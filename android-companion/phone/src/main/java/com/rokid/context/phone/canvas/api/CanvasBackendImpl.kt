@@ -6,9 +6,11 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
+import com.rokid.context.ai.canvas.FrameFact
 import com.rokid.context.ai.canvas.InnerFlow
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.ParamSpec
+import com.rokid.context.ai.canvas.PhotoScope
 import com.rokid.context.ai.canvas.PipelineDiff
 import com.rokid.context.ai.canvas.Problem
 import com.rokid.context.ai.canvas.Pipeline
@@ -585,7 +587,20 @@ class CanvasBackendImpl(
 
     override suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate {
         val p = loadPipeline(pipelineId, version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
-        return runner.estimate(p, frameIds, ::label)
+        return runner.estimate(p, scoped(p, frameIds), ::label)
+    }
+
+    /** The Photo node's settings narrow the chosen frames (estimate and start alike, so the token binds the same list). At the defaults the ids pass untouched and nothing is read. */
+    private suspend fun scoped(p: Pipeline, frameIds: List<String>): List<String> {
+        val s = PhotoScope.settingsOf(p)
+        if (s.isDefault) return frameIds
+        val g = MemoryGraph.get(app)
+        val frames = g.frames.byIds(frameIds)
+        val marks = if (s.markedOnly) g.db.canvasSlice3Dao().labels() else emptyList()
+        val facts = frames.associate { f ->
+            f.id to FrameFact(f.id, f.ts, f.source, marks.any { it.frameId == f.id || kotlin.math.abs(it.atMs - f.ts) <= PhotoScope.MARK_LINK_MS })
+        }
+        return PhotoScope.apply(s, frameIds, facts, clock())
     }
 
     override suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray =
@@ -617,7 +632,7 @@ class CanvasBackendImpl(
 
     override suspend fun startRun(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String {
         val p = loadPipeline(pipelineId, version) ?: throw IllegalArgumentException("invalid_pipeline")
-        return runner.start(p, pipelineId, version, frameIds, token, scope)
+        return runner.start(p, pipelineId, version, scoped(p, frameIds), token, scope)
     }
 
     override suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate {

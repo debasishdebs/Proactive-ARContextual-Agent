@@ -23,8 +23,16 @@ export const localCriticInner = {
   exposed: [{ param: 'aggregate', node: 'aggregate' }, { param: 'operator', node: 'compare' }, { param: 'cutoff', node: 'cutoff' }],
 };
 
+// what /api/node-types serves for input.photos (CanvasBackendImplTest checks the real JSON); every default is today's behaviour
+export const photoParams = [
+  { name: 'source', kind: 'enum', label: 'Source', options: ['glasses', 'all'], default: 'glasses' },
+  { name: 'sinceHours', kind: 'int', label: 'Only photos from the last hours (0 = any time)', min: 0, max: 720, step: 1, default: 0 },
+  { name: 'markedOnly', kind: 'bool', label: 'Only marked moments', default: false },
+  { name: 'limit', kind: 'int', label: 'At most this many photos (newest first)', min: 1, max: 50, step: 1, default: 50 },
+];
+
 export const nodeTypes = [
-  t('input.photos', 'Photo', 'photos', [], 'PHOTOS', { palette: false, category: 'Inputs' }),
+  t('input.photos', 'Photo', 'photos', [], 'PHOTOS', { palette: false, category: 'Inputs', params: photoParams }),
   t('ai.vision_extract', 'Facts from frames', 'extract', ['PHOTOS', 'JSON'], 'EXTRACTION', {
     params: [{ name: 'batch', kind: 'int', min: 1, max: 3 }, { name: 'prompt', kind: 'prompt' }],
   }),

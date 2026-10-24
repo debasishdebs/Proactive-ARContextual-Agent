@@ -91,7 +91,7 @@ object NodeTypes {
         (params["cases"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content } ?: emptyList()
 
     private val legacy: List<NodeType> = listOf(
-        NodeType(INPUT_PHOTOS, "Photo", emptySet(), PortType.PHOTOS, category = Category.INPUTS, short = "photos", palette = false, root = true),
+        NodeType(INPUT_PHOTOS, "Photo", emptySet(), PortType.PHOTOS, category = Category.INPUTS, short = "photos", palette = false, root = true, params = PhotoSettings.schema),
         NodeType(VISION_EXTRACT, "Facts from frames", setOf(PortType.PHOTOS, PortType.JSON), PortType.EXTRACTION, PromptKey.VISION_EXTRACT,
             executor = ExecutorKind.PROMPT, short = "extract"),
         NodeType(LOCAL_CRITIC, "Local trust check", setOf(PortType.EXTRACTION), PortType.EXTRACTION, branches = { listOf("trusted", "unsure") },

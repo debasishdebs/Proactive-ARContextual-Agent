@@ -208,6 +208,19 @@ export const tests = {
     eq(g[0].items.map((i) => i.type), ['ai.vision_extract', 'ai.critic', 'ai.prompt']);
     ok(!g.some((x) => x.items.some((i) => i.type === 'input.photos')), 'palette:false is left out');
   },
+  photoNodeSettingsAreEditableInTheInspector() {
+    const ed = E.selectNode(open(), 'photos');
+    const m = E.inspectorFor(ed, nodeTypes, env);
+    eq(m.fields.map((f) => f.name), ['source', 'sinceHours', 'markedOnly', 'limit']);
+    eq(m.fields.map((f) => f.value), ['glasses', 0, false, 50], 'defaults show today\'s behaviour');
+    const r = E.inputChange(ed, 'photos', 'source', null, 'all', nodeTypes, env);
+    ok(!r.error, r.error);
+    eq(r.ed.ds.pipe.nodes.find((n) => n.id === 'photos').params, { source: 'all' }, 'only the changed setting is stored');
+    eq(E.inspectorFor(r.ed, nodeTypes, env).fields[0].value, 'all');
+    ok(E.inputChange(ed, 'photos', 'limit', null, '60', nodeTypes, env).error, 'above the maximum is refused beside the field');
+    ok(E.inputChange(ed, 'photos', 'sinceHours', null, '-1', nodeTypes, env).error);
+    eq(E.inputChange(ed, 'photos', 'limit', null, '5', nodeTypes, env).ed.ds.pipe.nodes.find((n) => n.id === 'photos').params, { limit: 5 });
+  },
   nearestAboveDrop() {
     const nodes = E.flowFor(open(), nodeTypes).nodes;
     eq(E.nearestAbove(nodes, { x: 40, y: 250 }), 'trust', 'y=250 is between layer 2 (240) and 3 (360): the node above');
