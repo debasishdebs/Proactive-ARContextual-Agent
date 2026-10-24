@@ -89,6 +89,9 @@ class WindowRing(val seconds: Int, val agg: Int) {
         /** `Math.round(x * 1000)` clamped to +-2e6, or null for a non-finite [x]. Java and JS round halves toward +infinity. */
         fun quantise(x: Double): Int? = if (x.isFinite()) Math.round(x * 1000.0).coerceIn(-CLAMP, CLAMP).toInt() else null
 
+        /** [quantise] without boxing (the 1 Hz feed allocates nothing): [invalid] for a non-finite [x]. */
+        fun quantiseOr(x: Double, invalid: Int): Int = if (x.isFinite()) Math.round(x * 1000.0).coerceIn(-CLAMP, CLAMP).toInt() else invalid
+
         fun aggCode(name: String): Int? = when (name) { "max" -> AGG_MAX; "mean" -> AGG_MEAN; "frac" -> AGG_FRAC; else -> null }
 
         /** The bytes one term holds: the Int32 ring, plus the Int32 index deque for max. */
