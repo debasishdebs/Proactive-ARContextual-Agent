@@ -72,7 +72,7 @@ class MomentBuilder(
             if (fenced || unknown) refused++
         }
         for ((id, m) in resolved) {
-            if (m == null) { if (dao.moment(id) != null || dao.parts(id).isNotEmpty()) { dao.remove(listOf(id)); removed++ }; continue }
+            if (m == null) { if (dao.moment(id) != null || dao.parts(id).isNotEmpty()) { dao.remove(listOf(id), AuditStep.BUILD); removed++ }; continue }
             val before = dao.moment(id); val beforeParts = dao.parts(id)
             val entity = MomentEntity(m.id, BUILD_REV, m.contentRev, m.contentHash, clock()); val parts = partsOf(m)
             dao.replace(entity, parts)
