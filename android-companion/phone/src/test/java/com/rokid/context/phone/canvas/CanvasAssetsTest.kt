@@ -82,6 +82,19 @@ class CanvasAssetsTest {
         }
     }
 
+    // The GraalVM fake DOM cannot measure layout, so the contract is on the constants: the CSS height of the collapsed composite card
+    // equals CARD_H, and a card plus the label gap fits one layout cell (a taller card sat on the next node and hid its edge labels).
+    @Test fun collapsedCompositeCardFitsItsLayoutCell() {
+        fun num(src: String, name: String) = Regex("\\b$name = (\\d+)").find(src)!!.groupValues[1].toInt()
+        val fa = text("flowadapter.js")
+        val cardH = num(fa, "CARD_H"); val gap = num(fa, "MIN_GAP"); val cell = num(fa, "CELL_H")
+        assertTrue("card $cardH + gap $gap must fit the cell $cell", cardH + gap <= cell)
+        assertTrue(gap >= 24)
+        val css = text("style.css")
+        assertTrue("collapsed composite card height must be CARD_H", css.contains(".node-card.composite:not(:has(.comp.open)) { height: ${cardH}px; }"))
+        assertTrue(text("floweditor.js").contains("comp-row")) // marker and Expand button share one row inside the card
+    }
+
     @Test fun jsUnderSizeBudget() {
         val lines = all.filter { it.name.endsWith(".js") }.sumOf { it.readText().lines().size }
         assertEquals(true, lines <= 4400) // composite nodes added compositeview.js (~130 lines) and X5 added the boxed expression editor (exprgraph.js + exprview.js, ~650 lines)
