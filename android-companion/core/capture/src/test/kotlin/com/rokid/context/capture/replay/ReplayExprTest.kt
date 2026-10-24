@@ -108,3 +108,69 @@ class ReplayExprTest {
         assertTrue(r.exprDiv0 >= 1, "div0 reported: ${r.exprDiv0}")
     }
 }
+
+/** 3c E2a X6: window terms replay from empty rings at the replay's start, exactly like a plan apply on the device. */
+class ReplayWindowParityTest {
+    private fun guard(id: String, s: String, out: Int): JsonObject =
+        Json.parseToJsonElement("""{"id":"$id","role":"guard","out":$out,"s":[$s]}""").jsonObject
+
+    /** keep while `max(gyroMax, [sec] s) > [thr]`. */
+    private fun maxGuard(sec: Int, thr: Double, id: String = "w") =
+        guard(id, """{"op":"win","name":"gyroMax","agg":"max","sec":$sec},{"op":"const","v":$thr},{"op":"cmp","f":">","a":0,"b":1}""", 2)
+
+    private fun cand(vararg e: JsonObject) = ReplayCandidate("h", glance = ReplayFixtures.glance, exprs = e.toList())
+    private fun run(ev: List<TraceEvent>, c: ReplayCandidate?) = CaptureSimulator.replay(ev.asSequence(), ReplayFixtures.manifest(), c)
+
+    private val end = START + 25_000
+    private val sensors = (START..end step 20).flatMap { t ->
+        val turning = t in 20_000..20_700
+        listOf(TraceEvent.Gyro(t, t, 0f, 0f, if (turning) 1.5f else 0.02f), TraceEvent.Accel(t, t, 0f, 0f, 0f))
+    }
+    private val golden = ReplayFixtures.trace(sensors + ReplayFixtures.timerOracle(untilMs = 19_000).events, endMs = end)
+
+    /** The device by hand: a classifier fed the same sensors, one feature row a second of event time into a ring that starts empty, read at each dwell. */
+    private fun liveMaxAtDwells(sec: Int): List<Pair<Long, Double?>> {
+        var now = START
+        val cls = MotionClassifier({ now }, ReplayFixtures.glance)
+        val ring = com.rokid.context.core.model.context.graph.WindowRing(sec, com.rokid.context.core.model.context.graph.WindowRing.AGG_MAX)
+        var lastAt = Long.MIN_VALUE
+        val out = ArrayList<Pair<Long, Double?>>()
+        cls.dwellListener = { t -> out += t to ring.value().takeIf { !it.isNaN() } }
+        for (e in golden) {
+            if (e.tMs > now) now = e.tMs
+            if (lastAt == Long.MIN_VALUE || now - lastAt >= 1_000L) { ring.push(com.rokid.context.core.model.context.graph.WindowRing.quantise(cls.features().gyroMax.toDouble())!!); lastAt = now }
+            when (e) {
+                is TraceEvent.Gyro -> cls.onGyro(e.x, e.y, e.z, e.sMs)
+                is TraceEvent.Accel -> cls.onLinearAccel(e.x, e.y, e.z, e.sMs)
+                else -> Unit
+            }
+        }
+        return out.filter { it.first > ReplayFixtures.PRE_ROLL_END }
+    }
+
+    @Test fun ReplayWindowParityTest() {
+        val live = liveMaxAtDwells(5)
+        assertEquals(1, live.size, live.toString())
+        val v = live[0].second
+        assertTrue(v != null && v > 0.0, "a 5 s window is full at the dwell (22.2 s): $v")
+        // `>` against the exact live window value drops; a hair below keeps; the decision is the live ring's, not a partial or cold one
+        for ((thr, keep) in listOf(v!! to false, v - 0.001 to true, v + 0.001 to false)) {
+            val r = run(golden, cand(maxGuard(5, thr)))
+            assertEquals(listOf(live[0].first to keep), r.guardDecisions.map { it.atMs to it.keep }, "thr=$thr")
+            assertEquals(5, r.windowWarmingS); assertTrue(r.warming)
+        }
+    }
+
+    @Test fun replayStartsWarmingWhenTheHorizonOutlastsTheTrace() {
+        val live = liveMaxAtDwells(30)
+        assertEquals(listOf(null), live.map { it.second }, "the device would be warming too: 22 s of rings")
+        val drops = run(golden, cand(maxGuard(30, 100.0)))   // max > 100 is false once a window answers: it must not answer yet
+        assertEquals(listOf(true), drops.guardDecisions.map { it.keep }, "warming keeps: UNAVAILABLE never drops")
+        assertEquals(0, drops.guardDrops.getValue("w")); assertEquals(30, drops.windowWarmingS)
+    }
+
+    @Test fun noWindowsMeansNotWarming() {
+        val r = run(golden, cand(guard("i", """{"op":"const","v":true}""", 0)))
+        assertEquals(0, r.windowWarmingS); assertTrue(!r.warming)
+    }
+}

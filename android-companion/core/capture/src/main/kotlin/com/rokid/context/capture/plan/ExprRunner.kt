@@ -125,6 +125,8 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
     /** Bytes of window state (rings and deques) this runner holds; 0 without window terms. */
     val windowStateBytes: Int get() = win?.stateBytes ?: 0
     val windowTerms: Int get() = win?.terms?.size ?: 0
+    /** The longest window horizon in seconds (0 without windows): how long a plan apply leaves the runner warming. */
+    val windowHorizonS: Int get() = win?.terms?.maxOfOrNull { it.seconds } ?: 0
 
     /** Binds the window rings to [sig] at this instant (the plan apply): they start empty and fill one second at a time. Idempotent. */
     fun bind(sig: ExprSignals) { win?.let { sig.feed(it) } }
