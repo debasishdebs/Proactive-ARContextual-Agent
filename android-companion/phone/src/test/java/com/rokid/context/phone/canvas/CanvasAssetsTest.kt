@@ -14,7 +14,7 @@ class CanvasAssetsTest {
         "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js",
         "editorlogic.js", "editorflow.js", "floweditor.js", "jsx-shim.js",
         "format.js", "diffview.js", "runlogic.js", "versions.js", "liveview.js", "asks.js",
-        "pareto.js", "replayview.js", "paretoview.js", "helperview.js",
+        "pareto.js", "replayview.js", "paretoview.js", "helperview.js", "exprgraph.js", "exprview.js",
     )
     private fun text(n: String) = File(dir, n).readText()
     private val js get() = names.filter { it.endsWith(".js") }
@@ -84,7 +84,7 @@ class CanvasAssetsTest {
 
     @Test fun jsUnderSizeBudget() {
         val lines = all.filter { it.name.endsWith(".js") }.sumOf { it.readText().lines().size }
-        assertEquals(true, lines <= 3500)
+        assertEquals(true, lines <= 4200) // X5 added the boxed expression editor (exprgraph.js + exprview.js, ~650 lines)
     }
 
     @Test fun checkReadsLiveEditorValues() {

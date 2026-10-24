@@ -87,7 +87,11 @@ export const captureTypes = [
     params: [{ name: 'hamming', kind: 'int', min: 6, max: 16, step: 1, default: 10, sweep: true }, { name: 'ringCompare', kind: 'enum', options: ['last', 'all'], default: 'all', sweep: true }],
   }),
 ];
-export const allTypes = nodeTypes.concat(captureTypes);
+/** expr.guard as /api/node-types serves it (X2): one structured `graph` param, MOTION_EVENT in and out, never liveable. */
+export const exprGuardType = v2('expr.guard', 'Expression guard', 'guard', ['MOTION_EVENT'], 'MOTION_EVENT', 'RT_GLASSES', 'Thresholds/Filters', {
+  liveable: false, params: [{ name: 'graph', kind: 'graph', label: 'Expression graph', sweep: false }],
+});
+export const allTypes = nodeTypes.concat(captureTypes, [exprGuardType]);
 
 /** head -> threshold -> rate(+hub) -> capture -> (photos binding) input.photos; one pipeline over RT_GLASSES, RT_PHONE and ASYNC. */
 export function capturePipe() {

@@ -6,6 +6,7 @@ import { branchesOf } from './graph.js';
 import { typeOf, own, edgeKey, attributeProblems } from './validate.js';
 import { fields, coerce, coerceCell, promptParts, coercePromptPart } from './paramform.js';
 import * as keys from './keys.js';
+import { exprMeters, panelFor } from './exprgraph.js';
 
 /** Model roles an `ai.prompt` node can use (services/ai Role; EMBED is not allowed by the validator). */
 export const ROLES = ['VISION_EXTRACT', 'EXPLICIT_REMEMBER', 'SUMMARIZE', 'CRITIC', 'ANSWER', 'NUDGE'];
@@ -310,7 +311,7 @@ export function applyCompile(ed, rev, reply) {
   return Object.assign({}, ed, {
     compile: {
       state: 'done', rev, ok: !!(reply && reply.ok), planBytes: reply && typeof reply.planJson === 'string' ? utf8Length(reply.planJson) : null,
-      hash: reply && reply.configHash ? String(reply.configHash) : '', modelCalls: Number(cost.modelCalls) || 0, rtOps: Number(cost.rtOps) || 0,
+      hash: reply && reply.configHash ? String(reply.configHash) : '', exprs: exprMeters(reply && reply.planJson), modelCalls: Number(cost.modelCalls) || 0, rtOps: Number(cost.rtOps) || 0,
       problems: attributeProblems(reply && reply.problems), warnings: attributeProblems(reply && reply.warnings),
     },
   });
@@ -345,8 +346,11 @@ export function compileView(ed) {
     ? 'Compiles: plan ' + bytes + (c.hash ? ', hash ' + c.hash.slice(0, 8) : '') + ', ' + c.modelCalls + ' model calls, ' + c.rtOps + ' rt ops.'
     : 'Does not compile yet: ' + c.problems.length + (c.problems.length === 1 ? ' problem.' : ' problems.');
   const note = stale ? 'The draft has changed since this compile. Compile again.' : isDirty(ed) ? 'Compiled your unsaved edits. Save to keep them.' : '';
-  return { state: 'done', stale, ok: c.ok, problems: c.problems, warnings: placeWarnings(ed.ds.pipe, c.warnings), summary, note, message: '' };
+  return { state: 'done', stale, ok: c.ok, exprs: c.exprs, planBytes: c.planBytes, problems: c.problems, warnings: placeWarnings(ed.ds.pipe, c.warnings), summary, note, message: '' };
 }
+
+/** What the boxed editor of an expr.guard node shows from the compile view: EXPR_* problems placed on steps and nodes, and the meters. */
+export function exprPanel(ed, nodeId, graph) { return panelFor(compileView(ed), nodeId, graph); }
 
 /** [{text, nodeId?, edgeId?}]: what the problems list shows; nodeId is what a click focuses. */
 export function problemItems(ed) {
