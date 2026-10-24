@@ -38,6 +38,45 @@ abstract class DerivedStaleDao {
     @Query("SELECT value FROM canvas_meta WHERE `key` = 'scene_seq_floor'") protected abstract suspend fun sceneSeqFloorValue(): String?
     @Query("INSERT OR REPLACE INTO canvas_meta (`key`, value) VALUES ('scene_seq_floor', :value)") protected abstract suspend fun putSceneSeqFloor(value: String)
 
+    // --- Sensor features per Moment second (Room v12) ---
+    @Query("SELECT * FROM moment_sensor WHERE momentId IN (:ids) ORDER BY momentId, phoneSecond") abstract suspend fun sensorOf(ids: List<String>): List<MomentSensorEntity>
+    @Query("SELECT * FROM moment_sensor WHERE phoneSecond >= :fromSec AND phoneSecond <= :toSec ORDER BY phoneSecond, momentId") abstract suspend fun sensorBetween(fromSec: Long, toSec: Long): List<MomentSensorEntity>
+    @Query("SELECT COUNT(*) FROM moment_sensor") abstract suspend fun sensorCount(): Int
+    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun insertSensor(rows: List<MomentSensorEntity>)
+    @Query("DELETE FROM moment_sensor WHERE momentId IN (:ids)") abstract suspend fun deleteSensorOf(ids: List<String>)
+    @Query("SELECT DISTINCT momentId FROM moment_sensor WHERE traceId = :traceId ORDER BY momentId") protected abstract suspend fun sensorMomentsOfTrace(traceId: String): List<String>
+    @Query("DELETE FROM moment_sensor WHERE traceId = :traceId") protected abstract suspend fun deleteSensorOfTrace(traceId: String)
+    @Query("SELECT DISTINCT momentId FROM moment_sensor WHERE phoneSecond >= :fromSec AND phoneSecond <= :toSec ORDER BY momentId") protected abstract suspend fun sensorMomentsBetween(fromSec: Long, toSec: Long): List<String>
+    @Query("DELETE FROM moment_sensor WHERE phoneSecond >= :fromSec AND phoneSecond <= :toSec") protected abstract suspend fun deleteSensorBetween(fromSec: Long, toSec: Long)
+
+    /** Hides the derived fields of each of these Moments that still exists (and, through [markStaleCore], of every Scene holding it); the rows they were built from changed. */
+    protected suspend fun hideAfterSensorChange(momentIds: List<String>, now: Long, step: String) {
+        momentIds.filter { momentExists(it) > 0 }.forEach { markStaleCore("MOMENT", it, now, step, "SENSOR", null, force = true) }
+    }
+
+    /**
+     * The trace [traceId] is gone (tombstoned) or holds other content now: every sensor row computed from it is deleted, in ALL Moments (not only those of a forgotten range), and the derived
+     * fields of those Moments and of their Scenes are hidden in the caller's transaction. Returns the Moments touched.
+     */
+    suspend fun purgeSensorOfTrace(traceId: String, now: Long, step: String): Int {
+        val moments = sensorMomentsOfTrace(traceId)
+        if (moments.isEmpty()) return 0
+        deleteSensorOfTrace(traceId)
+        hideAfterSensorChange(moments, now, step)
+        return moments.size
+    }
+
+    /** Forget of the phone-clock interval `[fromMs, toMs]`: the sensor rows of its seconds go whichever trace they came from (a row whose trace row is missing is found by its second). */
+    suspend fun purgeSensorBetween(fromMs: Long, toMs: Long, now: Long, step: String): Int {
+        if (toMs < 0 || toMs < fromMs) return 0
+        val lo = Math.floorDiv(maxOf(fromMs, 0L), 1000L); val hi = Math.floorDiv(toMs, 1000L)
+        val moments = sensorMomentsBetween(lo, hi)
+        if (moments.isEmpty()) return 0
+        deleteSensorBetween(lo, hi)
+        hideAfterSensorChange(moments, now, step)
+        return moments.size
+    }
+
     /**
      * Deletes the Scene rows, their audit rows and their derived fields (the parts are the caller's). A Scene id can come back with other members, so the highest audit seq of the
      * deleted Scenes is kept in `canvas_meta` (`scene_seq_floor`, a counter, no user data): [appendAuditRow] never gives a Scene a seq at or below it, so the input revision of a Scene
