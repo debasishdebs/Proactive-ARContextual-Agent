@@ -198,6 +198,25 @@ class CanvasBackendImplTest {
         assertEquals("false", checkNotNull(backend.pipeline(copy))["builtIn"]!!.jsonPrimitive.content)
     }
 
+    @Test fun theStarterShowsBothLanesInOnePipelineAndClones() = runBlocking<Unit> {
+        val row = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "starter-capture-extract" }.jsonObject
+        assertEquals("true", row["builtIn"]!!.jsonPrimitive.content)
+        assertEquals("null", row["live"].toString())
+        assertEquals("false", backend.activePublish()["active"]!!.jsonPrimitive.content)
+        val p = checkNotNull(backend.pipeline("starter-capture-extract"))
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        val cells = p["layout"]!!.jsonObject["cells"]!!.jsonObject
+        assertTrue(listOf("head", "hub", "photos", "extract", "write").all { cells.containsKey(it) })
+        val domains = PipelineJson.decode(p["json"]!!.jsonPrimitive.content).getOrThrow().nodes.map { n ->
+            com.rokid.context.ai.canvas.NodeTypes.byType(n.type)!!.let { com.rokid.context.ai.canvas.NodeTypes.domainOf(n, it).name }
+        }.toSet()
+        assertEquals(setOf("RT_GLASSES", "RT_PHONE", "ASYNC"), domains)
+        val copy = backend.duplicate("starter-capture-extract", "My starter")
+        val d = checkNotNull(backend.pipeline(copy))
+        assertEquals("false", d["builtIn"]!!.jsonPrimitive.content)
+        assertEquals(0, d["problems"]!!.jsonArray.size)
+    }
+
     private val glassesOnlyJson = """{"schema":2,"id":"p","name":"identity","nodes":[
         {"id":"head","type":"imu.head_motion","title":"head","params":{}},
         {"id":"thresh","type":"gate.threshold","title":"thresh","params":{"feature":"gyroPeak","op":">","value":0.6}},

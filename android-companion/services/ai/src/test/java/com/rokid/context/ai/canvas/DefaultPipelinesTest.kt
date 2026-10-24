@@ -1,6 +1,7 @@
 package com.rokid.context.ai.canvas
 
 import com.rokid.context.ai.canvas.plan.PlanCompiler
+import com.rokid.context.ai.canvas.plan.PlanShape
 import com.rokid.context.ai.flow.flows.CaptureFlow
 import com.rokid.context.capture.plan.CanonicalJson
 import com.rokid.context.capture.plan.PlanJson
@@ -22,7 +23,8 @@ class DefaultPipelinesTest {
     @Test fun bothDefaultsValidate() {
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.liveExtract()))
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.intentDraft(seed)))
-        assertEquals(listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT, DefaultPipelines.DEFAULT_CAPTURE), DefaultPipelines.all)
+        assertEquals(listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT, DefaultPipelines.DEFAULT_CAPTURE, DefaultPipelines.STARTER), DefaultPipelines.all)
+        assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.starter()))
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.defaultCapture()))
     }
 
@@ -45,6 +47,40 @@ class DefaultPipelinesTest {
         // no node carries an override: only the threshold's required trio and the two signal bindings have params
         assertEquals(setOf("gate.threshold", "signal.in", "signal.out"), p.nodes.filter { it.params.isNotEmpty() }.map { it.type }.toSet())
         assertTrue(p.nodes.none { it.type == NodeTypes.INPUT_PHOTOS })
+    }
+
+    @Test fun starterHasBothLanesInOnePipelineAndValidates() {
+        val p = DefaultPipelines.starter()
+        assertEquals("starter-capture-extract", p.id)
+        assertEquals("Starter: capture and extract", p.name)
+        assertEquals(PipelineJson.SCHEMA_V2, p.schema)
+        assertEquals(emptyList<String>(), PipelineValidator.validate(p))
+        assertTrue(DefaultPipelines.STARTER in DefaultPipelines.all)
+        // the glasses lane is exactly Default capture's nodes and wires; the phone flow is exactly the live extraction's
+        val dc = DefaultPipelines.defaultCapture(); val live = DefaultPipelines.liveExtract()
+        assertTrue(p.nodes.containsAll(dc.nodes)); assertTrue(p.edges.containsAll(dc.edges))
+        assertTrue(p.nodes.containsAll(live.nodes)); assertTrue(p.edges.containsAll(live.edges))
+        // the one link between the lanes: the captured image is the Photo input
+        assertTrue(PipelineEdge("cam", "photos") in p.edges)
+        assertEquals(dc.nodes.size + live.nodes.size, p.nodes.size)
+        assertEquals(dc.edges.size + live.edges.size + 1, p.edges.size)
+        val lanes = p.nodes.map { n -> NodeTypes.domainOf(n, NodeTypes.resolve(n.type, p.schema)!!) }.toSet()
+        assertEquals(setOf(Domain.RT_GLASSES, Domain.RT_PHONE, Domain.ASYNC), lanes)
+    }
+
+    @Test fun starterCompilesToTheIdentityPlanAndKeepsItsAsyncHalf() {
+        val p = DefaultPipelines.starter()
+        val r = PlanCompiler.compile(p)
+        assertEquals(emptyList<String>(), r.problems)
+        assertEquals("the glasses plan is Default capture's, the async half changes nothing", "f5782e0d8610", r.plan!!.configHash)
+        assertEquals(PlanResolver.identity(), r.plan!!.config)
+        assertTrue(PlanShape.hasAsyncHalf(p))
+        assertEquals(emptyList<String>(), PlanShape.tier3Nodes(p))
+        val async = PlanShape.asyncProjection(p)
+        assertEquals(DefaultPipelines.liveExtract().nodes, async.nodes)
+        assertEquals(DefaultPipelines.liveExtract().edges, async.edges)
+        // Default capture is untouched by the starter existing
+        assertEquals("f5782e0d8610", PlanCompiler.compile(DefaultPipelines.defaultCapture()).plan!!.configHash)
     }
 
     @Test fun liveExtractMirrorsCaptureFlowPhotoPath() {
