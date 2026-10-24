@@ -189,3 +189,24 @@ table.results td, table.results th { white-space: nowrap; }
 .comp-field input, .comp-field select { width: 100%; min-width: 0; box-sizing: border-box; }
 .comp-box.read-only .expr-box-body { stroke-dasharray: 4 3; }
 .comp-errs { margin: 4px 0 0; text-align: left; }
+
+/* merged multi-pipeline view (read only): lanes as bands, one colour per pipeline, a name pill on each node */
+.merged-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.merged-lane-band { fill: var(--step); opacity: 0.6; }
+.merged-lane-label { fill: var(--muted); font-size: 13px; font-weight: 600; }
+.merged-node-body { fill: var(--card); stroke-width: 2; }
+.merged-node.composite .merged-node-body { fill: var(--comp); stroke: var(--comp-line); }
+.merged-node-title { fill: var(--fg); font-size: 13px; font-weight: 600; }
+.merged-node-type, .merged-edge-label, .merged-link-label { fill: var(--muted); font-size: 11px; }
+.merged-pill-text { fill: #fff; font-size: 11px; font-weight: 700; }
+.merged-edge-line, .merged-link-line { stroke: var(--muted); stroke-width: 1.5; }
+.merged-head { fill: var(--muted); }
+.merged-link-signal .merged-link-line { stroke: var(--accent); stroke-width: 2.5; }
+.merged-link.dashed .merged-link-line { stroke-dasharray: 6 4; }
+.merged-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 0; }
+.merged-chip { padding: 4px 10px; border-radius: 12px; border: 2px solid var(--line); }
+.merged-error { border-style: dashed; color: var(--bad); }
+.pl0 { --pl: #1f6fb2; } .pl1 { --pl: #b24a1f; } .pl2 { --pl: #2f8a4b; } .pl3 { --pl: #8a3fb2; } .pl4 { --pl: #a08a14; } .pl5 { --pl: #b21f6a; }
+.merged-node .merged-node-body, .merged-chip { stroke: var(--pl); border-color: var(--pl); }
+.merged-node .merged-pill { fill: var(--pl); }
+.merged-node.composite .merged-node-body { stroke: var(--comp-line); }
