@@ -156,6 +156,22 @@ abstract class CanvasDao {
             "WHERE f.ts >= :afterMs AND f.ts < :beforeMs AND (:dwellOnly = 0 OR m.dwell = 1) AND f.id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY f.ts DESC LIMIT :limit",
     )
     abstract suspend fun recentFramesBetween(afterMs: Long, beforeMs: Long, dwellOnly: Boolean, limit: Int): List<CanvasFrameRow>
+    // --- Moment-lite (read-only; no schema): the live frames of a time range and the memories that belong to them ---
+    /** Live (not forgotten) frames with `fromMs <= ts <= toMs`, oldest first. `rev` fingerprints what the row says (never the image). */
+    @Query(
+        "SELECT f.id AS id, f.ts AS ts, (f.ts || ':' || COALESCE(f.phash, '') || ':' || COALESCE(f.placeLabel, '') || ':' || COALESCE(f.luma, '')) AS rev FROM frame f " +
+            "WHERE f.ts >= :fromMs AND f.ts <= :toMs AND f.id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY f.ts, f.id LIMIT :limit",
+    )
+    abstract suspend fun momentFrames(fromMs: Long, toMs: Long, limit: Int): List<MomentFrameRow>
+
+    /** The not-invalidated memories of [frameIds] (their own frame, or a source frame): (frameId, memoryId, rev). */
+    @Query(
+        "SELECT m.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.text) AS rev FROM memory m WHERE m.frameId IN (:frameIds) AND m.reviewState != 'INVALIDATED' " +
+            "UNION SELECT fs.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.text) AS rev FROM frame_source fs JOIN memory m ON m.id = fs.memoryId " +
+            "WHERE fs.frameId IN (:frameIds) AND m.reviewState != 'INVALIDATED'",
+    )
+    abstract suspend fun momentMemories(frameIds: List<String>): List<MomentMemoryRow>
+
     @Query("SELECT id, text, type FROM memory WHERE frameId = :frameId OR id IN (SELECT memoryId FROM frame_source WHERE frameId = :frameId) ORDER BY createdAt")
     abstract suspend fun liveMemories(frameId: String): List<LiveMemoryRow>
 
@@ -182,7 +198,8 @@ abstract class CanvasDao {
      */
     @Transaction open suspend fun deleteCanvasOutputsForFrames(frameIds: List<String>) {
         if (frameIds.isEmpty()) return
-        val tokens = frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.flatMap { it.split('|') }.filter { it.isNotEmpty() }.distinct()
+        // Moment runs list every member photo as an "mf:<frameId>" lineage token on all their rows, so a Forget of any member photo finds the Moment's rows (no schema change).
+        val tokens = (frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.flatMap { it.split('|') } + frameIds.map { "mf:$it" }).filter { it.isNotEmpty() }.distinct()
         // Scores first: they are matched through the items that still exist.
         tokens.forEach { deleteScoresOfBatch(it) }
         frameIds.chunked(CHUNK).forEach { deleteScoresForFrames(it) }
@@ -196,4 +213,6 @@ abstract class CanvasDao {
 data class TokenMeans(val p: Double?, val c: Double?, val n: Int)
 
 data class CanvasFrameRow(val id: String, val ts: Long, val motion: String?, val dwell: Boolean?, val blur: Float?, val state: String?, val liveCount: Int)
+data class MomentFrameRow(val id: String, val ts: Long, val rev: String)
+data class MomentMemoryRow(val frameId: String, val id: String, val rev: String)
 data class LiveMemoryRow(val id: String, val text: String, val type: String)
