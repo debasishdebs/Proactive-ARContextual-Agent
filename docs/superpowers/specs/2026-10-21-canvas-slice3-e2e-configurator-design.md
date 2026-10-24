@@ -32,7 +32,7 @@ The user ruled on these seven points on 2026-10-22, and they are binding. Each o
 - the publish gate (§7 gates 1–5, S11: SHADOW, a bounded TRIAL, or verified LIVE at ≤ 0.42 %/min);
 - the group states and rollback modes (S25, S26);
 - commands with generations and acks (S24);
-- the frozen, resolved plan (S27) and the plan's **4 KB** cap (§5.2);
+- the frozen, resolved plan (S27) and the plan's **8 KB** cap (§5.2, user ruling §17.2);
 - schema-1 hashes (S41), the deletion fences for every 3a table (S38), and the S44 verification rule.
 
 ### Slice 3a: capture-half graph, lean replay and tuning, mark-now, publish
@@ -42,7 +42,7 @@ Goal: the user edits the capture half of the §1 flow on the canvas (head moveme
 |---|---|---|---|---|
 | A1 | `:core:capture`: a **move-only** extraction of the pure decision code that replay needs (`GlanceDetector`/`GlanceParams`, `MotionModel`/`HeuristicMotionModel`, the novelty decision, the `KeyframeGate` cap and dedupe decision), with A3's tests moved alongside; `ContextFusion` stays in `core:model` (S50) (T1) | A3 merged | A | 2 |
 | A2 | NodeTypes v2 (categories, domains, kinds, `ParamSchema` with sweep hints; the `EXPR` kind is registered but `liveable = false` and hidden until 3c), schema-1 resolution (S41), rooted domains and the bindings validator (S34) (T2) | slice 2 T3 | B | 4 |
-| A3 | `CapturePlan` with no `exprs` or `tables` yet, `PlanBounds`, `PlanValidator`, the invariants (S3, S23, S31, S32), resolution (S27), the 4 KB cap (T4) | A1, wave B (merged parts) | A | 3 |
+| A3 | `CapturePlan` with no `exprs` or `tables` yet, `PlanBounds`, `PlanValidator`, the invariants (S3, S23, S31, S32), resolution (S27), the 8 KB cap (T4; was 4 KB before §17.2) | A1, wave B (merged parts) | A | 3 |
 | A4 | `PlanCompiler`: wrapper param blocks, threshold folds into `glance.*` (anything else is a problem, "needs an expression node (3c)"), the policy table, `phone.fusion`; the capture-half §1 golden (T5) | A2, A3 | B | 3 |
 | A5 | Glasses: plan store, gen/ack/caps, apply **through the existing classes' params**, reserved timer (S31), SHADOW/TRIAL, heartbeat, auto-revert (with no `exprErr` rule yet) (T6) | A3 | C | 5 |
 | A6 | Protocol `pc_capture_plan` / `_ack` / `pc_mark`, phone `Hub` send and reconcile (T7) | A3 | C | 3 |
@@ -256,7 +256,7 @@ Ruling S31 (liveness, exactly what is guaranteed):
 - **G1.** While capture is otherwise eligible, a **reserved timer opportunity** comes at least once per 60 s under any plan. "Eligible" means: not user-paused, worn, not heat- or battery-stopped, camera not busy, and the HUD capture session running.
 - **What the reserved opportunity is:** a timer check that opens the camera. Guards, novelty and policy gaps cannot suppress it. The keyframe gate's dedupe and blur rules and the hard ceiling still apply. So "opportunity" means a camera open, not necessarily a kept photo.
 - **One exception, built in and not editable:** A3's still-scene backoff may suppress an opportunity while the IMU is STILL and the last 2 opens were near-duplicates of the ring. Its built-in maximum is 60 s, so G1 still holds.
-- **G2.** Guards may drop every glance. That is allowed. G1 is what bounds the loss.
+- **G2.** Guards may drop every glance. That is allowed. A guard may read the context state (§17.1) and drop on it; G1 and the S32 walking rows still hold because the reserved timer attempt and the walking veto run after the guard. G1 is what bounds the loss.
 - **G3.** No policy row can set `pause`, and `capPerMin` ≥ 1.
 - **Settings mode (no plan)** keeps wave B's defaults. There, REST and FLIGHT gaps of up to 300 s give at least 1 opportunity per 5 min. That is wave B's guarantee, not G1.
 - Why: `capPerMin ≥ 1` alone was an allowance, not a promise. A timer path that guards can't reach gives a promise that can be tested.
@@ -332,9 +332,9 @@ Ruling S51 (2026-10-22, user): the expression language is **deferred to 3c**. Th
 - **Limits:** at most 32 AST nodes per program, 6 programs per plan, 4 window terms per plan and 3 tables per plan.
 - **Features:**
   - motion: `boutMs`, `boutRad`, `rotSinceKeepRad`, `msSinceKeep`, `walkedSinceKeep`, `keeps60s`, `stillFrac5m`, plus the `SecondFeatures` fields;
-  - context, for value programs only: `ctxState`, `ctxConf`, `ctxSinceMs`.
+  - context, for guards and values (§17.1; the inspector warns when a guard reads it): `ctxState`, `ctxConf`, `ctxSinceMs`.
 - **Roles:**
-  - a **guard** returns a bool, reads motion only, and may only drop a glance candidate. It never touches the reserved timer opportunity (S31).
+  - a **guard** returns a bool and may only drop a glance candidate. It may read motion and context (§17.1). It never touches the reserved timer opportunity (S31) and never lifts the walking veto or the WALKING/UNKNOWN full-rate rows (S32); both run after the guard.
   - a **value** computes one policy field, clamped to `PlanBounds` and the invariants.
 
 Ruling S33 (the cost ceiling, made concrete):
@@ -347,12 +347,13 @@ Ruling S33 (the cost ceiling, made concrete):
 - **Results are finite and typed:**
   - Values are computed as `Double`.
   - A non-finite intermediate is an evaluator error. A guard error **keeps** the candidate, so a failure costs at most the cap, never liveness. A value error uses the row default.
-  - Errors are counted as `exprErr`. More than 10 in a minute auto-reverts the plan (§7).
+  - Division by zero is an error by role (3c ruling Q11): the guard keeps the candidate, the value takes the row default. It is counted as `exprDiv0` and does not count toward auto-revert.
+  - Other errors are counted as `exprErr`. More than 10 in a minute auto-reverts the plan (§7).
 - **One evaluator everywhere:** `PlanEvaluator` in `:core:capture` is used by the validator, the simulator, the phone and the glasses. A max-cost and overflow test runs on the glasses.
 - Why: the earlier ceiling ignored windows, lookups, gaps of zero and NaN.
 - Cost if wrong: under a burst of glances, a decision can be delayed by up to 500 ms.
 
-Ruling S5: tier 2 is non-Turing, bounded and evaluated at event rate. Guards are motion-only and drop-only, and values are clamped.
+Ruling S5: tier 2 is non-Turing, bounded and evaluated at event rate. Guards are drop-only (they may read motion and, per §17.1, the context state), and values are clamped.
 - Why: instant publish with a provable cost.
 - Cost if wrong: "skip when at a computer" must be written as a value program or put in the REST row.
 
@@ -545,7 +546,7 @@ Ruling S7: one pure module is shared by the glasses, the simulator and the compi
  "gate":{"bigChange":22,"hamming":10,"ringCompare":"all"},
  "phone":{"fusion":{…all FusionParams…},"intentCadence":{"vehicleMs":60000,"otherMs":300000}}}
 ```
-- **Size:** `planJson` is at most **4,096 bytes** (UTF-8, canonical JSON). The compiler fails over that and never trims. The glasses reject a larger plan as `too_big`.
+- **Size:** `planJson` is at most **8,192 bytes** (UTF-8, canonical JSON). The compiler fails over that and never trims. The glasses reject a larger plan as `too_big`.
 - **`exprs` and `tables`** are absent in 3a and 3b. They arrive with the expression language in 3c (S51), together with the `expr` and `windows` caps.
 
 Ruling S27 (frozen means resolved):
@@ -1146,7 +1147,7 @@ Estimates are Sonnet implementer agent-hours, including one Opus review and one 
 | T1 | `:core:capture` extraction | **3a** A1 | 3 → 2 | move-only of the pure pieces replay needs; everything else is wrapped (S50) |
 | T2 | NodeTypes v2, S41, S34 | **3a** A2 | 5 → 4 | `EXPR` kind registered, hidden until 3c |
 | T3 | `PlanEvaluator` (`expr`) | **3c** C1 | 5 → 5 | after the brainstorm (C0, 2 h) |
-| T4 | `CapturePlan`, bounds, validator, invariants | **3a** A3 | 5 → 3 | no `exprs`/`tables`; 4 KB cap |
+| T4 | `CapturePlan`, bounds, validator, invariants | **3a** A3 | 5 → 3 | no `exprs`/`tables`; 8 KB cap (§17.2) |
 | T5 | `PlanCompiler` + golden | **3a** A4 | 4 → 3 | threshold folds only; the rest is "needs an expression node (3c)" |
 | — | `expr` in compiler, plan and glasses | **3c** C2 | (in T5, T6) → 4 | split out of T5/T6 |
 | T6 | Glasses plan apply | **3a** A5 | 7 → 5 | applies through the existing classes' params; no `exprErr` rule yet |
