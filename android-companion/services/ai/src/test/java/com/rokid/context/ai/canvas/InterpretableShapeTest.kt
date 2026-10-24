@@ -23,6 +23,28 @@ class InterpretableShapeTest {
     private fun assertHas(p: Pipeline, text: String) { val r = InterpretableShape.problems(p); assertTrue("expected '$text' in $r", text in r) }
     private val seed = "Extract {{recent_context}}"
 
+    /** The glasses-side identity plan graph as tools/m1-run.sh saves it: no async half, so no input.photos. */
+    private fun glassesOnly(): Pipeline {
+        fun n(id: String, type: String, params: JsonObject = none) = PipelineNode(id, type, id, params)
+        val nodes = listOf(
+            n("head", "imu.head_motion"), n("thresh", "gate.threshold", buildJsonObject { put("feature", "gyroPeak"); put("op", ">"); put("value", 0.6) }),
+            n("settle", "imu.settle"), n("novel", "gate.novelty"), n("rate", "policy.capture_rate"), n("cap", "gate.rate_cap"), n("cam", "capture.image"),
+            n("cin", "signal.in", buildJsonObject { put("name", "ctx"); put("domain", "RT_GLASSES") }), n("hub", "hub.context"),
+            n("cout", "signal.out", buildJsonObject { put("name", "ctx"); put("domain", "RT_PHONE") }),
+        )
+        val edges = listOf("head" to "thresh", "thresh" to "settle", "settle" to "novel", "novel" to "rate", "cin" to "rate", "rate" to "cap", "cap" to "cam", "hub" to "cout")
+        return Pipeline(PipelineJson.SCHEMA_V2, "p", "identity", nodes, edges.map { e(it.first, it.second) })
+    }
+
+    @Test fun glassesOnlyGraphHasNoPublishableAsyncHalfAndDoesNotThrow() {
+        val p = glassesOnly()
+        assertEquals(emptyList<String>(), PipelineValidator.validate(p))
+        assertTrue(InterpretableShape.problems(p).isNotEmpty())
+        assertEquals(0.0 to 0.0, InterpretableShape.callRange(p))
+        InterpretableShape.warnings(p)
+        assertEquals(false, LiveShape.matches(p))
+    }
+
     @Test fun intentDraftIsInterpretable() = assertEquals(emptyList<String>(), InterpretableShape.problems(DefaultPipelines.intentDraft(seed)))
 
     @Test fun liveExtractIsInterpretable() = assertEquals(emptyList<String>(), InterpretableShape.problems(DefaultPipelines.liveExtract()))
