@@ -2,6 +2,7 @@ package com.rokid.context.phone.ui.activity
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.SwapVert
@@ -97,6 +98,9 @@ fun ActivityScreen(
                 MetricTile(Icons.Outlined.Lightbulb, PcColors.ChipAmber, "${state.tiles.nudges}", "Nudges", Modifier.weight(1f))
             }
         }
+        item { SectionLabel("Marks") }
+        if (state.marks.isEmpty()) item { Hint(MarkRows.EMPTY) }
+        items(state.marks, key = { "mark_${it.labelId}" }) { MarkCard(it) }
         if (state.period == Period.TODAY) {
             if (state.sections.isNotEmpty()) timelineItems(state.sections, onOpenMemory)
             else if (state.today != null) item { Hint("Nothing captured yet today") }
@@ -139,6 +143,18 @@ private fun SortMenu(current: ActivitySort, onSelect: (ActivitySort) -> Unit) {
                     trailingIcon = if (o == current) ({ Icon(Icons.Outlined.Check, contentDescription = "Selected") }) else null,
                 )
             }
+        }
+    }
+}
+
+/** One mark, read-only: when, how it was made, whether a Moment holds it and why there is no photo. */
+@Composable
+private fun MarkCard(row: MarkRowUi) {
+    SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth().testTag("mark_row")) {
+        Column(Modifier.padding(12.dp)) {
+            Text("${row.time}  \u00b7  ${row.code}", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
+            Text(row.joined, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink)
+            row.reason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft) }
         }
     }
 }

@@ -39,7 +39,7 @@ class ActivityViewModelTest {
     private var zone: java.time.ZoneId = Fixtures.ZONE
 
     private fun vm(clock: kotlinx.coroutines.flow.Flow<Long>, initial: Period = Period.TODAY) = ActivityViewModel(
-        initial, FakeGlassesStatusSource(), FakePipelineControl(), graph.timeline, graph.asks, graph.nudges,
+        initial, FakeGlassesStatusSource(), FakePipelineControl(), graph.timeline, graph.asks, graph.nudges, graph.marks,
         clock = clock, storagePct = flowOf(null), zone = { zone },
     ).also { vms += it }
 
@@ -96,7 +96,7 @@ class ActivityViewModelTest {
     @Test fun aQuickPauseThenResumeIsTwoRequests() {
         val slow = FakePipelineControl(publishAtOnce = false)
         val model = ActivityViewModel(
-            Period.TODAY, FakeGlassesStatusSource(), slow, graph.timeline, graph.asks, graph.nudges,
+            Period.TODAY, FakeGlassesStatusSource(), slow, graph.timeline, graph.asks, graph.nudges, graph.marks,
             clock = flowOf(Fixtures.NOW), storagePct = flowOf(null), zone = { zone },
         ).also { vms += it }
         model.togglePause(); model.togglePause()
