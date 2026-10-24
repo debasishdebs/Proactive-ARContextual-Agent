@@ -9,11 +9,12 @@ import org.json.JSONArray
 import java.security.MessageDigest
 
 /**
- * The activation switch of STORED Moments (moment-model spec section 10). It is a kill switch: when off the builder writes nothing, but Forget and Delete all still remove
+ * The activation switch of STORED Moments (moment-model spec section 10). ON by default since every deletion-protection, fence, race and inventory test is green (it stayed
+ * OFF while they were being written); it is now only a kill switch: when off the builder writes nothing, but Forget and Delete all still remove
  * whatever projection exists (deletion protection never depends on this switch).
  */
 object MomentStoreSwitch {
-    const val DEFAULT_ENABLED = false
+    const val DEFAULT_ENABLED = true
 }
 
 /**
