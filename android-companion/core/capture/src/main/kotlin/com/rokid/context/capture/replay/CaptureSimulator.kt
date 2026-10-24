@@ -131,9 +131,17 @@ data class ReplayResult(
     /** Expression errors the replayed guards ended in (div0 apart, as live). */
     val exprErr: Int = 0,
     val exprDiv0: Int = 0,
+    /**
+     * 3c E2a: the longest window horizon (seconds) of the candidate's programs, 0 without windows. A replay starts its windows EMPTY at its first event, exactly as the
+     * device does at a plan apply (no ring snapshot in the trace). A trace recorded while the plan was already running had full windows on the device, so the
+     * decisions of its first [windowWarmingS] seconds are warming (guards keep, values take the row default), not exact against the recording.
+     */
+    val windowWarmingS: Int = 0,
 ) {
     /** True when no window had to be excluded. */
     val exact: Boolean get() = inexact == 0
+    /** True when window terms were replayed from empty rings: see [windowWarmingS]. */
+    val warming: Boolean get() = windowWarmingS > 0
 }
 
 /**
@@ -240,7 +248,7 @@ object CaptureSimulator {
         val cls = MotionClassifier({ now }, glance)
         // 3c X4: the candidate's guards, evaluated by the same ExprRunner the glasses run, on the classifier's own per-second features (read once a second of event time, as the sensor feed does).
         val runner: ExprRunner? = cand?.exprs?.takeIf { it.isNotEmpty() }?.let { ExprRunner.of(it) }
-        val signals = ExprSignals()
+        val signals = ExprSignals().also { runner?.bind(it) }   // the plan apply: the window rings start empty at the replay's start, as on the device
         var lastFeatAt = Long.MIN_VALUE
         var ctxAt = start
         val guardLog = ArrayList<GuardDecision>()
@@ -688,6 +696,7 @@ object CaptureSimulator {
                 inexactSpans = spans, recordedOpens = recordedOpens, stalls = StallStats(stallCount, stallMs), glanceAdmissions = admissions,
                 guardDrops = runner?.let { r -> r.guardIds.indices.associate { r.guardIds[it] to r.drops(it) } } ?: emptyMap(),
                 guardDecisions = guardLog, exprErr = counts?.get(0) ?: 0, exprDiv0 = counts?.get(1) ?: 0,
+                windowWarmingS = runner?.windowHorizonS ?: 0,
             )
         }
     }
