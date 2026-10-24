@@ -19,8 +19,8 @@ WP13 LIVE gate: 16/16 PASS on podman 6.1.4 (new machine `pca`, 10 GB; `podman-ma
 
 ## NEEDS YOU (nothing else is blocked)
 1. When you take the glasses off: plug them in, tell me; I pull traces with `tools/handover.sh` and read the state line. (No trace exists for the hours you wore them after 12:45 and before 14:40.)
-2. M1 gate rule decision: I recommend <=2% failing windows (each classified) + shadow-vs-admissions parity; today M1 fails on both real traces (live-loop timing blips).
-3. Heartbeat freshness limit in the hand-over tool: 60 min chosen, OK?
+2. DONE (your decision): M1 gate = failing windows <= T% (default 3, hard cap 5, `--max-fail-pct` / M1_MAX_FAIL_PCT) + shadow-vs-admissions parity. Both real traces pass at 3% (1.7% and 1.5%). Failure classification prints `unclassified` until the replay report carries `baseFailKinds`.
+3. DONE (your idea): hand-over pulls only the WEAR WINDOW (last unplug by heartbeat `chg` to the next plug-in/end); no fixed age limit; window with no heartbeat is rejected.
 4. WP13 live steps 5-7 (kill-on-deletion through the supervisor, B2 frame run in the browser, device run) need your phone, a helper pairing code and your confirm taps: say "start helper".
 5. Not built, by design/decision: vision-extract -> Python adapter; declined vs expired shown separately; stored Moment tables/sensors/Scenes (55-87 h later); two older files still hold android.util.Log (CanvasPublisher, MemoryWipe: logging ratchet); GlassesRuntime can still construct the recorder lazily from Main (reads no file).
 
