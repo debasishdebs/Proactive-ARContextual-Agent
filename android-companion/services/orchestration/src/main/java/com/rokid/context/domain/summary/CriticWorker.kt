@@ -1,7 +1,9 @@
 package com.rokid.context.domain.summary
 
+import com.rokid.context.ai.canvas.LocalTrust
+
 class CriticWorker(
-    private val confidenceThreshold: Double = 0.70,
+    val confidenceThreshold: Double = LocalTrust.DEFAULT_CUTOFF,
 ) {
     fun validate(summaryId: String, confidence: Double): CriticResult {
         val status = if (confidence < confidenceThreshold) SummaryStatus.NEEDS_REVIEW else SummaryStatus.TRUSTED

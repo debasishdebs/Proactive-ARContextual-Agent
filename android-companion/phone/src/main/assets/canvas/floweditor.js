@@ -5,6 +5,7 @@
 import * as L from './editorlogic.js';
 import { canConnect } from './flowadapter.js';
 import { mountExprEditor } from './exprview.js';
+import { mountComposite } from './compositeview.js';
 import { validateDraft, saveDraft, freezeDraft, compileDraft } from './editorflow.js';
 
 /**
@@ -23,14 +24,34 @@ export function mountEditor(el, opts) {
   const fail = (e) => { if (opts.onError) opts.onError(e); };
 
   // ---- one node on the canvas
+  // a composite (black-box) node hosts compositeview.js: collapsed it is one card, expanded its inner flow with the node's params as inputs.
+  // The widgets by node id let a double click or Enter on the card toggle it; an edit goes through the same inputChange as the inspector.
+  const widgets = {};
+  const CompositeHost = ({ id, data }) => {
+    const host = React.useRef(null);
+    const w = React.useRef(null);
+    React.useEffect(() => {
+      w.current = mountComposite(host.current, {
+        title: data.title, inner: data.composite.inner, descriptors: data.composite.descriptors, params: data.composite.params, readOnly: data.readOnly,
+        onParam: (name, raw) => { const r = L.inputChange(store.get(), id, name, null, raw, nodeTypes, env); store.set(r.ed); return r.error; },
+      });
+      widgets[id] = w.current;
+      return () => { delete widgets[id]; w.current.unmount(); w.current = null; };
+    }, [id, data.readOnly]);
+    React.useEffect(() => { if (w.current) w.current.update({ params: data.composite.params }); });
+    return html`<div className="comp-host nodrag nopan nowheel" ref=${host}></div>`;
+  };
   const NodeCard = ({ id, data }) => {
     const probs = data.problems || [];
     const warns = data.warnings || [];
-    const cls = ['node-card', data.pending ? 'pending' : '', probs.length ? 'has-problem' : '', warns.length ? 'has-warning' : '', 'lane-' + String(data.domain || 'ASYNC').toLowerCase(), data.role ? 'role-' + data.role : ''].filter(Boolean).join(' ');
-    return html`<div className=${cls} aria-describedby=${probs.length ? 'prob-' + id : warns.length ? 'warn-' + id : undefined}>
+    const cls = ['node-card', data.pending ? 'pending' : '', probs.length ? 'has-problem' : '', warns.length ? 'has-warning' : '', 'lane-' + String(data.domain || 'ASYNC').toLowerCase(), data.role ? 'role-' + data.role : '', data.composite ? 'composite' : ''].filter(Boolean).join(' ');
+    const toggle = (ev) => { if (data.composite && widgets[id] && !(ev.target.closest && ev.target.closest('.comp-host'))) widgets[id].toggle(); };
+    return html`<div className=${cls} onDoubleClick=${toggle} aria-describedby=${probs.length ? 'prob-' + id : warns.length ? 'warn-' + id : undefined}>
       <${RF.Handle} type="target" position=${RF.Position.Top} />
       <div className="nt">${data.title}</div>
       <div className="nk">${data.typeLabel}</div>
+      ${data.composite ? html`<span className="comp-mark" title="Expandable: double click, or press Enter, to open its inner flow">expandable</span>` : null}
+      ${data.composite ? html`<${CompositeHost} id=${id} data=${data} />` : null}
       ${probs.length ? html`<span className="badge" aria-hidden="true">${probs.length}</span>` : null}
       ${warns.length ? html`<span className="badge warn" aria-hidden="true">${warns.length}</span>` : null}
       ${probs.length ? html`<ul id=${'prob-' + id} className="sr-only">${probs.map((t, i) => html`<li key=${i}>${t}</li>`)}</ul>` : null}
@@ -239,6 +260,7 @@ export function mountEditor(el, opts) {
         nodeId: nodeEl ? nodeEl.getAttribute('data-id') : null,
       }, nodeTypes);
       store.set(d.ed);
+      if (!d.handled && ev.key === 'Enter' && nodeEl && t === nodeEl && widgets[nodeEl.getAttribute('data-id')]) { ev.preventDefault(); widgets[nodeEl.getAttribute('data-id')].toggle(); return; }
       if (!d.handled) return;
       ev.preventDefault();
       if (d.stop) ev.stopPropagation();
@@ -264,7 +286,7 @@ export function mountEditor(el, opts) {
         onDragOver=${(ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; }}
         onDrop=${(ev) => { ev.preventDefault(); const type = ev.dataTransfer.getData('text/plain'); if (type) { const at = where(ev); act((cur) => L.dropOnPane(cur, type, at, L.flowFor(cur, nodeTypes).nodes, nodeTypes)); } }}>
         <${RF.ReactFlow} nodes=${flow.nodes} edges=${flow.edges} nodeTypes=${NODE_TYPES} colorMode="system"
-          nodesDraggable=${false} nodesFocusable=${true} edgesFocusable=${true} nodesConnectable=${!ro} fitView=${true} zoomOnPinch=${true} panOnDrag=${true}
+          zoomOnDoubleClick=${false} nodesDraggable=${false} nodesFocusable=${true} edgesFocusable=${true} nodesConnectable=${!ro} fitView=${true} zoomOnPinch=${true} panOnDrag=${true}
           deleteKeyCode=${['Delete', 'Backspace']} minZoom=${0.3}
           isValidConnection=${(c) => canConnect(c, store.get().ds.pipe, nodeTypes).ok}
           onNodesChange=${(ch) => { setMeasured((m) => L.recordMeasures(m, ch)); act((cur) => L.applySelection(cur, 'node', ch)); }}
