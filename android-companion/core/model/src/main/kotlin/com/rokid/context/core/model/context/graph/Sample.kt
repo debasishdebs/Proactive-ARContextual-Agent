@@ -10,6 +10,11 @@ package com.rokid.context.core.model.context.graph
 class Sample {
     enum class Type { NUM, BOOL, ENUM }
 
+    companion object {
+        const val ERR_DIV0 = 1
+        const val ERR_NONFINITE = 2
+    }
+
     var type: Type = Type.NUM; private set
     var num: Double = 0.0; private set
     var flag: Boolean = false; private set
@@ -20,6 +25,9 @@ class Sample {
     var coverage: Double = 1.0; private set
     var gen: Long = 0; private set
     var available: Boolean = false; private set
+    /** ERROR state (3c, C1a): a failed evaluation (division by zero, non-finite). An error is never [available] and never satisfies. */
+    var error: Boolean = false; private set
+    var errorKind: Int = 0; private set
 
     fun setNum(v: Double, atMs: Long, ageMs: Long, coverage: Double, gen: Long): Sample {
         type = Type.NUM; num = v; flag = false; code = 0; return meta(atMs, ageMs, coverage, gen, true)
@@ -37,14 +45,22 @@ class Sample {
         num = 0.0; flag = false; code = 0; return meta(0, 0, 0.0, 0, false)
     }
 
+    /** ERROR of [kind] ([ERR_DIV0], [ERR_NONFINITE]). */
+    fun setError(kind: Int): Sample {
+        num = 0.0; flag = false; code = 0; meta(0, 0, 0.0, 0, false)
+        error = true; errorKind = kind; return this
+    }
+
     /** Copies [o] (type, value, metadata, availability). */
     fun copyFrom(o: Sample): Sample {
         type = o.type; num = o.num; flag = o.flag; code = o.code
-        return meta(o.atMs, o.ageMs, o.coverage, o.gen, o.available)
+        meta(o.atMs, o.ageMs, o.coverage, o.gen, o.available)
+        error = o.error; errorKind = o.errorKind; return this
     }
 
     internal fun meta(atMs: Long, ageMs: Long, coverage: Double, gen: Long, available: Boolean): Sample {
-        this.atMs = atMs; this.ageMs = ageMs; this.coverage = coverage; this.gen = gen; this.available = available; return this
+        this.atMs = atMs; this.ageMs = ageMs; this.coverage = coverage; this.gen = gen; this.available = available
+        error = false; errorKind = 0; return this
     }
 
     /** Metadata of a result built from [a] and [b]: the oldest age, the least coverage, the newest gen. */
