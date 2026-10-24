@@ -362,11 +362,7 @@ object CaptureSimulator {
             if (e is TraceEvent.Gyro || e is TraceEvent.Accel) onDelivery(e.tMs)
             advanceTo(if (e is TraceEvent.Episode && e.open) e.tMs + 1 else e.tMs)
             if (e.tMs > now) now = e.tMs
-            if (runner != null && (lastFeatAt == Long.MIN_VALUE || now - lastFeatAt >= 1_000L)) {
-                val f = cls.features(); lastFeatAt = now
-                signals.set(SecondFeatures(f.gyroMax, f.gyroMean, f.gyroRms, f.aboveOnFrac, f.accVariance, f.stepHz.toFloat(), f.rotRad), now)
-                runner.tickValues(now, signals, ctx, (now - ctxAt) / 1000L)   // the 1 Hz row tick, right after the second's features
-            }
+            featureTick(now)
             when (e) {
                 is TraceEvent.Gyro -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onGyro(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
                 is TraceEvent.Accel -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onLinearAccel(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
@@ -404,12 +400,24 @@ object CaptureSimulator {
             lastSensorT = t
         }
 
+        /** The device's 1 Hz second: features into the signals, then the value programs' row tick. Runs on every simulated tick too, so a stretch with no events still re-evaluates each second. */
+        fun featureTick(at: Long) {
+            if (runner == null || !(lastFeatAt == Long.MIN_VALUE || at - lastFeatAt >= 1_000L)) return
+            val saved = now
+            if (at > now) now = at
+            val f = cls.features(); lastFeatAt = at
+            signals.set(SecondFeatures(f.gyroMax, f.gyroMean, f.gyroRms, f.aboveOnFrac, f.accVariance, f.stepHz.toFloat(), f.rotRad), at)
+            runner.tickValues(at, signals, ctx, (at - ctxAt) / 1000L)
+            now = saved
+        }
+
         fun advanceTo(t: Long) {
             // No tick runs more than one tick after the last delivered sensor event once the delivery has been silent for longer than a stall.
             val last = lastSensorT
             val limit = if (last != null && t - last > STALL_MS) minOf(t, last + TICK_MS) else t
             while (nextTickAt < limit) {
                 val at = nextTickAt
+                featureTick(at)
                 val wait = tick(at)
                 nextTickAt = at + wait.coerceAtLeast(1L)
                 settle(at)

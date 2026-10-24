@@ -62,3 +62,24 @@ class ReplayValueTest {
         assertEquals(emptyMap(), r.valueTicks)
     }
 }
+
+/** 3c E2a: the value programs run on every simulated second, events or not, as the device's 1 s loop does. */
+class ReplayValueEventFreeTest {
+    private val rest = listOf(TraceEvent.Ctx(START, ContextState.REST))
+    private val initial = ReplayFixtures.initial().filter { it !is TraceEvent.Ctx } + rest
+    private val plain = ReplayCandidate.policyTable(mapOf(PlanState.REST to PlanResolver.defaults().policy.getValue(PlanState.REST).copy(timerPhotoGapsMs = TimerPhotoGaps(0, 0, 0, 0))))
+
+    /** REST settledGapS = 5 + ctxAgeS / 10 seconds: it grows once a second with no event at all. */
+    private val ageGap: JsonObject = Json.parseToJsonElement("""{"id":"v","role":"value","row":"REST","field":"settledGapS","s":[{"op":"sig","name":"ctxAgeS"},{"op":"const","v":0.1},{"op":"arith","f":"*","a":0,"b":1},{"op":"const","v":5},{"op":"arith","f":"+","a":2,"b":3}],"out":4}""").jsonObject
+
+    @Test fun ReplayValueParityOverAnEventFreeStretch() {
+        val endMs = START + 400_000
+        val r = CaptureSimulator.replay(ReplayFixtures.trace(emptyList(), endMs = endMs, initial = initial).asSequence(), ReplayFixtures.manifest(endMs = endMs), ReplayCandidate("c", table = plain, exprs = listOf(ageGap)))
+        // the device re-evaluates every second: the gap follows the ctx age (5 s growing to 45 s over the stretch).
+        // A replay that evaluated only on events would hold the first value (5 s) and open every ~6 s for the whole stretch.
+        assertTrue(r.valueTicks.getValue("v") >= 390, "ticks ${r.valueTicks}")
+        val gaps = r.opens.zipWithNext { a, b -> b.atMs - a.atMs }
+        assertTrue(gaps.isNotEmpty() && gaps.last() > 30_000, "the gap grows with the ctx age: $gaps")
+        assertTrue(r.opens.size < 30, "not one open every ~6 s (about 65): ${r.opens.size}")
+    }
+}
