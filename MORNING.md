@@ -24,6 +24,9 @@ WP13 LIVE gate: 16/16 PASS on podman 6.1.4 (new machine `pca`, 10 GB; `podman-ma
 4. WP13 live steps 5-7 (kill-on-deletion through the supervisor, B2 frame run in the browser, device run) need your phone, a helper pairing code and your confirm taps: say "start helper".
 5. Not built, by design/decision: vision-extract -> Python adapter; declined vs expired shown separately; stored Moment tables/sensors/Scenes (55-87 h later); two older files still hold android.util.Log (CanvasPublisher, MemoryWipe: logging ratchet); GlassesRuntime can still construct the recorder lazily from Main (reads no file).
 
+## Replay of today's trace (5814127b, imported 15:50)
+Failing windows 1/116 (0.86%, gate 3%: PASS). Shadow parity vs glance admissions: 73 vs 68 (+5, limit +-4): FAIL by one open; likely heartbeat-boundary noise (partial heartbeats at the span edges). Parked by decision: optional edge-aware shadow counting (count only heartbeats fully inside the trace span).
+
 ## Found and fixed this afternoon
 - handover.sh read the trace end time from the wrong place (real manifests are a b64 envelope): fixed 855a7152, tests now use the real format. `--allow-partial` now passes through to the import (4faee104).
 - First on-device proof of the always-on logging chain: `trace boot/state` lines name every blocker (gate_off -> enabled, capture_blocked while paused, not_quiet, recovering, already_recording). A killed trace is sealed PARTIAL at the next start (killedTraces=1) and recording resumes in seconds.
