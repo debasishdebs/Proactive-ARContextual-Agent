@@ -5,7 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL }
+enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS }
 
 /** Where a node runs (slice 3 section 2). A `signal.*` node's domain is its `params.domain`, per instance. */
 enum class Domain { RT_GLASSES, RT_PHONE, ASYNC, REPLAY_ONLY }
@@ -72,6 +72,9 @@ object NodeTypes {
     /** S6 tier 3: laptop-run Python. Registered so a graph can hold it, never published, never run on the phone and never in `Executors.all()` (its executor is the experiment map's, WP8). */
     const val PY_FN = "py.fn"
 
+    /** Moment-lite: the root of an experiment over Moments (a derived read model, nothing stored). ASYNC only, never published, never run on the phone's own nodes: only `py.fn` accepts its output. */
+    const val INPUT_MOMENTS = "input.moments"
+
     const val OTHER = "other"
 
     /** The domains a `signal.*` node may run in. */
@@ -120,7 +123,9 @@ object NodeTypes {
 
     /** The python experiment node (S6 tier 3). In the palette since WP9 (the helper UI exists) but never liveable and never published; `entry` is the fixed function name `run`, not a param. */
     private val experiments: List<NodeType> = listOf(
-        NodeType(PY_FN, "Python (experiment)", setOf(PortType.JSON), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
+        NodeType(INPUT_MOMENTS, "Moments", emptySet(), PortType.MOMENTS, sinceSchema = 2, domain = Domain.ASYNC, category = Category.INPUTS,
+            short = "moments", liveable = false, root = true, cost = CostSpec(modelCalls = 0)),
+        NodeType(PY_FN, "Python (experiment)", setOf(PortType.JSON, PortType.MOMENTS), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
             executor = ExecutorKind.PYTHON, short = "pyfn", liveable = false, cost = CostSpec(modelCalls = 0),
             hint = "Needs the laptop helper and your confirm tap on the phone for each run; never published to the glasses.",
             params = ParamSchema(listOf(
