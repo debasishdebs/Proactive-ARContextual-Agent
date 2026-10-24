@@ -148,7 +148,7 @@ class PrivacyInvariantsTest {
             "core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/SampleTap.kt" to "b7cdcb4987e0ac9cf2fddc099a247328938aadcfe07b955c61a61b3e2b1fed46",
             "glasses/src/main/java/com/rokid/context/glasses/capture/motion/MotionCsv.kt" to "6927d95c260e4f259fed96e33692b3ef29ff7128313da2cef999c03928c7fb3b",
             "glasses/src/main/java/com/rokid/context/glasses/capture/motion/MotionHintSender.kt" to "3626ca71a1d974af896ea44d8f312f9c738151f4c3a03a68101bf6b4fba7dc52",
-            "glasses/src/main/java/com/rokid/context/glasses/capture/motion/SensorFeed.kt" to "6f45fff96d9f70f70aaca8c466bca2c3264b81bed0ac1f07b68479d2737c274f",
+            "glasses/src/main/java/com/rokid/context/glasses/capture/motion/SensorFeed.kt" to "c0cf4e89100e5e9d85b3966390b83512387954d4f988b15730ece8dcdb34d704", // re-pinned deliberately 2026-10-24: 3c X3 adds an optional `signals` sink and one plain write per second (ExprSignals.set), no sensor/timer/wakeup,
             "glasses/src/main/java/com/rokid/context/glasses/capture/motion/WearDetector.kt" to "eabc666457ddfcade389d168c32e0dd16ffd3de4e0632cb5a061702b9e7a8f3c",
             "glasses/src/main/java/com/rokid/context/glasses/capture/session/SensorRatePolicy.kt" to "bb43a2a91866b7c4b31a5c37ce6d7570e1ac6132c55b7255899487e61a2974b1",
         )
