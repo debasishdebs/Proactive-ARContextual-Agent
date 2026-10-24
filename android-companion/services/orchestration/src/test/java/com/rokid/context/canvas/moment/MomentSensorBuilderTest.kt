@@ -167,10 +167,21 @@ class MomentSensorBuilderTest {
     }
 
     @Test fun twoTracesOverTheSameSecondKeepTheOneWithMoreSamplesThenTheSmallerId() = runBlocking<Unit> {
-        photo(); import("trace-aaaa-0002", evs = events(extraGyro = 2)); import("trace-aaaa-0003")
-        builder.build(listOf(id)); assertEquals("most samples wins", "trace-aaaa-0002", rows().single().traceId)
+        photo(); import("trace-aaaa-0002"); import("trace-aaaa-0003", evs = events(extraGyro = 2))
+        builder.build(listOf(id)); assertEquals("most samples wins even with the larger id", "trace-aaaa-0003", rows().single().traceId)
         import("trace-aaaa-0001", evs = events(extraGyro = 2)); builder.build(listOf(id))
         assertEquals("a tie goes to the smaller trace id", "trace-aaaa-0001", rows().single().traceId)
+    }
+
+    @Test fun oneSensorsObjectReadsATraceOnceAndNeverServesAReplacedOne() = runBlocking<Unit> {
+        photo(); import()
+        val reads = ArrayList<String>()
+        val s = MomentSensors(s3, tracesRoot, epoch = store::read).also { it.testOnFileRead = { n -> reads += n } }
+        val b = MomentBuilder(db, enabled = { true }, clock = { now++ }, sensors = s)
+        b.build(listOf(id)); val first = reads.size; b.build(listOf(id))
+        assertTrue(first > 0); assertEquals("the second build reuses what was computed", first, reads.size)
+        import(rec = TraceStatus.PARTIAL, evs = events(extraGyro = 2)); b.build(listOf(id))
+        assertEquals("a replaced trace is read again", 6, rows().single().nGyro); assertEquals(2, rows().single().traceRevision)
     }
 
     @Test fun aTraceTombstonedWhileTheBuildWasReadingItFillsNoRow() = runBlocking<Unit> {
