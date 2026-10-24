@@ -95,6 +95,17 @@ class CanvasAssetsTest {
         assertTrue(text("floweditor.js").contains("comp-row")) // marker and Expand button share one row inside the card
     }
 
+    // The last node used to say "Connect to ... No valid target"; it is the next step now, and the palette says so for an empty family.
+    @Test fun inspectorAndPaletteUseTheFamilyWording() {
+        val f = text("floweditor.js")
+        assertFalse(f.contains("No valid target"))
+        assertFalse(f.contains("<span>Connect to</span>"))
+        assertTrue(f.contains("L.NEXT_STEP_LABEL") && f.contains("L.NO_NEXT_STEP"))
+        assertTrue(f.contains("L.SOON_TEXT") && f.contains("gr.soon"))
+        assertTrue(f.contains("pal-lane lane-")) // the lane stays visible on every palette item
+        assertTrue(text("style.css").contains(".btn.pal-lane.lane-rt_glasses"))
+    }
+
     @Test fun jsUnderSizeBudget() {
         val lines = all.filter { it.name.endsWith(".js") }.sumOf { it.readText().lines().size }
         assertEquals(true, lines <= 4550) // the Scenes run page (scenesRunView, ~55 lines, budget raised by 50); merged view added mergedflow.js + mergedview.js (+~110 lines, budget raised by 100); composite nodes added compositeview.js (~130 lines) and X5 added the boxed expression editor (exprgraph.js + exprview.js, ~650 lines)

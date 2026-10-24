@@ -13,7 +13,8 @@ object DefaultPipelines {
     const val INTENT_DRAFT = "intent-draft"
     val INTENT_LABELS = listOf("sitting_idle", "workout", "computer_work", "driving", "walking", "other")
     const val DEFAULT_CAPTURE = "default-capture"
-    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE)
+    const val STARTER = "starter-capture-extract"
+    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER)
 
     private val none = JsonObject(emptyMap())
     private val livePrompt = buildJsonObject { putJsonObject("prompt") { put("source", "live") } }
@@ -103,5 +104,19 @@ object DefaultPipelines {
         val edges = listOf("head" to "thresh", "thresh" to "settle", "settle" to "novel", "novel" to "rate", "cin" to "rate", "rate" to "cap", "cap" to "cam", "hub" to "cout")
             .map { PipelineEdge(it.first, it.second) }
         return Pipeline(PipelineJson.SCHEMA_V2, DEFAULT_CAPTURE, "Default capture", nodes, edges)
+    }
+
+    /**
+     * The starter: both halves of the generic flow in one pipeline, so one drawing shows the glasses lane (the Default capture nodes, wires and params untouched, so its
+     * plan hash stays f5782e0d8610) and the phone flow (the live extraction), joined by the one binding that exists: the captured image is the Photo input.
+     * Existing as a built-in activates nothing, and it is read-only like the others: clone it to edit.
+     */
+    fun starter(): Pipeline {
+        val glasses = defaultCapture()
+        val phone = liveExtract()
+        return Pipeline(
+            PipelineJson.SCHEMA_V2, STARTER, "Starter: capture and extract",
+            glasses.nodes + phone.nodes, glasses.edges + phone.edges + PipelineEdge("cam", "photos"),
+        )
     }
 }
