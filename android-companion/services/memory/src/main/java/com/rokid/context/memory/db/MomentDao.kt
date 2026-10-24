@@ -59,7 +59,9 @@ abstract class MomentDao {
     }
 
     // --- tombstones ---
-    @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertTombstones(t: List<MomentTombstoneEntity>)
+    /** Upsert: a repeated Forget REFRESHES `createdAt` (the newest wins), because the recency window of unknown-capture-time frames is measured from it. */
+    @Transaction open suspend fun insertTombstones(t: List<MomentTombstoneEntity>) = t.forEach { upsertTombstone(it.momentId, it.createdAt) }
+    @Query("INSERT INTO moment_tombstone (momentId, createdAt) VALUES (:id, :at) ON CONFLICT(momentId) DO UPDATE SET createdAt = MAX(createdAt, excluded.createdAt)") protected abstract suspend fun upsertTombstone(id: String, at: Long)
     @Query("SELECT momentId FROM moment_tombstone WHERE momentId IN (:ids)") abstract suspend fun tombstonedAmong(ids: List<String>): List<String>
     @Query("SELECT COUNT(*) FROM moment_tombstone WHERE createdAt >= :since") abstract suspend fun tombstonesSince(since: Long): Int
     /** Frames among [ids] with no capture time on `frame_meta` (no usable capture evidence: file or receipt time only). */
