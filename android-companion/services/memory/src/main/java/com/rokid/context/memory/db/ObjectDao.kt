@@ -57,7 +57,8 @@ abstract class ObjectDao : DerivedStaleDao() {
         val exists = if (row.objectKind == "MOMENT") momentExists(row.objectId) > 0 else auditRowCount(row.objectKind, row.objectId) > 0
         if (!exists) return WriteOutcome.PARENT_GONE
         if (inputSeq(row.objectKind, row.objectId) != expectedSeq) return WriteOutcome.STALE_INPUT
-        writeDerivedTx(row, step)
+        // a Scene's derived field records the input revision it was built from; the reader (`SceneInputExecutor`) shows it only while that is still the Scene's revision
+        writeDerivedTx(if (row.objectKind == "SCENE") row.copy(builtRev = expectedSeq) else row, step)
         return WriteOutcome.WRITTEN
     }
 

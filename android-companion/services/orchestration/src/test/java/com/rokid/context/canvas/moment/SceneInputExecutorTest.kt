@@ -13,6 +13,7 @@ import com.rokid.context.memory.moment.DerivedField
 import com.rokid.context.memory.moment.ObjectAudit
 import com.rokid.context.memory.moment.ObjectKind
 import com.rokid.context.memory.moment.ObjectRef
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -49,6 +50,9 @@ class SceneInputExecutorTest {
         moments.build(listOf(mid(sec)))
     }
 
+    /** A derived field as a derive would store it: built from the Scene's CURRENT input revision. */
+    private suspend fun put(sec: Long, field: String, value: String?, ref: String?) = audit.writeDerived(ref(sec), field, value, ref, audit.inputSeq(ref(sec)))
+
     private suspend fun seed() { photo(0); photo(30); photo(60); photo(400, "WALKING"); builder.rebuildWindow(t(0), t(3599)) }
 
     @Test fun itIsTheExecutorOfTheScenesNode() = assertEquals(NodeTypes.INPUT_SCENES, exec.type)
@@ -68,8 +72,8 @@ class SceneInputExecutorTest {
 
     @Test fun aFreshDerivedFieldIsReturnedAndAStaleOneIsNot() = runBlocking<Unit> {
         seed()
-        audit.writeDerived(ref(0), DerivedField.SUMMARY, "walked by the sea", null, 1); audit.writeDerived(ref(0), DerivedField.EMBEDDING, null, "emb:1", 1)
-        audit.writeDerived(ref(400), DerivedField.CAPTION, "a street", null, 1); audit.markStale(ObjectKind.SCENE, sid(400))
+        put(0, DerivedField.SUMMARY, "walked by the sea", null); put(0, DerivedField.EMBEDDING, null, "emb:1")
+        put(400, DerivedField.CAPTION, "a street", null); audit.markStale(ObjectKind.SCENE, sid(400))
         val all = exec.run(t(0), t(3599))
         assertEquals("walked by the sea", all[0].derived[DerivedField.SUMMARY]?.value); assertEquals("emb:1", all[0].derived[DerivedField.EMBEDDING]?.ref)
         assertTrue(all[1].derived.isEmpty())
@@ -77,7 +81,7 @@ class SceneInputExecutorTest {
 
     @Test fun forgettingOnePhotoHidesTheSceneSummaryAtOnceAndNoReaderSeesIt() = runBlocking<Unit> {
         seed()
-        DerivedField.ALL.forEach { audit.writeDerived(ref(0), it, "summary mentioning the cat", "emb:cat", 1) }
+        DerivedField.ALL.forEach { put(0, it, "summary mentioning the cat", "emb:cat") }
         assertEquals("summary mentioning the cat", exec.run(t(0), t(3599)).first().derived[DerivedField.SUMMARY]?.value)
         forget.forgetMoments(listOf(mid(30)))
         val after = exec.run(t(0), t(3599)).first { it.id == sid(0) }
@@ -86,7 +90,7 @@ class SceneInputExecutorTest {
         DerivedField.ALL.forEach { assertNull(audit.readDerived(ref(0), it)) }
         assertFalse(exec.toJson(exec.run(t(0), t(3599))).toString().contains("cat"))
         assertNotNull("the stale row is kept until it is rebuilt", audit.staleSince(ref(0), DerivedField.SUMMARY))
-        audit.writeDerived(ref(0), DerivedField.SUMMARY, "rebuilt without the photo", null, 2) // the later rebuild makes it visible again
+        put(0, DerivedField.SUMMARY, "rebuilt without the photo", null) // the later rebuild makes it visible again
         assertEquals("rebuilt without the photo", exec.run(t(0), t(3599)).first { it.id == sid(0) }.derived[DerivedField.SUMMARY]?.value)
     }
 
@@ -94,5 +98,47 @@ class SceneInputExecutorTest {
         seed()
         val j = exec.toJson(exec.run(t(0), t(3599))).toString()
         listOf("\"id\":\"${sid(0)}\"", "\"rule\":\"ACTIVITY_CHANGE\"", "\"activity\":\"WALKING\"", "\"momentIds\":[\"${mid(0)}\",\"${mid(30)}\",\"${mid(60)}\"]", "\"startMs\":${t(0)}").forEach { assertTrue(it + " in " + j, j.contains(it)) }
+    }
+
+    @Test fun undoingAMarkOfAMemberMomentHidesTheSceneDerivedFieldsAtOnce() = runBlocking<Unit> {
+        photo(0); fx.mark("L1", t(30) + 500); photo(30); photo(60); builder.rebuildWindow(t(0), t(3599))
+        put(0, DerivedField.SUMMARY, "with the mark", null)
+        assertEquals("with the mark", exec.run(t(0), t(3599)).single().derived[DerivedField.SUMMARY]?.value)
+        db.canvasSlice3Dao().deleteLabel("L1")
+        assertTrue(exec.run(t(0), t(3599)).single().derived.isEmpty())
+        assertNull(audit.readDerived(ref(0), DerivedField.SUMMARY))
+    }
+
+    @Test fun aMemberMomentThatChangesHidesTheSceneDerivedFieldsBeforeTheSceneIsRebuilt() = runBlocking<Unit> {
+        seed(); put(0, DerivedField.CAPTION, "three photos", null)
+        fx.frame("late", t(30) + 300); moments.build(listOf(mid(30))) // the Moment changed; the Scene has not been rebuilt yet
+        assertTrue(exec.run(t(0), t(3599)).first().derived.isEmpty())
+    }
+
+    @Test fun aDerivedFieldBuiltFromAnotherInputRevisionIsNotReturned() = runBlocking<Unit> {
+        seed()
+        audit.writeDerived(ref(0), DerivedField.SUMMARY, "old inputs", null, audit.inputSeq(ref(0)) + 1)
+        assertTrue(exec.run(t(0), t(3599)).first().derived.isEmpty())
+        audit.writeDerived(ref(0), DerivedField.SUMMARY, "current inputs", null, audit.inputSeq(ref(0)))
+        assertEquals("current inputs", exec.run(t(0), t(3599)).first().derived[DerivedField.SUMMARY]?.value)
+    }
+
+    /** A Forget that commits while the read is running must not give a mix: the read is one transaction, so the Forget waits and the answer is the state before it. */
+    @Test fun aForgetInTheMiddleOfTheReadCannotGiveAHiddenSummaryWithForgottenMembers() = runBlocking<Unit> {
+        seed()
+        DerivedField.ALL.forEach { put(0, it, "summary mentioning the cat", "emb") }
+        var forgotten: kotlinx.coroutines.Deferred<*>? = null
+        exec.testBetweenReads = {
+            forgotten = kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.Default) { forget.forgetMoments(listOf(mid(30))) }
+            kotlinx.coroutines.delay(300)
+        }
+        val during = exec.run(t(0), t(3599)).first { it.id == sid(0) }
+        exec.testBetweenReads = null
+        forgotten!!.await()
+        val consistentOld = during.momentIds.size == 3 && during.derived.size == 3
+        val consistentNew = during.momentIds.size == 2 && during.derived.isEmpty()
+        assertTrue("members=${during.momentIds.size} derived=${during.derived.size}", consistentOld || consistentNew)
+        val after = exec.run(t(0), t(3599)).first { it.id == sid(0) }
+        assertEquals(2, after.momentIds.size); assertTrue(after.derived.isEmpty())
     }
 }
