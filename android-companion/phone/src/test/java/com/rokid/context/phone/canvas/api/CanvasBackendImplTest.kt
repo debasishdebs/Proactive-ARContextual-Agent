@@ -14,6 +14,7 @@ import com.rokid.context.ai.InMemorySeedState
 import com.rokid.context.ai.ProviderBuilder
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
+import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.canvas.AskDebug
 import com.rokid.context.canvas.AskDebugPhotos
@@ -46,6 +47,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -196,6 +198,25 @@ class CanvasBackendImplTest {
         assertEquals("false", checkNotNull(backend.pipeline(copy))["builtIn"]!!.jsonPrimitive.content)
     }
 
+    @Test fun theStarterShowsBothLanesInOnePipelineAndClones() = runBlocking<Unit> {
+        val row = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "starter-capture-extract" }.jsonObject
+        assertEquals("true", row["builtIn"]!!.jsonPrimitive.content)
+        assertEquals("null", row["live"].toString())
+        assertEquals("false", backend.activePublish()["active"]!!.jsonPrimitive.content)
+        val p = checkNotNull(backend.pipeline("starter-capture-extract"))
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        val cells = p["layout"]!!.jsonObject["cells"]!!.jsonObject
+        assertTrue(listOf("head", "hub", "photos", "extract", "write").all { cells.containsKey(it) })
+        val domains = PipelineJson.decode(p["json"]!!.jsonPrimitive.content).getOrThrow().nodes.map { n ->
+            com.rokid.context.ai.canvas.NodeTypes.byType(n.type)!!.let { com.rokid.context.ai.canvas.NodeTypes.domainOf(n, it).name }
+        }.toSet()
+        assertEquals(setOf("RT_GLASSES", "RT_PHONE", "ASYNC"), domains)
+        val copy = backend.duplicate("starter-capture-extract", "My starter")
+        val d = checkNotNull(backend.pipeline(copy))
+        assertEquals("false", d["builtIn"]!!.jsonPrimitive.content)
+        assertEquals(0, d["problems"]!!.jsonArray.size)
+    }
+
     private val glassesOnlyJson = """{"schema":2,"id":"p","name":"identity","nodes":[
         {"id":"head","type":"imu.head_motion","title":"head","params":{}},
         {"id":"thresh","type":"gate.threshold","title":"thresh","params":{"feature":"gyroPeak","op":">","value":0.6}},
@@ -230,6 +251,66 @@ class CanvasBackendImplTest {
         assertTrue(ok.models.all { it.endpoint == "Azure" && it.model == "gpt" })
         assertTrue(ok.confirmToken.isNotEmpty())
         assertTrue(backend.estimate("live-extract", null, emptyList()) is Estimate.Refused)
+    }
+
+    @Test fun nodeTypesServeTheFamilyOfEveryType() {
+        val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        fun f(t: String) = types.getValue(t)["family"]!!.jsonPrimitive.content
+        assertEquals(setOf("Source", "Process", "Condition", "Outcome"), types.keys.map(::f).toSet()) // Aggregate has no type yet: the palette says coming soon
+        assertEquals(listOf("Source", "Source", "Process", "Condition", "Outcome", "Outcome"),
+            listOf("input.photos", "imu.head_motion", "ai.prompt", "gate.local_critic", "memory.write", "capture.image").map(::f))
+        assertEquals("Checks", types.getValue("gate.local_critic")["category"]!!.jsonPrimitive.content) // the old category is still served
+    }
+
+    @Test fun nodeTypesServeThePhotoSettingsWithTodaysDefaults() {
+        val photos = backend.nodeTypes().map { it.jsonObject }.first { it["type"]!!.jsonPrimitive.content == "input.photos" }
+        val params = photos["params"]!!.jsonArray.map { it.jsonObject }.associateBy { it["name"]!!.jsonPrimitive.content }
+        assertEquals(listOf("source", "sinceHours", "markedOnly", "limit"), params.keys.toList())
+        assertEquals("enum", params.getValue("source")["kind"]!!.jsonPrimitive.content)
+        assertEquals(listOf("glasses", "all"), params.getValue("source")["options"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf("glasses", "0", "false", "50"), params.values.map { it["default"]!!.jsonPrimitive.content })
+        assertEquals("0", params.getValue("sinceHours")["min"]!!.jsonPrimitive.content); assertEquals("720", params.getValue("sinceHours")["max"]!!.jsonPrimitive.content)
+        assertEquals("false", photos["palette"]!!.jsonPrimitive.content) // still exactly one photo input per pipeline
+    }
+
+    /** A copy of live-extract whose Photo node carries [photoParams]; returns its id. */
+    private suspend fun copyWithPhotoParams(photoParams: String): String {
+        val copy = backend.duplicate("live-extract", "Scoped")
+        val d = checkNotNull(backend.pipeline(copy))
+        val json = PipelineJson.decode(d["json"]!!.jsonPrimitive.content).getOrThrow()
+        val scoped = json.copy(nodes = json.nodes.map { if (it.type == "input.photos") it.copy(params = Json.parseToJsonElement(photoParams).jsonObject) else it })
+        assertTrue(backend.saveDraft(copy, PipelineJson.encode(scoped, pretty = false), d["draftRev"]!!.jsonPrimitive.int) is CanvasRepository.SaveResult.Saved)
+        return copy
+    }
+
+    @Test fun photoSettingsNarrowTheChosenFramesAndDefaultsDoNot() = runBlocking<Unit> {
+        val now = System.currentTimeMillis(); val h = 3_600_000L
+        seed("f1", now - 10 * h); seed("f2", now - 1 * h); seed("f3", now - 2 * h)
+        val ids = listOf("f1", "f2", "f3")
+        assertEquals("defaults: all three, as before", 3, (backend.estimate("live-extract", null, ids) as Estimate.Ok).photos)
+        assertEquals("explicit defaults change nothing", 3, (backend.estimate(copyWithPhotoParams("""{"source":"glasses","sinceHours":0,"markedOnly":false,"limit":50}"""), null, ids) as Estimate.Ok).photos)
+        assertEquals("since 5 h drops the 10 h old one", 2, (backend.estimate(copyWithPhotoParams("""{"sinceHours":5}"""), null, ids) as Estimate.Ok).photos)
+        assertEquals("limit 1 keeps the newest", 1, (backend.estimate(copyWithPhotoParams("""{"limit":1}"""), null, ids) as Estimate.Ok).photos)
+        assertTrue("nothing left is refused like an empty choice", backend.estimate(copyWithPhotoParams("""{"sinceHours":1,"limit":1,"markedOnly":true}"""), null, ids) is Estimate.Refused)
+        // a mark that names f3 makes it the only marked frame
+        val db = MemoryGraph.get(app).db
+        val fence = com.rokid.context.memory.db.DaoFence(com.rokid.context.orchestration.MemoryWipe.generation.get(), com.rokid.context.memory.db.DeletionEpochStore.of(app).read(),
+            com.rokid.context.orchestration.MemoryWipe.generation::get, com.rokid.context.memory.db.DeletionEpochStore.of(app)::read)
+        assertTrue(db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("m1", "MOMENT", "tap", "X", now - 30 * 60 * 1000, frameId = "f3", createdAt = now), fence))
+        assertEquals("marked only", 1, (backend.estimate(copyWithPhotoParams("""{"markedOnly":true}"""), null, ids) as Estimate.Ok).photos)
+    }
+
+    @Test fun aRunStartedOnAScopedPipelineRunsOnlyTheScopedFrames() = runBlocking<Unit> {
+        bind()
+        val now = System.currentTimeMillis(); val h = 3_600_000L
+        seed("f1", now - 10 * h); seed("f2", now - 1 * h)
+        val id = copyWithPhotoParams("""{"sinceHours":5}""")
+        val est = backend.estimate(id, null, listOf("f1", "f2")) as Estimate.Ok
+        assertEquals(1, est.photos)
+        val runId = backend.startRun(id, null, listOf("f1", "f2"), est.confirmToken)
+        withTimeout(30_000) { while (backend.run(runId)!!["status"]!!.jsonPrimitive.content == "RUNNING") delay(50) }
+        val items = checkNotNull(backend.run(runId))["items"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(setOf("f2"), items.map { it["frameId"]!!.jsonPrimitive.content }.toSet())
     }
 
     @Test fun endToEndRunOnFakeFrames() = runBlocking<Unit> {
