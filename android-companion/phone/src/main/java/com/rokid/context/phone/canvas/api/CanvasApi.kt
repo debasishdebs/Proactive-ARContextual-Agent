@@ -52,6 +52,7 @@ class CanvasApi(
         private val VERSION = Regex("^[0-9]{1,6}$")
         private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile", "/api/plans/check")
         private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+        private val MOMENT_ID = Regex("^[0-9a-f]{8}$")
         const val DEFAULT_LIMIT = 60
         const val MAX_LIMIT = 120
         const val MAX_FRAME_IDS = 50
@@ -78,6 +79,8 @@ class CanvasApi(
         HttpResponse.error(e.status, e.code, e.msg, e.problems)
     } catch (e: CanvasRunner.Busy) {
         HttpResponse.error(409, "busy", "A run is already active.")
+    } catch (e: CanvasRunner.MomentsMoved) {
+        HttpResponse.error(409, "moments_moved", "These Moments changed since the estimate (a photo was added or removed, or a memory or mark changed). Nothing ran. Estimate again.")
     } catch (e: NoSuchElementException) {
         HttpResponse.error(404, "not_found", "Not found.")
     } catch (e: IllegalArgumentException) {
@@ -125,6 +128,7 @@ class CanvasApi(
             "GET frames/:id" -> json(backend.frame(id(s[1])) ?: throw NoSuchElementException())
             "GET frames/:id/thumb" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = true)) }
             "GET frames/:id/image" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = false)) }
+            "GET moments" -> moments(req)
             "POST runs/estimate" -> estimate(req)
             "POST runs/estimate-ab" -> estimateAb(req)
             "POST runs/ab" -> startAb(req)
@@ -144,7 +148,7 @@ class CanvasApi(
 
     /** The route shape with ids as `:id`, or null for a path that is no route at all (404). */
     private fun templateOf(s: List<String>): String? = when {
-        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "runs", "compare", "validate", "live") -> s[0]
+        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "moments", "runs", "compare", "validate", "live") -> s[0]
         s.size == 2 && s[0] == "pipelines" -> "pipelines/:id"
         s.size == 3 && s[0] == "pipelines" && s[2] in setOf("freeze", "diff") -> "pipelines/:id/${s[2]}"
         s.size == 5 && s[0] == "pipelines" && s[2] == "versions" && s[4] == "publish" -> "pipelines/:id/versions/:n/publish"
@@ -332,6 +336,8 @@ class CanvasApi(
             put("nominal", e.nominal)
             put("max", e.max)
             put("photos", e.photos)
+            put("kind", e.kind)
+            put("photoCount", e.photoCount)
             put("models", JsonArray(e.models.map { m -> buildJsonObject { put("nodeId", m.nodeId); put("endpoint", m.endpoint); put("model", m.model) } }))
             put("confirmToken", e.confirmToken)
             put("tokens", e.tokens?.let { t -> buildJsonObject { put("promptTokens", t.promptTokens); put("completionTokens", t.completionTokens); put("basedOn", t.basedOn) } } ?: JsonNull)
@@ -339,8 +345,30 @@ class CanvasApi(
         is Estimate.Refused -> throw ApiError(422, "refused", "This run is over the limits.", e.reasons)
     }
 
+    /** Moments with `after <= start < before` (newest day first is the picker's business: this lists oldest first), same `day` / `before` / `limit` rules as the frames list. */
+    private suspend fun moments(req: HttpRequest): HttpResponse {
+        val before = req.query["before"]?.let { it.toLongOrNull() ?: throw bad() } ?: Long.MAX_VALUE
+        val limit = (req.query["limit"]?.let { it.toIntOrNull() ?: throw bad() } ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
+        val day = req.query["day"] ?: return json(backend.moments(0L, before, limit))
+        if (!DAY.matches(day)) throw bad("Bad day.")
+        val date = try { java.time.LocalDate.parse(day) } catch (e: java.time.DateTimeException) { throw bad("Bad day.") }
+        val z = zone()
+        val after = date.atStartOfDay(z).toInstant().toEpochMilli()
+        val nextMidnight = date.plusDays(1).atStartOfDay(z).toInstant().toEpochMilli()
+        return json(backend.moments(after, minOf(before, nextMidnight), limit))
+    }
+
+    /** A Moment run names `momentIds` instead of `frameIds`. */
+    private fun JsonObject.momentIds(): List<String>? {
+        val arr = this["momentIds"] ?: return null
+        if (arr !is JsonArray) throw bad("Bad \"momentIds\".")
+        if (arr.size > MAX_FRAME_IDS) throw bad("At most $MAX_FRAME_IDS moments")
+        return arr.map { e -> (e as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { MOMENT_ID.matches(it) } ?: throw bad("Bad moment id.") }
+    }
+
     private suspend fun estimate(req: HttpRequest): HttpResponse {
         val b = body(req)
+        b.momentIds()?.let { return estimateJson(backend.estimateMoments(b.idField("pipelineId"), b.version(), it)) }
         return estimateJson(backend.estimate(b.idField("pipelineId"), b.version(), b.frameIds()))
     }
 
@@ -393,7 +421,9 @@ class CanvasApi(
 
     private suspend fun startRun(req: HttpRequest): HttpResponse {
         val b = body(req)
-        val runId = backend.startRun(b.idField("pipelineId"), b.version(), b.frameIds(), b.str("confirmToken", 128))
+        val moments = b.momentIds()
+        val runId = if (moments != null) backend.startMomentRun(b.idField("pipelineId"), b.version(), moments, b.str("confirmToken", 128))
+        else backend.startRun(b.idField("pipelineId"), b.version(), b.frameIds(), b.str("confirmToken", 128))
         return json(buildJsonObject { put("runId", runId) })
     }
 

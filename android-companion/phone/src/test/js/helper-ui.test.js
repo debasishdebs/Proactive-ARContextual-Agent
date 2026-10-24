@@ -26,6 +26,18 @@ const pyPipe = () => JSON.stringify({
   ],
   edges: [{ from: 'photos', to: 'intent' }, { from: 'intent', to: 'fn' }],
 });
+const momentPipe = () => JSON.stringify({
+  schema: 2, id: 'mp1', name: 'Moments',
+  nodes: [
+    { id: 'moments', type: 'input.moments', title: 'Moments', params: {} },
+    { id: 'fn', type: 'py.fn', title: 'Python', params: { source: 'def run(x):\n  return {"n": 1}\n', outSchema: '{"type":"object"}' } },
+  ],
+  edges: [{ from: 'moments', to: 'fn' }],
+});
+const momentList = [
+  { id: '69011b80', startMs: 1761000000000, photos: 2, memories: 1, marks: 0 },
+  { id: '69011b85', startMs: 1761000005000, photos: 1, memories: 0, marks: 1 },
+];
 const item = (nodeId, over) => Object.assign({ frameId: 'f1', nodeId, status: 'OK', branch: null, output: null, error: null, latencyMs: 5, promptTokens: 0, completionTokens: 0, model: null, promptVersion: null }, over || {});
 const pyRun = (status, items) => ({
   runId: 'rp1', abGroup: null, pipelineId: 'py1', version: null, status, startedAt: 1, frameCount: 1, calls: 1, failures: 0,
@@ -187,6 +199,58 @@ export const tests = {
     await withView({}, async ({ ctx, root, api }) => {
       await runNewView(ctx, root, 'p1', '1');
       eq(cards(root).length, 0);
+    });
+  },
+
+  // ---- Moment-lite: a pipeline that starts at input.moments is run over Moments ----
+  async newRunOverMomentsListsMomentsWithPhotoCountsAndSendsMomentIdsNotFrameIds() {
+    await withView({
+      'GET /api/pipelines/mp1': Object.assign(E.pipelineData(), { id: 'mp1', json: momentPipe() }),
+      'GET /api/moments': momentList,
+      'GET /api/helper-status': st(),
+      'POST /api/runs/estimate': { nominal: 0, max: 0, photos: 2, kind: 'moments', photoCount: 3, models: [], confirmToken: 'tok', tokens: null },
+      'POST /api/runs': { runId: 'r9' },
+    }, async ({ ctx, root, api }) => {
+      await runNewView(ctx, root, 'mp1', '1');
+      has(root, '2 photos'); has(root, '1 photo'); has(root, 'on the phone');
+      ok(!api.calls.some((c) => c.path.startsWith('/api/frames')), 'the Moment page never lists single frames');
+      const boxes = findAll(root, (e) => e.tagName === 'input' && e.getAttribute('type') === 'checkbox');
+      eq(boxes.length, 2);
+      boxes[0].checked = true; boxes[0].dispatch('change');
+      boxes[1].checked = true; boxes[1].dispatch('change');
+      has(root, '2 of 50 Moments selected');
+      has(root, '3 photos');
+      E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
+      const est = api.calls.find((c) => c.path === '/api/runs/estimate');
+      eq(est.body, { pipelineId: 'mp1', momentIds: ['69011b80', '69011b85'], version: 1 });
+      ok(!('frameIds' in est.body), 'no frame ids');
+      has(ctx.modals[0].content, '2 Moments');
+      await E.runAction(ctx, 'Start');
+      eq(api.calls.find((c) => c.path === '/api/runs').body, { confirmToken: 'tok', pipelineId: 'mp1', momentIds: ['69011b80', '69011b85'], version: 1 });
+      eq(ctx.gone, ['#/run/r9']);
+      // the page has no control that confirms anything: only the select/clear/estimate/day controls
+      eq(api.calls.filter((c) => c.method !== 'GET').map((c) => c.path), ['/api/runs/estimate', '/api/runs']);
+    });
+  },
+  async newRunOverMomentsWithNothingSelectedAsksForOne() {
+    await withView({
+      'GET /api/pipelines/mp1': Object.assign(E.pipelineData(), { id: 'mp1', json: momentPipe() }),
+      'GET /api/moments': momentList, 'GET /api/helper-status': st(),
+    }, async ({ ctx, root, api }) => {
+      await runNewView(ctx, root, 'mp1', '');
+      E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
+      eq(ctx.notices, ['Select at least one Moment.']);
+      ok(!api.calls.some((c) => c.path === '/api/runs/estimate'));
+    });
+  },
+  async aMomentRunViewNamesTheMomentAndNeverAsksForAFrame() {
+    await withView({
+      'GET /api/runs/rm1': Object.assign(pyRun('DONE', [item('fn', { frameId: 'moment:69011b80', output: { n: 1 } })]), { runId: 'rm1', pipelineJson: momentPipe() }),
+      'GET /api/runs': [E.runRow('rm1', 'DONE', null, 1)],
+    }, async ({ ctx, root, api }) => {
+      await runView(ctx, root, 'rm1');
+      has(root, 'Moment 69011b80');
+      ok(!api.calls.some((c) => c.path.startsWith('/api/frames')), 'no frame lookup for a Moment item');
     });
   },
 
