@@ -428,7 +428,7 @@ object CaptureSimulator {
 
         fun onDwell(t: Long) {
             val k = keptAt.count { t - it < 60_000L }
-            val keepGuard = runner?.keep(t, signals, if (cand?.ctxBound == false) ContextState.UNKNOWN else ctx, (t - ctxAt) / 1000L)?.also { if (!preRoll) guardLog += GuardDecision(t, it) } ?: true
+            val keepGuard = runner?.keep(t, signals, ctx, (t - ctxAt) / 1000L)?.also { if (!preRoll) guardLog += GuardDecision(t, it) } ?: true
             val d = GlanceAdmission.decide(t - lastKeyframeAt, k, capNowFor(ctxCapNow()), hardNow(), cls.rotationSinceMarkRad(), cls.walkedSinceMark(), glance, keepGuard)
             if (d == GlanceAdmission.Decision.OPEN) { pendingDwellAt = t; if (!preRoll) admissions++ }
         }
@@ -682,11 +682,12 @@ object CaptureSimulator {
                 finalize(cur)
             }
             val hash = cand?.configHash ?: recordedHash ?: snap.planHash ?: "0"
+            val counts = runner?.takeCounts()
             return ReplayResult(
                 hash, compared, opens, gates, keeps, skips, tally.passed, tally.failed, tally.inexact, LinkedHashMap(reasonCounts), mismatches, mismatchCount,
                 inexactSpans = spans, recordedOpens = recordedOpens, stalls = StallStats(stallCount, stallMs), glanceAdmissions = admissions,
                 guardDrops = runner?.let { r -> r.guardIds.indices.associate { r.guardIds[it] to r.drops(it) } } ?: emptyMap(),
-                guardDecisions = guardLog, exprErr = runner?.takeCounts()?.get(0) ?: 0, exprDiv0 = runner?.exprDiv0 ?: 0,
+                guardDecisions = guardLog, exprErr = counts?.get(0) ?: 0, exprDiv0 = counts?.get(1) ?: 0,
             )
         }
     }

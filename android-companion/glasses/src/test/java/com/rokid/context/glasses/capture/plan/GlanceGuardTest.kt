@@ -86,4 +86,16 @@ class GlanceGuardTest {
         local = MotionState.STILL
         assertTrue(g.keep(6_000), "without the veto the guard sees REST")
     }
+
+    @Test fun SeveralFailingProgramsEachCountTowardRevertTest() {
+        val r = Rig(cfg(nonFinite, entry("n2", nonFinite["s"].toString().let { "" + it.substring(1, it.length - 1) }, 4), entry("n3", nonFinite["s"].toString().let { it.substring(1, it.length - 1) }, 4)), running = A)
+        val t = feed(r, 4)                                   // 3 failing guards x 4 evaluations = 12 errors in 2.4 s
+        assertEquals(12L, r.cfg.exprRunner!!.errTotal)
+        assertEquals("auto:exprErr", r.revert.check(t, A))
+    }
+
+    @Test fun guardReadsAppliedContextWhateverTheBindingFlag() {
+        val r = Rig(cfg(restOnly), running = A, applied = ContextState.REST)
+        assertTrue(r.guard.keep(1_000))
+    }
 }
