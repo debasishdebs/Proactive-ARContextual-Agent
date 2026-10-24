@@ -248,7 +248,7 @@ class CanvasRunner(
     suspend fun estimateMoments(p: Pipeline, momentIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
         val resolver = moments ?: return Estimate.Refused(listOf("moments are not available"))
         val ids = momentIdsOf(momentIds)
-        val res = resolver.resolve(ids)
+        val res = try { resolver.resolve(ids) } catch (e: com.rokid.context.canvas.moment.MomentTooBig) { return Estimate.Refused(listOf("a Moment has more than ${MomentResolver.FRAME_CAP} photos")) }
         val keys = res.map(::keyOf)
         val c = price(p, keys, labels)
         val reasons = mutableListOf<String>()
@@ -326,7 +326,7 @@ class CanvasRunner(
             if (ids.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS moments")
             if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
             if (!takesMoments(p)) throw IllegalArgumentException("pipeline does not take moments")
-            val res = resolver.resolve(ids)
+            val res = try { resolver.resolve(ids) } catch (e: com.rokid.context.canvas.moment.MomentTooBig) { throw MomentsMoved() }
             val bound = bindingOf(res)
             when (tokens.consumeBound(confirmToken, PipelineHash.of(p), ids, bound.joinToString("\n"))) {
                 ConfirmTokens.Verdict.BAD -> throw IllegalArgumentException("bad_token")

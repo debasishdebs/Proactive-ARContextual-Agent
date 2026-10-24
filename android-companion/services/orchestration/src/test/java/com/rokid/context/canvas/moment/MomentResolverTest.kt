@@ -11,6 +11,7 @@ class MomentResolverTest {
         var frames: List<MomentFrame> = emptyList(), var memories: List<Pair<String, MomentRef>> = emptyList(), var marks: List<MomentMark> = emptyList(),
     ) : MomentSource {
         override suspend fun frames(fromMs: Long, toMs: Long, limit: Int) = frames.filter { it.ts in fromMs..toMs }.sortedBy { it.ts }.take(limit)
+        override suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int) = frames.filter { it.ts in fromMs..toMs }.sortedBy { it.ts }.takeLast(limit)
         override suspend fun memories(frameIds: List<String>) = memories.filter { it.first in frameIds }
         override suspend fun marks(fromMs: Long, toMs: Long) = marks.filter { it.atMs in fromMs..toMs }
     }
@@ -85,8 +86,15 @@ class MomentResolverTest {
         assertEquals(1, m.contentRev)
     }
 
-    @Test fun windowLimitKeepsTheEarliestMoments() = runBlocking<Unit> {
+    @Test fun windowLimitKeepsTheNewestMoments() = runBlocking<Unit> {
         val src = FakeSource(frames = (0..9).map { f("f$it", ms + it * 1000L) })
-        assertEquals((0..2).map { MomentId.format(sec + it) }, MomentResolver(src).window(ms, ms + 9999, 3).map { it.id })
+        assertEquals((7..9).map { MomentId.format(sec + it) }, MomentResolver(src).window(ms, ms + 9999, 3).map { it.id })
+    }
+
+    @Test fun aSecondOverTheFrameCapIsRefusedNotTruncated() = runBlocking<Unit> {
+        val many = (0..MomentResolver.FRAME_CAP).map { f("f$it", ms + (it % 1000)) } // cap + 1 photos in one second
+        val e = runCatching { MomentResolver(FakeSource(frames = many)).resolve(listOf(MomentId.format(sec))) }.exceptionOrNull()
+        assertTrue("got $e", e is MomentTooBig)
+        assertEquals(1, MomentResolver(FakeSource(frames = many.take(MomentResolver.FRAME_CAP))).resolve(listOf(MomentId.format(sec))).size)
     }
 }
