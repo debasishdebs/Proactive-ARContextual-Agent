@@ -219,6 +219,36 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
         return keep
     }
 
+    /** One evaluated entry of a program (try-it): [kind] says what it holds, [num]/[flag]/[code] the value of a NUM/BOOL/ENUM. A window that is not full is [Kind.NOT_READY]. */
+    class Probe(val kind: Kind, val num: Double = 0.0, val flag: Boolean = false, val code: Int = 0) { enum class Kind { NUM, BOOL, ENUM, ERROR, DIV0, NOT_READY, UNAVAILABLE } }
+
+    /**
+     * Try-it on the phone: evaluates program [index] (of the guards, or of the values) through the SAME [run] as the glasses and returns every entry of it,
+     * so a step's value is the entry its output names. Reads the signals as given and touches no counter, no drop count and no override. Not hot path.
+     */
+    @Synchronized fun probe(value: Boolean, index: Int, nowMs: Long, sig: ExprSignals, ctx: ContextState, ctxAgeS: Long): List<Probe> {
+        val p = (if (value) vals else progs)[index]
+        win?.let { sig.feed(it) }
+        run(p, nowMs, sig, ctx, ctxAgeS)
+        val out = ArrayList<Probe>(p.op.size)
+        for (i in 0 until p.op.size) {
+            val s = p.st[i]
+            val o = p.op[i]
+            // a result that is only unavailable because a window below it is still warming says so (NOT_READY), not UNAVAILABLE
+            fun warm(k: Int) = out[k].kind == Probe.Kind.NOT_READY
+            val fed = o != OP_SIG && o != OP_CONST && o != OP_WIN
+            val fromWarm = fed && (warm(p.a[i]) || ((o == OP_CMP || o == OP_ARITH || o == OP_AND || o == OP_OR || o == OP_CHOOSE) && warm(p.b[i])) || (o == OP_CHOOSE && warm(p.c[i])))
+            out += when {
+                s.error -> Probe(if (s.errorKind == Sample.ERR_DIV0) Probe.Kind.DIV0 else Probe.Kind.ERROR)
+                !s.available -> Probe(if (o == OP_WIN || fromWarm) Probe.Kind.NOT_READY else Probe.Kind.UNAVAILABLE)
+                s.type == Sample.Type.NUM -> Probe(Probe.Kind.NUM, num = s.num)
+                s.type == Sample.Type.BOOL -> Probe(Probe.Kind.BOOL, flag = s.flag)
+                else -> Probe(Probe.Kind.ENUM, code = s.code)
+            }
+        }
+        return out
+    }
+
     private fun run(p: Prog, now: Long, sig: ExprSignals, ctx: ContextState, ctxAgeS: Long): Sample {
         val st = p.st
         for (i in 0 until p.op.size) {

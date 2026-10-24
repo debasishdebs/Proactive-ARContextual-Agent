@@ -170,7 +170,11 @@ export const captureTypes = [
 export const exprGuardType = v2('expr.guard', 'Expression guard', 'guard', ['MOTION_EVENT'], 'MOTION_EVENT', 'RT_GLASSES', 'Thresholds/Filters', {
   liveable: false, params: [{ name: 'graph', kind: 'graph', label: 'Expression graph', sweep: false }],
 });
-export const allTypes = nodeTypes.concat(captureTypes, [exprGuardType]);
+/** expr.value as /api/node-types serves it (E2a): the graph plus the row and the one field it tunes. */
+export const exprValueType = v2('expr.value', 'Value (expression)', 'value', ['MOTION_EVENT'], 'MOTION_EVENT', 'RT_GLASSES', 'Policy/Frequency', {
+  liveable: false, params: [{ name: 'graph', kind: 'graph', label: 'Expression graph', sweep: false }, { name: 'row', kind: 'enum', options: ['REST', 'VEHICLE_PASSENGER', 'VEHICLE_DRIVING', 'FLIGHT'], default: 'REST' }, { name: 'field', kind: 'enum', options: ['capPerMin', 'settledGapS', 'quietGapS', 'walkGapS', 'stillCapGapS'], default: 'capPerMin' }],
+});
+export const allTypes = nodeTypes.concat(captureTypes, [exprGuardType, exprValueType]);
 
 /** head -> threshold -> rate(+hub) -> capture -> (photos binding) input.photos; one pipeline over RT_GLASSES, RT_PHONE and ASYNC. */
 export function capturePipe() {

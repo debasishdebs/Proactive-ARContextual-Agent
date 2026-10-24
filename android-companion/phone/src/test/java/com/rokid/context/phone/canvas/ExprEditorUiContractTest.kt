@@ -29,6 +29,15 @@ class ExprEditorUiContractTest {
         assertEquals(3, checked.nodes)
     }
 
+    @Test fun theDefaultValueGraphIsAValidNumberForTheDefaultTargetAndCompiles() {
+        val json = Regex("DEFAULT_VALUE_GRAPH_JSON = '([^']+)'").find(text("exprgraph.js"))!!.groupValues[1]
+        val (program, diags) = ExprProgram.parse(ExprRole.VALUE, Json.parseToJsonElement(json))
+        assertEquals(emptyList<Any>(), diags)
+        assertEquals(emptyList<Any>(), program!!.check().problems)
+        val low = com.rokid.context.ai.canvas.plan.ExprLowering.lowerAll(listOf(com.rokid.context.ai.canvas.plan.ExprLowering.Entry("v", Json.parseToJsonElement(json), ExprRole.VALUE, "REST", "capPerMin")))
+        assertEquals(emptyList<String>(), low.problems)
+    }
+
     @Test fun theEditorSourcesHaveNoHtmlSinkAndNoConfirm() {
         for (n in listOf("exprgraph.js", "exprview.js")) {
             val c = code(n)

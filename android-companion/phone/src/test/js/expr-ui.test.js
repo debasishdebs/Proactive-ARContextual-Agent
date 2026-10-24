@@ -141,6 +141,35 @@ export const tests = {
       ok(text(root).includes('Compile to see'));
     });
   },
+  aWindowNodeAuthoredInJsonOpensAndSelectsWithoutThrowing() {
+    const g = X.defaultGraph();
+    g.steps[0].nodes.push({ id: 'w', op: 'win', name: 'stepHz', agg: 'frac', sec: 20, t: 1 }, { id: 'odd', op: 'future_op' });
+    mount({ graph: g }, ({ root }) => {
+      boxes(root)[0].dispatch('dblclick');
+      nodes(root).find((n) => n.getAttribute('data-node') === 'w').dispatch('click');
+      ok(byLabel(root, 'Aggregate over the window') && byLabel(root, 'Signal'), 'the window controls show');
+      ok(text(root).includes('frac stepHz 20 s > 1') && text(root).includes('Counts seconds above'));
+      pick(root, 'Aggregate over the window', 'max');
+      ok(!text(root).includes('Counts seconds above'), 'no threshold outside frac');
+      nodes(root).find((n) => n.getAttribute('data-node') === 'odd').dispatch('click');
+      ok(text(root).includes('future_op'), 'an unknown op is shown, not thrown on');
+    });
+  },
+  aValueEditorShowsItsTargetClampAndTheTryItPanelRunsThePhone() {
+    const asked = [];
+    const reply = { ok: true, steps: [{ name: 'fast', result: { state: 'BOOL', value: true } }], output: { state: 'BOOL', value: true }, verdict: 'keep' };
+    const g = X.defaultGraph();
+    mount({ graph: g, target: () => ({ row: 'REST', field: 'quietGapS' }), tryIt: (b) => { asked.push(b); return { then: (f) => f(reply) }; } }, ({ root }) => {
+      ok(text(root).includes('Expression value') && text(root).includes('5 to 300 seconds'), text(root));
+      const slider = byLabel(root, 'Try value for gyroMax');
+      ok(slider, 'one slider per signal the program reads');
+      slider.value = '2.5'; slider.dispatch('input');
+      E.click(E.buttons(root, 'Run')[0]);
+      eq(asked.length, 1); eq(asked[0].signals, { gyroMax: 2.5 }); eq(asked[0].role, 'value'); eq(asked[0].field, 'quietGapS');
+      ok(text(root).includes('fast = true') && text(root).includes('keep the picture'));
+    });
+    mount({ graph: g }, ({ root }) => ok(!byLabel(root, 'Try value for gyroMax'), 'no try-it without a runner'));
+  },
   jsonFallbackShowsAndAppliesTheGraph() {
     mount({}, ({ root, seen, ed }) => {
       E.click(E.buttons(root, 'Show JSON')[0]);

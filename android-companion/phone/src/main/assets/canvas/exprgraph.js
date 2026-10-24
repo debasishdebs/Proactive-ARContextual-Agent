@@ -22,13 +22,22 @@ export const SIGNALS = [
 export const OPS = {
   sig: { label: 'signal', ports: [] }, const: { label: 'constant', ports: [] }, cmp: { label: 'compare', ports: ['a', 'b'] }, arith: { label: 'arithmetic', ports: ['a', 'b'] },
   and: { label: 'and', ports: ['a', 'b'] }, or: { label: 'or', ports: ['a', 'b'] }, not: { label: 'not', ports: ['a'] }, in: { label: 'is in', ports: ['a'] },
-  clamp: { label: 'clamp', ports: ['a'] }, choose: { label: 'choose', ports: ['a', 'b', 'c'] }, fresh: { label: 'fresh', ports: ['a'] },
+  clamp: { label: 'clamp', ports: ['a'] }, choose: { label: 'choose', ports: ['a', 'b', 'c'] }, fresh: { label: 'fresh', ports: ['a'] }, win: { label: 'window', ports: [] },
 };
+export const opOf = (op) => (own(OPS, op) ? OPS[op] : { label: String(op), ports: [] });
+export const WIN_AGG = ['max', 'mean', 'frac'];
+export const WIN_SIGNALS = SIGNALS.filter((x) => x.name !== 'ctx' && x.name !== 'ctxAgeS'); // a window reads the seven one-second features only
+export const MAX_WINDOWS = 4;
 export const OP_NAMES = Object.keys(OPS);
 
 /** The graph a freshly added Expression guard carries: one step `fast` = headSpeed > 1.5 (3 lowered nodes, cost 3). */
 export const DEFAULT_GRAPH_JSON = '{"steps":[{"name":"fast","inputs":[{"name":"speed","sig":"headSpeed"}],"nodes":[{"id":"limit","op":"const","value":1.5},{"id":"over","op":"cmp","f":">"}],"wires":[["speed","over.a"],["limit","over.b"]],"out":"over"}],"out":"fast"}';
 export const defaultGraph = () => JSON.parse(DEFAULT_GRAPH_JSON);
+/** A fresh Value (expression): one step `cap` = clamp(2, 1, 4), a valid number for the default target (REST capPerMin). */
+export const DEFAULT_VALUE_GRAPH_JSON = '{"steps":[{"name":"cap","inputs":[],"nodes":[{"id":"k","op":"const","value":2},{"id":"c","op":"clamp","lo":1,"hi":4}],"wires":[["k","c.a"]],"out":"c"}],"out":"cap"}';
+export const defaultGraphFor = (type) => JSON.parse(type === 'expr.value' ? DEFAULT_VALUE_GRAPH_JSON : DEFAULT_GRAPH_JSON);
+/** What the row clamps a value program's number to (the program carries no bound of its own). */
+export const targetNote = (f) => (f ? 'Tunes ' + f + ', clamped to ' + (f === 'capPerMin' ? '1 to 4 captures a minute (rounded)' : '5 to 300 seconds') + '. An error or a warming window keeps the row value.' : '');
 
 const clone = (g) => JSON.parse(JSON.stringify(g));
 const fail = (error) => ({ error });
@@ -189,7 +198,7 @@ export function nodeLoop(s, to, from) {
 
 const DEFAULT_NODE = {
   sig: () => ({ name: 'gyroMax' }), const: () => ({ value: 0 }), cmp: () => ({ f: '>' }), arith: () => ({ f: '+' }), in: () => ({ set: ['REST'] }),
-  clamp: () => ({ lo: 0, hi: 1 }), fresh: () => ({ ms: 1000 }),
+  clamp: () => ({ lo: 0, hi: 1 }), fresh: () => ({ ms: 1000 }), win: () => ({ name: 'stepHz', agg: 'mean', sec: 10 }),
 };
 
 export function addNode(g, stepName, op) {
@@ -253,12 +262,23 @@ export function setNodeParam(g, stepName, id, key, raw) {
     value = num();
     if (value === null) return fail('Must be a number within 1000000');
     if ((key === 'lo' && value > n.hi) || (key === 'hi' && value < n.lo)) return fail('lo must not exceed hi');
+  } else if (n.op === 'win' && (key === 'name' || key === 'agg')) {
+    if (!(key === 'name' ? WIN_SIGNALS.map((x) => x.name) : WIN_AGG).includes(text)) return fail(key === 'name' ? 'A window reads one of the seven motion features' : 'Pick max, mean or frac');
+    value = text;
+  } else if (n.op === 'win' && key === 'sec') {
+    value = Number(text);
+    if (!/^\d+$/.test(text) || value < 1 || value > 300) return fail('Must be a whole number from 1 to 300 seconds');
+  } else if (n.op === 'win' && key === 't') {
+    value = num();
+    if (value === null) return fail('Must be a number within 1000000');
   } else if (n.op === 'fresh' && key === 'ms') {
     value = Number(text);
     if (!/^\d+$/.test(text) || value < 1 || value > MAX_FRESH_MS) return fail('Must be a whole number from 1 to ' + MAX_FRESH_MS);
   } else return fail('That node has no ' + key);
   const next = clone(g);
-  stepOf(next, stepName).nodes.find((x) => x.id === id)[key] = value;
+  const nn = stepOf(next, stepName).nodes.find((x) => x.id === id);
+  nn[key] = value;
+  if (n.op === 'win' && key === 'agg') { if (value === 'frac' && !own(nn, 't')) nn.t = 0.5; else if (value !== 'frac') delete nn.t; } // only frac takes a threshold
   return { graph: next };
 }
 
@@ -267,7 +287,7 @@ export function setWire(g, stepName, to, from) {
   const s = stepOf(g, stepName);
   const [id, port] = String(to).split('.');
   const target = s && s.nodes.find((n) => n.id === id);
-  if (!target || !OPS[target.op].ports.includes(port)) return fail('No such port');
+  if (!target || !opOf(target.op).ports.includes(port)) return fail('No such port');
   if (!taken(s).has(from)) return fail('No such source');
   if (s.nodes.some((n) => n.id === from) && nodeLoop(s, id, from)) {
     return fail(from === id ? 'A node cannot feed itself (EXPR_LOOP)' : 'Refused: ' + from + ' already depends on ' + id + ', so this would be a loop (EXPR_LOOP)');
@@ -308,7 +328,8 @@ export function nodeLabel(n) {
     case 'in': return 'is in ' + (n.set || []).join(', ');
     case 'clamp': return 'clamp ' + n.lo + '..' + n.hi;
     case 'fresh': return 'fresh ' + n.ms + ' ms';
-    default: return OPS[n.op] ? OPS[n.op].label : String(n.op);
+    case 'win': return n.agg + ' ' + n.name + ' ' + n.sec + ' s' + (n.agg === 'frac' ? ' > ' + n.t : '');
+    default: return opOf(n.op).label;
   }
 }
 
@@ -415,14 +436,17 @@ export function attribute(g, texts) {
 const COST = { clamp: 2, choose: 2, fresh: 2 };
 /** planJson (the whole compiled plan, as /api/plans/compile returns it) → {nodes: lowered total over all programs, byId: {canvasId: {nodes, cost}}}; unparsable gives zero. */
 export function exprMeters(planJson) {
-  const res = { nodes: 0, byId: {} };
+  const res = { nodes: 0, byId: {}, terms: 0, stateBytes: 0 };
+  const seen = new Set();
   let plan;
   try { plan = JSON.parse(planJson); } catch (e) { return res; }
   for (const p of (plan && plan.config && plan.config.exprs) || []) { // CapturePlan: planJson = {planSchema, configHash, config: {..., exprs}, meta}
     const s = p.s || [];
     res.nodes += s.length;
+    for (const e of s) if (e.op === 'win' && !seen.has([e.name, e.agg, e.sec, e.t].join())) { seen.add([e.name, e.agg, e.sec, e.t].join()); res.stateBytes += (e.agg === 'max' ? 8 : 4) * e.sec; }
     res.byId[p.id] = { nodes: s.length, cost: s.reduce((c, e) => c + (e.op === 'in' ? 1 + (e.set || []).length : own(COST, e.op) ? COST[e.op] : 1), 0) };
   }
+  res.terms = seen.size;
   return res;
 }
 
@@ -434,7 +458,31 @@ export function panelFor(view, nodeId, g) {
   const own1 = ex.byId[nodeId];
   return {
     compiled: true, stale: !!view.stale, problems: attribute(g, mine(view.problems)), warnings: attribute(g, mine(view.warnings)),
-    meters: { nodes: ex.nodes, maxNodes: MAX_NODES, cost: own1 ? own1.cost : 0, maxCost: MAX_COST, bytes: view.planBytes, maxBytes: MAX_BYTES },
+    meters: { nodes: ex.nodes, maxNodes: MAX_NODES, cost: own1 ? own1.cost : 0, maxCost: MAX_COST, bytes: view.planBytes, maxBytes: MAX_BYTES, terms: ex.terms || 0, maxTerms: MAX_WINDOWS, stateBytes: ex.stateBytes || 0 },
   };
 }
-export const metersText = (m) => 'nodes ' + m.nodes + '/' + m.maxNodes + ' · cost ' + m.cost + '/' + m.maxCost + ' · ' + (m.bytes == null ? '?' : m.bytes) + ' of ' + m.maxBytes + ' bytes';
+export const metersText = (m) => 'nodes ' + m.nodes + '/' + m.maxNodes + ' · cost ' + m.cost + '/' + m.maxCost + ' · ' + (m.bytes == null ? '?' : m.bytes) + ' of ' + m.maxBytes + ' bytes' + (m.terms ? ' · windows ' + m.terms + '/' + m.maxTerms + ' · window state ' + m.stateBytes + ' bytes (counted in the ' + m.maxBytes + ')' : '');
+
+// ---- try-it (the phone evaluates: POST /api/expr/try runs the glasses' own runner)
+const SLIDER = { aboveOnFrac: [0, 1, 0.01], accVar: [0, 50, 0.5], stepHz: [0, 4, 0.05], rotRad: [0, 7, 0.1] };
+export const sliderOf = (n) => SLIDER[n] || [0, 10, 0.1];
+/** The motion features the program reads (inputs, signal nodes, window nodes), headSpeed folded into gyroMax; ctx and ctxAgeS are not sliders. */
+export function signalsOf(g) {
+  const out = [];
+  const add = (n) => { const c = n === 'headSpeed' ? 'gyroMax' : n; if (SIGNALS.some((x) => x.name === c) && c !== 'ctx' && c !== 'ctxAgeS' && !out.includes(c)) out.push(c); };
+  for (const s of g.steps) { for (const i of s.inputs) if (own(i, 'sig')) add(i.sig); for (const n of s.nodes) if (n.op === 'sig' || n.op === 'win') add(n.name); }
+  return out;
+}
+export const tryBody = (g, values, target) => {
+  const signals = {};
+  for (const n of signalsOf(g)) signals[n] = own(values, n) ? values[n] : sliderOf(n)[0];
+  return Object.assign({ graph: g, signals }, target ? { role: 'value', row: target.row, field: target.field } : {});
+};
+const cellText = (c) => (c ? (c.state === 'NUM' ? String(Math.round(c.value * 1000) / 1000) : c.state === 'BOOL' || c.state === 'ENUM' ? String(c.value) : c.state) : '');
+/** The reply of the try-it route as lines: a problem list, or one line per step and the result. */
+export function tryLines(r) {
+  if (!r || r.ok !== true) return ((r && r.problems) || ['The program does not compile']).map(String);
+  const lines = r.steps.map((x) => x.name + ' = ' + cellText(x.result));
+  lines.push('result: ' + cellText(r.output) + (r.verdict ? ' (' + r.verdict + ' the picture)' : '') + (r.applied !== undefined ? ' (the row gets ' + r.applied + ')' : ''));
+  return lines;
+}

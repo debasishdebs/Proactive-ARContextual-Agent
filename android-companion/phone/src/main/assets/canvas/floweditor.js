@@ -92,17 +92,20 @@ export function mountEditor(el, opts) {
   };
 
   // the expr.guard graph: the vanilla boxed editor (exprview.js) lives in a host div; React only hands it the value and the compile view
-  const GraphControl = ({ spec, disabled, nodeId, onGraph }) => {
+  const GraphControl = ({ spec, disabled, nodeId, onGraph, target }) => {
     const host = React.useRef(null);
-    const api = React.useRef(null);
+    const ed = React.useRef(null);
+    const tgt = React.useRef(null);
+    tgt.current = target;
     const [err, setErr] = React.useState('');
     React.useEffect(() => {
-      api.current = mountExprEditor(host.current, {
+      ed.current = mountExprEditor(host.current, {
         graph: spec.value, readOnly: disabled, panel: (g) => L.exprPanel(store.get(), nodeId, g), onChange: (g) => setErr(onGraph(g) || ''),
+        target: () => tgt.current, tryIt: (b) => api('POST', '/api/expr/try', b),
       });
-      return () => { api.current.unmount(); api.current = null; };
+      return () => { ed.current.unmount(); ed.current = null; };
     }, [nodeId, disabled]);
-    React.useEffect(() => { if (api.current) api.current.update({ graph: spec.value }); });
+    React.useEffect(() => { if (ed.current) ed.current.update({ graph: spec.value }); });
     return html`<div className="field expr-host"><span>${spec.label}</span><div ref=${host}></div>${err ? html`<span className="err" role="alert">${err}</span>` : null}</div>`;
   };
 
@@ -154,7 +157,7 @@ export function mountEditor(el, opts) {
         onRaw=${(raw) => { const r = L.titleChange(store.get(), m.id, raw, nodeTypes); store.set(r.ed); return r.error; }} />
       ${m.fields.map((f) => html`<div key=${m.id + ':' + f.name}>
         ${f.control === 'graph'
-          ? html`<${GraphControl} spec=${f} disabled=${m.readOnly} nodeId=${m.id} onGraph=${change(f, null)} />`
+          ? html`<${GraphControl} spec=${f} disabled=${m.readOnly} nodeId=${m.id} onGraph=${change(f, null)} target=${m.type === 'expr.value' ? { row: (m.fields.find((x) => x.name === 'row') || {}).value, field: (m.fields.find((x) => x.name === 'field') || {}).value } : null} />`
           : f.control === 'table'
           ? html`<${TableControl} spec=${f} disabled=${m.readOnly}
               onCell=${(row, col, raw) => { const r = L.tableChange(store.get(), m.id, f.name, row, col, raw, nodeTypes); store.set(r.ed); return r.error; }} />`

@@ -16,7 +16,7 @@ const textBox = (label, value, onchange, disabled, type) => field(label, h('inpu
  */
 export function mountExprEditor(el, opts) {
   const parsed = X.parseGraph(opts.graph == null ? X.defaultGraph() : opts.graph);
-  const st = { graph: parsed.graph || X.defaultGraph(), view: 'outer', step: '', sel: '', msg: parsed.error || '', bad: !!parsed.error, json: false, jsonText: '' };
+  const st = { graph: parsed.graph || X.defaultGraph(), view: 'outer', step: '', sel: '', msg: parsed.error || '', bad: !!parsed.error, json: false, jsonText: '', tv: {}, tryOut: null };
   const ro = () => opts.readOnly === true;
   let panel = null;
   const refreshPanel = () => { if (opts.panel) panel = opts.panel(st.graph); };
@@ -157,6 +157,10 @@ export function mountExprEditor(el, opts) {
       case 'in': return [field('States (comma separated: ' + X.STATES.join(', ') + ')', h('input', { type: 'text', value: n.set.join(', '), disabled: ro() ? true : null, onchange: set('set') }))];
       case 'clamp': return [num('lo', 'Lowest'), num('hi', 'Highest')];
       case 'fresh': return [num('ms', 'Fresh within (ms, 1 to 60000)')];
+      case 'win': return [
+        select('Signal', X.WIN_SIGNALS.map((x) => ({ value: x.name, label: x.name + ' (' + x.note + ')' })), n.name, (v) => commit(X.setNodeParam(st.graph, step.name, n.id, 'name', v)), ro()),
+        select('Aggregate over the window', X.WIN_AGG.map((x) => ({ value: x, label: x })), n.agg, (v) => commit(X.setNodeParam(st.graph, step.name, n.id, 'agg', v)), ro()),
+        num('sec', 'Seconds (1 to 300; the window answers only when all of them were seen)'), n.agg === 'frac' ? num('t', 'Counts seconds above') : null];
       default: return [];
     }
   }
@@ -171,13 +175,13 @@ export function mountExprEditor(el, opts) {
       const isInput = step.inputs.some((i) => i.name === st.sel);
       return h('div', null, adder, h('p', { class: 'muted' }, isInput ? 'Inputs are wired on the steps view (the arrows between boxes).' : 'Select a node to set its values and wire its ports.'));
     }
-    const ports = X.OPS[n.op].ports.map((p) => {
+    const ports = X.opOf(n.op).ports.map((p) => {
       const cur = X.wireTo(step, n.id, p);
       const list = [{ value: '', label: 'not wired' }].concat(sources.filter((o) => o.value !== n.id));
       return field('Port ' + p, select('Port ' + p + ' of ' + n.id, list, cur, (v) => commit(v === '' ? X.removeWire(st.graph, step.name, n.id + '.' + p) : X.setWire(st.graph, step.name, n.id + '.' + p, v)), ro()));
     });
     return h('div', null, adder, h('section', { class: 'expr-panel', 'aria-label': 'Node ' + n.id },
-      h('h4', null, X.OPS[n.op].label + ' ' + n.id),
+      h('h4', null, X.opOf(n.op).label + ' ' + n.id),
       textBox('Node name', n.id, (v) => { const r = X.renameNode(st.graph, step.name, n.id, v); if (!r.error) st.sel = v.trim(); commit(r); }, ro()),
       ...paramRows(step, n), ...ports,
       h('div', { class: 'row wrap' },
@@ -202,6 +206,24 @@ export function mountExprEditor(el, opts) {
       outerSvg(), outerPanel());
   }
 
+  // ---- try-it: sliders for the signals the program reads; the PHONE evaluates it with the glasses' own runner (opts.tryIt posts it)
+  function tryView() {
+    if (!opts.tryIt) return null;
+    const rows = X.signalsOf(st.graph).map((n) => {
+      const [lo, hi, stp] = X.sliderOf(n);
+      const v = Object.prototype.hasOwnProperty.call(st.tv, n) ? st.tv[n] : lo;
+      const out = h('output', null, String(v));
+      return h('label', { class: 'field' }, h('span', null, n), h('input', { type: 'range', min: lo, max: hi, step: stp, value: String(v), 'aria-label': 'Try value for ' + n, oninput: (e) => { st.tv[n] = Number(e.target.value); out.textContent = e.target.value; } }), out);
+    });
+    const run = () => {
+      st.tryOut = ['Running…'];
+      render();
+      opts.tryIt(X.tryBody(st.graph, st.tv, opts.target ? opts.target() : null)).then((r) => { st.tryOut = X.tryLines(r); render(); }, (e) => { st.tryOut = [String((e && e.message) || 'The try-it failed.')]; render(); });
+    };
+    return h('section', { class: 'expr-try', 'aria-label': 'Try it' }, h('h4', null, 'Try it (the phone evaluates it)'), ...rows, btn('Run', run),
+      st.tryOut ? h('ul', { class: 'expr-try-out', role: 'status' }, ...st.tryOut.map((l) => h('li', null, l))) : null);
+  }
+
   function jsonView() {
     const area = h('textarea', { class: 'mono', rows: 12, spellcheck: 'false', 'aria-label': 'Expression graph as JSON', readonly: ro() ? true : null }, '');
     area.textContent = st.jsonText;
@@ -218,10 +240,11 @@ export function mountExprEditor(el, opts) {
   function render() {
     refreshPanel();
     clear(el);
-    const head = h('div', { class: 'row wrap' }, h('strong', null, 'Expression guard'),
+    const tgt = opts.target ? opts.target() : null;
+    const head = h('div', { class: 'row wrap' }, h('strong', null, tgt ? 'Expression value' : 'Expression guard'),
       btn(st.json ? 'Hide JSON' : 'Show JSON', () => { st.json = !st.json; st.jsonText = JSON.stringify(st.graph, null, 2); render(); }, 'btn'));
     if (st.json) st.jsonText = st.jsonText || JSON.stringify(st.graph, null, 2);
-    el.appendChild(h('div', { class: 'expr-editor' }, head, messages(), st.json ? jsonView() : st.view === 'inner' ? innerView() : outerView()));
+    el.appendChild(h('div', { class: 'expr-editor' }, head, tgt ? h('p', { class: 'muted' }, X.targetNote(tgt.field)) : null, messages(), st.json ? jsonView() : st.view === 'inner' ? innerView() : outerView(), tryView()));
   }
   render();
 
