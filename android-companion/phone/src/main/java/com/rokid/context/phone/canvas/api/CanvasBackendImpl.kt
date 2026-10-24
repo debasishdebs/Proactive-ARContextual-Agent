@@ -6,6 +6,7 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
+import com.rokid.context.ai.canvas.InnerFlow
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.ParamSpec
 import com.rokid.context.ai.canvas.PipelineDiff
@@ -243,9 +244,16 @@ class CanvasBackendImpl(
             put("sinceSchema", t.sinceSchema)
             put("liveable", t.liveable)
             put("hint", t.hint)
+            t.inner?.let { put("inner", innerJson(it)) }
             put("cost", buildJsonObject { put("modelCalls", t.cost.modelCalls); put("rtOps", t.cost.rtOps); put("cpuClass", t.cost.cpuClass) })
         }
     })
+
+    private fun innerJson(f: InnerFlow): JsonObject = buildJsonObject {
+        put("nodes", JsonArray(f.nodes.map { n -> buildJsonObject { put("id", n.id); put("label", n.label); put("kind", n.kind) } }))
+        put("wires", JsonArray(f.wires.map { w -> buildJsonObject { put("from", w.from); put("to", w.to); put("port", w.port) } }))
+        put("exposed", JsonArray(f.exposed.map { e -> buildJsonObject { put("param", e.param); put("node", e.node) } }))
+    }
 
     private fun paramJson(s: ParamSpec): JsonObject = buildJsonObject {
         put("name", s.name); put("kind", s.kind.wire)

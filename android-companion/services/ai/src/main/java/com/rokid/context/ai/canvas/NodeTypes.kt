@@ -47,6 +47,8 @@ data class NodeType(
     val domainFromParams: Boolean = false,
     /** A short line the palette shows under the label; empty for every type but the experiment node. */
     val hint: String = "",
+    /** A composite (black-box) node's inner flow, shown by the editor when it expands; null for a plain node. Description only, never executed. */
+    val inner: InnerFlow? = null,
 )
 
 object NodeTypes {
@@ -90,7 +92,7 @@ object NodeTypes {
         NodeType(VISION_EXTRACT, "Facts from frames", setOf(PortType.PHOTOS, PortType.JSON), PortType.EXTRACTION, PromptKey.VISION_EXTRACT,
             executor = ExecutorKind.PROMPT, short = "extract"),
         NodeType(LOCAL_CRITIC, "Local trust check", setOf(PortType.EXTRACTION), PortType.EXTRACTION, branches = { listOf("trusted", "unsure") },
-            category = Category.CHECKS, short = "trust"),
+            category = Category.CHECKS, short = "trust", params = LocalTrust.schema, inner = LocalTrust.inner),
         NodeType(CRITIC, "Critic", setOf(PortType.EXTRACTION), PortType.EXTRACTION, PromptKey.CRITIC, branches = { listOf("pass", "fail") },
             executor = ExecutorKind.PROMPT, short = "critic"),
         NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt"),
