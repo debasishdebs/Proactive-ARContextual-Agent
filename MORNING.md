@@ -15,7 +15,7 @@ WP13 LIVE gate: 16/16 PASS on podman 6.1.4 (new machine `pca`, 10 GB; `podman-ma
 ## STATUS (updated 2026-10-24 ~15:00, loop running)
 - INSTALLED (12:45): phone + glasses debug builds of v0.9.1. Glasses app was not running after the install until 14:39; launched both apps then. Glasses recording confirmed 14:40 (`trace state: ... flagState=enabled rec=1 starts=1`). Canvas paired with the laptop at https://192.168.68.100:8765 (fp 46:45:42:0A); browser pairing is yours (new code from the phone).
 - Full test run on v0.9.1 tip 6adc222f: all 7 modules green except one known flaky test (LocalModelsPageTest, passes alone). Later small commits: 821581ec (WP8 missing-executor), 2876b163 (doctor wording) with their own tests.
-- Codex combined final re-check of all fixes since their last review: RUNNING (result appended below by the loop).
+- Codex combined final re-check of all fixes since their last review: VERDICT READY, no Critical/Important. One Minor left open: Moment newest-N can underfill when a recent second holds very many photos (MomentResolver.kt ~47, fetch is capped at 2000 frames before choosing distinct seconds; fix = paginate).
 
 ## NEEDS YOU (nothing else is blocked)
 1. When you take the glasses off: plug them in, tell me; I pull traces with `tools/handover.sh` and read the state line. (No trace exists for the hours you wore them after 12:45 and before 14:40.)
