@@ -94,4 +94,17 @@ class ReplayExprTest {
             assertTrue(n >= 1, "minute $min has $n timer attempts: ${r.opens}")
         }
     }
+
+    @Test fun ReplayGuardSeesAppliedCtxWhenCtxBoundFalse() {
+        val restOnly = guard("c", """{"op":"sig","name":"ctx"},{"op":"in","a":0,"set":["REST"]}""", 1)
+        val ev = ReplayFixtures.trace(sensors + ReplayFixtures.timerOracle(untilMs = 19_000).events + TraceEvent.Ctx(START + 5_000, com.rokid.context.core.model.context.ContextState.REST), endMs = end)
+        val r = run(ev, ReplayCandidate("h", glance = ReplayFixtures.glance, ctxBound = false, exprs = listOf(restOnly)))
+        assertEquals(listOf(true), r.guardDecisions.map { it.keep }, "applied REST: keep, as the glasses guard does")
+    }
+
+    @Test fun replayReportsBothErrorCounters() {
+        val div0 = guard("d", """{"op":"const","v":1},{"op":"const","v":0},{"op":"arith","f":"/","a":0,"b":1},{"op":"const","v":0},{"op":"cmp","f":">","a":2,"b":3}""", 4)
+        val r = run(golden, cand(div0))
+        assertTrue(r.exprDiv0 >= 1, "div0 reported: ${r.exprDiv0}")
+    }
 }
