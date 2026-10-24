@@ -21,7 +21,7 @@ run collect start 25; chk "collect active=True untilMs=25000"
 run collect stop; chk "collect active=False"
 M1_DIAG="$T/diag_ok.log" run status; chk "traces=1 COMPLETE=1"; chk "shadow_hb=2"; chk "planMode=SHADOW"
 run replay t-1 --diag "$T/diag_ok.log"; chk "windows_compared=24 inexact_windows_excluded=2 base_pass=24 base_fail=0"
-chk "hours_from_full=7.5"; chk "PASS exact parity"
+chk "hours_from_full=7.5"; chk "failing_windows=0 total_windows=24 share=0.00 % T=3 %"; chk "PASS failing-window share 0.00 % <= 3 %"; chk "unclassified (0)"
 # Task 23c criterion: shadow shOpen against the counterfactual GLANCE ADMISSIONS within max(5 %, 4 opens); the DWELL+ONSET opens are only an INFO line (mock: admissions 100, opens 90)
 chk "PASS shadow shOpen=102 vs counterfactual glance_admissions=100, diff +2 (2.0 %), allowed +-5.0"
 chk "INFO shadow shOpen=102 vs counterfactual dwell_onset_opens=90, diff +12"
@@ -31,6 +31,25 @@ chk "FAIL shadow shOpen=130 vs counterfactual glance_admissions=100"
 # a report without glanceAdmissions (a phone build before the stall model) fails closed with a clear message, never silently passes
 run replay t-noadm --diag "$T/diag_ok.log" && { echo "FAIL: a report without glanceAdmissions must not pass"; fail=1; }
 chk "the report has no glanceAdmissions"
+# gate: failing windows / compared windows <= T percent (default 3, hard cap 5); mock trace t-f<failing>-<total>
+run replay t-f2-116 --diag "$T/diag_ok.log"; chk "failing_windows=2 total_windows=116 share=1.72 % T=3 %"; chk "PASS failing-window share 1.72 % <= 3 %"; chk "failure classification: unclassified (2), informational"
+run replay t-f6-100 --diag "$T/diag_ok.log" && { echo "FAIL: 6 of 100 must fail at the default 3"; fail=1; }
+chk "FAIL failing-window share 6.00 % <= 3 %"
+run replay t-fk2-100 --diag "$T/diag_ok.log"; chk "failure classification (counts by kind): GATE_DIFF=1, OPEN_MISS=1"
+run replay t-f5-100 --max-fail-pct 5 --diag "$T/diag_ok.log"; chk "PASS failing-window share 5.00 % <= 5 %"
+M1_MAX_FAIL_PCT=5 run replay t-f5-100 --diag "$T/diag_ok.log"; chk "failing-window share 5.00 % <= 5 %"
+run replay t-f6-100 --max-fail-pct 5 --diag "$T/diag_ok.log" && { echo "FAIL: 6 of 100 must fail at T=5"; fail=1; }
+chk "FAIL failing-window share 6.00 % <= 5 %"
+run replay t-f1-100 --max-fail-pct 6 --diag "$T/diag_ok.log" && { echo "FAIL: T=6 must be refused"; fail=1; }
+chk "REFUSED: max failing-window share '6'"
+o=$("$R" replay t-f1-100 --max-fail-pct 6 2>&1); case "$o" in *"replay started"*|*"jobState"*) echo "FAIL: T=6 reached the replay"; fail=1 ;; esac
+run replay t-f1-100 --max-fail-pct abc --diag "$T/diag_ok.log" && { echo "FAIL: T=abc must be refused"; fail=1; }
+chk "REFUSED: max failing-window share 'abc'"
+M1_MAX_FAIL_PCT=7 run replay t-f1-100 --diag "$T/diag_ok.log" && { echo "FAIL: env T=7 must be refused"; fail=1; }
+chk "REFUSED: max failing-window share '7'"
+# the parity criterion still applies when the failing share is fine
+run replay t-f2-116 --diag "$T/diag_bad.log" && { echo "FAIL: parity must still be enforced"; fail=1; }
+chk "PASS failing-window share 1.72 %"; chk "FAIL shadow shOpen=130 vs counterfactual glance_admissions=100"
 # the old total-opens criterion, only for SETTLE-wake scripts
 run replay t-1 --legacy-total --diag "$T/diag_ok.log"; chk "PASS shadow vs counterfactual opens (legacy total criterion, SETTLE-wake scripts only): 102 vs 100, deviation 2.0%"
 run replay t-1 --legacy-total --diag "$T/diag_bad.log" && { echo "FAIL: legacy 130 vs 100 should fail the 5% check"; fail=1; }
