@@ -88,6 +88,10 @@ class CanvasBackendImpl(
     private val plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
     /** 3b WP6: the helper job port (WP8 builds `py.fn` over it); null when no helper is bound. */
     val helperJobs: com.rokid.context.canvas.helper.HelperJobPort? = null,
+    /** Moment-lite: the read-only resolver behind `GET /api/moments` (the runner holds the same one for Moment runs). */
+    private val momentResolver: com.rokid.context.canvas.moment.MomentResolver = com.rokid.context.canvas.moment.MomentResolver(
+        com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao()),
+    ),
 ) : CanvasBackend {
     companion object {
         private val pretty = Json { prettyPrint = true }
@@ -154,15 +158,16 @@ class CanvasBackendImpl(
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
             val publisher = sharedPublisher ?: CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db))
+            val momentResolver = com.rokid.context.canvas.moment.MomentResolver(com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao()))
             val runner = CanvasRunner(
                 dao, photos, composeExecutors(extraExecutors),
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
-                ConfirmTokens(clock), hot, clock, log = log,
+                ConfirmTokens(clock), hot, clock, log = log, moments = momentResolver,
             )
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
             }
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer, plans, helperJobs)
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer, plans, helperJobs, momentResolver)
         }
 
         /** The built-in executors plus [extra]; an extra executor never replaces a built-in node type. */
@@ -571,6 +576,21 @@ class CanvasBackendImpl(
     override suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate {
         val p = loadPipeline(pipelineId, version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
         return runner.estimate(p, frameIds, ::label)
+    }
+
+    override suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray =
+        JsonArray(momentResolver.window(afterMs, beforeMs - 1, limit).map { m ->
+            buildJsonObject { put("id", m.id); put("startMs", m.startMs); put("photos", m.frames.size); put("memories", m.memories.size); put("marks", m.marks.size) }
+        })
+
+    override suspend fun estimateMoments(pipelineId: String, version: Int?, momentIds: List<String>): Estimate {
+        val p = loadPipeline(pipelineId, version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
+        return runner.estimateMoments(p, momentIds, ::label)
+    }
+
+    override suspend fun startMomentRun(pipelineId: String, version: Int?, momentIds: List<String>, token: String): String {
+        val p = loadPipeline(pipelineId, version) ?: throw IllegalArgumentException("invalid_pipeline")
+        return runner.startMoments(p, pipelineId, version, momentIds, token, scope)
     }
 
     override suspend fun startRun(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String {

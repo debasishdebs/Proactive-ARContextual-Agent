@@ -90,6 +90,11 @@ private class FakeBackend : CanvasBackend {
     override suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray { enter("frames"); lastFrames = listOf(afterMs, beforeMs, limit, dwellOnly); return JsonArray(emptyList()) }
     override suspend fun frame(id: String): JsonObject? { enter("frame"); return if (known) buildJsonObject { put("id", id) } else null }
     override suspend fun frameImage(id: String, thumb: Boolean): FrameImage? { enter("image:$thumb"); return image }
+    var lastMoments: List<Any?>? = null
+    var momentStartThrows: Exception? = null
+    override suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray { enter("moments"); lastMoments = listOf(afterMs, beforeMs, limit); return JsonArray(listOf(buildJsonObject { put("id", "69011b80"); put("startMs", 1761000000000L); put("photos", 2) })) }
+    override suspend fun estimateMoments(pipelineId: String, version: Int?, momentIds: List<String>): Estimate { enter("estimateMoments:$version"); known(0); lastEstimateIds = momentIds; return Estimate.Ok(momentIds.size, 0, 0, emptyList(), "tokM", kind = "moments", photoCount = 5) }
+    override suspend fun startMomentRun(pipelineId: String, version: Int?, momentIds: List<String>, token: String): String { enter("startMoments:$token"); momentStartThrows?.let { throw it }; lastEstimateIds = momentIds; return "runM" }
     override suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate { enter("estimate:$version"); known(0); lastEstimateIds = frameIds; return estimateResult }
     override suspend fun startRun(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String { enter("start:$token"); startThrows?.let { throw it }; return known("run1") }
     override suspend fun runs() = JsonArray(listOf(buildJsonObject { enter("runs"); put("runId", "run1") }))
@@ -561,6 +566,45 @@ class CanvasApiTest {
     }
 
     // ---- slice 2, Task 9 (commit 3): A/B, estimate tokens, Ask debug ----
+
+    // ---- Moment-lite ----
+
+    @Test fun momentsRouteListsWithTheDayAndLimitRulesOfFrames() {
+        val r = call("GET", "/api/moments", query = mapOf("before" to "5000", "limit" to "7"))
+        assertEquals(200, r.status)
+        assertEquals("69011b80", Json.parseToJsonElement(String(r.body)).jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals(listOf<Any?>(0L, 5000L, 7), be.lastMoments)
+        assertEquals(400, call("GET", "/api/moments", query = mapOf("day" to "2026-13-45")).status)
+        assertEquals(400, call("GET", "/api/moments", query = mapOf("limit" to "x")).status)
+    }
+
+    @Test fun estimateWithMomentIdsGoesToTheMomentPathAndReportsKind() {
+        val r = call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","version":2,"momentIds":["69011b80","69011b85"]}""")
+        assertEquals(200, r.status)
+        assertEquals(listOf("69011b80", "69011b85"), be.lastEstimateIds)
+        assertTrue("estimateMoments:2" in be.calls); assertFalse(be.calls.any { it.startsWith("estimate:") })
+        assertEquals("moments", r.obj()["kind"]!!.jsonPrimitive.content); assertEquals(5, r.obj()["photoCount"]!!.jsonPrimitive.int); assertEquals(2, r.obj()["photos"]!!.jsonPrimitive.int)
+    }
+
+    @Test fun badMomentIdsAre400() {
+        for (bad in listOf("""["zz"]""", """["69011B80"]""", """["69011b8"]""", """[1]""", """"69011b80"""", """["frame-1"]""")) {
+            assertEquals(bad, 400, call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","momentIds":$bad}""").status)
+            assertEquals(bad, 400, call("POST", "/api/runs", """{"pipelineId":"p-1","momentIds":$bad,"confirmToken":"t"}""").status)
+        }
+        val many = (1..51).joinToString(",") { "\"%08x\"".format(it) }
+        assertEquals(400, call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","momentIds":[$many]}""").status)
+        assertFalse(be.calls.any { it.startsWith("estimateMoments") || it.startsWith("startMoments") })
+    }
+
+    @Test fun startWithMomentIdsUsesTheMomentRunAndAMovedMomentIsATyped409() {
+        val ok = call("POST", "/api/runs", """{"pipelineId":"p-1","momentIds":["69011b80"],"confirmToken":"tokM"}""")
+        assertEquals(200, ok.status); assertEquals("runM", ok.obj()["runId"]!!.jsonPrimitive.content)
+        assertTrue("startMoments:tokM" in be.calls); assertFalse(be.calls.any { it.startsWith("start:") })
+        be.momentStartThrows = CanvasRunner.MomentsMoved()
+        val moved = call("POST", "/api/runs", """{"pipelineId":"p-1","momentIds":["69011b80"],"confirmToken":"tokM"}""")
+        assertEquals(409, moved.status); assertEquals("moments_moved", moved.err())
+        assertTrue(moved.obj()["message"]!!.jsonPrimitive.content.contains("Estimate again"))
+    }
 
     @Test fun estimateCarriesTokens() {
         be.estimateResult = Estimate.Ok(2, 3, 5, listOf(ModelLabel("extract", "az", "gpt")), "tok1", TokenEstimate(1200, 90, 7))

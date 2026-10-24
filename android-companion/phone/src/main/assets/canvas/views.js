@@ -177,6 +177,11 @@ function prevOf(versions, v) { return Math.max(0, ...(versions || []).map((x) =>
 
 export async function runNewView(ctx, root, pipelineId, version) {
   if (!pipelineId) { root.appendChild(h('p', null, 'Open a pipeline first.')); return; }
+  // a pipeline that starts at `input.moments` is run over Moments (the photos of one second), not over single photos
+  try {
+    const p0 = await ctx.api('GET', '/api/pipelines/' + enc(pipelineId));
+    if (hasMomentsInput(parseJson(p0 && p0.json))) { await momentsRunView(ctx, root, pipelineId, version, parseJson(p0.json)); return; }
+  } catch (e) { if (e && e.stale) return; /* fall back to the photo page */ }
   const st = { frames: [], selected: new Set(), done: false, dwell: false, motion: false, day: '' };
   let pipelines = [];
   try { pipelines = await ctx.api('GET', '/api/pipelines'); } catch (e) { if (e && e.stale) return; pipelines = []; } // only the A/B choices need it; a view that was left stops here
@@ -295,6 +300,80 @@ export async function runNewView(ctx, root, pipelineId, version) {
   await load(true);
 }
 
+/** True when the graph's input is `input.moments`. */
+const hasMomentsInput = (pipe) => !!pipe && Array.isArray(pipe.nodes) && pipe.nodes.some((n) => n && n.type === 'input.moments');
+
+/**
+ * Moment-lite run page: pick Moments (each is the photos of one second, with a photo count) of a day, estimate, confirm, start. It reuses the photo page's day filter
+ * and limits; the browser still cannot confirm anything (the Python step waits for the native tap on the phone).
+ */
+async function momentsRunView(ctx, root, pipelineId, version, pipe) {
+  const st = { moments: [], selected: new Set(), day: '' };
+  clear(root);
+  root.appendChild(h('h2', null, 'New run over Moments'));
+  const counter = h('span', { class: 'muted' });
+  const list = h('div', { class: 'moments' });
+  const helperSlot = h('div', null);
+  const upd = () => { counter.textContent = st.selected.size + ' of ' + MAX_PHOTOS + ' Moments selected · ' + st.moments.filter((m) => st.selected.has(m.id)).reduce((n, m) => n + m.photos, 0) + ' photos'; };
+  const draw = () => {
+    clear(list);
+    if (!st.moments.length) list.appendChild(h('p', { class: 'muted' }, 'No Moments in this period.'));
+    for (const m of st.moments) {
+      const box = h('input', { type: 'checkbox', 'aria-label': 'Moment ' + m.id });
+      box.checked = st.selected.has(m.id);
+      box.addEventListener('change', () => {
+        if (!box.checked) st.selected.delete(m.id);
+        else if (st.selected.size < MAX_PHOTOS) st.selected.add(m.id);
+        else { box.checked = false; ctx.showNotice('At most ' + MAX_PHOTOS + ' Moments per run.'); return; }
+        upd();
+      });
+      list.appendChild(h('label', { class: 'inline' }, box, ' ' + new Date(m.startMs).toLocaleTimeString() + ' · ' + m.photos + (m.photos === 1 ? ' photo' : ' photos') +
+        (m.memories ? ' · ' + m.memories + ' memories' : '') + (m.marks ? ' · ' + m.marks + ' marks' : '')));
+    }
+    upd();
+  };
+  async function load() {
+    const q = new URLSearchParams({ limit: '200' });
+    if (st.day) q.set('day', st.day);
+    try { st.moments = await ctx.api('GET', '/api/moments?' + q.toString()); st.selected = new Set(); draw(); } catch (e) { ctx.showError(e); }
+  }
+  const day = h('input', { type: 'date', 'aria-label': 'Day' });
+  day.addEventListener('change', () => { st.day = day.value; load(); });
+  const newest = h('input', { type: 'number', min: 1, max: MAX_PHOTOS, value: 10, 'aria-label': 'How many newest Moments' });
+  root.appendChild(h('section', { class: 'card' },
+    h('p', { class: 'muted' }, 'Pipeline ' + pipelineId + (version ? ' v' + version : ' (draft)')),
+    h('div', { class: 'row wrap' }, h('label', { class: 'inline' }, 'Day ', day)),
+    h('div', { class: 'row wrap' }, newest, btn('Select newest N', () => {
+      const n = Math.max(1, Math.min(MAX_PHOTOS, parseInt(newest.value, 10) || 1));
+      st.selected = new Set(st.moments.slice().sort((a, b) => b.startMs - a.startMs).slice(0, n).map((m) => m.id));
+      draw();
+    }), btn('Clear', () => { st.selected = new Set(); draw(); })),
+    counter));
+  root.appendChild(helperSlot);
+  root.appendChild(list);
+  root.appendChild(h('div', { class: 'row sticky' }, btn('Estimate', async () => {
+    const ids = st.moments.filter((m) => st.selected.has(m.id)).map((m) => m.id);
+    if (!ids.length) { ctx.showNotice('Select at least one Moment.'); return; }
+    const body = { pipelineId, momentIds: ids };
+    if (version) body.version = parseInt(version, 10);
+    try {
+      const e = await ctx.api('POST', '/api/runs/estimate', body);
+      ctx.modal('Start this run?', h('div', null, h('p', null, e.photos + ' Moments · ' + e.photoCount + ' photos'),
+        h('p', { class: 'muted' }, 'The Python step sends only each Moment\'s time and photo times to your laptop helper, after you tap Confirm on the phone. If a Moment changes before you start, nothing runs.')), [
+        { label: 'Start', cls: 'btn primary', run: async (close) => {
+          try { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); close(); ctx.go('#/run/' + enc(r.runId)); } catch (err) { close(); ctx.showError(err); }
+        } }]);
+    } catch (err) { ctx.showError(err); }
+  }, 'btn primary')));
+  if (hasPython(pipe)) {
+    try {
+      helperSlot.appendChild(helperCard(await loadHelperStatus(ctx)));
+      helperSlot.appendChild(h('p', { class: 'muted' }, 'Each Python step waits for a tap on the phone after you start the run.'));
+    } catch (e) { if (e && e.stale) return; }
+  }
+  await load();
+}
+
 // ---------------------------------------------------------------- run
 
 function topoOrder(pipe) {
@@ -411,9 +490,10 @@ export async function runView(ctx, root, runId) {
         })())));
     if (helper !== undefined) root.appendChild(helperCard(helper));
     for (const frameId of frames) {
-      const img = photoThumb(ctx, frameId, { value: () => returnedValues(order, items, frameId) });
+      const isMoment = frameId.startsWith('moment:'); // a Moment run's item: no single photo to show
+      const img = isMoment ? h('strong', null, 'Moment ' + frameId.slice(7)) : photoThumb(ctx, frameId, { value: () => returnedValues(order, items, frameId) });
       const meta = h('div', { class: 'meta' });
-      frameDetails(frameId, meta);
+      if (!isMoment) frameDetails(frameId, meta);
       const cards = order.map((n) => {
         const it = items.find((x) => x.frameId === frameId && x.nodeId === n.id);
         if (!it) return h('article', { class: 'nodecard ' + kindOf(n.type) }, h('h4', null, n.title || n.id), h('p', { class: 'muted' }, 'pending'));
