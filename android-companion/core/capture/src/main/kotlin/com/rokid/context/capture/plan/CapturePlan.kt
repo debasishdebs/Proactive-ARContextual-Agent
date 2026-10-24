@@ -1,8 +1,12 @@
 package com.rokid.context.capture.plan
 
 import com.rokid.context.core.model.context.ContextState
+import kotlinx.serialization.json.JsonObject
 
+/** Schema 1 plans carry no `exprs`; schema 2 plans carry `exprs` plus `sigSchema` (F2). The wire protocol version is unchanged. */
 const val PLAN_SCHEMA = 1
+const val PLAN_SCHEMA_EXPR = 2
+const val SIG_SCHEMA = 1
 const val PLAN_MAX_BYTES = 8_192
 
 /** S83: fixed in Kotlin, never plan params. */
@@ -33,6 +37,10 @@ data class PlanConfig(
     val gate: GateBlock,
     val ctxBound: Boolean,
     val phoneFusion: Map<String, Double>,
+    /** Prefix-form expression programs (X2 gives them a typed model). Empty for schema 1; never encoded when empty, so schema-1 hashes hold. */
+    val exprs: List<JsonObject> = emptyList(),
+    /** Signal catalogue version the [exprs] were lowered against: [SIG_SCHEMA] when [exprs] is non-empty, else 0 (absent). */
+    val sigSchema: Int = 0,
 )
 
 data class PlanMeta(val name: String, val settingsRev: Long, val expectOpensP95PerMin: Map<String, Double>? = null)
@@ -47,3 +55,6 @@ fun reservedBoundMs(state: ContextState, resting: Boolean): Long =
     if (state in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
         (resting && state != ContextState.WALKING)
     ) RESERVED_REST_MS else RESERVED_ACTIVE_MS
+
+/** The `planSchema` a config encodes as: 1 without expression programs, 2 with them. */
+fun planSchemaFor(c: PlanConfig): Int = if (c.exprs.isEmpty()) PLAN_SCHEMA else PLAN_SCHEMA_EXPR
