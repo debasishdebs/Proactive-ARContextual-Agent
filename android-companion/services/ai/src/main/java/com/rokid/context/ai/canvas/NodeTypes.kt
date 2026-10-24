@@ -78,6 +78,7 @@ object NodeTypes {
     const val COMPARE = "gate.compare"
 
     const val EXPR_GUARD = "expr.guard"
+    const val EXPR_VALUE = "expr.value"
     const val IMU_HEAD_MOTION = "imu.head_motion"
     const val IMU_SETTLE = "imu.settle"
     const val GATE_THRESHOLD = "gate.threshold"
@@ -138,6 +139,9 @@ object NodeTypes {
         // E1 expression guard: the whole two-level graph is the one `graph` param (validated, no generated form: the editor is X5). SHADOW/TRIAL only.
         NodeType(EXPR_GUARD, "Guard (expression)", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.THRESHOLDS_FILTERS, executor = ExecutorKind.EXPR, short = "guard", params = ExprParams.guard, liveable = false, cost = CostSpec(rtOps = 1), family = Family.CONDITION),
+        // E2a expression value: tunes the capture cap or a gap of ONE editable row from a number program (clamped; an error or a warming window keeps the row default). SHADOW/TRIAL only.
+        NodeType(EXPR_VALUE, "Value (expression)", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
+            category = Category.POLICY_FREQUENCY, executor = ExecutorKind.EXPR, short = "value", params = ExprParams.value, liveable = false, cost = CostSpec(rtOps = 1), family = Family.CONDITION),
         NodeType(GATE_NOVELTY, "Novelty", setOf(PortType.MOTION_EVENT), PortType.TRIGGER, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.THRESHOLDS_FILTERS, short = "novelty", params = CaptureParams.novelty, family = Family.CONDITION),
         NodeType(HUB_CONTEXT, "Motion from context hub", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_PHONE,

@@ -33,7 +33,12 @@ data class ActiveConfig(
     /** 3c X3: the plan's expression guards (null = none). SHADOW counts with it, TRIAL acts with it; settings never has one. */
     val exprRunner: ExprRunner? = null,
 ) {
-    fun policyFor(applied: ContextState): ContextCapturePolicy = ContextPolicies.of(if (ctxBound) applied else ContextState.UNKNOWN, table)
+    /** The plan's row of the applied state, then the value programs' overrides (3c E2a): only the capture cap and the gap seconds of the four editable rows, clamped; WALKING and UNKNOWN come back unchanged. */
+    fun policyFor(applied: ContextState): ContextCapturePolicy {
+        val state = if (ctxBound) applied else ContextState.UNKNOWN
+        val row = ContextPolicies.of(state, table)
+        return exprRunner?.tune(state, row) ?: row
+    }
 
     /** S68: the settings tier profile, then the row (minima via maxOf). The session applies `forRest()`, then heat and the battery tier. */
     fun profile(wake: CameraWake, tier: BudgetTier, applied: ContextState): CaptureProfile =

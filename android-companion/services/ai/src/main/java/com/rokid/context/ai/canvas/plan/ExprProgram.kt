@@ -2,6 +2,7 @@ package com.rokid.context.ai.canvas.plan
 
 import com.rokid.context.capture.plan.SignalCatalog
 import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.core.model.context.graph.WindowRing
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -18,7 +19,7 @@ enum class ExprRole(val wire: String) { GUARD("guard"), VALUE("value") }
 enum class ExprCode {
     EXPR_NO_GRAPH, EXPR_SHAPE, EXPR_BAD_NAME, EXPR_DUP_NAME, EXPR_UNKNOWN_REF, EXPR_FOREIGN_NODE, EXPR_LOOP, EXPR_UNKNOWN_SIGNAL,
     EXPR_WRONG_TYPE, EXPR_PORT, EXPR_BAD_PARAM, EXPR_GUARD_NOT_BOOL, EXPR_TOO_MANY_NODES, EXPR_TOO_MANY_PROGRAMS, EXPR_COST, EXPR_BYTES,
-    EXPR_GUARD_READS_CTX,
+    EXPR_GUARD_READS_CTX, EXPR_WINDOW_SIGNAL, EXPR_TOO_MANY_WINDOWS, EXPR_VALUE_TARGET,
 }
 
 data class ExprDiag(val code: ExprCode, val text: String) { override fun toString() = "$code: $text" }
@@ -58,7 +59,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
         val NAME = Regex("^[a-z][a-z0-9_]{0,23}$")
 
         private val ARITY = mapOf(
-            "sig" to 0, "const" to 0, "not" to 1, "in" to 1, "clamp" to 1, "fresh" to 1, "cmp" to 2, "and" to 2, "or" to 2, "arith" to 2, "choose" to 3,
+            "sig" to 0, "const" to 0, "win" to 0, "not" to 1, "in" to 1, "clamp" to 1, "fresh" to 1, "cmp" to 2, "and" to 2, "or" to 2, "arith" to 2, "choose" to 3,
         )
         private val PORTS = listOf("a", "b", "c")
         private val CMP = setOf("<", "<=", ">", ">=", "==")
@@ -70,7 +71,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
         private val GRAPH_KEYS = setOf("steps", "out")
         private val STEP_KEYS = setOf("name", "inputs", "nodes", "wires", "out")
         private val INPUT_KEYS = setOf("name", "sig", "step", "const")
-        private val NODE_KEYS = setOf("id", "op", "f", "value", "lo", "hi", "ms", "set", "name")
+        private val NODE_KEYS = setOf("id", "op", "f", "value", "lo", "hi", "ms", "set", "name", "agg", "sec", "t")
 
         fun parse(role: ExprRole, el: JsonElement?): Pair<ExprProgram?, List<ExprDiag>> {
             val bad = ArrayList<ExprDiag>()
@@ -132,6 +133,15 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
             fun num(k: String): Double? = (o[k] as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull?.takeIf { it.isFinite() && Math.abs(it) <= MAX_CONST }
             return when (op) {
                 "sig" -> ExprNode(id, op, name = str(o["name"]) ?: return param("$id: name missing"))
+                "win" -> {
+                    val agg = str(o["agg"])?.takeIf { WindowRing.aggCode(it) != null } ?: return param("$id: agg must be one of max mean frac")
+                    val sec = (o["sec"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.takeIf { it in WindowRing.MIN_SECONDS..WindowRing.MAX_SECONDS }
+                        ?: return param("$id: sec must be between ${WindowRing.MIN_SECONDS} and ${WindowRing.MAX_SECONDS}")
+                    val name = str(o["name"]) ?: return param("$id: name missing")
+                    if (agg == "frac") ExprNode(id, op, f = agg, ms = sec, name = name, flag = true, value = num("t") ?: return param("$id: frac needs t, a finite number"))
+                    else if ("t" in o) param("$id: only frac takes t")
+                    else ExprNode(id, op, f = agg, ms = sec, name = name)
+                }
                 "const" -> {
                     val p = o["value"] as? JsonPrimitive
                     if (p != null && !p.isString && p.booleanOrNull != null) ExprNode(id, op, flag = p.booleanOrNull!!, f = "bool")
@@ -182,7 +192,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
     private enum class Ty { NUM, BOOL, ENUM }
     private class Emit(val lowered: ArrayList<JsonObject> = ArrayList(), var cost: Int = 0)
 
-    private fun nodeCost(n: ExprNode) = when (n.op) { "clamp", "choose", "fresh" -> 2; "in" -> 1 + n.set.size; else -> 1 }
+    private fun nodeCost(n: ExprNode) = when (n.op) { "clamp", "choose", "fresh", "win" -> 2; "in" -> 1 + n.set.size; else -> 1 }
 
     /** Validates the whole graph and lowers it to the runner's step list (see the spec section "expr.guard graph"). Pure and deterministic. */
     fun check(): ExprChecked {
@@ -248,6 +258,10 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
                 if (!NAME.matches(n.id)) sbad(ExprCode.EXPR_BAD_NAME, "node id ${shown(n.id)} must match [a-z][a-z0-9_]{0,23}")
                 else if (nodes.put(n.id, n) != null) sbad(ExprCode.EXPR_DUP_NAME, "node id ${n.id} is used twice in the step")
                 if (n.op == "sig" && SignalCatalog.byName(n.name) == null) sbad(ExprCode.EXPR_UNKNOWN_SIGNAL, "unknown signal ${shown(n.name)}")
+                if (n.op == "win") {
+                    if (SignalCatalog.byName(n.name) == null) sbad(ExprCode.EXPR_UNKNOWN_SIGNAL, "unknown signal ${shown(n.name)}")
+                    else if (SignalCatalog.featureIndex(n.name) == null) sbad(ExprCode.EXPR_WINDOW_SIGNAL, "node ${n.id}: a window reads one of the one-second features, not ${shown(n.name)}")
+                }
             }
             // wires: port -> source
             val feed = HashMap<String, MutableMap<String, String>>()
@@ -301,6 +315,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
                 val result: Ty = when (n.op) {
                     "sig" -> SignalCatalog.byName(n.name)?.let { if (it.type == SignalCatalog.Type.ENUM) Ty.ENUM else Ty.NUM } ?: Ty.NUM
                     "const" -> if (n.f == "bool") Ty.BOOL else Ty.NUM
+                    "win" -> Ty.NUM
                     "cmp" -> { ok = need("a", a, Ty.NUM) and need("b", b, Ty.NUM); Ty.BOOL }
                     "arith" -> { ok = need("a", a, Ty.NUM) and need("b", b, Ty.NUM); Ty.NUM }
                     "and", "or" -> { ok = need("a", a, Ty.BOOL) and need("b", b, Ty.BOOL); Ty.BOOL }
@@ -323,6 +338,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
                     when (n.op) {
                         "sig" -> { put("name", SignalCatalog.canonical(n.name)!!) ; if (SignalCatalog.canonical(n.name) in listOf("ctx", "ctxAgeS")) readsCtx = true }
                         "const" -> if (n.f == "bool") put("v", n.flag) else put("v", number(n.value))
+                        "win" -> { put("name", SignalCatalog.canonical(n.name)!!); put("agg", n.f); put("sec", n.ms.toInt()); if (n.flag) put("t", number(n.value)) }
                         else -> {
                             if (n.f.isNotEmpty()) put("f", n.f)
                             a?.let { put("a", source(it)) }; b?.let { put("b", source(it)) }; c?.let { put("c", source(it)) }

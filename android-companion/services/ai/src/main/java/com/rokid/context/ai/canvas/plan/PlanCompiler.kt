@@ -9,7 +9,9 @@ import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PipelineValidator
 import com.rokid.context.capture.plan.CapturePlan
 import com.rokid.context.capture.plan.PLAN_MAX_BYTES
+import com.rokid.context.capture.plan.ExprWindows
 import com.rokid.context.capture.plan.SIG_SCHEMA
+import com.rokid.context.capture.plan.SIG_SCHEMA_WIN
 import com.rokid.context.capture.plan.planSchemaFor
 import com.rokid.context.capture.plan.GateBlock
 import com.rokid.context.capture.plan.PlanConfig
@@ -165,21 +167,27 @@ object PlanCompiler {
         val warnings = LinkedHashSet<String>()
         val policy = chain.firstOrNull { it.type == NodeTypes.POLICY_CAPTURE_RATE }?.let { rows(it, base.policy, profile, warnings) } ?: base.policy
         // expression guards: two-level graphs lowered to the plan's step list (X2); the plan stays schema 1 without any
-        val exprNodes = glasses.filter { it.type == NodeTypes.EXPR_GUARD }
-        val lowered = ExprLowering.lower(exprNodes.map { it.id to it.params["graph"] })
+        val exprNodes = glasses.filter { it.type == NodeTypes.EXPR_GUARD || it.type == NodeTypes.EXPR_VALUE }
+        val lowered = ExprLowering.lowerAll(
+            exprNodes.map { n ->
+                if (n.type == NodeTypes.EXPR_VALUE) ExprLowering.Entry(n.id, n.params["graph"], ExprRole.VALUE, str(n, "row") ?: "REST", str(n, "field") ?: "capPerMin")
+                else ExprLowering.Entry(n.id, n.params["graph"])
+            },
+        )
         problems += lowered.problems
         warnings += lowered.warnings
         if (problems.isNotEmpty()) return failed(problems, cost)
 
         val config = PlanConfig(
             glance = g, policy = policy, gate = gate, ctxBound = ctxBound, phoneFusion = base.phoneFusion,
-            exprs = lowered.exprs, sigSchema = if (lowered.exprs.isEmpty()) 0 else SIG_SCHEMA,
+            exprs = lowered.exprs, sigSchema = if (lowered.exprs.isEmpty()) 0 else if (ExprWindows.needsSig2(lowered.exprs)) SIG_SCHEMA_WIN else SIG_SCHEMA,
         )
         val plan = CapturePlan(planSchema = planSchemaFor(config), configHash = PlanJson.configHash(config), config = config, meta = PlanMeta(p.name, settingsRev))
         val json = PlanJson.encode(plan)
-        if (lowered.exprs.isNotEmpty() && json.toByteArray().size > PLAN_MAX_BYTES) {
+        if (lowered.exprs.isNotEmpty() && json.toByteArray().size + lowered.stateBytes > PLAN_MAX_BYTES) {
             val bytes = json.toByteArray().size
-            return failed(linkedSetOf("node ${exprNodes.first().id}: ${ExprDiag(ExprCode.EXPR_BYTES, "plan is $bytes bytes with its expressions (max $PLAN_MAX_BYTES)")}"), cost)
+            val withState = if (lowered.stateBytes > 0) " and ${lowered.stateBytes} bytes of window state" else ""
+            return failed(linkedSetOf("node ${exprNodes.first().id}: ${ExprDiag(ExprCode.EXPR_BYTES, "plan is $bytes bytes with its expressions$withState (max $PLAN_MAX_BYTES)")}"), cost)
         }
         // the output must pass the plan validator, by construction; if it ever does not, nothing is emitted
         val (planProblems, _) = PlanValidator.check(json)

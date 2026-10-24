@@ -97,7 +97,7 @@ class CaptureService : LifecycleService() {
     private val gate by lazy { KeyframeGate(PrefsGateStore(prefs), SystemClock::elapsedRealtime, params = { runtime.plan.active.gate }) }
     private val heat = HeatGuard(::readHeat, SystemClock::elapsedRealtime)
     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
-    private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier, val shadow: ShadowRunner) { var rateJob: Job? = null }
+    private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier, val shadow: ShadowRunner, val guard: GlanceGuard) { var rateJob: Job? = null }
     private var smart: Smart? = null
     /** Local auto-revert rules (the hard ceiling); fed by the session, checked on the supervisor's 1 s beat. */
     private val autoRevert = AutoRevert()
@@ -210,6 +210,8 @@ class CaptureService : LifecycleService() {
                 try {
                     val planNow = SystemClock.elapsedRealtime()
                     runtime.plan.tick(planNow) // TRIAL end and staged activation ride this existing 1 s loop
+                    smart?.guard?.tickValues(planNow) // 3c E2a: the value programs' row tick (caps and gaps of the editable rows), errors count toward auto:exprErr
+                    runtime.plan.active.exprRunner?.tick(exprSignals) // 3c C1b: the window rings read the seconds the sensor feed wrote (a plan's rings start empty at its apply)
                     val running = runtime.plan.runningId()
                     autoRevert.check(planNow, running)?.let { reason -> DiagLog.w(TAG, "plan auto-revert: $reason"); running?.let { id -> runtime.plan.revertIf(id, reason) } }
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "plan tick failed: ${e.javaClass.simpleName}") }
@@ -267,11 +269,12 @@ class CaptureService : LifecycleService() {
         hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
+        exprSignals.reset() // a capture session restart empties every window history (3c C1b)
         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir, signals = exprSignals).also { it.start(motion, wear) }
         val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }, exprSignals, { (runtime.contextGate.ageMs(SystemClock.elapsedRealtime()) ?: 0L) / 1000L }) // SHADOW: counts only, no camera
         motion.addTap(shadow)
         motion.addTap(runtime.traceRecorder) // records only while a trace runs (collect on, clean boundary); one volatile read otherwise
-        val sm = Smart(session, feed, motion, shadow)
+        val sm = Smart(session, feed, motion, shadow, guard)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
         sm.rateJob = scope.launch {
