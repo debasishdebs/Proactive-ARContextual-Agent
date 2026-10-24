@@ -15,6 +15,8 @@ interface MomentSource {
     /** Live frames with `fromMs <= ts <= toMs`, oldest first, at most [limit]. */
     suspend fun frames(fromMs: Long, toMs: Long, limit: Int): List<MomentFrame>
     /** (frameId, memory) pairs for the memories that belong to those frames. */
+    /** The newest [limit] live frames in the range, oldest first. */
+    suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int): List<MomentFrame>
     suspend fun memories(frameIds: List<String>): List<Pair<String, MomentRef>>
     suspend fun marks(fromMs: Long, toMs: Long): List<MomentMark>
 }
@@ -32,15 +34,18 @@ data class Moment(
     val bindingKey: String get() = "$id:$contentRev:$contentHash"
 }
 
+/** One second holds more photos than a Moment can fingerprint completely: refused, never silently truncated. */
+class MomentTooBig : IllegalStateException("moment_too_big")
+
 class MomentResolver(private val source: MomentSource) {
-    /** The Moments (seconds with at least one live photo) in `[fromMs, toMs]`, oldest first, at most [limit]. Listing only: a run re-resolves with [resolve]. */
+    /** The NEWEST [limit] Moments. Listing only: a run re-resolves with [resolve]. */
     suspend fun window(fromMs: Long, toMs: Long, limit: Int): List<Moment> {
         if (limit <= 0 || toMs < fromMs) return emptyList()
         val lo = maxOf(fromMs, 0L)
         val hi = minOf(toMs, (MomentId.MAX_SECOND + 1) * 1000 - 1)
         if (hi < lo) return emptyList()
-        val frames = source.frames(lo, hi, FRAME_CAP)
-        val seconds = frames.map { Math.floorDiv(it.ts, 1000L) }.distinct().sorted().take(limit)
+        val frames = source.framesNewest(lo, hi, FRAME_CAP)
+        val seconds = frames.map { Math.floorDiv(it.ts, 1000L) }.distinct().sorted().takeLast(limit)
         if (seconds.isEmpty()) return emptyList()
         val first = seconds.first() * 1000
         val last = seconds.last() * 1000 + 999
@@ -58,7 +63,8 @@ class MomentResolver(private val source: MomentSource) {
         for (id in ids.distinct()) {
             val s = MomentId.parse(id) ?: continue
             val lo = s * 1000
-            val frames = source.frames(lo, lo + 999, FRAME_CAP)
+            val frames = source.frames(lo, lo + 999, FRAME_CAP + 1)
+            if (frames.size > FRAME_CAP) throw MomentTooBig()
             if (frames.isEmpty()) continue
             out += build(s, frames, source.memories(frames.map { it.id }).map { it.second }, source.marks(lo, lo + 999))
         }
