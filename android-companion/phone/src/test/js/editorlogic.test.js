@@ -394,6 +394,17 @@ export const tests = {
     const n = ed.ds.pipe.nodes.find((x) => x.type === 'py.fn');
     ok(n, 'py.fn node added'); eq(n.params, { source: '', outSchema: '' }); ok(n.id.startsWith('pyfn'), 'id from short: ' + n.id);
   },
+  paletteOffersTheScenesInputUnderInputs() {
+    const root = { liveable: false, root: true, domain: 'ASYNC', executor: 'BUILTIN', category: 'Inputs', inputs: [], branches: [], params: [] };
+    const scenes = Object.assign({}, captureTypes[0], root, { type: 'input.scenes', label: 'Scenes', short: 'scenes', output: 'SCENES' });
+    const moments = Object.assign({}, captureTypes[0], root, { type: 'input.moments', label: 'Moments', short: 'moments', output: 'MOMENTS' });
+    const g = E.paletteGroups(open(), allTypes.concat([scenes, moments]));
+    eq(g.find((x) => x.category === 'Inputs').items, [{ type: 'input.scenes', label: 'Scenes' }], 'Scenes is offered; the Photo input and (unchanged) the Moments input are not');
+    // adding it gives a root node with no params and the registry short id
+    const ed = E.addFromPalette(open(), 'input.scenes', allTypes.concat([scenes]));
+    const n = ed.ds.pipe.nodes.find((x) => x.type === 'input.scenes');
+    ok(n, 'input.scenes node added'); eq(n.params, {}); ok(n.id.startsWith('scenes'), 'id from short: ' + n.id);
+  },
   inspectorIsGeneratedFromTheParamSchema() {
     const cap = () => E.open(capturePipe(), 1, { layers: 5, columns: 1, cells: {} }, []);
     let ed = E.selectNode(cap(), 'head_1');

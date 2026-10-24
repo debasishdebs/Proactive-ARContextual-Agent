@@ -194,8 +194,8 @@ export function paletteGroups(ed, nodeTypes) {
   if (isReadOnly(ed)) return [];
   const groups = [];
   for (const t of nodeTypes || []) {
-    // `expr` is registered but hidden until 3c; the python experiment node is the one unliveable type offered (S6 keeps it out of every publish)
-    if (!t.palette || (t.liveable === false && t.executor !== 'PYTHON')) continue;
+    // `expr` is registered but hidden until 3c; the python experiment node and the Scenes input are the unliveable types offered (S6 keeps them out of every publish)
+    if (!t.palette || (t.liveable === false && t.executor !== 'PYTHON' && t.type !== 'input.scenes')) continue;
     const cat = String(t.category || 'Other');
     let g = groups.find((x) => x.category === cat);
     if (!g) { g = { category: cat, items: [] }; groups.push(g); }
