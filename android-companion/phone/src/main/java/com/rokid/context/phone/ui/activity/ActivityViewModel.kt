@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.memory.AskRepository
 import com.rokid.context.memory.DayBucket
+import com.rokid.context.memory.MarkRepository
 import com.rokid.context.memory.NudgeRepository
 import com.rokid.context.memory.TimelineRepository
 import com.rokid.context.phone.ui.banner.BannerAction
@@ -33,6 +34,7 @@ class ActivityViewModel(
     private val timeline: TimelineRepository,
     private val asks: AskRepository,
     private val nudges: NudgeRepository,
+    private val marks: MarkRepository,
     clock: Flow<Long>,
     storagePct: Flow<Int?>,
     private val zone: () -> ZoneId,
@@ -51,14 +53,14 @@ class ActivityViewModel(
         val w = PeriodWindow.of(p, d)
         val r = w.millis(z)
         return if (p == Period.TODAY) {
-            combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), asks.timesIn(r), nudges.timesIn(r)) { mems, frames, a, n ->
-                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), sections = Timeline.sections(mems, Timeline.framesFor(mems, frames, timeline::framesByIds), z, d, o), today = d, sort = o)
+            combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), asks.timesIn(r), nudges.timesIn(r), marks.marksIn(r)) { mems, frames, a, n, k ->
+                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), sections = Timeline.sections(mems, Timeline.framesFor(mems, frames, timeline::framesByIds), z, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = false))
             }
         } else {
-            combine(timeline.frameTimesIn(r), timeline.visibleMemoryTimesIn(r), asks.timesIn(r), nudges.timesIn(r)) { f, m, a, n ->
+            combine(timeline.frameTimesIn(r), timeline.visibleMemoryTimesIn(r), asks.timesIn(r), nudges.timesIn(r), marks.marksIn(r)) { f, m, a, n, k ->
                 val fc = ActivityModel.countByDay(f, w, z)
                 val mc = ActivityModel.countByDay(m, w, z)
-                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(f.size, m.size, a.size, n.size), bars = ActivityModel.bars(w, fc), dayRows = ActivityModel.dayRows(w, fc, mc, d, o), today = d, sort = o)
+                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(f.size, m.size, a.size, n.size), bars = ActivityModel.bars(w, fc), dayRows = ActivityModel.dayRows(w, fc, mc, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = true))
             }
         }
     }
