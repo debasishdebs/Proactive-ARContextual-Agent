@@ -87,7 +87,7 @@ class MigrationV7to8Test {
         var d: File? = File(System.getProperty("user.dir")).absoluteFile
         while (d != null && !File(d, "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").isFile) d = d.parentFile
         val src = File(requireNotNull(d), "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").readText()
-        val body = src.substring(src.indexOf("val MIGRATION_7_8"))
+        val body = src.substring(src.indexOf("val MIGRATION_7_8"), src.indexOf("val MIGRATION_8_9"))
         val sql = Regex("execSQL\\(\"([^\"]*)\"\\)").findAll(body).map { it.groupValues[1] }.toList()
         assertEquals(21, sql.size)
         sql.forEach { s -> assertTrue(s, s.startsWith("ALTER TABLE `canvas_helper_job` ADD COLUMN") || s.startsWith("CREATE TABLE IF NOT EXISTS `canvas_helper_cleanup`")) }
