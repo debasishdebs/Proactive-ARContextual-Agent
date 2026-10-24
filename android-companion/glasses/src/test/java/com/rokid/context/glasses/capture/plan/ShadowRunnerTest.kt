@@ -85,10 +85,12 @@ class ShadowRunnerTest {
         assertEquals(ShadowCounts(0, 0), s.take(), "no glance spans two plans")
     }
 
-    private fun restrictiveShadowPlan(): com.rokid.context.capture.plan.CapturePlan {
+    private fun restrictiveShadowPlan(exprs: List<kotlinx.serialization.json.JsonObject> = emptyList()): com.rokid.context.capture.plan.CapturePlan {
         val base = com.rokid.context.capture.plan.PlanResolver.identity()
         val slow = base.policy.mapValues { (_, r) -> r.copy(timerPhotoGapsMs = TimerPhotoGaps(300_000, 300_000, 300_000, 300_000)) }
-        return PlanTestKit.plan(base.copy(policy = slow), "restrictive")
+        if (exprs.isEmpty()) return PlanTestKit.plan(base.copy(policy = slow), "restrictive")
+        val c = base.copy(policy = slow, exprs = exprs, sigSchema = com.rokid.context.capture.plan.SIG_SCHEMA)
+        return com.rokid.context.capture.plan.CapturePlan(com.rokid.context.capture.plan.PLAN_SCHEMA_EXPR, com.rokid.context.capture.plan.PlanJson.configHash(c), c, com.rokid.context.capture.plan.PlanMeta("restrictive-expr", 1))
     }
 
     /** Each recording needs its own virtual clock (the recorder reads the scheduler's absolute time). */
@@ -98,8 +100,8 @@ class ShadowRunnerTest {
         return text
     }
 
-    private fun withShadow(s: com.rokid.context.glasses.capture.golden.GoldenScript, out: (PlanController, ShadowRunner) -> Unit = { _, _ -> }) = rec(s) { r ->
-        RigPlan.controller(r) { it.onMessage(shadow(1, restrictiveShadowPlan())) }.also { c ->
+    private fun withShadow(s: com.rokid.context.glasses.capture.golden.GoldenScript, exprs: List<kotlinx.serialization.json.JsonObject> = emptyList(), out: (PlanController, ShadowRunner) -> Unit = { _, _ -> }) = rec(s) { r ->
+        RigPlan.controller(r) { it.onMessage(shadow(1, restrictiveShadowPlan(exprs))) }.also { c ->
             val runner = ShadowRunner({ c.shadow }, { r.applied }, { r.session.status.value.restingUntilMs != null })
             r.motion.addTap(runner)
             r.test.backgroundScope.launch { delay(s.durationMs - 1_000); out(c, runner) }
@@ -125,5 +127,32 @@ class ShadowRunnerTest {
             assertTrue(installed, "${s.name}: the SHADOW plan is installed and reported")
             assertTrue(plain == shadowed, "${s.name}: real capture is the settings path; " + firstDiff(plain, shadowed))
         }
+    }
+
+    private fun guard(id: String, v: Boolean) = kotlinx.serialization.json.Json.parseToJsonElement("""{"id":"$id","role":"guard","out":0,"s":[{"op":"const","v":$v}]}""").let { it as kotlinx.serialization.json.JsonObject }
+
+    /**
+     * 3c X3, S67: a SHADOW guard that would drop EVERY glance only counts it. The real session (camera, keyframes, every decision of the golden recorder) is
+     * byte-identical to the settings path, the plan is never installed as active, and the counts show would-drops instead of would-opens.
+     */
+    @Test fun ShadowNeverActsTest() {
+        val s0 = GoldenScripts.unknownWalk
+        val plain = rec(s0)
+        var counts: ShadowCounts? = null; var activeIsSettings = false; var installs = -1
+        val shadowed = withShadow(s0, listOf(guard("x", false))) { c, runner -> counts = runner.take(); activeIsSettings = c.active === ActiveConfig.SETTINGS; installs = if (c.active.exprRunner == null) 0 else 1 }
+        assertTrue(plain == shadowed, firstDiff(plain, shadowed))
+        assertTrue(activeIsSettings && installs == 0, "the SHADOW plan never becomes the active config")
+        assertTrue(counts!!.drop > 0 && counts!!.open == 0, "would-drops are counted instead of would-opens: $counts")
+    }
+
+    /** The sensing-unchanged golden (T12) with an identity-like guard (always keeps): real capture equal, and the shadow counts equal those without the guard. */
+    @Test fun sensingUnchangedWithIdentityLikeExprTest() {
+        val s0 = GoldenScripts.unknownWalk
+        val plain = rec(s0)
+        var without: ShadowCounts? = null; var with: ShadowCounts? = null
+        withShadow(s0) { _, runner -> without = runner.take() }
+        val shadowed = withShadow(s0, listOf(guard("i", true))) { _, runner -> with = runner.take() }
+        assertTrue(plain == shadowed, firstDiff(plain, shadowed))
+        assertEquals(without!!.open, with!!.open); assertEquals(without!!.skip, with!!.skip); assertEquals(0, with!!.drop)
     }
 }

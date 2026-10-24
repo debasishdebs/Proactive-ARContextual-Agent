@@ -109,6 +109,8 @@ class SamplingSession(
     private val glance: GlanceParams = GlanceParams(),
     /** The glance tunables in force now (slice 3a: a plan swaps them at a safe boundary); defaults to the fixed [glance]. */
     private val glanceNow: () -> GlanceParams = { glance },
+    /** 3c X3 expression guard at a glance candidate (before admission, drop-only): false drops it. Defaults to keep. Never starts anything. */
+    private val glanceKeep: (Long) -> Boolean = { true },
     /**
      * Wave B context cap (keyframes per minute) from the motion hub, or null for none. When non-null it is a hard cap
      * (no dwell bonus: [hardNow]) and [capNow] is the smaller of it and the A3 cap. Forced keeps (a manual "Capture now")
@@ -329,7 +331,8 @@ class SamplingSession(
         val walked = motion.walkedSinceMark()
         val cc = contextCap()
         val cap = capNow(cc)
-        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glanceNow())) {
+        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glanceNow(), glanceKeep(now))) {
+            GlanceAdmission.Decision.GUARD_DROP -> Unit
             GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
             GlanceAdmission.Decision.CAPPED -> { cappedAccum++; if (gate.keptInMinute(now).toLong() >= 2L * cap) onCeilingHit(now) }
             GlanceAdmission.Decision.OPEN -> {
