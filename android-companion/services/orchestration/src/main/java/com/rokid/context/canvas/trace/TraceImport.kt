@@ -35,6 +35,11 @@ class TraceImport(
     private val files: FencedFiles,
     /** Captured BEFORE anything is read and re-checked inside the publish transaction (S57, S58). */
     private val fence: () -> DaoFence,
+    /**
+     * Called once after a trace was STORED (a PARTIAL one too; never for a rejected or unchanged one, nor for a trace with no phone clock) with its interval on the PHONE clock.
+     * Production wires it to the coalesced Moment build trigger, so the sensor rows of Moments built before the trace arrived are backfilled. It must not block; a throw is swallowed.
+     */
+    private val onImported: (phoneStartMs: Long, phoneEndMs: Long) -> Unit = { _, _ -> },
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val root: File get() = File(files.tmpDir.parentFile, FencedFiles.TRACES_DIR)
@@ -79,9 +84,9 @@ class TraceImport(
         try {
             for (src in listed) src.copyTo(File(tmp, src.name), overwrite = false)
             var movedAside = false
+            val phone = TracePhoneClock.of(manifest) // the interval on the PHONE clock: Forget and admission compare THIS, never the glasses wall times
             val published = files.publish(tmp, finalDir) {
                 if (!f.holds()) return@publish false
-                val phone = TracePhoneClock.of(manifest) // the interval on the PHONE clock: Forget and admission compare THIS, never the glasses wall times
                 val row = CanvasTraceEntity(
                     traceId = manifest.traceId, source = "IMU", status = verdict.status.name, manifestJson = manifest.encode(), wipeGen = f.generation,
                     revision = revision, parentTraceId = manifest.parentTraceId, installId = manifest.installId, deletionCounter = manifest.deletionCounter,
@@ -98,6 +103,8 @@ class TraceImport(
                 return no(if (dao.trace(manifest.traceId)?.tombstoned == true) "tombstoned" else "fence")
             }
             aside.deleteRecursively()
+            val phoneEnd = phone.phoneEndMs
+            if (phone.clockQuality == com.rokid.context.memory.db.TraceClock.OFFSET_ESTIMATED && phoneEnd != null) try { onImported(phone.phoneStartMs, phoneEnd) } catch (e: CancellationException) { throw e } catch (e: Exception) { /* a build trigger never fails an import */ }
             return TraceImportResult.Imported(manifest.traceId, verdict.status, verdict.reason, revision)
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             return no("copy_failed")
