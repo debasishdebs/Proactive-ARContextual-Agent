@@ -50,6 +50,7 @@ abstract class WipeDao {
     /** 3b: the one wildcard cleanup command (`jobId` = "*") that tells every device-side copy of every helper job to discard; the table is KEPT by Delete all. */
     @Query("INSERT INTO canvas_helper_cleanup (jobId, reason, createdAt) VALUES ('*', 'delete_all', :now)") protected abstract suspend fun slice3WildcardCleanup(now: Long)
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
+    @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'momentForgetRanges'") protected abstract suspend fun momentClearForgetRanges(): Int
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES ('frame_forget_rev', '0')") protected abstract suspend fun slice3InitForgetRev()
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'frame_forget_rev'") protected abstract suspend fun slice3BumpForgetRev(): Int
     // Moment model phase 1 (Room v9). WIPED: the projection and the tombstones (the deletion epoch is the fence after a wipe). KEPT until acknowledged: cleanup_outbox (ids, paths
@@ -68,7 +69,7 @@ abstract class WipeDao {
     @Transaction
     open suspend fun wipeMemory(now: Long): List<String> {
         val proposals = proposalIds()
-        momentWipeCleanup(now); ackedOutbox(); momentParts(); momentTraceDeps(); moments(); momentTombstones() // the cleanup command is written BEFORE any source reference goes
+        momentWipeCleanup(now); ackedOutbox(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); slice3BumpLabelRev()
