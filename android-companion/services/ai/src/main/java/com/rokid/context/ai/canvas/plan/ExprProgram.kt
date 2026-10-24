@@ -43,6 +43,8 @@ data class ExprStep(val name: String, val inputs: List<ExprInput>, val nodes: Li
 data class ExprChecked(
     val problems: List<ExprDiag>, val warnings: List<ExprDiag>, val stepOrder: List<String>,
     val nodes: Int, val cost: Int, val lowered: List<JsonObject>, val out: Int,
+    /** Step name to the lowered entry that holds its output (try-it shows these). */
+    val stepOuts: Map<String, Int> = emptyMap(),
 )
 
 /**
@@ -367,7 +369,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
         if (role == ExprRole.GUARD && readsCtx) {
             warnings += ExprDiag(ExprCode.EXPR_GUARD_READS_CTX, "this guard reads ctx: it may drop glances while the state is wrong (walking and the 60 s timer photo attempt still run)")
         }
-        return ExprChecked(problems, warnings, order, emit.lowered.size, emit.cost, emit.lowered, outIdx)
+        return ExprChecked(problems, warnings, order, emit.lowered.size, emit.cost, emit.lowered, outIdx, stepOut.mapValues { it.value.first })
     }
 
     private fun add(e: Emit, o: JsonObject, cost: Int): Int { e.lowered += o; e.cost += cost; return e.lowered.size - 1 }
