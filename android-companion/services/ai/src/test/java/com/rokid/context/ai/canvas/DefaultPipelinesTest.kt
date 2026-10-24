@@ -1,6 +1,10 @@
 package com.rokid.context.ai.canvas
 
+import com.rokid.context.ai.canvas.plan.PlanCompiler
 import com.rokid.context.ai.flow.flows.CaptureFlow
+import com.rokid.context.capture.plan.CanonicalJson
+import com.rokid.context.capture.plan.PlanJson
+import com.rokid.context.capture.plan.PlanResolver
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -18,7 +22,29 @@ class DefaultPipelinesTest {
     @Test fun bothDefaultsValidate() {
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.liveExtract()))
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.intentDraft(seed)))
-        assertEquals(listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT), DefaultPipelines.all)
+        assertEquals(listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT, DefaultPipelines.DEFAULT_CAPTURE), DefaultPipelines.all)
+        assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.defaultCapture()))
+    }
+
+    @Test fun defaultCaptureCompilesToTheIdentityPlan() {
+        val p = DefaultPipelines.defaultCapture()
+        assertEquals("default-capture", p.id)
+        assertEquals("Default capture", p.name)
+        val r = PlanCompiler.compile(p)
+        assertEquals(emptyList<String>(), r.problems)
+        assertEquals("f5782e0d8610", r.plan!!.configHash)
+        val identity = PlanResolver.identity()
+        assertEquals(identity, r.plan!!.config)
+        assertEquals(CanonicalJson.encode(PlanJson.configJson(identity)), CanonicalJson.encode(PlanJson.configJson(r.plan!!.config)))
+    }
+
+    @Test fun defaultCaptureIsTheGlassesLaneAtDefaultParams() {
+        val p = DefaultPipelines.defaultCapture()
+        assertEquals(PipelineJson.SCHEMA_V2, p.schema)
+        assertEquals(listOf("imu.head_motion", "gate.threshold", "imu.settle", "gate.novelty", "policy.capture_rate", "gate.rate_cap", "capture.image", "signal.in", "hub.context", "signal.out").sorted(), p.nodes.map { it.type }.sorted())
+        // no node carries an override: only the threshold's required trio and the two signal bindings have params
+        assertEquals(setOf("gate.threshold", "signal.in", "signal.out"), p.nodes.filter { it.params.isNotEmpty() }.map { it.type }.toSet())
+        assertTrue(p.nodes.none { it.type == NodeTypes.INPUT_PHOTOS })
     }
 
     @Test fun liveExtractMirrorsCaptureFlowPhotoPath() {
