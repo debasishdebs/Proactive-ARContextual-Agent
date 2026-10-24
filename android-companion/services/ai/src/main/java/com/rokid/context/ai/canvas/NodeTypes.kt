@@ -19,7 +19,7 @@ enum class Category(val label: String) {
 
 /**
  * The generic flow every agentic build follows, whatever device runs it (specs/2026-10-24-generic-flow-families.md): the palette groups by these five.
- * A node's lane ([Domain]) stays its own attribute. No type is an [AGGREGATE] yet (window and interval aggregates come with 3c E2).
+ * A node's lane ([Domain]) stays its own attribute. The first [AGGREGATE] is `agg.window` (phone side); interval aggregates on the glasses come with 3c E2.
  */
 enum class Family(val label: String) { SOURCE("Source"), AGGREGATE("Aggregate"), PROCESS("Process"), CONDITION("Condition"), OUTCOME("Outcome") }
 
@@ -71,6 +71,12 @@ object NodeTypes {
     /** Process: one short summary per item, with a confidence (SUMMARY output); see [SummaryNode]. */
     const val SUMMARY = "proc.summary"
 
+    /** Aggregate: mean, min, max or count of one sensor feature over the last N items of a Scenes or Moments input (NUMBER output); see [WindowAggregate]. */
+    const val AGG_WINDOW = "agg.window"
+
+    /** Condition: compares the NUMBER of a [AGG_WINDOW] with a cutoff and branches yes or no (the number passes through). */
+    const val COMPARE = "gate.compare"
+
     const val EXPR_GUARD = "expr.guard"
     const val IMU_HEAD_MOTION = "imu.head_motion"
     const val IMU_SETTLE = "imu.settle"
@@ -113,6 +119,11 @@ object NodeTypes {
         // new in v0.9.4: a schema-2 type (a v1 graph never holds it), no params and no prompt of its own; its executor is the phone-side text path of `ai.prompt`
         NodeType(SUMMARY, "Summary", setOf(PortType.JSON, PortType.EXTRACTION, PortType.MOMENTS, PortType.SCENES), PortType.SUMMARY, sinceSchema = 2, executor = ExecutorKind.PROMPT,
             short = "summary", family = Family.PROCESS),
+        // v0.9.4, phone-side, deterministic, no model: the first Aggregate, and the Condition that reads its number
+        NodeType(AGG_WINDOW, "Window aggregate", setOf(PortType.SCENES, PortType.MOMENTS), PortType.NUMBER, sinceSchema = 2, category = Category.DATA, short = "window",
+            params = WindowAggregate.schema, family = Family.AGGREGATE),
+        NodeType(COMPARE, "Compare number", setOf(PortType.NUMBER), PortType.NUMBER, branches = { listOf("yes", "no") }, sinceSchema = 2, category = Category.CHECKS, short = "compare",
+            params = NumberCompare.schema, family = Family.CONDITION),
         NodeType(SWITCH, "Switch", setOf(PortType.JSON), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route", family = Family.CONDITION),
         NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION, PortType.SUMMARY), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", inner = MemoryWriteComposite.inner, family = Family.OUTCOME),
     )
