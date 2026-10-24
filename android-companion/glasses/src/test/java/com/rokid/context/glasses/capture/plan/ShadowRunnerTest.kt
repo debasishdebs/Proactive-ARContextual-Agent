@@ -89,7 +89,7 @@ class ShadowRunnerTest {
         val base = com.rokid.context.capture.plan.PlanResolver.identity()
         val slow = base.policy.mapValues { (_, r) -> r.copy(timerPhotoGapsMs = TimerPhotoGaps(300_000, 300_000, 300_000, 300_000)) }
         if (exprs.isEmpty()) return PlanTestKit.plan(base.copy(policy = slow), "restrictive")
-        val c = base.copy(policy = slow, exprs = exprs, sigSchema = com.rokid.context.capture.plan.SIG_SCHEMA)
+        val c = base.copy(policy = slow, exprs = exprs, sigSchema = if (com.rokid.context.capture.plan.ExprWindows.needsSig2(exprs)) com.rokid.context.capture.plan.SIG_SCHEMA_WIN else com.rokid.context.capture.plan.SIG_SCHEMA)
         return com.rokid.context.capture.plan.CapturePlan(com.rokid.context.capture.plan.PLAN_SCHEMA_EXPR, com.rokid.context.capture.plan.PlanJson.configHash(c), c, com.rokid.context.capture.plan.PlanMeta("restrictive-expr", 1))
     }
 
@@ -154,5 +154,16 @@ class ShadowRunnerTest {
         val shadowed = withShadow(s0, listOf(guard("i", true))) { _, runner -> with = runner.take() }
         assertTrue(plain == shadowed, firstDiff(plain, shadowed))
         assertEquals(without!!.open, with!!.open); assertEquals(without!!.skip, with!!.skip); assertEquals(0, with!!.drop)
+    }
+
+    /** 3c E2a: a SHADOW value program (here: every row capped at 1 per minute, a window warming) is only counted: real capture is byte-identical and the plan is never the active config. */
+    @Test fun ShadowNeverActsForValuePrograms() {
+        val s0 = GoldenScripts.unknownWalk
+        val plain = rec(s0)
+        val v = kotlinx.serialization.json.Json.parseToJsonElement("""{"id":"v","role":"value","row":"REST","field":"capPerMin","out":0,"s":[{"op":"win","name":"stepHz","agg":"mean","sec":30}]}""") as kotlinx.serialization.json.JsonObject
+        var activeIsSettings = false; var hasRunner = true
+        val shadowed = withShadow(s0, listOf(v)) { c, _ -> activeIsSettings = c.active === ActiveConfig.SETTINGS; hasRunner = c.active.exprRunner != null }
+        assertTrue(plain == shadowed, firstDiff(plain, shadowed))
+        assertTrue(activeIsSettings && !hasRunner, "the SHADOW plan never becomes the active config")
     }
 }

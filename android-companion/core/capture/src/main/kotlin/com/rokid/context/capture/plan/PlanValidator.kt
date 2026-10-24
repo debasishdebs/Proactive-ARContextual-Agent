@@ -21,6 +21,7 @@ object PlanValidator {
     }
 
     private const val MAX_DEPTH = 32
+    private const val MAX_PROGRAMS = 6
 
     private fun tooDeep(e: JsonElement, depth: Int): Boolean = when {
         depth > MAX_DEPTH -> true
@@ -40,7 +41,7 @@ object PlanValidator {
         if (exprs != null && ((raw["config"] as JsonObject)["sigSchema"] as? JsonPrimitive)?.content != wantSig.toString()) {
             out += "sigSchema must be $wantSig"
         }
-        if (exprs != null) windows(progs, bytes, out)
+        if (exprs != null) { windows(progs, bytes, out); values(progs, out) }
         finite(raw, "", out)
         sensing(raw, out)
         rawRules(raw, out)
@@ -55,6 +56,26 @@ object PlanValidator {
         if (terms.size > com.rokid.context.core.model.context.graph.WindowRing.MAX_TERMS) out += "plan has ${terms.size} window terms (max ${com.rokid.context.core.model.context.graph.WindowRing.MAX_TERMS})"
         val state = ExprWindows.stateBytes(terms)
         if (state > 0 && bytes + state > PLAN_MAX_BYTES && bytes <= PLAN_MAX_BYTES) out += "plan is $bytes bytes with $state bytes of window state (max $PLAN_MAX_BYTES)"
+    }
+
+    /** 3c E2a: a value program tunes one field of one editable row, once; WALKING and UNKNOWN are locked (S32). */
+    private fun values(progs: List<JsonObject>, out: MutableList<String>) {
+        if (progs.size > MAX_PROGRAMS) out += "plan has ${progs.size} expression programs (max $MAX_PROGRAMS)"
+        val seen = HashSet<String>()
+        for (p in progs) {
+            val role = (p["role"] as? JsonPrimitive)?.content
+            val id = (p["id"] as? JsonPrimitive)?.content ?: "?"
+            val row = (p["row"] as? JsonPrimitive)?.content
+            val field = (p["field"] as? JsonPrimitive)?.content
+            if (role != "value") {
+                if (row != null || field != null) out += "expr $id: only a value program has a target"
+                continue
+            }
+            if (row == "WALKING" || row == "UNKNOWN") out += "expr $id: policy row $row is locked"
+            else if (row == null || ExprValues.rowIndex(row) < 0) out += "expr $id: value row is not an editable policy row"
+            if (field == null || ExprValues.fieldIndex(field) < 0) out += "expr $id: value field must be one of ${ExprValues.FIELDS.joinToString(", ")}"
+            if (row != null && field != null && !seen.add("$row.$field")) out += "expr $id: $row.$field is tuned by another value program"
+        }
     }
 
     /** Convenience for text: size, parse, strict decode, then [problems]. Returns the decoded plan when it decoded. */

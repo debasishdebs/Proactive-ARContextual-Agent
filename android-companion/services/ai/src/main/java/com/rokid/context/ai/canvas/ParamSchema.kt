@@ -91,6 +91,15 @@ object CaptureParams {
 /** The expression node descriptor: one structured `graph` param, no per-node generated form (X5 draws its own editor). */
 object ExprParams {
     val guard = ParamSchema(listOf(ParamSpec("graph", ParamKind.GRAPH, label = "Expression graph")))
+
+    /** A value program (3c E2a): the graph ends in a number that tunes ONE field of ONE editable row (never WALKING or UNKNOWN), clamped to the row's own bounds; an error or a warming window keeps the row default. */
+    val value = ParamSchema(
+        listOf(
+            ParamSpec("graph", ParamKind.GRAPH, label = "Expression graph"),
+            ParamSpec("row", ParamKind.ENUM, options = com.rokid.context.capture.plan.PlanState.entries.map { it.name }, default = JsonPrimitive("REST"), label = "Row"),
+            ParamSpec("field", ParamKind.ENUM, options = com.rokid.context.capture.plan.ExprValues.FIELDS, default = JsonPrimitive("capPerMin"), label = "Tunes"),
+        ),
+    )
 }
 
 /** Validates a node's params against its [ParamSchema]. Problems are fixed texts naming the node id, the param and the bound. */
@@ -112,7 +121,7 @@ object ParamCheck {
     }
 
     private fun graph(id: String, t: NodeType, v: JsonElement): List<String> {
-        val role = if (t.type == NodeTypes.EXPR_GUARD) com.rokid.context.ai.canvas.plan.ExprRole.GUARD else com.rokid.context.ai.canvas.plan.ExprRole.VALUE
+        val role = if (t.type == NodeTypes.EXPR_VALUE) com.rokid.context.ai.canvas.plan.ExprRole.VALUE else com.rokid.context.ai.canvas.plan.ExprRole.GUARD
         val (p, bad) = com.rokid.context.ai.canvas.plan.ExprProgram.parse(role, v)
         return (bad + (p?.check()?.problems ?: emptyList())).map { "node $id: $it" }
     }
@@ -177,7 +186,7 @@ object ParamCheck {
 
     private fun cross(id: String, t: NodeType, params: JsonObject, out: MutableList<String>) {
         when (t.type) {
-            NodeTypes.EXPR_GUARD -> if ("graph" !in params) out += "node $id: ${com.rokid.context.ai.canvas.plan.ExprCode.EXPR_NO_GRAPH}: graph is missing"
+            NodeTypes.EXPR_GUARD, NodeTypes.EXPR_VALUE -> if ("graph" !in params) out += "node $id: ${com.rokid.context.ai.canvas.plan.ExprCode.EXPR_NO_GRAPH}: graph is missing"
             NodeTypes.IMU_HEAD_MOTION -> {
                 val onset = dbl(params, "onsetRadS", 0.6)
                 if (dbl(params, "releaseRadS", 0.3) > onset) out += "node $id: releaseRadS must not exceed onsetRadS"
