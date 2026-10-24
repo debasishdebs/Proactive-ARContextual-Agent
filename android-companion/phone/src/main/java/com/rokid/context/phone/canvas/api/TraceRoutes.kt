@@ -55,7 +55,7 @@ class TraceRoutes(
             when {
                 head == "traces" && seg.size == 1 && m == "GET" -> HttpResponse.json(200, JsonArray(dao.liveTraces().map(::row)))
                 head == "traces" && seg.size == 2 && m == "GET" ->
-                    HttpResponse.json(200, row(seg[1].takeIf { ID.matches(it) }?.let { dao.trace(it) }?.takeIf { !it.tombstoned } ?: throw NoSuchElementException()))
+                    HttpResponse.json(200, row(seg[1].takeIf { ID.matches(it) }?.let { dao.readableTrace(it) } ?: throw NoSuchElementException()))
                 head == "traces" && seg.size == 2 && seg[1] == "import" && m == "POST" -> import(req)
                 head == "collect" && seg.size == 1 && m == "GET" -> status()
                 head == "collect" && seg.size == 2 && seg[1] == "start" && m == "POST" -> start(req)

@@ -34,7 +34,7 @@ class DerivePortsTest {
         val reg = DeriveRegistry(); val runner = DeriveRunner(audit, reg)
         listOf(ObjectKind.MOMENT, ObjectKind.AUDIO, ObjectKind.SCENE, "FAKE").forEach { k ->
             echo(k, reg)
-            val o = ObjectRef(k, "id-$k", 3)
+            val o = ObjectRef(k, "id-$k", 3); audit.record(o, AuditOp.BUILT, AuditStep.BUILD); if (k == ObjectKind.MOMENT) db.momentDao().upsertMoment(com.rokid.context.memory.db.MomentEntity(o.id, 1, 1, "h", 1))
             assertNotNull(k, reg.summarizer(k)); assertNotNull(reg.captioner(k)); assertNotNull(reg.embedder(k))
             assertTrue(k, runner.rebuild(o, DerivedField.SUMMARY)); assertEquals("sum id-$k", audit.readDerived(o, DerivedField.SUMMARY)?.value)
             assertTrue(runner.rebuild(o, DerivedField.EMBEDDING)); assertEquals("emb:id-$k", audit.readDerived(o, DerivedField.EMBEDDING)?.ref)
@@ -56,7 +56,7 @@ class DerivePortsTest {
     }
 
     @Test fun rebuildMissingOrStaleRebuildsOnlyWhatIsHiddenOrAbsent() = runBlocking<Unit> {
-        val reg = DeriveRegistry(); echo("FAKE", reg); val o = ObjectRef("FAKE", "p1", 4)
+        val reg = DeriveRegistry(); echo("FAKE", reg); val o = ObjectRef("FAKE", "p1", 4); audit.record(o, AuditOp.BUILT, AuditStep.BUILD)
         audit.writeDerived(o, DerivedField.SUMMARY, "fresh", null, 4); audit.writeDerived(o, DerivedField.CAPTION, "old", null, 4); audit.markStale("FAKE", "p1")
         audit.writeDerived(o, DerivedField.SUMMARY, "fresh", null, 4) // summary rebuilt already
         val n = DeriveRunner(audit, reg).rebuildMissingOrStale(o)

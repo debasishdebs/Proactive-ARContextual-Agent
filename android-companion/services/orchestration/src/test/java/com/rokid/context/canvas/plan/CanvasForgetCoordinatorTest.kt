@@ -155,14 +155,15 @@ class CanvasForgetCoordinatorTest {
         assertTrue("a delayed voice command for the forgotten moment stores nothing", dao.labels().isEmpty())
     }
 
-    @Test fun anUnimportedTraceOverlappingAForgottenRangeCannotImportLater() = runBlocking {
+    @Test fun anUnimportedUnmappedTraceOverlappingAForgottenRangeIsQuarantinedNotVisible() = runBlocking {
         val e = DeletionEpochStore.of(ctx).read()
         val pulled = File(ctx.cacheDir, "pulled_forget").apply { deleteRecursively() }
         val d = com.rokid.context.canvas.trace.PulledTraces.write(pulled, "trace-late-001", e.installId, e.counter) // recorded at wall 1_700_000_001_000..012_010
         coordinator.forgetRange(1_700_000_000_000, 1_700_000_005_000)
         val r = com.rokid.context.canvas.trace.TraceImport(dao, FencedFiles(MemoryGraph.get(ctx).db, ctx.filesDir), { DaoFence(MemoryWipe.generation.get(), DeletionEpochStore.of(ctx).read(), MemoryWipe.generation::get, DeletionEpochStore.of(ctx)::read) }) { 5_000L }.import(d)
-        assertTrue(r.toString(), r is com.rokid.context.canvas.trace.TraceImportResult.Rejected)
-        assertFalse(File(File(ctx.filesDir, FencedFiles.TRACES_DIR), "trace-late-001").exists())
+        assertTrue(r.toString(), r is com.rokid.context.canvas.trace.TraceImportResult.Imported)
+        assertEquals(com.rokid.context.memory.db.TraceClock.QUARANTINED, dao.trace("trace-late-001")!!.clockQuality) // hidden from every reader, forgotten by any later range
+        assertTrue(dao.liveTraces().isEmpty())
         pulled.deleteRecursively(); Unit
     }
 }
