@@ -128,7 +128,7 @@ has "NO HEARTBEAT EVIDENCE"; has "continuing"; [ -f "$RUND/trace-aaaa-0001/manif
 # 6b. WEAR WINDOW from the chg= heartbeats (glasses clock; FAKE_NOW is 10-24 10:30). Manifest end times are glasses wall ms (endWallMs), read in the host zone like m1-run.sh does.
 hbl() { printf '%s I PcCapture heartbeat v=2 running=true batt=80 chg=%s wear=true\n' "$1" "$2"; }
 epoch() { python3 -c 'import datetime,sys; print(int(datetime.datetime.strptime("%d-%s"%(datetime.datetime.now().year,sys.argv[1]),"%Y-%m-%d %H:%M").timestamp()*1000))' "$1"; }
-mtrace() { mkdir -p "$GD/imu/traces/$1"; echo "{\"endWallMs\":$(epoch "10-24 $2")}" > "$GD/imu/traces/$1/manifest.json"; echo '{"c":1}' > "$GD/imu/traces/$1/chunk-0001.json"; }
+mtrace() { mkdir -p "$GD/imu/traces/$1"; python3 -c "import base64,json,sys; inner=json.dumps({'endWallMs':int(sys.argv[1]),'traceId':sys.argv[2]}).encode(); print(json.dumps({'v':1,'traceId':sys.argv[2],'kind':'manifest','seq':0,'count':1,'b64':base64.b64encode(inner).decode()}))" "$(epoch "10-24 $2")" "$1" > "$GD/imu/traces/$1/manifest.json"; echo '{"c":1}' > "$GD/imu/traces/$1/chunk-0001.json"; }
 setup WindowUnplugReplug
 { hbl "10-24 07:00:00.000" false; hbl "10-24 07:10:00.000" true; echo "10-24 07:30:00.000 I PcCapture status BEFOREWINDOW"; hbl "10-24 08:00:00.000" false; echo "10-24 08:05:00.000 I x $SECRET"; echo "10-24 08:06:00.000 I PcCapture status INWINDOW"; hbl "10-24 08:10:00.000" false; hbl "10-24 08:20:00.000" true; hbl "10-24 08:30:00.000" true; } > "$GD/capture_diag.log"; : > "$GD/capture_diag.log.1"
 rm -rf "$GD/imu/traces"/*; mtrace trace-before-0001 "07:30"; mtrace trace-inside-0001 "08:15"; mkdir -p "$GD/imu/traces/trace-untimed-0001"; echo '{}' > "$GD/imu/traces/trace-untimed-0001/manifest.json"

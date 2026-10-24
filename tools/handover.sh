@@ -96,7 +96,7 @@ NOW=$(adb -s "$G" shell date '+%m-%d %H:%M:%S' 2>/dev/null | tr -d '\r')
 # chg=true heartbeat (plugged in again) or the last heartbeat. All heartbeats chg=true (never worn) = no window. The helper below is the only place that reads the log's times.
 WIN="$PRIV/win.py"
 cat > "$WIN" <<'PY'
-import sys,os,glob,datetime,shutil,json
+import sys,os,glob,datetime,shutil,json,base64
 cmd=sys.argv[1]; now=sys.argv[2].strip(); d=sys.argv[3]
 def res(s,nw):  # "MM-DD HH:MM:SS.mmm" (no year) -> datetime in the year of the glasses "now"; a time more than a day ahead belongs to the previous year
     t=datetime.datetime.strptime("%d-%s"%(nw.year,s),"%Y-%m-%d %H:%M:%S.%f")
@@ -147,7 +147,10 @@ elif cmd=="traces":  # traces whose end time (manifest endWallMs, glasses wall m
     ws=h[start][0]; kept=skipped=untimed=0
     for m in glob.glob(os.path.join(sys.argv[4],"*","manifest.json")):
         try:
-            e=int(json.load(open(m))["endWallMs"]); assert e>0
+            d=json.load(open(m))
+            if isinstance(d,dict) and "b64" in d:  # real format (TRACE_SCHEMA=1): the manifest is an envelope whose b64 holds the manifest JSON
+                d=json.loads(base64.b64decode(d["b64"]))
+            e=int(d["endWallMs"]); assert e>0
             t=datetime.datetime.fromtimestamp(e/1000.0)
         except Exception:
             kept+=1; untimed+=1; continue
