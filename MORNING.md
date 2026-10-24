@@ -1,3 +1,12 @@
+# UPDATE 2026-10-24 17:30 (branches changed)
+- `v0.9.1` = the build INSTALLED on your devices at 12:45 (6adc222f) plus two bug fixes (WP8 missing-executor, doctor wording); worktree `~/Desktop/rokid/pca-v091`.
+- `v0.9.2` (worktree `~/Desktop/rokid/pca-int1`, tip 52463001) = everything new since: 3c E1 guards (graph model, boxed editor, glasses runner, replay parity), Moment phase 1 (Room v9) and the Moment blocks (Room v10: trace clock fix and backfill, MomentObject/audit/derived fields, builder trigger), M1 gate (default 3%, cap 5%) and the wear-window hand-over. Codex-reviewed with fixes merged (the 3c E1 fixes and the last Moment fixes had no final re-check).
+- Final full run on v0.9.2: all modules green except the known flaky PromptEditorTest (passes alone). APKs of the tip: phone `android-companion/phone/build/outputs/apk/debug/phone-debug.apk` (17:27); glasses `.../glasses/build/outputs/apk/debug/glasses-debug.apk` (17:05, no glasses change since). NOT installed: needs your OK, a phone backup, no call. The installed build is v0.9.1.
+- Design docs for you to approve (docs/superpowers/specs/): `2026-10-24-moment-scene-design-decisions.md`, `2026-10-24-3c-expression-editor-design-decisions.md`.
+- Tomorrow: outbox drainer, sensor features, Scene tables + `input.scenes`, 3c E2/values, X7 worn SHADOW gate with you, the three WP13 live steps, release bookkeeping.
+
+---
+
 # MORNING (2026-10-24): what is ready, what needs you
 
 Branch `v0.9.1` (integration). Phone debug APK: `android-companion/phone/build/outputs/apk/debug/phone-debug.apk` (rebuilt 12:43 with the Moment fixes; INSTALLED on the phone 12:45 and the glasses APK too, after backup `backups/pca-phone-pre-v091-20261024-1245.tar`).
