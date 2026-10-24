@@ -3,7 +3,7 @@
 // editorflow.js, which GraalJS tests. React, ReactDOM, ReactFlow and htm are read inside mountEditor, never at import,
 // so this module (and app.js, which imports it) loads without them. Text from the API is only ever a React text child.
 import * as L from './editorlogic.js';
-import { canConnect } from './flowadapter.js';
+import { canConnect, LANES, laneLabel } from './flowadapter.js';
 import { mountExprEditor } from './exprview.js';
 import { mountComposite } from './compositeview.js';
 import { validateDraft, saveDraft, freezeDraft, compileDraft } from './editorflow.js';
@@ -162,10 +162,10 @@ export function mountEditor(el, opts) {
         ${(f.parts || []).map((part) => html`<${Control} key=${m.id + ':' + f.name + ':' + part.part + ':' + f.value}
           spec=${Object.assign({ key: f.name + '.' + part.part }, part)} disabled=${m.readOnly} texts=${texts} onRaw=${change(f, part.part)} />`)}
       </div>`)}
-      ${m.readOnly ? null : html`<label className="field"><span>Connect to</span>
-        <select value="" aria-label="Connect this node to" disabled=${targets.length === 0}
+      ${m.readOnly ? null : html`<label className="field"><span>${L.NEXT_STEP_LABEL}</span>
+        <select value="" aria-label="Choose the next step" disabled=${targets.length === 0}
           onChange=${(e) => { const t = e.target.value; if (t) act((cur) => L.connectTo(cur, { source: m.id, target: t }, nodeTypes)); }}>
-          <option value="">${targets.length ? 'Choose a node…' : 'No valid target'}</option>
+          <option value="">${targets.length ? 'Choose a node…' : L.NO_NEXT_STEP}</option>
           ${targets.map((t) => html`<option key=${t.id} value=${t.id}>${t.title}</option>`)}
         </select></label>`}
       <div className="row wrap">
@@ -276,12 +276,14 @@ export function mountEditor(el, opts) {
     const ro = L.isReadOnly(ed);
     return html`<div className="editor">
       <section className="card palette" ref=${palette} aria-label="Add a step">
+        ${groups.length ? html`<ul className="lane-legend" aria-label="Where a step runs">${LANES.map((l) => html`<li key=${l.domain} className=${'lane-chip lane-' + l.domain.toLowerCase()}>${l.label}</li>`)}</ul>` : null}
         ${groups.length ? groups.map((gr) => html`<fieldset key=${gr.category} className="palette-group"><legend>${gr.category}</legend>
-          ${gr.items.map((it) => html`<button type="button" key=${it.type} className=${'btn' + (ed.armed === it.type ? ' active' : '')} draggable="true"
+          ${gr.soon ? html`<p className="muted palette-soon">${L.SOON_TEXT}</p>` : null}
+          ${gr.items.map((it) => html`<button type="button" key=${it.type} className=${'btn pal-lane lane-' + it.lane.toLowerCase() + (ed.armed === it.type ? ' active' : '')} draggable="true"
             aria-pressed=${ed.armed === it.type}
             onDragStart=${(ev) => { ev.dataTransfer.setData('text/plain', it.type); ev.dataTransfer.effectAllowed = 'copy'; }}
             onPointerDown=${(ev) => { pointer.current = ev.pointerType; }}
-            title=${it.hint || undefined} aria-describedby=${it.hint ? 'hint-' + it.type : undefined}
+            title=${it.hint || 'Runs on: ' + laneLabel(it.lane)} aria-describedby=${it.hint ? 'hint-' + it.type : undefined}
             onClick=${() => { const touch = pointer.current === 'touch'; pointer.current = ''; act((cur) => (touch ? L.arm(cur, it.type, nodeTypes) : L.addFromPalette(cur, it.type, nodeTypes))); }}>${it.label}</button>`)}
           ${gr.items.filter((it) => it.hint).map((it) => html`<p key=${'h-' + it.type} id=${'hint-' + it.type} className="muted palette-hint">${it.hint}</p>`)}
         </fieldset>`) : html`<p className="muted">${ed.readOnly ? L.READ_ONLY_TEXT : 'Saving. Editing is paused.'}</p>`}

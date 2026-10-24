@@ -17,6 +17,12 @@ enum class Category(val label: String) {
     ACTIONS_CAPTURE("Actions/Capture"), AI_CLASSIFY("AI/Classify"), MEMORY("Memory"), DATA("Data"), CODE("Code"),
 }
 
+/**
+ * The generic flow every agentic build follows, whatever device runs it (specs/2026-10-24-generic-flow-families.md): the palette groups by these five.
+ * A node's lane ([Domain]) stays its own attribute. No type is an [AGGREGATE] yet (window and interval aggregates come with 3c E2).
+ */
+enum class Family(val label: String) { SOURCE("Source"), AGGREGATE("Aggregate"), PROCESS("Process"), CONDITION("Condition"), OUTCOME("Outcome") }
+
 enum class ExecutorKind { BUILTIN, EXPR, TABLE, PROMPT, EMBED, TOOL, EVENT, SIGNAL, PYTHON, DRAFT }
 
 data class CostSpec(val modelCalls: Int = 0, val rtOps: Int = 0, val cpuClass: String = "LOW")
@@ -49,6 +55,8 @@ data class NodeType(
     val hint: String = "",
     /** A composite (black-box) node's inner flow, shown by the editor when it expands; null for a plain node. Description only, never executed. */
     val inner: InnerFlow? = null,
+    /** The palette group (generic flow family); served as `family` next to the old `category`, which stays for saved views and tests. */
+    val family: Family = Family.PROCESS,
 )
 
 object NodeTypes {
@@ -91,58 +99,58 @@ object NodeTypes {
         (params["cases"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content } ?: emptyList()
 
     private val legacy: List<NodeType> = listOf(
-        NodeType(INPUT_PHOTOS, "Photo", emptySet(), PortType.PHOTOS, category = Category.INPUTS, short = "photos", palette = false, root = true, params = PhotoSettings.schema),
+        NodeType(INPUT_PHOTOS, "Photo", emptySet(), PortType.PHOTOS, category = Category.INPUTS, short = "photos", palette = false, root = true, params = PhotoSettings.schema, family = Family.SOURCE),
         NodeType(VISION_EXTRACT, "Facts from frames", setOf(PortType.PHOTOS, PortType.JSON), PortType.EXTRACTION, PromptKey.VISION_EXTRACT,
-            executor = ExecutorKind.PROMPT, short = "extract"),
+            executor = ExecutorKind.PROMPT, short = "extract", family = Family.PROCESS),
         NodeType(LOCAL_CRITIC, "Local trust check", setOf(PortType.EXTRACTION), PortType.EXTRACTION, branches = { listOf("trusted", "unsure") },
-            category = Category.CHECKS, short = "trust", params = LocalTrust.schema, inner = LocalTrust.inner),
+            category = Category.CHECKS, short = "trust", params = LocalTrust.schema, inner = LocalTrust.inner, family = Family.CONDITION),
         NodeType(CRITIC, "Critic", setOf(PortType.EXTRACTION), PortType.EXTRACTION, PromptKey.CRITIC, branches = { listOf("pass", "fail") },
-            executor = ExecutorKind.PROMPT, short = "critic"),
-        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt"),
-        NodeType(SWITCH, "Switch", setOf(PortType.JSON), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route"),
-        NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write"),
+            executor = ExecutorKind.PROMPT, short = "critic", family = Family.PROCESS),
+        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt", family = Family.PROCESS),
+        NodeType(SWITCH, "Switch", setOf(PortType.JSON), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route", family = Family.CONDITION),
+        NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", family = Family.OUTCOME),
     )
 
     private val capture: List<NodeType> = listOf(
         NodeType(IMU_HEAD_MOTION, "Head movement", emptySet(), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.SENSORS, short = "head", params = CaptureParams.headMotion, root = true, cost = CostSpec(rtOps = 1)),
+            category = Category.SENSORS, short = "head", params = CaptureParams.headMotion, root = true, cost = CostSpec(rtOps = 1), family = Family.SOURCE),
         NodeType(IMU_SETTLE, "Settle", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.SENSORS, short = "settle", params = CaptureParams.settle),
+            category = Category.SENSORS, short = "settle", params = CaptureParams.settle, family = Family.SOURCE),
         NodeType(GATE_THRESHOLD, "Threshold", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.THRESHOLDS_FILTERS, short = "thresh", params = CaptureParams.threshold),
+            category = Category.THRESHOLDS_FILTERS, short = "thresh", params = CaptureParams.threshold, family = Family.CONDITION),
         // E1 expression guard: the whole two-level graph is the one `graph` param (validated, no generated form: the editor is X5). SHADOW/TRIAL only.
         NodeType(EXPR_GUARD, "Guard (expression)", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.THRESHOLDS_FILTERS, executor = ExecutorKind.EXPR, short = "guard", params = ExprParams.guard, liveable = false, cost = CostSpec(rtOps = 1)),
+            category = Category.THRESHOLDS_FILTERS, executor = ExecutorKind.EXPR, short = "guard", params = ExprParams.guard, liveable = false, cost = CostSpec(rtOps = 1), family = Family.CONDITION),
         NodeType(GATE_NOVELTY, "Novelty", setOf(PortType.MOTION_EVENT), PortType.TRIGGER, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.THRESHOLDS_FILTERS, short = "novelty", params = CaptureParams.novelty),
+            category = Category.THRESHOLDS_FILTERS, short = "novelty", params = CaptureParams.novelty, family = Family.CONDITION),
         NodeType(HUB_CONTEXT, "Motion from context hub", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_PHONE,
-            category = Category.SIGNALS_HUB, short = "hub", params = CaptureParams.hub, root = true),
+            category = Category.SIGNALS_HUB, short = "hub", params = CaptureParams.hub, root = true, family = Family.SOURCE),
         NodeType(SIGNAL_IN, "Receive signal", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.SIGNALS_HUB, executor = ExecutorKind.SIGNAL, short = "sigin", params = CaptureParams.signalIn, domainFromParams = true),
+            category = Category.SIGNALS_HUB, executor = ExecutorKind.SIGNAL, short = "sigin", params = CaptureParams.signalIn, domainFromParams = true, family = Family.SOURCE),
         NodeType(SIGNAL_OUT, "Send signal", setOf(PortType.CONTEXT), PortType.SIGNAL, sinceSchema = 2, domain = Domain.RT_PHONE,
-            category = Category.SIGNALS_HUB, executor = ExecutorKind.SIGNAL, short = "sigout", params = CaptureParams.signalOut, domainFromParams = true),
+            category = Category.SIGNALS_HUB, executor = ExecutorKind.SIGNAL, short = "sigout", params = CaptureParams.signalOut, domainFromParams = true, family = Family.OUTCOME),
         NodeType(POLICY_CAPTURE_RATE, "Capture frequency by activity", setOf(PortType.MOTION_EVENT, PortType.TRIGGER, PortType.CONTEXT), PortType.TRIGGER,
             sinceSchema = 2, domain = Domain.RT_GLASSES, category = Category.POLICY_FREQUENCY, executor = ExecutorKind.TABLE, short = "rate",
-            params = CaptureParams.captureRate, mixedIn = true),
+            params = CaptureParams.captureRate, mixedIn = true, family = Family.OUTCOME),
         NodeType(GATE_RATE_CAP, "Rate cap", setOf(PortType.TRIGGER), PortType.TRIGGER, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.THRESHOLDS_FILTERS, short = "cap", params = CaptureParams.rateCap),
+            category = Category.THRESHOLDS_FILTERS, short = "cap", params = CaptureParams.rateCap, family = Family.CONDITION),
         NodeType(CAPTURE_IMAGE, "Capture image", setOf(PortType.TRIGGER), PortType.PHOTOS, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.ACTIONS_CAPTURE, short = "capture", params = CaptureParams.captureImage),
+            category = Category.ACTIONS_CAPTURE, short = "capture", params = CaptureParams.captureImage, family = Family.OUTCOME),
     )
 
     /** The python experiment node (S6 tier 3). In the palette since WP9 (the helper UI exists) but never liveable and never published; `entry` is the fixed function name `run`, not a param. */
     private val experiments: List<NodeType> = listOf(
         NodeType(INPUT_MOMENTS, "Moments", emptySet(), PortType.MOMENTS, sinceSchema = 2, domain = Domain.ASYNC, category = Category.INPUTS,
-            short = "moments", liveable = false, root = true, cost = CostSpec(modelCalls = 0)),
+            short = "moments", liveable = false, root = true, cost = CostSpec(modelCalls = 0), family = Family.SOURCE),
         NodeType(INPUT_SCENES, "Scenes", emptySet(), PortType.SCENES, sinceSchema = 2, domain = Domain.ASYNC, category = Category.INPUTS,
-            short = "scenes", liveable = false, root = true, cost = CostSpec(modelCalls = 0)),
+            short = "scenes", liveable = false, root = true, cost = CostSpec(modelCalls = 0), family = Family.SOURCE),
         NodeType(PY_FN, "Python (experiment)", setOf(PortType.JSON, PortType.MOMENTS, PortType.SCENES), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
             executor = ExecutorKind.PYTHON, short = "pyfn", liveable = false, cost = CostSpec(modelCalls = 0),
             hint = "Needs the laptop helper and your confirm tap on the phone for each run; never published to the glasses.",
             params = ParamSchema(listOf(
                 ParamSpec("source", ParamKind.TEXT, label = "Source", maxLen = 16000),
                 ParamSpec("outSchema", ParamKind.TEXT, label = "Output schema", maxLen = 4000),
-            ))),
+            )), family = Family.PROCESS),
     )
 
     val all: List<NodeType> = legacy + capture + experiments

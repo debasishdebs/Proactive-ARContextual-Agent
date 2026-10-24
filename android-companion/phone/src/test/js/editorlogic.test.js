@@ -202,11 +202,28 @@ export const tests = {
   aFocusesThePalette() {
     eq(E.keyDecision(open(), key('a'), nodeTypes).effect, { kind: 'palette' });
   },
-  paletteGroupsByCategory() {
+  paletteGroupsByFamily() {
     const g = E.paletteGroups(open(), nodeTypes);
-    eq(g.map((x) => x.category), ['AI', 'Checks', 'Routing', 'Memory']);
-    eq(g[0].items.map((i) => i.type), ['ai.vision_extract', 'ai.critic', 'ai.prompt']);
+    eq(g.map((x) => x.category), ['Source', 'Aggregate', 'Process', 'Condition', 'Outcome'], 'the five families in flow order, always');
+    eq(g.map((x) => x.soon), [true, true, false, false, false], 'a family with nothing in it says coming soon');
+    eq(g[2].items.map((i) => i.type), ['ai.vision_extract', 'ai.critic', 'ai.prompt']);
+    eq(g[3].items.map((i) => i.type), ['gate.local_critic', 'route.switch']);
+    eq(g[4].items.map((i) => i.type), ['memory.write']);
     ok(!g.some((x) => x.items.some((i) => i.type === 'input.photos')), 'palette:false is left out');
+    eq(g[2].items[0].lane, 'ASYNC', 'the lane stays an attribute of each item');
+  },
+  emptyFamiliesAreTextNotHiddenNodes() {
+    const g = E.paletteGroups(open(), nodeTypes);
+    const agg = g.find((x) => x.category === 'Aggregate');
+    eq([agg.items, agg.soon], [[], true]);
+    eq(E.SOON_TEXT, 'Coming soon');
+    ok(!E.paletteGroups(open(), nodeTypes.filter((t) => t.family !== 'Process')).some((x) => x.category === 'Process' && !x.soon), 'a family emptied of its types turns to coming soon');
+    const stray = Object.assign({}, nodeTypes[1], { type: 'x.new', label: 'New thing', family: undefined });
+    eq(E.paletteGroups(open(), nodeTypes.concat([stray])).pop().category, 'Other', 'a type with no family is still offered, under Other');
+    eq(E.paletteGroups(open({ readOnly: true }), nodeTypes), [], 'read-only: no palette');
+  },
+  nextStepWordingReplacesConnectTo() {
+    eq([E.NEXT_STEP_LABEL, E.NO_NEXT_STEP], ['Next step', 'No next step needed']);
   },
   photoNodeSettingsAreEditableInTheInspector() {
     const ed = E.selectNode(open(), 'photos');
@@ -384,35 +401,35 @@ export const tests = {
   paletteGroupsCaptureNodesByCategoryAndHidesUnliveable() {
     const types = allTypes.concat([Object.assign({}, captureTypes[0], { type: 'expr', label: 'Expression', liveable: false, category: 'Thresholds/Filters' })]);
     const g = E.paletteGroups(open(), types);
-    const names = g.map((x) => x.category);
-    for (const c of ['Sensors', 'Thresholds/Filters', 'Signals/Hub', 'Policy/Frequency', 'Actions/Capture']) ok(names.includes(c), c);
-    ok(g.find((x) => x.category === 'Actions/Capture').items.some((it) => it.label === 'Capture image'));
+    const at = (cat, label) => (g.find((x) => x.category === cat).items.find((it) => it.label === label) || {}).lane;
+    eq([at('Source', 'Head movement'), at('Condition', 'Threshold'), at('Source', 'Motion from context hub'), at('Outcome', 'Send signal'), at('Outcome', 'Capture frequency by activity'), at('Outcome', 'Capture image')],
+      ['RT_GLASSES', 'RT_GLASSES', 'RT_PHONE', 'RT_PHONE', 'RT_GLASSES', 'RT_GLASSES'], 'every capture node sits in its family and keeps its lane');
+    ok(g.every((x) => ['Source', 'Aggregate', 'Process', 'Condition', 'Outcome'].includes(x.category)), 'no old category names are left');
     ok(!JSON.stringify(g).includes('Expression'), 'an expression node (not liveable until 3c) is not offered');
     ok(!JSON.stringify(g).includes('input.photos') && !JSON.stringify(g).includes('"Photo"'), 'the Photo input stays out of the palette');
   },
   paletteOffersThePythonExperimentUnderCodeWithItsHint() {
     const hint = 'Needs the laptop helper and your confirmation on the phone for each run; never published to the glasses.';
     const py = Object.assign({}, captureTypes[0], { type: 'py.fn', label: 'Python (experiment)', short: 'pyfn', inputs: ['JSON'], output: 'JSON', root: false, domain: 'ASYNC', executor: 'PYTHON',
-      category: 'Code', liveable: false, hint, params: [{ name: 'source', kind: 'text', label: 'Source', maxLen: 16000 }, { name: 'outSchema', kind: 'text', label: 'Output schema', maxLen: 4000 }] });
+      category: 'Code', family: 'Process', liveable: false, hint, params: [{ name: 'source', kind: 'text', label: 'Source', maxLen: 16000 }, { name: 'outSchema', kind: 'text', label: 'Output schema', maxLen: 4000 }] });
     const expr = Object.assign({}, captureTypes[0], { type: 'expr', label: 'Expression', liveable: false, executor: 'EXPR', category: 'Thresholds/Filters' });
     const types = allTypes.concat([py, expr]);
     const g = E.paletteGroups(open(), types);
-    const code = g.find((x) => x.category === 'Code');
-    ok(code, 'a Code group');
-    eq(code.items, [{ type: 'py.fn', label: 'Python (experiment)', hint }]);
+    const code = g.find((x) => x.category === 'Process');
+    eq(code.items.pop(), { type: 'py.fn', label: 'Python (experiment)', lane: 'ASYNC', hint }, 'the experiment node is a Process node and keeps its hint');
     ok(!JSON.stringify(g).includes('Expression'), 'an unliveable non-python type stays hidden');
-    ok(g.filter((x) => x.category !== 'Code').every((x) => x.items.every((i) => !i.hint)), 'other items carry no hint');
+    ok(g.every((x) => x.items.every((i) => i.type === 'py.fn' || !i.hint)), 'other items carry no hint');
     // adding it from the palette gives a node with empty source and outSchema (the validator asks for them) and the registry short id
     const ed = E.addFromPalette(E.selectNode(open(), 'extract'), 'py.fn', types);
     const n = ed.ds.pipe.nodes.find((x) => x.type === 'py.fn');
     ok(n, 'py.fn node added'); eq(n.params, { source: '', outSchema: '' }); ok(n.id.startsWith('pyfn'), 'id from short: ' + n.id);
   },
   paletteOffersTheScenesInputUnderInputs() {
-    const root = { liveable: false, root: true, domain: 'ASYNC', executor: 'BUILTIN', category: 'Inputs', inputs: [], branches: [], params: [] };
+    const root = { liveable: false, root: true, domain: 'ASYNC', executor: 'BUILTIN', category: 'Inputs', family: 'Source', inputs: [], branches: [], params: [] };
     const scenes = Object.assign({}, captureTypes[0], root, { type: 'input.scenes', label: 'Scenes', short: 'scenes', output: 'SCENES' });
     const moments = Object.assign({}, captureTypes[0], root, { type: 'input.moments', label: 'Moments', short: 'moments', output: 'MOMENTS' });
     const g = E.paletteGroups(open(), allTypes.concat([scenes, moments]));
-    eq(g.find((x) => x.category === 'Inputs').items, [{ type: 'input.scenes', label: 'Scenes' }], 'Scenes is offered; the Photo input and (unchanged) the Moments input are not');
+    eq(g.find((x) => x.category === 'Source').items.filter((i) => i.type.startsWith('input.')), [{ type: 'input.scenes', label: 'Scenes', lane: 'ASYNC' }], 'Scenes is offered; the Photo input and (unchanged) the Moments input are not');
     // adding it gives a root node with no params and the registry short id
     const ed = E.addFromPalette(open(), 'input.scenes', allTypes.concat([scenes]));
     const n = ed.ds.pipe.nodes.find((x) => x.type === 'input.scenes');

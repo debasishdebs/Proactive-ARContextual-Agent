@@ -189,19 +189,27 @@ export function refusalFromConnectionState(cs, pipe, nodeTypes) {
 
 // ---------------------------------------------------------------- palette
 
-/** [{category, items:[{type, label, hint?}]}] for the palette; empty when read-only. */
+/** The generic flow (specs/2026-10-24-generic-flow-families.md): the palette groups are these five, in this order; a node's lane is an attribute of its item, not a group. */
+export const FAMILIES = ['Source', 'Aggregate', 'Process', 'Condition', 'Outcome'];
+export const SOON_TEXT = 'Coming soon';
+/** The wording of the inspector's chooser for the following node (the last node has none to pick). */
+export const NEXT_STEP_LABEL = 'Next step';
+export const NO_NEXT_STEP = 'No next step needed';
+
+/** [{category, soon, items:[{type, label, lane, hint?}]}] for the palette: always the five families (an empty one is `soon`); a type with no family goes under Other. Empty when read-only. */
 export function paletteGroups(ed, nodeTypes) {
   if (isReadOnly(ed)) return [];
-  const groups = [];
+  const groups = FAMILIES.map((category) => ({ category, soon: false, items: [] }));
+  const other = { category: 'Other', soon: false, items: [] };
   for (const t of nodeTypes || []) {
     // `expr` is registered but hidden until 3c; the python experiment node and the Scenes input are the unliveable types offered (S6 keeps them out of every publish)
     if (!t.palette || (t.liveable === false && t.executor !== 'PYTHON' && t.type !== 'input.scenes')) continue;
-    const cat = String(t.category || 'Other');
-    let g = groups.find((x) => x.category === cat);
-    if (!g) { g = { category: cat, items: [] }; groups.push(g); }
-    g.items.push(t.hint ? { type: t.type, label: t.label, hint: t.hint } : { type: t.type, label: t.label });
+    const g = groups.find((x) => x.category === t.family) || other;
+    const lane = t.domain || 'ASYNC';
+    g.items.push(t.hint ? { type: t.type, label: t.label, lane, hint: t.hint } : { type: t.type, label: t.label, lane });
   }
-  return groups;
+  for (const g of groups) g.soon = g.items.length === 0;
+  return other.items.length ? groups.concat(other) : groups;
 }
 
 /** Adds a node of `type` after the selected node (if one is selected), and selects it. */
