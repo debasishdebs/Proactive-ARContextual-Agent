@@ -13,6 +13,8 @@ class JsEditorTest {
     @Test fun editorLogicTests() = JsHarness.assertAllPass("editorlogic.test.js")
     @Test fun flowEditorLoadTests() = JsHarness.assertAllPass("floweditor.test.js")
     @Test fun exprGraphTests() = JsHarness.assertAllPass("exprgraph.test.js")
+    @Test fun mergedFlowTests() = JsHarness.assertAllPass("mergedflow.test.js")
+    @Test fun mergedUiTests() = JsHarness.assertAllPass("merged-ui.test.js")
     @Test fun editorFlowTests() = JsHarness.assertAllPass("editorflow.test.js")
 
     @Test fun aFileWithoutTestsFails() {
