@@ -27,6 +27,17 @@ object PlanJson {
     )
 
     fun configJson(c: PlanConfig): JsonObject = JsonObject(
+        buildMap {
+            putAll(baseConfig(c))
+            // Only schema-2 plans carry these keys: a schema-1 config keeps its exact bytes and hash (F2).
+            if (c.exprs.isNotEmpty()) {
+                put("exprs", kotlinx.serialization.json.JsonArray(c.exprs))
+                put("sigSchema", JsonPrimitive(c.sigSchema))
+            }
+        },
+    )
+
+    private fun baseConfig(c: PlanConfig): Map<String, kotlinx.serialization.json.JsonElement> =
         mapOf(
             "glance" to c.glance.let { g ->
                 JsonObject(
@@ -66,8 +77,7 @@ object PlanJson {
             ),
             "ctxBound" to JsonPrimitive(c.ctxBound),
             "phoneFusion" to JsonObject(c.phoneFusion.mapValues { JsonPrimitive(it.value) }),
-        ),
-    )
+        )
 
     /** 12 hex of SHA-256 over the canonical `config` JSON. The meta block never changes it. */
     fun configHash(c: PlanConfig): String =
@@ -168,8 +178,14 @@ object PlanJson {
         val gate = GateBlock(gt.int("bigChange"), gt.int("hamming"), gt.str("ringCompare")).also { gt.done() }
         val ctxBound = c.bool("ctxBound")
         val fusion = c.obj("phoneFusion").let { f -> f.markOpen(); f.entries().mapValues { num(it.value, "phoneFusion.${it.key}") } }
+        val exprs = c.takeOpt("exprs")?.let { x ->
+            require(x is kotlinx.serialization.json.JsonArray) { "$path.exprs is not an array" }
+            x.mapIndexed { i, r -> r as? JsonObject ?: throw IllegalArgumentException("$path.exprs[$i] is not an object") }
+        } ?: emptyList()
+        val sig = c.takeOpt("sigSchema")?.let { intOf(it, "$path.sigSchema") } ?: 0
+        require(exprs.isEmpty() == (sig == 0)) { "$path.sigSchema must be present exactly when exprs is" }
         c.done()
-        return PlanConfig(glance, policy, gate, ctxBound, fusion)
+        return PlanConfig(glance, policy, gate, ctxBound, fusion, exprs, sig)
     }
 
     internal fun num(e: JsonElement, path: String): Double {
