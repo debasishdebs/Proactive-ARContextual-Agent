@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DeletionEpoch
 import com.rokid.context.memory.db.ObjectDao.WriteOutcome
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -56,5 +57,22 @@ class DerivedGuardTest {
         assertEquals(0, audit.audit(o).count { it.op == AuditOp.DERIVED_BUILT && it.seq > seq + 1 })
         // a derive started after the change succeeds
         assertEquals(WriteOutcome.WRITTEN, write(fence(), audit.inputSeq(o))); assertEquals("v", audit.readDerived(o, DerivedField.SUMMARY)?.value)
+    }
+
+    /** A derive paused in its port, Delete all, the SAME object id recreated with the SAME input sequence: the old derive must still be refused and nothing written. */
+    @Test fun aPausedDeriveFinishingAfterDeleteAllAndARecreatedObjectIsRefused() = runBlocking<Unit> {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>(); val inPort = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val reg = DeriveRegistry(); reg.register("FAKE", summarize = SummarizeInput { inPort.complete(Unit); gate.await(); DerivedWrite(DerivedField.SUMMARY, value = "FORGOTTEN content", builtRev = 1) })
+        audit.record(o, AuditOp.BUILT, AuditStep.BUILD)
+        val runner = DeriveRunner(audit, reg) { fence() }
+        val seqAtStart = audit.inputSeq(o)
+        val result = async(kotlinx.coroutines.Dispatchers.Default) { runner.rebuildOutcome(o, DerivedField.SUMMARY) }
+        inPort.await()
+        generation++; db.wipeDao().wipeMemory()
+        audit.record(o, AuditOp.BUILT, AuditStep.BUILD) // the same id again, the same input sequence as when the derive started
+        assertEquals(seqAtStart, audit.inputSeq(o))
+        gate.complete(Unit)
+        assertEquals(WriteOutcome.OBSOLETE_GENERATION, result.await())
+        assertNull(audit.readDerived(o, DerivedField.SUMMARY)); assertEquals(0, db.objectDao().derivedCount()); assertEquals(1, db.objectDao().auditCount())
     }
 }
