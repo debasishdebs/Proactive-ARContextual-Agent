@@ -5,7 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS, SCENES }
+enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS, SCENES, SUMMARY, NUMBER }
 
 /** Where a node runs (slice 3 section 2). A `signal.*` node's domain is its `params.domain`, per instance. */
 enum class Domain { RT_GLASSES, RT_PHONE, ASYNC, REPLAY_ONLY }
@@ -19,7 +19,7 @@ enum class Category(val label: String) {
 
 /**
  * The generic flow every agentic build follows, whatever device runs it (specs/2026-10-24-generic-flow-families.md): the palette groups by these five.
- * A node's lane ([Domain]) stays its own attribute. No type is an [AGGREGATE] yet (window and interval aggregates come with 3c E2).
+ * A node's lane ([Domain]) stays its own attribute. The first [AGGREGATE] is `agg.window` (phone side); interval aggregates on the glasses come with 3c E2.
  */
 enum class Family(val label: String) { SOURCE("Source"), AGGREGATE("Aggregate"), PROCESS("Process"), CONDITION("Condition"), OUTCOME("Outcome") }
 
@@ -68,6 +68,15 @@ object NodeTypes {
     const val SWITCH = "route.switch"
     const val MEMORY_WRITE = "memory.write"
 
+    /** Process: one short summary per item, with a confidence (SUMMARY output); see [SummaryNode]. */
+    const val SUMMARY = "proc.summary"
+
+    /** Aggregate: mean, min, max or count of one sensor feature over the last N items of a Scenes or Moments input (NUMBER output); see [WindowAggregate]. */
+    const val AGG_WINDOW = "agg.window"
+
+    /** Condition: compares the NUMBER of a [AGG_WINDOW] with a cutoff and branches yes or no (the number passes through). */
+    const val COMPARE = "gate.compare"
+
     const val EXPR_GUARD = "expr.guard"
     const val IMU_HEAD_MOTION = "imu.head_motion"
     const val IMU_SETTLE = "imu.settle"
@@ -102,13 +111,21 @@ object NodeTypes {
         NodeType(INPUT_PHOTOS, "Photo", emptySet(), PortType.PHOTOS, category = Category.INPUTS, short = "photos", palette = false, root = true, params = PhotoSettings.schema, family = Family.SOURCE),
         NodeType(VISION_EXTRACT, "Facts from frames", setOf(PortType.PHOTOS, PortType.JSON), PortType.EXTRACTION, PromptKey.VISION_EXTRACT,
             executor = ExecutorKind.PROMPT, short = "extract", inner = ExtractComposite.inner, family = Family.PROCESS),
-        NodeType(LOCAL_CRITIC, "Local trust check", setOf(PortType.EXTRACTION), PortType.EXTRACTION, branches = { listOf("trusted", "unsure") },
+        NodeType(LOCAL_CRITIC, "Local trust check", setOf(PortType.EXTRACTION, PortType.SUMMARY), PortType.EXTRACTION, branches = { listOf("trusted", "unsure") },
             category = Category.CHECKS, short = "trust", params = LocalTrust.schema, inner = LocalTrust.inner, family = Family.CONDITION),
         NodeType(CRITIC, "Critic", setOf(PortType.EXTRACTION), PortType.EXTRACTION, PromptKey.CRITIC, branches = { listOf("pass", "fail") },
             executor = ExecutorKind.PROMPT, short = "critic", inner = CriticComposite.inner, family = Family.PROCESS),
-        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt", family = Family.PROCESS),
+        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES, PortType.MOMENTS), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt", family = Family.PROCESS),
+        // new in v0.9.4: a schema-2 type (a v1 graph never holds it), no params and no prompt of its own; its executor is the phone-side text path of `ai.prompt`
+        NodeType(SUMMARY, "Summary", setOf(PortType.JSON, PortType.EXTRACTION, PortType.MOMENTS, PortType.SCENES), PortType.SUMMARY, sinceSchema = 2, executor = ExecutorKind.PROMPT,
+            short = "summary", family = Family.PROCESS),
+        // v0.9.4, phone-side, deterministic, no model: the first Aggregate, and the Condition that reads its number
+        NodeType(AGG_WINDOW, "Window aggregate", setOf(PortType.SCENES, PortType.MOMENTS), PortType.NUMBER, sinceSchema = 2, category = Category.DATA, short = "window",
+            params = WindowAggregate.schema, family = Family.AGGREGATE),
+        NodeType(COMPARE, "Compare number", setOf(PortType.NUMBER), PortType.NUMBER, branches = { listOf("yes", "no") }, sinceSchema = 2, category = Category.CHECKS, short = "compare",
+            params = NumberCompare.schema, family = Family.CONDITION),
         NodeType(SWITCH, "Switch", setOf(PortType.JSON), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route", family = Family.CONDITION),
-        NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", inner = MemoryWriteComposite.inner, family = Family.OUTCOME),
+        NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION, PortType.SUMMARY), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", inner = MemoryWriteComposite.inner, family = Family.OUTCOME),
     )
 
     private val capture: List<NodeType> = listOf(
