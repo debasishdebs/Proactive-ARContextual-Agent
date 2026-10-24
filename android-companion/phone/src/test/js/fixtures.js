@@ -30,6 +30,21 @@ export const localCriticInner = {
   exposed: [{ param: 'aggregate', node: 'aggregate' }, { param: 'operator', node: 'compare' }, { param: 'cutoff', node: 'cutoff' }],
 };
 
+// what /api/node-types serves for ai.vision_extract (CanvasBackendImplTest checks the real JSON): the batch default is today's (absent = 1); the prompt is not exposed
+export const visionExtractParams = [{ name: 'batch', kind: 'int', min: 1, max: 3, default: 1 }, { name: 'prompt', kind: 'prompt' }];
+export const visionExtractInner = {
+  nodes: [
+    { id: 'frames', label: 'Frames in', kind: 'source' }, { id: 'batch', label: 'Frames per call', kind: 'op' }, { id: 'prompt', label: 'Vision prompt', kind: 'op' },
+    { id: 'model', label: 'Model call', kind: 'op' }, { id: 'retry', label: 'Retry one by one', kind: 'op' }, { id: 'parse', label: 'Parse facts', kind: 'op' },
+  ],
+  wires: [
+    { from: 'frames', to: 'batch', port: '' }, { from: 'batch', to: 'prompt', port: '' }, { from: 'prompt', to: 'model', port: '' },
+    { from: 'model', to: 'retry', port: 'bad batch' }, { from: 'model', to: 'parse', port: 'valid' }, { from: 'retry', to: 'parse', port: '' },
+  ],
+  exposed: [{ param: 'batch', node: 'batch' }],
+  note: ['Read only except the batch size: the vision prompt (live or draft) is chosen in the inspector.', 'A bad batch is asked again one frame per call.'],
+};
+
 // what /api/node-types serves for input.photos (CanvasBackendImplTest checks the real JSON); every default is today's behaviour
 export const photoParams = [
   { name: 'source', kind: 'enum', label: 'Source', options: ['glasses', 'all'], default: 'glasses' },
@@ -41,7 +56,7 @@ export const photoParams = [
 export const nodeTypes = [
   t('input.photos', 'Photo', 'photos', [], 'PHOTOS', { palette: false, category: 'Inputs', params: photoParams }),
   t('ai.vision_extract', 'Facts from frames', 'extract', ['PHOTOS', 'JSON'], 'EXTRACTION', {
-    params: [{ name: 'batch', kind: 'int', min: 1, max: 3 }, { name: 'prompt', kind: 'prompt' }],
+    params: visionExtractParams, inner: visionExtractInner,
   }),
   t('gate.local_critic', 'Local trust check', 'trust', ['EXTRACTION'], 'EXTRACTION', { branches: ['trusted', 'unsure'], category: 'Checks', params: localCriticParams, inner: localCriticInner }),
   t('ai.critic', 'Critic', 'critic', ['EXTRACTION'], 'EXTRACTION', { branches: ['pass', 'fail'], params: [{ name: 'prompt', kind: 'prompt' }] }),

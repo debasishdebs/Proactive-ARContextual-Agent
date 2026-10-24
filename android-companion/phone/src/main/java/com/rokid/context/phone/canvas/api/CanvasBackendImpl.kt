@@ -4,6 +4,7 @@ import android.content.Context
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.contract.PromptKey
+import com.rokid.context.ai.canvas.ExtractComposite
 import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.FrameFact
@@ -258,6 +259,7 @@ class CanvasBackendImpl(
         put("nodes", JsonArray(f.nodes.map { n -> buildJsonObject { put("id", n.id); put("label", n.label); put("kind", n.kind) } }))
         put("wires", JsonArray(f.wires.map { w -> buildJsonObject { put("from", w.from); put("to", w.to); put("port", w.port) } }))
         put("exposed", JsonArray(f.exposed.map { e -> buildJsonObject { put("param", e.param); put("node", e.node) } }))
+        if (f.note.isNotEmpty()) put("note", JsonArray(f.note.map { JsonPrimitive(it) }))
     }
 
     private fun paramJson(s: ParamSpec): JsonObject = buildJsonObject {
@@ -294,7 +296,7 @@ class CanvasBackendImpl(
 
     /** The slice 2 types keep their editor param descriptors here (their v1 descriptors have no [ParamSchema]). */
     private fun paramsOf(type: String): List<JsonObject> = when (type) {
-        NodeTypes.VISION_EXTRACT -> listOf(param("batch", "int", mapOf("min" to 1, "max" to ExtractSave.MAX_BATCH)), param("prompt", "prompt"))
+        NodeTypes.VISION_EXTRACT -> listOf(JsonObject(param("batch", "int", mapOf("min" to 1, "max" to ExtractSave.MAX_BATCH)) + ("default" to JsonPrimitive(ExtractComposite.DEFAULT_BATCH))), param("prompt", "prompt"))
         NodeTypes.CRITIC -> listOf(param("prompt", "prompt"))
         NodeTypes.PROMPT -> listOf(param("role", "role"), param("template", "text"), param("schema", "schema"), param("images", "bool"), param("name", "text"))
         NodeTypes.SWITCH -> listOf(JsonObject(param("field", "text") + ("default" to JsonPrimitive("activity"))), param("cases", "labels"))

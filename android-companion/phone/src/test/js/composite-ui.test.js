@@ -2,7 +2,7 @@
 // collapse/expand, the inner boxes and wires, exposed params as inputs inside the owning box (defaults shown), edits reported to the host, labels as text.
 import { mountComposite, layout } from '../../main/assets/canvas/compositeview.js';
 import { findAll, find } from './fake-dom.js';
-import { eq, ok, localCriticParams, localCriticInner } from './fixtures.js';
+import { eq, ok, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner } from './fixtures.js';
 import * as E from './env.js';
 
 const cls = (el, c) => el.classList.contains(c);
@@ -135,5 +135,29 @@ export const tests = {
   everyExposedParamNamesARealDescriptorAndBox() {
     const i = inner(); const names = descriptors.map((d) => d.name); const ids = i.nodes.map((n) => n.id);
     for (const e of i.exposed) ok(names.includes(e.param) && ids.includes(e.node), e.param);
+  },
+  // ---- phase B: a composite whose prompt stays in the inspector and whose boxes are mostly read only
+  factsFromFramesShowsOnlyTheBatchAsAnInputWithTodaysDefault() {
+    mount({ title: 'Facts from frames', inner: JSON.parse(JSON.stringify(visionExtractInner)), descriptors: visionExtractParams }, ({ root, w }) => {
+      w.expand();
+      eq(boxes(root).length, 6); eq(wires(root).length, 6);
+      const all = controls(root);
+      eq(all.length, 1, 'only the batch is editable');
+      eq(controls(box(root, 'batch'))[0].value, '1'); eq(controls(box(root, 'batch'))[0].getAttribute('max'), '3');
+      ok(all[0].getAttribute('aria-label').includes('default 1'));
+      eq(controls(box(root, 'prompt')).length, 0, 'the prompt box is read only');
+      ok(E.textOf(root).includes('bad batch') && E.textOf(root).includes('Retry one by one'));
+    });
+  },
+  aNoteIsDrawnAsTextBelowTheBoxesAndCountedInTheHeight() {
+    const withNote = layout(JSON.parse(JSON.stringify(visionExtractInner)));
+    const i = JSON.parse(JSON.stringify(visionExtractInner)); delete i.note;
+    ok(withNote.height > layout(i).height, 'the note makes room for itself');
+    mount({ inner: JSON.parse(JSON.stringify(visionExtractInner)), descriptors: visionExtractParams }, ({ root, w }) => {
+      w.expand();
+      ok(E.textOf(root).includes('Read only except the batch size') && E.textOf(root).includes('asked again one frame per call'));
+      eq(findAll(root, (e) => cls(e, 'comp-note')).length, 2);
+    });
+    mount({}, ({ root, w }) => { w.expand(); eq(findAll(root, (e) => cls(e, 'comp-note')).length, 0, 'no note, nothing drawn'); });
   },
 };
