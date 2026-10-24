@@ -110,12 +110,17 @@ abstract class CanvasDao {
     }
 
     /** Fenced run-item (and score) commit of the experiment runner (S24): same fence as [commitTracesFenced]. */
-    @Transaction open suspend fun insertRunItemsFenced(rows: List<CanvasRunItemEntity>, scores: List<CanvasScoreEntity>, generation: Long, frameIds: Set<String>, currentGeneration: () -> Long): Boolean {
+    @Transaction open suspend fun insertRunItemsFenced(rows: List<CanvasRunItemEntity>, scores: List<CanvasScoreEntity>, generation: Long, frameIds: Set<String>, labelIds: Set<String> = emptySet(), currentGeneration: () -> Long): Boolean {
         if (!fenceHolds(generation, frameIds + rows.map { it.frameId } + scores.map { it.frameId }, currentGeneration)) return false
+        if (labelIds.isNotEmpty() && labelsMissing(labelIds) > 0) return false // a run over a mark: the mark was deleted while the call waited
         rows.forEach { upsertItem(it) }
         scores.forEach { upsertScore(it) }
         return true
     }
+
+    /** How many of [ids] are not labels (marks) any more. */
+    open suspend fun labelsMissing(ids: Collection<String>): Int = ids.distinct().let { u -> u.size - u.chunked(CHUNK).sumOf { labelsAmong(it).size } }
+    @Query("SELECT labelId FROM canvas_label WHERE labelId IN (:ids)") protected abstract suspend fun labelsAmong(ids: List<String>): List<String>
 
     private suspend fun fenceHolds(generation: Long, frameIds: Set<String>, currentGeneration: () -> Long): Boolean {
         if (currentGeneration() != generation) return false

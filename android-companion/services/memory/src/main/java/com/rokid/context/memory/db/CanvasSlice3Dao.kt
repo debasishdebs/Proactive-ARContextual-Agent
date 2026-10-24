@@ -132,10 +132,21 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         return true
     }
 
+    // The run rows of a Moment run list every mark of a MARK Moment (and of the Moments of a Scene run) as an `mf:<labelId>` lineage token. ONE helper deletes them; every path that deletes a label calls it.
+    @Query("DELETE FROM canvas_score WHERE EXISTS (SELECT 1 FROM canvas_run_item i WHERE i.runId = canvas_score.runId AND i.frameId = canvas_score.frameId AND i.nodeId = canvas_score.nodeId AND i.batchId IS NOT NULL AND instr('|' || i.batchId || '|', '|' || :token || '|') > 0)")
+    protected abstract suspend fun deleteScoresOfLineageToken(token: String): Int
+    @Query("DELETE FROM canvas_run_item WHERE batchId IS NOT NULL AND instr('|' || batchId || '|', '|' || :token || '|') > 0") protected abstract suspend fun deleteItemsOfLineageToken(token: String): Int
+    @Query("DELETE FROM canvas_live_trace WHERE batchId IS NOT NULL AND instr('|' || batchId || '|', '|' || :token || '|') > 0") protected abstract suspend fun deleteTracesOfLineageToken(token: String): Int
+
+    /** Deletes every run row (items, scores, live traces) whose lineage lists one of these labels. Call it in the transaction that deletes the labels. */
+    @Transaction open suspend fun deleteRunRowsOfLabels(labelIds: Collection<String>) {
+        for (id in labelIds.distinct()) { val t = "mf:$id"; deleteScoresOfLineageToken(t); deleteItemsOfLineageToken(t); deleteTracesOfLineageToken(t) }
+    }
+
     /** Deletes one label; the results computed under the old labels (they embody it) are invalidated in the same transaction. */
     @Transaction open suspend fun deleteLabel(id: String): Boolean {
         val n = deleteLabelRow(id)
-        if (n > 0) { bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)) }
+        if (n > 0) { deleteRunRowsOfLabels(listOf(id)); bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)) }
         return n > 0
     }
 
@@ -159,7 +170,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         if (frameIds.isEmpty()) return 0
         val gone = frameIds.chunked(CHUNK).flatMap { labelIdsOfFrames(it) }
         val n = frameIds.chunked(CHUNK).sumOf { deleteLabelRowsForFrames(it) }
-        if (n > 0) { bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
+        if (n > 0) { deleteRunRowsOfLabels(gone); bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
         return n
     }
 
@@ -167,7 +178,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
     @Transaction open suspend fun deleteLabelsBetween(fromMs: Long, toMs: Long): Int {
         val gone = labelIdsBetweenTimes(fromMs, toMs)
         val n = deleteLabelRowsBetween(fromMs, toMs)
-        if (n > 0) { bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
+        if (n > 0) { deleteRunRowsOfLabels(gone); bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
         return n
     }
 
