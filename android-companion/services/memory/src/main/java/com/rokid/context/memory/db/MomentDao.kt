@@ -17,7 +17,7 @@ abstract class MomentDao {
     @Query("SELECT * FROM moment_part WHERE momentId = :id ORDER BY kind, refId") abstract suspend fun parts(id: String): List<MomentPartEntity>
     @Query("SELECT * FROM moment_part WHERE momentId IN (:ids) ORDER BY momentId, kind, refId") abstract suspend fun partsOf(ids: List<String>): List<MomentPartEntity>
     @Query("SELECT momentId FROM moment WHERE momentId >= :fromId AND momentId <= :toId ORDER BY momentId") abstract suspend fun momentIdsBetween(fromId: String, toId: String): List<String>
-    @Query("SELECT momentId FROM moment_part WHERE kind = :kind AND refId IN (:refIds)") abstract suspend fun momentIdsHolding(kind: String, refIds: List<String>): List<String>
+    @Query("SELECT DISTINCT momentId FROM moment_part WHERE kind IN (:kinds) AND refId IN (:refIds)") abstract suspend fun momentIdsHolding(kinds: List<String>, refIds: List<String>): List<String>
     @Query("DELETE FROM moment_part WHERE momentId IN (:ids)") abstract suspend fun deleteParts(ids: List<String>)
     @Query("DELETE FROM moment WHERE momentId IN (:ids)") abstract suspend fun deleteMoments(ids: List<String>)
     @Query("DELETE FROM moment_trace_dep WHERE momentId IN (:ids)") abstract suspend fun deleteTraceDeps(ids: List<String>)
@@ -34,6 +34,29 @@ abstract class MomentDao {
 
     /** Removes [ids] and everything that hangs on them (parts, trace deps). */
     @Transaction open suspend fun remove(ids: List<String>) = ids.chunked(CHUNK).forEach { deleteParts(it); deleteTraceDeps(it); deleteMoments(it) }
+
+    /**
+     * Source-to-projection cleanup: removes every stored Moment that holds one of these deleted (or invalidated) sources, so a projection never keeps a reference to something Forget
+     * removed. The projection is rebuildable, so removing the whole Moment (not one part) also drops its now-stale content hash. Returns the Moment ids removed.
+     */
+    @Transaction open suspend fun dropHolding(frameIds: Collection<String>, memoryIds: Collection<String>, labelIds: Collection<String> = emptyList()): List<String> {
+        val ids = LinkedHashSet<String>()
+        frameIds.toList().chunked(CHUNK).forEach { c -> ids += momentIdsHolding(listOf(MomentPartKind.FRAME, MomentPartKind.CITE), c + c.map { "frame:$it" }) }
+        memoryIds.toList().chunked(CHUNK).forEach { c -> ids += momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), c) }
+        labelIds.toList().chunked(CHUNK).forEach { c -> ids += momentIdsHolding(listOf(MomentPartKind.MARK), c) }
+        remove(ids.toList())
+        return ids.toList()
+    }
+
+    /** Removes every stored Moment whose second lies in `[fromMs, toMs]` (a Forget of that time). Returns the Moment ids removed. */
+    @Transaction open suspend fun dropBetween(fromMs: Long, toMs: Long): List<String> {
+        if (toMs < 0) return emptyList()
+        val lo = com.rokid.context.canvas.moment.MomentId.format(Math.floorDiv(maxOf(fromMs, 0L), 1000L).coerceAtMost(com.rokid.context.canvas.moment.MomentId.MAX_SECOND))
+        val hi = com.rokid.context.canvas.moment.MomentId.format(Math.floorDiv(toMs, 1000L).coerceAtMost(com.rokid.context.canvas.moment.MomentId.MAX_SECOND))
+        val ids = momentIdsBetween(lo, hi)
+        remove(ids)
+        return ids
+    }
 
     // --- tombstones ---
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertTombstones(t: List<MomentTombstoneEntity>)

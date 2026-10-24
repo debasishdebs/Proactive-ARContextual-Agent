@@ -36,10 +36,22 @@ abstract class CanvasSlice3Dao {
     /** Every time range the user forgot (merged). Delete all clears it (the epoch fence covers everything before it). */
     open suspend fun forgottenRanges(): List<LongRange> = parseRanges(meta(FORGET_RANGES))
 
-    private suspend fun addForgetRange(from: Long, to: Long) {
-        val merged = mergeRanges(parseRanges(meta(FORGET_RANGES)) + listOf(minOf(from, to)..maxOf(from, to)))
-        setMeta(FORGET_RANGES, merged.joinToString(";") { "${it.first}-${it.last}" })
+    private suspend fun addForgetRange(from: Long, to: Long) = addRange(FORGET_RANGES, from, to)
+
+    private suspend fun addRange(key: String, from: Long, to: Long) {
+        val merged = mergeRanges(parseRanges(meta(key)) + listOf(minOf(from, to)..maxOf(from, to)))
+        setMeta(key, merged.joinToString(";") { "${it.first}-${it.last}" })
     }
+
+    // --- the Moment Forget fence (Moment model phase 1): the outward-rounded full-second ranges the user asked to forget through Moment Forget, kept apart from `forgetRanges` because
+    // that one also holds the +-10 s widening around every forgotten photo (a burst neighbour must still be admitted). Delete all empties it (the deletion epoch covers what came before).
+    /** Persists the Moment Forget range FIRST in the Forget transaction: a frame, mark or builder run for that time is refused from now on, whatever its arrival order. */
+    @Transaction open suspend fun addMomentForgetRange(fromMs: Long, toMs: Long) = addRange(MOMENT_FORGET_RANGES, fromMs, toMs)
+
+    open suspend fun momentForgetRanges(): List<LongRange> = parseRanges(meta(MOMENT_FORGET_RANGES))
+
+    /** True when [fromMs, toMs] touches a range that Moment Forget fenced. Call inside the committing transaction. */
+    open suspend fun momentFenced(fromMs: Long, toMs: Long): Boolean = momentForgetRanges().any { it.first <= toMs && it.last >= fromMs }
 
     /** True when [atMs] lies inside a forgotten range: a mark, a voice command or a trace for that time must not come back. */
     open suspend fun isForgotten(atMs: Long): Boolean = forgottenRanges().any { atMs in it }
@@ -586,6 +598,7 @@ abstract class CanvasSlice3Dao {
         const val LABEL_REV = "labelRev"
         const val FRAME_FORGET_REV = "frame_forget_rev"
         const val FORGET_RANGES = "forgetRanges"
+        const val MOMENT_FORGET_RANGES = "momentForgetRanges"
         const val MAX_RANGES = 200
         fun parseRanges(text: String?): List<LongRange> = text.orEmpty().split(';').mapNotNull { p ->
             val i = p.indexOf('-', 1).takeIf { it > 0 } ?: return@mapNotNull null
