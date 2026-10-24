@@ -7,11 +7,15 @@ import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PipelineValidator
 import com.rokid.context.canvas.helper.CanvasLogSink
+import com.rokid.context.canvas.moment.Moment
+import com.rokid.context.canvas.moment.MomentResolver
+import com.rokid.context.canvas.moment.MomentId
 import com.rokid.context.core.log.Level
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasRunEntity
 import com.rokid.context.memory.db.CanvasRunItemEntity
 import com.rokid.context.orchestration.ExtractPhoto
+import com.rokid.context.model.ModelImageInput
 import com.rokid.context.orchestration.MemoryWipe
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -26,6 +30,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.util.UUID
@@ -38,7 +46,10 @@ data class ModelLabel(val nodeId: String, val endpoint: String, val model: Strin
 data class TokenEstimate(val promptTokens: Int, val completionTokens: Int, val basedOn: Int)
 
 sealed interface Estimate {
-    data class Ok(val photos: Int, val nominal: Int, val max: Int, val models: List<ModelLabel>, val confirmToken: String, val tokens: TokenEstimate? = null) : Estimate
+    data class Ok(val photos: Int, val nominal: Int, val max: Int, val models: List<ModelLabel>, val confirmToken: String, val tokens: TokenEstimate? = null,
+        /** "photos", or "moments" for a Moment run (then [photos] counts Moments and [photoCount] their photos). */
+        val kind: String = "photos", val photoCount: Int = photos,
+    ) : Estimate
     data class Refused(val reasons: List<String>) : Estimate
 }
 
@@ -68,6 +79,8 @@ class CanvasRunner(
     private val generation: () -> Long = MemoryWipe.generation::get,
     /** Count-only lines through the one logger (never ids, tokens or provider text). */
     private val log: CanvasLogSink = CanvasLogSink { _, _, _ -> },
+    /** Moment-lite: the read-only resolver a Moment run uses (estimate, start and again right after the fence capture); null = no Moment runs. */
+    private val moments: MomentResolver? = null,
 ) {
     companion object {
         const val MAX_PHOTOS = 50
@@ -75,9 +88,19 @@ class CanvasRunner(
         const val KEEP_RUNS = 20
         /** Owner rows behind one per-call token mean (S32). */
         private const val TOKEN_HISTORY = 200
+        const val MOMENT_KEY_PREFIX = "moment:"
+        /** Lineage token of a member photo of a Moment run (the `batchId` column), so the Forget cascade finds the rows. */
+        const val MEMBER_TOKEN = "mf:"
+        private val NO_PHOTO = ExtractPhoto("", "", ModelImageInput("image/jpeg", ""))
     }
 
     class Busy : IllegalStateException("another run is in progress")
+
+    /** A Moment run was estimated, but a Moment (a photo, a memory, a mark) changed or vanished before the start: nothing ran, estimate again. */
+    class MomentsMoved : IllegalStateException("moments_moved")
+
+    /** The Moment ids of a Moment run (chronological) and the sorted binding keys the estimate token bound. */
+    private class MomentSel(val ids: List<String>, val bound: List<String>)
 
     private class Group(val id: String, val runA: String, val runB: String) {
         @Volatile var cancelled = false
@@ -176,8 +199,11 @@ class CanvasRunner(
         return reasons
     }
 
+    private fun takesMoments(p: Pipeline) = p.nodes.any { it.type == NodeTypes.INPUT_MOMENTS }
+
     suspend fun estimate(p: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
         val ids = frameIds.distinct()
+        if (takesMoments(p)) return Estimate.Refused(listOf("pipeline needs moments"))
         val c = price(p, ids, labels)
         val reasons = refusals(PipelineValidator.validate(p).isNotEmpty(), ids, c.nominal)
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
@@ -192,6 +218,7 @@ class CanvasRunner(
      */
     suspend fun estimateAb(a: Pipeline, b: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
         val ids = frameIds.distinct()
+        if (takesMoments(a) || takesMoments(b)) return Estimate.Refused(listOf("A/B runs over moments are not supported"))
         val ca = price(a, ids, labels)
         val cb = price(b, ids, labels)
         val problems = PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()
@@ -204,6 +231,37 @@ class CanvasRunner(
             (ca.tokens?.basedOn ?: 0) + (cb.tokens?.basedOn ?: 0),
         )
         return Estimate.Ok(ids.size, ca.nominal + cb.nominal, ca.max + cb.max, ca.models + cb.models, token, t)
+    }
+
+    /** The item key of a Moment in run rows (`moment:<id>`, moment-model spec 6.2): never mistaken for a frame id. */
+    private fun keyOf(m: Moment) = MOMENT_KEY_PREFIX + m.id
+
+    /** The sorted binding keys (id:rev:hash) the estimate token binds for [res]. */
+    private fun bindingOf(res: List<Moment>) = res.map { it.bindingKey }.sorted()
+
+    private fun momentIdsOf(raw: List<String>): List<String> = raw.distinct().also { l -> if (l.any { MomentId.parse(it) == null }) throw IllegalArgumentException("bad_moment_id") }.sorted()
+
+    /**
+     * The price of a Moment run. The token binds the pipeline hash, the sorted Moment ids AND each Moment's `contentRev` + `contentHash` as resolved NOW: a late photo,
+     * a corrected mark or a Forget of a member before the start changes the binding, so [startMoments] refuses ([MomentsMoved]) instead of running on other data.
+     */
+    suspend fun estimateMoments(p: Pipeline, momentIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
+        val resolver = moments ?: return Estimate.Refused(listOf("moments are not available"))
+        val ids = momentIdsOf(momentIds)
+        val res = resolver.resolve(ids)
+        val keys = res.map(::keyOf)
+        val c = price(p, keys, labels)
+        val reasons = mutableListOf<String>()
+        if (!takesMoments(p)) reasons += "pipeline does not take moments"
+        if (ids.isEmpty()) reasons += "no moments"
+        if (ids.size > MAX_PHOTOS) reasons += "more than $MAX_PHOTOS moments"
+        if (res.size != ids.size) reasons += "some moments have no photos any more"
+        if (PipelineValidator.validate(p).isNotEmpty()) reasons += "pipeline has problems"
+        if (c.nominal > MAX_NOMINAL_CALLS) reasons += "more than $MAX_NOMINAL_CALLS model calls"
+        if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
+        val token = tokens.issue(PipelineHash.of(p), ids, bindingOf(res).joinToString("\n"))
+        synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(c.models)) }
+        return Estimate.Ok(res.size, c.nominal, c.max, c.models, token, c.tokens, kind = "moments", photoCount = res.sumOf { it.frames.size })
     }
 
     private fun abHash(a: Pipeline, b: Pipeline) = PipelineHash.of(a) + "|" + PipelineHash.of(b)
@@ -226,6 +284,7 @@ class CanvasRunner(
             val ids = frameIds.distinct()
             if (ids.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS photos")
             if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
+            if (takesMoments(p)) throw IllegalArgumentException("pipeline needs moments")
             if (!tokens.consume(confirmToken, PipelineHash.of(p), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
             dao.pruneRuns(KEEP_RUNS - 1)
@@ -254,6 +313,54 @@ class CanvasRunner(
     }
 
     /**
+     * Starts a Moment run. Same rules as [start], and the freshness binding: the Moments are re-resolved NOW and their `contentRev` + `contentHash` must equal what the
+     * estimate bound, else [MomentsMoved] (typed, nothing runs, the token is spent). The run re-resolves once more right after the fence capture and, if anything moved,
+     * ends CANCELLED having sent and written nothing.
+     */
+    suspend fun startMoments(p: Pipeline, pipelineId: String, version: Int?, momentIds: List<String>, confirmToken: String, scope: CoroutineScope): String {
+        val resolver = moments ?: throw IllegalArgumentException("moments are not available")
+        if (!lock.tryLock()) throw Busy()
+        var launched = false
+        try {
+            val ids = momentIdsOf(momentIds)
+            if (ids.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS moments")
+            if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
+            if (!takesMoments(p)) throw IllegalArgumentException("pipeline does not take moments")
+            val res = resolver.resolve(ids)
+            val bound = bindingOf(res)
+            when (tokens.consumeBound(confirmToken, PipelineHash.of(p), ids, bound.joinToString("\n"))) {
+                ConfirmTokens.Verdict.BAD -> throw IllegalArgumentException("bad_token")
+                ConfirmTokens.Verdict.MOVED -> { line(Level.I, "moments moved since the estimate"); throw MomentsMoved() }
+                ConfirmTokens.Verdict.OK -> Unit
+            }
+            if (res.size != ids.size) throw MomentsMoved()
+            val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
+            dao.pruneRuns(KEEP_RUNS - 1)
+            val runId = newId()
+            val keys = res.map(::keyOf)
+            dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
+            cancelled.set(null)
+            _active.value = runId
+            launched = true
+            scope.launch(start = CoroutineStart.ATOMIC) {
+                try {
+                    execute(runId, p, keys, MomentSel(ids, bound))
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    line(Level.W, "run aborted")
+                } finally {
+                    _active.value = null
+                    lock.unlock()
+                }
+            }
+            return runId
+        } finally {
+            if (!launched) lock.unlock()
+        }
+    }
+
+    /**
      * Starts A now and B right after A ends DONE, in the same job (S31). Both rows exist when this returns: A RUNNING, B QUEUED, one `abGroup`.
      * Throws [Busy] while any run or group is active, [IllegalArgumentException] for a bad token (it is bound to both hashes) or too many photos.
      * A cancelled, failed or stopped A, or a group cancel at any time before B starts, leaves B CANCELLED with no items.
@@ -267,6 +374,7 @@ class CanvasRunner(
             val (a, versionA) = spec.a
             val (b, versionB) = spec.b
             if (PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
+            if (takesMoments(a) || takesMoments(b)) throw IllegalArgumentException("A/B runs over moments are not supported")
             if (!tokens.consume(confirmToken, abHash(a, b), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }.orEmpty()
             dao.pruneRuns(KEEP_RUNS - 2) // once for the group: neither of its rows exists yet, so neither can be pruned
@@ -308,7 +416,7 @@ class CanvasRunner(
     }
 
     /** Runs one run to a terminal row and returns the status it wrote ("DONE", "CANCELLED", "STOPPED_HOT", "FAILED"). Rethrows cancellation of the scope. */
-    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>): String {
+    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null): String {
         var calls = 0
         var failures = 0
         var status = "DONE"
@@ -318,15 +426,25 @@ class CanvasRunner(
             // WP8: a pipeline with a helper node also captures the helper fence (wipe generation, deletion epoch, frame-Forget revision) BEFORE the frames load; the run's own
             // write below stays the existing fenced path (insertRunItemsFenced) on the wipe generation and the tombstones.
             val helperFence = p.nodes.firstNotNullOfOrNull { executors[it.type] as? HelperExecutor }?.captureFence()
-            val load = photos.load(ids)
-            val photoById: Map<String, ExtractPhoto> = load.photos.associateBy { it.frameId }
+            // Moment run: re-resolve AFTER the fence capture (a Forget from here on moves the fence); if anything differs from what the estimate bound, nothing is sent or written.
+            val momentByKey: Map<String, Moment> = if (sel == null) emptyMap() else {
+                val res = moments?.resolve(sel.ids).orEmpty()
+                if (bindingOf(res) != sel.bound) { line(Level.I, "moments moved before the run"); return withContext(NonCancellable) { finish(runId, "CANCELLED", calls, failures) } }
+                res.associateBy(::keyOf)
+            }
+            val members: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> m.frames.map { it.id } }
+            val allMembers: Set<String> = members.values.flatten().toSet()
+            val photoById: Map<String, ExtractPhoto> = if (sel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
             val order = ids.withIndex().associate { it.value to it.index }
             val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
             val pending = ArrayList<CanvasRunItemEntity>()
 
             // S25 lineage: a frame's downstream rows (trust, preview...) keep the batch of the model call they derive from, so a Forget of ANY frame of that
             // call reaches them (a fact from photos A+B also sits in B's preview).
+            // a Moment's rows derive from every member photo: each member is a lineage token ("mf:<frameId>"), so a Forget of any member deletes them (CanvasDao.deleteCanvasOutputsForFrames)
             val lineage = HashMap<String, LinkedHashSet<String>>() // frame -> every model call whose output its rows derive from (a later per-frame call must not hide a shared one)
+
+            members.forEach { (k, f) -> lineage[k] = LinkedHashSet(f.map { MEMBER_TOKEN + it }) }
 
             fun write(nodeId: String, frameId: String, r: NodeResult) {
                 val m = r.meta
@@ -343,7 +461,7 @@ class CanvasRunner(
             suspend fun flush(): Boolean {
                 if (pending.isEmpty()) return true
                 val rows = pending.toList(); pending.clear()
-                return dao.insertRunItemsFenced(rows, emptyList(), gen, emptySet(), generation)
+                return dao.insertRunItemsFenced(rows, emptyList(), gen, allMembers, generation)
             }
 
             stop@ for (node in ItemFlow.topological(p)) {
@@ -363,20 +481,34 @@ class CanvasRunner(
                     dao.updateRun(runId, "RUNNING", calls, failures, null)
                     continue
                 }
+                if (node.type == NodeTypes.INPUT_MOMENTS) {
+                    for (id in ids) {
+                        val m = momentByKey[id]
+                        if (m != null) {
+                            val v = CanvasValue.Json(momentItem(m))
+                            write(node.id, id, NodeResult(id, v))
+                            inputs[id] = v
+                        } else write(node.id, id, NodeResult(id, null, error = "unreadable"))
+                    }
+                    outputs[node.id] = inputs.mapValues { ItemFlow.Out(it.value, null) }
+                    if (!flush()) { status = "CANCELLED"; break@stop }
+                    dao.updateRun(runId, "RUNNING", calls, failures, null)
+                    continue
+                }
                 val gathered = ItemFlow.gather(incoming, outputs)
                 inputs.putAll(gathered.inputs)
                 val conflicts = gathered.conflicts
                 for (id in conflicts.sortedBy { order[it] }) write(node.id, id, NodeResult(id, null, error = "merge_conflict"))
                 if (!flush()) { status = "CANCELLED"; break@stop }
                 val ex = executors[node.type]
-                val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById.getValue(it.key), it.value) }
+                val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value) }
                 val produced = LinkedHashMap<String, ItemFlow.Out>()
                 for (chunk in queue.chunked(ex?.chunkSize(node)?.coerceAtLeast(1) ?: Int.MAX_VALUE)) {
                     if (isCancelled(runId)) { status = "CANCELLED"; break@stop }
                     if (hot()) { status = "STOPPED_HOT"; break@stop }
                     // Pre-call fence: after a wipe or a Forget the loaded bytes must not be sent again (the commit fence alone only drops the write).
-                    if (generation() != gen || dao.tombstonedAmong(chunk.map { it.frameId }) > 0) { status = "CANCELLED"; break@stop }
-                    val ran = if (ex is HelperExecutor && helperFence != null) runInterruptible(runId, ex, node, chunk, ctx, helperFence) else ex?.run(node, chunk, ctx)
+                    if (generation() != gen || dao.tombstonedAmong(chunk.flatMap { members[it.frameId] ?: listOf(it.frameId) }) > 0) { status = "CANCELLED"; break@stop }
+                    val ran = if (ex is HelperExecutor && helperFence != null) runInterruptible(runId, ex, node, chunk, ctx, helperFence, members) else ex?.run(node, chunk, ctx)
                     if (ran == null) { status = "CANCELLED"; break@stop } // cancelled while the chunk was suspended in the helper executor
                     val results = ran.associateBy { it.frameId }
                     for (item in chunk) {
@@ -406,9 +538,9 @@ class CanvasRunner(
      * run was cancelled meanwhile (the caller ends the run CANCELLED); a cancellation of the run's own scope is rethrown, as before. The fence the runner captured before the frames
      * loaded travels in the coroutine context ([RunHelperFence]).
      */
-    private suspend fun runInterruptible(runId: String, ex: NodeExecutor, node: PipelineNode, chunk: List<CanvasItem>, ctx: RunContext, fence: com.rokid.context.memory.canvas.HelperFence): List<NodeResult>? =
+    private suspend fun runInterruptible(runId: String, ex: NodeExecutor, node: PipelineNode, chunk: List<CanvasItem>, ctx: RunContext, fence: com.rokid.context.memory.canvas.HelperFence, members: Map<String, List<String>>): List<NodeResult>? =
         coroutineScope {
-            val d = async(RunHelperFence(fence), start = CoroutineStart.LAZY) { ex.run(node, chunk, ctx) }
+            val d = async(RunHelperFence(fence) + (if (members.isEmpty()) EmptyCoroutineContext else RunMomentFrames(members)), start = CoroutineStart.LAZY) { ex.run(node, chunk, ctx) }
             chunkJob.set(d)
             try {
                 // the flag is set before the chunk job is read by cancel(), and the job is published before the flag is read here: one of the two always sees the other
@@ -419,6 +551,20 @@ class CanvasRunner(
                 chunkJob.compareAndSet(d, null)
             }
         }
+
+    /**
+     * What the helper receives for one Moment (moment-model spec 9, minus what this slice does not send): no frame id, no image bytes, no file ref. [photos] carries only the
+     * capture time of each photo (so its length is the photo count); `sensor` is null (no sensor input yet). Integers and strings only.
+     */
+    private fun momentItem(m: Moment): JsonObject = JsonObject(mapOf(
+        "itemType" to JsonPrimitive("moment"),
+        "momentId" to JsonPrimitive(m.id),
+        "contentRev" to JsonPrimitive(m.contentRev),
+        "contentHash" to JsonPrimitive(m.contentHash),
+        "startMs" to JsonPrimitive(m.startMs),
+        "photos" to JsonArray(m.frames.map { JsonObject(mapOf("tsMs" to JsonPrimitive(it.ts))) }),
+        "sensor" to JsonNull,
+    ))
 
     /** The row must reach a terminal state even when the DB threw once: retry as FAILED, then give up quietly (recoverAtStart sweeps it). Returns the status written. */
     private suspend fun finish(runId: String, status: String, calls: Int, failures: Int): String {

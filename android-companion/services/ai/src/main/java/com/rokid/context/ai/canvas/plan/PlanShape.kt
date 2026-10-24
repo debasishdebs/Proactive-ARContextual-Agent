@@ -44,7 +44,7 @@ object PlanShape {
     fun tier3Nodes(p: Pipeline, lookup: (String) -> NodeType?): List<String> = p.nodes.filter { n ->
         val t = lookup(n.type)
         val resolved = t?.takeIf { it.sinceSchema <= p.schema }?.let { NodeTypes.domainOf(n, it) }
-        n.type.startsWith("py.") || n.type.startsWith("tool.") || resolved == Domain.REPLAY_ONLY ||
+        n.type.startsWith("py.") || n.type.startsWith("tool.") || n.type == NodeTypes.INPUT_MOMENTS || resolved == Domain.REPLAY_ONLY ||
             t?.executor == ExecutorKind.PYTHON || t?.executor == ExecutorKind.DRAFT || t?.domain == Domain.REPLAY_ONLY
     }.map { it.id }.sorted()
 }

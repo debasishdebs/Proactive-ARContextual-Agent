@@ -71,9 +71,12 @@ object PipelineValidator {
 
         // Roots: one per domain that has nodes (S34). Slice 2's single `input.photos` rule is kept for any graph with an ASYNC half or no RT half.
         val rtNodes = domains.values.any { it == Domain.RT_GLASSES || it == Domain.RT_PHONE }
-        val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS }
+        val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS || it.type == NodeTypes.INPUT_MOMENTS }
         val asyncNodes = domains.values.any { it == Domain.ASYNC }
-        if ((asyncNodes || !rtNodes) && inputs.size != 1) out += "exactly one input.photos required"
+        // Moment-lite: the ASYNC half has exactly ONE input root, either `input.photos` or `input.moments`; both together are refused (mixed item types).
+        if ((asyncNodes || !rtNodes) && inputs.size != 1) {
+            out += if (inputs.any { it.type == NodeTypes.INPUT_MOMENTS }) "exactly one input root (input.photos or input.moments) required" else "exactly one input.photos required"
+        }
         val rootOf = HashMap<Domain, List<PipelineNode>>()
         for (d in listOf(Domain.RT_GLASSES, Domain.RT_PHONE)) {
             if (domains.none { it.value == d }) continue
@@ -84,8 +87,8 @@ object PipelineValidator {
         }
         rootOf[Domain.ASYNC] = inputs
         (inputs + rootOf.filterKeys { it != Domain.ASYNC }.values.flatten()).forEach { n ->
-            val photosOnly = n.type == NodeTypes.INPUT_PHOTOS
-            if (valid.any { it.to == n.id && !(photosOnly && isPhotosBinding(it, byId)) }) {
+            val photosOnly = n.type == NodeTypes.INPUT_PHOTOS || n.type == NodeTypes.INPUT_MOMENTS
+            if (valid.any { it.to == n.id && !(n.type == NodeTypes.INPUT_PHOTOS && isPhotosBinding(it, byId)) }) {
                 out.node(n.id, if (photosOnly) "node ${n.id}: input must have no incoming edge" else "node ${n.id}: root must have no incoming edge")
             }
         }

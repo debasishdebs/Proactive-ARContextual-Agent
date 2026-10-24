@@ -65,6 +65,12 @@ interface CanvasBackend {
      */
     suspend fun frameImage(id: String, thumb: Boolean): FrameImage?
     suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate
+    /** Moment-lite: Moments (seconds with at least one live photo) with `afterMs <= startMs < beforeMs`, oldest first: `{id, startMs, photos, memories, marks}`. Read-only. */
+    suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray = JsonArray(emptyList())
+    /** The price of a Moment run; the token binds the sorted ids and each Moment's contentRev + contentHash. */
+    suspend fun estimateMoments(pipelineId: String, version: Int?, momentIds: List<String>): Estimate = Estimate.Refused(listOf("moments are not available"))
+    /** Starts a Moment run; [CanvasRunner.MomentsMoved] when anything changed since the estimate. */
+    suspend fun startMomentRun(pipelineId: String, version: Int?, momentIds: List<String>, token: String): String = throw IllegalArgumentException("moments are not available")
     /** The price of an A/B pair: one token, bound to both pipelines (`hashA|hashB`) and the photos. */
     suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate
     /** Starts A now and B after it ends DONE; both ids are reserved up front. [CanvasRunner.Busy] while any run or group is active. */
