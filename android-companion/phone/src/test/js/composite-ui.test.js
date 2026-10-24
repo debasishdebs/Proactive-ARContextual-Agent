@@ -2,7 +2,7 @@
 // collapse/expand, the inner boxes and wires, exposed params as inputs inside the owning box (defaults shown), edits reported to the host, labels as text.
 import { mountComposite, layout } from '../../main/assets/canvas/compositeview.js';
 import { findAll, find } from './fake-dom.js';
-import { eq, ok, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner } from './fixtures.js';
+import { eq, ok, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner, criticInner } from './fixtures.js';
 import * as E from './env.js';
 
 const cls = (el, c) => el.classList.contains(c);
@@ -159,5 +159,14 @@ export const tests = {
       eq(findAll(root, (e) => cls(e, 'comp-note')).length, 2);
     });
     mount({}, ({ root, w }) => { w.expand(); eq(findAll(root, (e) => cls(e, 'comp-note')).length, 0, 'no note, nothing drawn'); });
+  },
+  aReadOnlyCompositeDrawsItsStagesWithNoInputAtAll() {
+    mount({ title: 'Critic', inner: JSON.parse(JSON.stringify(criticInner)), descriptors: [{ name: 'prompt', kind: 'prompt' }] }, ({ root, w }) => {
+      w.expand();
+      eq(boxes(root).length, 7); eq(wires(root).length, 8);
+      eq(controls(root).length, 0, 'nothing is editable');
+      ok(boxes(root).every((b) => cls(b, 'read-only')));
+      ok(E.textOf(root).includes('Read only: the critic prompt'));
+    });
   },
 };

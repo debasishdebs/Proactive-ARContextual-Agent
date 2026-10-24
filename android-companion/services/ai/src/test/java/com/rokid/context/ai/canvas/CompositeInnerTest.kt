@@ -17,7 +17,7 @@ class CompositeInnerTest {
 
     /** Phase A: the local critic; phase B adds the async black boxes one by one. */
     @Test fun theCompositeTypesAreTheOnesBuiltSoFar() {
-        assertEquals(setOf(NodeTypes.LOCAL_CRITIC, NodeTypes.VISION_EXTRACT), NodeTypes.all.filter { it.inner != null }.map { it.type }.toSet())
+        assertEquals(setOf(NodeTypes.LOCAL_CRITIC, NodeTypes.VISION_EXTRACT, NodeTypes.CRITIC), NodeTypes.all.filter { it.inner != null }.map { it.type }.toSet())
     }
 
     @Test fun everyInnerFlowIsWellFormed() {
@@ -85,5 +85,19 @@ class CompositeInnerTest {
         assertEquals(emptyList<String>(), lc.inner!!.note)
         // no ParamSchema was added: the type's validation stays the PipelineValidator's own batch / prompt checks
         assertEquals(ParamSchema.NONE, NodeTypes.byType(NodeTypes.VISION_EXTRACT)!!.params)
+    }
+
+    @Test fun criticShowsItsFixedShortcutsAndBranchesReadOnly() {
+        val t = NodeTypes.byType(NodeTypes.CRITIC)!!
+        val c = t.inner!!
+        assertEquals(emptyList<InnerExposed>(), c.exposed)
+        assertEquals(t.branches(JsonObject(emptyMap())).toSet(), c.nodes.filter { it.kind == "branch" }.map { it.id }.toSet())
+        assertEquals(ParamSchema.NONE, t.params)
+        // the model call is only reached after both shortcuts: any facts, then a bound model
+        val into = c.wires.filter { it.to == "model" || it.to == "prompt" }.map { it.from }
+        assertEquals(listOf("bound", "prompt"), into)
+        assertTrue(c.wires.any { it.from == "any" && it.to == "pass" && it.port == "none" })
+        assertTrue(c.wires.any { it.from == "bound" && it.to == "fail" && it.port == "no" })
+        assertTrue(c.note.any { it.contains("Read only") && it.contains("inspector") })
     }
 }

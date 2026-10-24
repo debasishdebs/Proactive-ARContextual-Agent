@@ -455,7 +455,7 @@ class CanvasBackendImplTest {
 
     @Test fun nodeTypesServeTheInnerFlowOfTheCompositesBuiltSoFar() {
         val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
-        assertEquals(setOf("gate.local_critic", "ai.vision_extract"), all.filterValues { "inner" in it }.keys)
+        assertEquals(setOf("gate.local_critic", "ai.vision_extract", "ai.critic"), all.filterValues { "inner" in it }.keys)
         val inner = all.getValue("gate.local_critic")["inner"]!!.jsonObject
         assertEquals(setOf("facts", "aggregate", "cutoff", "compare", "trusted", "unsure"), inner["nodes"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
         assertEquals(listOf("aggregate", "operator", "cutoff"), inner["exposed"]!!.jsonArray.map { it.jsonObject["param"]!!.jsonPrimitive.content })
@@ -480,6 +480,7 @@ class CanvasBackendImplTest {
         assertEquals(1, batch["default"]!!.jsonPrimitive.int)
         assertEquals(listOf("batch"), vx["inner"]!!.jsonObject["exposed"]!!.jsonArray.map { it.jsonObject["param"]!!.jsonPrimitive.content })
         assertTrue(vx["inner"]!!.jsonObject["note"]!!.jsonArray.isNotEmpty())
+        assertEquals("the critic is read only: nothing exposed", 0, all.getValue("ai.critic")["inner"]!!.jsonObject["exposed"]!!.jsonArray.size)
         assertTrue("the prompt stays a plain served descriptor", vx["params"]!!.jsonArray.any { it.jsonObject["name"]!!.jsonPrimitive.content == "prompt" })
     }
 

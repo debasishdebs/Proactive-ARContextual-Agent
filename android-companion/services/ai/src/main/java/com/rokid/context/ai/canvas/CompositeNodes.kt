@@ -103,3 +103,31 @@ object ExtractComposite {
         ),
     )
 }
+
+/**
+ * `ai.critic`, phase B. A read-only VIEW of `CriticExecutor`: nothing is exposed because the only setting, the critic prompt (live or draft),
+ * is edited in the inspector. The two shortcuts (no facts passes, no model bound fails) and the failure rule are real and fixed.
+ */
+object CriticComposite {
+    val inner = InnerFlow(
+        nodes = listOf(
+            InnerNode("facts", "Facts in", "source"),
+            InnerNode("any", "Any facts?", "op"),
+            InnerNode("bound", "Critic model set?", "op"),
+            InnerNode("prompt", "Critic prompt", "op"),
+            InnerNode("model", "Ask the model", "op"),
+            InnerNode("pass", "pass", "branch"),
+            InnerNode("fail", "fail", "branch"),
+        ),
+        wires = listOf(
+            InnerWire("facts", "any"), InnerWire("any", "pass", "none"), InnerWire("any", "bound", "some"),
+            InnerWire("bound", "fail", "no"), InnerWire("bound", "prompt", "yes"), InnerWire("prompt", "model"),
+            InnerWire("model", "pass", "ok"), InnerWire("model", "fail", "not ok or error"),
+        ),
+        exposed = emptyList(),
+        note = listOf(
+            "Read only: the critic prompt (live or draft) is chosen in the inspector; this node has no other setting.",
+            "No facts: pass without asking the model. No critic model set: fail. A failed model call also fails (the local verdict stays unsure).",
+        ),
+    )
+}

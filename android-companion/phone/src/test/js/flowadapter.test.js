@@ -47,7 +47,7 @@ export const tests = {
     eq(c.data.composite.inner.nodes.length, 6);
     eq(c.data.composite.descriptors.map((d) => d.name), ['aggregate', 'operator', 'cutoff']);
     eq(c.data.composite.params, {});
-    for (const n of f.nodes.filter((x) => !['trust', 'extract'].includes(x.id))) eq(n.data.composite, null, n.id + ' is plain');
+    for (const n of f.nodes.filter((x) => !['trust', 'extract', 'critic'].includes(x.id))) eq(n.data.composite, null, n.id + ' is plain');
   },
   anExpandedFactsFromFramesCardCountsItsNoteAndPushesTheRestDown() {
     const f = flow(null, null, { expanded: { extract: true } }); noOverlap(f); labelRoom(f);
