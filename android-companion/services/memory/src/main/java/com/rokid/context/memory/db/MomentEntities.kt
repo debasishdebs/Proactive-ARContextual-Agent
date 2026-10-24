@@ -48,6 +48,36 @@ data class MomentPartEntity(
 @Entity(tableName = "moment_tombstone")
 data class MomentTombstoneEntity(@PrimaryKey val momentId: String, val createdAt: Long)
 
+/**
+ * Sensor features of one Moment second (Room v12, additive): the numbers the glasses motion classifier computes from the raw samples of an imported trace, for the PHONE-clock second
+ * [phoneSecond] (`momentId` is the hex of that second). One row per (Moment, second): when several traces cover the second the builder keeps the one with the most samples, then the smaller
+ * trace id. [traceId] and [traceRevision] say which trace the numbers came from (the row goes when that trace is deleted or re-imported with other content); [clockQuality] and
+ * [uncertaintyMs] are carried over from that trace's phone-clock row. Numbers, enum names and ids only: no raw samples, no text. A rebuildable projection (deleted with its Moment,
+ * with its trace, by every Forget that selects by time, and by Delete all).
+ */
+@Entity(tableName = "moment_sensor", primaryKeys = ["momentId", "phoneSecond"], indices = [Index("traceId")])
+data class MomentSensorEntity(
+    val momentId: String,
+    val phoneSecond: Long,
+    val traceId: String,
+    val traceRevision: Int,
+    val clockQuality: String,
+    val uncertaintyMs: Long,
+    val gyroMax: Double,
+    val gyroMean: Double,
+    val gyroRms: Double,
+    val aboveOnFrac: Double,
+    val accVar: Double,
+    val stepHz: Double,
+    val rotRad: Double,
+    /** The classifier's [com.rokid.context.core.model.MotionState] name at the end of the second (STILL, HEAD_MOVING or WALKING). */
+    val motionState: String,
+    /** The trace's last `cx` [com.rokid.context.core.model.context.ContextState] name at or before the end of the second, or null when it had none yet. */
+    val contextCode: String?,
+    val nGyro: Int,
+    val nAcc: Int,
+)
+
 /** Reserved for trace-derived dependencies; created empty, no writer in phase 1. */
 @Entity(tableName = "moment_trace_dep", primaryKeys = ["momentId", "traceId", "revision"], indices = [Index("traceId")])
 data class MomentTraceDepEntity(val momentId: String, val traceId: String, val revision: Long)

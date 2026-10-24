@@ -19,8 +19,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MomentEntity::class, MomentPartEntity::class, MomentTombstoneEntity::class, MomentTraceDepEntity::class, CleanupOutboxEntity::class,
         ObjectAuditEntity::class, ObjectDerivedEntity::class,
         SceneEntity::class, ScenePartEntity::class,
+        MomentSensorEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -277,5 +278,17 @@ val MIGRATION_10_11: Migration = object : Migration(10, 11) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `scene_part` (`sceneId` TEXT NOT NULL, `kind` TEXT NOT NULL, `refId` TEXT NOT NULL, `partRev` TEXT NOT NULL, `partTimeMs` INTEGER NOT NULL, PRIMARY KEY(`sceneId`, `kind`, `refId`))")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_scene_part_sceneId` ON `scene_part` (`sceneId`)")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_scene_part_kind_refId` ON `scene_part` (`kind`, `refId`)")
+    }
+}
+
+/**
+ * v11 → v12 (sensor features per Moment second): ADDITIVE only. One new table, `moment_sensor`, and its trace index. No existing table or column is changed, nothing is copied, updated or
+ * dropped. The statements are the ones Room generated for `12.json`; the frozen `11.json` is untouched. If another branch also claims v12 at merge, DO NOT rename or edit this migration:
+ * rebase, write a NEW latest → next migration, regenerate the schema.
+ */
+val MIGRATION_11_12: Migration = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `moment_sensor` (`momentId` TEXT NOT NULL, `phoneSecond` INTEGER NOT NULL, `traceId` TEXT NOT NULL, `traceRevision` INTEGER NOT NULL, `clockQuality` TEXT NOT NULL, `uncertaintyMs` INTEGER NOT NULL, `gyroMax` REAL NOT NULL, `gyroMean` REAL NOT NULL, `gyroRms` REAL NOT NULL, `aboveOnFrac` REAL NOT NULL, `accVar` REAL NOT NULL, `stepHz` REAL NOT NULL, `rotRad` REAL NOT NULL, `motionState` TEXT NOT NULL, `contextCode` TEXT, `nGyro` INTEGER NOT NULL, `nAcc` INTEGER NOT NULL, PRIMARY KEY(`momentId`, `phoneSecond`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_sensor_traceId` ON `moment_sensor` (`traceId`)")
     }
 }
