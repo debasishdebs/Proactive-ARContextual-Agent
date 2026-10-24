@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hand-over tool (LGC10-min, plan 3.10), bash 3.2 + python3. Counts and names only: never a device secret, the pairing code, the session token or a system-log line.
-#   tools/handover.sh <out-dir> [--phone-tid ID] [--watch-tid ID] [--no-import] [--host HOST:PORT --code CODE --fp FP8] [--allow-no-heartbeat]
+#   tools/handover.sh <out-dir> [--phone-tid ID] [--watch-tid ID] [--no-import] [--host HOST:PORT --code CODE --fp FP8] [--allow-no-heartbeat] [--allow-partial]
 # Reads only (adb exec-out run-as ... cat/tar/test on the app's OWN files; never the glasses logcat, which leaks the device secret). It never installs, uninstalls, starts or stops an app.
 # The one write on the glasses is the zero-byte transferred marker files/imu/transferred/<traceId>, written AFTER a successful import of that trace (outside the frozen trace dir).
 # Steps: devices and tids -> refuse while files/trace_cleanup_pending exists on the glasses (or cannot be read) -> glasses capture_diag.log{,.1}, compute the WEAR WINDOW from the heartbeats
@@ -19,7 +19,7 @@ MARKDIR=files/imu/transferred
 die() { echo "$*" >&2; exit 1; }
 usage() { die "usage: tools/handover.sh <out-dir> [--phone-tid ID] [--watch-tid ID] [--no-import] [--host HOST:PORT --code CODE --fp FP8] [--allow-no-heartbeat]"; }
 
-OUT=""; PTID="${M1_PHONE_TID:-}"; WTID="${M1_WATCH_TID:-}"; NOIMPORT=0; HP=""; CODE=""; FP=""; ALLOWHB=0
+ALLOWPART=0; OUT=""; PTID="${M1_PHONE_TID:-}"; WTID="${M1_WATCH_TID:-}"; NOIMPORT=0; HP=""; CODE=""; FP=""; ALLOWHB=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --phone-tid) [ $# -ge 2 ] || usage; PTID="$2"; shift 2 ;;
@@ -29,6 +29,7 @@ while [ $# -gt 0 ]; do
     --code) [ $# -ge 2 ] || usage; CODE="$2"; shift 2 ;;
     --fp) [ $# -ge 2 ] || usage; FP="$2"; shift 2 ;;
     --allow-no-heartbeat) ALLOWHB=1; shift ;;
+    --allow-partial) ALLOWPART=1; shift ;;
     -*) usage ;;
     *) [ -z "$OUT" ] || usage; OUT="$1"; shift ;;
   esac
@@ -220,7 +221,7 @@ if [ -z "$HP" ] || [ -z "$CODE" ]; then echo "not imported: needs pairing (--hos
 export TMPDIR="$PRIV"
 "$HERE/m1-run.sh" pair "$HP" "$CODE" $FP || die "pairing failed: nothing imported, no marker written"
 CODE=""
-IMP=$(M1_PHONE_TID="$PTID" "$HERE/m1-run.sh" import "$OUT"); irc=$?
+IMP=$(M1_PHONE_TID="$PTID" "$HERE/m1-run.sh" import "$OUT" $([ "${ALLOWPART:-0}" = 1 ] && echo --allow-partial)); irc=$?
 echo "$IMP"
 marked=0
 for id in $(echo "$IMP" | sed -n 's/^imported traceId=\([a-z0-9-]*\) .*/\1/p'); do
