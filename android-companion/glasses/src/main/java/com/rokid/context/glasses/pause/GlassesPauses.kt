@@ -1,6 +1,6 @@
 package com.rokid.context.glasses.pause
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
@@ -30,7 +30,7 @@ class GlassesPauses(
     private val store: PauseStore,
     private val clock: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { UUID.randomUUID().toString() },
-    private val log: (String) -> Unit = { Log.w(TAG, it) },
+    private val log: (String) -> Unit = { PcLog.w(TAG, it) },
     private val quiet: QuietHoursClock? = null,
 ) {
     private val mutex = Mutex()
@@ -49,6 +49,10 @@ class GlassesPauses(
     /** Quiet-hours occurrence start -> the record that covered it; a handled occurrence never pauses again. */
     @Volatile private var quietHandled: Map<Long, String> = emptyMap()
     @Volatile private var loaded = false
+    /** pauseId -> who made it (log text only, persisted beside the records); an id without an entry is [PauseSource.PERSISTED]. */
+    @Volatile private var sources: Map<String, PauseSource> = emptyMap()
+    /** Ids that came back from the store at this process start. */
+    @Volatile private var restored: Set<String> = emptySet()
 
     /** Loads the store and pauses for a quiet-hours occurrence that has started (CaptureService calls this per capture). */
     suspend fun ensureLoaded() = mutex.withLock {
@@ -63,6 +67,24 @@ class GlassesPauses(
     fun helloRecords(): List<PauseRecord> = provisional.let { prov -> _records.value.filter { it.pauseId !in prov } }
 
     fun active(nowMs: Long = clock()): List<PauseRecord> = _records.value.filter { it.isActiveAt(nowMs) }
+
+    private fun sourceOf(r: PauseRecord): PauseSource =
+        if (r.pauseId == PauseStore.UNREADABLE_ID) PauseSource.STORE_UNREADABLE else sources[r.pauseId] ?: PauseSource.PERSISTED
+
+    private fun labelOf(r: PauseRecord) = sourceOf(r).name + if (r.pauseId in restored) "/restored" else ""
+
+    private fun labelOf(list: List<PauseRecord>) = list.map { labelOf(it) }.distinct().sorted().joinToString("+")
+
+    /**
+     * The word for WHO holds capture paused right now: "NOT_LOADED" before the store is read, "none" when nothing is, else the sources of the active records
+     * (`USER_GLASSES`, `USER_PHONE`, `QUIET_HOURS`, `STORE_UNREADABLE`, `PERSISTED`), each with `/restored` when it came back from the store at process start. Memory reads only.
+     */
+    fun sourceLabel(nowMs: Long = clock()): String {
+        if (!loaded) return "NOT_LOADED"
+        val act = active(nowMs)
+        if (act.isEmpty()) return if (unhandledQuiet(nowMs)) PauseSource.QUIET_HOURS.name else "none"
+        return labelOf(act)
+    }
 
     /** Also closed inside a quiet-hours occurrence not yet handled (not yet turned into a record). */
     fun captureAllowed(nowMs: Long = clock()): Boolean = loaded && active(nowMs).isEmpty() && !unhandledQuiet(nowMs)
@@ -81,10 +103,13 @@ class GlassesPauses(
             val clears = active.map { it.pauseId }.toSet()
             tombstones = tombstones + clears.associateWith { now }
             provisional = provisional - clears
+            log("pause resumed n=${clears.size} src=${labelOf(active)}")
             save(_records.value.filter { it.pauseId !in clears && it.isActiveAt(now) })
             PauseToggle.Resumed(clears)
         } else {
             val r = PauseRecord(newId(), PauseOrigin.GLASSES, createdAtMs = now, untilMs = null)
+            sources = sources + (r.pauseId to PauseSource.USER_GLASSES)
+            log("pause added src=${PauseSource.USER_GLASSES} until=none")
             save(_records.value.filter { it.isActiveAt(now) } + r)
             PauseToggle.Paused(r)
         }
@@ -134,6 +159,8 @@ class GlassesPauses(
             removed += ended
             prov = prov - ended
         }
+        if (added.isNotEmpty()) sources = sources + added.associate { it.pauseId to PauseSource.of(it.origin) }
+        if (added.isNotEmpty() || removed.isNotEmpty()) log("pause phone push added=${added.size} removed=${removed.size}${if (added.isNotEmpty()) " src=" + added.map { PauseSource.of(it.origin).name }.distinct().sorted().joinToString("+") else ""}")
         val before = PauseState(_records.value, tombstones, provisional, phoneResumed, quietHandled)
         tombstones = liveTombs
         provisional = prov
@@ -151,6 +178,8 @@ class GlassesPauses(
         val live = active(now).firstOrNull { it.origin == PauseOrigin.QUIET_HOURS }
         val id = live?.pauseId ?: newId().also { id ->
             _records.value = _records.value + PauseRecord(id, PauseOrigin.QUIET_HOURS, occ.first, occ.last + 1)
+            sources = sources + (id to PauseSource.QUIET_HOURS)
+            log("pause added src=${PauseSource.QUIET_HOURS} until=occurrence-end")
         }
         quietHandled = (quietHandled + (occ.first to id)).entries.sortedByDescending { it.key }.take(QUIET_KEEP)
             .associate { it.key to it.value }
@@ -167,6 +196,7 @@ class GlassesPauses(
                 provisional = it.provisional
                 phoneResumed = it.phoneResumed
                 quietHandled = it.quietHandled
+                sources = it.sources.mapValues { (_, v) -> PauseSource.parse(v) }
             }.records
         } catch (e: CancellationException) {
             throw e
@@ -174,14 +204,16 @@ class GlassesPauses(
             log("pause store unreadable (${e.javaClass.simpleName}): staying paused")
             listOf(PauseRecord(PauseStore.UNREADABLE_ID, PauseOrigin.GLASSES, clock(), null))
         }
+        restored = _records.value.map { it.pauseId }.toSet()
         loaded = true
+        log("pause loaded active=${active().size} src=${sourceLabel()}")
     }
 
     /** Memory first, so enforcement holds even if the disk write fails. */
     private suspend fun save(list: List<PauseRecord>) {
         _records.value = list
         try {
-            store.write(PauseState(list, tombstones, provisional, phoneResumed, quietHandled))
+            store.write(PauseState(list, tombstones, provisional, phoneResumed, quietHandled, list.map { it.pauseId }.toSet().let { ids -> sources.filterKeys { it in ids }.mapValues { it.value.name } }))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

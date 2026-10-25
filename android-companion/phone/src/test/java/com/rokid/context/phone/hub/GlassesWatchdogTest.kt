@@ -23,11 +23,13 @@ class GlassesWatchdogTest {
         var relaunchResult: String? = null
         var starts = 0; var reconnects = 0; var probes = 0; var relaunches = 0
         val notes = ArrayList<String?>()
+        val logs = ArrayList<String>(); val warns = ArrayList<String>()
         val w = GlassesWatchdog(
             now = { nowMs }, enabled = { enabled }, captureActive = { capture }, hubRunning = { running }, link = { link },
             lastHeardAtMs = { heard }, standingDown = { standing },
             startHub = { starts++ }, reconnect = { reconnects++ }, probeAlive = { probes++ }, relaunch = { relaunches++; relaunchResult },
             publish = { notes += it },
+            log = { logs += it }, warn = { warns += it },
         )
         fun silentFor(min: Long) { heard = nowMs - min * 60_000L }
     }
@@ -106,5 +108,42 @@ class GlassesWatchdogTest {
         runCurrent(); assertEquals(1, r.relaunches)
         advanceTimeBy(150_100); assertEquals(2, r.relaunches)
         job.cancel(); advanceTimeBy(600_000); assertEquals(2, r.relaunches)
+    }
+
+    // ---- 2026-10-25: the phone log had no watchdog line, so a 21 min dead gap could not be explained. Every decision is a counts-only line now. ----
+
+    @Test fun offNamesItsCause() {
+        val r = Rig().apply { enabled = false }
+        r.w.tick(); assertTrue(r.logs.toString(), r.logs.last().contains("verdict=Off why=setting_off"))
+        r.enabled = true; r.capture = false; r.w.tick()
+        assertTrue(r.logs.toString(), r.logs.last().contains("verdict=Off why=capture_inactive"))
+    }
+
+    @Test fun aSilentGlassesAppLogsTheReopenResultAndTheLinkState() {
+        val r = Rig().apply { silentFor(4); relaunchResult = "hourly limit" }
+        r.w.tick()
+        val l = r.logs.last()
+        assertTrue(l, l.contains("verdict=Waiting") && l.contains("relaunch=hourly limit") && l.contains("link=CONNECTED") && l.contains("silent_s=240"))
+        r.relaunchResult = null; r.nowMs += 150_000; r.silentFor(4); r.w.tick()
+        assertTrue(r.logs.toString(), r.logs.any { it.contains("verdict=Reopening") && it.contains("relaunch=reopened") })
+    }
+
+    @Test fun anUnchangedVerdictIsNotLoggedEveryTickButEveryTenth() {
+        val r = Rig().apply { silentFor(1) }
+        repeat(25) { r.nowMs += 150_000; r.heard = r.nowMs - 60_000; r.w.tick() }
+        assertTrue("first + 3 repeats at most: ${r.logs.size}", r.logs.size in 2..4)
+    }
+
+    /** The phone process can be suspended (Doze): a tick far later than the period is the proof, and it is a warning so it reaches the file. */
+    @Test fun aLateTickIsAWarningWithTheGap() {
+        val r = Rig().apply { silentFor(1) }
+        r.w.tick(); assertTrue(r.warns.isEmpty())
+        r.nowMs += 21 * 60_000L; r.heard = r.nowMs - 60_000; r.w.tick()
+        assertTrue(r.warns.toString(), r.warns.single().contains("late tick gap_s=1260"))
+    }
+
+    @Test fun hubDownIsAWarning() {
+        val r = Rig().apply { running = false }
+        r.w.tick(); assertTrue(r.warns.toString(), r.warns.any { it.contains("hub down") })
     }
 }

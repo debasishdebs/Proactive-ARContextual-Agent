@@ -105,7 +105,7 @@ class Hub(
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
-        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> Log.i(GlassesRelauncher.TAG, m) }, standDown = standDown)
+        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> com.rokid.context.core.log.PcLog.i(GlassesRelauncher.TAG, m) }, standDown = standDown)
     }
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state

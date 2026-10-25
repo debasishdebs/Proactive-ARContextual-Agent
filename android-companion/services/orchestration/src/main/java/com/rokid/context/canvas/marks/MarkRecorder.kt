@@ -1,5 +1,7 @@
 package com.rokid.context.canvas.marks
 
+import com.rokid.context.core.log.Level
+import com.rokid.context.core.log.LogPort
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.MarkMessage
 import com.rokid.context.memory.db.CanvasLabelEntity
@@ -142,7 +144,8 @@ class MarkRecorder(
 
     companion object {
         /** The production log: event names only, through the one logger (pca.log), never android.util.Log. */
-        val pcLog: (String) -> Unit = { PcLog.i("PcMarks", it) }
+        val pcLog: (String) -> Unit = logTo(PcLog)
+        fun logTo(port: LogPort): (String) -> Unit = { port.log(Level.I, "PcMarks", it) }
         const val JOIN_MS = 3_000L
         const val UNDO_WINDOW_MS = 120_000L
         private const val PRUNE_MS = 60_000L

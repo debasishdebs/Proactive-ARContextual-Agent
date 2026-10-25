@@ -20,6 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import androidx.datastore.preferences.core.edit
 import java.io.File
 
 /** Phase 6 tests: a clock-exact push of [records] (the old list-only merge). */
@@ -293,5 +294,78 @@ class GlassesPausesTest {
         val p = qPauses().also { it.ensureLoaded() }
         assertTrue(p.captureAllowed())
         assertEquals(null, QuietHoursClock { HudSettings(quietHours = QuietHours(-1, 60)) }.occurrenceAt(now))
+    }
+}
+
+/** 2026-10-25 wear window: capture paused twice and no log line said who. The source of every pause is now a word in the logs (log text only, no wire change). */
+class PauseSourceTest {
+    @get:Rule val tmp = TemporaryFolder()
+    private var now = 1_000_000L
+    private var n = 0
+    private var job: Job? = null
+    private val lines = ArrayList<String>()
+
+    private fun pauses(name: String = "pauses.preferences_pb"): GlassesPauses = runBlocking {
+        job?.cancelAndJoin()
+        val j = SupervisorJob().also { job = it }
+        GlassesPauses(PauseStore(File(tmp.root, name), CoroutineScope(Dispatchers.IO + j)) { now }, { now }, { "id${++n}" }, log = { lines += it })
+    }
+    @After fun tearDown() = runBlocking { job?.cancelAndJoin(); Unit }
+
+    @Test fun beforeTheStoreIsLoadedTheSourceSaysSo() {
+        assertEquals("NOT_LOADED", pauses().sourceLabel())
+    }
+
+    @Test fun noPauseIsNone() = runBlocking {
+        assertEquals("none", pauses().also { it.ensureLoaded() }.sourceLabel())
+    }
+
+    @Test fun aDoubleTapIsUserGlassesAndAfterARestartItIsRestored() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.toggle()
+        assertEquals("USER_GLASSES", p.sourceLabel())
+        assertTrue(lines.toString(), lines.any { it.startsWith("pause added src=USER_GLASSES") })
+        val again = pauses().also { it.ensureLoaded() }
+        assertEquals("USER_GLASSES/restored", again.sourceLabel())
+        assertTrue(lines.toString(), lines.any { it.startsWith("pause loaded active=1 src=USER_GLASSES/restored") })
+    }
+
+    @Test fun aPhonePauseIsUserPhoneAndAQuietHoursRecordIsQuietHours() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(HudSettings(pauses = listOf(PauseRecord("ph", PauseOrigin.PHONE, now, null), PauseRecord("qh", PauseOrigin.QUIET_HOURS, now, now + 60_000)), pausesExact = true))
+        assertEquals("QUIET_HOURS+USER_PHONE", p.sourceLabel())
+        assertTrue(lines.toString(), lines.any { it.startsWith("pause phone push added=2 removed=0") })
+    }
+
+    /** A store written before the source was kept: every record reads as PERSISTED (backwards compatible). */
+    @Test fun anOldRecordWithoutASourceReadsAsPersisted() = runBlocking {
+        val j = SupervisorJob()
+        val f = File(tmp.root, "old.preferences_pb")
+        // A pre-source file: only the "pauses" key, exactly what the older build wrote.
+        androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = CoroutineScope(Dispatchers.IO + j), produceFile = { f }).edit {
+            it[androidx.datastore.preferences.core.stringPreferencesKey("pauses")] = """[{"pauseId":"old1","origin":"PHONE","createdAtMs":5}]"""
+        }
+        j.cancelAndJoin()
+        assertEquals("PERSISTED/restored", pauses("old.preferences_pb").also { it.ensureLoaded() }.sourceLabel())
+    }
+
+    @Test fun anUnreadableStoreNamesItself() = runBlocking {
+        File(tmp.root, "bad.preferences_pb").writeText("not a datastore file")
+        assertEquals("STORE_UNREADABLE/restored", pauses("bad.preferences_pb").also { it.ensureLoaded() }.sourceLabel())
+    }
+
+    @Test fun theResumeNamesWhatItCleared() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.toggle(); lines.clear(); p.toggle()
+        assertTrue(lines.toString(), lines.any { it.startsWith("pause resumed n=1 src=USER_GLASSES") })
+        assertEquals("none", p.sourceLabel())
+    }
+
+    @Test fun theStatusReasonMapsToASource() {
+        assertEquals("USER_PHONE", PauseSource.forReason("paused", "USER_PHONE"))
+        assertEquals("BATTERY_LOW", PauseSource.forReason("battery", "none"))
+        assertEquals("BATTERY_BUDGET", PauseSource.forReason("battery_budget", "none"))
+        assertEquals("-", PauseSource.forReason("not_worn", "none"))
+        assertEquals("-", PauseSource.forReason(null, "none"))
     }
 }
