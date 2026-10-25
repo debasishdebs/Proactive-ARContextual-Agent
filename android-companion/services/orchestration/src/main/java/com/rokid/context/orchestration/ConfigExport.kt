@@ -42,7 +42,10 @@ object ConfigExport {
     private val json = Json { prettyPrint = true }
 
     /** Writes into `cache/exports` (the FileProvider folder), replacing the previous settings export. */
-    suspend fun write(context: Context, ai: AiGraph = AiGraph.get(context), nowMs: Long = System.currentTimeMillis()): File = withContext(Dispatchers.IO) {
+    suspend fun write(context: Context, ai: AiGraph = AiGraph.get(context), nowMs: Long = System.currentTimeMillis()): File =
+        DataOpGate.shared.export { writeLocked(context, ai, nowMs) } // the shared side of the gate: refused ("busy: a delete is running") while a delete runs
+
+    private suspend fun writeLocked(context: Context, ai: AiGraph, nowMs: Long): File = withContext(Dispatchers.IO) {
         val root = buildJsonObject {
             put("format", FORMAT)
             put("version", 1)
