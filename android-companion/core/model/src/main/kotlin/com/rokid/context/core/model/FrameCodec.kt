@@ -52,6 +52,7 @@ object FrameCodec {
         width: Int? = null,
         sampleSeq: Long? = null,
         sessionId: String? = null,
+        markRef: String? = null,
         chunkChars: Int = SAFE_CHUNK_CHARS,
     ): List<FrameChunk> {
         require(isValidFrameId(frameId)) { "bad frame id" }
@@ -62,7 +63,7 @@ object FrameCodec {
         return parts.mapIndexed { i, part ->
             FrameChunk(
                 FrameMeta(frameId = frameId, chunkIdx = i, chunkCount = parts.size, crc32 = crc, capturedAtMs = capturedAtMs, luma = luma, phash = phash, batteryPct = batteryPct,
-                    motion = motion, dwell = dwell, blur = blur, dhash = dhash, width = width, sampleSeq = sampleSeq, sessionId = sessionId),
+                    motion = motion, dwell = dwell, blur = blur, dhash = dhash, width = width, sampleSeq = sampleSeq, sessionId = sessionId, markRef = markRef),
                 part,
             )
         }

@@ -37,6 +37,8 @@ object Channels {
     const val MARK = "pc_mark"
     /** Slice 3a, phone to glasses: a [MarkAck]. Additive. */
     const val MARK_ACK = "pc_mark_ack"
+    /** v0.9.6 slice C, glasses to phone: a [MarkPhotoResult] (a mark's photo could not be taken). Additive; an old phone ignores the channel. */
+    const val MARK_PHOTO = "pc_mark_photo"
     /** Slice 3a, phone to glasses: a [TraceControl] (collect, tombstones, send). Additive. */
     const val TRACE_CTL = "pc_trace_ctl"
     /** Slice 3a, glasses to phone: a [TraceChunk]. Additive. */
@@ -229,7 +231,13 @@ data class HudSettings(
      * Deliberately NOT part of the trace settings hash. It is only a REQUEST: the glasses record only once a deletion epoch is also saved (three-state bootstrap).
      */
     val diagRecord: Boolean = false,
+    /** v0.9.6 slice C, additive: how long the camera stays open for the photo of a mark, ms ([MARK_PHOTO_HOLD_MIN_MS]..[MARK_PHOTO_HOLD_MAX_MS], see [normalized]). Old glasses ignore it. */
+    val markPhotoHoldMs: Int = MARK_PHOTO_HOLD_DEFAULT_MS,
 )
+
+const val MARK_PHOTO_HOLD_MIN_MS = 2_000
+const val MARK_PHOTO_HOLD_MAX_MS = 4_000
+const val MARK_PHOTO_HOLD_DEFAULT_MS = 3_000
 
 const val WEAR_PARK_MIN_SEC = 30
 const val WEAR_PARK_MAX_SEC = 1_800
@@ -273,6 +281,7 @@ fun HudSettings.normalized(): HudSettings {
         motionSourcesOff = motionSourcesOff.filter { it != "glasses_imu" },
         wearParkUnknownSec = wearParkUnknownSec.coerceIn(WEAR_PARK_MIN_SEC, WEAR_PARK_MAX_SEC),
         wearParkWornSec = wearParkWornSec.coerceIn(WEAR_PARK_MIN_SEC, WEAR_PARK_MAX_SEC),
+        markPhotoHoldMs = markPhotoHoldMs.coerceIn(MARK_PHOTO_HOLD_MIN_MS, MARK_PHOTO_HOLD_MAX_MS),
     )
 }
 
@@ -375,7 +384,31 @@ data class MarkMessage(
     val listenId: String? = null,
     val undo: Long? = null,
     val deletionCounter: Long = -1,
+    /** v0.9.6 slice C, additive: true = this glasses build will take a photo for the mark and report it (a frame with [FrameMeta.markRef], or a [MarkPhotoResult]). Absent = an old glasses build (reason `no_photo_support`). */
+    val photo: Boolean = false,
 )
+
+/** v0.9.6 slice C, glasses to phone on [Channels.MARK_PHOTO]: the photo of mark `(epoch, seq)` could not be taken; [reason] is a [MarkPhotoReason] token, never text. */
+@Serializable data class MarkPhotoResult(val v: Int = PROTOCOL_VERSION, val epoch: String, val seq: Long, val reason: String)
+
+/** The tokens of why a mark has no photo (stored on the label, shown to the user as words by the phone). A token the phone does not know is shown as is. */
+object MarkPhotoReason {
+    const val PENDING = "pending"
+    const val OK = "ok"
+    const val NO_PHOTO_SUPPORT = "no_photo_support"
+    const val RETRO = "retro_no_photo"
+    const val PHONE_MARK = "phone_mark_no_photo"
+    const val TIMEOUT = "photo_timeout"
+    const val NO_CAPTURE_SERVICE = "no_capture_service"
+    const val CAMERA_BUSY = "camera_busy"
+    const val CAMERA_BIND_FAILED = "camera_bind_failed"
+    const val NO_FRAME = "no_frame"
+    const val HEAT = "heat"
+    const val NOT_STORED = "not_stored"
+    const val CANCELLED = "cancelled"
+    /** Only a short token is ever stored: a wild value from the wire is cut and cleaned. */
+    fun clean(raw: String): String = raw.filter { it.isLetterOrDigit() || it == '_' }.take(32).ifEmpty { NO_FRAME }
+}
 
 /** Slice 3a, phone to glasses on [Channels.MARK_ACK]: the marks of [epoch] with these [seqs] are stored. */
 @Serializable data class MarkAck(val v: Int = PROTOCOL_VERSION, val epoch: String, val seqs: List<Long> = emptyList())
@@ -484,6 +517,8 @@ data class FrameMeta(
     val width: Int? = null,
     val sampleSeq: Long? = null,
     val sessionId: String? = null,
+    /** v0.9.6 slice C, additive: `"<epoch>:<seq>"` of the mark this photo was taken for (a mark touches capture). Absent = an ordinary frame; an old phone ignores it. */
+    val markRef: String? = null,
 )
 
 @Serializable data class FrameAck(val v: Int = PROTOCOL_VERSION, val frameId: String, val ok: Boolean, val reason: String? = null)
