@@ -32,7 +32,11 @@ class MarkPhotoLinkTest {
         assertEquals(listOf<GlassesEvent>(GlassesEvent.Outdated(2)), ev)
     }
 
-    private class Marks(var state: MarkState = MarkState.OPEN) : MarkLookup { val asked = ArrayList<String>(); override suspend fun state(markRef: String): MarkState { asked += markRef; return state } }
+    private class Marks(var state: MarkState = MarkState.OPEN) : MarkLookup {
+        val asked = ArrayList<String>(); val durable = HashMap<String, String>()
+        override suspend fun state(markRef: String): MarkState { asked += markRef; return state }
+        override suspend fun claim(markRef: String, frameId: String): Boolean = durable.getOrPut(markRef) { frameId } == frameId
+    }
     private fun admission(m: Marks, cap: Int = 16) = FrameAdmission(ledger(), Paused(), marks = MarkPhotoAllowance(m, cap))
 
     /** The bounded exception: only a frame of a REAL, still-waiting mark passes the pause history; every other frame of the same moment is still dropped. */
@@ -61,6 +65,17 @@ class MarkPhotoLinkTest {
         val a = FrameAdmission(ledger(), Paused(), marks = allow)
         for (i in 1..3) assertTrue(a.decide(meta("p$i", "ep:$i"), ClockOffset(0), phoneNow) is Admission.Ingest)
         assertEquals(2, allow.claimed, "the oldest claim was evicted, so the cache stays bounded")
+    }
+
+    /** Codex recheck: cycling fresh frame ids over more pending marks than the cache holds, or a restart, must not reopen a mark's allowance. */
+    @Test fun anEvictedClaimOrARestartDoesNotReopenTheAllowance() = runTest {
+        val marks = Marks()
+        val a = FrameAdmission(ledger(), Paused(), marks = MarkPhotoAllowance(marks, cap = 2))
+        for (i in 1..5) assertTrue(a.decide(meta("p$i", "ep:$i"), ClockOffset(0), phoneNow) is Admission.Ingest)
+        for (i in 1..5) assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("x$i", "ep:$i"), ClockOffset(0), phoneNow), "mark $i already has its frame")
+        val restarted = FrameAdmission(ledger(), Paused(), marks = MarkPhotoAllowance(marks, cap = 2))
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), restarted.decide(meta("y1", "ep:1"), ClockOffset(0), phoneNow))
+        assertTrue(restarted.decide(meta("p1", "ep:1"), ClockOffset(0), phoneNow) is Admission.Ingest, "its own frame still passes after a restart")
     }
 
     @Test fun aMarkPhotoIsStillDedupedAndStillNeedsTheClockOffset() = runTest {

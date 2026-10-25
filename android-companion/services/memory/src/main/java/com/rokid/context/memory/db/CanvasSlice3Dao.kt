@@ -146,7 +146,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
     /** Deletes one label; the results computed under the old labels (they embody it) are invalidated in the same transaction. */
     @Transaction open suspend fun deleteLabel(id: String): Boolean {
         val n = deleteLabelRow(id)
-        if (n > 0) { deleteRunRowsOfLabels(listOf(id)); bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)) }
+        if (n > 0) { deleteRunRowsOfLabels(listOf(id)); bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)); pruneMarkClaims() }
         return n > 0
     }
 
@@ -172,6 +172,16 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
     @Query("SELECT ts FROM frame WHERE id = :frameId") protected abstract suspend fun frameTs(frameId: String): Long?
     @Query("UPDATE canvas_label SET frameId = :frameId, photo = 'ok' WHERE labelId IN (:ids) AND frameId IS NULL") protected abstract suspend fun linkLabelRows(ids: List<String>, frameId: String): Int
     @Query("UPDATE canvas_label SET photo = :reason WHERE labelId IN (:ids) AND photo = 'pending'") protected abstract suspend fun failLabelRows(ids: List<String>, reason: String): Int
+
+    // The allowance of a mark's photo through a pause is claimed DURABLY (canvas_meta `mark_claim:<labelId>` = the frame id): no in-memory eviction or restart can hand it to a second frame.
+    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_claim:%' ESCAPE '\\' AND substr(`key`, 12) NOT IN (SELECT labelId FROM canvas_label)") protected abstract suspend fun pruneMarkClaims(): Int
+
+    /** True when [frameId] holds (or just took) the one claim of mark [labelId]; false when another frame id already does. Atomic: the first writer wins. */
+    @Transaction open suspend fun claimMarkPhoto(labelId: String, frameId: String): Boolean {
+        val key = "mark_claim:$labelId"
+        insertMetaIgnore(key, frameId)
+        return meta(key) == frameId
+    }
 
     /**
      * Links the live photo that names mark [labelId] (`mk:<epoch>:<seq>`) to the mark and its intent row, once (a mark that already has a photo keeps it). True when a link was made. Called inside the frame
@@ -210,7 +220,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         if (frameIds.isEmpty()) return 0
         val gone = frameIds.chunked(CHUNK).flatMap { labelIdsOfFrames(it) }
         val n = frameIds.chunked(CHUNK).sumOf { deleteLabelRowsForFrames(it) }
-        if (n > 0) { deleteRunRowsOfLabels(gone); bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
+        if (n > 0) { deleteRunRowsOfLabels(gone); bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone); pruneMarkClaims() }
         return n
     }
 
@@ -218,7 +228,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
     @Transaction open suspend fun deleteLabelsBetween(fromMs: Long, toMs: Long): Int {
         val gone = labelIdsBetweenTimes(fromMs, toMs)
         val n = deleteLabelRowsBetween(fromMs, toMs)
-        if (n > 0) { deleteRunRowsOfLabels(gone); bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
+        if (n > 0) { deleteRunRowsOfLabels(gone); bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone); pruneMarkClaims() }
         return n
     }
 

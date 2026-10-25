@@ -14,4 +14,6 @@ class RoomMarkLookup(private val dao: CanvasSlice3Dao) : MarkLookup {
         val l = dao.label(id) ?: return if (dao.meta(FrameIntake.MARK_UNDONE_PREFIX + id) != null) MarkState.CLOSED else MarkState.UNKNOWN
         return if (l.frameId == null && l.photo == MarkPhotoReason.PENDING) MarkState.OPEN else MarkState.CLOSED
     }
+
+    override suspend fun claim(markRef: String, frameId: String): Boolean = dao.claimMarkPhoto(MarkRef.labelId(markRef), frameId)
 }

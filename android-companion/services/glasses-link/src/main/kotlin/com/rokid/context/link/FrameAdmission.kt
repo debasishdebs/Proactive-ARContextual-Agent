@@ -27,7 +27,11 @@ sealed interface Admission {
 enum class MarkState { OPEN, UNKNOWN, CLOSED }
 
 /** Looks a mark up: OPEN = stored, no photo yet and still waiting for one; UNKNOWN = not stored (yet); CLOSED = it has its photo, no longer waits, or was undone. */
-fun interface MarkLookup { suspend fun state(markRef: String): MarkState }
+interface MarkLookup {
+    suspend fun state(markRef: String): MarkState
+    /** DURABLE claim: true when [frameId] holds (or just took) the one allowance of the mark; false when another frame id does. Survives eviction and restart. */
+    suspend fun claim(markRef: String, frameId: String): Boolean
+}
 
 /**
  * The allowance behind the ONE phone-side pause exception: a photo passes the pause history only for a REAL stored mark that still waits for its photo, and each mark's allowance goes to ONE frame id
@@ -42,6 +46,7 @@ class MarkPhotoAllowance(private val lookup: MarkLookup, private val cap: Int = 
         synchronized(claims) { claims[markRef]?.let { return if (it == frameId) MarkState.OPEN else MarkState.CLOSED } }
         val st = lookup.state(markRef)
         if (st != MarkState.OPEN) return st
+        if (!lookup.claim(markRef, frameId)) return MarkState.CLOSED // the durable claim decides; the map below is only a fast path
         synchronized(claims) {
             val other = claims[markRef]
             if (other != null) return if (other == frameId) MarkState.OPEN else MarkState.CLOSED
@@ -51,7 +56,7 @@ class MarkPhotoAllowance(private val lookup: MarkLookup, private val cap: Int = 
         return MarkState.OPEN
     }
 
-    companion object { val NONE = MarkPhotoAllowance({ MarkState.CLOSED }) }
+    companion object { val NONE = MarkPhotoAllowance(object : MarkLookup { override suspend fun state(markRef: String) = MarkState.CLOSED; override suspend fun claim(markRef: String, frameId: String) = false }) }
 }
 
 class FrameAdmission(
