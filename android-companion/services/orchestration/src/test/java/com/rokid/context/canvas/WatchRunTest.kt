@@ -22,6 +22,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -72,6 +73,16 @@ class WatchRunTest {
         assertEquals(listOf(0.0, 0.5, 1.0, 1.0), listOf(1000L, 2000L, 3000L, 4000L).map { num(agg(it)) })
         assertEquals(listOf("no", "yes", "yes", "yes"), listOf(1000L, 2000L, 3000L, 4000L).map { at -> items.first { it.nodeId == "cmp" && it.frameId == "watch:$at" }.branch })
         assertEquals(0, modelCalls.get()); assertEquals(0, h.dao.run(id)!!.calls)
+    }
+
+    @Test fun theRowsOfARealWatchRunAreTheOnesTheSourceSwitchDeletes() = runBlocking<Unit> {
+        put(1000L to WatchState.WALKING, 2000L to WatchState.RUNNING)
+        val id = runAll(runner(), pipeline())
+        assertTrue("the run keeps per-value rows today", h.dao.items(id).any { it.frameId == "watch:1000" })
+        assertEquals(1, h.dao.deleteWatchRuns())
+        assertNull(h.dao.run(id)); assertTrue(h.dao.items(id).isEmpty())
+        val empty = runAll(runner(), pipeline()) // an empty window's NO_DATA row is covered too
+        assertEquals(1, h.dao.deleteWatchRuns()); assertNull(h.dao.run(empty))
     }
 
     @Test fun onlyTheValuesOfTheWindowAreRead() = runBlocking<Unit> {

@@ -59,7 +59,8 @@ class ContextHubTest {
         val registry = ContextSourceRegistry()
         val logs = ArrayList<String>()
         val stats = ContextHubStats(clock)
-        val hub = ContextHub(ts.backgroundScope, settings, registry, fusion = fusion ?: ContextFusion(FusionParams(watchTtlMs = 1_500_000)), clock = clock, stats = stats, log = { logs += it })
+        var watchOffs = 0
+        val hub = ContextHub(ts.backgroundScope, settings, registry, fusion = fusion ?: ContextFusion(FusionParams(watchTtlMs = 1_500_000)), clock = clock, stats = stats, log = { logs += it }, onWatchOff = { watchOffs++ })
         val msgs = ArrayList<MotionContextMessage?>()
         init { ts.backgroundScope.launch(UnconfinedTestDispatcher(ts.testScheduler)) { hub.message.collect { msgs += it } } }
         fun start() { hub.start(); ts.runCurrent() }
@@ -292,6 +293,16 @@ class ContextHubTest {
         assertEquals("the window is honoured", listOf(WatchState.WALKING), f.hub.watchRing.recent(t, t + 1).map { it.state })
         f.off("watch_livefit")
         assertTrue("a source switched off forgets what it gave", f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
+    }
+
+    @Test fun switchingTheWatchSourceOffTellsTheOwnersOfItsValuesAndNoOtherSourceDoes() = runTest {
+        val f = Fx(this); f.reg("watch_livefit"); f.reg("phone_car"); f.on("watch_livefit", "phone_car"); f.start()
+        f.accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f))
+        f.off("phone_car")
+        assertEquals("another source going off is not the watch", 0, f.watchOffs)
+        f.off("watch_livefit")
+        assertEquals(1, f.watchOffs)
+        assertTrue(f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
     }
 
     @Test fun anotherSourcesEvidenceAndAnUnrunningWatchLeaveTheRingEmpty() = runTest {

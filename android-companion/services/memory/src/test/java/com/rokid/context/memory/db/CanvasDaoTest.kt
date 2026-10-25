@@ -27,6 +27,18 @@ class CanvasDaoTest {
         CanvasRunItemEntity(run, frame, node, status, null, "{}", null, null, null, null, null, null, null)
     private fun score(run: String, frame: String, node: String = "n") = CanvasScoreEntity(run, frame, node, 1, "", 1)
 
+    @Test fun deleteWatchRunsRemovesOnlyRunsHoldingWatchValuesWithTheirItemsAndScores() = runBlocking {
+        dao.insertRun(run("w1")); dao.insertRun(run("w2")); dao.insertRun(run("ph")); dao.insertRun(run("fresh", "RUNNING"))
+        dao.upsertItem(item("w1", "watch:1000")); dao.upsertItem(item("w1", "watch:2000", node = "agg")); dao.upsertItem(item("w2", "watch:none"))
+        dao.upsertItem(item("ph", "frame-1")); dao.upsertScore(score("w1", "watch:1000"))
+        assertEquals(2, dao.deleteWatchRuns())
+        assertNull(dao.run("w1")); assertNull(dao.run("w2"))
+        assertTrue(dao.items("w1").isEmpty() && dao.items("w2").isEmpty())
+        assertNotNull("a photo run stays", dao.run("ph")); assertEquals(1, dao.items("ph").size)
+        assertNotNull("a run with no value yet holds none", dao.run("fresh"))
+        assertEquals(0, dao.deleteWatchRuns())
+    }
+
     @Test fun saveDraftCasOnRev() = runBlocking {
         dao.upsertPipeline(pipe("p", rev = 2))
         assertEquals(0, dao.saveDraft("p", "{\"a\":1}", 1, 5))

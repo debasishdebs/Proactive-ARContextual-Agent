@@ -132,6 +132,8 @@ object HubGraph {
         val ctxHub = com.rokid.context.phone.context.ContextHub(
             ctxScope, com.rokid.context.phone.context.ContextSourceSettings.of(app), ctxRegistry,
             log = { Log.i("PcCtx", it) },
+            // the ring is emptied when the watch source goes off: the canvas run rows that carry its values go with it (Delete all already wipes them)
+            onWatchOff = { ctxScope.launch { runCatching { MemoryGraph.get(app).db.canvasDao().deleteWatchRuns() } } },
         )
         ctxRegistry.register(com.rokid.context.phone.context.WatchSource(
             settings = com.rokid.context.phone.context.ContextSourceSettings.of(app),

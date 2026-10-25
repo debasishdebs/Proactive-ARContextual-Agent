@@ -38,6 +38,12 @@ abstract class CanvasDao {
 
     @Transaction open suspend fun deleteRun(id: String) { deleteItems(id); deleteScores(id); deleteRunRow(id) }
 
+    /**
+     * Deletes every run that holds a watch value (its items are keyed `watch:<atMs>`, WatchMotion.KEY_PREFIX) with its items and scores; returns the runs deleted. Called when the watch source
+     * is switched off: the hub forgets the values it gave, so a run row must not keep them either. A run with no item yet holds no value and stays.
+     */
+    @Transaction open suspend fun deleteWatchRuns(): Int = watchRunIds().also { ids -> ids.forEach { deleteRun(it) } }.size
+
     /** Keeps the newest [keep] runs (by startedAt) and deletes the rest with their items and scores. */
     @Transaction open suspend fun pruneRuns(keep: Int) { runIdsBeyond(keep).forEach { deleteRun(it) } }
 
@@ -191,6 +197,7 @@ abstract class CanvasDao {
     @Query("DELETE FROM canvas_run_item WHERE runId = :id") protected abstract suspend fun deleteItems(id: String)
     @Query("DELETE FROM canvas_score WHERE runId = :id") protected abstract suspend fun deleteScores(id: String)
     @Query("DELETE FROM canvas_run WHERE runId = :id") protected abstract suspend fun deleteRunRow(id: String)
+    @Query("SELECT DISTINCT runId FROM canvas_run_item WHERE frameId LIKE 'watch:%'") protected abstract suspend fun watchRunIds(): List<String>
     @Query("SELECT runId FROM canvas_run ORDER BY startedAt DESC, runId DESC LIMIT -1 OFFSET :keep") protected abstract suspend fun runIdsBeyond(keep: Int): List<String>
     @Query("DELETE FROM canvas_run_item WHERE frameId IN (:frameIds)") abstract suspend fun deleteItemsForFrames(frameIds: List<String>): Int
     @Query("DELETE FROM canvas_score WHERE frameId IN (:frameIds)") abstract suspend fun deleteScoresForFrames(frameIds: List<String>): Int
