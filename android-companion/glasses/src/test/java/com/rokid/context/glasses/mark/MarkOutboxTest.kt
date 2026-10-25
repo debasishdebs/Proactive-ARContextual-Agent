@@ -19,6 +19,14 @@ class MarkOutboxTest {
     private fun outbox(s: MarkStore = store) = MarkOutbox(s, wallClock = { wall }, newEpoch = { "ep${++ids}" })
     private fun MarkOutbox.mark(at: Long = wall, listen: Boolean = true, undo: Long? = null) = record(at, atElapsedMs = 5, bootCount = 3, listen = listen, undo = undo)
 
+    @Test fun aMarkSaysItWillTakeAPhotoOnlyWhenAskedTo() {
+        val o = outbox()
+        assertFalse(o.record(wall, 5, 3, listen = true).photo)
+        val m = o.record(wall, 5, 3, listen = true, photo = true)
+        assertTrue(m.photo)
+        assertTrue(outbox().pending().last().photo, "the flag survives a restart: a resent mark still promises its photo")
+    }
+
     @Test fun recordPersistsBeforeItReturns() {
         val o = outbox()
         val m = o.mark()

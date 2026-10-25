@@ -143,4 +143,24 @@ class MarkPhotoRecorderTest {
         rec.applyVoice(listOf(VoiceMark.Retro(null)), glasses = true, nowMs = t0 + 30_000)
         assertEquals(MarkPhotoReason.RETRO, dao.labels().single { it.source == "retro" }.photo)
     }
+
+    /** The gate semantics: a mark and its photo recorded while an export runs are neither blocked nor lost (only deletes wait for the gate). */
+    @Test fun aMarkAndItsPhotoDuringAnExportAreRecordedAndLinkedWithoutWaiting() = runBlocking<Unit> {
+        com.rokid.context.orchestration.DataOpGate.shared.export {
+            kotlinx.coroutines.withTimeout(5_000) {
+                assertTrue(rec.onMark(mark(1), at(t0)))
+                commitPhoto("p1", t0 + 1_400, "e:1")
+            }
+        }
+        assertEquals("p1", dao.label("mk:e:1")!!.frameId)
+    }
+
+    /** Forget Moment of the PHOTO's second removes the mark too, though the mark was taken one second earlier (the existing frame lineage). */
+    @Test fun forgettingTheMomentOfThePhotoRemovesTheMarkAndItsIntent() = runBlocking<Unit> {
+        rec.onListenStart(t0); rec.onMark(mark(1), at(t0 + 100)); commitPhoto("p1", t0 + 1_400, "e:1")
+        rec.applyVoice(listOf(VoiceMark.Mark("buy")), glasses = true, nowMs = t0 + 2_000)
+        val svc = com.rokid.context.memory.forget.ForgetService(db, com.rokid.context.memory.ProposalRepository(db.proposalDao(), db.actionDao(), db)) { t0 }
+        com.rokid.context.memory.forget.MomentForget(db, svc) { t0 }.forgetMoments(listOf(com.rokid.context.memory.moment.MomentId.ofMs(t0 + 1_400)))
+        assertTrue(dao.labels().isEmpty()); assertEquals(0, db.frameDao().count())
+    }
 }

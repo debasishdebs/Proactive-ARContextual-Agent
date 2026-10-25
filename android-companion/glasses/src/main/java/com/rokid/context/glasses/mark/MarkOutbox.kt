@@ -47,9 +47,9 @@ class MarkOutbox(private val store: MarkStore, private val wallClock: () -> Long
     val size: Int get() = synchronized(lock) { entries.size }
     fun all(): List<MarkMessage> = synchronized(lock) { entries.toList() }
 
-    fun record(atMs: Long, atElapsedMs: Long, bootCount: Int, listen: Boolean, undo: Long? = null): MarkMessage = synchronized(lock) {
+    fun record(atMs: Long, atElapsedMs: Long, bootCount: Int, listen: Boolean, undo: Long? = null, photo: Boolean = false): MarkMessage = synchronized(lock) {
         if (epoch.isEmpty()) epoch = newEpoch()
-        val m = MarkMessage(epoch = epoch, seq = nextSeq++, atMs = atMs, atElapsedMs = atElapsedMs, bootCount = bootCount, listen = listen, undo = undo, deletionCounter = counter)
+        val m = MarkMessage(epoch = epoch, seq = nextSeq++, atMs = atMs, atElapsedMs = atElapsedMs, bootCount = bootCount, listen = listen, undo = undo, deletionCounter = counter, photo = photo)
         entries.add(m)
         while (entries.size > CAP) entries.removeAt(0)
         persist()

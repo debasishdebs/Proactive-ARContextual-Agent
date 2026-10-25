@@ -17,6 +17,8 @@ data class BufferedMeta(val frameId: String, val capturedAtMs: Long, val luma: I
     // Keyframe metadata (additive: a frame buffered before the sampling session has none and sends with defaults).
     val motion: MotionState = MotionState.UNKNOWN, val dwell: Boolean = false, val blur: Float? = null, val dhash: String? = null,
     val width: Int? = null, val sampleSeq: Long? = null, val sessionId: String? = null,
+    /** v0.9.6 slice C, additive: `"<epoch>:<seq>"` of the mark this photo was taken for (null = an ordinary frame). */
+    val markRef: String? = null,
 )
 
 data class BufferedFrame(val meta: BufferedMeta, val jpeg: File)
@@ -66,13 +68,13 @@ class OutboundBuffer(
      * False when the frame could not be stored; nothing is left behind then. When storage is full and the buffer is
      * not empty, the oldest frame makes room (FIFO, like the count cap) and the write is retried once.
      */
-    @Synchronized fun add(frameId: String, jpeg: ByteArray, capturedAtMs: Long, luma: Int?, phash: String?, batteryPct: Int?, elapsedAtCaptureMs: Long = elapsed(), keyframe: KeyframeOut? = null): Boolean {
+    @Synchronized fun add(frameId: String, jpeg: ByteArray, capturedAtMs: Long, luma: Int?, phash: String?, batteryPct: Int?, elapsedAtCaptureMs: Long = elapsed(), keyframe: KeyframeOut? = null, markRef: String? = null): Boolean {
         require(FrameCodec.isValidFrameId(frameId)) { "bad frame id" }
         val key = keyOf(capturedAtMs, frameId)
         val j = File(dir, "$key.jpg")
         val m = File(dir, "$key.json")
         val meta = BufferedMeta(frameId, capturedAtMs, luma, phash, batteryPct, elapsedAtCaptureMs, boot.ifEmpty { null },
-            keyframe?.motion ?: MotionState.UNKNOWN, keyframe?.dwell ?: false, keyframe?.blur, keyframe?.dhash, keyframe?.width, keyframe?.sampleSeq, keyframe?.sessionId)
+            keyframe?.motion ?: MotionState.UNKNOWN, keyframe?.dwell ?: false, keyframe?.blur, keyframe?.dhash, keyframe?.width, keyframe?.sampleSeq, keyframe?.sessionId, markRef)
         val metaBytes = Wire.json.encodeToString(BufferedMeta.serializer(), meta).toByteArray()
         if (!write(j, m, jpeg, metaBytes)) {
             if (frames.isEmpty()) return false
@@ -106,6 +108,13 @@ class OutboundBuffer(
 
     @Synchronized fun remove(frameId: String) {
         frames.entries.firstOrNull { it.value.meta.frameId == frameId }?.key?.let { delete(it) }
+    }
+
+    /** The user undid the mark: its photo, if it has not left the buffer yet, goes. False when none is here (delivered, or never taken); the phone fences and forgets one that is already on its way. */
+    @Synchronized fun discardMarkPhoto(markRef: String): Boolean {
+        val keys = frames.entries.filter { it.value.meta.markRef == markRef }.map { it.key }
+        keys.forEach { delete(it) }
+        return keys.isNotEmpty()
     }
 
     @Synchronized fun clear() { frames.keys.toList().forEach { delete(it) } }

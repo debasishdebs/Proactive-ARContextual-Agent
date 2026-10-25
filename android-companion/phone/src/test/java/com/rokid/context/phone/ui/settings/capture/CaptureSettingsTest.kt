@@ -220,6 +220,28 @@ class CaptureSettingsTest {
         compose.onNodeWithContentDescription("Capture mode: Settle").assertExists()
     }
 
+    @Test fun theMarkPhotoHoldDefaultsToThreeSecondsIsClampedAndSavedThroughTheHudSettings() = runBlocking {
+        val hud = FakeHudSettings(HudSettings())
+        val vm = CaptureSettingsViewModel(hud)
+        assertEquals(3_000, withTimeout(5_000) { vm.state.first() }.markPhotoHoldMs)
+        vm.setMarkPhotoHold(4_000); assertEquals(4_000, hud.settings.value.markPhotoHoldMs)
+        vm.setMarkPhotoHold(50); assertEquals("clamped to the 2 s floor", 2_000, hud.settings.value.markPhotoHoldMs)
+        vm.setMarkPhotoHold(99_000); assertEquals(4_000, hud.settings.value.markPhotoHoldMs)
+        assertEquals(4_000, withTimeout(5_000) { vm.state.first { it.markPhotoHoldMs == 4_000 } }.markPhotoHoldMs)
+        vm.cancelScope()
+    }
+
+    @Test fun theMarkPhotoHoldRowSitsNextToTheOtherCaptureSettingsAndOffersTwoToFourSeconds() {
+        var picked = -1
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(markPhotoHoldMs = 3_000), onBack = {}, onMarkPhotoHold = { picked = it }) } }
+        compose.onNodeWithTag("mark_photo_hold").performScrollTo().assertExists()
+        compose.onNodeWithTag("mark_photo_hold_note").assertExists()
+        compose.onNodeWithContentDescription("Mark photo hold: 3 s").assertExists()
+        compose.onNodeWithTag("mark_photo_hold").performClick()
+        compose.onNodeWithTag("mark_photo_hold_4").performClick() // 2, 2.5, 3, 3.5, 4 s
+        assertEquals(4_000, picked)
+    }
+
     @Test fun smartMotionShowsQuickLookNotSettleNote() {
         show(CaptureSettingsUiState(wake = CameraWake.MOTION))
         compose.onNodeWithTag("quick_look").assertExists(); compose.onNodeWithTag("settle_note").assertDoesNotExist()
