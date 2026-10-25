@@ -10,6 +10,8 @@ Based on v0.9.3 (6324b94d). Slice handoffs in this folder. APKs of the final tip
 | 4 | 3c E2b: editor for windows/values, phone try-it, differential fuzz + goldens (feat/expr-e2b) | full run green; no Codex | JS budget 4550 -> 4614 |
 | 5 | composite phase C: glasses-lane nodes (feat/composite-c) | full run green; no Codex | JS budget 4628; compile goldens pin five built-ins |
 | 6 | watch lane, proc.motion_model, out.set_frequency_preview, starter-watch-motion (feat/watch-lane) | final full run | preview only, no live acting |
+| 7 | window tolerance, percent-based (feat/window-tolerance) | Codex NOT READY (2 Important) -> fixed 1f66be8e | strict plans keep pre-change bytes; global setting default 90% |
+| 8 | diagnostics: log ratchet, pause source, watchdog logs, heartbeat span (feat/diag-fixes) | Codex NOT READY (1 Important) -> fixed 55816a16 | camera 70% was a measurement artefact; pause came from a pause record |
 
 Final run on the tip: all modules green except load-sensitive flaky tests (LocalModelsPageTest, PromptEditorTest, HistoricalBackfillTest, JsEditorTest, StepSheetTest, CanvasServerTest port tests) which pass alone. Cancelled earlier: the first v0.9.4 attempt (discarded at the user's request, then restarted).
 Needs the user: browser visual pass, phone and glasses installs (backup first, no call), the worn 35-minute X7/X10 SHADOW gate, the 01:50 marks check.
