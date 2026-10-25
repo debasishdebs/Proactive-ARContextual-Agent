@@ -36,6 +36,7 @@ class CaptureServiceModeTest {
 
     @After fun tearDown() {
         CaptureService.heartbeatFault = null
+        GlassesRuntime.recorderBuildHook = null
         controller?.destroy()
         GlassesRuntime.resetForTests()
     }
@@ -88,6 +89,19 @@ class CaptureServiceModeTest {
         waitUntil("session") { runtime.smartCapture.value }
         val in5min = assertNotNull(alarmIn())
         assertTrue(in5min in 290_000..300_000, "the alarm is a 5 min watchdog, not the 60 s interval: $in5min")
+    }
+
+    /** The main thread never builds or waits for the trace recorder: until the writer has built it, no Smart session starts; it starts at a later beat. */
+    @Test fun smartSessionWaitsForTheRecorderTheWriterBuildsAndNeverBuildsItOnMain() {
+        val release = java.util.concurrent.CountDownLatch(1)
+        GlassesRuntime.recorderBuildHook = { release.await(30, java.util.concurrent.TimeUnit.SECONDS) }
+        runtime.settingsCache.write(HudSettings(captureMode = CaptureMode.SMART, captureIntervalSec = 60))
+        startKeepAlive()
+        repeat(300) { idle(100); Thread.sleep(10); assertFalse(runtime.smartCapture.value, "no session while the recorder is not built (round $it)") } // as long as a normal session needs to start (waitUntil)
+        assertFalse(runtime.traceRecorderReady)
+        release.countDown()
+        waitUntil("session after the recorder") { runtime.smartCapture.value }
+        assertTrue(runtime.traceRecorderReady)
     }
 
     @Test fun switchingToFixedStopsTheSessionAndRearmsTheInterval() {
