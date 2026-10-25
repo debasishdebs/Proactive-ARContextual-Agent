@@ -238,6 +238,8 @@ data class HudSettings(
 const val MARK_PHOTO_HOLD_MIN_MS = 2_000
 const val MARK_PHOTO_HOLD_MAX_MS = 4_000
 const val MARK_PHOTO_HOLD_DEFAULT_MS = 3_000
+/** What Settings offers for the hold (any value in the range is accepted on the wire; the screen shows the nearest). */
+val MARK_PHOTO_HOLD_OPTIONS_MS = listOf(2_000, 2_500, 3_000, 3_500, 4_000)
 
 const val WEAR_PARK_MIN_SEC = 30
 const val WEAR_PARK_MAX_SEC = 1_800

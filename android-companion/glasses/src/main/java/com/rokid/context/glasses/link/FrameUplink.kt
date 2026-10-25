@@ -124,7 +124,7 @@ class FrameUplink(
                 }
                 val chunks = FrameCodec.split(id, jpeg, buffer.sendTimeMs(f), f.meta.luma, f.meta.phash, f.meta.batteryPct,
                     motion = f.meta.motion, dwell = f.meta.dwell, blur = f.meta.blur, dhash = f.meta.dhash, width = f.meta.width,
-                    sampleSeq = f.meta.sampleSeq, sessionId = f.meta.sessionId, chunkChars = config.chunkChars)
+                    sampleSeq = f.meta.sampleSeq, sessionId = f.meta.sessionId, markRef = f.meta.markRef, chunkChars = config.chunkChars)
                 val outcome = deliver(id, chunks)
                 if (outcome != Outcome.INTERRUPTED) forget(id)
                 when (outcome) {

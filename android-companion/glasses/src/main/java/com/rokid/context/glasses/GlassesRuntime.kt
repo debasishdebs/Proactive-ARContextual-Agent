@@ -193,6 +193,7 @@ class GlassesRuntime private constructor(private val app: Context) {
             markOutbox, markCue, send = { m -> controller?.sendMark(m) ?: false }, enabled = { true },
             wallClock = System::currentTimeMillis, elapsed = android.os.SystemClock::elapsedRealtime,
             bootCount = { android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1) },
+            photo = markPhoto, scope = scope, sendPhotoResult = { r -> controller?.sendMarkPhoto(r) ?: false },
         )
     }
     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
@@ -379,6 +380,25 @@ class GlassesRuntime private constructor(private val app: Context) {
             if (!pauses.captureAllowed()) { buffer.remove(frameId); return BufferResult.PAUSED }
             BufferResult.STORED
         }
+
+    /**
+     * v0.9.6 slice C, the glasses half of the bounded exception "a mark touches capture": stores the photo taken for a mark WITHOUT the two `captureAllowed` checks of [bufferCaptured] (the user asked for
+     * it explicitly, even while capture is paused). Only the mark photo calls this: it names its mark, it is one frame per mark, and every ordinary frame still goes through [bufferCaptured]. It takes the
+     * same [captureGate], so a pause toggle that clears the buffer either runs before it (the photo stays) or after it (a pause after the mark drops its undelivered photo, as for any frame).
+     */
+    fun bufferMarkPhoto(frameId: String, keyframe: KeyframeOut, capturedAtMs: Long, luma: Int?, batteryPct: Int?, markRef: String): Boolean {
+        val stored = synchronized(captureGate) { buffer.add(frameId, keyframe.jpeg, capturedAtMs, luma, keyframe.phash, batteryPct, keyframe = keyframe, markRef = markRef) }
+        if (stored) { controller?.sendHello(); uplink.kick() } // no capture blink: the mark has its own cue
+        return stored
+    }
+
+    /** What a mark needs from capture: the photo (through the running capture service) and the discard of an undelivered one. */
+    val markPhoto: com.rokid.context.glasses.mark.MarkPhotoRunner = object : com.rokid.context.glasses.mark.MarkPhotoRunner {
+        override suspend fun take(markRef: String): com.rokid.context.glasses.mark.MarkPhotoOutcome =
+            CaptureService.liveInstance?.takeMarkPhoto(markRef)
+                ?: com.rokid.context.glasses.mark.MarkPhotoOutcome.Failed(com.rokid.context.core.model.MarkPhotoReason.NO_CAPTURE_SERVICE)
+        override fun discard(markRef: String) { synchronized(captureGate) { buffer.discardMarkPhoto(markRef) } }
+    }
 
     /** A frame was buffered: cue it, report the new buffer size and flush if the session is open. */
     fun onFrameBuffered() {

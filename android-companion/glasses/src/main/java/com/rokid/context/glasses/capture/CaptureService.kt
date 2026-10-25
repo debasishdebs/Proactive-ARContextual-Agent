@@ -49,6 +49,7 @@ import com.rokid.context.glasses.capture.diag.Heartbeat
 import com.rokid.context.glasses.capture.motion.SensorRate
 import com.rokid.context.glasses.capture.session.CameraXBind
 import com.rokid.context.glasses.capture.session.CameraXSamplingCamera
+import com.rokid.context.glasses.capture.session.KeyframeEncoder
 import com.rokid.context.glasses.capture.session.HeatGuard
 import com.rokid.context.glasses.capture.session.HeatLevel
 import com.rokid.context.glasses.capture.session.HeatPoller
@@ -440,6 +441,23 @@ class CaptureService : LifecycleService() {
             }
         }
         return true
+    }
+
+    /**
+     * v0.9.6 slice C: the photo of a mark (see [com.rokid.context.glasses.mark.MarkPhotoCapture] for the bounded exception). Runs on Main (CameraX binds there). Needs this service to be the live
+     * keep-alive instance; the camera goes through the same [runtime.cameraOwner] as every other use.
+     */
+    internal suspend fun takeMarkPhoto(markRef: String): com.rokid.context.glasses.mark.MarkPhotoOutcome = withContext(Dispatchers.Main) { markCapture.take(markRef) }
+
+    private val markCapture by lazy {
+        com.rokid.context.glasses.mark.MarkPhotoCapture(
+            runtime.cameraOwner, CameraXSamplingCamera(this, this, cameraExecutor), KeyframeEncoder { AndroidKeyframeEncoder.encode(it) },
+            store = { id, out, at, luma, ref -> runtime.bufferMarkPhoto(id, out, at, luma, batteryPercent().takeIf { it in 0..100 }, ref) },
+            holdMs = { runtime.settingsCache.readNormalized().markPhotoHoldMs.toLong() },
+            heatStop = { heat.level.value == HeatLevel.STOP },
+            clock = System::currentTimeMillis, newFrameId = ::newFrameId,
+            onKeep = { c, d, p -> gate.recordKeep(c, d, p, SystemClock.elapsedRealtime()) },
+        )
     }
 
     /** A rest-period capture for the session: one Fixed capture through the owner, without touching the alarm or the service. */

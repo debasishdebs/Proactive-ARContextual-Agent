@@ -47,6 +47,28 @@ class GlassesRuntimeTest {
         }
     }
 
+    /**
+     * v0.9.6 slice C, the bounded exception on the glasses: a mark's photo is buffered while capture is PAUSED (an ordinary frame is refused), names its mark, and is the only thing that does:
+     * the same pause still refuses every ordinary frame.
+     */
+    @Test fun aMarkPhotoIsBufferedWhileCapturePausedButAnOrdinaryFrameIsNot() = runBlocking {
+        val runtime = GlassesRuntime.get(app)
+        runtime.pauses.ensureLoaded()
+        check(runtime.togglePause() is PauseToggle.Paused)
+        val kf = com.rokid.context.glasses.capture.KeyframeOut(ByteArray(1_024), 640, com.rokid.context.core.model.MotionState.UNKNOWN, false, 90f, "0", "0", 1, "mark")
+        assertEquals(BufferResult.PAUSED, runtime.bufferCaptured("g1", ByteArray(1_024), System.currentTimeMillis(), 90, "0", 80))
+        assertEquals(true, runtime.bufferMarkPhoto("g2", kf, System.currentTimeMillis(), 90, 80, "ep:1"))
+        assertEquals("ep:1", runtime.buffer.oldest()!!.meta.markRef)
+        assertEquals(1, runtime.buffer.size)
+        assertEquals(true, runtime.markPhoto.let { it.discard("ep:1"); runtime.buffer.size == 0 })
+    }
+
+    /** The service-less case: no capture service means a typed failure, never a hang or a crash. */
+    @Test fun withNoCaptureServiceAMarkPhotoFailsWithItsReason() = runBlocking {
+        val runtime = GlassesRuntime.get(app)
+        assertEquals(com.rokid.context.glasses.mark.MarkPhotoOutcome.Failed(com.rokid.context.core.model.MarkPhotoReason.NO_CAPTURE_SERVICE), runtime.markPhoto.take("ep:1"))
+    }
+
     /** Spec §5.5: a newly merged phone pause active now drops the buffer, like a local pause; an expired one doesn't. */
     @Test fun newActivePhoneRecordClearsBuffer() = runBlocking {
         val runtime = GlassesRuntime.get(app)

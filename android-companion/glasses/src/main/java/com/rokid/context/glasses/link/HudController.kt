@@ -252,6 +252,9 @@ class HudController(
     fun sendMark(m: com.rokid.context.core.model.MarkMessage): Boolean =
         _sessionOpen.value && bridge.send(Channels.MARK, Wire.encode(m.copy(sessionStartMs = sessionStartMs))) == 0
 
+    /** `pc_mark_photo` (v0.9.6 slice C): the photo of a mark could not be taken; only while the session is open, best effort (a lost report is the phone's photo timeout). */
+    fun sendMarkPhoto(r: com.rokid.context.core.model.MarkPhotoResult): Boolean = _sessionOpen.value && bridge.send(Channels.MARK_PHOTO, Wire.encode(r)) == 0
+
     /** `pc_capture_plan_ack`: only while the session is open (a closed session gets the status ack of [capsAck] on its next open). */
     fun sendPlanAck(a: com.rokid.context.core.model.CapturePlanAck): Boolean = _sessionOpen.value && bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(a)) == 0
 

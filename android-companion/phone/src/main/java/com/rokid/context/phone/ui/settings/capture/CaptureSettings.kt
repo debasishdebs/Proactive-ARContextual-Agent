@@ -12,6 +12,8 @@ import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.MotionLabel
+import com.rokid.context.core.model.MARK_PHOTO_HOLD_DEFAULT_MS
+import com.rokid.context.core.model.MARK_PHOTO_HOLD_OPTIONS_MS
 import com.rokid.context.core.model.QUICK_LOOK_MS_ALLOWED
 import com.rokid.context.core.model.REST_MINUTES_ALLOWED
 import com.rokid.context.core.model.WORK_MINUTES_ALLOWED
@@ -96,6 +98,8 @@ data class CaptureSettingsUiState(
     val forgetRadiusSec: Int = CaptureTimingStore.DEFAULT_FORGET_RADIUS_SEC,
     /** Settings > Capture > Scenes: rebuilds a day (more often = more compute). */
     val sceneRebuildsPerDay: Int = com.rokid.context.canvas.moment.SceneCadence.DEFAULT_PER_DAY,
+    /** Settings > Capture > Mark photo hold: how long the camera stays open for the photo of a mark (v0.9.6; a mark photo is taken even while capture is paused). */
+    val markPhotoHoldMs: Int = MARK_PHOTO_HOLD_DEFAULT_MS,
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
     val modeIndex: Int get() = when {
@@ -131,7 +135,7 @@ class CaptureSettingsViewModel(
     private val timings = combine(timing.silentMin, timing.tickSec, timing.forgetRadiusSec, sceneState) { a, b, c, d -> listOf(a, b, c, d) }
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?, tol: Int = tolerance.pct.value): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active, windowMinValidPct = tol)
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active, windowMinValidPct = tol, markPhotoHoldMs = n.markPhotoHoldMs)
     }
     private val wear = combine(wearUnknownSince, ticker) { since, _ -> since }
     val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear, tolerance.pct, timings) { ui, since, tol, t ->
@@ -155,6 +159,7 @@ class CaptureSettingsViewModel(
     /** Kept for callers that still toggle the legacy field; the protocol ignores it. */
     fun setBurst(on: Boolean) = hud.update { it.copy(burstOnChange = on) }
     fun setQuickLook(ms: Int) = hud.update { it.copy(quickLookMs = ms).normalized() }
+    fun setMarkPhotoHold(ms: Int) = hud.update { it.copy(markPhotoHoldMs = ms).normalized() }
     fun setPauseWhenNotWorn(on: Boolean) = hud.update { it.copy(pauseWhenNotWorn = on) }
     fun setWearParkEnabled(on: Boolean) = hud.update { it.copy(wearParkEnabled = on) }
     fun setWearParkUnknownSec(sec: Int) = hud.update { it.copy(wearParkUnknownSec = sec).normalized() }
@@ -187,7 +192,7 @@ class CaptureSettingsViewModel(
 @Composable
 fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
-    onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
+    onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {}, onMarkPhotoHold: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {}, onWindowTolerance: (Int) -> Unit = {},
     onWatchdogSilent: (Int) -> Unit = {}, onWatchdogTick: (Int) -> Unit = {}, onForgetRadius: (Int) -> Unit = {}, onSceneRebuilds: (Int) -> Unit = {},
     onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {}, onUseSettings: () -> Unit = {},
@@ -225,6 +230,9 @@ fun CaptureSettingsScreen(
                 }
                 ChoiceRow("Battery target", BATTERY_TARGET_HOURS_ALLOWED.map { if (it == 0) "Off" else "$it h" }, BATTERY_TARGET_HOURS_ALLOWED.indexOf(state.batteryTargetHours), { onBatteryTarget(BATTERY_TARGET_HOURS_ALLOWED[it]) }, tag = "battery_target")
                 NoticeText("Takes fewer photos when the glasses battery would not last this long.")
+                val hold = MARK_PHOTO_HOLD_OPTIONS_MS.minBy { kotlin.math.abs(it - state.markPhotoHoldMs) }
+                ChoiceRow("Mark photo hold", MARK_PHOTO_HOLD_OPTIONS_MS.map(CaptureLabels::quickLook), MARK_PHOTO_HOLD_OPTIONS_MS.indexOf(hold), { onMarkPhotoHold(MARK_PHOTO_HOLD_OPTIONS_MS[it]) }, tag = "mark_photo_hold")
+                NoticeText("A mark opens the camera and keeps one photo, even when capture is paused or the battery would stop it. The camera stays on this long.", tag = "mark_photo_hold_note")
                 SwitchRow("Pause when not worn", null, state.pauseWhenNotWorn, onPauseWhenNotWorn, tag = "pause_not_worn")
                 SwitchRow("Pause while I use my phone", null, state.pauseWhenPhoneInUse, onPauseWhenPhoneInUse, tag = "pause_phone_use")
             }

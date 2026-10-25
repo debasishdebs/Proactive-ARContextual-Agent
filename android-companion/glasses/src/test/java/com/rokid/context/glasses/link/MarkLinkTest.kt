@@ -51,6 +51,17 @@ class MarkLinkTest {
         assertFalse(c.sendMark(mark))
     }
 
+    @Test fun aPhotoFailureGoesOutOnlyWhileTheSessionIsOpenAsAMarkPhotoMessage() = runTest {
+        val c = controller()
+        val r = com.rokid.context.core.model.MarkPhotoResult(epoch = "e", seq = 1, reason = "camera_busy")
+        assertFalse(c.sendMarkPhoto(r)); assertTrue(bridge.sent.none { it.first == Channels.MARK_PHOTO })
+        bridge.phone(Channels.STATE, state())
+        assertTrue(c.sendMarkPhoto(r))
+        assertEquals(r, (Wire.decode<com.rokid.context.core.model.MarkPhotoResult>(bridge.sent.single { it.first == Channels.MARK_PHOTO }.second.single()) as Decoded.Ok).value)
+        bridge.rc = -1
+        assertFalse(c.sendMarkPhoto(r))
+    }
+
     @Test fun markAckReachesTheOutbox() = runTest {
         val c = controller(); val got = mutableListOf<MarkAck>()
         c.onMarkAck = { got += it }
