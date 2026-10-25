@@ -35,6 +35,8 @@ class ContextHub(
     private val clock: () -> Long = System::currentTimeMillis,
     val stats: ContextHubStats = ContextHubStats(clock),
     private val log: (String) -> Unit = {},
+    /** Called (on the hub's actor, must not block) after the watch source was switched off and its ring emptied: whatever else holds the values it gave must drop them too. */
+    private val onWatchOff: () -> Unit = {},
 ) : EvidenceSink {
     private sealed interface Cmd {
         class Ev(val e: Evidence, val sourceId: String?, val gen: Int) : Cmd
@@ -225,7 +227,7 @@ class ContextHub(
     /** Marks the source revoked (late callbacks are dropped) and forgets its evidence; the caller rebuilds the fusion. */
     private fun stopSource(id: String, s: ContextSource?) {
         running.remove(id); live.remove(id)
-        if (id == "watch_livefit") watchRing.clear() // a source switched off forgets what it gave
+        if (id == "watch_livefit") { watchRing.clear(); safe(Unit) { onWatchOff() } } // a source switched off forgets what it gave
         safe(Unit) { s?.stop() }
         retained.keys.removeAll { retained[it]?.let { e -> sourceOf(e) } == id }
     }
