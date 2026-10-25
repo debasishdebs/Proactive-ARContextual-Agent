@@ -173,13 +173,16 @@ class MemoryExportTest {
         db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("live", 1, "/live.jpg", "rokid_glasses"))
         db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("gone", 1, "/gone.jpg", "rokid_glasses"))
         db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("gone", 1))
-        listOf(mem("typed"), mem("photo", "live"), mem("derivedOk", derived = true), mem("review", review = com.rokid.context.memory.db.ReviewState.NEEDS_REVIEW),
+        // photo retention: the frame row is deleted, frame_meta stays, a tombstone is left; its memory is still exported (only a Forget-removed frame, with no frame_meta either, is an orphan)
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("expired", null, null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = 1))
+        db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("expired", 1))
+        listOf(mem("afterRetention", "expired"), mem("typed"), mem("photo", "live"), mem("derivedOk", derived = true), mem("review", review = com.rokid.context.memory.db.ReviewState.NEEDS_REVIEW),
             mem("forgotten", review = com.rokid.context.memory.db.ReviewState.INVALIDATED), mem("orphan", "missing"), mem("sibling", "gone"), mem("siblingForgotten", "gone", review = com.rokid.context.memory.db.ReviewState.INVALIDATED),
             mem("derivedStale", derived = true), mem("srcGone", review = com.rokid.context.memory.db.ReviewState.INVALIDATED)).forEach { db.memoryDao().insert(it) }
         db.forgetDao().insertEdges(listOf(com.rokid.context.memory.db.MemorySourceEntity("derivedOk", "typed"), com.rokid.context.memory.db.MemorySourceEntity("derivedStale", "srcGone")))
         val json = Json.parseToJsonElement(MemoryExport.write(ctx, nowMs = 3).readText()).jsonObject
-        assertEquals(setOf("typed", "photo", "derivedOk", "sibling"), json["memories"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
+        assertEquals(setOf("typed", "photo", "derivedOk", "sibling", "afterRetention"), json["memories"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
         // "gone" has a tombstone (locked after Forget FACT of its sibling) but its row stays: the surviving OK fact is still exported
-        assertEquals("nothing was purged", 10, db.memoryDao().count())
+        assertEquals("nothing was purged", 11, db.memoryDao().count())
     }
 }
