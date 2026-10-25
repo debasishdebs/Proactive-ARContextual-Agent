@@ -20,6 +20,12 @@ Plan for GAP-3 if the ruling changes: a `tr:<traceId>` lineage token per trace o
 - OPEN gaps (`@Ignore("GAP-n ...")`, each verified to FAIL when un-ignored): GAP-4 (Moment-run batch mates; seeded run rows), GAP-9 (`frame_cluster.repFrameIds` keeps the frame id), GAP-13 (new, below).
 - NEW finding GAP-13 (low): right after a mark undo, `moment_part.refId` and `object_audit.refId` still hold the undone mark's id (ids only, no text) until the next Moment build (15 min cadence or a build trigger); the oracle's mark-undo test therefore rebuilds first. Fix would be to drop the Moment's mark part in `deleteLabel`'s transaction.
 
+## Codex round (three Important defects, one check), commit after e2e5fa90
+1. Export race: `MemoryExport.write` publication (rename + older-export cleanup) and `deleteCached` now share one lock, `deleteCached` lists the folder after taking it, and a generation counter (bumped by every `deleteCached`, captured before the library is read) makes an export that was in flight during a Forget fail with `IOException` (stale) instead of publishing. Seams `testAfterEnumerate` and `testBeforePublish`. Test `anExportPublishedWhileTheCleanupIsBetweenListingAndDeletingNeverSurvives` drives list, publish, delete deterministically. Mutation: no lock and no generation check: that test fails (a lock-only or generation-only variant still passes, either alone closes the race).
+2. Oracle scans files of ANY size by streaming (64 KB chunks, needle-length overlap). The world's export is now over 1.2 MB with the forgotten text at the end. Mutation: deleteCached skips exports over 1 MB: Forget fact and Forget photo tests fail.
+3. Retention test seeds an export holding the expired memory before the worker runs. Mutation: remove `ForgetActions.apply` from `RetentionWorker`: the retention test fails.
+4. Hang check: `:services:orchestration:cleanTestDebugUnitTest :services:orchestration:testDebugUnitTest` run twice, both BUILD SUCCESSFUL (82 s and 66 s), no hang; not reproduced, cause unknown (no jstack taken). The new tests use no unbounded waits (latch wait 10 s, join 10 s).
+
 ## Decisions
 - Cached exports are deleted on ANY apply (also retention), not only for USER Forgets: regenerable, simplest safe rule. Export file match is by the `proactive-context-memories-` prefix.
 - The memory-edit hook lives in the ViewModel (the memory module has no Context); it runs only after a saved edit.
