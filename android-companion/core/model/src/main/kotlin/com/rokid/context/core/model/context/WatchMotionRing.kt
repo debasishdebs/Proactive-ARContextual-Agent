@@ -40,8 +40,5 @@ class WatchMotionRing(private val max: Int = MAX) {
 
     @Synchronized fun clear() = items.clear()
 
-    /** Drops the values with `fromMs <= atMs <= toMs` (a time-range Forget). Returns how many went. */
-    @Synchronized fun removeBetween(fromMs: Long, toMs: Long): Int { val n = items.size; items.removeAll { it.atMs in fromMs..toMs }; return n - items.size }
-
     companion object { const val MAX = 120 }
 }
