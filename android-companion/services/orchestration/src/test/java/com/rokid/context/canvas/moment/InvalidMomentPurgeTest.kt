@@ -118,12 +118,14 @@ class InvalidMomentPurgeTest {
 
     @Test fun memoriesWhoseSourceFramesNoLongerExistAreDeletedThroughTheForgetCascadeAndTheRestStay() = runBlocking<Unit> {
         fx.frame("live", MS + 5)
+        fx.frame("exp", MS + 9); db.forgetDao().deleteFrame("exp"); db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("exp", 1)) // what photo retention leaves: tombstone + frame_meta, no frame row
+        fx.memory("expired", "exp")
         fx.memory("onLive", "live"); fx.memory("typed", null); fx.memory("orphan", "gone"); fx.memory("viaSource", null, derived = true); fx.memory("viaLive", null, derived = true); fx.memory("child", null, derived = true)
         db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("viaSource", "gone2", null, "FACT"), com.rokid.context.memory.db.FrameSourceEntity("viaLive", "live", null, "FACT")))
         db.forgetDao().insertEdges(listOf(MemorySourceEntity("child", "orphan")))
         val r = purge().runOnce()
         val left = db.openHelper.readableDatabase.query("SELECT id FROM memory WHERE reviewState != 'INVALIDATED' ORDER BY id").use { c -> generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList() }
-        assertEquals("a photo-less typed memory and the ones with a live photo stay; the derived child of a forgotten memory is invalidated by the cascade", listOf("onLive", "typed", "viaLive"), left)
+        assertEquals("a photo-less typed memory, the ones with a live photo and the one whose photo retention expired (frame_meta kept) stay; the derived child of a forgotten memory is invalidated by the cascade", listOf("expired", "onLive", "typed", "viaLive"), left)
         assertEquals(2, r.memoriesDeleted)
         assertEquals("the cascade result reaches the caller (files, export cache, re-summarise)", 1, after.size)
         assertTrue(after.single().forgotten.containsAll(listOf("orphan", "viaSource")))
