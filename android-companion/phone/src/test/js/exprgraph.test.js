@@ -227,6 +227,18 @@ export const tests = {
     eq(X.setWire(g, 'fast', id + '.a', 'speed').error, 'No such port');
     eq(X.nodeLabel({ id: 'x', op: 'nope' }), 'nope');
   },
+  windowToleranceIsOptionalFiftyToHundredAndEmptyMeansTheSetting() {
+    let g = X.addNode(X.defaultGraph(), 'fast', 'win').graph;
+    const node = () => g.steps[0].nodes.find((n) => n.id === 'win');
+    g = X.setNodeParam(g, 'fast', 'win', 'mv', '80').graph;
+    eq(node().mv, 80); eq(X.nodeLabel(node()), 'mean stepHz 10 s · 80%');
+    for (const v of ['49', '101', '75.5', 'abc', '-5']) ok(X.setNodeParam(g, 'fast', 'win', 'mv', v).error, 'mv ' + v);
+    eq(X.setNodeParam(g, 'fast', 'win', 'mv', '50').graph.steps[0].nodes.find((n) => n.id === 'win').mv, 50);
+    g = X.setNodeParam(g, 'fast', 'win', 'mv', '').graph;
+    eq('mv' in node(), false, 'empty goes back to the setting: the key is dropped'); eq(X.nodeLabel(node()), 'mean stepHz 10 s');
+    const w = (mv) => Object.assign({ op: 'win', name: 'stepHz', agg: 'mean', sec: 10 }, mv ? { mv } : {});
+    eq(X.exprMeters(JSON.stringify({ config: { exprs: [{ id: 'a', s: [w(90), w(80), w(90)] }] } })).terms, 2, 'the tolerance is part of the term identity');
+  },
   metersShowWindowTermsAndStateBytes() {
     const w = (n, agg, sec, t) => Object.assign({ op: 'win', name: n, agg, sec }, t === undefined ? {} : { t });
     const plan = JSON.stringify({ config: { exprs: [{ id: 'a', s: [w('stepHz', 'mean', 10), w('gyroMax', 'max', 300), w('stepHz', 'mean', 10)] }, { id: 'b', s: [w('stepHz', 'frac', 5, 1)] }] } });
