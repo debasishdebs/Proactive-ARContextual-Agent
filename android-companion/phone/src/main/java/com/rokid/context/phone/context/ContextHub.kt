@@ -7,6 +7,8 @@ import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.core.model.context.Evidence
 import com.rokid.context.core.model.context.FusionParams
 import com.rokid.context.core.model.context.MotionContextMessage
+import com.rokid.context.core.model.context.WatchMotionRing
+import com.rokid.context.core.model.context.WatchSample
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -70,6 +72,9 @@ class ContextHub(
     private val failed = HashSet<String>()
     private var nextGen = 0
     private val retained = LinkedHashMap<String, Evidence>()
+
+    /** The recent watch values this hub accepted (memory only, bounded): what a canvas `src.watch_motion` run reads. Emptied when the watch source is switched off. */
+    val watchRing = WatchMotionRing()
     private var retainSeq = 0
     private var lastEvalAt = 0L
     private var committed = ContextState.UNKNOWN
@@ -172,6 +177,7 @@ class ContextHub(
         if (src != null && running[src] == null) return
         if (c.sourceId != null && running[c.sourceId] != c.gen) return
         fusion.onEvidence(c.e)
+        (c.e as? Evidence.WatchMotion)?.let { watchRing.add(WatchSample(it.atMs, it.state, it.confidence)) }
         retain(c.e)
         stats.count(c.e)
         publish(clock())
@@ -219,6 +225,7 @@ class ContextHub(
     /** Marks the source revoked (late callbacks are dropped) and forgets its evidence; the caller rebuilds the fusion. */
     private fun stopSource(id: String, s: ContextSource?) {
         running.remove(id); live.remove(id)
+        if (id == "watch_livefit") watchRing.clear() // a source switched off forgets what it gave
         safe(Unit) { s?.stop() }
         retained.keys.removeAll { retained[it]?.let { e -> sourceOf(e) } == id }
     }

@@ -1,6 +1,6 @@
 import { toFlow, canConnect, applyChange, edgeFromId, lanesOf, bindingsOf, CELL_W, CELL_H, LANE_GAP, CARD_W, CARD_H, MIN_GAP } from '../../main/assets/canvas/flowadapter.js';
 import { layout as innerLayout } from '../../main/assets/canvas/compositeview.js';
-import { nodeTypes, allTypes, capturePipe, livePipe, liveCells, eq, ok } from './fixtures.js';
+import { nodeTypes, allTypes, watchTypes, capturePipe, livePipe, liveCells, eq, ok } from './fixtures.js';
 
 const layout = { layers: 5, columns: 1, cells: liveCells };
 const flow = (pipe, problems, opts, lay) => toFlow(pipe || livePipe(), lay === undefined ? layout : lay, problems || [], nodeTypes, opts || {});
@@ -257,6 +257,20 @@ export const tests = {
     eq(f.lanes.map((l) => l.domain), ['RT_GLASSES', 'RT_PHONE']);
     for (const nd of f.nodes) { const l = f.lanes.find((x) => x.domain === nd.data.domain); ok(nd.position.x >= l.x && nd.position.x + CELL_W <= l.x + l.width, nd.id + ' sits inside its lane'); }
     eq(bindingsOf(pipe, types).length >= 1, true);
+  },
+  aWatchNodeGetsTheWatchLaneFirstThenGlassesThenThePhone() {
+    const n = (id, type, params) => ({ id, type, title: id, params: params || {} });
+    const types = allTypes.concat(watchTypes);
+    const pipe = { schema: 2, id: 'w', name: 'W', nodes: [n('watch', 'src.watch_motion'), n('agg', 'agg.window'), n('head', 'imu.head_motion')], edges: [{ from: 'watch', to: 'agg' }] };
+    const cells = { watch: { layer: 0, column: 0 }, agg: { layer: 1, column: 0 }, head: { layer: 0, column: 1 } };
+    const f = toFlow(pipe, { layers: 2, columns: 2, cells }, [], types, {});
+    eq(f.lanes.map((l) => l.domain), ['WATCH', 'RT_GLASSES', 'ASYNC']);
+    eq(f.lanes[0].label, 'Watch');
+    eq(node(f, 'watch').data.domain, 'WATCH');
+    ok(node(f, 'watch').position.x + CELL_W <= node(f, 'head').position.x, 'the watch lane is left of the glasses lane');
+    const l = f.lanes[0]; ok(node(f, 'watch').position.x >= l.x && node(f, 'watch').position.x + CELL_W <= l.x + l.width, 'the watch node sits inside its lane');
+    eq(lanesOf(pipe, { cells }, types).map((x) => x.domain), ['WATCH', 'RT_GLASSES', 'ASYNC']);
+    eq(bindingsOf({ nodes: [n('watch', 'src.watch_motion')], edges: [] }, types).length, 0, 'the watch node is no binding');
   },
   oneDomainKeepsTheSlice2Positions() {
     const f = flow();

@@ -106,6 +106,7 @@ class GlassesCompositeTest {
         DefaultPipelines.INTENT_DRAFT -> DefaultPipelines.intentDraft("SEED {{recent_context}}")
         DefaultPipelines.DEFAULT_CAPTURE -> DefaultPipelines.defaultCapture()
         DefaultPipelines.STARTER -> DefaultPipelines.starter()
+        DefaultPipelines.STARTER_WATCH_MOTION -> DefaultPipelines.starterWatchMotion()
         else -> DefaultPipelines.starterMomentSummary()
     }
 
@@ -117,6 +118,7 @@ class GlassesCompositeTest {
             "default-capture" to "f5782e0d8610:c6ea8af3a364cc71",
             "starter-capture-extract" to "f5782e0d8610:db81ad1a86a50070",
             "starter-moment-summary" to "f5782e0d8610:3ff66ed4cf6aaf77",
+            "starter-watch-motion" to "f5782e0d8610:28c9cf15a753d921",
         )
         assertEquals(DefaultPipelines.all.toSet(), pinned.keys)
         val got = DefaultPipelines.all.associateWith { id ->

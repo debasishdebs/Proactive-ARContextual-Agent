@@ -15,7 +15,8 @@ object DefaultPipelines {
     const val DEFAULT_CAPTURE = "default-capture"
     const val STARTER = "starter-capture-extract"
     const val STARTER_MOMENT_SUMMARY = "starter-moment-summary"
-    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER, STARTER_MOMENT_SUMMARY)
+    const val STARTER_WATCH_MOTION = "starter-watch-motion"
+    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER, STARTER_MOMENT_SUMMARY, STARTER_WATCH_MOTION)
 
     private val none = JsonObject(emptyMap())
     private val livePrompt = buildJsonObject { putJsonObject("prompt") { put("source", "live") } }
@@ -151,5 +152,23 @@ object DefaultPipelines {
             PipelineEdge("trust", "write", "trusted"), PipelineEdge("trust", "write", "unsure"),
         )
         return Pipeline(PipelineJson.SCHEMA_V2, STARTER_MOMENT_SUMMARY, "Starter: moments to summary", glasses.nodes + nodes, glasses.edges + edges)
+    }
+
+    /**
+     * The watch branch of the generic flow next to the glasses lane: `Motion on watch -> Window aggregate (max of the last 5 values) -> Motion model -> Set frequency (preview)`, and
+     * the Default capture nodes and wires untouched (plan hash f5782e0d8610). Everything on the watch and phone side is a read-only picture and a run template: the watch values come from
+     * the phone's context hub (run it over a time window), the last node only PREVIEWS the capture rate, and the whole graph can never publish (the watch lane and the preview Outcome
+     * are tier 3), so the glasses keep the capture they have. Existing as a built-in activates nothing; clone it to edit.
+     */
+    fun starterWatchMotion(): Pipeline {
+        val glasses = defaultCapture()
+        val nodes = listOf(
+            PipelineNode("watch", NodeTypes.SRC_WATCH_MOTION, "Motion on watch", none),
+            PipelineNode("win", NodeTypes.AGG_WINDOW, "Max over the last 5 values", buildJsonObject { put("feature", "watchMotion"); put("op", "max"); put("window", 5) }),
+            PipelineNode("model", NodeTypes.PROC_MOTION_MODEL, "Motion model", none),
+            PipelineNode("freq", NodeTypes.OUT_SET_FREQUENCY_PREVIEW, "Set frequency (preview)", none),
+        )
+        val edges = listOf(PipelineEdge("watch", "win"), PipelineEdge("win", "model"), PipelineEdge("model", "freq"))
+        return Pipeline(PipelineJson.SCHEMA_V2, STARTER_WATCH_MOTION, "Starter: watch motion to capture rate", glasses.nodes + nodes, glasses.edges + edges)
     }
 }

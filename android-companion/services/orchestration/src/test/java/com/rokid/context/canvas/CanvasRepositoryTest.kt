@@ -44,14 +44,14 @@ class CanvasRepositoryTest {
     @Test fun builtInsSeededAndRefreshed() = runBlocking<Unit> {
         repo.ensureBuiltIns()
         val all = repo.list()
-        assertEquals(setOf("live-extract", "intent-draft", "default-capture", "starter-capture-extract", "starter-moment-summary"), all.map { it.id }.toSet())
+        assertEquals(setOf("live-extract", "intent-draft", "default-capture", "starter-capture-extract", "starter-moment-summary", "starter-watch-motion"), all.map { it.id }.toSet())
         assertTrue(all.all { it.builtIn && it.draftRev == 0 })
         val intent = PipelineJson.decode(repo.get("intent-draft")!!.draftJson).getOrThrow()
         assertTrue(PipelineJson.encode(intent).contains("SEED for VISION_EXTRACT"))
         // overwritten each call: a changed seed shows up, and nothing is duplicated
         val again = CanvasRepository(dao, { "NEW SEED" }, { now++ }, { "x" })
         again.ensureBuiltIns()
-        assertEquals(5, again.list().size)
+        assertEquals(6, again.list().size)
         assertTrue(again.get("intent-draft")!!.draftJson.contains("NEW SEED"))
         assertFalse(again.get("intent-draft")!!.draftJson.contains("SEED for"))
     }
@@ -121,6 +121,24 @@ class CanvasRepositoryTest {
         assertEquals(DefaultPipelines.starter().copy(id = copy, name = "My starter"), PipelineJson.decode(c.draftJson).getOrThrow())
         val edited = PipelineJson.encode(PipelineJson.decode(c.draftJson).getOrThrow().let { p -> p.copy(nodes = p.nodes.map { if (it.id == "extract") it.copy(title = "Mine") else it }) })
         assertTrue("the clone is editable", repo.saveDraft(copy, edited, c.draftRev) is CanvasRepository.SaveResult.Saved)
+    }
+
+    @Test fun theWatchStarterIsSeededReadOnlyClonableAndNeverActive() = runBlocking<Unit> {
+        repo.ensureBuiltIns()
+        val st = repo.get("starter-watch-motion")!!
+        assertTrue(st.builtIn); assertEquals("Starter: watch motion to capture rate", st.name)
+        assertEquals(CanvasRepository.SaveResult.ReadOnly, repo.saveDraft("starter-watch-motion", st.draftJson, 0))
+        assertFalse(repo.delete("starter-watch-motion"))
+        assertTrue("existing as a pipeline activates nothing", dao.activePublishes().isEmpty())
+        assertEquals(DefaultPipelines.starterWatchMotion(), PipelineJson.decode(st.draftJson).getOrThrow())
+        val copy = repo.duplicate("starter-watch-motion", null, "Mine")
+        assertFalse(repo.get(copy)!!.builtIn)
+        assertEquals(DefaultPipelines.starterWatchMotion().copy(id = copy, name = "Mine"), PipelineJson.decode(repo.get(copy)!!.draftJson).getOrThrow())
+        // the earlier built-ins are stored exactly as the code encodes them
+        assertEquals(PipelineJson.encode(DefaultPipelines.starterMomentSummary()), repo.get("starter-moment-summary")!!.draftJson)
+        assertEquals(PipelineJson.encode(DefaultPipelines.starter()), repo.get("starter-capture-extract")!!.draftJson)
+        assertEquals(PipelineJson.encode(DefaultPipelines.defaultCapture()), repo.get("default-capture")!!.draftJson)
+        assertEquals(PipelineJson.encode(DefaultPipelines.liveExtract()), repo.get("live-extract")!!.draftJson)
     }
 
     @Test fun theMomentSummaryStarterIsSeededReadOnlyClonableAndLeavesTheOtherBuiltInsAsTheyWere() = runBlocking<Unit> {

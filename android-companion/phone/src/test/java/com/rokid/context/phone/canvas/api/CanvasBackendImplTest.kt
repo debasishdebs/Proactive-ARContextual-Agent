@@ -51,6 +51,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -238,6 +239,23 @@ class CanvasBackendImplTest {
         assertEquals("false", p["liveShape"]!!.jsonPrimitive.content)
         assertTrue("never published: its Moments input is tier 3", p["interpretable"]!!.jsonObject["problems"]!!.jsonArray.isNotEmpty())
         val copy = backend.duplicate("starter-moment-summary", "My moments")
+        assertEquals(0, checkNotNull(backend.pipeline(copy))["problems"]!!.jsonArray.size)
+    }
+
+    @Test fun theWatchStarterOpensReadOnlyWithFourLanesAndIsNotAnInterpreter() = runBlocking<Unit> {
+        val row = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "starter-watch-motion" }.jsonObject
+        assertEquals("true", row["builtIn"]!!.jsonPrimitive.content); assertEquals("null", row["live"].toString())
+        val p = checkNotNull(backend.pipeline("starter-watch-motion"))
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        val cells = p["layout"]!!.jsonObject["cells"]!!.jsonObject
+        assertTrue(listOf("head", "cam", "watch", "win", "model", "freq").all { cells.containsKey(it) })
+        assertEquals("false", p["liveShape"]!!.jsonPrimitive.content)
+        assertTrue("never published", p["interpretable"]!!.jsonObject["problems"]!!.jsonArray.isNotEmpty())
+        val lanes = PipelineJson.decode(p["json"]!!.jsonPrimitive.content).getOrThrow().nodes.map { n ->
+            com.rokid.context.ai.canvas.NodeTypes.byType(n.type)!!.let { com.rokid.context.ai.canvas.NodeTypes.domainOf(n, it).name }
+        }.toSet()
+        assertEquals(setOf("WATCH", "RT_GLASSES", "RT_PHONE", "ASYNC"), lanes)
+        val copy = backend.duplicate("starter-watch-motion", "My watch")
         assertEquals(0, checkNotNull(backend.pipeline(copy))["problems"]!!.jsonArray.size)
     }
 
@@ -517,13 +535,20 @@ class CanvasBackendImplTest {
     @Test fun nodeTypesServeTheInnerFlowOfTheCompositesBuiltSoFar() {
         val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
         assertEquals(setOf("gate.local_critic", "ai.vision_extract", "ai.critic", "memory.write", "policy.capture_rate",
-            "imu.head_motion", "imu.settle", "gate.novelty", "gate.rate_cap", "capture.image"), all.filterValues { "inner" in it }.keys)
+            "imu.head_motion", "imu.settle", "gate.novelty", "gate.rate_cap", "capture.image", "proc.motion_model"), all.filterValues { "inner" in it }.keys)
         val inner = all.getValue("gate.local_critic")["inner"]!!.jsonObject
         assertEquals(setOf("facts", "aggregate", "cutoff", "compare", "trusted", "unsure"), inner["nodes"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
         assertEquals(listOf("aggregate", "operator", "cutoff"), inner["exposed"]!!.jsonArray.map { it.jsonObject["param"]!!.jsonPrimitive.content })
         assertTrue("no note on the local critic (its JSON is unchanged)", "note" !in inner)
         val cut = all.getValue("gate.local_critic")["params"]!!.jsonArray.map { it.jsonObject }.first { it["name"]!!.jsonPrimitive.content == "cutoff" }
         assertEquals(0.7, cut["default"]!!.jsonPrimitive.content.toDouble(), 0.0)
+    }
+
+    @Test fun theWatchSourceIsServedInTheWatchLaneAsASource() {
+        val w = backend.nodeTypes().map { it.jsonObject }.first { it["type"]!!.jsonPrimitive.content == "src.watch_motion" }
+        assertEquals("WATCH", w["domain"]!!.jsonPrimitive.content); assertEquals("Source", w["family"]!!.jsonPrimitive.content)
+        assertEquals("WATCH", w["output"]!!.jsonPrimitive.content); assertTrue(w["root"]!!.jsonPrimitive.boolean); assertTrue(w["palette"]!!.jsonPrimitive.boolean)
+        assertTrue("the palette shows it (it is liveable by flag; publishing is stopped by the tier-3 guard)", w["liveable"]!!.jsonPrimitive.boolean)
     }
 
     /** Phase C: the rate table's exposed cells are served with their row, column and today's value (a blank cell has no default). */

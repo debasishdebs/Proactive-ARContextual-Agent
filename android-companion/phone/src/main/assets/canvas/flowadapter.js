@@ -8,8 +8,8 @@ export const CELL_W = 220, CELL_H = 120, LANE_GAP = 40;
 export const CARD_W = 180, CARD_H = 96, MIN_GAP = 24;
 const EXPANDED_PAD = 16;
 
-/** The three rooted domains (S34), left to right; any other domain name follows in order of appearance. */
-export const LANES = [{ domain: 'RT_GLASSES', label: 'Glasses (real time)' }, { domain: 'RT_PHONE', label: 'Phone (real time)' }, { domain: 'ASYNC', label: 'Async (phone)' }];
+/** The rooted domains (S34) plus the watch lane, left to right (WATCH / GLASSES / PHONE); any other domain name follows in order of appearance. */
+export const LANES = [{ domain: 'WATCH', label: 'Watch' }, { domain: 'RT_GLASSES', label: 'Glasses (real time)' }, { domain: 'RT_PHONE', label: 'Phone (real time)' }, { domain: 'ASYNC', label: 'Async (phone)' }];
 export const laneLabel = (d) => { const l = LANES.find((x) => x.domain === d); return l ? l.label : String(d); };
 
 const domainOf = (nt) => (nt && nt.domain) || 'ASYNC';
@@ -171,7 +171,7 @@ export function bindingsOf(pipe, nodeTypes) {
   const out = [];
   const nodes = pipe.nodes || [];
   const title = (n) => titleOf(n, typeOf(nodeTypes, n.type));
-  const where = (n) => ({ RT_GLASSES: 'glasses', RT_PHONE: 'phone', ASYNC: 'async' }[nodeDomain(n, typeOf(nodeTypes, n.type))] || 'other');
+  const where = (n) => ({ WATCH: 'watch', RT_GLASSES: 'glasses', RT_PHONE: 'phone', ASYNC: 'async' }[nodeDomain(n, typeOf(nodeTypes, n.type))] || 'other');
   const named = (n) => (n.params && typeof n.params.name === 'string' ? n.params.name : '');
   const sigs = nodes.filter((n) => n.type === 'signal.out' || n.type === 'signal.in');
   for (const name of Array.from(new Set(sigs.map(named).filter(Boolean))).sort()) {

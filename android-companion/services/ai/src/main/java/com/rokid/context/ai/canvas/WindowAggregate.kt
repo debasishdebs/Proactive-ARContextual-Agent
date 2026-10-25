@@ -8,7 +8,7 @@ import kotlinx.serialization.json.intOrNull
 
 /**
  * `agg.window` (Aggregate family): one number per item, the mean, min, max or count of ONE sensor feature over the last [Settings.window] items (this one and the ones before it,
- * in run order) of a Scenes or Moments input. The values are read from each item's `sensor` summary (numbers only, never text); an item without one adds nothing. Pure and
+ * in run order) of a Scenes, Moments or watch input. The values are read from each item's `sensor` summary (numbers only, never text); an item without one adds nothing. Pure and
  * deterministic: no model, no clock. `gate.compare` is the Condition that reads its number.
  */
 object WindowAggregate {
@@ -17,8 +17,8 @@ object WindowAggregate {
     const val DEFAULT_WINDOW = 10
     /** A run holds at most 50 items (`CanvasRunner.MAX_PHOTOS`), so a larger window could not differ. */
     const val MAX_WINDOW = 50
-    /** The numeric fields of a `SensorSummary` (the Scene's sensor summary served to a run item). */
-    val FEATURES = listOf("seconds", "gyroMean", "gyroMax", "accVarMean", "accVarMax", "stepHzMean", "stepHzMax")
+    /** The numeric fields of a `SensorSummary` (the Scene's sensor summary served to a run item), and `watchMotion` (the score of a `src.watch_motion` item). */
+    val FEATURES = listOf("seconds", "gyroMean", "gyroMax", "accVarMean", "accVarMax", "stepHzMean", "stepHzMax", "watchMotion")
     val OPS = listOf("mean", "min", "max", "count")
 
     data class Settings(val feature: String = DEFAULT_FEATURE, val op: String = DEFAULT_OP, val window: Int = DEFAULT_WINDOW)
