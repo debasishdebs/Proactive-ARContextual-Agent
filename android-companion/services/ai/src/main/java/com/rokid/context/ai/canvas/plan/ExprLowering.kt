@@ -19,7 +19,7 @@ import kotlinx.serialization.json.put
  */
 object ExprLowering {
     val OPS = setOf("sig", "const", "win", "cmp", "in", "and", "or", "not", "arith", "clamp", "choose", "fresh")
-    private val KEYS = setOf("op", "a", "b", "c", "f", "v", "name", "set", "lo", "hi", "ms", "agg", "sec", "t")
+    private val KEYS = setOf("op", "a", "b", "c", "f", "v", "name", "set", "lo", "hi", "ms", "agg", "sec", "t", "mv")
     private val PROGRAM_KEYS = setOf("id", "role", "out", "s")
     private val VALUE_KEYS = PROGRAM_KEYS + setOf("row", "field")
 
@@ -30,10 +30,11 @@ object ExprLowering {
     data class Entry(val id: String, val graph: JsonElement?, val role: ExprRole = ExprRole.GUARD, val row: String? = null, val field: String? = null)
 
     /** [graphs]: (canvas node id, its `graph` param). Problems and warnings read `node <id>: <CODE>: <text>`. */
-    fun lower(graphs: List<Pair<String, JsonElement?>>, role: ExprRole = ExprRole.GUARD): Result = lowerAll(graphs.map { Entry(it.first, it.second, role) })
+    fun lower(graphs: List<Pair<String, JsonElement?>>, role: ExprRole = ExprRole.GUARD, windowMinValidPct: Int = ExprProgram.DEFAULT_MIN_VALID_PCT): Result =
+        lowerAll(graphs.map { Entry(it.first, it.second, role) }, windowMinValidPct)
 
     /** Guards and values of one plan together: the 6 programs, 32 nodes and 4 window terms are shared limits over ALL of them. */
-    fun lowerAll(entries: List<Entry>): Result {
+    fun lowerAll(entries: List<Entry>, windowMinValidPct: Int = ExprProgram.DEFAULT_MIN_VALID_PCT): Result {
         val problems = ArrayList<String>(); val warnings = ArrayList<String>()
         val exprs = ArrayList<JsonObject>()
         var nodes = 0; var cost = 0
@@ -55,7 +56,7 @@ object ExprLowering {
                 problems += "node $id: ${ExprDiag(ExprCode.EXPR_TOO_MANY_PROGRAMS, "more than ${ExprProgram.MAX_PROGRAMS} expression programs")}"; continue
             }
             val (program, bad) = ExprProgram.parse(role, el)
-            val c = program?.check()
+            val c = program?.check(windowMinValidPct.coerceIn(WindowRing.MIN_VALID_PCT, 100))
             problems += (bad + (c?.problems ?: emptyList())).map { "node $id: $it" }
             warnings += (c?.warnings ?: emptyList()).map { "node $id: $it" }
             if (c == null || c.problems.isNotEmpty()) continue

@@ -33,6 +33,8 @@ data class ExprInput(val name: String, val kind: Kind, val ref: String = "", val
 data class ExprNode(
     val id: String, val op: String, val f: String = "", val value: Double = 0.0, val lo: Double = 0.0, val hi: Double = 0.0,
     val ms: Long = 0, val set: List<String> = emptyList(), val name: String = "", val flag: Boolean = false,
+    /** A `win` node's tolerance (3d): the least percent of its seconds that must hold a sensor value, 50..100; 0 = not written, the compile's default applies. */
+    val mv: Int = 0,
 )
 
 /** [to] is `node.port`; [from] is a node id or an input name of the same step. */
@@ -57,6 +59,8 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
     companion object {
         const val MAX_NODES = 32       // lowered nodes, over ALL programs of a plan
         const val MAX_PROGRAMS = 6
+        /** The global tolerance setting's default (percent of a window's seconds that must hold data). */
+        const val DEFAULT_MIN_VALID_PCT = 90
         const val MAX_COST = 64        // per program (options doc 4.4); 32 nodes cost at most 224, so the plan cap of 256 is implied
         val NAME = Regex("^[a-z][a-z0-9_]{0,23}$")
 
@@ -73,7 +77,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
         private val GRAPH_KEYS = setOf("steps", "out")
         private val STEP_KEYS = setOf("name", "inputs", "nodes", "wires", "out")
         private val INPUT_KEYS = setOf("name", "sig", "step", "const")
-        private val NODE_KEYS = setOf("id", "op", "f", "value", "lo", "hi", "ms", "set", "name", "agg", "sec", "t")
+        private val NODE_KEYS = setOf("id", "op", "f", "value", "lo", "hi", "ms", "set", "name", "agg", "sec", "t", "mv")
 
         fun parse(role: ExprRole, el: JsonElement?): Pair<ExprProgram?, List<ExprDiag>> {
             val bad = ArrayList<ExprDiag>()
@@ -140,9 +144,11 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
                     val sec = (o["sec"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.takeIf { it in WindowRing.MIN_SECONDS..WindowRing.MAX_SECONDS }
                         ?: return param("$id: sec must be between ${WindowRing.MIN_SECONDS} and ${WindowRing.MAX_SECONDS}")
                     val name = str(o["name"]) ?: return param("$id: name missing")
-                    if (agg == "frac") ExprNode(id, op, f = agg, ms = sec, name = name, flag = true, value = num("t") ?: return param("$id: frac needs t, a finite number"))
+                    val mv = if ("mv" in o) (o["mv"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.takeIf { it in WindowRing.MIN_VALID_PCT..100 }?.toInt()
+                        ?: return param("$id: mv (the tolerance, percent of seconds with data) must be a whole number between ${WindowRing.MIN_VALID_PCT} and 100") else 0
+                    if (agg == "frac") ExprNode(id, op, f = agg, ms = sec, name = name, flag = true, value = num("t") ?: return param("$id: frac needs t, a finite number"), mv = mv)
                     else if ("t" in o) param("$id: only frac takes t")
-                    else ExprNode(id, op, f = agg, ms = sec, name = name)
+                    else ExprNode(id, op, f = agg, ms = sec, name = name, mv = mv)
                 }
                 "const" -> {
                     val p = o["value"] as? JsonPrimitive
@@ -197,7 +203,8 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
     private fun nodeCost(n: ExprNode) = when (n.op) { "clamp", "choose", "fresh", "win" -> 2; "in" -> 1 + n.set.size; else -> 1 }
 
     /** Validates the whole graph and lowers it to the runner's step list (see the spec section "expr.guard graph"). Pure and deterministic. */
-    fun check(): ExprChecked {
+    /** [defaultMv]: the tolerance written into every window that names none (the global `window_min_valid_pct`, 3d); a published plan always carries it explicitly. */
+    fun check(defaultMv: Int = DEFAULT_MIN_VALID_PCT): ExprChecked {
         val problems = ArrayList<ExprDiag>()
         val warnings = ArrayList<ExprDiag>()
         fun bad(c: ExprCode, t: String) { problems += ExprDiag(c, t) }
@@ -340,7 +347,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
                     when (n.op) {
                         "sig" -> { put("name", SignalCatalog.canonical(n.name)!!) ; if (SignalCatalog.canonical(n.name) in listOf("ctx", "ctxAgeS")) readsCtx = true }
                         "const" -> if (n.f == "bool") put("v", n.flag) else put("v", number(n.value))
-                        "win" -> { put("name", SignalCatalog.canonical(n.name)!!); put("agg", n.f); put("sec", n.ms.toInt()); if (n.flag) put("t", number(n.value)) }
+                        "win" -> { put("name", SignalCatalog.canonical(n.name)!!); put("agg", n.f); put("sec", n.ms.toInt()); if (n.flag) put("t", number(n.value)); put("mv", if (n.mv > 0) n.mv else defaultMv) }
                         else -> {
                             if (n.f.isNotEmpty()) put("f", n.f)
                             a?.let { put("a", source(it)) }; b?.let { put("b", source(it)) }; c?.let { put("c", source(it)) }

@@ -27,6 +27,9 @@ class ContextApp : Application() {
         // One call budget for every provider call (P2); its period follows Settings > Capture > AI call pace (10 / 12 / 15 s).
         val pace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(this).paceMs
         com.rokid.context.ai.AiGraph.gate = com.rokid.context.work.budget.CallBudget(clock = System::currentTimeMillis, periodMs = { pace.value })
+        // 3d: the canvas compiler's default window tolerance follows Settings > Capture > Window tolerance (new compiles only; a published plan holds its own number).
+        val windowTolerance = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this).pct
+        com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { windowTolerance.value }
         // Phone power policy inputs (spec P2.5): the real thermal status and whether the app is in the foreground.
         com.rokid.context.work.frames.KeyframeGraph.thermal = com.rokid.context.work.frames.KeyframeGraph.systemThermal(this)
         com.rokid.context.work.frames.KeyframeGraph.foreground = {

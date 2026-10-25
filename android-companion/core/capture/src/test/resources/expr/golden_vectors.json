@@ -1299,5 +1299,1136 @@
   "expect": {
    "state": "UNAV"
   }
+ },
+ {
+  "name": "tolerance: 8 of 10 valid at 80 % answers (exactly at the threshold), mean over the valid seconds",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 80
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 3
+   },
+   {
+    "sec": 5,
+    "gyroMax": 5
+   },
+   {
+    "sec": 6,
+    "gyroMax": 6
+   },
+   {
+    "sec": 8,
+    "gyroMax": 8
+   },
+   {
+    "sec": 9,
+    "gyroMax": 9
+   },
+   {
+    "sec": 10,
+    "gyroMax": 10
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 5.5
+  }
+ },
+ {
+  "name": "tolerance: 8 of 10 valid at 90 % does not answer (one below the threshold)",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 90
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 3
+   },
+   {
+    "sec": 5,
+    "gyroMax": 5
+   },
+   {
+    "sec": 6,
+    "gyroMax": 6
+   },
+   {
+    "sec": 8,
+    "gyroMax": 8
+   },
+   {
+    "sec": 9,
+    "gyroMax": 9
+   },
+   {
+    "sec": 10,
+    "gyroMax": 10
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "tolerance: 8 of 10 valid at 100 % (strict) does not answer",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 100
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 3
+   },
+   {
+    "sec": 5,
+    "gyroMax": 5
+   },
+   {
+    "sec": 6,
+    "gyroMax": 6
+   },
+   {
+    "sec": 8,
+    "gyroMax": 8
+   },
+   {
+    "sec": 9,
+    "gyroMax": 9
+   },
+   {
+    "sec": 10,
+    "gyroMax": 10
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "tolerance: all 10 valid at 50 % is the plain mean",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 50
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 3
+   },
+   {
+    "sec": 4,
+    "gyroMax": 4
+   },
+   {
+    "sec": 5,
+    "gyroMax": 5
+   },
+   {
+    "sec": 6,
+    "gyroMax": 6
+   },
+   {
+    "sec": 7,
+    "gyroMax": 7
+   },
+   {
+    "sec": 8,
+    "gyroMax": 8
+   },
+   {
+    "sec": 9,
+    "gyroMax": 9
+   },
+   {
+    "sec": 10,
+    "gyroMax": 10
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 5.5
+  }
+ },
+ {
+  "name": "tolerance: only 2 of 10 seconds valid (the rest gaps) never answers at 50 %",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 50
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 5
+   },
+   {
+    "sec": 10,
+    "gyroMax": 5
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "tolerance: 9 of 10 seconds elapsed is still warming even when all valid",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 50
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 3
+   },
+   {
+    "sec": 4,
+    "gyroMax": 4
+   },
+   {
+    "sec": 5,
+    "gyroMax": 5
+   },
+   {
+    "sec": 6,
+    "gyroMax": 6
+   },
+   {
+    "sec": 7,
+    "gyroMax": 7
+   },
+   {
+    "sec": 8,
+    "gyroMax": 8
+   },
+   {
+    "sec": 9,
+    "gyroMax": 9
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "tolerance: a gap right after the first second (leading edge), 8 of 10 at 80 %",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 80
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 9
+   },
+   {
+    "sec": 4,
+    "gyroMax": 1
+   },
+   {
+    "sec": 5,
+    "gyroMax": 1
+   },
+   {
+    "sec": 6,
+    "gyroMax": 1
+   },
+   {
+    "sec": 7,
+    "gyroMax": 1
+   },
+   {
+    "sec": 8,
+    "gyroMax": 1
+   },
+   {
+    "sec": 9,
+    "gyroMax": 1
+   },
+   {
+    "sec": 10,
+    "gyroMax": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 2.0
+  }
+ },
+ {
+  "name": "tolerance: the same leading gaps at 90 % do not answer",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 90
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 9
+   },
+   {
+    "sec": 4,
+    "gyroMax": 1
+   },
+   {
+    "sec": 5,
+    "gyroMax": 1
+   },
+   {
+    "sec": 6,
+    "gyroMax": 1
+   },
+   {
+    "sec": 7,
+    "gyroMax": 1
+   },
+   {
+    "sec": 8,
+    "gyroMax": 1
+   },
+   {
+    "sec": 9,
+    "gyroMax": 1
+   },
+   {
+    "sec": 10,
+    "gyroMax": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "tolerance: trailing gaps (seconds 9 and 10 missing, newest write at 11), 8 of 10 at 80 %",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 10,
+     "mv": 80
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 3
+   },
+   {
+    "sec": 4,
+    "gyroMax": 4
+   },
+   {
+    "sec": 5,
+    "gyroMax": 5
+   },
+   {
+    "sec": 6,
+    "gyroMax": 6
+   },
+   {
+    "sec": 7,
+    "gyroMax": 7
+   },
+   {
+    "sec": 8,
+    "gyroMax": 8
+   },
+   {
+    "sec": 11,
+    "gyroMax": 5
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 5.0
+  }
+ },
+ {
+  "name": "tolerance: max is over the valid seconds, a gap is not a zero",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "max",
+     "sec": 10,
+     "mv": 80
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": -1
+   },
+   {
+    "sec": 2,
+    "gyroMax": -1
+   },
+   {
+    "sec": 5,
+    "gyroMax": -1
+   },
+   {
+    "sec": 6,
+    "gyroMax": -1
+   },
+   {
+    "sec": 7,
+    "gyroMax": -1
+   },
+   {
+    "sec": 8,
+    "gyroMax": -1
+   },
+   {
+    "sec": 9,
+    "gyroMax": -1
+   },
+   {
+    "sec": 10,
+    "gyroMax": -1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": -1.0
+  }
+ },
+ {
+  "name": "tolerance: frac is over the valid seconds (5 of 8 valid above 0.5)",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "frac",
+     "sec": 10,
+     "t": 0.5,
+     "mv": 80
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   },
+   {
+    "sec": 2,
+    "gyroMax": 1
+   },
+   {
+    "sec": 3,
+    "gyroMax": 1
+   },
+   {
+    "sec": 5,
+    "gyroMax": 0
+   },
+   {
+    "sec": 6,
+    "gyroMax": 0
+   },
+   {
+    "sec": 7,
+    "gyroMax": 1
+   },
+   {
+    "sec": 9,
+    "gyroMax": 1
+   },
+   {
+    "sec": 10,
+    "gyroMax": 0
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 0.625
+  }
+ },
+ {
+  "name": "tolerance: 54 of 60 valid at 90 % answers",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 60,
+     "mv": 90
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 2
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 2
+   },
+   {
+    "sec": 4,
+    "gyroMax": 2
+   },
+   {
+    "sec": 5,
+    "gyroMax": 2
+   },
+   {
+    "sec": 6,
+    "gyroMax": 2
+   },
+   {
+    "sec": 7,
+    "gyroMax": 2
+   },
+   {
+    "sec": 8,
+    "gyroMax": 2
+   },
+   {
+    "sec": 9,
+    "gyroMax": 2
+   },
+   {
+    "sec": 11,
+    "gyroMax": 2
+   },
+   {
+    "sec": 12,
+    "gyroMax": 2
+   },
+   {
+    "sec": 13,
+    "gyroMax": 2
+   },
+   {
+    "sec": 14,
+    "gyroMax": 2
+   },
+   {
+    "sec": 15,
+    "gyroMax": 2
+   },
+   {
+    "sec": 16,
+    "gyroMax": 2
+   },
+   {
+    "sec": 17,
+    "gyroMax": 2
+   },
+   {
+    "sec": 18,
+    "gyroMax": 2
+   },
+   {
+    "sec": 19,
+    "gyroMax": 2
+   },
+   {
+    "sec": 21,
+    "gyroMax": 2
+   },
+   {
+    "sec": 22,
+    "gyroMax": 2
+   },
+   {
+    "sec": 23,
+    "gyroMax": 2
+   },
+   {
+    "sec": 24,
+    "gyroMax": 2
+   },
+   {
+    "sec": 25,
+    "gyroMax": 2
+   },
+   {
+    "sec": 26,
+    "gyroMax": 2
+   },
+   {
+    "sec": 27,
+    "gyroMax": 2
+   },
+   {
+    "sec": 28,
+    "gyroMax": 2
+   },
+   {
+    "sec": 29,
+    "gyroMax": 2
+   },
+   {
+    "sec": 31,
+    "gyroMax": 2
+   },
+   {
+    "sec": 32,
+    "gyroMax": 2
+   },
+   {
+    "sec": 33,
+    "gyroMax": 2
+   },
+   {
+    "sec": 34,
+    "gyroMax": 2
+   },
+   {
+    "sec": 35,
+    "gyroMax": 2
+   },
+   {
+    "sec": 36,
+    "gyroMax": 2
+   },
+   {
+    "sec": 37,
+    "gyroMax": 2
+   },
+   {
+    "sec": 38,
+    "gyroMax": 2
+   },
+   {
+    "sec": 39,
+    "gyroMax": 2
+   },
+   {
+    "sec": 41,
+    "gyroMax": 2
+   },
+   {
+    "sec": 42,
+    "gyroMax": 2
+   },
+   {
+    "sec": 43,
+    "gyroMax": 2
+   },
+   {
+    "sec": 44,
+    "gyroMax": 2
+   },
+   {
+    "sec": 45,
+    "gyroMax": 2
+   },
+   {
+    "sec": 46,
+    "gyroMax": 2
+   },
+   {
+    "sec": 47,
+    "gyroMax": 2
+   },
+   {
+    "sec": 48,
+    "gyroMax": 2
+   },
+   {
+    "sec": 49,
+    "gyroMax": 2
+   },
+   {
+    "sec": 51,
+    "gyroMax": 2
+   },
+   {
+    "sec": 52,
+    "gyroMax": 2
+   },
+   {
+    "sec": 53,
+    "gyroMax": 2
+   },
+   {
+    "sec": 54,
+    "gyroMax": 2
+   },
+   {
+    "sec": 56,
+    "gyroMax": 2
+   },
+   {
+    "sec": 57,
+    "gyroMax": 2
+   },
+   {
+    "sec": 58,
+    "gyroMax": 2
+   },
+   {
+    "sec": 59,
+    "gyroMax": 2
+   },
+   {
+    "sec": 60,
+    "gyroMax": 2
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 2.0
+  }
+ },
+ {
+  "name": "tolerance: 53 of 60 valid at 90 % does not answer",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "gyroMax",
+     "agg": "mean",
+     "sec": 60,
+     "mv": 90
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 2
+   },
+   {
+    "sec": 2,
+    "gyroMax": 2
+   },
+   {
+    "sec": 3,
+    "gyroMax": 2
+   },
+   {
+    "sec": 4,
+    "gyroMax": 2
+   },
+   {
+    "sec": 5,
+    "gyroMax": 2
+   },
+   {
+    "sec": 6,
+    "gyroMax": 2
+   },
+   {
+    "sec": 7,
+    "gyroMax": 2
+   },
+   {
+    "sec": 8,
+    "gyroMax": 2
+   },
+   {
+    "sec": 9,
+    "gyroMax": 2
+   },
+   {
+    "sec": 11,
+    "gyroMax": 2
+   },
+   {
+    "sec": 12,
+    "gyroMax": 2
+   },
+   {
+    "sec": 13,
+    "gyroMax": 2
+   },
+   {
+    "sec": 14,
+    "gyroMax": 2
+   },
+   {
+    "sec": 15,
+    "gyroMax": 2
+   },
+   {
+    "sec": 16,
+    "gyroMax": 2
+   },
+   {
+    "sec": 17,
+    "gyroMax": 2
+   },
+   {
+    "sec": 18,
+    "gyroMax": 2
+   },
+   {
+    "sec": 19,
+    "gyroMax": 2
+   },
+   {
+    "sec": 21,
+    "gyroMax": 2
+   },
+   {
+    "sec": 22,
+    "gyroMax": 2
+   },
+   {
+    "sec": 23,
+    "gyroMax": 2
+   },
+   {
+    "sec": 24,
+    "gyroMax": 2
+   },
+   {
+    "sec": 25,
+    "gyroMax": 2
+   },
+   {
+    "sec": 26,
+    "gyroMax": 2
+   },
+   {
+    "sec": 27,
+    "gyroMax": 2
+   },
+   {
+    "sec": 28,
+    "gyroMax": 2
+   },
+   {
+    "sec": 29,
+    "gyroMax": 2
+   },
+   {
+    "sec": 31,
+    "gyroMax": 2
+   },
+   {
+    "sec": 32,
+    "gyroMax": 2
+   },
+   {
+    "sec": 33,
+    "gyroMax": 2
+   },
+   {
+    "sec": 34,
+    "gyroMax": 2
+   },
+   {
+    "sec": 35,
+    "gyroMax": 2
+   },
+   {
+    "sec": 36,
+    "gyroMax": 2
+   },
+   {
+    "sec": 37,
+    "gyroMax": 2
+   },
+   {
+    "sec": 38,
+    "gyroMax": 2
+   },
+   {
+    "sec": 39,
+    "gyroMax": 2
+   },
+   {
+    "sec": 41,
+    "gyroMax": 2
+   },
+   {
+    "sec": 42,
+    "gyroMax": 2
+   },
+   {
+    "sec": 43,
+    "gyroMax": 2
+   },
+   {
+    "sec": 44,
+    "gyroMax": 2
+   },
+   {
+    "sec": 45,
+    "gyroMax": 2
+   },
+   {
+    "sec": 46,
+    "gyroMax": 2
+   },
+   {
+    "sec": 47,
+    "gyroMax": 2
+   },
+   {
+    "sec": 48,
+    "gyroMax": 2
+   },
+   {
+    "sec": 49,
+    "gyroMax": 2
+   },
+   {
+    "sec": 51,
+    "gyroMax": 2
+   },
+   {
+    "sec": 52,
+    "gyroMax": 2
+   },
+   {
+    "sec": 53,
+    "gyroMax": 2
+   },
+   {
+    "sec": 54,
+    "gyroMax": 2
+   },
+   {
+    "sec": 56,
+    "gyroMax": 2
+   },
+   {
+    "sec": 58,
+    "gyroMax": 2
+   },
+   {
+    "sec": 59,
+    "gyroMax": 2
+   },
+   {
+    "sec": 60,
+    "gyroMax": 2
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
  }
 ]
