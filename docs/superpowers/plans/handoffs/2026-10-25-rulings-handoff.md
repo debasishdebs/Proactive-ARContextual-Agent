@@ -28,6 +28,7 @@ From the v0.9.5 tip incl. the catch-up diagnostics (33590ffe). No PROTOCOL_VERSI
 ## 4. Watchdog settings
 - Built: `GlassesWatchdog` takes `silentMs: () -> Long = { SILENT_MS }` and `periodMs: () -> Long = { TICK_MS }`; the silence threshold is read at every tick, the period before every sleep (and for the late-tick warning). `start(scope, periodMs: Long? = null)` keeps the fixed-period test form. Off while an explicit pause is active: unchanged (`captureActive`).
 - Settings: `CaptureTimingStore` (prefs `capture_timing`): `watchdog_silent_min` presets 2/3/5/10 default 3; `watchdog_tick_sec` presets 60/150/300 default 150. A value that is no preset falls back to the default. UI: Settings > Capture > "Glasses watchdog", two choice rows (tags `watchdog_silent`, `watchdog_tick`). `HubGraph` passes `CaptureTimingStore.get(app)::silentMs / ::tickMs`.
+- Backup: `capture_timing.xml` is excluded in `backup_rules.xml` and both sections of `data_extraction_rules.xml` and listed in `BackupRulesTest` (per-install, like `ai_call_pace`).
 - Tests: `GlassesWatchdogTest` (the whole old suite is unchanged and runs on the defaults; new: defaults are the old constants and act at exactly 3 min, a changed threshold applies on the next tick, a changed tick applies on the next sleep, pause still silences it), `CaptureSettingsTest` (store, VM, rows).
 - Mutation: threshold ignored (`SILENT_MS` used): `aChangedThresholdAppliesOnTheNextTick` fails; tick ignored (`TICK_MS` used): `aChangedTickAppliesOnTheNextSleep...` fails.
 
@@ -40,6 +41,9 @@ From the v0.9.5 tip incl. the catch-up diagnostics (33590ffe). No PROTOCOL_VERSI
 
 ## 6. Recorded
 `docs/superpowers/specs/2026-10-25-itemref-forget-design.md` section 7 "Rulings 2026-10-25 afternoon" and the decision list at the end of `2026-10-25-v094-status.md`. No range-Forget screen was built.
+
+## Final run
+Clean `:services:memory`, `:services:orchestration`, `:phone` unit tests: all green after the `BackupRulesTest` fix above (phone 1892 tests, the one failure was the missing backup ruling, rerun alone green). `:glasses` is untouched, so not run.
 
 ## Settings keys and defaults
 | Setting | Store / key | Presets | Default |

@@ -46,6 +46,7 @@
         <exclude domain="sharedpref" path="pc_dev.xml" />
         <exclude domain="sharedpref" path="ai_call_pace.xml" />
         <exclude domain="sharedpref" path="window_tolerance.xml" />
+        <exclude domain="sharedpref" path="capture_timing.xml" />
         <exclude domain="sharedpref" path="ask_photos.xml" />
         <!-- Canvas slice 3a: the persisted deletion epoch, the plan and collection state, the mark settings (per-install; a restored epoch would let another
              install's data pass its fence), and the sealed traces, pulled imports and tmp files (sensor and label data, never exported). Ruling: BackupRulesTest. -->
@@ -110,6 +111,7 @@
         <exclude domain="sharedpref" path="pc_dev.xml" />
         <exclude domain="sharedpref" path="ai_call_pace.xml" />
         <exclude domain="sharedpref" path="window_tolerance.xml" />
+        <exclude domain="sharedpref" path="capture_timing.xml" />
         <exclude domain="sharedpref" path="ask_photos.xml" />
         <!-- Canvas slice 3a: the persisted deletion epoch, the plan and collection state, the mark settings (per-install; a restored epoch would let another
              install's data pass its fence), and the sealed traces, pulled imports and tmp files (sensor and label data, never exported). Ruling: BackupRulesTest. -->
