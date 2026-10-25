@@ -24,6 +24,8 @@ sealed interface GlassesEvent {
     data class PlanAckReceived(val ack: CapturePlanAck) : GlassesEvent
     /** `pc_mark` (slice 3a). Accepted whatever its age: `atMs` is the occurrence time, not a freshness stamp. */
     data class MarkReceived(val mark: MarkMessage) : GlassesEvent
+    /** `pc_mark_photo` (v0.9.6 slice C): the photo of a mark could not be taken. */
+    data class MarkPhotoReceived(val result: com.rokid.context.core.model.MarkPhotoResult) : GlassesEvent
     /** `pc_trace_chunk` (slice 3a). */
     data class TraceChunkReceived(val chunk: TraceChunk) : GlassesEvent
     /** The glasses app speaks another protocol version ([remote] = its `v`, null when absent). */

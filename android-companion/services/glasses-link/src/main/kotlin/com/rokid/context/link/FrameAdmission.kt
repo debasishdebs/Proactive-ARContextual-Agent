@@ -3,6 +3,7 @@ package com.rokid.context.link
 import com.rokid.context.core.model.FrameAckReason
 import com.rokid.context.core.model.FrameCodec
 import com.rokid.context.core.model.FrameMeta
+import com.rokid.context.core.model.MarkRef
 
 /** Retained pause history in phone clock (spec §5.5); the hub's Room-backed `HubPauses` in production. */
 interface PauseHistory {
@@ -33,7 +34,9 @@ class FrameAdmission(private val ledger: ReceivedFrameLedger, private val pauses
         if (captured > nowMs + SKEW_TOLERANCE_MS) return Admission.Hold
         val t = captured.coerceAtMost(nowMs)
         if (t < nowMs - historyMs) return Admission.AckOnly(FrameAckReason.TOO_OLD)
-        if (pauses.pausedAt(t)) return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
+        // v0.9.6 slice C, the ONE phone-side exception of "a mark touches capture": the photo taken for a mark passes the pause history (the user asked for it explicitly), and only a frame that
+        // names a well-formed mark does. Everything else of that moment is still dropped. The wipe fence, the Moment Forget fences and the dedupe above and in the intake still apply.
+        if (!MarkRef.isValid(meta.markRef) && pauses.pausedAt(t)) return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
         return Admission.Ingest(t)
     }
 
