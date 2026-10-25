@@ -47,3 +47,5 @@ Read ~/Desktop/rokid/pca-v095m/docs/superpowers/plans/handoffs/2026-10-25-evenin
 ```
 
 ## UPDATE (late): v0.9.5 DONE, tip 843e0bae+ledger commit. Final APKs in backups/apks-v095-20261025-rc. Not pushed, not installed. Next: user "go" -> phone backup -> install (never on a call), verify cadence log/mark Moments; then v0.9.6 (migration deletes 01:50 mark-only Moments, ruled).
+
+## UPDATE (night): v0.9.6 BUILT, branch v0.9.6 tip 71804753 (slices A Moment text+purge, B Playground/Run-and-Save, C mark photo; Codex 3 fix rounds). Full run green except flaky LocalModelsPageTest (passes alone). APKs: backups/apks-v096-20261025. NOT installed, NOT pushed (v0.9.5 also unpushed). Install needs: phone backup (purge is destructive), user "go", no call. Worn test: camera light 3 s, "photo ✓" cue, photo+mark in one Moment, fallback when camera busy (start a call), mark while paused. Slice handoffs: 2026-10-26-v096{a,b,c}-handoff.md. Next: v0.9.7.
