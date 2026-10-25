@@ -152,7 +152,7 @@ object NodeTypes {
             category = Category.SIGNALS_HUB, executor = ExecutorKind.SIGNAL, short = "sigout", params = CaptureParams.signalOut, domainFromParams = true, family = Family.OUTCOME),
         NodeType(POLICY_CAPTURE_RATE, "Capture frequency by activity", setOf(PortType.MOTION_EVENT, PortType.TRIGGER, PortType.CONTEXT), PortType.TRIGGER,
             sinceSchema = 2, domain = Domain.RT_GLASSES, category = Category.POLICY_FREQUENCY, executor = ExecutorKind.TABLE, short = "rate",
-            params = CaptureParams.captureRate, mixedIn = true, family = Family.OUTCOME),
+            params = CaptureParams.captureRate, mixedIn = true, inner = CaptureRateComposite.inner, family = Family.OUTCOME),
         NodeType(GATE_RATE_CAP, "Rate cap", setOf(PortType.TRIGGER), PortType.TRIGGER, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.THRESHOLDS_FILTERS, short = "cap", params = CaptureParams.rateCap, family = Family.CONDITION),
         NodeType(CAPTURE_IMAGE, "Capture image", setOf(PortType.TRIGGER), PortType.PHOTOS, sinceSchema = 2, domain = Domain.RT_GLASSES,
