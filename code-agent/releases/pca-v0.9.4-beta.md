@@ -6,10 +6,13 @@ Debug-signed; no APKs are attached. Phone database is Room v13 (additive migrati
 - A Moment can be born from a mark alone (`MomentType` FRAME or MARK); a Marks section in the Activity tab; mark undo, retag and Forget rebuild and clean up runs and Scenes.
 
 **Capture expressions (3c, SHADOW/TRIAL only, LIVE refused)**
-- Window signals (max, mean, frac over 1-300 s, full-horizon warm-up), window terms in guards, `expr.value` programs tuning the capture cap and gap seconds of editable rows, replay parity, glasses-side program limits, a phone try-it (`POST /api/expr/try`) and differential fuzz.
+- Window signals (max, mean, frac over 1-300 s, full-horizon warm-up, percent tolerance for missing sensor seconds: per term and a global setting, default 90%), window terms in guards, `expr.value` programs tuning the capture cap and gap seconds of editable rows, replay parity, glasses-side program limits, a phone try-it (`POST /api/expr/try`) and differential fuzz.
 
 **Canvas**
 - Summary node, Aggregate nodes (`agg.window`, `gate.compare`), a WATCH lane with `src.watch_motion`, a tunable `proc.motion_model`, a preview-only `out.set_frequency_preview`, built-in starters (`starter-moment-summary`, `starter-watch-motion`), composite cards for the glasses-lane nodes (capture frequency by activity, head movement, settle, novelty, rate cap, capture image).
+
+**Diagnostics**
+- Pause source named in the status, heartbeat and trace-state lines (no wire change); watchdog and relauncher decisions logged; first-heartbeat camera rate artefact fixed; a per-file raw-log ratchet (about 98 files still to migrate) so marks and hub events reach `pca.log`.
 
 **Reviews**
 - Codex found Important defects in the Summary, mark-only Moment and E2a work (all fixed); canvas-only slices had no extra review.
