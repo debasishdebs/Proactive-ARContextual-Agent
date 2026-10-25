@@ -108,8 +108,8 @@ class MomentBuildTrigger(
 
     /** The cadence: rebuilds every second of the previous and the current hour (phone clock) and drops stored Moments of it that no longer qualify. */
     suspend fun rebuildRecent(nowMs: Long): MomentBuilder.Report {
-        if (!enabled()) return MomentBuilder.Report.NONE
-        try { catchUp(nowMs) } catch (e: CancellationException) { throw e } catch (e: Exception) { failureCount.incrementAndGet() } // unset marker: the next tick retries; the rebuild below must not wait on it
+        if (!enabled()) { com.rokid.context.core.log.PcLog.i("PcMoments", "cadence rebuild skipped: store switch off"); return MomentBuilder.Report.NONE }
+        try { catchUp(nowMs) } catch (e: CancellationException) { throw e } catch (e: Exception) { failureCount.incrementAndGet(); com.rokid.context.core.log.PcLog.i("PcMoments", "catch-up failed (${e.javaClass.simpleName})") } // unset marker: the next tick retries; the rebuild below must not wait on it
         val hour = Math.floorDiv(nowMs, HOUR_MS) * HOUR_MS
         return rebuild(hour - HOUR_MS, nowMs)
     }
@@ -126,13 +126,17 @@ class MomentBuildTrigger(
 /** The process-wide trigger (production wiring): the real builder on the app database, its drain on `Dispatchers.IO`, the kill switch [MomentStoreSwitch]. */
 object MomentTriggers {
     @Volatile private var instance: MomentBuildTrigger? = null
+    @Volatile private var builderInstance: MomentBuilder? = null
+
+    /** The builder behind [get] (the developer rebuild route runs it directly; the same instance, so the same switch, fences and sensors). */
+    fun builder(context: Context): MomentBuilder { get(context); return builderInstance!! }
 
     fun get(context: Context): MomentBuildTrigger = instance ?: synchronized(this) {
         instance ?: run {
             val db = MemoryGraph.get(context).db
             // the sensor numbers of each second come from the imported traces (read on Dispatchers.IO, before the build transaction)
             val sensors = MomentSensors(db.canvasSlice3Dao(), java.io.File(context.filesDir, com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR), DeletionEpochStore.of(context)::read)
-            val builder = MomentBuilder(db, sensors = sensors)
+            val builder = MomentBuilder(db, sensors = sensors).also { builderInstance = it }
             MomentBuildTrigger(
                 build = builder::build, rebuild = builder::rebuildWindow, enabled = { MomentStoreSwitch.DEFAULT_ENABLED },
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -141,7 +145,7 @@ object MomentTriggers {
         }.also { instance = it }
     }
 
-    fun resetForTests() { synchronized(this) { instance = null } }
+    fun resetForTests() { synchronized(this) { instance = null; builderInstance = null } }
 }
 
 /** The process-wide Scene cadence (production wiring): the real builder on the app database, the same kill switch as the Moments. Run by `MomentCadenceWorker` after its Moment rebuild. */

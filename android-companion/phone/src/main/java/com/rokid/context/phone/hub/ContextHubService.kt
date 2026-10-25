@@ -82,6 +82,7 @@ class ContextHubService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             val hub = HubGraph.get(this)
             hub.start()
+            com.rokid.context.work.OrchestrationScheduler(this).ensureBackgroundWork() // the link-up path: retention and the Moment cadence run whatever the pipeline flag says (unique, KEEP)
             com.rokid.context.work.frames.KeyframeGraph.get(this).start() // the hub service owns the keyframe pipeline while it runs
             watcher = CoroutineScope(Dispatchers.Main.immediate).launch {
                 combine(hub.status.map(::notificationText), hub.activePauses.map { it.isNotEmpty() }) { t, p -> t to p }

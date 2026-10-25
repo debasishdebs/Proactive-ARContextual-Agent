@@ -10,6 +10,7 @@ import com.rokid.context.memory.moment.AuditStep
 import com.rokid.context.memory.moment.MomentType
 import com.rokid.context.memory.moment.NoPhotoReason
 import com.rokid.context.memory.moment.ObjectAudit
+import com.rokid.context.core.log.PcLog
 import org.json.JSONArray
 import java.security.MessageDigest
 
@@ -61,18 +62,37 @@ class MomentBuilder(
 
     /**
      * The one-time catch-up after the v13 migration: the marks of the last [CATCHUP_MS] that were recorded before a mark could make a Moment get their MARK Moments now. It builds the seconds
-     * that hold a mark (in chunks, each its own transaction, idempotent) and then stores the time it ran in `canvas_meta` ([KEY_CATCHUP], a counter, no user data) so it never repeats;
-     * a failure before the end leaves the key unset and the next cadence tick runs it again. Switched off with the store switch (nothing is built and the key stays unset).
+     * that hold a mark (in chunks, each its own transaction, idempotent) and then stores the time it ran in `canvas_meta` ([KEY_CATCHUP], a counter, no user data) so it never repeats.
+     * The marker is stored ONLY after at least one mark second was found and built: a run that finds no mark leaves it unset (the next tick looks again: one indexed query), so a tick that ran before
+     * the marks were in the table (or before the worker could see them) cannot consume the catch-up for good (device defect 2026-10-25). A failure before the end leaves the key unset too.
+     * The key name is versioned ([KEY_CATCHUP] `_v2`): the first shipped version stored `mark_moment_catchup_ms` even when it found nothing, and a device holding that value is simply caught up once
+     * more (idempotent). Switched off with the store switch (nothing is built and the key stays unset). Counts-only log lines.
      */
     suspend fun catchUpMarks(nowMs: Long): Report {
-        if (!enabled()) return Report.NONE
+        if (!enabled()) { PcLog.i(TAG, "catch-up skipped: store switch off"); return Report.NONE }
         val meta = db.canvasSlice3Dao()
-        if (meta.meta(KEY_CATCHUP) != null) return Report.NONE
+        if (meta.meta(KEY_CATCHUP) != null) { PcLog.i(TAG, "catch-up skipped: already done"); return Report.NONE }
         val ids = dao.labelSeconds(maxOf(0L, nowMs - CATCHUP_MS), nowMs).filter { it in 0..MomentId.MAX_SECOND }.map { MomentId.format(it) }
-        var stored = 0; var removed = 0; var refused = 0
-        for (chunk in ids.chunked(CHUNK)) build(chunk).let { stored += it.stored; removed += it.removed; refused += it.refused }
+        val scanned = ids.size
+        if (ids.isEmpty()) { PcLog.i(TAG, "catch-up found no mark seconds; will look again"); return Report.NONE }
+        var stored = 0; var deleted = 0; var rejected = 0
+        for (chunk in ids.chunked(CHUNK)) build(chunk).let { stored += it.stored; deleted += it.removed; rejected += it.refused }
         meta.putMeta(KEY_CATCHUP, nowMs.toString())
-        return Report(stored, removed, refused)
+        PcLog.i(TAG, "catch-up done: scanned=$scanned stored=$stored deleted=$deleted rejected=$rejected")
+        return Report(stored, deleted, rejected)
+    }
+
+    /** What [rebuildDay] did: the catch-up's counts (all zero when it was off or already done; [catchUpDone] says whether its marker is stored) and the window rebuild's. */
+    data class DayReport(val catchUp: Report, val catchUpDone: Boolean, val window: Report)
+
+    /**
+     * The developer rebuild of one day (`POST /api/moments/rebuild`): the catch-up first (it does nothing once its marker is stored, and logs why), then the same window rebuild the cadence runs, over
+     * `[fromMs, toMs]` (stored/removed/refused counts; a forgotten second is refused by the same fences, so a rebuild can never resurrect it).
+     */
+    suspend fun rebuildDay(fromMs: Long, toMs: Long, nowMs: Long): DayReport {
+        val c = catchUpMarks(nowMs)
+        val done = enabled() && db.canvasSlice3Dao().meta(KEY_CATCHUP) != null
+        return DayReport(c, done, rebuildWindow(fromMs, toMs))
     }
 
     private suspend fun candidateIds(lo: Long, hi: Long): List<String> {
@@ -172,7 +192,8 @@ class MomentBuilder(
     companion object {
         const val BUILD_REV = 1
         /** `canvas_meta` key set once the catch-up of existing marks has run; the look-back of that catch-up. */
-        const val KEY_CATCHUP = "mark_moment_catchup_ms"
+        const val KEY_CATCHUP = "mark_moment_catchup_v2_ms"
+        private const val TAG = "PcMoments"
         const val CATCHUP_MS = 7 * 24 * 3_600_000L
         private const val CHUNK = 500
     }
