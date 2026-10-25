@@ -51,7 +51,7 @@ abstract class WipeDao {
     @Query("INSERT INTO canvas_helper_cleanup (jobId, reason, createdAt) VALUES ('*', 'delete_all', :now)") protected abstract suspend fun slice3WildcardCleanup(now: Long)
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'canvas\\_save:%' ESCAPE '\\'") protected abstract suspend fun canvasSaveMarkers()
-    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_undone:%' ESCAPE '\\'") protected abstract suspend fun markUndoneMarkers()
+    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_undone:%' ESCAPE '\\' OR `key` LIKE 'mark\\_claim:%' ESCAPE '\\'") protected abstract suspend fun markUndoneMarkers()
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'momentForgetRanges'") protected abstract suspend fun momentClearForgetRanges(): Int
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES ('frame_forget_rev', '0')") protected abstract suspend fun slice3InitForgetRev()
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'frame_forget_rev'") protected abstract suspend fun slice3BumpForgetRev(): Int

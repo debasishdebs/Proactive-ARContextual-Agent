@@ -142,6 +142,27 @@ class MarkPhotoLinkDaoTest {
         assertEquals(MarkPhotoReason.OK, dao.label(mark)!!.photo)
     }
 
+    /** Codex recheck: the allowance of a mark is claimed DURABLY by one frame id, so neither an in-memory eviction nor a restart can hand it to a second frame. */
+    @Test fun aMarkPhotoAllowanceIsClaimedOnceDurablyByOneFrameId() = runBlocking<Unit> {
+        insertMark()
+        assertTrue(dao.claimMarkPhoto(mark, "f1"))
+        assertTrue("the same frame again (a resend)", dao.claimMarkPhoto(mark, "f1"))
+        assertFalse("another frame id is refused", dao.claimMarkPhoto(mark, "f2"))
+        assertEquals("f1", dao.meta("mark_claim:$mark"))
+    }
+
+    @Test fun aClaimGoesWithItsMarkUndoForgetRangeAndDeleteAll() = runBlocking<Unit> {
+        insertMark(); dao.claimMarkPhoto(mark, "f1")
+        dao.deleteLabel(mark); dao.deleteLabel("$mark:i")
+        assertNull("undo", dao.meta("mark_claim:$mark"))
+        insertMark(at = MS + 100); dao.claimMarkPhoto(mark, "f1")
+        dao.deleteLabelsBetween(MS, MS + 999)
+        assertNull("range forget", dao.meta("mark_claim:$mark"))
+        insertMark(at = MS + 100); dao.claimMarkPhoto(mark, "f1")
+        db.wipeDao().wipeMemory(1_000)
+        assertNull("delete all", dao.meta("mark_claim:$mark"))
+    }
+
     @Test fun deleteAllRemovesTheUndoMarkers() = runBlocking<Unit> {
         dao.putMeta("mark_undone:$mark", "1")
         db.wipeDao().wipeMemory(1_000)

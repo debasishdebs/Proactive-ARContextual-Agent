@@ -33,4 +33,12 @@ class RoomMarkLookupTest {
         assertEquals("undone before it ever arrived", MarkState.CLOSED, lookup.state("e:8"))
         db.close()
     }
+
+    @Test fun theClaimIsStoredInTheDatabaseSoANewLookupSeesIt() = runBlocking<Unit> {
+        mark("mk:e:1", "pending")
+        assertEquals(true, lookup.claim("e:1", "f1"))
+        assertEquals(true, RoomMarkLookup(dao).claim("e:1", "f1"))
+        assertEquals(false, RoomMarkLookup(dao).claim("e:1", "f2"))
+        db.close()
+    }
 }
