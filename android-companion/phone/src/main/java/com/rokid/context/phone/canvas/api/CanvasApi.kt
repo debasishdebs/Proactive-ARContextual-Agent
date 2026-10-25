@@ -84,6 +84,10 @@ class CanvasApi(
         HttpResponse.error(409, "scenes_moved", "These Scenes changed since the estimate (a photo was added or removed, or a summary was hidden). Nothing ran. Estimate again.")
     } catch (e: CanvasRunner.MomentsMoved) {
         HttpResponse.error(409, "moments_moved", "These Moments changed since the estimate (a photo was added or removed, or a memory or mark changed). Nothing ran. Estimate again.")
+    } catch (e: CanvasRunner.AbArmMoved) {
+        HttpResponse.error(409, "ab_arm_moved", if (e.arm == "A") "The photos of arm A changed since the estimate (a mark was added or a photo aged out). Nothing ran. Estimate again." else "The photos of arm B changed since the estimate (a mark was added or a photo aged out). Nothing ran. Estimate again.")
+    } catch (e: CanvasRunner.AbArmEmpty) {
+        HttpResponse.error(422, "ab_arm_empty", if (e.arm == "A") "Arm A has no photo left after its Photo settings. Nothing ran." else "Arm B has no photo left after its Photo settings. Nothing ran.")
     } catch (e: NoSuchElementException) {
         HttpResponse.error(404, "not_found", "Not found.")
     } catch (e: IllegalArgumentException) {
@@ -345,6 +349,12 @@ class CanvasApi(
             put("models", JsonArray(e.models.map { m -> buildJsonObject { put("nodeId", m.nodeId); put("endpoint", m.endpoint); put("model", m.model) } }))
             put("confirmToken", e.confirmToken)
             put("tokens", e.tokens?.let { t -> buildJsonObject { put("promptTokens", t.promptTokens); put("completionTokens", t.completionTokens); put("basedOn", t.basedOn) } } ?: JsonNull)
+            // an A/B estimate: each arm's own frame count and price (A first)
+            if (e.arms.isNotEmpty()) put("arms", JsonArray(e.arms.map { a -> buildJsonObject {
+                put("photos", a.photos); put("nominal", a.nominal); put("max", a.max)
+                put("models", JsonArray(a.models.map { m -> buildJsonObject { put("nodeId", m.nodeId); put("endpoint", m.endpoint); put("model", m.model) } }))
+                put("tokens", a.tokens?.let { t -> buildJsonObject { put("promptTokens", t.promptTokens); put("completionTokens", t.completionTokens); put("basedOn", t.basedOn) } } ?: JsonNull)
+            } }))
         })
         is Estimate.Refused -> throw ApiError(422, "refused", "This run is over the limits.", e.reasons)
     }

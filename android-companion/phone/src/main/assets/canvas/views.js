@@ -283,7 +283,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
 
   /** One confirm for a run or an A/B pair: photos, calls, the model labels and (when the server has one) the token estimate. */
   function confirmStart(e, head, start) {
-    const line = e.photos + ' photos · about ' + e.nominal + ' model calls (at most ' + e.max + ')';
+    const line = e.arms && e.arms.length ? e.arms.map((a, i) => 'Arm ' + 'AB'[i] + ': ' + a.photos + ' photos · about ' + a.nominal + ' model calls (at most ' + a.max + ')').join(' | ') : e.photos + ' photos · about ' + e.nominal + ' model calls (at most ' + e.max + ')';
     const models = (e.models || []).map((m) => m.nodeId + ': ' + m.endpoint + ' / ' + m.model);
     ctx.modal(head.length ? 'Start this A/B pair?' : 'Start this run?', h('div', null, head.map((t) => h('p', null, t)), h('p', null, line), h('p', { class: 'muted' }, tokenEstimateText(e.tokens)),
       models.length ? h('ul', null, models.map((m) => h('li', null, m))) : null), [
