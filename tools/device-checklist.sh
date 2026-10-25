@@ -80,7 +80,7 @@ define_step() {
   S-CAPTURE)
     TITLE="Capture -> memory"
     INSTR="Let the glasses capture at least one frame; wait for it to appear in Activity on the phone."
-    MARKERS="G|delivered ${NL}P|frame ingested ${NL}!P|frame .* not stored" ;;
+    MARKERS="G|delivered ${NL}P|frame ingested${NL}!P|frame not stored" ;;
   S-ASK)
     TITLE="Ask -> answer -> TTS"
     INSTR="Ask a question from the glasses (long-press). The answer shows on the HUD and is spoken."
@@ -104,7 +104,7 @@ define_step() {
   S-FLUSH)
     TITLE="Offline buffer flush incl. a mid-frame link drop"
     INSTR="Buffer frames offline, reconnect and let them flush; repeat, dropping the link yourself mid-flush."
-    MARKERS="G|delivered ${NL}G|flush done${NL}P|frame ingested ${NL}G|flush interrupted|timeout" ;;
+    MARKERS="G|delivered ${NL}G|flush done${NL}P|frame ingested${NL}G|flush interrupted|timeout" ;;
   S-FORGET)
     TITLE="Forget fact vs Forget moment"
     INSTR="On the phone: Forget a fact (the moment stays), then Forget a moment (photo and its facts go)."
@@ -112,7 +112,7 @@ define_step() {
   D-A1)
     TITLE="Clock jump"
     INSTR="Glasses offline, frames buffered; move the glasses clock +2 days; reconnect. Frames flush and are not aged out; capture times on the phone match reality within the offset."
-    MARKERS="G|delivered ${NL}P|frame ingested ${NL}P|hello battery=" ;;
+    MARKERS="G|delivered ${NL}P|frame ingested${NL}P|hello battery=" ;;
   D-A2)
     TITLE="Full glasses storage"
     INSTR="Fill glasses storage to < 1 MB free, then capture. The newest frame is buffered, the oldest dropped, nothing crashes."
@@ -124,11 +124,11 @@ define_step() {
   D-A4)
     TITLE="Delete all with frames buffered"
     INSTR="Buffer 5 frames offline, run Delete all on the phone, reconnect. 5 acks wiped_drop; no new frames in Activity."
-    MARKERS="P|dropped: captured before Delete all${NL}G|delivered " ;;
+    MARKERS="P|frame dropped: captured_before_delete_all${NL}G|delivered " ;;
   D-A5)
     TITLE="Mid-frame drop (spec 6.4)"
     INSTR="Kill BT during a flush (you do it). The frame resumes from chunk 0 with no duplicate; the Status buffer count is exact after the flush."
-    MARKERS="G|flush interrupted${NL}G|flush done${NL}P|frame ingested " ;;
+    MARKERS="G|flush interrupted${NL}G|flush done${NL}P|frame ingested" ;;
   D-C1)
     TITLE="Camera bind failure"
     INSTR="Revoke the camera on the glasses mid-session. No SurfaceTexture warning spam; the service stops cleanly."
@@ -201,8 +201,8 @@ define_step() {
   P7-10)
     TITLE="Phone Capture now"
     INSTR="Phone 'Capture now': a photo appears in Today with source phone; the button is disabled while paused."
-    # Phone captures skip FrameIngestor ("frame ingested" is glasses-only); RokidFrameInbox.kt:192 logs the append.
-    MARKERS="P|append result=true frameId=rokid_phone_" ;;
+    # Phone captures skip FrameIngestor ("frame ingested" is glasses-only); RokidFrameInbox.ingestFile logs `append result=<bool> origin=phone|glasses` (an id-free marker).
+    MARKERS="P|append result=true origin=phone" ;;
   P7-11)
     TITLE="Forget fact cited by an Ask"
     INSTR="Forget fact on a memory cited by an Ask: the Ask shows 'Removed - a source was forgotten'; HUD Today drops it on the next frame; 'Reprocess old photos' never brings it back."
