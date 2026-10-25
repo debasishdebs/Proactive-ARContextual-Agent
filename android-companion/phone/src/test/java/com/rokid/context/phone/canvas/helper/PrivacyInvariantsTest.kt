@@ -79,18 +79,6 @@ class PrivacyInvariantsTest {
         assertEquals("raw platform logging in 3b files", emptyList<String>(), offenders)
     }
 
-    /**
-     * Two files 3b edited (the S6 guard in `CanvasPublisher`, a grants-prefs constant in `MemoryWipe`) already held platform log calls BEFORE 3b and 3b added none. They are
-     * not migrated here (decision needed, see the WP9 report); until the always-on ratchet moves them, the count may only go down.
-     */
-    @Test fun preexistingPlatformLogCallsInTwoEditedFilesDoNotGrow() {
-        val budget = mapOf("$orch/canvas/CanvasPublisher.kt" to 5, "$orch/orchestration/MemoryWipe.kt" to 5)
-        for ((path, max) in budget) {
-            val n = Regex("""android\.util\.Log|\bLog\.(v|d|i|w|e)\(""").findAll(code(src(path))).count()
-            assertTrue("$path has $n platform log references, at most $max allowed", n <= max)
-        }
-    }
-
     // ---- no ids or tokens in log lines ----
 
     @Test fun noIdsOrTokensInAnyLogLineOfAWholeRun() {

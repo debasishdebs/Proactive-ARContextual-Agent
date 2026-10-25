@@ -2,7 +2,7 @@ package com.rokid.context.orchestration
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.connectors.actions.ProposalNotifications
 import com.rokid.context.connectors.actions.executors.ReminderExecutor
@@ -109,12 +109,12 @@ object MemoryWipe {
             try {
                 proposals.forEach { ReminderExecutor.cancelAlarm(context, it) }
             } catch (e: Exception) {
-                Log.w("MemoryWipe", "alarms not cancelled: ${SafeLog.describe(e)}")
+                PcLog.w("MemoryWipe", "alarms not cancelled: ${SafeLog.describe(e)}")
             }
             try {
                 ProposalNotifications.cancel(context, proposals)
             } catch (e: Exception) {
-                Log.w("MemoryWipe", "notifications not cancelled: ${SafeLog.describe(e)}")
+                PcLog.w("MemoryWipe", "notifications not cancelled: ${SafeLog.describe(e)}")
             }
             val deleted = WipeFence.mutex.withLock {
                 val listed = paths.filter { it.isNotBlank() }.map(::File)
@@ -130,7 +130,7 @@ object MemoryWipe {
                 val n = all.count { it.exists() && it.delete() }
                 leftovers += all.count { it.exists() }
                 // Fix round 1 I3: the deleted frames may have freed the space the fence record needs; else it fails closed.
-                if (!marked && !WipeFence.markStarted(context.filesDir, wipedAt, wipedElapsed)) Log.w("MemoryWipe", "Delete all fence unknown: frames are held until it is recorded")
+                if (!marked && !WipeFence.markStarted(context.filesDir, wipedAt, wipedElapsed)) PcLog.w("MemoryWipe", "Delete all fence unknown: frames are held until it is recorded")
                 n
             }
             LegacyImporter.LEGACY_FILES.forEach { File(context.filesDir, it).let { f -> f.delete(); if (f.exists()) leftovers++ } }
@@ -146,7 +146,7 @@ object MemoryWipe {
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             // Slice 3a (S58): files and devices follow through the registered listeners (the glasses get the NEW epoch). After everything above; never throws.
-            if (leftovers == 0) DeletionEpochStore.of(context).clearWipePending() else Log.w("MemoryWipe", "Delete all left $leftovers artefact(s): the cleanup is retried at the next start")
+            if (leftovers == 0) DeletionEpochStore.of(context).clearWipePending() else PcLog.w("MemoryWipe", "Delete all left $leftovers artefact(s): the cleanup is retried at the next start")
             com.rokid.context.memory.forget.ForgetListeners.deleteAll()
             deleted
         } finally {
