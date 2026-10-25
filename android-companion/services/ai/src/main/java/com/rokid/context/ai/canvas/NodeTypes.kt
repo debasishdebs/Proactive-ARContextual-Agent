@@ -83,6 +83,9 @@ object NodeTypes {
     /** Process, phone side: the tunable heuristic of the watch branch (a number in, `moving` or `still` out); see [MotionModel]. The future learned model is another `kind` of this node. */
     const val PROC_MOTION_MODEL = "proc.motion_model"
 
+    /** Outcome, PREVIEW ONLY: records the capture rate the watch branch WOULD set; never publishes, never touches the capture policy, never live. See [SetFrequencyPreview]. */
+    const val OUT_SET_FREQUENCY_PREVIEW = "out.set_frequency_preview"
+
     const val EXPR_GUARD = "expr.guard"
     const val EXPR_VALUE = "expr.value"
     const val IMU_HEAD_MOTION = "imu.head_motion"
@@ -135,6 +138,8 @@ object NodeTypes {
         NodeType(PROC_MOTION_MODEL, "Motion model", setOf(PortType.NUMBER, PortType.WATCH), PortType.NUMBER, sinceSchema = 2, category = Category.DATA, short = "motion",
             params = MotionModel.schema, inner = MotionModel.inner, family = Family.PROCESS),
         NodeType(SWITCH, "Switch", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route", family = Family.CONDITION),
+        NodeType(OUT_SET_FREQUENCY_PREVIEW, "Set frequency (preview)", setOf(PortType.NUMBER), PortType.PREVIEW, sinceSchema = 2, category = Category.POLICY_FREQUENCY, short = "freq",
+            params = SetFrequencyPreview.schema, family = Family.OUTCOME),
         NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION, PortType.SUMMARY), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", inner = MemoryWriteComposite.inner, family = Family.OUTCOME),
     )
 

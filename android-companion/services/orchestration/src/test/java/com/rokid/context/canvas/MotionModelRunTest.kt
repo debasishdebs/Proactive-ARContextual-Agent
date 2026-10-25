@@ -42,7 +42,7 @@ class MotionModelRunTest {
 
     private fun runner() = CanvasRunner(
         h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) },
-        mapOf(NodeTypes.AGG_WINDOW to WindowAggregateExecutor, NodeTypes.PROC_MOTION_MODEL to MotionModelExecutor, NodeTypes.COMPARE to CompareExecutor, NodeTypes.SWITCH to SwitchExecutor),
+        mapOf(NodeTypes.AGG_WINDOW to WindowAggregateExecutor, NodeTypes.PROC_MOTION_MODEL to MotionModelExecutor, NodeTypes.COMPARE to CompareExecutor, NodeTypes.SWITCH to SwitchExecutor, NodeTypes.OUT_SET_FREQUENCY_PREVIEW to SetFrequencyPreviewExecutor),
         { id ->
             val ai = com.rokid.context.orchestration.TestAi.graph(app) { modelCalls.incrementAndGet(); "" }
             RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) })
@@ -83,6 +83,20 @@ class MotionModelRunTest {
         // gate.compare on the 1.0 / 0.0 `value` and route.switch on the `label` both follow the decision
         assertEquals(listOf("no", "yes", "yes", "no"), listOf(1000L, 2000L, 3000L, 4000L).map { at -> items.first { it.nodeId == "cmp" && it.frameId == "watch:$at" }.branch })
         assertEquals(listOf("still", "moving", "moving", "still"), listOf(1000L, 2000L, 3000L, 4000L).map { at -> items.first { it.nodeId == "sw" && it.frameId == "watch:$at" }.branch })
+    }
+
+    @Test fun theFrequencyPreviewRecordsWhatWouldBeSetAndAppliesNothing() = runBlocking<Unit> {
+        values()
+        val p = pipeline(0.4, 0.2).let { base ->
+            base.copy(nodes = base.nodes + PipelineNode("freq", NodeTypes.OUT_SET_FREQUENCY_PREVIEW, "Set frequency", buildJsonObject { put("row", "REST"); put("movingCapPerMin", 4); put("stillCapPerMin", 1) }),
+                ).copy(edges = base.edges + PipelineEdge("model", "freq"))
+        }
+        val items = runIt(p)
+        fun out(at: Long) = Json.parseToJsonElement(items.first { it.nodeId == "freq" && it.frameId == "watch:$at" }.outputJson!!).jsonObject.getValue("value").jsonObject
+        assertEquals(listOf(1, 4, 4, 1), listOf(1000L, 2000L, 3000L, 4000L).map { out(it).getValue("value").jsonPrimitive.content.toInt() })
+        assertEquals(listOf("lower", "raise", "raise", "lower"), listOf(1000L, 2000L, 3000L, 4000L).map { out(it).getValue("change").jsonPrimitive.content })
+        for (at in listOf(1000L, 2000L, 3000L, 4000L)) { assertEquals("false", out(at).getValue("applied").jsonPrimitive.content); assertEquals("true", out(at).getValue("preview").jsonPrimitive.content) }
+        assertEquals("the preview adds one row per value and nothing else is written", 4 * 5 + 4, items.size)
     }
 
     @Test fun anEmptyWindowStaysNoDataAllTheWayNotAStillLabel() = runBlocking<Unit> {
