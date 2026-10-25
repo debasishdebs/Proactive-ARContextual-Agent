@@ -177,7 +177,7 @@ object FrameImages {
 
     /** A fixed code and the exception class only: a message may carry a path (frame ids are in file names). */
     fun fail(code: Code, e: Throwable?) {
-        PcLog.w(TAG, "frame crypto failed code=$code" + (e?.let { " (${it.javaClass.simpleName})" } ?: ""))
+        if (e == null) PcLog.w(TAG, "frame crypto failed code=$code") else PcLog.w(TAG, "frame crypto failed code=$code (${e.javaClass.simpleName})")
     }
 
     private fun fsyncDir(dir: File) {
