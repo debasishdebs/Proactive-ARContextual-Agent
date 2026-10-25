@@ -80,6 +80,11 @@ class CanvasRunSave(
     }
 
     private class Marked : RuntimeException(null, null, false, false)
+    /** The run or one of its photos vanished between the load and the commit: the save rolls back whole. */
+    private class Gone(val result: Result) : RuntimeException(null, null, false, false)
+
+    /** Test seam: runs right after the load, before the save starts (a test wipes or deletes there). Null in production. */
+    @Volatile internal var testAfterLoad: (suspend () -> Unit)? = null
 
     private class Built(val facts: List<Fact>, val ok: List<Boolean>, val captions: List<FrameCaption>, val frames: Set<String>)
 
@@ -101,11 +106,13 @@ class CanvasRunSave(
         db.canvasDao().run(runId) ?: throw NoSuchElementException("run")
         val key = CanvasSaveMarker.key(runId)
         db.canvasSlice3Dao().meta(key)?.let { return Result.AlreadySaved(it.toIntOrNull() ?: 0) }
+        // the wipe generation is read BEFORE the run, its outputs and its photos are loaded: a Delete all that ran after this point makes the save refuse (Wiped), never commit what it loaded
+        val gen = generation()
         val l = load(runId)
+        testAfterLoad?.invoke()
         l.refusal?.let { PcLog.i(TAG, "canvas save refused"); return Result.NotSaveable(it) }
         val b = l.built ?: return Result.NothingToSave
         if (b.facts.isEmpty() && b.captions.isEmpty()) return Result.NothingToSave
-        val gen = generation()
         val prefix = PREFIX + runId + "_"
         var needReview = 0
         val res = try {
@@ -115,6 +122,10 @@ class CanvasRunSave(
                     tier = MemoryTier.SHORT, reviewState = ReviewState.NEEDS_REVIEW, generation = gen, nowMs = clock(),
                     inTransaction = { saved ->
                         if (db.canvasSlice3Dao().meta(key) != null) throw Marked() // a concurrent save won: roll this one back
+                        // re-read inside the transaction what the load saw: the run must still be DONE and every source photo must still be a live row (a forgotten one is fenced by the tombstone check)
+                        val run = db.canvasDao().run(runId)
+                        if (run == null || run.status != "DONE") throw Gone(Result.NotSaveable(Reason.NOT_DONE))
+                        if (b.frames.toList().chunked(500).sumOf { db.frameDao().byIds(it).size } != b.frames.size) throw Gone(Result.NothingToSave)
                         val view = db.memoryViewDao()
                         saved.filter { it.index != null && b.ok[it.index!!] }.forEach { view.moveReviewState(it.memoryId, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
                         needReview = saved.count { it.index != null && !b.ok[it.index!!] }
@@ -129,6 +140,8 @@ class CanvasRunSave(
         } catch (e: DataOpGate.WriteBlocked) {
             PcLog.i(TAG, "canvas save blocked by an export or delete")
             return Result.Busy(e.byExport)
+        } catch (g: Gone) {
+            return g.result
         } catch (m: Marked) {
             return Result.AlreadySaved(db.canvasSlice3Dao().meta(key)?.toIntOrNull() ?: 0)
         }

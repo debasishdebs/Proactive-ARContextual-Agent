@@ -248,6 +248,36 @@ class CanvasRunSaveTest {
         assertEquals(emptyList<Any>(), memories()); assertNull(h.dao3.meta(CanvasSaveMarker.key("r1")))
     }
 
+    /** Codex review 2026-10-26: the wipe generation is read BEFORE anything is loaded, so a Delete all between the load and the commit can never be mistaken for the current state. */
+    @Test fun aDeleteAllBetweenTheLoadAndTheSaveWritesNothing() = runBlocking {
+        frame("f1")
+        run("r1", pipeline(), mapOf("f1" to ext(true, listOf(fact("a mug", "f1")))))
+        val s = saver()
+        s.testAfterLoad = { MemoryWipe.generation.incrementAndGet() }
+        assertEquals(CanvasRunSave.Result.Wiped, s.save("r1"))
+        assertEquals(emptyList<Any>(), memories()); assertNull(h.dao3.meta(CanvasSaveMarker.key("r1")))
+    }
+
+    @Test fun aRunDeletedAfterTheLoadIsRecheckedInsideTheSaveAndNothingIsWritten() = runBlocking {
+        frame("f1")
+        run("r1", pipeline(), mapOf("f1" to ext(true, listOf(fact("a mug", "f1")))))
+        val s = saver()
+        s.testAfterLoad = { h.dao.deleteRun("r1") }
+        val r = s.save("r1")
+        assertTrue("$r", r is CanvasRunSave.Result.NotSaveable)
+        assertEquals(emptyList<Any>(), memories()); assertNull(h.dao3.meta(CanvasSaveMarker.key("r1")))
+    }
+
+    @Test fun aSourcePhotoGoneAfterTheLoadIsRecheckedInsideTheSaveAndNothingIsWritten() = runBlocking {
+        frame("f1"); frame("f2")
+        run("r1", pipeline(), mapOf("f1" to ext(true, listOf(fact("a mug", "f1"))), "f2" to ext(true, listOf(fact("a cup", "f2")))))
+        val s = saver()
+        s.testAfterLoad = { h.db.frameDao().deleteByIds(listOf("f2")) }
+        assertEquals(CanvasRunSave.Result.NothingToSave, s.save("r1"))
+        assertEquals("all or nothing: the rolled-back save leaves no memory of f1 either", emptyList<Any>(), memories()); assertNull(h.dao3.meta(CanvasSaveMarker.key("r1")))
+        assertEquals("a retry now saves what is valid", CanvasRunSave.Result.Saved(1, 0), saver().save("r1"))
+    }
+
     @Test fun aFailedSaveIsNotSwallowedAndLeavesNothingBehind() = runBlocking {
         frame("f1")
         run("r1", pipeline(), mapOf("f1" to ext(true, listOf(fact("a mug", "f1")))))
