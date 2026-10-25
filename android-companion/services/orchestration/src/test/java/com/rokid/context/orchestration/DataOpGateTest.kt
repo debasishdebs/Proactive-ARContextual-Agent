@@ -210,4 +210,34 @@ class DataOpGateTest {
         inside.await(); job.cancel(); job.join()
         assertFree(gate)
     }
+
+    /** Codex recheck: a cancellation (or the timeout) that wins right AFTER the reservation, before the block is entered, must not leak the writer slot. */
+    @Test fun aCancellationRightAfterTheReservationDoesNotLeakTheWriterSlot() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val del = async { gate.delete { inside.complete(Unit); release.await() } }
+        inside.await()
+        var ran = false
+        lateinit var job: kotlinx.coroutines.Job
+        gate.testInReserve = { job.cancel() }
+        job = launch { gate.write { ran = true } }
+        kotlinx.coroutines.delay(100)
+        release.complete(Unit); del.await(); job.join()
+        assertFalse("cancelled before the block", ran)
+        gate.testInReserve = null
+        assertFree(gate)
+        var d = false; gate.delete { d = true }; assertTrue("deletes are not held up by a leaked writer either", d)
+    }
+
+    @Test fun aTimeoutRightAfterTheReservationEitherRunsTheBlockOrReleasesTheSlot() = runBlocking<Unit> {
+        val gate = DataOpGate(waitMs = 50); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val del = async { gate.delete { inside.complete(Unit); release.await() } }
+        inside.await()
+        gate.testInReserve = { Thread.sleep(200) } // the wait's timeout fires while the slot was just taken
+        val r = async { runCatching { gate.write { "ran" } } }
+        kotlinx.coroutines.delay(30); release.complete(Unit); del.await()
+        r.await()
+        gate.testInReserve = null
+        assertFree(gate)
+        var d = false; gate.delete { d = true }; assertTrue(d)
+    }
 }
