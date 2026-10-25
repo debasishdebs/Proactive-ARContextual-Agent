@@ -283,6 +283,24 @@ class ContextHubTest {
         assertFalse("ANDROID_AUTO" in f.hub.message.value!!.reasons)
     }
 
+    @Test fun theHubKeepsTheRecentWatchValuesAndForgetsThemWhenTheWatchSourceIsSwitchedOff() = runTest {
+        val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
+        val t = f.clock()
+        f.accept(Evidence.WatchMotion(t, WatchState.WALKING, 0.9f)); f.adv(40_000)
+        f.accept(Evidence.WatchMotion(f.clock(), WatchState.RUNNING, 0.8f))
+        assertEquals(listOf(WatchState.WALKING, WatchState.RUNNING), f.hub.watchRing.recent(0, Long.MAX_VALUE).map { it.state })
+        assertEquals("the window is honoured", listOf(WatchState.WALKING), f.hub.watchRing.recent(t, t + 1).map { it.state })
+        f.off("watch_livefit")
+        assertTrue("a source switched off forgets what it gave", f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
+    }
+
+    @Test fun anotherSourcesEvidenceAndAnUnrunningWatchLeaveTheRingEmpty() = runTest {
+        val f = Fx(this); f.reg("phone_car"); f.on("phone_car"); f.start()
+        f.accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true))
+        f.accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f)) // the watch source is not running: the hub drops it
+        assertTrue(f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
+    }
+
     @Test fun aRunOneSinkIsDroppedAfterARestartAndRunTwoIsAccepted() = runTest {
         val f = Fx(this); val car = f.reg("phone_car")
         val sinks = ArrayList<EvidenceSink>()

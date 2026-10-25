@@ -6,6 +6,7 @@ import com.rokid.context.ai.canvas.PipelineHash
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PipelineValidator
+import com.rokid.context.ai.canvas.WatchMotion
 import com.rokid.context.canvas.helper.CanvasLogSink
 import com.rokid.context.canvas.moment.Moment
 import com.rokid.context.canvas.moment.MomentResolver
@@ -86,6 +87,8 @@ class CanvasRunner(
     private val moments: MomentResolver? = null,
     /** The read-only source a Scene run uses (estimate, start and again right after the fence capture); null = no Scene runs. */
     private val scenes: SceneRunSource? = null,
+    /** The recent watch values of the phone hub a watch run uses (estimate, start and again right after the fence capture); null = no watch runs. */
+    private val watch: WatchRunSource? = null,
 ) {
     companion object {
         const val MAX_PHOTOS = 50
@@ -108,9 +111,14 @@ class CanvasRunner(
     /** A Scene run was estimated, but a Scene (a member, its text, a hidden field) changed or vanished before the start: nothing ran, estimate again. */
     class ScenesMoved : IllegalStateException("scenes_moved")
 
+    /** A watch run was estimated, but the hub's values of the window changed before the start: nothing ran, estimate again. */
+    class WatchMoved : IllegalStateException("watch_moved")
+
     /** The Moment ids of a Moment run (chronological) and the sorted binding keys the estimate token bound. */
     private class MomentSel(val ids: List<String>, val bound: List<String>)
     private class SceneSel(val ids: List<String>, val bound: List<String>)
+    /** The window of a watch run and the binding string its estimate token carried. */
+    private class WatchSel(val fromMs: Long, val toMs: Long, val bound: String)
 
     private class Group(val id: String, val runA: String, val runB: String) {
         @Volatile var cancelled = false
@@ -211,10 +219,11 @@ class CanvasRunner(
 
     private fun takesMoments(p: Pipeline) = p.nodes.any { it.type == NodeTypes.INPUT_MOMENTS }
     private fun takesScenes(p: Pipeline) = p.nodes.any { it.type == NodeTypes.INPUT_SCENES }
+    private fun takesWatch(p: Pipeline) = p.nodes.any { it.type == NodeTypes.SRC_WATCH_MOTION }
 
     suspend fun estimate(p: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
         val ids = frameIds.distinct()
-        if (takesMoments(p) || takesScenes(p)) return Estimate.Refused(listOf("pipeline needs moments or scenes"))
+        if (takesMoments(p) || takesScenes(p) || takesWatch(p)) return Estimate.Refused(listOf("pipeline needs moments, scenes or watch values"))
         val c = price(p, ids, labels)
         val reasons = refusals(PipelineValidator.validate(p).isNotEmpty(), ids, c.nominal)
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
@@ -229,7 +238,7 @@ class CanvasRunner(
      */
     suspend fun estimateAb(a: Pipeline, b: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
         val ids = frameIds.distinct()
-        if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b)) return Estimate.Refused(listOf("A/B runs over moments are not supported"))
+        if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b) || takesWatch(a) || takesWatch(b)) return Estimate.Refused(listOf("A/B runs over moments are not supported"))
         val ca = price(a, ids, labels)
         val cb = price(b, ids, labels)
         val problems = PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()
@@ -343,6 +352,76 @@ class CanvasRunner(
         }
     }
 
+    /** The id the token binds: the window itself, so a value that arrives later changes the BINDING (watch_moved), not the id set (bad_token). */
+    private fun windowKey(fromMs: Long, toMs: Long) = "watch-window:$fromMs:$toMs"
+    private fun watchItems(samples: List<com.rokid.context.core.model.context.WatchSample>) = WatchMotion.items(samples)
+    private fun watchKeys(items: List<WatchMotion.Item>) = if (items.isEmpty()) listOf(WatchMotion.NO_DATA_KEY) else items.map { it.key }
+
+    /**
+     * The price of a watch run over the hub's values between [fromMs] and [toMs] (a watch run makes no model call: every node of the watch chain is pure). The token binds the pipeline
+     * hash, the item keys AND each value's score as read NOW, so a value that arrived since makes [startWatch] refuse ([WatchMoved]). An empty window is a valid run of ONE item that ends
+     * in the error NO_DATA (never a zero).
+     */
+    suspend fun estimateWatch(p: Pipeline, fromMs: Long, toMs: Long, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
+        val source = watch ?: return Estimate.Refused(listOf("watch values are not available"))
+        val reasons = mutableListOf<String>()
+        if (toMs < fromMs) reasons += "the window ends before it starts"
+        val items = if (toMs < fromMs) emptyList() else watchItems(source.recent(fromMs, toMs))
+        val keys = watchKeys(items)
+        val c = price(p, keys, labels)
+        if (!takesWatch(p)) reasons += "pipeline does not take watch values"
+        if (items.size > MAX_PHOTOS) reasons += "more than $MAX_PHOTOS watch values"
+        if (PipelineValidator.validate(p).isNotEmpty()) reasons += "pipeline has problems"
+        if (c.nominal > MAX_NOMINAL_CALLS) reasons += "more than $MAX_NOMINAL_CALLS model calls"
+        if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
+        val token = tokens.issue(PipelineHash.of(p), listOf(windowKey(fromMs, toMs)), WatchMotion.binding(items))
+        synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(c.models)) }
+        return Estimate.Ok(items.size, c.nominal, c.max, c.models, token, c.tokens, kind = "watch", photoCount = 0)
+    }
+
+    /** Starts a watch run: the Scene run's rules, with [WatchMoved] when the values of the window are not the ones the estimate bound. */
+    suspend fun startWatch(p: Pipeline, pipelineId: String, version: Int?, fromMs: Long, toMs: Long, confirmToken: String, scope: CoroutineScope): String {
+        val source = watch ?: throw IllegalArgumentException("watch values are not available")
+        if (!lock.tryLock()) throw Busy()
+        var launched = false
+        try {
+            if (toMs < fromMs) throw IllegalArgumentException("bad_window")
+            if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
+            if (!takesWatch(p)) throw IllegalArgumentException("pipeline does not take watch values")
+            val items = watchItems(source.recent(fromMs, toMs))
+            if (items.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS watch values")
+            val keys = watchKeys(items)
+            val bound = WatchMotion.binding(items)
+            when (tokens.consumeBound(confirmToken, PipelineHash.of(p), listOf(windowKey(fromMs, toMs)), bound)) {
+                ConfirmTokens.Verdict.BAD -> throw IllegalArgumentException("bad_token")
+                ConfirmTokens.Verdict.MOVED -> { line(Level.I, "watch values moved since the estimate"); throw WatchMoved() }
+                ConfirmTokens.Verdict.OK -> Unit
+            }
+            val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
+            dao.pruneRuns(KEEP_RUNS - 1)
+            val runId = newId()
+            dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
+            cancelled.set(null)
+            _active.value = runId
+            launched = true
+            scope.launch(start = CoroutineStart.ATOMIC) {
+                try {
+                    execute(runId, p, keys, wsel = WatchSel(fromMs, toMs, bound))
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    line(Level.W, "run aborted")
+                } finally {
+                    _active.value = null
+                    lock.unlock()
+                }
+            }
+            return runId
+        } finally {
+            if (!launched) lock.unlock()
+        }
+    }
+
     private fun abHash(a: Pipeline, b: Pipeline) = PipelineHash.of(a) + "|" + PipelineHash.of(b)
 
     private fun modelsJson(models: List<ModelLabel>) = JsonArray(models.map {
@@ -363,7 +442,7 @@ class CanvasRunner(
             val ids = frameIds.distinct()
             if (ids.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS photos")
             if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
-            if (takesMoments(p) || takesScenes(p)) throw IllegalArgumentException("pipeline needs moments or scenes")
+            if (takesMoments(p) || takesScenes(p) || takesWatch(p)) throw IllegalArgumentException("pipeline needs moments, scenes or watch values")
             if (!tokens.consume(confirmToken, PipelineHash.of(p), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
             dao.pruneRuns(KEEP_RUNS - 1)
@@ -453,7 +532,7 @@ class CanvasRunner(
             val (a, versionA) = spec.a
             val (b, versionB) = spec.b
             if (PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
-            if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b)) throw IllegalArgumentException("A/B runs over moments are not supported")
+            if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b) || takesWatch(a) || takesWatch(b)) throw IllegalArgumentException("A/B runs over moments are not supported")
             if (!tokens.consume(confirmToken, abHash(a, b), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }.orEmpty()
             dao.pruneRuns(KEEP_RUNS - 2) // once for the group: neither of its rows exists yet, so neither can be pruned
@@ -495,7 +574,7 @@ class CanvasRunner(
     }
 
     /** Runs one run to a terminal row and returns the status it wrote ("DONE", "CANCELLED", "STOPPED_HOT", "FAILED"). Rethrows cancellation of the scope. */
-    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null, ssel: SceneSel? = null): String {
+    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null, ssel: SceneSel? = null, wsel: WatchSel? = null): String {
         var calls = 0
         var failures = 0
         var status = "DONE"
@@ -516,9 +595,15 @@ class CanvasRunner(
                 if (bindingOfScenes(res) != ssel.bound) { line(Level.I, "scenes moved before the run"); return withContext(NonCancellable) { finish(runId, "CANCELLED", calls, failures) } }
                 res.associateBy(::keyOf)
             }
+            // Watch run: re-read AFTER the fence capture; the hub's values must still be the ones the estimate bound. No photo, no Moment: nothing to Forget-cascade.
+            val watchByKey: Map<String, WatchMotion.Item> = if (wsel == null) emptyMap() else {
+                val res = watchItems(watch?.recent(wsel.fromMs, wsel.toMs).orEmpty())
+                if (WatchMotion.binding(res) != wsel.bound) { line(Level.I, "watch values moved before the run"); return withContext(NonCancellable) { finish(runId, "CANCELLED", calls, failures) } }
+                res.associateBy { it.key }
+            }
             val members: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> m.frames.map { it.id } } + sceneByKey.mapValues { (_, s) -> s.frameIds }
             val allMembers: Set<String> = members.values.flatten().toSet()
-            val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
+            val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null && wsel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
             val order = ids.withIndex().associate { it.value to it.index }
             val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
             val pending = ArrayList<CanvasRunItemEntity>()
@@ -591,6 +676,20 @@ class CanvasRunner(
                             write(node.id, id, NodeResult(id, v))
                             inputs[id] = v
                         } else write(node.id, id, NodeResult(id, null, error = "unreadable"))
+                    }
+                    outputs[node.id] = inputs.mapValues { ItemFlow.Out(it.value, null) }
+                    if (!flush()) { status = "CANCELLED"; break@stop }
+                    dao.updateRun(runId, "RUNNING", calls, failures, null)
+                    continue
+                }
+                if (node.type == NodeTypes.SRC_WATCH_MOTION) {
+                    for (id in ids) {
+                        val w = watchByKey[id]
+                        if (w != null) {
+                            val v = CanvasValue.Json(w.json)
+                            write(node.id, id, NodeResult(id, v))
+                            inputs[id] = v
+                        } else write(node.id, id, NodeResult(id, null, error = WatchMotion.NO_DATA)) // the empty window's one item: absence is an error, never a zero
                     }
                     outputs[node.id] = inputs.mapValues { ItemFlow.Out(it.value, null) }
                     if (!flush()) { status = "CANCELLED"; break@stop }

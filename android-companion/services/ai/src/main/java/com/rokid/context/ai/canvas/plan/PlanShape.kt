@@ -35,7 +35,7 @@ object PlanShape {
 
     /**
      * Gate 2 (S6): nodes of tier 3, which never publish. Ruling: tier 3 is generated or laptop-run code, that is a node type under `py.` or `tool.`, a type whose registry
-     * entry runs on the laptop (`ExecutorKind.PYTHON`, `DRAFT`), or one of the REPLAY_ONLY domain. The registry lookup is the unresolved one (`byType`), so a schema-1 graph that
+     * entry runs on the laptop (`ExecutorKind.PYTHON`, `DRAFT`), or one of the REPLAY_ONLY domain; the WATCH lane (phone-side watch reads) and the preview-only `out.set_frequency_preview` never publish either. The registry lookup is the unresolved one (`byType`), so a schema-1 graph that
      * names a newer type is still caught. This is the ONE guard every publish path calls (S6: [S6_REFUSAL]).
      */
     fun tier3Nodes(p: Pipeline): List<String> = tier3Nodes(p, NodeTypes::byType)
@@ -44,8 +44,8 @@ object PlanShape {
     fun tier3Nodes(p: Pipeline, lookup: (String) -> NodeType?): List<String> = p.nodes.filter { n ->
         val t = lookup(n.type)
         val resolved = t?.takeIf { it.sinceSchema <= p.schema }?.let { NodeTypes.domainOf(n, it) }
-        n.type.startsWith("py.") || n.type.startsWith("tool.") || n.type == NodeTypes.INPUT_MOMENTS || n.type == NodeTypes.INPUT_SCENES || resolved == Domain.REPLAY_ONLY ||
-            t?.executor == ExecutorKind.PYTHON || t?.executor == ExecutorKind.DRAFT || t?.domain == Domain.REPLAY_ONLY
+        n.type.startsWith("py.") || n.type.startsWith("tool.") || n.type == NodeTypes.INPUT_MOMENTS || n.type == NodeTypes.INPUT_SCENES || n.type == NodeTypes.OUT_SET_FREQUENCY_PREVIEW || resolved == Domain.REPLAY_ONLY ||
+            t?.executor == ExecutorKind.PYTHON || t?.executor == ExecutorKind.DRAFT || t?.domain == Domain.REPLAY_ONLY || t?.domain == Domain.WATCH
     }.map { it.id }.sorted()
 }
 

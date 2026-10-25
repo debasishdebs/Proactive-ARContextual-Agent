@@ -5,10 +5,12 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoutedReply
 import com.rokid.context.ai.canvas.ExtractComposite
 import com.rokid.context.ai.canvas.LocalTrust
+import com.rokid.context.ai.canvas.MotionModel
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.NumberCompare
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PromptSource
+import com.rokid.context.ai.canvas.SetFrequencyPreview
 import com.rokid.context.ai.canvas.SummaryNode
 import com.rokid.context.ai.canvas.WindowAggregate
 import com.rokid.context.ai.canvas.promptSource
@@ -43,7 +45,7 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 object Executors {
     fun all(): Map<String, NodeExecutor> =
-        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, WindowAggregateExecutor, CompareExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
+        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, WindowAggregateExecutor, CompareExecutor, MotionModelExecutor, SetFrequencyPreviewExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
 }
 
 private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSource.Draft)?.let { PromptDraft(it.template, it.schema) }
@@ -290,6 +292,30 @@ object WindowAggregateExecutor : NodeExecutor {
     }
 }
 
+/**
+ * `proc.motion_model`: the tunable heuristic, no model call and no clock. The runner hands it the whole run in ONE chunk, in run order, because the hysteresis keeps one state across
+ * items ([MotionModel.decide]). An item with no usable number is the fixed error BAD_INPUT and leaves the state as it was.
+ */
+object MotionModelExecutor : NodeExecutor {
+    override val type = NodeTypes.PROC_MOTION_MODEL
+    override fun chunkSize(node: PipelineNode) = Int.MAX_VALUE
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val s = MotionModel.settings(node.params)
+        val numbers = items.map { (it.value as? CanvasValue.Json)?.let { v -> MotionModel.numberOf(v.value) } }
+        val moving = MotionModel.decide(numbers, s)
+        return items.indices.map { i ->
+            val m = moving[i] ?: return@map NodeResult(items[i].frameId, null, error = "BAD_INPUT")
+            NodeResult(items[i].frameId, CanvasValue.Json(buildJsonObject {
+                put("label", if (m) MotionModel.MOVING else MotionModel.STILL); put("value", if (m) 1.0 else 0.0); put("score", numbers[i]!!)
+                put("kind", s.kind); put("threshold", s.threshold); put("exit", s.exit)
+            }))
+        }
+    }
+}
+
 /** `gate.compare`: the aggregate's `value` against a cutoff; branch `yes` or `no`, the number passes through unchanged. No model. */
 object CompareExecutor : NodeExecutor {
     override val type = NodeTypes.COMPARE
@@ -319,6 +345,22 @@ object SwitchExecutor : NodeExecutor {
             val v = it.value as? CanvasValue.Json ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
             val label = field?.let { f -> ((v.value as? JsonObject)?.get(f) as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
             NodeResult(it.frameId, v, branch = if (label != null && label in cases) label else NodeTypes.OTHER)
+        }
+    }
+}
+
+/** `out.set_frequency_preview`: records what the capture rate WOULD become for the label of the model; writes and publishes nothing ([SetFrequencyPreview]). */
+object SetFrequencyPreviewExecutor : NodeExecutor {
+    override val type = NodeTypes.OUT_SET_FREQUENCY_PREVIEW
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val s = SetFrequencyPreview.settings(node.params)
+        return items.map {
+            val label = (((it.value as? CanvasValue.Json)?.value as? JsonObject)?.get("label") as? JsonPrimitive)?.takeIf { p -> p.isString }?.content
+            val p = label?.let { l -> SetFrequencyPreview.preview(l, s) } ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
+            NodeResult(it.frameId, CanvasValue.Json(p))
         }
     }
 }
