@@ -119,6 +119,20 @@ abstract class MomentDao : DerivedStaleDao() {
     @Query("SELECT labelId FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs ORDER BY labelId") abstract suspend fun labelIdsBetween(fromMs: Long, toMs: Long): List<String>
     @Query("DELETE FROM canvas_label WHERE labelId IN (:ids)") abstract suspend fun deleteLabels(ids: List<String>)
     @Query("SELECT labelId FROM canvas_label WHERE labelId IN (:ids)") abstract suspend fun labelIdsAmong(ids: List<String>): List<String>
+    /** Those of [ids] that are LIVE photos with a capture time: the frame row exists, it is not tombstoned and `frame_meta.capturedAtMs` is set (the two required parts of a valid Moment). */
+    @Query("SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id WHERE f.id IN (:ids) AND m.capturedAtMs IS NOT NULL AND f.id NOT IN (SELECT frameId FROM forget_tombstone)")
+    abstract suspend fun liveCapturedFrameIds(ids: List<String>): List<String>
+
+    /**
+     * Memories with a photo provenance whose every source frame is gone (no `frame` row): the complement of the orphan clause of the memory export (`ExportDao.memoryPage`). A memory with no photo
+     * provenance (typed, voice, a derived one with no frame source) is never an orphan. Any review state.
+     */
+    @Query(
+        "SELECT m.id FROM memory m WHERE (m.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = m.id)) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = m.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)) ORDER BY m.id",
+    )
+    abstract suspend fun orphanMemoryIds(): List<String>
+
     /** Distinct seconds that hold a live (not tombstoned) frame, for a window rebuild. */
     @Query("SELECT DISTINCT ts / 1000 FROM frame WHERE ts >= :fromMs AND ts <= :toMs AND ts >= 0 AND id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY 1") abstract suspend fun liveFrameSeconds(fromMs: Long, toMs: Long): List<Long>
     /** Distinct seconds that hold a mark (a `canvas_label` row), for a window rebuild and the one-time catch-up: a mark makes a Moment by itself. */

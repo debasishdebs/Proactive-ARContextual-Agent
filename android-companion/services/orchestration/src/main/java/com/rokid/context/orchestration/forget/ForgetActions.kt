@@ -118,6 +118,11 @@ object ForgetStartup {
     suspend fun run(context: Context, refresh: () -> Unit) = withContext(Dispatchers.IO) {
         ForgetActions.dataRemoved = refresh
         runCatching { FrameSweep.sweep(context) }
+        // v0.9.6: the one-time purge of invalid Moments and orphan memories, BEFORE the cadence is scheduled so a rebuild cannot race it (it stores its own marker and does nothing afterwards)
+        try {
+            val graph = MemoryGraph.get(context)
+            com.rokid.context.canvas.moment.InvalidMomentPurge(graph.db, ForgetService(graph.db, graph.proposals), after = { ForgetActions.apply(context, it) }).runOnce()
+        } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { PcLog.i("PcMoments", "invalid purge failed (${e.javaClass.simpleName})") }
         runCatching { if (MemoryGraph.get(context).db.forgetDao().invalidatedDerived(1).isNotEmpty()) ResummarizeWorker.enqueue(context) }
         runCatching { com.rokid.context.work.OrchestrationScheduler(context).ensureBackgroundWork() } // retention and the Moment cadence
         Unit
