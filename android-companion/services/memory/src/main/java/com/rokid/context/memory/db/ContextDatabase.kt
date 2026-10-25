@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -304,5 +304,19 @@ val MIGRATION_12_13: Migration = object : Migration(12, 13) {
         db.execSQL("ALTER TABLE `moment` ADD COLUMN `momentType` TEXT NOT NULL DEFAULT 'FRAME'")
         db.execSQL("ALTER TABLE `moment` ADD COLUMN `noPhotoReason` TEXT DEFAULT NULL")
         db.execSQL("ALTER TABLE `moment_part` ADD COLUMN `code` TEXT DEFAULT NULL")
+    }
+}
+
+/**
+ * v13 -> v14 (Moments carry text): ADDITIVE only, three new nullable columns on `moment` (`text`, `transcript`, `errorReason`; every existing row gets null) and nothing else. Nothing is
+ * copied, updated, dropped or renamed. The statements are the ones Room generated for `14.json`; the frozen `13.json` is untouched. The one-time purge of invalid Moments is NOT part of this
+ * migration (it runs through the gated delete paths after the first start, see `InvalidMomentPurge`). If another branch also claims v14 at merge, DO NOT rename or edit this migration:
+ * rebase, write a NEW latest -> next migration, regenerate the schema.
+ */
+val MIGRATION_13_14: Migration = object : Migration(13, 14) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `moment` ADD COLUMN `text` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `moment` ADD COLUMN `transcript` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `moment` ADD COLUMN `errorReason` TEXT DEFAULT NULL")
     }
 }
