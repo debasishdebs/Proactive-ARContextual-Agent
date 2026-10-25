@@ -101,4 +101,54 @@ class DataOpGateTest {
         release.complete(Unit); exp.await(); del.join()
         assertFree(gate)
     }
+
+    // ---- the write side (a canvas Save): waits, bounded, for a running export or delete ----
+
+    @Test fun aWriteRunsAtOnceWhenNothingElseRuns() = runBlocking<Unit> {
+        var ran = false
+        DataOpGate().write { ran = true }
+        assertTrue(ran)
+    }
+
+    @Test fun aWriteWaitsForARunningExportThenRuns() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val exp = async { gate.export { inside.complete(Unit); release.await() } }
+        inside.await()
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val w = async { gate.write { order += "write" } }
+        kotlinx.coroutines.delay(100)
+        assertTrue("the write has not run while the export does", order.isEmpty())
+        order += "export end"; release.complete(Unit); exp.await(); w.await()
+        assertEquals(listOf("export end", "write"), order)
+    }
+
+    @Test fun aWriteWaitsForARunningDeleteThenRuns() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val del = async { gate.delete { inside.complete(Unit); release.await() } }
+        inside.await()
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val w = async { gate.write { order += "write" } }
+        kotlinx.coroutines.delay(100)
+        assertTrue("the write has not run while the delete does", order.isEmpty())
+        order += "delete end"; release.complete(Unit); del.await(); w.await()
+        assertEquals(listOf("delete end", "write"), order)
+    }
+
+    @Test fun aWriteThatWaitedTooLongFailsTypedNamingTheReasonAndNeverRuns() = runBlocking<Unit> {
+        val gate = DataOpGate(waitMs = 150); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val exp = async { gate.export { inside.complete(Unit); release.await() } }
+        inside.await()
+        var ran = false
+        val e1 = runCatching { gate.write { ran = true } }.exceptionOrNull()
+        assertTrue(e1 is DataOpGate.WriteBlocked); assertTrue((e1 as DataOpGate.WriteBlocked).byExport); assertFalse(ran)
+        release.complete(Unit); exp.await()
+        val inside2 = CompletableDeferred<Unit>(); val release2 = CompletableDeferred<Unit>()
+        val del = async { gate.delete { inside2.complete(Unit); release2.await() } }
+        inside2.await()
+        val e2 = runCatching { gate.write { ran = true } }.exceptionOrNull()
+        assertTrue(e2 is DataOpGate.WriteBlocked); assertFalse((e2 as DataOpGate.WriteBlocked).byExport); assertFalse(ran)
+        release2.complete(Unit); del.await()
+        gate.write { ran = true }; assertTrue("after both, a write runs", ran)
+        gate.export { }; gate.delete { } // and nothing was left held
+    }
 }

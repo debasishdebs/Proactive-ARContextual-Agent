@@ -11,6 +11,28 @@ import kotlinx.serialization.json.put
 object CanvasValueJson {
     fun encode(v: CanvasValue): String = toJson(v).toString()
 
+    /** The [CanvasValue.Extraction] of a stored `kind: "extraction"` value, or null for any other kind or text that does not decode (read back by a canvas Save). */
+    fun decodeExtraction(text: String?): CanvasValue.Extraction? = runCatching {
+        val o = kotlinx.serialization.json.Json.parseToJsonElement(text ?: return null) as? JsonObject ?: return null
+        if ((o["kind"] as? JsonPrimitive)?.content != "extraction") return null
+        fun str(e: kotlinx.serialization.json.JsonElement?) = (e as? JsonPrimitive)?.takeIf { it.isString }?.content
+        CanvasValue.Extraction(
+            ((o["facts"] as? JsonArray) ?: JsonArray(emptyList())).mapNotNull { e ->
+                val f = e as? JsonObject ?: return@mapNotNull null
+                com.rokid.context.ai.contract.Fact(
+                    str(f["text"]) ?: return@mapNotNull null, str(f["type"]).orEmpty(), (f["confidence"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0, emptyList(),
+                    ((f["source_frame_ids"] as? JsonArray) ?: JsonArray(emptyList())).mapNotNull { str(it) },
+                )
+            },
+            ((o["captions"] as? JsonArray) ?: JsonArray(emptyList())).mapNotNull { e ->
+                val c = e as? JsonObject ?: return@mapNotNull null
+                com.rokid.context.ai.contract.FrameCaption(str(c["frame_id"]) ?: return@mapNotNull null, str(c["caption"]) ?: return@mapNotNull null)
+            },
+            (o["trusted"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toBooleanStrictOrNull(),
+            str(o["note"]),
+        )
+    }.getOrNull()
+
     fun branchOf(r: NodeResult): String? = r.branch
 
     internal fun toJson(v: CanvasValue): JsonObject = when (v) {

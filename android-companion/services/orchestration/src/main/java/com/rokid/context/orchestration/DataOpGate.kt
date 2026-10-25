@@ -20,6 +20,9 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     /** An export was refused because a delete is running: nothing was exported. */
     class DeleteRunning : IOException("busy: a delete is running")
 
+    /** A write (a canvas Save) gave up waiting for a running export ([byExport]) or delete: nothing was written, try again. */
+    class WriteBlocked(val byExport: Boolean) : IOException(if (byExport) "export in progress, try again" else "delete in progress, try again")
+
     private val lock = Any()
     private var exporters = 0
     private var deleters = 0
@@ -51,6 +54,20 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
             synchronized(lock) { deleters-- }
             bump()
         }
+    }
+
+    /**
+     * Runs [block] as a WRITE of user-requested memories (the canvas Save): it waits, at most [waitMs], until neither an export nor a delete runs (or waits), then runs;
+     * past the wait it throws [WriteBlocked] naming which one it was waiting for, and [block] never runs. A write holds nothing: it neither blocks nor is excluded by other writes.
+     */
+    suspend fun <T> write(block: suspend () -> T): T {
+        var byExport = false
+        fun free() = synchronized(lock) { byExport = exporters > 0; exporters == 0 && deleters == 0 && waiting == 0 }
+        if (!free()) {
+            val ok = withTimeoutOrNull(waitMs) { changed.first { free() }; true } == true
+            if (!ok) throw WriteBlocked(byExport)
+        }
+        return block()
     }
 
     /** Test seam: runs inside the wait's predicate once no export is running (a test cancels the delete exactly there). Null in production. */

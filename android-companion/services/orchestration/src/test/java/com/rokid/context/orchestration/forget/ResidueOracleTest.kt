@@ -213,6 +213,44 @@ class ResidueOracleTest {
         assertClean("Forget fact (Moment text)", listOf(mem, memText))
     }
 
+    // ---- v0.9.6: memories saved from a canvas run (Run & Save) are memories like any other ----
+
+    private val savedText = "CANVAS-SAVED-FORGOT-TEXT"
+    private val savedId = "rokid_cv_runcv_0"
+
+    /** The world plus a canvas run over the forgotten photo whose extraction was SAVED by the real save path (`rokid_cv_runcv_0`, `rokid_cv_runcv_c0`). */
+    private suspend fun savedFromCanvas() {
+        world()
+        val p = Pipeline(2, "p-save", "P", listOf(PipelineNode("photos", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap())), PipelineNode("ext", NodeTypes.VISION_EXTRACT, "ext", JsonObject(emptyMap())),
+            PipelineNode("save", NodeTypes.MEMORY_WRITE, "save", JsonObject(emptyMap()))), listOf(PipelineEdge("photos", "ext"), PipelineEdge("ext", "save")))
+        h.dao.insertRun(CanvasRunEntity("runcv", "p-save", null, "h", com.rokid.context.ai.canvas.PipelineJson.encode(p), "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        val ex = CanvasValue.Extraction(listOf(com.rokid.context.ai.contract.Fact(savedText, "object", 0.9, emptyList(), listOf(frame))), listOf(com.rokid.context.ai.contract.FrameCaption(frame, "CANVAS-CAPTION-TEXT")), trusted = true)
+        h.dao.upsertItem(CanvasRunItemEntity("runcv", frame, "ext", "OK", null, com.rokid.context.canvas.CanvasValueJson.encode(ex), null, null, null, null, null, null, "runcv:ext:$frame"))
+        h.dao.upsertItem(CanvasRunItemEntity("runcv", frame, "save", "OK", null, com.rokid.context.canvas.CanvasValueJson.encode(CanvasValue.Preview(listOf(com.rokid.context.canvas.PreviewRow("fact", savedText, "object", "SHORT", "OK")))), null, null, null, null, null, null, "runcv:ext:$frame"))
+        val r = com.rokid.context.canvas.CanvasRunSave(app, h.db, afterSave = { _, _ -> }).save("runcv")
+        assertEquals(com.rokid.context.canvas.CanvasRunSave.Result.Saved(2, 0), r)
+        assertTrue("the oracle sees the saved memory", residue(listOf(savedId, savedText)).size >= 2)
+    }
+
+    @Test fun forgetFactOfACanvasSavedMemoryLeavesNothingThatNamesIt() = runBlocking {
+        savedFromCanvas()
+        assertTrue(ForgetActions.forgetFact(app, savedId))
+        assertClean("Forget fact (canvas saved)", listOf(savedId, savedText))
+    }
+
+    @Test fun forgetPhotoOfACanvasSavedMemoryLeavesNothingThatNamesIt() = runBlocking {
+        savedFromCanvas()
+        assertTrue(ForgetActions.forgetMoment(app, frame))
+        assertClean("Forget photo (canvas saved)", listOf(savedId, "rokid_cv_runcv_c0", savedText, "CANVAS-CAPTION-TEXT"))
+    }
+
+    @Test fun deleteAllLeavesNothingOfACanvasSavedMemory() = runBlocking {
+        savedFromCanvas()
+        MemoryWipe.deleteAll(app)
+        assertClean("Delete all (canvas saved)", listOf(savedId, savedText))
+        assertEquals(0, h.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM canvas_meta WHERE key LIKE 'canvas%save:%'").use { c -> c.moveToFirst(); c.getInt(0) })
+    }
+
     @Test fun forgetPhotoLeavesNothingThatNamesIt() = runBlocking {
         world()
         assertTrue(ForgetActions.forgetMoment(app, frame))

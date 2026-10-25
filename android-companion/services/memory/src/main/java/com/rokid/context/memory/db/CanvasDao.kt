@@ -36,7 +36,9 @@ abstract class CanvasDao {
     /** S31 recovery: the QUEUED and RUNNING rows of an A/B group are CANCELLED (B must never start after a restart). Returns the rows changed. */
     @Query("UPDATE canvas_run SET status = 'CANCELLED', finishedAt = :now WHERE abGroup IS NOT NULL AND status IN ('RUNNING', 'QUEUED')") abstract suspend fun cancelOpenGroupRuns(now: Long): Int
 
-    @Transaction open suspend fun deleteRun(id: String) { deleteItems(id); deleteScores(id); deleteRunRow(id) }
+    @Transaction open suspend fun deleteRun(id: String) { deleteItems(id); deleteScores(id); deleteSaveMarker(CanvasSaveMarker.key(id)); deleteRunRow(id) }
+    /** v0.9.6: the "this run was saved" marker of a canvas run (a run id and a count, no content) goes with the run. */
+    @Query("DELETE FROM canvas_meta WHERE `key` = :key") protected abstract suspend fun deleteSaveMarker(key: String)
 
     /**
      * Deletes every run that holds a watch value (its items are keyed `watch:<atMs>`, WatchMotion.KEY_PREFIX) with its items and scores; returns the runs deleted. Called when the watch source

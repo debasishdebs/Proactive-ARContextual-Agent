@@ -146,6 +146,8 @@ class CanvasApi(
             "POST runs" -> startRun(req)
             "GET runs" -> json(backend.runs())
             "GET runs/:id" -> json(backend.run(id(s[1])) ?: throw NoSuchElementException())
+            "GET runs/:id/proposal" -> json(backend.runProposal(id(s[1])) ?: throw NoSuchElementException())
+            "POST runs/:id/save" -> json(backend.saveRun(id(s[1])))
             "POST runs/:id/cancel" -> if (backend.cancelRun(id(s[1]))) json(OK) else throw NoSuchElementException()
             "DELETE runs/:id" -> if (backend.deleteRun(id(s[1]))) json(OK) else throw NoSuchElementException()
             "PUT runs/:id/scores" -> score(id(s[1]), req)
@@ -168,7 +170,7 @@ class CanvasApi(
         s.size == 2 && s[0] == "asks" -> "asks/:id"
         s.size == 3 && s[0] == "asks" && s[2] == "replay" -> "asks/:id/replay"
         s.size == 2 && s[0] == "runs" -> "runs/:id"
-        s.size == 3 && s[0] == "runs" && s[2] in setOf("cancel", "scores") -> "runs/:id/${s[2]}"
+        s.size == 3 && s[0] == "runs" && s[2] in setOf("cancel", "scores", "proposal", "save") -> "runs/:id/${s[2]}"
         else -> null
     }
 
