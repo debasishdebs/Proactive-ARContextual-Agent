@@ -12,3 +12,6 @@
 
 Flaky under load (pass alone): PromptEditorTest, LocalModelsPageTest, HistoricalBackfillTest, one orchestration test JVM hang (not reproduced). NomicVisionTest needs `git lfs pull` in a new worktree.
 Not pushed: v0.9.5. Not installed: any v0.9.5 build.
+
+## Rulings merge (2026-10-25 late)
+feat/rulings merged (e3f3860b), Codex gate review NOT READY (2 Important: export orphan test counted tombstones; watch-off cleanup swallowed ExportInProgress), fixed dba0a8da + 843e0bae, merged. Full run green (550 tasks, 0 failures; PromptEditorTest flaked once, passed on rerun). APKs: ~/Desktop/rokid/backups/apks-v095-20261025-rc (SHA256SUMS, COMMIT 843e0bae). Accepted residue: watch-off retry is in-process only.

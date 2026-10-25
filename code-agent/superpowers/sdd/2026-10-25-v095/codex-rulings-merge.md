@@ -1,0 +1,5 @@
+- **Important — [ExportDao.kt:34](/Users/debasishkanhar/Desktop/rokid/pca-v095m/android-companion/services/memory/src/main/java/com/rokid/context/memory/db/ExportDao.kt:34):** Frame tombstones also lock extraction after **Forget fact**; they do not mean every fact from that frame was forgotten. With two facts sharing a frame, forgetting one preserves the other as `OK` and keeps the photo, but this query silently excludes the surviving fact from every subsequent export. Reproduced using the changed SQL.
+
+- **Important — [HubGraph.kt:136](/Users/debasishkanhar/Desktop/rokid/pca-v095m/android-companion/phone/src/main/java/com/rokid/context/phone/hub/HubGraph.kt:136):** Switching the watch source off during an export lasting over 30 seconds makes the new gated cleanup throw `ExportInProgress`. `runCatching` discards that failure, with no retry or user notification. The source shows as off while stored watch values remain after the export finishes, potentially indefinitely until another cleanup trigger.
+
+NOT READY
