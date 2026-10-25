@@ -516,7 +516,8 @@ class CanvasBackendImplTest {
 
     @Test fun nodeTypesServeTheInnerFlowOfTheCompositesBuiltSoFar() {
         val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
-        assertEquals(setOf("gate.local_critic", "ai.vision_extract", "ai.critic", "memory.write", "policy.capture_rate"), all.filterValues { "inner" in it }.keys)
+        assertEquals(setOf("gate.local_critic", "ai.vision_extract", "ai.critic", "memory.write", "policy.capture_rate",
+            "imu.head_motion", "imu.settle", "gate.novelty", "gate.rate_cap", "capture.image"), all.filterValues { "inner" in it }.keys)
         val inner = all.getValue("gate.local_critic")["inner"]!!.jsonObject
         assertEquals(setOf("facts", "aggregate", "cutoff", "compare", "trusted", "unsure"), inner["nodes"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
         assertEquals(listOf("aggregate", "operator", "cutoff"), inner["exposed"]!!.jsonArray.map { it.jsonObject["param"]!!.jsonPrimitive.content })

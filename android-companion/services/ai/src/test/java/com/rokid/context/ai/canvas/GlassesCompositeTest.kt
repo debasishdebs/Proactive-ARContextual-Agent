@@ -125,4 +125,89 @@ class GlassesCompositeTest {
         }
         assertEquals(pinned.toString(), got.toString())
     }
+
+    // ---------------------------------------------------------------- 2. Head movement, Settle, Novelty, Rate cap, Capture image
+
+    private val glanceTypes = listOf(NodeTypes.IMU_HEAD_MOTION, NodeTypes.IMU_SETTLE, NodeTypes.GATE_NOVELTY, NodeTypes.GATE_RATE_CAP, NodeTypes.CAPTURE_IMAGE)
+
+    /** What each exposed param of the five is today, from the plan's own identity config (the one source the glasses and the compiler share). */
+    private fun today(param: String): Double? {
+        val g = PlanResolver.identity().glance; val k = PlanResolver.identity().gate
+        return when (param) {
+            "onsetRadS" -> g.onsetRadS.toDouble(); "releaseRadS" -> g.releaseRadS.toDouble(); "bridgeMs" -> g.bridgeMs.toDouble(); "minBoutMs" -> g.minBoutMs.toDouble()
+            "minBoutRad" -> g.minBoutRad.toDouble(); "settleMs" -> g.settleMs.toDouble(); "noveltyWindowMs" -> g.noveltyWindowMs.toDouble(); "noveltyMinRad" -> g.noveltyMinRad.toDouble()
+            "bigTurnRad" -> g.bigTurnRad.toDouble(); "bigChange" -> k.bigChange.toDouble(); "hamming" -> k.hamming.toDouble()
+            else -> null
+        }
+    }
+
+    /** The edit each exposed param is tested with (a valid value that is not the default) and the one plan field it must change. */
+    private val edits = listOf(
+        Triple(NodeTypes.IMU_HEAD_MOTION, "onsetRadS", 0.7) to "/glance/onsetRadS", Triple(NodeTypes.IMU_HEAD_MOTION, "releaseRadS", 0.25) to "/glance/releaseRadS",
+        Triple(NodeTypes.IMU_HEAD_MOTION, "bridgeMs", 300) to "/glance/bridgeMs", Triple(NodeTypes.IMU_HEAD_MOTION, "minBoutMs", 400) to "/glance/minBoutMs",
+        Triple(NodeTypes.IMU_HEAD_MOTION, "minBoutRad", 0.3) to "/glance/minBoutRad", Triple(NodeTypes.IMU_SETTLE, "settleMs", 2000) to "/glance/settleMs",
+        Triple(NodeTypes.GATE_NOVELTY, "noveltyWindowMs", 30_000) to "/glance/noveltyWindowMs", Triple(NodeTypes.GATE_NOVELTY, "noveltyMinRad", 0.4) to "/glance/noveltyMinRad",
+        Triple(NodeTypes.GATE_RATE_CAP, "bigChange", 20) to "/gate/bigChange", Triple(NodeTypes.GATE_RATE_CAP, "bigTurnRad", 0.9) to "/glance/bigTurnRad",
+        Triple(NodeTypes.CAPTURE_IMAGE, "hamming", 12) to "/gate/hamming", Triple(NodeTypes.CAPTURE_IMAGE, "ringCompare", "last") to "/gate/ringCompare",
+    )
+
+    @Test fun theGlassesLaneNodesAreExpandableAndEveryStageIsDrawnAndWired() {
+        for (t in glanceTypes) {
+            val f = inner(t)
+            assertNotNull("$t is expandable", f)
+            val wired = f!!.wires.flatMap { listOf(it.from, it.to) }.toSet()
+            assertEquals("$t: every box is on a wire", f.nodes.map { it.id }.toSet(), wired)
+            val reached = f.nodes.filter { it.kind == "source" }.map { it.id }.toMutableSet()
+            do { val n = reached.size; f.wires.filter { it.from in reached }.forEach { reached += it.to } } while (reached.size != n)
+            assertEquals("$t: every box is reachable from a source", f.nodes.map { it.id }.toSet(), reached)
+            assertTrue("$t has a source and an outcome", f.nodes.any { it.kind == "source" } && f.nodes.any { it.kind == "branch" })
+            assertTrue("$t: every label fits its pill (<= 20 characters)", f.nodes.all { it.label.length <= 22 })
+        }
+    }
+
+    @Test fun everyExposedSettingIsAPlanParameterThatExistsTodayAtItsTodayDefault() {
+        val seen = mutableSetOf<String>()
+        for (t in glanceTypes) {
+            val specs = NodeTypes.byType(t)!!.params.specs.associateBy { it.name }
+            val exposed = inner(t)!!.exposed
+            assertEquals("$t exposes every param it has and nothing else", specs.keys, exposed.map { it.param }.toSet())
+            for (e in exposed) {
+                seen += e.param
+                val d = specs.getValue(e.param).default!!
+                if (e.param == "ringCompare") assertEquals("all", d.content)
+                else assertEquals("$t.${e.param} default", today(e.param)!!, d.doubleOrNull!!, 1e-6)
+                assertTrue("${e.param} has a readable label", specs.getValue(e.param).label.isNotBlank())
+            }
+        }
+        assertEquals(12, seen.size) // 11 numbers plus ringCompare
+    }
+
+    private fun editedPlanFields(type: String, param: String, value: Any): Set<String> {
+        val v: JsonPrimitive = if (value is String) JsonPrimitive(value) else JsonPrimitive(value as Number)
+        val p = DefaultPipelines.defaultCapture()
+        // the default capture's Threshold sets the onset explicitly; a head onset that disagreed with it would be refused, so the two move together
+        val g = p.copy(nodes = p.nodes.map {
+            when {
+                it.type == type -> it.copy(params = buildJsonObject { put(param, v) })
+                param == "onsetRadS" && it.type == NodeTypes.GATE_THRESHOLD -> it.copy(params = buildJsonObject { put("feature", "gyroPeak"); put("op", ">"); put("value", v) })
+                else -> it
+            }
+        })
+        val r = PlanCompiler.compile(g)
+        assertEquals(emptyList<String>(), r.problems)
+        val a = configLeaves(identity); val b = configLeaves(r)
+        return (a.keys + b.keys).filter { a[it] != b[it] }.toSet()
+    }
+
+    @Test fun editingOneExposedSettingChangesExactlyThatPlanField() {
+        for ((edit, path) in edits) assertEquals("${edit.first}.${edit.second}", setOf(path), editedPlanFields(edit.first, edit.second, edit.third))
+        assertEquals("every exposed param of the five has an edit golden", glanceTypes.flatMap { t -> inner(t)!!.exposed.map { t to it.param } }.toSet(), edits.map { it.first.first to it.first.second }.toSet())
+    }
+
+    @Test fun anExposedSettingAtItsDefaultCompilesToTheIdentityPlan() {
+        for (t in glanceTypes) {
+            val ps = buildJsonObject { for (s in NodeTypes.byType(t)!!.params.specs) put(s.name, s.default!!) }
+            assertEquals("$t at its defaults", emptySet<String>(), changedBy(t, ps))
+        }
+    }
 }
