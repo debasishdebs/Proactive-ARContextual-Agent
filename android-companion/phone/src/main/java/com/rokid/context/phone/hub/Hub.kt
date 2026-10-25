@@ -1,6 +1,6 @@
 package com.rokid.context.phone.hub
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.GlassesStatus
@@ -129,7 +129,7 @@ class Hub(
     /** Review I2: the pop-up shown instead of opening the HUD while the glasses app is minimised. */
     private var minimisedHint: Overlay? = null
     private var hintJob: Job? = null
-    private val broadcaster = StateBroadcaster(scope, onError = { Log.w(TAG, "broadcast failed: ${it.javaClass.simpleName}") }) { broadcast() }
+    private val broadcaster = StateBroadcaster(scope, onError = { PcLog.w(TAG, "broadcast failed: ${it.javaClass.simpleName}") }) { broadcast() }
 
     init { scope.launch { guarded("pauses") { refreshPauses() } } }
 
@@ -143,7 +143,7 @@ class Hub(
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
             // null = unknown again (session closed, offline, BT lost): the stale value is dropped, never re-sent (fix wave I1).
-            scope.launch { link.wearing.collect { w -> lastWorn = w; _wearUnknownSince.value = if (w != null) null else (_wearUnknownSince.value ?: clock()); if (w != null) { lastWornAtMs = clock(); Log.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else Log.i(TAG, "wear unknown") } },
+            scope.launch { link.wearing.collect { w -> lastWorn = w; _wearUnknownSince.value = if (w != null) null else (_wearUnknownSince.value ?: clock()); if (w != null) { lastWornAtMs = clock(); PcLog.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else PcLog.i(TAG, "wear unknown") } },
             scope.launch { phoneUse.collect { guarded("phone_ctx") { sendPhoneContext() } } },
             scope.launch { motionContext.collect { m -> guarded("motion_ctx") { onMotionContext(m) } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
@@ -159,7 +159,7 @@ class Hub(
         ) + listOfNotNull(relauncher?.start())
         // Fix wave I2: after a phone restart the wearer's exit still stands; only an explicit open ends it.
         if (standDown.active) {
-            Log.i(TAG, "wearer exited the glasses app earlier: not connecting, watching for a reopen")
+            PcLog.i(TAG, "wearer exited the glasses app earlier: not connecting, watching for a reopen")
             set { it.copy(closedByUser = true) }
             link.watchForReopen() // N4: the wearer's own reopen must still be noticed
         }
@@ -197,7 +197,7 @@ class Hub(
     }
 
     private fun showMinimisedHint() {
-        Log.i(TAG, "open on glasses while minimised: pop-up, no appStart")
+        PcLog.i(TAG, "open on glasses while minimised: pop-up, no appStart")
         minimisedHint = Overlay.Toast(OPEN_WHILE_MINIMISED)
         broadcaster.markDirty()
         hintJob?.cancel()
@@ -215,7 +215,7 @@ class Hub(
         val quietOff = before.quietHours != null && _hudSettings.value.quietHours == null
         scope.launch {
             guarded("settings") {
-                if (quietOff) withContext(io) { pauses.endQuietHours() }.also { Log.i(TAG, "quiet hours off: ended ${it.size} pause(s)") }
+                if (quietOff) withContext(io) { pauses.endQuietHours() }.also { PcLog.i(TAG, "quiet hours off: ended ${it.size} pause(s)") }
                 pushSettings(); broadcaster.markDirty()
                 if (quietOff) refreshPauses()
             }
@@ -226,7 +226,7 @@ class Hub(
     suspend fun pausePhone(untilMs: Long?): PauseRecord {
         val r = PauseRecord(UUID.randomUUID().toString(), PauseOrigin.PHONE, createdAtMs = clock(), untilMs = untilMs)
         withContext(io) { pauses.add(r) }
-        Log.i(TAG, "phone pause added ${r.pauseId}")
+        PcLog.i(TAG, "phone pause added")
         onHubScope { pushSettings(); broadcaster.markDirty() }
         refreshPauses()
         return r
@@ -235,7 +235,7 @@ class Hub(
     /** Ends only the named records (spec §5.5), then pushes the settings and a frame. */
     suspend fun resume(ids: Set<String>) {
         withContext(io) { pauses.resume(ids) }
-        Log.i(TAG, "phone resume for ${ids.size} pause(s)")
+        PcLog.i(TAG, "phone resume for ${ids.size} pause(s)")
         onHubScope { pushSettings(); broadcaster.markDirty() }
         refreshPauses()
     }
@@ -265,7 +265,7 @@ class Hub(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "$what failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "$what failed: ${e.javaClass.simpleName}")
             set { it.copy(error = storageErrorFor(e)) }
         }
     }
@@ -373,7 +373,7 @@ class Hub(
         // A fresh envelope (new atMs, this session's start), same state and sinceMs: the glasses drop a stale or pre-session stamp.
         motionContext.value?.let { sendMotionContext(it.copy(atMs = clock())) }
         sendAutoOpen()
-        try { onSessionReady(sessionStartMs) } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "session-ready hook failed: ${e.javaClass.simpleName}") }
+        try { onSessionReady(sessionStartMs) } catch (e: CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "session-ready hook failed: ${e.javaClass.simpleName}") }
         diagControl?.restart(newSession = true) // LGC4P: a new glasses session knows nothing of the last status
         broadcaster.markDirty()
     }
@@ -406,7 +406,7 @@ class Hub(
                     h.resumedAtMs.forEach { (id, at) -> pauses.resume(setOf(id), measured.toPhone(at)) }
                     pauses.union(h.pauses.map(measured::recordToPhone))
                 }
-                Log.i(TAG, "hello battery=${h.glassesBatteryPct} buffered=${h.bufferSize} resumed=${h.resumedAtMs.size} offsetMs=${measured.glassesMinusPhoneMs}")
+                PcLog.i(TAG, "hello battery=${h.glassesBatteryPct} buffered=${h.bufferSize} resumed=${h.resumedAtMs.size} offsetMs=${measured.glassesMinusPhoneMs}")
                 set {
                     it.copy(
                         versionMismatch = false, offset = measured, glassesBatteryPct = h.glassesBatteryPct ?: it.glassesBatteryPct,
@@ -418,7 +418,7 @@ class Hub(
                 // Fix wave I2: the glasses repeat the wearer's exit in every hello, in case `pc_user_exit` was lost with the session.
                 // N4: a hello that does not repeat a fresh exit means the app is running again (the wearer opened it): the stand-down is over.
                 if (standDown.active && h.userExitAtMs?.let { now - measured.toPhone(it) in 0..EXIT_STAMP_FRESH_MS } != true) {
-                    Log.i(TAG, "glasses app is running again: stand-down over")
+                    PcLog.i(TAG, "glasses app is running again: stand-down over")
                     standDown.connected(); set { it.copy(closedByUser = false) }
                 }
                 h.userExitAtMs?.let { at ->
@@ -447,7 +447,7 @@ class Hub(
                 }
             }
             is GlassesEvent.Outdated -> {
-                Log.w(TAG, "glasses protocol v=${e.remote}, phone v=$PROTOCOL_VERSION")
+                PcLog.w(TAG, "glasses protocol v=${e.remote}, phone v=$PROTOCOL_VERSION")
                 set { it.copy(versionMismatch = true) }
             }
             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
@@ -459,7 +459,7 @@ class Hub(
                     AckVerdict.CAPS -> onPlanCaps(e.ack.caps)
                     AckVerdict.MATCH -> onPlanAck(e.ack)
                     // count only; a line for the first and then every 20th, so a reconnect storm stays quiet
-                    AckVerdict.STALE -> ackGate.ackStale.let { n -> if (n == 1 || n % 20 == 0) Log.i(TAG, "stale pc_capture_plan_ack ignored (count=$n)") }
+                    AckVerdict.STALE -> ackGate.ackStale.let { n -> if (n == 1 || n % 20 == 0) PcLog.i(TAG, "stale pc_capture_plan_ack ignored (count=$n)") }
                 }
             }
             is GlassesEvent.MarkReceived -> onMarkReceived(e.mark, now)
@@ -474,12 +474,12 @@ class Hub(
     private suspend fun onMarkReceived(m: MarkMessage, now: Long) {
         val off = offset
         val arrival = com.rokid.context.canvas.marks.MarkArrival(off?.toPhone(m.atMs) ?: now, mapped = off != null, receivedAtMs = now)
-        val handled = try { onMark(m, arrival) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "mark not recorded (${e.javaClass.simpleName})"); false }
+        val handled = try { onMark(m, arrival) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "mark not recorded (${e.javaClass.simpleName})"); false }
         if (handled) link.send(Channels.MARK_ACK, Wire.encode(com.rokid.context.core.model.MarkAck(epoch = m.epoch, seqs = listOf(m.seq))))
     }
 
     private fun onUserExit(how: String) {
-        Log.i(TAG, "wearer exited the glasses app on purpose ($how): not reopening")
+        PcLog.i(TAG, "wearer exited the glasses app on purpose ($how): not reopening")
         standDown.enter(clock())
         relauncher?.onUserExit(); set { it.copy(closedByUser = true) }
     }
@@ -490,19 +490,19 @@ class Hub(
                 val r = offset?.recordToPhone(c.pause)
                     ?: ClockOffset.anchoredAt(c.pause, now).also { anchoredBeforeOffset[c.pause.pauseId] = c.pause }
                 withContext(io) { pauses.add(r) }
-                Log.i(TAG, "pause added ${r.pauseId} origin=${r.origin}")
+                PcLog.i(TAG, "pause added origin=${r.origin}")
                 pushSettings(); broadcaster.markDirty()
             }
             is Command.Resume -> {
                 withContext(io) { pauses.resume(c.clears) }
-                Log.i(TAG, "resume asked for ${c.clears.size} pause(s)")
+                PcLog.i(TAG, "resume asked for ${c.clears.size} pause(s)")
                 pushSettings(); broadcaster.markDirty()
             }
-            Command.ListenStart -> { Log.i(TAG, "listen start"); try { onGlassesListenStart(clock()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "listen join failed (${e.javaClass.simpleName})") }; voice.onListenStart() }
-            Command.Cancel -> { Log.i(TAG, "voice cancel"); voice.onCancel() }
-            is Command.Confirm -> { Log.i(TAG, "confirm answered"); actions.onConfirm(c.proposalId, c.yes) }
-            is Command.Undo -> { Log.i(TAG, "undo asked"); actions.onUndo(c.proposalId) }
-            else -> Log.i(TAG, "command ${c::class.simpleName} is handled in a later phase")
+            Command.ListenStart -> { PcLog.i(TAG, "listen start"); try { onGlassesListenStart(clock()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "listen join failed (${e.javaClass.simpleName})") }; voice.onListenStart() }
+            Command.Cancel -> { PcLog.i(TAG, "voice cancel"); voice.onCancel() }
+            is Command.Confirm -> { PcLog.i(TAG, "confirm answered"); actions.onConfirm(c.proposalId, c.yes) }
+            is Command.Undo -> { PcLog.i(TAG, "undo asked"); actions.onUndo(c.proposalId) }
+            else -> PcLog.i(TAG, "command ${c::class.simpleName} is handled in a later phase")
         }
     }
 
@@ -512,7 +512,7 @@ class Hub(
         if (last != null && now >= last && now - last < HELLO_REQUEST_MIN_INTERVAL_MS) return
         if (link.send(Channels.HELLO_REQUEST, Wire.encode(HelloRequest()))) {
             lastHelloRequestAtMs = now
-            Log.i(TAG, "frame held: asked the glasses for a fresh hello")
+            PcLog.i(TAG, "frame held: asked the glasses for a fresh hello")
         }
     }
 

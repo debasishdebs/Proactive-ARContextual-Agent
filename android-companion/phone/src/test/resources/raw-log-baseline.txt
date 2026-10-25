@@ -19,11 +19,6 @@ phone/src/main/java/com/rokid/context/phone/actions/ProposalActionReceiver.kt 2
 phone/src/main/java/com/rokid/context/phone/actions/ProposalNotifier.kt 2
 phone/src/main/java/com/rokid/context/phone/canvas/PlanGraph.kt 3
 phone/src/main/java/com/rokid/context/phone/capture/PhoneCapture.kt 2
-phone/src/main/java/com/rokid/context/phone/hub/ContextHubService.kt 5
-phone/src/main/java/com/rokid/context/phone/hub/FrameIngestor.kt 8
-phone/src/main/java/com/rokid/context/phone/hub/Hub.kt 26
-phone/src/main/java/com/rokid/context/phone/hub/HubGraph.kt 7
-phone/src/main/java/com/rokid/context/phone/hub/StateBroadcaster.kt 2
 phone/src/main/java/com/rokid/context/phone/log/PhoneLogSink.kt 5
 phone/src/main/java/com/rokid/context/phone/nudge/PhoneNudges.kt 2
 phone/src/main/java/com/rokid/context/phone/ui/settings/Diagnostics.kt 3
@@ -51,9 +46,6 @@ services/connectors/src/main/kotlin/com/rokid/context/connectors/actions/Actions
 services/connectors/src/main/kotlin/com/rokid/context/connectors/actions/BootReceiver.kt 2
 services/connectors/src/main/kotlin/com/rokid/context/connectors/actions/ReminderReceiver.kt 2
 services/connectors/src/main/kotlin/com/rokid/context/connectors/actions/executors/ReminderExecutor.kt 2
-services/glasses-link/src/main/kotlin/com/rokid/context/link/CxrGlassesLink.kt 18
-services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassAppWatcher.kt 14
-services/glasses-link/src/main/kotlin/com/rokid/context/link/SessionSlot.kt 2
 services/memory/src/main/java/com/rokid/context/memory/MemoryGraph.kt 1
 services/memory/src/main/java/com/rokid/context/memory/db/EncryptionMigrator.kt 3
 services/memory/src/main/java/com/rokid/context/memory/frames/FrameImages.kt 2
