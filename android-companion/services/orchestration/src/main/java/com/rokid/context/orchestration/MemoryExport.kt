@@ -2,6 +2,8 @@ package com.rokid.context.orchestration
 
 import android.content.Context
 import android.util.JsonWriter
+import com.rokid.context.ai.SafeLog
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ExportDao
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +20,19 @@ object MemoryExport {
 
     /** cache/exports: the only folder the FileProvider shares (res/xml/file_paths.xml); Delete all empties it. */
     fun dir(context: Context): File = File(context.cacheDir, "exports")
+
+    /**
+     * GAP-1: the cached memory exports (and an unfinished `.part`) hold memory and ask text verbatim. A Forget, a retention
+     * pass and a memory edit remove them all (they are regenerable); the diagnostics export in the same folder is not ours.
+     * Best effort: a failure is logged by class only and never turns the Forget into a failure.
+     */
+    fun deleteCached(context: Context) {
+        try {
+            dir(context).listFiles()?.filter { it.isFile && it.name.startsWith(PREFIX) }?.forEach { it.delete() }
+        } catch (e: Exception) {
+            PcLog.w("MemoryExport", "cached exports not deleted: ${SafeLog.describe(e)}")
+        }
+    }
 
     suspend fun write(context: Context, graph: MemoryGraph = MemoryGraph.get(context), nowMs: Long = System.currentTimeMillis(), pageSize: Int = 500): File =
         write(context, graph.db.exportDao(), nowMs, pageSize)
