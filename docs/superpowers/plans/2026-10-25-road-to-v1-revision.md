@@ -9,6 +9,8 @@
 6. Sensors, guard signals and operators must be configurable, not a fixed catalogue: user-defined derived signals (expression boxes reused as signals, e.g. activity = mean stepHz over 10 s above 1.2), editable classifier thresholds, sensor on/off and rates; devices' capabilities (mic, display, camera, IMU, watch motion) are editable across devices.
 7. A router needs no new node type: Prompt (own prompt and output schema) -> Switch / Compare. Verify in the browser pass that the Prompt node can define an output schema and that the Switch can pick the JSON field.
 
+8. EXPORT + MIGRATION (user, 2026-10-25 evening): all exports go behind the DataOpGate and never include invalid/hidden memories; the Forget dialog names the reason and when to retry (an export is running; try again shortly). When v0.9.6 ships Moments fully, a ONE-TIME migration deletes every INVALID Moment from everywhere (a Moment without a timestamp or without a live photo, both required parts; the explicit fallback Moment created when a mark could not take its photo keeps its error reason and is NOT invalid) and memories whose source frames no longer exist; the app is still debug so destructive is acceptable. Safeguards agreed to propose: a phone backup first (manual adb tar, as always), counts-only PcLog lines with the numbers deleted, a one-time marker in canvas_meta. The outbox drain deferring to a running export is accepted as is.
+
 ## Revised version train
 | Version | Scope |
 |---|---|
