@@ -5,10 +5,10 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS, SCENES, SUMMARY, NUMBER }
+enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS, SCENES, SUMMARY, NUMBER, WATCH }
 
-/** Where a node runs (slice 3 section 2). A `signal.*` node's domain is its `params.domain`, per instance. */
-enum class Domain { RT_GLASSES, RT_PHONE, ASYNC, REPLAY_ONLY }
+/** Where a node runs (slice 3 section 2). A `signal.*` node's domain is its `params.domain`, per instance. WATCH is the watch lane: its one node reads what the phone hub already received from the watch. */
+enum class Domain { WATCH, RT_GLASSES, RT_PHONE, ASYNC, REPLAY_ONLY }
 
 /** Palette group. The first four are the slice 2 groups, kept for the v1 descriptors. */
 enum class Category(val label: String) {
@@ -77,6 +77,9 @@ object NodeTypes {
     /** Condition: compares the NUMBER of a [AGG_WINDOW] with a cutoff and branches yes or no (the number passes through). */
     const val COMPARE = "gate.compare"
 
+    /** Source, WATCH lane: the watch motion values the phone context hub already received (a window of timestamped scores); NO_DATA when there are none. See [WatchMotion]. */
+    const val SRC_WATCH_MOTION = "src.watch_motion"
+
     const val EXPR_GUARD = "expr.guard"
     const val EXPR_VALUE = "expr.value"
     const val IMU_HEAD_MOTION = "imu.head_motion"
@@ -121,7 +124,7 @@ object NodeTypes {
         NodeType(SUMMARY, "Summary", setOf(PortType.JSON, PortType.EXTRACTION, PortType.MOMENTS, PortType.SCENES), PortType.SUMMARY, sinceSchema = 2, executor = ExecutorKind.PROMPT,
             short = "summary", family = Family.PROCESS),
         // v0.9.4, phone-side, deterministic, no model: the first Aggregate, and the Condition that reads its number
-        NodeType(AGG_WINDOW, "Window aggregate", setOf(PortType.SCENES, PortType.MOMENTS), PortType.NUMBER, sinceSchema = 2, category = Category.DATA, short = "window",
+        NodeType(AGG_WINDOW, "Window aggregate", setOf(PortType.SCENES, PortType.MOMENTS, PortType.WATCH), PortType.NUMBER, sinceSchema = 2, category = Category.DATA, short = "window",
             params = WindowAggregate.schema, family = Family.AGGREGATE),
         NodeType(COMPARE, "Compare number", setOf(PortType.NUMBER), PortType.NUMBER, branches = { listOf("yes", "no") }, sinceSchema = 2, category = Category.CHECKS, short = "compare",
             params = NumberCompare.schema, family = Family.CONDITION),
@@ -146,6 +149,9 @@ object NodeTypes {
             category = Category.THRESHOLDS_FILTERS, short = "novelty", params = CaptureParams.novelty, inner = NoveltyComposite.inner, family = Family.CONDITION),
         NodeType(HUB_CONTEXT, "Motion from context hub", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_PHONE,
             category = Category.SIGNALS_HUB, short = "hub", params = CaptureParams.hub, root = true, family = Family.SOURCE),
+        // v0.9.4, WATCH lane: a root that reads the watch values the phone hub already holds (no watch app change, no permission); phone side only, never published
+        NodeType(SRC_WATCH_MOTION, "Motion on watch", emptySet(), PortType.WATCH, sinceSchema = 2, domain = Domain.WATCH,
+            category = Category.SENSORS, short = "watch", root = true, family = Family.SOURCE),
         NodeType(SIGNAL_IN, "Receive signal", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.SIGNALS_HUB, executor = ExecutorKind.SIGNAL, short = "sigin", params = CaptureParams.signalIn, domainFromParams = true, family = Family.SOURCE),
         NodeType(SIGNAL_OUT, "Send signal", setOf(PortType.CONTEXT), PortType.SIGNAL, sinceSchema = 2, domain = Domain.RT_PHONE,

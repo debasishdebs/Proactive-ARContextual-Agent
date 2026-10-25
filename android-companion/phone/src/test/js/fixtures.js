@@ -2,7 +2,7 @@
 // Node types mirror GET /api/node-types (Task 9 adds short, palette, category).
 // the family each type serves in GET /api/node-types (NodeFamiliesTest checks the registry): Source, Aggregate, Process, Condition, Outcome
 export const FAMILY = {
-  'input.photos': 'Source', 'imu.head_motion': 'Source', 'imu.settle': 'Source', 'hub.context': 'Source', 'signal.in': 'Source',
+  'input.photos': 'Source', 'imu.head_motion': 'Source', 'imu.settle': 'Source', 'hub.context': 'Source', 'signal.in': 'Source', 'src.watch_motion': 'Source', 'agg.window': 'Aggregate',
   'ai.vision_extract': 'Process', 'ai.prompt': 'Process', 'ai.critic': 'Process',
   'gate.local_critic': 'Condition', 'route.switch': 'Condition', 'gate.threshold': 'Condition', 'gate.novelty': 'Condition', 'gate.rate_cap': 'Condition', 'expr.guard': 'Condition',
   'memory.write': 'Outcome', 'capture.image': 'Outcome', 'policy.capture_rate': 'Outcome', 'signal.out': 'Outcome',
@@ -174,6 +174,11 @@ export const exprGuardType = v2('expr.guard', 'Expression guard', 'guard', ['MOT
 export const exprValueType = v2('expr.value', 'Value (expression)', 'value', ['MOTION_EVENT'], 'MOTION_EVENT', 'RT_GLASSES', 'Policy/Frequency', {
   liveable: false, params: [{ name: 'graph', kind: 'graph', label: 'Expression graph', sweep: false }, { name: 'row', kind: 'enum', options: ['REST', 'VEHICLE_PASSENGER', 'VEHICLE_DRIVING', 'FLIGHT'], default: 'REST' }, { name: 'field', kind: 'enum', options: ['capPerMin', 'settledGapS', 'quietGapS', 'walkGapS', 'stillCapGapS'], default: 'capPerMin' }],
 });
+/** The watch lane and the window aggregate as /api/node-types serves them: the watch source is the one WATCH-domain root, the aggregate is phone-side (ASYNC). */
+export const watchTypes = [
+  v2('src.watch_motion', 'Motion on watch', 'watch', [], 'WATCH', 'WATCH', 'Sensors', { root: true }),
+  v2('agg.window', 'Window aggregate', 'window', ['SCENES', 'MOMENTS', 'WATCH'], 'NUMBER', 'ASYNC', 'Data'),
+];
 export const allTypes = nodeTypes.concat(captureTypes, [exprGuardType, exprValueType]);
 
 /** head -> threshold -> rate(+hub) -> capture -> (photos binding) input.photos; one pipeline over RT_GLASSES, RT_PHONE and ASYNC. */

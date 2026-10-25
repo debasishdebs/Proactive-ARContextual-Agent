@@ -169,6 +169,8 @@ class CanvasBackendImpl(
                 dao, photos, composeExecutors(extraExecutors),
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
                 ConfirmTokens(clock), hot, clock, log = log, moments = momentResolver, scenes = com.rokid.context.canvas.moment.DaoSceneRunSource(MemoryGraph.get(app).db, momentResolver),
+                // the hub's recent watch values, read at the time of a watch run (null hub = none); no route or page starts a watch run yet
+                watch = com.rokid.context.canvas.WatchRunSource { from, to -> com.rokid.context.phone.hub.HubGraph.contextHub?.watchRing?.recent(from, to).orEmpty() },
             )
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))

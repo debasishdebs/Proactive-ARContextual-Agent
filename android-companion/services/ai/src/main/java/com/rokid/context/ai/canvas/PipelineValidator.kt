@@ -56,7 +56,7 @@ object PipelineValidator {
             val src = types[e.from] ?: continue
             val photosBinding = isPhotosBinding(e, byId)
             val crossing = domains[e.from] != null && domains[e.to] != null && domains[e.from] != domains[e.to]
-            if (crossing && !photosBinding) { out.add(Problem("$label: crosses domains", edge = e)); continue }
+            if (crossing && !photosBinding && !watchPing(e, byId, domains)) { out.add(Problem("$label: crosses domains", edge = e)); continue }
             val branches = src.branches(byId.getValue(e.from).params)
             if (branches.isEmpty()) {
                 if (e.`when` != null) out.add(Problem("$label: when not allowed", edge = e))
@@ -71,11 +71,12 @@ object PipelineValidator {
 
         // Roots: one per domain that has nodes (S34). Slice 2's single `input.photos` rule is kept for any graph with an ASYNC half or no RT half.
         val rtNodes = domains.values.any { it == Domain.RT_GLASSES || it == Domain.RT_PHONE }
-        val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS || it.type == NodeTypes.INPUT_MOMENTS || it.type == NodeTypes.INPUT_SCENES }
+        val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS || it.type == NodeTypes.INPUT_MOMENTS || it.type == NodeTypes.INPUT_SCENES || it.type == NodeTypes.SRC_WATCH_MOTION }
         val asyncNodes = domains.values.any { it == Domain.ASYNC }
         // Moment-lite: the ASYNC half has exactly ONE input root, either `input.photos` or `input.moments`; both together are refused (mixed item types).
         if ((asyncNodes || !rtNodes) && inputs.size != 1) {
             out += when {
+                inputs.any { it.type == NodeTypes.SRC_WATCH_MOTION } -> "exactly one input root (input.photos, input.moments, input.scenes or src.watch_motion) required"
                 inputs.any { it.type == NodeTypes.INPUT_SCENES } -> "exactly one input root (input.photos, input.moments or input.scenes) required"
                 inputs.any { it.type == NodeTypes.INPUT_MOMENTS } -> "exactly one input root (input.photos or input.moments) required"
                 else -> "exactly one input.photos required"
@@ -216,6 +217,10 @@ object PipelineValidator {
         }
         return out
     }
+
+    /** The second cross-domain edge: the watch source hands its values to the phone's async half (the "ping phone" step of the watch branch). Nothing else may leave the WATCH lane. */
+    private fun watchPing(e: PipelineEdge, byId: Map<String, PipelineNode>, domains: Map<String, Domain>) =
+        byId[e.from]?.type == NodeTypes.SRC_WATCH_MOTION && domains[e.to] == Domain.ASYNC
 
     /** The one cross-domain edge: the capture node feeds the ASYNC half's `input.photos` (the `photos` binding). */
     private fun isPhotosBinding(e: PipelineEdge, byId: Map<String, PipelineNode>) =

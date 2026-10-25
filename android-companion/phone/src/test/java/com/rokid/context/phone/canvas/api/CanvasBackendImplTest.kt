@@ -51,6 +51,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -524,6 +525,13 @@ class CanvasBackendImplTest {
         assertTrue("no note on the local critic (its JSON is unchanged)", "note" !in inner)
         val cut = all.getValue("gate.local_critic")["params"]!!.jsonArray.map { it.jsonObject }.first { it["name"]!!.jsonPrimitive.content == "cutoff" }
         assertEquals(0.7, cut["default"]!!.jsonPrimitive.content.toDouble(), 0.0)
+    }
+
+    @Test fun theWatchSourceIsServedInTheWatchLaneAsASource() {
+        val w = backend.nodeTypes().map { it.jsonObject }.first { it["type"]!!.jsonPrimitive.content == "src.watch_motion" }
+        assertEquals("WATCH", w["domain"]!!.jsonPrimitive.content); assertEquals("Source", w["family"]!!.jsonPrimitive.content)
+        assertEquals("WATCH", w["output"]!!.jsonPrimitive.content); assertTrue(w["root"]!!.jsonPrimitive.boolean); assertTrue(w["palette"]!!.jsonPrimitive.boolean)
+        assertTrue("the palette shows it (it is liveable by flag; publishing is stopped by the tier-3 guard)", w["liveable"]!!.jsonPrimitive.boolean)
     }
 
     /** Phase C: the rate table's exposed cells are served with their row, column and today's value (a blank cell has no default). */
