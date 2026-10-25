@@ -21,6 +21,8 @@ class MemoryDetailViewModel(
     private val edits: MemoryEdits,
     zone: () -> ZoneId,
     private val forget: MemoryForget = MemoryForget.None,
+    /** After a saved edit: the cached memory export still holds the old text, so the route deletes it (GAP-1). */
+    private val onTextEdited: () -> Unit = {},
 ) : ViewModel() {
     private data class Local(
         val draft: String? = null, val message: String? = null, val confirm: ForgetKind? = null,
@@ -50,7 +52,7 @@ class MemoryDetailViewModel(
         val draft = local.value.draft ?: return
         if (draft.isBlank()) { local.update { it.copy(message = "Text can't be empty") }; return }
         viewModelScope.launch {
-            if (edits.editText(memoryId, draft)) local.update { it.copy(draft = null, message = "Saved") }
+            if (edits.editText(memoryId, draft)) { runCatching(onTextEdited); local.update { it.copy(draft = null, message = "Saved") } }
             else local.update { it.copy(message = "This memory can't be edited") }
         }
     }

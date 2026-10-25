@@ -348,3 +348,11 @@ Ranking = reachable in production today x privacy weight x confidence. File:line
 1. GAP-1: forgetting a fact leaves its text in the cached memory export JSON.
 2. GAP-2: watch values survive Delete all in memory, are not removed by any Forget, and an in-flight run re-inserts them after watch-off.
 3. GAP-3: Scene run rows keep sensor summaries after the trace they came from is forgotten.
+
+## 6. Rulings 2026-10-25 (user)
+
+- **GAP-1: FIX.** A Forget must not leave the forgotten text in the cached memory export. Fixed (branch feat/forget-gaps): every Forget, retention pass, Delete all and memory edit removes the cached memory exports (regenerable). See `docs/superpowers/plans/handoffs/2026-10-25-forget-gaps-handoff.md`.
+- **GAP-2: ACCEPTED, no unified watch deletion.** The watch has no app of ours, its sensor data is owned by the watch vendor's services, and the in-memory ring is ephemeral. Hardening B's behaviour (watch run rows deleted when the watch source is switched off) stays as it is; no watch fence, no Delete-all ring clearing, no range-Forget deletion of watch rows.
+- **GAP-3: ACCEPTED residue.** The aggregated sensor summary in a Scene run row is too coarse to be personal data. No trace lineage token and no run-row deletion for it.
+- Both accepted gaps are pinned in `ResidueOracleTest` as `@AcceptedResidue` tests (not `@Ignore`): they pass while the residue stays and fail if the behaviour changes, so the ruling is revisited rather than forgotten.
+- New finding (low, not ruled): GAP-13, see the handoff.
