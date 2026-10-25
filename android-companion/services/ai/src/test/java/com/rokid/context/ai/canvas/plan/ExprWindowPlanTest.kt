@@ -20,12 +20,12 @@ import org.junit.Test
 /** 3c E2a X6: window terms in expression programs (lowering, validation, the plan carriage). */
 class ExprWindowPlanTest {
     /** One step: `<agg>(signal, sec) > limit`. */
-    private fun winStep(name: String = "calm", signal: String = "stepHz", agg: String = "mean", sec: Int = 10, limit: String = "1.2", t: String? = null) =
-        step(name, "", """{"id":"w","op":"win","name":"$signal","agg":"$agg","sec":$sec${if (t != null) ""","t":$t""" else ""}},{"id":"k","op":"const","value":$limit},{"id":"c","op":"cmp","f":">"}""",
+    private fun winStep(name: String = "calm", signal: String = "stepHz", agg: String = "mean", sec: Int = 10, limit: String = "1.2", t: String? = null, mv: String? = null) =
+        step(name, "", """{"id":"w","op":"win","name":"$signal","agg":"$agg","sec":$sec${if (t != null) ""","t":$t""" else ""}${if (mv != null) ""","mv":$mv""" else ""}},{"id":"k","op":"const","value":$limit},{"id":"c","op":"cmp","f":">"}""",
             """["w","c.a"],["k","c.b"]""", "c")
 
-    private fun g(signal: String = "stepHz", agg: String = "mean", sec: Int = 10, t: String? = null, limit: String = "1.2") =
-        graph(winStep("calm", signal, agg, sec, limit, t), out = "calm")
+    private fun g(signal: String = "stepHz", agg: String = "mean", sec: Int = 10, t: String? = null, limit: String = "1.2", mv: String? = null) =
+        graph(winStep("calm", signal, agg, sec, limit, t, mv), out = "calm")
 
     private fun compile(vararg graphs: String) =
         PlanCompiler.compile(pipeline(*graphs.mapIndexed { i, s -> guardNode("g${i + 1}", s) }.toTypedArray()))
@@ -37,7 +37,7 @@ class ExprWindowPlanTest {
         assertEquals(2, plan.planSchema); assertEquals(SIG_SCHEMA_WIN, plan.config.sigSchema)
         val s = (plan.config.exprs.single()["s"] as JsonArray).map { it as JsonObject }
         val w = s.single { (it["op"] as JsonPrimitive).content == "win" }
-        assertEquals("""{"op":"win","name":"stepHz","agg":"mean","sec":10}""", w.toString())
+        assertEquals("""{"op":"win","name":"stepHz","agg":"mean","sec":10,"mv":90}""", w.toString())
         assertEquals(emptyList<String>(), PlanValidator.check(r.planJson!!).first)
         assertEquals(plan.configHash, PlanJson.configHash(PlanJson.decodeStrict(r.planJson!!).getOrThrow().config))
     }
@@ -45,7 +45,39 @@ class ExprWindowPlanTest {
     @Test fun fracCarriesItsThreshold() {
         val r = compile(g(agg = "frac", t = "0.6", sec = 30))
         assertEquals(r.problems.toString(), emptyList<String>(), r.problems)
-        assertTrue(r.planJson!!, r.planJson!!.contains(""""agg":"frac","name":"stepHz","op":"win","sec":30,"t":0.6"""))   // the canonical text sorts keys
+        assertTrue(r.planJson!!, r.planJson!!.contains(""""agg":"frac","mv":90,"name":"stepHz","op":"win","sec":30,"t":0.6"""))   // the canonical text sorts keys
+    }
+
+    private fun winOps(r: CompileResult) = r.plan!!.config.exprs.flatMap { (it["s"] as JsonArray).map { e -> e as JsonObject } }.filter { (it["op"] as JsonPrimitive).content == "win" }
+
+    @Test fun theCompilerWritesTheToleranceExplicitlyDefaultingToTheGlobalSetting() {
+        val p = pipeline(guardNode("g1", g()), guardNode("g2", g(sec = 20, mv = "75")))
+        val def = PlanCompiler.compile(p)
+        assertEquals(listOf(90, 75), winOps(def).map { (it["mv"] as JsonPrimitive).content.toInt() })
+        val set = PlanCompiler.compile(p, windowMinValidPct = 60)
+        assertEquals("the global setting fills only the windows that name none", listOf(60, 75), winOps(set).map { (it["mv"] as JsonPrimitive).content.toInt() })
+        assertTrue("a different default is a different plan", def.plan!!.configHash != set.plan!!.configHash)
+        val a = PlanCompiler.compile(p, windowMinValidPct = 90); assertEquals("same setting, same bytes", def.planJson, a.planJson)
+        assertEquals(emptyList<String>(), PlanValidator.check(set.planJson!!).first)
+    }
+
+    @Test fun theToleranceIsPartOfTheTermIdentity() {
+        val two = compile(g(mv = "90"), g(mv = "80"))   // the same window at two tolerances: two terms, two rings
+        assertEquals(two.problems.toString(), emptyList<String>(), two.problems)
+        assertEquals(2, winOps(two).map { it.toString() }.toSet().size)
+        val five = compile(g(mv = "50"), g(mv = "60"), g(mv = "70"), g(mv = "80"), g(mv = "90"))
+        assertTrue(five.problems.toString(), five.problems.any { "EXPR_TOO_MANY_WINDOWS" in it })
+        val same = compile(g(mv = "90"), g(mv = "90"), g(), g(), g(), g()); assertEquals(same.problems.toString(), emptyList<String>(), same.problems)
+    }
+
+    @Test fun aToleranceOutsideFiftyToHundredIsRefusedWithAMessage() {
+        for (bad in listOf("49", "101", "75.5", "\"90\"", "true")) {
+            val r = compile(g(mv = bad))
+            assertNull("mv $bad", r.plan)
+            assertTrue(r.problems.toString(), r.problems.any { "EXPR_BAD_PARAM" in it && "between 50 and 100" in it })
+        }
+        for (ok in listOf("50", "100")) assertNotNull(compile(g(mv = ok)).plan)
+        assertNotNull("an out-of-range GLOBAL value is clamped, never an error", PlanCompiler.compile(pipeline(guardNode("g1", g())), windowMinValidPct = 10).plan)
     }
 
     @Test fun aGuardWithoutWindowsKeepsCatalogue1() {
