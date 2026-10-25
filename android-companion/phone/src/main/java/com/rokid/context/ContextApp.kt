@@ -71,6 +71,8 @@ class ContextApp : Application() {
                 com.rokid.context.work.frames.KeyframeGraph.get(this).start()
             }.onFailure { PcLog.w("ContextApp", "frame adoption failed; retries next start (${it.javaClass.simpleName})") }
         }
+        // The Moment cadence and retention are scheduled on EVERY process start (not only when MainActivity runs with processing on): the cadence builds the MARK Moments of marks recorded by an older build.
+        com.rokid.context.work.OrchestrationScheduler(this).ensureBackgroundWork()
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
         com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)
