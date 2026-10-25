@@ -53,7 +53,7 @@ class ForgetService(
      */
     suspend fun forgetMoment(frameId: String, redactCites: Boolean = true): Result = notifying { forgetMomentTx(frameId, redactCites) }
 
-    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true): Result = db.withTransaction {
+    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true): Result = db.withTransaction {
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
@@ -63,13 +63,16 @@ class ForgetService(
             dropCanvasOutputs(listOf(frameId))
             return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites)
         }
-        val r = cascade(ids, lockFrames = true, extraCited = cites)
+        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox)
+        val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         db.momentDao().dropHolding(listOf(frameId), ids) // source-to-projection cleanup: no stored Moment keeps a reference to what Forget removed
-        dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts))
+        val spans = dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts))
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
-        r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct())
+        val out = r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct())
+        if (queueOutbox) queueCleanup(out.framesToDelete, wire, spans) // same transaction as the delete
+        out
     }
 
     /**
@@ -78,8 +81,8 @@ class ForgetService(
      */
     suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { forgetFactsTx(ids, lockFrames) }
 
-    internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true): Result = db.withTransaction {
-        cascade(ids.distinct(), lockFrames)
+    internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true): Result = db.withTransaction {
+        cascade(ids.distinct(), lockFrames, queueOutbox = queueOutbox)
     }
 
     /**
@@ -107,7 +110,7 @@ class ForgetService(
      */
     suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = notifying { expirePhotosTx(frameIds, requireLinked, recheckSkipped) }
 
-    private suspend fun expirePhotosTx(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = db.withTransaction {
+    internal suspend fun expirePhotosTx(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = db.withTransaction {
         val paths = mutableListOf<String>()
         var expired = 0
         val expiredIds = mutableListOf<String>()
@@ -124,13 +127,15 @@ class ForgetService(
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
         db.momentDao().dropHolding(expiredIds, emptyList()) // a Moment with no live photo is not a Moment
-        dropCanvasOutputs(expiredIds, expiredTimes) // S25: frame retention uses the same cascade, once for the whole set
+        val wire = expiredIds.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId } // frame_meta stays on expiry
+        val spans = dropCanvasOutputs(expiredIds, expiredTimes) // S25: frame retention uses the same cascade, once for the whole set
+        queueCleanup(paths, wire, spans) // same transaction as the expiry
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet()): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
@@ -150,7 +155,8 @@ class ForgetService(
         db.momentDao().dropHolding(frames, f + d) // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them
         // 4. Extraction lock.
         val now = clock()
-        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; dropCanvasOutputs(frames) }
+        var spans = emptyList<Triple<Long, Long, List<String>>>()
+        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; spans = dropCanvasOutputs(frames) }
         // 5. Redaction (exact JSON match after a LIKE prefilter: "A1" never matches "A").
         val cited = forgotten + invalidated + extraCited // extraCited: `frame:<id>` photo cites (S1)
         val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
@@ -177,6 +183,7 @@ class ForgetService(
         val uncited = frames.filter { dao.remainingRefs(it) == 0 }
         uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
+        if (queueOutbox) queueCleanup(files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans) // same transaction as the delete
         return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
     }
 
@@ -194,7 +201,13 @@ class ForgetService(
         return r
     }
 
-    private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null) {
+    /** The shared outbox helper, called inside the deleting transaction: phone JPEGs, glasses frames, tombstoned glasses traces and the glasses time ranges. */
+    private suspend fun queueCleanup(files: Collection<String>, wireFrameIds: Collection<String>, spans: List<Triple<Long, Long, List<String>>>) {
+        CleanupOutbox.queue(db.momentDao(), clock(), files, wireFrameIds, spans.flatMap { it.third }, spans.map { it.first..it.second })
+    }
+
+    /** Returns the time spans it fenced (from, to, tombstoned trace ids) so the caller can queue the glasses cleanup in the same transaction. */
+    private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null): List<Triple<Long, Long, List<String>>> {
         val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { dao.frame(it)?.ts }
         // A mark carries no frame id (the glasses tap does not know which photo it is near), so the link between a photo and the marks and traces of its moment is TIME:
         // everything within PHOTO_LINK_MS of a forgotten photo goes with it (marks, traces, and the results that read them), through the same durable range fence as a
@@ -207,6 +220,7 @@ class ForgetService(
         if (frameIds.isNotEmpty() || spans.isNotEmpty()) pendingFrames.add(Pending(frameIds, spans))
         db.canvasDao().deleteCanvasOutputsForFrames(frameIds) // items, scores and live traces, batch-wide (S25)
         db.canvasSlice3Dao().deleteSliceOutputsForFrames(frameIds, clock()) // slice 3a: labels of the photos, the results that read them, helper jobs that carry them
+        return spans
     }
 
     private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"
