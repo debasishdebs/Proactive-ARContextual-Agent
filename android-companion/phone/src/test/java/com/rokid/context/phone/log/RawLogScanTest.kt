@@ -14,7 +14,7 @@ class RawLogScanTest {
     private val root = File("..") // the Gradle test working directory is android-companion/phone
 
     private fun code(f: File): String = f.readText().replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), "").lines().joinToString("\n") { it.replace(Regex("(^|\\s)//.*$"), "") }
-    private val rawLog = Regex("""android\.util\.Log|\bLog\.(v|d|i|w|e|wtf)\(""")
+    private val rawLog = RAW_LOG
 
     private fun baseline(): Map<String, Int> =
         File("src/test/resources/raw-log-baseline.txt").readLines().filter { it.isNotBlank() && !it.startsWith("#") }.associate { l -> l.substringBeforeLast(' ') to l.substringAfterLast(' ').toInt() }
@@ -38,5 +38,20 @@ class RawLogScanTest {
     @Test fun theThreeMigratedFilesAreNotInTheBaseline() {
         val gone = listOf("MarkGraph.kt", "CanvasPublisher.kt", "MemoryWipe.kt")
         assertEquals(emptyList<String>(), baseline().keys.filter { k -> gone.any { k.endsWith("/$it") } })
+    }
+
+    /** Whitespace or a line break may sit between `Log` and `.`, and between the method and `(`: each form must count. */
+    @Test fun theMatcherSeesEveryCallShape() {
+        for (m in listOf("v", "d", "i", "w", "e", "wtf", "println", "isLoggable", "getStackTraceString")) {
+            for (shape in listOf("Log.$m(1)", "Log.$m (1)", "Log.$m\t(1)", "Log.$m\n    (1)", "Log . $m(1)", "Log\n.$m(1)", "android.util.Log.$m (1)", "android . util . Log")) {
+                assertEquals("`$shape` must count", 1, RAW_LOG.findAll("x = $shape").count().coerceAtMost(1))
+            }
+        }
+        assertEquals("PcLog is not raw", 0, RAW_LOG.findAll("PcLog.i (\"T\", \"m\")").count())
+        assertEquals(2, RAW_LOG.findAll("import android.util.Log\nLog.i (\"T\", \"new raw log\")").count())
+    }
+
+    private companion object {
+        val RAW_LOG = Regex("""android\s*\.\s*util\s*\.\s*Log|\bLog\s*\.\s*(v|d|i|w|e|wtf|println|isLoggable|getStackTraceString)\s*\(""")
     }
 }
