@@ -100,7 +100,7 @@ class MarkPhotoRecorderTest {
         assertTrue(rec.onMark(mark(2, photo = false, undo = 1), at(t0 + 3_000)))
         assertEquals(listOf("p1"), forgotten)
         assertNull(dao.label("mk:e:1")); assertNull(dao.label("mk:e:1:i")); assertEquals(0, db.frameDao().count())
-        assertNull("the photo is forgotten, no marker needed", dao.meta("mark_undone:mk:e:1"))
+        assertNotNull("the fence is written first, whatever the link says", dao.meta("mark_undone:mk:e:1"))
     }
 
     @Test fun aRefusedPhotoForgetMeansTheUndoIsNotAckedAndNothingIsRemoved() = runBlocking<Unit> {
@@ -162,5 +162,22 @@ class MarkPhotoRecorderTest {
         val svc = com.rokid.context.memory.forget.ForgetService(db, com.rokid.context.memory.ProposalRepository(db.proposalDao(), db.actionDao(), db)) { t0 }
         com.rokid.context.memory.forget.MomentForget(db, svc) { t0 }.forgetMoments(listOf(com.rokid.context.memory.moment.MomentId.ofMs(t0 + 1_400)))
         assertTrue(dao.labels().isEmpty()); assertEquals(0, db.frameDao().count())
+    }
+
+    /** Codex review 2026-10-26: the photo may be committed and linked between the undo's read of the mark and its fence; the undo re-reads the link after the fence, so that photo is forgotten too. */
+    @Test fun aPhotoCommittedBetweenTheUndosReadAndItsFenceIsForgottenToo() = runBlocking<Unit> {
+        rec.onMark(mark(1), at(t0))
+        rec.testAfterUndoRead = { commitPhoto("p1", t0 + 1_400, "e:1") }
+        assertTrue(rec.onMark(mark(2, photo = false, undo = 1), at(t0 + 800)))
+        assertEquals(listOf("p1"), forgotten)
+        assertNull(dao.label("mk:e:1")); assertEquals(0, db.frameDao().count())
+    }
+
+    @Test fun aPhotoCommittedAfterTheUndosFenceIsRefused() = runBlocking<Unit> {
+        rec.onMark(mark(1), at(t0))
+        var lateOutcome: FrameIntake.Outcome? = null
+        rec.testAfterUndoFence = { lateOutcome = commitPhoto("late", t0 + 1_400, "e:1") }
+        assertTrue(rec.onMark(mark(2, photo = false, undo = 1), at(t0 + 800)))
+        assertEquals(FrameIntake.Outcome.FENCED, lateOutcome); assertEquals(0, db.frameDao().count())
     }
 }

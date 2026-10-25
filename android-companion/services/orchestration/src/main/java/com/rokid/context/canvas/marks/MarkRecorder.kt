@@ -107,6 +107,10 @@ class MarkRecorder(
         true
     }
 
+    /** Test seams of the undo race (a test commits a photo right after the mark was read / after the fence was written). Null in production. */
+    @Volatile internal var testAfterUndoRead: (suspend () -> Unit)? = null
+    @Volatile internal var testAfterUndoFence: (suspend () -> Unit)? = null
+
     /** The glasses could not take the photo of mark `(epoch, seq)` (`pc_mark_photo`). True = the reason was stored (only while the photo is still pending); never throws on a mark we do not have. */
     suspend fun onPhotoResult(r: MarkPhotoResult): Boolean = lock.withLock {
         val id = "mk:${r.epoch}:${r.seq}"
@@ -123,9 +127,13 @@ class MarkRecorder(
      */
     private suspend fun removeMark(target: String) {
         val l = dao.label(target)
-        val frame = l?.frameId
-        if (frame != null) { if (!forgetPhoto(frame)) throw IllegalStateException("photo forget refused") }
-        else if (l == null || l.photo == MarkPhotoReason.PENDING) dao.putMeta(FrameIntake.MARK_UNDONE_PREFIX + target, wallClock().toString())
+        testAfterUndoRead?.invoke()
+        // THE FENCE FIRST, then the link is read again: the frame intake checks the marker inside its own transaction, and the two transactions are serialised, so a photo that committed before the fence is
+        // seen by the re-read below (and forgotten) and a photo that commits after it is refused. Reading the link before the fence would leave the photo of a mark undone in between.
+        dao.putMeta(FrameIntake.MARK_UNDONE_PREFIX + target, wallClock().toString())
+        testAfterUndoFence?.invoke()
+        val frame = dao.label(target)?.frameId
+        if (frame != null && !forgetPhoto(frame)) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
         // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
         DataOpGate.shared.delete { dao.deleteLabel(target); dao.deleteLabel("$target:i") }
         l?.atMs?.let(onChanged)
