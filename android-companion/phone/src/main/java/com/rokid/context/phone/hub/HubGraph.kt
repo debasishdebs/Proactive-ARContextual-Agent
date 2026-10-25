@@ -119,7 +119,7 @@ object HubGraph {
         val settings = HubSettingsStore(app.getSharedPreferences("hub_settings", Context.MODE_PRIVATE)) { AppConfigStore.glassesSilencyMode(app) }
         val pauses = HubPauses(MemoryGraph.get(app).db.pauseDao(), quietHours = { settings.read().quietHours })
         val ingestor = FrameIngestor(
-            RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger,
+            RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses, marks = com.rokid.context.link.MarkPhotoAllowance(RoomMarkLookup(MemoryGraph.get(app).db.canvasSlice3Dao()))), ledger,
             archiveDir = RokidFrameInbox.archiveDir(app),
             // A receipt already committed to Room is acked at once (spec P2 receipt durability).
             committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },

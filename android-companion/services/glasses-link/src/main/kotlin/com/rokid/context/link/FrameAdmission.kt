@@ -23,7 +23,42 @@ sealed interface Admission {
 }
 
 /** What the phone does with a complete frame (spec §1.8 dedupe, §5.5 flush filter). */
-class FrameAdmission(private val ledger: ReceivedFrameLedger, private val pauses: PauseHistory, private val historyMs: Long = HISTORY_MS) {
+/** What the phone knows of the mark a photo names (a real stored mark label `mk:<epoch>:<seq>`). */
+enum class MarkState { OPEN, UNKNOWN, CLOSED }
+
+/** Looks a mark up: OPEN = stored, no photo yet and still waiting for one; UNKNOWN = not stored (yet); CLOSED = it has its photo, no longer waits, or was undone. */
+fun interface MarkLookup { suspend fun state(markRef: String): MarkState }
+
+/**
+ * The allowance behind the ONE phone-side pause exception: a photo passes the pause history only for a REAL stored mark that still waits for its photo, and each mark's allowance goes to ONE frame id
+ * (a resend of that frame passes again; a second frame naming the same mark does not). At most [cap] marks are claimed at once (the oldest claim is evicted), so a flood of frames cannot ride it.
+ */
+class MarkPhotoAllowance(private val lookup: MarkLookup, private val cap: Int = 16) {
+    private val claims = LinkedHashMap<String, String>()
+    internal val claimed: Int get() = synchronized(claims) { claims.size }
+
+    suspend fun check(markRef: String, frameId: String): MarkState {
+        if (!MarkRef.isValid(markRef)) return MarkState.CLOSED
+        synchronized(claims) { claims[markRef]?.let { return if (it == frameId) MarkState.OPEN else MarkState.CLOSED } }
+        val st = lookup.state(markRef)
+        if (st != MarkState.OPEN) return st
+        synchronized(claims) {
+            val other = claims[markRef]
+            if (other != null) return if (other == frameId) MarkState.OPEN else MarkState.CLOSED
+            claims[markRef] = frameId
+            while (claims.size > cap) claims.remove(claims.keys.first())
+        }
+        return MarkState.OPEN
+    }
+
+    companion object { val NONE = MarkPhotoAllowance({ MarkState.CLOSED }) }
+}
+
+class FrameAdmission(
+    private val ledger: ReceivedFrameLedger, private val pauses: PauseHistory, private val historyMs: Long = HISTORY_MS,
+    /** Without it (the default) no frame passes a pause. */
+    private val marks: MarkPhotoAllowance = MarkPhotoAllowance.NONE,
+) {
     suspend fun decide(meta: FrameMeta, offset: ClockOffset?, nowMs: Long): Admission {
         if (!FrameCodec.isValidFrameId(meta.frameId)) return Admission.Reject(FrameAckReason.DECODE)
         if (ledger.contains(meta.frameId)) return Admission.AckOnly(FrameAckReason.DUPLICATE)
@@ -34,9 +69,18 @@ class FrameAdmission(private val ledger: ReceivedFrameLedger, private val pauses
         if (captured > nowMs + SKEW_TOLERANCE_MS) return Admission.Hold
         val t = captured.coerceAtMost(nowMs)
         if (t < nowMs - historyMs) return Admission.AckOnly(FrameAckReason.TOO_OLD)
-        // v0.9.6 slice C, the ONE phone-side exception of "a mark touches capture": the photo taken for a mark passes the pause history (the user asked for it explicitly), and only a frame that
-        // names a well-formed mark does. Everything else of that moment is still dropped. The wipe fence, the Moment Forget fences and the dedupe above and in the intake still apply.
-        if (!MarkRef.isValid(meta.markRef) && pauses.pausedAt(t)) return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
+        // v0.9.6 slice C, the ONE phone-side exception of "a mark touches capture": the photo taken for a mark passes the pause history (the user asked for it explicitly) only when its mark is REAL (stored, no
+        // photo yet) and this frame holds that mark's single allowance ([MarkPhotoAllowance]). A photo whose mark has not arrived yet is held (no ack: the glasses resend once the mark is stored).
+        // Everything else of that moment is still dropped. The wipe fence, the Moment Forget fences and the dedupe above and in the intake still apply.
+        if (pauses.pausedAt(t)) {
+            val ref = meta.markRef
+            if (ref == null || !MarkRef.isValid(ref)) return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
+            when (marks.check(ref, meta.frameId)) {
+                MarkState.OPEN -> Unit
+                MarkState.UNKNOWN -> return Admission.Hold
+                MarkState.CLOSED -> return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
+            }
+        }
         return Admission.Ingest(t)
     }
 
