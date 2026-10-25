@@ -1,5 +1,6 @@
 package com.rokid.context.canvas.marks
 
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.MarkMessage
 import com.rokid.context.memory.db.CanvasLabelEntity
 import com.rokid.context.memory.db.CanvasSlice3Dao
@@ -140,6 +141,8 @@ class MarkRecorder(
         dao.labelsBetween(nowMs - UNDO_WINDOW_MS, nowMs).lastOrNull { it.kind == KIND_MOMENT && it.source in UNDOABLE }?.labelId
 
     companion object {
+        /** The production log: event names only, through the one logger (pca.log), never android.util.Log. */
+        val pcLog: (String) -> Unit = { PcLog.i("PcMarks", it) }
         const val JOIN_MS = 3_000L
         const val UNDO_WINDOW_MS = 120_000L
         private const val PRUNE_MS = 60_000L

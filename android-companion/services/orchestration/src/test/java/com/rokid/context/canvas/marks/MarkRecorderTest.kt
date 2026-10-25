@@ -3,6 +3,11 @@ package com.rokid.context.canvas.marks
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.log.Level
+import com.rokid.context.core.log.Line
+import com.rokid.context.core.log.LogSink
+import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.log.Route
 import com.rokid.context.core.model.MarkMessage
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DaoFence
@@ -39,6 +44,18 @@ class MarkRecorderTest {
         MarkMessage(epoch = "e", seq = seq, atMs = 5, atElapsedMs = 5, listen = listen, undo = undo, deletionCounter = counter)
     private fun at(ms: Long) = MarkArrival(ms, mapped = true, receivedAtMs = ms)
     private fun labels() = runBlocking { dao.labels() }
+
+    /** The 2026-10-25 wear window: 'mark recorded' went through android.util.Log and never reached pca.log. The production logger now is PcLog. */
+    @Test fun aRecordedMarkReachesPcLogWithAnEventNameOnly() = runBlocking {
+        val seen = ArrayList<Line>()
+        PcLog.testOnlyResetNeverCallFromProduction(); PcLog.install(object : LogSink { override fun emit(line: Line, route: Route) { synchronized(seen) { seen += line } } }); PcLog.setDiagnostic(true)
+        try {
+            val r = MarkRecorder(dao, { DaoFence(0, epoch, { 0 }, { epoch }) }, { t0 }, MarkRecorder.pcLog)
+            assertTrue(r.onMark(mark(1), at(t0)))
+            val l = synchronized(seen) { seen.single { it.tag == "PcMarks" } }
+            assertEquals("mark recorded", l.msg); assertEquals(Level.I, l.level)
+        } finally { PcLog.testOnlyResetNeverCallFromProduction() }
+    }
 
     @Test fun markStoresOneMomentWithNoTextAndBumpsLabelRev() = runBlocking {
         assertTrue(rec.onMark(mark(1), at(t0)))
