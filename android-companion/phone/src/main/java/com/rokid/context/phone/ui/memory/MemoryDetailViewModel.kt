@@ -74,14 +74,17 @@ class MemoryDetailViewModel(
         local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null) } }
         if (!start) return
         viewModelScope.launch {
+            var exportBlocked = false
             val ok = try {
                 when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId) }
             } catch (c: CancellationException) {
                 throw c
+            } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
+                exportBlocked = true; false
             } catch (e: Exception) {
                 false
             }
-            local.update { if (ok) it.copy(forgetting = false, forgotten = true) else it.copy(forgetting = false, message = ForgetCopy.FAILED) }
+            local.update { if (ok) it.copy(forgetting = false, forgotten = true) else it.copy(forgetting = false, message = if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED) }
         }
     }
 }

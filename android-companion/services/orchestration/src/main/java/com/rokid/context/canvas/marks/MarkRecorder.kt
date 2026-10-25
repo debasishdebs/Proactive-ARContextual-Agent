@@ -1,6 +1,7 @@
 package com.rokid.context.canvas.marks
 
 import com.rokid.context.core.log.Level
+import com.rokid.context.orchestration.DataOpGate
 import com.rokid.context.core.log.LogPort
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.MarkMessage
@@ -72,7 +73,8 @@ class MarkRecorder(
         if (m.undo != null) {
             val target = "mk:${m.epoch}:${m.undo}"
             val at = dao.label(target)?.atMs
-            dao.deleteLabel(target); dao.deleteLabel("$target:i")
+            // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
+            DataOpGate.shared.delete { dao.deleteLabel(target); dao.deleteLabel("$target:i") }
             at?.let(onChanged)
             unjoined.removeAll { it.id == target }
             if (listen?.bound == target) listen?.bound = null
@@ -109,7 +111,7 @@ class MarkRecorder(
                 val target = momentId ?: l.bound ?: newestUndoable(nowMs)
                 if (target != null) {
                     val at = dao.label(target)?.atMs
-                    dao.deleteLabel(target); dao.deleteLabel("$target:i")
+                    DataOpGate.shared.delete { dao.deleteLabel(target); dao.deleteLabel("$target:i") } // typed ExportInProgress when an export blocks it (the caller logs it)
                     at?.let(onChanged)
                     unjoined.removeAll { it.id == target }
                     if (l.bound == target) l.bound = null

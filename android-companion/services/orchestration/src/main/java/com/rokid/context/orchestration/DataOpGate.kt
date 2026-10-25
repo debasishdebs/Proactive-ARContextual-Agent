@@ -53,18 +53,31 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
         }
     }
 
+    /** Test seam: runs inside the wait's predicate once no export is running (a test cancels the delete exactly there). Null in production. */
+    @Volatile internal var testInPredicate: (() -> Unit)? = null
+
+    /**
+     * Cancellation safe: the wait only READS the state; the acquisition is one non-suspending step in the `finally`, taken only when the wait completed normally, so no
+     * cancellation or timeout can land between taking `deleters` and the caller's release (a leaked `deleters` would refuse every later export).
+     * While `waiting > 0` no export can start, so the state the predicate saw still holds in the `finally`.
+     */
     private suspend fun enterDelete() {
         synchronized(lock) {
             if (exporters == 0) { deleters++; return }
             waiting++
         }
+        var done = false
         var got = false
         try {
-            withTimeoutOrNull(waitMs) {
-                changed.first { synchronized(lock) { if (exporters == 0) { deleters++; got = true; true } else false } }
-            }
+            done = withTimeoutOrNull(waitMs) {
+                changed.first { synchronized(lock) { (exporters == 0).also { if (it) testInPredicate?.invoke() } } }
+                true
+            } == true
         } finally {
-            synchronized(lock) { waiting-- }
+            synchronized(lock) {
+                waiting--
+                if (done && exporters == 0) { deleters++; got = true }
+            }
             bump()
         }
         if (!got) throw ExportInProgress()
@@ -73,6 +86,7 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     companion object {
         const val WAIT_MS = 30_000L
         /** The one gate of the process (replaceable only by tests of this module, to shorten the wait). */
-        @Volatile internal var shared = DataOpGate()
+        @Volatile var shared = DataOpGate()
+            internal set
     }
 }
