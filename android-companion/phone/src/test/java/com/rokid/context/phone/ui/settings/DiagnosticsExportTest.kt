@@ -21,4 +21,11 @@ class DiagnosticsExportTest {
         assertTrue(text, text.contains("job-1") && text.contains("ANSWER v1 ok"))
         assertFalse(text, text.contains("sk-x") || text.contains("abc"))
     }
+
+    @Test fun theDiagnosticsExportIsRefusedWhileADeleteRuns() = kotlinx.coroutines.runBlocking {
+        val err = runCatching { com.rokid.context.orchestration.DataOpGate.shared.delete { DiagnosticsExport.write(tmp.root, listOf("a"), listOf("b")) } }.exceptionOrNull()
+        org.junit.Assert.assertTrue(err is com.rokid.context.orchestration.DataOpGate.DeleteRunning)
+        org.junit.Assert.assertFalse(java.io.File(tmp.root, "exports/" + DiagnosticsExport.FILE_NAME).exists())
+        org.junit.Assert.assertTrue(DiagnosticsExport.write(tmp.root, listOf("a"), listOf("b")).exists())
+    }
 }

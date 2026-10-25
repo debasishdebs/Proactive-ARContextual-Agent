@@ -57,7 +57,10 @@ object DiagnosticsExport {
     const val FILE_NAME = "proactive-context-diagnostics.txt"
 
     /** Writes into `cacheDir/exports`, the only folder the FileProvider shares. */
-    suspend fun write(cacheDir: java.io.File, traces: List<String>, logs: List<String>): java.io.File = withContext(Dispatchers.IO) {
+    suspend fun write(cacheDir: java.io.File, traces: List<String>, logs: List<String>): java.io.File =
+        com.rokid.context.orchestration.DataOpGate.shared.export { writeLocked(cacheDir, traces, logs) } // refused while a delete runs
+
+    private suspend fun writeLocked(cacheDir: java.io.File, traces: List<String>, logs: List<String>): java.io.File = withContext(Dispatchers.IO) {
         val dir = java.io.File(cacheDir, "exports").apply { mkdirs() }
         java.io.File(dir, FILE_NAME).apply {
             writeText("Recent jobs\n" + LogReader.redact(traces).joinToString("\n") + "\n\nLogs\n" + LogReader.redact(logs).joinToString("\n") + "\n")
