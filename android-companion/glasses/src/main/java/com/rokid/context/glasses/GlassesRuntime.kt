@@ -129,7 +129,10 @@ class GlassesRuntime private constructor(private val app: Context) {
      * Slice 3a Task 16: the IMU trace recorder. Records only while diagnostics are on with a saved epoch ([diagRecord]) or the phone's `pc_trace_ctl` says collect (default: never). Files go under
      * `files/imu/` (`traces/`, `imu_trace_tmp/`, `trace_epoch`); all file work runs on its own idle-blocked daemon thread (no timer, no wake-up).
      */
-    private val traceRecorderLazy = lazy {
+    private val traceRecorderFuture = java.util.concurrent.CompletableFuture<com.rokid.context.glasses.capture.trace.TraceRecorder>()
+    /** The thread that built the recorder (a test pins that it is the writer, never the main looper). */
+    @Volatile internal var recorderBuiltOn: Thread? = null
+    private fun buildTraceRecorder(): com.rokid.context.glasses.capture.trace.TraceRecorder =
         com.rokid.context.glasses.capture.trace.TraceRecorder(
             root = File(app.filesDir, "imu"), clock = android.os.SystemClock::elapsedRealtime, wallClock = System::currentTimeMillis,
             bootId = { com.rokid.context.capture.trace.Manifest.bootIdOf(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, 0).coerceAtLeast(0)) },
@@ -139,8 +142,19 @@ class GlassesRuntime private constructor(private val app: Context) {
             // LGC5: at process start, after the recovery (writer thread): restart count, flag state, epoch and how many killed traces were found. Reads no recorder (it may still be constructing).
             onRecovered = { r -> DiagLog.i(TRACE_TAG, com.rokid.context.glasses.capture.trace.TraceStateReporter.boot(restarts.closes, diagRecord.stateFor(r.epochSaved), r.epochSaved, r.found)) },
         )
+    /**
+     * The recorder is constructed ONLY on the writer thread (queued at process start, see `init`), never lazily on the caller: its construction queues the start-up recovery
+     * (TraceStorage.recover), the class of the 2026-10-23 ANR. The main thread must not call this before [traceRecorderReady] (it throws instead of blocking); other threads wait for
+     * the writer. Main-thread code uses [traceRecorderOrNull] / [traceRecorderReady].
+     */
+    val traceRecorder: com.rokid.context.glasses.capture.trace.TraceRecorder get() {
+        traceRecorderFuture.getNow(null)?.let { return it }
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) { "the trace recorder is built on the writer thread: the main thread must not wait for it" }
+        return try { traceRecorderFuture.get() } catch (e: java.util.concurrent.ExecutionException) { throw IllegalStateException("trace recorder construction failed", e.cause) }
     }
-    val traceRecorder: com.rokid.context.glasses.capture.trace.TraceRecorder by traceRecorderLazy
+    /** The recorder once the writer has built it, else null. Never builds or waits. */
+    val traceRecorderOrNull: com.rokid.context.glasses.capture.trace.TraceRecorder? get() = traceRecorderFuture.getNow(null)
+    val traceRecorderReady: Boolean get() = traceRecorderFuture.isDone && !traceRecorderFuture.isCompletedExceptionally
     /** LGC5: where the capture session says why it offered no clean boundary (read by [traceState]). */
     val traceBoundary = com.rokid.context.glasses.capture.trace.TraceBoundaryReporter()
     /** LGC5: the `trace state:` line (tag [TRACE_TAG]); driven by [pollTraceState]. */
@@ -152,7 +166,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         )
     }
     /** Prints the state line when the blocker changed or a minute passed. A no-op until the recorder exists (this never constructs it on the calling thread); memory reads only. */
-    fun pollTraceState() { if (traceRecorderLazy.isInitialized()) traceState.poll() }
+    fun pollTraceState() { if (traceRecorderReady) traceState.poll() }
     /** The single storage writer (idle-blocked daemon thread, no timer): the recorder's epoch wipe / recovery and the `diag_state` load and saves run on it, in order. */
     private val traceWriter: java.util.concurrent.ExecutorService by lazy {
         java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace").also { it.isDaemon = true } }
@@ -164,8 +178,8 @@ class GlassesRuntime private constructor(private val app: Context) {
      */
     val diagRecord: com.rokid.context.glasses.log.DiagRecord = com.rokid.context.glasses.log.DiagRecord(
         com.rokid.context.glasses.log.DiagStateFile.forApp(app),
-        epochSaved = { traceRecorder.epochSaved }, io = { r -> traceWriter.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
-    ).also { d -> d.onChanged = { traceRecorder.onDiagChanged() } }
+        epochSaved = { traceRecorderOrNull?.epochSaved ?: false }, io = { r -> traceWriter.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
+    ).also { d -> d.onChanged = { traceRecorderOrNull?.onDiagChanged() } }
     /** Slice 3a Task 30: the persisted mark outbox (`mark_queue` prefs) and the tap that fills it. A mark never touches capture (S45). */
     val markOutbox: com.rokid.context.glasses.mark.MarkOutbox by lazy {
         com.rokid.context.glasses.mark.MarkOutbox(
@@ -243,7 +257,10 @@ class GlassesRuntime private constructor(private val app: Context) {
     init {
         // LGC5: build the recorder on the WRITER thread (queued after the `diag_state` load): its recovery, the replayed cleanup and the `trace boot:` line then happen at process start, whatever the
         // capture mode, and the main thread never constructs it first. A later main-thread access finds it built or waits only for the (cheap) construction.
-        traceWriter.execute { runCatching { traceRecorder } }
+        traceWriter.execute {
+            try { recorderBuildHook?.invoke(); recorderBuiltOn = Thread.currentThread(); traceRecorderFuture.complete(buildTraceRecorder()) }
+            catch (t: Throwable) { traceRecorderFuture.completeExceptionally(t) }
+        }
     }
 
     /** Tap = Ask (spec §5.1). Only an open session takes it; capture pauses don't matter (Ask is a user action). */
@@ -278,9 +295,13 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
         c.onPhoneSettingsPush = { s -> diagRecord.onSettings(s.diagRecord) }
         c.onCapturePlan = { m -> plan.onMessage(m) }
-        c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m); diagRecord.retryPersist()
-            // LGC6-min: tell the phone the new state once the control's ordered work (fence, epoch save) has run on the writer, so its re-send ends at `enabled` without waiting for a frame's hello.
-            traceWriter.execute { try { controller?.sendHello() } catch (e: Exception) { /* the next hello carries it */ } }
+        c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter)
+            // The recorder exists only on the writer thread (queued behind its construction), so the control is handed over there: the caller (the link callback, possibly main) never waits for it.
+            traceWriter.execute {
+                traceRecorder.onControl(m); diagRecord.retryPersist()
+                // LGC6-min: tell the phone the new state once the control's ordered work (fence, epoch save) has run on the writer, so its re-send ends at `enabled` without waiting for a frame's hello.
+                traceWriter.execute { try { controller?.sendHello() } catch (e: Exception) { /* the next hello carries it */ } }
+            }
         }
         c.onMarkAck = { a -> markOutbox.onAck(a) }
         c.onMarksDue = { markTap.flush() }
@@ -329,7 +350,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         lastRestartGapSec = restarts.lastGapSec,
         userExitAtMs = restarts.userExitAtMs,
         iconBlocked = iconBlocked && uiMode.get() == UiModeStore.ICON,
-    ).withDiagFields(diagRecord, if (traceRecorderLazy.isInitialized()) traceState else null) // LGC6-min: memory reads only, never builds the recorder on this thread
+    ).withDiagFields(diagRecord, if (traceRecorderReady) traceState else null) // LGC6-min: memory reads only, never builds the recorder on this thread
 
     /** Serialises a captured frame's write with the pause toggle's buffer clear (spec §5.5). */
     private val captureGate = Any()
@@ -405,6 +426,10 @@ class GlassesRuntime private constructor(private val app: Context) {
 
         /** Test seam: the CXR bridge (a fake in Robolectric tests). */
         @Volatile internal var bridgeFactory: (Context) -> GlassesBridge = { CxrBridge(it) }
+
+        /** Test seam: runs on the writer thread just before the recorder is built (a test blocks it to prove the main thread neither builds nor waits for the recorder). */
+        @VisibleForTesting
+        @Volatile internal var recorderBuildHook: (() -> Unit)? = null
 
         /** Test seam: the glasses mic (a fake in Robolectric tests; preflight F23, same pattern as [bridgeFactory]). */
         @VisibleForTesting

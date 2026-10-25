@@ -2,9 +2,6 @@ package com.rokid.context.memory.forget
 
 import androidx.room.withTransaction
 import com.rokid.context.memory.moment.MomentId
-import com.rokid.context.memory.db.CleanupOutboxEntity
-import com.rokid.context.memory.db.CleanupPayload
-import com.rokid.context.memory.db.CleanupTarget
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.MomentPartKind
 import com.rokid.context.memory.db.MomentTombstoneEntity
@@ -84,9 +81,9 @@ class MomentForget(
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
             // 3. The cascade: the existing code paths, in this transaction.
             var cascade = ForgetService.Result.EMPTY
-            for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f))
+            for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f, queueOutbox = false)) // the rows below are this transaction's own, written once
             val memoryIds = memories.toList()
-            if (memoryIds.isNotEmpty()) cascade = cascade.plus(service.forgetFactsTx(memoryIds))
+            if (memoryIds.isNotEmpty()) cascade = cascade.plus(service.forgetFactsTx(memoryIds, queueOutbox = false))
             spans.forEach { s3.forgetRangeTx(it.first, it.last, now) } // traces, marks of the range, labelRev, frame_forget_rev, helper jobs
             val strayLabels = labels.toList().chunked(CHUNK).flatMap { md.labelIdsAmong(it) }
             strayLabels.chunked(CHUNK).forEach { md.deleteLabels(it) }
@@ -100,14 +97,7 @@ class MomentForget(
             spans.forEach { dropped += md.dropBetween(it.first, it.last) }
             // 5. The durable cleanup, same transaction.
             val tombstonedTraces = liveTracesBefore - s3.forgettableTraces().map { it.traceId }.toSet()
-            val rows = ArrayList<CleanupOutboxEntity>()
-            fun row(target: String, json: String) = rows.add(CleanupOutboxEntity(target = target, payloadJson = json, createdAt = now))
-            fun one(key: String, v: String) = CleanupPayload.one(key, v)
-            cascade.framesToDelete.distinct().sorted().forEach { row(CleanupTarget.PHONE_FILE, one("path", it)) }
-            wire.distinct().sorted().forEach { row(CleanupTarget.GLASSES_FRAME, one("wireFrameId", it)) }
-            tombstonedTraces.sorted().forEach { row(CleanupTarget.GLASSES_TRACE, one("traceId", it)) }
-            spans.forEach { row(CleanupTarget.GLASSES_RANGE, CleanupPayload.range(it.first, it.last)) }
-            val inserted = md.insertOutbox(rows).count { it != -1L }
+            val inserted = CleanupOutbox.queue(md, now, cascade.framesToDelete, wire, tombstonedTraces, spans)
             testFaultBeforeCommit?.invoke()
             counts = Result(requestedSeconds.size, frames.size, memories.size, labels.size, dropped.size, inserted, cascade)
             cascade

@@ -614,7 +614,7 @@ class CanvasRunner(
             val lineage = HashMap<String, LinkedHashSet<String>>() // frame -> every model call whose output its rows derive from (a later per-frame call must not hide a shared one)
 
             members.forEach { (k, f) -> lineage[k] = LinkedHashSet(f.map { MEMBER_TOKEN + it }) }
-            // a MARK Moment has no photo to carry the lineage: its marks do (a Forget of the mark deletes the rows, see CanvasSlice3Dao.deleteRunRowsOfLabels); a Scene run lists the marks of its MARK Moments
+            // every mark of a Moment is lineage (a MARK Moment has no photo; a FRAME Moment lists the marks inside it too): a Forget or undo of the mark deletes the rows, see CanvasSlice3Dao.deleteRunRowsOfLabels; a Scene run lists the marks of all its Moments
             val markLineageOf: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> markLineage(m) } + sceneByKey.mapValues { (_, s) -> s.markIds }
             markLineageOf.forEach { (k, ids) -> if (ids.isNotEmpty()) lineage.getOrPut(k) { LinkedHashSet() }.addAll(ids.map { MEMBER_TOKEN + it }) }
             val allMarks: Set<String> = markLineageOf.values.flatten().toSet()
