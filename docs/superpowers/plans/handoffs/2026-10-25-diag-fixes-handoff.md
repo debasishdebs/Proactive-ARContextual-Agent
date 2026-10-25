@@ -44,3 +44,6 @@ Full run of `:glasses`, `:phone`, `:services:orchestration`, `:core:capture` (`-
 
 ## Merge steps
 `git merge feat/diag-fixes` into v0.9.4 (touches only the files listed; the baseline file `phone/src/test/resources/raw-log-baseline.txt` conflicts if another branch added raw `Log` calls: migrate them or raise the count deliberately). Build both APKs; glasses behaviour is unchanged except log text and the heartbeat rate normalisation.
+
+## Addendum: matcher hardening (Codex Important)
+`RawLogScanTest` missed `Log.i ("T", "m")` (whitespace before `(`), so a raw call in a baseline-listed file kept its count. The matcher now allows whitespace and line breaks between `android . util . Log`, between `Log` and `.`, and between the method and `(`, for v, d, i, w, e, wtf, println, isLoggable and getStackTraceString; `theMatcherSeesEveryCallShape` pins every form (and that `PcLog.i (` is not raw). Mutation: the old matcher fails that test. The stricter matcher found no extra calls in the baseline files, so the baseline file is unchanged. The scan lives in `:phone` (it reads every module's sources).
