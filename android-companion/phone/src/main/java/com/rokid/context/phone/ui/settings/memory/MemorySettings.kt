@@ -141,7 +141,11 @@ class MemorySettingsViewModel(
         if (_state.value.busy) return
         _state.update { it.copy(busy = true, notice = null) }
         viewModelScope.launch {
-            try { block() } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            try { block() } catch (c: CancellationException) { throw c } catch (e: com.rokid.context.orchestration.DataOpGate.DeleteRunning) {
+                _state.update { it.copy(notice = "A delete is running — try again") }
+            } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
+                _state.update { it.copy(notice = "Export in progress — try again") }
+            } catch (e: Exception) {
                 PcLog.i(TAG, "memory action failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(notice = "That didn't work — try again") }
             } finally { _state.update { it.copy(busy = false) } }
