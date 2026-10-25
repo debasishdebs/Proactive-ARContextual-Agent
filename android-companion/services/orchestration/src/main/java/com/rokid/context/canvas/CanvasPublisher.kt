@@ -16,7 +16,7 @@ import com.rokid.context.prompt.CasEdit
 import com.rokid.context.prompt.PromptDefaults
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptRepository
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.RoomDatabase
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
@@ -118,7 +118,7 @@ class CanvasPublisher(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "interpreter publish failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "interpreter publish failed: ${e.javaClass.simpleName}")
             Outcome.Blocked(listOf(PUBLISH_FAILED))
         }
     }
@@ -175,7 +175,7 @@ class CanvasPublisher(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "publish failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "publish failed: ${e.javaClass.simpleName}")
             return Outcome.Blocked(listOf(PUBLISH_FAILED))
         }
         return result
@@ -241,7 +241,7 @@ class CanvasPublisher(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "rollback failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "rollback failed: ${e.javaClass.simpleName}")
             return Outcome.Blocked(listOf(ROLLBACK_FAILED))
         }
         return result
@@ -255,7 +255,7 @@ class CanvasPublisher(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "rollback failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "rollback failed: ${e.javaClass.simpleName}")
             return Outcome.Blocked(listOf(ROLLBACK_FAILED))
         }
         return result

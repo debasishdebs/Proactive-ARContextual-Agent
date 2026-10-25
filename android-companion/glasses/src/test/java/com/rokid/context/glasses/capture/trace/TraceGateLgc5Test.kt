@@ -123,7 +123,18 @@ class TraceGateLgc5Test {
         clock.t += 60_000; sr.poll(); sr.poll()
         assertEquals(3, lines.size, "one heartbeat per 60 s")
         val l = lines[2].second
-        assertTrue(Regex("""^trace state: blocker=\S+ recovered=1 recoveredMs=\d+ collect=0 untilInMs=- diag=1 flagState=enabled epoch=set usedMB=\d+ softMB=\d+ rec=0 traces=0 offers=\d+ starts=\d+ startRefused=\d+$""").matches(l), l)
+        assertTrue(Regex("""^trace state: blocker=\S+ recovered=1 recoveredMs=\d+ collect=0 untilInMs=- diag=1 flagState=enabled epoch=set usedMB=\d+ softMB=\d+ rec=0 traces=0 offers=\d+ starts=\d+ startRefused=\d+ pause_src=-$""").matches(l), l)
+    }
+
+    /** 2026-10-25: a pause with no named source. The state line carries it, and a change of source prints a new line even when the blocker did not change. */
+    @Test fun StateLineNamesThePauseSourceAndReprintsWhenItChanges() {
+        persistedEpoch(); diag = true
+        var src = "-"
+        val r = recorder(); val sr = TraceStateReporter(r, boundary, { flag }, clock, { warn, l -> lines += warn to l }, pauseSource = { src })
+        boundary.report(null); sr.poll(); sr.poll()
+        assertEquals(1, lines.size); assertTrue(lines[0].second.endsWith(" pause_src=-"), lines[0].second)
+        src = "USER_PHONE"; sr.poll()
+        assertEquals(2, lines.size); assertTrue(lines[1].second.endsWith(" pause_src=USER_PHONE"), lines[1].second)
     }
 
     @Test fun InactiveSessionIsTheBlockerWhenOnlyTheSessionIsMissing() {
