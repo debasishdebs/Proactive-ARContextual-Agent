@@ -51,9 +51,9 @@ class ForgetService(
      * (`frame_meta`, `frame_vector`, state, no `frame` row, no memory) is still a moment (S2). Saved answers that cited it (`frame:<id>`) are
      * redacted with their proposals and alarms (S1), unless [redactCites] is false (retention's legacy-frame expiry never redacts). Empty only when no frame, metadata, vector, state or memory exists.
      */
-    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true): Result = notifying { forgetMomentTx(frameId, redactCites) }
+    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true, phoneFilesOnly: Boolean = false): Result = notifying { forgetMomentTx(frameId, redactCites, phoneFilesOnly = phoneFilesOnly) }
 
-    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true): Result = db.withTransaction {
+    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false): Result = db.withTransaction {
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
@@ -63,7 +63,7 @@ class ForgetService(
             dropCanvasOutputs(listOf(frameId))
             return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites)
         }
-        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox)
+        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly)
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         db.momentDao().dropHolding(listOf(frameId), ids) // source-to-projection cleanup: no stored Moment keeps a reference to what Forget removed
@@ -71,7 +71,7 @@ class ForgetService(
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
         val out = r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct())
-        if (queueOutbox) queueCleanup(out.framesToDelete, wire, spans) // same transaction as the delete
+        if (queueOutbox) queueCleanup(out.framesToDelete, wire, spans, phoneFilesOnly) // same transaction as the delete
         out
     }
 
@@ -94,7 +94,7 @@ class ForgetService(
     suspend fun expire(ids: Collection<String>): Result = notifying { expireTx(ids) }
 
     private suspend fun expireTx(ids: Collection<String>): Result = db.withTransaction {
-        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true)
+        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true) // routine retention: phone files only
     }
 
     /**
@@ -129,13 +129,13 @@ class ForgetService(
         db.momentDao().dropHolding(expiredIds, emptyList()) // a Moment with no live photo is not a Moment
         val wire = expiredIds.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId } // frame_meta stays on expiry
         val spans = dropCanvasOutputs(expiredIds, expiredTimes) // S25: frame retention uses the same cascade, once for the whole set
-        queueCleanup(paths, wire, spans) // same transaction as the expiry
+        queueCleanup(paths, wire, spans, phoneFilesOnly = true) // same transaction as the expiry; routine retention is storage hygiene: phone files only (glasses and helper rows are for user Forgets)
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
@@ -183,7 +183,7 @@ class ForgetService(
         val uncited = frames.filter { dao.remainingRefs(it) == 0 }
         uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
-        if (queueOutbox) queueCleanup(files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans) // same transaction as the delete
+        if (queueOutbox) queueCleanup(files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans, phoneFilesOnly) // same transaction as the delete
         return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
     }
 
@@ -202,8 +202,9 @@ class ForgetService(
     }
 
     /** The shared outbox helper, called inside the deleting transaction: phone JPEGs, glasses frames, tombstoned glasses traces and the glasses time ranges. */
-    private suspend fun queueCleanup(files: Collection<String>, wireFrameIds: Collection<String>, spans: List<Triple<Long, Long, List<String>>>) {
-        CleanupOutbox.queue(db.momentDao(), clock(), files, wireFrameIds, spans.flatMap { it.third }, spans.map { it.first..it.second })
+    private suspend fun queueCleanup(files: Collection<String>, wireFrameIds: Collection<String>, spans: List<Triple<Long, Long, List<String>>>, phoneFilesOnly: Boolean = false) {
+        if (phoneFilesOnly) CleanupOutbox.queue(db.momentDao(), clock(), files)
+        else CleanupOutbox.queue(db.momentDao(), clock(), files, wireFrameIds, spans.flatMap { it.third }, spans.map { it.first..it.second })
     }
 
     /** Returns the time spans it fenced (from, to, tombstoned trace ids) so the caller can queue the glasses cleanup in the same transaction. */

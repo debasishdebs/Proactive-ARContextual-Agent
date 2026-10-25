@@ -70,4 +70,25 @@ class OutboxRoomTest {
         now += OutboxDrainer.backoffMs(1); drainer(files).drain()
         assertEquals(2, files.calls.size); assertEquals(2, RoomOutboxStore(db).attempts().values.single().count)
     }
+
+    @Test fun theDueQueryIsBoundedInSqlPhoneFirstAndSkipsExcludedIds() = runBlocking<Unit> {
+        val md = db.momentDao()
+        md.insertOutbox((1..300).map { CleanupOutboxEntity(target = CleanupTarget.GLASSES_FRAME, payloadJson = CleanupPayload.one("wireFrameId", "w$it"), createdAt = it.toLong()) })
+        md.insertOutbox(listOf(CleanupOutboxEntity(target = CleanupTarget.PHONE_FILE, payloadJson = CleanupPayload.one("path", "/a.jpg"), createdAt = 999)))
+        val store = RoomOutboxStore(db)
+        val first = store.due(10, emptyList())
+        assertEquals(10, first.size); assertEquals("phone files first", CleanupTarget.PHONE_FILE, first.first().target)
+        val skipped = first[1].id
+        assertTrue(store.due(10, listOf(skipped)).none { it.id == skipped })
+        assertEquals(301, store.count())
+    }
+
+    @Test fun trimKeepsTheNewestRowsOfOneTargetOnly() = runBlocking<Unit> {
+        val md = db.momentDao()
+        md.insertOutbox((1..6).map { CleanupOutboxEntity(target = CleanupTarget.GLASSES_FRAME, payloadJson = CleanupPayload.one("wireFrameId", "w$it"), createdAt = it.toLong()) })
+        md.insertOutbox((1..3).map { CleanupOutboxEntity(target = CleanupTarget.PHONE_FILE, payloadJson = CleanupPayload.one("path", "/$it.jpg"), createdAt = it.toLong()) })
+        assertEquals(4, RoomOutboxStore(db).trim(CleanupTarget.GLASSES_FRAME, 2))
+        assertEquals(listOf("{\"wireFrameId\":\"w5\"}", "{\"wireFrameId\":\"w6\"}"), md.pendingOutbox().filter { it.target == CleanupTarget.GLASSES_FRAME }.map { it.payloadJson })
+        assertEquals(3, md.pendingOutbox().count { it.target == CleanupTarget.PHONE_FILE })
+    }
 }

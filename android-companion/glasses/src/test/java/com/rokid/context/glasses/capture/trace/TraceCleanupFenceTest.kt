@@ -349,4 +349,18 @@ class TraceCleanupFenceTest {
         assertEquals(0, TraceTestKit.readAll(root).size, "the forget range was mapped with the arrival clocks: the trace is inside it")
         assertFalse(r.wantsStart, "the 10 s collect window ended 50 s ago on the arrival clock")
     }
+
+    /** A control handed over late by the caller (a 20 s backlog on the writer queue) is applied with the clocks sampled at ARRIVAL, not at execution. */
+    @Test fun ALateAppliedControlUsesTheArrivalClocksPassedByTheCaller() {
+        val r0 = recorder(); r0.onControl(TraceTestKit.collect(counter = 1)); r0.begin(); r0.gyro(5); r0.close(CloseReason.STOP)
+        val m = TraceTestKit.readAll(root).single().manifest
+        val r = recorder()
+        val arrivedElapsed = clock.t; val arrivedWall = wall + clock.t
+        val at = arrivedWall
+        val c = TraceTestKit.collect(counter = 1).copy(atMs = at, collect = true, collectUntilMs = at + 10_000, forgetFromMs = m.startWallMs - 1_000, forgetToMs = m.endWallMs + 1_000)
+        clock.t += 20_000 // the control waited 20 s before it was applied
+        r.onControl(c, arrivedElapsed, arrivedWall)
+        assertEquals(0, TraceTestKit.readAll(root).size, "the forget range was translated with the arrival wall clock (a 20 s shift exceeds the 5 s margin)")
+        assertFalse(r.wantsStart, "the 10 s collect window ended 10 s ago on the arrival clock; sampled at execution it would still run")
+    }
 }

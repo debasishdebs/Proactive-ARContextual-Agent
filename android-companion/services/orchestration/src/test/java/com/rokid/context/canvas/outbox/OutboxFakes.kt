@@ -11,7 +11,18 @@ class FakeStore(rows: List<OutboxRow> = emptyList()) : OutboxStore {
     var attempts = HashMap<Long, OutboxAttempt>()
     var failRemoveOnce = false
     var removeCalls = 0
-    override suspend fun pending(): List<OutboxRow> = rows.toList()
+    var lastLimit = -1
+    override suspend fun due(limit: Int, excludeIds: Collection<Long>): List<OutboxRow> {
+        lastLimit = limit
+        return rows.filter { it.id !in excludeIds }.sortedWith(compareBy({ it.target != CleanupTarget.PHONE_FILE }, { it.id })).take(limit)
+    }
+    override suspend fun count(): Int = rows.size
+    override suspend fun existing(ids: Collection<Long>): Set<Long> = rows.map { it.id }.filter { it in ids }.toSet()
+    override suspend fun trim(target: String, keep: Int): Int {
+        val mine = rows.filter { it.target == target }.sortedByDescending { it.id }
+        val drop = mine.drop(keep).map { it.id }.toSet()
+        rows.removeAll { it.id in drop }; return drop.size
+    }
     override suspend fun remove(id: Long) {
         removeCalls++
         if (failRemoveOnce) { failRemoveOnce = false; throw IllegalStateException("crash before the row delete") }
