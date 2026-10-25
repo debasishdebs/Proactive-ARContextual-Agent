@@ -309,6 +309,20 @@ class CanvasPlanPublishApiTest {
         assertTrue(sent.isEmpty()); assertTrue(ok(call("GET", "/api/publish"))["stack"]!!.jsonArray.isEmpty())
     }
 
+    /** The watch starter (a watch lane and a preview-only Outcome next to the glasses lane) reaches every publish route and is refused with the one fixed text; nothing is published or sent. */
+    @Test fun theWatchStarterNeverPublishesOnAnyRoute() {
+        val (id, v) = storedTier3(DefaultPipelines.starterWatchMotion().copy(name = "Watch starter"))
+        for (mode in listOf("shadow", "live", "prompts")) {
+            val r = call("POST", "/api/pipelines/$id/versions/$v/publish", buildJsonObject { put("mode", mode) })
+            assertEquals(mode, 409, r.status); assertEquals("publish_blocked", json(r)["error"]!!.jsonPrimitive.content); assertEquals(s6, problems(r))
+        }
+        val chk = ok(call("POST", "/api/plans/check", publishBody(id, v, "SHADOW")))
+        assertEquals("false", chk["ok"]!!.jsonPrimitive.content)
+        val r = call("POST", "/api/plans/publish", publishBody(id, v, "SHADOW"))
+        assertEquals(409, r.status); assertEquals(s6, problems(r))
+        assertTrue(sent.isEmpty()); assertTrue(ok(call("GET", "/api/publish"))["stack"]!!.jsonArray.isEmpty())
+    }
+
     /** An ASYNC-only graph (no capture half) holding py.fn or a tool node: the plan publish route answers the fixed S6 text, not "no capture half". */
     @Test fun planPublishRouteRefusesAnAsyncOnlyTier3GraphWithTheFixedText() {
         for (type in listOf("py.fn", "tool.draft")) {
