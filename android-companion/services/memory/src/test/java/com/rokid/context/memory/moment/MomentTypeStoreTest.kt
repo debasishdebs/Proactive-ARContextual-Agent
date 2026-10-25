@@ -61,4 +61,15 @@ class MomentTypeStoreTest {
         assertEquals(listOf(null, NoPhotoReason.UNKNOWN, null), rows.map { it.noPhotoReason })
         assertEquals("a range", listOf("b"), md.marksIn(4_000, 6_000).first().map { it.labelId })
     }
+
+    @Test fun aMarkRowCarriesItsPhotoStateAndTheErrorReasonOfItsFallbackMoment() = runBlocking<Unit> {
+        val s3 = db.canvasSlice3Dao()
+        val e = DeletionEpoch("i", 0, 0); val f = DaoFence(0, e, { 0 }, { e })
+        s3.insertLabelFenced(label("a", "tap", 1_000).copy(photo = "pending"), f)
+        s3.insertLabelFenced(label("b", "tap", 5_000).copy(photo = "camera_busy"), f)
+        md.replace(MomentEntity("00000005", 1, 1, "h", 1, MomentType.MARK, NoPhotoReason.UNKNOWN, errorReason = "camera_busy"), listOf(MomentPartEntity("00000005", MomentPartKind.MARK, "b", "r", 5_000, "tap")))
+        val rows = md.marksIn(0, 10_000).first()
+        assertEquals(listOf("camera_busy", "pending"), rows.map { it.photo })
+        assertEquals(listOf("camera_busy", null), rows.map { it.errorReason })
+    }
 }

@@ -117,6 +117,11 @@ data class CanvasLabelEntity(
     @ColumnInfo(defaultValue = "") val provenance: String = "",
     @ColumnInfo(defaultValue = "0") val deletionCounter: Long = 0,
     val createdAt: Long,
+    /**
+     * Room v15 (v0.9.6 slice C), a mark's photo state, a fixed token ([com.rokid.context.core.model.MarkPhotoReason]), never text: `pending` (the glasses will send a photo or say why not), `ok` (its photo is [frameId]),
+     * or the reason there is none. Null = no information (a row from before v15): such a mark keeps the old rule (its own second). The intent row of a mark carries its mark's value.
+     */
+    @ColumnInfo(defaultValue = "NULL") val photo: String? = null,
 )
 
 /** Small durable key/value counters. `labelRev` is bumped by every label insert, delete or correction (S75). Holds no user data. */

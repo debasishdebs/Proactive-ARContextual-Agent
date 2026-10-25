@@ -6,7 +6,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /** Keyframe capture wave 1 (Room v2, additive). Per-frame capture metadata; [wireFrameId] is the glasses-side id, unique. */
-@Entity(tableName = "frame_meta", indices = [Index(value = ["wireFrameId"], unique = true), Index("clusterId")])
+@Entity(tableName = "frame_meta", indices = [Index(value = ["wireFrameId"], unique = true), Index("clusterId"), Index("markRef")])
 data class FrameMetaEntity(
     @PrimaryKey val frameId: String,
     val wireFrameId: String?,
@@ -31,6 +31,8 @@ data class FrameMetaEntity(
     @ColumnInfo(defaultValue = "NULL") val intentAt: Long? = null,
     /** Room v5 (wave 3): when the glasses captured the photo, on the phone clock (null = unknown, e.g. a pre-v5 row). [createdAt] is the receive time. */
     @ColumnInfo(defaultValue = "NULL") val capturedAtMs: Long? = null,
+    /** Room v15 (v0.9.6 slice C): `"<epoch>:<seq>"` of the mark this photo was taken for (a mark touches capture); null = an ordinary frame. Ids only, deleted with the frame. */
+    @ColumnInfo(defaultValue = "NULL") val markRef: String? = null,
 )
 
 enum class FrameState { PENDING, EXTRACTING, EXTRACTED, CLUSTERED, NEAR_DUP, FAILED, FAILED_FINAL, IN_CLUSTER, CAPTION_QUEUED }

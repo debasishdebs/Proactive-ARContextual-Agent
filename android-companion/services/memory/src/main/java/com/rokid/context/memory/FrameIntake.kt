@@ -1,6 +1,7 @@
 package com.rokid.context.memory
 
 import androidx.room.withTransaction
+import com.rokid.context.core.model.MarkRef
 import com.rokid.context.memory.moment.MomentId
 import com.rokid.context.memory.db.CleanupOutboxEntity
 import com.rokid.context.memory.db.CleanupPayload
@@ -30,6 +31,15 @@ class FrameIntake(private val db: ContextDatabase, private val clock: () -> Long
             })
             return@withTransaction Outcome.FENCED
         }
+        // v0.9.6 slice C: the photo of a mark that was UNDONE before it arrived is refused like a forgotten second (the JPEG is queued for deletion).
+        val markRef = rows.meta.markRef?.takeIf { MarkRef.isValid(it) }
+        if (markRef != null && db.canvasSlice3Dao().meta(MARK_UNDONE_PREFIX + MarkRef.labelId(markRef)) != null) {
+            val sidecar = frame.path.removeSuffix(".jpg") + ".meta.json"
+            db.momentDao().insertOutbox(listOf(frame.path, sidecar).filter { it.isNotBlank() }.distinct().map {
+                CleanupOutboxEntity(target = CleanupTarget.PHONE_FILE, payloadJson = CleanupPayload.one("path", it), createdAt = clock())
+            })
+            return@withTransaction Outcome.FENCED
+        }
         val wire = rows.meta.wireFrameId
         val other = wire?.let { db.frameMetaDao().byWireId(it) }
         when {
@@ -38,6 +48,8 @@ class FrameIntake(private val db: ContextDatabase, private val clock: () -> Long
             else -> {
                 db.frameMetaDao().upsert(rows.meta)
                 db.frameStateDao().insertIgnore(listOf(rows.state))
+                // a mark touches capture: the photo that names its mark is linked to it in THIS transaction (a mark that is not here yet finds the photo when it is recorded)
+                if (markRef != null) db.canvasSlice3Dao().linkMarkPhoto(MarkRef.labelId(markRef))
                 Outcome.ADDED
             }
         }
@@ -58,5 +70,9 @@ class FrameIntake(private val db: ContextDatabase, private val clock: () -> Long
         return captured == null && db.momentDao().tombstonesSince(clock() - UNKNOWN_TIME_FENCE_MS) > 0
     }
 
-    companion object { const val UNKNOWN_TIME_FENCE_MS = 24L * 3600 * 1000 }
+    companion object {
+        const val UNKNOWN_TIME_FENCE_MS = 24L * 3600 * 1000
+        /** `canvas_meta` key prefix of an undone mark whose photo may still be on its way (the value is a time, no content). */
+        const val MARK_UNDONE_PREFIX = "mark_undone:"
+    }
 }
