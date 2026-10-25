@@ -11,6 +11,7 @@ import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DeletionEpochStore
 import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.phone.canvas.api.ApiExtra
+import com.rokid.context.phone.canvas.api.MomentRoutes
 import com.rokid.context.phone.canvas.api.PlanRoutes
 import com.rokid.context.phone.canvas.api.ReplayRoutes
 import com.rokid.context.phone.canvas.api.SweepRoutes
@@ -42,6 +43,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             val sweeps = SweepService(dao, traces, fence, scope, devMode, jobGate = gate)
             return build(
                 dao, replay, devMode, startup = { CanvasStartup.run(app, db) },
+                moments = { f, t, n -> com.rokid.context.canvas.moment.MomentTriggers.builder(app).rebuildDay(f, t, n) },
                 sender = { HubGraph.get(app); HubGraph.planSender }, collect = { HubGraph.get(app); HubGraph.collectSession },
                 importer = TraceImport(dao, com.rokid.context.canvas.trace.FencedFiles(db, app.filesDir), fence, onImported = com.rokid.context.canvas.moment.MomentTriggers.get(app)::onTraceImported),
                 stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR).also(File::mkdirs) } },
@@ -62,6 +64,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             sweeps: SweepService? = null,
             /** The candidate of the stored plan with a hash (`ReplayCandidates.forHash`); null = replays with a candidate are refused. */
             candidates: (suspend (String) -> com.rokid.context.capture.replay.ReplayCandidate?)? = null,
+            /** The developer Moment rebuild of one day (`POST /api/moments/rebuild`); null = the route is not registered. */
+            moments: (suspend (Long, Long, Long) -> com.rokid.context.canvas.moment.MomentBuilder.DayReport)? = null,
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
             val replays = ReplayRoutes(replay, candidates ?: { null })
@@ -70,6 +74,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 add(ApiExtra(traces::handle)); add(ApiExtra(replays::handle))
                 if (sweeps != null) SweepRoutes(sweeps).let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(planRoutes::handle))
+                if (moments != null) MomentRoutes(devMode::value, moments).let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
             }
             return CanvasExtras(all, replay, startup, sweeps)
