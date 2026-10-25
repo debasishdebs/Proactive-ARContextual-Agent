@@ -16,6 +16,7 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.contract.PromptKey
+import com.rokid.context.canvas.AbStarted
 import com.rokid.context.canvas.AskDebug
 import com.rokid.context.canvas.AskDebugPhotos
 import com.rokid.context.canvas.AskPhotoRecall
@@ -390,6 +391,63 @@ class CanvasBackendImplTest {
         withTimeout(30_000) { while (backend.run(runId)!!["status"]!!.jsonPrimitive.content == "RUNNING") delay(50) }
         val items = checkNotNull(backend.run(runId))["items"]!!.jsonArray.map { it.jsonObject }
         assertEquals(setOf("f2"), items.map { it["frameId"]!!.jsonPrimitive.content }.toSet())
+    }
+
+    private suspend fun markFrame(label: String, frameId: String, at: Long) {
+        val db = MemoryGraph.get(app).db
+        val fence = com.rokid.context.memory.db.DaoFence(com.rokid.context.orchestration.MemoryWipe.generation.get(), com.rokid.context.memory.db.DeletionEpochStore.of(app).read(),
+            com.rokid.context.orchestration.MemoryWipe.generation::get, com.rokid.context.memory.db.DeletionEpochStore.of(app)::read)
+        assertTrue(db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity(label, "MOMENT", "tap", "X", at, frameId = frameId, createdAt = at), fence))
+    }
+
+    private suspend fun awaitGroup(started: AbStarted) = withTimeout(30_000) {
+        while (listOf(started.runA, started.runB).any { backend.run(it)!!["status"]!!.jsonPrimitive.content in listOf("RUNNING", "QUEUED") }) delay(50)
+    }
+
+    private suspend fun framesOf(runId: String) = checkNotNull(backend.run(runId))["items"]!!.jsonArray.map { it.jsonObject["frameId"]!!.jsonPrimitive.content }.toSet()
+
+    @Test fun anAbEstimateNarrowsTheFramesByThePhotoSettingsOfBothArms() = runBlocking<Unit> {
+        val now = System.currentTimeMillis(); val h = 3_600_000L
+        seed("f1", now - 10 * h); seed("f2", now - 1 * h); seed("f3", now - 2 * h)
+        val ids = listOf("f1", "f2", "f3")
+        val plain = PipelineRef("live-extract", null)
+        assertEquals("defaults on both sides: all three, as before", 3, (backend.estimateAb(plain, plain, ids) as Estimate.Ok).photos)
+        assertEquals("arm A since 5 h drops the 10 h old one", 2, (backend.estimateAb(PipelineRef(copyWithPhotoParams("""{"sinceHours":5}"""), null), plain, ids) as Estimate.Ok).photos)
+        assertEquals("arm B limit 1 keeps the newest", 1, (backend.estimateAb(plain, PipelineRef(copyWithPhotoParams("""{"limit":1}"""), null), ids) as Estimate.Ok).photos)
+        assertEquals("both arms: only what passes both", 1, (backend.estimateAb(PipelineRef(copyWithPhotoParams("""{"sinceHours":5}"""), null), PipelineRef(copyWithPhotoParams("""{"limit":1}"""), null), ids) as Estimate.Ok).photos)
+        val none = backend.estimateAb(PipelineRef(copyWithPhotoParams("""{"markedOnly":true}"""), null), plain, ids)
+        assertTrue("nothing left is refused like an empty choice", none is Estimate.Refused && "no photos" in none.reasons)
+    }
+
+    @Test fun anAbRunSendsOnlyTheScopedFramesToBothArms() = runBlocking<Unit> {
+        bind()
+        val now = System.currentTimeMillis(); val h = 3_600_000L
+        seed("f1", now - 10 * h); seed("f2", now - 1 * h)
+        val ids = listOf("f1", "f2")
+        val a = PipelineRef(copyWithPhotoParams("""{"sinceHours":5}"""), null); val b = PipelineRef("live-extract", null)
+        val est = backend.estimateAb(a, b, ids) as Estimate.Ok
+        assertEquals(1, est.photos)
+        val started = backend.startAb(a, b, ids, est.confirmToken)
+        awaitGroup(started)
+        assertEquals(setOf("f2"), framesOf(started.runA)); assertEquals(setOf("f2"), framesOf(started.runB))
+    }
+
+    @Test fun anAbRunWhoseScopedFramesMovedSinceTheEstimateIsAnInvalidToken() = runBlocking<Unit> {
+        bind()
+        val now = System.currentTimeMillis(); val h = 3_600_000L
+        seed("f2", now - 1 * h); seed("f3", now - 2 * h)
+        val ids = listOf("f2", "f3")
+        markFrame("m3", "f3", now - 2 * h)
+        val a = PipelineRef(copyWithPhotoParams("""{"markedOnly":true}"""), null); val b = PipelineRef("live-extract", null)
+        val est = backend.estimateAb(a, b, ids) as Estimate.Ok
+        assertEquals(1, est.photos)
+        markFrame("m2", "f2", now - 1 * h) // a second frame is marked before the start: the scoped set moved
+        val err = runCatching { backend.startAb(a, b, ids, est.confirmToken) }.exceptionOrNull()
+        assertTrue(err is IllegalArgumentException && err.message == "bad_token")
+        // a start whose scoped set is empty is refused the same way (a token bought for the unscoped list does not fit the empty one)
+        val unscoped = backend.estimateAb(b, b, listOf("f3")) as Estimate.Ok
+        val empty = runCatching { backend.startAb(PipelineRef(copyWithPhotoParams("""{"sinceHours":1}"""), null), b, listOf("f3"), unscoped.confirmToken) }.exceptionOrNull()
+        assertTrue(empty is IllegalArgumentException && empty.message == "bad_token")
     }
 
     @Test fun endToEndRunOnFakeFrames() = runBlocking<Unit> {
