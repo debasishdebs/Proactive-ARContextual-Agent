@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -318,5 +318,17 @@ val MIGRATION_13_14: Migration = object : Migration(13, 14) {
         db.execSQL("ALTER TABLE `moment` ADD COLUMN `text` TEXT DEFAULT NULL")
         db.execSQL("ALTER TABLE `moment` ADD COLUMN `transcript` TEXT DEFAULT NULL")
         db.execSQL("ALTER TABLE `moment` ADD COLUMN `errorReason` TEXT DEFAULT NULL")
+    }
+}
+
+/**
+ * v14 -> v15 (v0.9.6 slice C, a mark touches capture): the photo a mark asked for. `frame_meta.markRef` names the mark a photo belongs to (indexed: a mark that arrives after its photo finds it),
+ * `canvas_label.photo` is the mark's photo state token. Additive: two nullable columns and one index, no row is touched (an old mark has no photo information: null).
+ */
+val MIGRATION_14_15: Migration = object : Migration(14, 15) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `markRef` TEXT DEFAULT NULL")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_frame_meta_markRef` ON `frame_meta` (`markRef`)")
+        db.execSQL("ALTER TABLE `canvas_label` ADD COLUMN `photo` TEXT DEFAULT NULL")
     }
 }

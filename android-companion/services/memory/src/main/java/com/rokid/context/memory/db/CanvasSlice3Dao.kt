@@ -165,6 +165,44 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         return n > 0
     }
 
+    // --- v0.9.6 slice C: a mark touches capture. The photo of a mark is linked on the label (`frameId`, `photo = ok`); the intent row of the mark (`<id>:i`) follows it. ---
+    /** The live photo that names this mark (`frame_meta.markRef`), the earliest when several do: one photo per mark. */
+    @Query("SELECT m.frameId FROM frame_meta m JOIN frame f ON f.id = m.frameId WHERE m.markRef = :ref AND m.frameId NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY f.ts, m.frameId LIMIT 1")
+    protected abstract suspend fun photoOfMark(ref: String): String?
+    @Query("UPDATE canvas_label SET frameId = :frameId, photo = 'ok' WHERE labelId IN (:ids) AND frameId IS NULL") protected abstract suspend fun linkLabelRows(ids: List<String>, frameId: String): Int
+    @Query("UPDATE canvas_label SET photo = :reason WHERE labelId IN (:ids) AND photo = 'pending'") protected abstract suspend fun failLabelRows(ids: List<String>, reason: String): Int
+
+    /**
+     * Links the live photo that names mark [labelId] (`mk:<epoch>:<seq>`) to the mark and its intent row, once (a mark that already has a photo keeps it). True when a link was made. Called inside the frame
+     * commit (the photo arrived after its mark) and when a mark is recorded (the photo arrived first). The marks' derived fields are staled: the mark now belongs to the photo's Moment.
+     */
+    @Transaction open suspend fun linkMarkPhoto(labelId: String): Boolean {
+        val l = label(labelId) ?: return false
+        if (l.frameId != null) return false
+        val frame = photoOfMark(labelId.removePrefix("mk:")) ?: return false
+        val ids = listOf(labelId, "$labelId:i")
+        if (linkLabelRows(ids, frame) == 0) return false
+        bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), ids)
+        return true
+    }
+
+    /** The glasses said why the photo of mark [labelId] could not be taken: stored (on the mark and its intent row) only while the photo is still pending. */
+    @Transaction open suspend fun markPhotoFailed(labelId: String, reason: String): Boolean = failLabelRows(listOf(labelId, "$labelId:i"), reason) > 0
+
+    /**
+     * The marks (and intent rows) a Moment build reads for a time range, by their EFFECTIVE time: the capture time of the linked live photo, else the mark's own time. A mark whose linked photo is
+     * gone (expired) makes no Moment, and a mark still waiting for its photo (`pending`, received after [pendingSince]) is held back; once the wait ran out it is read as the fallback (the caller maps
+     * `pending` to `photo_timeout`).
+     */
+    @Query(
+        "SELECT l.labelId AS labelId, l.kind AS kind, l.source AS source, l.name AS name, COALESCE(f.ts, l.atMs) AS atMs, l.frameId AS frameId, l.traceId AS traceId, l.provenance AS provenance, " +
+            "l.deletionCounter AS deletionCounter, l.createdAt AS createdAt, l.photo AS photo FROM canvas_label l " +
+            "LEFT JOIN frame f ON f.id = l.frameId AND f.id NOT IN (SELECT frameId FROM forget_tombstone) " +
+            "WHERE COALESCE(f.ts, l.atMs) >= :fromMs AND COALESCE(f.ts, l.atMs) <= :toMs " +
+            "AND NOT (l.photo = 'ok' AND f.id IS NULL) AND NOT (l.photo = 'pending' AND l.createdAt > :pendingSince) ORDER BY COALESCE(f.ts, l.atMs), l.labelId",
+    )
+    abstract suspend fun momentMarksBetween(fromMs: Long, toMs: Long, pendingSince: Long): List<CanvasLabelEntity>
+
     /** Forget of photos: their labels go, `labelRev` moves (the caller invalidates the dependent results). Returns the labels deleted. */
     @Transaction open suspend fun deleteLabelsForFrames(frameIds: List<String>): Int {
         if (frameIds.isEmpty()) return 0
