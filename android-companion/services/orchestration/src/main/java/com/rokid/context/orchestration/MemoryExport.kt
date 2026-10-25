@@ -28,11 +28,25 @@ object MemoryExport {
      */
     fun deleteCached(context: Context) {
         try {
-            dir(context).listFiles()?.filter { it.isFile && it.name.startsWith(PREFIX) }?.forEach { it.delete() }
+            // One lock with the publication in write(): the directory is listed AFTER taking it, and an export that started before this call can never publish after it (generation).
+            synchronized(publishLock) {
+                generation++
+                val listed = dir(context).listFiles()?.filter { it.isFile && it.name.startsWith(PREFIX) }
+                testAfterEnumerate?.invoke()
+                listed?.forEach { it.delete() }
+            }
         } catch (e: Exception) {
             PcLog.w("MemoryExport", "cached exports not deleted: ${SafeLog.describe(e)}")
         }
     }
+
+    private val publishLock = Any()
+    /** Moves with every [deleteCached]; guarded by [publishLock]. An export that read the library before a Forget must not be published after it. */
+    private var generation = 0L
+    /** Test seam: runs after the `.part` is complete and before it is published. Always null in production. */
+    /** Test seam: runs in [deleteCached] after the directory was listed and before the files are deleted. Always null in production. */
+    @Volatile internal var testAfterEnumerate: (() -> Unit)? = null
+    @Volatile internal var testBeforePublish: (() -> Unit)? = null
 
     suspend fun write(context: Context, graph: MemoryGraph = MemoryGraph.get(context), nowMs: Long = System.currentTimeMillis(), pageSize: Int = 500): File =
         write(context, graph.db.exportDao(), nowMs, pageSize)
@@ -47,6 +61,7 @@ object MemoryExport {
         val dir = dir(context).apply { mkdirs() }
         val target = File(dir, "$PREFIX$nowMs.json")
         val part = File(dir, "${target.name}.part")
+        val startedAt = synchronized(publishLock) { generation }
         try {
             JsonWriter(OutputStreamWriter(part.outputStream().buffered(), Charsets.UTF_8)).use { w ->
                 w.beginObject()
@@ -82,13 +97,17 @@ object MemoryExport {
                 w.endArray()
                 w.endObject()
             }
-            if (!part.renameTo(target)) throw IOException("export rename failed")
+            testBeforePublish?.invoke()
+            synchronized(publishLock) {
+                if (generation != startedAt) throw IOException("export is stale: a Forget ran while it was written") // its text may be what was just forgotten
+                if (!part.renameTo(target)) throw IOException("export rename failed")
+                // Keep only the newest memory export; other files here (Task 21's diagnostics export) are not ours (F22).
+                dir.listFiles()?.filter { it.isFile && it.name.startsWith(PREFIX) && it.name.endsWith(".json") && it.name != target.name }?.forEach { it.delete() }
+            }
         } catch (t: Throwable) {
             part.delete()
             throw t
         }
-        // Keep only the newest memory export; other files here (Task 21's diagnostics export) are not ours (F22).
-        dir.listFiles()?.filter { it.isFile && it.name.startsWith(PREFIX) && it.name.endsWith(".json") && it.name != target.name }?.forEach { it.delete() }
         target
     }
 }

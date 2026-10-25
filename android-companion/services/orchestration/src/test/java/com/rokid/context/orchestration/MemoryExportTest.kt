@@ -144,4 +144,23 @@ class MemoryExportTest {
         assertEquals(listOf(old.name), MemoryExport.dir(ctx).listFiles()!!.map { it.name })
         old.delete()
     }
+
+    /**
+     * The race: the cleanup lists the folder (it sees the `.part`), then the export renames the `.part` to `.json`, then the cleanup deletes what it listed (the `.part` is gone) and
+     * the JSON with the forgotten text stays. Driven deterministically: the cleanup runs on its own thread and stalls after listing while the export tries to publish.
+     */
+    @Test fun anExportPublishedWhileTheCleanupIsBetweenListingAndDeletingNeverSurvives() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx)
+        g.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "forgotten text", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, "t"))
+        val listed = java.util.concurrent.CountDownLatch(1)
+        lateinit var cleanup: Thread
+        MemoryExport.testAfterEnumerate = { listed.countDown(); Thread.sleep(400) } // the cleanup is slow between listing and deleting
+        MemoryExport.testBeforePublish = { cleanup = Thread { MemoryExport.deleteCached(ctx) }.also { it.start() }; assertTrue(listed.await(10, java.util.concurrent.TimeUnit.SECONDS)) }
+        try {
+            runCatching { MemoryExport.write(ctx, nowMs = 5) } // fails (stale) with the fix; with the race it publishes the JSON
+            cleanup.join(10_000)
+        } finally { MemoryExport.testBeforePublish = null; MemoryExport.testAfterEnumerate = null }
+        assertTrue("no export holds the forgotten text", java.io.File(ctx.cacheDir, "exports").listFiles().orEmpty().none { it.name.startsWith("proactive-context-memories-") })
+        assertTrue(MemoryExport.write(ctx, nowMs = 6).exists()) // the next export works
+    }
 }
