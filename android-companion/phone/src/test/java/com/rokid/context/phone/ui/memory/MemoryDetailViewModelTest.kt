@@ -75,4 +75,17 @@ class MemoryDetailViewModelTest {
         model.askForget(ForgetKind.MOMENT)
         assertEquals(null, model.state.value.confirm)
     }
+
+    /** GAP-1: an edit leaves the old text in the cached export; the hook (which deletes the cached exports) runs once per saved edit only. */
+    @Test fun aSavedEditRunsTheEditHookAndARefusedOneDoesNot() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
+        val edited = AtomicInteger()
+        val model = MemoryDetailViewModel("m1", graph.timeline, graph.memoryEdits, zone = { Fixtures.ZONE }, onTextEdited = { edited.incrementAndGet() }).also { vms += it }
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.startEdit(); model.updateDraft("   "); model.saveEdit()
+        assertEquals(0, edited.get())
+        model.updateDraft("Keys in the drawer"); model.saveEdit()
+        withTimeout(5_000) { model.state.first { it.message == "Saved" } }
+        assertEquals(1, edited.get())
+    }
 }
