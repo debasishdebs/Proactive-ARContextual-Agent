@@ -8,7 +8,8 @@ import androidx.room.PrimaryKey
 /*
  * Moment model phase 1 (Room v9, additive). `moment` and `moment_part` are a PROJECTION over the authoritative stores (frames, memories, marks): the builder can drop and
  * rebuild them and Forget never trusts them (it discovers sources from the authoritative stores and unions the projection). `moment_tombstone` and `cleanup_outbox` are the
- * deletion protection. `moment_trace_dep` is reserved and empty until a trace writer exists. Names only here: no photo bytes, no text, no paths of photos.
+ * deletion protection. `moment_trace_dep` is reserved and empty until a trace writer exists. No photo bytes and no paths of photos. Since v14 the ONE exception to "no text" is
+ * [MomentEntity.text] (its timestamp and the visible memory text of its photos): a copy that Forget removes by dropping the whole Moment (`MomentDao.dropHolding`), so it never outlives its source memories.
  */
 
 /** One stored Moment: [contentRev] and [contentHash] are exactly Moment-lite's (the derived read model); [buildRev] is the builder code version. */
@@ -23,6 +24,15 @@ data class MomentEntity(
     @ColumnInfo(defaultValue = "FRAME") val momentType: com.rokid.context.memory.moment.MomentType,
     /** Why a MARK Moment has no photo (content-free code); null for a FRAME Moment. */
     @ColumnInfo(defaultValue = "NULL") val noPhotoReason: com.rokid.context.memory.moment.NoPhotoReason? = null,
+    /**
+     * Room v14. The Moment's TEXT object: its timestamp plus the visible memory text of its photos (one line per memory), null when no visible memory text exists. A derived copy: the builder
+     * rewrites it on every build and a Forget that removes a source memory drops the whole Moment. NOT the transcript, intent or summary (those are separate objects).
+     */
+    @ColumnInfo(defaultValue = "NULL") val text: String? = null,
+    /** Room v14. The full voice transcript: its OWN object, a scaffold that is always null until audio flows exist. Never merged into [text]. */
+    @ColumnInfo(defaultValue = "NULL") val transcript: String? = null,
+    /** Room v14. The explicit error reason of a MARK Moment recorded because its photo could not be taken (the photo-failed fallback). A MARK Moment with a non-empty reason is VALID; without one it is not (see `MomentValidity`). A content-free code, never user text. */
+    @ColumnInfo(defaultValue = "NULL") val errorReason: String? = null,
 ) : com.rokid.context.memory.moment.MomentObject {
     override val kind: String get() = com.rokid.context.memory.moment.ObjectKind.MOMENT
     override val id: String get() = momentId
