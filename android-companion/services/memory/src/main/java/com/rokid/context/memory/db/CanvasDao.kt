@@ -39,6 +39,7 @@ abstract class CanvasDao {
     @Transaction open suspend fun deleteRun(id: String) { deleteItems(id); deleteScores(id); deleteRunRow(id) }
 
     /**
+     * (A time-range Forget removes the runs holding a value of the range: [CanvasSlice3Dao.forgetRangeTx].)
      * Deletes every run that holds a watch value (its items are keyed `watch:<atMs>`, WatchMotion.KEY_PREFIX) with its items and scores; returns the runs deleted. Called when the watch source
      * is switched off: the hub forgets the values it gave, so a run row must not keep them either. A run with no item yet holds no value and stays.
      */
@@ -116,8 +117,10 @@ abstract class CanvasDao {
     }
 
     /** Fenced run-item (and score) commit of the experiment runner (S24): same fence as [commitTracesFenced]. */
-    @Transaction open suspend fun insertRunItemsFenced(rows: List<CanvasRunItemEntity>, scores: List<CanvasScoreEntity>, generation: Long, frameIds: Set<String>, labelIds: Set<String> = emptySet(), currentGeneration: () -> Long): Boolean {
+    @Transaction open suspend fun insertRunItemsFenced(rows: List<CanvasRunItemEntity>, scores: List<CanvasScoreEntity>, generation: Long, frameIds: Set<String>, labelIds: Set<String> = emptySet(), watchGeneration: Long = 0L, currentWatchGeneration: () -> Long = { 0L }, currentGeneration: () -> Long): Boolean {
         if (!fenceHolds(generation, frameIds + rows.map { it.frameId } + scores.map { it.frameId }, currentGeneration)) return false
+        // GAP-2: a watch value the hub already forgot (source off, Delete all, range Forget) must not come back through a run that was executing meanwhile.
+        if ((rows.any { it.frameId.startsWith(WATCH_KEY_PREFIX) } || scores.any { it.frameId.startsWith(WATCH_KEY_PREFIX) }) && currentWatchGeneration() != watchGeneration) return false
         if (labelIds.isNotEmpty() && labelsMissing(labelIds) > 0) return false // a run over a mark: the mark was deleted while the call waited
         rows.forEach { upsertItem(it) }
         scores.forEach { upsertScore(it) }
@@ -226,7 +229,7 @@ abstract class CanvasDao {
         frameIds.chunked(CHUNK).forEach { deleteItemsForFrames(it); deleteTracesForFrames(it) }
     }
 
-    private companion object { const val CHUNK = 500 }
+    private companion object { const val CHUNK = 500; const val WATCH_KEY_PREFIX = "watch:" /* WatchMotion.KEY_PREFIX; memory does not depend on :services:ai */ }
 }
 
 data class TokenMeans(val p: Double?, val c: Double?, val n: Int)

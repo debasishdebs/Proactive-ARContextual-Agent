@@ -169,6 +169,8 @@ object HubGraph {
             },
         ))
         contextRegistry = ctxRegistry; contextHub = ctxHub
+        // GAP-2: Delete all and a time-range Forget reach the in-memory watch values too (the hub graph is a process singleton; register is idempotent).
+        com.rokid.context.memory.forget.ForgetListeners.register(ctxHub.forgetListener)
         // Slice 3a: plan reconciliation and the collect session live HERE, in the hub; the canvas server only calls them.
         val install = { com.rokid.context.memory.db.DeletionEpochStore.of(app).read().installId }
         val phoneRt = com.rokid.context.phone.hub.plan.LaterSeams.noPhoneRt // TODO(Task 13): PhoneRtApplier

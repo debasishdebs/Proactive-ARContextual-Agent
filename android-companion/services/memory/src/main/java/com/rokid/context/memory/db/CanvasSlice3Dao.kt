@@ -79,9 +79,21 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         ids.forEach { tombstoneTrace(it, now) }
         purgeSensorBetween(fromMs, toMs, now, "forget") // the sensor rows of the range go whichever trace they came from
         val labels = deleteLabelsBetween(fromMs, toMs)
+        deleteWatchRunsBetween(fromMs, toMs) // GAP-2: the run rows holding a watch value of the range (items are keyed watch:<atMs>)
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
         return ForgetOutcome(ids, labels, invalid, jobs)
     }
+
+    /** Runs that hold a `watch:<atMs>` item with `fromMs <= atMs <= toMs` (the empty-window `watch:none` item holds no value). */
+    @Query("SELECT DISTINCT runId FROM canvas_run_item WHERE frameId LIKE 'watch:%' AND SUBSTR(frameId, 7) GLOB '[0-9]*' AND CAST(SUBSTR(frameId, 7) AS INTEGER) BETWEEN :fromMs AND :toMs")
+    protected abstract suspend fun watchRunIdsBetween(fromMs: Long, toMs: Long): List<String>
+    @Query("DELETE FROM canvas_score WHERE runId = :runId") protected abstract suspend fun deleteScoresOfRun(runId: String): Int
+    @Query("DELETE FROM canvas_run_item WHERE runId = :runId") protected abstract suspend fun deleteItemsOfRun(runId: String): Int
+    @Query("DELETE FROM canvas_run WHERE runId = :runId") protected abstract suspend fun deleteRunRowOf(runId: String): Int
+
+    /** Deletes (with items and scores) every run holding a watch value of the range; returns the runs. Call it inside the Forget transaction. */
+    @Transaction open suspend fun deleteWatchRunsBetween(fromMs: Long, toMs: Long): Int =
+        watchRunIdsBetween(fromMs, toMs).also { ids -> ids.forEach { deleteScoresOfRun(it); deleteItemsOfRun(it); deleteRunRowOf(it) } }.size
 
     /**
      * The 3b deletion step shared by every Forget entry point, called INSIDE the Forget transaction: bumps `frame_forget_rev` (so a runner fence captured earlier and a

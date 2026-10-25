@@ -3,6 +3,7 @@ package com.rokid.context.canvas
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.ai.canvas.PipelineHash
+import com.rokid.context.ai.canvas.WatchFence
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PipelineValidator
@@ -89,6 +90,8 @@ class CanvasRunner(
     private val scenes: SceneRunSource? = null,
     /** The recent watch values of the phone hub a watch run uses (estimate, start and again right after the fence capture); null = no watch runs. */
     private val watch: WatchRunSource? = null,
+    /** GAP-2: the watch fence (see [WatchFence]); captured before a run reads the hub's values and checked, with the rows, by the fenced commit. */
+    private val watchGeneration: () -> Long = WatchFence.generation::get,
 ) {
     companion object {
         const val MAX_PHOTOS = 50
@@ -581,6 +584,7 @@ class CanvasRunner(
         try {
             val ctx = context(runId)
             val gen = generation() // captured BEFORE the photos are loaded: every write below is fenced on it (S24)
+            val wgen = watchGeneration() // GAP-2: and watch rows on the watch fence, captured before the hub's values are read
             // WP8: a pipeline with a helper node also captures the helper fence (wipe generation, deletion epoch, frame-Forget revision) BEFORE the frames load; the run's own
             // write below stays the existing fenced path (insertRunItemsFenced) on the wipe generation and the tombstones.
             val helperFence = p.nodes.firstNotNullOfOrNull { executors[it.type] as? HelperExecutor }?.captureFence()
@@ -634,7 +638,7 @@ class CanvasRunner(
             suspend fun flush(): Boolean {
                 if (pending.isEmpty()) return true
                 val rows = pending.toList(); pending.clear()
-                return dao.insertRunItemsFenced(rows, emptyList(), gen, allMembers, allMarks, generation)
+                return dao.insertRunItemsFenced(rows, emptyList(), gen, allMembers, allMarks, watchGeneration = wgen, currentWatchGeneration = watchGeneration, currentGeneration = generation)
             }
 
             stop@ for (node in ItemFlow.topological(p)) {
