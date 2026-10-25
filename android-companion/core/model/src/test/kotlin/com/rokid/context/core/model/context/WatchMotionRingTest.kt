@@ -1,8 +1,8 @@
 package com.rokid.context.core.model.context
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class WatchMotionRingTest {
     private fun s(at: Long, st: WatchState = WatchState.WALKING, c: Float = 1f) = WatchSample(at, st, c)
