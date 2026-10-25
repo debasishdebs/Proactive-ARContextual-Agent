@@ -139,6 +139,16 @@ class CanvasBackendImplTest {
         assertEquals(listOf("1", "0"), rows.map { (it["marks"] as kotlinx.serialization.json.JsonPrimitive).content })
     }
 
+    @Test fun theMomentListCarriesTheTextOfTheVisibleMemoriesOfItsPhotosAndNullWhenThereIsNone() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        db.frameDao().insertIgnore(FrameEntity("f1", 1_761_000_005_000L, "/f1.jpg", "rokid")); db.frameDao().insertIgnore(FrameEntity("f2", 1_761_000_009_000L, "/f2.jpg", "rokid"))
+        db.memoryDao().insert(com.rokid.context.memory.db.MemoryEntity("m1", "f1", "the red door", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, "the red door"))
+        db.memoryDao().insert(com.rokid.context.memory.db.MemoryEntity("m2", "f1", "hidden one", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.NEEDS_REVIEW, false, 2, false, "hidden one"))
+        val rows = backend.moments(0, 1_761_000_100_000L, 10).map { it as kotlinx.serialization.json.JsonObject }.associateBy { (it["startMs"] as kotlinx.serialization.json.JsonPrimitive).content.toLong() }
+        assertEquals(java.time.Instant.ofEpochMilli(1_761_000_005_000L).toString() + "\nthe red door", (rows.getValue(1_761_000_005_000L)["text"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals("null", rows.getValue(1_761_000_009_000L)["text"].toString())
+    }
+
     /** A sealed JPEG in the archive and its `frame` row; the source starts with "rokid" like real frames. */
     private fun seed(id: String, ts: Long): FrameEntity {
         val file = File(tmp.root, "rokid_${ts}_$id.jpg").apply { writeBytes(FrameImages.forDisk(jpeg)) }
