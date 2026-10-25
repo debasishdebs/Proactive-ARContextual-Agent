@@ -1,6 +1,6 @@
 package com.rokid.context.glasses.capture
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -14,8 +14,8 @@ internal class CaptureSession(private val unbind: () -> Unit, private val releas
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        runCatching(unbind).onFailure { Log.w(CaptureService.TAG, "capture unbind failed: ${it.javaClass.simpleName}") }
-        runCatching(release).onFailure { Log.w(CaptureService.TAG, "texture release failed: ${it.javaClass.simpleName}") }
+        runCatching(unbind).onFailure { PcLog.w(CaptureService.TAG, "capture unbind failed: ${it.javaClass.simpleName}") }
+        runCatching(release).onFailure { PcLog.w(CaptureService.TAG, "texture release failed: ${it.javaClass.simpleName}") }
     }
 }
 
@@ -29,7 +29,7 @@ internal fun startForegroundOrStop(start: () -> Unit, onRefused: () -> Unit): Bo
 } catch (e: CancellationException) {
     throw e
 } catch (e: Exception) {
-    Log.w(CaptureService.TAG, "startForeground refused: ${e.javaClass.simpleName}")
+    PcLog.w(CaptureService.TAG, "startForeground refused: ${e.javaClass.simpleName}")
     onRefused()
     false
 }

@@ -1,7 +1,7 @@
 package com.rokid.context.glasses.link
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.cxr.CXRServiceBridge
 import com.rokid.cxr.Caps
 
@@ -26,7 +26,7 @@ class CxrBridge(context: Context) : GlassesBridge {
     override fun send(channel: String, vararg parts: String): Int = try {
         bridge.sendMessage(channel, Caps().apply { parts.forEach { write(it) } })
     } catch (e: Exception) {
-        Log.w(HudController.TAG, "send $channel threw ${e.javaClass.simpleName}")
+        PcLog.w(HudController.TAG, "send $channel threw ${e.javaClass.simpleName}")
         -3
     }
 

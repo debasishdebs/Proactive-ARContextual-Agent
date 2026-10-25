@@ -3,7 +3,7 @@ package com.rokid.context.glasses.capture
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.glasses.GlassesRuntime
 
 /**
@@ -17,13 +17,13 @@ class CaptureAlarmReceiver : BroadcastReceiver() {
         val live = CaptureService.liveInstance
         if (live != null) {
             // Smart mode: a watchdog (restart the session if it is not running); Fixed mode: one capture.
-            if (!live.onAlarm()) Log.i(CaptureService.TAG, "alarm: capture already in flight")
+            if (!live.onAlarm()) PcLog.i(CaptureService.TAG, "alarm: capture already in flight")
             return
         }
         runCatching {
             context.startForegroundService(Intent(context, CaptureService::class.java).setAction(CaptureService.ACTION_SCHEDULED))
         }.onFailure {
-            Log.w(CaptureService.TAG, "alarm: service start refused: ${it.javaClass.simpleName}")
+            PcLog.w(CaptureService.TAG, "alarm: service start refused: ${it.javaClass.simpleName}")
             CaptureScheduler(context).scheduleNext(CaptureCadence.RETRY_MS) // keep the chain alive
             GlassesRuntime.get(context).onCaptureScheduled()
         }

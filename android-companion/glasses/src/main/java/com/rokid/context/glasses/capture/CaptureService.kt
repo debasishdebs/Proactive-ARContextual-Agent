@@ -11,7 +11,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.context.ContextPolicies
 import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.glasses.capture.motion.MotionHintSender
