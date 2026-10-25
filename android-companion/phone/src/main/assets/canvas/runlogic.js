@@ -23,6 +23,10 @@ export function retryDelay(attempt, err) {
   return [1000, 2000, 4000][attempt] === undefined ? null : [1000, 2000, 4000][attempt];
 }
 
+/** Playground vs Run-and-Save (v0.9.6): a pipeline with a Save memory step offers two saving runs, one without it is a playground (run, see the output, nothing stored). `?after=` of the run page: what to do once DONE (null: nothing). */
+export const hasMemoryNode = (pipe) => !!pipe && Array.isArray(pipe.nodes) && pipe.nodes.some((n) => n && n.type === 'memory.write');
+export const runChoices = (pipe) => (hasMemoryNode(pipe) ? [{ label: 'Run & Save', after: 'save' }, { label: 'Run, review, then Save', after: 'review' }] : [{ label: 'Run', after: 'play' }]);
+export const afterOf = (v) => (['save', 'review', 'play'].includes(v) ? v : null);
 export const refKey = (r) => r.pipelineId + '@' + (r.version ? r.version : 'draft');
 
 /** Redraw only when nothing on screen is final: a finished, unchanged run keeps its open details and typed notes. */

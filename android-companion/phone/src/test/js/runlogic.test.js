@@ -69,4 +69,15 @@ export const tests = {
     eq(R.parseRef('p1@draft'), { pipelineId: 'p1' });
     eq(R.parseRef(''), null);
   },
+  runChoicesOfferTwoSavingRunsWithAMemoryNodeAndAPlaygroundWithout() {
+    const withMem = { nodes: [{ id: 'a', type: 'ai.vision_extract' }, { id: 'w', type: 'memory.write' }] };
+    eq(R.runChoices(withMem), [{ label: 'Run & Save', after: 'save' }, { label: 'Run, review, then Save', after: 'review' }]);
+    eq(R.runChoices({ nodes: [{ id: 'a', type: 'ai.vision_extract' }] }), [{ label: 'Run', after: 'play' }]);
+    eq(R.runChoices(null), [{ label: 'Run', after: 'play' }]);
+    ok(R.hasMemoryNode(withMem) && !R.hasMemoryNode({ nodes: [] }) && !R.hasMemoryNode(null));
+  },
+  afterOfAcceptsOnlyTheThreeModes() {
+    eq(['save', 'review', 'play'].map(R.afterOf), ['save', 'review', 'play']);
+    eq([null, undefined, '', 'x', 'SAVE'].map(R.afterOf), [null, null, null, null, null]);
+  },
 };
