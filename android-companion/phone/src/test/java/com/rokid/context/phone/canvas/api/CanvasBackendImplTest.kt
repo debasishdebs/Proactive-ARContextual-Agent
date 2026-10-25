@@ -1234,4 +1234,46 @@ class CanvasBackendImplTest {
         assertEquals(AskDebug.Replay.Failed("not_found"), backend.replayAsk("nope", "T"))
         assertTrue(requests.isEmpty())
     }
+
+    // ---- Playground vs Run-and-Save (v0.9.6) ----
+
+    private fun saveRunPipeline(withMemory: Boolean) = com.rokid.context.ai.canvas.Pipeline(
+        2, "p", "P",
+        listOf(com.rokid.context.ai.canvas.PipelineNode("photos", "input.photos", "photos", JsonObject(emptyMap())), com.rokid.context.ai.canvas.PipelineNode("ext", "ai.vision_extract", "ext", JsonObject(emptyMap()))) +
+            (if (withMemory) listOf(com.rokid.context.ai.canvas.PipelineNode("save", "memory.write", "save", JsonObject(emptyMap()))) else emptyList()),
+        listOf(com.rokid.context.ai.canvas.PipelineEdge("photos", "ext")) + (if (withMemory) listOf(com.rokid.context.ai.canvas.PipelineEdge("ext", "save")) else emptyList()),
+    )
+
+    private suspend fun seedRun(id: String, withMemory: Boolean) {
+        val db = MemoryGraph.get(app).db
+        val jpg = tmp.newFile("$id.jpg").apply { writeBytes(byteArrayOf(1)) }
+        db.frameDao().insertIgnore(FrameEntity("f-$id", 1, jpg.absolutePath, "rokid_glasses"))
+        db.canvasDao().insertRun(CanvasRunEntity(id, "p", null, "h", PipelineJson.encode(saveRunPipeline(withMemory)), "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        db.canvasDao().upsertItem(CanvasRunItemEntity(id, "f-$id", "ext", "OK", null,
+            """{"kind":"extraction","facts":[{"text":"a mug","type":"object","confidence":0.9,"source_frame_ids":["f-$id"]}],"captions":[],"trusted":true,"note":null}""", null, null, null, null, null, null, "$id:ext"))
+    }
+
+    @Test fun aRunWithASaveMemoryNodeIsProposedAndSavedOnceThroughTheRealPath() = runBlocking<Unit> {
+        seedRun("r1", withMemory = true)
+        val p = backend.runProposal("r1")!!
+        assertEquals(true, p["saveable"]!!.jsonPrimitive.boolean)
+        assertEquals("a mug", p["memories"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content)
+        val first = backend.saveRun("r1")
+        assertEquals("SAVED", first["result"]!!.jsonPrimitive.content); assertEquals(true, first["ok"]!!.jsonPrimitive.boolean); assertEquals(1, first["saved"]!!.jsonPrimitive.int)
+        assertEquals("rokid_cv_r1_0", MemoryGraph.get(app).db.memoryViewDao().byId("rokid_cv_r1_0")!!.id)
+        val again = backend.saveRun("r1")
+        assertEquals("ALREADY_SAVED", again["result"]!!.jsonPrimitive.content); assertEquals(1, again["saved"]!!.jsonPrimitive.int)
+        assertEquals(1, backend.runProposal("r1")!!["saved"]!!.jsonPrimitive.int)
+    }
+
+    @Test fun aPlaygroundRunIsNotSaveableAndAnUnknownRunIsNotFound() = runBlocking<Unit> {
+        seedRun("r2", withMemory = false)
+        val p = backend.runProposal("r2")!!
+        assertEquals(false, p["saveable"]!!.jsonPrimitive.boolean); assertEquals("NO_MEMORY_NODE", p["reason"]!!.jsonPrimitive.content)
+        val r = backend.saveRun("r2")
+        assertEquals("NOT_SAVEABLE", r["result"]!!.jsonPrimitive.content); assertEquals(false, r["ok"]!!.jsonPrimitive.boolean)
+        assertEquals(null, MemoryGraph.get(app).db.memoryViewDao().byId("rokid_cv_r2_0"))
+        assertNull(backend.runProposal("nope"))
+        assertTrue(runCatching { backend.saveRun("nope") }.exceptionOrNull() is NoSuchElementException)
+    }
 }

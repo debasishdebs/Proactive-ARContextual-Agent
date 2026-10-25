@@ -320,6 +320,21 @@ class CanvasApiTest {
         assertEquals(404, call("GET", "/api/runs/run1").status)
     }
 
+    @Test fun theRunProposalAndTheSaveRoutes() {
+        val api2 = CanvasApi(object : CanvasBackend by be {
+            override suspend fun runProposal(id: String): JsonObject? = if (id == "run1") buildJsonObject { put("saveable", true) } else null
+            override suspend fun saveRun(id: String): JsonObject = if (id == "run1") buildJsonObject { put("result", "SAVED") } else throw NoSuchElementException()
+        })
+        fun go(m: String, p: String) = api2.handle(HttpRequest(m, p, emptyMap(), emptyMap(), ByteArray(0)))
+        assertEquals(200, go("GET", "/api/runs/run1/proposal").status)
+        assertEquals(404, go("GET", "/api/runs/nope/proposal").status)
+        val saved = go("POST", "/api/runs/run1/save")
+        assertEquals(200, saved.status); assertEquals("SAVED", saved.obj()["result"]!!.jsonPrimitive.content)
+        assertEquals(404, go("POST", "/api/runs/nope/save").status)
+        assertEquals("a save is a POST only", 405, go("GET", "/api/runs/run1/save").status)
+        assertEquals("a proposal is a GET only", 405, go("POST", "/api/runs/run1/proposal").status)
+    }
+
     @Test fun busyOnDeleteActiveRun() {
         val api2 = CanvasApi(object : CanvasBackend by be {
             override suspend fun deleteRun(id: String): Boolean = throw CanvasRunner.Busy()

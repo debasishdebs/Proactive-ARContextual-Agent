@@ -35,4 +35,17 @@ class CanvasValueJsonTest {
         assertEquals("x", CanvasValueJson.branchOf(NodeResult("f", null, branch = "x")))
         assertNull(CanvasValueJson.branchOf(NodeResult("f", null)))
     }
+
+    /** A canvas Save reads the stored extraction back: what was encoded is what it decodes (tags are not stored), and any other kind or garbage is null. */
+    @Test fun anExtractionDecodesBackFromItsStoredForm() {
+        val ex = CanvasValue.Extraction(
+            listOf(Fact("A mug", "object", 0.9, emptyList(), listOf("f1", "f2"))), listOf(FrameCaption("f1", "A counter")), trusted = true, note = "n",
+        )
+        assertEquals(ex, CanvasValueJson.decodeExtraction(CanvasValueJson.encode(ex)))
+        assertEquals(false, CanvasValueJson.decodeExtraction(CanvasValueJson.encode(ex.copy(trusted = false)))!!.trusted)
+        assertNull(CanvasValueJson.decodeExtraction(CanvasValueJson.encode(ex.copy(trusted = null)))!!.trusted)
+        assertNull(CanvasValueJson.decodeExtraction(CanvasValueJson.encode(CanvasValue.Photo)))
+        assertNull(CanvasValueJson.decodeExtraction("""{"kind":"json","value":{}}"""))
+        assertNull(CanvasValueJson.decodeExtraction("not json")); assertNull(CanvasValueJson.decodeExtraction(null))
+    }
 }

@@ -89,6 +89,16 @@ interface CanvasBackend {
      */
     suspend fun run(id: String): JsonObject?
     suspend fun cancelRun(id: String): Boolean
+    /**
+     * Playground vs Run-and-Save (v0.9.6): what saving run [id] would write, read-only: `{saveable, reason, message, saved, memories:[{frameId,kind,text,type,review}]}`;
+     * `saveable:false` with its reason for a run that is not finished, has no Save memory step (a playground run) or is not a photo run. Null for an unknown run.
+     */
+    suspend fun runProposal(id: String): JsonObject? = null
+    /**
+     * Saves run [id]'s memories through the real write path, once: `{result, ok, saved, message}` with `result` one of SAVED, ALREADY_SAVED, NOT_SAVEABLE, NOTHING, BUSY (an export or
+     * delete is running: try again), WIPED. A failure is thrown (500), never reported as saved. Unknown run: [NoSuchElementException].
+     */
+    suspend fun saveRun(id: String): JsonObject = throw IllegalArgumentException("save is not available")
     suspend fun deleteRun(id: String): Boolean
     suspend fun score(runId: String, frameId: String, nodeId: String, score: Int, note: String)
     /**

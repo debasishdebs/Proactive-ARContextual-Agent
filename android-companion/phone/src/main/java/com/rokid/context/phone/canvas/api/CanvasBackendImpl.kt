@@ -741,6 +741,27 @@ class CanvasBackendImpl(
 
     override suspend fun cancelRun(id: String): Boolean = runner.cancel(id)
 
+    private val runSave by lazy { com.rokid.context.canvas.CanvasRunSave(app, MemoryGraph.get(app).db) }
+
+    override suspend fun runProposal(id: String): JsonObject? {
+        start()
+        val p = runSave.proposal(id) ?: return null
+        return buildJsonObject {
+            put("saveable", p.saveable); put("reason", p.reason?.name); put("message", p.reason?.message); put("saved", p.saved)
+            put("memories", JsonArray(p.memories.map { m -> buildJsonObject { put("frameId", m.frameId); put("kind", m.kind); put("text", m.text); put("type", m.type); put("review", m.review) } }))
+        }
+    }
+
+    override suspend fun saveRun(id: String): JsonObject {
+        start()
+        val r = runSave.save(id)
+        return buildJsonObject {
+            put("result", r.code); put("ok", r is com.rokid.context.canvas.CanvasRunSave.Result.Saved || r is com.rokid.context.canvas.CanvasRunSave.Result.AlreadySaved)
+            put("saved", (r as? com.rokid.context.canvas.CanvasRunSave.Result.Saved)?.count ?: (r as? com.rokid.context.canvas.CanvasRunSave.Result.AlreadySaved)?.count ?: 0)
+            put("message", r.message)
+        }
+    }
+
     override suspend fun deleteRun(id: String): Boolean {
         if (runner.isBusy(id)) throw CanvasRunner.Busy() // the active run or either run of a live A/B group (a QUEUED B included)
         if (dao.run(id) == null) return false

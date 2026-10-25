@@ -29,7 +29,7 @@ object DeletionGraph {
         k("canvas_helper_cleanup", "opaque job ids and reason codes only, no user data; must survive Delete all so the laptop copies are still deleted"),
         w("canvas_run", "photo experiment runs"), w("canvas_run_item", "per-photo run outputs"), w("canvas_score", "per-photo scores"),
         w("canvas_live_trace", "per-photo live outputs"),
-        k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); the forgetRanges fence value is emptied by the wipe; otherwise no user data"),
+        k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); the forgetRanges fence value is emptied by the wipe; `canvas_save:<runId>` markers (v0.9.6: a run id and a count, no content; they make a canvas Save idempotent) are deleted with their run and by the wipe; otherwise no user data"),
         k("canvas_group_state", "publish-group recovery record: gen, hashes, mode, install id and state; needed to recover a deployed plan; no user data"),
         w("moment", "stored Moment projection (a rebuildable read model over frames, memories and marks); since v14 its `text` column holds the visible memory text of its photos (dropped with the Moment by every Forget that removes a source memory, rewritten by the rebuild), `transcript` is a null scaffold and `errorReason` a content-free code"),
         w("moment_part", "Moment membership edges (ids and revisions only)"),
