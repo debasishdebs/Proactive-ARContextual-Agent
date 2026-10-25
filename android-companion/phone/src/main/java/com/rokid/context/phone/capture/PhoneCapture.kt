@@ -4,7 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.core.content.FileProvider
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -97,7 +97,7 @@ class PhoneCapture(
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "capture ingest failed (${e.javaClass.simpleName})")
+            PcLog.i(TAG, "capture ingest failed (${e.javaClass.simpleName})")
             false
         } finally {
             discard(file)

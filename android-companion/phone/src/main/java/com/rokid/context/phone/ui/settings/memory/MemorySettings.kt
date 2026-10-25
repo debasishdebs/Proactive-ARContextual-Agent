@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.memory
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -132,7 +132,7 @@ class MemorySettingsViewModel(
 
     private suspend fun refreshStorage() {
         val used = try { withContext(work) { usedBytes() } } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            Log.i(TAG, "storage size unavailable (${e.javaClass.simpleName})"); 0L
+            PcLog.i(TAG, "storage size unavailable (${e.javaClass.simpleName})"); 0L
         }
         _state.update { it.copy(storage = "${used / (1024 * 1024)} MB of ${it.settings.quotaMb} MB") }
     }
@@ -142,7 +142,7 @@ class MemorySettingsViewModel(
         _state.update { it.copy(busy = true, notice = null) }
         viewModelScope.launch {
             try { block() } catch (c: CancellationException) { throw c } catch (e: Exception) {
-                Log.i(TAG, "memory action failed (${e.javaClass.simpleName})")
+                PcLog.i(TAG, "memory action failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(notice = "That didn't work — try again") }
             } finally { _state.update { it.copy(busy = false) } }
         }

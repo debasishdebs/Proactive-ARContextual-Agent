@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.phone.hub.Hub
 import com.rokid.context.ai.SafeLog
@@ -136,7 +136,7 @@ class PausePipelineControl(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.w(TAG, "pause tap failed: ${SafeLog.describe(e)}")
+                    PcLog.w(TAG, "pause tap failed: ${SafeLog.describe(e)}")
                 } finally {
                     synchronized(lock) { if (--inFlight == 0) requested = null }
                 }
@@ -153,7 +153,7 @@ class PausePipelineControl(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "legacy pause migration failed: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "legacy pause migration failed: ${SafeLog.describe(e)}")
         }
     }
 
@@ -169,7 +169,7 @@ class PausePipelineControl(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "backlog release failed: ${SafeLog.describe(e)}")
+                PcLog.w(TAG, "backlog release failed: ${SafeLog.describe(e)}")
             }
         }
     }

@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.diagnostics
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.local.NomicText
 import com.rokid.context.ai.local.RecallAtK
 import com.rokid.context.memory.ImageDecodeException
@@ -134,12 +134,12 @@ class PhotoDimEval(
             val pass = !ceiling && RecallAtK.choose256(r768, r256)
             val done = Outcome.Done(r768, r256, pass, loadedLabelled.size, loadedDistractors, inconclusive = ceiling)
             writeResult(done)
-            Log.i(TAG, "done labelled=${loadedLabelled.size} distractors=$loadedDistractors queries=${r768.queries} small=${r768.smallQueries} verdict=${done.verdict}")
+            PcLog.i(TAG, "done labelled=${loadedLabelled.size} distractors=$loadedDistractors queries=${r768.queries} small=${r768.smallQueries} verdict=${done.verdict}")
             return done
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "failed class=${e.javaClass.simpleName}")
+            PcLog.i(TAG, "failed class=${e.javaClass.simpleName}")
             return Outcome.Failed("The test failed (${e.javaClass.simpleName}) \u2014 try again")
         }
     }
