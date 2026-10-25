@@ -6,9 +6,11 @@ import com.rokid.context.capture.plan.ExprSignals
 import com.rokid.context.capture.plan.ExprValues
 import com.rokid.context.capture.plan.SignalCatalog
 import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.core.model.context.graph.WindowRing
 import com.rokid.context.glasses.capture.motion.model.SecondFeatures
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -19,8 +21,8 @@ import kotlinx.serialization.json.putJsonArray
 /**
  * The phone-evaluated try-it (3c X8): runs ONE expression program through the SAME [ExprRunner] code the glasses use (no second evaluator) on the values the
  * user gave for the program's signals, and reports every step's value. Window terms need history: a signal is a constant (held for as many seconds as the
- * longest window needs) or a list of per-second values (oldest first, the last one is "now"); all lists of one request have the same length. A window that
- * has fewer valid seconds than its horizon is NOT_READY, exactly like a warming window on the device. Input is bounded: [MAX_SIGNALS] signals,
+ * longest window needs) or a list of per-second values (oldest first, the last one is "now"; a null is a missing second); all lists of one request have the same length. A window whose horizon has not
+ * elapsed, or that has fewer valid seconds than its tolerance asks, is NOT_READY, exactly like a warming window on the device. Input is bounded: [MAX_SIGNALS] signals,
  * [MAX_VALUES] values each, [MAX_BYTES] of body (the route checks the size). Nothing here reads or writes any state.
  */
 object ExprTry {
@@ -43,7 +45,7 @@ object ExprTry {
      * [body]: `{graph, role?: "guard"|"value", row?, field?, signals: {name: number | [number...]}, ctx?: <state>, ctxAgeS?: number}`.
      * A program that does not compile answers `{ok:false, problems}` (not a refusal); a bad request is [Outcome.Bad].
      */
-    fun run(body: JsonObject): Outcome {
+    fun run(body: JsonObject, windowMinValidPct: Int = ExprProgram.DEFAULT_MIN_VALID_PCT): Outcome {
         val role = when ((body["role"] as? JsonPrimitive)?.content ?: "guard") { "guard" -> ExprRole.GUARD; "value" -> ExprRole.VALUE; else -> return bad("bad_request", "Role must be guard or value.") }
         val sigs = body["signals"] as? JsonObject ?: return bad("bad_request", "signals must be an object.")
         if (sigs.size > MAX_SIGNALS) return bad("too_many_signals", "At most $MAX_SIGNALS signals.")
@@ -56,7 +58,7 @@ object ExprTry {
                 if (v.isEmpty() || v.size > MAX_VALUES) return bad("too_many_values", "A signal list holds 1 to $MAX_VALUES values.")
                 if (len != 0 && len != v.size) return bad("ragged_signals", "Signal lists must all have the same length.")
                 len = v.size
-                DoubleArray(v.size) { num(v[it]) ?: return bad("bad_value", NUMBERS) }
+                DoubleArray(v.size) { if (v[it] is JsonNull) Double.NaN else num(v[it]) ?: return bad("bad_value", NUMBERS) }   // null = a missing second
             } else doubleArrayOf(num(v) ?: return bad("bad_value", NUMBERS))
             series[name] = xs
         }
@@ -64,9 +66,9 @@ object ExprTry {
         val age = body["ctxAgeS"]?.let { num(it)?.takeIf { a -> a >= 0 } ?: return bad("bad_value", "ctxAgeS is a number from 0 to 1000000.") } ?: 0.0
 
         val field = (body["field"] as? JsonPrimitive)?.content
-        val low = ExprLowering.lowerAll(listOf(ExprLowering.Entry("try", body["graph"], role, (body["row"] as? JsonPrimitive)?.content, field)))
+        val low = ExprLowering.lowerAll(listOf(ExprLowering.Entry("try", body["graph"], role, (body["row"] as? JsonPrimitive)?.content, field)), windowMinValidPct)
         if (low.problems.isNotEmpty() || low.exprs.isEmpty()) return Outcome.Ok(buildJsonObject { put("ok", false); putJsonArray("problems") { low.problems.forEach { add(JsonPrimitive(it)) } } })
-        val checked = ExprProgram.parse(role, body["graph"]).first!!.check()
+        val checked = ExprProgram.parse(role, body["graph"]).first!!.check(windowMinValidPct.coerceIn(WindowRing.MIN_VALID_PCT, 100))
         val runner = ExprRunner.of(low.exprs) ?: return bad("bad_request", "The program cannot run.")
 
         val read = (low.exprs[0]["s"] as JsonArray).map { it as JsonObject }.filter { (it["op"] as JsonPrimitive).content.let { op -> op == "sig" || op == "win" } }
