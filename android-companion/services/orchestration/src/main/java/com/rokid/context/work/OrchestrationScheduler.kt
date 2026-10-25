@@ -259,9 +259,18 @@ class OrchestrationScheduler(
         workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.NightIndexWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
     }
 
+    /**
+     * The jobs that must run whatever the pipeline state (they only remove data or rebuild a projection and never make an AI call): retention and the Moment cadence. Called from every start path
+     * (the process start, every launch, a link-up) and from [scheduleCritic]; each is unique + KEEP, so repeated calls are free. (The cadence used to be reached only through [scheduleCritic],
+     * which MainActivity calls only while processing is on: with processing off it was never scheduled and a mark recorded by an older build never got its Moment.)
+     */
+    fun ensureBackgroundWork() {
+        runCatching { ensureRetention() }
+        runCatching { ensureMomentCadence() }
+    }
+
     fun scheduleCritic() {
-        ensureRetention()
-        ensureMomentCadence()
+        ensureBackgroundWork()
         ensureNightIndex()
         val request = PeriodicWorkRequestBuilder<CriticWorkerJob>(3, TimeUnit.HOURS)
             .addTag(TAG_CRITIC)
