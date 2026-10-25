@@ -52,7 +52,7 @@ Legend. Columns: **Out** = writes `cleanup_outbox` rows (and `canvas_helper_clea
 | `ask`, `nudge`, `proposal` | redacted by E1-E3; E10 deletes | export copies of them (GAP-1) |
 | `summary_trace` | E10 | E1-E3 (ids and counts only, documented) |
 | `canvas_label` marks | E2/E4 (+-10 s), E8, E9, E10, E11 | none |
-| `moment`, `moment_part`, `moment_sensor`, audit, derived | `MomentDao.remove`, E10 | n.a. |
+| `moment` (incl. since v14 `text`: visible memory text of its photos; `transcript`: null scaffold; `errorReason`), `moment_part`, `moment_sensor`, audit, derived | `MomentDao.remove`, E10; the text is also dropped with the Moment by `dropHolding` when a source memory is forgotten or invalidated (E1) and never rewritten from a hidden, forgotten or stale-derived memory (`ResidueOracleTest.momentTextOf...`) | n.a. |
 | `scene`, `scene_part`, audit, derived | shrink on Moment removal, E10 | n.a. |
 | `canvas_trace`, events, trace folders | E2/E4 span, E8, E9, E10, `sweepTombstoned` | glasses copy until the transport exists (GAP-5) |
 | `canvas_run_item`, `canvas_score`, `canvas_live_trace` | E1, E2, E4, E8, E9, E10, E11, E13 (run level), pruning (E7) | rows holding sensor values of a forgotten trace (GAP-3); `watch:` rows on any Forget (GAP-2); batch mates across Moments (GAP-4) |
