@@ -20,8 +20,8 @@ class MomentFixture(val db: ContextDatabase) {
         db.frameDao().insertIgnore(FrameEntity(id, ts, "/$id.jpg", "rokid_glasses", phash = "p$id"))
         if (captured) db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = ts))
     }
-    suspend fun memory(id: String, frameId: String?, derived: Boolean = false, createdAt: Long = 1) =
-        db.memoryDao().insert(MemoryEntity(id, frameId, "text of $id", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, createdAt, derived, "text of $id"))
+    suspend fun memory(id: String, frameId: String?, derived: Boolean = false, createdAt: Long = 1, state: ReviewState = ReviewState.OK, text: String = "text of $id") =
+        db.memoryDao().insert(MemoryEntity(id, frameId, text, "note", "", MemoryTier.SHORT, 0.8, state, false, createdAt, derived, text))
     suspend fun mark(id: String, atMs: Long, source: String = "tap", kind: String = "MOMENT", name: String = "X") {
         val e = DeletionEpoch("i", 1, 0)
         db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, kind, source, name, atMs, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
