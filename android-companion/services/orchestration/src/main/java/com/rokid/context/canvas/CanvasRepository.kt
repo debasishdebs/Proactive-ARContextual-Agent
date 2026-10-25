@@ -32,7 +32,7 @@ class CanvasRepository(
     /** Upserts the built-ins with the current code's JSON (they are read-only, so overwriting is safe). */
     suspend fun ensureBuiltIns() {
         val now = clock()
-        val built = listOf(DefaultPipelines.liveExtract(), DefaultPipelines.intentDraft(seedTemplate(PromptKey.VISION_EXTRACT)), DefaultPipelines.defaultCapture(), DefaultPipelines.starter(), DefaultPipelines.starterMomentSummary())
+        val built = listOf(DefaultPipelines.liveExtract(), DefaultPipelines.intentDraft(seedTemplate(PromptKey.VISION_EXTRACT)), DefaultPipelines.defaultCapture(), DefaultPipelines.starter(), DefaultPipelines.starterMomentSummary(), DefaultPipelines.starterWatchMotion())
         built.forEach { p ->
             val old = dao.pipeline(p.id)
             dao.upsertPipeline(CanvasPipelineEntity(p.id, p.name, PipelineJson.encode(p), old?.draftRev ?: 0, true, old?.createdAt ?: now, now))

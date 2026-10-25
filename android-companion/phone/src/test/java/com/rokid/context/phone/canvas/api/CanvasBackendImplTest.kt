@@ -242,6 +242,23 @@ class CanvasBackendImplTest {
         assertEquals(0, checkNotNull(backend.pipeline(copy))["problems"]!!.jsonArray.size)
     }
 
+    @Test fun theWatchStarterOpensReadOnlyWithFourLanesAndIsNotAnInterpreter() = runBlocking<Unit> {
+        val row = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "starter-watch-motion" }.jsonObject
+        assertEquals("true", row["builtIn"]!!.jsonPrimitive.content); assertEquals("null", row["live"].toString())
+        val p = checkNotNull(backend.pipeline("starter-watch-motion"))
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        val cells = p["layout"]!!.jsonObject["cells"]!!.jsonObject
+        assertTrue(listOf("head", "cam", "watch", "win", "model", "freq").all { cells.containsKey(it) })
+        assertEquals("false", p["liveShape"]!!.jsonPrimitive.content)
+        assertTrue("never published", p["interpretable"]!!.jsonObject["problems"]!!.jsonArray.isNotEmpty())
+        val lanes = PipelineJson.decode(p["json"]!!.jsonPrimitive.content).getOrThrow().nodes.map { n ->
+            com.rokid.context.ai.canvas.NodeTypes.byType(n.type)!!.let { com.rokid.context.ai.canvas.NodeTypes.domainOf(n, it).name }
+        }.toSet()
+        assertEquals(setOf("WATCH", "RT_GLASSES", "RT_PHONE", "ASYNC"), lanes)
+        val copy = backend.duplicate("starter-watch-motion", "My watch")
+        assertEquals(0, checkNotNull(backend.pipeline(copy))["problems"]!!.jsonArray.size)
+    }
+
     private val glassesOnlyJson = """{"schema":2,"id":"p","name":"identity","nodes":[
         {"id":"head","type":"imu.head_motion","title":"head","params":{}},
         {"id":"thresh","type":"gate.threshold","title":"thresh","params":{"feature":"gyroPeak","op":">","value":0.6}},
