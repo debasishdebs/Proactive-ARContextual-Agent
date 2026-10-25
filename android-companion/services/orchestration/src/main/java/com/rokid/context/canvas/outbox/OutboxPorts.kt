@@ -11,8 +11,14 @@ data class OutboxAttempt(val count: Int, val lastAtMs: Long)
 
 /** The durable outbox and the attempt book. */
 interface OutboxStore {
-    /** Every row that is still pending. */
-    suspend fun pending(): List<OutboxRow>
+    /** At most [limit] pending rows, phone files first then oldest, never one of [excludeIds] (rows still in their backoff). The drainer never loads the whole table. */
+    suspend fun due(limit: Int, excludeIds: Collection<Long>): List<OutboxRow>
+    /** How many rows are pending. */
+    suspend fun count(): Int
+    /** Which of [ids] are still pending. */
+    suspend fun existing(ids: Collection<Long>): Set<Long>
+    /** Keeps the newest [keep] rows of [target] and drops the older ones; returns how many were dropped. */
+    suspend fun trim(target: String, keep: Int): Int
     /** Deletes the row. Called only after the deletion it stands for was confirmed. */
     suspend fun remove(id: Long)
     suspend fun attempts(): Map<Long, OutboxAttempt>

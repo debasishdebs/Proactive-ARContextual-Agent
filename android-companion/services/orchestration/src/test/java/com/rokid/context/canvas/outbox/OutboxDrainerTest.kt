@@ -134,4 +134,41 @@ class OutboxDrainerTest {
         val r = drainer(FakeStore(), FakeFiles()).drain()
         assertEquals(OutboxDrainer.Report.NONE, r); assertEquals(0, glasses.probes)
     }
+
+    // ---- v0.9.5: a bounded drain ----
+
+    @Test fun aDrainReadsOnlyAWindowOfDueRowsNeverTheWholeTable() = runBlocking<Unit> {
+        val store = FakeStore((1L..500L).map { phoneRow(it, "/f/$it.jpg") })
+        val r = drainer(store, FakeFiles()).drain()
+        assertEquals(OutboxDrainer.WINDOW, store.lastLimit)
+        assertEquals("the budget still bounds the work", 50, r.removed); assertEquals(450, store.rows.size)
+    }
+
+    @Test fun rowsInsideTheirBackoffAreNotReadAtAll() = runBlocking<Unit> {
+        val files = FakeFiles(listOf("/f/a.jpg")).also { it.failing += "/f/a.jpg" }
+        val store = FakeStore(listOf(phoneRow(1, "/f/a.jpg"), phoneRow(2, "/f/b.jpg")))
+        drainer(store, files).drain() // row 1 fails, row 2 goes
+        store.rows += (3L..260L).map { phoneRow(it, "/f/$it.jpg") }
+        now += 1_000
+        val r = drainer(store, files).drain()
+        assertEquals("row 1 waits in its backoff and does not take a place in the window", 1, r.waiting)
+        assertTrue(store.rows.any { it.id == 1L })
+    }
+
+    @Test fun anUnreachableGlassesCannotGrowTheOutboxPastTheCapAndTheOldestAreDroppedAndCounted() = runBlocking<Unit> {
+        glasses.reachable = false
+        val extra = 5; val cap = OutboxDrainer.GLASSES_CAP_PER_TARGET
+        val store = FakeStore((1L..(cap + extra).toLong()).map { frameRow(it, "w$it") } + phoneRow(100_000, "/f/keep.jpg"))
+        val r = drainer(store, FakeFiles(listOf("/f/keep.jpg")), max = 10).drain()
+        assertEquals(extra, r.dropped)
+        assertEquals(cap, store.rows.count { it.target == com.rokid.context.memory.db.CleanupTarget.GLASSES_FRAME })
+        assertTrue("the OLDEST went", store.rows.none { it.id in 1L..extra.toLong() } && store.rows.any { it.id == (extra + 1).toLong() })
+        assertTrue(log.lines.any { it.contains("dropped=$extra") }); assertTrue(log.lines.none { it.contains("w1") })
+    }
+
+    @Test fun phoneFileRowsAreNeverCapped() = runBlocking<Unit> {
+        val store = FakeStore((1L..(OutboxDrainer.GLASSES_CAP_PER_TARGET + 3).toLong()).map { phoneRow(it, "/f/$it.jpg") })
+        val r = drainer(store, FakeFiles(), max = 0).drain()
+        assertEquals(0, r.dropped); assertEquals(OutboxDrainer.GLASSES_CAP_PER_TARGET + 3, store.rows.size)
+    }
 }
