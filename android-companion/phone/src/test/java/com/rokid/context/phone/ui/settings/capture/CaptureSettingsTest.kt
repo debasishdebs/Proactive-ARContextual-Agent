@@ -121,6 +121,29 @@ class CaptureSettingsTest {
         compose.onNodeWithTag("rest_note").assertDoesNotExist()
     }
 
+    @Test fun windowToleranceDefaultsTo90PersistsAndIsClamped() = runBlocking {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("tol_test", 0).also { it.edit().clear().commit() }
+        val store = WindowToleranceStore(prefs)
+        assertEquals(90, store.pct.value)
+        val vm = CaptureSettingsViewModel(FakeHudSettings(), tolerance = store)
+        vm.setWindowTolerance(75)
+        assertEquals(75, prefs.getInt("window_min_valid_pct", 0))
+        assertEquals(75, WindowToleranceStore(prefs).pct.value)
+        assertEquals(75, withTimeout(5_000) { vm.state.first { it.windowMinValidPct == 75 } }.windowMinValidPct)
+        store.set(10); assertEquals(50, store.pct.value); store.set(500); assertEquals(100, store.pct.value)
+        assertEquals(listOf(50, 60, 70, 75, 80, 90, 95, 100), WindowToleranceStore.options(75))
+        vm.cancelScope()
+    }
+
+    @Test fun windowToleranceRowIsShownAndSetsThePercent() {
+        var picked = -1
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(windowMinValidPct = 90), onBack = {}, onWindowTolerance = { picked = it }) } }
+        compose.onNodeWithTag("window_tolerance").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("window_tolerance").performClick()
+        compose.onNodeWithTag("window_tolerance_2").performClick()   // 50, 60, 70
+        assertEquals(70, picked)
+    }
+
     @Test fun pacePersists() = runBlocking {
         val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("pace_test", 0).also { it.edit().clear().commit() }
         val store = AiCallPaceStore(prefs)
