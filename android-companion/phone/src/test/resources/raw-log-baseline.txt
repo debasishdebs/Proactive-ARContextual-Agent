@@ -12,7 +12,6 @@ glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt 20
 glasses/src/main/java/com/rokid/context/glasses/log/GlassesLogSink.kt 5
 glasses/src/main/java/com/rokid/context/glasses/overlay/MinimisedIcon.kt 2
 glasses/src/main/java/com/rokid/context/glasses/overlay/PopupOverlay.kt 2
-glasses/src/main/java/com/rokid/context/glasses/pause/GlassesPauses.kt 2
 phone/src/main/java/com/rokid/context/ContextApp.kt 3
 phone/src/main/java/com/rokid/context/MainActivity.kt 3
 phone/src/main/java/com/rokid/context/phone/actions/HubActionsImpl.kt 2
@@ -22,8 +21,7 @@ phone/src/main/java/com/rokid/context/phone/canvas/PlanGraph.kt 3
 phone/src/main/java/com/rokid/context/phone/capture/PhoneCapture.kt 2
 phone/src/main/java/com/rokid/context/phone/hub/ContextHubService.kt 5
 phone/src/main/java/com/rokid/context/phone/hub/FrameIngestor.kt 8
-phone/src/main/java/com/rokid/context/phone/hub/GlassesRelauncher.kt 3
-phone/src/main/java/com/rokid/context/phone/hub/Hub.kt 27
+phone/src/main/java/com/rokid/context/phone/hub/Hub.kt 26
 phone/src/main/java/com/rokid/context/phone/hub/HubGraph.kt 7
 phone/src/main/java/com/rokid/context/phone/hub/StateBroadcaster.kt 2
 phone/src/main/java/com/rokid/context/phone/log/PhoneLogSink.kt 5

@@ -7,8 +7,8 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.SystemClock
 import android.telephony.TelephonyManager
-import android.util.Log
 import androidx.core.content.ContextCompat
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -84,7 +84,7 @@ class GlassesRelauncher(
     private val guards: RelaunchGuards,
     private val reopen: () -> Unit,
     private val now: () -> Long,
-    private val log: (String) -> Unit = { Log.i(TAG, it) },
+    private val log: (String) -> Unit = { PcLog.i(TAG, it) },
     private val stepsMs: List<Long> = STEPS_MS,
     private val maxPerHour: Int = MAX_PER_HOUR,
     private val pollMs: Long = POLL_MS,
@@ -108,6 +108,7 @@ class GlassesRelauncher(
     fun start(): Job = scope.launch {
         var prev: LinkState? = null
         state.collect { s ->
+            if (prev != null && prev != s) log("relaunch: link $prev->$s")
             if (s == LinkState.CONNECTED) { if (connectedSince == null) connectedSince = now(); standDown.connected() }
             if (s == LinkState.CONNECTED || s == LinkState.MINIMISED || s == LinkState.PAUSED_BT) awaitingSince = null
             if (s == LinkState.CLOSED_ON_GLASSES && prev != LinkState.CLOSED_ON_GLASSES) onClosed()
@@ -151,7 +152,9 @@ class GlassesRelauncher(
     private fun scheduleNext(afterFailure: Boolean = false) {
         job?.cancel()
         this.afterFailure = afterFailure
-        job = scope.launch { attemptLoop(stepsMs[step.coerceAtMost(stepsMs.lastIndex)]) }
+        val wait = stepsMs[step.coerceAtMost(stepsMs.lastIndex)]
+        log("relaunch: attempt in ${wait / 1000} s (step $step${if (afterFailure) ", after a failed reopen" else ""})")
+        job = scope.launch { attemptLoop(wait) }
     }
 
     private suspend fun attemptLoop(firstDelayMs: Long) {
@@ -239,7 +242,7 @@ class AndroidRelaunchGuards(
     init {
         // API 31+: the listener sees a hang-up the moment it happens, between two polls.
         if (watchModeChanges && Build.VERSION.SDK_INT >= 31) {
-            try { audio?.addOnModeChangedListener(ContextCompat.getMainExecutor(app)) { mode -> onModeChanged(mode) } } catch (e: Exception) { Log.w(GlassesRelauncher.TAG, "mode listener unavailable: ${e.javaClass.simpleName}") }
+            try { audio?.addOnModeChangedListener(ContextCompat.getMainExecutor(app)) { mode -> onModeChanged(mode) } } catch (e: Exception) { PcLog.w(GlassesRelauncher.TAG, "mode listener unavailable: ${e.javaClass.simpleName}") }
         }
     }
 

@@ -1,5 +1,6 @@
 package com.rokid.context.phone.hub
 
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -16,6 +17,9 @@ import kotlinx.coroutines.launch
  *  - silent while the link says up: MINIMISED = [probeAlive]; otherwise [relaunch] = [GlassesRelauncher.attemptNow], which owns
  *    every guard (call idle with its post-call settle, media, worn, hourly cap, back-off). The watchdog itself never launches anything.
  * Every tick publishes the user-visible note (null = nothing to say) through [publish].
+ *
+ * Logging (2026-10-25, a 21 min dead gap had no phone line): one counts-only line per verdict CHANGE and every [LOG_EVERY]th tick otherwise (`verdict`, `why` or the
+ * relaunch result, the link state, seconds silent), a warning for a late tick (the phone process was suspended: the proof for Doze) and for a dead hub.
  */
 class GlassesWatchdog(
     private val now: () -> Long,
@@ -34,6 +38,9 @@ class GlassesWatchdog(
     private val relaunch: () -> String?,
     private val publish: (String?) -> Unit,
     private val silentMs: Long = SILENT_MS,
+    private val log: (String) -> Unit = { PcLog.i(TAG, it) },
+    private val warn: (String) -> Unit = { PcLog.w(TAG, it) },
+    private val periodMs: Long = TICK_MS,
 ) {
     sealed interface Verdict {
         object Off : Verdict
@@ -48,8 +55,11 @@ class GlassesWatchdog(
 
     /** Where silence is measured from when nothing was heard yet: the first tick of this enabled window. */
     private var baselineMs: Long? = null
+    private var lastTickAt: Long? = null
+    private var lastLogged: String? = null
+    private var quietTicks = 0
 
-    fun start(scope: CoroutineScope, periodMs: Long = TICK_MS): Job = scope.launch {
+    fun start(scope: CoroutineScope, periodMs: Long = this.periodMs): Job = scope.launch {
         while (true) {
             try { tick() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* never end the loop */ }
             delay(periodMs)
@@ -58,31 +68,46 @@ class GlassesWatchdog(
 
     fun tick(): Verdict {
         val t = now()
-        if (!enabled() || !captureActive()) { baselineMs = null; return finish(Verdict.Off) }
-        if (!hubRunning()) { baselineMs = null; startHub(); return finish(Verdict.HubDown) }
+        lastTickAt?.let { prev -> if (t - prev > 2 * periodMs) warn("watchdog late tick gap_s=${(t - prev) / 1000} period_s=${periodMs / 1000}") }
+        lastTickAt = t
+        if (!enabled()) { baselineMs = null; return finish(Verdict.Off, "why=setting_off") }
+        if (!captureActive()) { baselineMs = null; return finish(Verdict.Off, "why=capture_inactive") }
+        if (!hubRunning()) { baselineMs = null; warn("watchdog hub down, starting it"); startHub(); return finish(Verdict.HubDown, "why=hub_down") }
         val base = baselineMs ?: t.also { baselineMs = it }
         val age = (t - (lastHeardAtMs() ?: base)).coerceAtLeast(0L)
-        if (standingDown()) return finish(Verdict.StoppedByYou(age))
-        if (age < silentMs) return finish(Verdict.Ok)
+        val silentS = "silent_s=${age / 1000}"
+        if (standingDown()) return finish(Verdict.StoppedByYou(age), "why=stood_down $silentS")
+        if (age < silentMs) return finish(Verdict.Ok, silentS)
         val l = link()
+        var detail = "link=$l $silentS"
         return finish(
             when (l) {
-                LinkState.OFFLINE, LinkState.PAUSED_BT -> { reconnect(); Verdict.LinkDown(age) }
+                LinkState.OFFLINE, LinkState.PAUSED_BT -> { reconnect(); detail += " action=reconnect"; Verdict.LinkDown(age) }
                 LinkState.NOT_AUTHORIZED -> Verdict.LinkDown(age)
                 LinkState.CONNECTING -> Verdict.Ok
-                LinkState.MINIMISED -> { probeAlive(); Verdict.Probing(age) }
+                LinkState.MINIMISED -> { probeAlive(); detail += " action=probe"; Verdict.Probing(age) }
                 LinkState.CONNECTED, LinkState.CLOSED_ON_GLASSES, LinkState.VERSION_MISMATCH -> when (val why = relaunch()) {
-                    null, "pending" -> Verdict.Reopening(age)
-                    "stood down" -> Verdict.StoppedByYou(age)
-                    else -> Verdict.Waiting(why, age)
+                    null -> { detail += " relaunch=reopened"; Verdict.Reopening(age) }
+                    "pending" -> { detail += " relaunch=pending"; Verdict.Reopening(age) }
+                    "stood down" -> { detail += " relaunch=stood down"; Verdict.StoppedByYou(age) }
+                    else -> { detail += " relaunch=$why"; Verdict.Waiting(why, age) }
                 }
             },
+            detail,
         )
     }
 
-    private fun finish(v: Verdict): Verdict { publish(note(v)); return v }
+    /** Logs the decision: at once when the verdict or its detail changed, else every [LOG_EVERY]th tick. */
+    private fun finish(v: Verdict, detail: String = ""): Verdict {
+        publish(note(v))
+        val key = v.javaClass.simpleName + " " + detail.replace(Regex("silent_s=\\d+"), "")
+        if (key != lastLogged || ++quietTicks >= LOG_EVERY) { log("watchdog tick verdict=${v.javaClass.simpleName} $detail".trim()); lastLogged = key; quietTicks = 0 }
+        return v
+    }
 
     companion object {
+        const val TAG = "PcWatchdog"
+        const val LOG_EVERY = 10
         const val TICK_MS = 150_000L
         /** N: minutes of silence before the watchdog acts (3). */
         const val SILENT_MS = 3 * 60_000L

@@ -19,9 +19,12 @@ class TraceStateReporter(
     /** `warn` is true for a fault (the log level), false for everything else. */
     private val emit: (warn: Boolean, line: String) -> Unit,
     private val heartbeatMs: Long = 60_000L,
+    /** WHO holds capture paused (a [com.rokid.context.glasses.pause.PauseSource] word, or "-"); a change prints a new line. Log text only. */
+    private val pauseSource: () -> String = { "-" },
 ) {
     private var lastBlocker: String? = null
     private var lastAt = 0L
+    private var lastPauseSrc: String? = null
 
     /** The published blocker (a closed vocabulary). */
     fun blocker(): String {
@@ -37,8 +40,9 @@ class TraceStateReporter(
     @Synchronized fun poll() {
         val now = clock()
         val b = blocker()
-        if (b == lastBlocker && now - lastAt < heartbeatMs) return
-        lastBlocker = b; lastAt = now
+        val ps = pauseSource()
+        if (b == lastBlocker && ps == lastPauseSrc && now - lastAt < heartbeatMs) return
+        lastBlocker = b; lastAt = now; lastPauseSrc = ps
         emit(b in FAULTS, line(b))
     }
 
@@ -46,7 +50,7 @@ class TraceStateReporter(
         val s = recorder.state()
         return "trace state: blocker=$b recovered=${s.recovered.i()} recoveredMs=${s.recoveredMs} collect=${s.collect.i()} untilInMs=${s.untilInMs ?: "-"} diag=${s.diag.i()} " +
             "flagState=${flagState().wire} epoch=${if (s.epochSaved) "set" else "unset"} usedMB=${s.usedBytes shr 20} softMB=${s.softBudgetBytes shr 20} rec=${s.recording.i()} " +
-            "traces=${s.traces} offers=${boundary.offers} starts=${boundary.starts} startRefused=${boundary.startRefused}"
+            "traces=${s.traces} offers=${boundary.offers} starts=${boundary.starts} startRefused=${boundary.startRefused} pause_src=${pauseSource()}"
     }
 
     /** The process-start line (see [boot]). */

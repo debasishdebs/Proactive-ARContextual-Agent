@@ -32,6 +32,8 @@ data class PauseState(
     val provisional: Set<String> = emptySet(),
     val phoneResumed: Map<String, Long> = emptyMap(),
     val quietHandled: Map<Long, String> = emptyMap(),
+    /** pauseId -> [PauseSource] name (log text only). Missing = a store from before the source was kept: [PauseSource.PERSISTED]. */
+    val sources: Map<String, String> = emptyMap(),
 )
 
 class PauseStore(file: File, scope: CoroutineScope, private val clock: () -> Long = System::currentTimeMillis) {
@@ -52,7 +54,8 @@ class PauseStore(file: File, scope: CoroutineScope, private val clock: () -> Lon
         val provisional = prefs[PROVISIONAL]?.let { runCatching { Wire.json.decodeFromString(SET_SERIALIZER, it) }.getOrNull() } ?: emptySet()
         val phoneResumed = prefs[PHONE_RESUMED]?.let { runCatching { Wire.json.decodeFromString(TOMB_SERIALIZER, it) }.getOrNull() } ?: emptyMap()
         val quiet = prefs[QUIET]?.let { runCatching { Wire.json.decodeFromString(QUIET_SERIALIZER, it) }.getOrNull() } ?: emptyMap()
-        return PauseState(records, tombs, provisional, phoneResumed, quiet)
+        val sources = prefs[SOURCES]?.let { runCatching { Wire.json.decodeFromString(SOURCES_SERIALIZER, it) }.getOrNull() } ?: emptyMap()
+        return PauseState(records, tombs, provisional, phoneResumed, quiet, sources)
     }
 
     /** All keys in one atomic edit. */
@@ -63,6 +66,7 @@ class PauseStore(file: File, scope: CoroutineScope, private val clock: () -> Lon
             it[PROVISIONAL] = Wire.json.encodeToString(SET_SERIALIZER, state.provisional)
             it[PHONE_RESUMED] = Wire.json.encodeToString(TOMB_SERIALIZER, state.phoneResumed)
             it[QUIET] = Wire.json.encodeToString(QUIET_SERIALIZER, state.quietHandled)
+            it[SOURCES] = Wire.json.encodeToString(SOURCES_SERIALIZER, state.sources)
         }
     }
 
@@ -73,6 +77,8 @@ class PauseStore(file: File, scope: CoroutineScope, private val clock: () -> Lon
         private val PROVISIONAL = stringPreferencesKey("provisional")
         private val PHONE_RESUMED = stringPreferencesKey("phoneResumed")
         private val QUIET = stringPreferencesKey("quietHandled")
+        private val SOURCES = stringPreferencesKey("sources")
+        private val SOURCES_SERIALIZER = MapSerializer(String.serializer(), String.serializer())
         private val TOMB_SERIALIZER = MapSerializer(String.serializer(), Long.serializer())
         private val SET_SERIALIZER = SetSerializer(String.serializer())
         private val QUIET_SERIALIZER = MapSerializer(Long.serializer(), String.serializer())

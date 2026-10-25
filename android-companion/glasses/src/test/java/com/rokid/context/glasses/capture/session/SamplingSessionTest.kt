@@ -371,6 +371,7 @@ class SamplingSessionTest {
         r.session.start()
         delay(2_000)
         assertTrue(r.logs.any { it.contains("not counted") })
+        assertTrue(r.logs.any { Regex("""not ready on the first bind.*cause=open_failed open_ms=\d+""").containsMatchIn(it) }, "the line names the cause and the open time")
         assertFalse(r.logs.any { it.contains("camera bind failed") }, "the cold-start retry must not count")
         assertEquals(2, r.camera.opens)
         r.session.stop("test")

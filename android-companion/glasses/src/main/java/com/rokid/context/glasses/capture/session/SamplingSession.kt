@@ -604,8 +604,8 @@ class SamplingSession(
                     coldStartGrace = false
                     bindBackoffUntil = now + COLD_START_RETRY_MS
                     outcome = EpisodeOutcome.COLD
-                    log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted)")
-                } else if (camera.busy) { outcome = EpisodeOutcome.BUSY; onBusy(now) } else { outcome = EpisodeOutcome.BIND; onBindFailed(now) }
+                    log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted) ${failureDetail(ep, now)}")
+                } else if (camera.busy) { outcome = EpisodeOutcome.BUSY; onBusy(now) } else { outcome = EpisodeOutcome.BIND; onBindFailed(now, failureDetail(ep, now)) }
             }
             // The trace records the scheduler's own view of how the episode ended (cold, busy and bind drive the back-offs; every other end is ok).
             trace?.onEpisodeClose(causeOf(ep.why), ep.firstFrameAt.takeIf { it >= 0 }, ep.openedAt.takeIf { it > 0 }, outcome)
@@ -623,6 +623,9 @@ class SamplingSession(
         }
         kick.trySend(Unit)
     }
+
+    /** Why an episode gave no frame and how long the camera was held for it (2026-10-25: the first bind after every start was "not ready" with nothing to say why). Counts and fixed words. */
+    private fun failureDetail(ep: Episode, now: Long) = "cause=${if (ep.openFailed) "open_failed" else "no_frames"} open_ms=${if (ep.openedAt > 0) (now - ep.openedAt).coerceAtLeast(0) else 0}"
 
     /** Another app holds the camera: wait and retry, never a bind failure (it must not latch the Fixed fallback). Caller holds [lock]. */
     private fun onBusy(now: Long) {
@@ -669,10 +672,10 @@ class SamplingSession(
     }
 
     /** Caller holds [lock]. */
-    private fun onBindFailed(now: Long) {
+    private fun onBindFailed(now: Long, detail: String = "") {
         bindFailures++
         bindBackoffUntil = now + BIND_BACKOFF_MS
-        log("camera bind failed ($bindFailures of $MAX_BIND_FAILURES)")
+        log("camera bind failed ($bindFailures of $MAX_BIND_FAILURES)${if (detail.isEmpty()) "" else " $detail"}")
         if (bindFailures >= MAX_BIND_FAILURES && !stopped) {
             degraded = true
             stopped = true
