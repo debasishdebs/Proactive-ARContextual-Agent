@@ -33,22 +33,23 @@ data class ParamSchema(val specs: List<ParamSpec>, val strict: Boolean = true) {
 
 /** The capture-half descriptors: bounds from slice 3 section 8, defaults from the shipped `GlanceParams` and `KeyframeGate`. */
 object CaptureParams {
-    private fun num(name: String, min: Double, max: Double, default: Double, step: Double) =
-        ParamSpec(name, ParamKind.NUMBER, min = min, max = max, step = step, default = JsonPrimitive(default), sweep = true)
+    private fun num(name: String, min: Double, max: Double, default: Double, step: Double, label: String = "") =
+        ParamSpec(name, ParamKind.NUMBER, label = label, min = min, max = max, step = step, default = JsonPrimitive(default), sweep = true)
 
-    private fun int(name: String, min: Int, max: Int, default: Int, step: Int) =
-        ParamSpec(name, ParamKind.INT, min = min.toDouble(), max = max.toDouble(), step = step.toDouble(), default = JsonPrimitive(default), sweep = true)
+    private fun int(name: String, min: Int, max: Int, default: Int, step: Int, label: String = "") =
+        ParamSpec(name, ParamKind.INT, label = label, min = min.toDouble(), max = max.toDouble(), step = step.toDouble(), default = JsonPrimitive(default), sweep = true)
 
+    // the labels are what the expanded (composite) cards and the inspector show; the units are the compiler's own (rad/s, ms, bits of 64)
     val headMotion = ParamSchema(listOf(
-        num("onsetRadS", 0.4, 1.0, 0.6, 0.05), num("releaseRadS", 0.2, 1.0, 0.3, 0.05),
-        int("bridgeMs", 100, 500, 250, 25), int("minBoutMs", 100, 800, 300, 25), num("minBoutRad", 0.1, 0.8, 0.26, 0.02),
+        num("onsetRadS", 0.4, 1.0, 0.6, 0.05, "Starts above (rad/s)"), num("releaseRadS", 0.2, 1.0, 0.3, 0.05, "Holds above (rad/s)"),
+        int("bridgeMs", 100, 500, 250, 25, "Bridge gaps (ms)"), int("minBoutMs", 100, 800, 300, 25, "Min length (ms)"), num("minBoutRad", 0.1, 0.8, 0.26, 0.02, "Min turn (rad)"),
     ))
-    val settle = ParamSchema(listOf(int("settleMs", 1_000, 3_000, 1_500, 100)))
-    val novelty = ParamSchema(listOf(int("noveltyWindowMs", 5_000, 60_000, 20_000, 1_000), num("noveltyMinRad", 0.1, 0.8, 0.3, 0.02)))
-    val rateCap = ParamSchema(listOf(int("bigChange", 16, 32, 22, 1), num("bigTurnRad", 0.5, 1.5, 0.8, 0.05)))
+    val settle = ParamSchema(listOf(int("settleMs", 1_000, 3_000, 1_500, 100, "Quiet for (ms)")))
+    val novelty = ParamSchema(listOf(int("noveltyWindowMs", 5_000, 60_000, 20_000, 1_000, "Window (ms)"), num("noveltyMinRad", 0.1, 0.8, 0.3, 0.02, "Min turn (rad)")))
+    val rateCap = ParamSchema(listOf(int("bigChange", 16, 32, 22, 1, "Big change (bits)"), num("bigTurnRad", 0.5, 1.5, 0.8, 0.05, "Big turn (rad)")))
     val captureImage = ParamSchema(listOf(
-        int("hamming", 6, 16, 10, 1),
-        ParamSpec("ringCompare", ParamKind.ENUM, options = listOf("last", "all"), default = JsonPrimitive("all"), sweep = true),
+        int("hamming", 6, 16, 10, 1, "Different above (bits)"),
+        ParamSpec("ringCompare", ParamKind.ENUM, label = "Compare with", options = listOf("last", "all"), default = JsonPrimitive("all"), sweep = true),
     ))
 
     /** Gate features and the one comparison each allows (S78: onset is strict, bouts are inclusive). */

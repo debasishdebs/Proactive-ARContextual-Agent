@@ -5,8 +5,10 @@
 import { h, s, clear } from './dom.js';
 import { fields } from './paramform.js';
 
-export const BOX = { w: 176, head: 40, field: 58, min: 62, gapX: 56, gapY: 22, pad: 14, noteLine: 18 };
+export const BOX = { w: 176, head: 40, field: 58, cell: 34, min: 62, gapX: 56, gapY: 22, pad: 14, noteLine: 18 };
 
+// an exposed entry names a param, or ONE cell of a table param (row, col): its key is 'param.row.col' and its control is a compact number
+const ekey = (e) => (e.col ? e.param + '.' + e.row + '.' + e.col : e.param);
 const layoutDepth = (inner) => {
   const depth = new Map(inner.nodes.map((n) => [n.id, 0]));
   for (let pass = 0; pass < inner.nodes.length; pass++) {
@@ -18,7 +20,7 @@ const layoutDepth = (inner) => {
 /** Pure geometry: boxes in columns by wire depth (a box is as tall as its exposed fields need), cubic wires from a right edge to a left edge. */
 export function layout(inner) {
   const depth = layoutDepth(inner);
-  const owned = (id) => (inner.exposed || []).filter((e) => e.node === id).map((e) => e.param);
+  const owned = (id) => (inner.exposed || []).filter((e) => e.node === id).map(ekey);
   const cols = [];
   inner.nodes.forEach((n, i) => { const d = depth.get(n.id); (cols[d] = cols[d] || []).push({ n, i }); });
   const boxes = [];
@@ -27,8 +29,11 @@ export function layout(inner) {
     let y = BOX.pad;
     for (const { n, i } of col || []) {
       const params = owned(n.id);
-      const hgt = Math.max(BOX.min, BOX.head + params.length * BOX.field + 8);
-      boxes.push({ id: n.id, label: n.label, kind: n.kind, params, x: BOX.pad + c * (BOX.w + BOX.gapX), y, w: BOX.w, h: hgt, colour: i % 6 });
+      const fy = [];
+      let acc = 0;
+      for (const k of params) { fy.push(acc); acc += k.indexOf('.') < 0 ? BOX.field : BOX.cell; }
+      const hgt = Math.max(BOX.min, BOX.head + acc + 8);
+      boxes.push({ id: n.id, label: n.label, kind: n.kind, params, fy, x: BOX.pad + c * (BOX.w + BOX.gapX), y, w: BOX.w, h: hgt, colour: i % 6 });
       y += hgt + BOX.gapY;
     }
     height = Math.max(height, y);
@@ -47,7 +52,7 @@ const hint = (d) => (d && d.default !== undefined ? ' (default ' + d.default + '
 
 /**
  * opts: {title, inner, descriptors (the node type's params), params (the node's current params), readOnly,
- *        onParam(name, raw) -> error text | undefined (the host coerces and stores), onToggle(expanded)}
+ *        onParam(name, raw) -> error text | undefined (the host coerces and stores), onCell(param, row, col, raw) likewise for a table cell, onToggle(expanded)}
  * → {toggle(), expand(), collapse(), update({params}), state(), unmount()}. The expanded flag is view-only and not saved.
  */
 export function mountComposite(el, opts) {
@@ -59,10 +64,10 @@ export function mountComposite(el, opts) {
   const set = (v) => { st.expanded = v; if (opts.onToggle) opts.onToggle(v); render(); };
 
   function control(f) {
-    const label = f.label + hint(desc(f.name));
+    const label = f.label + (f.cell ? (f.hint === undefined ? '' : ' (default ' + f.hint + ')') : hint(desc(f.name)));
     const change = (e) => {
       const raw = f.control === 'checkbox' ? e.target.checked : e.target.value;
-      const err = opts.onParam ? opts.onParam(f.name, raw) : undefined;
+      const err = f.cell ? (opts.onCell ? opts.onCell(f.cell.param, f.cell.row, f.cell.col, raw) : undefined) : opts.onParam ? opts.onParam(f.name, raw) : undefined;
       if (err) st.errs[f.name] = err; else delete st.errs[f.name];
       render();
     };
@@ -74,14 +79,22 @@ export function mountComposite(el, opts) {
     } else if (f.control === 'checkbox') {
       input = h('input', { type: 'checkbox', 'aria-label': label, checked: f.value === true ? true : null, disabled: ro() ? true : null, onchange: change });
     } else {
-      input = h('input', { type: f.control === 'number' ? 'number' : 'text', 'aria-label': label, min: f.min, max: f.max, step: f.step, value: String(f.value), disabled: ro() ? true : null, onchange: change });
+      input = h('input', { type: f.control === 'number' ? 'number' : 'text', 'aria-label': label, min: f.min, max: f.max, step: f.step, value: String(f.value), placeholder: f.cell ? f.ph : null, disabled: ro() ? true : null, onchange: change });
     }
-    return h('div', { class: 'comp-field' }, h('span', { class: 'comp-label' }, f.label), input);
+    return h('div', { class: 'comp-field' + (f.cell ? ' cell' : '') }, h('span', { class: 'comp-label', title: label }, f.label), input);
   }
+
+  // one compact field per exposed table cell: the cell's own value, else blank with the default (or 'unchanged' / 'inherit') as the placeholder
+  const cells = () => (inner.exposed || []).filter((e) => e.col).map((e) => {
+    const c = (((desc(e.param) || {}).table || {}).cols || []).find((x) => x.name === e.col) || {};
+    const cur = ((st.params[e.param] || {})[e.row] || {})[e.col];
+    return { name: ekey(e), cell: { param: e.param, row: e.row, col: e.col }, control: 'number', label: String(c.label || e.col).replace('timer photo gap ', 'gap '), min: c.allowZero ? 0 : c.min, max: c.max, step: 1,
+      value: cur === undefined || cur === null ? '' : cur, hint: e.default, ph: e.default !== undefined ? String(e.default) : c.allowZero ? 'inherit' : 'unchanged' };
+  });
 
   function svg() {
     const L = layout(inner);
-    const all = fields((opts.descriptors || []).filter((d) => (inner.exposed || []).some((e) => e.param === d.name)), st.params, {});
+    const all = fields((opts.descriptors || []).filter((d) => (inner.exposed || []).some((e) => e.param === d.name && !e.col)), st.params, {}).concat(cells());
     const root = s('svg', { class: 'expr-svg comp-svg', viewBox: '0 0 ' + L.width + ' ' + L.height, width: L.width, height: L.height, role: 'group', 'aria-label': 'Inner flow of ' + (opts.title || 'this node') });
     root.appendChild(s('defs', null, s('marker', { id: 'comp-wire', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto' }, s('path', { d: 'M0 0L10 5L0 10z', class: 'expr-wirehead' }))));
     for (const w of L.wires) {
@@ -96,7 +109,7 @@ export function mountComposite(el, opts) {
         s('rect', { x: b.x + 10, y: b.y - 12, width: Math.min(pw, b.w - 20), height: 24, rx: 12, class: 'expr-pill' }),
         s('text', { x: b.x + 10 + Math.min(pw, b.w - 20) / 2, y: b.y + 5, 'text-anchor': 'middle', class: 'expr-pill-text' }, b.label));
       mine.forEach((f, i) => {
-        const fo = s('foreignObject', { x: b.x + 8, y: b.y + BOX.head - 6 + i * BOX.field, width: b.w - 16, height: BOX.field - 4, class: 'comp-fo' });
+        const fo = s('foreignObject', { x: b.x + 8, y: b.y + BOX.head - 6 + b.fy[i], width: b.w - 16, height: (f.cell ? BOX.cell : BOX.field) - 4, class: 'comp-fo' });
         fo.appendChild(control(f));
         g.appendChild(fo);
       });

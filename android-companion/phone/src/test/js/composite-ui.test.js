@@ -2,7 +2,7 @@
 // collapse/expand, the inner boxes and wires, exposed params as inputs inside the owning box (defaults shown), edits reported to the host, labels as text.
 import { mountComposite, layout } from '../../main/assets/canvas/compositeview.js';
 import { findAll, find } from './fake-dom.js';
-import { eq, ok, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner, criticInner, memoryWriteInner } from './fixtures.js';
+import { eq, ok, allTypes, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner, criticInner, memoryWriteInner } from './fixtures.js';
 import * as E from './env.js';
 
 const cls = (el, c) => el.classList.contains(c);
@@ -177,6 +177,34 @@ export const tests = {
       ok(E.textOf(root).includes('no duplicate or novelty check') && E.textOf(root).includes('Fact row (SHORT)'));
       const L = layout(JSON.parse(JSON.stringify(memoryWriteInner)));
       ok(L.boxes.every((a, i) => L.boxes.every((b, j) => i === j || a.x !== b.x || a.y + a.h <= b.y || b.y + b.h <= a.y)), 'boxes in a column never overlap');
+    });
+  },
+  // phase C: a table cell of the node's `rows` param is a compact field inside its row's box (the rate table: a cap, a gap, locked rows without inputs)
+  tableCellsAreCompactFieldsInsideTheirRowBoxAndLockedRowsHaveNone() {
+    const rate = { nodes: [{ id: 'state', label: 'Which activity?', kind: 'op' }, { id: 'REST', label: 'REST', kind: 'op' }, { id: 'VEHICLE_PASSENGER', label: 'VEHICLE_PASSENGER', kind: 'op' }, { id: 'WALKING', label: 'WALKING (locked)', kind: 'op' }],
+      wires: [{ from: 'state', to: 'REST' }, { from: 'state', to: 'VEHICLE_PASSENGER' }, { from: 'state', to: 'WALKING' }],
+      exposed: [{ param: 'rows', node: 'REST', row: 'REST', col: 'capPerMin', default: 2 }, { param: 'rows', node: 'REST', row: 'REST', col: 'settledGapS', default: 30 },
+        { param: 'rows', node: 'VEHICLE_PASSENGER', row: 'VEHICLE_PASSENGER', col: 'capPerMin' }] };
+    const descriptors = allTypes.find((t) => t.type === 'policy.capture_rate').params;
+    const L = layout(rate);
+    const hOf = (id) => L.boxes.find((b) => b.id === id).h;
+    ok(hOf('REST') > hOf('VEHICLE_PASSENGER') && hOf('REST') < 40 + 2 * 58, 'a cell is shorter than a full field: two cells fit in less than two fields');
+    eq(JSON.stringify(L.boxes.find((b) => b.id === 'REST').params), '["rows.REST.capPerMin","rows.REST.settledGapS"]');
+    const cells = [];
+    mount({ title: 'Capture frequency', inner: rate, descriptors, params: { rows: { REST: { capPerMin: 3 } } }, onCell: (p, r, c, raw) => { cells.push([p, r, c, raw]); return undefined; } }, ({ root, w }) => {
+      w.expand();
+      const rest = controls(box(root, 'REST'));
+      eq(rest.length, 2); eq(rest[0].value, '3', 'the cell as stored'); eq(rest[1].value, '', 'an unset cell is blank'); eq(rest[1].getAttribute('placeholder'), '30', 'with today as the placeholder');
+      eq(controls(box(root, 'VEHICLE_PASSENGER'))[0].getAttribute('placeholder'), 'unchanged', 'no default: a blank cap is unchanged');
+      eq(controls(box(root, 'WALKING')).length, 0, 'a locked row has no input'); ok(cls(box(root, 'WALKING'), 'read-only'));
+      ok(find(box(root, 'REST'), (e) => cls(e, 'comp-field') && cls(e, 'cell')), 'compact');
+      rest[1].value = '45'; rest[1].dispatch('change');
+      eq(JSON.stringify(cells), '[["rows","REST","settledGapS","45"]]', 'reported as param, row, column, raw text');
+    });
+    mount({ title: 'Capture frequency', inner: rate, descriptors, readOnly: true }, ({ root, w }) => { w.expand(); ok(controls(root).every((e) => e.hasAttribute('disabled'))); });
+    mount({ title: 'Capture frequency', inner: rate, descriptors, onCell: () => 'cap per minute must be between 1 and 4' }, ({ root, w }) => {
+      w.expand(); const c = controls(box(root, 'REST'))[0]; c.value = '9'; c.dispatch('change');
+      ok(E.textOf(root).includes('cap per minute must be between 1 and 4'));
     });
   },
 };

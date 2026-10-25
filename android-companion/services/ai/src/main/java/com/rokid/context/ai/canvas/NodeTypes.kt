@@ -131,9 +131,9 @@ object NodeTypes {
 
     private val capture: List<NodeType> = listOf(
         NodeType(IMU_HEAD_MOTION, "Head movement", emptySet(), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.SENSORS, short = "head", params = CaptureParams.headMotion, root = true, cost = CostSpec(rtOps = 1), family = Family.SOURCE),
+            category = Category.SENSORS, short = "head", params = CaptureParams.headMotion, root = true, inner = HeadMotionComposite.inner, cost = CostSpec(rtOps = 1), family = Family.SOURCE),
         NodeType(IMU_SETTLE, "Settle", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.SENSORS, short = "settle", params = CaptureParams.settle, family = Family.SOURCE),
+            category = Category.SENSORS, short = "settle", params = CaptureParams.settle, inner = SettleComposite.inner, family = Family.SOURCE),
         NodeType(GATE_THRESHOLD, "Threshold", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.THRESHOLDS_FILTERS, short = "thresh", params = CaptureParams.threshold, family = Family.CONDITION),
         // E1 expression guard: the whole two-level graph is the one `graph` param (validated, no generated form: the editor is X5). SHADOW/TRIAL only.
@@ -143,7 +143,7 @@ object NodeTypes {
         NodeType(EXPR_VALUE, "Value (expression)", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.POLICY_FREQUENCY, executor = ExecutorKind.EXPR, short = "value", params = ExprParams.value, liveable = false, cost = CostSpec(rtOps = 1), family = Family.CONDITION),
         NodeType(GATE_NOVELTY, "Novelty", setOf(PortType.MOTION_EVENT), PortType.TRIGGER, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.THRESHOLDS_FILTERS, short = "novelty", params = CaptureParams.novelty, family = Family.CONDITION),
+            category = Category.THRESHOLDS_FILTERS, short = "novelty", params = CaptureParams.novelty, inner = NoveltyComposite.inner, family = Family.CONDITION),
         NodeType(HUB_CONTEXT, "Motion from context hub", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_PHONE,
             category = Category.SIGNALS_HUB, short = "hub", params = CaptureParams.hub, root = true, family = Family.SOURCE),
         NodeType(SIGNAL_IN, "Receive signal", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_GLASSES,
@@ -152,11 +152,11 @@ object NodeTypes {
             category = Category.SIGNALS_HUB, executor = ExecutorKind.SIGNAL, short = "sigout", params = CaptureParams.signalOut, domainFromParams = true, family = Family.OUTCOME),
         NodeType(POLICY_CAPTURE_RATE, "Capture frequency by activity", setOf(PortType.MOTION_EVENT, PortType.TRIGGER, PortType.CONTEXT), PortType.TRIGGER,
             sinceSchema = 2, domain = Domain.RT_GLASSES, category = Category.POLICY_FREQUENCY, executor = ExecutorKind.TABLE, short = "rate",
-            params = CaptureParams.captureRate, mixedIn = true, family = Family.OUTCOME),
+            params = CaptureParams.captureRate, mixedIn = true, inner = CaptureRateComposite.inner, family = Family.OUTCOME),
         NodeType(GATE_RATE_CAP, "Rate cap", setOf(PortType.TRIGGER), PortType.TRIGGER, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.THRESHOLDS_FILTERS, short = "cap", params = CaptureParams.rateCap, family = Family.CONDITION),
+            category = Category.THRESHOLDS_FILTERS, short = "cap", params = CaptureParams.rateCap, inner = RateCapComposite.inner, family = Family.CONDITION),
         NodeType(CAPTURE_IMAGE, "Capture image", setOf(PortType.TRIGGER), PortType.PHOTOS, sinceSchema = 2, domain = Domain.RT_GLASSES,
-            category = Category.ACTIONS_CAPTURE, short = "capture", params = CaptureParams.captureImage, family = Family.OUTCOME),
+            category = Category.ACTIONS_CAPTURE, short = "capture", params = CaptureParams.captureImage, inner = CaptureImageComposite.inner, family = Family.OUTCOME),
     )
 
     /** The python experiment node (S6 tier 3). In the palette since WP9 (the helper UI exists) but never liveable and never published; `entry` is the fixed function name `run`, not a param. */
