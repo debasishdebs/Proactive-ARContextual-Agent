@@ -1,17 +1,6 @@
 # Raw platform log references per production file (android.util.Log import or Log.x( call). The scan RawLogScanTest lets a file's count only go DOWN and a file not listed have 0.
 # Migrate a file to PcLog, then delete its line here. Do not add lines.
-glasses/src/main/java/com/rokid/context/glasses/GlassesRuntime.kt 4
-glasses/src/main/java/com/rokid/context/glasses/MainActivity.kt 11
-glasses/src/main/java/com/rokid/context/glasses/capture/CaptureAlarmReceiver.kt 3
-glasses/src/main/java/com/rokid/context/glasses/capture/CaptureService.kt 1
-glasses/src/main/java/com/rokid/context/glasses/capture/CaptureSession.kt 4
-glasses/src/main/java/com/rokid/context/glasses/capture/ForegroundFallback.kt 2
-glasses/src/main/java/com/rokid/context/glasses/capture/session/CameraXSamplingCamera.kt 3
-glasses/src/main/java/com/rokid/context/glasses/link/GlassesBridge.kt 2
-glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt 20
 glasses/src/main/java/com/rokid/context/glasses/log/GlassesLogSink.kt 5
-glasses/src/main/java/com/rokid/context/glasses/overlay/MinimisedIcon.kt 2
-glasses/src/main/java/com/rokid/context/glasses/overlay/PopupOverlay.kt 2
 phone/src/main/java/com/rokid/context/ContextApp.kt 3
 phone/src/main/java/com/rokid/context/MainActivity.kt 3
 phone/src/main/java/com/rokid/context/phone/actions/HubActionsImpl.kt 2

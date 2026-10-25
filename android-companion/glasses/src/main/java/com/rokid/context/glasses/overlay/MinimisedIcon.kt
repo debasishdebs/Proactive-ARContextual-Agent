@@ -8,7 +8,7 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -65,7 +65,7 @@ class MinimisedIcon(
         } else {
             val nv = RingView(context)
             val added = runCatching { windowManager.addView(nv, lp) }
-                .onFailure { Log.w(TAG, "icon window refused: ${it.javaClass.simpleName}") }.isSuccess
+                .onFailure { PcLog.w(TAG, "icon window refused: ${it.javaClass.simpleName}") }.isSuccess
             if (!added) return false
             view = nv
             params = lp

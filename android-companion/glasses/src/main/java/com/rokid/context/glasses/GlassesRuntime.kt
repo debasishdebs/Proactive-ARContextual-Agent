@@ -5,7 +5,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.BatteryManager
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.glasses.capture.diag.DiagLog
 import androidx.annotation.VisibleForTesting
 import com.rokid.context.core.model.Command
@@ -65,7 +65,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** Fix wave K4 / LGC3: installs the glasses diagnostic log (through the DiagLog shim; no filesystem work here); first, so every later log line lands there. */
     private val diagInstalled = DiagLog.install(app)
     /** Nothing launched here may crash the glasses app; only the exception's simple name is logged. */
-    private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
+    private val errors = CoroutineExceptionHandler { _, e -> PcLog.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errors)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)
     /** The persisted last `pc_settings` (quiet hours and their zone apply offline); HudController writes it on each push. */
@@ -275,7 +275,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         recording = listening,
         hasPermission = { app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED },
         sourceFactory = { pcmSourceFactory() },
-        log = { Log.i(TAG, "ptt: $it") },
+        log = { PcLog.i(TAG, "ptt: $it") },
     )
 
     /** Session open, not listening, and the phone is not showing Listening (flush resumes once the answer is up). */
@@ -287,7 +287,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     fun attach(c: HudController) {
         controller = c
         c.onFrameAck = uplink::onAck
-        c.onWear = { w -> if (w == null) wear.reset() else { wear.onRemote(w); Log.i(TAG, "wear=$w (from the phone)") } }
+        c.onWear = { w -> if (w == null) wear.reset() else { wear.onRemote(w); PcLog.i(TAG, "wear=$w (from the phone)") } }
         c.onMotionContext = { m -> contextGate.onMessage(m, android.os.SystemClock.elapsedRealtime()) }
         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
