@@ -32,24 +32,50 @@ class MarkPhotoLinkTest {
         assertEquals(listOf<GlassesEvent>(GlassesEvent.Outdated(2)), ev)
     }
 
-    /** The bounded exception: only a frame that names its mark passes the pause history; every other frame of the same moment is still dropped. */
-    @Test fun aMarkPhotoPassesAPauseAnOrdinaryFrameDoesNot() = runTest {
-        val a = FrameAdmission(ledger(), Paused())
+    private class Marks(var state: MarkState = MarkState.OPEN) : MarkLookup { val asked = ArrayList<String>(); override suspend fun state(markRef: String): MarkState { asked += markRef; return state } }
+    private fun admission(m: Marks, cap: Int = 16) = FrameAdmission(ledger(), Paused(), marks = MarkPhotoAllowance(m, cap))
+
+    /** The bounded exception: only a frame of a REAL, still-waiting mark passes the pause history; every other frame of the same moment is still dropped. */
+    @Test fun aMarkPhotoPassesAPauseOnlyForARealOpenMarkAnOrdinaryFrameDoesNot() = runTest {
+        val a = admission(Marks())
         assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("g1", null), ClockOffset(0), phoneNow))
         assertTrue(a.decide(meta("g2", "ep:1"), ClockOffset(0), phoneNow) is Admission.Ingest)
     }
 
+    @Test fun aReferenceToNoRealMarkIsDroppedOrHeldNeverIngested() = runTest {
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), admission(Marks(MarkState.CLOSED)).decide(meta("g1", "fake:1"), ClockOffset(0), phoneNow))
+        assertEquals(Admission.Hold, admission(Marks(MarkState.UNKNOWN)).decide(meta("g2", "fake:1"), ClockOffset(0), phoneNow), "the mark may simply not have arrived yet: no ack, the glasses resend")
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), FrameAdmission(ledger(), Paused()).decide(meta("g3", "ep:1"), ClockOffset(0), phoneNow), "with no lookup at all nothing passes")
+    }
+
+    @Test fun oneMarkAllowsOneFrameManyIdsWithOneReferenceAreNotUnlimitedPhotos() = runTest {
+        val a = admission(Marks())
+        assertTrue(a.decide(meta("p1", "ep:1"), ClockOffset(0), phoneNow) is Admission.Ingest)
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("p2", "ep:1"), ClockOffset(0), phoneNow))
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("p3", "ep:1"), ClockOffset(0), phoneNow))
+        assertTrue(a.decide(meta("p1", "ep:1"), ClockOffset(0), phoneNow) is Admission.Ingest, "a resend of the SAME frame passes again")
+    }
+
+    @Test fun onlyAFewMarksAreClaimedAtOnce() = runTest {
+        val allow = MarkPhotoAllowance(Marks(), cap = 2)
+        val a = FrameAdmission(ledger(), Paused(), marks = allow)
+        for (i in 1..3) assertTrue(a.decide(meta("p$i", "ep:$i"), ClockOffset(0), phoneNow) is Admission.Ingest)
+        assertEquals(2, allow.claimed, "the oldest claim was evicted, so the cache stays bounded")
+    }
+
     @Test fun aMarkPhotoIsStillDedupedAndStillNeedsTheClockOffset() = runTest {
         val l = ledger().also { it.add("g3") }
-        val a = FrameAdmission(l, Paused())
+        val a = FrameAdmission(l, Paused(), marks = MarkPhotoAllowance(Marks()))
         assertEquals(Admission.AckOnly(FrameAckReason.DUPLICATE), a.decide(meta("g3", "ep:1"), ClockOffset(0), phoneNow))
         assertEquals(Admission.Hold, a.decide(meta("g4", "ep:1"), offset = null, nowMs = phoneNow))
     }
 
-    @Test fun aMalformedMarkReferenceDoesNotOpenThePauseException() = runTest {
-        val a = FrameAdmission(ledger(), Paused())
+    @Test fun aMalformedMarkReferenceNeverEvenAsksTheLookup() = runTest {
+        val m = Marks()
+        val a = admission(m)
         for (bad in listOf("", "no-colon", ":1", "ep:", "ep:x", "ep:1:2", "e p:1", "x".repeat(200) + ":1")) {
             assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("b${bad.hashCode().toUInt()}", bad), ClockOffset(0), phoneNow), "ref=$bad")
         }
+        assertTrue(m.asked.isEmpty())
     }
 }

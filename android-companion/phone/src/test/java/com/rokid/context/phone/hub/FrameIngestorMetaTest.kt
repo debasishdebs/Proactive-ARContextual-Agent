@@ -106,7 +106,7 @@ class FrameIngestorMetaTest {
     /** v0.9.6 slice C: a photo taken for a mark passes a pause, carries its mark through the sidecar into `frame_meta` and links the mark; an ordinary frame of the same moment is dropped. */
     @Test fun aMarkPhotoPassesAPauseCarriesItsMarkToTheRowAndLinksIt() = runBlocking {
         val paused = object : PauseHistory { override suspend fun pausedAt(phoneMs: Long) = true }
-        val ing = FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, paused), ledger, AtomicJpegWriter, wipeFence = { WipeFence.Fence.None }, wipeLock = Mutex(), archiveDir = archive, dirSync = RecordingSync(),
+        val ing = FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, paused, marks = com.rokid.context.link.MarkPhotoAllowance(RoomMarkLookup(db.canvasSlice3Dao()))), ledger, AtomicJpegWriter, wipeFence = { WipeFence.Fence.None }, wipeLock = Mutex(), archiveDir = archive, dirSync = RecordingSync(),
             committed = { db.frameMetaDao().byWireId(it) != null }) { stored++ }
         val e = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0)
         db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk:ep-1:4", "MOMENT", "tap", "MOMENT", rx, createdAt = 1, photo = "pending"), com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }))
@@ -120,6 +120,9 @@ class FrameIngestorMetaTest {
         assertEquals("ep-1:4", meta.markRef)
         assertEquals(meta.frameId, db.canvasSlice3Dao().label("mk:ep-1:4")!!.frameId)
         assertEquals(1, rows())
+        // a second photo naming the same mark, and a photo naming no real mark, are dropped by the same pause
+        assertEquals(FrameAckReason.PAUSED_DROP, ing.onChunk(FrameCodec.split("g3", jpeg, capturedAtMs = rx + 140, markRef = "ep-1:4").single(), offset, now).ack!!.reason)
+        assertNull("no mark yet: held, no ack", ing.onChunk(FrameCodec.split("g4", jpeg, capturedAtMs = rx + 140, markRef = "fake:1").single(), offset, now).ack)
     }
 
     @Test fun sidecarBeforeJpegThenAck() = runBlocking {
