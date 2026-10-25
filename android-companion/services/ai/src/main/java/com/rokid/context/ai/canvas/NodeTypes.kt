@@ -80,6 +80,9 @@ object NodeTypes {
     /** Source, WATCH lane: the watch motion values the phone context hub already received (a window of timestamped scores); NO_DATA when there are none. See [WatchMotion]. */
     const val SRC_WATCH_MOTION = "src.watch_motion"
 
+    /** Process, phone side: the tunable heuristic of the watch branch (a number in, `moving` or `still` out); see [MotionModel]. The future learned model is another `kind` of this node. */
+    const val PROC_MOTION_MODEL = "proc.motion_model"
+
     const val EXPR_GUARD = "expr.guard"
     const val EXPR_VALUE = "expr.value"
     const val IMU_HEAD_MOTION = "imu.head_motion"
@@ -128,7 +131,10 @@ object NodeTypes {
             params = WindowAggregate.schema, family = Family.AGGREGATE),
         NodeType(COMPARE, "Compare number", setOf(PortType.NUMBER), PortType.NUMBER, branches = { listOf("yes", "no") }, sinceSchema = 2, category = Category.CHECKS, short = "compare",
             params = NumberCompare.schema, family = Family.CONDITION),
-        NodeType(SWITCH, "Switch", setOf(PortType.JSON), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route", family = Family.CONDITION),
+        // v0.9.4, the Process of the watch branch: a number (aggregate or watch score) in, a label out; deterministic, no model. Expandable: threshold and hysteresis are its inner boxes
+        NodeType(PROC_MOTION_MODEL, "Motion model", setOf(PortType.NUMBER, PortType.WATCH), PortType.NUMBER, sinceSchema = 2, category = Category.DATA, short = "motion",
+            params = MotionModel.schema, inner = MotionModel.inner, family = Family.PROCESS),
+        NodeType(SWITCH, "Switch", setOf(PortType.JSON, PortType.NUMBER), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route", family = Family.CONDITION),
         NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION, PortType.SUMMARY), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", inner = MemoryWriteComposite.inner, family = Family.OUTCOME),
     )
 

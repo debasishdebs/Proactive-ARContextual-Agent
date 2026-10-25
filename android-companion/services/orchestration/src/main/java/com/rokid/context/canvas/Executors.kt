@@ -5,6 +5,7 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoutedReply
 import com.rokid.context.ai.canvas.ExtractComposite
 import com.rokid.context.ai.canvas.LocalTrust
+import com.rokid.context.ai.canvas.MotionModel
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.NumberCompare
 import com.rokid.context.ai.canvas.PipelineNode
@@ -43,7 +44,7 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 object Executors {
     fun all(): Map<String, NodeExecutor> =
-        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, WindowAggregateExecutor, CompareExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
+        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, WindowAggregateExecutor, CompareExecutor, MotionModelExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
 }
 
 private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSource.Draft)?.let { PromptDraft(it.template, it.schema) }
@@ -285,6 +286,30 @@ object WindowAggregateExecutor : NodeExecutor {
             NodeResult(item.frameId, CanvasValue.Json(buildJsonObject {
                 put("value", if (s.op == "count") JsonPrimitive(v.toLong()) else JsonPrimitive(v)); put("n", n)
                 put("feature", s.feature); put("op", s.op); put("window", s.window)
+            }))
+        }
+    }
+}
+
+/**
+ * `proc.motion_model`: the tunable heuristic, no model call and no clock. The runner hands it the whole run in ONE chunk, in run order, because the hysteresis keeps one state across
+ * items ([MotionModel.decide]). An item with no usable number is the fixed error BAD_INPUT and leaves the state as it was.
+ */
+object MotionModelExecutor : NodeExecutor {
+    override val type = NodeTypes.PROC_MOTION_MODEL
+    override fun chunkSize(node: PipelineNode) = Int.MAX_VALUE
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val s = MotionModel.settings(node.params)
+        val numbers = items.map { (it.value as? CanvasValue.Json)?.let { v -> MotionModel.numberOf(v.value) } }
+        val moving = MotionModel.decide(numbers, s)
+        return items.indices.map { i ->
+            val m = moving[i] ?: return@map NodeResult(items[i].frameId, null, error = "BAD_INPUT")
+            NodeResult(items[i].frameId, CanvasValue.Json(buildJsonObject {
+                put("label", if (m) MotionModel.MOVING else MotionModel.STILL); put("value", if (m) 1.0 else 0.0); put("score", numbers[i]!!)
+                put("kind", s.kind); put("threshold", s.threshold); put("exit", s.exit)
             }))
         }
     }
