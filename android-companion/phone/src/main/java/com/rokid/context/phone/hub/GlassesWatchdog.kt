@@ -101,7 +101,7 @@ class GlassesWatchdog(
     private fun finish(v: Verdict, detail: String = ""): Verdict {
         publish(note(v))
         val key = v.javaClass.simpleName + " " + detail.replace(Regex("silent_s=\\d+"), "")
-        if (key != lastLogged || ++quietTicks >= LOG_EVERY) { log("watchdog tick verdict=${v.javaClass.simpleName} $detail".trim()); lastLogged = key; quietTicks = 0 }
+        if (key != lastLogged || ++quietTicks >= LOG_EVERY) { log("watchdog tick verdict=${v.javaClass.simpleName}${if (detail.isBlank()) "" else " $detail"}"); lastLogged = key; quietTicks = 0 }
         return v
     }
 

@@ -52,10 +52,10 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
             // One writer per model file: a replacement waits until the stopped worker has let go of the .part.
             withContext(Dispatchers.IO) { downloadAll(model) }
         } catch (e: IOException) {
-            Outcome.Retry.also { log(id, "io") }
+            Outcome.Retry.also { modelEvent(id, "io") }
         }
         return when (outcome) {
-            Outcome.Done -> Result.success().also { log(id, "done") }
+            Outcome.Done -> Result.success().also { modelEvent(id, "done") }
             Outcome.Retry -> if (runAttemptCount + 1 >= MAX_ATTEMPTS) fail(id, MSG_FAILED, "gave_up") else Result.retry()
             is Outcome.Fail -> fail(id, outcome.message, outcome.reason)
         }
@@ -126,7 +126,7 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                 }
                 200 -> false.also { have = 0 }
                 416 -> null
-                408, 429, in 500..599 -> return Outcome.Retry.also { log(id, "http_${response.code}") }
+                408, 429, in 500..599 -> return Outcome.Retry.also { modelEvent(id, "http_${response.code}") }
                 else -> return Outcome.Fail(MSG_FAILED, "http_${response.code}")
             }
             if (append != null) {
@@ -158,11 +158,11 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
     }
 
     private fun fail(id: String, message: String, reason: String): Result {
-        log(id, reason)
+        modelEvent(id, reason)
         return Result.failure(Data.Builder().putString(KEY_MESSAGE, message).build())
     }
 
-    private fun log(id: String, reason: String) = PcLog.i(TAG, "model $id: $reason")
+    private fun modelEvent(catalogId: String, reason: String) = PcLog.i(TAG, "model $catalogId: $reason")
 
     companion object {
         const val KEY_MODEL_ID = "model_id"
