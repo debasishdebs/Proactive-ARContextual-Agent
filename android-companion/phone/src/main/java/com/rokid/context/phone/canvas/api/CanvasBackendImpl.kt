@@ -613,7 +613,7 @@ class CanvasBackendImpl(
 
     override suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray =
         JsonArray(momentResolver.window(afterMs, beforeMs - 1, limit).map { m ->
-            buildJsonObject { put("id", m.id); put("startMs", m.startMs); put("type", m.type.name); put("photos", m.frames.size); put("memories", m.memories.size); put("marks", m.marks.size); put("text", m.text?.let { JsonPrimitive(it) } ?: JsonNull); m.sensor?.let { put("sensor", it.toJson()) } }
+            buildJsonObject { put("id", m.id); put("startMs", m.startMs); put("type", m.type.name); put("photos", m.frames.size); put("memories", m.memories.size); put("marks", m.marks.size); put("text", m.text?.let { JsonPrimitive(it) } ?: JsonNull); put("errorReason", m.errorReason?.let { JsonPrimitive(it) } ?: JsonNull); m.sensor?.let { put("sensor", it.toJson()) } }
         })
 
     override suspend fun scenes(fromMs: Long, toMs: Long, limit: Int): JsonArray = sceneExec.toJson(sceneExec.run(fromMs, toMs, limit))

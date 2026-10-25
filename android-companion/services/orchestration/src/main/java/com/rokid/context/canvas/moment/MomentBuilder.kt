@@ -39,7 +39,7 @@ class MomentBuilder(
     /** [stored] Moments written, [removed] stale ones deleted (no live photo and no mark, forgotten, or too big), [refused] seconds a tombstone or a Moment Forget range fenced. */
     data class Report(val stored: Int, val removed: Int, val refused: Int) { companion object { val NONE = Report(0, 0, 0) } }
 
-    private val resolver = MomentResolver(DaoMomentSource(db.canvasDao(), db.canvasSlice3Dao()))
+    private val resolver = MomentResolver(DaoMomentSource(db.canvasDao(), db.canvasSlice3Dao(), clock = clock))
     private val dao = db.momentDao()
     private val audit = ObjectAudit(db.objectDao(), clock)
 
@@ -129,10 +129,10 @@ class MomentBuilder(
         for ((id, m) in resolved) {
             if (m == null) { if (dao.moment(id) != null || dao.parts(id).isNotEmpty()) { dao.remove(listOf(id), AuditStep.BUILD); removed++ }; continue }
             val before = dao.moment(id); val beforeParts = dao.parts(id)
-            // the text is derived from the sources as they are NOW; the transcript is its own object (null until audio flows exist); the error reason of a fallback mark-only Moment is written by
-            // the mark-photo fallback, not derived here, so a rebuild keeps it while the Moment stays a MARK Moment (a photo makes it a FRAME Moment, which has none)
+            // the text is derived from the sources as they are NOW; the transcript is its own object (null until audio flows exist); the error reason of the fallback mark-only Moment is derived from its
+            // marks' photo state (v0.9.6 slice C: why the photo could not be taken), so a rebuild follows the sources; a photo makes it a FRAME Moment, which has none
             val entity = MomentEntity(m.id, BUILD_REV, m.contentRev, m.contentHash, clock(), m.type, noPhotoReasonOf(m.type), text = m.text, transcript = null,
-                errorReason = if (m.type == MomentType.MARK) before?.errorReason else null)
+                errorReason = if (m.type == MomentType.MARK) m.errorReason else null)
             val parts = partsOf(m)
             dao.replace(entity, parts)
             recordAudit(entity, before, beforeParts, parts)

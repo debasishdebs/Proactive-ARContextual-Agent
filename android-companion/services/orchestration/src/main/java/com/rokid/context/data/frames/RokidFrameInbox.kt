@@ -287,7 +287,7 @@ object RokidFrameInbox {
             // routedAt stays NULL only when the scene indexer is active (an IMAGE-capable embedder is bound, vectors available, Ruling 2):
             // the router, not the per-photo path, sees the frame first. Otherwise routedAt = now: wave-1 behaviour (claimable at once).
             FrameMetaEntity(
-                frameId = frameId, wireFrameId = receipt?.wireFrameId, sessionId = receipt?.sessionId,
+                frameId = frameId, wireFrameId = receipt?.wireFrameId, sessionId = receipt?.sessionId, markRef = receipt?.markRef?.takeIf { com.rokid.context.core.model.MarkRef.isValid(it) },
                 motion = receipt?.motion ?: "UNKNOWN", dwell = receipt?.dwell ?: false, blur = receipt?.blur,
                 dhash = receipt?.dhash, phash = receipt?.phash, width = receipt?.width, salience = null, salienceTerms = null,
                 clusterId = null, nearDupOf = null, imageVectorSpace = null, createdAt = now, routedAt = if (routeFirst) null else now,

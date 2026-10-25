@@ -98,6 +98,7 @@ class HubTest {
         onPlanCaps: (List<String>) -> Unit = {},
         onMark: suspend (com.rokid.context.core.model.MarkMessage, com.rokid.context.canvas.marks.MarkArrival) -> Boolean = { _, _ -> true },
         onGlassesListenStart: suspend (Long) -> Unit = {},
+        onMarkPhoto: suspend (com.rokid.context.core.model.MarkPhotoResult) -> Unit = {},
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -107,7 +108,7 @@ class HubTest {
             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
             startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
-            phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onGlassesListenStart = onGlassesListenStart,
+            phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
         )
             .also { if (start) { it.start(); runCurrent() } }
     }
@@ -891,6 +892,25 @@ class HubTest {
         link.emit(hello(glassesNowMs = now + 140)); runCurrent()
         link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 2, atMs = now + 140 - 2_000, atElapsedMs = 5))); runCurrent()
         assertEquals(com.rokid.context.canvas.marks.MarkArrival(now - 2_000, true, now), arrivals[1])
+    }
+
+    @Test fun aMarkPhotoReportReachesTheRecorderAndIsNeverAcked() = runTest {
+        val link = FakeGlassesLink(); val got = ArrayList<com.rokid.context.core.model.MarkPhotoResult>()
+        hub(link, onMarkPhoto = { got += it })
+        link.emitReady(); runCurrent()
+        val r = com.rokid.context.core.model.MarkPhotoResult(epoch = "e", seq = 2, reason = "camera_busy")
+        link.emit(GlassesEvent.MarkPhotoReceived(r)); runCurrent()
+        assertEquals(listOf(r), got)
+        assertTrue(link.sent.none { it.first == Channels.MARK_ACK })
+    }
+
+    @Test fun aFailingMarkPhotoReportDoesNotBreakTheHub() = runTest {
+        val link = FakeGlassesLink(); var n = 0
+        hub(link, onMarkPhoto = { n++; throw IllegalStateException("db") }, onMark = { _, _ -> true })
+        link.emitReady(); runCurrent()
+        link.emit(GlassesEvent.MarkPhotoReceived(com.rokid.context.core.model.MarkPhotoResult(epoch = "e", seq = 2, reason = "x"))); runCurrent()
+        link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 1, atMs = now, atElapsedMs = 5))); runCurrent()
+        assertEquals(1, n); assertTrue("the hub still handles marks", link.sent.any { it.first == Channels.MARK_ACK })
     }
 
     @Test fun aGlassesListenStartIsForwardedToTheMarkJoin() = runTest {

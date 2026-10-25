@@ -22,9 +22,15 @@ class MomentFixture(val db: ContextDatabase) {
     }
     suspend fun memory(id: String, frameId: String?, derived: Boolean = false, createdAt: Long = 1, state: ReviewState = ReviewState.OK, text: String = "text of $id") =
         db.memoryDao().insert(MemoryEntity(id, frameId, text, "note", "", MemoryTier.SHORT, 0.8, state, false, createdAt, derived, text))
-    suspend fun mark(id: String, atMs: Long, source: String = "tap", kind: String = "MOMENT", name: String = "X") {
+    suspend fun mark(id: String, atMs: Long, source: String = "tap", kind: String = "MOMENT", name: String = "X", photo: String? = null, createdAt: Long = 1) {
         val e = DeletionEpoch("i", 1, 0)
-        db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, kind, source, name, atMs, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
+        db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, kind, source, name, atMs, createdAt = createdAt, photo = photo), DaoFence(0, e, { 0 }, { e }))
+    }
+    /** A photo that was taken for the mark [markRef] (`<epoch>:<seq>`), committed like the intake does it (so it links an existing mark). */
+    suspend fun markPhoto(id: String, ts: Long, markRef: String) {
+        db.frameDao().insertIgnore(FrameEntity(id, ts, "/$id.jpg", "rokid_glasses", phash = "p$id"))
+        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = ts, markRef = markRef))
+        db.canvasSlice3Dao().linkMarkPhoto("mk:$markRef")
     }
     suspend fun ask(id: String, citesFrame: String) = db.askDao().upsert(AskEntity(id, 1, "q", "a", "[\"frame:$citesFrame\"]", null, "test", false))
 

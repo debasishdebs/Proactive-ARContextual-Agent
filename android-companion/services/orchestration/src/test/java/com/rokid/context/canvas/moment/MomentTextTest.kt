@@ -91,10 +91,12 @@ class MomentTextTest {
         builder.build(listOf(id)); assertNull("every source forgotten: no text", stored().text)
     }
 
-    @Test fun aRebuildKeepsTheErrorReasonOfAFallbackMarkMomentAndAPhotoClearsIt() = runBlocking<Unit> {
-        fx.mark("L", MS + 500)
+    /** Since slice C the reason is DERIVED from the marks' photo state at every build (the glasses' report or the old-glasses default), so a rebuild follows the sources; a photo clears it. */
+    @Test fun aRebuildDerivesTheErrorReasonOfAFallbackMarkMomentFromItsMarkAndAPhotoClearsIt() = runBlocking<Unit> {
+        fx.mark("L", MS + 500, photo = "camera_busy")
         builder.build(listOf(id))
-        db.momentDao().replace(stored().copy(errorReason = "camera_busy"), db.momentDao().parts(id)) // what the mark-photo fallback (a later slice) will write
+        assertEquals("camera_busy", stored().errorReason)
+        db.momentDao().replace(stored().copy(errorReason = "stale"), db.momentDao().parts(id)) // a stored value is never trusted over the sources
         builder.build(listOf(id))
         assertEquals("camera_busy", stored().errorReason)
         fx.frame("a", MS + 5); builder.build(listOf(id))

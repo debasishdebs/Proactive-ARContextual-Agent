@@ -5,6 +5,7 @@ import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MomentDao
 import com.rokid.context.memory.moment.MomentType
+import com.rokid.context.core.model.MarkPhotoReason
 import com.rokid.context.memory.moment.NoPhotoReason
 import com.rokid.context.phone.ui.status.StatusUi
 import java.time.DayOfWeek
@@ -121,18 +122,40 @@ object MarkRows {
         MomentType.MARK -> "Moment with no photo"
     }
 
-    /** Only a Moment with no photo has a reason; UNKNOWN is the only one the phone can know today. */
-    fun reasonLabel(type: MomentType?, reason: NoPhotoReason?): String? = when (type) {
-        null, MomentType.FRAME -> null
-        MomentType.MARK -> when (reason) {
-            null, NoPhotoReason.UNKNOWN -> "No photo: reason unknown"
+    /**
+     * Only a mark with no photo has a reason. A fallback Moment says why ([errorReason], v0.9.6 slice C); a Moment from before it says "reason unknown". A mark no Moment holds yet shows what its own photo state says:
+     * still on its way, or the reason it will have none.
+     */
+    fun reasonLabel(type: MomentType?, reason: NoPhotoReason?, errorReason: String? = null, photo: String? = null): String? = when (type) {
+        MomentType.FRAME -> null
+        MomentType.MARK -> "No photo: " + (errorReason?.let(::reasonWords) ?: when (reason) { null, NoPhotoReason.UNKNOWN -> "reason unknown" })
+        null -> when (photo) {
+            null, MarkPhotoReason.OK -> null
+            MarkPhotoReason.PENDING -> "Photo on its way"
+            else -> "No photo: ${reasonWords(photo)}"
         }
+    }
+
+    /** The reason tokens as plain words (a token this build does not know is shown as it is: it is a short code, never text a user wrote). */
+    fun reasonWords(token: String): String = when (token) {
+        MarkPhotoReason.NO_PHOTO_SUPPORT -> "these glasses cannot take a photo for a mark"
+        MarkPhotoReason.RETRO -> "a mark said afterwards has no photo"
+        MarkPhotoReason.PHONE_MARK -> "a mark made on the phone has no camera"
+        MarkPhotoReason.TIMEOUT -> "the photo never arrived"
+        MarkPhotoReason.NO_CAPTURE_SERVICE -> "the glasses camera service was not running"
+        MarkPhotoReason.CAMERA_BUSY -> "the camera was busy"
+        MarkPhotoReason.CAMERA_BIND_FAILED -> "the camera could not start"
+        MarkPhotoReason.NO_FRAME -> "the camera gave no picture"
+        MarkPhotoReason.HEAT -> "the glasses were too warm"
+        MarkPhotoReason.NOT_STORED -> "the glasses could not save it"
+        MarkPhotoReason.CANCELLED -> "the photo was cancelled"
+        else -> token
     }
 
     /** [withDay] adds the weekday and date (Week and Month). Order is the one the rows come in (newest first). */
     fun rows(rows: List<MomentDao.MarkRow>, zone: ZoneId, withDay: Boolean): List<MarkRowUi> = rows.map { r ->
         val at = Instant.ofEpochMilli(r.atMs).atZone(zone)
-        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), codeLabel(r.code), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason))
+        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), codeLabel(r.code), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason, r.errorReason, r.photo))
     }
 }
 

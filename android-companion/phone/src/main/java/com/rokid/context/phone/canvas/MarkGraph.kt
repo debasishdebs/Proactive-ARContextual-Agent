@@ -24,6 +24,8 @@ object MarkGraph {
                 log = MarkRecorder.pcLog,
                 onRecorded = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
                 onChanged = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
+                // an undone mark's photo goes through the one gated Forget path (tombstone, Moment cleanup, outbox); a running export refuses it and the undo is resent
+                forgetPhoto = { frameId -> com.rokid.context.orchestration.forget.ForgetActions.forgetMomentOutcome(ctx, frameId) == com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE },
             )
         }.also { recorder = it }
     }

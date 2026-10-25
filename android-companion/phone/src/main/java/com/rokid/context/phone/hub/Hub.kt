@@ -90,6 +90,8 @@ class Hub(
     private val onPlanCaps: (List<String>) -> Unit = {},
     /** Slice 3a: a `pc_mark`, accepted whatever its age (occurrence time, not freshness). Idempotency is the receiver's. */
     private val onMark: suspend (MarkMessage, com.rokid.context.canvas.marks.MarkArrival) -> Boolean = { _, _ -> true },
+    /** v0.9.6 slice C: a `pc_mark_photo` (the photo of a mark could not be taken). Best effort: nothing is acknowledged, a lost report is the recorder's photo timeout. */
+    private val onMarkPhoto: suspend (com.rokid.context.core.model.MarkPhotoResult) -> Unit = {},
     /** A glasses `ListenStart` reached the phone (phone clock): the mark recorder joins it with a `listen = true` mark within 3 s. */
     private val onGlassesListenStart: suspend (Long) -> Unit = {},
     /** Slice 3a: a `pc_trace_chunk` (the transfer contract is a later task). */
@@ -463,6 +465,7 @@ class Hub(
                 }
             }
             is GlassesEvent.MarkReceived -> onMarkReceived(e.mark, now)
+            is GlassesEvent.MarkPhotoReceived -> try { onMarkPhoto(e.result) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (x: Exception) { PcLog.w(TAG, "mark photo report not recorded (${x.javaClass.simpleName})") }
             is GlassesEvent.TraceChunkReceived -> onTraceChunk(e.chunk)
         }
     }

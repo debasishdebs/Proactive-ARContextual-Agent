@@ -5,6 +5,9 @@ import com.rokid.context.orchestration.DataOpGate
 import com.rokid.context.core.log.LogPort
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.MarkMessage
+import com.rokid.context.core.model.MarkPhotoReason
+import com.rokid.context.core.model.MarkPhotoResult
+import com.rokid.context.memory.FrameIntake
 import com.rokid.context.memory.db.CanvasLabelEntity
 import com.rokid.context.memory.db.CanvasSlice3Dao
 import com.rokid.context.memory.db.DaoFence
@@ -42,6 +45,11 @@ class MarkRecorder(
     private val onRecorded: (Long) -> Unit = {},
     /** Called (never blocking) with the phone-clock time of a mark that was undone or re-tagged, so the Moment of that second is rebuilt (a MARK Moment goes with its mark; the code follows the tag). */
     private val onChanged: (Long) -> Unit = {},
+    /**
+     * Forgets the photo of a mark that is undone, through the existing gated Forget path (production: `ForgetActions.forgetMomentOutcome`). False = it could not (a running export held the gate): the undo
+     * then throws, is not acknowledged and the glasses resend it. The default (tests of other behaviour) forgets nothing.
+     */
+    private val forgetPhoto: suspend (frameId: String) -> Boolean = { true },
 ) {
     private val lock = Mutex()
     private class Listen(val startAt: Long, var bound: String? = null, val glasses: Boolean = true)
@@ -72,10 +80,7 @@ class MarkRecorder(
         val f = fence()
         if (m.undo != null) {
             val target = "mk:${m.epoch}:${m.undo}"
-            val at = dao.label(target)?.atMs
-            // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
-            DataOpGate.shared.delete { dao.deleteLabel(target); dao.deleteLabel("$target:i") }
-            at?.let(onChanged)
+            removeMark(target)
             unjoined.removeAll { it.id == target }
             if (listen?.bound == target) listen?.bound = null
             log("mark undone")
@@ -83,8 +88,10 @@ class MarkRecorder(
         }
         if (m.deletionCounter >= 0 && m.deletionCounter < f.now().counter) { log("mark dropped: older deletion epoch"); return@withLock true }
         if (dao.label(id) != null) { log("mark already recorded"); return@withLock true } // double delivery: no second row, no join, no labelRev move
+        // a mark that touches capture (v0.9.6 slice C): `photo` = the glasses will take a photo and say how it went; an old glasses build cannot
+        val photo = if (m.photo) MarkPhotoReason.PENDING else MarkPhotoReason.NO_PHOTO_SUPPORT
         val ok = dao.insertLabelFenced(
-            CanvasLabelEntity(id, KIND_MOMENT, SRC_TAP, MOMENT, arrival.mappedAtMs, provenance = if (arrival.mapped) "clock:mapped" else "clock:receipt", deletionCounter = maxOf(m.deletionCounter, 0), createdAt = wallClock()),
+            CanvasLabelEntity(id, KIND_MOMENT, SRC_TAP, MOMENT, arrival.mappedAtMs, provenance = if (arrival.mapped) "clock:mapped" else "clock:receipt", deletionCounter = maxOf(m.deletionCounter, 0), createdAt = wallClock(), photo = photo),
             f,
         )
         if (!ok) { log("mark dropped: before the wipe or fence moved"); return@withLock true }
@@ -95,7 +102,33 @@ class MarkRecorder(
         }
         log("mark recorded")
         onRecorded(arrival.mappedAtMs)
+        // the photo may have arrived before its mark: the link is made now, and the second of the photo is rebuilt (its frame commit ran before the mark existed)
+        if (photo == MarkPhotoReason.PENDING) dao.linkMarkPhoto(id)?.let { photoAt -> log("mark photo linked"); onRecorded(photoAt) }
         true
+    }
+
+    /** The glasses could not take the photo of mark `(epoch, seq)` (`pc_mark_photo`). True = the reason was stored (only while the photo is still pending); never throws on a mark we do not have. */
+    suspend fun onPhotoResult(r: MarkPhotoResult): Boolean = lock.withLock {
+        val id = "mk:${r.epoch}:${r.seq}"
+        val at = dao.label(id)?.atMs ?: return@withLock false
+        if (!dao.markPhotoFailed(id, MarkPhotoReason.clean(r.reason))) return@withLock false
+        log("mark photo failed")
+        onRecorded(at)
+        true
+    }
+
+    /**
+     * Removes mark [target] and its intent row and, with them, its PHOTO (the user undid the mark: its photo goes through the existing gated Forget path, tombstone and Moment cleanup included).
+     * A photo still on its way is fenced by a `canvas_meta` marker the frame intake checks. Order: the photo first, so a refused Forget throws (nothing removed, the undo is resent) and a retry is idempotent.
+     */
+    private suspend fun removeMark(target: String) {
+        val l = dao.label(target)
+        val frame = l?.frameId
+        if (frame != null) { if (!forgetPhoto(frame)) throw IllegalStateException("photo forget refused") }
+        else if (l == null || l.photo == MarkPhotoReason.PENDING) dao.putMeta(FrameIntake.MARK_UNDONE_PREFIX + target, wallClock().toString())
+        // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
+        DataOpGate.shared.delete { dao.deleteLabel(target); dao.deleteLabel("$target:i") }
+        l?.atMs?.let(onChanged)
     }
 
     /** The recognised utterance carried these commands (in spoken order). [glasses] false = a phone-mic ask. */
@@ -110,9 +143,7 @@ class MarkRecorder(
             VoiceMark.Undo -> {
                 val target = momentId ?: l.bound ?: newestUndoable(nowMs)
                 if (target != null) {
-                    val at = dao.label(target)?.atMs
-                    DataOpGate.shared.delete { dao.deleteLabel(target); dao.deleteLabel("$target:i") } // typed ExportInProgress when an export blocks it (the caller logs it)
-                    at?.let(onChanged)
+                    removeMark(target) // typed ExportInProgress when an export blocks it (the caller logs it); the mark's photo goes with it
                     unjoined.removeAll { it.id == target }
                     if (l.bound == target) l.bound = null
                     momentId = null
@@ -132,13 +163,22 @@ class MarkRecorder(
         val id = already ?: l.bound ?: "vm:${l.startAt}:${if (l.glasses) 'g' else 'p'}"
         if (already == null) {
             if (l.bound != null) { val at = dao.label(id)?.atMs; dao.retagLabel(id, source); at?.let(onChanged) }
-            else if (dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, l.startAt, provenance = "clock:receipt", deletionCounter = f.now().counter, createdAt = wallClock()), f)) onRecorded(l.startAt)
+            else if (dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, l.startAt, provenance = "clock:receipt", deletionCounter = f.now().counter, createdAt = wallClock(), photo = noPhotoReasonOf(l, source)), f)) onRecorded(l.startAt)
         }
         if (intent != null && dao.label("$id:i") == null) {
-            if (dao.insertLabelFenced(CanvasLabelEntity("$id:i", KIND_INTENT, source, intent, l.startAt, provenance = "intent", deletionCounter = f.now().counter, createdAt = wallClock()), f)) onRecorded(l.startAt)
+            // the intent row follows its mark: same photo link, same state (a mark with no glasses photo possible says why)
+            val parent = dao.label(id)
+            if (dao.insertLabelFenced(CanvasLabelEntity("$id:i", KIND_INTENT, source, intent, l.startAt, frameId = parent?.frameId, provenance = "intent", deletionCounter = f.now().counter, createdAt = wallClock(), photo = parent?.photo ?: noPhotoReasonOf(l, source)), f)) onRecorded(l.startAt)
         }
         log("voice mark recorded")
         return id
+    }
+
+    /** A voice mark with no glasses tap behind it cannot have a photo: a retro mark (the moment is past), a phone-mic mark (no camera here), or a glasses utterance whose tap mark never arrived (old glasses). */
+    private fun noPhotoReasonOf(l: Listen, source: String): String = when {
+        source == SRC_RETRO -> MarkPhotoReason.RETRO
+        !l.glasses -> MarkPhotoReason.PHONE_MARK
+        else -> MarkPhotoReason.NO_PHOTO_SUPPORT
     }
 
     private suspend fun newestUndoable(nowMs: Long): String? =
