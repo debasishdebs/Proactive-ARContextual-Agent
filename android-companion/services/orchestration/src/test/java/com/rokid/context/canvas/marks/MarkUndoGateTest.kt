@@ -79,4 +79,18 @@ class MarkUndoGateTest {
         assertNotNull(c.run("w1"))
         assertEquals(1, WatchRowCleanup.deleteWatchRuns(c)); assertNull(c.run("w1"))
     }
+
+    @Test fun aWatchOffCleanupBlockedByALongExportRetriesUntilTheRowsAreGone() = runBlocking<Unit> {
+        val c = MemoryGraph.get(ctx).db.canvasDao()
+        c.insertRun(CanvasRunEntity("w1", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        c.upsertItem(CanvasRunItemEntity("w1", "watch:1000", "n", "OK", null, "{}", null, null, null, null, null, null, null))
+        val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val exp = async { DataOpGate.shared.export { inside.complete(Unit); release.await() } }; inside.await()
+        val cleanup = async { WatchRowCleanup.deleteUntilDone(c, retryMs = 20) }
+        kotlinx.coroutines.delay(400) // several failed attempts (each waits 150 ms) while the export runs
+        assertNotNull("still there while the export runs", c.run("w1"))
+        release.complete(Unit); exp.await()
+        kotlinx.coroutines.withTimeout(10_000) { cleanup.await() }
+        assertNull("deleted once the export finished", c.run("w1"))
+    }
 }
