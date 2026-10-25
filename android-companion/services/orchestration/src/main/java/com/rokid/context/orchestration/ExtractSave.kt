@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
@@ -91,7 +91,7 @@ object ExtractSave {
                 } catch (e: ModelCallException) {
                     if (e.kind != FailureKind.INVALID_OUTPUT) throw e
                     attempts += usageOf(e.replies)
-                    Log.i(TAG, "batch of ${chunk.size} rejected as INVALID_OUTPUT; retrying one photo per call")
+                    PcLog.i(TAG, "batch of ${chunk.size} rejected as INVALID_OUTPUT; retrying one photo per call")
                 }
             }
             chunk.forEach { p ->
@@ -142,7 +142,7 @@ object ExtractSave {
                 // The CAS comes first: a stale attempt must not write a single row.
                 claims?.forEach { (frameId, claimId) ->
                     if (db.frameStateDao().completeIfClaimed(frameId, claimId, FrameState.EXTRACTED.name, nowMs) == 0) {
-                        Log.i(TAG, "extraction dropped: claim on $frameId no longer holds")
+                        PcLog.i(TAG, "extraction dropped: claim no longer holds")
                         throw Rollback(ExtractSaveResult.StaleClaim)
                     }
                 }

@@ -1,6 +1,6 @@
 package com.rokid.context.work.frames.scene
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.memory.ImageDecodeException
 import com.rokid.context.memory.db.ContextDatabase
@@ -117,7 +117,7 @@ class SceneIndexer(
                 }
             }
         }
-        Log.d(TAG, "routed=${counts.routed} fast=${counts.fast} dup=${counts.dup} clustered=${counts.clustered} closed=${counts.closed.joinToString(",").ifEmpty { "-" }}")
+        PcLog.d(TAG, "routed=${counts.routed} fast=${counts.fast} dup=${counts.dup} clustered=${counts.clustered} closed=${counts.closed.joinToString(",").ifEmpty { "-" }}")
         RouteResult(counts.routed, retry)
     }
 
@@ -133,7 +133,7 @@ class SceneIndexer(
         val reason = SceneRules.closeByTime(cur.view(), clock(), tuning()) ?: return false
         db.withTransaction { closeRow(cur, reason, emptySet(), clock(), tuning()) }
         open = null
-        Log.d(TAG, "routed=0 fast=0 dup=0 clustered=0 closed=$reason")
+        PcLog.d(TAG, "routed=0 fast=0 dup=0 clustered=0 closed=$reason")
         true
     }
 

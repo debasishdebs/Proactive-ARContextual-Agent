@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.SafeLog
@@ -67,7 +67,7 @@ object ExtractFollowUp {
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "critic unavailable, keeping the local verdict: ${SafeLog.describe(e)}")
+            PcLog.i(TAG, "critic unavailable, keeping the local verdict: ${SafeLog.describe(e)}")
             false
         }
     }

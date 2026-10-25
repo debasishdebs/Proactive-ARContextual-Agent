@@ -1,6 +1,6 @@
 package com.rokid.context.connectors.actions
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.contract.ProposedAction
 import com.rokid.context.connectors.ProposalIntake
@@ -233,7 +233,7 @@ class ActionEngine(
     private fun ttl(origin: ProposalOrigin) = if (origin == ProposalOrigin.ASK) ASK_TTL_MS else NUDGE_TTL_MS
 
     private fun log(what: String, t: Throwable) {
-        try { Log.w(TAG, "$what failed: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { /* plain JVM */ }
+        try { PcLog.w(TAG, "$what failed: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { /* plain JVM */ }
     }
 
     companion object {

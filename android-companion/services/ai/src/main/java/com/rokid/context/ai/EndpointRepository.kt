@@ -2,7 +2,7 @@ package com.rokid.context.ai
 
 import com.rokid.context.memory.db.EndpointDao
 import com.rokid.context.memory.db.EndpointEntity
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +58,7 @@ class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVau
         try {
             if (previous != null) vault.put(keyRef(id), previous) else vault.remove(keyRef(id))
         } catch (e: Exception) {
-            Log.w(TAG, "Key rollback failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "Key rollback failed: ${e.javaClass.simpleName}")
         }
     }
 
@@ -76,7 +76,7 @@ class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVau
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "Key remove failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "Key remove failed: ${e.javaClass.simpleName}")
         }
         dao.delete(id)
     }
@@ -90,7 +90,7 @@ class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVau
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "Orphan key remove failed: ${e.javaClass.simpleName}"); false
+                PcLog.w(TAG, "Orphan key remove failed: ${e.javaClass.simpleName}"); false
             }
         }
     } }

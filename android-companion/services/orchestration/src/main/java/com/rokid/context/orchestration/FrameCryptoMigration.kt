@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.BackoffPolicy
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -59,7 +59,7 @@ object FrameCryptoMigration {
                 }
             }
         }
-        if (failed > 0) Log.w(TAG, "frames not converted=$failed; retrying later")
+        if (failed > 0) PcLog.w(TAG, "frames not converted=$failed; retrying later")
         if (failed > 0) Outcome.FAILED else Outcome.DONE
     }
 }

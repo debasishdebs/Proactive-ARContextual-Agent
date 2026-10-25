@@ -2,7 +2,7 @@ package com.rokid.context.orchestration.nudge
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.ai.AiGraph
@@ -36,7 +36,7 @@ class NudgeRunGate(
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "nudge run failed: ${SafeLog.describe(e)}") // the next summarizer pass tries again
+            PcLog.i(TAG, "nudge run failed: ${SafeLog.describe(e)}") // the next summarizer pass tries again
         }
         return ran
     }

@@ -1,7 +1,7 @@
 package com.rokid.context.work.frames.recall
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ContextDatabase
@@ -73,7 +73,7 @@ class PhotoRecall(
         val captionHits = if (captionK > 0) captionScores(query, imageSet, notAfterMs) ?: run { captionState = CaptionSearchState.FAILED; emptyList() } else emptyList()
         val image = enrich(imageIds, PhotoSource.IMAGE, notAfterMs)
         val cap = enrich(captionHits, PhotoSource.CAPTION, notAfterMs).take(captionK) // cut AFTER frames without frame_meta are dropped
-        Log.i("PcRecall", "img=${image.size} cap=${cap.size} scanned=$scanned ms=${clock() - t0} state=$state")
+        PcLog.i("PcRecall", "img=${image.size} cap=${cap.size} scanned=$scanned ms=${clock() - t0} state=$state")
         return RecallResult(image, cap, state, scanned, truncated, captionState)
     }
 

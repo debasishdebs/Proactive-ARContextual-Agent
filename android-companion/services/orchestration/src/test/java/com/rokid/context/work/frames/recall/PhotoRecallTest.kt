@@ -39,6 +39,7 @@ import java.io.IOException
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class PhotoRecallTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.PcLogToShadowRule()
     private val db: ContextDatabase = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     @After fun close() = db.close()
 

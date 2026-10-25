@@ -1,6 +1,6 @@
 package com.rokid.context.ai.run
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.RoutedReply
@@ -91,13 +91,13 @@ class RoleRunner(
             if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, versionNo, attempts.toList())
             if (eval.schemaUnusable) {
                 // A corrected reply can't help; the job stays retryable so it succeeds once the prompt's schema is fixed.
-                Log.w(TAG, "${call.key.name} v$versionNo output schema can't be applied")
+                PcLog.w(TAG, "${call.key.name} v$versionNo output schema can't be applied")
                 throw ModelCallException("${call.key.name} v$versionNo output schema can't be applied", retryable = true, kind = FailureKind.INVALID_OUTPUT, replies = attempts.toList())
             }
             rejected = eval
             cutCap = if (reply.truncated) ((reply.maxTokens ?: ModelRequest.DEFAULT_MAX_TOKENS) * 2).coerceAtMost(ModelRequest.MAX_TOKENS_LIMIT) else null
             // Fixed words only: the stage and whether the provider cut the reply tell the failure classes apart in a device log.
-            Log.i(TAG, "${call.key.name} v$versionNo reply rejected (attempt $attempt, stage=${stage(eval)}, ${eval.problems().size} problem(s), cut=${reply.truncated}) from ${reply.endpoint.name}")
+            PcLog.i(TAG, "${call.key.name} v$versionNo reply rejected (attempt $attempt, stage=${stage(eval)}, ${eval.problems().size} problem(s), cut=${reply.truncated})")
         }
         val last = checkNotNull(rejected)
         throw ModelCallException("${call.key.name} reply didn't match its schema: ${failureSummary(last)}", retryable = true, kind = FailureKind.INVALID_OUTPUT, replies = attempts.toList())

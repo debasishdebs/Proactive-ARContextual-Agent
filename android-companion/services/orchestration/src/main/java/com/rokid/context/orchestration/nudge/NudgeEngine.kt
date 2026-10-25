@@ -1,6 +1,6 @@
 package com.rokid.context.orchestration.nudge
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.contract.NudgeOutput
@@ -59,7 +59,7 @@ class NudgeEngine(
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "nudge failed: ${SafeLog.describe(e)}")
+            PcLog.i(TAG, "nudge failed: ${SafeLog.describe(e)}")
             memory.traces.upsert(SummaryTraceEntity("nudge_run_$now", "NUDGE_FAILED", now, SafeLog.describe(e)))
             return NudgeRun.Failed
         }

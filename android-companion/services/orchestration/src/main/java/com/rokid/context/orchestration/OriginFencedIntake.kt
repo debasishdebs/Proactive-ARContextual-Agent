@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.contract.ProposedAction
@@ -40,7 +40,7 @@ class OriginFencedIntake(private val context: Context, private val memory: Memor
         } catch (c: kotlinx.coroutines.CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.w(TAG, "origin check failed: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "origin check failed: ${SafeLog.describe(e)}")
             false
         }
         if (dead) {

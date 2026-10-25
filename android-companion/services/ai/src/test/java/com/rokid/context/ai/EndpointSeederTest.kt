@@ -20,6 +20,7 @@ import org.robolectric.shadows.ShadowLog
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class EndpointSeederTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.ai.PcLogToShadowRule()
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val vault = InMemoryKeyVault()
     private val endpoints = EndpointRepository(db.endpointDao(), vault)

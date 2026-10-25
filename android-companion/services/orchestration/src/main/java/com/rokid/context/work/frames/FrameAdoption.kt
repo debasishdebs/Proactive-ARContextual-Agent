@@ -2,7 +2,7 @@ package com.rokid.context.work.frames
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ContextDatabase
@@ -69,9 +69,9 @@ class FrameAdoption(
             missing += gone.size
             after = page.last().id
         }
-        if (wiped) Log.i(TAG, "Delete all ran during adoption: stopped")
+        if (wiped) PcLog.i(TAG, "Delete all ran during adoption: stopped")
         prefs.edit().putBoolean(FLAG, true).commit() // after a wipe there is nothing left to adopt
-        Log.i(TAG, "adopted pending=$pending extracted=$extracted missingFile=$missing")
+        PcLog.i(TAG, "adopted pending=$pending extracted=$extracted missingFile=$missing")
         return Report(alreadyDone = false, pending = pending, extracted = extracted, missingFile = missing)
     }
 

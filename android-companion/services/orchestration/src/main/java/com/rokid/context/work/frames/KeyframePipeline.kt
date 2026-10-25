@@ -1,6 +1,6 @@
 package com.rokid.context.work.frames
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.contract.ClusterContract
@@ -194,7 +194,7 @@ class KeyframePipeline(
             if (startReleased) return
             val n = FrameRecovery.releaseAtProcessStart(states, clock(), processStartMs(), clusters)
             startReleased = true
-            Log.i(PIPE_TAG, "released=$n at process start")
+            PcLog.i(PIPE_TAG, "released=$n at process start")
             sweepFinalClusters(clock())
         }
     }
@@ -417,7 +417,7 @@ class KeyframePipeline(
             }
             retry
         } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            Log.w(TAG, "routing failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "routing failed: ${e.javaClass.simpleName}")
             null
         }
     }
@@ -447,15 +447,15 @@ class KeyframePipeline(
         val claimed = claim(picked.map { it.frameId }, claimId).toSet()
         if (claimed.isEmpty()) return Step.Idle(CONTENTION_MS) // the old worker or an ask took them
         val frames = picked.filter { it.frameId in claimed }
-        Log.i(PIPE_TAG, "claimed=${frames.size} batch=${picked.size} class=${callClass.name}")
+        PcLog.i(PIPE_TAG, "claimed=${frames.size} batch=${picked.size} class=${callClass.name}")
         val outcome = try {
             extractor(frames.map { it.frameId }, claimId, callClass)
         } catch (c: CancellationException) {
             withContext(NonCancellable) { frames.forEach { states.release(it.frameId, claimId, clock()) } }
-            Log.i(PIPE_TAG, "released=${frames.size} cancelled")
+            PcLog.i(PIPE_TAG, "released=${frames.size} cancelled")
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "extraction failed: ${e.javaClass.simpleName}")
+            PcLog.i(TAG, "extraction failed: ${e.javaClass.simpleName}")
             ExtractOutcome.classify(e, online())
         }
         report?.invoke(frames, outcome)
@@ -498,15 +498,15 @@ class KeyframePipeline(
         val per = if (live.size >= ClusterContract.MAX_CLUSTERS) ClusterContract.MAX_PHOTOS / ClusterContract.MAX_CLUSTERS else PHOTOS_PER_CLUSTER
         val reps = live.mapValues { it.value.take(per) }
         val sent = claimed.filter { it.clusterId in reps }
-        Log.i(PIPE_TAG, "clusters=${sent.size} photos=${reps.values.sumOf { it.size }}")
+        PcLog.i(PIPE_TAG, "clusters=${sent.size} photos=${reps.values.sumOf { it.size }}")
         val outcome = try {
             run(sent, reps, claimId, CallClass.EXTRACT)
         } catch (c: CancellationException) {
             withContext(NonCancellable) { sent.forEach { clusters.release(it.clusterId, claimId, clock()) } }
-            Log.i(PIPE_TAG, "released=${sent.size} clusters cancelled")
+            PcLog.i(PIPE_TAG, "released=${sent.size} clusters cancelled")
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "cluster call failed: ${e.javaClass.simpleName}")
+            PcLog.i(TAG, "cluster call failed: ${e.javaClass.simpleName}")
             ExtractOutcome.classify(e, online()).let { ClusterOutcome.Failed(it.error, it.countsAttempt, it.maxAttempts) }
         }
         return Step.Done(settleClusters(sent, claimId, outcome))
@@ -536,7 +536,7 @@ class KeyframePipeline(
         val c = clusters.get(id)?.takeIf { it.state == "FAILED_FINAL" } ?: return
         repIdsOf(c).chunked(CHUNK).forEach { states.move(it, FrameState.IN_CLUSTER.name, FrameState.FAILED_FINAL.name, "cluster_failed", now) }
         states.settleCluster(id, FrameState.NEAR_DUP.name, "cluster_failed", now)
-        Log.i(PIPE_TAG, "cluster failed for good")
+        PcLog.i(PIPE_TAG, "cluster failed for good")
     }
 
     private suspend fun settleClusters(sent: List<FrameClusterEntity>, claimId: String, o: ClusterOutcome): Int {
@@ -547,21 +547,21 @@ class KeyframePipeline(
                 o.leftOut.forEach { failCluster(it, claimId, "cluster_invalid", now, FrameStateDao.MAX_ATTEMPTS) }
                 o.gone.forEach { failCluster(it, claimId, "reps_gone", now, 1) }
                 val done = sent.count { it.clusterId !in o.leftOut && it.clusterId !in o.gone && it.clusterId !in o.failedFinal }
-                Log.i(PIPE_TAG, "summarised=$done leftOut=${o.leftOut.size} gone=${o.gone.size}")
+                PcLog.i(PIPE_TAG, "summarised=$done leftOut=${o.leftOut.size} gone=${o.gone.size}")
                 done
             }
             ClusterOutcome.Stale -> {
                 withContext(NonCancellable) { sent.forEach { clusters.release(it.clusterId, claimId, clock()) } }
-                Log.i(PIPE_TAG, "released=${sent.size} clusters stale")
+                PcLog.i(PIPE_TAG, "released=${sent.size} clusters stale")
                 0
             }
             is ClusterOutcome.Failed -> {
                 if (o.countsAttempt) {
                     sent.forEach { failCluster(it.clusterId, claimId, o.error, now, o.maxAttempts) }
-                    Log.i(PIPE_TAG, "failed class=${o.error} clusters=${sent.size}")
+                    PcLog.i(PIPE_TAG, "failed class=${o.error} clusters=${sent.size}")
                 } else {
                     sent.forEach { clusters.release(it.clusterId, claimId, now) }
-                    Log.i(PIPE_TAG, "released=${sent.size} clusters reason=${o.error}")
+                    PcLog.i(PIPE_TAG, "released=${sent.size} clusters reason=${o.error}")
                     pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
                     pausedUntilMs = now + pauseStepMs
                 }
@@ -574,7 +574,7 @@ class KeyframePipeline(
     private suspend fun shedBacklog(now: Long) {
         if (states.pendingCount() <= SHED_ABOVE) return
         val n = states.shedOldestNonDwell(SHED_KEEP_NEWEST, now)
-        if (n > 0) Log.i(PIPE_TAG, "shed=$n")
+        if (n > 0) PcLog.i(PIPE_TAG, "shed=$n")
     }
 
     /** [offerToNudges] false for the night job's calls: a week-old photo's memory is not a live moment (the fast-path nudge is never offered it). */
@@ -589,25 +589,25 @@ class KeyframePipeline(
                 rest.forEach {
                     val lag = it.receivedAt?.let { r -> r - it.ts }
                     latency.record(now - it.ts, lag)
-                    if (lag != null && lag <= LatencyTracker.MAX_RECEIPT_LAG_MS) Log.i(PIPE_TAG, "latencyMs=${(now - it.ts).coerceAtLeast(0L)}")
+                    if (lag != null && lag <= LatencyTracker.MAX_RECEIPT_LAG_MS) PcLog.i(PIPE_TAG, "latencyMs=${(now - it.ts).coerceAtLeast(0L)}")
                 }
-                Log.i(PIPE_TAG, "extracted=${rest.size}")
-                if (offerToNudges) runCatching { onExtracted(rest, o.memories) }.onFailure { Log.w(TAG, "post-extraction hook failed: ${it.javaClass.simpleName}") }
+                PcLog.i(PIPE_TAG, "extracted=${rest.size}")
+                if (offerToNudges) runCatching { onExtracted(rest, o.memories) }.onFailure { PcLog.w(TAG, "post-extraction hook failed: ${it.javaClass.simpleName}") }
                 rest.size
             }
             is ExtractOutcome.Stale, is ExtractOutcome.Wiped -> {
                 // One claim failed the CAS and rolled the whole save back: give back every other claim of the batch with no attempt.
                 // release() is claim-guarded, so the stale frame itself (retaken, forgotten) is left alone.
                 withContext(NonCancellable) { rest.forEach { states.release(it.frameId, claimId, clock()) } }
-                Log.i(PIPE_TAG, "released=${rest.size} stale")
+                PcLog.i(PIPE_TAG, "released=${rest.size} stale")
                 0
             }
             is ExtractOutcome.Failed -> {
                 rest.forEach { if (o.countsAttempt) states.fail(it.frameId, claimId, o.error, now, o.maxAttempts) else states.release(it.frameId, claimId, now) }
                 if (o.countsAttempt) {
                     val attempts = rest.maxOfOrNull { states.get(it.frameId)?.attempts ?: 0 } ?: 0
-                    Log.i(PIPE_TAG, "failed class=${o.error} frames=${rest.size} attempts=$attempts")
-                } else Log.i(PIPE_TAG, "released=${rest.size} reason=${o.error}")
+                    PcLog.i(PIPE_TAG, "failed class=${o.error} frames=${rest.size} attempts=$attempts")
+                } else PcLog.i(PIPE_TAG, "released=${rest.size} reason=${o.error}")
                 if (!o.countsAttempt && !user) {
                     pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
                     pausedUntilMs = now + pauseStepMs

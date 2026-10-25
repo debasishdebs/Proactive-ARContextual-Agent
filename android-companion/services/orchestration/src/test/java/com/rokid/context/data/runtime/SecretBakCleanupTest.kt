@@ -17,6 +17,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class SecretBakCleanupTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.PcLogToShadowRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val sentinel = "SENTINEL-not-a-real-key-42"
     private val names = listOf("app_config_secret.xml.bak.1780057256", "app_config_secret.xml.bak.manual_reset_1780057830")

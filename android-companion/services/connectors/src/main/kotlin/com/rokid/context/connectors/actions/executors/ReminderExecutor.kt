@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.core.app.NotificationManagerCompat
 import com.rokid.context.connectors.actions.ActionParams
 import com.rokid.context.connectors.actions.ActionType
@@ -54,7 +54,7 @@ class ReminderExecutor(private val context: Context) : ActionExecutor {
 
     /** Success marker for tools/device-checklist.sh (OBS-2): codes only, never the title or due time (log redaction). */
     private fun logCode(code: FailCode?) {
-        try { Log.i(TAG, "reminder armed; code=${code?.name ?: "NONE"}") } catch (_: RuntimeException) { /* plain JVM */ }
+        try { PcLog.i(TAG, "reminder armed; code=${code?.name ?: "NONE"}") } catch (_: RuntimeException) { /* plain JVM */ }
     }
 
     companion object {

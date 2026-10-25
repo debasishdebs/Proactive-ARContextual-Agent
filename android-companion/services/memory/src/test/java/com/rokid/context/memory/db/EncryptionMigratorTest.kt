@@ -18,6 +18,7 @@ import java.io.IOException
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class EncryptionMigratorTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.memory.PcLogToShadowRule()
     @get:Rule val dir = TemporaryFolder()
     private val db by lazy { File(dir.root, "context.db") }
     private val tmp by lazy { File(dir.root, "context.db.migrating") }

@@ -5,7 +5,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.speech.SpeechRecognizer
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.voice.FallbackGuard
 import com.rokid.context.voice.PcmFeeder
 import com.rokid.context.voice.SpeechEngine
@@ -38,7 +38,7 @@ class AndroidOnDeviceStt(context: Context) : SpeechEngine {
         val pipe = try {
             AndroidPipes.SHARED.openFeed()
         } catch (e: Exception) {
-            Log.w(TAG, "audio pipe unavailable (${e.javaClass.simpleName})"); return failed(listener)
+            PcLog.w(TAG, "audio pipe unavailable (${e.javaClass.simpleName})"); return failed(listener)
         }
         val read = pipe.read
         val feeder = PcmFeeder(pipe.sink, capacityBytes = pipe.capacityBytes)
@@ -59,13 +59,13 @@ class AndroidOnDeviceStt(context: Context) : SpeechEngine {
         main.post {
             if (released.get()) return@post
             val r = runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(app) }.getOrElse {
-                Log.w(TAG, "recognizer unavailable (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT); return@post
+                PcLog.w(TAG, "recognizer unavailable (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT); return@post
             }
             recognizer.set(r)
             r.setRecognitionListener(RecognitionBridge(core))
             // read stays open until release() (preflight F1). A synchronous throw is a Failed final, never a crash on Main.
             runCatching { r.startListening(SpeechIntents.external(localeTag, read)) }.onFailure {
-                Log.w(TAG, "recognizer start failed (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT)
+                PcLog.w(TAG, "recognizer start failed (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT)
             }
         }
         return object : SttSession {
@@ -88,12 +88,12 @@ class AndroidOnDeviceStt(context: Context) : SpeechEngine {
         main.post {
             if (released.get()) return@post
             val r = runCatching { SpeechRecognizer.createOnDeviceSpeechRecognizer(app) }.getOrElse {
-                Log.w(TAG, "recognizer unavailable (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT); return@post
+                PcLog.w(TAG, "recognizer unavailable (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT); return@post
             }
             recognizer.set(r)
             r.setRecognitionListener(RecognitionBridge(core))
             runCatching { r.startListening(SpeechIntents.base(localeTag)) }.onFailure {
-                Log.w(TAG, "recognizer start failed (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT)
+                PcLog.w(TAG, "recognizer start failed (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT)
             }
         }
         return object : SttSession {

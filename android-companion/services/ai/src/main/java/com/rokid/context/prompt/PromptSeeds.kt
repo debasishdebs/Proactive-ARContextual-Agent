@@ -1,7 +1,7 @@
 package com.rokid.context.prompt
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.contract.PromptKey
 
 /** First-launch prompt text per key (spec §4.3 seeds). */
@@ -28,7 +28,7 @@ class AssetPromptSeeds(context: Context, private val dir: String = "prompts/seed
 
     override fun template(key: PromptKey): String =
         runCatching { assets.open("$dir/${file(key)}").bufferedReader().use { it.readText() } }.getOrNull()?.takeIf { it.isNotBlank() }
-            ?: BuiltInPromptSeeds.template(key).also { Log.w(TAG, "Seed asset missing for ${key.name}; using the built-in seed") }
+            ?: BuiltInPromptSeeds.template(key).also { PcLog.w(TAG, "Seed asset missing for ${key.name}; using the built-in seed") }
 
     companion object {
         private const val TAG = "AssetPromptSeeds"

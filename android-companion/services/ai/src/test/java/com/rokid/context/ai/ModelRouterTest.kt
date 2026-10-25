@@ -21,6 +21,7 @@ import org.robolectric.shadows.ShadowLog
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class ModelRouterTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.ai.PcLogToShadowRule()
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val endpoints = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
     private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
