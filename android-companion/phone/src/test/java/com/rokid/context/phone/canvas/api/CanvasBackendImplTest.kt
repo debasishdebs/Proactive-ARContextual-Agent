@@ -516,7 +516,7 @@ class CanvasBackendImplTest {
 
     @Test fun nodeTypesServeTheInnerFlowOfTheCompositesBuiltSoFar() {
         val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
-        assertEquals(setOf("gate.local_critic", "ai.vision_extract", "ai.critic", "memory.write"), all.filterValues { "inner" in it }.keys)
+        assertEquals(setOf("gate.local_critic", "ai.vision_extract", "ai.critic", "memory.write", "policy.capture_rate"), all.filterValues { "inner" in it }.keys)
         val inner = all.getValue("gate.local_critic")["inner"]!!.jsonObject
         assertEquals(setOf("facts", "aggregate", "cutoff", "compare", "trusted", "unsure"), inner["nodes"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
         assertEquals(listOf("aggregate", "operator", "cutoff"), inner["exposed"]!!.jsonArray.map { it.jsonObject["param"]!!.jsonPrimitive.content })
@@ -525,15 +525,30 @@ class CanvasBackendImplTest {
         assertEquals(0.7, cut["default"]!!.jsonPrimitive.content.toDouble(), 0.0)
     }
 
+    /** Phase C: the rate table's exposed cells are served with their row, column and today's value (a blank cell has no default). */
+    @Test fun captureFrequencyServesItsExposedCellsWithTheirTodayDefaults() {
+        val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        val inner = all.getValue("policy.capture_rate")["inner"]!!.jsonObject
+        val cells = inner["exposed"]!!.jsonArray.map { it.jsonObject }.associateBy { it["row"]!!.jsonPrimitive.content + "." + it["col"]!!.jsonPrimitive.content }
+        assertEquals(20, cells.size)
+        assertEquals(2, cells.getValue("REST.capPerMin")["default"]!!.jsonPrimitive.int)
+        assertEquals(300, cells.getValue("FLIGHT.stillCapGapS")["default"]!!.jsonPrimitive.int)
+        assertTrue("a blank cap has no default", "default" !in cells.getValue("VEHICLE_PASSENGER.capPerMin"))
+        assertEquals("rows", cells.getValue("REST.settledGapS")["param"]!!.jsonPrimitive.content)
+    }
+
     /** Every exposed param of a composite names a served descriptor, and an exposed one carries today's default (absent = default). */
     @Test fun everyExposedParamOfACompositeIsServedWithItsDefault() {
         val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
         for ((type, t) in all) {
             val inner = t["inner"]?.jsonObject ?: continue
             val served = t["params"]!!.jsonArray.map { it.jsonObject }.associateBy { it["name"]!!.jsonPrimitive.content }
-            for (e in inner["exposed"]!!.jsonArray.map { it.jsonObject["param"]!!.jsonPrimitive.content }) {
+            for (x in inner["exposed"]!!.jsonArray.map { it.jsonObject }) {
+                val e = x["param"]!!.jsonPrimitive.content
                 assertTrue("$type: $e is served", e in served)
-                assertTrue("$type: $e has a default", "default" in served.getValue(e))
+                // a table cell carries its own default on the exposed entry (a blank cell has none); every other exposed param has one on its descriptor
+                if ("col" in x) assertTrue("$type: $e cell has a column and a row", "row" in x)
+                else assertTrue("$type: $e has a default", "default" in served.getValue(e))
             }
         }
         val vx = all.getValue("ai.vision_extract")

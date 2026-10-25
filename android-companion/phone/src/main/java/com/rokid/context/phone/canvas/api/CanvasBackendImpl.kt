@@ -258,7 +258,9 @@ class CanvasBackendImpl(
     private fun innerJson(f: InnerFlow): JsonObject = buildJsonObject {
         put("nodes", JsonArray(f.nodes.map { n -> buildJsonObject { put("id", n.id); put("label", n.label); put("kind", n.kind) } }))
         put("wires", JsonArray(f.wires.map { w -> buildJsonObject { put("from", w.from); put("to", w.to); put("port", w.port) } }))
-        put("exposed", JsonArray(f.exposed.map { e -> buildJsonObject { put("param", e.param); put("node", e.node) } }))
+        put("exposed", JsonArray(f.exposed.map { e ->
+            buildJsonObject { put("param", e.param); put("node", e.node); if (e.col.isNotEmpty()) { put("row", e.row); put("col", e.col); e.default?.let { put("default", it) } } }
+        }))
         if (f.note.isNotEmpty()) put("note", JsonArray(f.note.map { JsonPrimitive(it) }))
     }
 

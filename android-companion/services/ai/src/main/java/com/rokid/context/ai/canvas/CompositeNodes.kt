@@ -10,7 +10,8 @@ import kotlinx.serialization.json.doubleOrNull
  */
 data class InnerNode(val id: String, val label: String, val kind: String)
 data class InnerWire(val from: String, val to: String, val port: String = "")
-data class InnerExposed(val param: String, val node: String)
+/** [row] and [col] name ONE cell of a table param (`policy.capture_rate`'s `rows`); [default] is that cell's value today (null: the cell is blank, "unchanged" or "inherit"). Empty for a plain param. */
+data class InnerExposed(val param: String, val node: String, val row: String = "", val col: String = "", val default: JsonPrimitive? = null)
 /** [note] are short lines drawn under the boxes: what a read-only composite cannot show as boxes (empty for gate.local_critic). */
 data class InnerFlow(val nodes: List<InnerNode>, val wires: List<InnerWire>, val exposed: List<InnerExposed>, val note: List<String> = emptyList())
 

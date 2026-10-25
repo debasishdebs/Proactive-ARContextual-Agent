@@ -37,6 +37,7 @@ export function mountEditor(el, opts) {
         title: data.title, inner: data.composite.inner, descriptors: data.composite.descriptors, params: data.composite.params, readOnly: data.readOnly,
         onToggle: (v) => { exp[id] = v; expSubs.forEach((f) => f()); },
         onParam: (name, raw) => { const r = L.inputChange(store.get(), id, name, null, raw, nodeTypes, env); store.set(r.ed); return r.error; },
+        onCell: (name, row, col, raw) => { const r = L.tableChange(store.get(), id, name, row, col, raw, nodeTypes); store.set(r.ed); return r.error; },
       });
       widgets[id] = w.current;
       return () => { delete widgets[id]; w.current.unmount(); w.current = null; };
