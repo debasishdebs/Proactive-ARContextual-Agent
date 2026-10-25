@@ -1,7 +1,7 @@
 // The pure merge of several pipelines into one read-only drawing: ids, lanes, colours, cross-pipeline signal links, captured-frames links.
 import { buildMerged, parseIds, mergedHref, withCapture, DEFAULT_CAPTURE, PIPELINE_COLOURS } from '../../main/assets/canvas/mergedflow.js';
 import { CARD_W, CARD_H, CELL_H } from '../../main/assets/canvas/flowadapter.js';
-import { allTypes, capturePipe, livePipe, eq, ok } from './fixtures.js';
+import { allTypes, watchTypes, capturePipe, livePipe, eq, ok } from './fixtures.js';
 
 const cap = () => ({ id: 'default-capture', name: 'Default capture', pipe: capturePipe() });
 const live = () => ({ id: 'live-extract', name: 'Live', pipe: livePipe() });
@@ -33,6 +33,14 @@ export const tests = {
     eq(m.nodes.filter((n) => n.domain === 'RT_GLASSES').length > 0 && m.nodes.some((n) => n.id === 'starter::extract' && n.domain === 'ASYNC'), true);
     ok(m.edges.some((e) => e.kind === 'flow' && e.from === 'starter::capture_1' && e.to === 'starter::photos'), 'capture image feeds the Photo input as an ordinary edge');
     ok(!m.edges.some((e) => e.kind === 'frames'), 'no captured-frames link: the join is inside the one pipeline');
+    for (const n of m.nodes) { const l = m.lanes.find((x) => x.domain === n.domain); ok(n.x >= l.x && n.x + n.w <= l.x + l.width, n.id + ' lies inside its lane'); }
+  },
+  aWatchPipelineAddsTheWatchLaneBeforeTheGlassesLane() {
+    const w = { id: 'wm', name: 'Watch', pipe: { schema: 2, id: 'wm', name: 'Watch', nodes: [{ id: 'watch', type: 'src.watch_motion', title: 'Motion on watch', params: {} }, { id: 'agg', type: 'agg.window', title: 'Window', params: {} }], edges: [{ from: 'watch', to: 'agg' }] } };
+    const m = buildMerged([cap(), w], allTypes.concat(watchTypes));
+    eq(m.lanes.map((l) => l.domain), ['WATCH', 'RT_GLASSES', 'RT_PHONE', 'ASYNC']);
+    eq(m.lanes[0].label, 'Watch');
+    eq(node(m, 'wm::watch').domain, 'WATCH');
     for (const n of m.nodes) { const l = m.lanes.find((x) => x.domain === n.domain); ok(n.x >= l.x && n.x + n.w <= l.x + l.width, n.id + ' lies inside its lane'); }
   },
   nodesAreGroupedInLanesGlassesPhoneAsync() {

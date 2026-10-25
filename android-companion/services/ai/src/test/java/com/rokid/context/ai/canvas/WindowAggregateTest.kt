@@ -30,7 +30,7 @@ class WindowAggregateTest {
         assertEquals(WindowAggregate.Settings("gyroMean", "mean", 10), WindowAggregate.settings(none))
         assertEquals(50, WindowAggregate.MAX_WINDOW)
         assertEquals(listOf("mean", "min", "max", "count"), WindowAggregate.OPS)
-        assertEquals(listOf("seconds", "gyroMean", "gyroMax", "accVarMean", "accVarMax", "stepHzMean", "stepHzMax"), WindowAggregate.FEATURES)
+        assertEquals(listOf("seconds", "gyroMean", "gyroMax", "accVarMean", "accVarMax", "stepHzMean", "stepHzMax", "watchMotion"), WindowAggregate.FEATURES)
         assertEquals(WindowAggregate.Settings("stepHzMax", "max", 3), WindowAggregate.settings(params("feature" to "stepHzMax", "op" to "max", "window" to 3)))
         assertEquals("a bad value falls back, the validator reports it", WindowAggregate.Settings(), WindowAggregate.settings(params("feature" to "nope", "op" to 5, "window" to 99)))
     }
@@ -69,7 +69,7 @@ class WindowAggregateTest {
         val t = NodeTypes.byType(NodeTypes.AGG_WINDOW)
         assertNotNull(t); t!!
         assertEquals(Family.AGGREGATE, t.family); assertEquals(Domain.ASYNC, t.domain); assertEquals(PortType.NUMBER, t.output)
-        assertEquals(setOf(PortType.SCENES, PortType.MOMENTS), t.inputs); assertTrue(t.palette); assertEquals(2, t.sinceSchema)
+        assertEquals(setOf(PortType.SCENES, PortType.MOMENTS, PortType.WATCH), t.inputs); assertTrue(t.palette); assertEquals(2, t.sinceSchema)
         assertEquals(0, t.cost.modelCalls); assertNull(NodeTypes.resolve(NodeTypes.AGG_WINDOW, 1))
         assertEquals(listOf(NodeTypes.AGG_WINDOW), NodeTypes.all.filter { it.family == Family.AGGREGATE }.map { it.type })
     }
