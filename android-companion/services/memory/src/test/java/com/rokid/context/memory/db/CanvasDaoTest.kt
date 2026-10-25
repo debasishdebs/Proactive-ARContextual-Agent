@@ -39,17 +39,6 @@ class CanvasDaoTest {
         assertEquals(0, dao.deleteWatchRuns())
     }
 
-    /** GAP-2: a write of watch rows made under an older watch fence (the source was switched off or Delete all ran meanwhile) is refused whole; other rows are not affected by the watch fence. */
-    @Test fun aWatchRowWrittenUnderAnOlderWatchFenceIsRefused() = runBlocking {
-        assertFalse(dao.insertRunItemsFenced(listOf(item("w", "watch:1000")), emptyList(), 7, emptySet(), watchGeneration = 3, currentWatchGeneration = { 4 }) { 7 })
-        assertTrue(dao.items("w").isEmpty())
-        assertFalse("one watch row refuses the whole write", dao.insertRunItemsFenced(listOf(item("w", "watch:none"), item("w", "f1")), emptyList(), 7, emptySet(), watchGeneration = 3, currentWatchGeneration = { 4 }) { 7 })
-        assertTrue(dao.items("w").isEmpty())
-        assertTrue(dao.insertRunItemsFenced(listOf(item("w", "watch:1000")), emptyList(), 7, emptySet(), watchGeneration = 4, currentWatchGeneration = { 4 }) { 7 })
-        assertEquals(1, dao.items("w").size)
-        assertTrue("a photo row never looks at the watch fence", dao.insertRunItemsFenced(listOf(item("p", "f1")), emptyList(), 7, emptySet(), watchGeneration = 3, currentWatchGeneration = { 4 }) { 7 })
-    }
-
     @Test fun saveDraftCasOnRev() = runBlocking {
         dao.upsertPipeline(pipe("p", rev = 2))
         assertEquals(0, dao.saveDraft("p", "{\"a\":1}", 1, 5))

@@ -77,15 +77,6 @@ class ContextHub(
 
     /** The recent watch values this hub accepted (memory only, bounded): what a canvas `src.watch_motion` run reads. Emptied when the watch source is switched off. */
     val watchRing = WatchMotionRing()
-
-    /**
-     * GAP-2: Delete all empties the watch ring and a time-range Forget drops its values; both also move the watch fence, so a watch run that is executing cannot write the forgotten
-     * values back. Registered with `ForgetListeners` by the hub graph.
-     */
-    val forgetListener: com.rokid.context.memory.forget.ForgetListener = object : com.rokid.context.memory.forget.ForgetListener {
-        override suspend fun onDeleteAll() { com.rokid.context.ai.canvas.WatchFence.bump(); watchRing.clear() }
-        override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { com.rokid.context.ai.canvas.WatchFence.bump(); watchRing.removeBetween(fromMs, toMs) }
-    }
     private var retainSeq = 0
     private var lastEvalAt = 0L
     private var committed = ContextState.UNKNOWN
@@ -236,7 +227,7 @@ class ContextHub(
     /** Marks the source revoked (late callbacks are dropped) and forgets its evidence; the caller rebuilds the fusion. */
     private fun stopSource(id: String, s: ContextSource?) {
         running.remove(id); live.remove(id)
-        if (id == "watch_livefit") { com.rokid.context.ai.canvas.WatchFence.bump(); watchRing.clear(); safe(Unit) { onWatchOff() } } // a source switched off forgets what it gave
+        if (id == "watch_livefit") { watchRing.clear(); safe(Unit) { onWatchOff() } } // a source switched off forgets what it gave
         safe(Unit) { s?.stop() }
         retained.keys.removeAll { retained[it]?.let { e -> sourceOf(e) } == id }
     }

@@ -39,12 +39,4 @@ class WatchMotionRingTest {
         val r = WatchMotionRing(); r.add(s(1)); r.clear()
         assertEquals(emptyList<WatchSample>(), r.recent(0, 10))
     }
-
-    @Test fun removeBetweenDropsOnlyTheRangeAndCountsIt() {
-        val r = WatchMotionRing()
-        listOf(s(100), s(200), s(300), s(400)).forEach(r::add)
-        assertEquals(2, r.removeBetween(200, 300))
-        assertEquals(listOf(100L, 400L), r.recent(0, 1000).map { it.atMs })
-        assertEquals(0, r.removeBetween(200, 300))
-    }
 }

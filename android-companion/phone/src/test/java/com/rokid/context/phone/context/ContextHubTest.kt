@@ -305,32 +305,6 @@ class ContextHubTest {
         assertTrue(f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
     }
 
-    /** GAP-2: switching the watch source off moves the watch fence (a run in flight cannot write its values back); another source going off does not. */
-    @Test fun switchingTheWatchSourceOffMovesTheWatchFenceAndNoOtherSourceDoes() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.reg("phone_car"); f.on("watch_livefit", "phone_car"); f.start()
-        val g0 = com.rokid.context.ai.canvas.WatchFence.generation.get()
-        f.off("phone_car")
-        assertEquals(g0, com.rokid.context.ai.canvas.WatchFence.generation.get())
-        f.off("watch_livefit")
-        assertTrue(com.rokid.context.ai.canvas.WatchFence.generation.get() > g0)
-    }
-
-    /** GAP-2: Delete all empties the in-memory ring (it survived before) and moves the fence; a time-range Forget drops only the values of the range. */
-    @Test fun deleteAllEmptiesTheWatchRingAndARangeForgetDropsItsValues() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
-        val t = f.clock()
-        f.accept(Evidence.WatchMotion(t, WatchState.WALKING, 0.9f)); f.adv(40_000)
-        f.accept(Evidence.WatchMotion(f.clock(), WatchState.RUNNING, 0.8f))
-        val g0 = com.rokid.context.ai.canvas.WatchFence.generation.get()
-        f.hub.forgetListener.onRangeForgotten(t - 1, t + 1, emptyList())
-        assertEquals(listOf(WatchState.RUNNING), f.hub.watchRing.recent(0, Long.MAX_VALUE).map { it.state })
-        assertTrue(com.rokid.context.ai.canvas.WatchFence.generation.get() > g0)
-        val g1 = com.rokid.context.ai.canvas.WatchFence.generation.get()
-        f.hub.forgetListener.onDeleteAll()
-        assertTrue(f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
-        assertTrue(com.rokid.context.ai.canvas.WatchFence.generation.get() > g1)
-    }
-
     @Test fun anotherSourcesEvidenceAndAnUnrunningWatchLeaveTheRingEmpty() = runTest {
         val f = Fx(this); f.reg("phone_car"); f.on("phone_car"); f.start()
         f.accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true))
