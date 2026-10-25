@@ -406,48 +406,69 @@ class CanvasBackendImplTest {
 
     private suspend fun framesOf(runId: String) = checkNotNull(backend.run(runId))["items"]!!.jsonArray.map { it.jsonObject["frameId"]!!.jsonPrimitive.content }.toSet()
 
-    @Test fun anAbEstimateNarrowsTheFramesByThePhotoSettingsOfBothArms() = runBlocking<Unit> {
+    private fun arms(e: Estimate) = (e as Estimate.Ok).arms.map { it.photos }
+
+    @Test fun anAbEstimateShowsEachArmOverItsOwnPhotoSettings() = runBlocking<Unit> {
         val now = System.currentTimeMillis(); val h = 3_600_000L
         seed("f1", now - 10 * h); seed("f2", now - 1 * h); seed("f3", now - 2 * h)
         val ids = listOf("f1", "f2", "f3")
         val plain = PipelineRef("live-extract", null)
-        assertEquals("defaults on both sides: all three, as before", 3, (backend.estimateAb(plain, plain, ids) as Estimate.Ok).photos)
-        assertEquals("arm A since 5 h drops the 10 h old one", 2, (backend.estimateAb(PipelineRef(copyWithPhotoParams("""{"sinceHours":5}"""), null), plain, ids) as Estimate.Ok).photos)
-        assertEquals("arm B limit 1 keeps the newest", 1, (backend.estimateAb(plain, PipelineRef(copyWithPhotoParams("""{"limit":1}"""), null), ids) as Estimate.Ok).photos)
-        assertEquals("both arms: only what passes both", 1, (backend.estimateAb(PipelineRef(copyWithPhotoParams("""{"sinceHours":5}"""), null), PipelineRef(copyWithPhotoParams("""{"limit":1}"""), null), ids) as Estimate.Ok).photos)
+        val since5 = PipelineRef(copyWithPhotoParams("""{"sinceHours":5}"""), null)
+        val limit1 = PipelineRef(copyWithPhotoParams("""{"limit":1}"""), null)
+        assertEquals("defaults on both sides: all three each, as before", listOf(3, 3), arms(backend.estimateAb(plain, plain, ids)))
+        assertEquals("identical Photo settings: the same frames (same photos, different pipelines)", listOf(2, 2), arms(backend.estimateAb(since5, since5, ids)))
+        assertEquals("arm A since 5 h drops the 10 h old one; arm B keeps all", listOf(2, 3), arms(backend.estimateAb(since5, plain, ids)))
+        assertEquals("arm B limit 1 keeps the newest; arm A keeps all", listOf(3, 1), arms(backend.estimateAb(plain, limit1, ids)))
+        assertEquals("each arm its own set, no intersection", listOf(2, 1), arms(backend.estimateAb(since5, limit1, ids)))
+        val both = backend.estimateAb(since5, limit1, ids) as Estimate.Ok
+        assertEquals("the total counts the distinct frames of both arms", 2, both.photos)
+        assertEquals("cost per arm: A prices two photos, B one", true, both.arms[0].nominal > both.arms[1].nominal)
         val none = backend.estimateAb(PipelineRef(copyWithPhotoParams("""{"markedOnly":true}"""), null), plain, ids)
-        assertTrue("nothing left is refused like an empty choice", none is Estimate.Refused && "no photos" in none.reasons)
+        assertTrue("an arm with nothing left is refused by name", none is Estimate.Refused && "arm A: no photos" in none.reasons)
+        val noneB = backend.estimateAb(plain, PipelineRef(copyWithPhotoParams("""{"markedOnly":true}"""), null), ids)
+        assertTrue(noneB is Estimate.Refused && "arm B: no photos" in noneB.reasons)
     }
 
-    @Test fun anAbRunSendsOnlyTheScopedFramesToBothArms() = runBlocking<Unit> {
+    @Test fun anAbRunSendsEachArmOnlyItsOwnScopedFrames() = runBlocking<Unit> {
         bind()
         val now = System.currentTimeMillis(); val h = 3_600_000L
         seed("f1", now - 10 * h); seed("f2", now - 1 * h)
         val ids = listOf("f1", "f2")
         val a = PipelineRef(copyWithPhotoParams("""{"sinceHours":5}"""), null); val b = PipelineRef("live-extract", null)
         val est = backend.estimateAb(a, b, ids) as Estimate.Ok
-        assertEquals(1, est.photos)
+        assertEquals(listOf(1, 2), est.arms.map { it.photos })
         val started = backend.startAb(a, b, ids, est.confirmToken)
         awaitGroup(started)
-        assertEquals(setOf("f2"), framesOf(started.runA)); assertEquals(setOf("f2"), framesOf(started.runB))
+        assertEquals("arm A never gets the frame its filter excludes", setOf("f2"), framesOf(started.runA))
+        assertEquals("arm B has its own (unfiltered) set", setOf("f1", "f2"), framesOf(started.runB))
+        // identical Photo settings: identical frames
+        val est2 = backend.estimateAb(a, a, ids) as Estimate.Ok
+        val s2 = backend.startAb(a, a, ids, est2.confirmToken)
+        awaitGroup(s2)
+        assertEquals(framesOf(s2.runA), framesOf(s2.runB))
     }
 
-    @Test fun anAbRunWhoseScopedFramesMovedSinceTheEstimateIsAnInvalidToken() = runBlocking<Unit> {
+    @Test fun anAbArmWhoseScopedFramesMovedOrEmptiedIsATypedErrorNamingTheArm() = runBlocking<Unit> {
         bind()
         val now = System.currentTimeMillis(); val h = 3_600_000L
         seed("f2", now - 1 * h); seed("f3", now - 2 * h)
         val ids = listOf("f2", "f3")
         markFrame("m3", "f3", now - 2 * h)
-        val a = PipelineRef(copyWithPhotoParams("""{"markedOnly":true}"""), null); val b = PipelineRef("live-extract", null)
-        val est = backend.estimateAb(a, b, ids) as Estimate.Ok
-        assertEquals(1, est.photos)
-        markFrame("m2", "f2", now - 1 * h) // a second frame is marked before the start: the scoped set moved
-        val err = runCatching { backend.startAb(a, b, ids, est.confirmToken) }.exceptionOrNull()
-        assertTrue(err is IllegalArgumentException && err.message == "bad_token")
-        // a start whose scoped set is empty is refused the same way (a token bought for the unscoped list does not fit the empty one)
-        val unscoped = backend.estimateAb(b, b, listOf("f3")) as Estimate.Ok
-        val empty = runCatching { backend.startAb(PipelineRef(copyWithPhotoParams("""{"sinceHours":1}"""), null), b, listOf("f3"), unscoped.confirmToken) }.exceptionOrNull()
-        assertTrue(empty is IllegalArgumentException && empty.message == "bad_token")
+        val marked = PipelineRef(copyWithPhotoParams("""{"markedOnly":true}"""), null); val plain = PipelineRef("live-extract", null)
+        val estA = backend.estimateAb(marked, plain, ids) as Estimate.Ok
+        markFrame("m2", "f2", now - 1 * h) // a second frame is marked before the start: arm A's set moved
+        val errA = runCatching { backend.startAb(marked, plain, ids, estA.confirmToken) }.exceptionOrNull()
+        assertTrue(errA is com.rokid.context.canvas.CanvasRunner.AbArmMoved && errA.arm == "A")
+        val estB = backend.estimateAb(plain, PipelineRef(copyWithPhotoParams("""{"limit":1}"""), null), ids) as Estimate.Ok
+        val b2 = PipelineRef(copyWithPhotoParams("""{"limit":2}"""), null) // B's set grew from 1 to 2
+        val errB = runCatching { backend.startAb(plain, b2, ids, estB.confirmToken) }.exceptionOrNull()
+        assertTrue("B moved, A did not", errB is com.rokid.context.canvas.CanvasRunner.AbArmMoved && errB.arm == "B")
+        // a start whose arm is empty is typed too
+        val ok = backend.estimateAb(plain, plain, listOf("f3")) as Estimate.Ok
+        val empty = runCatching { backend.startAb(plain, PipelineRef(copyWithPhotoParams("""{"sinceHours":1}"""), null), listOf("f3"), ok.confirmToken) }.exceptionOrNull()
+        assertTrue(empty is com.rokid.context.canvas.CanvasRunner.AbArmEmpty && empty.arm == "B")
+        val spent = runCatching { backend.startAb(plain, plain, listOf("f3"), ok.confirmToken) }.exceptionOrNull()
+        assertTrue("the token is spent", spent is IllegalArgumentException && spent.message == "bad_token")
     }
 
     @Test fun endToEndRunOnFakeFrames() = runBlocking<Unit> {

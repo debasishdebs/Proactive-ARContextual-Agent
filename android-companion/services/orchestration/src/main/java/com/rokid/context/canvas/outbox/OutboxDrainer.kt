@@ -43,7 +43,13 @@ class OutboxDrainer(
 
     private val lock = Mutex()
 
-    suspend fun drain(): Report = lock.withLock { drainLocked() }
+    /** A delete: the exclusive side of the [com.rokid.context.orchestration.DataOpGate]. While an export runs for 30 s the rows simply stay pending (nothing is dropped) and the next trigger retries. */
+    suspend fun drain(): Report = try {
+        com.rokid.context.orchestration.DataOpGate.shared.delete { lock.withLock { drainLocked() } }
+    } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
+        log.log(Level.I, "OutboxDrainer", "drain deferred: export in progress")
+        Report.NONE
+    }
 
     private suspend fun drainLocked(): Report {
         val before = store.attempts()

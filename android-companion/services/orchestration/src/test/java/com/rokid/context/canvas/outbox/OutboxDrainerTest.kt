@@ -1,5 +1,6 @@
 package com.rokid.context.canvas.outbox
 
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -170,5 +171,21 @@ class OutboxDrainerTest {
         val store = FakeStore((1L..(OutboxDrainer.GLASSES_CAP_PER_TARGET + 3).toLong()).map { phoneRow(it, "/f/$it.jpg") })
         val r = drainer(store, FakeFiles(), max = 0).drain()
         assertEquals(0, r.dropped); assertEquals(OutboxDrainer.GLASSES_CAP_PER_TARGET + 3, store.rows.size)
+    }
+
+    /** The gate ruling: a drain is a delete; while an export holds the gate the rows stay pending (nothing dropped) and the next drain does the work. */
+    @Test fun aDrainDuringAnExportDefersAndKeepsEveryRow() = runBlocking<Unit> {
+        val files = FakeFiles(listOf("/f/a.jpg")); val store = FakeStore(listOf(phoneRow(1, "/f/a.jpg")))
+        val original = com.rokid.context.orchestration.DataOpGate.shared
+        com.rokid.context.orchestration.DataOpGate.shared = com.rokid.context.orchestration.DataOpGate(waitMs = 150)
+        try {
+            val inside = kotlinx.coroutines.CompletableDeferred<Unit>(); val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+            val exp = kotlinx.coroutines.GlobalScope.launch { com.rokid.context.orchestration.DataOpGate.shared.export { inside.complete(Unit); release.await() } }
+            inside.await()
+            val r = drainer(store, files).drain()
+            assertEquals(OutboxDrainer.Report.NONE, r); assertEquals(1, store.rows.size); assertEquals(setOf("/f/a.jpg"), files.present)
+            release.complete(Unit); exp.join()
+            assertEquals(1, drainer(store, files).drain().removed)
+        } finally { com.rokid.context.orchestration.DataOpGate.shared = original }
     }
 }

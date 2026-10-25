@@ -202,8 +202,8 @@ export function paletteGroups(ed, nodeTypes) {
   const groups = FAMILIES.map((category) => ({ category, soon: false, items: [] }));
   const other = { category: 'Other', soon: false, items: [] };
   for (const t of nodeTypes || []) {
-    // `expr` is registered but hidden until 3c; the python experiment node and the Scenes input are the unliveable types offered (S6 keeps them out of every publish)
-    if (!t.palette || (t.liveable === false && t.executor !== 'PYTHON' && t.type !== 'input.scenes')) continue;
+    // `expr` is registered but hidden until 3c; the python experiment node and the Moments and Scenes inputs are the unliveable types offered (S6 keeps them out of every publish)
+    if (!t.palette || (t.liveable === false && t.executor !== 'PYTHON' && t.type !== 'input.scenes' && t.type !== 'input.moments')) continue;
     const g = groups.find((x) => x.category === t.family) || other;
     const lane = t.domain || 'ASYNC';
     g.items.push(t.hint ? { type: t.type, label: t.label, lane, hint: t.hint } : { type: t.type, label: t.label, lane });

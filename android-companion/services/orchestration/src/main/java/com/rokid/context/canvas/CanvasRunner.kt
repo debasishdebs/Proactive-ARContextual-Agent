@@ -53,9 +53,14 @@ sealed interface Estimate {
     data class Ok(val photos: Int, val nominal: Int, val max: Int, val models: List<ModelLabel>, val confirmToken: String, val tokens: TokenEstimate? = null,
         /** "photos", or "moments" for a Moment run (then [photos] counts Moments and [photoCount] their photos). */
         val kind: String = "photos", val photoCount: Int = photos,
+        /** An A/B estimate: the price of each arm over ITS OWN frames (A first); empty for every other estimate. [photos] then counts the distinct frames of both arms. */
+        val arms: List<ArmEstimate> = emptyList(),
     ) : Estimate
     data class Refused(val reasons: List<String>) : Estimate
 }
+
+/** One arm of an A/B estimate: its own frame count and price. */
+data class ArmEstimate(val photos: Int, val nominal: Int, val max: Int, val models: List<ModelLabel>, val tokens: TokenEstimate?)
 
 /** The two sides of an A/B run: (pipeline, version) and the pipeline id of each. */
 data class AbSpec(val a: Pair<Pipeline, Int?>, val aId: String, val b: Pair<Pipeline, Int?>, val bId: String)
@@ -111,6 +116,12 @@ class CanvasRunner(
     /** A Scene run was estimated, but a Scene (a member, its text, a hidden field) changed or vanished before the start: nothing ran, estimate again. */
     class ScenesMoved : IllegalStateException("scenes_moved")
 
+    /** An A/B arm has no photo left after its own Photo node settings (typed per arm: "A" or "B"). Nothing ran. */
+    class AbArmEmpty(val arm: String) : IllegalStateException("ab_arm_empty")
+
+    /** An A/B arm's own scoped photos are not the set its estimate bound (a mark was added, a photo aged out) (typed per arm). Nothing ran, the token is spent. */
+    class AbArmMoved(val arm: String) : IllegalStateException("ab_arm_moved")
+
     /** A watch run was estimated, but the hub's values of the window changed before the start: nothing ran, estimate again. */
     class WatchMoved : IllegalStateException("watch_moved")
 
@@ -136,6 +147,11 @@ class CanvasRunner(
     @Volatile private var group: Group? = null
     private val modelsByToken = object : LinkedHashMap<String, List<String>>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<String>>) = size > 32
+    }
+
+    /** The frame set each arm of an A/B estimate was priced over, by token: lets a start say WHICH arm moved. */
+    private val armsByToken = object : LinkedHashMap<String, Pair<Set<String>, Set<String>>>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Set<String>, Set<String>>>) = size > 32
     }
 
     /** Group rows (A/B) still QUEUED or RUNNING after a restart are CANCELLED (B must never start), plain RUNNING rows are INTERRUPTED. Returns the rows changed. */
@@ -232,26 +248,42 @@ class CanvasRunner(
         return Estimate.Ok(ids.size, c.nominal, c.max, c.models, token, c.tokens)
     }
 
+    /** [estimateAb] with one frame set for both arms. */
+    suspend fun estimateAb(a: Pipeline, b: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate = estimateAb(a, b, frameIds, frameIds, labels)
+
     /**
-     * The price of an A/B run: the sums of both sides, under the same limits as one run (50 photos, 200 nominal calls in total). One token, bound to
-     * both pipeline hashes (A's then B's) and the frames, starts [startAb] and nothing else.
+     * The price of an A/B run: each arm is priced over ITS OWN frames ([idsA], [idsB]: what the arm's Photo node settings let through), the sums are under the same
+     * limits as one run (50 photos per arm, 200 nominal calls in total). An arm with no frames is refused by name. One token, bound to both pipeline hashes
+     * (A's then B's) and to each arm's frames, starts [startAb] and nothing else.
      */
-    suspend fun estimateAb(a: Pipeline, b: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
-        val ids = frameIds.distinct()
+    suspend fun estimateAb(a: Pipeline, b: Pipeline, idsA: List<String>, idsB: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
+        val ia = idsA.distinct()
+        val ib = idsB.distinct()
         if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b) || takesWatch(a) || takesWatch(b)) return Estimate.Refused(listOf("A/B runs over moments are not supported"))
-        val ca = price(a, ids, labels)
-        val cb = price(b, ids, labels)
+        val ca = price(a, ia, labels)
+        val cb = price(b, ib, labels)
         val problems = PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()
-        val reasons = refusals(problems, ids, ca.nominal + cb.nominal)
+        val reasons = mutableListOf<String>()
+        if (ia.isEmpty()) reasons += "arm A: no photos"
+        if (ib.isEmpty()) reasons += "arm B: no photos"
+        if (ia.size > MAX_PHOTOS) reasons += "arm A: more than $MAX_PHOTOS photos"
+        if (ib.size > MAX_PHOTOS) reasons += "arm B: more than $MAX_PHOTOS photos"
+        if (problems) reasons += "pipeline has problems"
+        if (ca.nominal + cb.nominal > MAX_NOMINAL_CALLS) reasons += "more than $MAX_NOMINAL_CALLS model calls"
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
-        val token = tokens.issue(abHash(a, b), ids)
+        val token = tokens.issue(abHash(a, b), armFrames(ia, ib))
         synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(ca.models), modelsJson(cb.models)) }
+        synchronized(armsByToken) { armsByToken[token] = ia.toSet() to ib.toSet() }
         val t = if (ca.tokens == null && cb.tokens == null) null else TokenEstimate(
             (ca.tokens?.promptTokens ?: 0) + (cb.tokens?.promptTokens ?: 0), (ca.tokens?.completionTokens ?: 0) + (cb.tokens?.completionTokens ?: 0),
             (ca.tokens?.basedOn ?: 0) + (cb.tokens?.basedOn ?: 0),
         )
-        return Estimate.Ok(ids.size, ca.nominal + cb.nominal, ca.max + cb.max, ca.models + cb.models, token, t)
+        val arms = listOf(ArmEstimate(ia.size, ca.nominal, ca.max, ca.models, ca.tokens), ArmEstimate(ib.size, cb.nominal, cb.max, cb.models, cb.tokens))
+        return Estimate.Ok((ia + ib).distinct().size, ca.nominal + cb.nominal, ca.max + cb.max, ca.models + cb.models, token, t, arms = arms)
     }
+
+    /** What an A/B token binds: every frame of A and of B, each tagged with its arm (the same frame may sit in both). */
+    private fun armFrames(a: List<String>, b: List<String>): List<String> = a.map { "a:$it" } + b.map { "b:$it" }
 
     /** The item key of a Moment in run rows (`moment:<id>`, moment-model spec 6.2): never mistaken for a frame id. */
     private fun keyOf(m: Moment) = MOMENT_KEY_PREFIX + m.id
@@ -523,34 +555,47 @@ class CanvasRunner(
      * Throws [Busy] while any run or group is active, [IllegalArgumentException] for a bad token (it is bound to both hashes) or too many photos.
      * A cancelled, failed or stopped A, or a group cancel at any time before B starts, leaves B CANCELLED with no items.
      */
-    suspend fun startAb(spec: AbSpec, frameIds: List<String>, confirmToken: String, scope: CoroutineScope): AbStarted {
+    suspend fun startAb(spec: AbSpec, frameIds: List<String>, confirmToken: String, scope: CoroutineScope): AbStarted = startAb(spec, frameIds, frameIds, confirmToken, scope)
+
+    /** [startAb] with each arm's own frames ([idsA], [idsB]); an empty arm or an arm whose set is not the estimate's is a typed [AbArmEmpty] / [AbArmMoved]. */
+    suspend fun startAb(spec: AbSpec, idsA: List<String>, idsB: List<String>, confirmToken: String, scope: CoroutineScope): AbStarted {
         if (!lock.tryLock()) throw Busy()
         var launched = false
         try {
-            val ids = frameIds.distinct()
-            if (ids.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS photos")
+            val ia = idsA.distinct()
+            val ib = idsB.distinct()
+            val estimated = synchronized(armsByToken) { armsByToken.remove(confirmToken) }
+            if (ia.size > MAX_PHOTOS || ib.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS photos")
             val (a, versionA) = spec.a
             val (b, versionB) = spec.b
             if (PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
             if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b) || takesWatch(a) || takesWatch(b)) throw IllegalArgumentException("A/B runs over moments are not supported")
-            if (!tokens.consume(confirmToken, abHash(a, b), ids)) throw IllegalArgumentException("bad_token")
+            if (ia.isEmpty()) { tokens.consume(confirmToken, "", emptyList()); throw AbArmEmpty("A") }
+            if (ib.isEmpty()) { tokens.consume(confirmToken, "", emptyList()); throw AbArmEmpty("B") }
+            if (!tokens.consume(confirmToken, abHash(a, b), armFrames(ia, ib))) {
+                if (estimated != null) {
+                    if (estimated.first != ia.toSet()) throw AbArmMoved("A")
+                    if (estimated.second != ib.toSet()) throw AbArmMoved("B")
+                }
+                throw IllegalArgumentException("bad_token")
+            }
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }.orEmpty()
             dao.pruneRuns(KEEP_RUNS - 2) // once for the group: neither of its rows exists yet, so neither can be pruned
             val g = Group(newId(), newId(), newId())
-            dao.insertRun(runRow(g.runA, spec.aId, versionA, a, "RUNNING", ids, models.getOrNull(0) ?: "[]", g.id))
-            dao.insertRun(runRow(g.runB, spec.bId, versionB, b, "QUEUED", ids, models.getOrNull(1) ?: "[]", g.id))
+            dao.insertRun(runRow(g.runA, spec.aId, versionA, a, "RUNNING", ia, models.getOrNull(0) ?: "[]", g.id))
+            dao.insertRun(runRow(g.runB, spec.bId, versionB, b, "QUEUED", ib, models.getOrNull(1) ?: "[]", g.id))
             cancelled.set(null)
             group = g
             _active.value = g.runA
             launched = true
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
-                    val first = execute(g.runA, a, ids)
+                    val first = execute(g.runA, a, ia)
                     if (first == "DONE" && !g.cancelled) {
                         // B's row may be gone (a delete that raced): then B must not spend a single model call.
                         if (dao.markStarted(g.runB, clock()) > 0) {
                             _active.value = g.runB
-                            execute(g.runB, b, ids)
+                            execute(g.runB, b, ib)
                         }
                     }
                 } catch (c: CancellationException) {

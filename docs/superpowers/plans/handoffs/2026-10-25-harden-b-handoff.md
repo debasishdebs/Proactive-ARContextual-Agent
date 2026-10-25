@@ -2,6 +2,9 @@
 
 Branch `feat/harden-b` (worktree ~/Desktop/rokid/pca-v095b), from v0.9.5 tip 37f298af (includes hardening A). Two Codex Important findings. No PROTOCOL_VERSION, TRACE_SCHEMA, Room schema, plan, hash or JS change (Default capture f5782e0d8610, `live-extract` 0f331f401992 and the pinned plan bytes are untouched; `jsUnderSizeBudget` stays 4632 because no JS line was added). No new HTTP route: the watch run still has none.
 
+
+> **SUPERSEDED in part by a user ruling (2026-10-25 afternoon), see `2026-10-25-rulings-handoff.md` item 2.** The A/B INTERSECTION described under Built 1, the per-path table row "A/B estimate and start" and Decision 1 no longer hold: each A/B arm now uses its OWN Photo node settings (`CanvasBackendImpl` scopes each arm with `scoped(pipeline, frameIds)`; the runner takes one frame list per arm; the estimate carries `arms`, typed `AbArmEmpty` / `AbArmMoved` per arm). The rule "a frame an arm's filter excludes never goes to that arm's model" is kept. The watch-run part of this handoff is unchanged.
+
 ## Built
 1. **A/B runs now honour the Photo node settings.** `CanvasBackendImpl.scopedAb(a, b, frameIds) = scoped(a, scoped(b, frameIds))`, used in `estimateAb` AND `startAb`. An A/B run compares both pipelines over ONE frame set (the runner takes one list), so the set is the frames that pass the settings of BOTH arms (source, sinceHours, markedOnly, limit applied one after the other; limit keeps the newest N of what is left). A frame that either filter drops is sent to neither arm. At the defaults on both sides `scoped` returns the ids untouched and reads nothing (as before).
    Typed errors are the ones of a single run, because the confirm token binds the SCOPED list: an empty scoped set is `Estimate.Refused(["no photos"])`; a start whose scoped set differs from the estimate's (a mark added, a frame aged out) or is empty is `IllegalArgumentException("bad_token")` (HTTP invalid token, same as `startRun`).

@@ -429,12 +429,13 @@ export const tests = {
     const n = ed.ds.pipe.nodes.find((x) => x.type === 'py.fn');
     ok(n, 'py.fn node added'); eq(n.params, { source: '', outSchema: '' }); ok(n.id.startsWith('pyfn'), 'id from short: ' + n.id);
   },
-  paletteOffersTheScenesInputUnderInputs() {
+  paletteOffersTheMomentsAndScenesInputsUnderSource() {
     const root = { liveable: false, root: true, domain: 'ASYNC', executor: 'BUILTIN', category: 'Inputs', family: 'Source', inputs: [], branches: [], params: [] };
     const scenes = Object.assign({}, captureTypes[0], root, { type: 'input.scenes', label: 'Scenes', short: 'scenes', output: 'SCENES' });
     const moments = Object.assign({}, captureTypes[0], root, { type: 'input.moments', label: 'Moments', short: 'moments', output: 'MOMENTS' });
     const g = E.paletteGroups(open(), allTypes.concat([scenes, moments]));
-    eq(g.find((x) => x.category === 'Source').items.filter((i) => i.type.startsWith('input.')), [{ type: 'input.scenes', label: 'Scenes', lane: 'ASYNC' }], 'Scenes is offered; the Photo input and (unchanged) the Moments input are not');
+    eq(g.find((x) => x.category === 'Source').items.filter((i) => i.type.startsWith('input.')), [{ type: 'input.scenes', label: 'Scenes', lane: 'ASYNC' }, { type: 'input.moments', label: 'Moments', lane: 'ASYNC' }], 'Moments and Scenes are offered (neither is liveable); the Photo input is not');
+    ok(!g.some((x) => x.items.some((i) => i.type === 'input.moments' && x.category !== 'Source')), 'Moments sits in the Source family');
     // adding it gives a root node with no params and the registry short id
     const ed = E.addFromPalette(open(), 'input.scenes', allTypes.concat([scenes]));
     const n = ed.ds.pipe.nodes.find((x) => x.type === 'input.scenes');

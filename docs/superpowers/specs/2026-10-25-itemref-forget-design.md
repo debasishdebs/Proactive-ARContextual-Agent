@@ -356,3 +356,11 @@ Ranking = reachable in production today x privacy weight x confidence. File:line
 - **GAP-3: ACCEPTED residue.** The aggregated sensor summary in a Scene run row is too coarse to be personal data. No trace lineage token and no run-row deletion for it.
 - Both accepted gaps are pinned in `ResidueOracleTest` as `@AcceptedResidue` tests (not `@Ignore`): they pass while the residue stays and fail if the behaviour changes, so the ruling is revisited rather than forgotten.
 - New finding (low, not ruled): GAP-13, see the handoff.
+
+## 7. Rulings 2026-10-25 afternoon (user)
+
+- **Forget a time range = delete ALL Moments and their metadata in the selected range**, i.e. `MomentForget.forgetRange` semantics (frames, memories, marks, traces and Moments of the range). This answers GAP-10: there is no second, shallower depth. The two range-Forget implementations (`MomentForget.forgetRange` and `CanvasSlice3Forget.forgetRange`) must be RECONCILED when a screen is built (one entry point with the Moment semantics; the slice-3 one becomes a step of it or is removed). No range-Forget screen is built now.
+- **The watch run route is v2.** `POST /api/runs/watch*` stays unwired.
+- **Scene building flows are v2.** The Scene build and rebuild flows beyond the stored cadence (default now 24 a day) are not built for v1.
+- **Export vs Forget: simple mutual exclusion.** One process-wide `DataOpGate`. A delete (Forget fact or photo, Delete all, a retention pass, an outbox drain) takes the EXCLUSIVE side and, if an export is running, waits for it (bounded, 30 s) and then fails with the typed `DataOpGate.ExportInProgress` ("export in progress, try again"); a Forget is never silently dropped. An export takes the SHARED side by try-acquire only and refuses to start with the typed `DataOpGate.DeleteRunning` ("busy: a delete is running") while any delete runs or waits. The cached-export generation check stays as a cheap defensive check (a memory edit is not a gated delete).
+- **Settings made user-configurable (stored, defaults unchanged except one):** watchdog silence threshold (2/3/5/10 min, default 3) and tick (60/150/300 s, default 150); photo Forget radius (5/10/15/30 s, default 10 s); Scene rebuild cadence (12/24/48/96 a day, default now 24, was 96; a stored value is respected). The activity definition stays STILL, WALKING, VEHICLE only.

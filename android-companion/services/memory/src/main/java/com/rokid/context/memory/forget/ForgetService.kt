@@ -211,9 +211,10 @@ class ForgetService(
     private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null): List<Triple<Long, Long, List<String>>> {
         val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { dao.frame(it)?.ts }
         // A mark carries no frame id (the glasses tap does not know which photo it is near), so the link between a photo and the marks and traces of its moment is TIME:
-        // everything within PHOTO_LINK_MS of a forgotten photo goes with it (marks, traces, and the results that read them), through the same durable range fence as a
+        // everything within the [ForgetRadius] (default PHOTO_LINK_MS) of a forgotten photo goes with it (marks, traces, and the results that read them), through the same durable range fence as a
         // range Forget. Conservative on purpose: a privacy action errs on deleting a little more.
-        val spans = capturedAt.map { (it - PHOTO_LINK_MS)..(it + PHOTO_LINK_MS) }.let(CanvasSlice3Dao::mergeRanges).map { r ->
+        val radius = ForgetRadius.ms() // read once per Forget: the user's setting, default PHOTO_LINK_MS
+        val spans = capturedAt.map { (it - radius)..(it + radius) }.let(CanvasSlice3Dao::mergeRanges).map { r ->
             val o = db.canvasSlice3Dao().forgetRangeTx(r.first, r.last, clock())
             db.momentDao().dropBetween(r.first, r.last) // the marks of that time are gone: so are the stored Moments that held them
             Triple(r.first, r.last, o.tombstonedTraceIds)
@@ -227,7 +228,7 @@ class ForgetService(
     private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"
 
     companion object {
-        /** How far around a forgotten photo's capture time marks and traces are linked to it (a mark labels the 10 s before it). */
+        /** The DEFAULT of [ForgetRadius] (a mark labels the 10 s before it): how far around a forgotten photo's capture time marks and traces are linked to it unless the user set another. */
         const val PHOTO_LINK_MS = 10_000L
         const val REDACTED = "Removed \u2014 a source was forgotten"
         /**
