@@ -47,13 +47,10 @@ data class Moment(
 }
 
 /**
- * The mark ids a run over [m] lists as lineage (`mf:<labelId>`), so Forgetting a mark deletes the run rows. A FRAME Moment keeps its photos as its lineage; a MARK Moment has none, so its marks carry it.
- * Exhaustive over the type: a new type must decide.
+ * The mark ids a run over [m] lists as lineage (`mf:<labelId>`), so Forgetting or undoing a mark deletes the run rows. EVERY Moment lists ALL its marks: a MARK Moment has no photo, so its
+ * marks carry the lineage; a FRAME Moment keeps its photos as lineage too, and a mark inside it (a mark in a photo Moment) is just as much an input of the run. The commit fence covers the same ids.
  */
-fun markLineage(m: Moment): List<String> = when (m.type) {
-    MomentType.FRAME -> emptyList()
-    MomentType.MARK -> m.marks.map { it.id }
-}
+fun markLineage(m: Moment): List<String> = m.marks.map { it.id }
 
 /** One second holds more photos than a Moment can fingerprint completely: refused, never silently truncated. */
 class MomentTooBig : IllegalStateException("moment_too_big")

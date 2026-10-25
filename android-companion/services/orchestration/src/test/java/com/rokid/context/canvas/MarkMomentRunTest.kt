@@ -180,4 +180,76 @@ class MarkMomentRunTest {
         momentForget().forgetMoments(listOf(markId))
         assertEquals("the Scene's rows go with the mark", emptyList<String>(), h.dao.items(id).map { it.nodeId })
     }
+
+    // ---- a mark INSIDE a photo Moment is in the run lineage too (v0.9.5): the photo stays, the run rows of the Moment go with the mark ----
+
+    private val photoSec = sec + 5
+    private suspend fun frameRows(id: String) = h.dao.items(id).filter { it.frameId == "moment:$frameId" }
+    private suspend fun seedPhotoMomentWithMark(markId: String = "mk:e:1", source: String = "tap") {
+        fx.frame("fp", photoSec * 1000 + 10); fx.mark(markId, photoSec * 1000 + 200, source)
+    }
+    private suspend fun runOverThePhotoMoment(markId: String = "mk:e:1", source: String = "tap"): String {
+        seedPhotoMomentWithMark(markId, source)
+        return runAll(runner(), listOf(frameId)).also { assertEquals(listOf("ask", "moments"), frameRows(it).map { r -> r.nodeId }.sorted()) }
+    }
+
+    @Test fun aRunOverAPhotoMomentListsEveryMarkOfItsMomentAsLineage() = runBlocking<Unit> {
+        val id = runOverThePhotoMoment()
+        assertTrue("the rows carry the mark token: ${frameRows(id).map { it.batchId }}", frameRows(id).all { "mf:mk:e:1" in it.batchId.orEmpty().split('|') })
+    }
+
+    @Test fun anUndoOfAMarkInAPhotoMomentDeletesTheRunRowsOfThatMomentAndKeepsThePhoto() = runBlocking<Unit> {
+        val id = runOverThePhotoMoment()
+        MarkRecorder(dao3, ::fence, { 5 }).onMark(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 2, atMs = 5, atElapsedMs = 5, listen = false, undo = 1, deletionCounter = 1), MarkArrival(photoSec * 1000 + 900, true, 0))
+        assertEquals(emptyList<String>(), frameRows(id).map { it.nodeId })
+        assertEquals("the photo is not touched", listOf("fp"), h.db.frameDao().all().map { it.id })
+    }
+
+    @Test fun aVoiceUndoOfAMarkInAPhotoMomentDeletesTheRunRows() = runBlocking<Unit> {
+        val id = runOverThePhotoMoment("mk:e:1", "voice")
+        MarkRecorder(dao3, ::fence, { 5 }).applyVoice(listOf(VoiceMark.Undo), glasses = true, nowMs = photoSec * 1000 + 5_000)
+        assertEquals(emptyList<String>(), frameRows(id).map { it.nodeId })
+    }
+
+    @Test fun aRangeForgetOfTheMarkInAPhotoMomentDeletesTheRunRowsButNotThePhoto() = runBlocking<Unit> {
+        val id = runOverThePhotoMoment()
+        dao3.forgetRangeTx(photoSec * 1000 + 150, photoSec * 1000 + 250, 5) // only the mark's time: the photo (at +10) is outside the range
+        assertEquals(emptyList<String>(), frameRows(id).map { it.nodeId })
+        assertEquals(listOf("fp"), h.db.frameDao().all().map { it.id })
+    }
+
+    @Test fun theForgetOfAPhotoAMarkOfAPhotoMomentIsLinkedToDeletesTheRunRows() = runBlocking<Unit> {
+        fx.frame("fp", photoSec * 1000 + 10)
+        dao3.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk:e:1", "MOMENT", "tap", "MOMENT", photoSec * 1000 + 200, frameId = "elsewhere", createdAt = 1), fence())
+        val id = runAll(runner(), listOf(frameId))
+        assertEquals(2, frameRows(id).size)
+        dao3.deleteSliceOutputsForFrames(listOf("elsewhere"), 5) // the mark's own photo link goes; the Moment's photo "fp" stays
+        assertEquals(emptyList<String>(), frameRows(id).map { it.nodeId })
+    }
+
+    @Test fun aMarkOfAPhotoMomentForgottenWhileTheModelCallWaitsWritesNothing() = runBlocking<Unit> {
+        seedPhotoMomentWithMark()
+        onRun = { MarkRecorder(dao3, ::fence, { 5 }).applyVoice(listOf(VoiceMark.Undo), glasses = true, nowMs = photoSec * 1000 + 5_000); dao3.deleteLabel("mk:e:1") }
+        val id = runAll(runner(), listOf(frameId))
+        assertEquals(emptyList<String>(), frameRows(id).map { it.nodeId })
+        assertEquals("CANCELLED", h.dao.run(id)!!.status)
+    }
+
+    @Test fun aSceneRunOverAPhotoMomentLosesItsRowsWhenAMarkInsideItIsUndone() = runBlocking<Unit> {
+        seedPhotoMomentWithMark()
+        com.rokid.context.canvas.moment.MomentBuilder(h.db, enabled = { true }, clock = { 5 }).build(listOf(frameId))
+        com.rokid.context.canvas.moment.SceneBuilder(h.db, enabled = { true }, clock = { 5 }).rebuildWindow(sec * 1000, sec * 1000 + 3_599_000)
+        val sid = "S$frameId"
+        val sp = Pipeline(2, "sp", "P", listOf(PipelineNode("scenes", NodeTypes.INPUT_SCENES, "scenes", JsonObject(emptyMap())), PipelineNode("ask", NodeTypes.PROMPT, "ask", buildJsonObject { put("schema", "{\"type\":\"object\"}") })), listOf(PipelineEdge("scenes", "ask")))
+        val r = CanvasRunner(
+            h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to recorder),
+            { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
+            h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), scenes = com.rokid.context.canvas.moment.DaoSceneRunSource(h.db, resolver()),
+        )
+        val e = r.estimateScenes(sp, listOf(sid), label) as Estimate.Ok
+        val id = r.startScenes(sp, "sp", null, listOf(sid), e.confirmToken, h.scope); h.finish(r)
+        assertEquals(2, h.dao.items(id).size)
+        MarkRecorder(dao3, ::fence, { 5 }).onMark(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 2, atMs = 5, atElapsedMs = 5, listen = false, undo = 1, deletionCounter = 1), MarkArrival(photoSec * 1000 + 900, true, 0))
+        assertEquals("the Scene's rows go with the mark", emptyList<String>(), h.dao.items(id).map { it.nodeId })
+    }
 }
