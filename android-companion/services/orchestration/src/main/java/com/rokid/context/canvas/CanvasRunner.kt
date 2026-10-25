@@ -801,7 +801,8 @@ class CanvasRunner(
     /**
      * What the helper receives for one Moment (moment-model spec 9, minus what this slice does not send): no frame id, no image bytes, no file ref. [photos] carries only the
      * capture time of each photo (so its length is the photo count; a MARK Moment has NO photo and says so: `type` MARK, `photos` empty); `marks` carries the time and code (tap, voice,
-     * phone_voice, retro, ask_tap) of each mark, never a word; `sensor` is null (no sensor input yet). Integers and strings only.
+     * phone_voice, retro, ask_tap) of each mark, never a word; `sensor` is null (no sensor input yet); `text` is the Moment's text object (its timestamp and the visible memory text of
+     * its photos, or null when it has none; the voice transcript, intent and summary are separate objects and never in it). Integers and strings only.
      */
     private fun momentItem(m: Moment): JsonObject = JsonObject(mapOf(
         "itemType" to JsonPrimitive("moment"),
@@ -813,6 +814,7 @@ class CanvasRunner(
         "photos" to JsonArray(m.frames.map { JsonObject(mapOf("tsMs" to JsonPrimitive(it.ts))) }),
         "marks" to JsonArray(m.marks.map { JsonObject(mapOf("tsMs" to JsonPrimitive(it.atMs), "code" to JsonPrimitive(it.code))) }),
         "sensor" to JsonNull,
+        "text" to (m.text?.let { JsonPrimitive(it) } ?: JsonNull),
     ))
 
     /** The row must reach a terminal state even when the DB threw once: retry as FAILED, then give up quietly (recoverAtStart sweeps it). Returns the status written. */
