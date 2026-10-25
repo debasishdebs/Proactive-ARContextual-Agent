@@ -86,6 +86,7 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     companion object {
         const val WAIT_MS = 30_000L
         /** The one gate of the process (replaceable only by tests of this module, to shorten the wait). */
-        @Volatile internal var shared = DataOpGate()
+        @Volatile var shared = DataOpGate()
+            internal set
     }
 }
