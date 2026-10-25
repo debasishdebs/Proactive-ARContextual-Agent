@@ -1,28 +1,7 @@
 # Raw platform log references per production file (android.util.Log import or Log.x( call). The scan RawLogScanTest lets a file's count only go DOWN and a file not listed have 0.
 # Migrate a file to PcLog, then delete its line here. Do not add lines.
 glasses/src/main/java/com/rokid/context/glasses/log/GlassesLogSink.kt 5
-phone/src/main/java/com/rokid/context/ContextApp.kt 3
-phone/src/main/java/com/rokid/context/MainActivity.kt 3
-phone/src/main/java/com/rokid/context/phone/actions/HubActionsImpl.kt 2
-phone/src/main/java/com/rokid/context/phone/actions/ProposalActionReceiver.kt 2
-phone/src/main/java/com/rokid/context/phone/actions/ProposalNotifier.kt 2
-phone/src/main/java/com/rokid/context/phone/canvas/PlanGraph.kt 3
-phone/src/main/java/com/rokid/context/phone/capture/PhoneCapture.kt 2
 phone/src/main/java/com/rokid/context/phone/log/PhoneLogSink.kt 5
-phone/src/main/java/com/rokid/context/phone/nudge/PhoneNudges.kt 2
-phone/src/main/java/com/rokid/context/phone/ui/settings/Diagnostics.kt 3
-phone/src/main/java/com/rokid/context/phone/ui/settings/SettingsDeps.kt 3
-phone/src/main/java/com/rokid/context/phone/ui/settings/ai/EndpointEditor.kt 2
-phone/src/main/java/com/rokid/context/phone/ui/settings/connectors/ActionsSettings.kt 2
-phone/src/main/java/com/rokid/context/phone/ui/settings/diagnostics/PhotoDimEval.kt 3
-phone/src/main/java/com/rokid/context/phone/ui/settings/flows/FlowView.kt 2
-phone/src/main/java/com/rokid/context/phone/ui/settings/memory/MemorySettings.kt 3
-phone/src/main/java/com/rokid/context/phone/ui/settings/prompts/PromptEditor.kt 3
-phone/src/main/java/com/rokid/context/phone/ui/settings/prompts/PromptHistory.kt 2
-phone/src/main/java/com/rokid/context/phone/ui/settings/prompts/PromptsList.kt 2
-phone/src/main/java/com/rokid/context/phone/ui/settings/retrieval/RetrievalSettings.kt 2
-phone/src/main/java/com/rokid/context/phone/ui/status/PipelineControl.kt 4
-phone/src/main/java/com/rokid/context/phone/voice/VoiceGraph.kt 6
 services/ai/src/main/java/com/rokid/context/ai/EndpointRepository.kt 4
 services/ai/src/main/java/com/rokid/context/ai/EndpointSeeder.kt 4
 services/ai/src/main/java/com/rokid/context/ai/ModelRouter.kt 2

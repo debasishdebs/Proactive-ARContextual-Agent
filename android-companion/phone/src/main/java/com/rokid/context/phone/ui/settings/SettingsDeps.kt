@@ -1,7 +1,7 @@
 package com.rokid.context.phone.ui.settings
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.link.AuthActivity
@@ -117,7 +117,7 @@ class SettingsDeps(
         fun create(app: Context): SettingsDeps = SettingsDeps(
             lazyAi = lazy { AiGraph.get(app) },
             hud = HubHudSettings(HubGraph.get(app)),
-            reauthorize = { AuthActivity.launch(app).onFailure { Log.i("Settings", "re-authorize failed (${it.javaClass.simpleName})") } },
+            reauthorize = { AuthActivity.launch(app).onFailure { PcLog.i("Settings", "re-authorize failed (${it.javaClass.simpleName})") } },
             onEmbedBindingChanged = { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app) },
             lazyTestInputs = lazy {
                 val mem = MemoryGraph.get(app)
@@ -149,7 +149,7 @@ class SettingsDeps(
             openAppSettings = {
                 val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", app.packageName, null))
                     .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                runCatching { app.startActivity(intent) }.onFailure { Log.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
+                runCatching { app.startActivity(intent) }.onFailure { PcLog.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
             },
             pauses = com.rokid.context.phone.ui.status.CapturePauses.control(app),
             sources = AppSources(app),

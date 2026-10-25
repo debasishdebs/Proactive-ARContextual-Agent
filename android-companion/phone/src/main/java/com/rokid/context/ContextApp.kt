@@ -1,5 +1,6 @@
 package com.rokid.context
 
+import com.rokid.context.core.log.PcLog
 import android.app.Application
 import com.rokid.context.ai.EnvDefaults
 
@@ -43,7 +44,7 @@ class ContextApp : Application() {
         // Canvas slice 3a start-up recovery (S58, S77): orphan files in canvas_tmp go, and a replay or sweep left RUNNING by a dead process is ABORTED.
         kotlin.concurrent.thread(name = "canvas-startup") {
             runCatching { kotlinx.coroutines.runBlocking { com.rokid.context.canvas.trace.CanvasStartup.run(this@ContextApp, com.rokid.context.memory.MemoryGraph.get(this@ContextApp).db) } }
-                .onFailure { android.util.Log.w("ContextApp", "canvas start-up recovery failed; retries next start (${it.javaClass.simpleName})") }
+                .onFailure { PcLog.w("ContextApp", "canvas start-up recovery failed; retries next start (${it.javaClass.simpleName})") }
         }
         // Eager background import so it is normally done before first use; PipelineRecords calls wait only if it is still running.
         kotlin.concurrent.thread(name = "legacy-import") {
@@ -58,7 +59,7 @@ class ContextApp : Application() {
                     // Seeds, then clears the legacy key only once it reached KeyVault (F23).
                     com.rokid.context.orchestration.LegacyKeySeed.run(this@ContextApp, com.rokid.context.ai.AiGraph.get(this@ContextApp).seeder)
                 }
-            }.onFailure { android.util.Log.w("ContextApp", "AI seed failed; will retry next start (${it.javaClass.simpleName})") }
+            }.onFailure { PcLog.w("ContextApp", "AI seed failed; will retry next start (${it.javaClass.simpleName})") }
         }
         // Keyframe capture P1: after the v1 -> v2 migration (the first DB use runs it), adopt pre-v2 frames once, then queue a
         // drain: every drain starts with the receipt reconciliation (startup pass), so half-finished receipts are finished.
@@ -68,7 +69,7 @@ class ContextApp : Application() {
                 com.rokid.context.phone.hub.enqueueInboxIngest(this)
                 // Startup: the pipeline starts, abandoned claims go back to PENDING and everything claimable is drained.
                 com.rokid.context.work.frames.KeyframeGraph.get(this).start()
-            }.onFailure { android.util.Log.w("ContextApp", "frame adoption failed; retries next start (${it.javaClass.simpleName})") }
+            }.onFailure { PcLog.w("ContextApp", "frame adoption failed; retries next start (${it.javaClass.simpleName})") }
         }
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
         com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog

@@ -1,7 +1,7 @@
 package com.rokid.context.phone.canvas
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.plan.CapturePlanPublisher
@@ -120,7 +120,7 @@ class PlanGraph(
                 val ai = AiGraph.get(app)
                 val db = MemoryGraph.get(app).db
                 val publisher = CanvasPublisher(db.canvasDao(), ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, System::currentTimeMillis, CanvasPublisher.inTransaction(db))
-                PlanGraph(db.canvasDao(), db.canvasSlice3Dao(), publisher, transport, install, glasses, phoneRt, scope, log = { Log.i(TAG, it) }).also { it.start() }
+                PlanGraph(db.canvasDao(), db.canvasSlice3Dao(), publisher, transport, install, glasses, phoneRt, scope, log = { PcLog.i(TAG, it) }).also { it.start() }
             }
         }
 
@@ -131,7 +131,7 @@ class PlanGraph(
         fun warm(scope: CoroutineScope) { scope.launch(Dispatchers.IO) { runCatching { current() } } }
 
         /** The hub's ack feed (a no-op before [install]). */
-        fun feedAck(ack: CapturePlanAck) { try { current()?.onAck(ack) } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "plan graph unavailable (${e.javaClass.simpleName})") } }
+        fun feedAck(ack: CapturePlanAck) { try { current()?.onAck(ack) } catch (e: CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "plan graph unavailable (${e.javaClass.simpleName})") } }
     }
 }
 

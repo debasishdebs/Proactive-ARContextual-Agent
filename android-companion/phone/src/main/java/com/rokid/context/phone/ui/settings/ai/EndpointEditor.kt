@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.ai
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -160,7 +160,7 @@ class EndpointEditorViewModel(
                 if (e is CancellationException) throw e
                 if (e is EndpointInUseException) { _state.update { it.copy(error = inUse(e.roles)) }; return null }
                 val msg = (e as? IllegalArgumentException)?.message?.takeIf { it.length <= 120 } ?: "Couldn't save the endpoint"
-                if (e !is IllegalArgumentException) Log.i(TAG, "endpoint save failed (${e.javaClass.simpleName})")
+                if (e !is IllegalArgumentException) PcLog.i(TAG, "endpoint save failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(error = msg) }
                 null
             },
