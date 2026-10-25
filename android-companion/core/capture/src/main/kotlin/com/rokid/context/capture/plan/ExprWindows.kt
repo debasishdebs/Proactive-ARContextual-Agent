@@ -9,12 +9,12 @@ import kotlinx.serialization.json.intOrNull
 
 /**
  * The window terms of lowered programs (3c C1b/X6): `{op:win, name, agg, sec[, t]}` entries over the seven one-second features. A term is the distinct
- * (signal, aggregate, seconds, threshold) over all programs of a plan: the same term used twice shares one ring. At most [WindowRing.MAX_TERMS] terms,
+ * (signal, aggregate, seconds, threshold, minValidPct) over all programs of a plan: the same term used twice shares one ring. At most [WindowRing.MAX_TERMS] terms,
  * 1 to 300 s; their ring bytes count toward the plan size cap. One place parses them, so the validator, the runner and the lowering agree.
  */
 object ExprWindows {
     /** [thr] is the quantised threshold of a `frac` term (a second counts when its quantised value is above it), else 0. */
-    data class Term(val feature: Int, val name: String, val agg: Int, val seconds: Int, val thr: Int) {
+    data class Term(val feature: Int, val name: String, val agg: Int, val seconds: Int, val thr: Int, val minValidPct: Int = 100) {
         val stateBytes: Int get() = WindowRing.stateBytes(seconds, agg)
     }
 
@@ -34,13 +34,15 @@ object ExprWindows {
         val feature = SignalCatalog.featureIndex(name) ?: return null   // only the one-second features, never ctx or ctxAgeS
         val agg = WindowRing.aggCode((o["agg"] as? JsonPrimitive)?.content ?: return null) ?: return null
         val sec = (o["sec"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it in WindowRing.MIN_SECONDS..WindowRing.MAX_SECONDS } ?: return null
+        // tolerance: absent = 100 (strict; a plan from before 3d), else an integer 50..100 (a fraction, a string or a boolean is malformed)
+        val mv = if ("mv" in o) (o["mv"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.takeIf { it in WindowRing.MIN_VALID_PCT..100 } ?: return null else 100
         val thr = if (agg == WindowRing.AGG_FRAC) {
             WindowRing.quantise((o["t"] as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull ?: return null) ?: return null
         } else {
             if ("t" in o) return null
             0
         }
-        return Term(feature, name, agg, sec, thr)
+        return Term(feature, name, agg, sec, thr, mv)
     }
 
     fun stateBytes(terms: List<Term>): Int = terms.sumOf { it.stateBytes }

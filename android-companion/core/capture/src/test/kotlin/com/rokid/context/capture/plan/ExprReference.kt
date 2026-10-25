@@ -15,8 +15,9 @@ import kotlin.math.floor
  * Rules it encodes: a value is NUM, BOOL or ENUM with an age in ms (the oldest input's age), or UNAVAILABLE, or an ERROR (div0 or non-finite). Any ERROR or UNAVAILABLE
  * input makes the result ERROR/UNAVAILABLE (strict, not Kleene; the first error among the inputs wins). `choose` reads only the branch it picks. `fresh` passes a value whose
  * age is at most `ms` and is UNAVAILABLE for an older one. A feature is UNAVAILABLE when none was written yet or the last write is more than 3000 ms old. A window is
- * UNAVAILABLE ("not ready") unless EVERY one of its last `sec` seconds holds a value and the feed is not stale; mean = (sum of quantised/n)/1000, max = max quantised/1000,
- * frac = (seconds whose quantised value is above the quantised threshold)/n, quantised = round(x * 1000) clamped to +-2,000,000.
+ * UNAVAILABLE ("not ready") unless its full horizon of `sec` seconds has elapsed since the first write, at least `mv` percent (default 100) of those seconds hold a value
+ * (integers: valid * 100 >= mv * sec) and the feed is not stale; over the VALID seconds only: mean = (sum of quantised/valid)/1000, max = max quantised/1000,
+ * frac = (valid seconds whose quantised value is above the quantised threshold)/valid, quantised = round(x * 1000) clamped to +-2,000,000.
  */
 class ExprReference(private val s: JsonArray) {
     sealed interface V {
@@ -121,13 +122,17 @@ class ExprReference(private val s: JsonArray) {
         if (nowMs - last > 3000) return V.NotReady
         val i = SignalCatalog.featureNames.indexOf(SignalCatalog.canonical((e["name"] as JsonPrimitive).content)!!)
         val n = (e["sec"] as JsonPrimitive).content.toInt()
-        val qs = ArrayList<Long>(n)
-        for (k in 0 until n) { val row = w.bySecond[w.newestSecond - k] ?: return V.NotReady; qs += q(row[i]) }
+        // 3d: the horizon must have fully elapsed since the first write (never a partial horizon), then at least mv % of its seconds hold a value
+        val mv = (e["mv"] as? JsonPrimitive)?.content?.toInt() ?: 100
+        if (w.newestSecond - n + 1 < w.bySecond.keys.min()) return V.NotReady
+        val qs = (0 until n).mapNotNull { k -> w.bySecond[w.newestSecond - k]?.let { q(it[i]) } }   // a second with no write is a gap: no value, never a zero
+        if (qs.size * 100 < mv * n) return V.NotReady
         val age = nowMs - last
+        val m = qs.size
         return when ((e["agg"] as JsonPrimitive).content) {
-            "mean" -> V.Num((qs.sum().toDouble() / n) / 1000.0, age)
+            "mean" -> V.Num((qs.sum().toDouble() / m) / 1000.0, age)
             "max" -> V.Num(qs.max() / 1000.0, age)
-            else -> { val thr = q((e["t"] as JsonPrimitive).doubleOrNull!!); V.Num(qs.count { it > thr }.toDouble() / n, age) }
+            else -> { val thr = q((e["t"] as JsonPrimitive).doubleOrNull!!); V.Num(qs.count { it > thr }.toDouble() / m, age) }
         }
     }
 }
