@@ -7,7 +7,11 @@ import com.rokid.context.memory.db.ContextDatabase
  * re-queue of the same path. The attempt book is one `canvas_meta` value of `id:count:lastAtMs` entries (ids and numbers only; no schema change).
  */
 class RoomOutboxStore(private val db: ContextDatabase) : OutboxStore {
-    override suspend fun pending(): List<OutboxRow> = db.momentDao().pendingOutbox().map { OutboxRow(it.id, it.target, it.payloadJson) }
+    override suspend fun due(limit: Int, excludeIds: Collection<Long>): List<OutboxRow> =
+        db.momentDao().dueOutbox(limit, excludeIds.take(EXCLUDE_MAX)).map { OutboxRow(it.id, it.target, it.payloadJson) }
+    override suspend fun count(): Int = db.momentDao().pendingOutboxCount()
+    override suspend fun existing(ids: Collection<Long>): Set<Long> = ids.toList().chunked(500).flatMap { db.momentDao().outboxIdsAmong(it) }.toSet()
+    override suspend fun trim(target: String, keep: Int): Int = db.momentDao().trimOutbox(target, keep)
     override suspend fun remove(id: Long) { db.momentDao().removeOutbox(id) }
 
     override suspend fun attempts(): Map<Long, OutboxAttempt> = (db.canvasSlice3Dao().meta(KEY) ?: "").split(';').mapNotNull { e ->
@@ -19,5 +23,5 @@ class RoomOutboxStore(private val db: ContextDatabase) : OutboxStore {
         db.canvasSlice3Dao().putMeta(KEY, m.entries.sortedBy { it.key }.joinToString(";") { "${it.key}:${it.value.count}:${it.value.lastAtMs}" })
     }
 
-    companion object { const val KEY = "outbox_attempts" }
+    companion object { const val KEY = "outbox_attempts"; const val EXCLUDE_MAX = 500 }
 }

@@ -59,11 +59,20 @@ class ForgetOutboxPathsTest {
         assertTrue(fx.outbox().toString(), fx.outbox().contains(file("/p/a.jpg")))
     }
 
-    @Test fun photoExpiryQueuesTheJpegTheSidecarTheGlassesFrameAndTheLinkRange() = runBlocking<Unit> {
+    @Test fun photoExpiryQueuesOnlyThePhoneFilesNeverGlassesOrTraceRows() = runBlocking<Unit> {
         fx.frame("a", MS + 5, wire = "g_a"); fx.memory("m1", "a"); trace()
         fx.service.expirePhotos(listOf("a"))
+        assertEquals(setOf(file("/p/a.jpg"), file("/p/a.meta.json")), fx.outbox().toSet())
+    }
+
+    @Test fun routineMemoryExpiryAndLegacyFrameRetentionQueueOnlyPhoneFiles() = runBlocking<Unit> {
+        fx.frame("a", MS + 5); fx.memory("m1", "a"); trace() // a legacy frame (no frame_meta): the only kind memory expiry can take with it
+        fx.service.expire(listOf("m1"))
+        fx.frame("b", MS + 500_000, wire = "g_b"); fx.memory("m2", "b")
+        fx.service.forgetMoment("b", redactCites = false, phoneFilesOnly = true) // retention step 7
         val box = fx.outbox()
-        assertTrue(box.toString(), box.containsAll(listOf(file("/p/a.jpg"), file("/p/a.meta.json"), wire("g_a"), linkRange(MS + 5), CleanupTarget.GLASSES_TRACE to "{\"traceId\":\"trace-aaa-01\"}")))
+        assertTrue(box.toString(), box.isNotEmpty() && box.all { it.first == CleanupTarget.PHONE_FILE })
+        assertTrue(box.toString(), box.contains(file("/p/a.jpg")) && box.contains(file("/p/b.jpg")))
     }
 
     @Test fun anExpiryThatSkipsEveryPhotoQueuesNothing() = runBlocking<Unit> {

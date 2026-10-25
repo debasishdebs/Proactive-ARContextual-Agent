@@ -98,6 +98,12 @@ abstract class MomentDao : DerivedStaleDao() {
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertOutbox(rows: List<CleanupOutboxEntity>): List<Long>
     @Query("SELECT * FROM cleanup_outbox WHERE ackedAt IS NULL ORDER BY id") abstract suspend fun pendingOutbox(): List<CleanupOutboxEntity>
     @Query("SELECT COUNT(*) FROM cleanup_outbox") abstract suspend fun outboxCount(): Int
+    /** The drainer's bounded read: at most [limit] pending rows, phone files first then oldest, skipping [excludeIds] (rows still inside their backoff; callers pass at most 500). Never the whole table. */
+    @Query("SELECT * FROM cleanup_outbox WHERE ackedAt IS NULL AND id NOT IN (:excludeIds) ORDER BY (target != 'PHONE_FILE'), id LIMIT :limit") abstract suspend fun dueOutbox(limit: Int, excludeIds: List<Long>): List<CleanupOutboxEntity>
+    @Query("SELECT COUNT(*) FROM cleanup_outbox WHERE ackedAt IS NULL") abstract suspend fun pendingOutboxCount(): Int
+    @Query("SELECT id FROM cleanup_outbox WHERE id IN (:ids)") abstract suspend fun outboxIdsAmong(ids: List<Long>): List<Long>
+    /** Keeps the newest [keep] pending rows of [target] and deletes the older ones; returns how many went. */
+    @Query("DELETE FROM cleanup_outbox WHERE target = :target AND ackedAt IS NULL AND id IN (SELECT id FROM cleanup_outbox WHERE target = :target AND ackedAt IS NULL ORDER BY id DESC LIMIT -1 OFFSET :keep)") abstract suspend fun trimOutbox(target: String, keep: Int): Int
     /** The drainer's confirm: the row goes only after the deletion is confirmed (a row left behind by a crash is simply drained again). */
     @Query("DELETE FROM cleanup_outbox WHERE id = :id") abstract suspend fun removeOutbox(id: Long): Int
     @Query("UPDATE cleanup_outbox SET ackedAt = :now WHERE id = :id AND ackedAt IS NULL") abstract suspend fun ack(id: Long, now: Long): Int
