@@ -292,10 +292,10 @@ class TraceRecorder(
 
     // ---- link: TraceControl ----
 
-    /** The phone's `pc_trace_ctl` (link thread). Applies the epoch, then the collect window. Tombstones, forget ranges and `send` are Task 17. */
-    fun onControl(c: TraceControl) {
-        synchronized(lock) { if (!loaded) { early += Early(c, clock(), wallClock()); return } }
-        applyControl(c, clock(), wallClock())
+    /** The phone's `pc_trace_ctl` (link thread). [arrivedElapsed] / [arrivedWall] are the clocks when the control ARRIVED: a caller that queues it (the runtime hands it to the writer) passes the values it sampled before queueing, so a backlog never shifts the forget range or extends the collect window. Applies the epoch, then the collect window. Tombstones, forget ranges and `send` are Task 17. */
+    fun onControl(c: TraceControl, arrivedElapsed: Long = clock(), arrivedWall: Long = wallClock()) {
+        synchronized(lock) { if (!loaded) { early += Early(c, arrivedElapsed, arrivedWall); return } }
+        applyControl(c, arrivedElapsed, arrivedWall)
     }
 
     /** [now] and [wall] are the clocks at the control's ARRIVAL (a control that waited for the writer's load keeps its own: a long recovery must not shift ranges or extend a window). */
