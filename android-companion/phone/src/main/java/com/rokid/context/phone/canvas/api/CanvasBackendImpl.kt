@@ -611,6 +611,12 @@ class CanvasBackendImpl(
         return PhotoScope.apply(s, frameIds, facts, clock())
     }
 
+    /**
+     * An A/B run compares both pipelines over ONE frame set, so it is the frames that pass the Photo node settings of BOTH (a frame either filter drops is never sent to either side).
+     * Estimate and start alike, so the token binds the same list; an empty set is refused like an empty choice, and a set that moved in between is a bad token, as for a single run.
+     */
+    private suspend fun scopedAb(a: Pipeline, b: Pipeline, frameIds: List<String>): List<String> = scoped(a, scoped(b, frameIds))
+
     override suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray =
         JsonArray(momentResolver.window(afterMs, beforeMs - 1, limit).map { m ->
             buildJsonObject { put("id", m.id); put("startMs", m.startMs); put("type", m.type.name); put("photos", m.frames.size); put("memories", m.memories.size); put("marks", m.marks.size); m.sensor?.let { put("sensor", it.toJson()) } }
@@ -646,13 +652,13 @@ class CanvasBackendImpl(
     override suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate {
         val pa = loadPipeline(a.pipelineId, a.version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
         val pb = loadPipeline(b.pipelineId, b.version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
-        return runner.estimateAb(pa, pb, frameIds, ::label)
+        return runner.estimateAb(pa, pb, scopedAb(pa, pb, frameIds), ::label)
     }
 
     override suspend fun startAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>, token: String): AbStarted {
         val pa = loadPipeline(a.pipelineId, a.version) ?: throw IllegalArgumentException("invalid_pipeline")
         val pb = loadPipeline(b.pipelineId, b.version) ?: throw IllegalArgumentException("invalid_pipeline")
-        return runner.startAb(AbSpec(pa to a.version, a.pipelineId, pb to b.version, b.pipelineId), frameIds, token, scope)
+        return runner.startAb(AbSpec(pa to a.version, a.pipelineId, pb to b.version, b.pipelineId), scopedAb(pa, pb, frameIds), token, scope)
     }
 
     // ---- Ask debug: the composed prompt and the replay hold the user's memories. Served on authenticated routes only; nothing here logs them. ----
