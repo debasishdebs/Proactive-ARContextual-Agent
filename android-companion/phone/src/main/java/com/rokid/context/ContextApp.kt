@@ -31,6 +31,9 @@ class ContextApp : Application() {
         // 3d: the canvas compiler's default window tolerance follows Settings > Capture > Window tolerance (new compiles only; a published plan holds its own number).
         val windowTolerance = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this).pct
         com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { windowTolerance.value }
+        // The photo Forget radius follows Settings > Capture > Forget (default 10 s); the Forget path reads it once per Forget through ForgetRadius.ms().
+        val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this)
+        com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }
         // Phone power policy inputs (spec P2.5): the real thermal status and whether the app is in the foreground.
         com.rokid.context.work.frames.KeyframeGraph.thermal = com.rokid.context.work.frames.KeyframeGraph.systemThermal(this)
         com.rokid.context.work.frames.KeyframeGraph.foreground = {

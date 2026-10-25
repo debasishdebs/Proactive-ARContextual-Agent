@@ -146,4 +146,50 @@ class GlassesWatchdogTest {
         val r = Rig().apply { running = false }
         r.w.tick(); assertTrue(r.warns.toString(), r.warns.any { it.contains("hub down") })
     }
+
+    // ---- 2026-10-25 ruling: the silence threshold and the tick are stored settings; the defaults are the old constants ----
+
+    @Test fun theDefaultsAreTheOldConstants() {
+        assertEquals(3 * 60_000L, GlassesWatchdog.SILENT_MS); assertEquals(150_000L, GlassesWatchdog.TICK_MS)
+        // a watchdog built without the settings acts at exactly 3 minutes of silence, as before
+        val r = Rig().apply { silentFor(3) }; assertEquals(GlassesWatchdog.Verdict.Reopening(3 * 60_000L), r.w.tick())
+        val q = Rig().apply { heard = nowMs - (3 * 60_000L - 1) }; assertEquals(GlassesWatchdog.Verdict.Ok, q.w.tick())
+    }
+
+    private class Cfg(var silent: Long, var period: Long = 150_000L) {
+        var now = 10 * 60_000L; var heard: Long? = null; var relaunches = 0
+        val w = GlassesWatchdog(
+            now = { now }, enabled = { true }, captureActive = { true }, hubRunning = { true }, link = { LinkState.CONNECTED }, lastHeardAtMs = { heard }, standingDown = { false },
+            startHub = {}, reconnect = {}, probeAlive = {}, relaunch = { relaunches++; null }, publish = {}, log = {}, warn = {},
+            silentMs = { silent }, periodMs = { period },
+        )
+    }
+
+    @Test fun aChangedThresholdAppliesOnTheNextTick() {
+        val c = Cfg(silent = 10 * 60_000L); c.heard = c.now - 4 * 60_000L
+        assertEquals("10 min: 4 min of silence is fine", GlassesWatchdog.Verdict.Ok, c.w.tick()); assertEquals(0, c.relaunches)
+        c.silent = 2 * 60_000L // the user picks 2 min
+        assertEquals(GlassesWatchdog.Verdict.Reopening(4 * 60_000L), c.w.tick()); assertEquals(1, c.relaunches)
+        c.silent = 5 * 60_000L
+        assertEquals("back to 5 min: quiet again", GlassesWatchdog.Verdict.Ok, c.w.tick())
+    }
+
+    @Test fun aChangedTickAppliesOnTheNextSleepAndPauseStillSilencesIt() = runTest {
+        val c = Cfg(silent = 60_000L, period = 60_000L); c.heard = c.now - 10 * 60_000L
+        val job = c.w.start(backgroundScope)
+        runCurrent(); assertEquals(1, c.relaunches)
+        advanceTimeBy(60_100); assertEquals("60 s tick", 2, c.relaunches)
+        c.period = 300_000L // the user picks 300 s: the sleep that is running now was 60 s, the next one is 300 s
+        advanceTimeBy(60_000); assertEquals(3, c.relaunches)
+        advanceTimeBy(299_000); assertEquals("no tick inside the new 300 s", 3, c.relaunches)
+        advanceTimeBy(2_000); assertEquals(4, c.relaunches)
+        job.cancel()
+    }
+
+    @Test fun offWhileAnExplicitPauseIsActiveWhateverTheSettings() {
+        val c = Cfg(silent = 60_000L); c.heard = c.now - 60 * 60_000L
+        val paused = GlassesWatchdog(now = { c.now }, enabled = { true }, captureActive = { false }, hubRunning = { true }, link = { LinkState.CONNECTED }, lastHeardAtMs = { c.heard },
+            standingDown = { false }, startHub = {}, reconnect = {}, probeAlive = {}, relaunch = { c.relaunches++; null }, publish = {}, log = {}, warn = {}, silentMs = { 60_000L })
+        assertEquals(GlassesWatchdog.Verdict.Off, paused.tick()); assertEquals(0, c.relaunches)
+    }
 }

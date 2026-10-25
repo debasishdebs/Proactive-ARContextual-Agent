@@ -126,13 +126,13 @@ class SceneBuilder(
 
 /**
  * How often Scenes are rebuilt: a STORED value (`canvas_meta` key [KEY_PER_DAY], "X times a day"), default [DEFAULT_PER_DAY], clamped to `1..`[MAX_PER_DAY] (the periodic worker runs every
- * 15 minutes, so more than 96 a day is not possible). There is no settings screen yet. [runIfDue] is called by the Moment cadence worker and only rebuilds when the interval has passed.
+ * 15 minutes, so more than 96 a day is not possible). Settings > Capture offers 12 / 24 / 48 / 96 a day (default 24). [runIfDue] is called by the Moment cadence worker and only rebuilds when the interval has passed.
  */
 class SceneCadence(private val db: ContextDatabase, private val builder: SceneBuilder, private val clock: () -> Long = System::currentTimeMillis) {
     private val meta = db.canvasSlice3Dao()
 
-    suspend fun perDay(): Int = (meta.meta(KEY_PER_DAY)?.toIntOrNull() ?: DEFAULT_PER_DAY).coerceIn(1, MAX_PER_DAY)
-    suspend fun setPerDay(n: Int) = meta.putMeta(KEY_PER_DAY, n.coerceIn(1, MAX_PER_DAY).toString())
+    suspend fun perDay(): Int = storedPerDay(meta)
+    suspend fun setPerDay(n: Int) = storePerDay(meta, n)
 
     /** Rebuilds the previous and the current hour when the interval since the last run has passed; null when it is not due. */
     suspend fun runIfDue(nowMs: Long = clock()): SceneBuilder.Report? {
@@ -147,8 +147,14 @@ class SceneCadence(private val db: ContextDatabase, private val builder: SceneBu
     companion object {
         const val KEY_PER_DAY = "scene_rebuilds_per_day"
         const val KEY_LAST = "scene_last_rebuild_ms"
-        const val DEFAULT_PER_DAY = 96
+        /** Hourly. Only the default of an UNSET key: a stored value is always respected (it was 96 before 2026-10-25). */
+        const val DEFAULT_PER_DAY = 24
         const val MAX_PER_DAY = 96
+        /** Settings > Capture presets (a stored value that is none of them stays selectable). */
+        val PRESETS_PER_DAY = listOf(12, 24, 48, 96)
+
+        suspend fun storedPerDay(meta: com.rokid.context.memory.db.CanvasSlice3Dao): Int = (meta.meta(KEY_PER_DAY)?.toIntOrNull() ?: DEFAULT_PER_DAY).coerceIn(1, MAX_PER_DAY)
+        suspend fun storePerDay(meta: com.rokid.context.memory.db.CanvasSlice3Dao, n: Int) = meta.putMeta(KEY_PER_DAY, n.coerceIn(1, MAX_PER_DAY).toString())
         const val DAY_MS = 86_400_000L
         /** The periodic worker has jitter: a run a little early still counts as due. */
         const val TOLERANCE_MS = 120_000L
