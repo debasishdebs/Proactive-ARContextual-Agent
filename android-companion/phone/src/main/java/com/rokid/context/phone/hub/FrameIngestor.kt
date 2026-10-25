@@ -208,7 +208,7 @@ class FrameIngestor(
     private fun receiptMeta(m: FrameMeta, size: Long) = ReceiptMeta(
         wireFrameId = m.frameId, capturedAtMs = m.capturedAtMs, motion = m.motion.name, dwell = m.dwell, blur = m.blur,
         dhash = m.dhash, phash = m.phash, luma = m.luma, batteryPct = m.batteryPct, width = m.width,
-        sampleSeq = m.sampleSeq, sessionId = m.sessionId, size = size,
+        sampleSeq = m.sampleSeq, sessionId = m.sessionId, size = size, markRef = m.markRef?.takeIf { com.rokid.context.core.model.MarkRef.isValid(it) },
     )
 
     companion object { const val TAG = "ContextHub" }

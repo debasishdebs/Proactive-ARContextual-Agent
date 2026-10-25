@@ -54,9 +54,9 @@ class MarkPhotoLinkDaoTest {
     @Test fun thePhotoIsHereFirstTheMarkThatArrivesLaterFindsItAndLinks() = runBlocking<Unit> {
         assertEquals(FrameIntake.Outcome.ADDED, commit("p1", MS + 1_500, ref))
         insertMark()
-        assertTrue(dao.linkMarkPhoto(mark))
+        assertEquals("the photo's capture time, for the rebuild of its second", MS + 1_500, dao.linkMarkPhoto(mark))
         assertEquals("p1", dao.label(mark)!!.frameId); assertEquals("p1", dao.label("$mark:i")!!.frameId)
-        assertFalse("linking twice changes nothing", dao.linkMarkPhoto(mark))
+        assertNull("linking twice changes nothing", dao.linkMarkPhoto(mark))
     }
 
     @Test fun oneMarkOwnsOnePhotoASecondFrameWithTheSameReferenceStaysAnOrdinaryFrame() = runBlocking<Unit> {
@@ -69,7 +69,7 @@ class MarkPhotoLinkDaoTest {
     @Test fun whenTwoPhotosArrivedBeforeTheMarkTheEarliestIsTheMarksPhoto() = runBlocking<Unit> {
         commit("p2", MS + 2_500, ref); commit("p1", MS + 1_500, ref)
         insertMark()
-        assertTrue(dao.linkMarkPhoto(mark))
+        assertEquals(MS + 1_500, dao.linkMarkPhoto(mark))
         assertEquals("p1", dao.label(mark)!!.frameId)
     }
 
@@ -113,11 +113,12 @@ class MarkPhotoLinkDaoTest {
         assertEquals(listOf(mark, "$mark:i"), dao.momentMarksBetween(MS + 1_000, MS + 1_999, 0).map { it.labelId })
     }
 
-    @Test fun anUnlinkedMarkStaysInItsOwnSecondAndAnOldLabelWithNoStateToo() = runBlocking<Unit> {
+    @Test fun anUnlinkedMarkStaysInItsOwnSecondAndSoDoesAMarkFromBeforeThePhotoStateExisted() = runBlocking<Unit> {
         insertMark(photo = MarkPhotoReason.NO_PHOTO_SUPPORT, withIntent = false)
         assertEquals(listOf(mark), dao.momentMarksBetween(MS, MS + 999, 0).map { it.labelId })
-        dao.markPhotoFailed(mark, "x") // not pending: untouched
-        db.canvasSlice3Dao().label(mark)
+        val e = DeletionEpoch("i", 1, 0)
+        dao.insertLabelFenced(CanvasLabelEntity("old", "MOMENT", "tap", "MOMENT", MS + 200, createdAt = 1, photo = null), DaoFence(0, e, { 0 }, { e }))
+        assertEquals("a null photo state is a mark from before v15: it stays", listOf("old", mark), dao.momentMarksBetween(MS, MS + 999, 0).map { it.labelId }.sorted().reversed().sortedBy { it != "old" })
     }
 
     @Test fun aPendingMarkIsHeldBackUntilItsWaitRanOutThenItIsAFallback() = runBlocking<Unit> {

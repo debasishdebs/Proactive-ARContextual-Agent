@@ -66,6 +66,26 @@ class ActivityMarksTest {
         graph.db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, "MOMENT", code, "MOMENT", at, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
     }
 
+    @Test fun aFallbackMomentSaysWhyAndAMarkWithNoMomentYetShowsItsOwnPhotoState() = runBlocking<Unit> {
+        val e = DeletionEpoch("i", 1, 0); val f = DaoFence(0, e, { 0 }, { e })
+        val s3 = graph.db.canvasSlice3Dao()
+        s3.insertLabelFenced(CanvasLabelEntity("a", "MOMENT", "tap", "MOMENT", Fixtures.at(TODAY, 8, 5), createdAt = 1, photo = "camera_busy"), f)
+        s3.insertLabelFenced(CanvasLabelEntity("b", "MOMENT", "tap", "MOMENT", Fixtures.at(TODAY, 9, 5), createdAt = 1, photo = "pending"), f)
+        s3.insertLabelFenced(CanvasLabelEntity("c", "MOMENT", "tap", "MOMENT", Fixtures.at(TODAY, 9, 30), createdAt = 1, photo = "heat"), f)
+        s3.insertLabelFenced(CanvasLabelEntity("d", "MOMENT", "tap", "MOMENT", Fixtures.at(TODAY, 9, 45), createdAt = 1, photo = "ok", frameId = "p"), f)
+        graph.db.momentDao().replace(MomentEntity("0000000a", 1, 1, "h", 1, MomentType.MARK, NoPhotoReason.UNKNOWN, errorReason = "camera_busy"), listOf(MomentPartEntity("0000000a", MomentPartKind.MARK, "a", "r", 1, "tap")))
+        val st = withTimeout(5_000) { vm().state.first { it.today == TODAY && it.marks.size == 4 } }
+        assertEquals(listOf(null, "No photo: the glasses were too warm", "Photo on its way", "No photo: the camera was busy"), st.marks.map { it.reason })
+    }
+
+    @Test fun theReasonTokensAreWordsAndAnUnknownTokenIsShownAsIs() {
+        assertEquals("the camera was busy", MarkRows.reasonWords("camera_busy"))
+        assertEquals("the photo never arrived", MarkRows.reasonWords("photo_timeout"))
+        assertEquals("some_new_code", MarkRows.reasonWords("some_new_code"))
+        assertEquals("No photo: reason unknown", MarkRows.reasonLabel(MomentType.MARK, NoPhotoReason.UNKNOWN))
+        assertNull(MarkRows.reasonLabel(MomentType.FRAME, null, "camera_busy"))
+    }
+
     @Test fun marksAreListedNewestFirstWithTimeCodeAndTheMomentThatHoldsThem() = runBlocking<Unit> {
         mark("a", Fixtures.at(TODAY, 8, 5), "tap"); mark("b", Fixtures.at(TODAY, 9, 30), "voice"); mark("c", Fixtures.at(TODAY, 9, 45), "ask_tap")
         mark("old", Fixtures.at(TODAY.minusDays(1), 23), "tap")

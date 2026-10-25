@@ -1,5 +1,6 @@
 package com.rokid.context.canvas.moment
 
+import com.rokid.context.core.model.MarkPhotoReason
 import com.rokid.context.memory.db.MomentSensorEntity
 import com.rokid.context.memory.moment.MomentType
 import java.security.MessageDigest
@@ -13,8 +14,11 @@ data class MomentRef(val id: String, val rev: String)
 /** The text of one VISIBLE memory of a photo ([frameId]); [createdAt] and [memoryId] fix a stable order. */
 data class MomentText(val frameId: String, val memoryId: String, val createdAt: Long, val text: String)
 
-/** A mark of a Moment. [code] is how it was made (tap, voice, phone_voice, retro, ask_tap): a fixed token, never text. */
-data class MomentMark(val id: String, val atMs: Long, val rev: String, val code: String)
+/**
+ * A mark of a Moment. [code] is how it was made (tap, voice, phone_voice, retro, ask_tap): a fixed token, never text. [atMs] is its EFFECTIVE time: the capture time of its photo when it has one.
+ * [photo] is its photo state as the source reads it NOW ([com.rokid.context.core.model.MarkPhotoReason]: `ok`, a reason token, a pending mark already past its wait reads as `photo_timeout`; null = a mark from before v15).
+ */
+data class MomentMark(val id: String, val atMs: Long, val rev: String, val code: String, val photo: String? = null)
 
 /** Read-only access to the existing tables; nothing here writes. Forgotten (tombstoned) frames are never returned. */
 interface MomentSource {
@@ -52,6 +56,11 @@ data class Moment(
      * The voice transcript, the intent and the summary are separate objects and never part of it.
      */
     val text: String? = null,
+    /**
+     * Why a MARK Moment has no photo (the explicit fallback Moment, v0.9.6 slice C): the reason token of its mark (`no_photo_support` for a mark with no photo information). Null for a FRAME Moment. Not part of
+     * [contentHash] on its own: the marks' revisions carry the photo state.
+     */
+    val errorReason: String? = null,
 ) {
     /** What an estimate token binds for this Moment. */
     val bindingKey: String get() = "$id:$contentRev:$contentHash"
@@ -115,8 +124,13 @@ class MomentResolver(private val source: MomentSource) {
         val lines = f.map { "F|${it.id}|${it.ts}|${it.rev}" } + m.map { "M|${it.id}|${it.rev}" } + k.map { "K|${it.id}|${it.atMs}|${it.rev}|${it.code}" }
         val digest = MessageDigest.getInstance("SHA-256").digest(lines.sorted().joinToString("\n").toByteArray(Charsets.UTF_8))
         val type = checkNotNull(MomentType.of(f.size, k.size)) { "a second with neither a photo nor a mark is not a Moment" }
-        return Moment(MomentId.format(second), second * 1000, type, f, m, k, lines.size, digest.joinToString("") { "%02x".format(it) }, text = textOf(second * 1000, f, texts))
+        return Moment(MomentId.format(second), second * 1000, type, f, m, k, lines.size, digest.joinToString("") { "%02x".format(it) }, text = textOf(second * 1000, f, texts),
+            errorReason = if (type == MomentType.MARK) fallbackReason(k) else null)
     }
+
+    /** The reason of a mark-only Moment: the first reason a mark states, else the old-glasses one (a mark with no photo information was made before a mark could take a photo). */
+    private fun fallbackReason(marks: List<MomentMark>): String =
+        marks.firstNotNullOfOrNull { it.photo?.takeIf { p -> p != MarkPhotoReason.OK && p != MarkPhotoReason.PENDING } } ?: MarkPhotoReason.NO_PHOTO_SUPPORT
 
     /** Timestamp line + one line per visible memory text of THESE photos (ordered by photo, then memory time, then id; a memory of two photos once); null when there is none. */
     private fun textOf(startMs: Long, frames: List<MomentFrame>, texts: List<MomentText>): String? {

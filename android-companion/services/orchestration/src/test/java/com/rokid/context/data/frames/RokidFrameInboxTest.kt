@@ -69,6 +69,30 @@ class RokidFrameInboxTest {
         assertNull("a file without a receipt has no known capture time", meta.get("b")!!.capturedAtMs)
     }
 
+    @Test fun theMarkOfAReceiptReachesTheFrameMetaAndLinksAnExistingMark() = runBlocking {
+        archive.mkdirs()
+        val db = MemoryGraph.get(ctx).db
+        val e = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0)
+        db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk:ep-1:4", "MOMENT", "tap", "MOMENT", now - 91_000, createdAt = 1, photo = "pending"), com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }))
+        val a = File(archive, "a.jpg").apply { writeBytes(byteArrayOf(1, 2)); setLastModified(now - 90_000) }
+        val b = File(archive, "b.jpg").apply { writeBytes(byteArrayOf(3, 4)); setLastModified(now - 80_000) }
+        RokidFrameInbox.ingestFile(ctx, a, "rokid_glasses", receipt = ReceiptMeta(wireFrameId = "w-a", capturedAtMs = 7, size = 2, markRef = "ep-1:4"), nowMs = { now }, sceneActive = { false })
+        RokidFrameInbox.ingestFile(ctx, b, "rokid_glasses", receipt = ReceiptMeta(wireFrameId = "w-b", capturedAtMs = 8, size = 2), nowMs = { now }, sceneActive = { false })
+        assertEquals("ep-1:4", db.frameMetaDao().get("a")!!.markRef); assertNull(db.frameMetaDao().get("b")!!.markRef)
+        assertEquals("a", db.canvasSlice3Dao().label("mk:ep-1:4")!!.frameId)
+    }
+
+    @Test fun theSidecarCarriesTheMarkAndAnOldSidecarHasNone() {
+        val dir = File(inbox, "side").apply { mkdirs() }
+        val withMark = ReceiptMeta(wireFrameId = "w", capturedAtMs = 7, size = 2, markRef = "ep:4")
+        val f = File(dir, "x.meta.json").apply { writeBytes(withMark.toJson()) }
+        assertEquals(withMark, ReceiptMeta.read(f))
+        assertEquals("ep:4", ReceiptMeta.read(f)!!.markRef)
+        val old = File(dir, "y.meta.json").apply { writeText("""{"v":1,"wireFrameId":"w","capturedAtMs":7,"motion":"UNKNOWN","dwell":false,"size":2}""") }
+        assertNull(ReceiptMeta.read(old)!!.markRef)
+        assertFalse("a resend that names another mark is not the same receipt", withMark == withMark.copy(markRef = "ep:5"))
+    }
+
     @Test fun aReceiptMtimeOutsideOneToNowIsNotACaptureTime() = runBlocking {
         archive.mkdirs()
         val future = File(archive, "f.jpg").apply { writeBytes(byteArrayOf(1, 2)); setLastModified(now + 3_600_000) }

@@ -149,6 +149,16 @@ class CanvasBackendImplTest {
         assertEquals("null", rows.getValue(1_761_000_009_000L)["text"].toString())
     }
 
+    @Test fun theMomentListShowsWhyAFallbackMarkMomentHasNoPhoto() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        val e = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0)
+        db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk:e:1", "MOMENT", "tap", "MOMENT", 1_761_000_005_000L, createdAt = 1, photo = "camera_busy"), com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }))
+        db.frameDao().insertIgnore(FrameEntity("f1", 1_761_000_009_000L, "/f1.jpg", "rokid"))
+        val rows = backend.moments(0, 1_761_000_100_000L, 10).map { it as kotlinx.serialization.json.JsonObject }.associateBy { (it["type"] as kotlinx.serialization.json.JsonPrimitive).content }
+        assertEquals("camera_busy", (rows.getValue("MARK")["errorReason"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertEquals("null", rows.getValue("FRAME")["errorReason"].toString())
+    }
+
     /** A sealed JPEG in the archive and its `frame` row; the source starts with "rokid" like real frames. */
     private fun seed(id: String, ts: Long): FrameEntity {
         val file = File(tmp.root, "rokid_${ts}_$id.jpg").apply { writeBytes(FrameImages.forDisk(jpeg)) }

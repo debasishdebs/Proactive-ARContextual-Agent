@@ -90,6 +90,7 @@ class WiringEndToEndTest {
             phoneInstall = { install },
             onPlanAck = { ack -> sender.onAck(ack); PlanGraph.feedAck(ack) },
             onMark = { m, a -> MarkGraph.recorder(ctx).onMark(m, a) },
+            onMarkPhoto = { r -> MarkGraph.recorder(ctx).onPhotoResult(r) },
             onGlassesListenStart = { t -> MarkGraph.recorder(ctx).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start) },
         )
@@ -118,6 +119,27 @@ class WiringEndToEndTest {
         assertEquals("one MOMENT row from the tap", 1, labels.size)
         assertEquals("MOMENT", labels.single().kind); assertEquals("tap", labels.single().source)
         assertEquals("the same mark again is the same row", 1, run { link.emit(GlassesEvent.MarkReceived(MarkMessage(epoch = "e9", seq = 4, atMs = System.currentTimeMillis(), atElapsedMs = 5))); delay(300); db.canvasSlice3Dao().labels().size })
+    }
+
+    /** v0.9.6 slice C over the real Hub and the real recorder: a mark that will take a photo waits for it; the glasses' failure report is stored; the undo forgets the linked photo through the real Forget path. */
+    @Test fun markPhotoFlowWiredEndToEnd() = runBlocking {
+        build(); openSession()
+        val now = System.currentTimeMillis()
+        link.emit(GlassesEvent.MarkReceived(MarkMessage(epoch = "e9", seq = 4, atMs = now, atElapsedMs = 5, photo = true)))
+        until { sentOn(Channels.MARK_ACK).isNotEmpty() }
+        assertEquals("pending", db.canvasSlice3Dao().label("mk:e9:4")!!.photo)
+        link.emit(GlassesEvent.MarkPhotoReceived(com.rokid.context.core.model.MarkPhotoResult(epoch = "e9", seq = 4, reason = "camera_busy")))
+        until { db.canvasSlice3Dao().label("mk:e9:4")!!.photo == "camera_busy" }
+        // a second mark with its photo linked: the undo forgets the photo (the real ForgetActions path) and the mark with it
+        link.emit(GlassesEvent.MarkReceived(MarkMessage(epoch = "e9", seq = 5, atMs = now + 10_000, atElapsedMs = 5, photo = true)))
+        until { db.canvasSlice3Dao().label("mk:e9:5") != null }
+        db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("pf", now + 11_000, File(tmp.root, "pf.jpg").also { it.writeBytes(byteArrayOf(1)) }.path, "rokid_glasses"))
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("pf", "w_pf", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = now + 11_000, markRef = "e9:5"))
+        db.canvasSlice3Dao().linkMarkPhoto("mk:e9:5")
+        link.emit(GlassesEvent.MarkReceived(MarkMessage(epoch = "e9", seq = 6, atMs = now + 12_000, atElapsedMs = 5, undo = 5)))
+        until { db.canvasSlice3Dao().label("mk:e9:5") == null }
+        assertEquals("the photo is forgotten with its mark", 0, db.frameDao().count())
+        until { sentOn(Channels.MARK_ACK).any { (Wire.decode<MarkAck>(it.second) as Decoded.Ok).value.seqs == listOf(6L) } } // the undo was acknowledged
     }
 
     @Test fun publishFlowWiredEndToEnd() = runBlocking {

@@ -24,13 +24,15 @@ data class ReceiptMeta(
     val sampleSeq: Long? = null,
     val sessionId: String? = null,
     val size: Long = 0,
+    /** v0.9.6 slice C: `"<epoch>:<seq>"` of the mark this photo was taken for (null = an ordinary frame). */
+    val markRef: String? = null,
 ) {
     fun toJson(): ByteArray = JSONObject().apply {
         put("v", 1)
         put("wireFrameId", wireFrameId); put("capturedAtMs", capturedAtMs); put("motion", motion); put("dwell", dwell)
         blur?.let { put("blur", it.toDouble()) }; dhash?.let { put("dhash", it) }; phash?.let { put("phash", it) }
         luma?.let { put("luma", it) }; batteryPct?.let { put("batteryPct", it) }; width?.let { put("width", it) }
-        sampleSeq?.let { put("sampleSeq", it) }; sessionId?.let { put("sessionId", it) }; put("size", size)
+        sampleSeq?.let { put("sampleSeq", it) }; sessionId?.let { put("sessionId", it) }; markRef?.let { put("markRef", it) }; put("size", size)
     }.toString().toByteArray(Charsets.UTF_8)
 
     companion object {
@@ -46,7 +48,7 @@ data class ReceiptMeta(
                 batteryPct = if (o.has("batteryPct")) o.getInt("batteryPct") else null,
                 width = if (o.has("width")) o.getInt("width") else null,
                 sampleSeq = if (o.has("sampleSeq")) o.getLong("sampleSeq") else null,
-                sessionId = o.optString("sessionId").ifEmpty { null }, size = o.optLong("size", 0),
+                sessionId = o.optString("sessionId").ifEmpty { null }, size = o.optLong("size", 0), markRef = o.optString("markRef").ifEmpty { null },
             )
         } catch (e: IOException) { null } catch (e: JSONException) { null }
     }

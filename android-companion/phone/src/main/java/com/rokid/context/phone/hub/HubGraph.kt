@@ -217,6 +217,7 @@ object HubGraph {
             applyToCapture = { com.rokid.context.phone.context.ContextSourceSettings.of(app).applyToCapture },
             phoneInstall = install, onPlanAck = { ack -> sender.onAck(ack); com.rokid.context.phone.canvas.PlanGraph.feedAck(ack) }, onTraceChunk = traceIntake::onChunk,
             onMark = { m, a -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onMark(m, a) },
+            onMarkPhoto = { r -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onPhotoResult(r) },
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,

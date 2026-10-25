@@ -103,6 +103,25 @@ class FrameIngestorMetaTest {
         RokidFrameInbox.ingestPendingIds(ctx, nowMs = { nowMs }, dirSync = sync, appendFrame = appender)
     private suspend fun rows() = db.frameDao().count()
 
+    /** v0.9.6 slice C: a photo taken for a mark passes a pause, carries its mark through the sidecar into `frame_meta` and links the mark; an ordinary frame of the same moment is dropped. */
+    @Test fun aMarkPhotoPassesAPauseCarriesItsMarkToTheRowAndLinksIt() = runBlocking {
+        val paused = object : PauseHistory { override suspend fun pausedAt(phoneMs: Long) = true }
+        val ing = FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, paused), ledger, AtomicJpegWriter, wipeFence = { WipeFence.Fence.None }, wipeLock = Mutex(), archiveDir = archive, dirSync = RecordingSync(),
+            committed = { db.frameMetaDao().byWireId(it) != null }) { stored++ }
+        val e = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0)
+        db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk:ep-1:4", "MOMENT", "tap", "MOMENT", rx, createdAt = 1, photo = "pending"), com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }))
+        val plain = ing.onChunk(FrameCodec.split("g1", jpeg, capturedAtMs = rx + 140).single(), offset, now)
+        assertEquals(FrameAckReason.PAUSED_DROP, plain.ack!!.reason)
+        val photo = ing.onChunk(FrameCodec.split("g2", jpeg, capturedAtMs = rx + 140, markRef = "ep-1:4").single(), offset, now)
+        assertTrue(photo.ack!!.ok); assertNull(photo.ack!!.reason)
+        assertEquals(1, stored)
+        drain()
+        val meta = db.frameMetaDao().byWireId("g2")!!
+        assertEquals("ep-1:4", meta.markRef)
+        assertEquals(meta.frameId, db.canvasSlice3Dao().label("mk:ep-1:4")!!.frameId)
+        assertEquals(1, rows())
+    }
+
     @Test fun sidecarBeforeJpegThenAck() = runBlocking {
         val w = OrderWriter()
         val r = ingest(ing = ingestor(w))
