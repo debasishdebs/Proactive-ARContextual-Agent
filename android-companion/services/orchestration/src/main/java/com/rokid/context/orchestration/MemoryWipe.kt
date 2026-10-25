@@ -82,6 +82,11 @@ object MemoryWipe {
      * cancellation only after the wipe has finished.
      */
     suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false): Int = withContext(Dispatchers.IO + NonCancellable) {
+        // The exclusive side of the DataOpGate: a running export is waited for (30 s), else DataOpGate.ExportInProgress and nothing is deleted (the caller says "try again").
+        DataOpGate.shared.delete { wipeNow(context, db, resume) }
+    }
+
+    private suspend fun wipeNow(context: Context, db: ContextDatabase, resume: Boolean): Int = withContext(Dispatchers.IO + NonCancellable) {
         // S57: the persisted deletion epoch (`counter + 1`, `wipedAtMs`) is committed BEFORE anything is deleted, so a crash or power loss mid-wipe still
         // leaves a durable record that everything recorded under the old counter is stale. If it cannot be committed nothing is deleted.
         // The same commit writes the "wipe pending" marker: if the process dies before the cleanup below finished, the next start finishes it ([resumeIfPending]).

@@ -2,6 +2,7 @@ package com.rokid.context.orchestration.forget
 
 import android.content.Context
 import com.rokid.context.core.log.PcLog
+import com.rokid.context.orchestration.DataOpGate
 import androidx.room.withTransaction
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -25,6 +26,16 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result = try {
+        // The exclusive side of the DataOpGate: an export in progress is waited for (30 s); then DataOpGate.ExportInProgress ends up in the retry below (never skipped).
+        DataOpGate.shared.delete { retain() }
+    } catch (c: CancellationException) {
+        throw c
+    } catch (e: Exception) {
+        PcLog.w(TAG, "retention failed: ${SafeLog.describe(e)}")
+        Result.retry()
+    }
+
+    private suspend fun retain(): Result {
         val graph = MemoryGraph.get(applicationContext)
         val service = ForgetService(graph.db, graph.proposals)
         var removed = false
@@ -43,12 +54,7 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             runCatching { MemoryMaintenance.checkpoint(graph.db) }
             runCatching { ForgetActions.dataRemoved() }
         }
-        Result.success()
-    } catch (c: CancellationException) {
-        throw c
-    } catch (e: Exception) {
-        PcLog.w(TAG, "retention failed: ${SafeLog.describe(e)}")
-        Result.retry()
+        return Result.success()
     }
 
     companion object {

@@ -25,11 +25,11 @@ class CanvasForgetCoordinator(
     private val onWiped: () -> Unit = {},
 ) : ForgetListener {
     /** The user forgot the time range. Returns what was tombstoned. */
-    suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result {
+    suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result = com.rokid.context.orchestration.DataOpGate.shared.delete {
         val r = forget.forgetRange(fromMs, toMs)
         afterRange(fromMs, toMs, r.tombstonedTraceIds)
         ForgetListeners.rangeForgotten(fromMs, toMs, r.tombstonedTraceIds, except = this)
-        return r
+        r
     }
 
     /** Files and glasses follow a committed range forget (also a photo's time link, through [ForgetListeners]). Idempotent. */
