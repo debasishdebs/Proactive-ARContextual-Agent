@@ -124,12 +124,14 @@ abstract class MomentDao : DerivedStaleDao() {
     abstract suspend fun liveCapturedFrameIds(ids: List<String>): List<String>
 
     /**
-     * Memories with a photo provenance whose every source frame is gone (no `frame` row): the complement of the orphan clause of the memory export (`ExportDao.memoryPage`). A memory with no photo
+     * Memories with a photo provenance whose every source frame is gone (no `frame` row and no `frame_meta` row: a retention-expired photo keeps its `frame_meta`, so its memories are NOT orphans): the complement of the orphan clause of the memory export (`ExportDao.memoryPage`). A memory with no photo
      * provenance (typed, voice, a derived one with no frame source) is never an orphan. Any review state.
      */
     @Query(
         "SELECT m.id FROM memory m WHERE (m.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = m.id)) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = m.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)) ORDER BY m.id",
+            "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = m.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)) " +
+            // photo retention deletes the `frame` row but keeps `frame_meta`: those memories are kept by design; a Forget deletes `frame_meta` too, so only Forget-removed (or never existing) frames are orphans
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = m.frameId OR fm.frameId IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)) ORDER BY m.id",
     )
     abstract suspend fun orphanMemoryIds(): List<String>
 
