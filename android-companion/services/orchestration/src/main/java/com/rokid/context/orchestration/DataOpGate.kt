@@ -72,21 +72,26 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
      */
     suspend fun <T> write(block: suspend () -> T): T {
         var byExport = false
+        var reserved = false // guarded by [lock]; set in the SAME step as the admission check, released in the one finally below, whatever happens in between
         fun tryReserve() = synchronized(lock) {
             byExport = exporters > 0
-            (exporters == 0 && deleters == 0 && waiting == 0).also { if (it) writers++ }
-        }
-        if (!tryReserve()) {
-            val ok = withTimeoutOrNull(waitMs) { changed.first { tryReserve() }; true } == true
-            if (!ok) throw WriteBlocked(byExport)
+            (exporters == 0 && deleters == 0 && waiting == 0).also { if (it) { writers++; reserved = true; testInReserve?.invoke() } }
         }
         try {
+            if (!tryReserve()) {
+                val ok = withTimeoutOrNull(waitMs) { changed.first { tryReserve() }; true } == true
+                // a timeout that landed right after the slot was taken still owns the slot: it runs (the finally releases it)
+                if (!ok && !synchronized(lock) { reserved }) throw WriteBlocked(byExport)
+            }
             return block()
         } finally {
-            synchronized(lock) { writers-- }
+            synchronized(lock) { if (reserved) { writers--; reserved = false } }
             bump()
         }
     }
+
+    /** Test seam: runs right after a write took its slot, inside the admission step (a test cancels there). Null in production. */
+    @Volatile internal var testInReserve: (() -> Unit)? = null
 
     /** Test seam: runs inside the wait's predicate once no export is running (a test cancels the delete exactly there). Null in production. */
     @Volatile internal var testInPredicate: (() -> Unit)? = null
