@@ -28,3 +28,6 @@ Total about 110-190 agent-hours, plus Codex reviews and fix rounds (every glasse
 
 ## Open questions for the user
 - Nudge flow scope today vs target (triggers, targets, return path); the mark-photo hold default 3 s; how much of device capability editing (mic, display) is v1.
+
+## Ruling 2026-10-25 (late): 01:50 mark-only Moments
+The v0.9.6 one-time migration DELETES the 2026-10-25 01:50 mark-only Moments (invalid: no photo); they are not kept with an "old, no photo" note. User also said: continue building towards v1 (v0.9.6 starts after v0.9.5 is merged, verified and APKs saved).
