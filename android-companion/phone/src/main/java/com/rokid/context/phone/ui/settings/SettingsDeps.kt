@@ -91,6 +91,8 @@ class SettingsDeps(
     val exportSettings: (suspend () -> File)? = null,
     /** Settings > Capture > AI call pace (prefs key `ai_call_pace_ms`, read by the call budget). */
     val aiCallPace: com.rokid.context.phone.ui.settings.capture.AiCallPaceStore = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore(),
+    /** Settings > Capture > Window tolerance (prefs key `window_min_valid_pct`, read by the canvas compiler). */
+    val windowTolerance: com.rokid.context.phone.ui.settings.capture.WindowToleranceStore = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore(),
     /** Diagnostics > Keyframes and the Capture status line (counts only). */
     val keyframes: KeyframeDiagnostics = KeyframeDiagnostics.None,
     /** Diagnostics: "Rokid closed the app N times (last gap Xs)" from the glasses' hello; null until reported. */
@@ -160,6 +162,7 @@ class SettingsDeps(
             localModelLoadFailures = NativeLoadFailures(com.rokid.context.data.models.LocalModelStore(app)),
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
             aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
+            windowTolerance = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(app),
             keyframes = AppKeyframeDiagnostics(app),
             capturePlan = com.rokid.context.phone.canvas.ProcessPlanControl { HubGraph.get(app); com.rokid.context.phone.canvas.PlanGraph.current() },
             glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),

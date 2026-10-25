@@ -148,7 +148,7 @@ export function mountExprEditor(el, opts) {
 
   function paramRows(step, n) {
     const set = (key) => (e) => commit(X.setNodeParam(st.graph, step.name, n.id, key, e.target.value));
-    const num = (key, label) => field(label, h('input', { type: 'text', value: String(n[key]), disabled: ro() ? true : null, onchange: set(key) }));
+    const num = (key, label) => field(label, h('input', { type: 'text', value: n[key] == null ? '' : String(n[key]), disabled: ro() ? true : null, onchange: set(key) }));
     switch (n.op) {
       case 'sig': return [select('Signal', X.SIGNALS.map((x) => ({ value: x.name, label: x.name + ' (' + x.note + ')' })), n.name, (v) => commit(X.setNodeParam(st.graph, step.name, n.id, 'name', v)), ro())];
       case 'const': return [field('Value (a number, true or false; a number can be swept by the tuner)', h('input', { type: 'text', value: String(n.value), disabled: ro() ? true : null, onchange: set('value') }))];
@@ -160,7 +160,8 @@ export function mountExprEditor(el, opts) {
       case 'win': return [
         select('Signal', X.WIN_SIGNALS.map((x) => ({ value: x.name, label: x.name + ' (' + x.note + ')' })), n.name, (v) => commit(X.setNodeParam(st.graph, step.name, n.id, 'name', v)), ro()),
         select('Aggregate over the window', X.WIN_AGG.map((x) => ({ value: x, label: x })), n.agg, (v) => commit(X.setNodeParam(st.graph, step.name, n.id, 'agg', v)), ro()),
-        num('sec', 'Seconds (1 to 300; the window answers only when all of them were seen)'), n.agg === 'frac' ? num('t', 'Counts seconds above') : null];
+        num('sec', 'Seconds (1 to 300; it answers once all of them have passed)'), n.agg === 'frac' ? num('t', 'Counts seconds above') : null,
+        num('mv', 'Tolerance % (50 to 100): the least share of the seconds that must have sensor data; empty = the Settings value')];
       default: return [];
     }
   }

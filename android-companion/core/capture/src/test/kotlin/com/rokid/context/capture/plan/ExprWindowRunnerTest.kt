@@ -17,12 +17,12 @@ class ExprWindowRunnerTest {
     private fun entry(id: String, s: String, out: Int): JsonObject =
         Json.parseToJsonElement("""{"id":"$id","role":"guard","out":$out,"s":[$s]}""").jsonObject
 
-    private fun win(name: String, agg: String, sec: Int, t: String? = null) =
-        """{"op":"win","name":"$name","agg":"$agg","sec":$sec${if (t != null) ""","t":$t""" else ""}}"""
+    private fun win(name: String, agg: String, sec: Int, t: String? = null, mv: String? = null) =
+        """{"op":"win","name":"$name","agg":"$agg","sec":$sec${if (t != null) ""","t":$t""" else ""}${if (mv != null) ""","mv":$mv""" else ""}}"""
 
     /** keep while `<agg>(stepHz, sec) > limit`, i.e. DROP when the window mean is at or below the limit. */
-    private fun guard(agg: String, sec: Int, limit: String, name: String = "stepHz", id: String = "w", t: String? = null) =
-        entry(id, "${win(name, agg, sec, t)},{\"op\":\"const\",\"v\":$limit},{\"op\":\"cmp\",\"f\":\">\",\"a\":0,\"b\":1}", 2)
+    private fun guard(agg: String, sec: Int, limit: String, name: String = "stepHz", id: String = "w", t: String? = null, mv: String? = null) =
+        entry(id, "${win(name, agg, sec, t, mv)},{\"op\":\"const\",\"v\":$limit},{\"op\":\"cmp\",\"f\":\">\",\"a\":0,\"b\":1}", 2)
 
     private fun feats(stepHz: Float = 0f, gyroMax: Float = 0f) = SecondFeatures(gyroMax, 0f, 0f, 0f, 0f, stepHz, 0f)
     private val ctx = ContextState.UNKNOWN
@@ -72,6 +72,45 @@ class ExprWindowRunnerTest {
         assertTrue(step(r, s, 10, 0f), "a window holding a gap answers nothing: keep")
         assertTrue(step(r, s, 11, 0f), "slots 9..11: 9 is still a gap")
         assertFalse(step(r, s, 12, 0f), "slots 10..12 are three valid seconds in a row again")
+    }
+
+    /** Feeds seconds 1..[n] with stepHz 0, except the seconds in [gaps] (no feed: an invalid slot), ticking and evaluating at every fed second and at the end. */
+    private fun run(r: ExprRunner, n: Int, gaps: Set<Int>): Boolean {
+        val s = ExprSignals(); r.bind(s)
+        var k = true
+        for (t in 1..n) { if (t in gaps) continue; k = step(r, s, t, 0f) }
+        s.set(feats(0f), (n + 1) * 1000L); r.tick(s)   // second n+1 closes the horizon: the last gap, if any, sits inside it
+        return r.keep((n + 1) * 1000L + 500, s, ctx, 0)
+    }
+
+    @Test fun ToleranceAnswersAtTheThresholdAndKeepsBelow() {
+        // mean 0 over 10 s with limit 1.0 DROPS when it answers (0 > 1 false); UNAVAILABLE keeps. horizon = seconds 2..11 after the closing feed
+        assertFalse(run(ExprRunner.of(listOf(guard("mean", 10, "1.0", mv = "90")))!!, 10, setOf(5)), "9 of 10 valid at 90 %: answers, drops")
+        assertTrue(run(ExprRunner.of(listOf(guard("mean", 10, "1.0", mv = "90")))!!, 10, setOf(4, 7)), "8 of 10 at 90 %: unavailable, keeps")
+        assertFalse(run(ExprRunner.of(listOf(guard("mean", 10, "1.0", mv = "80")))!!, 10, setOf(4, 7)), "8 of 10 at 80 %: answers")
+        assertTrue(run(ExprRunner.of(listOf(guard("mean", 10, "1.0", mv = "100")))!!, 10, setOf(5)), "strict: one gap makes it unavailable")
+        assertTrue(run(ExprRunner.of(listOf(guard("mean", 10, "1.0")))!!, 10, setOf(5)), "no mv in the plan = strict (a plan from before tolerance)")
+    }
+
+    @Test fun ToleranceKeepsTheWarmUpRule() {
+        val s = ExprSignals(); val r = ExprRunner.of(listOf(guard("mean", 4, "1.0", mv = "50")))!!; r.bind(s)
+        for (t in 1..3) assertTrue(step(r, s, t, 0f), "all valid, but only $t of 4 s elapsed: warming keeps")
+        assertFalse(step(r, s, 4, 0f))
+    }
+
+    @Test fun termIdentityIncludesTheTolerance() {
+        val a = guard("mean", 5, "1.0", id = "a", mv = "90"); val b = guard("mean", 5, "1.0", id = "b", mv = "80"); val c = guard("mean", 5, "2.0", id = "c", mv = "90")
+        assertEquals(2, ExprWindows.termsOf(listOf(a, b, c))!!.size)
+        assertEquals(2, ExprRunner.of(listOf(a, b))!!.windowTerms)
+        assertEquals(4 * 5 * 2, ExprRunner.of(listOf(a, b))!!.windowStateBytes, "tolerance adds no state bytes")
+    }
+
+    @Test fun toleranceOutsideFiftyToHundredIsMalformed() {
+        for (bad in listOf("49", "101", "0", "-5", "90.5", "\"90\"", "true")) {
+            assertNull(ExprWindows.termsOf(listOf(guard("mean", 5, "1.0", mv = bad))), "mv $bad")
+            assertNull(ExprRunner.of(listOf(guard("mean", 5, "1.0", mv = bad))), "mv $bad")
+        }
+        for (ok in listOf("50", "75", "100")) assertNotNull(ExprRunner.of(listOf(guard("mean", 5, "1.0", mv = ok))), "mv $ok")
     }
 
     @Test fun WindowResetOnApply() {
@@ -135,6 +174,15 @@ class ExprWindowRunnerTest {
         // the same term twice is one term
         val dup = (1..6).map { guard("mean", 5, "1.0", id = "g$it") }
         assertEquals(1, ExprWindows.termsOf(dup)!!.size)
+    }
+
+    @Test fun ValidatorChecksTheToleranceRangeAndCountsTermsByIdentity() {
+        assertEquals(emptyList(), problemsOf(listOf(guard("mean", 5, "1.0", mv = "50"), guard("mean", 6, "1.0", id = "b", mv = "100"))))
+        for (bad in listOf("49", "101", "\"90\"", "75.5")) assertTrue(problemsOf(listOf(guard("mean", 5, "1.0", mv = bad))).any { "window term is malformed" in it }, "mv $bad")
+        // the same window at five tolerances is five terms, not one: the limit of four still holds
+        val five = listOf("50", "60", "70", "80", "90").mapIndexed { i, mv -> guard("mean", 5, "1.0", id = "g$i", mv = mv) }
+        assertTrue(problemsOf(five).any { "5 window terms (max 4)" in it }, problemsOf(five).toString())
+        assertEquals(emptyList(), problemsOf(five.take(4)))
     }
 
     @Test fun WindowStateBytesCountedInThePlanCap() {

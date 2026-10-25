@@ -62,6 +62,8 @@ class BackupRulesTest {
         com.rokid.context.phone.log.PrefsWipePending.PREFS,
         // AI call pace (10 / 12 / 15 s) paces this phone's own model calls (the call budget reads it): per-device, back to the default after a restore.
         com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
+        // 3d: the global window tolerance is a per-device compile default: back to 90 after a restore.
+        com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.PREFS,
         // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
         com.rokid.context.orchestration.AskPhotoPolicy.PREFS,
     ) + slice3aPrefs

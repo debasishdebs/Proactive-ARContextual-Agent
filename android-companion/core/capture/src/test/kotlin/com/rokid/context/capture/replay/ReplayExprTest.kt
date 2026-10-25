@@ -161,6 +161,19 @@ class ReplayWindowParityTest {
         }
     }
 
+    /** 3d: a 3 s sensor stall (10.0-13.0 s, no events) leaves 2 gap seconds in a 20 s window that answers at the dwell (22.2 s): 18 of 20 valid. */
+    @Test fun ReplayWindowToleranceParity() {
+        val stalled = ReplayFixtures.trace(sensors.filter { it.tMs !in (START + 10_000)..(START + 13_000) } + ReplayFixtures.timerOracle(untilMs = 19_000).events, endMs = end)
+        fun win(mv: String?) = guard("w", """{"op":"win","name":"gyroMax","agg":"max","sec":20${if (mv != null) ""","mv":$mv""" else ""}},{"op":"const","v":100},{"op":"cmp","f":">","a":0,"b":1}""", 2)
+        // `max > 100` is false as soon as the window answers: the guard DROPS; while it is unavailable (a gap beyond the tolerance) it keeps
+        fun keeps(mv: String?) = run(stalled, cand(win(mv))).guardDecisions.map { it.keep }
+        assertEquals(listOf(false), keeps("90"), "18 of 20 valid at 90 %: exactly at the threshold")
+        assertEquals(listOf(false), keeps("50"))
+        assertEquals(listOf(true), keeps("91"), "one percent more than the trace has: unavailable, keeps")
+        assertEquals(listOf(true), keeps("100")); assertEquals(listOf(true), keeps(null), "no tolerance written = strict")
+        assertEquals(listOf(false), run(golden, cand(win("100"))).guardDecisions.map { it.keep }, "the same window over the unstalled trace answers strictly")
+    }
+
     @Test fun replayStartsWarmingWhenTheHorizonOutlastsTheTrace() {
         val live = liveMaxAtDwells(30)
         assertEquals(listOf(null), live.map { it.second }, "the device would be warming too: 22 s of rings")

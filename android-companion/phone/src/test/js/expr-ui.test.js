@@ -149,6 +149,7 @@ export const tests = {
       nodes(root).find((n) => n.getAttribute('data-node') === 'w').dispatch('click');
       ok(byLabel(root, 'Aggregate over the window') && byLabel(root, 'Signal'), 'the window controls show');
       ok(text(root).includes('frac stepHz 20 s > 1') && text(root).includes('Counts seconds above'));
+      ok(text(root).includes('Tolerance % (50 to 100)') && text(root).includes('empty = the Settings value'), 'the tolerance field shows, empty for a node that names none');
       pick(root, 'Aggregate over the window', 'max');
       ok(!text(root).includes('Counts seconds above'), 'no threshold outside frac');
       nodes(root).find((n) => n.getAttribute('data-node') === 'odd').dispatch('click');
