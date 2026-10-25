@@ -151,6 +151,24 @@ class MarkPhotoLinkDaoTest {
         assertEquals("f1", dao.meta("mark_claim:$mark"))
     }
 
+    /** Codex round 3: the admission read the mark OPEN, then undo / Forget / Delete all removed it; the claim must refuse and write nothing (no parentless ids). */
+    @Test fun aClaimOnAMarkDeletedAfterTheAdmissionReadIsRefusedAndLeavesNoRow() = runBlocking<Unit> {
+        insertMark()
+        dao.deleteLabel(mark); dao.deleteLabel("$mark:i")
+        assertFalse(dao.claimMarkPhoto(mark, "f1"))
+        assertNull(dao.meta("mark_claim:$mark"))
+        assertFalse("never existed", dao.claimMarkPhoto("mk:nobody:1", "f1")); assertNull(dao.meta("mark_claim:mk:nobody:1"))
+    }
+
+    @Test fun aMarkThatAlreadyHasItsPhotoOrALostOneTakesNoClaim() = runBlocking<Unit> {
+        insertMark(); commit("p1", MS + 1_500, ref)
+        assertFalse(dao.claimMarkPhoto(mark, "f2")); assertNull(dao.meta("mark_claim:$mark"))
+        val m2 = "mk:ep-1:8"
+        val e = DeletionEpoch("i", 1, 0)
+        dao.insertLabelFenced(CanvasLabelEntity(m2, "MOMENT", "tap", "MOMENT", MS + 5, createdAt = 1, photo = MarkPhotoReason.CAMERA_BUSY), DaoFence(0, e, { 0 }, { e }))
+        assertFalse(dao.claimMarkPhoto(m2, "f3")); assertNull(dao.meta("mark_claim:$m2"))
+    }
+
     @Test fun aClaimGoesWithItsMarkUndoForgetRangeAndDeleteAll() = runBlocking<Unit> {
         insertMark(); dao.claimMarkPhoto(mark, "f1")
         dao.deleteLabel(mark); dao.deleteLabel("$mark:i")
