@@ -266,4 +266,23 @@ class CapturePlanActionsTest {
         assertEquals(hashA, cand.configHash); assertNotNull(cand.table); assertNotNull(cand.gate)
         assertNull("no stored plan has this hash", c.forHash("deadbeef"))
     }
+
+    @Test fun aWindowPlanKeepsItsReplayCandidateAfterTheGlobalToleranceChanges() = runBlocking {
+        val calm = """{"steps":[{"name":"calm","inputs":[],"nodes":[{"id":"w","op":"win","name":"stepHz","agg":"mean","sec":10},{"id":"k","op":"const","value":1.2},{"id":"c","op":"cmp","f":"<"}],"wires":[["w","c.a"],["k","c.b"]],"out":"c"}],"out":"calm"}"""
+        val base = PlanTestFixtures.captureHalf("Win")
+        val guard = com.rokid.context.ai.canvas.PipelineNode("gw", com.rokid.context.ai.canvas.NodeTypes.EXPR_GUARD, "gw", kotlinx.serialization.json.buildJsonObject { put("graph", kotlinx.serialization.json.Json.parseToJsonElement(calm)) })
+        val p = base.copy(
+            nodes = base.nodes + guard,
+            edges = base.edges.filterNot { it.from == "head" && it.to == "thresh" } + com.rokid.context.ai.canvas.PipelineEdge("head", "gw") + com.rokid.context.ai.canvas.PipelineEdge("gw", "thresh"),
+        )
+        h.frozen(p, ran = false)
+        val published = com.rokid.context.ai.canvas.plan.PlanCompiler.compile(p, windowMinValidPct = 90).plan!!.configHash
+        val other = com.rokid.context.ai.canvas.plan.PlanCompiler.compile(p, windowMinValidPct = 60).plan!!.configHash
+        assertTrue("the tolerance is part of the plan hash", published != other)
+        try {
+            com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { 60 }
+            assertEquals(published, ReplayCandidates(h.canvas).forHash(published)!!.configHash)
+            assertEquals(other, ReplayCandidates(h.canvas).forHash(other)!!.configHash)
+        } finally { com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { 90 } }
+    }
 }

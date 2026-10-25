@@ -79,7 +79,7 @@ object PlanCompiler {
     fun compile(
         p: Pipeline, settingsRev: Long = 0, profile: CaptureProfile = SETTINGS_PROFILE,
         /** 3d: the tolerance written into every window term that names none (the stored `window_min_valid_pct` setting); never changes a plan already published. */
-        windowMinValidPct: Int = ExprProgram.DEFAULT_MIN_VALID_PCT,
+        windowMinValidPct: Int = WindowTolerance.current(),
     ): CompileResult {
         val nodes = p.nodes.sortedBy { it.id }
         val edges = p.edges.sortedWith(compareBy({ it.from }, { it.to }, { it.`when` ?: "" }))

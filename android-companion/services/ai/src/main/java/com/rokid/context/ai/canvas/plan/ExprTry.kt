@@ -45,7 +45,7 @@ object ExprTry {
      * [body]: `{graph, role?: "guard"|"value", row?, field?, signals: {name: number | [number...]}, ctx?: <state>, ctxAgeS?: number}`.
      * A program that does not compile answers `{ok:false, problems}` (not a refusal); a bad request is [Outcome.Bad].
      */
-    fun run(body: JsonObject, windowMinValidPct: Int = ExprProgram.DEFAULT_MIN_VALID_PCT): Outcome {
+    fun run(body: JsonObject, windowMinValidPct: Int = WindowTolerance.current()): Outcome {
         val role = when ((body["role"] as? JsonPrimitive)?.content ?: "guard") { "guard" -> ExprRole.GUARD; "value" -> ExprRole.VALUE; else -> return bad("bad_request", "Role must be guard or value.") }
         val sigs = body["signals"] as? JsonObject ?: return bad("bad_request", "signals must be an object.")
         if (sigs.size > MAX_SIGNALS) return bad("too_many_signals", "At most $MAX_SIGNALS signals.")

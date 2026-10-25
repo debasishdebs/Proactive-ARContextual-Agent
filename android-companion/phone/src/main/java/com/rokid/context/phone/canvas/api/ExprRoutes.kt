@@ -1,7 +1,7 @@
 package com.rokid.context.phone.canvas.api
 
-import com.rokid.context.ai.canvas.plan.ExprProgram
 import com.rokid.context.ai.canvas.plan.ExprTry
+import com.rokid.context.ai.canvas.plan.WindowTolerance
 import com.rokid.context.phone.canvas.server.HttpRequest
 import com.rokid.context.phone.canvas.server.HttpResponse
 import kotlinx.serialization.json.Json
@@ -13,7 +13,7 @@ import kotlinx.serialization.json.JsonObject
  * for a program that does not compile. The evaluator is the glasses' `ExprRunner` ([ExprTry]); the route reads and writes nothing. Auth, Host/Origin policy and the body
  * limit are the router's; input over [ExprTry.MAX_BYTES], too many signals or values, a non-number and ragged lists are a typed `400` with a fixed message.
  */
-class ExprRoutes(private val windowMinValidPct: () -> Int = { ExprProgram.DEFAULT_MIN_VALID_PCT }) {
+class ExprRoutes(private val windowMinValidPct: () -> Int = { WindowTolerance.current() }) {
     suspend fun handle(req: HttpRequest): HttpResponse? {
         if (req.path != "/api/expr/try") return null
         if (!req.method.equals("POST", true)) return HttpResponse.error(405, "bad_request", "Method not allowed.")

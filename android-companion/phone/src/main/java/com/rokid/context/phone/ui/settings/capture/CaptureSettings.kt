@@ -87,6 +87,8 @@ data class CaptureSettingsUiState(
     val wearMissingLong: Boolean = false,
     /** The active canvas capture plan (S12): the rows it resolved show "Frozen in canvas plan vN" and the Capture plan row offers "Use settings". Null when settings run the capture. */
     val plan: ActivePlan? = null,
+    /** Settings > Capture > Window tolerance: percent of a window's seconds that must have sensor data (applies to plans compiled from now on). */
+    val windowMinValidPct: Int = WindowToleranceStore.DEFAULT,
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
     val modeIndex: Int get() = when {
@@ -113,14 +115,15 @@ class CaptureSettingsViewModel(
     /** Re-evaluates the missing-signal warning; the destination passes the 30 s one (a ViewModel never polls). */
     private val ticker: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit),
     private val plan: CapturePlanControl = CapturePlanControl.None,
+    private val tolerance: WindowToleranceStore = WindowToleranceStore(),
 ) : ViewModel() {
-    private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?): CaptureSettingsUiState {
+    private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?, tol: Int = tolerance.pct.value): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active)
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active, windowMinValidPct = tol)
     }
     private val wear = combine(wearUnknownSince, ticker) { since, _ -> since }
-    val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear) { ui, since ->
-        ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()))
+    val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear, tolerance.pct) { ui, since, tol ->
+        ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()), windowMinValidPct = tol)
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN, null))
 
@@ -155,6 +158,7 @@ class CaptureSettingsViewModel(
         hud.update { it.copy(motionSourcesOff = (it.motionSourcesOff.filter { s -> s != id } + if (on) emptyList() else listOf(id))).normalized() }
     }
     fun setPace(ms: Long) = pace.set(ms)
+    fun setWindowTolerance(pct: Int) = tolerance.set(pct)
     /** "Use settings" (S26): the capture overrides are disabled and the settings run the capture again. */
     fun useSettings() { viewModelScope.launch { runCatching { plan.useSettings() } } }
 }
@@ -163,7 +167,7 @@ class CaptureSettingsViewModel(
 fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
-    onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
+    onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {}, onWindowTolerance: (Int) -> Unit = {},
     onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {}, onUseSettings: () -> Unit = {},
     onWearParkEnabled: (Boolean) -> Unit = {}, onWearParkUnknown: (Int) -> Unit = {}, onWearParkWorn: (Int) -> Unit = {}, onOpenHiRokid: (() -> Unit)? = null,
 ) {
@@ -238,6 +242,14 @@ fun CaptureSettingsScreen(
                 val paces = AiCallPaceStore.OPTIONS_MS
                 ChoiceRow("AI call pace", paces.map(CaptureLabels::pace), paces.indexOf(state.paceMs), { onPace(paces[it]) }, tag = "pace")
                 NoticeText("One background AI call per this long.")
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Capture windows", style = MaterialTheme.typography.titleMedium)
+                val pcts = WindowToleranceStore.options(state.windowMinValidPct)
+                ChoiceRow("Window tolerance (% of seconds with sensor data)", pcts.map { "$it%" }, pcts.indexOf(state.windowMinValidPct), { onWindowTolerance(pcts[it]) }, tag = "window_tolerance")
+                NoticeText("A canvas window answers once this share of its seconds had sensor data (90% of 60 s is 54 s). Applies to plans compiled from now on; each window can set its own in the editor.", tag = "window_tolerance_note")
             }
         }
     }
