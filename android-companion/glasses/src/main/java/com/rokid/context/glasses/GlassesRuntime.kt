@@ -148,6 +148,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         com.rokid.context.glasses.capture.trace.TraceStateReporter(
             traceRecorder, traceBoundary, { diagRecord.state() }, android.os.SystemClock::elapsedRealtime,
             emit = { warn, line -> if (warn) DiagLog.w(TRACE_TAG, line) else DiagLog.i(TRACE_TAG, line) },
+            pauseSource = { pauses.sourceLabel() },
         )
     }
     /** Prints the state line when the blocker changed or a minute passed. A no-op until the recorder exists (this never constructs it on the calling thread); memory reads only. */

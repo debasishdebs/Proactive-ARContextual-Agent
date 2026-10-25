@@ -103,4 +103,15 @@ class HeartbeatTest {
         assertEquals("ok", Heartbeat.guarded({ logs += it }) { "ok" })
         assertEquals(1, logs.size)
     }
+
+    @Test fun theHeartbeatNamesWhoPausedCapture() {
+        assertTrue(hb().copy(pauseSrc = "USER_GLASSES").format().contains(" pause_src=USER_GLASSES"))
+        assertTrue("no source, no field: the line keeps its old shape", !hb().format().contains("pause_src"))
+    }
+
+    /** 2026-10-25: the first heartbeat of a process spans a few hundred ms (a floor of one minute now); extrapolating one open to a minute printed camOpen=73% opens1m=236 (a measurement artefact, the steady state is 0-6%). */
+    @Test fun aSpanUnderAMinuteIsNotExtrapolatedToAMinute() {
+        val s = hb(DiagStats(kf1m = 0, openMs = 186, spanMs = 254, analysed = 0, opens = 1)).format()
+        assertTrue(s, s.contains(" camOpen=0% camOpenMs1m=186 ") && s.contains(" opens1m=1 "))
+    }
 }

@@ -204,6 +204,15 @@ class GlassesRelauncherTest {
     @Test fun ringtoneModeIsBusy() {
         assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_RINGTONE, null, far, far))
     }
+
+    @Test fun everyDecisionLeavesACountsOnlyLine() = runTest {
+        val g = Guards().apply { call = false }
+        val r = rig(g)
+        r.close(); runCurrent()
+        assertTrue(r.logs.toString(), r.logs.any { it == "relaunch: link CONNECTED->CLOSED_ON_GLASSES" })
+        assertTrue(r.logs.toString(), r.logs.any { it == "relaunch: attempt in 8 s (step 0)" })
+        advanceTimeBy(8_100); assertTrue(r.logs.toString(), r.logs.any { it == "relaunch: waiting (call active)" })
+    }
 }
 
 /** The watchdog's trigger: [GlassesRelauncher.attemptNow] reuses every guard, the back-off bookkeeping and the hourly cap. */

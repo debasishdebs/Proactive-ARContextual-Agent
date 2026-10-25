@@ -335,7 +335,8 @@ class CaptureService : LifecycleService() {
         runtime.captureStatus.value = shown
         try { runtime.pollTraceState() } catch (e: Exception) { /* never skips the status line */ }
         // Counts and states only. One line when it changes, and a heartbeat every minute.
-        val line = "status running=${shown.running} reason=${shown.reason} motion=${shown.motion} keyframes10m=${shown.keyframesLast10Min} resting=${shown.restingUntilMs != null} heat=${heat.level.value} degraded=$degraded ${smart?.session?.startupStats() ?: ""}"
+        val pauseSrc = com.rokid.context.glasses.pause.PauseSource.forReason(shown.reason?.toString(), runtime.pauses.sourceLabel())
+        val line = "status running=${shown.running} reason=${shown.reason} pause_src=$pauseSrc motion=${shown.motion} keyframes10m=${shown.keyframesLast10Min} resting=${shown.restingUntilMs != null} heat=${heat.level.value} degraded=$degraded ${smart?.session?.startupStats() ?: ""}"
         // Fix wave K3/K4: the heartbeat (every minute) adds what the retest could not show: ui mode, rate, camera share, battery temp, wear, restart gap.
         if (tick % 60 == 0) {
             // A20: everything that builds the heartbeat is inside the guard, so a throw never skips the status line below.
@@ -361,7 +362,7 @@ class CaptureService : LifecycleService() {
                     csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
                     ctx = runtime.contextGate.raw()?.name ?: "none", ctxAgeS = runtime.contextGate.ageMs(now)?.div(1000),
                     ctxApplied = applied.name,
-                    plan = ps.hash8 ?: "none", gen = ps.gen, planMode = ps.mode.name, planRevert = ps.revert ?: "none",
+                    plan = ps.hash8 ?: "none", gen = ps.gen, planMode = ps.mode.name, planRevert = ps.revert ?: "none", pauseSrc = pauseSrc,
                 )
                 lastUpBytes = upTotal; lastUpAt = now
                 val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
@@ -370,7 +371,7 @@ class CaptureService : LifecycleService() {
                 hb.copy(scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, ctxVeto = runtime.contextGate.takeVetoes(), shOpen = sh.open, shSkip = sh.skip, shDrop = sh.drop, exprErr = sh.exprErr + (act?.get(0) ?: 0), exprDiv0 = sh.exprDiv0 + (act?.get(1) ?: 0)).format()
             }?.let { DiagLog.i(TAG, it) }
         }
-        val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"
+        val key = "${shown.running}|${shown.reason}|$pauseSrc|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"
         if (statusThrottle.shouldLog(key, line, tick, force = tick % 60 == 0)) DiagLog.i(TAG, line)
     }
 

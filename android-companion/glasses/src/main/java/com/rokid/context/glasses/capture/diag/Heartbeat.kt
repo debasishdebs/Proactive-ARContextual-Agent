@@ -50,11 +50,14 @@ data class Heartbeat(
     val shDrop: Int = 0,
     val exprErr: Int = 0,
     val exprDiv0: Int = 0,
+    /** WHO holds capture paused: a PauseSource word, BATTERY_LOW for the battery policy, "-" when not paused (then the field is left out, so the line keeps its old shape; log text only). */
+    val pauseSrc: String = "-",
 ) {
-    private fun perMin(v: Long, spanMs: Long = stats.spanMs): Long = v * 60_000L / spanMs.coerceAtLeast(1)
+    /** Per-minute rates are normalised over at least a minute: the first heartbeat of a process spans a few hundred ms, and one camera open in it read camOpen=73% opens1m=236 (2026-10-25). */
+    private fun perMin(v: Long, spanMs: Long = stats.spanMs): Long = v * 60_000L / spanMs.coerceAtLeast(MIN_RATE_SPAN_MS)
 
     fun format(): String {
-        val span = stats.spanMs.coerceAtLeast(1)
+        val span = stats.spanMs.coerceAtLeast(MIN_RATE_SPAN_MS)
         val openPct = (100 * stats.openMs / span).coerceIn(0, 100)
         val drain = drainPctPerMin?.let { String.format(Locale.US, "%.2f", it) } ?: "na"
         val proj = projectedHours?.let { String.format(Locale.US, "%.1f", it) } ?: "na"
@@ -69,10 +72,13 @@ data class Heartbeat(
             " plan=$plan gen=$gen planMode=$planMode ruleSkip1m=0 exprErr=$exprErr planRevert=$planRevert resv=${stats.wakes["resv"] ?: 0} shOpen=$shOpen shSkip=$shSkip" +
             (if (shDrop > 0 || exprDiv0 > 0) " shDrop=$shDrop exprDiv0=$exprDiv0" else "") +
             " worn=${if (wear) 1 else 0} charging=${if (charging) 1 else 0}" +
+            (if (pauseSrc != "-") " pause_src=$pauseSrc" else "") +
             if (csvFail > 0) " csvFail=$csvFail" else ""
     }
 
     companion object {
+        const val MIN_RATE_SPAN_MS = 60_000L
+
         /** A19: "off" when there is no sampling session (the sensors are not running), else the feed's rate. */
         fun sensorsLabel(hasSession: Boolean, rate: String?): String = if (!hasSession) "off" else rate ?: "full"
 
