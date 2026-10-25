@@ -15,10 +15,16 @@ import java.io.IOException
  */
 class DataOpGate(private val waitMs: Long = WAIT_MS) {
     /** A delete gave up waiting for a running export: nothing was deleted, try again. */
-    class ExportInProgress : IOException("export in progress, try again")
+    open class ExportInProgress(message: String = "export in progress, try again") : IOException(message)
+
+    /** A delete gave up waiting for a running write (a canvas Save): nothing was deleted, try again (a save is short). */
+    class WriteInProgress : ExportInProgress("save in progress, try again")
 
     /** An export was refused because a delete is running: nothing was exported. */
-    class DeleteRunning : IOException("busy: a delete is running")
+    open class DeleteRunning(message: String = "busy: a delete is running") : IOException(message)
+
+    /** An export was refused because a write (a canvas Save) is running: nothing was exported, try again. */
+    class WriteRunning : DeleteRunning("busy: a save is running")
 
     /** A write (a canvas Save) gave up waiting for a running export ([byExport]) or delete: nothing was written, try again. */
     class WriteBlocked(val byExport: Boolean) : IOException(if (byExport) "export in progress, try again" else "delete in progress, try again")
@@ -27,6 +33,8 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     private var exporters = 0
     private var deleters = 0
     private var waiting = 0
+    /** Writes that RESERVED the shared side (a Save holds it for its whole run); they do not exclude each other. */
+    private var writers = 0
     /** Bumped on every change so a waiting delete re-checks. */
     private val changed = MutableStateFlow(0)
     private fun bump() { changed.value = changed.value + 1 }
@@ -35,6 +43,7 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     suspend fun <T> export(block: suspend () -> T): T {
         synchronized(lock) {
             if (deleters > 0 || waiting > 0) throw DeleteRunning()
+            if (writers > 0) throw WriteRunning()
             exporters++
         }
         try {
@@ -57,17 +66,26 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     }
 
     /**
-     * Runs [block] as a WRITE of user-requested memories (the canvas Save): it waits, at most [waitMs], until neither an export nor a delete runs (or waits), then runs;
-     * past the wait it throws [WriteBlocked] naming which one it was waiting for, and [block] never runs. A write holds nothing: it neither blocks nor is excluded by other writes.
+     * Runs [block] as a WRITE of user-requested memories (the canvas Save): it waits, at most [waitMs], until neither an export nor a delete runs (or waits), then RESERVES a writer slot in the same
+     * step and holds it for the whole of [block]: an export is refused ([WriteRunning]) and a delete waits (bounded, then [WriteInProgress]) while a write runs. Past the wait it throws [WriteBlocked]
+     * naming which one it was waiting for, and [block] never runs. Writes do not exclude each other. A waiting delete stops NEW writes from starting, so writes cannot starve a delete.
      */
     suspend fun <T> write(block: suspend () -> T): T {
         var byExport = false
-        fun free() = synchronized(lock) { byExport = exporters > 0; exporters == 0 && deleters == 0 && waiting == 0 }
-        if (!free()) {
-            val ok = withTimeoutOrNull(waitMs) { changed.first { free() }; true } == true
+        fun tryReserve() = synchronized(lock) {
+            byExport = exporters > 0
+            (exporters == 0 && deleters == 0 && waiting == 0).also { if (it) writers++ }
+        }
+        if (!tryReserve()) {
+            val ok = withTimeoutOrNull(waitMs) { changed.first { tryReserve() }; true } == true
             if (!ok) throw WriteBlocked(byExport)
         }
-        return block()
+        try {
+            return block()
+        } finally {
+            synchronized(lock) { writers-- }
+            bump()
+        }
     }
 
     /** Test seam: runs inside the wait's predicate once no export is running (a test cancels the delete exactly there). Null in production. */
@@ -80,24 +98,26 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
      */
     private suspend fun enterDelete() {
         synchronized(lock) {
-            if (exporters == 0) { deleters++; return }
+            if (exporters == 0 && writers == 0) { deleters++; return }
             waiting++
         }
         var done = false
         var got = false
+        var byWrite = false
         try {
             done = withTimeoutOrNull(waitMs) {
-                changed.first { synchronized(lock) { (exporters == 0).also { if (it) testInPredicate?.invoke() } } }
+                changed.first { synchronized(lock) { (exporters == 0 && writers == 0).also { if (it) testInPredicate?.invoke() } } }
                 true
             } == true
         } finally {
             synchronized(lock) {
                 waiting--
-                if (done && exporters == 0) { deleters++; got = true }
+                if (done && exporters == 0 && writers == 0) { deleters++; got = true }
+                byWrite = exporters == 0 && writers > 0
             }
             bump()
         }
-        if (!got) throw ExportInProgress()
+        if (!got) throw if (byWrite) WriteInProgress() else ExportInProgress()
     }
 
     companion object {

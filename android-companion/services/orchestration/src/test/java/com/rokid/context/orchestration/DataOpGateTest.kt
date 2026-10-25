@@ -151,4 +151,63 @@ class DataOpGateTest {
         gate.write { ran = true }; assertTrue("after both, a write runs", ran)
         gate.export { }; gate.delete { } // and nothing was left held
     }
+
+    /** Codex review 2026-10-26: a write must RESERVE its side for its whole run, so an export or a delete cannot enter in the middle of a Save. */
+    @Test fun anExportIsRefusedTypedWhileAWriteRunsAndNothingOfItRuns() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val w = async { gate.write { inside.complete(Unit); release.await() } }
+        inside.await()
+        var ran = false
+        val err = runCatching { gate.export { ran = true } }.exceptionOrNull()
+        assertTrue(err is DataOpGate.WriteRunning); assertTrue("callers that catch DeleteRunning still catch it", err is DataOpGate.DeleteRunning); assertFalse(ran)
+        release.complete(Unit); w.await()
+        gate.export { ran = true }; assertTrue(ran)
+    }
+
+    @Test fun aDeleteWaitsForARunningWriteThenRuns() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val w = async { gate.write { inside.complete(Unit); release.await() } }
+        inside.await()
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val del = async { gate.delete { order += "delete" } }
+        kotlinx.coroutines.delay(100)
+        assertTrue("the delete has not entered in the middle of the write", order.isEmpty())
+        order += "write end"; release.complete(Unit); w.await(); del.await()
+        assertEquals(listOf("write end", "delete"), order)
+    }
+
+    @Test fun aDeleteThatWaitedTooLongForAWriteFailsTypedAndAWriteNeverStarvesIt() = runBlocking<Unit> {
+        val gate = DataOpGate(waitMs = 150); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val w = async { gate.write { inside.complete(Unit); release.await() } }
+        inside.await()
+        var ran = false
+        val err = runCatching { gate.delete { ran = true } }.exceptionOrNull()
+        assertTrue(err is DataOpGate.WriteInProgress); assertTrue(err is DataOpGate.ExportInProgress); assertFalse(ran)
+        release.complete(Unit); w.await()
+        gate.delete { ran = true }; assertTrue("the gate is free again", ran)
+    }
+
+    @Test fun aWaitingDeleteStopsNewWritesFromStartingSoItIsNotStarved() = runBlocking<Unit> {
+        val gate = DataOpGate(waitMs = 5_000); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val w = async { gate.write { inside.complete(Unit); release.await() } }
+        inside.await()
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val del = async { gate.delete { order += "delete" } }
+        kotlinx.coroutines.delay(100)
+        val w2 = async { gate.write { order += "write2" } }
+        kotlinx.coroutines.delay(100)
+        assertTrue("write2 waits behind the delete", order.isEmpty())
+        release.complete(Unit); w.await(); del.await(); w2.await()
+        assertEquals(listOf("delete", "write2"), order)
+    }
+
+    @Test fun aWriteThatEndsOrIsCancelledReleasesItsReservation() = runBlocking<Unit> {
+        val gate = DataOpGate()
+        runCatching { gate.write { throw IllegalStateException("x") } }
+        assertFree(gate)
+        val inside = CompletableDeferred<Unit>()
+        val job = launch { gate.write { inside.complete(Unit); kotlinx.coroutines.awaitCancellation() } }
+        inside.await(); job.cancel(); job.join()
+        assertFree(gate)
+    }
 }
