@@ -25,7 +25,7 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
             private val onForgotten = { HubGraph.get(app).refresh() }
             override suspend fun forgetFact(memoryId: String) = ForgetActions.forgetFact(app, memoryId, onForgotten)
             override suspend fun forgetMoment(frameId: String) = ForgetActions.forgetMoment(app, frameId, onForgotten)
-        })
+        }, onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })
     }
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(state.forgotten) {

@@ -55,6 +55,8 @@ object ForgetActions {
             }
         }
         FrameSweep.delete(r.framesToDelete)
+        // GAP-1: a cached memory export still holds the forgotten text; the next export regenerates it.
+        com.rokid.context.orchestration.MemoryExport.deleteCached(context)
         if (r.invalidated.isNotEmpty()) {
             try {
                 ResummarizeWorker.enqueue(context)

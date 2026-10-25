@@ -161,4 +161,28 @@ class ForgetActionsTest {
         assertFalse(leftover.exists()); assertTrue(live.exists())
         assertEquals(setOf("live", "recent", "ref"), fdao.allTombstones().toSet())
     }
+
+    /** GAP-1: the cached memory export still holds the forgotten text; every Forget removes the cached memory exports (regenerable). */
+    private fun seedExports(): List<File> {
+        val dir = File(ctx.cacheDir, "exports").apply { mkdirs() }
+        return listOf("proactive-context-memories-7.json", "proactive-context-memories-8.json.part")
+            .map { File(dir, it).apply { writeText("{\"memories\":[{\"text\":\"secret fact\"}]}") } }
+    }
+
+    @Test fun forgetFactDeletesTheCachedMemoryExports() = runBlocking {
+        mem("A")
+        val diag = File(ctx.cacheDir, "exports/proactive-context-diagnostics-1.txt").apply { parentFile!!.mkdirs(); writeText("x") }
+        val exports = seedExports()
+        assertTrue(ForgetActions.forgetFact(ctx, "A"))
+        exports.forEach { assertFalse(it.name, it.exists()) }
+        assertTrue("the diagnostics export is not ours", diag.exists())
+    }
+
+    @Test fun forgetMomentDeletesTheCachedMemoryExports() = runBlocking {
+        graph.db.frameDao().insertIgnore(FrameEntity("f1", 1, File(ctx.filesDir, "x.jpg").absolutePath, "rokid_glasses"))
+        mem("m1", "f1")
+        val exports = seedExports()
+        assertTrue(ForgetActions.forgetMoment(ctx, "f1"))
+        exports.forEach { assertFalse(it.name, it.exists()) }
+    }
 }
