@@ -1,7 +1,7 @@
 package com.rokid.context.ai
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import kotlinx.coroutines.CancellationException
 
 /** [keyRetired]: the legacy key was dealt with once (copied in, or not needed); it is never read or copied again (P8 D1). */
@@ -42,7 +42,7 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
         // Fix round 1: validate first, with no I/O. Only this rejection is permanent; an IllegalArgumentException from
         // anywhere else (a DAO, a binding) is retried like any other failure.
         rejection(settings)?.let { e ->
-            Log.w(TAG, "AI seed rejected the legacy config: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "AI seed rejected the legacy config: ${SafeLog.describe(e)}")
             state.markDone()
             return Result.failure(e)
         }
@@ -53,7 +53,7 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "AI seed not finished: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "AI seed not finished: ${SafeLog.describe(e)}")
             Result.failure(e)
         }
     }
@@ -106,7 +106,7 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        Log.w(TAG, "Orphan key sweep not finished: ${e.javaClass.simpleName}")
+        PcLog.w(TAG, "Orphan key sweep not finished: ${e.javaClass.simpleName}")
         0
     }
 

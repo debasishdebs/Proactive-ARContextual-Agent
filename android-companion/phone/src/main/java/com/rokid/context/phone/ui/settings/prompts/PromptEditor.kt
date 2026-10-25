@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.prompts
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
@@ -195,7 +195,7 @@ class PromptEditorViewModel(
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                Log.i(TAG, "test run failed (${e.javaClass.simpleName})")
+                PcLog.i(TAG, "test run failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(notice = "Couldn't run the test") }
             } finally {
                 _state.update { regated(it.copy(running = false)) } // one update: never "done" with stale gates
@@ -230,7 +230,7 @@ class PromptEditorViewModel(
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                Log.i(TAG, "save failed (${e.javaClass.simpleName})")
+                PcLog.i(TAG, "save failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(notice = "Couldn't save") }
             } finally {
                 _state.update { regated(it.copy(saving = false)) }

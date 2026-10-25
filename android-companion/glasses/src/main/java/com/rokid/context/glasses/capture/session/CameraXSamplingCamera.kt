@@ -7,7 +7,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import android.util.Range
 import android.util.Size
 import android.view.Surface
@@ -115,7 +115,7 @@ internal object CameraXBind {
             onBound?.invoke(camera)
             session
         } catch (e: Exception) {
-            Log.w(TAG, "camera bind failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "camera bind failed: ${e.javaClass.simpleName}")
             session.close()
             null
         }
@@ -152,7 +152,7 @@ internal class CameraXSamplingCamera(private val context: Context, private val o
         val fps = CameraXBind.fpsRange(p)
         val analysis = CameraXBind.analysis(fps)
         analysis.setAnalyzer(executor) { image ->
-            try { onFrame(ImageProxyFrame(image)) } catch (e: Exception) { Log.w(TAG, "analyze failed: ${e.javaClass.simpleName}") } finally { image.close() }
+            try { onFrame(ImageProxyFrame(image)) } catch (e: Exception) { PcLog.w(TAG, "analyze failed: ${e.javaClass.simpleName}") } finally { image.close() }
         }
         busy = false
         held = CameraXBind.bind(owner, p, analysis, executor, fps = fps) { cam ->

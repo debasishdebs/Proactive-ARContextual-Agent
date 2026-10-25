@@ -1,6 +1,6 @@
 package com.rokid.context.canvas
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.contract.AnswerOutput
 import com.rokid.context.ai.contract.PromptKey
@@ -152,10 +152,10 @@ class AskDebug(
         } catch (c: CancellationException) {
             throw c
         } catch (e: ModelCallException) {
-            Log.i(TAG, "replay failed: kind=${e.kind}")
+            PcLog.i(TAG, "replay failed: kind=${e.kind}")
             return Replay.Failed(e.kind.name)
         } catch (e: Exception) {
-            Log.i(TAG, "replay failed (${e.javaClass.simpleName})")
+            PcLog.i(TAG, "replay failed (${e.javaClass.simpleName})")
             return Replay.Failed(e.javaClass.simpleName)
         }
         if (!stillValid(askId, gen, memoryIds, frameIds)) return Replay.Failed("forgotten")
@@ -174,9 +174,9 @@ class AskDebug(
 
     /** The gate first, then the photo search; any failure of either means no photos (fail closed). */
     private suspend fun photoRecall(ask: AskEntity): AskPhotoRecall? {
-        val allowed = try { photos.allowed() } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "photo gate failed (${e.javaClass.simpleName})"); false }
+        val allowed = try { photos.allowed() } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "photo gate failed (${e.javaClass.simpleName})"); false }
         if (!allowed) return null
-        return try { photos.recall(ask.question, ask.ts) } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); null }
+        return try { photos.recall(ask.question, ask.ts) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); null }
     }
 
     private suspend fun compose(template: String, vars: PromptVars, ts: Long): String {

@@ -7,7 +7,7 @@ import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.work.OrchestrationScheduler
 import com.rokid.context.memory.MemoryGraph
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.memory.db.ReviewState
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +105,7 @@ object AskActions {
                     } catch (c: CancellationException) {
                         throw c
                     } catch (e: Exception) {
-                        Log.w(TAG, "review not queued: ${SafeLog.describe(e)}")
+                        PcLog.w(TAG, "review not queued: ${SafeLog.describe(e)}")
                         false
                     }
                 }

@@ -12,7 +12,7 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.core.content.ContextCompat
 import com.rokid.context.voice.AudioFocus
 import com.rokid.context.voice.Speaker
@@ -32,7 +32,7 @@ import java.util.Locale
  */
 class AndroidSpeaker(
     context: Context,
-    private val log: (SpeakerEvent) -> Unit = { Log.i(TAG, it.wire) },
+    private val log: (SpeakerEvent) -> Unit = { PcLog.i(TAG, it.wire) },
 ) : Speaker {
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())

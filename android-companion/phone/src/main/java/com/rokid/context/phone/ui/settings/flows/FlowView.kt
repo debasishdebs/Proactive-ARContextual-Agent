@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.flows
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -101,7 +101,7 @@ class FlowViewModel(
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "seeding prompts failed (${e.javaClass.simpleName})") // a missing row reads "Prompt missing"
+            PcLog.i(TAG, "seeding prompts failed (${e.javaClass.simpleName})") // a missing row reads "Prompt missing"
         }
         emitAll(combine(shown, ai.bindings.observeAll(), ai.prompts.observeAllActive(), retrieval.settings) { flows, bindings, active, settings ->
             val prompts = active.mapNotNull { v -> PromptKey.parse(v.promptId)?.let { it to PromptUi(v.version, TemplateVariables.used(v.template).toList()) } }.toMap()

@@ -5,7 +5,7 @@ import android.database.sqlite.SQLiteFullException
 import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.OsConstants
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.FrameAck
 import com.rokid.context.core.model.FileDurability
 import com.rokid.context.core.model.FrameAckReason
@@ -76,7 +76,7 @@ object AtomicJpegWriter : JpegWriter {
             throw e
         }
         // The rename is durable only once the directory entry is; a failure here still leaves a whole file.
-        if (!fsyncDir(dir)) Log.w(FrameIngestor.TAG, "frame dir not fsynced")
+        if (!fsyncDir(dir)) PcLog.w(FrameIngestor.TAG, "frame dir not fsynced")
     }
 }
 
@@ -167,14 +167,14 @@ class FrameIngestor(
         val fence = wipeFence()
         if (fence is WipeFence.Fence.Unknown) {
             // Fail closed (fix round 1 I3): no ack, so the glasses keep the frame and resend it once the fence is known.
-            Log.w(TAG, "frame $id not stored: Delete all fence unknown")
+            PcLog.w(TAG, "frame not stored: delete_all_fence_unknown")
             return@withLock IngestResult(ack = null, error = storageErrorFor(fence.cause ?: IOException("wipe fence unknown")))
         }
         val wipedAt = (fence as? WipeFence.Fence.At)?.ms
         val done = try {
             if (wipedAt != null && capturedAtMs != null && capturedAtMs < wipedAt) {
                 ledger.add(id)
-                Log.i(TAG, "frame $id dropped: captured before Delete all")
+                PcLog.i(TAG, "frame dropped: captured_before_delete_all")
                 return@withLock IngestResult(FrameAck(frameId = id, ok = true, reason = FrameAckReason.WIPED))
             }
             // Gaps G1: sealed while "Encrypt memory" is on; a seal failure is an IOException (no ack, the glasses resend).
@@ -185,11 +185,11 @@ class FrameIngestor(
             ledger.add(id)
             d
         } catch (e: IOException) {
-            Log.w(TAG, "frame $id not stored: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "frame not stored: ${e.javaClass.simpleName}")
             return@withLock IngestResult(ack = null, error = storageErrorFor(e))
         }
         if (done.outcome == ReceiptStore.Outcome.VERIFIED) {
-            Log.i(TAG, "frame resend verified $id")
+            PcLog.i(TAG, "frame resend verified")
             return@withLock IngestResult(FrameAck(frameId = id, ok = true, reason = FrameAckReason.DUPLICATE))
         }
         // The frame is durable in the inbox and the ledger, so it is acked even if queueing fails: the next queue drain
@@ -198,10 +198,10 @@ class FrameIngestor(
             onStored()
             null
         } catch (e: Exception) {
-            Log.w(TAG, "frame $id stored but not queued: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "frame stored but not queued: ${e.javaClass.simpleName}")
             storageErrorFor(e)
         }
-        Log.i(TAG, "frame ingested $id")
+        PcLog.i(TAG, "frame ingested")
         IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = capturedAtMs ?: done.rxMs, error = queueError)
     }
 

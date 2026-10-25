@@ -1,5 +1,6 @@
 package com.rokid.context.memory
 
+import com.rokid.context.core.log.PcLog
 import android.content.Context
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.DatabaseFactory
@@ -79,7 +80,7 @@ class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredC
                 importOnce(context, import)
             } catch (e: Exception) {
                 facadeImportFailed = true
-                android.util.Log.w("MemoryGraph", "legacy import failed; the worker retries: ${e.javaClass.simpleName}")
+                PcLog.w("MemoryGraph", "legacy import failed; the worker retries: ${e.javaClass.simpleName}")
                 null
             }
         }

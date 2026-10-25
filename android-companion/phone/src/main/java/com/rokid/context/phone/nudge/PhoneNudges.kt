@@ -1,7 +1,7 @@
 package com.rokid.context.phone.nudge
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.NudgeLine
 import com.rokid.context.core.model.Overlay
@@ -33,7 +33,7 @@ object PhoneNudges {
      */
     fun hubPort(app: Context, hud: () -> HudSettings): HubNudges {
         NudgeEnvironment.hud = { hud().let { NudgeHud(it.quietHours, it.verbosity, ZoneId.systemDefault()) } }
-        val guard = CoroutineExceptionHandler { _, t -> Log.w("PhoneNudges", "nudge port failed: ${t.javaClass.simpleName}") }
+        val guard = CoroutineExceptionHandler { _, t -> PcLog.w("PhoneNudges", "nudge port failed: ${t.javaClass.simpleName}") }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + guard)
         val rows: Flow<List<NudgeEntity>> = flow { emitAll(MemoryGraph.get(app).nudges.recent(1)) }
         return NudgePort(rows, scope, System::currentTimeMillis)

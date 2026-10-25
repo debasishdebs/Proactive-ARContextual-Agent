@@ -6,7 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.rokid.context.ai.SafeLog
@@ -73,7 +73,7 @@ class ProposalNotifier(private val context: Context, private val zone: () -> Zon
             scope.launch {
                 repo.pending().collect { rows ->
                     try { notifier.sync(rows) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
-                        try { Log.w("ProposalNotifier", "sync failed: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
+                        try { PcLog.w("ProposalNotifier", "sync failed: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
                     }
                 }
             }

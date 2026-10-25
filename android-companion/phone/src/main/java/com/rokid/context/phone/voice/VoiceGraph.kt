@@ -3,7 +3,7 @@ package com.rokid.context.phone.voice
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.AskActions
 import com.rokid.context.phone.hub.ContextHubService
@@ -31,13 +31,13 @@ import kotlinx.coroutines.withContext
  * It may be built by a sticky background restart of the hub service: nothing here probes until [onForeground].
  */
 class VoiceGraph private constructor(private val app: Context) {
-    private val errors = CoroutineExceptionHandler { _, t -> Log.w(TAG, "voice job failed: ${t.javaClass.simpleName}") }
+    private val errors = CoroutineExceptionHandler { _, t -> PcLog.w(TAG, "voice job failed: ${t.javaClass.simpleName}") }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + errors)
 
     val settings = VoiceSettingsStore({ app.getSharedPreferences("voice_settings", Context.MODE_PRIVATE) }, scope)
     val capabilities = VoiceCapabilityService(
         AndroidVoicePlatform(app), PrefsProbeRecords({ app.getSharedPreferences("voice_probe", Context.MODE_PRIVATE) }),
-        language = { settings.settings.value.language }, scope = scope, micHeld = ContextHubService.micHeld, log = { Log.i(TAG, it) },
+        language = { settings.settings.value.language }, scope = scope, micHeld = ContextHubService.micHeld, log = { PcLog.i(TAG, it) },
     )
     val pipeline = VoicePipeline(
         scope, AndroidOnDeviceStt(app), capabilities.capabilities, { settings.settings.value.language },
@@ -53,8 +53,8 @@ class VoiceGraph private constructor(private val app: Context) {
         ),
         AndroidSpeaker(app), bluetoothMedia = { AudioRoutes.hasBluetoothMedia(app) },
         onFallbackSuspected = { capabilities.onFallbackSuspected() },
-        log = { Log.i(TAG, it) },
-        interceptor = MarkVoiceInterceptor({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { Log.i(TAG, it) }),
+        log = { PcLog.i(TAG, it) },
+        interceptor = MarkVoiceInterceptor({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { PcLog.i(TAG, it) }),
     )
     /** G7: Battery Saver, for the glasses tap's blocked reason (the ask path refuses the ask itself). */
     private val batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app)
@@ -73,7 +73,7 @@ class VoiceGraph private constructor(private val app: Context) {
         },
         openSettings = {
             runCatching { app.startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                .onFailure { Log.i(TAG, "speech settings unavailable (${it.javaClass.simpleName})") }
+                .onFailure { PcLog.i(TAG, "speech settings unavailable (${it.javaClass.simpleName})") }
         },
     )
 

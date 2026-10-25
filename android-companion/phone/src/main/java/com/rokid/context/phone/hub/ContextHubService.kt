@@ -15,7 +15,7 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -127,7 +127,7 @@ class ContextHubService : Service() {
     private fun enterForeground(text: String, wanted: Int): Boolean {
         val entered = enterWithFallback(wanted) { types ->
             runCatching { ServiceCompat.startForeground(this, ID, notification(text, lastPaused), types) }
-                .onFailure { Log.w(TAG, "foreground ($types) refused: ${it.javaClass.simpleName}") }.getOrThrow()
+                .onFailure { PcLog.w(TAG, "foreground ($types) refused: ${it.javaClass.simpleName}") }.getOrThrow()
         }
         micRetry.entered(tried = wanted, entered = entered)
         if (entered != null) { currentTypes = entered; _micHeld.value = holdsMic(entered); _locationHeld.value = holdsLocation(entered) }
@@ -275,7 +275,7 @@ class ContextHubService : Service() {
         fun refreshLocationType(context: Context) {
             if (!running) return
             runCatching { context.startService(Intent(context, ContextHubService::class.java).setAction(ACTION_REFRESH_LOCATION)) }
-                .onFailure { Log.w(TAG, "location refresh refused: ${it.javaClass.simpleName}") }
+                .onFailure { PcLog.w(TAG, "location refresh refused: ${it.javaClass.simpleName}") }
         }
 
         /** One line for the legacy Live screen (Task 12 shows it in place of the RFCOMM bridge message). */
@@ -289,7 +289,7 @@ class ContextHubService : Service() {
             val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true)
             resume?.let { start.putExtra(EXTRA_RESUME, it) }
             runCatching { context.startForegroundService(start) }
-                .onFailure { Log.w(TAG, "start refused: ${it.javaClass.simpleName}") }
+                .onFailure { PcLog.w(TAG, "start refused: ${it.javaClass.simpleName}") }
         }
 
         /** A start is in front only when its intent says so; a sticky restart's null intent is the background. */
@@ -329,7 +329,7 @@ class ContextHubService : Service() {
             val refresh = Intent(context, ContextHubService::class.java).setAction(ACTION_REFRESH_TYPES)
             resume?.let { refresh.putExtra(EXTRA_RESUME, it) }
             runCatching { context.startService(refresh) }
-                .onFailure { Log.w(TAG, "refresh refused: ${it.javaClass.simpleName}") }
+                .onFailure { PcLog.w(TAG, "refresh refused: ${it.javaClass.simpleName}") }
         }
 
         fun stop(context: Context) { context.stopService(Intent(context, ContextHubService::class.java)) }

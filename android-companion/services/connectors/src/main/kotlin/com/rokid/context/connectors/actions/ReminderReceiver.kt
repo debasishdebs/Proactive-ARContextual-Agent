@@ -5,7 +5,7 @@ import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.rokid.context.ai.SafeLog
@@ -35,7 +35,7 @@ class ReminderReceiver : BroadcastReceiver() {
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                try { Log.w("ReminderReceiver", "reminder not shown: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
+                try { PcLog.w("ReminderReceiver", "reminder not shown: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
             } finally {
                 pending.finish()
             }

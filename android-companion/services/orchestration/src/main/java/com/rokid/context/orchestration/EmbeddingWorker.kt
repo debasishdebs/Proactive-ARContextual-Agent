@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -36,7 +36,7 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         val clock = PrefsIndexClock(applicationContext)
         if (!AppConfigStore.isPipelineEnabled(applicationContext)) {
             if (rebuild) { clock.setPendingRebuildToken(id.toString()); clock.setRebuildPending(true) }
-            Log.i(TAG, "pipeline paused: index work left for resume")
+            PcLog.i(TAG, "pipeline paused: index work left for resume")
             return Result.success()
         }
         val ai = AiGraph.get(applicationContext)
@@ -86,7 +86,7 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         }
 
         private fun deferForBattery(context: Context) {
-            Log.i(TAG, "on-device index work waits for a charger (battery)")
+            PcLog.i(TAG, "on-device index work waits for a charger (battery)")
             PrefsIndexClock(context).setBatteryPaused(true)
             WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, untilCharging = true))
         }
@@ -113,10 +113,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             deferForBattery(context)
             Result.success()
         } catch (e: IndexConfigException) {
-            Log.w(TAG, "index config failure; not retrying until the next trigger: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "index config failure; not retrying until the next trigger: ${SafeLog.describe(e)}")
             Result.failure()
         } catch (e: Exception) {
-            Log.w(TAG, "index run failed: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "index run failed: ${SafeLog.describe(e)}")
             retryOrFail(attempt)
         }
 

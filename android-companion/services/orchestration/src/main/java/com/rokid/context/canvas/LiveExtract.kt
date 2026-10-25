@@ -1,6 +1,6 @@
 package com.rokid.context.canvas
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.run.RoleRunner
@@ -78,7 +78,7 @@ object LiveExtract {
     /** The extraction step of the keyframe extractor. Only an active LIVE interpreter publish changes the result. */
     suspend fun batch(deps: LiveDeps, photos: List<ExtractPhoto>, callClass: CallClass): LiveBatch {
         val pub = try { deps.dao.activeInterpreter() } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            Log.w(TAG, "publish lookup failed: ${e.javaClass.simpleName}"); null
+            PcLog.w(TAG, "publish lookup failed: ${e.javaClass.simpleName}"); null
         }
         if (pub == null) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass), LiveEffects.None)
         if (pub.mode != LiveMode.LIVE.name) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass), LiveEffects(pub.id, emptyList(), emptyMap(), false, shadow = true))
@@ -116,7 +116,7 @@ object LiveExtract {
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.w(TAG, "shadow failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "shadow failed: ${e.javaClass.simpleName}")
         }
     }
 
@@ -137,14 +137,14 @@ object LiveExtract {
         var committed = false
         try {
             committed = deps.dao.commitTracesFenced(effects.traces, generation, savedFrames, MemoryWipe.generation::get)
-        } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.w(TAG, "trace commit failed: ${e.javaClass.simpleName}") }
+        } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.w(TAG, "trace commit failed: ${e.javaClass.simpleName}") }
 
         if (committed && !effects.fellBack) {
             for ((frameId, label) in effects.labels) {
                 if (frameId !in savedFrames) continue
                 if (MemoryWipe.generation.get() != generation) break
                 try { deps.sink.record(frameId, label.first, label.second, deps.clock()) }
-                catch (c: CancellationException) { throw c } catch (e: Exception) { Log.w(TAG, "intent sink failed: ${e.javaClass.simpleName}") }
+                catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.w(TAG, "intent sink failed: ${e.javaClass.simpleName}") }
             }
         }
 
@@ -154,7 +154,7 @@ object LiveExtract {
                 if (deps.dao.interpretedCountUpTo(id, FALLBACK_WINDOW) >= FALLBACK_WINDOW && deps.dao.recentFallbacks(id, FALLBACK_WINDOW) >= FALLBACK_LIMIT) {
                     deps.publisher(id, AUTO_ROLLBACK_REASON)
                 }
-            } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.w(TAG, "auto-rollback check failed: ${e.javaClass.simpleName}") }
+            } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.w(TAG, "auto-rollback check failed: ${e.javaClass.simpleName}") }
         }
     }
 
@@ -173,7 +173,7 @@ object LiveExtract {
             throw c
         } catch (e: Exception) {
             if (PipelineInterpreter.isTransient(e)) throw e
-            Log.w(TAG, "interpreter failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "interpreter failed: ${e.javaClass.simpleName}")
             failed("internal")
         }
     }

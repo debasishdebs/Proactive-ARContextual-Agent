@@ -7,7 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.WindowManager
@@ -39,7 +39,7 @@ class PopupOverlay(private val context: Context, private val windowManager: Wind
             nv.maxWidth = (context.resources.displayMetrics.widthPixels * 0.85f).toInt()
             nv.background = GradientDrawable().apply { setColor(Color.BLACK); setStroke((2 * d).toInt(), GREEN); cornerRadius = 14 * d }
             val added = runCatching { windowManager.addView(nv, layoutParams()) }
-                .onFailure { Log.w(TAG, "pop-up window refused: ${it.javaClass.simpleName}") }.isSuccess
+                .onFailure { PcLog.w(TAG, "pop-up window refused: ${it.javaClass.simpleName}") }.isSuccess
             if (!added) return
             view = nv
         }

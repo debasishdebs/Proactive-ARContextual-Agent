@@ -2,7 +2,7 @@ package com.rokid.context.link
 
 import android.app.Activity
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.LinkState
 import com.rokid.cxr.Caps
 import com.rokid.cxr.session.AiInterceptMode
@@ -59,16 +59,16 @@ class CxrGlassesLink(
         app, GLASSES_PKG, probe, linkState = { _state.value.name },
         onBound = { ok -> post { minimised.onBound(ok) } },
         onCustomCmd = { cmd, bytes -> decodeParts(cmd, bytes)?.let { parts -> post { onBackgroundMessage(cmd, parts) } } },
-        onWearing = { w -> Log.i(TAG, "watcher: wearing=$w"); _wearing.value = w },
+        onWearing = { w -> PcLog.i(TAG, "watcher: wearing=$w"); _wearing.value = w },
         // Fix wave I1: the SDK reports only changes, so the device-info snapshot on each bind is what refreshes a value we dropped.
-        onWearingSnapshot = { w -> Log.i(TAG, "watcher: wearing snapshot known=${w != null}"); if (w != null) _wearing.value = w },
+        onWearingSnapshot = { w -> PcLog.i(TAG, "watcher: wearing snapshot known=${w != null}"); if (w != null) _wearing.value = w },
     ) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
     /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
     private val minimised: MinimisedLink = MinimisedLink(
         scope, watcher, inbound,
         onAlive = { openAfterSilence = false; act(policy.onEvent(LinkEvent.BackgroundAlive)) },
         onSilent = { post { onBackgroundSilent() } },
-        log = { Log.i(TAG, it) },
+        log = { PcLog.i(TAG, it) },
     )
     /** The wearer asked to open the app while minimised and a liveness probe is out: if the glasses are silent, open it for real. */
     private var openAfterSilence = false
@@ -103,7 +103,7 @@ class CxrGlassesLink(
     private fun now() = System.currentTimeMillis()
     private fun setState(s: LinkState) {
         if (_state.value != s) {
-            _state.value = s; Log.i(TAG, "link=$s")
+            _state.value = s; PcLog.i(TAG, "link=$s")
             // Fix wave I1: a wear value from before a link loss must never come back; the next bind's snapshot or change refreshes it.
             if (s == LinkState.OFFLINE || s == LinkState.PAUSED_BT || s == LinkState.NOT_AUTHORIZED) _wearing.value = null
         }
@@ -113,7 +113,7 @@ class CxrGlassesLink(
     fun authorize(activity: Activity, onDone: (Boolean) -> Unit) {
         try {
             manager.requestAuthorization(activity, listOf(GlassPermission.MICROPHONE, GlassPermission.DEVICE_MANAGE, GlassPermission.MEDIA)) { r ->
-                Log.i(TAG, "authorize ok=${r.isSuccess} code=${r.errorCode}")
+                PcLog.i(TAG, "authorize ok=${r.isSuccess} code=${r.errorCode}")
                 r.token?.takeIf { r.isSuccess }?.let { app.getSharedPreferences(PREFS, 0).edit().putString(KEY_TOKEN, it).apply() }
                 // Success without any usable token would loop AuthActivity: treat it as a failure.
                 val ok = r.isSuccess && (r.token != null || token() != null)
@@ -123,7 +123,7 @@ class CxrGlassesLink(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "authorize failed (${e.javaClass.simpleName})")
+            PcLog.w(TAG, "authorize failed (${e.javaClass.simpleName})")
             post { onAuthResult(false) }
             onDone(false)
         }
@@ -152,14 +152,14 @@ class CxrGlassesLink(
 
     private fun onBackgroundSilent() {
         act(policy.onEvent(LinkEvent.BackgroundSilent))
-        if (openAfterSilence && !policy.minimised) { openAfterSilence = false; Log.i(TAG, "minimised app is gone: opening it on request"); act(policy.manualConnect()) }
+        if (openAfterSilence && !policy.minimised) { openAfterSilence = false; PcLog.i(TAG, "minimised app is gone: opening it on request"); act(policy.manualConnect()) }
     }
 
     override fun connectOnce() = post { auth.clearStale(now()); act(policy.autoConnect()) }
 
     override fun connectOnResume() = post {
         if (!shouldReconnectOnResume(_state.value, token() != null, authDeclined, authTimedOut, policy.waitingAuthRetry)) return@post
-        Log.i(TAG, "phone app resumed: reconnecting")
+        PcLog.i(TAG, "phone app resumed: reconnecting")
         authTimedOut = false
         auth.clearStale(now())
         act(policy.manualConnect())
@@ -215,7 +215,7 @@ class CxrGlassesLink(
                 delay(AuthGate.AUTH_TIMEOUT_MS)
                 auth.expire()
                 authTimedOut = true // not a decline: with a token, the next phone-app resume retries
-                Log.i(TAG, "authorization timed out")
+                PcLog.i(TAG, "authorization timed out")
                 act(policy.onEvent(LinkEvent.AuthTimedOut)) // BUG-R2-4: bounded automatic retry, then NOT_AUTHORIZED
             }
             if (AuthActivity.launch(app).isFailure) onAuthResult(false)
@@ -246,7 +246,7 @@ class CxrGlassesLink(
             inbound.open(s) {
                 s.addLifecycleCallback(lifecycleFor(s))
                 s.addGlassesEventListener(object : com.rokid.cxr.session.IGlassesEventListener {
-                    override fun onWearingStatusChanged(wearing: Boolean) { Log.i(TAG, "session: wearing=$wearing"); _wearing.value = wearing }
+                    override fun onWearingStatusChanged(wearing: Boolean) { PcLog.i(TAG, "session: wearing=$wearing"); _wearing.value = wearing }
                     override fun onGlassesAppResumed() = Unit
                     override fun onGlassesAppPaused() = Unit
                     override fun onDeviceInfoChanged(info: com.rokid.cxr.session.GlassesInfo) = Unit
@@ -265,7 +265,7 @@ class CxrGlassesLink(
             created?.let(slot::fail)
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "openSession failed (${e.javaClass.simpleName})")
+            PcLog.w(TAG, "openSession failed (${e.javaClass.simpleName})")
             created?.let(slot::fail)
             act(policy.onEvent(LinkEvent.ConnectFailed))
         }
@@ -293,7 +293,7 @@ class CxrGlassesLink(
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        Log.w(TAG, "bad payload on $cmd: ${e.javaClass.simpleName}")
+        PcLog.w(TAG, "bad payload on $cmd: ${e.javaClass.simpleName}")
         null
     }
 
@@ -307,12 +307,12 @@ class CxrGlassesLink(
         val s = slot.current ?: return false
         return try {
             val r = s.sendCustomCmd(channel, Caps().apply { write(json) }, ByteArray(0))
-            if (!r.isSuccess) Log.w(TAG, "send $channel failed ${r.code}")
+            if (!r.isSuccess) PcLog.w(TAG, "send $channel failed ${r.code}")
             r.isSuccess
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "send $channel threw ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "send $channel threw ${e.javaClass.simpleName}")
             false
         }
     }
@@ -328,13 +328,13 @@ class CxrGlassesLink(
             inbound.close(s)
             if (!slot.clearIf(s)) return@post
             val glassesLeft = reason == CloseReason.GLASSES_EXIT || reason == CloseReason.USER_CLOSED
-            Log.i(TAG, "session closed $reason")
+            PcLog.i(TAG, "session closed $reason")
             _wearing.value = null // fix wave I1: the next bind re-reads it
             act(policy.onEvent(if (glassesLeft) LinkEvent.GlassesExited else LinkEvent.Closed))
         }
         override fun onConnectResult(ok: Boolean, code: SessionErrorCode?) = post {
             if (ok || !slot.clearIf(s)) return@post
-            Log.w(TAG, "connect failed $code")
+            PcLog.w(TAG, "connect failed $code")
             if (code == SessionErrorCode.TOKEN_EXPIRED || code == SessionErrorCode.NOT_AUTHENTICATED) onTokenRejected()
             else act(policy.onEvent(if (isTerminalConnectError(code)) LinkEvent.ConnectRefused else LinkEvent.ConnectFailed))
         }
@@ -348,7 +348,7 @@ class CxrGlassesLink(
             Class.forName("com.rokid.sprite.aiapp.externalapp.auth.AuthorizationHelper")
                 .getDeclaredField("a").apply { isAccessible = true }.setBoolean(null, true)
         } catch (e: Exception) {
-            Log.w(TAG, "could not force global Hi Rokid (${e.javaClass.simpleName})")
+            PcLog.w(TAG, "could not force global Hi Rokid (${e.javaClass.simpleName})")
         }
     }
 

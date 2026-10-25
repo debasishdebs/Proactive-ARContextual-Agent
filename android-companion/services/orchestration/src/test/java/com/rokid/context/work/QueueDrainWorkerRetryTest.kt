@@ -42,6 +42,7 @@ import org.robolectric.shadows.ShadowLog
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class QueueDrainWorkerRetryTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.PcLogToShadowRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private var behaviour: () -> String = { "ok" }
     private lateinit var ai: AiGraph

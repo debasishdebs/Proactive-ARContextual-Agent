@@ -2,7 +2,7 @@ package com.rokid.context.orchestration
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.embed.Canaries
 import com.rokid.context.ai.embed.Embedders
@@ -220,9 +220,9 @@ class IndexMaintenance(
         ) {
             val e = embedders.forSpace(current)
             when (if (e == null) Check.UNCHECKED else check(current, e)) {
-                Check.DRIFTED -> { Log.i(TAG, "canaries drifted: space marked stale"); spaces.markStale(current.id) }
+                Check.DRIFTED -> { PcLog.i(TAG, "canaries drifted: space marked stale"); spaces.markStale(current.id) }
                 Check.MATCH, Check.NOISY -> clock.markCanary(now())
-                Check.UNCHECKED -> Log.i(TAG, "canary check could not run; trying again next time")
+                Check.UNCHECKED -> PcLog.i(TAG, "canary check could not run; trying again next time")
             }
             current = spaces.current()
         }
@@ -254,7 +254,7 @@ class IndexMaintenance(
                     activeImagesLeft = Modality.IMAGE in e.modalities && !images.paused && spaces.missingImages(current.id, 1).isNotEmpty()
                 } catch (c: CancellationException) { throw c } catch (c: IndexConfigException) { throw c } catch (t: Exception) {
                     if (building == null) throw t // nothing else to do: let the worker retry with backoff
-                    Log.i(TAG, "old space not reachable; it keeps its vectors: ${SafeLog.describe(t)}")
+                    PcLog.i(TAG, "old space not reachable; it keeps its vectors: ${SafeLog.describe(t)}")
                 }
             }
         }
@@ -264,16 +264,16 @@ class IndexMaintenance(
         fillImages(building, bound.embedder, images)
         if (!spaces.coverage(building.id).complete) return Outcome.MORE
         when (check(building, bound.embedder)) {
-            Check.UNCHECKED -> { Log.i(TAG, "pre-swap canary check could not run; not swapping"); return Outcome.RETRY }
+            Check.UNCHECKED -> { PcLog.i(TAG, "pre-swap canary check could not run; not swapping"); return Outcome.RETRY }
             Check.DRIFTED -> {
                 spaces.discard(building.id)
                 val last = clock.lastDiscard()
                 val streak = if (last?.fingerprint == fp) last.streak + 1 else 1
                 clock.recordDiscard(DiscardRecord(fp, now(), streak))
-                Log.i(TAG, "canaries drifted while building: build discarded (streak $streak)")
+                PcLog.i(TAG, "canaries drifted while building: build discarded (streak $streak)")
                 return Outcome.DONE
             }
-            Check.NOISY -> Log.i(TAG, "canaries are noisy, not drifted: swapping")
+            Check.NOISY -> PcLog.i(TAG, "canaries are noisy, not drifted: swapping")
             Check.MATCH -> Unit
         }
         // Ruling 15: image coverage is required per space, iff the building embedder declares IMAGE. Paused backfill waits for the next trigger (no spin).
@@ -282,7 +282,7 @@ class IndexMaintenance(
             // Every photo is covered or marked: with no image vector at all (or a mostly-marked library) that is a broken decoder, not a finished build.
             val health = spaces.imageSwapHealth(building.id)
             if (health != ImageSwapHealth.OK) {
-                Log.w(TAG, "image backfill unhealthy ($health): not swapping")
+                PcLog.w(TAG, "image backfill unhealthy ($health): not swapping")
                 throw IndexConfigException("image backfill unhealthy: $health")
             }
         }
@@ -298,8 +298,8 @@ class IndexMaintenance(
     private suspend fun start(bound: BoundEmbedder, fp: String): EmbeddingSpaceEntity? {
         spaces.building()?.takeIf { it.fingerprint == fp }?.let { return it }
         clock.lastDiscard()?.takeIf { it.fingerprint == fp }?.let { d ->
-            if (d.streak >= MAX_DISCARD_STREAK) { Log.i(TAG, "index unstable: auto-rebuild stopped until Rebuild"); return null }
-            if (now() - d.at < DAY_MS) { Log.i(TAG, "build held for 24 h after a drift discard"); return null }
+            if (d.streak >= MAX_DISCARD_STREAK) { PcLog.i(TAG, "index unstable: auto-rebuild stopped until Rebuild"); return null }
+            if (now() - d.at < DAY_MS) { PcLog.i(TAG, "build held for 24 h after a drift discard"); return null }
         }
         val canaries = bound.embedder.embedDocuments(Canaries.TEXTS)
         return spaces.startBuilding(fp, bound.configJson, bound.dim, Canaries.encode(canaries), now(), bound.embedder.imageDims)
@@ -342,10 +342,10 @@ class IndexMaintenance(
         // The width comes only from the embedder (never from a stored vector or the text dim); rows of another width are dropped.
         val dims = embedder.imageDims ?: throw IndexConfigException("image embedder must declare imageDims") // no purge, no write
         val purged = spaces.purgeWrongWidthImages(space.id, dims)
-        if (purged > 0) Log.w(TAG, "image backfill: dropped $purged vectors of the wrong width")
+        if (purged > 0) PcLog.w(TAG, "image backfill: dropped $purged vectors of the wrong width")
         val skip = HashSet<String>() // skipped this run: not re-listed, or they would starve the photos behind them
         while (p.budget > 0) {
-            if (!bulkAllowed()) { p.paused = true; Log.i(TAG, "image backfill paused by the bulk gate"); return }
+            if (!bulkAllowed()) { p.paused = true; PcLog.i(TAG, "image backfill paused by the bulk gate"); return }
             val want = minOf(imageBatch, p.budget)
             val ids = spaces.missingImages(space.id, want + skip.size).filter { it !in skip }.take(want)
             if (ids.isEmpty()) return
@@ -372,7 +372,7 @@ class IndexMaintenance(
             }
             // A decoder that fails everything shows as no image vector at all: the swap refuses (see imageSwapHealth) and a new build clears the marks.
             toMark.forEach { spaces.markUnembeddable(it); readAttempts.forget(it) }
-            Log.i(TAG, "image backfill: ${ids.size} photos, $stored stored, ${toMark.size} unembeddable, $transient deferred, $rejected wrong width")
+            PcLog.i(TAG, "image backfill: ${ids.size} photos, $stored stored, ${toMark.size} unembeddable, $transient deferred, $rejected wrong width")
             if (rejected > 0 && stored == 0 && rejected == ids.size - toMark.size - transient) {
                 throw IndexConfigException("space ${space.id}: image vectors have the wrong width")
             }

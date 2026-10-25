@@ -1,6 +1,6 @@
 package com.rokid.context.link
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import java.util.Collections
 import java.util.WeakHashMap
 import kotlin.coroutines.cancellation.CancellationException
@@ -12,7 +12,7 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 internal class SessionSlot<S : Any>(
     private val close: (S) -> Unit,
-    private val log: (String) -> Unit = { Log.w(CxrGlassesLink.TAG, it) },
+    private val log: (String) -> Unit = { PcLog.w(CxrGlassesLink.TAG, it) },
 ) {
     private val closed: MutableSet<S> = Collections.newSetFromMap(WeakHashMap())
 

@@ -1,7 +1,7 @@
 package com.rokid.context.work.frames.scene
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.ai.contract.ClusterOutput
 import com.rokid.context.memory.MemoryGraph
@@ -56,7 +56,7 @@ object ClusterSave {
                         failed += c.clusterId
                         db.frameClusterDao().fail(c.clusterId, claimId, "reps_forgotten", nowMs, maxAttempts = 1)
                     } else db.frameClusterDao().completeIfClaimed(c.clusterId, claimId, "rokid_cl_${claimId}_$i", nowMs)
-                    if (ok == 0) { Log.i(TAG, "cluster save dropped: claim on ${c.clusterId} no longer holds"); throw Rollback(ClusterSaveResult.Stale) }
+                    if (ok == 0) { PcLog.i(TAG, "cluster save dropped: claim no longer holds"); throw Rollback(ClusterSaveResult.Stale) }
                 }
                 val saved = mutableListOf<SavedMemory>()
                 val rows = mutableListOf<FrameSourceEntity>()
@@ -97,7 +97,7 @@ object ClusterSave {
                     if (c.clusterId in failed) db.frameStateDao().settleCluster(c.clusterId, FrameState.NEAR_DUP.name, "cluster_failed", nowMs)
                     else db.frameStateDao().settleCluster(c.clusterId, FrameState.CLUSTERED.name, null, nowMs)
                 }
-                Log.i(TAG, "cluster save: ${results.size - failed.size} clusters, ${saved.size} memories, ${failed.size} failed")
+                PcLog.i(TAG, "cluster save: ${results.size - failed.size} clusters, ${saved.size} memories, ${failed.size} failed")
                 ClusterSaveResult.Saved(saved, failed)
             }
         } catch (r: Rollback) {

@@ -5,7 +5,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.PowerManager
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.ai.AiGraph
@@ -63,7 +63,7 @@ class QueueDrainWorker(
     override suspend fun doWork(): Result {
         // Paused (phone ⏸): nothing goes to the AI provider. Jobs stay queued; resuming drains them (resumePipeline).
         if (!AppConfigStore.isPipelineEnabled(applicationContext)) {
-            Log.i(TAG, "pipeline paused: queue left for resume")
+            PcLog.i(TAG, "pipeline paused: queue left for resume")
             return Result.success()
         }
         var processed = 0
@@ -98,7 +98,7 @@ class QueueDrainWorker(
                 }
                 val decision = RetryPolicy.decide(outcome, job.attemptCount)
                 // Detail for Diagnostics logs only: text, never the throwable (a ModelCallException's cause may echo a key).
-                Log.w(TAG, "job ${job.id} ${outcome.name} attempt ${job.attemptCount + 1}/${RetryPolicy.MAX_ATTEMPTS}: ${SafeLog.describe(error)}")
+                PcLog.w(TAG, "job ${outcome.name} attempt ${job.attemptCount + 1}/${RetryPolicy.MAX_ATTEMPTS}: ${SafeLog.describe(error)}")
                 val shown = if (decision == RetryPolicy.Decision.FAIL && outcome == RetryClassifier.Outcome.RETRY) {
                     UserFacingErrors.AiGaveUp
                 } else {
@@ -114,7 +114,7 @@ class QueueDrainWorker(
         }
 
         if (processed == 0) {
-            Log.i(TAG, "queue drain idle")
+            PcLog.i(TAG, "queue drain idle")
         }
         return Result.success()
     }

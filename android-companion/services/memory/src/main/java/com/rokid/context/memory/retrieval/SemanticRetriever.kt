@@ -1,6 +1,6 @@
 package com.rokid.context.memory.retrieval
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.memory.EmbeddingSpaces
 import com.rokid.context.memory.SpaceEmbedderProvider
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +27,7 @@ class SemanticRetriever(
     } catch (c: CancellationException) {
         throw c
     } catch (e: Exception) {
-        Log.i(TAG, "semantic search unavailable (${e.javaClass.simpleName}); using lexical")
+        PcLog.i(TAG, "semantic search unavailable (${e.javaClass.simpleName}); using lexical")
         null
     }
 

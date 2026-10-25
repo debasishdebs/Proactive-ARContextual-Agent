@@ -31,7 +31,7 @@ class VoiceModuleRulesTest {
     private fun foreignImport(line: String): Boolean {
         val l = line.trim()
         return l.startsWith("import com.rokid.context.") &&
-            !l.startsWith("import com.rokid.context.core.model.") && !l.startsWith("import com.rokid.context.voice.")
+            !l.startsWith("import com.rokid.context.core.model.") && !l.startsWith("import com.rokid.context.core.log.") && !l.startsWith("import com.rokid.context.voice.")
     }
 
     /** `createSpeechRecognizer(...)` or a `::createSpeechRecognizer` reference; `createOnDeviceSpeechRecognizer` is fine. */
@@ -46,7 +46,7 @@ class VoiceModuleRulesTest {
 
     /** Any logging call: `Log.`, `log(`, Timber, `System.out/err`, `println(`, or an aliased `Log`. */
     private fun isLogLine(line: String, aliases: Set<String> = emptySet()): Boolean =
-        Regex("\\bLog\\.|\\blog\\(|\\bTimber\\b|\\bSystem\\.(out|err)\\b|\\bprintln\\(|\\bprintStackTrace\\(").containsMatchIn(line) ||
+        Regex("\\bLog\\.|\\bPcLog\\.|\\blog\\(|\\bTimber\\b|\\bSystem\\.(out|err)\\b|\\bprintln\\(|\\bprintStackTrace\\(").containsMatchIn(line) ||
             aliases.any { Regex("\\b${Regex.escape(it)}\\.").containsMatchIn(line) }
 
     /** A log line that puts voice text into the message: `$name`, `${expr}` or `+ name` concatenation; counts are fine. */
@@ -65,13 +65,14 @@ class VoiceModuleRulesTest {
         ))
         listOf("phone.hub.Hub", "ai.ModelRouter", "memory.MemoryStore", "orchestration.X", "link.GlassesLink", "data.runtime.X", "domain.queue.X", "ContextApp", "glasses.X")
             .forEach { assertTrue(foreignImport("import com.rokid.context.$it"), it) }
-        listOf("core.model.audio.Pcm", "core.model.TextHygiene", "voice.PipeSink")
+        listOf("core.model.audio.Pcm", "core.log.PcLog", "core.model.TextHygiene", "voice.PipeSink")
             .forEach { assertTrue(!foreignImport("import com.rokid.context.$it"), it) }
         assertTrue(createsNetworkRecognizer("SpeechRecognizer.createSpeechRecognizer(context)"))
         assertTrue(createsNetworkRecognizer("val make = SpeechRecognizer::createSpeechRecognizer"))
         assertTrue(!createsNetworkRecognizer("SpeechRecognizer.createOnDeviceSpeechRecognizer(context)"))
         listOf(
             "Log.d(TAG, \"final \$finalText\")",
+            "PcLog.i(TAG, \"heard \$text\")",
             "Log.i(TAG, \"got \${r.text}\")",
             "Log.w(TAG, \"heard: \" + spoken)",
             "log(\"q=\" + question.trim())",
@@ -87,6 +88,7 @@ class VoiceModuleRulesTest {
             "Log.d(TAG, \"partials=\${partials.size}\")",
             "Log.i(TAG, \"event=start count=\$count\")",
             "Log.w(TAG, \"failed: \${e.javaClass.simpleName}\")",
+            "PcLog.w(TAG, \"failed: \${e.javaClass.simpleName}\")",
             "val s = \"x \$text\"",
         ).forEach { assertTrue(!logsVoiceText(it), it) }
     }
@@ -107,7 +109,7 @@ class VoiceModuleRulesTest {
      * `log(SpeakerEvent.X)` in the core, one `Log.i(TAG, it.wire)` sink in AndroidSpeaker, nothing else.
      */
     private fun speakerLogAllowed(line: String): Boolean =
-        Regex("\\blog\\(SpeakerEvent\\.[A-Z_]+\\)").containsMatchIn(line) || line.trim().endsWith("{ Log.i(TAG, it.wire) },") ||
+        Regex("\\blog\\(SpeakerEvent\\.[A-Z_]+\\)").containsMatchIn(line) || line.trim().endsWith("{ PcLog.i(TAG, it.wire) },") ||
             Regex("^\\s*private val log: \\(SpeakerEvent\\) -> Unit").containsMatchIn(line)
 
     private fun speakerLogViolations(name: String, source: String): List<String> {
@@ -127,10 +129,11 @@ class VoiceModuleRulesTest {
     @Test fun theSpeakerLogRuleCatchesEveryForm() {
         listOf(
             "log(SpeakerEvent.INIT_FAILED)",
-            "        private val log: (SpeakerEvent) -> Unit = { Log.i(TAG, it.wire) },",
+            "        private val log: (SpeakerEvent) -> Unit = { PcLog.i(TAG, it.wire) },",
         ).forEach { assertEquals(emptyList(), speakerLogViolations("ok", it), it) }
         listOf(
             "Log.i(TAG, \"speaking \$id\")",
+            "PcLog.i(TAG, \"speaking \$id\")",
             "log(\"lang_missing \$locale\")",
             "Timber.i(\"focus_lost\")",
             "System.out.println(text)",

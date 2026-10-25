@@ -1,7 +1,7 @@
 package com.rokid.context.memory.db
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import java.io.File
 
 /**
@@ -64,14 +64,14 @@ class EncryptionMigrator(
             if (inPlace) {
                 // The converted file is the database now: never roll the mode back. stage (committed before the renames)
                 // is only cleared after current = target is committed, so the next recover() can always finish the flags.
-                Log.w(TAG, "encryption change applied, flags not yet saved (${e.javaClass.simpleName}); finishing at next open")
+                PcLog.w(TAG, "encryption change applied, flags not yet saved (${e.javaClass.simpleName}); finishing at next open")
                 runCatching { recover() }
                 return target
             }
             // BUG-R2-2: class + fixed reason code only; a message may carry a path or SQL, so it is never logged.
             val reason = (e as? ConversionException)?.reason ?: phase
             val cls = ((e as? ConversionException)?.cause ?: e).javaClass.simpleName
-            Log.w(TAG, "encryption change failed ($cls, reason=$reason); keeping the current database")
+            PcLog.w(TAG, "encryption change failed ($cls, reason=$reason); keeping the current database")
             if (!dbFile.exists() && old.exists()) rename(old, dbFile) // a failed swap rename: put the old database back
             discardTmp()
             store.stage = null; store.target = null; store.failed = true
