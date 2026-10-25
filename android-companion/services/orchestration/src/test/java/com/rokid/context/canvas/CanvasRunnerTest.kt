@@ -610,7 +610,8 @@ class CanvasRunnerTest {
         val heavy = runner(liveFakes() + fake(NodeTypes.CRITIC, nominal = { it * 3 }) { _, it -> NodeResult(it.frameId, it.value, branch = "pass") }.let { it.type to it })
         assertTrue(heavy.estimate(a, frames(40), noLabel) is Estimate.Ok) // one side alone fits (14 + 120)
         assertEquals(listOf("more than 200 model calls"), (heavy.estimateAb(a, variantB(a), frames(40), noLabel) as Estimate.Refused).reasons)
-        assertEquals(listOf("more than 50 photos"), (r.estimateAb(a, variantB(a), frames(51), noLabel) as Estimate.Refused).reasons)
+        assertEquals(listOf("arm A: more than 50 photos", "arm B: more than 50 photos"), (r.estimateAb(a, variantB(a), frames(51), noLabel) as Estimate.Refused).reasons)
+        assertEquals(listOf("arm B: no photos"), (r.estimateAb(a, variantB(a), frames(2), emptyList(), noLabel) as Estimate.Refused).reasons)
         val bad = a.copy(edges = a.edges.drop(1))
         assertTrue("pipeline has problems" in (r.estimateAb(a, bad, frames(1), noLabel) as Estimate.Refused).reasons)
     }
@@ -621,12 +622,29 @@ class CanvasRunnerTest {
         fun refused(s: AbSpec, t: String, frames: List<String> = f) = runBlocking { try { r.startAb(s, frames, t, scope); false } catch (e: IllegalArgumentException) { e.message == "bad_token" } }
         assertTrue(refused(spec(a, a), abOk(r, a, b, f).confirmToken))      // B swapped for A
         assertTrue(refused(spec(b, a), abOk(r, a, b, f).confirmToken))      // sides swapped
-        assertTrue(refused(spec(a, b), abOk(r, a, b, f).confirmToken, frames(3)))
+        try { r.startAb(spec(a, b), frames(3), abOk(r, a, b, f).confirmToken, scope); fail() } catch (e: CanvasRunner.AbArmMoved) { assertEquals("A", e.arm) } // the same pipelines over other frames: typed, naming the arm
         assertTrue(refused(spec(a, b), ok(r, a, f).confirmToken))           // a plain run's token
         try { r.start(a, a.id, null, f, abOk(r, a, b, f).confirmToken, scope); fail() } catch (e: IllegalArgumentException) { assertEquals("bad_token", e.message) }
         assertTrue(dao.runs(10).isEmpty())
         val st = beginAb(r, a, b, f); finish(r)
         assertEquals("DONE", dao.run(st.runB)?.status)
+    }
+
+    @Test fun abArmsRunOverTheirOwnFramesAndTheEstimatePricesEachSeparately() = runBlocking<Unit> {
+        val r = runner(liveFakes()); val a = DefaultPipelines.liveExtract(); val b = variantB(a)
+        val fa = frames(2); val fb = frames(5)
+        val e = r.estimateAb(a, b, fa, fb, noLabel) as Estimate.Ok
+        assertEquals(listOf(2, 5), e.arms.map { it.photos })
+        assertEquals(5, e.photos) // distinct frames of both arms
+        assertEquals(e.nominal, e.arms.sumOf { it.nominal })
+        assertTrue("A priced over fewer frames than B", e.arms[0].nominal < e.arms[1].nominal)
+        val st = r.startAb(spec(a, b), fa, fb, e.confirmToken, scope); finish(r)
+        assertEquals(fa.toSet(), dao.items(st.runA).map { it.frameId }.toSet())
+        assertEquals(fb.toSet(), dao.items(st.runB).map { it.frameId }.toSet())
+        // an empty arm at the start is typed and spends the token
+        val e2 = r.estimateAb(a, b, fa, fb, noLabel) as Estimate.Ok
+        try { r.startAb(spec(a, b), fa, emptyList(), e2.confirmToken, scope); fail() } catch (x: CanvasRunner.AbArmEmpty) { assertEquals("B", x.arm) }
+        try { r.startAb(spec(a, b), fa, fb, e2.confirmToken, scope); fail() } catch (x: IllegalArgumentException) { assertEquals("bad_token", x.message) }
     }
 
     @Test fun pruneKeepsActiveGroup() = runBlocking<Unit> {

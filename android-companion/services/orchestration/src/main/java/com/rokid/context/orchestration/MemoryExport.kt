@@ -51,12 +51,18 @@ object MemoryExport {
     suspend fun write(context: Context, graph: MemoryGraph = MemoryGraph.get(context), nowMs: Long = System.currentTimeMillis(), pageSize: Int = 500): File =
         write(context, graph.db.exportDao(), nowMs, pageSize)
 
+    /** The shared side of the [DataOpGate]: refused with [DataOpGate.DeleteRunning] while a delete runs. [gate] is a test seam (production: the one process-wide gate). */
+    internal suspend fun write(context: Context, dao: ExportDao, nowMs: Long, pageSize: Int = 500, gate: DataOpGate = DataOpGate.shared): File =
+        gate.export { writeLocked(context, dao, nowMs, pageSize) }
+
     /**
      * Streams the library page by page ([pageSize] rows per DAO call, rowid order) through a [JsonWriter], so peak
      * memory is one page (Phase 8 B1). Every ask is exported. The file is written as `.part` and renamed; older memory
      * exports go only after the rename. On any failure or cancellation the `.part` is deleted and the previous export stays.
+     * A delete (Forget, Delete all, retention, outbox) cannot run while this does and this cannot start while one runs ([DataOpGate]); the generation check below stays
+     * as a cheap defensive check for the one writer the gate does not cover (a memory edit calls [deleteCached] too).
      */
-    internal suspend fun write(context: Context, dao: ExportDao, nowMs: Long, pageSize: Int = 500): File = withContext(Dispatchers.IO) {
+    private suspend fun writeLocked(context: Context, dao: ExportDao, nowMs: Long, pageSize: Int): File = withContext(Dispatchers.IO) {
         val page = pageSize.coerceAtLeast(1)
         val dir = dir(context).apply { mkdirs() }
         val target = File(dir, "$PREFIX$nowMs.json")

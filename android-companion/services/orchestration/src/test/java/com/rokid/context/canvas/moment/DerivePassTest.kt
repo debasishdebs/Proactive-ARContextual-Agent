@@ -92,7 +92,7 @@ class DerivePassTest {
         assertFalse(cadence.enabled()); assertEquals(4, cadence.perDay())
         assertNull(pass().runIfDue(MS)); assertTrue(prompts.isEmpty())
         on(); cadence.setPerDay(1000); assertEquals(96, cadence.perDay()); cadence.setPerDay(0); assertEquals(1, cadence.perDay()); cadence.setPerDay(4)
-        assertEquals(96, SceneCadence(db, builder).perDay()) // the Scene build cadence is untouched
+        assertEquals(24, SceneCadence(db, builder).perDay()) // the Scene build cadence is untouched (its own default: hourly)
         assertNotNull(pass().runIfDue(MS)); assertNull(pass().runIfDue(MS + 60 * 60_000L)) // 4 a day = every 6 hours
         assertNotNull(pass().runIfDue(MS + 6 * 60 * 60_000L))
     }

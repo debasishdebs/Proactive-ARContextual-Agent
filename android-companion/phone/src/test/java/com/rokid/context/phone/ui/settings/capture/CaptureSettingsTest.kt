@@ -422,4 +422,46 @@ class CaptureSettingsTest {
         assertEquals(1, calls)
         vm.cancelScope()
     }
+
+    // ---- 2026-10-25 rulings: watchdog silence and tick, photo Forget radius, Scene rebuilds per day ----
+
+    @Test fun timingSettingsDefaultToTheOldValuesPersistAndFallBackWhenBad() {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("timing_test", 0).also { it.edit().clear().commit() }
+        val store = CaptureTimingStore(prefs)
+        assertEquals(3, store.silentMin.value); assertEquals(150, store.tickSec.value); assertEquals(10, store.forgetRadiusSec.value)
+        assertEquals(180_000L, store.silentMs()); assertEquals(150_000L, store.tickMs()); assertEquals(10_000L, store.forgetRadiusMs())
+        store.setSilentMin(10); store.setTickSec(60); store.setForgetRadiusSec(30)
+        assertEquals(10, prefs.getInt("watchdog_silent_min", 0)); assertEquals(60, prefs.getInt("watchdog_tick_sec", 0)); assertEquals(30, prefs.getInt("forget_radius_sec", 0))
+        val again = CaptureTimingStore(prefs)
+        assertEquals(600_000L, again.silentMs()); assertEquals(60_000L, again.tickMs()); assertEquals(30_000L, again.forgetRadiusMs())
+        store.setSilentMin(7); store.setTickSec(1); store.setForgetRadiusSec(-3)
+        assertEquals("a value that is no preset falls back to the default", listOf(3, 150, 10), listOf(store.silentMin.value, store.tickSec.value, store.forgetRadiusSec.value))
+        prefs.edit().putInt("watchdog_silent_min", 999).putInt("watchdog_tick_sec", 0).putInt("forget_radius_sec", 4).commit()
+        val bad = CaptureTimingStore(prefs); assertEquals(listOf(3, 150, 10), listOf(bad.silentMin.value, bad.tickSec.value, bad.forgetRadiusSec.value))
+        assertEquals(listOf(2, 3, 5, 10), CaptureTimingStore.SILENT_MIN_PRESETS); assertEquals(listOf(60, 150, 300), CaptureTimingStore.TICK_SEC_PRESETS); assertEquals(listOf(5, 10, 15, 30), CaptureTimingStore.FORGET_RADIUS_SEC_PRESETS)
+    }
+
+    @Test fun theViewModelSetsTheTimingsAndTheSceneCadenceAndShowsThem() = runBlocking {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("timing_vm_test", 0).also { it.edit().clear().commit() }
+        val control = object : SceneRebuildControl { var n = 96; override suspend fun perDay() = n; override suspend fun set(n: Int) { this.n = n } }
+        val vm = CaptureSettingsViewModel(FakeHudSettings(), timing = CaptureTimingStore(prefs), sceneRebuilds = control)
+        assertEquals("a stored value is shown, not the new default", 96, withTimeout(5_000) { vm.state.first { it.sceneRebuildsPerDay == 96 } }.sceneRebuildsPerDay)
+        vm.setWatchdogSilentMin(5); vm.setWatchdogTickSec(300); vm.setForgetRadiusSec(15); vm.setSceneRebuilds(48)
+        val s = withTimeout(5_000) { vm.state.first { it.watchdogSilentMin == 5 && it.sceneRebuildsPerDay == 48 } }
+        assertEquals(300, s.watchdogTickSec); assertEquals(15, s.forgetRadiusSec)
+        withTimeout(5_000) { while (control.n != 48) kotlinx.coroutines.delay(10) }
+        vm.cancelScope()
+    }
+
+    @Test fun theNewRowsAreShownAndReportTheChoice() {
+        var silent = -1; var tick = -1; var radius = -1; var scenes = -1
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(), onBack = {}, onWatchdogSilent = { silent = it }, onWatchdogTick = { tick = it }, onForgetRadius = { radius = it }, onSceneRebuilds = { scenes = it }) } }
+        fun pick(tag: String, i: Int) { compose.onNodeWithTag(tag).performScrollTo().performClick(); compose.onNodeWithTag("${tag}_$i").performClick() }
+        pick("watchdog_silent", 3) // 2, 3, 5, 10 min
+        pick("watchdog_tick", 0) // 60 s
+        pick("forget_radius", 3) // 30 s
+        pick("scene_rebuilds", 3) // 12, 24, 48, 96
+        assertEquals(listOf(10, 60, 30, 96), listOf(silent, tick, radius, scenes))
+        compose.onNodeWithText("More often = more compute.").performScrollTo().assertIsDisplayed()
+    }
 }
