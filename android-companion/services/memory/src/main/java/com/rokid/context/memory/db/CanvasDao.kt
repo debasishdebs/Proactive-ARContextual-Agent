@@ -190,6 +190,18 @@ abstract class CanvasDao {
     )
     abstract suspend fun momentMemories(frameIds: List<String>): List<MomentMemoryRow>
 
+    /**
+     * The VISIBLE memory texts of [frameIds] (live frames), the same validity the export applies: reviewState OK (not forgotten, not hidden for review) and, for a derived memory, at least one
+     * source memory that is not forgotten (a derived memory whose sources are all forgotten is stale-hidden). A memory whose photo is gone is never found (it is read through the live frames).
+     */
+    @Query(
+        "SELECT x.frameId AS frameId, m.id AS id, m.createdAt AS createdAt, m.text AS text FROM (SELECT id AS mid, frameId AS frameId FROM memory WHERE frameId IN (:frameIds) " +
+            "UNION SELECT memoryId AS mid, frameId AS frameId FROM frame_source WHERE frameId IN (:frameIds)) x JOIN memory m ON m.id = x.mid " +
+            "WHERE m.reviewState = 'OK' AND (m.derived = 0 OR NOT EXISTS (SELECT 1 FROM memory_source s WHERE s.memoryId = m.id) OR EXISTS (SELECT 1 FROM memory_source s JOIN memory m2 ON m2.id = s.sourceMemoryId " +
+            "WHERE s.memoryId = m.id AND m2.reviewState != 'INVALIDATED'))",
+    )
+    abstract suspend fun momentVisibleTexts(frameIds: List<String>): List<MomentTextRow>
+
     @Query("SELECT id, text, type FROM memory WHERE frameId = :frameId OR id IN (SELECT memoryId FROM frame_source WHERE frameId = :frameId) ORDER BY createdAt")
     abstract suspend fun liveMemories(frameId: String): List<LiveMemoryRow>
 
@@ -233,5 +245,6 @@ data class TokenMeans(val p: Double?, val c: Double?, val n: Int)
 
 data class CanvasFrameRow(val id: String, val ts: Long, val motion: String?, val dwell: Boolean?, val blur: Float?, val state: String?, val liveCount: Int)
 data class MomentFrameRow(val id: String, val ts: Long, val rev: String)
+data class MomentTextRow(val frameId: String, val id: String, val createdAt: Long, val text: String)
 data class MomentMemoryRow(val frameId: String, val id: String, val rev: String)
 data class LiveMemoryRow(val id: String, val text: String, val type: String)

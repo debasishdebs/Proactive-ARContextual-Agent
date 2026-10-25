@@ -129,7 +129,11 @@ class MomentBuilder(
         for ((id, m) in resolved) {
             if (m == null) { if (dao.moment(id) != null || dao.parts(id).isNotEmpty()) { dao.remove(listOf(id), AuditStep.BUILD); removed++ }; continue }
             val before = dao.moment(id); val beforeParts = dao.parts(id)
-            val entity = MomentEntity(m.id, BUILD_REV, m.contentRev, m.contentHash, clock(), m.type, noPhotoReasonOf(m.type)); val parts = partsOf(m)
+            // the text is derived from the sources as they are NOW; the transcript is its own object (null until audio flows exist); the error reason of a fallback mark-only Moment is written by
+            // the mark-photo fallback, not derived here, so a rebuild keeps it while the Moment stays a MARK Moment (a photo makes it a FRAME Moment, which has none)
+            val entity = MomentEntity(m.id, BUILD_REV, m.contentRev, m.contentHash, clock(), m.type, noPhotoReasonOf(m.type), text = m.text, transcript = null,
+                errorReason = if (m.type == MomentType.MARK) before?.errorReason else null)
+            val parts = partsOf(m)
             dao.replace(entity, parts)
             recordAudit(entity, before, beforeParts, parts)
             // the sensor numbers of this second, from the traces as they are NOW; a second that was not part of the read is left alone

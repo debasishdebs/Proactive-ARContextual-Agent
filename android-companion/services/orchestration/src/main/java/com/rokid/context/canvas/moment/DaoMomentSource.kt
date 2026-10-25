@@ -14,6 +14,9 @@ class DaoMomentSource(private val dao: CanvasDao, private val dao3: CanvasSlice3
     override suspend fun memories(frameIds: List<String>): List<Pair<String, MomentRef>> =
         frameIds.chunked(CHUNK).flatMap { c -> dao.momentMemories(c).map { it.frameId to MomentRef(it.id, it.rev) } }
 
+    override suspend fun visibleTexts(frameIds: List<String>): List<MomentText> =
+        frameIds.chunked(CHUNK).flatMap { c -> dao.momentVisibleTexts(c).map { MomentText(it.frameId, it.id, it.createdAt, it.text) } }
+
     override suspend fun marks(fromMs: Long, toMs: Long) = dao3.labelsBetween(fromMs, toMs).map { MomentMark(it.labelId, it.atMs, "${it.kind}:${it.name}:${it.deletionCounter}:${it.provenance}", it.source) }
 
     /** The stored sensor rows, when this source was given the Moment DAO (the builder's own resolver is not: it never reads them). */

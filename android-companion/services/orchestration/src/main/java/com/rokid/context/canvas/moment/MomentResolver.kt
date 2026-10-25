@@ -10,6 +10,9 @@ data class MomentFrame(val id: String, val ts: Long, val rev: String)
 /** A memory (or any other id-bearing part) attached by reference. */
 data class MomentRef(val id: String, val rev: String)
 
+/** The text of one VISIBLE memory of a photo ([frameId]); [createdAt] and [memoryId] fix a stable order. */
+data class MomentText(val frameId: String, val memoryId: String, val createdAt: Long, val text: String)
+
 /** A mark of a Moment. [code] is how it was made (tap, voice, phone_voice, retro, ask_tap): a fixed token, never text. */
 data class MomentMark(val id: String, val atMs: Long, val rev: String, val code: String)
 
@@ -22,6 +25,8 @@ interface MomentSource {
     suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int): List<MomentFrame>
     suspend fun memories(frameIds: List<String>): List<Pair<String, MomentRef>>
     suspend fun marks(fromMs: Long, toMs: Long): List<MomentMark>
+    /** The texts of the VISIBLE memories (valid, not hidden, not stale, not forgotten) of these live frames; none by default (a source that does not read them). */
+    suspend fun visibleTexts(frameIds: List<String>): List<MomentText> = emptyList()
     /** The newest [limit] marks in the range, oldest first (a mark makes a Moment by itself, so a listing must see them next to the photos). */
     suspend fun marksNewest(fromMs: Long, toMs: Long, limit: Int): List<MomentMark> = marks(fromMs, toMs).takeLast(limit)
     /** The stored sensor rows of these Moments (`moment_sensor`); none by default (a source that does not read them). */
@@ -41,6 +46,12 @@ data class Moment(
     val contentRev: Int, val contentHash: String,
     /** The compact sensor summary of this second, only when the source had `moment_sensor` rows for it. NOT part of [contentHash] or [bindingKey]: sensor rows are derived, never evidence of what the Moment holds. */
     val sensor: SensorSummary? = null,
+    /**
+     * The Moment's TEXT object: [startMs] as an ISO-8601 UTC timestamp, then the text of every visible memory of its photos (one line each, photo time then memory time order); null when no
+     * visible memory text exists (the text is an optional part: a MARK Moment, or a photo without a visible fact, has none). NOT part of [contentHash] (the memory revisions already are).
+     * The voice transcript, the intent and the summary are separate objects and never part of it.
+     */
+    val text: String? = null,
 ) {
     /** What an estimate token binds for this Moment. */
     val bindingKey: String get() = "$id:$contentRev:$contentHash"
@@ -69,9 +80,10 @@ class MomentResolver(private val source: MomentSource) {
         val seconds = (frames.map { Math.floorDiv(it.ts, 1000L) } + marks.map { Math.floorDiv(it.atMs, 1000L) }).distinct().sorted().takeLast(limit)
         if (seconds.isEmpty()) return emptyList()
         val mem = source.memories(frames.map { it.id }).groupBy({ it.first }, { it.second })
+        val texts = source.visibleTexts(frames.map { it.id })
         return withSensor(seconds.map { s ->
             val here = frames.filter { Math.floorDiv(it.ts, 1000L) == s }
-            build(s, here, here.flatMap { mem[it.id].orEmpty() }, marks.filter { Math.floorDiv(it.atMs, 1000L) == s })
+            build(s, here, here.flatMap { mem[it.id].orEmpty() }, marks.filter { Math.floorDiv(it.atMs, 1000L) == s }, texts)
         })
     }
 
@@ -85,7 +97,7 @@ class MomentResolver(private val source: MomentSource) {
             if (frames.size > FRAME_CAP) throw MomentTooBig()
             val marks = source.marks(lo, lo + 999)
             if (frames.isEmpty() && marks.isEmpty()) continue
-            out += build(s, frames, source.memories(frames.map { it.id }).map { it.second }, marks)
+            out += build(s, frames, source.memories(frames.map { it.id }).map { it.second }, marks, source.visibleTexts(frames.map { it.id }))
         }
         return withSensor(out)
     }
@@ -96,14 +108,22 @@ class MomentResolver(private val source: MomentSource) {
         return if (rows.isEmpty()) ms else ms.map { m -> m.copy(sensor = SensorSummary.of(rows[m.id].orEmpty())) }
     }
 
-    private fun build(second: Long, frames: List<MomentFrame>, memories: List<MomentRef>, marks: List<MomentMark>): Moment {
+    private fun build(second: Long, frames: List<MomentFrame>, memories: List<MomentRef>, marks: List<MomentMark>, texts: List<MomentText>): Moment {
         val f = frames.sortedWith(compareBy({ it.ts }, { it.id }))
         val m = memories.distinctBy { it.id }.sortedBy { it.id }
         val k = marks.sortedWith(compareBy({ it.atMs }, { it.id }))
         val lines = f.map { "F|${it.id}|${it.ts}|${it.rev}" } + m.map { "M|${it.id}|${it.rev}" } + k.map { "K|${it.id}|${it.atMs}|${it.rev}|${it.code}" }
         val digest = MessageDigest.getInstance("SHA-256").digest(lines.sorted().joinToString("\n").toByteArray(Charsets.UTF_8))
         val type = checkNotNull(MomentType.of(f.size, k.size)) { "a second with neither a photo nor a mark is not a Moment" }
-        return Moment(MomentId.format(second), second * 1000, type, f, m, k, lines.size, digest.joinToString("") { "%02x".format(it) })
+        return Moment(MomentId.format(second), second * 1000, type, f, m, k, lines.size, digest.joinToString("") { "%02x".format(it) }, text = textOf(second * 1000, f, texts))
+    }
+
+    /** Timestamp line + one line per visible memory text of THESE photos (ordered by photo, then memory time, then id; a memory of two photos once); null when there is none. */
+    private fun textOf(startMs: Long, frames: List<MomentFrame>, texts: List<MomentText>): String? {
+        val order = frames.withIndex().associate { (i, f) -> f.id to i }
+        val lines = texts.filter { it.frameId in order }.sortedWith(compareBy({ order.getValue(it.frameId) }, { it.createdAt }, { it.memoryId }))
+            .distinctBy { it.memoryId }.map { it.text.trim() }.filter { it.isNotEmpty() }
+        return if (lines.isEmpty()) null else (listOf(java.time.Instant.ofEpochMilli(startMs).toString()) + lines).joinToString("\n")
     }
 
     companion object { const val FRAME_CAP = 2000
