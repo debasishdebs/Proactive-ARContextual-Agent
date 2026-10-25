@@ -18,7 +18,7 @@ class CompositeInnerTest {
     /** Phase A: the local critic; phase B adds the async black boxes; phase C the glasses lane (Threshold and Guard are plain, hub.context is phase D). */
     @Test fun theCompositeTypesAreTheOnesBuiltSoFar() {
         assertEquals(setOf(NodeTypes.LOCAL_CRITIC, NodeTypes.VISION_EXTRACT, NodeTypes.CRITIC, NodeTypes.MEMORY_WRITE, NodeTypes.POLICY_CAPTURE_RATE,
-            NodeTypes.IMU_HEAD_MOTION, NodeTypes.IMU_SETTLE, NodeTypes.GATE_NOVELTY, NodeTypes.GATE_RATE_CAP, NodeTypes.CAPTURE_IMAGE), NodeTypes.all.filter { it.inner != null }.map { it.type }.toSet())
+            NodeTypes.IMU_HEAD_MOTION, NodeTypes.IMU_SETTLE, NodeTypes.GATE_NOVELTY, NodeTypes.GATE_RATE_CAP, NodeTypes.CAPTURE_IMAGE, NodeTypes.PROC_MOTION_MODEL), NodeTypes.all.filter { it.inner != null }.map { it.type }.toSet())
     }
 
     @Test fun everyInnerFlowIsWellFormed() {

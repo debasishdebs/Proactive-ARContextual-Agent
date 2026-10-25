@@ -188,6 +188,10 @@ object ParamCheck {
     private fun cross(id: String, t: NodeType, params: JsonObject, out: MutableList<String>) {
         when (t.type) {
             NodeTypes.EXPR_GUARD, NodeTypes.EXPR_VALUE -> if ("graph" !in params) out += "node $id: ${com.rokid.context.ai.canvas.plan.ExprCode.EXPR_NO_GRAPH}: graph is missing"
+            NodeTypes.PROC_MOTION_MODEL -> {
+                val raw = dbl(params, "hysteresis", MotionModel.DEFAULT_HYSTERESIS)
+                if (raw > dbl(params, "threshold", MotionModel.DEFAULT_THRESHOLD)) out += "node $id: hysteresis must not exceed threshold"
+            }
             NodeTypes.IMU_HEAD_MOTION -> {
                 val onset = dbl(params, "onsetRadS", 0.6)
                 if (dbl(params, "releaseRadS", 0.3) > onset) out += "node $id: releaseRadS must not exceed onsetRadS"
