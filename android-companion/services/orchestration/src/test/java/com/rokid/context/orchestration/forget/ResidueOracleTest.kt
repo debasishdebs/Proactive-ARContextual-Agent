@@ -196,6 +196,23 @@ class ResidueOracleTest {
         assertTrue("the kept fact survives", h.db.memoryViewDao().byId(keepMem) != null)
     }
 
+    /** v14: a Moment carries TEXT (timestamp + visible memory text). The oracle sees it in `moment.text`; Forget drops the holding Moments, and the rebuild never writes a forgotten or stale-derived text back. */
+    @Test fun momentTextOfAForgottenFactAndOfItsDerivedSummaryIsGoneAndStaysGoneAfterTheRebuild() = runBlocking {
+        world()
+        h.db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity(derivedMem, keepFrame, null, "FACT"))) // the derived summary is also cited on the KEPT photo
+        val builder = MomentBuilder(h.db, enabled = { true }, clock = { 6 })
+        builder.build(listOf(mid(10), mid(900)))
+        val texts = { runBlocking { h.db.momentDao().allMoments().mapNotNull { it.text } } }
+        assertTrue("the world's Moments carry the texts: ${texts()}", texts().any { memText in it } && texts().any { "text of the kept fact" in it && "text of the derived fact" in it })
+        assertTrue("the oracle scans moment.text", residue(listOf(memText)).any { it.startsWith("moment.text") })
+        assertTrue(ForgetActions.forgetFact(app, mem))
+        assertTrue("no Moment text names the forgotten fact right after Forget: ${texts()}", texts().none { memText in it || "text of the derived fact" in it })
+        builder.build(listOf(mid(10), mid(900)))
+        assertTrue("nor after the rebuild: ${texts()}", texts().none { memText in it || "text of the derived fact" in it })
+        assertEquals("the kept photo's Moment keeps only the visible fact", listOf("text of the kept fact"), texts().filter { "kept" in it }.map { it.lines().drop(1).joinToString("|") })
+        assertClean("Forget fact (Moment text)", listOf(mem, memText))
+    }
+
     @Test fun forgetPhotoLeavesNothingThatNamesIt() = runBlocking {
         world()
         assertTrue(ForgetActions.forgetMoment(app, frame))

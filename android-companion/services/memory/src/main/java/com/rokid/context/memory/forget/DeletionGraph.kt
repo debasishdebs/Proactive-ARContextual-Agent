@@ -31,7 +31,7 @@ object DeletionGraph {
         w("canvas_live_trace", "per-photo live outputs"),
         k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); the forgetRanges fence value is emptied by the wipe; otherwise no user data"),
         k("canvas_group_state", "publish-group recovery record: gen, hashes, mode, install id and state; needed to recover a deployed plan; no user data"),
-        w("moment", "stored Moment projection (a rebuildable read model over frames, memories and marks)"),
+        w("moment", "stored Moment projection (a rebuildable read model over frames, memories and marks); since v14 its `text` column holds the visible memory text of its photos (dropped with the Moment by every Forget that removes a source memory, rewritten by the rebuild), `transcript` is a null scaffold and `errorReason` a content-free code"),
         w("moment_part", "Moment membership edges (ids and revisions only)"),
         w("moment_tombstone", "forgotten seconds; the deletion epoch is the fence after Delete all, as with the frame tombstones"),
         w("moment_trace_dep", "reserved trace dependencies of a Moment; empty until a trace writer exists"),
