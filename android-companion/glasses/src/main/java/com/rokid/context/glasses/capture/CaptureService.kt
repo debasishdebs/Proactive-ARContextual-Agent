@@ -231,7 +231,8 @@ class CaptureService : LifecycleService() {
         }
         if (degradedLatch.retryDue()) { DiagLog.i(TAG, "watchdog: retrying Smart after the camera fallback"); scheduleNextCapture(failed = false) }
         val wantSmart = s.captureMode == CaptureMode.SMART && keepAliveMode && !degraded
-        if (wantSmart && smart == null) startSmart()
+        // The trace recorder is built on the writer thread (never here on Main): a session starts at the first beat after it exists (it is built within moments of process start).
+        if (wantSmart && smart == null) { if (runtime.traceRecorderReady) startSmart() }
         else if (!wantSmart && smart != null) stopSmart(if (degraded) "bind" else "mode")
     }
 
@@ -302,7 +303,7 @@ class CaptureService : LifecycleService() {
         runtime.resetLocalMotion()
         cur.rateJob?.cancel()
         cur.session.stop(reason)
-        cur.motion.removeTap(runtime.traceRecorder)
+        runtime.traceRecorderOrNull?.let { cur.motion.removeTap(it) }
         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
         cur.feed.stop()
         runtime.smartCapture.value = false
