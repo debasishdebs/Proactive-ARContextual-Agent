@@ -33,11 +33,19 @@ class SceneCadenceTest {
 
     private fun cadence() = SceneCadence(db, SceneBuilder(db, enabled = { true }))
 
-    @Test fun theDefaultIsEveryWorkerTickAndAStoredValueIsClampedAndKept() = runBlocking<Unit> {
+    @Test fun theDefaultIsHourlyAndAStoredValueIsClampedAndKept() = runBlocking<Unit> {
         val c = cadence()
-        assertEquals(96, c.perDay())
+        assertEquals("an unset key means hourly (24 a day), no longer every worker tick (96)", 24, c.perDay())
+        assertEquals(listOf(12, 24, 48, 96), SceneCadence.PRESETS_PER_DAY)
         c.setPerDay(4); assertEquals(4, cadence().perDay())
         c.setPerDay(0); assertEquals(1, c.perDay()); c.setPerDay(1000); assertEquals(96, c.perDay())
+    }
+
+    @Test fun anExistingStoredValueIsRespectedWhateverTheDefaultIs() = runBlocking<Unit> {
+        db.canvasSlice3Dao().putMeta(SceneCadence.KEY_PER_DAY, "96") // what every install had stored or defaulted to before
+        assertEquals(96, cadence().perDay())
+        db.canvasSlice3Dao().putMeta(SceneCadence.KEY_PER_DAY, "junk"); assertEquals("a bad stored value falls back to the default", 24, cadence().perDay())
+        db.canvasSlice3Dao().putMeta(SceneCadence.KEY_PER_DAY, "50"); assertEquals("a custom stored value stays", 50, cadence().perDay())
     }
 
     @Test fun itRunsTheFirstTimeThenOnlyWhenTheIntervalHasPassed() = runBlocking<Unit> {

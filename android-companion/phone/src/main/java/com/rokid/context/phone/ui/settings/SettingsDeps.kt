@@ -93,6 +93,10 @@ class SettingsDeps(
     val aiCallPace: com.rokid.context.phone.ui.settings.capture.AiCallPaceStore = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore(),
     /** Settings > Capture > Window tolerance (prefs key `window_min_valid_pct`, read by the canvas compiler). */
     val windowTolerance: com.rokid.context.phone.ui.settings.capture.WindowToleranceStore = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore(),
+    /** Settings > Capture > watchdog silence and tick, photo Forget radius (prefs `capture_timing`, read by the watchdog and bound to the Forget radius at start). */
+    val captureTiming: com.rokid.context.phone.ui.settings.capture.CaptureTimingStore = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore(),
+    /** Settings > Capture > Scene rebuilds per day (`canvas_meta`, the key the cadence worker reads). */
+    val sceneRebuilds: com.rokid.context.phone.ui.settings.capture.SceneRebuildControl = com.rokid.context.phone.ui.settings.capture.SceneRebuildControl.None,
     /** Diagnostics > Keyframes and the Capture status line (counts only). */
     val keyframes: KeyframeDiagnostics = KeyframeDiagnostics.None,
     /** Diagnostics: "Rokid closed the app N times (last gap Xs)" from the glasses' hello; null until reported. */
@@ -163,6 +167,8 @@ class SettingsDeps(
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
             aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
             windowTolerance = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(app),
+            captureTiming = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app),
+            sceneRebuilds = com.rokid.context.phone.ui.settings.capture.StoredSceneRebuilds { MemoryGraph.get(app).db.canvasSlice3Dao() },
             keyframes = AppKeyframeDiagnostics(app),
             capturePlan = com.rokid.context.phone.canvas.ProcessPlanControl { HubGraph.get(app); com.rokid.context.phone.canvas.PlanGraph.current() },
             glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),

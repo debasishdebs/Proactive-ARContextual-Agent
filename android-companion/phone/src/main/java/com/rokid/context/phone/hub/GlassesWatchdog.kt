@@ -37,10 +37,12 @@ class GlassesWatchdog(
     /** Null = the relauncher reopened the app; otherwise why not. */
     private val relaunch: () -> String?,
     private val publish: (String?) -> Unit,
-    private val silentMs: Long = SILENT_MS,
+    /** The silence threshold, read at EVERY tick (Settings > Capture; default [SILENT_MS]), so a changed setting applies on the next tick. */
+    private val silentMs: () -> Long = { SILENT_MS },
     private val log: (String) -> Unit = { PcLog.i(TAG, it) },
     private val warn: (String) -> Unit = { PcLog.w(TAG, it) },
-    private val periodMs: Long = TICK_MS,
+    /** The tick period, read before EVERY sleep (Settings > Capture; default [TICK_MS]). */
+    private val periodMs: () -> Long = { TICK_MS },
 ) {
     sealed interface Verdict {
         object Off : Verdict
@@ -59,16 +61,18 @@ class GlassesWatchdog(
     private var lastLogged: String? = null
     private var quietTicks = 0
 
-    fun start(scope: CoroutineScope, periodMs: Long = this.periodMs): Job = scope.launch {
+    /** [periodMs] null = the configured one, re-read before every sleep; a number fixes it (tests). */
+    fun start(scope: CoroutineScope, periodMs: Long? = null): Job = scope.launch {
         while (true) {
             try { tick() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* never end the loop */ }
-            delay(periodMs)
+            delay(periodMs ?: this@GlassesWatchdog.periodMs())
         }
     }
 
     fun tick(): Verdict {
         val t = now()
-        lastTickAt?.let { prev -> if (t - prev > 2 * periodMs) warn("watchdog late tick gap_s=${(t - prev) / 1000} period_s=${periodMs / 1000}") }
+        val period = periodMs()
+        lastTickAt?.let { prev -> if (t - prev > 2 * period) warn("watchdog late tick gap_s=${(t - prev) / 1000} period_s=${period / 1000}") }
         lastTickAt = t
         if (!enabled()) { baselineMs = null; return finish(Verdict.Off, "why=setting_off") }
         if (!captureActive()) { baselineMs = null; return finish(Verdict.Off, "why=capture_inactive") }
@@ -77,7 +81,7 @@ class GlassesWatchdog(
         val age = (t - (lastHeardAtMs() ?: base)).coerceAtLeast(0L)
         val silentS = "silent_s=${age / 1000}"
         if (standingDown()) return finish(Verdict.StoppedByYou(age), "why=stood_down $silentS")
-        if (age < silentMs) return finish(Verdict.Ok, silentS)
+        if (age < silentMs()) return finish(Verdict.Ok, silentS)
         val l = link()
         var detail = "link=$l $silentS"
         return finish(

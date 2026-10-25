@@ -228,6 +228,9 @@ object HubGraph {
                 lastHeardAtMs = { hub.lastHeardAtMs }, standingDown = hub::standingDown,
                 startHub = { ContextHubService.ensureRunning(app) }, reconnect = hub::watchdogReconnect, probeAlive = hub::watchdogProbe,
                 relaunch = hub::watchdogRelaunch, publish = hub::setWatchdogNote,
+                // Settings > Capture: the silence threshold and the tick, read at every tick (defaults 3 min and 150 s, as before)
+                silentMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::silentMs,
+                periodMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::tickMs,
             ).start(scope)
         }
     }

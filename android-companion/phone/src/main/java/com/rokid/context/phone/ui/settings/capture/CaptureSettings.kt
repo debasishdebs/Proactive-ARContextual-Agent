@@ -89,6 +89,13 @@ data class CaptureSettingsUiState(
     val plan: ActivePlan? = null,
     /** Settings > Capture > Window tolerance: percent of a window's seconds that must have sensor data (applies to plans compiled from now on). */
     val windowMinValidPct: Int = WindowToleranceStore.DEFAULT,
+    /** Settings > Capture > Glasses watchdog (minutes of silence before it acts; seconds between its checks). */
+    val watchdogSilentMin: Int = CaptureTimingStore.DEFAULT_SILENT_MIN,
+    val watchdogTickSec: Int = CaptureTimingStore.DEFAULT_TICK_SEC,
+    /** Settings > Capture > Forget: seconds around a forgotten photo whose marks and Moments go with it. */
+    val forgetRadiusSec: Int = CaptureTimingStore.DEFAULT_FORGET_RADIUS_SEC,
+    /** Settings > Capture > Scenes: rebuilds a day (more often = more compute). */
+    val sceneRebuildsPerDay: Int = com.rokid.context.canvas.moment.SceneCadence.DEFAULT_PER_DAY,
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
     val modeIndex: Int get() = when {
@@ -116,14 +123,20 @@ class CaptureSettingsViewModel(
     private val ticker: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit),
     private val plan: CapturePlanControl = CapturePlanControl.None,
     private val tolerance: WindowToleranceStore = WindowToleranceStore(),
+    private val timing: CaptureTimingStore = CaptureTimingStore(),
+    private val sceneRebuilds: SceneRebuildControl = SceneRebuildControl.None,
 ) : ViewModel() {
+    private val sceneState = MutableStateFlow(com.rokid.context.canvas.moment.SceneCadence.DEFAULT_PER_DAY)
+    init { viewModelScope.launch { runCatching { sceneState.value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { sceneRebuilds.perDay() } } } }
+    private val timings = combine(timing.silentMin, timing.tickSec, timing.forgetRadiusSec, sceneState) { a, b, c, d -> listOf(a, b, c, d) }
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?, tol: Int = tolerance.pct.value): CaptureSettingsUiState {
         val n = h.normalized()
         return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active, windowMinValidPct = tol)
     }
     private val wear = combine(wearUnknownSince, ticker) { since, _ -> since }
-    val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear, tolerance.pct) { ui, since, tol ->
-        ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()), windowMinValidPct = tol)
+    val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear, tolerance.pct, timings) { ui, since, tol, t ->
+        ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()), windowMinValidPct = tol,
+            watchdogSilentMin = t[0], watchdogTickSec = t[1], forgetRadiusSec = t[2], sceneRebuildsPerDay = t[3])
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN, null))
 
@@ -159,6 +172,14 @@ class CaptureSettingsViewModel(
     }
     fun setPace(ms: Long) = pace.set(ms)
     fun setWindowTolerance(pct: Int) = tolerance.set(pct)
+    fun setWatchdogSilentMin(min: Int) = timing.setSilentMin(min)
+    fun setWatchdogTickSec(sec: Int) = timing.setTickSec(sec)
+    fun setForgetRadiusSec(sec: Int) = timing.setForgetRadiusSec(sec)
+    fun setSceneRebuilds(perDay: Int) {
+        val n = perDay.coerceIn(1, com.rokid.context.canvas.moment.SceneCadence.MAX_PER_DAY)
+        sceneState.value = n
+        viewModelScope.launch { runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { sceneRebuilds.set(n) } } }
+    }
     /** "Use settings" (S26): the capture overrides are disabled and the settings run the capture again. */
     fun useSettings() { viewModelScope.launch { runCatching { plan.useSettings() } } }
 }
@@ -168,6 +189,7 @@ fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {}, onWindowTolerance: (Int) -> Unit = {},
+    onWatchdogSilent: (Int) -> Unit = {}, onWatchdogTick: (Int) -> Unit = {}, onForgetRadius: (Int) -> Unit = {}, onSceneRebuilds: (Int) -> Unit = {},
     onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {}, onUseSettings: () -> Unit = {},
     onWearParkEnabled: (Boolean) -> Unit = {}, onWearParkUnknown: (Int) -> Unit = {}, onWearParkWorn: (Int) -> Unit = {}, onOpenHiRokid: (() -> Unit)? = null,
 ) {
@@ -250,6 +272,27 @@ fun CaptureSettingsScreen(
                 val pcts = WindowToleranceStore.options(state.windowMinValidPct)
                 ChoiceRow("Window tolerance (% of seconds with sensor data)", pcts.map { "$it%" }, pcts.indexOf(state.windowMinValidPct), { onWindowTolerance(pcts[it]) }, tag = "window_tolerance")
                 NoticeText("A canvas window answers once this share of its seconds had sensor data (90% of 60 s is 54 s). Applies to plans compiled from now on; each window can set its own in the editor.", tag = "window_tolerance_note")
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Glasses watchdog", style = MaterialTheme.typography.titleMedium)
+                val silent = CaptureTimingStore.SILENT_MIN_PRESETS
+                ChoiceRow("Silence before it acts", silent.map { "$it min" }, silent.indexOf(state.watchdogSilentMin), { onWatchdogSilent(silent[it]) }, tag = "watchdog_silent")
+                val ticks = CaptureTimingStore.TICK_SEC_PRESETS
+                ChoiceRow("Check every", ticks.map { "$it s" }, ticks.indexOf(state.watchdogTickSec), { onWatchdogTick(ticks[it]) }, tag = "watchdog_tick")
+                NoticeText("How long the glasses app may stay quiet before the phone reopens it, and how often the phone looks. Off while capture is paused.", tag = "watchdog_note")
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Forget and Scenes", style = MaterialTheme.typography.titleMedium)
+                val radii = CaptureTimingStore.FORGET_RADIUS_SEC_PRESETS
+                ChoiceRow("Photo Forget radius", radii.map { "$it s" }, radii.indexOf(state.forgetRadiusSec), { onForgetRadius(radii[it]) }, tag = "forget_radius")
+                NoticeText("Forgetting a photo also removes the marks, Moments and results within this time of it.", tag = "forget_radius_note")
+                val rebuilds = (com.rokid.context.canvas.moment.SceneCadence.PRESETS_PER_DAY + state.sceneRebuildsPerDay).distinct().sorted()
+                ChoiceRow("Scene rebuilds per day", rebuilds.map { "$it" }, rebuilds.indexOf(state.sceneRebuildsPerDay), { onSceneRebuilds(rebuilds[it]) }, tag = "scene_rebuilds")
+                NoticeText("More often = more compute.", tag = "scene_rebuilds_note")
             }
         }
     }
