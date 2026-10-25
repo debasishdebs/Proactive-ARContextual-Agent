@@ -116,4 +116,23 @@ class WatchRunTest {
         assertTrue(e is Estimate.Refused && e.reasons.any { it.contains("does not take watch") })
         assertTrue(r.estimateWatch(pipeline(), 10, 0, label) is Estimate.Refused)
     }
+
+    /** GAP-2: the source is switched off (its run rows deleted, the fence bumped) while a run is executing: the later nodes' rows are NOT written and nothing orphaned is left. */
+    @Test fun aRunInFlightWhenTheSourceIsSwitchedOffWritesNothingMore() = runBlocking<Unit> {
+        put(1000L to WatchState.WALKING, 2000L to WatchState.RUNNING)
+        val off = object : NodeExecutor by WindowAggregateExecutor {
+            override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+                com.rokid.context.ai.canvas.WatchFence.bump(); h.dao.deleteWatchRuns() // what the hub does on switch-off, between two nodes of the run
+                return WindowAggregateExecutor.run(node, items, ctx)
+            }
+        }
+        val r = CanvasRunner(
+            h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.AGG_WINDOW to off, NodeTypes.COMPARE to CompareExecutor),
+            { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { ""}; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
+            h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, watch = WatchRunSource { f, t -> ring.recent(f, t) },
+        )
+        val id = runAll(r, pipeline())
+        assertTrue("no row of the run survives the switch-off", h.dao.items(id).isEmpty())
+        assertNull(h.dao.run(id))
+    }
 }

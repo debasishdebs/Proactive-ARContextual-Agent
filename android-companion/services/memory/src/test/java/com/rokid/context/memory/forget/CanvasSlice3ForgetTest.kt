@@ -170,4 +170,17 @@ class CanvasSlice3ForgetTest {
         forget.forgetRange(0, 10_000)
         dao.trace("trace-src-003")!!.let { assertTrue(it.tombstoned); assertEquals(0L, it.startedAtMs); assertNull(it.endedAtMs); assertNull(it.parentTraceId); assertEquals("", it.installId) }
     }
+
+    /** GAP-2: a time-range Forget (also a photo's +-10 s link) removes the runs that hold a watch value of the range; other runs and `watch:none` rows stay. */
+    @Test fun rangeDeletesTheRunsHoldingWatchValuesOfTheRange() = runBlocking {
+        val c = db.canvasDao()
+        fun run(id: String) = com.rokid.context.memory.db.CanvasRunEntity(id, "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]")
+        fun item(r: String, f: String) = com.rokid.context.memory.db.CanvasRunItemEntity(r, f, "n", "OK", null, "{}", null, null, null, null, null, null, null)
+        listOf("w-in", "w-out", "w-none", "ph").forEach { c.insertRun(run(it)) }
+        c.upsertItem(item("w-in", "watch:1500")); c.upsertItem(item("w-in", "watch:9000")); c.upsertScore(com.rokid.context.memory.db.CanvasScoreEntity("w-in", "watch:1500", "n", 1, "", 1))
+        c.upsertItem(item("w-out", "watch:9000")); c.upsertItem(item("w-none", "watch:none")); c.upsertItem(item("ph", "frame-1500"))
+        forget.forgetRange(1_000, 2_000)
+        assertNull(c.run("w-in")); assertTrue(c.items("w-in").isEmpty()); assertTrue(c.scores("w-in").isEmpty())
+        assertNotNull(c.run("w-out")); assertNotNull(c.run("w-none")); assertNotNull(c.run("ph"))
+    }
 }
