@@ -1,7 +1,7 @@
 package com.rokid.context.ai.contract
 
 import android.util.Base64
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.run.RoleCall
@@ -83,7 +83,7 @@ object ClusterContract {
             if (first.out != null) { keep(first.out); continue }
             invalid = first.error
             if (batch.size == 1) continue
-            Log.i(TAG, "batch of ${batch.size} clusters rejected as INVALID_OUTPUT; retrying one cluster per call")
+            PcLog.i(TAG, "batch of ${batch.size} clusters rejected as INVALID_OUTPUT; retrying one cluster per call")
             for (g in batch) {
                 val solo = attempt(runner, listOf(g), callClass, override, current)
                 if (solo.out != null) keep(solo.out) else invalid = solo.error

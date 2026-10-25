@@ -2,7 +2,7 @@ package com.rokid.context.glasses.capture
 
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.glasses.MainActivity
 
 /**
@@ -51,7 +51,7 @@ class HudPresence(private val clock: () -> Long = System::currentTimeMillis) {
 class ForegroundFallback(
     private val presence: HudPresence,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val log: (String) -> Unit = { Log.w(CaptureService.TAG, it) },
+    private val log: (String) -> Unit = { PcLog.w(CaptureService.TAG, it) },
     private val maxConsecutive: Int = 3,
     /** Called just before the HUD is started (screen-wake attribution). */
     private val onLaunch: () -> Unit = {},

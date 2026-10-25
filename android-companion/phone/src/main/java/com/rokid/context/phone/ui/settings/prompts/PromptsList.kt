@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.prompts
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
@@ -41,7 +41,7 @@ class PromptsListViewModel(private val ai: AiGraph, private val seed: suspend ()
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                Log.i("PromptsList", "seeding prompts failed (${e.javaClass.simpleName})")
+                PcLog.i("PromptsList", "seeding prompts failed (${e.javaClass.simpleName})")
                 notice.value = "Couldn't load the prompts"
             }
         }

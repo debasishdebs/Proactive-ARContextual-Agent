@@ -11,7 +11,7 @@ import com.rokid.context.link.ReceivedFrameLedger
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.phone.actions.PhoneActions
 import com.rokid.context.phone.nudge.PhoneNudges
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -52,7 +52,7 @@ object HubGraph {
 
     /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
     private val commitScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> Log.w(Hub.TAG, "receipt commit scope failed: ${t.javaClass.simpleName}") },
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> PcLog.w(Hub.TAG, "receipt commit scope failed: ${t.javaClass.simpleName}") },
     )
 
     /** Single-flight + dirty flag for the arrival drain: a burst of frames costs at most two full drains (final review N2). */
@@ -94,10 +94,10 @@ object HubGraph {
         try { enqueue(app) } finally {
             coalescer.request(scope) {
                 try { commit(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                    Log.w(Hub.TAG, "receipt commit failed: ${e.javaClass.simpleName}")
+                    PcLog.w(Hub.TAG, "receipt commit failed: ${e.javaClass.simpleName}")
                 } finally {
                     try { signal(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                        Log.w(Hub.TAG, "keyframe signal failed: ${e.javaClass.simpleName}")
+                        PcLog.w(Hub.TAG, "keyframe signal failed: ${e.javaClass.simpleName}")
                     }
                 }
             }
@@ -113,7 +113,7 @@ object HubGraph {
 
     private fun build(app: Context): Hub {
         // Last line of defence: Hub guards every event, but nothing on this scope may ever kill the process.
-        val guard = CoroutineExceptionHandler { _, t -> Log.w(Hub.TAG, "hub coroutine failed: ${t.javaClass.simpleName}") }
+        val guard = CoroutineExceptionHandler { _, t -> PcLog.w(Hub.TAG, "hub coroutine failed: ${t.javaClass.simpleName}") }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + guard)
         val ledger = ReceivedFrameLedger(File(app.filesDir, "cxr_received_frames.txt"))
         val settings = HubSettingsStore(app.getSharedPreferences("hub_settings", Context.MODE_PRIVATE)) { AppConfigStore.glassesSilencyMode(app) }
@@ -131,7 +131,7 @@ object HubGraph {
         val ctxScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + guard)
         val ctxHub = com.rokid.context.phone.context.ContextHub(
             ctxScope, com.rokid.context.phone.context.ContextSourceSettings.of(app), ctxRegistry,
-            log = { Log.i("PcCtx", it) },
+            log = { PcLog.i("PcCtx", it) },
             // the ring is emptied when the watch source goes off: the canvas run rows that carry its values go with it (Delete all already wipes them)
             onWatchOff = { ctxScope.launch { runCatching { MemoryGraph.get(app).db.canvasDao().deleteWatchRuns() } } },
         )
@@ -196,7 +196,7 @@ object HubGraph {
         com.rokid.context.phone.canvas.PlanGraph.warm(scope)
 
         // S57: a Delete all whose cleanup was cut short (a crash, a failed delete) is finished as the hub comes up.
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) { try { com.rokid.context.orchestration.MemoryWipe.resumeIfPending(app) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { Log.w(Hub.TAG, "wipe resume failed (${e.javaClass.simpleName})") } }
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) { try { com.rokid.context.orchestration.MemoryWipe.resumeIfPending(app) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(Hub.TAG, "wipe resume failed (${e.javaClass.simpleName})") } }
         // S58: files and glasses follow every Delete all and time-range Forget; registered once (the hub graph is a process singleton).
         forgetCoordinator?.let { com.rokid.context.memory.forget.ForgetListeners.unregister(it) }
         com.rokid.context.memory.forget.ForgetListeners.register(

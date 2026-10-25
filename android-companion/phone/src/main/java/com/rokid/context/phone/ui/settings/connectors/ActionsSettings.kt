@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.connectors
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -44,7 +44,7 @@ fun ActionsRoute(deps: SettingsDeps, back: () -> Unit, openShopping: () -> Unit,
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.w("ActionsRoute", "actions unavailable: ${SafeLog.describe(e)}")
+            PcLog.w("ActionsRoute", "actions unavailable: ${SafeLog.describe(e)}")
             null
         }
     }

@@ -1,7 +1,7 @@
 package com.rokid.context.work
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.connectors.sources.SourcesGraph
@@ -53,7 +53,7 @@ class FrameIngestWorker(
         } catch (c: kotlinx.coroutines.CancellationException) {
             throw c // the pipeline already gave its claims back
         } catch (e: Exception) {
-            Log.w(TAG, "drain failed: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "drain failed: ${e.javaClass.simpleName}")
         }
         return Result.success()
     }

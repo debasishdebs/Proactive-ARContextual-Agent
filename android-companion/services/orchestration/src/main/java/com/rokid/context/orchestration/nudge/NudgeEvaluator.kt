@@ -1,6 +1,6 @@
 package com.rokid.context.orchestration.nudge
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,7 +77,7 @@ class NudgeEvaluator(
                 synchronized(lock) { windowOpen = false }
                 throw c
             } catch (e: Exception) {
-                Log.i(TAG, "nudge check failed: ${SafeLog.describe(e)}") // class only, no text; the periodic backstop covers it
+                PcLog.i(TAG, "nudge check failed: ${SafeLog.describe(e)}") // class only, no text; the periodic backstop covers it
                 null
             }
             if (decision != null) out.emit(decision to (clock() - captured).coerceAtLeast(0L))

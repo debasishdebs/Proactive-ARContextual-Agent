@@ -13,6 +13,7 @@ import org.robolectric.shadows.ShadowLog
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class SeedAssetsTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.ai.PcLogToShadowRule()
     @Test fun everySeedUsesOnlyKnownVariablesAndHasTheRequiredOnes() {
         val seeds = AssetPromptSeeds(ApplicationProvider.getApplicationContext())
         PromptKey.entries.forEach { k ->

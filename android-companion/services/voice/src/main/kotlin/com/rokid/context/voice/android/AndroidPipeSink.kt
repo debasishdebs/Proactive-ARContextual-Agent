@@ -4,7 +4,7 @@ import android.os.ParcelFileDescriptor
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.voice.PipeCapacity
 import com.rokid.context.voice.PipeSink
 import java.io.FileDescriptor
@@ -52,7 +52,7 @@ class AndroidPipeSink internal constructor(private val write: ParcelFileDescript
             posix.fcntlInt(fd, F_SETPIPE_SZ, PINNED_PIPE_BYTES)
             pipeSize = posix.fcntlInt(fd, F_GETPIPE_SZ, 0)
         } catch (e: ErrnoException) {
-            Log.w(TAG, "pipe size not pinned (errno ${e.errno})")
+            PcLog.w(TAG, "pipe size not pinned (errno ${e.errno})")
             throw IOException("pipe size not pinned (errno ${e.errno})")
         }
         posix.fcntlInt(fd, posix.F_SETFL, posix.fcntlInt(fd, posix.F_GETFL, 0) or posix.O_NONBLOCK)
@@ -101,7 +101,7 @@ internal class AndroidPipes(
         val (read, sink) = open()
         if (sink.pipeSize > m.pipeSize) {
             sink.close(); runCatching { read.close() }
-            Log.w(TAG, "feed pipe size=${sink.pipeSize} above measured size=${m.pipeSize}")
+            PcLog.w(TAG, "feed pipe size=${sink.pipeSize} above measured size=${m.pipeSize}")
             throw IOException("feed pipe bigger than the measured one")
         }
         return Feed(read, sink, m.capacityBytes)
@@ -115,7 +115,7 @@ internal class AndroidPipes(
             // A scratch pipe that took nothing isn't remembered: callers fail closed and the next call measures again.
             if (it.capacityBytes <= 0) throw IOException("scratch pipe took nothing")
             measured = it
-            Log.i(TAG, "pipe capacity=${it.capacityBytes} size=${it.pipeSize}")
+            PcLog.i(TAG, "pipe capacity=${it.capacityBytes} size=${it.pipeSize}")
         }
     }
 

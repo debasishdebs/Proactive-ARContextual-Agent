@@ -1,7 +1,7 @@
 package com.rokid.context.data.runtime
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 
 /**
  * B12: deletes copies of the legacy key file (`files/app_config_secret.xml.bak.*`) that an Auto Backup restore put
@@ -17,7 +17,7 @@ object SecretBakCleanup {
     fun run(context: Context): Int = runCatching {
         val copies = context.filesDir.listFiles { f -> f.isFile && f.name.startsWith(PREFIX) }.orEmpty()
         val deleted = copies.count { it.delete() }
-        if (deleted > 0) Log.i(TAG, "Deleted $deleted restored secret backup file(s)")
+        if (deleted > 0) PcLog.i(TAG, "Deleted $deleted restored secret backup file(s)")
         deleted
     }.getOrDefault(0)
 }

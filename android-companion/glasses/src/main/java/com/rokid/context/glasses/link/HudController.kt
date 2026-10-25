@@ -1,6 +1,6 @@
 package com.rokid.context.glasses.link
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.hud.render.HudConnection
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
@@ -116,32 +116,32 @@ class HudController(
         bridge.subscribe(Channels.PHONE_CONTEXT) { text -> (Wire.decode<PhoneContextMessage>(text) as? Decoded.Ok)?.value?.let(::onPhoneContextMessage) }
         bridge.subscribe(Channels.MOTION_CONTEXT) { text -> (Wire.decode<MotionContextMessage>(text) as? Decoded.Ok)?.value?.let(::onMotionContextMessage) }
         bridge.subscribe(Channels.CAPTURE_PLAN) { text -> (Wire.decode<com.rokid.context.core.model.CapturePlanMessage>(text) as? Decoded.Ok)?.value?.let(::onPlanMessage) }
-        bridge.subscribe(Channels.TRACE_CTL) { text -> (Wire.decode<com.rokid.context.core.model.TraceControl>(text) as? Decoded.Ok)?.value?.let { m -> try { onTraceControl(m) } catch (e: Exception) { Log.w(TAG, "trace control failed: ${e.javaClass.simpleName}") } } }
-        bridge.subscribe(Channels.MARK_ACK) { text -> (Wire.decode<com.rokid.context.core.model.MarkAck>(text) as? Decoded.Ok)?.value?.let { a -> try { onMarkAck(a) } catch (e: Exception) { Log.w(TAG, "mark ack failed: ${e.javaClass.simpleName}") } } }
-        bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
-        bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
+        bridge.subscribe(Channels.TRACE_CTL) { text -> (Wire.decode<com.rokid.context.core.model.TraceControl>(text) as? Decoded.Ok)?.value?.let { m -> try { onTraceControl(m) } catch (e: Exception) { PcLog.w(TAG, "trace control failed: ${e.javaClass.simpleName}") } } }
+        bridge.subscribe(Channels.MARK_ACK) { text -> (Wire.decode<com.rokid.context.core.model.MarkAck>(text) as? Decoded.Ok)?.value?.let { a -> try { onMarkAck(a) } catch (e: Exception) { PcLog.w(TAG, "mark ack failed: ${e.javaClass.simpleName}") } } }
+        bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { PcLog.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
+        bridge.setConnectionListener(connected = { PcLog.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
     }
 
     private fun onPhoneContextMessage(m: PhoneContextMessage) {
-        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_phone_ctx ignored"); return }
+        if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_phone_ctx ignored"); return }
         onPhoneUse(m.inUse)
     }
 
     private fun onPlanMessage(m: com.rokid.context.core.model.CapturePlanMessage) {
         // A transport copy older than this session is stale; the phone re-sends its current gen on the new session.
-        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_capture_plan ignored"); return }
+        if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_capture_plan ignored"); return }
         onCapturePlan(m)
     }
 
     private fun onMotionContextMessage(m: MotionContextMessage) {
-        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_motion_ctx ignored"); return }
+        if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_motion_ctx ignored"); return }
         // One lock for the session check, the ordering check, the gate update and the close reset: a delayed older
         // message can neither pass before a newer revoke and land after it, nor outlive the session close. The gate
         // callback is non-blocking, so holding the lock across it is safe.
         synchronized(ctxLock) {
-            if (!_sessionOpen.value) { Log.i(TAG, "pc_motion_ctx of a closed session ignored"); return }
-            if (m.atMs < lastCtxAtMs) { Log.i(TAG, "older pc_motion_ctx ignored"); return }
+            if (!_sessionOpen.value) { PcLog.i(TAG, "pc_motion_ctx of a closed session ignored"); return }
+            if (m.atMs < lastCtxAtMs) { PcLog.i(TAG, "older pc_motion_ctx ignored"); return }
             lastCtxAtMs = m.atMs
             onMotionContext(m)
         }
@@ -149,7 +149,7 @@ class HudController(
 
     /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
     private fun onWearMessage(m: WearMessage) {
-        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_wear ignored"); return }
+        if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_wear ignored"); return }
         onWear(m.worn)
     }
 
@@ -161,7 +161,7 @@ class HudController(
                 (d.value.capture as? CaptureState.Paused)?.let { onPhoneSettings(_settings.value.copy(pauses = it.records, pausesExact = false, resumedPauseIds = emptyList())) }
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
-            is Decoded.Malformed -> Log.w(TAG, "bad pc_state (${d.reason})") // a class name only: the text could quote memory lines
+            is Decoded.Malformed -> PcLog.w(TAG, "bad pc_state (${d.reason})") // a class name only: the text could quote memory lines
         }
         refreshConnection()
     }
@@ -177,7 +177,7 @@ class HudController(
                 onPhoneSettingsPush(v)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
-            is Decoded.Malformed -> Log.w(TAG, "bad pc_settings (${d.reason})")
+            is Decoded.Malformed -> PcLog.w(TAG, "bad pc_settings (${d.reason})")
         }
         refreshConnection()
     }
@@ -192,7 +192,7 @@ class HudController(
                 if (wasOpen) { sendCapsAck(); sendHello(); dueMarks() } // a new phone session on a long-lived glasses session needs the caps again (also retries a failed send)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
-            is Decoded.Malformed -> Log.w(TAG, "bad pc_hello_request (${d.reason})")
+            is Decoded.Malformed -> PcLog.w(TAG, "bad pc_hello_request (${d.reason})")
         }
         refreshConnection()
     }
@@ -205,26 +205,26 @@ class HudController(
         outdated = false
         liveness.onFrame()
         if (!exited && _sessionOpen.compareAndSet(false, true)) {
-            Log.i(TAG, "session open")
+            PcLog.i(TAG, "session open")
             sessionStartMs = clock()
             sendHello()
             sendCapsAck()
-            try { statusAck()?.let { bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(it)) } } catch (e: Exception) { Log.w(TAG, "plan status ack failed: ${e.javaClass.simpleName}") }
+            try { statusAck()?.let { bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(it)) } } catch (e: Exception) { PcLog.w(TAG, "plan status ack failed: ${e.javaClass.simpleName}") }
             onSessionOpened()
             dueMarks()
         }
     }
 
-    private fun dueMarks() { try { onMarksDue() } catch (e: Exception) { Log.w(TAG, "marks due failed: ${e.javaClass.simpleName}") } }
+    private fun dueMarks() { try { onMarksDue() } catch (e: Exception) { PcLog.w(TAG, "marks due failed: ${e.javaClass.simpleName}") } }
 
     /** Plumbing only; the phone shows "too old" for a peer that never sends it. A failed send or a throwing [capsAck] is retried at the next hello request. */
     private fun sendCapsAck() {
         val ok = runCatching { bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(capsAck())) == 0 }.getOrDefault(false)
-        if (!ok) Log.w(TAG, "caps ack not sent")
+        if (!ok) PcLog.w(TAG, "caps ack not sent")
     }
 
     private fun markOutdated(remote: Int?) {
-        Log.w(TAG, "phone protocol v=$remote, glasses v=$PROTOCOL_VERSION")
+        PcLog.w(TAG, "phone protocol v=$remote, glasses v=$PROTOCOL_VERSION")
         outdated = true
         closeSession("version mismatch")
     }
@@ -232,7 +232,7 @@ class HudController(
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
         synchronized(ctxLock) {
-            if (_sessionOpen.compareAndSet(true, false)) { Log.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
+            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
         }
         refreshConnection()
     }

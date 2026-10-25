@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -153,7 +153,7 @@ class DiagnosticsViewModel(
         viewModelScope.launch {
             val loaded = try {
                 withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline(), capturePlan = keyframes.capturePlan()) }
-            } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
+            } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
             extras.value = loaded
         }
     }
@@ -199,7 +199,7 @@ class DiagnosticsViewModel(
         _state.value = DiagnosticsUiState(busy = true)
         viewModelScope.launch {
             val msg = try { block() } catch (c: CancellationException) { throw c } catch (e: Exception) {
-                Log.i(TAG, "diagnostics action failed (${e.javaClass.simpleName})")
+                PcLog.i(TAG, "diagnostics action failed (${e.javaClass.simpleName})")
                 FAILED
             }
             _state.value = DiagnosticsUiState(message = msg)

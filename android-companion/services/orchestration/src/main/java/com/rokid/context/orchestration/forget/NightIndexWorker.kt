@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration.forget
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.ai.AiGraph
@@ -53,7 +53,7 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.w(TAG, "night job failed: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "night job failed: ${SafeLog.describe(e)}")
             Result.success() // the next night tries again; nothing here is lost by waiting
         }
     }
@@ -87,7 +87,7 @@ internal class NightIndex(
     data class Result(val queued: Int, val described: Int, val left: Int, val backfill: String)
 
     suspend fun run(): Result {
-        if (!bulkAllowed()) { Log.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); return Result(0, 0, 0, "gate") }
+        if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); return Result(0, 0, 0, "gate") }
         val queued = queue()
         var described = 0
         if (queued.isNotEmpty() || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty()) {
@@ -102,10 +102,10 @@ internal class NightIndex(
         val backfill = try {
             maintenance()?.name ?: "none"
         } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            Log.w(TAG, "backfill failed: ${SafeLog.describe(e)}"); "failed"
+            PcLog.w(TAG, "backfill failed: ${SafeLog.describe(e)}"); "failed"
         }
         val left = db.frameStateDao().describeWaiting()
-        Log.i(TAG, "PcNight described=$described left=$left backfilled=$backfill")
+        PcLog.i(TAG, "PcNight described=$described left=$left backfilled=$backfill")
         return Result(queued.size, described, left, backfill)
     }
 

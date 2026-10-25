@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration.forget
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import androidx.work.BackoffPolicy
 import androidx.work.CoroutineWorker
@@ -58,7 +58,7 @@ class ResummarizeWorker(ctx: Context, params: WorkerParameters) : CoroutineWorke
         // Fix round 1 I8: RetryClassifier decides; at most MAX_ATTEMPTS runs. The failed memories stay hidden.
         val kind = RetryClassifier.classify(outcome)
         if (kind == RetryClassifier.Outcome.CANCELLED) throw outcome
-        Log.w(TAG, "re-summarise ${kind.name} attempt ${runAttemptCount + 1}/$MAX_ATTEMPTS: ${SafeLog.describe(outcome)}")
+        PcLog.w(TAG, "re-summarise ${kind.name} attempt ${runAttemptCount + 1}/$MAX_ATTEMPTS: ${SafeLog.describe(outcome)}")
         return if (kind == RetryClassifier.Outcome.RETRY && runAttemptCount + 1 < MAX_ATTEMPTS) Result.retry() else Result.failure()
     }
 

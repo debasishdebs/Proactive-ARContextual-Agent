@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.core.model.TextHygiene
 import com.rokid.context.memory.MemoryGraph
@@ -42,16 +42,16 @@ object PipelineRecords {
 
     /** Only `rokid*` sources with a JPEG that exists; payload kept to one line (≤ 220 chars). False = rejected or duplicate id. */
     suspend fun appendFrame(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows? = null): Boolean {
-        if (!frame.source.startsWith("rokid", ignoreCase = true)) { Log.w(TAG, "append rejected non-rokid source=${frame.source}"); return false }
+        if (!frame.source.startsWith("rokid", ignoreCase = true)) { PcLog.w(TAG, "append rejected non-rokid source"); return false }
         val file = frame.path.takeIf { it.isNotBlank() }?.let(::File)
-        if (file == null || !withContext(Dispatchers.IO) { file.exists() }) { Log.w(TAG, "append rejected preview missing frameId=${frame.id}"); return false }
+        if (file == null || !withContext(Dispatchers.IO) { file.exists() }) { PcLog.w(TAG, "append rejected preview missing"); return false }
         val stored = frame.copy(path = file.absolutePath, payload = oneLine(frame.payload).take(220))
         // With [rows] the frame, its frame_meta and its PENDING frame_state land in one transaction (keyframe capture P1).
         val ok = if (rows == null) graph(context).frames.add(stored)
         else graph(context).intake.commit(stored, rows) == com.rokid.context.memory.FrameIntake.Outcome.ADDED
         // The stored Moment of that second is built off this thread, coalesced; a frame with no capture evidence schedules nothing (unknown capture time is never a Moment).
         if (ok && rows != null) com.rokid.context.canvas.moment.MomentTriggers.get(context).onFrameCommitted(stored.ts, rows.meta.capturedAtMs)
-        Log.i(TAG, "append ok=$ok frameId=${frame.id}")
+        PcLog.i(TAG, "append ok=$ok")
         return ok
     }
 
@@ -136,18 +136,18 @@ object PipelineRecords {
         // before its own transaction, so a fact from work begun before the wipe can never land after it.
         return g.db.withTransaction {
             if (MemoryWipe.generation.get() != generation) {
-                Log.i(TAG, "fact dropped: Delete all ran since this job started")
+                PcLog.i(TAG, "fact dropped: Delete all ran since this job started")
                 return@withTransaction false
             }
             // Forget fence: a fact extracted from a frame that was forgotten meanwhile (tombstoned) is never written.
             val fence = (fenceFrameIds + listOfNotNull(frameId)).distinct()
             if (fence.chunked(MAX_IN).any { g.db.forgetDao().tombstoned(it).isNotEmpty() }) {
-                Log.i(TAG, "fact dropped: its frame was forgotten")
+                PcLog.i(TAG, "fact dropped: its frame was forgotten")
                 return@withTransaction false
             }
             val sources = sourceIds.distinct()
             if (!com.rokid.context.memory.forget.ForgetFence.allLive(g.db, sources)) {
-                Log.i(TAG, "fact dropped: a source was forgotten since this job started")
+                PcLog.i(TAG, "fact dropped: a source was forgotten since this job started")
                 return@withTransaction false
             }
             g.memories.add(

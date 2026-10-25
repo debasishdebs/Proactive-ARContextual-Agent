@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.retrieval
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -140,7 +140,7 @@ class RetrievalViewModel(
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                Log.i(TAG, "try it failed (${e.javaClass.simpleName})") // the type only: a message could carry provider text
+                PcLog.i(TAG, "try it failed (${e.javaClass.simpleName})") // the type only: a message could carry provider text
                 _state.update { it.copy(results = emptyList(), fallbackNotice = null, tryError = "Search failed") }
             } finally {
                 _state.update { it.copy(searching = false) }

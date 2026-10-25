@@ -1,7 +1,7 @@
 package com.rokid.context.work.frames.recall
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.FrameState
 import com.rokid.context.memory.retrieval.VectorCodec
@@ -69,7 +69,7 @@ class DescribeOnDemand(
         if (ids.isEmpty()) return DescribeResult.Expired
         val stored = PipelineRecords.framesByIds(context, ids).map { it.id }.toSet() // a forgotten, deleted or file-less photo is not there
         val live = ids.filter { it in stored }
-        if (live.isEmpty()) { Log.i(TAG, "PcDescribe frames=${ids.size} result=Expired"); return DescribeResult.Expired }
+        if (live.isEmpty()) { PcLog.i(TAG, "PcDescribe frames=${ids.size} result=Expired"); return DescribeResult.Expired }
         val states = db.frameStateDao().byIds(live).associate { it.frameId to it.state }
         val openClusters = db.frameClusterDao().let { dao -> live.filter { states[it] == FrameState.IN_CLUSTER.name }.let { ids ->
             if (ids.isEmpty()) emptySet() else db.frameMetaDao().byIds(ids).filter { m -> m.clusterId?.let { c -> dao.get(c)?.state in OPEN_CLUSTER } == true }.map { it.frameId }.toSet()
@@ -112,7 +112,7 @@ class DescribeOnDemand(
             busy > 0 -> DescribeResult.Busy
             else -> DescribeResult.Expired
         }
-        Log.i(TAG, "PcDescribe frames=${ids.size} claimed=${claimable.size} direct=${direct.size} saved=$memories result=${result.javaClass.simpleName}")
+        PcLog.i(TAG, "PcDescribe frames=${ids.size} claimed=${claimable.size} direct=${direct.size} saved=$memories result=${result.javaClass.simpleName}")
         return result
     }
 

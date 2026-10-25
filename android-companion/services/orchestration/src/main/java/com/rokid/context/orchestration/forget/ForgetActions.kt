@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration.forget
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.connectors.actions.ProposalNotifications
 import com.rokid.context.connectors.actions.executors.ReminderExecutor
@@ -46,12 +46,12 @@ object ForgetActions {
             try {
                 r.redactedProposals.forEach { ReminderExecutor.cancelAlarm(context, it) }
             } catch (e: Exception) {
-                Log.w(TAG, "alarms not cancelled: ${SafeLog.describe(e)}")
+                PcLog.w(TAG, "alarms not cancelled: ${SafeLog.describe(e)}")
             }
             try {
                 ProposalNotifications.cancel(context, r.redactedProposals)
             } catch (e: Exception) {
-                Log.w(TAG, "notifications not cancelled: ${SafeLog.describe(e)}")
+                PcLog.w(TAG, "notifications not cancelled: ${SafeLog.describe(e)}")
             }
         }
         FrameSweep.delete(r.framesToDelete)
@@ -59,7 +59,7 @@ object ForgetActions {
             try {
                 ResummarizeWorker.enqueue(context)
             } catch (e: Exception) {
-                Log.w(TAG, "re-summarise not queued (start-up retries): ${SafeLog.describe(e)}")
+                PcLog.w(TAG, "re-summarise not queued (start-up retries): ${SafeLog.describe(e)}")
             }
         }
     }
@@ -69,7 +69,7 @@ object ForgetActions {
         try {
             QueueRuntimeStore.scrubTerminalText(context)
         } catch (e: Exception) {
-            Log.w(TAG, "queue scrub failed: ${SafeLog.describe(e)}")
+            PcLog.w(TAG, "queue scrub failed: ${SafeLog.describe(e)}")
         }
     }
 
@@ -79,7 +79,7 @@ object ForgetActions {
                 val graph = MemoryGraph.get(context)
                 op(ForgetService(graph.db, graph.proposals))
             } catch (e: Exception) {
-                Log.w(TAG, "forget failed: ${SafeLog.describe(e)}")
+                PcLog.w(TAG, "forget failed: ${SafeLog.describe(e)}")
                 return@withContext false
             }
             // Committed: everything after this is best effort and never turns the Forget into a failure.

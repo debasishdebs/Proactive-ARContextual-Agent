@@ -23,6 +23,7 @@ import java.io.IOException
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class FrameImagesTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.memory.PcLogToShadowRule()
     @get:Rule val tmp = TemporaryFolder()
     private var wanted = false
     private val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()) + ByteArray(2_000) { (it % 251).toByte() }

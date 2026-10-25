@@ -1,5 +1,6 @@
 package com.rokid.context.work.frames.intent
 
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.canvas.FrameIntentSink
 import com.rokid.context.core.model.context.IntentLabel
 
@@ -25,7 +26,7 @@ class FrameIntentWriter(private val store: IntentFrameStore) : FrameIntentSink {
         } catch (c: kotlin.coroutines.cancellation.CancellationException) {
             throw c
         } catch (e: Exception) {
-            runCatching { android.util.Log.w("FrameIntentWriter", "intent write failed: ${e.javaClass.simpleName}") }
+            runCatching { PcLog.w("FrameIntentWriter", "intent write failed: ${e.javaClass.simpleName}") }
         }
     }
 }

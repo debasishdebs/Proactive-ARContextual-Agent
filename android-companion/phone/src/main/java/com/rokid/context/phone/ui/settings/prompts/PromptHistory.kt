@@ -1,6 +1,6 @@
 package com.rokid.context.phone.ui.settings.prompts
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -82,7 +82,7 @@ class PromptHistoryViewModel(keyId: String, private val ai: AiGraph) : ViewModel
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                Log.i("PromptHistory", "restore failed (${e.javaClass.simpleName})")
+                PcLog.i("PromptHistory", "restore failed (${e.javaClass.simpleName})")
                 notice.value = "Couldn't restore that version"
             }
         }

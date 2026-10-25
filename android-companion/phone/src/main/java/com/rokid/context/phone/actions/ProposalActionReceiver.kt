@@ -4,7 +4,7 @@ import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.connectors.actions.ActionsGraph
 import kotlinx.coroutines.CancellationException
@@ -26,7 +26,7 @@ class ProposalActionReceiver : BroadcastReceiver() {
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                try { Log.w("ProposalAction", "respond failed: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
+                try { PcLog.w("ProposalAction", "respond failed: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
             } finally {
                 app.getSystemService(NotificationManager::class.java)?.cancel(id, ProposalNotifier.NOTIFICATION_ID)
                 pending.finish()

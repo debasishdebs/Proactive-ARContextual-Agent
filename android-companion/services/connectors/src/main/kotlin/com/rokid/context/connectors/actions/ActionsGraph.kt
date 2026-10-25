@@ -1,5 +1,6 @@
 package com.rokid.context.connectors.actions
 
+import com.rokid.context.core.log.PcLog
 import android.content.Context
 import com.rokid.context.connectors.ProposalIntake
 import com.rokid.context.connectors.actions.executors.ActionExecutor
@@ -103,7 +104,7 @@ internal class RecoverOnce(private val scope: CoroutineScope) {
             } catch (c: kotlinx.coroutines.CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                try { android.util.Log.w("ActionsGraph", "recover failed: ${com.rokid.context.ai.SafeLog.describe(t)}") } catch (_: RuntimeException) { }
+                try { PcLog.w("ActionsGraph", "recover failed: ${com.rokid.context.ai.SafeLog.describe(t)}") } catch (_: RuntimeException) { }
             }
         }
     }

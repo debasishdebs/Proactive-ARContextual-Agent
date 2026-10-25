@@ -10,7 +10,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -109,7 +109,7 @@ class MainActivity : ComponentActivity() {
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         permissionPending = false
         if (result[Manifest.permission.CAMERA] == true) { ensureCaptureScheduled(); CaptureService.startKeepAlive(this) }
-        else if (!granted(Manifest.permission.CAMERA)) Log.w(TAG, "camera permission denied: capture stays off")
+        else if (!granted(Manifest.permission.CAMERA)) PcLog.w(TAG, "camera permission denied: capture stays off")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -124,7 +124,7 @@ class MainActivity : ComponentActivity() {
         controller.onActivityStart()
         controller.start()
         // A launcher-looking start that was really the phone's automatic reopen: back to icon mode (never the HUD over a call).
-        controller.onAutoOpen = { runOnUiThread { if (runtime.startGate.onAutoOpenMarker() && !minimised) { Log.i(TAG, "automatic reopen: icon mode"); minimise() } } }
+        controller.onAutoOpen = { runOnUiThread { if (runtime.startGate.onAutoOpenMarker() && !minimised) { PcLog.i(TAG, "automatic reopen: icon mode"); minimise() } } }
         lifecycleScope.launch { runtime.pauses.ensureLoaded() }
         // Final review I2: a phone toast during our recording means the phone refused or ended the ask. Stop recording
         // (no Cancel: the phone already dropped it) so the wearer sees the toast instead of "tap to send".
@@ -172,10 +172,10 @@ class MainActivity : ComponentActivity() {
         com.rokid.context.glasses.capture.diag.DiagLog.i(GlassesRuntime.CAPTURE_TAG, decision.line(StartSources.refClass(referrer?.host)))
         if (decision.minimise) {
             hudHidden.value = true // before the first frame: no HUD flash ahead of the minimise
-            Log.i(TAG, "starting minimised (icon mode) source=$source")
+            PcLog.i(TAG, "starting minimised (icon mode) source=$source")
             swipeTimer.post { minimise() }
         } else hudHidden.value = false
-        if (!decision.minimise && source == StartSource.LAUNCHER) Log.i(TAG, "opened from the launcher: showing the HUD")
+        if (!decision.minimise && source == StartSource.LAUNCHER) PcLog.i(TAG, "opened from the launcher: showing the HUD")
     }
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
@@ -226,7 +226,7 @@ class MainActivity : ComponentActivity() {
             if (o.proposalId == launchedConfirmId) return
             launchedConfirmId = o.proposalId
             runtime.screenWakes.onOurUi()
-            runCatching { applicationContext.startActivity(confirmIntent()) }.onFailure { Log.w(TAG, "confirm open refused: ${it.javaClass.simpleName}") }
+            runCatching { applicationContext.startActivity(confirmIntent()) }.onFailure { PcLog.w(TAG, "confirm open refused: ${it.javaClass.simpleName}") }
             return
         }
         val pm = getSystemService(PowerManager::class.java)
@@ -431,7 +431,7 @@ class MainActivity : ComponentActivity() {
         swipeTimer.removeCallbacks(minimisedHello); swipeTimer.postDelayed(minimisedHello, MINIMISED_HELLO_MS)
         if (!Settings.canDrawOverlays(this)) {
             // Capture runs but nothing shows it: count-only warning here, a Diagnostics row on the phone (via the hello).
-            Log.w(TAG, "minimised without the overlay permission: no icon")
+            PcLog.w(TAG, "minimised without the overlay permission: no icon")
             runtime.iconBlocked = true; controller.sendHello()
             Toast.makeText(this, NO_OVERLAY_TOAST, Toast.LENGTH_SHORT).show(); return
         }
@@ -469,7 +469,7 @@ class MainActivity : ComponentActivity() {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.w(TAG, "pause toggle failed: ${e.javaClass.simpleName}")
+                    PcLog.w(TAG, "pause toggle failed: ${e.javaClass.simpleName}")
                     return@launch
                 }
                 onPauseToggle(t, now)
@@ -487,7 +487,7 @@ class MainActivity : ComponentActivity() {
     private fun onAsk(now: Long) {
         if (runtime.listening.value) { runtime.ptt.stop(); runtime.markTap.onListenFinished(); return }
         // BUG-R3-3: the VAD ended the listen a beat before this tap; the tap was the send, the ask is already on its way.
-        if (runtime.ptt.takeLateTap()) { Log.i(TAG, "ptt: tap after auto-end taken as send"); return }
+        if (runtime.ptt.takeLateTap()) { PcLog.i(TAG, "ptt: tap after auto-end taken as send"); return }
         // P3: tap = mark + listen. The mark is taken first and never waits for the checks below (design §4.3); it never changes capture.
         val askBlocked = HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason)
         runtime.markTap.onTap(listen = askBlocked == null && granted(Manifest.permission.RECORD_AUDIO))
@@ -517,12 +517,12 @@ class MainActivity : ComponentActivity() {
             is PauseToggle.Paused -> {
                 controller.send(Command.Pause(t.record))
                 local = LocalOverlay.Splash(now)
-                Log.i(TAG, "paused locally ${t.record.pauseId}")
+                PcLog.i(TAG, "paused locally")
             }
             is PauseToggle.Resumed -> {
                 controller.send(Command.Resume(t.clears))
                 local = LocalOverlay.Toast("Capture resumed", now)
-                Log.i(TAG, "resumed ${t.clears.size} pause(s)")
+                PcLog.i(TAG, "resumed ${t.clears.size} pause(s)")
             }
         }
     }

@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration.forget
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -47,7 +47,7 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
     } catch (c: CancellationException) {
         throw c
     } catch (e: Exception) {
-        Log.w(TAG, "retention failed: ${SafeLog.describe(e)}")
+        PcLog.w(TAG, "retention failed: ${SafeLog.describe(e)}")
         Result.retry()
     }
 

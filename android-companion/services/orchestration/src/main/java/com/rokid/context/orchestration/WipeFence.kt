@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.os.SystemClock
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.FileDurability
 import kotlinx.coroutines.sync.Mutex
 import java.io.File
@@ -67,7 +67,7 @@ object WipeFence {
             tmp.delete()
             pending = Pending(filesDir.absoluteFile, nowMs, elapsedMs, bootId, e)
             try { File(filesDir, MARKER).createNewFile() } catch (_: IOException) { }
-            Log.w(TAG, "wipe start not recorded: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "wipe start not recorded: ${e.javaClass.simpleName}")
             false
         }
     }
@@ -93,7 +93,7 @@ object WipeFence {
 
     /** The wipe's real start is unknowable: fail closed at now (frames captured before now are covered) and record it. */
     private fun clamp(filesDir: File, nowMs: Long, elapsedMs: Long, bootId: String): Fence {
-        Log.i(TAG, "wipe fence clamped to now")
+        PcLog.i(TAG, "wipe fence clamped to now")
         return if (markStarted(filesDir, nowMs, elapsedMs, bootId)) Fence.At(nowMs) else Fence.Unknown(pending?.cause)
     }
 

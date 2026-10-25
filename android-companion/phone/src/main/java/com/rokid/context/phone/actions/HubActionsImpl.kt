@@ -1,6 +1,6 @@
 package com.rokid.context.phone.actions
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.connectors.actions.ActionCopy
 import com.rokid.context.connectors.actions.ActionEngine
@@ -125,7 +125,7 @@ class HubActionsImpl(
 
     private suspend fun guarded(block: suspend () -> Unit) {
         try { block() } catch (c: CancellationException) { throw c } catch (t: Throwable) {
-            try { Log.w(TAG, "actions port: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
+            try { PcLog.w(TAG, "actions port: ${SafeLog.describe(t)}") } catch (_: RuntimeException) { }
         }
     }
 

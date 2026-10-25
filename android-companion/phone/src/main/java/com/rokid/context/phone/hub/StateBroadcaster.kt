@@ -1,6 +1,6 @@
 package com.rokid.context.phone.hub
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -23,7 +23,7 @@ class StateBroadcaster(
     private val minIntervalMs: Long = 250,
     private val heartbeatMs: Long = 10_000,
     private val onError: (Throwable) -> Unit = {},
-    private val log: (String) -> Unit = { Log.w(TAG, it) },
+    private val log: (String) -> Unit = { PcLog.w(TAG, it) },
     private val send: suspend () -> Unit,
 ) {
     private val dirty = Channel<Unit>(Channel.CONFLATED)

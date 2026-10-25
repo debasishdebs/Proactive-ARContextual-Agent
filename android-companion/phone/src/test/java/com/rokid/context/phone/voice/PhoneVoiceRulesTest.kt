@@ -26,7 +26,7 @@ class PhoneVoiceRulesTest {
         val out = mutableListOf<String>()
         var i = 0
         while (i < lines.size) {
-            val start = Regex("\\bLog\\.[a-z]+\\(").find(lines[i])
+            val start = Regex("\\b(?:Pc)?Log\\.[a-z]+\\(").find(lines[i])
             if (start == null) { i++; continue }
             var stmt = lines[i].substring(start.range.first)
             var depth = stmt.count { it == '(' } - stmt.count { it == ')' }

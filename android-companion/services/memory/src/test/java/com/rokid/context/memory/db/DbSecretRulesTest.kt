@@ -12,7 +12,7 @@ class DbSecretRulesTest {
 
     @Test fun noLogCallMentionsThePassphraseOrKey() {
         assertTrue("memory sources not found from ${File(".").absolutePath}", sources.isNotEmpty())
-        val logLine = Regex("""\bLog\.[vdiwe]\(|SafeLog\.|println\(""")
+        val logLine = Regex("""\b(?:Pc)?Log\.[vdiwe]\(|SafeLog\.|println\(""")
         val secret = Regex("""passphrase|key\(\)|\bkey\b""", RegexOption.IGNORE_CASE)
         val bad = sources.flatMap { f -> f.readLines().mapIndexedNotNull { i, l -> if (logLine.containsMatchIn(l) && secret.containsMatchIn(l)) "${f.name}:${i + 1}" else null } }
         assertEquals(emptyList<String>(), bad)

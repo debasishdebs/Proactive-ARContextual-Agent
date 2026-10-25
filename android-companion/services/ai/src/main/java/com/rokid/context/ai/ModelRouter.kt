@@ -1,6 +1,6 @@
 package com.rokid.context.ai
 
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.CallGate
 import com.rokid.context.model.LanguageModel
@@ -155,7 +155,7 @@ class ModelRouter(
         val reply = if (request.images.isNotEmpty() && Capability.VISION in e.capabilities) {
             try { gated(request) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
                 if (request.requireImages) throw t   // a text-only retry would guess without the photo
-                Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${SafeLog.describe(t)}")
+                PcLog.w(TAG, "vision failed, retrying as text: ${SafeLog.describe(t)}")
                 gated(request.copy(images = emptyList()))
             }
         } else {

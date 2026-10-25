@@ -1,7 +1,7 @@
 package com.rokid.context
 
 import android.os.Bundle
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -58,9 +58,9 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch(Dispatchers.IO) {
                 val rerun = runCatching {
                     OnboardingGuard.of(com.rokid.context.ai.AiGraph.get(applicationContext), deps.memory).mustRerun(complete = true)
-                }.getOrElse { e -> Log.w(TAG, "onboarding check failed (${e.javaClass.simpleName})"); false }
+                }.getOrElse { e -> PcLog.w(TAG, "onboarding check failed (${e.javaClass.simpleName})"); false }
                 if (rerun) {
-                    Log.i(TAG, "onboarding marked complete but no usable AI and no data: showing onboarding")
+                    PcLog.i(TAG, "onboarding marked complete but no usable AI and no data: showing onboarding")
                     deps.onboarding.resetDurably()
                     reonboard.value = true
                 }
