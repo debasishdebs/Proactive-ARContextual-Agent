@@ -34,7 +34,7 @@ class OutboxDrainer(
     private val maxRowsPerRun: Int = MAX_ROWS_PER_RUN,
 ) {
     /** [removed] rows confirmed and deleted, [failed] rows that failed this run, [deferred] rows left for an unreachable port, [waiting] rows still inside their backoff, [malformed] unreadable or unknown rows, [stuck] rows past [STUCK_ATTEMPTS]. */
-    data class Report(val removed: Int, val failed: Int, val deferred: Int, val waiting: Int, val malformed: Int, val stuck: Int = 0) {
+    data class Report(val removed: Int, val failed: Int, val deferred: Int, val waiting: Int, val malformed: Int, val stuck: Int = 0, val dropped: Int = 0) {
         companion object { val NONE = Report(0, 0, 0, 0, 0) }
     }
 
@@ -46,24 +46,27 @@ class OutboxDrainer(
     suspend fun drain(): Report = lock.withLock { drainLocked() }
 
     private suspend fun drainLocked(): Report {
-        val rows = store.pending()
         val before = store.attempts()
-        if (rows.isEmpty()) {
+        val now = clock()
+        val total = store.count()
+        if (total == 0) {
             if (before.isNotEmpty()) store.saveAttempts(emptyMap())
             return Report.NONE
         }
-        val live = rows.map { it.id }.toSet()
+        // Bounded read: only rows that are due (not in their backoff), at most WINDOW of them, phone files first.
+        val inBackoff = before.filter { (_, a) -> now >= a.lastAtMs && now - a.lastAtMs < backoffMs(a.count) }.keys.toList()
+        val rows = store.due(WINDOW, inBackoff)
+        val live = store.existing(before.keys)
         val attempts = before.filterKeys { it in live }.toMutableMap()
-        val now = clock()
         val reach = HashMap<Port, Boolean>()
         suspend fun reachable(p: Port): Boolean = reach.getOrPut(p) {
             try {
                 when (p) { Port.FILES -> true; Port.GLASSES -> glasses.reachable(); Port.HELPER -> helper.reachable() }
             } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
         }
-        var budget = maxRowsPerRun; var removed = 0; var failed = 0; var deferred = 0; var waiting = 0; var malformed = 0
+        var budget = maxRowsPerRun; var removed = 0; var failed = 0; var deferred = 0; var waiting = inBackoff.count { it in live }; var malformed = 0
         try {
-            for (row in rows.sortedWith(compareBy({ it.target != CleanupTarget.PHONE_FILE }, { it.id }))) {
+            for (row in rows) {
                 if (budget <= 0) break
                 val steps = plan(row)
                 if (steps == null) { malformed++; continue }
@@ -94,10 +97,13 @@ class OutboxDrainer(
         } finally {
             if (attempts != before) withContext(NonCancellable) { store.saveAttempts(attempts) }
         }
+        // A glasses transport that stays unreachable must not grow the table without bound: each glasses target keeps its newest GLASSES_CAP_PER_TARGET rows; the oldest are dropped and only counted.
+        var dropped = 0
+        for (t in CAPPED_TARGETS) dropped += try { store.trim(t, GLASSES_CAP_PER_TARGET) } catch (e: CancellationException) { throw e } catch (e: Exception) { 0 }
         val stuck = attempts.values.count { it.count >= STUCK_ATTEMPTS }
-        val report = Report(removed, failed, deferred, waiting, malformed, stuck)
+        val report = Report(removed, failed, deferred, waiting, malformed, stuck, dropped)
         log.log(Level.I, "OutboxDrainer", "drain removed=${LogFields.count(removed)} failed=${LogFields.count(failed)} deferred=${LogFields.count(deferred)} " +
-            "waiting=${LogFields.count(waiting)} malformed=${LogFields.count(malformed)} stuck=${LogFields.count(stuck)} left=${LogFields.count(rows.size - removed)}")
+            "waiting=${LogFields.count(waiting)} malformed=${LogFields.count(malformed)} stuck=${LogFields.count(stuck)} left=${LogFields.count(total - removed - dropped)} dropped=${LogFields.count(dropped)}")
         return report
     }
 
@@ -113,6 +119,11 @@ class OutboxDrainer(
 
     companion object {
         const val MAX_ROWS_PER_RUN = 50
+        /** Rows read per run (the SQL LIMIT). */
+        const val WINDOW = 200
+        /** Hard cap of pending rows per glasses target; the glasses transport is not built, so an unreachable glasses must not grow the table forever. Phone-file rows are never capped. */
+        const val GLASSES_CAP_PER_TARGET = 2_000
+        private val CAPPED_TARGETS = listOf(CleanupTarget.GLASSES_FRAME, CleanupTarget.GLASSES_TRACE, CleanupTarget.GLASSES_RANGE)
         const val BASE_BACKOFF_MS = 5 * 60_000L
         const val MAX_BACKOFF_MS = 6 * 3_600_000L
         const val STUCK_ATTEMPTS = 20

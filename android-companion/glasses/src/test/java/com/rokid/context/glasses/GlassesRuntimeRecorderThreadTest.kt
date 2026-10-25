@@ -50,4 +50,22 @@ class GlassesRuntimeRecorderThreadTest {
         assertNotEquals(Looper.getMainLooper().thread, built)
         assertTrue(runtime.traceRecorderOrNull === runtime.traceRecorder)
     }
+
+    /** A control that waits in the writer queue (here: behind a held-back recorder build) keeps the clocks of its ARRIVAL: its 300 ms collect window is over when the writer finally applies it. */
+    @Test fun aControlQueuedBehindTheWriterIsAppliedWithItsArrivalClocks() {
+        GlassesRuntime.resetForTests()
+        val release = CountDownLatch(1)
+        GlassesRuntime.recorderBuildHook = { release.await(30, TimeUnit.SECONDS) }
+        val runtime = GlassesRuntime.get(app)
+        val bridge = com.rokid.context.glasses.link.FakeBridge()
+        val c = com.rokid.context.glasses.link.HudController(runtime.scope, bridge, com.rokid.context.glasses.link.HudSettingsCache(app.getSharedPreferences("rt_ctl", 0)), { com.rokid.context.core.model.Hello(glassesBatteryPct = 80, bufferSize = 0, glassesNowMs = 0, pauses = emptyList()) })
+        runtime.attach(c); c.start()
+        bridge.phone(com.rokid.context.core.model.Channels.TRACE_CTL, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.TraceControl(collect = true, collectUntilMs = System.currentTimeMillis() + 300, installId = "inst-1", deletionCounter = 1, atMs = System.currentTimeMillis())))
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(1_500)) // the control waits 1.5 s for the writer (Robolectric's elapsed clock only moves when told)
+        release.countDown()
+        repeat(1000) { if (runtime.traceRecorderReady && runtime.traceRecorder.state().recovered) return@repeat; Thread.sleep(5) }
+        val st = runtime.traceRecorder.state()
+        assertTrue(st.recovered, "the writer finished its start-up")
+        assertFalse(st.collect, "the window ended 1.2 s ago on the arrival clock; sampled at execution it would still be open")
+    }
 }
