@@ -350,7 +350,7 @@ class ExecutorsTest {
         assertEquals(0 to 0, est(NodeTypes.MEMORY_WRITE, node(NodeTypes.MEMORY_WRITE), 4))
         assertEquals(3, exec(NodeTypes.VISION_EXTRACT).chunkSize(extractNode(3)))
         assertNull(Executors.all()[NodeTypes.INPUT_PHOTOS])
-        assertEquals(10, Executors.all().size)
+        assertEquals(11, Executors.all().size)
     }
 
     // ---- usage (S32): tokens and calls sit on the one row that owns each provider call ----

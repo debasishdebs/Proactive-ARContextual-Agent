@@ -10,6 +10,7 @@ import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.NumberCompare
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PromptSource
+import com.rokid.context.ai.canvas.SetFrequencyPreview
 import com.rokid.context.ai.canvas.SummaryNode
 import com.rokid.context.ai.canvas.WindowAggregate
 import com.rokid.context.ai.canvas.promptSource
@@ -44,7 +45,7 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 object Executors {
     fun all(): Map<String, NodeExecutor> =
-        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, WindowAggregateExecutor, CompareExecutor, MotionModelExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
+        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, WindowAggregateExecutor, CompareExecutor, MotionModelExecutor, SetFrequencyPreviewExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
 }
 
 private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSource.Draft)?.let { PromptDraft(it.template, it.schema) }
@@ -344,6 +345,22 @@ object SwitchExecutor : NodeExecutor {
             val v = it.value as? CanvasValue.Json ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
             val label = field?.let { f -> ((v.value as? JsonObject)?.get(f) as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
             NodeResult(it.frameId, v, branch = if (label != null && label in cases) label else NodeTypes.OTHER)
+        }
+    }
+}
+
+/** `out.set_frequency_preview`: records what the capture rate WOULD become for the label of the model; writes and publishes nothing ([SetFrequencyPreview]). */
+object SetFrequencyPreviewExecutor : NodeExecutor {
+    override val type = NodeTypes.OUT_SET_FREQUENCY_PREVIEW
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val s = SetFrequencyPreview.settings(node.params)
+        return items.map {
+            val label = (((it.value as? CanvasValue.Json)?.value as? JsonObject)?.get("label") as? JsonPrimitive)?.takeIf { p -> p.isString }?.content
+            val p = label?.let { l -> SetFrequencyPreview.preview(l, s) } ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
+            NodeResult(it.frameId, CanvasValue.Json(p))
         }
     }
 }

@@ -17,7 +17,7 @@ class NodeFamiliesTest {
             NodeTypes.VISION_EXTRACT to Family.PROCESS, NodeTypes.PROMPT to Family.PROCESS, NodeTypes.SUMMARY to Family.PROCESS, NodeTypes.PROC_MOTION_MODEL to Family.PROCESS, NodeTypes.AGG_WINDOW to Family.AGGREGATE, NodeTypes.COMPARE to Family.CONDITION, NodeTypes.CRITIC to Family.PROCESS, NodeTypes.PY_FN to Family.PROCESS,
             NodeTypes.GATE_THRESHOLD to Family.CONDITION, NodeTypes.GATE_NOVELTY to Family.CONDITION, NodeTypes.EXPR_GUARD to Family.CONDITION, NodeTypes.EXPR_VALUE to Family.CONDITION,
             NodeTypes.LOCAL_CRITIC to Family.CONDITION, NodeTypes.SWITCH to Family.CONDITION, NodeTypes.GATE_RATE_CAP to Family.CONDITION,
-            NodeTypes.CAPTURE_IMAGE to Family.OUTCOME, NodeTypes.POLICY_CAPTURE_RATE to Family.OUTCOME, NodeTypes.SIGNAL_OUT to Family.OUTCOME, NodeTypes.MEMORY_WRITE to Family.OUTCOME,
+            NodeTypes.CAPTURE_IMAGE to Family.OUTCOME, NodeTypes.POLICY_CAPTURE_RATE to Family.OUTCOME, NodeTypes.SIGNAL_OUT to Family.OUTCOME, NodeTypes.MEMORY_WRITE to Family.OUTCOME, NodeTypes.OUT_SET_FREQUENCY_PREVIEW to Family.OUTCOME,
         )
         assertEquals("a new type needs a family here", expected.keys, NodeTypes.all.map { it.type }.toSet())
         expected.forEach { (t, f) -> assertEquals(t, f, NodeTypes.byType(t)!!.family) }
