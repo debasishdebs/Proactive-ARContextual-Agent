@@ -34,6 +34,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class AskActionsTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.PcLogToShadowRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private var reply: suspend (String) -> String = { """{"answer":"Milk is almost empty.","sources":["rokid_mem_1"]}""" }
     private val prompts = mutableListOf<String>()

@@ -1,7 +1,7 @@
 package com.rokid.context.memory.frames
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.google.crypto.tink.Aead
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
@@ -177,7 +177,7 @@ object FrameImages {
 
     /** A fixed code and the exception class only: a message may carry a path (frame ids are in file names). */
     fun fail(code: Code, e: Throwable?) {
-        Log.w(TAG, "frame crypto failed code=$code" + (e?.let { " (${it.javaClass.simpleName})" } ?: ""))
+        PcLog.w(TAG, "frame crypto failed code=$code" + (e?.let { " (${it.javaClass.simpleName})" } ?: ""))
     }
 
     private fun fsyncDir(dir: File) {

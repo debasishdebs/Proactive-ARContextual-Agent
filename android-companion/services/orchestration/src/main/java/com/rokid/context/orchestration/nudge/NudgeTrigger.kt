@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration.nudge
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -15,7 +15,7 @@ object NudgeTrigger {
         try {
             WorkManager.getInstance(context).enqueueUniqueWork(WORK, ExistingWorkPolicy.KEEP, OneTimeWorkRequestBuilder<NudgeWorker>().build())
         } catch (e: Exception) {
-            Log.i("NudgeTrigger", "nudge not scheduled: ${SafeLog.describe(e)}") // never fails the summarizer pass
+            PcLog.i("NudgeTrigger", "nudge not scheduled: ${SafeLog.describe(e)}") // never fails the summarizer pass
         }
     }
 }

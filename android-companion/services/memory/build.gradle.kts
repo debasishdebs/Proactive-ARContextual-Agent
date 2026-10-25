@@ -21,6 +21,7 @@ ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 
 dependencies {
     api("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation(project(":core:model")) // PcLog, the one logger (pure Kotlin module)
     api("androidx.room:room-runtime:2.6.1")
     api("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")

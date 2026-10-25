@@ -17,6 +17,7 @@ import org.robolectric.shadows.ShadowAlarmManager
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class ReminderExecutorTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.connectors.PcLogToShadowRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val am = ctx.getSystemService(AlarmManager::class.java)
     private val exec = ReminderExecutor(ctx)

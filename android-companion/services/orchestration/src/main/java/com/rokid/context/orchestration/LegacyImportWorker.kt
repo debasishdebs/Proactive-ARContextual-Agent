@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
@@ -23,10 +23,10 @@ class LegacyImportWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "legacy import failed (run ${runAttemptCount + 1}/$MAX_RUNS): ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "legacy import failed (run ${runAttemptCount + 1}/$MAX_RUNS): ${e.javaClass.simpleName}")
             return if (runAttemptCount < MAX_RUNS - 1) Result.retry() else Result.failure()
         }
-        if (report != null) Log.i(TAG, "legacy import $report")
+        if (report != null) PcLog.i(TAG, "legacy import $report")
         EmbeddingWorker.enqueue(applicationContext) // imported memories are embedded in the background (spec §6.2)
         return Result.success()
     }

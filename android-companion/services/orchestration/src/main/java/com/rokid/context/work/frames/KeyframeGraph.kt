@@ -8,7 +8,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.PowerManager
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.contract.ClusterContract
 import com.rokid.context.ai.contract.ClusterPhoto
@@ -175,14 +175,14 @@ class KeyframeHandle internal constructor(private val app: Context) {
     fun start() {
         pipeline.start(scope)
         if (!started.compareAndSet(false, true)) return
-        scope.launch { runCatching { pipeline.recover() }.onFailure { Log.w(TAG, "recovery failed: ${it.javaClass.simpleName}") } }
+        scope.launch { runCatching { pipeline.recover() }.onFailure { PcLog.w(TAG, "recovery failed: ${it.javaClass.simpleName}") } }
         watchNetwork()
     }
 
     /** A frame committed to Room (the drain, or the hub after storing a receipt). Starts the loop if needed but never scans (review M1). */
     fun signal() {
         pipeline.start(scope); pipeline.signal()
-        try { KeyframeGraph.intentSampler?.poke() } catch (e: Exception) { Log.w(TAG, "intent poke failed: ${e.javaClass.simpleName}") }
+        try { KeyframeGraph.intentSampler?.poke() } catch (e: Exception) { PcLog.w(TAG, "intent poke failed: ${e.javaClass.simpleName}") }
     }
 
     /**
@@ -201,7 +201,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
                 pipeline.onNetworkReturn()
             }
         }
-        try { cm.registerDefaultNetworkCallback(cb); networkWatch = cb } catch (e: Exception) { Log.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") }
+        try { cm.registerDefaultNetworkCallback(cb); networkWatch = cb } catch (e: Exception) { PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") }
     }
 
     /** Whether the active network has validated internet access (ConnectivityManager). Unknown counts as online: only a clear "no" means offline. */

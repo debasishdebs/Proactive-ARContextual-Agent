@@ -1,7 +1,7 @@
 package com.rokid.context.work
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.annotation.VisibleForTesting
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -162,7 +162,7 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         return Result.failure(Data.Builder().putString(KEY_MESSAGE, message).build())
     }
 
-    private fun log(id: String, reason: String) = Log.i(TAG, "model $id: $reason")
+    private fun log(id: String, reason: String) = PcLog.i(TAG, "model $id: $reason")
 
     companion object {
         const val KEY_MODEL_ID = "model_id"

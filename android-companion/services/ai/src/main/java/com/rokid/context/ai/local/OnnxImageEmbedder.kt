@@ -3,7 +3,7 @@ package com.rokid.context.ai.local
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.ProviderConfigException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -61,7 +61,7 @@ class OnnxImageEmbedder(
                 throw e
             } catch (e: Throwable) {
                 // Native-load Errors (UnsatisfiedLinkError, NoClassDefFoundError, OOM...) degrade to text-only like any failure; class name only.
-                Log.w(TAG, "session create failed attempt=$attempt class=${e.javaClass.simpleName}")
+                PcLog.w(TAG, "session create failed attempt=$attempt class=${e.javaClass.simpleName}")
             }
         }
         unavailable = true

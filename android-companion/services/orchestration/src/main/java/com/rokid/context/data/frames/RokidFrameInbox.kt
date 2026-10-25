@@ -1,7 +1,7 @@
 package com.rokid.context.data.frames
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.memory.FrameRows
 import com.rokid.context.memory.MemoryGraph
@@ -99,7 +99,7 @@ object RokidFrameInbox {
         appendFrame: FrameAppender,
     ): List<String> {
         val swept = sweepOrphanParts(context, nowMs())
-        if (swept > 0) Log.i(TAG, "swept orphan parts=$swept")
+        if (swept > 0) PcLog.i(TAG, "swept orphan parts=$swept")
         val inbox = inboxDir(context)
         if (!inbox.exists()) inbox.mkdirs()
         val archive = archiveDir(context)
@@ -118,7 +118,7 @@ object RokidFrameInbox {
             ?.take(maxItems.coerceAtLeast(1))
             ?.toList()
             .orEmpty()
-        Log.i(TAG, "ingestPending inbox=${inbox.absolutePath} files=${candidates.size}")
+        PcLog.i(TAG, "ingestPending files=${candidates.size}")
 
         for (file in candidates) {
             // Review Focus 3: a Delete all that starts while this file is ingested bumps the generation; its row and file go.
@@ -144,7 +144,7 @@ object RokidFrameInbox {
                 InboxResult.STORED -> if (MemoryWipe.generation.get() != generation) {
                     dropRows(context, listOf(frameIdOf(sourceFile)))
                     sourceFile.delete(); sourceSidecar?.delete()
-                    Log.i(TAG, "frame dropped: Delete all ran during its ingest")
+                    PcLog.i(TAG, "frame dropped: Delete all ran during its ingest")
                 } else {
                     imported += frameIdOf(sourceFile)
                 }
@@ -155,9 +155,9 @@ object RokidFrameInbox {
                 // Fix round 3: same rule as a cancelled ingest. A Delete all since it began deletes the file, else it goes back.
                 InboxResult.FAILED -> if (MemoryWipe.generation.get() != generation) {
                     sourceFile.delete(); sourceSidecar?.delete()
-                    Log.i(TAG, "failed frame dropped: Delete all ran during its ingest")
+                    PcLog.i(TAG, "failed frame dropped: Delete all ran during its ingest")
                 } else if (moved && !WipeFence.mutex.withLock { returnToInbox(archived, file, archivedSidecar, sidecar) }) {
-                    Log.w(TAG, "failed ingest not returned to the inbox")
+                    PcLog.w(TAG, "failed ingest not returned to the inbox")
                 }
             }
         }
@@ -190,7 +190,7 @@ object RokidFrameInbox {
     ) {
         val id = frameIdOf(sourceFile)
         if (MemoryWipe.generation.get() != generation) {
-            try { dropRows(context, listOf(id)) } catch (e: Exception) { Log.w(TAG, "row not removed: ${e.javaClass.simpleName}") }
+            try { dropRows(context, listOf(id)) } catch (e: Exception) { PcLog.w(TAG, "row not removed: ${e.javaClass.simpleName}") }
             sourceFile.delete(); sourceSidecar?.delete()
             return
         }
@@ -221,10 +221,10 @@ object RokidFrameInbox {
         if (ingestFile(context, file, source, placeLabel, appendFrame) != InboxResult.STORED) return null
         if (MemoryWipe.generation.get() != generation) {
             withContext(NonCancellable) {
-                try { dropRows(context, listOf(id)) } catch (e: Exception) { Log.w(TAG, "row not removed: ${e.javaClass.simpleName}") }
+                try { dropRows(context, listOf(id)) } catch (e: Exception) { PcLog.w(TAG, "row not removed: ${e.javaClass.simpleName}") }
                 file.delete()
             }
-            Log.i(TAG, "frame dropped: Delete all ran during its ingest")
+            PcLog.i(TAG, "frame dropped: Delete all ran during its ingest")
             return null
         }
         return id
@@ -253,7 +253,7 @@ object RokidFrameInbox {
     ): InboxResult {
         val archive = archiveDir(context)
         if (!dirSync.sync(archive) || !dirSync.sync(inboxDir(context))) {
-            Log.w(TAG, "directory sync failed; commit deferred")
+            PcLog.w(TAG, "directory sync failed; commit deferred")
             return InboxResult.SYNC_FAILED
         }
         // A legacy receipt (no .v2 marker) has no sidecar: UNKNOWN/false defaults. A v2 one is only ever committed with its meta.
@@ -263,7 +263,7 @@ object RokidFrameInbox {
         val result = ingestFile(context, jpeg, source, placeLabel, appendFrame, meta, nowMs)
         if (result != InboxResult.FAILED && sidecar != null) {
             sidecar.delete()
-            if (!dirSync.sync(archive)) Log.w(TAG, "archive directory not synced after the commit")
+            if (!dirSync.sync(archive)) PcLog.w(TAG, "archive directory not synced after the commit")
         }
         return result
     }
@@ -280,7 +280,7 @@ object RokidFrameInbox {
     ): InboxResult {
         val frameId = frameIdOf(file)
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
-        Log.i(TAG, "ingestFile path=${file.absolutePath} source=$source exists=${file.exists()} size=${file.length()}")
+        PcLog.i(TAG, "ingestFile exists=${file.exists()} size=${file.length()}")
         val now = nowMs()
         val routeFirst = try { sceneActive() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
         val rows = FrameRows(
@@ -313,10 +313,10 @@ object RokidFrameInbox {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "ingest failed frameId=$frameId: ${e.javaClass.simpleName}")
+            PcLog.w(TAG, "ingest failed: ${e.javaClass.simpleName}")
             return InboxResult.FAILED
         }
-        Log.i(TAG, "append result=$appended frameId=$frameId")
+        PcLog.i(TAG, "append result=$appended")
         if (appended) PipelineStatsStore.incFrameCaptured(context)
         else if (receipt != null) dropRedundantCopy(context, file, receipt.wireFrameId, frameId)
         // appendFrame's false is a duplicate id or a file that vanished: neither is worth a retry.
@@ -342,18 +342,18 @@ object RokidFrameInbox {
                 row.path == file.absolutePath -> return // the row already points at this very file
                 row.path.isNotBlank() && File(row.path).exists() -> {
                     file.delete()
-                    Log.i(TAG, "redundant receipt dropped (wire id already stored)")
+                    PcLog.i(TAG, "redundant receipt dropped (wire id already stored)")
                     return
                 }
                 else -> {
                     g.db.frameDao().updatePath(row.id, file.absolutePath)
-                    Log.i(TAG, "stored frame repointed at the surviving copy")
+                    PcLog.i(TAG, "stored frame repointed at the surviving copy")
                     return
                 }
             }
             file.delete()
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            Log.w(TAG, "redundant copy kept: ${e.javaClass.simpleName}") // a throwing check keeps the file
+            PcLog.w(TAG, "redundant copy kept: ${e.javaClass.simpleName}") // a throwing check keeps the file
         }
     }
 
@@ -410,12 +410,12 @@ object RokidFrameInbox {
             if (nowMs() - r.rxMs < SIDECAR_LOST_AFTER_MS) continue // held, not defaulted
             try {
                 writeDurably(ReceiptNames.sidecarBeside(jpeg), ReceiptMeta(wireFrameId = r.wireId, capturedAtMs = jpeg.lastModified().takeIf { it > 0 } ?: r.rxMs, size = jpeg.length()).toJson())
-                if (!dirSync.sync(jpeg.parentFile!!)) { Log.w(TAG, "defaults sidecar not synced"); continue }
+                if (!dirSync.sync(jpeg.parentFile!!)) { PcLog.w(TAG, "defaults sidecar not synced"); continue }
                 wroteSidecar = true
                 PipelineStatsStore.incSidecarLost(context)
-                Log.i(TAG, "${PipelineStatsStore.K_V2_SIDECAR_LOST} count=1")
+                PcLog.i(TAG, "${PipelineStatsStore.K_V2_SIDECAR_LOST} count=1")
             } catch (e: java.io.IOException) {
-                Log.w(TAG, "defaults sidecar not written: ${e.javaClass.simpleName}")
+                PcLog.w(TAG, "defaults sidecar not written: ${e.javaClass.simpleName}")
             }
         }
 
@@ -437,7 +437,7 @@ object RokidFrameInbox {
             }
             if (id in rowIds) { // committed; only the post-commit cleanup died
                 sidecar.delete()
-                if (!dirSync.sync(archive)) Log.w(TAG, "archive directory not synced after the cleanup")
+                if (!dirSync.sync(archive)) PcLog.w(TAG, "archive directory not synced after the cleanup")
                 continue
             }
             val generation = MemoryWipe.generation.get()
@@ -448,7 +448,7 @@ object RokidFrameInbox {
                 } else committed += id
             }
         }
-        if (committed.isNotEmpty()) Log.i(TAG, "reconciled receipts=${committed.size}")
+        if (committed.isNotEmpty()) PcLog.i(TAG, "reconciled receipts=${committed.size}")
         return committed
     }
 
@@ -461,8 +461,8 @@ object RokidFrameInbox {
             if (jpeg.parentFile == inbox) jpeg.renameTo(File(archive, sidecar.name.removeSuffix(ReceiptNames.SIDECAR) + ReceiptNames.JPG))
             else sidecar.renameTo(File(archive, jpeg.name.removeSuffix(ReceiptNames.JPG) + ReceiptNames.SIDECAR))
         }
-        if (!ok) { Log.w(TAG, "split receipt not reunited"); return }
-        if (!dirSync.sync(archive) || !dirSync.sync(inbox)) Log.w(TAG, "split receipt reunited but directories not synced")
+        if (!ok) { PcLog.w(TAG, "split receipt not reunited"); return }
+        if (!dirSync.sync(archive) || !dirSync.sync(inbox)) PcLog.w(TAG, "split receipt reunited but directories not synced")
     }
 
     private const val MAX_IN = 500

@@ -29,6 +29,7 @@ import kotlin.math.sin
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], application = Application::class)
 class SceneIndexerTest {
+    @get:org.junit.Rule val pcLogShadow = com.rokid.context.PcLogToShadowRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val db = DatabaseFactory.inMemory(ctx)
     @After fun close() = db.close()

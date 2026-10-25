@@ -1,7 +1,7 @@
 package com.rokid.context.orchestration.forget
 
 import android.content.Context
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.WipeFence
@@ -30,7 +30,7 @@ object FrameSweep {
         paths.distinct().count { p ->
             val f = File(p)
             val ok = !f.exists() || runCatching { f.delete() }.getOrDefault(false)
-            if (!ok) Log.w(TAG, "a forgotten photo could not be deleted yet; the sweep retries")
+            if (!ok) PcLog.w(TAG, "a forgotten photo could not be deleted yet; the sweep retries")
             ok && f.exists().not()
         }
 
@@ -62,7 +62,7 @@ object FrameSweep {
         val stuck = rowless.filter { id -> byId[id].orEmpty().any { it.exists() } }
         if (stuck.size <= CHUNK) {
             runCatching { dao.pruneTombstones(nowMs - TOMBSTONE_KEEP_MS, stuck.ifEmpty { listOf("") }) }
-                .onFailure { Log.w(TAG, "tombstones not pruned (next sweep retries): ${it.javaClass.simpleName}") }
+                .onFailure { PcLog.w(TAG, "tombstones not pruned (next sweep retries): ${it.javaClass.simpleName}") }
         }
         deleted
     }

@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.speech.SpeechRecognizer
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.rokid.context.voice.ExternalAudioProbe
@@ -54,7 +54,7 @@ class AndroidVoicePlatform(context: Context, private val io: CoroutineDispatcher
         val clip = withContext(io) { app.assets.open(ExternalAudioProbe.ASSET).use { it.readBytes() } }
         val capacity = withContext(io) { AndroidPipes.SHARED.capacity() }
         if (!ProbeFeed.canDecide(clip.size, capacity)) {
-            Log.i(TAG, "probe skipped: capacity=$capacity clip=${clip.size}")
+            PcLog.i(TAG, "probe skipped: capacity=$capacity clip=${clip.size}")
             return null
         }
         var pipe: AndroidPipes.Feed? = null
@@ -78,7 +78,7 @@ class AndroidVoicePlatform(context: Context, private val io: CoroutineDispatcher
             }
             val outcome = withContext(io) { ProbeFeed.stream(f, clip) }
             val ending = withTimeoutOrNull(FINAL_WAIT_MS) { final.await() }
-            return ProbeFeed.judge(ending, outcome).also { if (it == null) Log.i(TAG, "probe undecided: recognizer ${ending?.javaClass?.simpleName}") }
+            return ProbeFeed.judge(ending, outcome).also { if (it == null) PcLog.i(TAG, "probe undecided: recognizer ${ending?.javaClass?.simpleName}") }
         } finally {
             withContext(NonCancellable) {
                 feeder?.close() ?: pipe?.sink?.close()

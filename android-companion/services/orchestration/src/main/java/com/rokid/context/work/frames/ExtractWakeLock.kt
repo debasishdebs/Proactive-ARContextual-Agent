@@ -2,7 +2,7 @@ package com.rokid.context.work.frames
 
 import android.content.Context
 import android.os.PowerManager
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 
 /**
  * A PARTIAL_WAKE_LOCK around one extraction (review I5): without it the CPU may sleep inside a long provider call or a budget
@@ -17,7 +17,7 @@ class ExtractWakeLock(private val app: Context, private val timeoutMs: Long = HO
 
     suspend fun <T> hold(block: suspend () -> T): T {
         val l = lock
-        val acquired = l != null && try { l.acquire(timeoutMs); true } catch (e: Exception) { Log.w(TAG, "wake lock refused: ${e.javaClass.simpleName}"); false }
+        val acquired = l != null && try { l.acquire(timeoutMs); true } catch (e: Exception) { PcLog.w(TAG, "wake lock refused: ${e.javaClass.simpleName}"); false }
         try {
             return block()
         } finally {

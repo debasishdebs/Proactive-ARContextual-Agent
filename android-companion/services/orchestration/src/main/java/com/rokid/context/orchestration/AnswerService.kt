@@ -2,7 +2,7 @@ package com.rokid.context.orchestration
 
 import android.content.Context
 import androidx.room.withTransaction
-import android.util.Log
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
@@ -189,7 +189,7 @@ class AnswerService(
 
     private suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null): List<Pair<PhotoHit, String>> {
         val hits = try { if (!photosAllowed()) emptyList() else if (notAfterMs != null) photosAsOf(q, notAfterMs) else photos(q, nowMs) } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            Log.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); emptyList()
+            PcLog.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); emptyList()
         }
         // The relevance floor: below it a photo gets neither an image nor a line (provisional values: AskPhotoPolicy).
         // Ask debug only: a photo known to be captured (else received) after the ask did not exist for it.
@@ -246,10 +246,10 @@ class AnswerService(
     } catch (e: NoMemoriesException) {
         AskOutcome.Failed(AskActions.NO_MEMORIES)
     } catch (e: ModelCallException) {
-        Log.i(TAG, "answer failed: kind=${e.kind} retryable=${e.retryable}") // never the message: it can carry provider text
+        PcLog.i(TAG, "answer failed: kind=${e.kind} retryable=${e.retryable}") // never the message: it can carry provider text
         AskOutcome.Failed(if (e.kind == FailureKind.INVALID_OUTPUT) AskActions.FAILED else AskActions.AI_UNAVAILABLE)
     } catch (e: Exception) {
-        Log.i(TAG, "answer failed (${e.javaClass.simpleName})")
+        PcLog.i(TAG, "answer failed (${e.javaClass.simpleName})")
         AskOutcome.Failed(AskActions.FAILED)
     }
 
@@ -270,12 +270,12 @@ class AnswerService(
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            Log.i(TAG, "backlog extraction before ask failed (${e.javaClass.simpleName})")
+            PcLog.i(TAG, "backlog extraction before ask failed (${e.javaClass.simpleName})")
         }
         val r = retrieve(q, nowMs)
         // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
         if (r.memories.isEmpty() && r.photos.isEmpty() && !ActionTriggers.matches(q)) {
-            runCatching(onNoMatch).onFailure { Log.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
+            runCatching(onNoMatch).onFailure { PcLog.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
             throw NoMemoriesException()
         }
         val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER)).output as AnswerOutput
@@ -305,7 +305,7 @@ class AnswerService(
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
-                Log.w(TAG, "proposal intake failed (${t.javaClass.simpleName})")
+                PcLog.w(TAG, "proposal intake failed (${t.javaClass.simpleName})")
                 null
             }
         }
