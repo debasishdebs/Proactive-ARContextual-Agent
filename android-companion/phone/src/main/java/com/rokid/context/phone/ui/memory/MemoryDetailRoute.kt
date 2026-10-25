@@ -23,8 +23,14 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
         MemoryDetailViewModel(id, deps.memory.timeline, deps.memory.memoryEdits, deps.zone, forget = object : MemoryForget {
             // The hub refresh makes the next StateFrame drop the memory from `today`.
             private val onForgotten = { HubGraph.get(app).refresh() }
-            override suspend fun forgetFact(memoryId: String) = ForgetActions.forgetFact(app, memoryId, onForgotten)
-            override suspend fun forgetMoment(frameId: String) = ForgetActions.forgetMoment(app, frameId, onForgotten)
+            override suspend fun forgetFact(memoryId: String) = done(ForgetActions.forgetFactOutcome(app, memoryId, onForgotten))
+            override suspend fun forgetMoment(frameId: String) = done(ForgetActions.forgetMomentOutcome(app, frameId, onForgotten))
+            /** The typed outcome: a blocked-by-export Forget becomes the typed exception the view model names to the user. */
+            private fun done(o: ForgetActions.Outcome): Boolean = when (o) {
+                ForgetActions.Outcome.DONE -> true
+                ForgetActions.Outcome.EXPORT_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.ExportInProgress()
+                ForgetActions.Outcome.FAILED -> false
+            }
         }, onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })
     }
     val state by vm.state.collectAsStateWithLifecycle()

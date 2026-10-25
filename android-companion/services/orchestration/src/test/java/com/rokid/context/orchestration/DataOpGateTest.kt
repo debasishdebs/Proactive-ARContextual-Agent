@@ -2,6 +2,7 @@ package com.rokid.context.orchestration
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
@@ -62,5 +63,42 @@ class DataOpGateTest {
         val a = async { gate.export { inside.complete(Unit); release.await() } }
         inside.await(); var ran = false; gate.export { ran = true }; assertTrue(ran)
         release.complete(Unit); a.await()
+    }
+
+    private suspend fun assertFree(gate: DataOpGate) { var ran = false; gate.export { ran = true }; assertTrue("the gate is free: an export starts", ran) }
+
+    @Test fun cancellingADeleteBeforeItAcquiresLeavesTheGateFree() = runBlocking<Unit> {
+        val gate = DataOpGate()
+        val job = launch(start = kotlinx.coroutines.CoroutineStart.LAZY) { gate.delete { } }
+        job.cancel(); job.join()
+        assertFree(gate)
+    }
+
+    @Test fun cancellingADeleteDuringTheWaitLeavesTheGateFree() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val exp = async { gate.export { inside.complete(Unit); release.await() } }; inside.await()
+        val del = launch { gate.delete { } }
+        withTimeout(10_000) { while (!runCatching { gate.export { } }.exceptionOrNull().let { it is DataOpGate.DeleteRunning }) kotlinx.coroutines.delay(5) }
+        del.cancel(); del.join()
+        release.complete(Unit); exp.await()
+        assertFree(gate)
+    }
+
+    @Test fun cancellingADeleteAfterItAcquiredLeavesTheGateFree() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>()
+        val del = launch { gate.delete { inside.complete(Unit); CompletableDeferred<Unit>().await() } }
+        inside.await(); del.cancel(); del.join()
+        assertFree(gate)
+    }
+
+    @Test fun aCancellationLandingRightAfterTheExportEndedDoesNotLeakTheDeleteCount() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val exp = async { gate.export { inside.complete(Unit); release.await() } }; inside.await()
+        lateinit var del: kotlinx.coroutines.Job
+        gate.testInPredicate = { del.cancel() } // the export is over, the wait is about to hand the gate over: the delete is cancelled right there
+        del = launch { gate.delete { } }
+        withTimeout(10_000) { while (!runCatching { gate.export { } }.exceptionOrNull().let { it is DataOpGate.DeleteRunning }) kotlinx.coroutines.delay(5) }
+        release.complete(Unit); exp.await(); del.join()
+        assertFree(gate)
     }
 }

@@ -88,4 +88,17 @@ class MemoryDetailViewModelTest {
         withTimeout(5_000) { model.state.first { it.message == "Saved" } }
         assertEquals(1, edited.get())
     }
+
+    @Test fun aForgetBlockedByAnExportSaysSoAndWhenToRetry() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
+        val model = vm(object : MemoryForget {
+            override suspend fun forgetFact(memoryId: String): Boolean = throw com.rokid.context.orchestration.DataOpGate.ExportInProgress()
+            override suspend fun forgetMoment(frameId: String): Boolean = true
+        })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.FACT); model.confirmForget()
+        val s = withTimeout(5_000) { model.state.first { it.message != null } }
+        assertEquals("An export is running. Try again in a minute, or when it finishes.", s.message)
+        assertTrue(!s.forgetting && !s.forgotten)
+    }
 }

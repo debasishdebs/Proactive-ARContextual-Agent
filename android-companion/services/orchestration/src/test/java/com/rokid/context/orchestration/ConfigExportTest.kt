@@ -115,4 +115,12 @@ class ConfigExportTest {
     @Test fun askPhotosSwitchIsNotExported() {
         assertFalse("ask_photos" in ConfigExport.PREFS_FILES)
     }
+
+    /** The gate ruling: the settings export is an export too (shared side), refused while a delete runs and never partly written. */
+    @Test fun theSettingsExportIsRefusedWhileADeleteRuns() = runBlocking<Unit> {
+        val err = runCatching { DataOpGate.shared.delete { ConfigExport.write(ctx, ai, nowMs = 9) } }.exceptionOrNull()
+        assertTrue(err is DataOpGate.DeleteRunning); assertEquals("busy: a delete is running", err!!.message)
+        assertFalse("no file was written", java.io.File(MemoryExport.dir(ctx), ConfigExport.FILE_NAME).exists() && java.io.File(MemoryExport.dir(ctx), ConfigExport.FILE_NAME).readText().contains("\"exportedAt\": 9"))
+        assertTrue("after the delete it runs", ConfigExport.write(ctx, ai, nowMs = 10).exists())
+    }
 }
