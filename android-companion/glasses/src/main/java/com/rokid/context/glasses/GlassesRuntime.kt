@@ -296,9 +296,11 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onPhoneSettingsPush = { s -> diagRecord.onSettings(s.diagRecord) }
         c.onCapturePlan = { m -> plan.onMessage(m) }
         c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter)
+            // The arrival clocks are sampled HERE, before the control waits in the writer queue (a long recovery must not shift Forget's range or extend a collect window).
+            val arrivedElapsed = android.os.SystemClock.elapsedRealtime(); val arrivedWall = System.currentTimeMillis()
             // The recorder exists only on the writer thread (queued behind its construction), so the control is handed over there: the caller (the link callback, possibly main) never waits for it.
             traceWriter.execute {
-                traceRecorder.onControl(m); diagRecord.retryPersist()
+                traceRecorder.onControl(m, arrivedElapsed, arrivedWall); diagRecord.retryPersist()
                 // LGC6-min: tell the phone the new state once the control's ordered work (fence, epoch save) has run on the writer, so its re-send ends at `enabled` without waiting for a frame's hello.
                 traceWriter.execute { try { controller?.sendHello() } catch (e: Exception) { /* the next hello carries it */ } }
             }
