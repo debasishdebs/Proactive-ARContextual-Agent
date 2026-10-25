@@ -61,6 +61,16 @@ class ExprWindowPlanTest {
         assertEquals(emptyList<String>(), PlanValidator.check(set.planJson!!).first)
     }
 
+    @Test fun aStrictWindowPlanKeepsItsPreToleranceBytesAndOnlyATolerantOneCarriesMv() {
+        val old = """{"op":"win","name":"stepHz","agg":"mean","sec":10}"""   // the E2a-era lowered op
+        val p = pipeline(guardNode("g1", g()))
+        val strictDefault = PlanCompiler.compile(p, windowMinValidPct = 100)
+        assertEquals(old, winOps(strictDefault).single().toString()); assertTrue(!strictDefault.planJson!!.contains("\"mv\""))
+        val strictNode = PlanCompiler.compile(pipeline(guardNode("g1", g(mv = "100"))), windowMinValidPct = 70)
+        assertEquals("an explicit 100 is strict too: no mv", strictDefault.planJson, strictNode.planJson)
+        assertTrue(PlanCompiler.compile(p, windowMinValidPct = 90).planJson!!.contains("\"mv\":90"))
+    }
+
     @Test fun theToleranceIsPartOfTheTermIdentity() {
         val two = compile(g(mv = "90"), g(mv = "80"))   // the same window at two tolerances: two terms, two rings
         assertEquals(two.problems.toString(), emptyList<String>(), two.problems)

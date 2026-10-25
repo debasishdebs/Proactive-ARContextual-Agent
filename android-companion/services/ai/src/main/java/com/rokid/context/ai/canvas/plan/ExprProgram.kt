@@ -347,7 +347,7 @@ data class ExprProgram(val role: ExprRole, val steps: List<ExprStep>, val out: S
                     when (n.op) {
                         "sig" -> { put("name", SignalCatalog.canonical(n.name)!!) ; if (SignalCatalog.canonical(n.name) in listOf("ctx", "ctxAgeS")) readsCtx = true }
                         "const" -> if (n.f == "bool") put("v", n.flag) else put("v", number(n.value))
-                        "win" -> { put("name", SignalCatalog.canonical(n.name)!!); put("agg", n.f); put("sec", n.ms.toInt()); if (n.flag) put("t", number(n.value)); put("mv", if (n.mv > 0) n.mv else defaultMv) }
+                        "win" -> { put("name", SignalCatalog.canonical(n.name)!!); put("agg", n.f); put("sec", n.ms.toInt()); if (n.flag) put("t", number(n.value)); (if (n.mv > 0) n.mv else defaultMv).let { if (it < 100) put("mv", it) } }   // 100 = strict = absent: a strict plan keeps its pre-3d bytes and hash
                         else -> {
                             if (n.f.isNotEmpty()) put("f", n.f)
                             a?.let { put("a", source(it)) }; b?.let { put("b", source(it)) }; c?.let { put("c", source(it)) }
