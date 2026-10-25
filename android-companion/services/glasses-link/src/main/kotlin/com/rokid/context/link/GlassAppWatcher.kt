@@ -78,7 +78,8 @@ internal class GlassAppWatcher(
     private fun askWearSnapshot(l: CXRLink) {
         runCatching { l.getGlassDeviceInfo() }
             .onFailure { PcLog.w(CxrGlassesLink.TAG, "watcher: device info request failed (${it.javaClass.simpleName})") }
-        PcLog.i(CxrGlassesLink.TAG, "watcher: wear check on=${runCatching { l.isWearingCheckOn() }.getOrNull()}")
+        val wearCheck = runCatching { l.isWearingCheckOn() }.getOrNull()
+        PcLog.i(CxrGlassesLink.TAG, "watcher: wear check on=$wearCheck")
     }
 
     override fun send(channel: String, json: String): Int? {

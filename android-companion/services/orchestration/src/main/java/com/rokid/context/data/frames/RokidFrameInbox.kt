@@ -316,7 +316,8 @@ object RokidFrameInbox {
             PcLog.w(TAG, "ingest failed: ${e.javaClass.simpleName}")
             return InboxResult.FAILED
         }
-        PcLog.i(TAG, "append result=$appended")
+        val origin = if (source == "rokid_phone") "phone" else "glasses" // a stable id-free marker: device-checklist P7-10 greps `append result=true origin=phone`
+        PcLog.i(TAG, "append result=$appended origin=$origin")
         if (appended) PipelineStatsStore.incFrameCaptured(context)
         else if (receipt != null) dropRedundantCopy(context, file, receipt.wireFrameId, frameId)
         // appendFrame's false is a duplicate id or a file that vanished: neither is worth a retry.
