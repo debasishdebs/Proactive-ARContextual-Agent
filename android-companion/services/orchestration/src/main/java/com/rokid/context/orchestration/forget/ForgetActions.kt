@@ -95,14 +95,14 @@ object ForgetActions {
 
 /**
  * Start-up (fix round 1): sweep photos a failed delete left behind, rebuild anything still INVALIDATED (a re-summarise
- * that never got queued or gave up), and make sure retention is scheduled, whatever the pipeline state.
+ * that never got queued or gave up), and make sure retention and the Moment cadence are scheduled, whatever the pipeline state.
  */
 object ForgetStartup {
     suspend fun run(context: Context, refresh: () -> Unit) = withContext(Dispatchers.IO) {
         ForgetActions.dataRemoved = refresh
         runCatching { FrameSweep.sweep(context) }
         runCatching { if (MemoryGraph.get(context).db.forgetDao().invalidatedDerived(1).isNotEmpty()) ResummarizeWorker.enqueue(context) }
-        runCatching { com.rokid.context.work.OrchestrationScheduler(context).ensureRetention() }
+        runCatching { com.rokid.context.work.OrchestrationScheduler(context).ensureBackgroundWork() } // retention and the Moment cadence
         Unit
     }
 }
