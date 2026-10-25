@@ -52,6 +52,9 @@ class ExprSignals {
     @Synchronized internal fun read(i: Int, nowMs: Long): Double =
         if (atMs == Long.MIN_VALUE || nowMs - atMs > STALE_MS) Double.NaN else f[i]
 
+    /** True when a second was written and the newest write is not older than the staleness bound (a window's own staleness test: no feature's value is read). */
+    @Synchronized internal fun fresh(nowMs: Long): Boolean = atMs != Long.MIN_VALUE && nowMs - atMs <= STALE_MS
+
     @Synchronized internal fun ageMs(nowMs: Long): Long = nowMs - atMs
 
     /** Brings [w] up to the newest slot: bound at the current slot on first use (the plan apply), reset on a new epoch, otherwise the slots it has not seen. */
@@ -260,7 +263,7 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
                     else if (k == SIG_CTX) o.setEnum(ctxCode(ctx), now, 0, 1.0, 0)
                     else o.setNum(ctxAgeS.toDouble(), now, 0, 1.0, 0)
                 }
-                OP_WIN -> { val v = if (sig.read(0, now).isNaN()) Double.NaN else win!!.rings[p.wi[i]].value(); if (v.isNaN()) o.setUnavailable() else o.setNum(v, now, sig.ageMs(now), 1.0, 0) }
+                OP_WIN -> { val v = if (!sig.fresh(now)) Double.NaN else win!!.rings[p.wi[i]].value(); if (v.isNaN()) o.setUnavailable() else o.setNum(v, now, sig.ageMs(now), 1.0, 0) }
                 OP_CONST -> if (p.flag[i]) o.setBool(p.num[i] != 0.0, 0, 0, 1.0, 0) else o.setNum(p.num[i], 0, 0, 1.0, 0)
                 OP_CMP -> StepOps.cmp(o, st[p.a[i]], st[p.b[i]], p.f[i])
                 OP_ARITH -> StepOps.arith(o, st[p.a[i]], st[p.b[i]], p.f[i])
