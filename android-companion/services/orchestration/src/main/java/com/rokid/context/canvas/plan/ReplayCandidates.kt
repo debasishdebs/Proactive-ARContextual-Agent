@@ -19,7 +19,7 @@ class ReplayCandidates(private val canvas: CanvasDao, private val settingsRev: s
             // A window plan holds the tolerance it was compiled with; the global setting may have changed since, so a pipeline with windows is also tried at every tolerance (3d).
             val tolerances = if ("\"win\"" in v.json) listOf(WindowTolerance.current()) + (WindowRing.MIN_VALID_PCT..100) else listOf(WindowTolerance.current())
             for (pct in tolerances) {
-                val plan = PlanCompiler.compile(pipeline, rev, windowMinValidPct = pct).plan ?: break
+                val plan = PlanCompiler.compile(pipeline, rev, windowMinValidPct = pct).plan ?: continue   // a compile can fail at one tolerance only (a duplicate term becoming a fifth)
                 if (plan.configHash == hash) return ReplayCandidate.of(plan)
             }
         }
