@@ -110,10 +110,23 @@ class ResidueOracleTest {
             }
         }
         for (root in listOf(app.filesDir, app.cacheDir)) root.walkTopDown().filter { it.isFile }.forEach { f ->
-            val body = if (f.length() < 1_000_000) runCatching { f.readText() }.getOrDefault("") else ""
-            needles.firstOrNull { f.name.contains(it) || body.contains(it) }?.let { out += "file ${f.name} names $it" }
+            needles.firstOrNull { f.name.contains(it) || fileContains(f, it) }?.let { out += "file ${f.name} names $it" }
         }
         return out.distinct()
+    }
+    /** Streams the file in 64 KB chunks with an overlap of the needle length, so a file of any size is searched. */
+    private fun fileContains(f: File, needle: String): Boolean {
+        val keep = needle.length - 1
+        var carry = ""
+        f.reader(Charsets.ISO_8859_1).use { r ->
+            val buf = CharArray(64 * 1024)
+            while (true) {
+                val n = r.read(buf); if (n < 0) return false
+                val text = carry + String(buf, 0, n)
+                if (text.contains(needle)) return true
+                carry = text.takeLast(keep)
+            }
+        }
     }
     private fun assertClean(trigger: String, needles: Collection<String>) {
         val r = residue(needles)
@@ -157,7 +170,8 @@ class ResidueOracleTest {
         SceneBuilder(h.db, enabled = { true }, clock = { 5 }).rebuildWindow(t(0), t(3599))
         audit.writeDerived(ObjectRef(ObjectKind.MOMENT, mid(10), 1), DerivedField.SUMMARY, derivedText, null, 1)
         h.db.momentDao().replaceSensor(mid(10), listOf(MomentSensorEntity(mid(10), t(10) / 1000, trace, 1, "OFFSET_ESTIMATED", 40, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "WALKING", null, 5, 5)), 1, "build")
-        File(app.cacheDir, "exports/proactive-context-memories-1.json").apply { parentFile!!.mkdirs(); writeText("{\"memories\":[{\"id\":\"$mem\",\"text\":\"$memText\"}]}") }
+        // over 1 MB on purpose: a scan that skips big files, or a deletion that does, must be caught (the forgotten text is at the END)
+        File(app.cacheDir, "exports/proactive-context-memories-1.json").apply { parentFile!!.mkdirs(); writeText("{\"pad\":\"" + "x".repeat(1_200_000) + "\",\"memories\":[{\"id\":\"$mem\",\"text\":\"$memText\"}]}") }
         val r = runner()
         val moments = h.db.momentDao().allMoments().map { it.momentId }
         val scenes = h.db.sceneDao().scenesBetween(t(0), t(3599), 50).map { it.sceneId }
@@ -201,6 +215,7 @@ class ResidueOracleTest {
     @Test fun retentionExpiryLeavesNothingThatNamesTheExpiredFact() = runBlocking {
         world()
         h.db.memoryDao().insert(MemoryEntity(oldMem, null, oldText, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, System.currentTimeMillis() - 3 * 24 * 3_600_000L, false, oldText))
+        File(app.cacheDir, "exports/proactive-context-memories-2.json").writeText("{\"memories\":[{\"id\":\"$oldMem\",\"text\":\"$oldText\"}]}") // an export made before the expiry
         assertTrue(residue(listOf(oldMem, oldText)).isNotEmpty())
         runBlocking { TestListenableWorkerBuilder<RetentionWorker>(app).build().doWork() }
         assertClean("retention expiry", listOf(oldMem, oldText))
