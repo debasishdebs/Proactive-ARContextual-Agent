@@ -285,4 +285,25 @@ class CapturePlanActionsTest {
             assertEquals(other, ReplayCandidates(h.canvas).forHash(other)!!.configHash)
         } finally { com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { 90 } }
     }
+
+    @Test fun aReplayCandidateIsFoundEvenWhenAnotherToleranceMakesTheCompileFail() = runBlocking {
+        fun win(sec: Int, mv: String?) = """{"steps":[{"name":"s","inputs":[],"nodes":[{"id":"w","op":"win","name":"stepHz","agg":"mean","sec":$sec${if (mv != null) ""","mv":$mv""" else ""}},{"id":"k","op":"const","value":1.2},{"id":"c","op":"cmp","f":"<"}],"wires":[["w","c.a"],["k","c.b"]],"out":"c"}],"out":"s"}"""
+        // four explicit 90 % terms, plus a fifth window with no mv: at the global 90 % it is a duplicate of the first (four terms); at 60 % it is a fifth term and the compile fails
+        val graphs = listOf(win(2, "90"), win(3, "90"), win(4, "90"), win(5, "90"), win(2, null))
+        val base = PlanTestFixtures.captureHalf("Dup")
+        val guards = graphs.mapIndexed { i, g -> com.rokid.context.ai.canvas.PipelineNode("g$i", com.rokid.context.ai.canvas.NodeTypes.EXPR_GUARD, "g$i", kotlinx.serialization.json.buildJsonObject { put("graph", kotlinx.serialization.json.Json.parseToJsonElement(g)) }) }
+        val ids = guards.map { it.id }
+        val p = base.copy(
+            nodes = base.nodes + guards,
+            edges = base.edges.filterNot { it.from == "head" && it.to == "thresh" } + com.rokid.context.ai.canvas.PipelineEdge("head", ids.first()) +
+                ids.zipWithNext { a, b -> com.rokid.context.ai.canvas.PipelineEdge(a, b) } + com.rokid.context.ai.canvas.PipelineEdge(ids.last(), "thresh"),
+        )
+        h.frozen(p, ran = false)
+        val published = com.rokid.context.ai.canvas.plan.PlanCompiler.compile(p, windowMinValidPct = 90).plan!!.configHash
+        assertNull("at 60 % the duplicate is a fifth term", com.rokid.context.ai.canvas.plan.PlanCompiler.compile(p, windowMinValidPct = 60).plan)
+        try {
+            com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { 60 }
+            assertEquals(published, ReplayCandidates(h.canvas).forHash(published)!!.configHash)
+        } finally { com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { 90 } }
+    }
 }
