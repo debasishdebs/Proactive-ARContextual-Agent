@@ -41,7 +41,7 @@ class ExprDifferentialFuzzTest {
                 3 -> if (r.nextBoolean()) add(Ty.NUM, """{"op":"const","v":${nums[r.nextInt(nums.size)]}}""") else add(Ty.BOOL, """{"op":"const","v":${r.nextBoolean()}}""")
                 4, 5 -> {
                     val agg = listOf("max", "mean", "frac")[r.nextInt(3)]
-                    val term = """{"op":"win","name":"${features[r.nextInt(features.size)]}","agg":"$agg","sec":${listOf(1, 2, 3, 5, 8, 12)[r.nextInt(6)]}${if (agg == "frac") ""","t":${nums[r.nextInt(6)]}""" else ""}}"""
+                    val term = """{"op":"win","name":"${features[r.nextInt(features.size)]}","agg":"$agg","sec":${listOf(1, 2, 3, 5, 8, 12)[r.nextInt(6)]}${if (agg == "frac") ""","t":${nums[r.nextInt(6)]}""" else ""}${listOf("", "", ""","mv":100""", ""","mv":90""", ""","mv":75""", ""","mv":50""")[r.nextInt(6)]}}"""
                     if (terms.size < 4 || term in terms) { terms += term; add(Ty.NUM, term) }
                 }
                 6 -> if (nu.size >= 2) add(Ty.BOOL, """{"op":"cmp","f":"${listOf("<", "<=", ">", ">=", "==")[r.nextInt(5)]}","a":${nu.random(r)},"b":${nu.random(r)}}""")

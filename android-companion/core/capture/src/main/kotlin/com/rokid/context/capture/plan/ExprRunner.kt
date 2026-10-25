@@ -71,7 +71,7 @@ class ExprSignals {
 
 /** The window rings of one runner (one per distinct term) and how far they have read the [ExprSignals] history. Built empty at plan apply. */
 internal class WindowState(val terms: Array<ExprWindows.Term>) {
-    val rings = Array(terms.size) { WindowRing(terms[it].seconds, terms[it].agg) }
+    val rings = Array(terms.size) { WindowRing(terms[it].seconds, terms[it].agg, terms[it].minValidPct) }
     var cursor = -1L
     var epoch = -1
     val stateBytes: Int get() = terms.sumOf { it.stateBytes }
