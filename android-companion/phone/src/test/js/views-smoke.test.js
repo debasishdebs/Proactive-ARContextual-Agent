@@ -337,4 +337,99 @@ export const tests = {
       eq(ctx.errors.length, 0);
     });
   },
+  // ---- Playground vs Run-and-Save (v0.9.6) ----
+  async runNewOffersRunAndSaveOrRunReviewThenSaveForAPipelineWithSaveMemory() {
+    await withView({ 'POST /api/runs/estimate': { nominal: 3, max: 4, photos: 1, models: [], confirmToken: 'tok' }, 'POST /api/runs': { runId: 'r7' } }, async ({ ctx, root, api }) => {
+      await runNewView(ctx, root, 'p1', '1');
+      E.click(findAll(root, (e) => e.classList.contains('thumb'))[0]);
+      E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
+      eq(ctx.modals[0].actions.map((a) => a.label), ['Run & Save', 'Run, review, then Save']);
+      await E.runAction(ctx, 'Run, review, then Save');
+      eq(ctx.gone, ['#/run/r7?after=review']);
+      eq(api.calls.filter((c) => c.path === '/api/runs').length, 1);
+    });
+  },
+  async runNewIsAPlaygroundForAPipelineWithoutSaveMemory() {
+    const noMem = JSON.stringify({ schema: 1, id: 'p2', name: 'P2', nodes: [{ id: 'photos', type: 'input.photos', title: 'Photo', params: {} }, { id: 'ask', type: 'ai.prompt', title: 'Prompt', params: {} }], edges: [{ from: 'photos', to: 'ask' }] });
+    await withView({ 'GET /api/pipelines/p2': Object.assign(E.pipelineData(), { id: 'p2', json: noMem }), 'POST /api/runs/estimate': { nominal: 1, max: 1, photos: 1, models: [], confirmToken: 'tok' }, 'POST /api/runs': { runId: 'r8' } }, async ({ ctx, root }) => {
+      await runNewView(ctx, root, 'p2', '');
+      E.click(findAll(root, (e) => e.classList.contains('thumb'))[0]);
+      E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
+      eq(ctx.modals[0].actions.map((a) => a.label), ['Run']);
+      await E.runAction(ctx, 'Run');
+      eq(ctx.gone, ['#/run/r8?after=play']);
+    });
+  },
+  async runViewAfterSaveSavesOnceAndShowsTheResultOrTheReason() {
+    await withView({ 'POST /api/runs/r1/save': { result: 'SAVED', ok: true, saved: 2, message: 'Saved 2 memories.' } }, async ({ ctx, root, api }) => {
+      await runView(ctx, root, 'r1', 'save'); await E.settle();
+      eq(api.calls.filter((c) => c.method === 'POST').map((c) => c.path), ['/api/runs/r1/save']);
+      eq(ctx.modals.map((m) => m.title), ['Saved']); has(ctx.modals[0].content, 'Saved 2 memories.');
+    });
+    await withView({ 'POST /api/runs/r1/save': { result: 'BUSY', ok: false, saved: 0, message: 'Not saved: an export is running. Try again in a minute, or when it finishes.' } }, async ({ ctx, root }) => {
+      await runView(ctx, root, 'r1', 'save'); await E.settle();
+      eq(ctx.modals.map((m) => m.title), ['Not saved']); has(ctx.modals[0].content, 'export is running');
+      ok(E.buttons(root, 'Review & save memories').length === 1, 'the run page keeps a way to retry');
+    });
+    await withView({ 'POST /api/runs/r1/save': () => { throw new E.FakeApiError(500, 'internal', 'Something went wrong.'); } }, async ({ ctx, root }) => {
+      await runView(ctx, root, 'r1', 'save'); await E.settle();
+      eq(ctx.errors.length, 1, 'a failed save shows the error, it is not dropped'); eq(ctx.modals.length, 0);
+    });
+  },
+  async runViewAfterReviewShowsTheProposalAndSavesOnlyWhenTheUserConfirms() {
+    const proposal = { saveable: true, reason: null, message: null, saved: null, memories: [{ frameId: 'f1', kind: 'fact', text: 'a mug', type: 'object', review: 'OK' }, { frameId: 'f1', kind: 'fact', text: 'a cup', type: 'object', review: 'NEEDS_REVIEW' }] };
+    await withView({ 'GET /api/runs/r1/proposal': proposal, 'POST /api/runs/r1/save': { result: 'SAVED', ok: true, saved: 2, message: 'Saved 2 memories (1 need review in Memory).' } }, async ({ ctx, root, api }) => {
+      await runView(ctx, root, 'r1', 'review'); await E.settle();
+      eq(ctx.modals.map((m) => m.title), ['Memories this run would save']);
+      const t = E.textOf(ctx.modals[0].content);
+      ok(t.includes('a mug (fact)') && t.includes('a cup (fact, needs review)') && t.includes('Close discards'), t);
+      eq(api.calls.filter((c) => c.method === 'POST').length, 0, 'nothing is saved until the user confirms');
+      eq(ctx.modals[0].actions.map((a) => a.label), ['Save']);
+      await E.runAction(ctx, 'Save'); await E.settle();
+      eq(api.calls.filter((c) => c.method === 'POST').map((c) => c.path), ['/api/runs/r1/save']);
+      eq(ctx.modals.map((m) => m.title), ['Memories this run would save', 'Saved']);
+    });
+    // discarding (Close) sends nothing; an already-saved or unsaveable run offers no Save at all
+    await withView({ 'GET /api/runs/r1/proposal': Object.assign({}, proposal, { saved: 2 }) }, async ({ ctx, root, api }) => {
+      await runView(ctx, root, 'r1', 'review'); await E.settle();
+      eq(ctx.modals[0].actions, []); has(ctx.modals[0].content, 'Already saved (2).'); eq(api.calls.filter((c) => c.method === 'POST').length, 0);
+    });
+    await withView({ 'GET /api/runs/r1/proposal': { saveable: false, reason: 'NO_MEMORY_NODE', message: 'This pipeline has no Save memory step, so a run only shows its output (playground).', saved: null, memories: [] } }, async ({ ctx, root }) => {
+      await runView(ctx, root, 'r1', 'review'); await E.settle();
+      eq(ctx.modals[0].actions, []); has(ctx.modals[0].content, 'playground');
+    });
+  },
+  async runViewAfterPlayShowsTheOutputOfTheLastStepAndStoresNothing() {
+    const pj = JSON.stringify({ schema: 1, id: 'p2', name: 'P2', nodes: [{ id: 'photos', type: 'input.photos', title: 'Photo', params: {} }, { id: 'ask', type: 'ai.prompt', title: 'Ask', params: {} }], edges: [{ from: 'photos', to: 'ask' }] });
+    const r = Object.assign(E.run('r1', 'DONE', null), { pipelineJson: pj, items: [
+      { frameId: 'f1', nodeId: 'photos', status: 'OK', output: { caption: 'FIRST-STEP-OUTPUT' }, error: null },
+      { frameId: 'f1', nodeId: 'ask', status: 'OK', output: { caption: 'LAST-STEP-OUTPUT' }, error: null }] });
+    await withView({ 'GET /api/runs/r1': r }, async ({ ctx, root, api }) => {
+      await runView(ctx, root, 'r1', 'play'); await E.settle();
+      eq(ctx.modals.map((m) => m.title), ['Run output (nothing was saved)']);
+      const t = E.textOf(ctx.modals[0].content);
+      ok(t.includes('LAST-STEP-OUTPUT') && !t.includes('FIRST-STEP-OUTPUT'), t);
+      eq(api.calls.filter((c) => c.method !== 'GET').length, 0, 'a playground run sends nothing but reads');
+      eq(E.buttons(root, 'Review & save memories').length, 0, 'no Save memory step, no save control');
+    });
+  },
+  async runViewActsOnceWhenTheRunFinishesAndNeverOnAPlainLink() {
+    let n = 0;
+    await withView({ 'GET /api/runs/r1': () => E.run('r1', ++n < 2 ? 'RUNNING' : 'DONE', null), 'GET /api/runs': [E.runRow('r1', 'DONE', null, 1)], 'POST /api/runs/r1/save': { result: 'SAVED', ok: true, saved: 1, message: 'Saved 1 memory.' } }, async ({ ctx, root, api, env }) => {
+      await runView(ctx, root, 'r1', 'save'); await E.settle();
+      eq(ctx.modals.length, 0, 'not while the run is going');
+      await env.runTimers(); await E.settle(); await env.runTimers(); await E.settle();
+      eq(api.calls.filter((c) => c.method === 'POST').length, 1, 'one save, however many polls');
+    });
+    // the page keeps polling while an A/B partner runs: the finished run is still acted on once
+    await withView({ 'GET /api/runs/r1': E.run('r1', 'DONE', 'g1'), 'GET /api/runs': [E.runRow('r1', 'DONE', 'g1', 10), E.runRow('r2', 'RUNNING', 'g1', 20)], 'POST /api/runs/r1/save': { result: 'SAVED', ok: true, saved: 1, message: 'Saved 1 memory.' } }, async ({ ctx, root, api, env }) => {
+      await runView(ctx, root, 'r1', 'save'); await E.settle();
+      await env.runTimers(); await E.settle(); await env.runTimers(); await E.settle();
+      eq(api.calls.filter((c) => c.method === 'POST').length, 1, 'polled three times, saved once');
+    });
+    await withView({}, async ({ ctx, root, api }) => {
+      await runView(ctx, root, 'r1'); await E.settle();
+      eq(ctx.modals.length, 0); eq(api.calls.filter((c) => c.method === 'POST').length, 0);
+    });
+  },
 };

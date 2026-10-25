@@ -7,7 +7,7 @@ import { planDialog } from './planpublish.js';
 import { mergedHref, withCapture } from './mergedflow.js';
 import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
 import { statusLabel, errorText, helperCard, loadHelperStatus, hasPython } from './helperview.js';
-import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving } from './runlogic.js';
+import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving, hasMemoryNode, runChoices, afterOf } from './runlogic.js';
 
 const pretty = (v) => JSON.stringify(v, null, 2);
 const enc = encodeURIComponent;
@@ -188,8 +188,10 @@ function prevOf(versions, v) { return Math.max(0, ...(versions || []).map((x) =>
 export async function runNewView(ctx, root, pipelineId, version) {
   if (!pipelineId) { root.appendChild(h('p', null, 'Open a pipeline first.')); return; }
   // a pipeline that starts at `input.moments` is run over Moments (the photos of one second), not over single photos
+  let pipe0 = null;
   try {
     const p0 = await ctx.api('GET', '/api/pipelines/' + enc(pipelineId));
+    pipe0 = parseJson(p0 && p0.json);
     if (hasInput(parseJson(p0 && p0.json), 'input.scenes')) { await scenesRunView(ctx, root, pipelineId, version, parseJson(p0.json)); return; }
     if (hasMomentsInput(parseJson(p0 && p0.json))) { await momentsRunView(ctx, root, pipelineId, version, parseJson(p0.json)); return; }
   } catch (e) { if (e && e.stale) return; /* fall back to the photo page */ }
@@ -277,17 +279,17 @@ export async function runNewView(ctx, root, pipelineId, version) {
     if (version) body.version = parseInt(version, 10);
     try {
       const e = await ctx.api('POST', '/api/runs/estimate', body);
-      confirmStart(e, [], async () => { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); ctx.go('#/run/' + enc(r.runId)); });
+      confirmStart(e, [], async (after) => { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); ctx.go('#/run/' + enc(r.runId) + (after ? '?after=' + after : '')); }, runChoices(pipe0));
     } catch (err) { ctx.showError(err); }
   }, 'btn primary')));
 
   /** One confirm for a run or an A/B pair: photos, calls, the model labels and (when the server has one) the token estimate. */
-  function confirmStart(e, head, start) {
+  function confirmStart(e, head, start, choices) {
     const line = e.arms && e.arms.length ? e.arms.map((a, i) => 'Arm ' + 'AB'[i] + ': ' + a.photos + ' photos · about ' + a.nominal + ' model calls (at most ' + a.max + ')').join(' | ') : e.photos + ' photos · about ' + e.nominal + ' model calls (at most ' + e.max + ')';
     const models = (e.models || []).map((m) => m.nodeId + ': ' + m.endpoint + ' / ' + m.model);
     ctx.modal(head.length ? 'Start this A/B pair?' : 'Start this run?', h('div', null, head.map((t) => h('p', null, t)), h('p', null, line), h('p', { class: 'muted' }, tokenEstimateText(e.tokens)),
-      models.length ? h('ul', null, models.map((m) => h('li', null, m))) : null), [
-      { label: 'Start', cls: 'btn primary', run: async (close) => { try { await start(); close(); } catch (err) { close(); ctx.showError(err); } } }]);
+      models.length ? h('ul', null, models.map((m) => h('li', null, m))) : null),
+      (choices || [{ label: 'Start', after: null }]).map((c) => ({ label: c.label, cls: 'btn primary', run: async (close) => { try { await start(c.after); close(); } catch (err) { close(); ctx.showError(err); } } })));
   }
 
   async function startAb(ids, other) {
@@ -486,7 +488,9 @@ function renderOutput(o) {
   return box;
 }
 
-export async function runView(ctx, root, runId) {
+export async function runView(ctx, root, runId, after) {
+  const mode = afterOf(after);
+  let acted = false;
   const frameInfo = new Map();
   let timer = null;
   let stopped = false;
@@ -529,6 +533,31 @@ export async function runView(ctx, root, runId) {
     return h('div', { class: 'scorebar' }, h('div', { class: 'row' }, up, down), note);
   }
 
+  // Playground vs Run-and-Save: the server decides what may be saved and says why not (an export or delete running, a forgotten photo...); the page only shows it
+  async function saveNow(close) {
+    try {
+      const r = await ctx.api('POST', '/api/runs/' + enc(runId) + '/save');
+      ctx.modal(r.ok ? 'Saved' : 'Not saved', h('p', { class: r.ok ? null : 'err' }, r.message), []);
+      if (r.ok && close) close();
+    } catch (e) { ctx.showError(e); }
+  }
+  async function review() {
+    let p;
+    try { p = await ctx.api('GET', '/api/runs/' + enc(runId) + '/proposal'); } catch (e) { ctx.showError(e); return; }
+    const go = p.saveable && p.saved == null && (p.memories || []).length > 0;
+    ctx.modal('Memories this run would save', h('div', null, p.saveable ? null : h('p', { class: 'err' }, p.message), p.saved != null ? h('p', null, 'Already saved (' + p.saved + ').') : null,
+      h('ul', null, (p.memories || []).map((m) => h('li', null, m.text + ' (' + m.kind + (m.review === 'OK' ? '' : ', needs review') + ')'))), go ? h('p', { class: 'muted' }, 'Nothing is stored until you press Save. Close discards.') : null),
+      go ? [{ label: 'Save', cls: 'btn primary', run: saveNow }] : []);
+  }
+  function afterRun(run) {
+    if (mode === 'save') return saveNow();
+    if (mode === 'review') return review();
+    const pipe = parseJson(run.pipelineJson);
+    const sinks = topoOrder(pipe).filter((n) => !((pipe && pipe.edges) || []).some((e) => e.from === n.id));
+    const items = run.items || [];
+    ctx.modal('Run output (nothing was saved)', h('div', null, [...new Set(items.map((i) => i.frameId))].map((f) => h('section', { class: 'card' }, returnedValues(sinks, items, f)))), []);
+  }
+
   async function draw(run, others, helper) {
     const pipe = parseJson(run.pipelineJson);
     const order = topoOrder(pipe);
@@ -549,6 +578,7 @@ export async function runView(ctx, root, runId) {
       branchText(run.branches).map((t) => h('p', { class: 'muted' }, t)),
       partner ? h('p', null, 'A/B partner: ', h('a', { href: '#/run/' + enc(partner.runId) }, 'run ' + partner.runId), ' (' + statusLabel(partner.status) + ')') : null,
       h('div', { class: 'row wrap' },
+        String(run.status) === 'DONE' && hasMemoryNode(pipe) ? btn('Review & save memories', review) : null,
         (running || (partner && isActive(partner.status))) ? btn(run.abGroup ? 'Cancel A/B pair' : 'Cancel', async () => { try { await ctx.api('POST', '/api/runs/' + enc(runId) + '/cancel'); } catch (e) { ctx.showError(e); } }, 'btn danger') : null,
         (() => {
           const sel = h('select', { 'aria-label': 'Compare with' }, h('option', { value: '' }, 'Compare with…'),
@@ -602,6 +632,7 @@ export async function runView(ctx, root, runId) {
       await draw(run, others, helper);
       drawnStatus = String(run.status);
     }
+    if (mode && !acted && String(run.status) === 'DONE') { acted = true; await afterRun(run); }
     const partner = partnerOf(others, run);
     const partnerActive = !!partner && isActive(partner.status);
     if (isActive(run.status) || partnerActive) sawActive = true;

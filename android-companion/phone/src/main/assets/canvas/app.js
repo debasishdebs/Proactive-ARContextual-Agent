@@ -244,7 +244,7 @@ async function route(force) {
     else if (parts[0] === 'p' && parts[1] && parts[2] === 'diff') await diffView(ctx, root, parts[1], query.get('a') || '', query.get('b') || '');
     else if (parts[0] === 'p' && parts[1]) await pipelineView(ctx, root, parts[1]);
     else if (parts[0] === 'run' && parts[1] === 'new') await runNewView(ctx, root, query.get('p') || '', query.get('v') || '');
-    else if (parts[0] === 'run' && parts[1]) await runView(ctx, root, parts[1]);
+    else if (parts[0] === 'run' && parts[1]) await runView(ctx, root, parts[1], query.get('after'));
     else if (parts[0] === 'live') await liveView(ctx, root);
     else if (parts[0] === 'replay') await replayView(ctx, root);
     else if (parts[0] === 'sweep') await sweepView(ctx, root);
