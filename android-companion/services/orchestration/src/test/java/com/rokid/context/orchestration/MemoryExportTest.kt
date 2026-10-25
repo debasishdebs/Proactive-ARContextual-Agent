@@ -114,6 +114,7 @@ class MemoryExportTest {
     @Test fun jsonShapeIsUnchanged() = runBlocking<Unit> {
         val g = MemoryGraph.get(ctx)
         g.memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 1, "one"))
+        g.db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("f2", 1, "/f2.jpg", "rokid_glasses")) // a live source frame (an orphan is not exported)
         g.memories.add(LegacyImporter.toMemory("m2", "short_term", 0.5, 2, "two").copy(frameId = "f2"))
         g.asks.add(AskEntity("a1", 2, "milk?", "In the fridge", "[\"m1\"]", null, "phone_typed", false))
         val f = MemoryExport.write(ctx, nowMs = 12)
@@ -162,5 +163,22 @@ class MemoryExportTest {
         } finally { MemoryExport.testBeforePublish = null; MemoryExport.testAfterEnumerate = null }
         assertTrue("no export holds the forgotten text", java.io.File(ctx.cacheDir, "exports").listFiles().orEmpty().none { it.name.startsWith("proactive-context-memories-") })
         assertTrue(MemoryExport.write(ctx, nowMs = 6).exists()) // the next export works
+    }
+
+    /** 2026-10-25: an export never carries an invalid or hidden memory (forgotten, needs-review, stale-hidden derived, orphaned); nothing is purged. */
+    @Test fun anExportCarriesOnlyValidVisibleMemories() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx); val db = g.db
+        fun mem(id: String, frame: String? = null, review: com.rokid.context.memory.db.ReviewState = com.rokid.context.memory.db.ReviewState.OK, derived: Boolean = false) =
+            com.rokid.context.memory.db.MemoryEntity(id, frame, "text $id", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, review, false, 1, derived, "text $id")
+        db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("live", 1, "/live.jpg", "rokid_glasses"))
+        db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("gone", 1, "/gone.jpg", "rokid_glasses"))
+        db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("gone", 1))
+        listOf(mem("typed"), mem("photo", "live"), mem("derivedOk", derived = true), mem("review", review = com.rokid.context.memory.db.ReviewState.NEEDS_REVIEW),
+            mem("forgotten", review = com.rokid.context.memory.db.ReviewState.INVALIDATED), mem("orphan", "missing"), mem("tombstoned", "gone"),
+            mem("derivedStale", derived = true), mem("srcGone", review = com.rokid.context.memory.db.ReviewState.INVALIDATED)).forEach { db.memoryDao().insert(it) }
+        db.forgetDao().insertEdges(listOf(com.rokid.context.memory.db.MemorySourceEntity("derivedOk", "typed"), com.rokid.context.memory.db.MemorySourceEntity("derivedStale", "srcGone")))
+        val json = Json.parseToJsonElement(MemoryExport.write(ctx, nowMs = 3).readText()).jsonObject
+        assertEquals(setOf("typed", "photo", "derivedOk"), json["memories"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
+        assertEquals("nothing was purged", 9, db.memoryDao().count())
     }
 }
