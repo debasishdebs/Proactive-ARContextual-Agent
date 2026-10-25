@@ -27,17 +27,23 @@ data class AskExportRow(val rowid: Long, val id: String, val ts: Long, val quest
 @Dao
 interface ExportDao {
     @Query(
-        "SELECT rowid, id, text, type, tags, tier, confidence, reviewState, createdAt, frameId FROM memory " +
-            "WHERE rowid > :after AND reviewState = 'OK' " +
-            // a memory with a photo provenance needs a LIVE source frame (the frame row is present: a forgotten PHOTO deletes its row, while a tombstone alone only locks extraction, also after Forget FACT or a photo expiry); one with none (typed, voice) stays
-            "AND ((frameId IS NULL AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = memory.id)) OR EXISTS (SELECT 1 FROM frame f WHERE " +
-            "(f.id = memory.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = memory.id)))) " +
+        "SELECT m.rowid AS rowid, m.id, m.text, m.type, m.tags, m.tier, m.confidence, m.reviewState, m.createdAt, m.frameId FROM memory m " +
+            "WHERE m.rowid > :after AND m.reviewState = 'OK' " +
+            // not an orphan: photo retention deletes the `frame` row but keeps `frame_meta` (its memories are still exported); a Forget-removed frame has neither (one definition, shared with the one-time purge)
+            "AND NOT (${MemoryOrphan.SQL}) " +
             // a derived memory needs at least one source memory that is not forgotten (stale-hidden otherwise)
-            "AND (derived = 0 OR NOT EXISTS (SELECT 1 FROM memory_source s WHERE s.memoryId = memory.id) OR EXISTS (SELECT 1 FROM memory_source s JOIN memory m2 ON m2.id = s.sourceMemoryId " +
-            "WHERE s.memoryId = memory.id AND m2.reviewState != 'INVALIDATED')) ORDER BY rowid LIMIT :limit",
+            "AND (m.derived = 0 OR NOT EXISTS (SELECT 1 FROM memory_source s WHERE s.memoryId = m.id) OR EXISTS (SELECT 1 FROM memory_source s JOIN memory m2 ON m2.id = s.sourceMemoryId " +
+            "WHERE s.memoryId = m.id AND m2.reviewState != 'INVALIDATED')) ORDER BY m.rowid LIMIT :limit",
     )
     suspend fun memoryPage(after: Long, limit: Int): List<MemoryExportRow>
 
     @Query("SELECT rowid, id, ts, question, answer FROM ask WHERE rowid > :after ORDER BY rowid LIMIT :limit")
     suspend fun askPage(after: Long, limit: Int): List<AskExportRow>
+}
+
+/** The ONE definition of an orphan memory (alias `m` = `memory`): a photo provenance (its `frameId` or a `frame_source` row) and, for every source frame, neither a `frame` row nor a `frame_meta` row. Used by the export and the one-time purge. */
+object MemoryOrphan {
+    const val SQL = "((m.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = m.id)) " +
+        "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = m.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)) " +
+        "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = m.frameId OR fm.frameId IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)))"
 }
