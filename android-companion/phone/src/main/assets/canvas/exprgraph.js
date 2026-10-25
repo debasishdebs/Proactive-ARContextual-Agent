@@ -268,6 +268,9 @@ export function setNodeParam(g, stepName, id, key, raw) {
   } else if (n.op === 'win' && key === 'sec') {
     value = Number(text);
     if (!/^\d+$/.test(text) || value < 1 || value > 300) return fail('Must be a whole number from 1 to 300 seconds');
+  } else if (n.op === 'win' && key === 'mv') { // the tolerance: percent of the seconds that must hold data; empty = the global setting at compile
+    value = text === '' ? undefined : Number(text);
+    if (text !== '' && (!/^\d+$/.test(text) || value < 50 || value > 100)) return fail('Tolerance is a whole number from 50 to 100 (percent of seconds with data), or empty for the setting');
   } else if (n.op === 'win' && key === 't') {
     value = num();
     if (value === null) return fail('Must be a number within 1000000');
@@ -277,7 +280,7 @@ export function setNodeParam(g, stepName, id, key, raw) {
   } else return fail('That node has no ' + key);
   const next = clone(g);
   const nn = stepOf(next, stepName).nodes.find((x) => x.id === id);
-  nn[key] = value;
+  if (value === undefined) delete nn[key]; else nn[key] = value;
   if (n.op === 'win' && key === 'agg') { if (value === 'frac' && !own(nn, 't')) nn.t = 0.5; else if (value !== 'frac') delete nn.t; } // only frac takes a threshold
   return { graph: next };
 }
@@ -328,7 +331,7 @@ export function nodeLabel(n) {
     case 'in': return 'is in ' + (n.set || []).join(', ');
     case 'clamp': return 'clamp ' + n.lo + '..' + n.hi;
     case 'fresh': return 'fresh ' + n.ms + ' ms';
-    case 'win': return n.agg + ' ' + n.name + ' ' + n.sec + ' s' + (n.agg === 'frac' ? ' > ' + n.t : '');
+    case 'win': return n.agg + ' ' + n.name + ' ' + n.sec + ' s' + (n.agg === 'frac' ? ' > ' + n.t : '') + (own(n, 'mv') ? ' · ' + n.mv + '%' : '');
     default: return opOf(n.op).label;
   }
 }
@@ -443,7 +446,7 @@ export function exprMeters(planJson) {
   for (const p of (plan && plan.config && plan.config.exprs) || []) { // CapturePlan: planJson = {planSchema, configHash, config: {..., exprs}, meta}
     const s = p.s || [];
     res.nodes += s.length;
-    for (const e of s) if (e.op === 'win' && !seen.has([e.name, e.agg, e.sec, e.t].join())) { seen.add([e.name, e.agg, e.sec, e.t].join()); res.stateBytes += (e.agg === 'max' ? 8 : 4) * e.sec; }
+    for (const e of s) if (e.op === 'win' && !seen.has([e.name, e.agg, e.sec, e.t, e.mv].join())) { seen.add([e.name, e.agg, e.sec, e.t, e.mv].join()); res.stateBytes += (e.agg === 'max' ? 8 : 4) * e.sec; }
     res.byId[p.id] = { nodes: s.length, cost: s.reduce((c, e) => c + (e.op === 'in' ? 1 + (e.set || []).length : own(COST, e.op) ? COST[e.op] : 1), 0) };
   }
   res.terms = seen.size;
