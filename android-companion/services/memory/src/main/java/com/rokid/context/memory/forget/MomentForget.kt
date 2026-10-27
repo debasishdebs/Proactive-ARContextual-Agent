@@ -141,6 +141,8 @@ class MomentForget(
             }
         }
         frames.toList().chunked(CHUNK).forEach { c -> memories += md.memoryIdsOfFrames(c) }
+        // a mark LINKED to an in-set photo goes with the photo whatever its own time (the photo's Forget deletes it): it is part of the set, previewed and hashed
+        if (bounded) frames.toList().chunked(CHUNK).forEach { c -> labels += md.labelIdsLinkedToFrames(c) }
         val moments = LinkedHashSet<String>(between)
         frames.toList().chunked(CHUNK).forEach { c -> moments += md.momentIdsHolding(listOf(MomentPartKind.FRAME, MomentPartKind.CITE), c + c.map { "frame:$it" }) }
         memories.toList().chunked(CHUNK).forEach { moments += md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }

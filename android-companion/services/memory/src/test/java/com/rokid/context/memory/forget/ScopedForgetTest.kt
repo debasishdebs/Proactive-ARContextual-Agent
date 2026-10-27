@@ -175,6 +175,15 @@ class ScopedForgetTest {
         refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash); assertTrue("a3" in frames())
     }
 
+    /** Round 4 (1): a mark linked to an in-span photo is deleted with the photo whatever its own time, so it is counted and hashed (preview == delete). */
+    @Test fun aMarkLinkedToAnInSpanPhotoButTimedOutsideTheSpanIsInThePreviewAndTheDelete() = runBlocking<Unit> {
+        world(); s3.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("Llinked", "MOMENT", "tap", "X", MS + 60_000, frameId = "a1", createdAt = 1), com.rokid.context.memory.db.DaoFence(0, com.rokid.context.memory.db.DeletionEpoch("i", 1, 0), { 0 }, { com.rokid.context.memory.db.DeletionEpoch("i", 1, 0) }))
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertEquals("La and Llinked", 2, c.marks)
+        val before = marks().size; engine.forget(p, c.planHash)
+        assertEquals("exactly the previewed marks went", c.marks, before - marks().size); assertTrue("Ln stays", "Ln" in marks()); assertFalse("Llinked" in marks())
+    }
+
     @Test fun aDerivedFactThatAppearsAfterThePreviewIsRefused() = runBlocking<Unit> {
         world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT))
         fx.memory("dnew", null, derived = true, createdAt = MS + 300_000); fx.derivedFrom("dnew", "ma1")

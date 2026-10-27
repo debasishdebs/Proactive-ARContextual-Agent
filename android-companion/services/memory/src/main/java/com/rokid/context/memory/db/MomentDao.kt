@@ -121,6 +121,8 @@ abstract class MomentDao : DerivedStaleDao() {
     @Query("SELECT frameId, capturedAtMs AS ms FROM frame_meta WHERE frameId IN (:frameIds) AND capturedAtMs IS NOT NULL UNION ALL SELECT id AS frameId, ts AS ms FROM frame WHERE id IN (:frameIds)")
     abstract suspend fun captureTimes(frameIds: List<String>): List<FrameTimeRow>
     @Query("SELECT path FROM frame WHERE id IN (:frameIds) AND path != ''") abstract suspend fun framePaths(frameIds: List<String>): List<String>
+    /** Marks (and their intent rows) LINKED to these photos, whatever their own time: the photo's Forget deletes them (`deleteLabelsForFrames`). */
+    @Query("SELECT labelId FROM canvas_label WHERE frameId IN (:frameIds)") abstract suspend fun labelIdsLinkedToFrames(frameIds: List<String>): List<String>
     @Query("SELECT labelId FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs ORDER BY labelId") abstract suspend fun labelIdsBetween(fromMs: Long, toMs: Long): List<String>
     @Query("DELETE FROM canvas_label WHERE labelId IN (:ids)") protected abstract suspend fun deleteLabelRows(ids: List<String>)
     @Query("DELETE FROM canvas_meta WHERE `key` IN (:keys)") protected abstract suspend fun deleteMetaKeys(keys: List<String>)
