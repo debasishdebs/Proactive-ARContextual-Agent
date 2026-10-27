@@ -151,7 +151,7 @@ class DerivedEditorTest {
         } finally { exec.shutdownNow() }
     }
 
-    @Test fun anOlderCheckThatFinishesLateNeverOverwritesANewerText() {
+    @Test fun aSlowOlderCheckNeverDecidesForANewerText() {
         val exec = java.util.concurrent.Executors.newFixedThreadPool(2)
         try {
             val v = SignalSettingsViewModel(FakeHudSettings(), SignalConfigStore(), MutableStateFlow<String?>(null), editorDispatcher = exec.asCoroutineDispatcher(), editorDebounceMs = 0)
@@ -159,12 +159,12 @@ class DerivedEditorTest {
             v.checkHook = { if (v.checks.get() == 1) { started.countDown(); gate.await(5, java.util.concurrent.TimeUnit.SECONDS) } }
             v.newDerived(); v.setEditorName("walky"); v.setEditorText("not json")   // the first check blocks inside
             assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
-            v.setEditorText(walky)                                                  // the newer text is checked meanwhile and is valid
+            v.setEditorText(walky)                                                  // the newer text replaces it; the old check cannot be interrupted, so it finishes first
+            assertTrue("the old verdict is not shown while the newer text is pending", v.editor.value.checking && v.editor.value.text == walky)
+            gate.countDown()
             val end = System.currentTimeMillis() + 5_000
             while (v.editor.value.checking && System.currentTimeMillis() < end) Thread.sleep(10)
-            assertTrue(v.editor.value.canSave)
-            gate.countDown(); Thread.sleep(200)                                    // the old check ("not json") now finishes
-            assertTrue("the newer text keeps its verdict", v.editor.value.canSave && v.editor.value.text == walky)
+            assertTrue("the newer text gets its own verdict", v.editor.value.canSave && v.editor.value.text == walky)
         } finally { exec.shutdownNow() }
     }
 }

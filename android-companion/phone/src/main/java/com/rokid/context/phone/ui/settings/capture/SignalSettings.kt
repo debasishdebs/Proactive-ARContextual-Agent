@@ -27,7 +27,8 @@ import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.SwitchRow
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -94,7 +95,17 @@ class SignalSettingsViewModel(
     private val editorState = MutableStateFlow(DerivedEditorUi())
     val editor: StateFlow<DerivedEditorUi> = editorState
     private val editorScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + editorDispatcher)
-    private var checkJob: kotlinx.coroutines.Job? = null
+    private class Req(val name: String, val text: String, val editing: Boolean, val version: Int)
+    private val requests = kotlinx.coroutines.flow.MutableSharedFlow<Req>(extraBufferCapacity = 64, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    init {
+        // typing is debounced (Flow.debounce: a pause of editorDebounceMs) and only the newest request is checked, off the main thread
+        editorScope.launch {
+            requests.let { if (editorDebounceMs > 0) it.debounce(editorDebounceMs) else it }.collectLatest { r ->
+                val out = check(true, r.name, r.text, r.editing)
+                if (latest.get() == r.version) editorState.value = out
+            }
+        }
+    }
     private val latest = java.util.concurrent.atomic.AtomicInteger()
     /** Test seams: how many checks ran and the thread of the last one. */
     internal val checks = java.util.concurrent.atomic.AtomicInteger()
@@ -119,24 +130,18 @@ class SignalSettingsViewModel(
         val editing = editorState.value.editing
         val v = latest.incrementAndGet()
         editorState.value = DerivedEditorUi(true, name, text, editing, null, false, checking = !(name.isBlank() && text.isBlank()))
-        checkJob?.cancel()
-        checkJob = editorScope.launch {
-            if (editorDebounceMs > 0) delay(editorDebounceMs)
-            val r = check(true, name, text, editing)
-            if (latest.get() == v) editorState.value = r
-        }
+        requests.tryEmit(Req(name, text, editing, v))
     }
-    fun newDerived() { latest.incrementAndGet(); checkJob?.cancel(); editorState.value = DerivedEditorUi(open = true) }
+    fun newDerived() { latest.incrementAndGet(); editorState.value = DerivedEditorUi(open = true) }
     fun editDerived(name: String) {
         val d = store.config.value.derived.firstOrNull { it.name == name } ?: return
-        latest.incrementAndGet(); checkJob?.cancel()
+        val v = latest.incrementAndGet()
         editorState.value = DerivedEditorUi(true, d.name, d.graph.toString(), true, null, false, checking = true)
-        val e = editorState.value; val v = latest.get()
-        checkJob = editorScope.launch { val r = check(true, e.name, e.text, true); if (latest.get() == v) editorState.value = r }
+        requests.tryEmit(Req(d.name, d.graph.toString(), true, v))
     }
     fun setEditorName(name: String) = edit(name = name)
     fun setEditorText(text: String) = edit(text = text)
-    fun closeEditor() { latest.incrementAndGet(); checkJob?.cancel(); editorState.value = DerivedEditorUi() }
+    fun closeEditor() { latest.incrementAndGet(); editorState.value = DerivedEditorUi() }
     /** Saves through [SignalConfigStore.saveDerived] (validated and size-checked again there; the 16-entry history and the logging are its), off the main thread. Closes the editor on success. */
     fun saveEditor() {
         val e = editorState.value
