@@ -28,4 +28,15 @@ class DeleterGateInventoryTest {
         }.map { it.name }
         assertEquals("a delete path that does not take the DataOpGate", emptyList<String>(), offenders)
     }
+
+    /** A range-forget entry point must run the same post-commit cleanup as a fact or photo Forget (`ForgetActions.apply`: export cache, reminders, notifications, outbox follow-up), or its leftovers keep forgotten text. */
+    @Test fun everyRangeForgetEntryPointRunsThePostCommitCleanup() {
+        val roots = listOf(File("src/main"), File("../../phone/src/main")).filter { it.exists() }
+        val callers = roots.flatMap { r -> r.walkTopDown().filter { it.isFile && it.name.endsWith(".kt") }.toList() }.filter { f ->
+            f.readLines().filter { l -> l.trimStart().let { !it.startsWith("*") && !it.startsWith("//") && !it.startsWith("/*") } }.joinToString("\n").contains(".forgetRange(")
+        }
+        assertTrue("the scan sees the coordinator: ${callers.map { it.name }}", callers.any { it.name == "CanvasForgetCoordinator.kt" })
+        val offenders = callers.filter { f -> val t = f.readText(); !t.contains("afterCascade(") && !t.contains("ForgetActions.apply(") && !t.contains("ForgetActions.afterRange(") }.map { it.name }
+        assertEquals("a range Forget entry point without the post-commit cleanup", emptyList<String>(), offenders)
+    }
 }
