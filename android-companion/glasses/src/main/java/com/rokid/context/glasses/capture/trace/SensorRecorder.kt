@@ -83,20 +83,24 @@ class SensorRecorder internal constructor(
     /** Writes whatever is buffered now. */
     fun flush() { val b = synchronized(lock) { takeLocked() }; b?.let { writeAsync(it) } }
 
-    /** A Forget (range or epoch) arrived: what is buffered goes without being written. */
-    fun discard() { synchronized(lock) { buf = ArrayList() } }
+    /** A Forget (range or epoch) arrived: what is buffered goes without being written, and a batch already taken is dropped when it reaches the writer. */
+    fun discard() { synchronized(lock) { buf = ArrayList(); generation++ } }
 
-    private class Batch(val events: List<TraceEvent>, val startWall: Long, val seq: Int)
+    /** Counts cleanups ([discard]); a batch taken before one is never written after it (under [lock]). */
+    private var generation = 0
+    private class Batch(val events: List<TraceEvent>, val startWall: Long, val seq: Int, val generation: Int, val storeEpoch: Int)
 
     private fun takeLocked(): Batch? {
         if (buf.isEmpty()) return null
-        val out = Batch(buf, firstWall, seq++); buf = ArrayList()
+        val out = Batch(buf, firstWall, seq++, generation, store.epoch.get()); buf = ArrayList()
         return out
     }
 
     private fun writeAsync(b: Batch) {
         val end = wallClock().coerceAtLeast(b.startWall)
         io(Runnable {
+            // A Forget (range or epoch) that completed after this batch was taken, in memory ([generation]) or on disk (the store's wipe/forget epoch), means these samples are forgotten: drop them
+            if (synchronized(lock) { b.generation != generation } || b.storeEpoch != store.epoch.get()) return@Runnable
             when (store.write(b.startWall, end, b.seq, b.events)) {
                 SensorRecStore.Result.WRITTEN -> { log("sensor batch written"); if (store.lastPruned > 0) log("sensor batch pruned") }
                 else -> log("sensor recording blocked")
