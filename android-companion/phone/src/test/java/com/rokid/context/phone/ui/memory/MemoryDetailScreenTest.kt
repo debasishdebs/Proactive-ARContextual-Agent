@@ -111,4 +111,15 @@ class MemoryDetailScreenTest {
         compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = scene, forgetConfirmable = true, message = ForgetCopy.CONTENT_CHANGED), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
         assertEquals("the page and the dialog both show it", 2, compose.onAllNodesWithText("Content changed since the preview. Review again.").fetchSemanticsNodes().size)
     }
+
+    @Test fun theDialogSaysHowManyItemsOutsideTheWindowAreAffectedButNotDeleted() {
+        compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = scene.copy(outside = 3), forgetConfirmable = true), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
+        compose.onNodeWithText("3 items outside this window are affected (not deleted).").assertExists()
+        assertEquals("1 item outside this window is affected (not deleted).", ForgetScopeCopy.outsideLine(1))
+    }
+
+    @Test fun noOutsideLineWhenNothingOutsideIsAffected() {
+        compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = scene, forgetConfirmable = true), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
+        compose.onNodeWithText("0 items outside this window are affected (not deleted).").assertDoesNotExist()
+    }
 }

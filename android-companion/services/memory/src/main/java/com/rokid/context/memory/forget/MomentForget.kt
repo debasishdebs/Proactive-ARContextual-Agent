@@ -64,14 +64,16 @@ class MomentForget(
     /** [scenesRemoved] = Scenes that go whole (named, or every one of their Moments goes); [scenesShrunk] = Scenes that lose some Moments but survive. */
     data class Counts(val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int,
         /** Identifies exactly the set counted (ids, spans, Scene effect): a Forget confirmed with it deletes that set or nothing ([ForgetContentChanged]). */
-        val planHash: String = "")
+        val planHash: String = "",
+        /** Items OUTSIDE the spans that are affected but NOT deleted: photos an in-span fact cites (locked only) and derived facts elsewhere that become invalid. */
+        val outside: Int = 0)
     suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
         val merged = wholeSeconds(spans)
         if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0, 0)
         return db.withTransaction {
-            val d = discover(secondsOf(merged), merged)
+            val d = discover(secondsOf(merged), merged, bounded = true)
             val e = sceneEffect(d.moments, sceneIds)
-            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e))
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e), outside = d.outsideFrames.size + d.descendants.size)
         }
     }
 
@@ -92,7 +94,7 @@ class MomentForget(
 
     private fun hashOf(spans: List<LongRange>, d: Found, e: SceneEffect): String = ForgetPlanHash.of(
         ForgetScope.MOMENT, spans,
-        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
+        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
     )
 
     private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
@@ -104,11 +106,20 @@ class MomentForget(
 
     private fun mergeSpans(spans: List<LongRange>): List<LongRange> = com.rokid.context.memory.db.CanvasSlice3Dao.mergeRanges(spans)
 
-    /** Everything the Forget of [spans] reaches (never trusts the projection alone). [moments] = the stored Moments that would go. Reads only; call it inside the Forget transaction. */
-    private class Found(val frames: Set<String>, val memories: Set<String>, val labels: Set<String>, val projected: Set<String>, val moments: Set<String>)
+    /**
+     * Everything the Forget of [spans] reaches. Reads only; call it inside the Forget transaction.
+     * - UNBOUNDED (range Forget, Moment ids; the old behaviour): the stored projection names extra sources, and the cascade follows what it follows.
+     * - BOUNDED (Forget scope MOMENT / SCENE, round 3 design): ONLY what lies inside the spans, one query per entity type and NO closure: photos by capture time, marks by time, memories created in the spans or citing an in-span photo,
+     *   and the stored Moments of those seconds (or holding those sources). What the delete merely TOUCHES outside them is counted, never deleted: [outsideFrames] (photos an in-span fact cites: locked only) and [descendants]
+     *   (derived facts elsewhere that become invalid).
+     */
+    private class Found(
+        val frames: Set<String>, val memories: Set<String>, val labels: Set<String>, val projected: Set<String>, val moments: Set<String>,
+        val outsideFrames: Set<String> = emptySet(), val descendants: Set<String> = emptySet(),
+    )
 
-    private suspend fun discover(requestedSeconds: List<Long>, spans: List<LongRange>): Found {
-        val md = db.momentDao()
+    private suspend fun discover(requestedSeconds: List<Long>, spans: List<LongRange>, bounded: Boolean = false): Found {
+        val md = db.momentDao(); val fd = db.forgetDao()
         val frames = LinkedHashSet<String>(); val memories = LinkedHashSet<String>(); val labels = LinkedHashSet<String>(); val projected = LinkedHashSet<String>()
         val between = LinkedHashSet<String>()
         for (span in spans) {
@@ -118,7 +129,7 @@ class MomentForget(
             memories += md.memoryIdsCreatedBetween(span.first, span.last); labels += md.labelIdsBetween(span.first, span.last)
         }
         requestedSeconds.forEach { projected += MomentId.format(it) }
-        projected.toList().chunked(CHUNK).forEach { c ->
+        if (!bounded) projected.toList().chunked(CHUNK).forEach { c ->
             md.partsOf(c).forEach { p ->
                 when (p.kind) {
                     MomentPartKind.FRAME -> frames += p.refId
@@ -129,21 +140,16 @@ class MomentForget(
                 }
             }
         }
-        // Closure: the cascade a memory triggers LOCKS (and, when nothing else cites it, deletes) every photo the memory cites, and a deleted photo takes ALL its memories, so the set must contain them too (preview == delete == hash == outbox).
-        val fd = db.forgetDao()
-        do {
-            var grew = false
-            frames.toList().chunked(CHUNK).forEach { c -> val m = md.memoryIdsOfFrames(c); if (memories.addAll(m)) grew = true }
-            memories.toList().chunked(CHUNK).forEach { c ->
-                val cited = fd.memories(c).mapNotNull { it.frameId } + fd.sourceFramesOf(c)
-                if (frames.addAll(cited)) grew = true
-            }
-        } while (grew)
+        frames.toList().chunked(CHUNK).forEach { c -> memories += md.memoryIdsOfFrames(c) }
         val moments = LinkedHashSet<String>(between)
         frames.toList().chunked(CHUNK).forEach { c -> moments += md.momentIdsHolding(listOf(MomentPartKind.FRAME, MomentPartKind.CITE), c + c.map { "frame:$it" }) }
         memories.toList().chunked(CHUNK).forEach { moments += md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }
         labels.toList().chunked(CHUNK).forEach { moments += md.momentIdsHolding(listOf(MomentPartKind.MARK), it) }
-        return Found(frames, memories, labels, projected, moments)
+        if (!bounded) return Found(frames, memories, labels, projected, moments)
+        val ml = memories.toList()
+        val cited = ml.chunked(CHUNK).flatMap { c -> fd.memories(c).mapNotNull { it.frameId } + fd.sourceFramesOf(c) }.toSet()
+        val descendants = ml.chunked(CHUNK).flatMap { fd.descendants(it) }.toSet() - memories
+        return Found(frames, memories, labels, projected, moments, outsideFrames = cited - frames, descendants = descendants)
     }
 
     private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String> = emptyList(), byKey: Boolean = false, expectedHash: String? = null): Result {
@@ -155,7 +161,7 @@ class MomentForget(
             spans.forEach { s3.addMomentForgetRange(it.first, it.last) }
             md.insertTombstones((requestedSeconds + spans.map { it.first / 1000 }).distinct().map { MomentTombstoneEntity(MomentId.format(it), now) }) // + the start of every span: the recency marker of a long range
             // 2. Independent discovery, unioned with the projection.
-            val found = discover(requestedSeconds, spans)
+            val found = discover(requestedSeconds, spans, bounded = byKey)
             val frames = found.frames; val memories = found.memories; val labels = found.labels; val projected = found.projected
             if (expectedHash != null) { // the confirmed set must be EXACTLY the one that was previewed; anything else rolls this transaction back (fences included) and deletes nothing
                 if (hashOf(spans, found, sceneEffect(found.moments, sceneIds)) != expectedHash) throw ForgetContentChanged()
@@ -164,9 +170,9 @@ class MomentForget(
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
             // 3. The cascade: the existing code paths, in this transaction.
             var cascade = ForgetService.Result.EMPTY
-            for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f, queueOutbox = false, radiusCascade = !byKey)) // the rows below are this transaction's own, written once
+            for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f, queueOutbox = false, bounded = if (byKey) frames else null)) // the rows below are this transaction's own, written once
             val memoryIds = memories.toList()
-            if (memoryIds.isNotEmpty()) cascade = cascade.plus(service.forgetFactsTx(memoryIds, queueOutbox = false, radiusCascade = !byKey))
+            if (memoryIds.isNotEmpty()) cascade = cascade.plus(service.forgetFactsTx(memoryIds, queueOutbox = false, bounded = if (byKey) frames else null))
             var labelsDeleted = 0; var resultsInvalidated = 0
             spans.forEach { val o = s3.forgetRangeTx(it.first, it.last, now); labelsDeleted += o.labelsDeleted; resultsInvalidated += o.resultsInvalidated } // traces, marks of the range, labelRev, frame_forget_rev, helper jobs
             val strayLabels = labels.toList().chunked(CHUNK).flatMap { md.labelIdsAmong(it) }
@@ -179,6 +185,11 @@ class MomentForget(
             dropped += md.dropHolding(frames, memories, labels)
             md.remove(projected.toList())
             spans.forEach { dropped += md.dropBetween(it.first, it.last) }
+            if (byKey && cascade.invalidated.isNotEmpty()) { // derived facts elsewhere were hidden (not deleted): the Moments that hold them survive, lose their text copy and rebuild; their derived fields are hidden
+                val remote = cascade.invalidated.toList().chunked(CHUNK).flatMap { md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }.distinct() - dropped
+                if (remote.isNotEmpty()) md.blankText(remote)
+                s3.staleMomentsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), cascade.invalidated, step = "forget")
+            }
             if (byKey) { // Forget scope MOMENT / SCENE: whole Scenes go, and the run rows of every Moment and Scene that went are deleted by their own key too (lineage tokens alone miss e.g. a sensor-only summary)
                 if (sceneIds.isNotEmpty()) db.sceneDao().remove(sceneIds)
                 db.canvasDao().deleteCanvasOutputsForFrames(sceneIds.map { "scene:$it" } + dropped.map { "moment:$it" })

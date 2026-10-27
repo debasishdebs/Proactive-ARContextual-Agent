@@ -29,6 +29,8 @@ data class ForgetPreview(
     val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int,
     /** Identifies exactly the set counted: the delete refuses ([ContentChanged]) if what it would remove is not that set any more. */
     val planHash: String = "",
+    /** Items outside the deleted window that are affected but NOT deleted (an outside photo an in-window fact cites is locked; derived facts elsewhere become invalid). */
+    val outside: Int = 0,
 )
 
 /** A scoped Forget was confirmed against a different set than the one previewed: nothing was deleted; the dialog says so and counts again. */
@@ -90,6 +92,8 @@ object ForgetScopeCopy {
         )
         return "This deletes " + listOf(n(photos, "photo", "photos"), n(memories, "fact", "facts"), n(marks, "mark", "marks"), n(moments, "Moment", "Moments")).joinToString(", ") + "." + if (scenes.isEmpty()) "" else " " + scenes.joinToString(", ") + "."
     }
+    /** The extra line when the Forget touches things it does not delete: counts only. */
+    fun outsideLine(n: Int) = "$n ${if (n == 1) "item outside this window is" else "items outside this window are"} affected (not deleted)."
     const val COUNTING = "Counting what will be deleted\u2026"
     const val COUNTS_FAILED = "Couldn't count what would be deleted, so nothing was forgotten. Try again."
 }

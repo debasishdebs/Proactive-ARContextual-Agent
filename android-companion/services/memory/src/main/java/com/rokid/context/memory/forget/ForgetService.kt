@@ -53,7 +53,8 @@ class ForgetService(
      */
     suspend fun forgetMoment(frameId: String, redactCites: Boolean = true, phoneFilesOnly: Boolean = false): Result = notifying { forgetMomentTx(frameId, redactCites, phoneFilesOnly = phoneFilesOnly) }
 
-    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, radiusCascade: Boolean = true): Result = db.withTransaction {
+    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null): Result = db.withTransaction {
+        val radiusCascade = bounded == null
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
@@ -61,9 +62,9 @@ class ForgetService(
             // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan canvas rows (safer default). No frame_source row
             // can exist here: memoryIdsOfFrame already lists them, so an orphan one takes the main path below.
             dropCanvasOutputs(listOf(frameId), null, radiusCascade)
-            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, radiusCascade = radiusCascade)
+            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded)
         }
-        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, radiusCascade = radiusCascade)
+        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded)
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         db.momentDao().dropHolding(listOf(frameId), ids) // source-to-projection cleanup: no stored Moment keeps a reference to what Forget removed
@@ -81,8 +82,8 @@ class ForgetService(
      */
     suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { forgetFactsTx(ids, lockFrames) }
 
-    internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, radiusCascade: Boolean = true): Result = db.withTransaction {
-        cascade(ids.distinct(), lockFrames, queueOutbox = queueOutbox, radiusCascade = radiusCascade)
+    internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, bounded: Set<String>? = null): Result = db.withTransaction {
+        cascade(ids.distinct(), lockFrames, queueOutbox = queueOutbox, bounded = bounded)
     }
 
     /**
@@ -135,7 +136,7 @@ class ForgetService(
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, radiusCascade: Boolean = true): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
@@ -152,11 +153,14 @@ class ForgetService(
         f.chunked(CHUNK).forEach { c -> dao.deleteFrameSourcesFor(c); dao.deleteEdgesFrom(c); dao.deleteEdgesTo(c); dao.deleteVectorsFor(c); dao.deleteMemories(c) }
         // 3. D: hidden, vectors gone.
         d.chunked(CHUNK).forEach { c -> dao.invalidate(c); dao.deleteVectorsFor(c) }
-        db.momentDao().dropHolding(frames, f + d) // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them
+        val radiusCascade = bounded == null
+        // BOUNDED (Forget scope MOMENT / SCENE): only photos inside the planned spans lose outputs, files and Moments; a cited photo outside them is merely LOCKED below, and Moments elsewhere that hold a hidden derived fact are not dropped (the caller blanks and stales them).
+        val inside = if (bounded == null) frames else frames.filter { it in bounded }
+        db.momentDao().dropHolding(inside, if (bounded == null) f + d else f) // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them
         // 4. Extraction lock.
         val now = clock()
         var spans = emptyList<Triple<Long, Long, List<String>>>()
-        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; spans = dropCanvasOutputs(frames, null, radiusCascade) }
+        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; spans = dropCanvasOutputs(inside, null, radiusCascade) }
         // 5. Redaction (exact JSON match after a LIKE prefilter: "A1" never matches "A").
         val cited = forgotten + invalidated + extraCited // extraCited: `frame:<id>` photo cites (S1)
         val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
@@ -180,7 +184,7 @@ class ForgetService(
             }
         }
         // The photo goes only when no surviving memory cites it (memory.frameId or frame_source); its image vector goes with it.
-        val uncited = frames.filter { dao.remainingRefs(it) == 0 }
+        val uncited = inside.filter { dao.remainingRefs(it) == 0 }
         uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         if (queueOutbox) queueCleanup(files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans, phoneFilesOnly) // same transaction as the delete

@@ -63,12 +63,12 @@ object ForgetActions {
         }
 
     /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
-    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String)
+    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0)
     suspend fun previewScoped(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): ScopedPreview = withContext(Dispatchers.IO) {
         val graph = MemoryGraph.get(context)
         val engine = ScopedForget(graph.db, ForgetService(graph.db, graph.proposals))
         val plan = engine.plan(target, scope); val c = engine.preview(plan)
-        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash)
+        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash, c.outside)
     }
 
     /**

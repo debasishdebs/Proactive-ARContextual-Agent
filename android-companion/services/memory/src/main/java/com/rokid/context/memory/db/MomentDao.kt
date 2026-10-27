@@ -20,6 +20,8 @@ abstract class MomentDao : DerivedStaleDao() {
     @Query("SELECT momentId FROM moment WHERE momentId >= :fromId AND momentId <= :toId ORDER BY momentId") abstract suspend fun momentIdsBetween(fromId: String, toId: String): List<String>
     @Query("SELECT DISTINCT momentId FROM moment_part WHERE kind IN (:kinds) AND refId IN (:refIds)") abstract suspend fun momentIdsHolding(kinds: List<String>, refIds: List<String>): List<String>
     @Query("DELETE FROM moment_part WHERE momentId IN (:ids)") abstract suspend fun deleteParts(ids: List<String>)
+    /** The text copy of a Moment that survives while a source it showed was hidden: gone until the next build rewrites it. */
+    @Query("UPDATE moment SET text = NULL WHERE momentId IN (:ids)") abstract suspend fun blankText(ids: List<String>)
     @Query("DELETE FROM moment WHERE momentId IN (:ids)") abstract suspend fun deleteMoments(ids: List<String>)
     @Query("DELETE FROM moment_trace_dep WHERE momentId IN (:ids)") abstract suspend fun deleteTraceDeps(ids: List<String>)
     /** Reserved: no production writer in phase 1 (tests only). */
