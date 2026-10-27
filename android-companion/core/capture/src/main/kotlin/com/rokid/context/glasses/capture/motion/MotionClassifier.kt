@@ -1,6 +1,7 @@
 package com.rokid.context.glasses.capture.motion
 
 import com.rokid.context.core.model.MotionState
+import com.rokid.context.core.model.signals.ClassifierThresholds
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +22,12 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
     /** The glance tunables in force; every read goes through here (slice 3a: a plan swaps the whole set at once, see [setConfig]). */
     @Volatile var config: GlanceParams = params
         private set
+
+    /** v0.9.7 A: the editable walking / head-moving thresholds in force (defaults = the shipped constants below). Read once per sample; swapped whole. */
+    @Volatile var thresholds: ClassifierThresholds = ClassifierThresholds.DEFAULT
+        private set
+
+    fun setThresholds(t: ClassifierThresholds) { thresholds = t }
 
     /** Swaps every glance tunable at once (the classifier's own reads and the detector's). The caller picks the safe moment: [quiet], or [abortBout] first. */
     @Synchronized fun setConfig(p: GlanceParams) { config = p; detector.p = p }
@@ -108,7 +115,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
     @Synchronized fun onGyro(x: Float, y: Float, z: Float, tMs: Long) {
         gyroNewestMs = maxOf(gyroNewestMs, tMs); val t = gyroNewestMs
         val mag = sqrt(x * x + y * y + z * z)
-        val above = mag > HEAD_MOVING_RAD_S
+        val above = mag > thresholds.headMovingRadS
         if (mag > featGyroMax) featGyroMax = mag
         val dt = if (lastGyroMs < 0) 0L else maxOf(0L, tMs - lastGyroMs)
         lastGyroMs = maxOf(lastGyroMs, tMs)
@@ -217,7 +224,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
     }
 
     /** WALKING by the strict rule or by the provisional relaxed one (see [analyseWindow]). */
-    private fun walking(): Boolean = strictWalk || (relaxedSinceMs >= 0 && accT.isNotEmpty() && accT.last() - relaxedSinceMs >= RELAXED_HOLD_MS)
+    private fun walking(): Boolean = strictWalk || (relaxedSinceMs >= 0 && accT.isNotEmpty() && accT.last() - relaxedSinceMs >= thresholds.relaxedHoldMs)
 
     /**
      * Summed per-axis variance of linear accel and a oscillation frequency on the strongest axis (mean crossings; the
@@ -244,9 +251,10 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
         }
         val hz = crossings / 2.0 / ((accT.last() - accT.first()) / 1000.0)
         lastHz = hz
-        strictWalk = lastVariance > WALK_VARIANCE && hz in WALK_MIN_HZ..WALK_MAX_HZ
+        val th = thresholds
+        strictWalk = lastVariance > th.walkVariance && hz in th.walkMinHz..th.walkMaxHz
         // A 1 s window counts whole crossings (0.5 Hz steps), so a steady 1.4 Hz reads 1.0 / 1.5 alternately: a miss shorter than the grace does not end the run.
-        if (lastVariance > RELAXED_VARIANCE && hz in RELAXED_MIN_HZ..RELAXED_MAX_HZ) { if (relaxedSinceMs < 0) relaxedSinceMs = tMs; relaxedLastOkMs = tMs }
+        if (lastVariance > th.relaxedVariance && hz in th.relaxedMinHz..th.relaxedMaxHz) { if (relaxedSinceMs < 0) relaxedSinceMs = tMs; relaxedLastOkMs = tMs }
         else if (relaxedSinceMs >= 0 && tMs - relaxedLastOkMs > RELAXED_GRACE_MS) relaxedSinceMs = -1L
     }
 
