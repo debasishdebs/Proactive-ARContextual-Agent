@@ -52,7 +52,7 @@ class ReplayRoutesTest {
     }
     private val service = ReplayService(db.canvasSlice3Dao(), { if (it == "t1") trace else null }, { DaoFence(1, epoch, { 1 }, { epoch }) }, scope, dev)
     private val stored = ReplayCandidate("a1b2", gate = com.rokid.context.glasses.capture.keyframe.GateParams(hamming = 9, bigChange = 99))
-    private val routes = ReplayRoutes(service) { h -> if (h == "a1b2") stored else null }
+    private val routes = ReplayRoutes(service) { h -> if (h == "a1b2") stored else if (h == "c0c0") throw com.rokid.context.canvas.plan.AmbiguousConfigHash() else null }
 
     private fun req(m: String, path: String, body: String = "") = HttpRequest(m, path, emptyMap(), emptyMap(), body.toByteArray())
     private fun call(m: String, path: String, body: String = "") = runBlocking { routes.handle(req(m, path, body)) }
@@ -80,6 +80,13 @@ class ReplayRoutesTest {
         assertEquals(404, call("GET", "/api/replays/zzz")!!.status)
         dev.value = false
         assertEquals(403, call("POST", "/api/replays", """{"traceIds":["t1"]}""")!!.status)
+    }
+
+    @Test fun anAmbiguousHashIsATypedConflictNotAGuess() {
+        runBlocking { db.canvasSlice3Dao().acceptTraceFenced(CanvasTraceEntity("t1", "IMU", "COMPLETE", "{}", 1, false, 0, null, "i", 1, true, 10, 20, 1), DaoFence(1, epoch, { 1 }, { epoch })) }
+        val r = call("POST", "/api/replays", """{"traceIds":["t1"],"candidate":{"configHash":"c0c0"}}""")!!
+        assertEquals(409, r.status)
+        assertTrue("ambiguous_hash" in String(r.body))
     }
 
     @Test fun aCandidateIsTheStoredPlanOfItsHashNeverTheCallersFigures() {
