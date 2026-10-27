@@ -1,5 +1,6 @@
 package com.rokid.context.memory.forget
 
+import androidx.room.withTransaction
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.moment.MomentId
 
@@ -86,6 +87,12 @@ class ScopedForget(
         if (plan.isEmpty) return MomentForget.Counts(0, 0, 0, 0, 0, 0)
         val dao = db.forgetDao(); val md = db.momentDao()
         if (plan.spans.isNotEmpty()) return MomentForget(db, service, clock).preview(plan.spans, plan.sceneIds)
+        return singleCounts(plan)
+    }
+
+    /** A single photo or fact: the sets its cascade and the radius path reach, with the hash of exactly those ids. */
+    private suspend fun singleCounts(plan: Plan): MomentForget.Counts {
+        val dao = db.forgetDao(); val md = db.momentDao()
         val radius = ForgetRadius.ms()
         val frames: List<String>; val memories: Set<String>
         if (plan.frameId != null) {
@@ -101,15 +108,26 @@ class ScopedForget(
         val marks = windows.flatMap { md.labelIdsBetween(it.first, it.last) }.distinct()
         val moments = (windows.flatMap { md.momentIdsBetween(MomentId.format(it.first / 1000), MomentId.format(it.last / 1000)) } + frames.chunked(500).flatMap { c -> md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.FRAME, com.rokid.context.memory.db.MomentPartKind.CITE), c + c.map { "frame:$it" }) } + memories.toList().chunked(500).flatMap { md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.SUMMARY), it) }).distinct()
         val (removed, shrunk) = MomentForget(db, service, clock).sceneEffect(moments)
-        return MomentForget.Counts(frames.size, memories.size, marks.size, moments.size, removed, shrunk)
+        val hash = ForgetPlanHash.of(ForgetScope.PHOTO, windows, mapOf("target" to listOf(plan.factId ?: plan.frameId.orEmpty()), "frames" to frames, "memories" to memories, "marks" to marks, "moments" to moments, "scenesRemoved" to removed, "scenesShrunk" to shrunk))
+        return MomentForget.Counts(frames.size, memories.size, marks.size, moments.size, removed.size, shrunk.size, hash)
     }
 
-    /** Runs the plan in one transaction (the caller holds the delete gate and runs the post-commit cleanup on [Done.cascade]). */
-    suspend fun forget(plan: Plan): Done {
+    /**
+     * Runs the plan in one transaction (the caller holds the delete gate and runs the post-commit cleanup on [Done.cascade]). With [expectedHash] (the hash the preview returned) the Forget deletes EXACTLY the previewed set: the
+     * set is rediscovered INSIDE the deleting transaction and, if it differs in any id (a photo or mark that arrived, a changed Scene membership, a changed radius or scope fallback), [ForgetContentChanged] rolls everything back.
+     */
+    suspend fun forget(plan: Plan, expectedHash: String? = null): Done {
         if (plan.isEmpty) return Done(plan, ForgetService.Result.EMPTY, emptyList(), emptyList())
-        plan.factId?.let { return Done(plan, service.forgetFact(it), emptyList(), emptyList()) }
-        plan.frameId?.let { return Done(plan, service.forgetMoment(it), emptyList(), emptyList()) }
-        val r = MomentForget(db, service, clock).forgetSpans(plan.spans, plan.sceneIds)
+        if (plan.factId != null || plan.frameId != null) {
+            val r = service.notifying {
+                db.withTransaction {
+                    if (expectedHash != null && singleCounts(plan).planHash != expectedHash) throw ForgetContentChanged()
+                    if (plan.factId != null) service.forgetFactsTx(listOf(plan.factId)) else service.forgetMomentTx(plan.frameId!!)
+                }
+            }
+            return Done(plan, r, emptyList(), emptyList())
+        }
+        val r = MomentForget(db, service, clock).forgetSpans(plan.spans, plan.sceneIds, expectedHash)
         // files and glasses follow the committed range (trace folders, the glasses' unsent traces): the same listener call as a range Forget
         for (s in plan.spans) ForgetListeners.rangeForgotten(s.first, s.last, r.tombstonedTraceIds)
         return Done(plan, r.cascade, plan.spans, r.tombstonedTraceIds)

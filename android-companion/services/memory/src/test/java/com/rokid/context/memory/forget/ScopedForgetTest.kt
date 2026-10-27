@@ -102,6 +102,52 @@ class ScopedForgetTest {
         assertEquals("the preview named exactly what went: marks (La only)", 1, counts.marks); assertEquals(counts.photos, 3) // a1, a2, edge
     }
 
+    // ---- review fix: the confirm deletes EXACTLY what the preview showed, or nothing ----
+    private suspend fun refused(plan: ScopedForget.Plan, hash: String) { try { engine.forget(plan, hash); org.junit.Assert.fail("expected ForgetContentChanged") } catch (e: ForgetContentChanged) { } }
+
+    @Test fun theConfirmDeletesTheSetThatWasPreviewedWhenNothingChanged() = runBlocking<Unit> {
+        ForgetScope.values().forEach { sc ->
+            fresh(); world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), sc)); assertTrue(c.planHash.isNotEmpty())
+            engine.forget(engine.plan(ForgetTarget.Photo("a1"), sc), c.planHash); assertFalse("$sc", "a1" in frames())
+        }
+    }
+
+    @Test fun aPhotoThatArrivedInsideTheSpanAfterThePreviewIsNeverDeletedUncounted() = runBlocking<Unit> {
+        world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT))
+        fx.frame("late", MS + 6_000)
+        refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash)
+        assertEquals("nothing was deleted and nothing was fenced", listOf("a1", "a2", "a3", "late", "n1"), frames()); assertEquals(0, db.momentDao().tombstoneCount()); assertTrue(s3.momentForgetRanges().isEmpty())
+        val again = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)); assertEquals(c.photos + 1, again.photos)
+        engine.forget(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), again.planHash); assertFalse("late" in frames())
+    }
+
+    @Test fun aSceneMembershipChangeAfterThePreviewIsRefused() = runBlocking<Unit> {
+        world(); db.sceneDao().remove(listOf("sc-A"))
+        val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.SCENE)) // previewed as a MOMENT (no Scene yet)
+        scene("sc-A", 0, 3, 25) // the Scene appears: the same confirm would now be the whole Scene
+        refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.SCENE), c.planHash)
+        assertEquals(listOf("a1", "a2", "a3", "n1"), frames())
+    }
+
+    @Test fun aMarkThatArrivedInTheRadiusAfterAPhotoPreviewIsRefusedAndSoIsAChangedRadius() = runBlocking<Unit> {
+        world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.PHOTO))
+        fx.mark("Lnew", MS + 4_000); refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.PHOTO), c.planHash); assertTrue("Lnew" in marks()); assertTrue("a1" in frames())
+        val c2 = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.PHOTO)); ForgetRadius.provider = { 30_000L }
+        refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.PHOTO), c2.planHash); assertTrue("a1" in frames())
+    }
+
+    @Test fun aFactPreviewIsPinnedToo() = runBlocking<Unit> {
+        world(); val c = engine.preview(engine.plan(ForgetTarget.Fact("ma1"), ForgetScope.PHOTO)); fx.mark("Lnew", MS + 4_000)
+        refused(engine.plan(ForgetTarget.Fact("ma1"), ForgetScope.PHOTO), c.planHash); assertEquals(listOf("ma1", "ma2", "ma3", "mn1"), memories())
+    }
+
+    @Test fun noHashMeansNoCheckAndTheHashNamesTheScope() = runBlocking<Unit> {
+        world()
+        val hashes = ForgetScope.values().map { engine.preview(engine.plan(ForgetTarget.Photo("a1"), it)).planHash }
+        assertEquals("one hash per distinct set", 3, hashes.distinct().size)
+        engine.forget(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.PHOTO)); assertFalse("a1" in frames())
+    }
+
     @Test fun aMomentEntryWithTheSettingOnPhotoIsStillAMomentForget() = runBlocking<Unit> {
         world(); val d = run(ForgetTarget.Moment(mid(0)), ForgetScope.PHOTO)
         assertEquals(ForgetScope.MOMENT, d.plan.effective); assertEquals(listOf("a3", "n1"), frames()); assertTrue(s3.momentFenced(MS, MS + 999))
