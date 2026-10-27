@@ -155,16 +155,51 @@ class DerivedEditorTest {
         val exec = java.util.concurrent.Executors.newFixedThreadPool(2)
         try {
             val v = SignalSettingsViewModel(FakeHudSettings(), SignalConfigStore(), MutableStateFlow<String?>(null), editorDispatcher = exec.asCoroutineDispatcher(), editorDebounceMs = 0)
-            val gate = java.util.concurrent.CountDownLatch(1); val started = java.util.concurrent.CountDownLatch(1)
-            v.checkHook = { if (v.checks.get() == 1) { started.countDown(); gate.await(5, java.util.concurrent.TimeUnit.SECONDS) } }
+            val gate1 = java.util.concurrent.CountDownLatch(1); val gate2 = java.util.concurrent.CountDownLatch(1); val started1 = java.util.concurrent.CountDownLatch(1); val started2 = java.util.concurrent.CountDownLatch(1)
+            v.checkHook = { when (v.checks.get()) { 1 -> { started1.countDown(); gate1.await(5, java.util.concurrent.TimeUnit.SECONDS) }; 2 -> { started2.countDown(); gate2.await(5, java.util.concurrent.TimeUnit.SECONDS) } } }
             v.newDerived(); v.setEditorName("walky"); v.setEditorText("not json")   // the first check blocks inside
-            assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
-            v.setEditorText(walky)                                                  // the newer text replaces it; the old check cannot be interrupted, so it finishes first
-            assertTrue("the old verdict is not shown while the newer text is pending", v.editor.value.checking && v.editor.value.text == walky)
-            gate.countDown()
+            assertTrue(started1.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            v.setEditorText(walky)                                                  // the newer text replaces it
+            gate1.countDown()                                                       // the old check finishes; the newer one starts and is held
+            assertTrue(started2.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertTrue("the old verdict did not land on the newer text: ${v.editor.value}", v.editor.value.text == walky && v.editor.value.problem == null && v.editor.value.checking)
+            gate2.countDown()
             val end = System.currentTimeMillis() + 5_000
             while (v.editor.value.checking && System.currentTimeMillis() < end) Thread.sleep(10)
             assertTrue("the newer text gets its own verdict", v.editor.value.canSave && v.editor.value.text == walky)
         } finally { exec.shutdownNow() }
     }
+
+    @Test fun aCheckThatFinishesAfterTheEditorWasClosedNeverReopensIt() {
+        val exec = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val v = SignalSettingsViewModel(FakeHudSettings(), SignalConfigStore(), MutableStateFlow<String?>(null), editorDispatcher = exec.asCoroutineDispatcher(), editorDebounceMs = 0)
+            val gate = java.util.concurrent.CountDownLatch(1); val started = java.util.concurrent.CountDownLatch(1)
+            v.checkHook = { started.countDown(); gate.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+            v.newDerived(); v.setEditorName("walky"); v.setEditorText(walky)
+            assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            v.closeEditor()
+            gate.countDown(); Thread.sleep(300)
+            assertFalse("closed stays closed: ${v.editor.value}", v.editor.value.open)
+        } finally { exec.shutdownNow() }
+    }
+
+    @Test fun aSaveThatFinishesAfterTheTextChangedDoesNotCloseTheEditor() {
+        val exec = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val store = SignalConfigStore()
+            val v = SignalSettingsViewModel(FakeHudSettings(), store, MutableStateFlow<String?>(null), editorDispatcher = exec.asCoroutineDispatcher(), editorDebounceMs = 0)
+            v.newDerived(); v.setEditorName("walky"); v.setEditorText(walky)
+            val end = System.currentTimeMillis() + 5_000
+            while (!v.editor.value.canSave && System.currentTimeMillis() < end) Thread.sleep(10)
+            val gate = java.util.concurrent.CountDownLatch(1)
+            exec.execute { gate.await(5, java.util.concurrent.TimeUnit.SECONDS) }   // the one worker thread is busy: the save waits behind this
+            v.saveEditor(); v.setEditorText(walky + " ")                             // typed over before the save ran
+            gate.countDown()
+            Thread.sleep(500)
+            assertTrue("the save itself happened", store.config.value.derived.isNotEmpty())
+            assertTrue("typing during the save keeps the editor open: ${v.editor.value}", v.editor.value.open && v.editor.value.text == walky + " ")
+        } finally { exec.shutdownNow() }
+    }
 }
+
