@@ -24,21 +24,64 @@ object MemoryExport {
     /**
      * GAP-1: the cached memory exports (and an unfinished `.part`) hold memory and ask text verbatim. A Forget, a retention
      * pass and a memory edit remove them all (they are regenerable); the diagnostics export in the same folder is not ours.
-     * Best effort: a failure is logged by class only and never turns the Forget into a failure.
+     * Returns true when no cached export is left. A failure is logged by class only and never throws; it is remembered ([cleanupPending]) so the next start ([retryPending],
+     * bounded) and the next Forget try again, and a PRODUCTION Forget reports it as a typed outcome (`ForgetActions.Outcome.CACHE_CLEANUP_FAILED`, review fix R3).
      */
-    fun deleteCached(context: Context) {
+    fun deleteCached(context: Context): Boolean {
+        var clean = true
         try {
             // One lock with the publication in write(): the directory is listed AFTER taking it, and an export that started before this call can never publish after it (generation).
             synchronized(publishLock) {
                 generation++
-                val listed = dir(context).listFiles()?.filter { it.isFile && it.name.startsWith(PREFIX) }
+                val folder = dir(context)
+                val all = folder.listFiles()
+                if (all == null && folder.exists()) clean = false // the folder cannot be listed: whatever is in it stays unknown
+                val listed = all?.filter { it.isFile && it.name.startsWith(PREFIX) }
                 testAfterEnumerate?.invoke()
-                listed?.forEach { it.delete() }
+                listed?.forEach { if (!(testDelete?.invoke(it) ?: it.delete()) && it.exists()) clean = false }
             }
         } catch (e: Exception) {
+            clean = false
             PcLog.w("MemoryExport", "cached exports not deleted: ${SafeLog.describe(e)}")
         }
+        remember(context, clean)
+        return clean
     }
+
+    /** Whether a cached export could not be deleted and the retry is still due. */
+    fun cleanupPending(context: Context): Boolean = prefs(context).getBoolean(PENDING, false)
+
+    /** Start-up retry of a cached export that a Forget could not delete: at most [MAX_START_RETRIES] start-ups (the next Forget tries again whatever happened). Returns true when nothing is left. */
+    fun retryPending(context: Context): Boolean {
+        val p = prefs(context)
+        if (!p.getBoolean(PENDING, false)) return true
+        val n = p.getInt(RETRIES, 0)
+        if (n >= MAX_START_RETRIES) return false
+        p.edit().putInt(RETRIES, n + 1).commit()
+        return deleteCached(context)
+    }
+
+    private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(CLEANUP_PREFS, Context.MODE_PRIVATE)
+
+    private fun remember(context: Context, clean: Boolean) {
+        try {
+            val p = prefs(context); val was = p.getBoolean(PENDING, false)
+            if (clean && was) p.edit().clear().commit()
+            else if (!clean && !was) p.edit().putBoolean(PENDING, true).putInt(RETRIES, 0).commit()
+        } catch (e: Exception) { PcLog.w("MemoryExport", "cleanup mark not stored: ${SafeLog.describe(e)}") }
+    }
+
+    /** Phone prefs: one boolean and one counter, no user data; Delete all clears it (the export folder is emptied by the wipe itself). */
+    const val CLEANUP_PREFS = "export_cleanup"
+    private const val PENDING = "pending"
+    private const val RETRIES = "retries"
+    const val MAX_START_RETRIES = 5
+
+    /** A debuggable build may leave an undeletable cached export; a production build must report it. */
+    internal val defaultProductionBuild: (Context) -> Boolean = { (it.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0 }
+    @Volatile internal var productionBuild: (Context) -> Boolean = defaultProductionBuild
+    /** Test seam: replaces `File.delete()` in [deleteCached] (false = the file cannot be deleted). Always null in production. */
+    @Volatile internal var testDelete: ((File) -> Boolean)? = null
 
     private val publishLock = Any()
     /** Moves with every [deleteCached]; guarded by [publishLock]. An export that read the library before a Forget must not be published after it. */

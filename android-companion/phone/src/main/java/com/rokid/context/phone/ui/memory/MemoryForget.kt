@@ -15,6 +15,9 @@ interface MemoryForget {
     }
 }
 
+/** The Forget went through but, in a production build, a cached memory export that still holds text could not be deleted (it is retried at the next start and the next Forget). */
+class CacheCleanupFailed : Exception("cached export not deleted")
+
 /** Fixed copy (spec §2.4 Memory detail; never exception text). */
 object ForgetCopy {
     const val FACT_TITLE = "Forget this fact?"
@@ -26,5 +29,9 @@ object ForgetCopy {
     const val DONE = "Forgotten"
     /** A running export holds the delete gate for up to 30 s: the Forget did not run. */
     const val EXPORT_RUNNING = "An export is running. Try again in a minute, or when it finishes."
+    /** A Canvas Save holds the delete gate (a save is short): the Forget did not run. */
+    const val SAVE_RUNNING = "A save is running. Try again in a minute, or when it finishes."
+    /** The Forget committed; a saved export file still holds the text and could not be deleted. */
+    const val CACHE_LEFT = "Forgotten, but a saved copy of your memories (the export file in this app's cache) could not be deleted and may still contain it. It is retried when the app starts and at your next Forget; Delete all removes it too."
     const val FAILED = "Couldn't forget that \u2014 try again"
 }

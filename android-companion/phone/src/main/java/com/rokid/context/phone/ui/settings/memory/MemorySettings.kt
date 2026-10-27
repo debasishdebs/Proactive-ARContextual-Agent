@@ -143,6 +143,8 @@ class MemorySettingsViewModel(
         viewModelScope.launch {
             try { block() } catch (c: CancellationException) { throw c } catch (e: com.rokid.context.orchestration.DataOpGate.DeleteRunning) {
                 _state.update { it.copy(notice = "A delete is running — try again") }
+            } catch (e: com.rokid.context.orchestration.DataOpGate.WriteInProgress) {
+                _state.update { it.copy(notice = "A save is running — try again") }
             } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
                 _state.update { it.copy(notice = "Export in progress — try again") }
             } catch (e: Exception) {

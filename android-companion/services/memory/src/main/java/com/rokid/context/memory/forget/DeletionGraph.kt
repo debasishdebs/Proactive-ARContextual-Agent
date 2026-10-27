@@ -50,6 +50,7 @@ object DeletionGraph {
         w("canvas_plan_state", "the publish-group and plan state sent to the glasses; cleared so a stale plan is never re-sent (only the generation counter stays: not personal data, and the glasses keep theirs)"),
         w("canvas_collect", "the Collect-for-tuning session window"),
         w("canvas_helper_grants", "the laptop helper's capability grants (py_exec, default off): a wipe turns every grant off, so Delete all never leaves the helper allowed"),
+        w("export_cleanup", "a boolean and a counter: a cached memory export could not be deleted by a Forget and its retry is due (no user data; Delete all empties the export folder itself and clears the mark)"),
         k("deletion_epoch", "the persisted deletion epoch (install id, counter, wipedAtMs): it IS the fence and holds no user data"),
         k("mark_settings", "reserved: mark toggles (settings, not memory); not written yet"),
     )

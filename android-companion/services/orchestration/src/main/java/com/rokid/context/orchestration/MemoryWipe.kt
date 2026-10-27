@@ -46,7 +46,7 @@ object MemoryWipe {
     }
 
     /** The prefs Delete all clears (a test pins it to [com.rokid.context.memory.forget.DeletionGraph.wipedPrefs]). */
-    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS)
+    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS, MemoryExport.CLEANUP_PREFS)
 
     /**
      * Bumped first by every Delete all. A writer that read it before its work began (a queue job before its claim, an

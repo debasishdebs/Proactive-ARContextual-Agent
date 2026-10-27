@@ -25,10 +25,12 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
             private val onForgotten = { HubGraph.get(app).refresh() }
             override suspend fun forgetFact(memoryId: String) = done(ForgetActions.forgetFactOutcome(app, memoryId, onForgotten))
             override suspend fun forgetMoment(frameId: String) = done(ForgetActions.forgetMomentOutcome(app, frameId, onForgotten))
-            /** The typed outcome: a blocked-by-export Forget becomes the typed exception the view model names to the user. */
+            /** The typed outcome: a blocked Forget becomes the typed exception the view model names to the user (an export, a Canvas save, or a cached export that could not be deleted). */
             private fun done(o: ForgetActions.Outcome): Boolean = when (o) {
                 ForgetActions.Outcome.DONE -> true
                 ForgetActions.Outcome.EXPORT_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.ExportInProgress()
+                ForgetActions.Outcome.SAVE_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.WriteInProgress()
+                ForgetActions.Outcome.CACHE_CLEANUP_FAILED -> throw CacheCleanupFailed()
                 ForgetActions.Outcome.FAILED -> false
             }
         }, onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })
@@ -37,7 +39,7 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
     LaunchedEffect(state.forgotten) {
         if (state.forgotten) {
             // No snackbar host on the screens behind (owned by other streams): a Toast carries "Forgotten" across the pop.
-            Toast.makeText(app, ForgetCopy.DONE, Toast.LENGTH_SHORT).show()
+            Toast.makeText(app, state.message ?: ForgetCopy.DONE, Toast.LENGTH_SHORT).show()
             back()
         }
     }

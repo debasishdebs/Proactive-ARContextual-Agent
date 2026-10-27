@@ -41,7 +41,7 @@ class InvalidMomentPurge(
         return try {
             gate.delete { purge() }
         } catch (e: DataOpGate.ExportInProgress) {
-            PcLog.i(TAG, "invalid purge deferred: export in progress")
+            if (e is DataOpGate.WriteInProgress) PcLog.i(TAG, "invalid purge deferred: save in progress") else PcLog.i(TAG, "invalid purge deferred: export in progress")
             Result(Status.DEFERRED, 0, 0, 0)
         }
     }
