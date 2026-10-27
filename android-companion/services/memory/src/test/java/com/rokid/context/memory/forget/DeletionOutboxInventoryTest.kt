@@ -14,7 +14,7 @@ import java.io.File
 class DeletionOutboxInventoryTest {
     private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }.map { File(it, "src/main/java/com/rokid/context/memory") }.first { it.isDirectory }
     private val callPattern = Regex("""\b(forgetRangeTx|deleteSliceOutputsForFrames|deleteCanvasOutputsForFrames|deleteFrame)\(""")
-    private val deleters = setOf("forget/ForgetService.kt", "forget/MomentForget.kt", "forget/CanvasSlice3Forget.kt")
+    private val deleters = setOf("forget/ForgetService.kt", "forget/MomentForget.kt")
 
     private fun sources() = root.walkTopDown().filter { it.isFile && it.extension == "kt" }.map { it.relativeTo(root).path to it.readText() }.toList()
 

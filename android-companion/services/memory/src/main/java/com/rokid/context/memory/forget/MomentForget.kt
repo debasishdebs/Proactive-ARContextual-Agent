@@ -26,6 +26,8 @@ class MomentForget(
     data class Result(
         val seconds: Int, val frames: Int, val memories: Int, val marks: Int, val momentsDropped: Int, val outboxRows: Int,
         val cascade: ForgetService.Result = ForgetService.Result.EMPTY,
+        /** The glasses traces this Forget tombstoned (ids, for the file and glasses follow-up of the canvas range Forget), the marks deleted and the results invalidated by the range cascade. */
+        val tombstonedTraceIds: List<String> = emptyList(), val labelsDeleted: Int = 0, val resultsInvalidated: Int = 0,
     ) { companion object { val EMPTY = Result(0, 0, 0, 0, 0, 0) } }
 
     /** Test seam: runs inside the transaction after everything was written, so a test can throw and prove all of it rolls back. Always null in production. */
@@ -84,7 +86,8 @@ class MomentForget(
             for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f, queueOutbox = false)) // the rows below are this transaction's own, written once
             val memoryIds = memories.toList()
             if (memoryIds.isNotEmpty()) cascade = cascade.plus(service.forgetFactsTx(memoryIds, queueOutbox = false))
-            spans.forEach { s3.forgetRangeTx(it.first, it.last, now) } // traces, marks of the range, labelRev, frame_forget_rev, helper jobs
+            var labelsDeleted = 0; var resultsInvalidated = 0
+            spans.forEach { val o = s3.forgetRangeTx(it.first, it.last, now); labelsDeleted += o.labelsDeleted; resultsInvalidated += o.resultsInvalidated } // traces, marks of the range, labelRev, frame_forget_rev, helper jobs
             val strayLabels = labels.toList().chunked(CHUNK).flatMap { md.labelIdsAmong(it) }
             strayLabels.chunked(CHUNK).forEach { md.deleteLabels(it) }
             if (strayLabels.isNotEmpty()) s3.bumpLabelRev()
@@ -99,7 +102,7 @@ class MomentForget(
             val tombstonedTraces = liveTracesBefore - s3.forgettableTraces().map { it.traceId }.toSet()
             val inserted = CleanupOutbox.queue(md, now, cascade.framesToDelete, wire, tombstonedTraces, spans)
             testFaultBeforeCommit?.invoke()
-            counts = Result(requestedSeconds.size, frames.size, memories.size, labels.size, dropped.size, inserted, cascade)
+            counts = Result(requestedSeconds.size, frames.size, memories.size, labels.size, dropped.size, inserted, cascade, tombstonedTraces.toList(), labelsDeleted, resultsInvalidated)
             cascade
         }
         }

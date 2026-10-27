@@ -1,6 +1,6 @@
 package com.rokid.context.memory.forget
 
-import androidx.room.withTransaction
+import com.rokid.context.memory.ProposalRepository
 import com.rokid.context.memory.db.ContextDatabase
 
 /**
@@ -14,10 +14,13 @@ class CanvasSlice3Forget(private val db: ContextDatabase, private val clock: () 
 
     fun dao() = db.canvasSlice3Dao()
 
-    suspend fun forgetRange(fromMs: Long, toMs: Long): Result = db.withTransaction {
-        val o = db.canvasSlice3Dao().forgetRangeTx(fromMs, toMs, clock())
-        db.momentDao().dropBetween(fromMs, toMs) // its marks are gone: so are the stored Moments of that time
-        CleanupOutbox.queue(db.momentDao(), clock(), traceIds = o.tombstonedTraceIds, ranges = listOf(fromMs..toMs)) // glasses traces and the glasses range, same transaction
-        Result(o.tombstonedTraceIds, o.labelsDeleted, o.resultsInvalidated)
+    /**
+     * v0.9.7 review fix (R7): a time-range Forget is a MOMENT range Forget: every Moment of the range goes with its photos, memories, marks, run outputs and projection, and the seconds are fenced
+     * (durable range + `moment_tombstone`), so no rebuild resolves a surviving source again. Same semantics as [MomentForget.forgetRange] (whole seconds, outward), which also runs [CanvasSlice3Dao.forgetRangeTx].
+     */
+    suspend fun forgetRange(fromMs: Long, toMs: Long): Result {
+        val service = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db), clock)
+        val r = MomentForget(db, service, clock).forgetRange(fromMs, toMs)
+        return Result(r.tombstonedTraceIds, r.labelsDeleted, r.resultsInvalidated)
     }
 }

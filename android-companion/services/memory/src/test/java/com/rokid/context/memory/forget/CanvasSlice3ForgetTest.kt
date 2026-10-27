@@ -118,7 +118,7 @@ class CanvasSlice3ForgetTest {
         forget.forgetRange(1_000, 2_000)
         assertFalse("the unacked mark delivered again", dao.insertLabelFenced(CanvasLabelEntity("mk:e:1", "MOMENT", "tap", "MOMENT", 1_500, createdAt = 2), fence))
         assertFalse("a delayed voice mark at the listen start", dao.insertLabelFenced(CanvasLabelEntity("vm:1", "INTENT", "voice", "driving", 1_999, createdAt = 2), fence))
-        assertTrue("just outside the range is fine", dao.insertLabelFenced(CanvasLabelEntity("mk:e:2", "MOMENT", "tap", "MOMENT", 2_001, createdAt = 2), fence))
+        assertTrue("just outside the range is fine", dao.insertLabelFenced(CanvasLabelEntity("mk:e:2", "MOMENT", "tap", "MOMENT", 3_001, createdAt = 2), fence))
         assertNull(dao.label("mk:e:1"))
     }
 
@@ -130,11 +130,12 @@ class CanvasSlice3ForgetTest {
     }
 
     @Test fun rangesMergeAndAreCapped() = runBlocking {
-        forget.forgetRange(100, 200); forget.forgetRange(150, 300); forget.forgetRange(301, 310)
-        assertEquals(listOf(100L..310L), dao.forgottenRanges())
-        (0 until 250).forEach { i -> forget.forgetRange(10_000L + i * 100, 10_010L + i * 100) }
+        // whole seconds since v0.9.7 (a range Forget is a Moment range Forget, rounded outward)
+        forget.forgetRange(1_000, 1_200); forget.forgetRange(1_500, 2_100); forget.forgetRange(3_000, 3_100)
+        assertEquals(listOf(1_000L..3_999L), dao.forgottenRanges())
+        (0 until 250).forEach { i -> forget.forgetRange(10_000L + i * 2_000, 10_010L + i * 2_000) }
         assertTrue(dao.forgottenRanges().size <= com.rokid.context.memory.db.CanvasSlice3Dao.MAX_RANGES)
-        assertTrue("capping only ever fences MORE", dao.isForgotten(10_005L) && dao.isForgotten(10_000L + 249 * 100 + 5))
+        assertTrue("capping only ever fences MORE", dao.isForgotten(10_005L) && dao.isForgotten(10_000L + 249 * 2_000 + 5))
     }
 
     @Test fun deleteAllClearsTheRangeFenceBecauseTheEpochCoversEverythingBeforeIt() = runBlocking {
