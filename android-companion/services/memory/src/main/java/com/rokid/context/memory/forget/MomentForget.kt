@@ -49,9 +49,73 @@ class MomentForget(
         return run(seconds, listOf(lo * 1000..hi * 1000 + 999))
     }
 
+    /**
+     * v0.9.7 slice C (Forget scope MOMENT / SCENE): forgets every source inside [spans] (millisecond ranges, rounded OUTWARD to whole seconds and merged) with the very code of [forgetRange]: photos, memories,
+     * marks, traces, sensor rows, run outputs, projection, durable outbox and the fences (`momentForgetRanges` + a tombstone per second). [sceneIds] are Scenes that go WHOLE in the same transaction
+     * (rows, parts, audit, derived fields); the run outputs of those Scenes and of every Moment that went (`scene:<id>`, `moment:<id>` rows) are deleted by key as well, not only through their lineage tokens.
+     */
+    suspend fun forgetSpans(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Result {
+        val merged = wholeSeconds(spans)
+        if (merged.isEmpty()) return Result.EMPTY
+        return run(secondsOf(merged), merged, sceneIds.toList().distinct(), byKey = true)
+    }
+
+    /** What [forgetSpans] would remove, from the SAME discovery (read-only, one snapshot): the numbers the confirm dialog shows. */
+    data class Counts(val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenes: Int)
+    suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
+        val merged = wholeSeconds(spans)
+        if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0)
+        return db.withTransaction {
+            val d = discover(secondsOf(merged), merged)
+            val scenes = LinkedHashSet<String>(sceneIds)
+            d.moments.toList().chunked(CHUNK).forEach { scenes += db.sceneDao().sceneIdsHoldingMoments(it) }
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, scenes.size)
+        }
+    }
+
+    private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
+        val lo = Math.floorDiv(maxOf(it.first, 0L), 1000L).coerceAtMost(MomentId.MAX_SECOND); val hi = Math.floorDiv(it.last, 1000L).coerceAtMost(MomentId.MAX_SECOND)
+        lo * 1000..hi * 1000 + 999
+    })
+    private fun secondsOf(merged: List<LongRange>): List<Long> =
+        if (merged.sumOf { it.last / 1000 - it.first / 1000 + 1 } <= MAX_TOMBSTONED_SPAN) merged.flatMap { (it.first / 1000..it.last / 1000).toList() } else emptyList()
+
     private fun mergeSpans(spans: List<LongRange>): List<LongRange> = com.rokid.context.memory.db.CanvasSlice3Dao.mergeRanges(spans)
 
-    private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>): Result {
+    /** Everything the Forget of [spans] reaches (never trusts the projection alone). [moments] = the stored Moments that would go. Reads only; call it inside the Forget transaction. */
+    private class Found(val frames: Set<String>, val memories: Set<String>, val labels: Set<String>, val projected: Set<String>, val moments: Set<String>)
+
+    private suspend fun discover(requestedSeconds: List<Long>, spans: List<LongRange>): Found {
+        val md = db.momentDao()
+        val frames = LinkedHashSet<String>(); val memories = LinkedHashSet<String>(); val labels = LinkedHashSet<String>(); val projected = LinkedHashSet<String>()
+        val between = LinkedHashSet<String>()
+        for (span in spans) {
+            val inSpan = md.momentIdsBetween(MomentId.format(span.first / 1000), MomentId.format(span.last / 1000))
+            projected += inSpan; between += inSpan
+            frames += md.frameIdsBetween(span.first, span.last); frames += md.metaFrameIdsBetween(span.first, span.last)
+            memories += md.memoryIdsCreatedBetween(span.first, span.last); labels += md.labelIdsBetween(span.first, span.last)
+        }
+        requestedSeconds.forEach { projected += MomentId.format(it) }
+        projected.toList().chunked(CHUNK).forEach { c ->
+            md.partsOf(c).forEach { p ->
+                when (p.kind) {
+                    MomentPartKind.FRAME -> frames += p.refId
+                    MomentPartKind.MEMORY, MomentPartKind.SUMMARY -> memories += p.refId
+                    MomentPartKind.MARK -> labels += p.refId
+                    MomentPartKind.CITE -> frames += p.refId.removePrefix("frame:") // a cite names the photo it cites
+                    else -> Unit // OTHER and the reserved SENSOR have no source store yet
+                }
+            }
+        }
+        frames.toList().chunked(CHUNK).forEach { c -> memories += md.memoryIdsOfFrames(c) }
+        val moments = LinkedHashSet<String>(between)
+        frames.toList().chunked(CHUNK).forEach { c -> moments += md.momentIdsHolding(listOf(MomentPartKind.FRAME, MomentPartKind.CITE), c + c.map { "frame:$it" }) }
+        memories.toList().chunked(CHUNK).forEach { moments += md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }
+        labels.toList().chunked(CHUNK).forEach { moments += md.momentIdsHolding(listOf(MomentPartKind.MARK), it) }
+        return Found(frames, memories, labels, projected, moments)
+    }
+
+    private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String> = emptyList(), byKey: Boolean = false): Result {
         var counts = Result.EMPTY
         service.notifying {
         db.withTransaction {
@@ -60,25 +124,8 @@ class MomentForget(
             spans.forEach { s3.addMomentForgetRange(it.first, it.last) }
             md.insertTombstones((requestedSeconds + spans.map { it.first / 1000 }).distinct().map { MomentTombstoneEntity(MomentId.format(it), now) }) // + the start of every span: the recency marker of a long range
             // 2. Independent discovery, unioned with the projection.
-            val frames = LinkedHashSet<String>(); val memories = LinkedHashSet<String>(); val labels = LinkedHashSet<String>(); val projected = LinkedHashSet<String>()
-            for (span in spans) {
-                projected += md.momentIdsBetween(MomentId.format(span.first / 1000), MomentId.format(span.last / 1000))
-                frames += md.frameIdsBetween(span.first, span.last); frames += md.metaFrameIdsBetween(span.first, span.last)
-                memories += md.memoryIdsCreatedBetween(span.first, span.last); labels += md.labelIdsBetween(span.first, span.last)
-            }
-            requestedSeconds.forEach { projected += MomentId.format(it) }
-            projected.toList().chunked(CHUNK).forEach { c ->
-                md.partsOf(c).forEach { p ->
-                    when (p.kind) {
-                        MomentPartKind.FRAME -> frames += p.refId
-                        MomentPartKind.MEMORY, MomentPartKind.SUMMARY -> memories += p.refId
-                        MomentPartKind.MARK -> labels += p.refId
-                        MomentPartKind.CITE -> frames += p.refId.removePrefix("frame:") // a cite names the photo it cites
-                        else -> Unit // OTHER and the reserved SENSOR have no source store yet
-                    }
-                }
-            }
-            frames.toList().chunked(CHUNK).forEach { c -> memories += md.memoryIdsOfFrames(c) }
+            val found = discover(requestedSeconds, spans)
+            val frames = found.frames; val memories = found.memories; val labels = found.labels; val projected = found.projected
             val wire = frames.toList().chunked(CHUNK).flatMap { md.wireIds(it) }.map { it.wireFrameId }
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
             // 3. The cascade: the existing code paths, in this transaction.
@@ -98,6 +145,10 @@ class MomentForget(
             dropped += md.dropHolding(frames, memories, labels)
             md.remove(projected.toList())
             spans.forEach { dropped += md.dropBetween(it.first, it.last) }
+            if (byKey) { // Forget scope MOMENT / SCENE: whole Scenes go, and the run rows of every Moment and Scene that went are deleted by their own key too (lineage tokens alone miss e.g. a sensor-only summary)
+                if (sceneIds.isNotEmpty()) db.sceneDao().remove(sceneIds)
+                db.canvasDao().deleteCanvasOutputsForFrames(sceneIds.map { "scene:$it" } + dropped.map { "moment:$it" })
+            }
             // 5. The durable cleanup, same transaction.
             val tombstonedTraces = liveTracesBefore - s3.forgettableTraces().map { it.traceId }.toSet()
             val inserted = CleanupOutbox.queue(md, now, cascade.framesToDelete, wire, tombstonedTraces, spans)
