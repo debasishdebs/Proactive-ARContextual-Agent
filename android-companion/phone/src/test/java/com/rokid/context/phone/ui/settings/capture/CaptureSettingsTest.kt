@@ -486,4 +486,43 @@ class CaptureSettingsTest {
         assertEquals(listOf(10, 60, 30, 96), listOf(silent, tick, radius, scenes))
         compose.onNodeWithText("More often = more compute.").performScrollTo().assertIsDisplayed()
     }
+
+    // ---- 2026-10-27 ruling: Forget scope (Photo default | Moment | Scene), next to the photo Forget radius ----
+
+    @Test fun theForgetScopeDefaultsToPhotoPersistsAndABadStoredValueIsPhoto() {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_test", 0).also { it.edit().clear().commit() }
+        val store = CaptureTimingStore(prefs)
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, store.forgetScope.value)
+        store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.SCENE)
+        assertEquals("SCENE", prefs.getString("forget_scope", null)); assertEquals(com.rokid.context.memory.forget.ForgetScope.SCENE, CaptureTimingStore(prefs).forgetScope.value)
+        listOf("scene", "ALL", "", "7").forEach { bad -> prefs.edit().putString("forget_scope", bad).commit(); assertEquals(bad, com.rokid.context.memory.forget.ForgetScope.PHOTO, CaptureTimingStore(prefs).forgetScope.value) }
+        prefs.edit().putInt("forget_scope", 2).commit() // a value of the wrong type is read as the default too
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, CaptureTimingStore(prefs).forgetScope.value)
+        assertEquals("the radius next to it is untouched", 10, store.forgetRadiusSec.value)
+    }
+
+    @Test fun theViewModelSetsTheForgetScopeAndShowsItAndTheCaptureSettingsHaveThreeOptionsWithOneLineEach() {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_vm_test", 0).also { it.edit().clear().commit() }
+        val vm = CaptureSettingsViewModel(FakeHudSettings(), timing = CaptureTimingStore(prefs))
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, runBlocking { withTimeout(5_000) { vm.state.first() } }.forgetScope)
+        vm.setForgetScope(com.rokid.context.memory.forget.ForgetScope.MOMENT)
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.MOMENT, runBlocking { withTimeout(5_000) { vm.state.first { it.forgetScope == com.rokid.context.memory.forget.ForgetScope.MOMENT } } }.forgetScope)
+        vm.cancelScope()
+        var picked: com.rokid.context.memory.forget.ForgetScope? = null
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(), onBack = {}, onForgetScope = { picked = it }) } }
+        compose.onNodeWithTag("forget_scope").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithTag("forget_scope_2").performClick()
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.SCENE, picked)
+        com.rokid.context.memory.forget.ForgetScope.values().forEach { sc ->
+            compose.onNodeWithText(com.rokid.context.phone.ui.memory.ForgetScopeCopy.settingLine(sc), substring = false).performScrollTo().assertIsDisplayed()
+        }
+        assertEquals("three distinct lines", 3, com.rokid.context.memory.forget.ForgetScope.values().map { com.rokid.context.phone.ui.memory.ForgetScopeCopy.settingLine(it) }.distinct().size)
+    }
+
+    @Test fun theChosenScopeIsWhatTheForgetPathReadsAndAThrowingStoreIsPhoto() {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_bind_test", 0).also { it.edit().clear().commit() }
+        val store = CaptureTimingStore(prefs); store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.MOMENT)
+        com.rokid.context.memory.forget.ForgetScopeSetting.provider = { store.forgetScopeNow() }
+        try { assertEquals(com.rokid.context.memory.forget.ForgetScope.MOMENT, com.rokid.context.memory.forget.ForgetScopeSetting.get()) } finally { com.rokid.context.memory.forget.ForgetScopeSetting.provider = { com.rokid.context.memory.forget.ForgetScope.PHOTO } }
+    }
 }

@@ -143,7 +143,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val hiRokid = remember(ctx) { com.rokid.context.phone.ui.settings.capture.WearGuide.launchIntent(ctx) }
         CaptureSettingsScreen(state, onBack = back, onModeChoice = vm::setModeChoice, onBatteryTarget = vm::setBatteryTarget, onPauseWhenPhoneInUse = vm::setPauseWhenPhoneInUse, onInterval = vm::setInterval, onQuickLook = vm::setQuickLook, onMarkPhotoHold = vm::setMarkPhotoHold,
             onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onCaptureCue = vm::setCaptureCue, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace, onWindowTolerance = vm::setWindowTolerance,
-            onWatchdogSilent = vm::setWatchdogSilentMin, onWatchdogTick = vm::setWatchdogTickSec, onForgetRadius = vm::setForgetRadiusSec, onSceneRebuilds = vm::setSceneRebuilds,
+            onWatchdogSilent = vm::setWatchdogSilentMin, onWatchdogTick = vm::setWatchdogTickSec, onForgetRadius = vm::setForgetRadiusSec, onForgetScope = vm::setForgetScope, onSceneRebuilds = vm::setSceneRebuilds,
             onWorkRestEnabled = vm::setWorkRestEnabled, onMotionLabel = vm::setMotionLabel, onOpenContext = { nav.navigate(Routes.SETTINGS_CONTEXT) }, onUseSettings = vm::useSettings, onOpenSignals = { nav.navigate(Routes.SETTINGS_SIGNALS) },
             onWearParkEnabled = vm::setWearParkEnabled, onWearParkUnknown = vm::setWearParkUnknownSec, onWearParkWorn = vm::setWearParkWornSec,
             onOpenHiRokid = hiRokid?.let { i -> { runCatching { ctx.startActivity(i) } } })

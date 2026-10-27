@@ -39,6 +39,7 @@ class ContextApp : Application() {
         // The photo Forget radius follows Settings > Capture > Forget (default 10 s); the Forget path reads it once per Forget through ForgetRadius.ms().
         val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this)
         com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }
+        com.rokid.context.memory.forget.ForgetScopeSetting.provider = { timing.forgetScopeNow() } // the Forget scope (Photo | Moment | Scene), read when a Forget starts
         // Phone power policy inputs (spec P2.5): the real thermal status and whether the app is in the foreground.
         com.rokid.context.work.frames.KeyframeGraph.thermal = com.rokid.context.work.frames.KeyframeGraph.systemThermal(this)
         com.rokid.context.work.frames.KeyframeGraph.foreground = {

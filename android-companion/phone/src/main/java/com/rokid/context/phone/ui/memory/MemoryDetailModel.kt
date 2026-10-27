@@ -33,6 +33,14 @@ data class MemoryDetailUiState(
     val message: String? = null,
     /** The Forget dialog on screen, if any. */
     val confirm: ForgetKind? = null,
+    /** v0.9.7 slice C: the counts and scope the open dialog shows (null until counted, or when the port has no scope). */
+    val forgetPreview: ForgetPreview? = null,
+    /** The counts are being computed: Forget stays disabled. */
+    val forgetPreviewing: Boolean = false,
+    /** The counts could not be computed. */
+    val forgetPreviewFailed: Boolean = false,
+    /** False when the dialog must not be confirmed yet (counting, or a Moment/Scene scope whose counts failed). */
+    val forgetConfirmable: Boolean = true,
     /** A Forget is running: both Forget buttons are disabled. */
     val forgetting: Boolean = false,
     /** The Forget finished: the route refreshes the hub, says "Forgotten" and goes back. */

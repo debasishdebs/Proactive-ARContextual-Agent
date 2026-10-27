@@ -63,8 +63,19 @@ fun MemoryDetailScreen(
         AlertDialog(
             onDismissRequest = onDismissForget,
             title = { Text(if (kind == ForgetKind.FACT) ForgetCopy.FACT_TITLE else ForgetCopy.MOMENT_TITLE) },
-            text = { Text(if (kind == ForgetKind.FACT) ForgetCopy.FACT_BODY else ForgetCopy.MOMENT_BODY) },
-            confirmButton = { TextButton(onClick = onConfirmForget, enabled = !state.forgetting) { Text(ForgetCopy.CONFIRM) } },
+            text = {
+                Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                    Text(if (kind == ForgetKind.FACT) ForgetCopy.FACT_BODY else ForgetCopy.MOMENT_BODY)
+                    // v0.9.7 slice C: the scope that will really run, in plain words, then the counts (a Scene Forget never runs without them)
+                    state.forgetPreview?.let { p ->
+                        Text(ForgetScopeCopy.dialogScope(p.effective), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                        Text(ForgetScopeCopy.counts(p.photos, p.memories, p.marks, p.moments, p.scenes))
+                    }
+                    if (state.forgetPreviewing) Text(ForgetScopeCopy.COUNTING)
+                    if (state.forgetPreviewFailed) Text(ForgetScopeCopy.COUNTS_FAILED)
+                }
+            },
+            confirmButton = { TextButton(onClick = onConfirmForget, enabled = !state.forgetting && !state.forgetPreviewing && state.forgetConfirmable) { Text(ForgetCopy.CONFIRM) } },
             dismissButton = { TextButton(onClick = onDismissForget) { Text(ForgetCopy.CANCEL) } },
         )
     }

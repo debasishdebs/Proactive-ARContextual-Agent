@@ -127,4 +127,73 @@ class MemoryDetailViewModelTest {
         assertEquals("An export is running. Try again in a minute, or when it finishes.", s.message)
         assertTrue(!s.forgetting && !s.forgotten)
     }
+
+    // ---- v0.9.7 slice C: the Forget scope in the dialog (scope in plain words, counts first, the confirmed scope is the one that runs) ----
+    private fun port(active: com.rokid.context.memory.forget.ForgetScope, preview: suspend () -> ForgetPreview?, onScoped: (ForgetKind, com.rokid.context.memory.forget.ForgetScope) -> Boolean = { _, _ -> true }) = object : MemoryForget {
+        // the production port's plain forgetFact / forgetMoment are scoped by the SETTING too (used when no counts could be shown at the Photo scope)
+        override suspend fun forgetFact(memoryId: String): Boolean = onScoped(ForgetKind.FACT, active)
+        override suspend fun forgetMoment(frameId: String): Boolean = onScoped(ForgetKind.MOMENT, active)
+        override fun activeScope() = active
+        override suspend fun preview(kind: ForgetKind, memoryId: String, frameId: String?) = preview()
+        override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope) = onScoped(kind, scope)
+    }
+    private fun sceneCounts(requested: com.rokid.context.memory.forget.ForgetScope = com.rokid.context.memory.forget.ForgetScope.SCENE) = ForgetPreview(requested, requested, 4, 5, 2, 3, 1)
+
+    @Test fun theDialogLoadsTheCountsAndTheConfirmedScopeIsTheOneThatRuns() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
+        var ran: Pair<ForgetKind, com.rokid.context.memory.forget.ForgetScope>? = null
+        // the setting moved to MOMENT after the dialog counted at SCENE: the delete must run at the scope the dialog SHOWED
+        val model = vm(port(com.rokid.context.memory.forget.ForgetScope.MOMENT, { sceneCounts() }) { k, sc -> ran = k to sc; true })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.MOMENT)
+        val open = withTimeout(5_000) { model.state.first { it.forgetPreview != null } }
+        assertEquals(sceneCounts(), open.forgetPreview); assertTrue(open.forgetConfirmable)
+        model.confirmForget(); withTimeout(5_000) { model.state.first { it.forgotten } }
+        assertEquals(ForgetKind.MOMENT to com.rokid.context.memory.forget.ForgetScope.SCENE, ran)
+    }
+
+    @Test fun theConfirmIsRefusedWhileTheCountsAreStillBeingCounted() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
+        val gate = CompletableDeferred<ForgetPreview?>(); var ran = 0
+        val model = vm(port(com.rokid.context.memory.forget.ForgetScope.SCENE, { gate.await() }) { _, _ -> ran++; true })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.MOMENT)
+        val s = withTimeout(5_000) { model.state.first { it.confirm != null && it.forgetPreviewing } }
+        assertTrue(!s.forgetConfirmable)
+        model.confirmForget(); assertEquals("nothing ran, the dialog is still open", 0, ran); assertEquals(ForgetKind.MOMENT, model.state.value.confirm)
+        gate.complete(sceneCounts()); withTimeout(5_000) { model.state.first { it.forgetConfirmable } }
+        model.confirmForget(); withTimeout(5_000) { model.state.first { it.forgotten } }; assertEquals(1, ran)
+    }
+
+    @Test fun aFailedCountBlocksMomentAndSceneButNotThePhotoScope() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
+        com.rokid.context.memory.forget.ForgetScope.values().forEach { sc ->
+            var ran = 0
+            val model = vm(port(sc, { throw java.io.IOException("db") }) { _, _ -> ran++; true })
+            withTimeout(5_000) { model.state.first { it.found } }
+            model.askForget(ForgetKind.FACT)
+            val s = withTimeout(5_000) { model.state.first { it.confirm != null && !it.forgetPreviewing } }
+            assertEquals("$sc blocked", sc != com.rokid.context.memory.forget.ForgetScope.PHOTO, !s.forgetConfirmable); assertTrue(s.forgetPreviewFailed)
+            model.confirmForget()
+            if (sc == com.rokid.context.memory.forget.ForgetScope.PHOTO) { withTimeout(5_000) { model.state.first { it.forgotten } }; assertEquals(1, ran) } else assertEquals("$sc: nothing ran", 0, ran)
+        }
+    }
+
+    @Test fun dismissingTheDialogDropsTheCountsAndALateCountDoesNotReopenIt() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
+        val gate = CompletableDeferred<ForgetPreview?>()
+        val model = vm(port(com.rokid.context.memory.forget.ForgetScope.MOMENT, { gate.await() }))
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.MOMENT); model.dismissForget(); gate.complete(sceneCounts(com.rokid.context.memory.forget.ForgetScope.MOMENT))
+        kotlinx.coroutines.delay(100)
+        assertEquals(null, model.state.value.confirm); assertEquals(null, model.state.value.forgetPreview)
+    }
+
+    @Test fun aPortWithNoPreviewKeepsTheOldUnscopedPath() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1")); var fact = 0
+        val model = vm(object : MemoryForget { override suspend fun forgetFact(memoryId: String): Boolean { fact++; return true }; override suspend fun forgetMoment(frameId: String) = true })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.FACT); assertTrue(model.state.value.forgetConfirmable); assertEquals(null, model.state.value.forgetPreview)
+        model.confirmForget(); withTimeout(5_000) { model.state.first { it.forgotten } }; assertEquals(1, fact)
+    }
 }
