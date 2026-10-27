@@ -8,6 +8,11 @@ const rows = [
 ];
 
 export const tests = {
+  momentAndSceneRunsPlayWhenThePipelineHasNoMemoryNode() {
+    eq(R.momentStart({ nodes: [{ type: 'input.moments' }] }), { label: 'Run', after: 'play' });
+    eq(R.momentStart({ nodes: [{ type: 'memory.write' }] }), { label: 'Start', after: null }); // a Moment or Scene run is never saved by Run-and-Save (the server refuses it)
+    eq(R.momentStart(null), { label: 'Run', after: 'play' });
+  },
   isMovingKnowsServerEnumsNumbersAndBooleans() {
     for (const m of ['WALKING', 'walking', 'VEHICLE', 'MOVING', 'HEAD_MOVING', 1, 0.5, true]) ok(R.isMoving(m), String(m));
     for (const m of ['STILL', 'UNKNOWN', 'NONE', 'NOT_WORN', '', null, undefined, 0, false, NaN]) ok(!R.isMoving(m), String(m));

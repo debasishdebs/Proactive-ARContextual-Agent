@@ -26,6 +26,7 @@ export function retryDelay(attempt, err) {
 /** Playground vs Run-and-Save (v0.9.6): a pipeline with a Save memory step offers two saving runs, one without it is a playground (run, see the output, nothing stored). `?after=` of the run page: what to do once DONE (null: nothing). */
 export const hasMemoryNode = (pipe) => !!pipe && Array.isArray(pipe.nodes) && pipe.nodes.some((n) => n && n.type === 'memory.write');
 export const runChoices = (pipe) => (hasMemoryNode(pipe) ? [{ label: 'Run & Save', after: 'save' }, { label: 'Run, review, then Save', after: 'review' }] : [{ label: 'Run', after: 'play' }]);
+export const momentStart = (pipe) => (hasMemoryNode(pipe) ? { label: 'Start', after: null } : { label: 'Run', after: 'play' }); // a Moment/Scene run is never saved (the server refuses it): no memory node = the output dialog
 export const afterOf = (v) => (['save', 'review', 'play'].includes(v) ? v : null);
 export const refKey = (r) => r.pipelineId + '@' + (r.version ? r.version : 'draft');
 

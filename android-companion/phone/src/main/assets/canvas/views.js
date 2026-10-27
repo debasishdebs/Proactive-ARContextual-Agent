@@ -7,7 +7,7 @@ import { planDialog } from './planpublish.js';
 import { mergedHref, withCapture } from './mergedflow.js';
 import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
 import { statusLabel, errorText, helperCard, loadHelperStatus, hasPython } from './helperview.js';
-import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving, hasMemoryNode, runChoices, afterOf } from './runlogic.js';
+import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving, hasMemoryNode, runChoices, momentStart, afterOf } from './runlogic.js';
 
 const pretty = (v) => JSON.stringify(v, null, 2);
 const enc = encodeURIComponent;
@@ -362,8 +362,8 @@ async function scenesRunView(ctx, root, pipelineId, version, pipe) {
       const e = await ctx.api('POST', '/api/runs/estimate', body);
       ctx.modal('Start this run?', h('div', null, h('p', null, e.photos + ' Scenes · ' + e.photoCount + ' photos'),
         h('p', { class: 'muted' }, 'Your steps receive each Scene\'s visible summary and caption only (a hidden or stale one is left out), never a photo. If a Scene changes before you start, nothing runs.')), [
-        { label: 'Start', cls: 'btn primary', run: async (close) => {
-          try { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); close(); ctx.go('#/run/' + enc(r.runId)); } catch (err) { close(); ctx.showError(err); }
+        { label: momentStart(pipe).label, cls: 'btn primary', run: async (close) => {
+          try { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); close(); ctx.go('#/run/' + enc(r.runId) + (momentStart(pipe).after ? '?after=' + momentStart(pipe).after : '')); } catch (err) { close(); ctx.showError(err); }
         } }]);
     } catch (err) { ctx.showError(err); }
   }, 'btn primary')));
@@ -429,9 +429,9 @@ async function momentsRunView(ctx, root, pipelineId, version, pipe) {
     try {
       const e = await ctx.api('POST', '/api/runs/estimate', body);
       ctx.modal('Start this run?', h('div', null, h('p', null, e.photos + ' Moments · ' + e.photoCount + ' photos'),
-        h('p', { class: 'muted' }, 'The Python step sends only each Moment\'s time and photo times to your laptop helper, after you tap Confirm on the phone. If a Moment changes before you start, nothing runs.')), [
-        { label: 'Start', cls: 'btn primary', run: async (close) => {
-          try { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); close(); ctx.go('#/run/' + enc(r.runId)); } catch (err) { close(); ctx.showError(err); }
+        h('p', { class: 'muted' }, 'The Python step sends each Moment\'s time, photo times, mark kinds and times, and the visible memory text of its photos (no photos) to your laptop helper, after you tap Confirm on the phone. If a Moment changes before you start, nothing runs.')), [
+        { label: momentStart(pipe).label, cls: 'btn primary', run: async (close) => {
+          try { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); close(); ctx.go('#/run/' + enc(r.runId) + (momentStart(pipe).after ? '?after=' + momentStart(pipe).after : '')); } catch (err) { close(); ctx.showError(err); }
         } }]);
     } catch (err) { ctx.showError(err); }
   }, 'btn primary')));

@@ -106,9 +106,18 @@ class CanvasAssetsTest {
         assertTrue(text("style.css").contains(".btn.pal-lane.lane-rt_glasses"))
     }
 
+    /** v0.9.7 review fixes F and G: the Moment helper consent says what the helper item really holds, and Moment and Scene starts end in the output dialog when nothing is saved. */
+    @Test fun theMomentConsentNamesTheTextAndMomentAndSceneRunsShowTheirOutput() {
+        val v = text("views.js")
+        assertFalse("the old claim that only times are sent", v.contains("sends only each Moment\\'s time and photo times"))
+        assertTrue(v.contains("visible memory text") && v.contains("mark kinds"))
+        assertEquals("the Moment start and the Scene start both ask momentStart", 2, Regex("\\.after \\? '\\?after='").findAll(v).count())
+        assertTrue(text("runlogic.js").contains("export const momentStart"))
+    }
+
     @Test fun jsUnderSizeBudget() {
         val lines = all.filter { it.name.endsWith(".js") }.sumOf { it.readText().lines().size }
-        assertEquals(true, lines <= 4667) // v0.9.6 Playground vs Run-and-Save: the run choices, the after-run dialogs and the run-page button (+35 lines: runlogic.js 4, views.js 31; budget 4632 -> 4667, exactly the new total, it had no spare line); 3d: the window tolerance field (+4 lines: mv in setNodeParam 3, the field and label 1, budget 4628 -> 4632, exactly the new total); composite phase C: the rate table cells as compact fields in compositeview.js (+14 lines, budget 4614 -> 4628: it had no spare line); E2b: window nodes, the Value default graph and clamp note, window meters and the try-it panel in the boxed editor (+74 lines, budget raised by 64 from 4550 because the old budget had 10 spare); 
+        assertEquals(true, lines <= 4668) // v0.9.7 review fix G: momentStart in runlogic.js (+1 line, budget 4667 -> 4668, exactly the new total; the disclosure text fix F changed no line count); v0.9.6 Playground vs Run-and-Save: the run choices, the after-run dialogs and the run-page button (+35 lines: runlogic.js 4, views.js 31; budget 4632 -> 4667, exactly the new total, it had no spare line); 3d: the window tolerance field (+4 lines: mv in setNodeParam 3, the field and label 1, budget 4628 -> 4632, exactly the new total); composite phase C: the rate table cells as compact fields in compositeview.js (+14 lines, budget 4614 -> 4628: it had no spare line); E2b: window nodes, the Value default graph and clamp note, window meters and the try-it panel in the boxed editor (+74 lines, budget raised by 64 from 4550 because the old budget had 10 spare); 
         // the Scenes run page (scenesRunView, ~55 lines, budget raised by 50); merged view added mergedflow.js + mergedview.js (+~110 lines, budget raised by 100); composite nodes added compositeview.js (~130 lines) and X5 added the boxed expression editor (exprgraph.js + exprview.js, ~650 lines)
     }
 
