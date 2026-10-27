@@ -123,8 +123,10 @@ object ParamCheck {
 
     private fun graph(id: String, t: NodeType, v: JsonElement): List<String> {
         val role = if (t.type == NodeTypes.EXPR_VALUE) com.rokid.context.ai.canvas.plan.ExprRole.VALUE else com.rokid.context.ai.canvas.plan.ExprRole.GUARD
-        val (p, bad) = com.rokid.context.ai.canvas.plan.ExprProgram.parse(role, v)
-        return (bad + (p?.check()?.problems ?: emptyList())).map { "node $id: $it" }
+        // v0.9.7 A: a graph naming a derived signal is expanded (and a disabled signal refused) exactly as the compiler does, so the editor and the freeze agree with the compile
+        val x = com.rokid.context.ai.canvas.plan.DerivedSignals.expand(v, com.rokid.context.ai.canvas.plan.SignalConfigs.current())
+        val (p, bad) = com.rokid.context.ai.canvas.plan.ExprProgram.parse(role, x.graph)
+        return (x.problems + bad + (p?.check()?.problems ?: emptyList())).map { "node $id: $it" }
     }
 
     private fun one(id: String, s: ParamSpec, v: JsonElement): List<String> = when (s.kind) {

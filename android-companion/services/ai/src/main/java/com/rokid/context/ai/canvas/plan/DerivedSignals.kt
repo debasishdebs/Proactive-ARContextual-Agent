@@ -17,7 +17,13 @@ data class SignalConfig(val disabled: Set<String> = emptySet(), val derived: Lis
 /** The config every compile reads, bound once at app start to the stored setting (like [WindowTolerance]). */
 object SignalConfigs {
     @Volatile var provider: () -> SignalConfig = { SignalConfig() }
-    fun current(): SignalConfig = provider()
+    /** Every configuration with derived signals the user has had (newest first, bounded): a frozen version is replayed against the one it was frozen under. */
+    @Volatile var historyProvider: () -> List<SignalConfig> = { emptyList() }
+    private val override = ThreadLocal<SignalConfig?>()
+    fun current(): SignalConfig = override.get() ?: provider()
+    /** Runs [block] (on this thread) with [cfg] as the configuration, so the pipeline validator inside a compile agrees with the compile's own. */
+    fun <T> using(cfg: SignalConfig, block: () -> T): T { val before = override.get(); override.set(cfg); try { return block() } finally { override.set(before) } }
+    fun history(): List<SignalConfig> = historyProvider()
 }
 
 /**

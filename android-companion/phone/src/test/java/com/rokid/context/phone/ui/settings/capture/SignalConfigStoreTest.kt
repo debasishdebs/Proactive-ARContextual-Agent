@@ -76,4 +76,15 @@ class SignalConfigStoreTest {
         s.setEnabled("gyroMax", false)
         assertEquals(setOf("gyroMax"), SignalConfigs.current().disabled)
     }
+
+    @Test fun aDeletedOrEditedDefinitionStaysInTheHistoryAcrossRestarts() {
+        val p = prefs("sc7")
+        val s = SignalConfigStore(p)
+        s.saveDerived("walky", walky)
+        s.deleteDerived("walky")
+        assertTrue(s.config.value.derived.isEmpty())
+        assertEquals(listOf("walky"), SignalConfigStore(p).history.flatMap { c -> c.derived.map { it.name } }.distinct())
+        for (i in 1..30) s.saveDerived("n$i", walky)
+        assertTrue(SignalConfigStore(p).history.size <= SignalConfigStore.MAX_HISTORY)
+    }
 }

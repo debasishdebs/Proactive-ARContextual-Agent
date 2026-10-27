@@ -80,7 +80,11 @@ object PlanCompiler {
         p: Pipeline, settingsRev: Long = 0, profile: CaptureProfile = SETTINGS_PROFILE,
         /** 3d: the tolerance written into every window term that names none (the stored `window_min_valid_pct` setting); never changes a plan already published. */
         windowMinValidPct: Int = WindowTolerance.current(),
-    ): CompileResult {
+        /** v0.9.7 A: the signal configuration (disabled signals, derived definitions) the expressions are expanded against; a frozen version is recompiled with the one it was frozen under. */
+        signals: SignalConfig = SignalConfigs.current(),
+    ): CompileResult = SignalConfigs.using(signals) { compileWith(p, settingsRev, profile, windowMinValidPct, signals) }
+
+    private fun compileWith(p: Pipeline, settingsRev: Long, profile: CaptureProfile, windowMinValidPct: Int, signals: SignalConfig): CompileResult {
         val nodes = p.nodes.sortedBy { it.id }
         val edges = p.edges.sortedWith(compareBy({ it.from }, { it.to }, { it.`when` ?: "" }))
         val byId = nodes.associateBy { it.id }
@@ -175,7 +179,7 @@ object PlanCompiler {
                 if (n.type == NodeTypes.EXPR_VALUE) ExprLowering.Entry(n.id, n.params["graph"], ExprRole.VALUE, str(n, "row") ?: "REST", str(n, "field") ?: "capPerMin")
                 else ExprLowering.Entry(n.id, n.params["graph"])
             },
-            windowMinValidPct,
+            windowMinValidPct, signals,
         )
         problems += lowered.problems
         warnings += lowered.warnings
