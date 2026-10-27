@@ -89,6 +89,32 @@ class MemoryDetailViewModelTest {
         assertEquals(1, edited.get())
     }
 
+    @Test fun aForgetBlockedByACanvasSaveNamesTheSaveNotAnExport() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
+        val model = vm(object : MemoryForget {
+            override suspend fun forgetFact(memoryId: String): Boolean = throw com.rokid.context.orchestration.DataOpGate.WriteInProgress()
+            override suspend fun forgetMoment(frameId: String): Boolean = true
+        })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.FACT); model.confirmForget()
+        val s = withTimeout(5_000) { model.state.first { it.message != null } }
+        assertEquals("A save is running. Try again in a minute, or when it finishes.", s.message)
+        assertTrue(!s.forgetting && !s.forgotten)
+    }
+
+    @Test fun aForgetWhoseCachedExportCouldNotBeDeletedIsForgottenAndSaysWhatRemains() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
+        val model = vm(object : MemoryForget {
+            override suspend fun forgetFact(memoryId: String): Boolean = throw CacheCleanupFailed()
+            override suspend fun forgetMoment(frameId: String): Boolean = true
+        })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.FACT); model.confirmForget()
+        val s = withTimeout(5_000) { model.state.first { it.forgotten } }
+        assertEquals(ForgetCopy.CACHE_LEFT, s.message)
+        assertTrue(ForgetCopy.CACHE_LEFT.contains("export file") && ForgetCopy.CACHE_LEFT.contains("next Forget"))
+    }
+
     @Test fun aForgetBlockedByAnExportSaysSoAndWhenToRetry() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
         val model = vm(object : MemoryForget {

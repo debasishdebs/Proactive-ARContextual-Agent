@@ -118,6 +118,18 @@ class MemorySettingsTest {
         vm.cancelScope()
     }
 
+    /** v0.9.7 review fix D: a Delete all blocked by a Canvas Save names the save, not an export. */
+    @Test fun aDeleteAllBlockedByACanvasSaveNamesTheSave() {
+        val vm = MemorySettingsViewModel(
+            { store }, encryption, usedBytes = { 0L }, wipe = { throw com.rokid.context.orchestration.DataOpGate.WriteInProgress() },
+            export = { File("x") }, share = {}, reviewCount = flowOf(0), work = main.dispatcher,
+        )
+        vm.askDeleteAll(); vm.confirmDeleteAll(); vm.confirmDeleteAll()
+        assertEquals("A save is running — try again", withTimeout5 { vm.state.first { it.notice != null } }.notice)
+        vm.cancelScope()
+    }
+    private fun <T> withTimeout5(block: suspend () -> T): T = runBlocking { withTimeout(5_000) { block() } }
+
     /** Review M7: the prefs-backed store is reached on the work dispatcher, not in the ViewModel factory on Main. */
     @Test fun theStoreIsNotReadWhenTheViewModelIsBuilt() {
         val vm = MemorySettingsViewModel({ storeReads++; store }, encryption, usedBytes = { 0L }, wipe = {}, export = { File("x") }, share = {},

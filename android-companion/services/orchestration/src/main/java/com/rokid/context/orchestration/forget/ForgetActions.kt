@@ -27,12 +27,19 @@ import com.rokid.context.orchestration.DataOpGate
 object ForgetActions {
     private const val TAG = "ForgetActions"
 
-    /** How a Forget ended. [ExportInProgress] = a running export held the [DataOpGate] for 30 s: nothing was forgotten, try again (never silently dropped). */
-    enum class Outcome { DONE, EXPORT_IN_PROGRESS, FAILED }
+    /**
+     * How a Forget ended. [EXPORT_IN_PROGRESS] = a running export held the [DataOpGate] for 30 s: nothing was forgotten, try again (never silently dropped). [SAVE_IN_PROGRESS] = a Canvas Save
+     * held it (a save is short): nothing was forgotten, try again. [CACHE_CLEANUP_FAILED] = the Forget COMMITTED but, in a production build, a cached memory export that still holds text could not be
+     * deleted: it is retried at the next start and the next Forget, and the caller says what remains.
+     */
+    enum class Outcome { DONE, EXPORT_IN_PROGRESS, SAVE_IN_PROGRESS, CACHE_CLEANUP_FAILED, FAILED;
+        /** The Forget itself went through (the cached-export leftover does not undo it). */
+        val committed: Boolean get() = this == DONE || this == CACHE_CLEANUP_FAILED
+    }
 
-    suspend fun forgetFact(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Boolean = forgetFactOutcome(context, memoryId, onForgotten) == Outcome.DONE
+    suspend fun forgetFact(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Boolean = forgetFactOutcome(context, memoryId, onForgotten).committed
 
-    suspend fun forgetMoment(context: Context, frameId: String, onForgotten: () -> Unit = {}): Boolean = forgetMomentOutcome(context, frameId, onForgotten) == Outcome.DONE
+    suspend fun forgetMoment(context: Context, frameId: String, onForgotten: () -> Unit = {}): Boolean = forgetMomentOutcome(context, frameId, onForgotten).committed
 
     suspend fun forgetFactOutcome(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Outcome =
         run(context, onForgotten) { it.forgetFact(memoryId) }
@@ -46,8 +53,8 @@ object ForgetActions {
      */
     @Volatile var dataRemoved: () -> Unit = {}
 
-    /** After a committed cascade: files, then the re-summarise. A failure here is logged; the Forget itself succeeded. */
-    internal suspend fun apply(context: Context, r: ForgetService.Result) {
+    /** After a committed cascade: files, then the re-summarise. A failure here is logged; the Forget itself succeeded. Returns false when a cached memory export could not be deleted. */
+    internal suspend fun apply(context: Context, r: ForgetService.Result): Boolean {
         // Integration carry 3: a redacted proposal's notifications still show its text; cancel them in any process.
         // Privacy carry: so does an armed reminder alarm (its intent holds the title and note); cancel it too.
         if (r.redactedProposals.isNotEmpty()) {
@@ -64,7 +71,7 @@ object ForgetActions {
         }
         FrameSweep.delete(r.framesToDelete)
         // GAP-1: a cached memory export still holds the forgotten text; the next export regenerates it.
-        com.rokid.context.orchestration.MemoryExport.deleteCached(context)
+        val cacheClean = com.rokid.context.orchestration.MemoryExport.deleteCached(context)
         if (r.invalidated.isNotEmpty()) {
             try {
                 ResummarizeWorker.enqueue(context)
@@ -72,6 +79,7 @@ object ForgetActions {
                 PcLog.w(TAG, "re-summarise not queued (start-up retries): ${SafeLog.describe(e)}")
             }
         }
+        return cacheClean
     }
 
     /** Text the queue log still holds in finished rows (fix round 1 I4). */
@@ -87,6 +95,9 @@ object ForgetActions {
         withContext(Dispatchers.IO + NonCancellable) {
             try {
                 DataOpGate.shared.delete { runLocked(context, onForgotten, op) }
+            } catch (e: DataOpGate.WriteInProgress) {
+                PcLog.w(TAG, "forget not run: save in progress")
+                Outcome.SAVE_IN_PROGRESS
             } catch (e: DataOpGate.ExportInProgress) {
                 PcLog.w(TAG, "forget not run: export in progress")
                 Outcome.EXPORT_IN_PROGRESS
@@ -102,10 +113,14 @@ object ForgetActions {
             return Outcome.FAILED
         }
         // Committed: everything after this is best effort and never turns the Forget into a failure.
-        apply(context, r)
+        val cacheClean = apply(context, r)
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }
         runCatching(onForgotten)
+        if (!cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) {
+            PcLog.w(TAG, "forget done, cached export not deleted")
+            return Outcome.CACHE_CLEANUP_FAILED
+        }
         return Outcome.DONE
     }
 }
@@ -117,6 +132,7 @@ object ForgetActions {
 object ForgetStartup {
     suspend fun run(context: Context, refresh: () -> Unit) = withContext(Dispatchers.IO) {
         ForgetActions.dataRemoved = refresh
+        runCatching { com.rokid.context.orchestration.MemoryExport.retryPending(context) } // a cached export an earlier Forget could not delete (bounded)
         runCatching { FrameSweep.sweep(context) }
         // v0.9.6: the one-time purge of invalid Moments and orphan memories, BEFORE the cadence is scheduled so a rebuild cannot race it (it stores its own marker and does nothing afterwards)
         try {

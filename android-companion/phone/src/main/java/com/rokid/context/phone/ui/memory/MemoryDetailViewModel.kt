@@ -36,7 +36,7 @@ class MemoryDetailViewModel(
     ) { base, l ->
         // `forgotten` survives the row disappearing (the Forget itself deletes it).
         if (base.found) base.copy(draft = l.draft, message = l.message, confirm = l.confirm, forgetting = l.forgetting, forgotten = l.forgotten)
-        else base.copy(forgotten = l.forgotten)
+        else base.copy(forgotten = l.forgotten, message = if (l.forgotten) l.message else base.message) // the cached-export notice outlives the row
     }
         .stateIn(viewModelScope, SharingStarted.Eagerly, MemoryDetailUiState())
 
@@ -74,17 +74,24 @@ class MemoryDetailViewModel(
         local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null) } }
         if (!start) return
         viewModelScope.launch {
-            var exportBlocked = false
+            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false
             val ok = try {
                 when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId) }
             } catch (c: CancellationException) {
                 throw c
+            } catch (e: com.rokid.context.orchestration.DataOpGate.WriteInProgress) {
+                saveBlocked = true; false
             } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
                 exportBlocked = true; false
+            } catch (e: CacheCleanupFailed) {
+                cacheLeft = true; true // the Forget itself committed
             } catch (e: Exception) {
                 false
             }
-            local.update { if (ok) it.copy(forgetting = false, forgotten = true) else it.copy(forgetting = false, message = if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED) }
+            local.update {
+                if (ok) it.copy(forgetting = false, forgotten = true, message = if (cacheLeft) ForgetCopy.CACHE_LEFT else null)
+                else it.copy(forgetting = false, message = if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
+            }
         }
     }
 }

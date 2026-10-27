@@ -47,7 +47,8 @@ class OutboxDrainer(
     suspend fun drain(): Report = try {
         com.rokid.context.orchestration.DataOpGate.shared.delete { lock.withLock { drainLocked() } }
     } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
-        log.log(Level.I, "OutboxDrainer", "drain deferred: export in progress")
+        if (e is com.rokid.context.orchestration.DataOpGate.WriteInProgress) log.log(Level.I, "OutboxDrainer", "drain deferred: save in progress")
+        else log.log(Level.I, "OutboxDrainer", "drain deferred: export in progress")
         Report.NONE
     }
 
