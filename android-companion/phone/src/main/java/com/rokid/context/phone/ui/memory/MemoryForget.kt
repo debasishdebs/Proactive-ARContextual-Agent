@@ -31,7 +31,12 @@ data class ForgetPreview(
     val planHash: String = "",
     /** Items outside the deleted window that are affected but NOT deleted (an outside photo an in-window fact cites is locked; derived facts elsewhere become invalid). */
     val outside: Int = 0,
+    /** Too much is connected to forget in one step: the dialog explains and Forget stays disabled. */
+    val tooLarge: Boolean = false,
 )
+
+/** The Forget was refused because too much is connected to it: nothing was deleted. */
+class TooLarge : Exception("too large")
 
 /** A scoped Forget was confirmed against a different set than the one previewed: nothing was deleted; the dialog says so and counts again. */
 class ContentChanged : Exception("content changed since the preview")
@@ -94,6 +99,7 @@ object ForgetScopeCopy {
     }
     /** The extra line when the Forget touches things it does not delete: counts only. */
     fun outsideLine(n: Int) = "$n ${if (n == 1) "item outside this window is" else "items outside this window are"} affected (not deleted)."
+    const val TOO_LARGE = "Too much is connected to this to forget in one step; use a smaller scope or Delete all"
     const val COUNTING = "Counting what will be deleted\u2026"
     const val COUNTS_FAILED = "Couldn't count what would be deleted, so nothing was forgotten. Try again."
 }

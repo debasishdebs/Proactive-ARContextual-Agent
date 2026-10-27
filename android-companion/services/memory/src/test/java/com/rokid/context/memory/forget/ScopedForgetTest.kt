@@ -206,6 +206,30 @@ class ScopedForgetTest {
         assertEquals("all of them lost the text copy and none was deleted", n, db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM moment WHERE text IS NULL AND momentId >= '${MomentId.format(SEC + 100_000)}'").use { it.moveToFirst(); it.getInt(0) })
     }
 
+    /** Round 4 (4): the derived-fact walk has a hard depth and size cap; past it the preview says TOO_LARGE and nothing can be deleted by this scope. */
+    private suspend fun assertTooLarge() {
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertTrue(c.tooLarge); assertEquals(0, c.photos)
+        try { engine.forget(p, null); org.junit.Assert.fail("expected ForgetTooLarge") } catch (e: ForgetTooLarge) { }
+        assertEquals(listOf("a1", "a2", "a3", "n1"), frames()); assertEquals(0, db.momentDao().tombstoneCount()); assertTrue(s3.momentForgetRanges().isEmpty()); assertEquals(listOf("ma1", "ma2", "ma3", "mn1"), memories())
+    }
+    private suspend fun chain(len: Int) { var prev = "ma1"; for (i in 1..len) { fx.memory("c$i", null, derived = true, createdAt = MS + 300_000 + i); fx.derivedFrom("c$i", prev); prev = "c$i" } }
+
+    @Test fun aDerivedChainDeeperThanTheCapIsTooLarge() = runBlocking<Unit> {
+        world(); chain(40); assertTooLarge() // the default cap is 32 levels
+    }
+
+    @Test fun moreDerivedFactsThanTheNodeCapAreTooLarge() = runBlocking<Unit> {
+        world(); MomentForget.maxNodes = 5
+        try { for (i in 1..6) { fx.memory("d$i", null, derived = true, createdAt = MS + 300_000 + i); fx.derivedFrom("d$i", "ma1") }; assertTooLarge() } finally { MomentForget.maxNodes = 5_000 }
+    }
+
+    @Test fun aChainWithinTheCapIsAccepted() = runBlocking<Unit> {
+        world(); chain(30)
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertFalse(c.tooLarge); assertEquals(30, c.outside); engine.forget(p, c.planHash); assertFalse("a1" in frames())
+    }
+
     @Test fun aDerivedFactThatAppearsAfterThePreviewIsRefused() = runBlocking<Unit> {
         world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT))
         fx.memory("dnew", null, derived = true, createdAt = MS + 300_000); fx.derivedFrom("dnew", "ma1")

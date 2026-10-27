@@ -197,6 +197,14 @@ class MemoryDetailViewModelTest {
         model.confirmForget(); withTimeout(5_000) { model.state.first { it.forgotten } }; assertEquals(1, fact)
     }
 
+    @Test fun aTooLargePreviewBlocksTheConfirmAtEveryScope() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1")); var ran = 0
+        val model = vm(port(com.rokid.context.memory.forget.ForgetScope.PHOTO, { sceneCounts().copy(tooLarge = true) }) { _, _ -> ran++; true })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.MOMENT); val s = withTimeout(5_000) { model.state.first { it.forgetPreview != null } }
+        assertTrue(!s.forgetConfirmable); model.confirmForget(); assertEquals(0, ran); assertEquals(ForgetKind.MOMENT, model.state.value.confirm)
+    }
+
     @Test fun aContentChangeSinceThePreviewSaysSoReopensTheDialogWithNewCountsAndDeletedNothing() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
         var previews = 0; var scoped = 0; val hashes = mutableListOf<String?>()

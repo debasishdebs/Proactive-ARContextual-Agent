@@ -75,7 +75,7 @@ class MemoryDetailViewModel(
             var preview: ForgetPreview? = null; var failed = false
             try { preview = forget.preview(kind, memoryId, frameId) } catch (c: CancellationException) { throw c } catch (e: Exception) { failed = true }
             // A Moment or Scene scope never runs without its counts (the most destructive levels); the Photo scope, today's behaviour, still can.
-            val blocked = failed && forget.activeScope() != com.rokid.context.memory.forget.ForgetScope.PHOTO
+            val blocked = (failed && forget.activeScope() != com.rokid.context.memory.forget.ForgetScope.PHOTO) || preview?.tooLarge == true
             local.update { l -> if (l.confirm != kind) l else l.copy(previewing = false, preview = preview, previewFailed = failed, blockedByCount = blocked) }
         }
     }
@@ -92,7 +92,7 @@ class MemoryDetailViewModel(
         local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null, preview = null) } }
         if (!start) return
         viewModelScope.launch {
-            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false
+            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false; var tooLarge = false
             val ok = try {
                 if (preview != null) forget.forgetScoped(kind, memoryId, frameId, preview.requested, preview.planHash.ifEmpty { null }) // the scope the dialog showed
                 else when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId) }
@@ -102,6 +102,8 @@ class MemoryDetailViewModel(
                 saveBlocked = true; false
             } catch (e: ContentChanged) {
                 changed = true; false
+            } catch (e: TooLarge) {
+                tooLarge = true; false
             } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
                 exportBlocked = true; false
             } catch (e: CacheCleanupFailed) {
@@ -111,7 +113,7 @@ class MemoryDetailViewModel(
             }
             local.update {
                 if (ok) it.copy(forgetting = false, forgotten = true, message = if (cacheLeft) ForgetCopy.CACHE_LEFT else null)
-                else it.copy(forgetting = false, message = if (changed) ForgetCopy.CONTENT_CHANGED else if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
+                else it.copy(forgetting = false, message = if (changed) ForgetCopy.CONTENT_CHANGED else if (tooLarge) ForgetScopeCopy.TOO_LARGE else if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
             }
             if (changed) openDialog(kind, frameId) // review again: the dialog opens once more with the NEW counts, the message stays
         }

@@ -34,9 +34,9 @@ object ForgetActions {
     /**
      * How a Forget ended. [EXPORT_IN_PROGRESS] = a running export held the [DataOpGate] for 30 s: nothing was forgotten, try again (never silently dropped). [SAVE_IN_PROGRESS] = a Canvas Save
      * held it (a save is short): nothing was forgotten, try again. [CACHE_CLEANUP_FAILED] = the Forget COMMITTED but, in a production build, a cached memory export that still holds text could not be
-     * deleted: it is retried at the next start and the next Forget, and the caller says what remains. [CONTENT_CHANGED] = a scoped Forget was confirmed against a different set than the one previewed (new photos, marks or Moments in the span, a changed Scene): nothing was deleted, preview again.
+     * deleted: it is retried at the next start and the next Forget, and the caller says what remains. [TOO_LARGE] = the facts connected to a Moment/Scene Forget are beyond the depth/size cap: nothing was deleted. [CONTENT_CHANGED] = a scoped Forget was confirmed against a different set than the one previewed (new photos, marks or Moments in the span, a changed Scene): nothing was deleted, preview again.
      */
-    enum class Outcome { DONE, EXPORT_IN_PROGRESS, SAVE_IN_PROGRESS, CACHE_CLEANUP_FAILED, CONTENT_CHANGED, FAILED;
+    enum class Outcome { DONE, EXPORT_IN_PROGRESS, SAVE_IN_PROGRESS, CACHE_CLEANUP_FAILED, CONTENT_CHANGED, TOO_LARGE, FAILED;
         /** The Forget itself went through (the cached-export leftover does not undo it). */
         val committed: Boolean get() = this == DONE || this == CACHE_CLEANUP_FAILED
     }
@@ -63,12 +63,12 @@ object ForgetActions {
         }
 
     /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
-    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0)
+    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0, val tooLarge: Boolean = false)
     suspend fun previewScoped(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): ScopedPreview = withContext(Dispatchers.IO) {
         val graph = MemoryGraph.get(context)
         val engine = ScopedForget(graph.db, ForgetService(graph.db, graph.proposals))
         val plan = engine.plan(target, scope); val c = engine.preview(plan)
-        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash, c.outside)
+        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash, c.outside, c.tooLarge)
     }
 
     /**
@@ -156,6 +156,9 @@ object ForgetActions {
         } catch (e: com.rokid.context.memory.forget.ForgetContentChanged) {
             PcLog.w(TAG, "forget not run: content changed")
             return Outcome.CONTENT_CHANGED
+        } catch (e: com.rokid.context.memory.forget.ForgetTooLarge) {
+            PcLog.w(TAG, "forget not run: too large")
+            return Outcome.TOO_LARGE
         } catch (e: Exception) {
             PcLog.w(TAG, "forget failed: ${SafeLog.describe(e)}")
             return Outcome.FAILED

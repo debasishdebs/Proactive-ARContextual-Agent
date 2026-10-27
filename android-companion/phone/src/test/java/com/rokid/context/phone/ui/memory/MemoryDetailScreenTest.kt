@@ -118,6 +118,12 @@ class MemoryDetailScreenTest {
         assertEquals("1 item outside this window is affected (not deleted).", ForgetScopeCopy.outsideLine(1))
     }
 
+    @Test fun aTooLargeForgetSaysSoShowsNoCountsAndCannotBeConfirmed() {
+        compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = scene.copy(tooLarge = true), forgetConfirmable = false), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
+        compose.onNodeWithText("Too much is connected to this to forget in one step; use a smaller scope or Delete all").assertExists(); compose.onNodeWithText("Forget").assertIsNotEnabled()
+        compose.onNodeWithText("This deletes 4 photos, 5 facts, 1 mark, 3 Moments. 1 Scene removed, 2 Scenes shrink.").assertDoesNotExist()
+    }
+
     @Test fun noOutsideLineWhenNothingOutsideIsAffected() {
         compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = scene, forgetConfirmable = true), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
         compose.onNodeWithText("0 items outside this window are affected (not deleted).").assertDoesNotExist()

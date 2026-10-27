@@ -172,6 +172,15 @@ class ScopedForgetActionsTest {
         }
     }
 
+    @Test fun aTooConnectedForgetIsATypedOutcomeAndThePreviewSaysSo() = runBlocking<Unit> {
+        world(); var prev = "ma1"
+        graph.db.memoryDao().let { d -> for (i in 1..40) { d.insert(MemoryEntity("c$i", null, "t", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, ms + 300_000L + i, true, "t")); graph.db.forgetDao().insertEdges(listOf(com.rokid.context.memory.db.MemorySourceEntity("c$i", prev))); prev = "c$i" } }
+        assertTrue(ForgetActions.previewScoped(ctx, ForgetTarget.Photo("a1"), ForgetScope.MOMENT).tooLarge)
+        val o = ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.MOMENT)
+        assertEquals(ForgetActions.Outcome.TOO_LARGE, o); assertFalse(o.committed); assertTrue("a1" in frames())
+        assertEquals("the photo scope is unaffected", ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.PHOTO))
+    }
+
     @Test fun theSamePreviewConfirmsWhenNothingChanged() = runBlocking<Unit> {
         world(); val p = ForgetActions.previewScoped(ctx, ForgetTarget.Photo("a1"), ForgetScope.SCENE)
         assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.SCENE, expectedHash = p.planHash))
