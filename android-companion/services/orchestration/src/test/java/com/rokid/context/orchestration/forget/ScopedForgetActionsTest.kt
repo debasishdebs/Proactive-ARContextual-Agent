@@ -154,7 +154,7 @@ class ScopedForgetActionsTest {
     @Test fun thePreviewNamesTheEffectiveScopeAndTheCountsAndWritesNothing() = runBlocking<Unit> {
         world()
         val p = ForgetActions.previewScoped(ctx, ForgetTarget.Photo("a1"), ForgetScope.SCENE)
-        assertEquals(ForgetScope.SCENE, p.effective); assertEquals(2, p.photos); assertEquals(2, p.memories); assertEquals(2, p.moments); assertEquals(1, p.scenes)
+        assertEquals(ForgetScope.SCENE, p.effective); assertEquals(2, p.photos); assertEquals(2, p.memories); assertEquals(2, p.moments); assertEquals(1, p.scenesRemoved); assertEquals(0, p.scenesShrunk)
         assertEquals(listOf("a1", "a3", "n1"), frames()); assertEquals(0, graph.db.momentDao().tombstoneCount())
         assertEquals(ForgetScope.MOMENT, ForgetActions.previewScoped(ctx, ForgetTarget.Moment(mid(0)), ForgetScope.PHOTO).effective)
         assertNotNull(graph.db.sceneDao().scene("sc-A")); assertNull(graph.db.sceneDao().scene("none"))

@@ -181,13 +181,24 @@ class ScopedForgetTest {
             val done = engine.forget(p)
             val after = listOf(frames().size, memories().size, marks().size, moments().size)
             assertEquals("photos $c", if (c.target is ForgetTarget.Fact) done.cascade.framesToDelete.count { it.endsWith(".jpg") } else before[0] - after[0], counts.photos); assertEquals("memories $c", before[1] - after[1], counts.memories); assertEquals("marks $c", before[2] - after[2], counts.marks)
-            assertEquals("moments $c", before[3] - after[3], counts.moments); assertTrue("scenes $c", before[4] - scenes().size <= counts.scenes)
+            assertEquals("moments $c", before[3] - after[3], counts.moments); assertEquals("scenes removed $c", before[4] - scenes().size, counts.scenesRemoved)
         }
     }
 
+    /** Review fix: a Scene that only LOSES Moments is "shrunk", not "deleted"; Scene scope does not count a neighbouring Scene touched only by the radius as removed. */
+    @Test fun scenesThatOnlyLoseMomentsAreCountedAsShrunkNotRemoved() = runBlocking<Unit> {
+        world()
+        val moment = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT))
+        assertEquals(0, moment.scenesRemoved); assertEquals("Scene A keeps its 25 s Moment", 1, moment.scenesShrunk)
+        engine.forget(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)); assertEquals(listOf("sc-A", "sc-N"), scenes())
+        fresh(); world(); fx.frame("nb", MS + 8_000); fx.project(mid(8), MomentPartKind.FRAME to "nb"); scene("sc-NB", 8, 60)
+        val scene = engine.preview(engine.plan(ForgetTarget.Scene("sc-A"), ForgetScope.SCENE))
+        assertEquals("only Scene A is removed; the neighbour inside the radius merely shrinks", listOf(1, 1), listOf(scene.scenesRemoved, scene.scenesShrunk))
+    }
+
     @Test fun theSceneCountNamesTheScenesThatGo() = runBlocking<Unit> {
-        world(); assertEquals(1, engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.SCENE)).scenes)
-        assertEquals(1, engine.preview(engine.plan(ForgetTarget.Scene("sc-A"), ForgetScope.SCENE)).scenes)
+        world(); assertEquals(1, engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.SCENE)).scenesRemoved)
+        assertEquals(1, engine.preview(engine.plan(ForgetTarget.Scene("sc-A"), ForgetScope.SCENE)).scenesRemoved)
     }
 
     // ---- listeners ----

@@ -137,7 +137,7 @@ class MemoryDetailViewModelTest {
         override suspend fun preview(kind: ForgetKind, memoryId: String, frameId: String?) = preview()
         override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope) = onScoped(kind, scope)
     }
-    private fun sceneCounts(requested: com.rokid.context.memory.forget.ForgetScope = com.rokid.context.memory.forget.ForgetScope.SCENE) = ForgetPreview(requested, requested, 4, 5, 2, 3, 1)
+    private fun sceneCounts(requested: com.rokid.context.memory.forget.ForgetScope = com.rokid.context.memory.forget.ForgetScope.SCENE) = ForgetPreview(requested, requested, 4, 5, 2, 3, 1, 0)
 
     @Test fun theDialogLoadsTheCountsAndTheConfirmedScopeIsTheOneThatRuns() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))

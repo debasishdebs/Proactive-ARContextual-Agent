@@ -26,7 +26,7 @@ interface MemoryForget {
 /** What the dialog shows: the scope asked for, the scope it really runs at (an entry never forgets less than itself; a missing Moment/Scene falls back), and the counts. */
 data class ForgetPreview(
     val requested: com.rokid.context.memory.forget.ForgetScope, val effective: com.rokid.context.memory.forget.ForgetScope,
-    val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenes: Int,
+    val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int,
 )
 
 /** The Forget went through but, in a production build, a cached memory export that still holds text could not be deleted (it is retried at the next start and the next Forget). */
@@ -74,9 +74,14 @@ object ForgetScopeCopy {
         com.rokid.context.memory.forget.ForgetScope.SCENE -> "Forget scope: Scene. The whole Scene goes: every Moment in it, with all its photos, facts and marks."
     }
 
-    fun counts(photos: Int, memories: Int, marks: Int, moments: Int, scenes: Int): String {
+    /** "This deletes 4 photos, 5 facts, 1 mark, 3 Moments. 1 Scene removed, 2 Scenes shrink." Scenes that only lose some Moments are NOT counted as deleted. */
+    fun counts(photos: Int, memories: Int, marks: Int, moments: Int, scenesRemoved: Int, scenesShrunk: Int): String {
         fun n(c: Int, one: String, many: String) = "$c ${if (c == 1) one else many}"
-        return "This deletes " + listOf(n(photos, "photo", "photos"), n(memories, "fact", "facts"), n(marks, "mark", "marks"), n(moments, "Moment", "Moments")).joinToString(", ") + if (scenes > 0) " and " + n(scenes, "Scene", "Scenes") + "." else "."
+        val scenes = listOfNotNull(
+            if (scenesRemoved > 0) n(scenesRemoved, "Scene", "Scenes") + " removed" else null,
+            if (scenesShrunk > 0) n(scenesShrunk, "Scene", "Scenes") + (if (scenesShrunk == 1) " shrinks" else " shrink") else null,
+        )
+        return "This deletes " + listOf(n(photos, "photo", "photos"), n(memories, "fact", "facts"), n(marks, "mark", "marks"), n(moments, "Moment", "Moments")).joinToString(", ") + "." + if (scenes.isEmpty()) "" else " " + scenes.joinToString(", ") + "."
     }
     const val COUNTING = "Counting what will be deleted\u2026"
     const val COUNTS_FAILED = "Couldn't count what would be deleted, so nothing was forgotten. Try again."
