@@ -421,6 +421,23 @@ class ResidueOracleTest {
         assertClean("Forget Scene (setting Photo)", listOf(frame, mem, memText, mark, derivedText, trace, sceneOf))
     }
 
+    /** Round 4 (2): a fact of the span that cites a photo OUTSIDE it: the photo is kept, but the fact's text must be gone from stored run outputs, DONE helper results, Moment.text and the cached export. */
+    @Test fun momentScopeLeavesNoTextOfAFactCitingAnOutsidePhotoAnywhere() = runBlocking {
+        scopedWorld()
+        val citeText = "CITING-FACT-TEXT-ZQ"
+        h.db.memoryDao().insert(MemoryEntity("mem-CITE", keepFrame, citeText, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, t(11), false, citeText))
+        MomentBuilder(h.db, enabled = { true }, clock = { 6 }).build(listOf(mid(900)))
+        h.dao.insertRun(CanvasRunEntity("run-cite", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        h.dao.upsertItem(CanvasRunItemEntity("run-cite", keepFrame, "n", "OK", null, "{\"fact\":\"$citeText\"}", null, null, null, null, null, null, null))
+        h.dao3.insertHelperJob(com.rokid.context.memory.db.CanvasHelperJobEntity("hj-cite", "py_exec", "DONE", frameIdsJson = "[\"$keepFrame\"]", createdAt = 1, updatedAt = 1, resultJson = "{\"r\":\"$citeText\"}"))
+        File(app.cacheDir, "exports/proactive-context-memories-9.json").writeText("{\"memories\":[{\"text\":\"$citeText\"}]}")
+        val before = residue(listOf(citeText)).map { it.substringBefore('.') }.toSet()
+        assertTrue("the oracle sees it in run items, helper jobs, moments, memory and the export: $before", before.containsAll(listOf("canvas_run_item", "canvas_helper_job", "memory")))
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Photo(frame), com.rokid.context.memory.forget.ForgetScope.MOMENT))
+        assertClean("Forget (scope Moment), fact citing an outside photo", listOf(citeText, "mem-CITE"))
+        assertEquals("the outside photo is kept", 1, frameRows(keepFrame))
+    }
+
     @Test fun aFactAtMomentScopeLeavesNothingOfItsMoment() = runBlocking {
         scopedWorld()
         assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Fact(mem), com.rokid.context.memory.forget.ForgetScope.MOMENT))

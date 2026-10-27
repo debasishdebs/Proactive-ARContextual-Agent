@@ -436,6 +436,16 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
             (scrubDoneRow(id, now) > 0).also { if (it) insertCleanup(CanvasHelperCleanupEntity(jobId = id, reason = "frame_forget", createdAt = now)) }
         }
 
+    /**
+     * Forget scope MOMENT / SCENE: a photo OUTSIDE the spans that an in-span fact cites is only locked, but the stored outputs that may carry the forgotten fact's text (run outputs are the caller's, DONE helper results here) are scrubbed,
+     * and the frame-Forget fence moves (open helper jobs are voided, fail closed). The photo itself, its marks and its Moments stay.
+     */
+    @Transaction open suspend fun scrubOutputsOfLockedFrames(frameIds: List<String>, now: Long) {
+        if (frameIds.isEmpty()) return
+        moveFrameForgetFence(now)
+        scrubDoneJobsForFrames(frameIds, now)
+    }
+
     // --- frame_forget_rev (core plan section 6, "Frame-Forget fence"): a counter in canvas_meta, bumped in the transaction of every Forget (`forgetRangeTx`, `deleteSliceOutputsForFrames`, Delete all) ---
     /** The frame-Forget revision (0 until the first bump). Captured by the runner BEFORE it loads frames, re-read inside every helper-job transaction. */
     open suspend fun frameForgetRev(): Long = meta(FRAME_FORGET_REV)?.toLongOrNull() ?: 0L

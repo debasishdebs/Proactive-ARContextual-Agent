@@ -160,7 +160,13 @@ class ForgetService(
         // 4. Extraction lock.
         val now = clock()
         var spans = emptyList<Triple<Long, Long, List<String>>>()
-        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; spans = dropCanvasOutputs(inside, null, radiusCascade) }
+        if (lockFrames) {
+            frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; spans = dropCanvasOutputs(inside, null, radiusCascade)
+            if (bounded != null) { // a locked photo outside the spans keeps itself, but the stored run outputs and DONE helper results of it may carry the forgotten fact's text: scrubbed
+                val outside = frames - inside.toSet()
+                if (outside.isNotEmpty()) { db.canvasDao().deleteCanvasOutputsForFrames(outside); db.canvasSlice3Dao().scrubOutputsOfLockedFrames(outside, now) }
+            }
+        }
         // 5. Redaction (exact JSON match after a LIKE prefilter: "A1" never matches "A").
         val cited = forgotten + invalidated + extraCited // extraCited: `frame:<id>` photo cites (S1)
         val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }

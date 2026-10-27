@@ -170,6 +170,18 @@ class ScopedForgetTest {
         assertTrue("n1's Moment survives", mid(90) in moments())
     }
 
+    /** Round 4 (2): the kept outside photo's stored run outputs and DONE helper results may carry the forgotten fact's text: they are scrubbed (the photo, its other facts and other photos' outputs stay). */
+    @Test fun theStoredOutputsOfAnOutsidePhotoThatCarriedTheForgottenFactAreScrubbed() = runBlocking<Unit> {
+        world(); fx.memory("mx", "n1", createdAt = MS + 500)
+        db.canvasDao().insertRun(com.rokid.context.memory.db.CanvasRunEntity("r1", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        db.canvasDao().upsertItem(com.rokid.context.memory.db.CanvasRunItemEntity("r1", "n1", "ext", "OK", null, "{\"fact\":\"text of mx\"}", null, null, null, null, null, null, null))
+        db.canvasDao().upsertItem(com.rokid.context.memory.db.CanvasRunItemEntity("r1", "a3", "ext", "OK", null, "{\"fact\":\"text of ma3\"}", null, null, null, null, null, null, null))
+        s3.insertHelperJob(com.rokid.context.memory.db.CanvasHelperJobEntity("hj", "py_exec", "DONE", frameIdsJson = "[\"n1\"]", createdAt = 1, updatedAt = 1, resultJson = "{\"r\":\"text of mx\"}"))
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); engine.forget(p, engine.preview(p).planHash)
+        assertEquals("n1 is kept", true, "n1" in frames()); assertEquals("only the other photo's output stays", listOf("a3"), db.canvasDao().items("r1").map { it.frameId })
+        assertEquals("the helper result is scrubbed", null, s3.helperJob("hj")?.resultJson)
+    }
+
     @Test fun aNewInSpanFactCitingAnotherOutsidePhotoAfterThePreviewIsRefused() = runBlocking<Unit> {
         world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)); fx.memory("mx", "a3", createdAt = MS + 500)
         refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash); assertTrue("a3" in frames())
