@@ -50,8 +50,9 @@ class SensorRecorderTest {
 
     @Test fun aBatchIsWrittenWhenTheCountIsReachedAndOnTheMinuteTick() {
         val fx = Fx(); val r = rec(fx, flushEvery = 100); r.configure(25)
-        feed(r, 5)
-        assertTrue("the count flush ran", written(fx).size >= 100)
+        feed(r, 5); assertTrue("nothing is written by the tap itself", written(fx).isEmpty())
+        r.poll()
+        assertTrue("the count flush ran on the beat", written(fx).size >= 100)
         val fx2 = Fx(); val r2 = rec(fx2); r2.configure(5)
         feed(r2, 2); assertTrue(written(fx2).isEmpty())
         clock.t += 61_000; r2.poll()
@@ -110,5 +111,47 @@ class SensorRecorderTest {
         feed(r, 3); r.discard(); feed(r, 3, from = 150); r.flush()
         q.forEach { it.run() }
         assertTrue(written(fx).isNotEmpty())
+    }
+
+    // ---- review round 2: the tap never waits, never throws; eligibility is immediate and going ineligible drops ----
+    @Test fun theTapNeverWaitsForAStalledConfigure() {
+        val fx = Fx(); val entered = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        val r = SensorRecorder(fx.store, clock = clock, wallClock = { wall }, io = { it.run() }, log = { if (it == "sensor recording started") { entered.countDown(); release.await(10, java.util.concurrent.TimeUnit.SECONDS) } })
+        val t = Thread { r.configure(10) }; t.start()
+        try {
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val done = java.util.concurrent.CountDownLatch(1)
+            Thread { feed(r, 1); done.countDown() }.start()
+            assertTrue("the sensor thread must not wait for configure()", done.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        } finally { release.countDown(); t.join(5_000) }
+    }
+
+    @Test fun aThrowInTheTapIsCountedAndNeverReachesTheClassifier() {
+        val fx = Fx(); var boom = true
+        val r = SensorRecorder(fx.store, clock = { if (boom) throw IllegalStateException("clock") else clock.t }, wallClock = { wall }, io = { it.run() }, log = {})
+        r.configure(25)
+        r.onGyro(0.1f, 0.2f, 0.3f, 100L, com.rokid.context.core.model.MotionState.STILL)
+        r.onAccel(0.1f, 0.2f, 0.3f, 100L, 100L, com.rokid.context.core.model.MotionState.STILL)
+        assertEquals(2L, r.errors()); boom = false
+        r.onGyro(0.1f, 0.2f, 0.3f, 400L, com.rokid.context.core.model.MotionState.STILL); assertEquals(1, r.buffered())
+    }
+
+    @Test fun anIneligibleStateRecordsNothingAtOnceAndDropsWhatWasBufferedWithoutWritingIt() {
+        val fx = Fx(); val r = rec(fx); r.configure(10)
+        feed(r, 2); assertTrue(r.buffered() > 0)
+        r.setEligible(false)
+        assertEquals("dropped, not kept", 0, r.buffered())
+        feed(r, 2, from = 100); assertEquals("a sample after the transition is ignored", 0, r.buffered())
+        r.flush(); r.poll(); assertTrue("nothing was written", written(fx).isEmpty())
+        r.setEligible(true); feed(r, 2, from = 200); r.flush()
+        assertTrue("eligible again records", written(fx).isNotEmpty())
+    }
+
+    @Test fun theFullBufferDropsTheNewestSampleNotTheOldest() {
+        val fx = Fx(); val r = rec(fx, flushEvery = 1_000_000, maxBuffered = 10); r.configure(25)
+        feed(r, 5); r.flush()
+        val g = written(fx).filterIsInstance<TraceEvent.Gyro>().map { it.sMs }
+        assertTrue("kept the first samples: $g", g.isNotEmpty() && g.max() < 600)
+        assertTrue(r.dropped() > 0)
     }
 }
