@@ -148,7 +148,7 @@ class ContextHub(
         rebuild(); publish(clock())
     }
 
-    fun onMotionHint(h: MotionHint) { accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m)) }
+    fun onMotionHint(h: MotionHint) { GlassesClassifierStatus.report(h.classifierHash); accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m)) }
 
     private suspend fun runActor() {
         for (c in inbox) {

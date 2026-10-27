@@ -195,7 +195,7 @@ fun CaptureSettingsScreen(
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {}, onMarkPhotoHold: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {}, onWindowTolerance: (Int) -> Unit = {},
     onWatchdogSilent: (Int) -> Unit = {}, onWatchdogTick: (Int) -> Unit = {}, onForgetRadius: (Int) -> Unit = {}, onSceneRebuilds: (Int) -> Unit = {},
-    onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {}, onUseSettings: () -> Unit = {},
+    onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {}, onUseSettings: () -> Unit = {}, onOpenSignals: () -> Unit = {},
     onWearParkEnabled: (Boolean) -> Unit = {}, onWearParkUnknown: (Int) -> Unit = {}, onWearParkWorn: (Int) -> Unit = {}, onOpenHiRokid: (() -> Unit)? = null,
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
@@ -301,6 +301,13 @@ fun CaptureSettingsScreen(
                 val rebuilds = (com.rokid.context.canvas.moment.SceneCadence.PRESETS_PER_DAY + state.sceneRebuildsPerDay).distinct().sorted()
                 ChoiceRow("Scene rebuilds per day", rebuilds.map { "$it" }, rebuilds.indexOf(state.sceneRebuildsPerDay), { onSceneRebuilds(rebuilds[it]) }, tag = "scene_rebuilds")
                 NoticeText("More often = more compute.", tag = "scene_rebuilds_note")
+            }
+        }
+        item {
+            SettingsCard {
+                androidx.compose.foundation.layout.Box(Modifier.testTag("signals_link")) {
+                    ChipRow(Icons.Outlined.Sensors, PcColors.ChipSky, "Signals and classifier thresholds", "Which signals guards use, walking and head-moving cut-offs", onClick = onOpenSignals)
+                }
             }
         }
     }
