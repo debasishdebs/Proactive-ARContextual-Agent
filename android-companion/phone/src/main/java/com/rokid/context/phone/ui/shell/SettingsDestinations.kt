@@ -150,10 +150,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_SIGNALS) {
         val app = LocalContext.current.applicationContext
-        val vm = viewModel { com.rokid.context.phone.ui.settings.capture.SignalSettingsViewModel(s.hud, com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app), com.rokid.context.phone.context.GlassesClassifierStatus.reported) }
+        val vm = viewModel { com.rokid.context.phone.ui.settings.capture.SignalSettingsViewModel(s.hud, com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app), com.rokid.context.phone.context.GlassesClassifierStatus.reported, com.rokid.context.phone.ui.settings.capture.FusionSettingsStore.get(app)) }
         val state by vm.state.collectAsStateWithLifecycle()
         val editor by vm.editor.collectAsStateWithLifecycle()
-        com.rokid.context.phone.ui.settings.capture.SignalSettingsScreen(state, onBack = back, editor = editor, editorActions = vm.editorActions(), onThreshold = vm::setThreshold, onReset = vm::resetThresholds, onSignal = vm::setSignalEnabled, onDeleteDerived = vm::deleteDerived)
+        com.rokid.context.phone.ui.settings.capture.SignalSettingsScreen(state, onBack = back, editor = editor, editorActions = vm.editorActions(), onFusion = vm::setFusion, onFusionReset = vm::resetFusion, onThreshold = vm::setThreshold, onReset = vm::resetThresholds, onSignal = vm::setSignalEnabled, onDeleteDerived = vm::deleteDerived)
     }
 
     composable(Routes.SETTINGS_CONTEXT) {

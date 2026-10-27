@@ -32,6 +32,8 @@ class ContextHub(
     private val registry: ContextSourceRegistry,
     private val params: FusionParams = FusionParams(watchTtlMs = 1_500_000),
     private var fusion: ContextFusion = ContextFusion(params),
+    /** v0.9.7 B: the user's changed fusion thresholds (non-default keys of [com.rokid.context.capture.plan.FusionSettings]); applied over [params] on this hub's actor, no restart. Null = the fixed [params]. */
+    private val overrides: StateFlow<Map<String, Double>>? = null,
     private val clock: () -> Long = System::currentTimeMillis,
     val stats: ContextHubStats = ContextHubStats(clock),
     private val log: (String) -> Unit = {},
@@ -42,12 +44,16 @@ class ContextHub(
         class Ev(val e: Evidence, val sourceId: String?, val gen: Int) : Cmd
         data object Reconcile : Cmd
         class Fail(val id: String, val gen: Int) : Cmd
+        class Params(val overrides: Map<String, Double>) : Cmd
         data object Drain : Cmd
         data object Tick : Cmd
         data object Stop : Cmd
     }
 
     private val inbox = Channel<Cmd>(Channel.UNLIMITED)
+    /** The params the fusion runs with: [params] plus the user's overrides (actor-only after construction). */
+    private var effective: FusionParams = params
+    private var appliedHash = "default"
     private val lock = Any()
     private val evq = ArrayDeque<Cmd.Ev>()
     private val drainSignalled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -95,6 +101,7 @@ class ContextHub(
             feeders = listOf(
                 scope.launch { settings.changes.collect { inbox.trySend(Cmd.Reconcile) } },
                 scope.launch { registry.changes.collect { inbox.trySend(Cmd.Reconcile) } },
+                scope.launch { overrides?.collect { inbox.trySend(Cmd.Params(it)) } },
                 scope.launch { while (true) { delay(TICK_MS); inbox.trySend(Cmd.Tick) } },
             )
             lastEvalAt = now; lastStatsLogAt = now
@@ -141,6 +148,15 @@ class ContextHub(
         return { if (started) inbox.trySend(Cmd.Fail(id, gen)) }
     }
 
+    /** New thresholds: a fresh engine on the retained evidence (hysteresis restarts from UNKNOWN, like a source change); nothing happens when the effective values did not change. */
+    private fun onParams(o: Map<String, Double>) {
+        val h = com.rokid.context.capture.plan.FusionSettings.hash(o)
+        if (h == appliedHash) return
+        appliedHash = h; effective = com.rokid.context.capture.plan.FusionSettings.apply(params, o)
+        log("fusion settings applied")
+        rebuild(); publish(clock())
+    }
+
     private fun onSourceFailed(c: Cmd.Fail) {
         if (running[c.id] != c.gen) return
         stopSource(c.id, registry.get(c.id)); failed.add(c.id)
@@ -158,6 +174,7 @@ class ContextHub(
                     Cmd.Drain -> drain()
                     Cmd.Reconcile -> { reconcile(); publish(clock()) }
                     is Cmd.Fail -> onSourceFailed(c)
+                    is Cmd.Params -> onParams(c.overrides)
                     Cmd.Tick -> onTick()
                     Cmd.Stop -> { shutdown(); return }
                 }
@@ -234,7 +251,7 @@ class ContextHub(
 
     /** Task 2's engine has no "forget": a fresh engine replays the retained evidence of the sources still on (hysteresis restarts from UNKNOWN). */
     private fun rebuild() {
-        fusion = ContextFusion(params)
+        fusion = ContextFusion(effective)
         committed = ContextState.UNKNOWN
         retained.values.forEach { fusion.onEvidence(it) }
         forcePublish = true
@@ -307,7 +324,7 @@ class ContextHub(
         for (id in running.keys.toList()) stopSource(id, registry.get(id))
         failed.clear(); synchronized(evq) { evq.clear() }
         _status.value = ALL_IDS.associateWith { SourceStatus.OFF }
-        fusion = ContextFusion(params); committed = ContextState.UNKNOWN; retained.clear()
+        fusion = ContextFusion(effective); committed = ContextState.UNKNOWN; retained.clear()
         applySpeed(false)
         if (_message.value != null) revokeThenNull(clock())
         _decision.value = _decision.value.copy(state = ContextState.UNKNOWN, reasons = emptySet(), vehicleSuspected = false)

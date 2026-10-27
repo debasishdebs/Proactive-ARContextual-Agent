@@ -14,6 +14,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.ai.canvas.plan.DerivedSignals
 import com.rokid.context.ai.canvas.plan.SignalConfig
+import com.rokid.context.capture.plan.FusionSettings
 import com.rokid.context.capture.plan.SignalCatalog
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.normalized
@@ -40,6 +41,8 @@ data class SignalSettingsUi(
     /** Catalogue signal to whether guards may use it. */
     val signals: List<Pair<String, Boolean>> = SignalCatalog.all.map { it.name to true },
     val derived: List<String> = emptyList(),
+    /** Effective value of every phone fusion threshold (defaults where not edited). */
+    val fusion: Map<String, Double> = FusionSettings.RANGES.mapValues { it.value.first },
 )
 
 /**
@@ -56,20 +59,22 @@ class SignalSettingsViewModel(
     private val hud: HudSettingsControl,
     private val store: SignalConfigStore,
     private val glassesHash: StateFlow<String?>,
+    private val fusionStore: FusionSettingsStore = FusionSettingsStore(),
 ) : ViewModel() {
-    private fun of(h: com.rokid.context.core.model.HudSettings, c: SignalConfig, reported: String?): SignalSettingsUi {
+    private fun of(h: com.rokid.context.core.model.HudSettings, c: SignalConfig, reported: String?, f: Map<String, Double> = fusionStore.overrides.value): SignalSettingsUi {
         val clean = ClassifierThresholds.clean(h.classifier)
         val hash = ClassifierThresholds.hash(clean)
         return SignalSettingsUi(
             ClassifierThresholds.RANGES.mapValues { (k, d) -> clean[k] ?: d.first }, hash, GlassesClassifierStatus.verdict(hash, reported),
             SignalCatalog.all.map { it.name to (it.name !in c.disabled) }, c.derived.map { it.name },
+            FusionSettings.RANGES.mapValues { (k, d) -> FusionSettings.clean(f)[k] ?: d.first },
         )
     }
 
     /** The state right now, read from the three sources (what [state] converges to). */
     fun snapshot(): SignalSettingsUi = of(hud.settings.value, store.config.value, glassesHash.value)
 
-    val state: StateFlow<SignalSettingsUi> = combine(hud.settings, store.config, glassesHash, ::of)
+    val state: StateFlow<SignalSettingsUi> = combine(hud.settings, store.config, glassesHash, fusionStore.overrides, ::of)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, store.config.value, glassesHash.value))
 
     fun setThreshold(key: String, value: Double) {
@@ -107,6 +112,8 @@ class SignalSettingsViewModel(
     fun editorActions() = DerivedEditorActions(::newDerived, ::editDerived, ::setEditorName, ::setEditorText, ::saveEditor, ::closeEditor)
 
     fun resetThresholds() { hud.update { it.copy(classifier = emptyMap()) }; PcLog.i(TAG, "classifier thresholds saved") }
+    fun setFusion(key: String, value: Double) = fusionStore.set(key, value)
+    fun resetFusion() = fusionStore.reset()
     fun setSignalEnabled(name: String, on: Boolean) { store.setEnabled(name, on) }
     fun deleteDerived(name: String) { store.deleteDerived(name) }
 
@@ -127,6 +134,13 @@ class SignalSettingsViewModel(
             "relaxedHoldMs" to "Walking, soft: must last (ms)",
             "heurAccVar" to "Shadow model: walking above", "heurMinHz" to "Shadow model: slowest step (Hz)", "heurMaxHz" to "Shadow model: fastest step (Hz)", "heurAboveOnFrac" to "Shadow model: head moving share",
         )
+        private val FUSION_LABELS = mapOf(
+            "fastKmh" to "Vehicle: speed above (km/h)", "fastTtlMs" to "Vehicle: a speed reading counts for (ms)", "fastConfirmGapMs" to "Vehicle: two readings at most apart (ms)",
+            "vehicleHoldMs" to "Vehicle: kept after the signal stops (ms)", "enterVehicleMs" to "Vehicle: must last (ms)", "switchDriverMs" to "Driver/passenger switch must last (ms)",
+            "enterRestMs" to "Rest: must last (ms)", "enterUnknownMs" to "Leaving walking or unknown: must last (ms)", "hintStillTtlMs" to "Rest: a glasses report counts for (ms)",
+            "stillFrac" to "Rest: still share of the last 5 min", "stillFracWithImage" to "Rest with a photo hint: still share",
+        )
+        fun fusionLabel(key: String) = FUSION_LABELS[key] ?: key
         fun label(key: String) = LABELS[key] ?: key
         fun fmt(v: Double) = if (v == Math.floor(v)) v.toLong().toString() else v.toString()
     }
@@ -136,6 +150,7 @@ class SignalSettingsViewModel(
 fun SignalSettingsScreen(
     state: SignalSettingsUi, onBack: () -> Unit,
     editor: DerivedEditorUi = DerivedEditorUi(), editorActions: DerivedEditorActions = DerivedEditorActions(),
+    onFusion: (String, Double) -> Unit = { _, _ -> }, onFusionReset: () -> Unit = {},
     onThreshold: (String, Double) -> Unit = { _, _ -> }, onReset: () -> Unit = {}, onSignal: (String, Boolean) -> Unit = { _, _ -> }, onDeleteDerived: (String) -> Unit = {},
 ) {
     SettingsPage("Signals", onBack, tag = "signal_settings") {
@@ -155,6 +170,21 @@ fun SignalSettingsScreen(
                     when (state.glasses) { "match" -> "The glasses run these values."; "pending" -> "Waiting for the glasses to apply them."; else -> "The glasses have not reported their values yet (older glasses never do)." },
                     tag = "classifier_status",
                 )
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Phone fusion (rest, walking, vehicle)", style = MaterialTheme.typography.titleMedium)
+                for ((key, range) in FusionSettings.RANGES) {
+                    val cur = state.fusion.getValue(key)
+                    val opts = FusionSettings.options(key, cur)
+                    ChoiceRow(
+                        SignalSettingsViewModel.fusionLabel(key), opts.map { SignalSettingsViewModel.fmt(it) + if (it == range.first) " (default)" else "" },
+                        opts.indexOf(cur).coerceAtLeast(0), { onFusion(key, opts[it]) }, tag = "fusion_$key",
+                    )
+                }
+                TextButton(onClick = onFusionReset, modifier = Modifier.testTag("fusion_reset")) { Text("Back to defaults") }
+                NoticeText("How the phone decides rest, walking or vehicle from its sources. Applies at once; the states stay still, walking and vehicle.", tag = "fusion_note")
             }
         }
         item {

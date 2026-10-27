@@ -66,6 +66,8 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.PREFS,
         // v0.9.7 A: disabled catalogue signals and derived-signal definitions are per-device config tied to the canvas guards in the excluded DB: back to empty after a restore.
         com.rokid.context.phone.ui.settings.capture.SignalConfigStore.PREFS,
+        // v0.9.7 B: the user's phone fusion thresholds are a per-device setting: back to the defaults after a restore.
+        com.rokid.context.phone.ui.settings.capture.FusionSettingsStore.PREFS,
         com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.PREFS,
         // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
         com.rokid.context.orchestration.AskPhotoPolicy.PREFS,
