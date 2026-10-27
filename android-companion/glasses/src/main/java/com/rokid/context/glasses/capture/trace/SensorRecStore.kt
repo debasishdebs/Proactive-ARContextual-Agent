@@ -22,6 +22,9 @@ internal class SensorRecStore(
 ) {
     enum class Result { WRITTEN, NO_ROOM, REFUSED, IO }
 
+    /** Bumped by every [wipe] and [forget]: a batch taken before one must not be written after it. */
+    val epoch = java.util.concurrent.atomic.AtomicInteger()
+
     /** Batches deleted by the last [write] to make room. */
     @Volatile var lastPruned: Int = 0
         private set
@@ -64,11 +67,12 @@ internal class SensorRecStore(
     }
 
     /** Epoch wipe (Forget all / Delete all): every batch goes. True only when the folder is really gone. */
-    fun wipe(): Boolean { deleteTree(dir); return !dir.exists() }
+    fun wipe(): Boolean { epoch.incrementAndGet(); deleteTree(dir); return !dir.exists() }
 
     /** Range Forget (glasses wall clock): every batch whose interval overlaps a range, and every file whose name cannot be read (it cannot be shown not to overlap), is deleted. True when all of them are gone. */
     fun forget(ranges: List<LongRange>): Boolean {
         if (ranges.isEmpty()) return true
+        epoch.incrementAndGet()
         var ok = true
         for (f in dir.listFiles() ?: emptyArray()) {
             val m = NAME.matchEntire(f.name)

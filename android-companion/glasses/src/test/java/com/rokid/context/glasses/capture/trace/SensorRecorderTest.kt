@@ -82,4 +82,33 @@ class SensorRecorderTest {
         assertEquals(0, r.buffered()); assertFalse(File(fx.root, "sensor_rec").listFiles()?.isNotEmpty() ?: false)
         feed(r, 1, from = 100); assertTrue(r.buffered() > 0)
     }
+
+    // ---- the cleanup race: a batch taken under the lock but handed to the writer after a Forget completed ----
+    private fun held(fx: Fx, queue: ArrayList<Runnable>) = SensorRecorder(fx.store, clock = clock, wallClock = { wall }, io = { queue += it }, log = { log += it })
+
+    @Test fun aBatchTakenBeforeADiscardIsNeverWrittenAfterIt() {
+        val fx = Fx(); val q = ArrayList<Runnable>(); val r = held(fx, q); r.configure(10)
+        feed(r, 3); r.flush()                      // the batch is taken and queued, the writer has not run it yet
+        assertEquals(1, q.size)
+        r.discard()                                // the Forget arrives
+        q.forEach { it.run() }                     // the writer reaches the batch only now
+        assertTrue("forgotten samples must not come back: ${fx.store.dir.listFiles()?.map { it.name }}", written(fx).isEmpty())
+    }
+
+    @Test fun aBatchTakenBeforeAWipeOrRangeForgetOfTheStoreIsNeverWrittenAfterIt() {
+        for (cleanup in listOf<(SensorRecStore) -> Unit>({ it.wipe() }, { it.forget(listOf(0L..Long.MAX_VALUE / 2)) })) {
+            val fx = Fx(); val q = ArrayList<Runnable>(); val r = held(fx, q); r.configure(10)
+            feed(r, 3); r.flush()
+            cleanup(fx.store)
+            q.forEach { it.run() }
+            assertTrue(written(fx).isEmpty())
+        }
+    }
+
+    @Test fun aBatchTakenAfterTheDiscardIsWrittenAsUsual() {
+        val fx = Fx(); val q = ArrayList<Runnable>(); val r = held(fx, q); r.configure(10)
+        feed(r, 3); r.discard(); feed(r, 3, from = 150); r.flush()
+        q.forEach { it.run() }
+        assertTrue(written(fx).isNotEmpty())
+    }
 }
