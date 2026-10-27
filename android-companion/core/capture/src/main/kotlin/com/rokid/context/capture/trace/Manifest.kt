@@ -163,7 +163,7 @@ data class Manifest(
                 ),
                 "ctx" to JsonPrimitive(s.ctx.name), "resting" to JsonPrimitive(s.resting), "tier" to JsonPrimitive(s.tier.name),
                 "sampleEvery" to n(s.sampleEvery.toLong()), "exact" to JsonPrimitive(s.exact),
-            ),
+            ) + (if (s.classifier.isEmpty()) emptyMap() else mapOf("classifier" to JsonObject(s.classifier.mapValues { n(Math.round(it.value * 1000.0)) }))),   // only when edited: every default trace keeps its bytes
         )
 
         /** SHA-256 (lower-case hex) over the ASCII concatenation of the chunk sha hex strings in `seq` order. */
@@ -220,6 +220,7 @@ data class Manifest(
                 planGen = o.int("planGen"),
                 planHash = o.strOrNull("planHash"), glance = glance, ctx = o.enum("ctx", ContextState.values()), resting = o.bool("resting"),
                 tier = o.enum("tier", BudgetTier.values()), sampleEvery = o.int("sampleEvery").toInt(), exact = o.bool("exact"),
+                classifier = o.objOrNull("classifier")?.mapValues { (k, v) -> intOf(v) / 1000.0 } ?: emptyMap(),
             )
             o.done()
             return s
@@ -265,6 +266,8 @@ data class Manifest(
             fun float(k: String): Float { val v = int(k); require(v in Int.MIN_VALUE..Int.MAX_VALUE) { "$k bits" }; return Float.fromBits(v.toInt()) }
             fun bool(k: String): Boolean = take(k).let { require(it is JsonPrimitive && it !is JsonNull && !it.isString && (it.content == "true" || it.content == "false")) { "$k not a boolean" }; (it as JsonPrimitive).content == "true" }
             fun obj(k: String) = Obj(take(k))
+            /** An optional member: absent = null (additive fields only). */
+            fun objOrNull(k: String): Map<String, JsonElement>? { val v = o[k] ?: return null; used += k; return v as? JsonObject ?: throw IllegalArgumentException("$k not an object") }
             fun arr(k: String): JsonArray = take(k) as? JsonArray ?: throw IllegalArgumentException("$k not an array")
             fun <T : Enum<T>> enum(k: String, values: Array<T>): T = str(k).let { s -> values.firstOrNull { it.name == s } ?: throw IllegalArgumentException("$k unknown") }
             fun done() = require(o.keys == used) { "unknown key" }

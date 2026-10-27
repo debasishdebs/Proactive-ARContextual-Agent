@@ -281,7 +281,7 @@ class CaptureService : LifecycleService() {
             appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it, plan.runningId()) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
             trace = runtime.traceRecorder, traceBoundary = runtime.traceBoundary,
-            traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value) },
+            traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value, runtime.settingsCache.readNormalized().classifier) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
             glanceKeep = guard::keep,
         )

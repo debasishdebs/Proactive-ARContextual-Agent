@@ -509,7 +509,7 @@ class SamplingSession(
             bindBackoffUntil = bindBackoffUntil.takeIf { it > 0L }, coldStartGrace = coldStartGrace, bindFailures = bindFailures.coerceAtMost(StartSnapshot.MAX_BIND_FAILURES),
             prevGyroMs = motion.prevGyroMs(), startups = startups.toList().takeLast(StartSnapshot.MAX_STARTUPS), pose = motion.poseSnapshot(),
             lastPhotoAttemptAtMs = lastPhotoAttemptAtMs, planGen = info.planGen, planHash = info.planHash, glance = glanceNow(),
-            ctx = appliedState(), resting = resting, tier = info.tier, sampleEvery = n, exact = n == 1,
+            ctx = appliedState(), resting = resting, tier = info.tier, sampleEvery = n, exact = n == 1, classifier = info.classifier,
         )
         return TraceStart(snap, traceProfile(s, prof, info), gate.paramsNow(), info)
     }

@@ -175,6 +175,10 @@ data class ReplayResult(
  * Input is consumed once, event by event; memory is bounded by the open window, the open decisions and the results (not by the trace length).
  */
 object CaptureSimulator {
+    /** The classifier a replay runs: the glance config plus the thresholds the glasses recorded in the start snapshot (the defaults for an older trace). */
+    internal fun classifierFor(snap: com.rokid.context.capture.trace.StartSnapshot, glance: GlanceParams, clock: () -> Long): MotionClassifier =
+        MotionClassifier(clock, glance).also { it.setThresholds(com.rokid.context.core.model.signals.ClassifierThresholds.from(snap.classifier)) }
+
     const val TICK_MS = 250L
     const val MAX_MISMATCHES = 64
     /** A delivery gap of the sensor events longer than this is a stall: the live loop made no decision inside one (real traces: 38 stalls, 1.0-8.1 s, no recorded open inside any). */
@@ -247,7 +251,7 @@ object CaptureSimulator {
         val glance: GlanceParams = cand?.glance ?: snap.glance
         val store = Store()
         val gate = KeyframeGate(store, { gateNow }, { gateParams })
-        val cls = MotionClassifier({ now }, glance)
+        val cls = classifierFor(snap, glance) { now }
         // 3c X4: the candidate's guards, evaluated by the same ExprRunner the glasses run, on the classifier's own per-second features (read once a second of event time, as the sensor feed does).
         val runner: ExprRunner? = cand?.exprs?.takeIf { it.isNotEmpty() }?.let { ExprRunner.of(it) }
         val signals = ExprSignals().also { runner?.bind(it) }   // the plan apply: the window rings start empty at the replay's start, as on the device

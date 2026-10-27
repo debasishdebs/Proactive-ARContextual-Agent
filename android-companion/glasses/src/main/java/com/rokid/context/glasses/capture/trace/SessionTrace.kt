@@ -19,6 +19,8 @@ data class TraceInfo(
     val planHash: String?,
     val planMode: PlanMode,
     val tier: BudgetTier,
+    /** v0.9.7 A: the classifier threshold overrides in force (canonical; empty = defaults), recorded in the trace start snapshot. */
+    val classifier: Map<String, Double> = emptyMap(),
 ) {
     /** The same plan (gen, hash, mode), whatever the settings. */
     fun samePlan(o: TraceInfo) = planGen == o.planGen && planHash == o.planHash && planMode == o.planMode
