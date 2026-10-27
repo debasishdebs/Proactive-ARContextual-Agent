@@ -205,6 +205,7 @@ class CaptureService : LifecycleService() {
                 try {
                     if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
                     applyRate()
+                    applyClassifier()
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "budget/rate update failed: ${e.javaClass.simpleName}") }
                 // Own guard: a throw above must not skip the TRIAL limit check.
                 try {
@@ -241,6 +242,23 @@ class CaptureService : LifecycleService() {
         smart?.let { it.feed.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime(), state ?: it.motion.state.value)) }
     }
 
+    /** v0.9.7 A: the classifier thresholds in force (hash echoed to the phone and recorded in the trace settings hash). */
+    @Volatile private var classifierHashNow = "default"
+    private var classifierApplied: String? = null
+
+    /** Applies the phone's classifier thresholds to the running classifier and the shadow heuristic; no-op while unchanged unless [force] (a fresh session starts on defaults). */
+    private fun applyClassifier(force: Boolean = false) {
+        val raw = runtime.settingsCache.readNormalized().classifier
+        val hash = com.rokid.context.core.model.signals.ClassifierThresholds.hash(raw)
+        classifierHashNow = hash
+        val sm = smart ?: return
+        if (!force && classifierApplied == hash) return
+        val t = com.rokid.context.core.model.signals.ClassifierThresholds.from(raw)
+        sm.motion.setThresholds(t); sm.feed.setThresholds(t)
+        classifierApplied = hash
+        DiagLog.i(TAG, "classifier thresholds applied")
+    }
+
     private fun startSmart() {
         val clock: () -> Long = SystemClock::elapsedRealtime
         val plan = runtime.plan
@@ -267,7 +285,7 @@ class CaptureService : LifecycleService() {
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
             glanceKeep = guard::keep,
         )
-        hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
+        hintSender = MotionHintSender(clock, classifierHash = { classifierHashNow }) { h -> runtime.controller?.sendMotionHint(h) == true }
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
         exprSignals.reset() // a capture session restart empties every window history (3c C1b)
@@ -277,6 +295,7 @@ class CaptureService : LifecycleService() {
         motion.addTap(runtime.traceRecorder) // records only while a trace runs (collect on, clean boundary); one volatile read otherwise
         val sm = Smart(session, feed, motion, shadow, guard)
         smart = sm
+        applyClassifier(force = true)
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
         sm.rateJob = scope.launch {
             motion.movementSignals().collect { // the collected state, not state.value: a glance may already be over

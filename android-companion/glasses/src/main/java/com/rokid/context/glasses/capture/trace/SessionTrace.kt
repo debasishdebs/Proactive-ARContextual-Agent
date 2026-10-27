@@ -72,7 +72,9 @@ interface SessionTrace {
 /** The `settingsHash` of a trace: a hash prefix of the settings that shape capture. Any change closes the trace (`settings`); nothing else about the settings is stored. */
 object TraceSettingsHash {
     fun of(s: com.rokid.context.core.model.HudSettings): String {
-        val text = "${s.captureMode}|${s.quickLookMs}|${s.cameraWake}|${s.workMinutes}|${s.restMinutes}|${s.batteryTargetHours}|${s.pauseWhenNotWorn}|${s.pauseWhenPhoneInUse}|${s.workRestEnabled}"
+        val text = "${s.captureMode}|${s.quickLookMs}|${s.cameraWake}|${s.workMinutes}|${s.restMinutes}|${s.batteryTargetHours}|${s.pauseWhenNotWorn}|${s.pauseWhenPhoneInUse}|${s.workRestEnabled}" +
+            // v0.9.7 A: edited classifier thresholds change behaviour, so they close the trace; with none the text (and every old trace hash) is unchanged
+            com.rokid.context.core.model.signals.ClassifierThresholds.hash(s.classifier).let { if (it == "default") "" else "|cls=$it" }
         return java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).take(6).joinToString("") { "%02x".format(it) }
     }
 }
