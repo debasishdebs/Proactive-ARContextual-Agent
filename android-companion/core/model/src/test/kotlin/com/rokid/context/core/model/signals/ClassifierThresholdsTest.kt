@@ -63,4 +63,11 @@ class ClassifierThresholdsTest {
         assertNull(MotionHint(atMs = 1).classifierHash)
         assertNull(assertIs<Decoded.Ok<MotionHint>>(Wire.decode<MotionHint>("""{"v":1,"atMs":1}""")).value.classifierHash)
     }
+
+    @Test fun whatAClassifierHoldsRoundTripsToItsOverrides() {
+        assertEquals(emptyMap(), ClassifierThresholds.DEFAULT.toOverrides())
+        val o = mapOf("headMovingRadS" to 0.7, "walkMaxHz" to 3.0, "relaxedHoldMs" to 3000.0, "heurAboveOnFrac" to 0.45)
+        assertEquals(o, ClassifierThresholds.from(o).toOverrides())
+        assertEquals(ClassifierThresholds.hash(o), ClassifierThresholds.hash(ClassifierThresholds.from(o).toOverrides()))
+    }
 }
