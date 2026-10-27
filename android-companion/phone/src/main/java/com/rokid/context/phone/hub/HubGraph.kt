@@ -204,6 +204,7 @@ object HubGraph {
                 com.rokid.context.memory.forget.CanvasSlice3Forget(com.rokid.context.memory.MemoryGraph.get(app).db), app.filesDir, collect,
                 send = { c -> link.send(com.rokid.context.core.model.Channels.TRACE_CTL, com.rokid.context.core.model.Wire.encode(c)) },
                 onWiped = sender::resetAfterWipe,
+                afterCascade = { com.rokid.context.orchestration.forget.ForgetActions.afterRange(app, it) },
             ).also { forgetCoordinator = it },
         )
         return Hub(

@@ -10,7 +10,13 @@ import com.rokid.context.memory.db.ContextDatabase
  * through the `ForgetListener` seam (the caller's job, after commit); the durable `cleanup_outbox` rows (tombstoned glasses traces, the glasses range) are written in the same transaction by [CleanupOutbox].
  */
 class CanvasSlice3Forget(private val db: ContextDatabase, private val clock: () -> Long = System::currentTimeMillis) {
-    data class Result(val tombstonedTraceIds: List<String>, val labelsDeleted: Int, val resultsInvalidated: Int)
+    data class Result(
+        val tombstonedTraceIds: List<String>, val labelsDeleted: Int, val resultsInvalidated: Int,
+        /** What the cascade removed (frames to delete, redacted proposals, invalidated derived facts): the caller must run the post-commit cleanup (`ForgetActions.apply`) on it. */
+        val cascade: ForgetService.Result = ForgetService.Result.EMPTY,
+        /** False when the post-commit cleanup could not delete a cached memory export (set by the coordinator). */
+        val cacheClean: Boolean = true,
+    )
 
     fun dao() = db.canvasSlice3Dao()
 
@@ -21,6 +27,6 @@ class CanvasSlice3Forget(private val db: ContextDatabase, private val clock: () 
     suspend fun forgetRange(fromMs: Long, toMs: Long): Result {
         val service = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db), clock)
         val r = MomentForget(db, service, clock).forgetRange(fromMs, toMs)
-        return Result(r.tombstonedTraceIds, r.labelsDeleted, r.resultsInvalidated)
+        return Result(r.tombstonedTraceIds, r.labelsDeleted, r.resultsInvalidated, r.cascade)
     }
 }

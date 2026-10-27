@@ -82,6 +82,27 @@ object ForgetActions {
         return cacheClean
     }
 
+    /** The cleanup after a committed RANGE Forget (the coordinator calls it inside the delete gate): the same as a fact or photo Forget. False = a cached export could not be deleted. */
+    suspend fun afterRange(context: Context, r: ForgetService.Result): Boolean {
+        val clean = apply(context, r)
+        scrubQueue(context)
+        runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }
+        runCatching(dataRemoved)
+        return clean
+    }
+
+    /** A time-range Forget with the typed outcome (the coordinator must have been built with `afterCascade = { afterRange(ctx, it) }`). */
+    suspend fun forgetRangeOutcome(context: Context, coordinator: com.rokid.context.canvas.plan.CanvasForgetCoordinator, fromMs: Long, toMs: Long): Outcome =
+        withContext(Dispatchers.IO + NonCancellable) {
+            try {
+                val r = coordinator.forgetRange(fromMs, toMs)
+                if (!r.cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE
+            } catch (e: DataOpGate.WriteInProgress) { Outcome.SAVE_IN_PROGRESS
+            } catch (e: DataOpGate.ExportInProgress) { Outcome.EXPORT_IN_PROGRESS
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { PcLog.w(TAG, "range forget failed: ${SafeLog.describe(e)}"); Outcome.FAILED }
+        }
+
     /** Text the queue log still holds in finished rows (fix round 1 I4). */
     internal fun scrubQueue(context: Context) {
         try {

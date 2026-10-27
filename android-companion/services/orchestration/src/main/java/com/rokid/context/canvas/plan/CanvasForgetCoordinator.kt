@@ -23,13 +23,16 @@ class CanvasForgetCoordinator(
     private val send: suspend (TraceControl) -> Unit,
     /** Hub-held state that Delete all must drop from memory too (the desired capture plan that is re-sent at every session). */
     private val onWiped: () -> Unit = {},
+    /** The post-commit cleanup of the cascade (production: `ForgetActions.afterRange`: photos, reminders, notifications, cached export, queue scrub); false = a cached export could not be deleted. */
+    private val afterCascade: suspend (com.rokid.context.memory.forget.ForgetService.Result) -> Boolean = { true },
 ) : ForgetListener {
     /** The user forgot the time range. Returns what was tombstoned. */
     suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result = com.rokid.context.orchestration.DataOpGate.shared.delete {
         val r = forget.forgetRange(fromMs, toMs)
+        val clean = afterCascade(r.cascade)
         afterRange(fromMs, toMs, r.tombstonedTraceIds)
         ForgetListeners.rangeForgotten(fromMs, toMs, r.tombstonedTraceIds, except = this)
-        r
+        r.copy(cacheClean = clean)
     }
 
     /** Files and glasses follow a committed range forget (also a photo's time link, through [ForgetListeners]). Idempotent. */
