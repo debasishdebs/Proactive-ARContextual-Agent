@@ -36,6 +36,8 @@ object MemoryWipe {
 
     /** 3b WP2: the laptop helper's capability grants (`py_exec`, default off). Delete all clears them, so a wipe always leaves every grant off; the phone's `HelperGrants.PREFS` is the same name (a phone test pins it). */
     const val HELPER_GRANTS_PREFS = "canvas_helper_grants"
+    /** The phone's signal configuration (user-written expressions): cleared here on disk, and in memory by the `ForgetListener` the phone registers. */
+    const val SIGNAL_CONFIG_PREFS = "signal_config"
 
     /** Clears one of [WIPED_PREFS]; the plan state keeps only its generation counter. */
     fun clearWipedPrefs(prefs: android.content.SharedPreferences, name: String): Boolean {
@@ -46,7 +48,7 @@ object MemoryWipe {
     }
 
     /** The prefs Delete all clears (a test pins it to [com.rokid.context.memory.forget.DeletionGraph.wipedPrefs]). */
-    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS, MemoryExport.CLEANUP_PREFS)
+    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS, MemoryExport.CLEANUP_PREFS, SIGNAL_CONFIG_PREFS)
 
     /**
      * Bumped first by every Delete all. A writer that read it before its work began (a queue job before its claim, an

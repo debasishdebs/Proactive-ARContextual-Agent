@@ -87,8 +87,14 @@ class ResidueOracleTest {
 
     /** Tables that legitimately keep ids of a forgotten item: control data CREATED by a deletion (fences, tombstones, the outbox), never user content. */
     private val control = setOf(
-        "forget_tombstone", "cleanup_outbox", "canvas_helper_cleanup", "moment_tombstone", "canvas_meta",
+        "forget_tombstone", "cleanup_outbox", "canvas_helper_cleanup", "moment_tombstone",
     )
+
+    /**
+     * `canvas_meta` is NOT exempt any more (v0.9.7 review fix R18: a blanket exemption hid `mark_claim:*` and `canvas_save:*`). It is scanned like every table except the ONE documented control key family that
+     * must outlive a mark: `mark_undone:<labelId>` (an id, no content; it refuses a late photo of an undone mark; Delete all clears it, [deleteAllLeavesNoMarker...] pins that).
+     */
+    private val tableFilter = mapOf("canvas_meta" to " WHERE `key` NOT LIKE 'mark\\_undone:%' ESCAPE '\\'")
 
     @Before fun setUp() { WorkManagerTestInitHelper.initializeTestWorkManager(app); h = PyFnRunHarness(app) }
     @After fun tearDown() { h.close() }
@@ -101,7 +107,7 @@ class ResidueOracleTest {
         val tables = ArrayList<String>()
         sdb.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%'").use { c -> while (c.moveToNext()) tables += c.getString(0) }
         for (table in tables.filter { it !in allowTables }) {
-            sdb.query("SELECT * FROM `$table`").use { c ->
+            sdb.query("SELECT * FROM `$table`" + (tableFilter[table] ?: "")).use { c ->
                 while (c.moveToNext()) for (i in 0 until c.columnCount) {
                     if (c.getType(i) != android.database.Cursor.FIELD_TYPE_STRING && c.getType(i) != android.database.Cursor.FIELD_TYPE_INTEGER) continue
                     val v = c.getString(i)
@@ -288,6 +294,74 @@ class ResidueOracleTest {
         h.dao.deleteWatchRuns() // what the hub does when the watch source is switched off
         assertClean("watch off", listOf("watch:"))
         assertTrue("a Moment run stays", h.dao.runs(10).isNotEmpty())
+    }
+
+    // ---- v0.9.7 review fix R18: the markers in canvas_meta leave with their owners ----
+
+    private fun keys(like: String): List<String> = h.db.openHelper.readableDatabase.query("SELECT `key` FROM canvas_meta WHERE `key` LIKE '$like' ESCAPE '\\'").use { c -> val out = ArrayList<String>(); while (c.moveToNext()) out += c.getString(0); out }
+    /** A claim whose mark is gone, or a save marker whose run is gone: ids only, but residue that no owner will ever clean. */
+    private fun orphanMarkers(): List<String> = h.db.openHelper.readableDatabase.query(
+        "SELECT `key` FROM canvas_meta WHERE (`key` LIKE 'mark\\_claim:%' ESCAPE '\\' AND substr(`key`, 12) NOT IN (SELECT labelId FROM canvas_label)) " +
+            "OR (`key` LIKE 'canvas\\_save:%' ESCAPE '\\' AND substr(`key`, 13) NOT IN (SELECT runId FROM canvas_run))",
+    ).use { c -> val out = ArrayList<String>(); while (c.moveToNext()) out += c.getString(0); out }
+    /** A mark that is still waiting for its photo and has already claimed one (the durable pause allowance). */
+    private suspend fun claimedMark(id: String, atMs: Long) {
+        fx.mark(id, atMs, photo = "pending")
+        assertTrue(h.dao3.claimMarkPhoto(id, "claimed-photo")); assertEquals(listOf("mark_claim:$id"), keys("mark\\_claim:$id"))
+    }
+
+    @Test fun aMarkClaimLeavesWithAnUndoneMark() = runBlocking {
+        world(); claimedMark("mk:c1", t(20))
+        assertTrue(h.dao3.deleteLabel("mk:c1"))
+        assertEquals(emptyList<String>(), orphanMarkers()); assertClean("mark undo (claim)", listOf("mk:c1:"))
+    }
+
+    @Test fun aMarkClaimLeavesWithAForgottenPhotoNearIt() = runBlocking {
+        world(); claimedMark("mk:c2", t(14)) // inside the photo link radius of the forgotten photo
+        assertTrue(ForgetActions.forgetMoment(app, frame))
+        assertEquals(emptyList<String>(), orphanMarkers()); assertEquals(emptyList<String>(), keys("mark\\_claim:mk:c2"))
+    }
+
+    @Test fun aMarkClaimLeavesWithARangeForget() = runBlocking {
+        world(); claimedMark("mk:c3", t(20) + 100)
+        com.rokid.context.memory.forget.CanvasSlice3Forget(h.db).forgetRange(t(20), t(21))
+        assertEquals(emptyList<String>(), orphanMarkers()); assertEquals(emptyList<String>(), keys("mark\\_claim:mk:c3"))
+    }
+
+    @Test fun aMarkClaimLeavesWhenAMomentForgetDeletesAStrayMarkOfAProjection() = runBlocking {
+        world(); claimedMark("mk:c4", t(700)) // far from the forgotten second: only the projection names it
+        h.db.momentDao().replace(com.rokid.context.memory.db.MomentEntity(mid(10), 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME), listOf(com.rokid.context.memory.db.MomentPartEntity(mid(10), com.rokid.context.memory.db.MomentPartKind.MARK, "mk:c4", "r", 1)))
+        val service = com.rokid.context.memory.forget.ForgetService(h.db, MemoryGraph.get(app).proposals)
+        com.rokid.context.memory.forget.MomentForget(h.db, service).forgetMoments(listOf(mid(10)))
+        assertEquals("the stray mark itself is gone", null, h.dao3.label("mk:c4"))
+        assertEquals(emptyList<String>(), orphanMarkers()); assertEquals(emptyList<String>(), keys("mark\\_claim:mk:c4"))
+    }
+
+    @Test fun aSaveMarkerLeavesWithItsRunAndNeverOutlivesIt() = runBlocking {
+        savedFromCanvas()
+        assertEquals(listOf("canvas_save:runcv"), keys("canvas\\_save:%"))
+        assertTrue(ForgetActions.forgetMoment(app, frame))
+        assertEquals("the run row stays after a photo Forget, so its marker may (a retry must not save twice)", emptyList<String>(), orphanMarkers())
+        h.dao.deleteRun("runcv")
+        assertEquals(emptyList<String>(), keys("canvas\\_save:%"))
+    }
+
+    @Test fun deleteAllLeavesNoMarkerOfAnyKind() = runBlocking {
+        savedFromCanvas(); claimedMark("mk:c5", t(20)); h.dao3.putMeta("mark_undone:mk:gone", "1")
+        MemoryWipe.deleteAll(app)
+        assertEquals(emptyList<String>(), keys("canvas\\_save:%") + keys("mark\\_claim:%") + keys("mark\\_undone:%"))
+    }
+
+    /** `signal_config` holds the user's own expressions (user config): Delete all wipes it, no Forget touches it. Written the way the phone store writes it. */
+    private fun signalPrefs() = app.getSharedPreferences("signal_config", Context.MODE_PRIVATE)
+    @Test fun theSignalConfigurationIsUserConfigWipedByDeleteAllAndNotByAForget() = runBlocking {
+        world()
+        signalPrefs().edit().putString("derived", "{\"d_mine\":{\"USER-EXPRESSION\":1}}").putString("history", "[{\"derived\":{\"d_old\":{}}}]").commit()
+        assertTrue(ForgetActions.forgetFact(app, mem)); assertTrue(ForgetActions.forgetMoment(app, frame))
+        com.rokid.context.memory.forget.CanvasSlice3Forget(h.db).forgetRange(t(0), t(3599))
+        assertTrue("no Forget touches the user's configuration", signalPrefs().getString("derived", null)!!.contains("USER-EXPRESSION") && signalPrefs().contains("history"))
+        MemoryWipe.deleteAll(app)
+        assertEquals("Delete all removes it", emptyMap<String, Any?>(), signalPrefs().all)
     }
 
     // ---- accepted residue (user rulings 2026-10-25): pinned, not bugs ----

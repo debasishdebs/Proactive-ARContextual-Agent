@@ -93,6 +93,16 @@ class SignalConfigStore(private val prefs: SharedPreferences? = null) {
 
     @Synchronized fun clear() { persist(SignalConfig()); PcLog.i(TAG, "signal config saved") }
 
+    /**
+     * Delete all (review fix R18): the signal configuration is USER CONFIG that holds the user's own expressions (derived definitions and their history), so Delete all removes it: the state, the history
+     * and the prefs file. A Forget of a fact, photo or range does NOT touch it (it holds no memory content).
+     */
+    @Synchronized fun wipe() {
+        state.value = SignalConfig(); past.value = emptyList()
+        prefs?.edit()?.clear()?.commit()
+        PcLog.i(TAG, "signal config wiped")
+    }
+
     companion object {
         const val PREFS = "signal_config"
         private const val DISABLED = "disabled"
@@ -100,6 +110,11 @@ class SignalConfigStore(private val prefs: SharedPreferences? = null) {
         private const val HISTORY = "history"
         const val MAX_HISTORY = 16
         private const val TAG = "SignalConfig"
+
+        /** The Delete all hook (registered once at start-up by `ContextApp`): wipes the process store. */
+        fun wipeListener(context: Context): com.rokid.context.memory.forget.ForgetListener = object : com.rokid.context.memory.forget.ForgetListener {
+            override suspend fun onDeleteAll() = get(context).wipe()
+        }
 
         @Volatile private var instance: SignalConfigStore? = null
         fun get(context: Context): SignalConfigStore = instance ?: synchronized(this) {

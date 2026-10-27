@@ -26,7 +26,7 @@ class DeletionInventoryFilesTest {
 
     /** Any string literal of the form "canvas_*" / "mark_*" assigned to a PREFS or DIR constant in a main source is an on-disk artefact and needs a decision. */
     @Test fun noUnregisteredPrefsOrFolderConstantInAnyMainSource() {
-        val decl = Regex("""const val (\w*(?:PREFS|DIR)\w*)\s*=\s*"((?:canvas|mark)_\w+)"""")
+        val decl = Regex("""const val (\w*(?:PREFS|DIR)\w*)\s*=\s*"((?:canvas|mark|signal)_\w+)"""")
         val found = root.walkTopDown().onEnter { it.name != "build" && it.name != ".git" && it.name != "node_modules" }
             .filter { it.extension == "kt" && "/src/main/" in it.path }
             .flatMap { f -> decl.findAll(f.readText()).map { it.groupValues[2] to f.name } }.toList()
@@ -40,7 +40,7 @@ class DeletionInventoryFilesTest {
      * preferences file or names a folder, in ANY main source of the app, the services, the glasses and the cores, must be a registered artefact.
      */
     @Test fun noFileOrPrefsLiteralInAnyMainSourceEscapesTheRegistry() {
-        val lit = Regex(""""((?:canvas|mark|imu|trace|traces)[a-z_.]*)"""")
+        val lit = Regex(""""((?:canvas|mark|imu|trace|traces|signal)[a-z_.]*)"""")
         val ctx = Regex("""File\(|getSharedPreferences|PREFS|DIR|Dir\b|filesDir|cacheDir|\.xml""")
         val found = HashMap<String, MutableSet<String>>()
         root.walkTopDown().onEnter { it.name != "build" && it.name != ".git" && it.name != "node_modules" }
@@ -53,7 +53,7 @@ class DeletionInventoryFilesTest {
 
     @Test fun everyBackupExcludedCanvasPathIsRegistered() {
         val rules = File(root, "phone/src/main/res/xml/backup_rules.xml").readText()
-        val paths = Regex("""path="((?:canvas|mark)_\w+|deletion_epoch)(?:\.xml)?"""").findAll(rules).map { it.groupValues[1] }.toSet()
+        val paths = Regex("""path="((?:canvas|mark|signal)_\w+|deletion_epoch)(?:\.xml)?"""").findAll(rules).map { it.groupValues[1] }.toSet()
         assertTrue(paths.size >= 6)
         val missing = paths.filter { it !in registeredNames }
         assertTrue("backup-excluded but undecided: $missing", missing.isEmpty())
