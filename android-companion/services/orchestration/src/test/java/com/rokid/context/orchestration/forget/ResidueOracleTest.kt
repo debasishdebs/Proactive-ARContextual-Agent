@@ -364,6 +364,69 @@ class ResidueOracleTest {
         assertEquals("Delete all removes it", emptyMap<String, Any?>(), signalPrefs().all)
     }
 
+    // ---- v0.9.7 slice C: the Forget scope. After each scope nothing names the removed set; neighbours survive at PHOTO ----
+
+    private val nearFrame = "frame-NEAR"; private val nearMem = "mem-NEAR"; private val nearText = "NEAR-NEIGHBOUR-TEXT"
+    /** The world plus a neighbouring photo 4 s after the forgotten one (inside the 10 s radius, in its own Moment) with a fact. */
+    private suspend fun scopedWorld() {
+        world()
+        fx.frame(nearFrame, t(14) + 5); h.db.memoryDao().insert(MemoryEntity(nearMem, nearFrame, nearText, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, t(14) + 5, false, nearText))
+        MomentBuilder(h.db, enabled = { true }, clock = { 6 }).build(listOf(mid(14)))
+        assertTrue("the neighbour has its own Moment before", h.db.momentDao().moment(mid(14)) != null)
+    }
+    private fun frameRows(id: String) = h.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM frame WHERE id = '$id'").use { c -> c.moveToFirst(); c.getInt(0) }
+
+    @Test fun photoScopeLeavesNothingOfThePhotoAndTheNeighbourSurvivesAndFormsItsOwnMoment() = runBlocking {
+        scopedWorld()
+        fx.frame("frame-SAMESEC", t(10) + 700) // another photo in the SAME second: it survives, but the second is fenced, so the Moment cannot rebuild from it
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Photo(frame), com.rokid.context.memory.forget.ForgetScope.PHOTO))
+        assertClean("Forget photo (scope Photo)", listOf(frame, mem, memText, mark, derivedText, trace, momentOfForgotten()))
+        assertEquals("the neighbouring photo survives", 1, frameRows(nearFrame)); assertTrue(h.db.memoryViewDao().byId(nearMem) != null); assertEquals(1, frameRows(keepFrame))
+        MomentBuilder(h.db, enabled = { true }, clock = { 7 }).build(listOf(mid(10), mid(14)))
+        assertTrue("the neighbour forms its OWN Moment", h.db.momentDao().moment(mid(14)) != null)
+        assertEquals(1, frameRows("frame-SAMESEC")); assertEquals("the forgotten photo's own second cannot rebuild", null, h.db.momentDao().moment(mid(10)))
+        assertClean("Forget photo (scope Photo, after the rebuild)", listOf(frame, mem, memText, mark, derivedText, trace, momentOfForgotten()))
+    }
+
+    @Test fun momentScopeLeavesNothingOfTheMomentWindowAndNeighboursOutsideItSurvive() = runBlocking {
+        scopedWorld()
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Photo(frame), com.rokid.context.memory.forget.ForgetScope.MOMENT))
+        assertClean("Forget (scope Moment)", listOf(frame, mem, memText, mark, derivedText, trace, momentOfForgotten(), nearFrame, nearMem, nearText, mid(14)))
+        assertEquals(1, frameRows(keepFrame)); assertTrue("a Moment far away survives", h.db.momentDao().moment(mid(900)) != null); assertTrue(h.dao3.label(undoMark) != null)
+        MomentBuilder(h.db, enabled = { true }, clock = { 7 }).build(listOf(mid(10), mid(14), mid(12)))
+        assertClean("Forget (scope Moment, after the rebuild)", listOf(frame, mem, memText, mark, derivedText, trace, momentOfForgotten(), nearFrame, nearMem, nearText, mid(14)))
+        assertTrue("its Moment run rows and its export are gone too", residue(listOf(mem, memText, nearText, "proactive-context-memories")).isEmpty())
+    }
+
+    @Test fun sceneScopeLeavesNothingOfTheSceneAndAnotherSceneSurvives() = runBlocking {
+        scopedWorld()
+        val all = h.db.sceneDao().allScenes(); val sceneOf = h.db.sceneDao().sceneIdsHoldingMoments(listOf(mid(10))).single()
+        val inScene = h.db.sceneDao().parts(sceneOf).map { it.refId }
+        val otherScenes = all.map { it.sceneId } - sceneOf
+        assertTrue("the oracle needs a second Scene to keep (the Moment 900 s later): $all", otherScenes.isNotEmpty())
+        val gone = h.db.momentDao().partsOf(inScene).filter { it.kind == com.rokid.context.memory.db.MomentPartKind.FRAME }.map { it.refId } + inScene + sceneOf
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Photo(frame), com.rokid.context.memory.forget.ForgetScope.SCENE))
+        assertClean("Forget (scope Scene)", gone + listOf(mem, memText, mark, derivedText, trace))
+        assertEquals(null, h.db.sceneDao().scene(sceneOf)); assertEquals("another Scene survives", otherScenes.toSet(), h.db.sceneDao().allScenes().map { it.sceneId }.toSet())
+        assertEquals(1, frameRows(keepFrame)); assertTrue(h.db.memoryViewDao().byId(keepMem) != null)
+        SceneBuilder(h.db, enabled = { true }, clock = { 8 }).rebuildWindow(t(0), t(3599))
+        MomentBuilder(h.db, enabled = { true }, clock = { 8 }).build(inScene)
+        assertClean("Forget (scope Scene, after the rebuilds)", gone + listOf(mem, memText, mark, derivedText, trace))
+    }
+
+    @Test fun aSceneEntryLeavesNothingOfItsSceneEvenWithTheSettingOnPhoto() = runBlocking {
+        scopedWorld()
+        val sceneOf = h.db.sceneDao().sceneIdsHoldingMoments(listOf(mid(10))).single()
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Scene(sceneOf), com.rokid.context.memory.forget.ForgetScope.PHOTO))
+        assertClean("Forget Scene (setting Photo)", listOf(frame, mem, memText, mark, derivedText, trace, sceneOf))
+    }
+
+    @Test fun aFactAtMomentScopeLeavesNothingOfItsMoment() = runBlocking {
+        scopedWorld()
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Fact(mem), com.rokid.context.memory.forget.ForgetScope.MOMENT))
+        assertClean("Forget fact (scope Moment)", listOf(frame, mem, memText, mark, derivedText, trace, nearFrame, nearText))
+    }
+
     // ---- accepted residue (user rulings 2026-10-25): pinned, not bugs ----
 
     @AcceptedResidue("GAP-2", "the watch has no app of ours, its sensor data belongs to the watch vendor's services and the in-memory ring is ephemeral: watch run rows and the ring are only removed by watch-off, Delete all and run pruning")
