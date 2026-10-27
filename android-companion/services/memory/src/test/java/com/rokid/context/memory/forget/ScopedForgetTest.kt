@@ -196,6 +196,16 @@ class ScopedForgetTest {
         assertEquals("exactly the previewed marks went", c.marks, before - marks().size); assertTrue("Ln stays", "Ln" in marks()); assertFalse("Llinked" in marks())
     }
 
+    /** Round 4 (3): every list the bounded path introduced is chunked; more remote Moments than SQLite's bind limit hold one hidden fact. */
+    @Test fun moreRemoteMomentsThanTheBindLimitDoNotRollBackTheForget() = runBlocking<Unit> {
+        world(); fx.memory("dsum", null, derived = true, createdAt = MS + 200_000); fx.derivedFrom("dsum", "ma1")
+        val n = 33_000
+        db.openHelper.writableDatabase.let { w -> w.beginTransaction(); try { for (i in 0 until n) { val id = MomentId.format(SEC + 100_000 + i); w.execSQL("INSERT INTO moment (momentId, buildRev, contentRev, contentHash, builtAt, momentType, text) VALUES ('$id', 1, 1, 'h', 1, 'FRAME', 'TXT')"); w.execSQL("INSERT INTO moment_part (momentId, kind, refId, partRev, partTimeMs) VALUES ('$id', 'MEMORY', 'dsum', 'r', 1)") }; w.setTransactionSuccessful() } finally { w.endTransaction() } }
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        engine.forget(p, c.planHash)
+        assertEquals("all of them lost the text copy and none was deleted", n, db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM moment WHERE text IS NULL AND momentId >= '${MomentId.format(SEC + 100_000)}'").use { it.moveToFirst(); it.getInt(0) })
+    }
+
     @Test fun aDerivedFactThatAppearsAfterThePreviewIsRefused() = runBlocking<Unit> {
         world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT))
         fx.memory("dnew", null, derived = true, createdAt = MS + 300_000); fx.derivedFrom("dnew", "ma1")
