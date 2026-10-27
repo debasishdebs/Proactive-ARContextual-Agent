@@ -37,3 +37,20 @@ for d in "$TMP"/traces/*/; do
   rm -rf "${OUT:?}/$id"; mv "$d" "$OUT/$id" && n=$((n + 1))
 done
 echo "pulled $n trace(s), skipped $skipped (no manifest or odd name) into $OUT"
+
+# v0.9.7 B: the developer sensor recordings (files/imu/sensor_rec, written only with Developer mode and a chosen rate). Same method and the same cleanup fence as the traces (checked above);
+# only files named s-<start>-<end>-<seq>.json are kept, in <out-dir>/sensor_rec/ (never inside a trace directory). Nothing is deleted on the glasses; none present = 0.
+SL=$(mktemp) || die "no tmp file"
+sn=0; sk=0
+if adb -s "$G" exec-out run-as "$PKG" tar -c -C files/imu sensor_rec 2>/dev/null | tar -t > "$SL" 2>/dev/null && [ -s "$SL" ]; then
+  if grep -Eq '(^/|(^|/)\.\.(/|$))' "$SL"; then rm -f "$SL"; die "unsafe path in the sensor archive: refusing"; fi
+  adb -s "$G" exec-out run-as "$PKG" tar -c -C files/imu sensor_rec 2>/dev/null | tar -x -C "$TMP" || { rm -f "$SL"; die "sensor pull failed"; }
+  mkdir -p "$OUT/sensor_rec" || die "cannot create $OUT/sensor_rec"
+  for f in "$TMP"/sensor_rec/*; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f")
+    if printf '%s' "$b" | grep -Eq '^s-[0-9]{1,16}-[0-9]{1,16}-[0-9]{4}\.json$'; then mv "$f" "$OUT/sensor_rec/$b" && sn=$((sn + 1)); else sk=$((sk + 1)); fi
+  done
+fi
+rm -f "$SL"
+echo "pulled $sn sensor batch(es), skipped $sk (odd name) into $OUT/sensor_rec"
