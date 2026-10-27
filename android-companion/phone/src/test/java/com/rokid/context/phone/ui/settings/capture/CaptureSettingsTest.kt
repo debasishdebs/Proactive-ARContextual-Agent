@@ -491,25 +491,25 @@ class CaptureSettingsTest {
 
     @Test fun theForgetScopeDefaultsToPhotoPersistsAndABadStoredValueIsPhoto() {
         val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_test", 0).also { it.edit().clear().commit() }
-        val store = CaptureTimingStore(prefs)
-        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, store.forgetScope.value)
+        val store = CaptureTimingStore(prefs, DEV_ON)
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, store.storedForgetScope.value)
         store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.SCENE)
-        assertEquals("SCENE", prefs.getString("forget_scope", null)); assertEquals(com.rokid.context.memory.forget.ForgetScope.SCENE, CaptureTimingStore(prefs).forgetScope.value)
-        listOf("scene", "ALL", "", "7").forEach { bad -> prefs.edit().putString("forget_scope", bad).commit(); assertEquals(bad, com.rokid.context.memory.forget.ForgetScope.PHOTO, CaptureTimingStore(prefs).forgetScope.value) }
+        assertEquals("SCENE", prefs.getString("forget_scope", null)); assertEquals(com.rokid.context.memory.forget.ForgetScope.SCENE, CaptureTimingStore(prefs, DEV_ON).storedForgetScope.value)
+        listOf("scene", "ALL", "", "7").forEach { bad -> prefs.edit().putString("forget_scope", bad).commit(); assertEquals(bad, com.rokid.context.memory.forget.ForgetScope.PHOTO, CaptureTimingStore(prefs, DEV_ON).storedForgetScope.value) }
         prefs.edit().putInt("forget_scope", 2).commit() // a value of the wrong type is read as the default too
-        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, CaptureTimingStore(prefs).forgetScope.value)
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, CaptureTimingStore(prefs, DEV_ON).storedForgetScope.value)
         assertEquals("the radius next to it is untouched", 10, store.forgetRadiusSec.value)
     }
 
     @Test fun theViewModelSetsTheForgetScopeAndShowsItAndTheCaptureSettingsHaveThreeOptionsWithOneLineEach() {
         val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_vm_test", 0).also { it.edit().clear().commit() }
-        val vm = CaptureSettingsViewModel(FakeHudSettings(), timing = CaptureTimingStore(prefs))
+        val vm = CaptureSettingsViewModel(FakeHudSettings(), timing = CaptureTimingStore(prefs, DEV_ON))
         assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, runBlocking { withTimeout(5_000) { vm.state.first() } }.forgetScope)
         vm.setForgetScope(com.rokid.context.memory.forget.ForgetScope.MOMENT)
         assertEquals(com.rokid.context.memory.forget.ForgetScope.MOMENT, runBlocking { withTimeout(5_000) { vm.state.first { it.forgetScope == com.rokid.context.memory.forget.ForgetScope.MOMENT } } }.forgetScope)
         vm.cancelScope()
         var picked: com.rokid.context.memory.forget.ForgetScope? = null
-        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(), onBack = {}, onForgetScope = { picked = it }) } }
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(developerMode = true), onBack = {}, onForgetScope = { picked = it }) } }
         compose.onNodeWithTag("forget_scope").performScrollTo().assertIsDisplayed().performClick()
         compose.onNodeWithTag("forget_scope_2").performClick()
         assertEquals(com.rokid.context.memory.forget.ForgetScope.SCENE, picked)
@@ -521,8 +521,41 @@ class CaptureSettingsTest {
 
     @Test fun theChosenScopeIsWhatTheForgetPathReadsAndAThrowingStoreIsPhoto() {
         val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_bind_test", 0).also { it.edit().clear().commit() }
-        val store = CaptureTimingStore(prefs); store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.MOMENT)
+        val store = CaptureTimingStore(prefs, DEV_ON); store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.MOMENT)
         com.rokid.context.memory.forget.ForgetScopeSetting.provider = { store.forgetScopeNow() }
         try { assertEquals(com.rokid.context.memory.forget.ForgetScope.MOMENT, com.rokid.context.memory.forget.ForgetScopeSetting.get()) } finally { com.rokid.context.memory.forget.ForgetScopeSetting.provider = { com.rokid.context.memory.forget.ForgetScope.PHOTO } }
+    }
+
+    // ---- safety net: Moment and Scene are experimental, offered only with Developer mode on ----
+    private val DEV_ON = kotlinx.coroutines.flow.MutableStateFlow(true)
+
+    @Test fun withoutDeveloperModeTheScopeIsPhotoWhateverIsStoredAndMomentAndSceneCannotBeSet() {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_dev_test", 0).also { it.edit().clear().commit() }
+        val dev = kotlinx.coroutines.flow.MutableStateFlow(false)
+        prefs.edit().putString("forget_scope", "SCENE").commit()
+        val store = CaptureTimingStore(prefs, dev)
+        assertEquals("a stored Scene behaves as Photo", com.rokid.context.memory.forget.ForgetScope.PHOTO, store.forgetScopeNow())
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, runBlocking { withTimeout(5_000) { store.forgetScope.first() } })
+        store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.MOMENT)
+        assertEquals("refused without Developer mode", "SCENE", prefs.getString("forget_scope", null))
+        dev.value = true
+        assertEquals("the stored choice is back with Developer mode", com.rokid.context.memory.forget.ForgetScope.SCENE, store.forgetScopeNow())
+        store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.MOMENT); assertEquals(com.rokid.context.memory.forget.ForgetScope.MOMENT, store.forgetScopeNow())
+        dev.value = false; assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, store.forgetScopeNow())
+        store.setForgetScope(com.rokid.context.memory.forget.ForgetScope.PHOTO); assertEquals("Photo can always be chosen", "PHOTO", prefs.getString("forget_scope", null))
+    }
+
+    @Test fun settingsShowPhotoAndGreyOutMomentAndSceneWithoutDeveloperMode() {
+        val prefs = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences("scope_dev_vm_test", 0).also { it.edit().clear().commit() }
+        prefs.edit().putString("forget_scope", "SCENE").commit()
+        val vm = CaptureSettingsViewModel(FakeHudSettings(), timing = CaptureTimingStore(prefs, kotlinx.coroutines.flow.MutableStateFlow(false)))
+        val s = runBlocking { withTimeout(5_000) { vm.state.first() } }
+        assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, s.forgetScope); assertEquals(false, s.developerMode); vm.cancelScope()
+        var picked: com.rokid.context.memory.forget.ForgetScope? = null
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(developerMode = s.developerMode, forgetScope = s.forgetScope), onBack = {}, onForgetScope = { picked = it }) } }
+        compose.onNodeWithTag("forget_scope").performScrollTo().performClick()
+        compose.onNodeWithTag("forget_scope_1").assertIsNotEnabled(); compose.onNodeWithTag("forget_scope_2").assertIsNotEnabled(); compose.onNodeWithTag("forget_scope_0").assertIsEnabled()
+        compose.onNodeWithTag("forget_scope_experimental").performScrollTo().assertIsDisplayed()
+        assertEquals(null, picked)
     }
 }

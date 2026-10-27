@@ -99,6 +99,8 @@ object ForgetScopeCopy {
     }
     /** The extra line when the Forget touches things it does not delete: counts only. */
     fun outsideLine(n: Int) = "$n ${if (n == 1) "item outside this window is" else "items outside this window are"} affected (not deleted)."
+    /** Why Moment and Scene are greyed out in Settings. */
+    const val EXPERIMENTAL = "Moment and Scene are experimental until a worn test: turn on Developer mode (Settings > Diagnostics) to use them. Photo is used until then."
     const val TOO_LARGE = "Too much is connected to this to forget in one step; use a smaller scope or Delete all"
     const val COUNTING = "Counting what will be deleted\u2026"
     const val COUNTS_FAILED = "Couldn't count what would be deleted, so nothing was forgotten. Try again."

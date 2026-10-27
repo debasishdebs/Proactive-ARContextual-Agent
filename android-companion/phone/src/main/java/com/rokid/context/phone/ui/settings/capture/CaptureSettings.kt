@@ -98,6 +98,8 @@ data class CaptureSettingsUiState(
     val forgetRadiusSec: Int = CaptureTimingStore.DEFAULT_FORGET_RADIUS_SEC,
     /** Settings > Capture > Forget: how much a Forget photo / fact / Moment removes (default Photo). */
     val forgetScope: com.rokid.context.memory.forget.ForgetScope = com.rokid.context.memory.forget.ForgetScope.PHOTO,
+    /** Moment and Scene Forget scope are experimental: offered only while Developer mode is on. */
+    val developerMode: Boolean = false,
     /** Settings > Capture > Scenes: rebuilds a day (more often = more compute). */
     val sceneRebuildsPerDay: Int = com.rokid.context.canvas.moment.SceneCadence.DEFAULT_PER_DAY,
     /** Settings > Capture > Mark photo hold: how long the camera stays open for the photo of a mark (v0.9.6; a mark photo is taken even while capture is paused). */
@@ -134,8 +136,8 @@ class CaptureSettingsViewModel(
 ) : ViewModel() {
     private val sceneState = MutableStateFlow(com.rokid.context.canvas.moment.SceneCadence.DEFAULT_PER_DAY)
     init { viewModelScope.launch { runCatching { sceneState.value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { sceneRebuilds.perDay() } } } }
-    private class Timings(val silent: Int, val tick: Int, val radius: Int, val scenes: Int, val scope: com.rokid.context.memory.forget.ForgetScope)
-    private val timings = combine(timing.silentMin, timing.tickSec, timing.forgetRadiusSec, sceneState, timing.forgetScope) { a, b, c, d, e -> Timings(a, b, c, d, e) }
+    private class Timings(val silent: Int, val tick: Int, val radius: Int, val scenes: Int, val scope: com.rokid.context.memory.forget.ForgetScope, val dev: Boolean)
+    private val timings = combine(timing.silentMin, timing.tickSec, timing.forgetRadiusSec, sceneState, combine(timing.forgetScope, timing.developerMode) { s, dev -> s to dev }) { a, b, c, d, e -> Timings(a, b, c, d, e.first, e.second) }
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?, tol: Int = tolerance.pct.value): CaptureSettingsUiState {
         val n = h.normalized()
         return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active, windowMinValidPct = tol, markPhotoHoldMs = n.markPhotoHoldMs)
@@ -143,7 +145,7 @@ class CaptureSettingsViewModel(
     private val wear = combine(wearUnknownSince, ticker) { since, _ -> since }
     val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear, tolerance.pct, timings) { ui, since, tol, t ->
         ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()), windowMinValidPct = tol,
-            watchdogSilentMin = t.silent, watchdogTickSec = t.tick, forgetRadiusSec = t.radius, sceneRebuildsPerDay = t.scenes, forgetScope = t.scope)
+            watchdogSilentMin = t.silent, watchdogTickSec = t.tick, forgetRadiusSec = t.radius, sceneRebuildsPerDay = t.scenes, forgetScope = t.scope, developerMode = t.dev)
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN, null))
 
@@ -303,7 +305,9 @@ fun CaptureSettingsScreen(
                 ChoiceRow("Photo Forget radius", radii.map { "$it s" }, radii.indexOf(state.forgetRadiusSec), { onForgetRadius(radii[it]) }, tag = "forget_radius")
                 NoticeText("Forgetting a photo also removes the marks, Moments and results within this time of it.", tag = "forget_radius_note")
                 val scopes = com.rokid.context.memory.forget.ForgetScope.values().toList()
-                ChoiceRow("Forget scope", scopes.map { com.rokid.context.phone.ui.memory.ForgetScopeCopy.label(it) }, scopes.indexOf(state.forgetScope), { onForgetScope(scopes[it]) }, tag = "forget_scope")
+                ChoiceRow("Forget scope", scopes.map { com.rokid.context.phone.ui.memory.ForgetScopeCopy.label(it) }, scopes.indexOf(state.forgetScope), { onForgetScope(scopes[it]) }, tag = "forget_scope",
+                    disabled = if (state.developerMode) emptySet() else setOf(1, 2), disabledReason = com.rokid.context.phone.ui.memory.ForgetScopeCopy.EXPERIMENTAL)
+                if (!state.developerMode) NoticeText(com.rokid.context.phone.ui.memory.ForgetScopeCopy.EXPERIMENTAL, tag = "forget_scope_experimental")
                 scopes.forEach { NoticeText(com.rokid.context.phone.ui.memory.ForgetScopeCopy.settingLine(it), tag = "forget_scope_note_${it.name.lowercase()}") }
                 val rebuilds = (com.rokid.context.canvas.moment.SceneCadence.PRESETS_PER_DAY + state.sceneRebuildsPerDay).distinct().sorted()
                 ChoiceRow("Scene rebuilds per day", rebuilds.map { "$it" }, rebuilds.indexOf(state.sceneRebuildsPerDay), { onSceneRebuilds(rebuilds[it]) }, tag = "scene_rebuilds")
