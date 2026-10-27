@@ -213,6 +213,10 @@ class TraceRecorder(
 
     /** The sealed traces a hand-over may export: none while [cleanupPending] (coarse refusal), else every sealed trace id. */
     fun exportableTraceIds(): List<String> = storage.exportableTraceIds()
+    /** v0.9.7 B: the sensor-recording batch store (same root, same writer thread, same wipe and forget). */
+    internal val sensorStore: SensorRecStore get() = storage.sensor
+    /** v0.9.7 B: called (under the recorder lock, must be cheap) whenever a received cleanup (an epoch wipe or a forget; [applyControl] queues the forget run for both) is queued: the sensor recorder drops what it still holds in memory. */
+    @Volatile var onCleanupQueued: () -> Unit = {}
 
     /** Bytes under `traces/` and `imu_trace_tmp/` (tests, diagnostics). */
     val usedBytes: Long get() = storage.used.get()
@@ -346,6 +350,7 @@ class TraceRecorder(
 
     /** Queues the forget run (caller holds [lock]); [liveId] is the running job whose tmp directory is never touched. */
     private fun enqueueForgetLocked(liveId: String?) {
+        onCleanupQueued()
         val keep = liveId?.let { setOf(it) } ?: emptySet()
         io { runForgetTask(keep) }
     }

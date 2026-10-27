@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -241,6 +242,9 @@ fun DiagnosticsScreen(
     onOpenPhotoDimTest: (() -> Unit)? = null,
     /** Wave B: the Context hub card (enum names and numbers only); null while no hub exists. */
     contextHub: ContextHubCardData? = null,
+    /** v0.9.7 B: the developer sensor recording rate in Hz (0 = off); the row shows only with [developerMode]. */
+    sensorRecHz: Int = 0,
+    onSensorRecHz: (Int) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -298,6 +302,13 @@ fun DiagnosticsScreen(
                 }
                 Switch(checked = developerMode, onCheckedChange = onDeveloperMode, modifier = Modifier.testTag("developer_mode_switch"))
             }
+            if (developerMode) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val rates = listOf(0) + com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ
+                    ChoiceRow("Record raw glasses sensors", rates.map { if (it == 0) "Off" else "$it Hz" }, rates.indexOf(sensorRecHz).coerceAtLeast(0), { onSensorRecHz(rates[it]) }, tag = "sensor_rec_rate")
+                    if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")
+                }
+            }
             if (onOpenPhotoDimTest != null) {
                 androidx.compose.foundation.layout.Box(Modifier.testTag("photo_dim_row")) {
                     ChipRow(Icons.Outlined.PhotoCamera, PcColors.ChipAmber, "Photo search dimension test (debug)", "Compare image search at 768 and 256 dimensions on your photos", onClick = onOpenPhotoDimTest)
@@ -305,6 +316,12 @@ fun DiagnosticsScreen(
             }
         }
     }
+}
+
+/** The copy of the developer sensor-recording row (v0.9.7 B). */
+object SensorRecCopy {
+    /** Shown while a rate is chosen: what is recorded, where it goes, and the cost. */
+    fun warning(hz: Int) = "records sensor data at $hz Hz and saves it in batches on the glasses (not sent to the phone yet; a developer pull reads it). Uses more battery."
 }
 
 /** The count-only text lines of the Keyframes block. */

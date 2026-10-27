@@ -385,7 +385,11 @@ class Hub(
         val pushed = StateFrameBuilder.settingsFor(
             settings.read(), active, _state.value.offset, voice.askBlockedReason.value, resumed = resumed, zoneId = ZoneId.systemDefault().id,
         // LGC4P: the Developer-mode switch at push time, never the stored value (a restart would otherwise re-send false and switch recording off).
-        ).copy(diagRecord = devMode.value)
+        ).let { it.copy(
+            diagRecord = devMode.value,
+            // v0.9.7 B: the developer sensor recording is a diagnostics feature: its rate goes on the wire only while Developer mode is on (and only a preset); the stored value alone never decides
+            sensorRecHz = if (devMode.value) it.sensorRecHz.takeIf { hz -> hz in com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ } ?: 0 else 0,
+        ) }
         link.send(Channels.SETTINGS, Wire.encode(pushed))
     }
 

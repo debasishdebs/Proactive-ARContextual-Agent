@@ -77,6 +77,8 @@ internal class TraceStorage(
     /** Transfer markers (LGC9, plan 3.8): `<root>/transferred/<traceId>`, zero bytes, in their own directory: never inside `traces/<id>/` (the frozen layout) and never listed by the pull. */
     val transferredDir = File(root, "transferred")
     val used = AtomicLong(0)
+    /** v0.9.7 B: the developer sensor-recording batches (`sensor_rec/`, under the same root): wiped with every epoch wipe and range-forgotten with the traces. Not under `traces/`: import and replay never see them. */
+    val sensor = SensorRecStore(File(root, "sensor_rec"), freeBytes = { measure() }, deleteTree = { deleteTree(it) })
 
     // ---- space policy (LGC7-min, plan 3.7) ----
     /** The soft budget: min(1.5 GB, 20 % of physical free space), re-measured at each trace start and after recovery. Until the first measure it is the maximum. */
@@ -359,8 +361,9 @@ internal class TraceStorage(
         deleteTree(tmpDir)
         deleteTree(tracesDir)
         deleteTree(transferredDir)
+        val sensorGone = sensor.wipe()
         used.set(sizeOf(tracesDir) + sizeOf(tmpDir))
-        return !tmpDir.exists() && !tracesDir.exists() && !transferredDir.exists()
+        return !tmpDir.exists() && !tracesDir.exists() && !transferredDir.exists() && sensorGone
     }
 
     // ---- transfer markers (LGC9) ----
@@ -448,6 +451,7 @@ internal class TraceStorage(
             }
             if (hit) { deleteTree(dir); if (dir.exists()) ok = false }
         }
+        if (!sensor.forget(ranges)) ok = false // v0.9.7 B: sensor-recording batches overlapping a forgotten range
         recount()
         pruneMarkers() // a marker whose trace is gone never outlives the forget
         if (ok) forgetFile.delete()
