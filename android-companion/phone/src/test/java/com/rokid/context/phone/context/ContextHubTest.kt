@@ -51,7 +51,7 @@ class ContextHubTest {
         override fun setWanted(on: Boolean) { calls += on }
     }
 
-    private inner class Fx(val ts: TestScope, fusion: ContextFusion? = null) {
+    private inner class Fx(val ts: TestScope, fusion: ContextFusion? = null, overrides: kotlinx.coroutines.flow.StateFlow<Map<String, Double>>? = null) {
         val t0 = 1_793_000_000_000L
         val clock: () -> Long = { t0 + ts.testScheduler.currentTime }
         val prefs = ctx.getSharedPreferences("hub_${counter.incrementAndGet()}", 0).also { it.edit().clear().commit() }
@@ -60,7 +60,7 @@ class ContextHubTest {
         val logs = ArrayList<String>()
         val stats = ContextHubStats(clock)
         var watchOffs = 0
-        val hub = ContextHub(ts.backgroundScope, settings, registry, fusion = fusion ?: ContextFusion(FusionParams(watchTtlMs = 1_500_000)), clock = clock, stats = stats, log = { logs += it }, onWatchOff = { watchOffs++ })
+        val hub = ContextHub(ts.backgroundScope, settings, registry, fusion = fusion ?: ContextFusion(FusionParams(watchTtlMs = 1_500_000)), clock = clock, stats = stats, log = { logs += it }, onWatchOff = { watchOffs++ }, overrides = overrides)
         val msgs = ArrayList<MotionContextMessage?>()
         init { ts.backgroundScope.launch(UnconfinedTestDispatcher(ts.testScheduler)) { hub.message.collect { msgs += it } } }
         fun start() { hub.start(); ts.runCurrent() }
@@ -146,6 +146,30 @@ class ContextHubTest {
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.IN_VEHICLE, 0.9f)); f.adv(31_000)
         assertEquals(ContextState.VEHICLE_PASSENGER, f.hub.message.value!!.state)
         assertTrue(f.msgs.filterNotNull().none { it.state == ContextState.VEHICLE_DRIVING })
+    }
+
+    /** Two fresh 22 km/h readings 30 s apart: a vehicle only when "fast" is below 22 (default 25). */
+    private fun slowFast(f: Fx) { f.accept(Evidence.Speed(f.clock(), 22f, true)); f.adv(30_000); f.accept(Evidence.Speed(f.clock(), 22f, true)); f.adv(40_000) }
+
+    @Test fun withNoOverridesTwoReadingsAt22AreNotAVehicle() = runTest {
+        val f = Fx(this, overrides = kotlinx.coroutines.flow.MutableStateFlow(emptyMap())); f.reg("phone_speed"); f.on("phone_speed"); f.start()
+        slowFast(f)
+        assertTrue(f.msgs.filterNotNull().none { it.state == ContextState.VEHICLE_DRIVING || it.state == ContextState.VEHICLE_PASSENGER })
+    }
+
+    @Test fun aLoweredFastThresholdMakesTheSameReadingsAVehicleWithoutARestart() = runTest {
+        val o = kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, Double>())
+        val f = Fx(this, overrides = o); f.reg("phone_speed"); f.on("phone_speed"); f.start()
+        o.value = mapOf("fastKmh" to 20.0); f.ts.runCurrent()
+        slowFast(f)
+        assertTrue(f.msgs.filterNotNull().any { it.state == ContextState.VEHICLE_DRIVING || it.state == ContextState.VEHICLE_PASSENGER })
+        assertTrue(f.logs.any { it == "fusion settings applied" })
+    }
+
+    @Test fun overridesPresentAtConstructionApplyFromTheFirstEvaluation() = runTest {
+        val f = Fx(this, overrides = kotlinx.coroutines.flow.MutableStateFlow(mapOf("fastKmh" to 20.0))); f.reg("phone_speed"); f.on("phone_speed"); f.start()
+        slowFast(f)
+        assertTrue(f.msgs.filterNotNull().any { it.state == ContextState.VEHICLE_DRIVING || it.state == ContextState.VEHICLE_PASSENGER })
     }
 
     @Test fun aGlassesHintCarriesTheClassifierHashToTheStatus() = runTest {
