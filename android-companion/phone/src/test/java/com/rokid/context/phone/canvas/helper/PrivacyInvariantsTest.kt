@@ -132,11 +132,11 @@ class PrivacyInvariantsTest {
             "core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/FeatureLogger.kt" to "e4d202b05ce8299e4c7f16b4692ea624a18df20362e0db343c151f59b84e538f",
             "core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetector.kt" to "d58795770133290b97033497a523b1000b7ca26cc8e5b33eccc1836bbd1671f8",
             "core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceParams.kt" to "3ae12d265514e1675ba575f40858d3f171d9700c3d6e7a54aaa84f68d23f0360",
-            "core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt" to "8c1cc34e14eeaac3f048ef500195448a468aca6dac13ee8906bc6a1a924c744f",
+            "core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt" to "5e2a1c870b17d46afa1cdfcbfa5313443c53d851f055f0a8c18ad5f6c00acbef", // re-pinned deliberately 2026-10-27: v0.9.7 A configurable thresholds (defaults equal the old constants)
             "core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/SampleTap.kt" to "b7cdcb4987e0ac9cf2fddc099a247328938aadcfe07b955c61a61b3e2b1fed46",
             "glasses/src/main/java/com/rokid/context/glasses/capture/motion/MotionCsv.kt" to "6927d95c260e4f259fed96e33692b3ef29ff7128313da2cef999c03928c7fb3b",
-            "glasses/src/main/java/com/rokid/context/glasses/capture/motion/MotionHintSender.kt" to "3626ca71a1d974af896ea44d8f312f9c738151f4c3a03a68101bf6b4fba7dc52",
-            "glasses/src/main/java/com/rokid/context/glasses/capture/motion/SensorFeed.kt" to "c0cf4e89100e5e9d85b3966390b83512387954d4f988b15730ece8dcdb34d704", // re-pinned deliberately 2026-10-24: 3c X3 adds an optional `signals` sink and one plain write per second (ExprSignals.set), no sensor/timer/wakeup,
+            "glasses/src/main/java/com/rokid/context/glasses/capture/motion/MotionHintSender.kt" to "edcb74cc00fb1092fb562b53cb8927ae4788838c3ce46c7c58a4909a60d74d6f", // re-pinned deliberately 2026-10-27: v0.9.7 A configurable thresholds (defaults equal the old constants)
+            "glasses/src/main/java/com/rokid/context/glasses/capture/motion/SensorFeed.kt" to "eaf3d0fa1b2d5d7dd09e13b0041373b7a0f65f7836b5ca3e159a8271cbd4bda3", // re-pinned deliberately 2026-10-24: 3c X3 adds an optional `signals` sink and one plain write per second (ExprSignals.set), no sensor/timer/wakeup, // re-pinned deliberately 2026-10-27: v0.9.7 A configurable thresholds (defaults equal the old constants)
             "glasses/src/main/java/com/rokid/context/glasses/capture/motion/WearDetector.kt" to "eabc666457ddfcade389d168c32e0dd16ffd3de4e0632cb5a061702b9e7a8f3c",
             "glasses/src/main/java/com/rokid/context/glasses/capture/session/SensorRatePolicy.kt" to "bb43a2a91866b7c4b31a5c37ce6d7570e1ac6132c55b7255899487e61a2974b1",
         )
