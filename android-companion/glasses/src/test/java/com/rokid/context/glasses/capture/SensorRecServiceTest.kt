@@ -10,6 +10,7 @@ import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.glasses.GlassesRuntime
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -63,6 +64,23 @@ class SensorRecServiceTest {
         val after = service.sensorRecBuffered()
         motion.onGyro(0.2f, 0.1f, 0f, 5_000L)
         assertTrue("no sample after the session ended", service.sensorRecBuffered() <= after)
+    }
+
+    /** The pause is seen at the transition itself, not at the next 1 s beat: samples that arrive right after it are not recorded and what was buffered is dropped. */
+    @Test fun aPauseStopsTheRecordingAtOnceNotAtTheNextBeat() {
+        runtime.settingsCache.write(HudSettings(captureMode = CaptureMode.SMART, captureIntervalSec = 60, sensorRecHz = 25))
+        val service = startKeepAlive()
+        waitUntil("recording") { "sensor recording started" in logs() }
+        val motion = service.smartMotionForTest!!
+        repeat(100) { motion.onGyro(0.2f, 0.1f, 0f, it * 20L); motion.onLinearAccel(0.1f, 0f, 0f, it * 20L) }
+        assertTrue("recording before the pause", service.sensorRecBuffered() > 0)
+        kotlinx.coroutines.runBlocking { runtime.pauses.ensureLoaded(); runtime.pauses.toggle() }
+        idle(10)   // far less than the 1 s beat
+        assertEquals("the buffer was dropped at the transition", 0, service.sensorRecBuffered())
+        repeat(100) { motion.onGyro(0.2f, 0.1f, 0f, 5_000L + it * 20L); motion.onLinearAccel(0.1f, 0f, 0f, 5_000L + it * 20L) }
+        assertEquals("a sample after the pause is not recorded", 0, service.sensorRecBuffered())
+        Thread.sleep(300) // the writer thread would have the batch by now
+        assertTrue("nothing recorded before the pause was written to disk", runtime.traceRecorder.sensorStore.dir.listFiles().isNullOrEmpty())
     }
 
     @Test fun offByDefaultNeverStarts() {

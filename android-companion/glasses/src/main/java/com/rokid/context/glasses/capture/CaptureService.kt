@@ -69,6 +69,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ExecutorService
@@ -145,6 +146,8 @@ class CaptureService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         runCatching { registerReceiver(screenOnReceiver, IntentFilter(Intent.ACTION_SCREEN_ON)) }
+        runCatching { registerReceiver(sensorRecPowerReceiver, IntentFilter().apply { addAction(Intent.ACTION_BATTERY_CHANGED); addAction(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED) }) }
+        watchSensorRecStates()
         lastUpBytes = runtime.uplink.bytesSent; lastUpAt = SystemClock.elapsedRealtime() // the first heartbeat must not count pre-restart bytes
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(CHANNEL_ID, "Capture", NotificationManager.IMPORTANCE_LOW))
@@ -153,6 +156,7 @@ class CaptureService : LifecycleService() {
     override fun onDestroy() {
         if (liveInstance === this) liveInstance = null
         runCatching { unregisterReceiver(screenOnReceiver) }
+        runCatching { unregisterReceiver(sensorRecPowerReceiver) }
         stopSmart("destroyed")
         stopSensorRecording()
         cameraExecutor.shutdown()
@@ -248,22 +252,43 @@ class CaptureService : LifecycleService() {
     // ---- developer sensor recording (v0.9.7 B): a read-only tap on the samples the classifier's own feed delivers; no sensor registration, no rate change, nothing read back by the classifier ----
     private var sensorRecorder: com.rokid.context.glasses.capture.trace.SensorRecorder? = null
 
-    /** Once a second: the phone's rate (0 = off) filtered by the pause, park, heat and battery policy and by every state where the sensor rate policy lowers sampling ([com.rokid.context.glasses.capture.trace.SensorRecPolicy]). */
+    /**
+     * Recomputes the recording: [com.rokid.context.glasses.capture.trace.SensorRecPolicy] over the phone's rate and every blocker (pause, park, heat, battery, saver, the rate policy's lowered states). It runs on the
+     * supervisor's beat AND at once on every transition of those states ([watchSensorRecStates], the power receiver), so the per-sample eligibility flag the tap reads is never a beat stale. Not eligible = the
+     * buffered samples are DROPPED; the user turning the rate off (still eligible) writes them.
+     */
     private fun applySensorRecording() {
         val tr = runtime.traceRecorderOrNull ?: return
         val sm = smart
-        val rate = com.rokid.context.glasses.capture.trace.SensorRecPolicy.rateFor(
-            runtime.settingsCache.readNormalized().sensorRecHz, sessionRunning = sm != null, captureAllowed = runtime.pauses.captureAllowed(), parked = runtime.wear.parked.value,
+        val setting = runtime.settingsCache.readNormalized().sensorRecHz
+        val allowedNow = com.rokid.context.glasses.capture.trace.SensorRecPolicy.rateFor(
+            com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ.first(), sessionRunning = sm != null, captureAllowed = runtime.pauses.captureAllowed(), parked = runtime.wear.parked.value,
             heatStop = heat.level.value == HeatLevel.STOP, lowBattery = FrameGuard.lowBattery(batteryPercent(), isCharging()), batterySaver = isBatterySaverOn(),
             sessionReason = runtime.captureStatus.value.reason?.toString(),
-        )
-        if (rate == 0 && sensorRecorder == null) return
-        val rec = sensorRecorder ?: com.rokid.context.glasses.capture.trace.SensorRecorder(
-            tr.sensorStore, SystemClock::elapsedRealtime, System::currentTimeMillis, io = { r -> runtime.traceWriterExecute(r) }, log = { DiagLog.i(TAG, it) },
+        ) > 0
+        val rate = if (allowedNow) com.rokid.context.glasses.capture.trace.SensorRecPolicy.rateFor(setting, true, true, false, false, false, false) else 0
+        val rec = sensorRecorder
+        if (rec == null && rate == 0) return
+        val r = rec ?: com.rokid.context.glasses.capture.trace.SensorRecorder(
+            tr.sensorStore, SystemClock::elapsedRealtime, System::currentTimeMillis, io = { w -> runtime.traceWriterExecute(w) }, log = { DiagLog.i(TAG, it) },
         ).also { sensorRecorder = it; tr.onCleanupQueued = it::discard }
-        sm?.motion?.addTap(rec) // idempotent; the recorder ignores samples while its rate is 0
-        rec.configure(rate)
-        rec.poll()
+        sm?.motion?.addTap(r) // idempotent; the tap ignores samples while not eligible or at rate 0
+        r.setEligible(allowedNow)
+        r.configure(rate)
+        r.poll()
+    }
+
+    /** Re-evaluates the recording the moment a blocker changes (not on the 1 s beat). */
+    private fun watchSensorRecStates() {
+        scope.launch {
+            kotlinx.coroutines.flow.merge(
+                runtime.captureStatus.map { }, runtime.wear.parked.map { }, heat.level.map { }, runtime.pauses.records.map { },
+            ).collect { try { applySensorRecording() } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "sensor recording update failed: ${e.javaClass.simpleName}") } }
+        }
+    }
+
+    private val sensorRecPowerReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { runCatching { applySensorRecording() } }
     }
 
     /** Test seams: the running session's classifier and what the recording tap holds. */
