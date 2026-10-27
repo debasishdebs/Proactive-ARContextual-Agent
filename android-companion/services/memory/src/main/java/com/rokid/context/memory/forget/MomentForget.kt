@@ -189,7 +189,7 @@ class MomentForget(
             spans.forEach { dropped += md.dropBetween(it.first, it.last) }
             if (byKey && cascade.invalidated.isNotEmpty()) { // derived facts elsewhere were hidden (not deleted): the Moments that hold them survive, lose their text copy and rebuild; their derived fields are hidden
                 val remote = cascade.invalidated.toList().chunked(CHUNK).flatMap { md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }.distinct() - dropped
-                if (remote.isNotEmpty()) md.blankText(remote)
+                remote.chunked(CHUNK).forEach { md.blankText(it) } // chunked: more than SQLite's bind limit of Moments may hold one hidden fact
                 s3.staleMomentsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), cascade.invalidated, step = "forget")
             }
             if (byKey) { // Forget scope MOMENT / SCENE: whole Scenes go, and the run rows of every Moment and Scene that went are deleted by their own key too (lineage tokens alone miss e.g. a sensor-only summary)
