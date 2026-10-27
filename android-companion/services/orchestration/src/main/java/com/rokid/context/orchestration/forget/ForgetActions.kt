@@ -7,7 +7,11 @@ import com.rokid.context.connectors.actions.ProposalNotifications
 import com.rokid.context.connectors.actions.executors.ReminderExecutor
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.MemoryMaintenance
+import com.rokid.context.memory.forget.ForgetScope
+import com.rokid.context.memory.forget.ForgetScopeSetting
 import com.rokid.context.memory.forget.ForgetService
+import com.rokid.context.memory.forget.ForgetTarget
+import com.rokid.context.memory.forget.ScopedForget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -46,6 +50,26 @@ object ForgetActions {
 
     suspend fun forgetMomentOutcome(context: Context, frameId: String, onForgotten: () -> Unit = {}): Outcome =
         run(context, onForgotten) { it.forgetMoment(frameId) }
+
+    /**
+     * The granular Forget with the user's SCOPE (Photo | Moment | Scene, [ForgetScopeSetting]): memory detail's Forget fact and Forget photo, and any Moment or Scene entry, go through here. Same gate, same typed
+     * outcomes, same post-commit cleanup as every Forget (cached export, reminders, notifications, outbox, queue scrub, listeners); MOMENT and SCENE run the range-Forget code ([com.rokid.context.memory.forget.ScopedForget]).
+     * The scope is read ONCE here ([scope] defaults to the setting) so the dialog's counts and the delete name the same scope.
+     */
+    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), onForgotten: () -> Unit = {}): Outcome =
+        run(context, onForgotten) { svc ->
+            val engine = ScopedForget(MemoryGraph.get(context).db, svc)
+            engine.forget(engine.plan(target, scope)).cascade
+        }
+
+    /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
+    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenes: Int)
+    suspend fun previewScoped(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): ScopedPreview = withContext(Dispatchers.IO) {
+        val graph = MemoryGraph.get(context)
+        val engine = ScopedForget(graph.db, ForgetService(graph.db, graph.proposals))
+        val plan = engine.plan(target, scope); val c = engine.preview(plan)
+        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenes)
+    }
 
     /**
      * Set once by the phone at start-up (the hub refresh). Background passes (retention) call it after removing data,
