@@ -34,6 +34,7 @@ class ContextApp : Application() {
         // v0.9.7 A: the canvas compiler and try-it read the disabled signals and derived definitions from Settings (new compiles only; a published plan is already expanded).
         val signalConfig = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).config
         com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { signalConfig.value }
+        com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).history }
         // The photo Forget radius follows Settings > Capture > Forget (default 10 s); the Forget path reads it once per Forget through ForgetRadius.ms().
         val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this)
         com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }

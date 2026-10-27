@@ -267,6 +267,48 @@ class CapturePlanActionsTest {
         assertNull("no stored plan has this hash", c.forHash("deadbeef"))
     }
 
+    private fun guardedPipeline(name: String, graph: String): com.rokid.context.ai.canvas.Pipeline {
+        val base = PlanTestFixtures.captureHalf(name)
+        val guard = com.rokid.context.ai.canvas.PipelineNode("gd", com.rokid.context.ai.canvas.NodeTypes.EXPR_GUARD, "gd", kotlinx.serialization.json.buildJsonObject { put("graph", kotlinx.serialization.json.Json.parseToJsonElement(graph)) })
+        return base.copy(
+            nodes = base.nodes + guard,
+            edges = base.edges.filterNot { it.from == "head" && it.to == "thresh" } + com.rokid.context.ai.canvas.PipelineEdge("head", "gd") + com.rokid.context.ai.canvas.PipelineEdge("gd", "thresh"),
+        )
+    }
+
+    @Test fun aFrozenVersionStaysReplayableAfterItsDerivedSignalIsEditedOrDeleted() = runBlocking {
+        val def = kotlinx.serialization.json.Json.parseToJsonElement("""{"steps":[{"name":"s","inputs":[{"name":"x","sig":"gyroMax"}],"nodes":[{"id":"k","op":"const","value":1.5},{"id":"c","op":"cmp","f":">"}],"wires":[["x","c.a"],["k","c.b"]],"out":"c"}],"out":"s"}""") as kotlinx.serialization.json.JsonObject
+        val a = com.rokid.context.ai.canvas.plan.SignalConfig(derived = listOf(com.rokid.context.ai.canvas.plan.DerivedSignal("fast", def)))
+        val p0 = guardedPipeline("Dv", """{"steps":[{"name":"g","inputs":[{"name":"w","sig":"d_fast"}],"nodes":[{"id":"n","op":"not"}],"wires":[["w","n.a"]],"out":"n"}],"out":"g"}""")
+        val hash = try {
+            val p = p0
+            com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { a }
+            assertEquals("the editor validates a derived reference like the compile", emptyList<String>(), com.rokid.context.ai.canvas.PipelineValidator.validate(p))
+            com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { a }   // frozen while the definition exists
+            h.frozen(p, ran = false)
+            com.rokid.context.ai.canvas.plan.PlanCompiler.compile(p, signals = a).plan!!.configHash
+        } finally { com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.ai.canvas.plan.SignalConfig() } }
+        try {
+            // the definition is deleted afterwards: the current configuration is empty, the history still holds it
+            com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.ai.canvas.plan.SignalConfig() }
+            com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { listOf(a) }
+            assertEquals(hash, ReplayCandidates(h.canvas).forHash(hash)!!.configHash)
+            com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { emptyList() }
+            assertNull("with no record of the definition the hash cannot be rebuilt", ReplayCandidates(h.canvas).forHash(hash))
+        } finally { com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.ai.canvas.plan.SignalConfig() }; com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { emptyList() } }
+    }
+
+    @Test fun aFrozenVersionStaysReplayableAfterASignalIsSwitchedOff() = runBlocking {
+        val p = guardedPipeline("Sw", """{"steps":[{"name":"g","inputs":[{"name":"x","sig":"gyroMax"}],"nodes":[{"id":"k","op":"const","value":1.5},{"id":"c","op":"cmp","f":">"}],"wires":[["x","c.a"],["k","c.b"]],"out":"c"}],"out":"g"}""")
+        h.frozen(p, ran = false)
+        val r = com.rokid.context.ai.canvas.plan.PlanCompiler.compile(p)
+        val hash = r.plan?.configHash ?: error("compile: ${r.problems}")
+        try {
+            com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.ai.canvas.plan.SignalConfig(disabled = setOf("gyroMax")) }
+            assertEquals(hash, ReplayCandidates(h.canvas).forHash(hash)!!.configHash)
+        } finally { com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.ai.canvas.plan.SignalConfig() } }
+    }
+
     @Test fun aWindowPlanKeepsItsReplayCandidateAfterTheGlobalToleranceChanges() = runBlocking {
         val calm = """{"steps":[{"name":"calm","inputs":[],"nodes":[{"id":"w","op":"win","name":"stepHz","agg":"mean","sec":10},{"id":"k","op":"const","value":1.2},{"id":"c","op":"cmp","f":"<"}],"wires":[["w","c.a"],["k","c.b"]],"out":"c"}],"out":"calm"}"""
         val base = PlanTestFixtures.captureHalf("Win")

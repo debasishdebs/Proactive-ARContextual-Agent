@@ -37,7 +37,29 @@ class SignalConfigStore(private val prefs: SharedPreferences? = null) {
         return SignalConfig(disabled, kept)
     }
 
+    /** Configurations with derived signals the user has had, newest first (at most [MAX_HISTORY]); a frozen version is replayed against the one it was frozen under. */
+    private val past = MutableStateFlow(loadHistory())
+    val history: List<SignalConfig> get() = past.value
+
+    private fun loadHistory(): List<SignalConfig> = runCatching {
+        (Json.parseToJsonElement(prefs?.getString(HISTORY, null) ?: "[]") as JsonArray).mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null
+            val disabled = (o["disabled"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }?.toSet() ?: emptySet()
+            val derived = (o["derived"] as? JsonObject)?.mapNotNull { (n, g) -> (g as? JsonObject)?.let { DerivedSignal(n, it) } } ?: emptyList()
+            SignalConfig(disabled, derived).takeIf { it.derived.isNotEmpty() }
+        }
+    }.getOrDefault(emptyList())
+
+    private fun remember(c: SignalConfig) {
+        if (c.derived.isEmpty()) return
+        val next = (listOf(c) + past.value).distinct().take(MAX_HISTORY)
+        past.value = next
+        prefs?.edit()?.putString(HISTORY, JsonArray(next.map { h -> JsonObject(mapOf("disabled" to JsonArray(h.disabled.sorted().map { JsonPrimitive(it) }), "derived" to JsonObject(h.derived.associate { it.name to it.graph }))) }).toString())?.apply()
+    }
+
     private fun persist(c: SignalConfig) {
+        remember(state.value)
+        remember(c)
         prefs?.edit()?.putString(DISABLED, JsonArray(c.disabled.sorted().map { JsonPrimitive(it) }).toString())
             ?.putString(DERIVED, JsonObject(c.derived.associate { it.name to it.graph }).toString())?.apply()
         state.value = c
@@ -75,6 +97,8 @@ class SignalConfigStore(private val prefs: SharedPreferences? = null) {
         const val PREFS = "signal_config"
         private const val DISABLED = "disabled"
         private const val DERIVED = "derived"
+        private const val HISTORY = "history"
+        const val MAX_HISTORY = 16
         private const val TAG = "SignalConfig"
 
         @Volatile private var instance: SignalConfigStore? = null
