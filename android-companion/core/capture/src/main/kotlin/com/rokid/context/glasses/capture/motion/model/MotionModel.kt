@@ -1,6 +1,7 @@
 package com.rokid.context.glasses.capture.motion.model
 
 import com.rokid.context.core.model.MotionState
+import com.rokid.context.core.model.signals.ClassifierThresholds
 import com.rokid.context.glasses.capture.motion.GlanceParams
 
 /** One second of IMU features, in the order the trained tree's feature indices refer to. */
@@ -19,11 +20,15 @@ interface MotionModel {
 
 class HeuristicMotionModel(private val p: GlanceParams = GlanceParams()) : MotionModel {
     override val id = "heuristic-v1"
-    override fun classify(f: SecondFeatures): MotionState = when {
-        f.accVar > 0.25f && f.stepHz in 1.2f..2.8f -> MotionState.WALKING
-        f.aboveOnFrac >= 0.3f && f.rotRad >= p.minBoutRad -> MotionState.HEAD_MOVING
+
+    /** v0.9.7 A: the editable cut-offs (defaults = the numbers this model shipped with). */
+    @Volatile var thresholds: ClassifierThresholds = ClassifierThresholds.DEFAULT
+
+    override fun classify(f: SecondFeatures): MotionState = thresholds.let { t -> when {
+        f.accVar > t.heurAccVar && f.stepHz in t.heurMinHz..t.heurMaxHz -> MotionState.WALKING
+        f.aboveOnFrac >= t.heurAboveOnFrac && f.rotRad >= p.minBoutRad -> MotionState.HEAD_MOVING
         else -> MotionState.STILL
-    }
+    } }
 }
 
 /**
