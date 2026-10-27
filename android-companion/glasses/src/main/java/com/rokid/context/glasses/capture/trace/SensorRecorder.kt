@@ -1,11 +1,14 @@
 package com.rokid.context.glasses.capture.trace
 
 import com.rokid.context.capture.trace.TraceEvent
+import com.rokid.context.core.model.MotionState
+import com.rokid.context.glasses.capture.motion.SampleTap
 
 /**
- * Buffers raw glasses sensor samples (gyro, linear acceleration) at a developer-chosen rate and writes them in BATCHES through [SensorRecStore] (v0.9.7 B). It is fed by its OWN
- * sensor registration ([SensorRecFeed]); it holds no reference to, and reads nothing from, the motion classifier, the capture session or the rate policy, and nothing it records is read by them.
- * Samples are down-sampled in software to the chosen rate, the buffer is bounded ([maxBuffered]; overflow is counted, not kept), a batch goes out every [flushEvery] samples or [flushMs]
+ * Buffers raw glasses sensor samples (gyro, linear acceleration) at a developer-chosen rate and writes them in BATCHES through [SensorRecStore] (v0.9.7 B). It owns NO sensor registration:
+ * it is a read-only [SampleTap] on the samples the classifier's existing `SensorFeed` already delivers (the same tap mechanism the trace recorder uses), so the requested sensor rates and the
+ * rate policy are untouched and it can never see more than the policy delivers. It holds no reference to the classifier and nothing it records is read by it or by the capture session.
+ * Samples are down-sampled in software to the chosen rate (the effective rate is therefore min(chosen, delivered)), the buffer is bounded ([maxBuffered]; overflow is counted, not kept), a batch goes out every [flushEvery] samples or [flushMs]
  * (on [poll], the supervisor's 1 s beat) and at a stop. Writes run on [io] (the trace writer thread). Logs name events only.
  */
 class SensorRecorder internal constructor(
@@ -17,7 +20,7 @@ class SensorRecorder internal constructor(
     private val flushEvery: Int = 2_000,
     private val maxBuffered: Int = 6_000,
     private val flushMs: Long = 60_000,
-) {
+) : SampleTap {
     private val lock = Any()
     private var hz = 0
     private var buf = ArrayList<TraceEvent>()
@@ -47,6 +50,9 @@ class SensorRecorder internal constructor(
 
     fun onGyro(x: Float, y: Float, z: Float, sMs: Long) = add(true, x, y, z, sMs)
     fun onAccel(x: Float, y: Float, z: Float, sMs: Long) = add(false, x, y, z, sMs)
+    // the classifier's tap: [tMs] is the sensor time in ms; the motion state and the gyro time are the classifier's business and ignored
+    override fun onGyro(x: Float, y: Float, z: Float, tMs: Long, state: MotionState) = add(true, x, y, z, tMs)
+    override fun onAccel(x: Float, y: Float, z: Float, tMs: Long, gyroNewestMs: Long, state: MotionState) = add(false, x, y, z, tMs)
 
     private fun add(gyro: Boolean, x: Float, y: Float, z: Float, sMs: Long) {
         var flush: Batch? = null

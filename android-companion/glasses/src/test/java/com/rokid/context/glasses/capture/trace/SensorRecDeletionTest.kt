@@ -51,13 +51,16 @@ class SensorRecDeletionTest {
     @Test fun theRecordingCodeNeverNamesTheClassifierTheSessionOrTheRatePolicy() {
         val dir = File("src/main/java/com/rokid/context/glasses/capture/trace")
         val forbidden = Regex("MotionClassifier|AndroidSensorFeed|SensorFeed\\b|SensorRate|RatePolicy|CaptureSession|KeyframeGate|MotionModel|WearDetector")
-        for (f in listOf("SensorRecorder.kt", "SensorRecFeed.kt", "SensorRecStore.kt", "SensorRecPolicy.kt")) {
+        for (f in listOf("SensorRecorder.kt", "SensorRecStore.kt", "SensorRecPolicy.kt")) {
             val text = File(dir, f).readText().lines().filter { !it.trimStart().startsWith("*") && !it.trimStart().startsWith("/*") && !it.trimStart().startsWith("//") }.joinToString("\n")
-            assertFalse(forbidden.containsMatchIn(text), "$f must not touch the classifier path: ${forbidden.find(text)?.value}")
+            // the policy may only READ the rate policy's reason set; it never calls it
+            val allowed = if (f == "SensorRecPolicy.kt") text.replace("SensorRatePolicy.LOW_REASONS", "").replace("import com.rokid.context.glasses.capture.session.SensorRatePolicy", "") else text
+            assertFalse(forbidden.containsMatchIn(allowed), "$f must not touch the classifier path: ${forbidden.find(allowed)?.value}")
         }
         // the classifier's own feed is not changed to know about the recording
         val sensorFeed = File("src/main/java/com/rokid/context/glasses/capture/motion/SensorFeed.kt").readText()
         assertFalse(sensorFeed.contains("SensorRec") || sensorFeed.contains("sensorRec"))
+        assertFalse(File("src/main/java/com/rokid/context/glasses/capture/trace").listFiles()!!.filter { it.name.startsWith("SensorRec") }.any { it.readText().contains("registerListener") || it.readText().contains(".register(") }, "no second sensor registration of its own")
     }
 
     @Test fun theBatchFolderSitsUnderTheBackupExcludedImuRoot() {

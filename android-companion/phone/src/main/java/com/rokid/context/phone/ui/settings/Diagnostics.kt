@@ -321,7 +321,7 @@ fun DiagnosticsScreen(
 /** The copy of the developer sensor-recording row (v0.9.7 B). */
 object SensorRecCopy {
     /** Shown while a rate is chosen: what is recorded, where it goes, and the cost. */
-    fun warning(hz: Int) = "records sensor data at $hz Hz and saves it in batches on the glasses (not sent to the phone yet; a developer pull reads it). Uses more battery."
+    fun warning(hz: Int) = "records sensor data at $hz Hz at most (never faster than the glasses already sample, and nothing while they save battery, rest or are paused) and saves it in batches on the glasses (not sent to the phone yet; a developer pull reads it). Uses more battery."
 }
 
 /** The count-only text lines of the Keyframes block. */

@@ -52,6 +52,19 @@ class SensorRecServiceTest {
         assertTrue(runtime.smartCapture.value)
     }
 
+    @Test fun theRecordingIsATapOnTheRunningClassifierAndIsRemovedWithTheSession() {
+        runtime.settingsCache.write(HudSettings(captureMode = CaptureMode.SMART, captureIntervalSec = 60, sensorRecHz = 25))
+        val service = startKeepAlive()
+        waitUntil("recording") { "sensor recording started" in logs() }
+        val motion = service.smartMotionForTest!!
+        repeat(100) { motion.onGyro(0.2f, 0.1f, 0f, it * 20L); motion.onLinearAccel(0.1f, 0f, 0f, it * 20L) }
+        assertTrue("the classifier's samples reach the recording", service.sensorRecBuffered() > 0)
+        service.endKeepAlive()
+        val after = service.sensorRecBuffered()
+        motion.onGyro(0.2f, 0.1f, 0f, 5_000L)
+        assertTrue("no sample after the session ended", service.sensorRecBuffered() <= after)
+    }
+
     @Test fun offByDefaultNeverStarts() {
         runtime.settingsCache.write(HudSettings(captureMode = CaptureMode.SMART, captureIntervalSec = 60))
         startKeepAlive()
