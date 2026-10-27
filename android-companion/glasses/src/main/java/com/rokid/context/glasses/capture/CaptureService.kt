@@ -32,6 +32,7 @@ import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.plan.AutoRevert
 import com.rokid.context.glasses.capture.plan.GlanceGuard
 import com.rokid.context.glasses.capture.trace.TraceInfo
+import com.rokid.context.glasses.capture.trace.appliedTraceInfo
 import com.rokid.context.glasses.capture.trace.TraceSettingsHash
 import com.rokid.context.glasses.capture.plan.ShadowCounts
 import com.rokid.context.glasses.capture.plan.ShadowRunner
@@ -281,7 +282,7 @@ class CaptureService : LifecycleService() {
             appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it, plan.runningId()) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
             trace = runtime.traceRecorder, traceBoundary = runtime.traceBoundary,
-            traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value, runtime.settingsCache.readNormalized().classifier) },
+            traceInfo = { val k = plan.traceKey(); appliedTraceInfo(runtime.settingsCache.readNormalized(), motion.thresholds, k.gen, k.configHash, k.mode, budget.tier.value) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
             glanceKeep = guard::keep,
         )

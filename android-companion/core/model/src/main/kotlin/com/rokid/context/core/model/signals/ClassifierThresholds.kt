@@ -13,6 +13,15 @@ data class ClassifierThresholds(
     val relaxedVariance: Float = 0.25f, val relaxedMinHz: Double = 1.2, val relaxedMaxHz: Double = 2.8, val relaxedHoldMs: Long = 2_000L,
     val heurAccVar: Float = 0.25f, val heurMinHz: Float = 1.2f, val heurMaxHz: Float = 2.8f, val heurAboveOnFrac: Float = 0.3f,
 ) {
+    /** The canonical override map of what this instance holds (only non-default entries): what a classifier actually runs, in the form the wire and the trace use. */
+    fun toOverrides(): Map<String, Double> = clean(
+        mapOf(
+            "headMovingRadS" to headMovingRadS.toDouble(), "walkVariance" to walkVariance.toDouble(), "walkMinHz" to walkMinHz, "walkMaxHz" to walkMaxHz,
+            "relaxedVariance" to relaxedVariance.toDouble(), "relaxedMinHz" to relaxedMinHz, "relaxedMaxHz" to relaxedMaxHz, "relaxedHoldMs" to relaxedHoldMs.toDouble(),
+            "heurAccVar" to heurAccVar.toDouble(), "heurMinHz" to heurMinHz.toDouble(), "heurMaxHz" to heurMaxHz.toDouble(), "heurAboveOnFrac" to heurAboveOnFrac.toDouble(),
+        ),
+    )
+
     companion object {
         val DEFAULT = ClassifierThresholds()
 

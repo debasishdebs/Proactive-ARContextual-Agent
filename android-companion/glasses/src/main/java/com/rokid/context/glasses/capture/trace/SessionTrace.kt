@@ -26,6 +26,18 @@ data class TraceInfo(
     fun samePlan(o: TraceInfo) = planGen == o.planGen && planHash == o.planHash && planMode == o.planMode
 }
 
+/**
+ * The trace info of a session: the settings hash and the recorded thresholds follow the classifier's APPLIED thresholds ([applied], read from the classifier itself), never the settings cache,
+ * so a trace never records thresholds the classifier does not run yet, and applying new ones changes the info (the recorder then closes the segment with `settings`).
+ */
+fun appliedTraceInfo(
+    settings: com.rokid.context.core.model.HudSettings, applied: com.rokid.context.core.model.signals.ClassifierThresholds,
+    planGen: Long, planHash: String?, planMode: PlanMode, tier: BudgetTier,
+): TraceInfo {
+    val overrides = applied.toOverrides()
+    return TraceInfo(TraceSettingsHash.of(settings.copy(classifier = overrides)), planGen, planHash, planMode, tier, overrides)
+}
+
 /** The effective capture profile and the inputs `onDwell`/`flushWindow` need, as the session decides with them (the `pf` event). */
 data class TraceProfile(
     val wake: CameraWake, val settledMs: Long, val quietMs: Long, val walkMs: Long?, val stillCapMs: Long, val analysisMs: Long,
