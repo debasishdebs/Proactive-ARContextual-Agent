@@ -28,6 +28,7 @@ import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.SwitchRow
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,7 +56,9 @@ data class SignalSettingsUi(
  */
 data class DerivedEditorUi(val open: Boolean = false, val name: String = "", val text: String = "", val editing: Boolean = false, val problem: String? = null, val canSave: Boolean = false,
     /** The check of the latest text is still pending (debounced, off the main thread): Save stays disabled. */
-    val checking: Boolean = false)
+    val checking: Boolean = false,
+    /** Bumped by every edit/open/close; a check result lands only on the state it was made for (one atomic update). */
+    val version: Int = 0)
 
 /** The editor's callbacks, bundled for the screen. */
 class DerivedEditorActions(val onNew: () -> Unit = {}, val onEdit: (String) -> Unit = {}, val onName: (String) -> Unit = {}, val onText: (String) -> Unit = {}, val onSave: () -> Unit = {}, val onClose: () -> Unit = {})
@@ -96,17 +99,16 @@ class SignalSettingsViewModel(
     val editor: StateFlow<DerivedEditorUi> = editorState
     private val editorScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + editorDispatcher)
     private class Req(val name: String, val text: String, val editing: Boolean, val version: Int)
-    private val requests = kotlinx.coroutines.flow.MutableSharedFlow<Req>(extraBufferCapacity = 64, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    private val requests = kotlinx.coroutines.flow.MutableSharedFlow<Req>(replay = 1, extraBufferCapacity = 64, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
     init {
         // typing is debounced (Flow.debounce: a pause of editorDebounceMs) and only the newest request is checked, off the main thread
         editorScope.launch {
             requests.let { if (editorDebounceMs > 0) it.debounce(editorDebounceMs) else it }.collectLatest { r ->
                 val out = check(true, r.name, r.text, r.editing)
-                if (latest.get() == r.version) editorState.value = out
+                editorState.update { if (it.open && it.version == r.version) out.copy(version = it.version) else it }
             }
         }
     }
-    private val latest = java.util.concurrent.atomic.AtomicInteger()
     /** Test seams: how many checks ran and the thread of the last one. */
     internal val checks = java.util.concurrent.atomic.AtomicInteger()
     @Volatile internal var lastCheckThread: String? = null
@@ -126,30 +128,34 @@ class SignalSettingsViewModel(
     }
 
     /** The text is shown at once; its check runs after a pause in typing, off the main thread, and only the newest one lands. */
-    private fun edit(name: String = editorState.value.name, text: String = editorState.value.text) {
-        val editing = editorState.value.editing
-        val v = latest.incrementAndGet()
-        editorState.value = DerivedEditorUi(true, name, text, editing, null, false, checking = !(name.isBlank() && text.isBlank()))
-        requests.tryEmit(Req(name, text, editing, v))
+    private fun edit(name: String? = null, text: String? = null) {
+        var req: Req? = null
+        editorState.update { cur ->
+            val n = name ?: cur.name; val t = text ?: cur.text
+            val v = cur.version + 1
+            req = Req(n, t, cur.editing, v)
+            DerivedEditorUi(true, n, t, cur.editing, null, false, checking = !(n.isBlank() && t.isBlank()), version = v)
+        }
+        requests.tryEmit(req!!)
     }
-    fun newDerived() { latest.incrementAndGet(); editorState.value = DerivedEditorUi(open = true) }
+    fun newDerived() { editorState.update { DerivedEditorUi(open = true, version = it.version + 1) } }
     fun editDerived(name: String) {
         val d = store.config.value.derived.firstOrNull { it.name == name } ?: return
-        val v = latest.incrementAndGet()
-        editorState.value = DerivedEditorUi(true, d.name, d.graph.toString(), true, null, false, checking = true)
-        requests.tryEmit(Req(d.name, d.graph.toString(), true, v))
+        var req: Req? = null
+        editorState.update { cur -> val v = cur.version + 1; req = Req(d.name, d.graph.toString(), true, v); DerivedEditorUi(true, d.name, d.graph.toString(), true, null, false, checking = true, version = v) }
+        requests.tryEmit(req!!)
     }
     fun setEditorName(name: String) = edit(name = name)
     fun setEditorText(text: String) = edit(text = text)
-    fun closeEditor() { latest.incrementAndGet(); editorState.value = DerivedEditorUi() }
+    fun closeEditor() { editorState.update { DerivedEditorUi(version = it.version + 1) } }
     /** Saves through [SignalConfigStore.saveDerived] (validated and size-checked again there; the 16-entry history and the logging are its), off the main thread. Closes the editor on success. */
     fun saveEditor() {
         val e = editorState.value
         if (!e.canSave) return
-        val v = latest.incrementAndGet()
         editorScope.launch {
             val problems = store.saveDerived(e.name, runCatching { kotlinx.serialization.json.Json.parseToJsonElement(e.text) }.getOrNull())
-            if (latest.get() == v) { if (problems.isEmpty()) closeEditor() else editorState.value = e.copy(problem = problems.first(), canSave = false) }
+            // the result lands only on the editor it was made for: typed over or closed meanwhile = left alone
+            editorState.update { if (!it.open || it.version != e.version) it else if (problems.isEmpty()) DerivedEditorUi(version = it.version + 1) else it.copy(problem = problems.first(), canSave = false) }
         }
     }
     fun editorActions() = DerivedEditorActions(::newDerived, ::editDerived, ::setEditorName, ::setEditorText, ::saveEditor, ::closeEditor)
