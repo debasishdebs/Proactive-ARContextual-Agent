@@ -117,7 +117,10 @@ abstract class MomentDao : DerivedStaleDao() {
     @Query("SELECT frameId, wireFrameId FROM frame_meta WHERE frameId IN (:frameIds) AND wireFrameId IS NOT NULL") abstract suspend fun wireIds(frameIds: List<String>): List<WireIdRow>
     @Query("SELECT path FROM frame WHERE id IN (:frameIds) AND path != ''") abstract suspend fun framePaths(frameIds: List<String>): List<String>
     @Query("SELECT labelId FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs ORDER BY labelId") abstract suspend fun labelIdsBetween(fromMs: Long, toMs: Long): List<String>
-    @Query("DELETE FROM canvas_label WHERE labelId IN (:ids)") abstract suspend fun deleteLabels(ids: List<String>)
+    @Query("DELETE FROM canvas_label WHERE labelId IN (:ids)") protected abstract suspend fun deleteLabelRows(ids: List<String>)
+    @Query("DELETE FROM canvas_meta WHERE `key` IN (:keys)") protected abstract suspend fun deleteMetaKeys(keys: List<String>)
+    /** Deletes marks (callers chunk at 500) together with their durable photo-pause claims (`canvas_meta mark_claim:<labelId>`), so no claim outlives its mark. */
+    @Transaction open suspend fun deleteLabels(ids: List<String>) { deleteLabelRows(ids); deleteMetaKeys(ids.map { "mark_claim:$it" }) }
     @Query("SELECT labelId FROM canvas_label WHERE labelId IN (:ids)") abstract suspend fun labelIdsAmong(ids: List<String>): List<String>
     /** Those of [ids] that are LIVE photos with a capture time: the frame row exists, it is not tombstoned and `frame_meta.capturedAtMs` is set (the two required parts of a valid Moment). */
     @Query("SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id WHERE f.id IN (:ids) AND m.capturedAtMs IS NOT NULL AND f.id NOT IN (SELECT frameId FROM forget_tombstone)")

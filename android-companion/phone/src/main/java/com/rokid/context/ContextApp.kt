@@ -32,6 +32,7 @@ class ContextApp : Application() {
         val windowTolerance = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this).pct
         com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { windowTolerance.value }
         // v0.9.7 A: the canvas compiler and try-it read the disabled signals and derived definitions from Settings (new compiles only; a published plan is already expanded).
+        com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.ui.settings.capture.SignalConfigStore.wipeListener(this)) // Delete all removes the user's signal configuration
         val signalConfig = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).config
         com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { signalConfig.value }
         com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).history }

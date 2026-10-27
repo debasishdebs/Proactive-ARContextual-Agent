@@ -3,6 +3,7 @@ package com.rokid.context.phone.ui.settings.capture
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.ai.canvas.plan.SignalConfig
 import com.rokid.context.ai.canvas.plan.SignalConfigs
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -22,6 +23,26 @@ class SignalConfigStoreTest {
 
     private val walky = Json.parseToJsonElement("""{"steps":[{"name":"s","inputs":[{"name":"k","const":1.2}],"nodes":[{"id":"w","op":"win","agg":"mean","sec":10,"name":"stepHz"},{"id":"c","op":"cmp","f":">"}],"wires":[["w","c.a"],["k","c.b"]],"out":"c"}],"out":"s"}""") as JsonObject
     private fun prefs(name: String) = ApplicationProvider.getApplicationContext<Application>().getSharedPreferences(name, 0).also { it.edit().clear().commit() }
+
+    @Test fun deleteAllWipesTheConfigurationItsHistoryAndThePrefsButAFreshStoreStillWorks() {
+        val prefs = prefs("signal_wipe_test")
+        val store = SignalConfigStore(prefs)
+        assertTrue(store.setEnabled("gyroMax", false)); assertTrue(store.saveDerived("walky", walky).isEmpty()); assertTrue(store.saveDerived("walky2", walky).isEmpty())
+        assertTrue(store.history.isNotEmpty() && prefs.all.isNotEmpty())
+        store.wipe()
+        assertEquals(SignalConfig(), store.config.value); assertTrue(store.history.isEmpty()); assertTrue("the prefs file is empty", prefs.all.isEmpty())
+        assertEquals("a reload finds nothing either", SignalConfig(), SignalConfigStore(prefs).config.value)
+    }
+
+    @Test fun theDeleteAllListenerWipesTheProcessStore() = kotlinx.coroutines.runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val store = SignalConfigStore.get(app)
+        assertTrue(store.setEnabled("gyroMax", false))
+        com.rokid.context.memory.forget.ForgetListeners.register(SignalConfigStore.wipeListener(app))
+        com.rokid.context.memory.forget.ForgetListeners.deleteAll()
+        com.rokid.context.memory.forget.ForgetListeners.clearForTests()
+        assertEquals(SignalConfig(), store.config.value)
+    }
 
     @Test fun emptyByDefaultAndSaveAndReloadWork() {
         val p = prefs("sc1")
