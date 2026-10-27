@@ -1,6 +1,10 @@
 package com.rokid.context.phone.ui.settings.capture
 
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -8,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.rokid.context.ai.canvas.plan.DerivedSignals
 import com.rokid.context.ai.canvas.plan.SignalConfig
 import com.rokid.context.capture.plan.SignalCatalog
 import com.rokid.context.core.log.PcLog
@@ -20,6 +25,7 @@ import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.SwitchRow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -35,6 +41,15 @@ data class SignalSettingsUi(
     val signals: List<Pair<String, Boolean>> = SignalCatalog.all.map { it.name to true },
     val derived: List<String> = emptyList(),
 )
+
+/**
+ * The derived-signal editor (v0.9.7 B). [problem] is the FIRST problem of [DerivedSignals.validate] (the validator `PUT /api/signals/derived/<name>` runs) or a parse problem; null while valid or while both fields are empty.
+ * [canSave] only when both fields are filled and nothing is wrong.
+ */
+data class DerivedEditorUi(val open: Boolean = false, val name: String = "", val text: String = "", val editing: Boolean = false, val problem: String? = null, val canSave: Boolean = false)
+
+/** The editor's callbacks, bundled for the screen. */
+class DerivedEditorActions(val onNew: () -> Unit = {}, val onEdit: (String) -> Unit = {}, val onName: (String) -> Unit = {}, val onText: (String) -> Unit = {}, val onSave: () -> Unit = {}, val onClose: () -> Unit = {})
 
 /** Settings > Capture > Signals (v0.9.7 A). Thresholds go to the glasses on `pc_settings` (clamped by [normalized]); signals and derived definitions live in [SignalConfigStore]. */
 class SignalSettingsViewModel(
@@ -62,6 +77,34 @@ class SignalSettingsViewModel(
         hud.update { it.copy(classifier = it.classifier + (key to value)).normalized() }
         PcLog.i(TAG, "classifier thresholds saved")
     }
+
+    private val editorState = MutableStateFlow(DerivedEditorUi())
+    val editor: StateFlow<DerivedEditorUi> = editorState
+
+    private fun check(open: Boolean, name: String, text: String, editing: Boolean): DerivedEditorUi {
+        if (name.isBlank() && text.isBlank()) return DerivedEditorUi(open, name, text, editing)
+        val graph = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) }.getOrNull()
+        val problem = if (graph == null) (if (text.isBlank()) "write the expression" else "the expression is not valid JSON")
+        else DerivedSignals.validate(name, graph, store.config.value).firstOrNull()
+        return DerivedEditorUi(open, name, text, editing, problem, problem == null)
+    }
+    private fun edit(name: String = editorState.value.name, text: String = editorState.value.text) { editorState.value = check(true, name, text, editorState.value.editing) }
+    fun newDerived() { editorState.value = DerivedEditorUi(open = true) }
+    fun editDerived(name: String) {
+        val d = store.config.value.derived.firstOrNull { it.name == name } ?: return
+        editorState.value = check(true, d.name, d.graph.toString(), true)
+    }
+    fun setEditorName(name: String) = edit(name = name)
+    fun setEditorText(text: String) = edit(text = text)
+    fun closeEditor() { editorState.value = DerivedEditorUi() }
+    /** Saves through [SignalConfigStore.saveDerived] (validated again there; the 16-entry history and the logging are its). Closes the editor on success. */
+    fun saveEditor() {
+        val e = editorState.value
+        if (!e.canSave) return
+        val problems = store.saveDerived(e.name, runCatching { kotlinx.serialization.json.Json.parseToJsonElement(e.text) }.getOrNull())
+        if (problems.isEmpty()) closeEditor() else editorState.value = e.copy(problem = problems.first(), canSave = false)
+    }
+    fun editorActions() = DerivedEditorActions(::newDerived, ::editDerived, ::setEditorName, ::setEditorText, ::saveEditor, ::closeEditor)
 
     fun resetThresholds() { hud.update { it.copy(classifier = emptyMap()) }; PcLog.i(TAG, "classifier thresholds saved") }
     fun setSignalEnabled(name: String, on: Boolean) { store.setEnabled(name, on) }
@@ -92,6 +135,7 @@ class SignalSettingsViewModel(
 @Composable
 fun SignalSettingsScreen(
     state: SignalSettingsUi, onBack: () -> Unit,
+    editor: DerivedEditorUi = DerivedEditorUi(), editorActions: DerivedEditorActions = DerivedEditorActions(),
     onThreshold: (String, Double) -> Unit = { _, _ -> }, onReset: () -> Unit = {}, onSignal: (String, Boolean) -> Unit = { _, _ -> }, onDeleteDerived: (String) -> Unit = {},
 ) {
     SettingsPage("Signals", onBack, tag = "signal_settings") {
@@ -120,13 +164,27 @@ fun SignalSettingsScreen(
                 NoticeText("A guard that names a switched-off signal does not compile. Guards run in shadow or trial only until the live gate passes.", tag = "signal_note")
             }
         }
-        if (state.derived.isNotEmpty()) item {
+        item {
             SettingsCard {
                 Text("Derived signals", style = MaterialTheme.typography.titleMedium)
                 for (n in state.derived) {
                     Text("d_$n", style = MaterialTheme.typography.bodyMedium)
-                    TextButton(onClick = { onDeleteDerived(n) }, modifier = Modifier.testTag("derived_${n}_delete")) { Text("Delete d_$n") }
+                    Row {
+                        TextButton(onClick = { editorActions.onEdit(n) }, modifier = Modifier.testTag("derived_${n}_edit")) { Text("Edit d_$n") }
+                        TextButton(onClick = { onDeleteDerived(n) }, modifier = Modifier.testTag("derived_${n}_delete")) { Text("Delete d_$n") }
+                    }
                 }
+                if (!editor.open) TextButton(onClick = editorActions.onNew, modifier = Modifier.testTag("derived_new")) { Text("New derived signal") }
+                else {
+                    OutlinedTextField(editor.name, editorActions.onName, label = { Text("Name (a-z, 0-9, _; up to 12)") }, singleLine = true, enabled = !editor.editing, modifier = Modifier.fillMaxWidth().testTag("derived_name"))
+                    OutlinedTextField(editor.text, editorActions.onText, label = { Text("Expression (graph JSON)") }, minLines = 4, modifier = Modifier.fillMaxWidth().testTag("derived_text"))
+                    editor.problem?.let { NoticeText(it, error = true, tag = "derived_problem") }
+                    Row {
+                        Button(onClick = editorActions.onSave, enabled = editor.canSave, modifier = Modifier.testTag("derived_save")) { Text("Save") }
+                        TextButton(onClick = editorActions.onClose, modifier = Modifier.testTag("derived_close")) { Text("Cancel") }
+                    }
+                }
+                NoticeText("Up to 8 derived signals. Guards that use them run in shadow or trial only.", tag = "derived_note")
             }
         }
     }
