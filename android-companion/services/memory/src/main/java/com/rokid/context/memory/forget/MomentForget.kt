@@ -130,9 +130,9 @@ class MomentForget(
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
             // 3. The cascade: the existing code paths, in this transaction.
             var cascade = ForgetService.Result.EMPTY
-            for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f, queueOutbox = false)) // the rows below are this transaction's own, written once
+            for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f, queueOutbox = false, radiusCascade = !byKey)) // the rows below are this transaction's own, written once
             val memoryIds = memories.toList()
-            if (memoryIds.isNotEmpty()) cascade = cascade.plus(service.forgetFactsTx(memoryIds, queueOutbox = false))
+            if (memoryIds.isNotEmpty()) cascade = cascade.plus(service.forgetFactsTx(memoryIds, queueOutbox = false, radiusCascade = !byKey))
             var labelsDeleted = 0; var resultsInvalidated = 0
             spans.forEach { val o = s3.forgetRangeTx(it.first, it.last, now); labelsDeleted += o.labelsDeleted; resultsInvalidated += o.resultsInvalidated } // traces, marks of the range, labelRev, frame_forget_rev, helper jobs
             val strayLabels = labels.toList().chunked(CHUNK).flatMap { md.labelIdsAmong(it) }

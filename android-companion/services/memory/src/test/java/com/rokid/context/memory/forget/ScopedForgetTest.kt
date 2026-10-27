@@ -91,6 +91,17 @@ class ScopedForgetTest {
         assertEquals("the window of 3 s reaches 0 s too", listOf("a3", "n1"), frames()); assertEquals(listOf("Ln"), marks())
     }
 
+    /** Review fix: the planned span already includes the radius; a photo at its EDGE must not cascade its own radius to marks and Moments outside the span (deletion set == preview set). */
+    @Test fun aPhotoAtTheEdgeOfTheSpanDoesNotCascadeItsOwnRadiusPastTheSpan() = runBlocking<Unit> {
+        world(); fx.frame("edge", MS + 10_500); fx.mark("Lout", MS + 20_000); fx.memory("medge", "edge")
+        fx.project(mid(20), MomentPartKind.MARK to "Lout")
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val counts = engine.preview(p)
+        engine.forget(p)
+        assertFalse("the edge photo is inside the span and goes", "edge" in frames()); assertTrue("the mark 20 s away is outside it and stays", "Lout" in marks())
+        assertTrue("so does its Moment", mid(20) in moments())
+        assertEquals("the preview named exactly what went: marks (La only)", 1, counts.marks); assertEquals(counts.photos, 3) // a1, a2, edge
+    }
+
     @Test fun aMomentEntryWithTheSettingOnPhotoIsStillAMomentForget() = runBlocking<Unit> {
         world(); val d = run(ForgetTarget.Moment(mid(0)), ForgetScope.PHOTO)
         assertEquals(ForgetScope.MOMENT, d.plan.effective); assertEquals(listOf("a3", "n1"), frames()); assertTrue(s3.momentFenced(MS, MS + 999))
