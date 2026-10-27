@@ -64,6 +64,8 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
         // 3d: the global window tolerance is a per-device compile default: back to 90 after a restore.
         com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.PREFS,
+        // v0.9.7 A: disabled catalogue signals and derived-signal definitions are per-device config tied to the canvas guards in the excluded DB: back to empty after a restore.
+        com.rokid.context.phone.ui.settings.capture.SignalConfigStore.PREFS,
         com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.PREFS,
         // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
         com.rokid.context.orchestration.AskPhotoPolicy.PREFS,

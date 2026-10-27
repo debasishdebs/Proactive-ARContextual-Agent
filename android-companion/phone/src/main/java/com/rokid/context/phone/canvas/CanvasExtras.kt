@@ -49,6 +49,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR).also(File::mkdirs) } },
                 plans = { HubGraph.get(app); PlanGraph.current()?.publisher }, m1 = { HubGraph.get(app); PlanGraph.current()?.m1 }, sweeps = sweeps,
                 candidates = com.rokid.context.canvas.plan.ReplayCandidates(db.canvasDao())::forHash,
+                signals = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app),
             )
         }
 
@@ -66,6 +67,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             candidates: (suspend (String) -> com.rokid.context.capture.replay.ReplayCandidate?)? = null,
             /** The developer Moment rebuild of one day (`POST /api/moments/rebuild`); null = the route is not registered. */
             moments: (suspend (Long, Long, Long) -> com.rokid.context.canvas.moment.MomentBuilder.DayReport)? = null,
+            /** v0.9.7 A: the signal configuration store (`/api/signals`); null = the routes are not registered. */
+            signals: com.rokid.context.phone.ui.settings.capture.SignalConfigStore? = null,
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
             val replays = ReplayRoutes(replay, candidates ?: { null })
@@ -76,6 +79,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 add(ApiExtra(planRoutes::handle))
                 if (moments != null) MomentRoutes(devMode::value, moments).let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
+                signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it)::handle)) }
             }
             return CanvasExtras(all, replay, startup, sweeps)
         }
