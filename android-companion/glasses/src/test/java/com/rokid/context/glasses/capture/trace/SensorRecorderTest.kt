@@ -132,7 +132,7 @@ class SensorRecorderTest {
         r.configure(25)
         r.onGyro(0.1f, 0.2f, 0.3f, 100L, com.rokid.context.core.model.MotionState.STILL)
         r.onAccel(0.1f, 0.2f, 0.3f, 100L, 100L, com.rokid.context.core.model.MotionState.STILL)
-        assertEquals(2L, r.errors()); boom = false
+        assertEquals(2L, r.errors()); assertEquals("a reserved slot is given back when the sample could not be made", 0, r.buffered()); boom = false
         r.onGyro(0.1f, 0.2f, 0.3f, 400L, com.rokid.context.core.model.MotionState.STILL); assertEquals(1, r.buffered())
     }
 
@@ -153,5 +153,59 @@ class SensorRecorderTest {
         val g = written(fx).filterIsInstance<TraceEvent.Gyro>().map { it.sMs }
         assertTrue("kept the first samples: $g", g.isNotEmpty() && g.max() < 600)
         assertTrue(r.dropped() > 0)
+    }
+
+    // ---- review round 3: one atomic cap, and a generation on every sample and batch ----
+    @Test fun twoConcurrentOffersAtCapMinusOneNeverExceedTheCap() {
+        val fx = Fx(); val r = rec(fx, flushEvery = 1_000_000, maxBuffered = 5); r.configure(25)
+        feed(r, 1) // fill: 25 Hz would offer many; the cap holds 5
+        r.flush(); assertEquals(0, r.buffered())
+        // bring it to cap-1 = 4
+        var s = 10_000L; repeat(4) { r.onGyro(0.1f, 0.1f, 0.1f, s); s += 100 }
+        assertEquals(4, r.buffered())
+        val before = r.dropped(); val barrier = java.util.concurrent.CyclicBarrier(2)
+        r.reserveHook = { c -> if (c == 4) barrier.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        val t1 = Thread { r.onGyro(0.2f, 0f, 0f, 20_000L) }; val t2 = Thread { r.onAccel(0.2f, 0f, 0f, 20_000L) }
+        t1.start(); t2.start(); t1.join(5_000); t2.join(5_000)
+        assertEquals("both saw cap-1, only one may take the last slot", 5, r.buffered()); assertEquals(1L, r.dropped() - before)
+    }
+
+    @Test fun theCounterStaysWithinZeroAndTheCapUnderStress() {
+        val fx = Fx(); val r = rec(fx, flushEvery = 50, maxBuffered = 200); r.configure(25)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false); val bad = java.util.concurrent.atomic.AtomicInteger()
+        val taps = (0 until 3).map { k -> Thread { var s = k * 1_000_000L; while (!stop.get()) { r.onGyro(0.1f, 0f, 0f, s); r.onAccel(0.1f, 0f, 0f, s); s += 40 } } }
+        val consumer = Thread { while (!stop.get()) { r.poll(); r.setEligible(false); r.setEligible(true); r.flush(); val b = r.buffered(); if (b < 0 || b > 200) bad.incrementAndGet() } }
+        taps.forEach { it.start() }; consumer.start()
+        Thread.sleep(700); stop.set(true); (taps + consumer).forEach { it.join(5_000) }
+        r.flush()
+        assertEquals("never negative, never above the cap", 0, bad.get()); assertEquals(0, r.buffered())
+    }
+
+    @Test fun aBatchQueuedBeforeAPauseIsNotWrittenAfterIt() {
+        val fx = Fx(); val q = ArrayList<Runnable>(); val r = held(fx, q); r.configure(10)
+        feed(r, 3); r.flush(); assertEquals(1, q.size)
+        r.setEligible(false)                      // the pause
+        q.forEach { it.run() }
+        assertTrue("recorded before the pause, still not written after it: ${fx.store.dir.listFiles()?.map { it.name }}", written(fx).isEmpty())
+    }
+
+    @Test fun aCallbackPastTheEligibilityCheckThatOffersAfterTheDropIsNeverFlushed() {
+        val fx = Fx(); val r = rec(fx); r.configure(10)
+        val inTap = java.util.concurrent.CountDownLatch(1); val go = java.util.concurrent.CountDownLatch(1)
+        r.tapHook = { inTap.countDown(); go.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        val t = Thread { r.onGyro(0.1f, 0.2f, 0.3f, 5_000L) }; t.start()
+        assertTrue(inTap.await(5, java.util.concurrent.TimeUnit.SECONDS))   // it read "eligible" and holds the old generation
+        r.setEligible(false)                                                  // the transition and the drop happen now
+        go.countDown(); t.join(5_000)                                         // ... and the callback offers afterwards
+        assertEquals("the late sample is in the queue", 1, r.buffered())
+        r.configure(0)                                                        // the stop flushes only current-generation samples
+        assertTrue("nothing written", written(fx).isEmpty()); assertEquals(0, r.buffered())
+    }
+
+    @Test fun aSampleOfTheCurrentGenerationIsStillWritten() {
+        val fx = Fx(); val r = rec(fx); r.configure(10)
+        r.setEligible(false); r.setEligible(true)
+        feed(r, 2); r.configure(0)
+        assertTrue(written(fx).isNotEmpty())
     }
 }

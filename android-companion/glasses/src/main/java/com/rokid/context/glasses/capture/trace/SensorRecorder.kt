@@ -29,11 +29,18 @@ class SensorRecorder internal constructor(
     @Volatile private var eligible = true
     /** Bumped when the schedule must restart (a new rate, eligible again); the tap thread resets its own due times when it sees a new value. */
     @Volatile private var scheduleEpoch = 0
-    private val queue = java.util.concurrent.ConcurrentLinkedQueue<TraceEvent>()
+    /** A sample and the generation the tap read BEFORE it looked at eligibility: a cleanup or an eligibility change that happens after that read leaves it stale, and it is dropped at take(). */
+    private class Sample(val event: TraceEvent, val generation: Long)
+    private val queue = java.util.concurrent.ConcurrentLinkedQueue<Sample>()
+    /** Reserved slots: incremented (below the cap, by compare-and-set) BEFORE a sample is offered, decremented once per polled sample. Never negative, never above [maxBuffered]. */
     private val size = java.util.concurrent.atomic.AtomicInteger()
+    /** Test seams: between the tap's eligibility check and its offer, and inside the reserve loop with the value just read. */
+    @Volatile internal var tapHook: (() -> Unit)? = null
+    @Volatile internal var reserveHook: ((Int) -> Unit)? = null
     private val drops = java.util.concurrent.atomic.AtomicLong()
     private val errs = java.util.concurrent.atomic.AtomicLong()
-    private val generation = java.util.concurrent.atomic.AtomicInteger()
+    /** Bumped by every cleanup ([discard]) and every eligibility change: samples and batches of an older generation are never written. */
+    private val generation = java.util.concurrent.atomic.AtomicLong()
     // tap-thread-only: the next due sensor time per sensor (ms), MIN_VALUE = none yet
     private var seenEpoch = 0
     private var lastG = Long.MIN_VALUE
@@ -59,9 +66,10 @@ class SensorRecorder internal constructor(
     /** False = a pause, park, heat, battery or rate-policy state forbids recording right now: samples are ignored at once and what is buffered is DROPPED, not written. */
     fun setEligible(e: Boolean) {
         val was = eligible
+        if (was == e) return
         eligible = e
-        if (was && !e) dropBuffer()
-        if (!was && e) scheduleEpoch = scheduleEpoch + 1
+        generation.incrementAndGet() // after the volatile write: a tap that read the old flag holds the old generation
+        if (!e) dropBuffer() else scheduleEpoch = scheduleEpoch + 1
     }
 
     fun onGyro(x: Float, y: Float, z: Float, sMs: Long) = add(true, x, y, z, sMs)
@@ -72,6 +80,7 @@ class SensorRecorder internal constructor(
 
     private fun add(gyro: Boolean, x: Float, y: Float, z: Float, sMs: Long) {
         try {
+            val gen = generation.get() // BEFORE the eligibility read
             val rate = hz
             if (rate == 0 || !eligible || sMs < 0 || !x.isFinite() || !y.isFinite() || !z.isFinite()) return
             val e = scheduleEpoch
@@ -82,11 +91,23 @@ class SensorRecorder internal constructor(
             if (due != Long.MIN_VALUE && sMs < due && due - sMs <= period) return
             val next = if (due == Long.MIN_VALUE || sMs - due >= period || sMs < due) sMs + period else due + period
             if (gyro) lastG = next else lastA = next
-            if (size.get() >= maxBuffered) { drops.incrementAndGet(); return } // drop-newest
-            val t = clock()
-            queue.add(if (gyro) TraceEvent.Gyro(t, sMs, x, y, z) else TraceEvent.Accel(t, sMs, x, y, z))
-            size.incrementAndGet()
+            tapHook?.invoke()
+            if (!reserve()) { drops.incrementAndGet(); return } // drop-newest
+            try {
+                val t = clock()
+                queue.add(Sample(if (gyro) TraceEvent.Gyro(t, sMs, x, y, z) else TraceEvent.Accel(t, sMs, x, y, z), gen))
+            } catch (t: Throwable) { size.decrementAndGet(); throw t } // a reserved slot that never got its sample is given back
         } catch (t: Throwable) { errs.incrementAndGet() }
+    }
+
+    /** Takes one slot if the buffer is below its cap: one compare-and-set loop, so concurrent offers can never exceed [maxBuffered]. */
+    private fun reserve(): Boolean {
+        while (true) {
+            val c = size.get()
+            reserveHook?.invoke(c)
+            if (c >= maxBuffered) return false
+            if (size.compareAndSet(c, c + 1)) return true
+        }
     }
 
     /** The supervisor's beat: full batches go out, and a batch that has been collecting for [flushMs] too. */
@@ -95,7 +116,7 @@ class SensorRecorder internal constructor(
         repeat(MAX_BATCHES_PER_POLL) {
             val n = size.get()
             if (n == 0) return
-            val old = queue.peek()?.let { clock() - it.tMs >= flushMs } ?: false
+            val old = queue.peek()?.let { clock() - it.event.tMs >= flushMs } ?: false
             if (n < flushEvery && !old) return
             take()?.let { writeAsync(it) }
         }
@@ -109,15 +130,20 @@ class SensorRecorder internal constructor(
 
     private fun dropBuffer() { while (queue.poll() != null) size.decrementAndGet() }
 
-    private class Batch(val events: List<TraceEvent>, val startWall: Long, val seq: Int, val generation: Int, val storeEpoch: Int)
+    private class Batch(val events: List<TraceEvent>, val startWall: Long, val seq: Int, val generation: Long, val storeEpoch: Int)
 
-    /** Up to [flushEvery] samples off the queue, with the generation and store epoch of this moment; null when empty. */
+    /** Up to [flushEvery] CURRENT-generation samples off the queue (older ones are discarded as they are polled); sized from what was polled, not from the counter. Null when nothing is left. */
     private fun take(): Batch? = synchronized(consumer) {
-        val out = ArrayList<TraceEvent>(minOf(size.get(), flushEvery))
-        while (out.size < flushEvery) { val e = queue.poll() ?: break; size.decrementAndGet(); out.add(e) }
+        val gen = generation.get()
+        val out = ArrayList<TraceEvent>()
+        while (out.size < flushEvery) {
+            val smp = queue.poll() ?: break
+            size.decrementAndGet()
+            if (smp.generation == gen) out.add(smp.event)
+        }
         if (out.isEmpty()) return null
         val now = clock()
-        Batch(out, (wallClock() - (now - out.first().tMs)).coerceAtLeast(0), seq++, generation.get(), store.epoch.get())
+        Batch(out, (wallClock() - (now - out.first().tMs)).coerceAtLeast(0), seq++, gen, store.epoch.get())
     }
 
     private fun writeAsync(b: Batch) {
