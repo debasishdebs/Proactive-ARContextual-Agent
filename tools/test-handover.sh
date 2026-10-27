@@ -75,6 +75,25 @@ echo "epoch=2" > "$GD/trace_cleanup_pending"
 OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 "$HERE/trace-pull.sh" "$OUTD" 2>&1 < /dev/null); RC=$?
 [ "$RC" != 0 ] || bad "$CASE: trace-pull.sh exported while pending"; has "trace_cleanup_pending"; logsnt 'tar -c'
 
+# 2b. v0.9.7 B: developer sensor recordings are pulled with the traces (same fence, same method), only well-named files, into <out>/sensor_rec
+setup SensorRecPulled
+mkdir -p "$GD/imu/sensor_rec"; echo '{"k":"sensor"}' > "$GD/imu/sensor_rec/s-1700000000000-1700000060000-0000.json"; echo x > "$GD/imu/sensor_rec/odd.txt"
+OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 "$HERE/trace-pull.sh" "$OUTD" 2>&1 < /dev/null); RC=$?
+[ "$RC" = 0 ] || bad "$CASE: rc $RC"; has "pulled 1 sensor batch(es), skipped 1"
+[ -f "$OUTD/sensor_rec/s-1700000000000-1700000060000-0000.json" ] || bad "$CASE: the batch was not pulled"; [ ! -e "$OUTD/sensor_rec/odd.txt" ] || bad "$CASE: an oddly named file was kept"
+[ -f "$OUTD/trace-aaaa-0001/manifest.json" ] || bad "$CASE: the trace pull broke"; [ -f "$GD/imu/sensor_rec/odd.txt" ] || bad "$CASE: something was deleted on the glasses"
+setup SensorRecAbsent
+OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 "$HERE/trace-pull.sh" "$OUTD" 2>&1 < /dev/null); RC=$?
+[ "$RC" = 0 ] || bad "$CASE: rc $RC"; has "pulled 0 sensor batch(es)"
+setup SensorRecRefusedWhilePending
+mkdir -p "$GD/imu/sensor_rec"; echo '{}' > "$GD/imu/sensor_rec/s-1-2-0000.json"; echo "epoch=2" > "$GD/trace_cleanup_pending"
+OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 "$HERE/trace-pull.sh" "$OUTD" 2>&1 < /dev/null); RC=$?
+[ "$RC" != 0 ] || bad "$CASE: pulled while pending"; [ ! -e "$OUTD/sensor_rec" ] || bad "$CASE: a recording left during a pending cleanup"
+setup SensorRecThroughHandover
+mkdir -p "$GD/imu/sensor_rec"; echo '{"k":"sensor"}' > "$GD/imu/sensor_rec/s-1700000000000-1700000060000-0000.json"
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
+[ -f "$RUND/sensor_rec/s-1700000000000-1700000060000-0000.json" ] || bad "$CASE: the handover folder lacks the recording"
+
 # 3. --no-import: files only, exit 0, nothing marked, no push, no pairing needed; phone by transport id, never serial; no logcat at all
 setup NoImport
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
