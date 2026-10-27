@@ -378,14 +378,14 @@ class ResidueOracleTest {
 
     @Test fun photoScopeLeavesNothingOfThePhotoAndTheNeighbourSurvivesAndFormsItsOwnMoment() = runBlocking {
         scopedWorld()
-        fx.frame("frame-SAMESEC", t(10) + 700) // another photo in the SAME second: it survives, but the second is fenced, so the Moment cannot rebuild from it
+        fx.frame("frame-SAMESEC", t(10) + 700) // another photo in the SAME second: it survives and may form a Moment (no fence at PHOTO scope)
         assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(app, com.rokid.context.memory.forget.ForgetTarget.Photo(frame), com.rokid.context.memory.forget.ForgetScope.PHOTO))
         assertClean("Forget photo (scope Photo)", listOf(frame, mem, memText, mark, derivedText, trace, momentOfForgotten()))
         assertEquals("the neighbouring photo survives", 1, frameRows(nearFrame)); assertTrue(h.db.memoryViewDao().byId(nearMem) != null); assertEquals(1, frameRows(keepFrame))
         MomentBuilder(h.db, enabled = { true }, clock = { 7 }).build(listOf(mid(10), mid(14)))
         assertTrue("the neighbour forms its OWN Moment", h.db.momentDao().moment(mid(14)) != null)
-        assertEquals(1, frameRows("frame-SAMESEC")); assertEquals("the forgotten photo's own second cannot rebuild", null, h.db.momentDao().moment(mid(10)))
-        assertClean("Forget photo (scope Photo, after the rebuild)", listOf(frame, mem, memText, mark, derivedText, trace, momentOfForgotten()))
+        assertEquals(1, frameRows("frame-SAMESEC")); assertTrue("the sibling of the same second rebuilds that Moment (today's behaviour)", h.db.momentDao().moment(mid(10)) != null)
+        assertClean("Forget photo (scope Photo, after the rebuild)", listOf(frame, mem, memText, mark, derivedText, trace))
     }
 
     @Test fun momentScopeLeavesNothingOfTheMomentWindowAndNeighboursOutsideItSurvive() = runBlocking {
