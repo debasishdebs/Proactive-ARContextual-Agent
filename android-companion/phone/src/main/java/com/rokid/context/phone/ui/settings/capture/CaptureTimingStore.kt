@@ -18,12 +18,15 @@ import kotlinx.coroutines.flow.asStateFlow
  *   is not exactly one of the three names is Photo. Like the radius it is per-device (this prefs file is excluded from backup and transfer: a restore returns to Photo).
  * Persisted in the prefs [PREFS]; with no prefs it is in memory only.
  */
-class CaptureTimingStore(private val prefs: SharedPreferences? = null) {
+class CaptureTimingStore(private val prefs: SharedPreferences? = null, val developerMode: StateFlow<Boolean> = MutableStateFlow(false)) {
     private val silent = MutableStateFlow(clean(prefs?.getInt(KEY_SILENT_MIN, DEFAULT_SILENT_MIN) ?: DEFAULT_SILENT_MIN, SILENT_MIN_PRESETS, DEFAULT_SILENT_MIN))
     private val tick = MutableStateFlow(clean(prefs?.getInt(KEY_TICK_SEC, DEFAULT_TICK_SEC) ?: DEFAULT_TICK_SEC, TICK_SEC_PRESETS, DEFAULT_TICK_SEC))
     private val radius = MutableStateFlow(clean(prefs?.getInt(KEY_FORGET_RADIUS_SEC, DEFAULT_FORGET_RADIUS_SEC) ?: DEFAULT_FORGET_RADIUS_SEC, FORGET_RADIUS_SEC_PRESETS, DEFAULT_FORGET_RADIUS_SEC))
     private val scope = MutableStateFlow(readScope(prefs))
-    val forgetScope: StateFlow<ForgetScope> = scope.asStateFlow()
+    /** What is STORED (kept while Developer mode is off, so switching it on again restores the choice). */
+    val storedForgetScope: StateFlow<ForgetScope> = scope.asStateFlow()
+    /** What the app does and Settings shows: Moment and Scene are EXPERIMENTAL until a worn pass, so only with Developer mode on; otherwise Photo, whatever is stored. */
+    val forgetScope: kotlinx.coroutines.flow.Flow<ForgetScope> = kotlinx.coroutines.flow.combine(scope, developerMode) { s, dev -> effective(s, dev) }
     val silentMin: StateFlow<Int> = silent.asStateFlow()
     val tickSec: StateFlow<Int> = tick.asStateFlow()
     val forgetRadiusSec: StateFlow<Int> = radius.asStateFlow()
@@ -33,12 +36,13 @@ class CaptureTimingStore(private val prefs: SharedPreferences? = null) {
     fun setForgetRadiusSec(v: Int) { val c = clean(v, FORGET_RADIUS_SEC_PRESETS, DEFAULT_FORGET_RADIUS_SEC); prefs?.edit()?.putInt(KEY_FORGET_RADIUS_SEC, c)?.apply(); radius.value = c }
 
     fun setForgetScope(v: ForgetScope) {
+        if (v != ForgetScope.PHOTO && !developerMode.value) return // not offered without Developer mode
         val changed = scope.value != v
         prefs?.edit()?.putString(KEY_FORGET_SCOPE, v.name)?.apply(); scope.value = v
         if (changed) PcLog.i("PcForget", "forget scope changed") // the event only: never the value
     }
     /** The scope the Forget path reads (through [com.rokid.context.memory.forget.ForgetScopeSetting]) at the moment a Forget starts. */
-    fun forgetScopeNow(): ForgetScope = scope.value
+    fun forgetScopeNow(): ForgetScope = effective(scope.value, developerMode.value)
 
     /** The watchdog's silence threshold in ms (read at every tick). */
     fun silentMs(): Long = silent.value * 60_000L
@@ -62,11 +66,13 @@ class CaptureTimingStore(private val prefs: SharedPreferences? = null) {
 
         private fun readScope(prefs: SharedPreferences?): ForgetScope = try { ForgetScope.parse(prefs?.getString(KEY_FORGET_SCOPE, null)) } catch (e: ClassCastException) { ForgetScope.PHOTO }
 
+        fun effective(stored: ForgetScope, developerMode: Boolean): ForgetScope = if (developerMode) stored else ForgetScope.PHOTO
+
         fun clean(v: Int, presets: List<Int>, default: Int): Int = if (v in presets) v else default
 
         @Volatile private var instance: CaptureTimingStore? = null
         fun get(context: Context): CaptureTimingStore = instance ?: synchronized(this) {
-            instance ?: CaptureTimingStore(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)).also { instance = it }
+            instance ?: CaptureTimingStore(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE), com.rokid.context.phone.canvas.DeveloperModeStore.get(context).enabled).also { instance = it }
         }
     }
 }
