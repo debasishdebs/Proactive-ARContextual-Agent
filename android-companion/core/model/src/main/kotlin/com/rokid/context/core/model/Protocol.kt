@@ -59,6 +59,8 @@ object Channels {
     val atMs: Long,
     val v: Int = PROTOCOL_VERSION,
     val stillFrac5m: Float = -1f,
+    /** v0.9.7 A, additive: the hash of the classifier thresholds the glasses run (`default` or 12 hex); null from an old glasses build. */
+    val classifierHash: String? = null,
 )
 
 /** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
@@ -233,6 +235,8 @@ data class HudSettings(
     val diagRecord: Boolean = false,
     /** v0.9.6 slice C, additive: how long the camera stays open for the photo of a mark, ms ([MARK_PHOTO_HOLD_MIN_MS]..[MARK_PHOTO_HOLD_MAX_MS], see [normalized]). Old glasses ignore it. */
     val markPhotoHoldMs: Int = MARK_PHOTO_HOLD_DEFAULT_MS,
+    /** v0.9.7 A, additive: edited classifier thresholds (only non-default keys, see [com.rokid.context.core.model.signals.ClassifierThresholds]). Empty = defaults. Old glasses ignore it. */
+    val classifier: Map<String, Double> = emptyMap(),
 )
 
 const val MARK_PHOTO_HOLD_MIN_MS = 2_000
@@ -284,6 +288,7 @@ fun HudSettings.normalized(): HudSettings {
         wearParkUnknownSec = wearParkUnknownSec.coerceIn(WEAR_PARK_MIN_SEC, WEAR_PARK_MAX_SEC),
         wearParkWornSec = wearParkWornSec.coerceIn(WEAR_PARK_MIN_SEC, WEAR_PARK_MAX_SEC),
         markPhotoHoldMs = markPhotoHoldMs.coerceIn(MARK_PHOTO_HOLD_MIN_MS, MARK_PHOTO_HOLD_MAX_MS),
+        classifier = com.rokid.context.core.model.signals.ClassifierThresholds.clean(classifier),
     )
 }
 
