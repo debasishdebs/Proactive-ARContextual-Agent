@@ -70,24 +70,29 @@ class MomentForget(
         if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0, 0)
         return db.withTransaction {
             val d = discover(secondsOf(merged), merged)
-            val (removed, shrunk) = sceneEffect(d.moments, sceneIds)
-            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, removed.size, shrunk.size, hashOf(merged, d, removed, shrunk))
+            val e = sceneEffect(d.moments, sceneIds)
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e))
         }
     }
 
     /** (removed, shrunk): of the Scenes holding any of [momentIds] (and the named [sceneIds]), those left with no Moment (or named) go; the others only lose parts. */
-    internal suspend fun sceneEffect(momentIds: Collection<String>, sceneIds: Collection<String> = emptyList()): Pair<Set<String>, Set<String>> {
+    internal class SceneEffect(val removed: Set<String>, val shrunk: Set<String>, val membership: Map<String, List<String>>) {
+        operator fun component1() = removed; operator fun component2() = shrunk
+    }
+
+    internal suspend fun sceneEffect(momentIds: Collection<String>, sceneIds: Collection<String> = emptyList()): SceneEffect {
         val named = sceneIds.toSet(); val going = momentIds.toSet()
         val affected = LinkedHashSet<String>(named)
         going.toList().chunked(CHUNK).forEach { affected += db.sceneDao().sceneIdsHoldingMoments(it) }
-        if (affected.isEmpty()) return emptySet<String>() to emptySet()
+        if (affected.isEmpty()) return SceneEffect(emptySet(), emptySet(), emptyMap())
         val parts = affected.toList().chunked(CHUNK).flatMap { db.sceneDao().partsOf(it) }.filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.groupBy({ it.sceneId }, { it.refId })
         val removed = affected.filter { it in named || (parts[it].orEmpty().all { r -> r in going }) }.toSet()
-        return removed to (affected - removed)
+        return SceneEffect(removed, affected - removed, affected.associateWith { parts[it].orEmpty().sorted() })
     }
 
-    private fun hashOf(spans: List<LongRange>, d: Found, removed: Set<String>, shrunk: Set<String>): String = ForgetPlanHash.of(
-        ForgetScope.MOMENT, spans, mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to removed, "scenesShrunk" to shrunk),
+    private fun hashOf(spans: List<LongRange>, d: Found, e: SceneEffect): String = ForgetPlanHash.of(
+        ForgetScope.MOMENT, spans,
+        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
     )
 
     private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
@@ -124,7 +129,16 @@ class MomentForget(
                 }
             }
         }
-        frames.toList().chunked(CHUNK).forEach { c -> memories += md.memoryIdsOfFrames(c) }
+        // Closure: the cascade a memory triggers LOCKS (and, when nothing else cites it, deletes) every photo the memory cites, and a deleted photo takes ALL its memories, so the set must contain them too (preview == delete == hash == outbox).
+        val fd = db.forgetDao()
+        do {
+            var grew = false
+            frames.toList().chunked(CHUNK).forEach { c -> val m = md.memoryIdsOfFrames(c); if (memories.addAll(m)) grew = true }
+            memories.toList().chunked(CHUNK).forEach { c ->
+                val cited = fd.memories(c).mapNotNull { it.frameId } + fd.sourceFramesOf(c)
+                if (frames.addAll(cited)) grew = true
+            }
+        } while (grew)
         val moments = LinkedHashSet<String>(between)
         frames.toList().chunked(CHUNK).forEach { c -> moments += md.momentIdsHolding(listOf(MomentPartKind.FRAME, MomentPartKind.CITE), c + c.map { "frame:$it" }) }
         memories.toList().chunked(CHUNK).forEach { moments += md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }
@@ -144,8 +158,7 @@ class MomentForget(
             val found = discover(requestedSeconds, spans)
             val frames = found.frames; val memories = found.memories; val labels = found.labels; val projected = found.projected
             if (expectedHash != null) { // the confirmed set must be EXACTLY the one that was previewed; anything else rolls this transaction back (fences included) and deletes nothing
-                val (removed, shrunk) = sceneEffect(found.moments, sceneIds)
-                if (hashOf(spans, found, removed, shrunk) != expectedHash) throw ForgetContentChanged()
+                if (hashOf(spans, found, sceneEffect(found.moments, sceneIds)) != expectedHash) throw ForgetContentChanged()
             }
             val wire = frames.toList().chunked(CHUNK).flatMap { md.wireIds(it) }.map { it.wireFrameId }
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()

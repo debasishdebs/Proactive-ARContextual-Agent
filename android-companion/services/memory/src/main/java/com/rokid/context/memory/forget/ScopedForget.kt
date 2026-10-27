@@ -90,26 +90,31 @@ class ScopedForget(
         return singleCounts(plan)
     }
 
-    /** A single photo or fact: the sets its cascade and the radius path reach, with the hash of exactly those ids. */
+    /**
+     * A single photo or fact: the sets its cascade and the radius path reach, with the hash of exactly those ids. The cascade LOCKS and radius-cleans EVERY photo the forgotten memories cite (not only the ones that
+     * go), so the windows, marks and Moments are those of ALL cited photos; [Counts.photos] is the photos that really go (the target, and cited ones nothing else cites).
+     */
     private suspend fun singleCounts(plan: Plan): MomentForget.Counts {
         val dao = db.forgetDao(); val md = db.momentDao()
         val radius = ForgetRadius.ms()
-        val frames: List<String>; val memories: Set<String>
-        if (plan.frameId != null) {
-            val exists = dao.frame(plan.frameId) != null || dao.photoRowCount(plan.frameId) > 0 || dao.memoryIdsOfFrame(plan.frameId).isNotEmpty()
-            frames = if (exists) listOf(plan.frameId) else emptyList(); memories = dao.memoryIdsOfFrame(plan.frameId).toSet()
-        } else {
-            val id = plan.factId!!; val found = dao.memories(listOf(id))
-            val cited = (found.mapNotNull { it.frameId } + dao.sourceFramesOf(listOf(id))).distinct()
-            frames = cited.filter { f -> dao.memoryIdsOfFrame(f).all { it == id } } // the photos only this fact held go with it
-            memories = found.map { it.id }.toSet()
+        val seed: Set<String> = if (plan.frameId != null) dao.memoryIdsOfFrame(plan.frameId).toSet() else dao.memories(listOf(plan.factId!!)).map { it.id }.toSet()
+        val seedList = seed.toList()
+        val cited = (dao.memories(seedList).mapNotNull { it.frameId } + dao.sourceFramesOf(seedList) + listOfNotNull(plan.frameId)).distinct()
+        val photos = cited.filter { f ->
+            if (f == plan.frameId) dao.frame(f) != null || dao.photoRowCount(f) > 0 || dao.memoryIdsOfFrame(f).isNotEmpty()
+            else dao.frame(f) != null && dao.memoryIdsOfFrame(f).all { it in seed }
         }
-        val windows = secondsOfFrames(frames).map { window(it, radius) }.let(com.rokid.context.memory.db.CanvasSlice3Dao::mergeRanges)
+        val invalidated = seedList.chunked(500).flatMap { dao.descendants(it) }.toSet() - seed
+        val windows = secondsOfFrames(cited).map { window(it, radius) }.let(com.rokid.context.memory.db.CanvasSlice3Dao::mergeRanges)
         val marks = windows.flatMap { md.labelIdsBetween(it.first, it.last) }.distinct()
-        val moments = (windows.flatMap { md.momentIdsBetween(MomentId.format(it.first / 1000), MomentId.format(it.last / 1000)) } + frames.chunked(500).flatMap { c -> md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.FRAME, com.rokid.context.memory.db.MomentPartKind.CITE), c + c.map { "frame:$it" }) } + memories.toList().chunked(500).flatMap { md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.SUMMARY), it) }).distinct()
-        val (removed, shrunk) = MomentForget(db, service, clock).sceneEffect(moments)
-        val hash = ForgetPlanHash.of(ForgetScope.PHOTO, windows, mapOf("target" to listOf(plan.factId ?: plan.frameId.orEmpty()), "frames" to frames, "memories" to memories, "marks" to marks, "moments" to moments, "scenesRemoved" to removed, "scenesShrunk" to shrunk))
-        return MomentForget.Counts(frames.size, memories.size, marks.size, moments.size, removed.size, shrunk.size, hash)
+        val moments = (windows.flatMap { md.momentIdsBetween(MomentId.format(it.first / 1000), MomentId.format(it.last / 1000)) } +
+            cited.chunked(500).flatMap { c -> md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.FRAME, com.rokid.context.memory.db.MomentPartKind.CITE), c + c.map { "frame:$it" }) } +
+            seedList.chunked(500).flatMap { md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.SUMMARY), it) }).distinct()
+        val e = MomentForget(db, service, clock).sceneEffect(moments)
+        val hash = ForgetPlanHash.of(ForgetScope.PHOTO, windows, mapOf(
+            "target" to listOf(plan.factId ?: plan.frameId.orEmpty()), "cited" to cited, "photos" to photos, "memories" to seed, "invalidated" to invalidated, "marks" to marks, "moments" to moments,
+            "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk) + e.membership.mapKeys { "scene:" + it.key })
+        return MomentForget.Counts(photos.size, seed.size, marks.size, moments.size, e.removed.size, e.shrunk.size, hash)
     }
 
     /**
