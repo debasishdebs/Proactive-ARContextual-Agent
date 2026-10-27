@@ -60,13 +60,13 @@ class ScopedForgetTest {
     private suspend fun run(target: ForgetTarget, scope: ForgetScope) = engine.forget(engine.plan(target, scope))
 
     // ---- PHOTO ----
-    @Test fun photoScopeDeletesExactlyThatPhotoAndItsRadiusAndFencesItsSecond() = runBlocking<Unit> {
+    @Test fun photoScopeDeletesExactlyThatPhotoAndItsRadiusAndFencesNothing() = runBlocking<Unit> {
         world(); val d = run(ForgetTarget.Photo("a1"), ForgetScope.PHOTO)
         assertEquals(ForgetScope.PHOTO, d.plan.effective)
         assertEquals("neighbouring photos survive", listOf("a2", "a3", "n1"), frames()); assertEquals(listOf("ma2", "ma3", "mn1"), memories())
         assertEquals("the mark in the radius goes as today", listOf("Ln"), marks())
         assertEquals("the Moments of the radius are rebuildable and dropped", listOf(mid(25), mid(90)), moments())
-        assertTrue(s3.momentFenced(MS, MS + 999)); assertFalse("the neighbour's second is NOT fenced", s3.momentFenced(MS + 3000, MS + 3999))
+        assertFalse("PHOTO scope fences nothing", s3.momentFenced(MS, MS + 999)); assertEquals(0, db.momentDao().tombstoneCount())
         assertEquals(listOf("sc-A", "sc-N"), scenes())
     }
 

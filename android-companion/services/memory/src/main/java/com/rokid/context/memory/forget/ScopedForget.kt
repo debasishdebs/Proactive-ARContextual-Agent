@@ -15,7 +15,7 @@ sealed interface ForgetTarget {
 /**
  * The Forget SCOPE engine (user ruling 2026-10-27). One entry for every granular Forget: [plan] resolves the [ForgetTarget] and the [ForgetScope] into WHAT goes (read only), [preview] counts it from the same
  * discovery the delete uses, [forget] runs it in one transaction through the existing code (never a second copy of the cascade):
- * - PHOTO: a photo = [ForgetService.forgetMoment] with `fenceOwnSecond` (frame, file, vectors, memories, run outputs, the radius path); a fact = [ForgetService.forgetFact] exactly as before. Neighbours survive.
+ * - PHOTO: a photo = [ForgetService.forgetMoment] exactly as before, NO second fence (frame, file, vectors, memories, run outputs, the radius path); a fact = [ForgetService.forgetFact] exactly as before. Neighbours survive.
  * - MOMENT: [MomentForget.forgetSpans] over the Moment's second(s) extended by [ForgetRadius] (photos, memories, marks, traces, sensor rows, run outputs, projection, outbox, fences).
  * - SCENE: the same over every Moment of the Scene (and the Scene's own time), and the Scene goes whole.
  * Fallbacks (safe, stated in the handoff): a fact with no photo, or a photo with no known time, is forgotten as a PHOTO; a Moment that is in no stored Scene is forgotten as a MOMENT.
@@ -108,7 +108,7 @@ class ScopedForget(
     suspend fun forget(plan: Plan): Done {
         if (plan.isEmpty) return Done(plan, ForgetService.Result.EMPTY, emptyList(), emptyList())
         plan.factId?.let { return Done(plan, service.forgetFact(it), emptyList(), emptyList()) }
-        plan.frameId?.let { return Done(plan, service.forgetMoment(it, fenceOwnSecond = true), emptyList(), emptyList()) }
+        plan.frameId?.let { return Done(plan, service.forgetMoment(it), emptyList(), emptyList()) }
         val r = MomentForget(db, service, clock).forgetSpans(plan.spans, plan.sceneIds)
         // files and glasses follow the committed range (trace folders, the glasses' unsent traces): the same listener call as a range Forget
         for (s in plan.spans) ForgetListeners.rangeForgotten(s.first, s.last, r.tombstonedTraceIds)

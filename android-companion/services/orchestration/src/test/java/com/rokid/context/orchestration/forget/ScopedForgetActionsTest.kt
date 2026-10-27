@@ -107,7 +107,7 @@ class ScopedForgetActionsTest {
         world()
         assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.PHOTO))
         assertEquals(listOf("a3", "n1"), frames()); assertTrue(jpgs["a3"]!!.exists()); assertFalse(jpgs["a1"]!!.exists())
-        assertTrue(graph.db.canvasSlice3Dao().momentFenced(ms, ms + 999))
+        assertFalse("PHOTO scope fences nothing", graph.db.canvasSlice3Dao().momentFenced(ms, ms + 999))
     }
 
     @Test fun inProductionAnUndeletableExportIsTypedAtEveryScopeAndTheForgetIsCommitted() = runBlocking<Unit> {
