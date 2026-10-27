@@ -148,6 +148,41 @@ class ScopedForgetTest {
         engine.forget(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.PHOTO)); assertFalse("a1" in frames())
     }
 
+    // ---- Codex round 2: plan == delete for Scenes' membership, for photos cited by facts of the span, and for shared photos ----
+    @Test fun aMomentAddedToAnAffectedSceneAfterThePreviewIsRefusedWhoseRemovalOutcomeDidNotChange() = runBlocking<Unit> {
+        ForgetScope.values().forEach { sc ->
+            fresh(); world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), sc))
+            db.sceneDao().insertParts(listOf(ScenePartEntity("sc-A", ScenePartKind.MOMENT, mid(90), "r", MS + 90_000))) // the builder put an existing Moment into the Scene
+            refused(engine.plan(ForgetTarget.Photo("a1"), sc), c.planHash); assertTrue("$sc: nothing deleted", "a1" in frames())
+        }
+    }
+
+    @Test fun aPhotoCitedByAFactOfTheSpanIsInThePreviewTheHashAndTheOutbox() = runBlocking<Unit> {
+        world(); db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("n1", "g1_n1", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = MS + 90_005))
+        fx.memory("mx", "n1", createdAt = MS + 500) // a fact born in the span that cites the photo 90 s away
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertEquals("a1, a2 and the cited n1", 3, c.photos); assertEquals("ma1, ma2, mx and n1's own mn1", 4, c.memories)
+        engine.forget(p, c.planHash)
+        assertEquals(listOf("a3"), frames()); assertTrue("n1's glasses copy is queued", fx.outbox().contains(com.rokid.context.memory.db.CleanupTarget.GLASSES_FRAME to "{\"wireFrameId\":\"g1_n1\"}"))
+        assertTrue(mid(90) !in moments())
+    }
+
+    @Test fun aChangeToAPhotoThatOnlyACitingFactReachesIsRefused() = runBlocking<Unit> {
+        world(); fx.memory("mx", "n1", createdAt = MS + 500)
+        val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)); fx.memory("mn2", "n1") // a new fact of the outside photo
+        refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash); assertTrue("n1" in frames())
+    }
+
+    @Test fun aSharedPhotoIsLockedAndRadiusCleanedSoItsWindowIsInThePlan() = runBlocking<Unit> {
+        world(); fx.memory("ma1b", "a1") // a second fact of the same photo: forgetting ma1 locks a1 but keeps its file
+        val c = engine.preview(engine.plan(ForgetTarget.Fact("ma1"), ForgetScope.PHOTO))
+        assertEquals("the shared photo stays", 0, c.photos); assertEquals("its radius still removes the mark La", 1, c.marks)
+        fx.mark("Llate", MS + 4_000) // arrives in the shared photo's radius after the preview
+        refused(engine.plan(ForgetTarget.Fact("ma1"), ForgetScope.PHOTO), c.planHash); assertTrue("Llate" in marks())
+        val c2 = engine.preview(engine.plan(ForgetTarget.Fact("ma1"), ForgetScope.PHOTO)); assertEquals(2, c2.marks)
+        engine.forget(engine.plan(ForgetTarget.Fact("ma1"), ForgetScope.PHOTO), c2.planHash); assertFalse("Llate" in marks()); assertFalse("La" in marks())
+    }
+
     @Test fun aMomentEntryWithTheSettingOnPhotoIsStillAMomentForget() = runBlocking<Unit> {
         world(); val d = run(ForgetTarget.Moment(mid(0)), ForgetScope.PHOTO)
         assertEquals(ForgetScope.MOMENT, d.plan.effective); assertEquals(listOf("a3", "n1"), frames()); assertTrue(s3.momentFenced(MS, MS + 999))
