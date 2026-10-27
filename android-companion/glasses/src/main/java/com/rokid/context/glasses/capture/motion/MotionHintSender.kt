@@ -9,7 +9,12 @@ import com.rokid.context.core.model.MotionState
  * [stillFrac5m] is the STILL share of the previous seconds (up to 300, none older than [WINDOW_MS]), -1 until [MIN_SLOTS] recent ones are recorded; the current
  * second is recorded after the decision. Times are glasses elapsedRealtime; the phone stamps receipt time.
  */
-class MotionHintSender(private val clock: () -> Long, private val send: (MotionHint) -> Boolean) {
+class MotionHintSender(
+    private val clock: () -> Long,
+    /** v0.9.7 A: the hash of the classifier thresholds in force, echoed on every hint; null = not reported. A change is sent at the next second. */
+    private val classifierHash: () -> String? = { null },
+    private val send: (MotionHint) -> Boolean,
+) {
     private val ring = BooleanArray(SLOTS)
     private val at = LongArray(SLOTS)
     private var filled = 0
@@ -18,6 +23,7 @@ class MotionHintSender(private val clock: () -> Long, private val send: (MotionH
     private var lastSendAt = clock()
     private var lastSentWalking = false
     private var force = false
+    private var lastSentHash: String? = null
 
     /** Send at the next second whatever the cadence (the session just opened). */
     @Synchronized fun forceNext() { force = true }
@@ -26,11 +32,12 @@ class MotionHintSender(private val clock: () -> Long, private val send: (MotionH
         expire(nowMs)
         val walking = state == MotionState.WALKING
         val since = nowMs - lastSendAt
-        if (force || (walking != lastSentWalking && since >= MIN_GAP_MS) || since >= REFRESH_MS) {
+        val hash = classifierHash()
+        if (force || hash != lastSentHash || (walking != lastSentWalking && since >= MIN_GAP_MS) || since >= REFRESH_MS) {
             force = false
             val frac = if (filled < MIN_SLOTS) -1f else stills.toFloat() / filled
             // A failed send (session closed, bridge error) is not a send: it is retried on the next second.
-            if (send(MotionHint(state = state, atMs = clock(), stillFrac5m = frac))) { lastSendAt = nowMs; lastSentWalking = walking }
+            if (send(MotionHint(state = state, atMs = clock(), stillFrac5m = frac, classifierHash = hash))) { lastSendAt = nowMs; lastSentWalking = walking; lastSentHash = hash }
         }
         val still = state == MotionState.STILL
         if (filled == SLOTS && ring[next]) stills--

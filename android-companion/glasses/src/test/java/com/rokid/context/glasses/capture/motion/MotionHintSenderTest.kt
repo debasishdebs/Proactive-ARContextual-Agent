@@ -64,4 +64,24 @@ class MotionHintSenderTest {
         // the window at 420 s is 121..419 s: 180 still (121..300) of 299
         assertEquals(180f / 299f, sent.last().stillFrac5m)
     }
+
+    @Test fun theClassifierHashIsEchoedAndAChangeIsSentAtOnce() {
+        var hash: String? = "default"
+        val out = ArrayList<MotionHint>()
+        val t = MotionHintSender({ now }, classifierHash = { hash }) { out += it; true }
+        for (sec in 1..3) { now = sec * 1_000L; t.onSecond(MotionState.STILL, now) }
+        assertEquals(listOf("default"), out.map { it.classifierHash }, "the first hint carries it")
+        hash = "0123456789ab"
+        now = 4_000L; t.onSecond(MotionState.STILL, now)
+        assertEquals(listOf("default", "0123456789ab"), out.map { it.classifierHash }, "a change does not wait for the 60 s refresh")
+        now = 5_000L; t.onSecond(MotionState.STILL, now)
+        assertEquals(2, out.size)
+    }
+
+    @Test fun anUnreportedHashStaysNullLikeAnOldGlasses() {
+        val out = ArrayList<MotionHint>()
+        val t = MotionHintSender({ now }) { out += it; true }
+        now = 1_000L; t.onSecond(MotionState.STILL, now); now = 61_000L; t.onSecond(MotionState.STILL, now)
+        assertEquals(listOf<String?>(null), out.map { it.classifierHash }.distinct())
+    }
 }

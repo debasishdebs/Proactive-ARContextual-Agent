@@ -23,6 +23,8 @@ interface SensorFeed {
     fun stop()
     /** Switches the IMU/proximity sampling rate; fakes may ignore it. */
     fun setRate(r: SensorRate) = Unit
+    /** v0.9.7 A: the classifier thresholds in force (the shadow heuristic reads them); fakes may ignore it. */
+    fun setThresholds(t: com.rokid.context.core.model.signals.ClassifierThresholds) = Unit
 }
 
 /**
@@ -70,7 +72,10 @@ class AndroidSensorFeed internal constructor(
     )
 
     // Shadow only: the model and fusion are logged to the CSV and never read by capture.
-    private val imuSource = GlassesImuSource(HeuristicMotionModel())
+    private val heuristic = HeuristicMotionModel()
+    private val imuSource = GlassesImuSource(heuristic)
+
+    override fun setThresholds(t: com.rokid.context.core.model.signals.ClassifierThresholds) { heuristic.thresholds = t }
     private val csv: MotionCsv? = csvDir?.let { MotionCsv(it) }
     /** Motion CSV write failures so far (count only, for the heartbeat). */
     val csvFailures: Int get() = csv?.failures ?: 0
