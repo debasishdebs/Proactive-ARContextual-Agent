@@ -251,6 +251,15 @@ class TraceSessionTest {
         assertEquals(0, fx.finish().size)
     }
 
+    @Test fun theTraceStartRecordsTheClassifierThresholdsInForce() = runTest {
+        val fx = Fx(this, root); val r = fx.rig
+        r.traceInfo = TraceTestKit.info.copy(classifier = mapOf("walkVariance" to 0.4))
+        r.startSensors(); r.gyroMag = 0.01f
+        r.session.start()
+        delay(60_000)
+        assertEquals(mapOf("walkVariance" to 0.4), fx.finish().first().manifest.snapshot.classifier)
+    }
+
     @Test fun aDownsampledSessionTraceIsNotExact() = runTest {
         val fx = Fx(this, root, sampleEvery = 2); val r = fx.rig
         r.startSensors(); r.gyroMag = 0.01f

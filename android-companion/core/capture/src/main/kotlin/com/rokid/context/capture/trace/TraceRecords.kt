@@ -289,8 +289,14 @@ data class StartSnapshot(
     val sampleEvery: Int,
     /** `sampleEvery == 1`. Only an exact trace may be parity or publish evidence. */
     val exact: Boolean,
+    /**
+     * v0.9.7 A, additive and optional (TRACE_SCHEMA stays 1): the classifier threshold OVERRIDES in force (canonical, see [com.rokid.context.core.model.signals.ClassifierThresholds.clean]);
+     * empty = the defaults, which is every older trace. Replay restores them so a simulated classifier is the one that ran.
+     */
+    val classifier: Map<String, Double> = emptyMap(),
 ) {
     init {
+        require(classifier == com.rokid.context.core.model.signals.ClassifierThresholds.clean(classifier)) { "classifier not canonical" }
         hash(settingsHash, "settingsHash")
         require(ring.size <= MAX_RING) { "ring too long" }
         lastKeyframeAt?.let { ms(it, "lastKeyframeAt") }

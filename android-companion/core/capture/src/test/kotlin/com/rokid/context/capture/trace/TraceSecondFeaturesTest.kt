@@ -28,6 +28,13 @@ class TraceSecondFeaturesTest {
         return listOf(gyro(t(0), 3000, 3f, 0f, 0f), gyro(t(1), 3100, 0f, 4f, 0f), gyro(t(2), 3200, 0f, 0f, 0f), gyro(t(3), 3300, 0f, 0f, 1f))
     }
 
+    @Test fun theClassifierThresholdsOfTheTraceAreRestoredForTheReplayedFeatures() {
+        val edited = m.copy(snapshot = m.snapshot.copy(classifier = mapOf("headMovingRadS" to 1.2)))
+        val slow = (0 until 4).map { gyro(2800L + 10L * it, 3000L + 100L * it, 0f, 0f, 1f) }   // 1 rad/s throughout
+        assertEquals(MotionState.STILL, TraceSecondFeatures.compute(edited, slow.asSequence()).single().state, "1 rad/s is under the edited 1.2 threshold")
+        assertEquals(MotionState.HEAD_MOVING, TraceSecondFeatures.compute(m, slow.asSequence()).single().state, "an older trace replays with the defaults")
+    }
+
     @Test fun theSevenFeaturesOfAGyroSecondAreExact() {
         val r = TraceSecondFeatures.compute(m, gyroSecond().asSequence()).single()
         assertEquals(s0 + 2, r.phoneSecond)

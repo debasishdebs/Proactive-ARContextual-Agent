@@ -27,7 +27,7 @@ data class SecondFeatureRow(
 object TraceSecondFeatures {
     fun compute(manifest: Manifest, events: Sequence<TraceEvent>): List<SecondFeatureRow> {
         val map = ClockMap.of(manifest)
-        val classifier = MotionClassifier({ 0L })
+        val classifier = MotionClassifier({ 0L }).also { it.setThresholds(com.rokid.context.core.model.signals.ClassifierThresholds.from(manifest.snapshot.classifier)) }
         val rows = ArrayList<SecondFeatureRow>()
         val contexts = ArrayList<Pair<Long, ContextState>>() // (phone second of the cx event, state), in append order
         var current = Long.MIN_VALUE; var nGyro = 0; var nAcc = 0
