@@ -65,9 +65,12 @@ class MemoryDetailViewModel(
         val s = state.value
         val allowed = s.found && !s.forgetting && when (kind) { ForgetKind.FACT -> s.editable; ForgetKind.MOMENT -> s.frameId != null }
         if (!allowed) return
+        openDialog(kind, s.frameId, keepMessage = false)
+    }
+
+    private fun openDialog(kind: ForgetKind, frameId: String?, keepMessage: Boolean = true) {
         previewJob?.cancel()
-        local.update { it.copy(confirm = kind, message = null, preview = null, previewFailed = false, blockedByCount = false, previewing = true) }
-        val frameId = s.frameId
+        local.update { it.copy(confirm = kind, message = if (keepMessage) it.message else null, preview = null, previewFailed = false, blockedByCount = false, previewing = true) }
         previewJob = viewModelScope.launch {
             var preview: ForgetPreview? = null; var failed = false
             try { preview = forget.preview(kind, memoryId, frameId) } catch (c: CancellationException) { throw c } catch (e: Exception) { failed = true }
@@ -89,14 +92,16 @@ class MemoryDetailViewModel(
         local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null, preview = null) } }
         if (!start) return
         viewModelScope.launch {
-            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false
+            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false
             val ok = try {
-                if (preview != null) forget.forgetScoped(kind, memoryId, frameId, preview.requested) // the scope the dialog showed
+                if (preview != null) forget.forgetScoped(kind, memoryId, frameId, preview.requested, preview.planHash.ifEmpty { null }) // the scope the dialog showed
                 else when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId) }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: com.rokid.context.orchestration.DataOpGate.WriteInProgress) {
                 saveBlocked = true; false
+            } catch (e: ContentChanged) {
+                changed = true; false
             } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
                 exportBlocked = true; false
             } catch (e: CacheCleanupFailed) {
@@ -106,8 +111,9 @@ class MemoryDetailViewModel(
             }
             local.update {
                 if (ok) it.copy(forgetting = false, forgotten = true, message = if (cacheLeft) ForgetCopy.CACHE_LEFT else null)
-                else it.copy(forgetting = false, message = if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
+                else it.copy(forgetting = false, message = if (changed) ForgetCopy.CONTENT_CHANGED else if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
             }
+            if (changed) openDialog(kind, frameId) // review again: the dialog opens once more with the NEW counts, the message stays
         }
     }
 }

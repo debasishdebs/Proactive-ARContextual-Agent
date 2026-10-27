@@ -12,7 +12,7 @@ interface MemoryForget {
     /** v0.9.7 slice C: what the Forget of [kind] would remove at the active scope (the dialog's counts). Null = this port has no scope (the dialog is the old one); a throw = it could not count. */
     suspend fun preview(kind: ForgetKind, memoryId: String, frameId: String?): ForgetPreview? = null
     /** Runs the Forget at the scope the dialog SHOWED (read once when it opened). The default is the old unscoped Forget. */
-    suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope): Boolean =
+    suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String? = null): Boolean =
         when (kind) { ForgetKind.FACT -> forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forgetMoment(frameId) }
 
     companion object {
@@ -27,7 +27,12 @@ interface MemoryForget {
 data class ForgetPreview(
     val requested: com.rokid.context.memory.forget.ForgetScope, val effective: com.rokid.context.memory.forget.ForgetScope,
     val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int,
+    /** Identifies exactly the set counted: the delete refuses ([ContentChanged]) if what it would remove is not that set any more. */
+    val planHash: String = "",
 )
+
+/** A scoped Forget was confirmed against a different set than the one previewed: nothing was deleted; the dialog says so and counts again. */
+class ContentChanged : Exception("content changed since the preview")
 
 /** The Forget went through but, in a production build, a cached memory export that still holds text could not be deleted (it is retried at the next start and the next Forget). */
 class CacheCleanupFailed : Exception("cached export not deleted")
@@ -47,6 +52,8 @@ object ForgetCopy {
     const val SAVE_RUNNING = "A save is running. Try again in a minute, or when it finishes."
     /** The Forget committed; a saved export file still holds the text and could not be deleted. */
     const val CACHE_LEFT = "Forgotten, but a saved copy of your memories (the export file in this app's cache) could not be deleted and may still contain it. It is retried when the app starts and at your next Forget; Delete all removes it too."
+    /** The set changed between the counts and the confirm (new photos or marks, a changed Scene): nothing was deleted. */
+    const val CONTENT_CHANGED = "Content changed since the preview. Review again."
     const val FAILED = "Couldn't forget that \u2014 try again"
 }
 

@@ -159,4 +159,22 @@ class ScopedForgetActionsTest {
         assertEquals(ForgetScope.MOMENT, ForgetActions.previewScoped(ctx, ForgetTarget.Moment(mid(0)), ForgetScope.PHOTO).effective)
         assertNotNull(graph.db.sceneDao().scene("sc-A")); assertNull(graph.db.sceneDao().scene("none"))
     }
+
+    // ---- review fix: the confirm deletes EXACTLY the previewed set ----
+    @Test fun aContentChangeSinceThePreviewIsATypedOutcomeThatDeletesAndCleansNothing() = runBlocking<Unit> {
+        world(); val export = cachedExport()
+        ForgetScope.values().forEach { sc ->
+            val p = ForgetActions.previewScoped(ctx, ForgetTarget.Photo("a1"), sc)
+            photo("late$sc", ms + 4_000 + sc.ordinal * 1_000); moment(4L + sc.ordinal, MomentPartKind.FRAME to "late$sc") // a photo and its stored Moment inside every span and every radius
+            val o = ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), sc, expectedHash = p.planHash)
+            assertEquals("$sc", ForgetActions.Outcome.CONTENT_CHANGED, o); assertFalse(o.committed)
+            assertTrue("a1 stays", "a1" in frames()); assertTrue(jpgs["a1"]!!.exists()); assertTrue("no cleanup ran", export.exists()); assertEquals(0, graph.db.momentDao().tombstoneCount())
+        }
+    }
+
+    @Test fun theSamePreviewConfirmsWhenNothingChanged() = runBlocking<Unit> {
+        world(); val p = ForgetActions.previewScoped(ctx, ForgetTarget.Photo("a1"), ForgetScope.SCENE)
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.SCENE, expectedHash = p.planHash))
+        assertEquals(listOf("n1"), frames())
+    }
 }

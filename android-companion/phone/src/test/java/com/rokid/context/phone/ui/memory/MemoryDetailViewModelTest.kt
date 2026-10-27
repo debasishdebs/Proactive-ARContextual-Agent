@@ -135,7 +135,7 @@ class MemoryDetailViewModelTest {
         override suspend fun forgetMoment(frameId: String): Boolean = onScoped(ForgetKind.MOMENT, active)
         override fun activeScope() = active
         override suspend fun preview(kind: ForgetKind, memoryId: String, frameId: String?) = preview()
-        override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope) = onScoped(kind, scope)
+        override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String?) = onScoped(kind, scope)
     }
     private fun sceneCounts(requested: com.rokid.context.memory.forget.ForgetScope = com.rokid.context.memory.forget.ForgetScope.SCENE) = ForgetPreview(requested, requested, 4, 5, 2, 3, 1, 0)
 
@@ -195,5 +195,23 @@ class MemoryDetailViewModelTest {
         withTimeout(5_000) { model.state.first { it.found } }
         model.askForget(ForgetKind.FACT); assertTrue(model.state.value.forgetConfirmable); assertEquals(null, model.state.value.forgetPreview)
         model.confirmForget(); withTimeout(5_000) { model.state.first { it.forgotten } }; assertEquals(1, fact)
+    }
+
+    @Test fun aContentChangeSinceThePreviewSaysSoReopensTheDialogWithNewCountsAndDeletedNothing() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
+        var previews = 0; var scoped = 0; val hashes = mutableListOf<String?>()
+        val model = vm(object : MemoryForget {
+            override suspend fun forgetFact(memoryId: String) = true
+            override suspend fun forgetMoment(frameId: String) = true
+            override fun activeScope() = com.rokid.context.memory.forget.ForgetScope.SCENE
+            override suspend fun preview(kind: ForgetKind, memoryId: String, frameId: String?) = sceneCounts().copy(photos = 4 + previews++, planHash = "h$previews")
+            override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String?): Boolean { hashes += planHash; if (scoped++ == 0) throw ContentChanged(); return true }
+        })
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.MOMENT); model.confirmForget()
+        val s = withTimeout(5_000) { model.state.first { it.confirm == ForgetKind.MOMENT && it.forgetPreview?.photos == 5 } }
+        assertEquals(ForgetCopy.CONTENT_CHANGED, s.message); assertEquals("Content changed since the preview. Review again.", ForgetCopy.CONTENT_CHANGED); assertTrue(!s.forgotten && !s.forgetting)
+        model.confirmForget(); withTimeout(5_000) { model.state.first { it.forgotten } }
+        assertEquals("the delete is pinned to the hash of the counts the user saw", listOf<String?>("h1", "h2"), hashes)
     }
 }

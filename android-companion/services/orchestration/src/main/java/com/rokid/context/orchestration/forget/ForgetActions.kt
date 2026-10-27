@@ -34,9 +34,9 @@ object ForgetActions {
     /**
      * How a Forget ended. [EXPORT_IN_PROGRESS] = a running export held the [DataOpGate] for 30 s: nothing was forgotten, try again (never silently dropped). [SAVE_IN_PROGRESS] = a Canvas Save
      * held it (a save is short): nothing was forgotten, try again. [CACHE_CLEANUP_FAILED] = the Forget COMMITTED but, in a production build, a cached memory export that still holds text could not be
-     * deleted: it is retried at the next start and the next Forget, and the caller says what remains.
+     * deleted: it is retried at the next start and the next Forget, and the caller says what remains. [CONTENT_CHANGED] = a scoped Forget was confirmed against a different set than the one previewed (new photos, marks or Moments in the span, a changed Scene): nothing was deleted, preview again.
      */
-    enum class Outcome { DONE, EXPORT_IN_PROGRESS, SAVE_IN_PROGRESS, CACHE_CLEANUP_FAILED, FAILED;
+    enum class Outcome { DONE, EXPORT_IN_PROGRESS, SAVE_IN_PROGRESS, CACHE_CLEANUP_FAILED, CONTENT_CHANGED, FAILED;
         /** The Forget itself went through (the cached-export leftover does not undo it). */
         val committed: Boolean get() = this == DONE || this == CACHE_CLEANUP_FAILED
     }
@@ -56,19 +56,19 @@ object ForgetActions {
      * outcomes, same post-commit cleanup as every Forget (cached export, reminders, notifications, outbox, queue scrub, listeners); MOMENT and SCENE run the range-Forget code ([com.rokid.context.memory.forget.ScopedForget]).
      * The scope is read ONCE here ([scope] defaults to the setting) so the dialog's counts and the delete name the same scope.
      */
-    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), onForgotten: () -> Unit = {}): Outcome =
+    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, onForgotten: () -> Unit = {}): Outcome =
         run(context, onForgotten) { svc ->
             val engine = ScopedForget(MemoryGraph.get(context).db, svc)
-            engine.forget(engine.plan(target, scope)).cascade
+            engine.forget(engine.plan(target, scope), expectedHash).cascade
         }
 
     /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
-    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int)
+    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String)
     suspend fun previewScoped(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): ScopedPreview = withContext(Dispatchers.IO) {
         val graph = MemoryGraph.get(context)
         val engine = ScopedForget(graph.db, ForgetService(graph.db, graph.proposals))
         val plan = engine.plan(target, scope); val c = engine.preview(plan)
-        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk)
+        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash)
     }
 
     /**
@@ -153,6 +153,9 @@ object ForgetActions {
         val r = try {
             val graph = MemoryGraph.get(context)
             op(ForgetService(graph.db, graph.proposals))
+        } catch (e: com.rokid.context.memory.forget.ForgetContentChanged) {
+            PcLog.w(TAG, "forget not run: content changed")
+            return Outcome.CONTENT_CHANGED
         } catch (e: Exception) {
             PcLog.w(TAG, "forget failed: ${SafeLog.describe(e)}")
             return Outcome.FAILED

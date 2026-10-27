@@ -54,35 +54,41 @@ class MomentForget(
      * marks, traces, sensor rows, run outputs, projection, durable outbox and the fences (`momentForgetRanges` + a tombstone per second). [sceneIds] are Scenes that go WHOLE in the same transaction
      * (rows, parts, audit, derived fields); the run outputs of those Scenes and of every Moment that went (`scene:<id>`, `moment:<id>` rows) are deleted by key as well, not only through their lineage tokens.
      */
-    suspend fun forgetSpans(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Result {
+    suspend fun forgetSpans(spans: List<LongRange>, sceneIds: Collection<String> = emptyList(), expectedHash: String? = null): Result {
         val merged = wholeSeconds(spans)
         if (merged.isEmpty()) return Result.EMPTY
-        return run(secondsOf(merged), merged, sceneIds.toList().distinct(), byKey = true)
+        return run(secondsOf(merged), merged, sceneIds.toList().distinct(), byKey = true, expectedHash = expectedHash)
     }
 
     /** What [forgetSpans] would remove, from the SAME discovery (read-only, one snapshot): the numbers the confirm dialog shows. */
     /** [scenesRemoved] = Scenes that go whole (named, or every one of their Moments goes); [scenesShrunk] = Scenes that lose some Moments but survive. */
-    data class Counts(val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int)
+    data class Counts(val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int,
+        /** Identifies exactly the set counted (ids, spans, Scene effect): a Forget confirmed with it deletes that set or nothing ([ForgetContentChanged]). */
+        val planHash: String = "")
     suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
         val merged = wholeSeconds(spans)
         if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0, 0)
         return db.withTransaction {
             val d = discover(secondsOf(merged), merged)
             val (removed, shrunk) = sceneEffect(d.moments, sceneIds)
-            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, removed, shrunk)
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, removed.size, shrunk.size, hashOf(merged, d, removed, shrunk))
         }
     }
 
     /** (removed, shrunk): of the Scenes holding any of [momentIds] (and the named [sceneIds]), those left with no Moment (or named) go; the others only lose parts. */
-    internal suspend fun sceneEffect(momentIds: Collection<String>, sceneIds: Collection<String> = emptyList()): Pair<Int, Int> {
+    internal suspend fun sceneEffect(momentIds: Collection<String>, sceneIds: Collection<String> = emptyList()): Pair<Set<String>, Set<String>> {
         val named = sceneIds.toSet(); val going = momentIds.toSet()
         val affected = LinkedHashSet<String>(named)
         going.toList().chunked(CHUNK).forEach { affected += db.sceneDao().sceneIdsHoldingMoments(it) }
-        if (affected.isEmpty()) return 0 to 0
+        if (affected.isEmpty()) return emptySet<String>() to emptySet()
         val parts = affected.toList().chunked(CHUNK).flatMap { db.sceneDao().partsOf(it) }.filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.groupBy({ it.sceneId }, { it.refId })
-        val removed = affected.count { it in named || (parts[it].orEmpty().all { r -> r in going }) }
-        return removed to affected.size - removed
+        val removed = affected.filter { it in named || (parts[it].orEmpty().all { r -> r in going }) }.toSet()
+        return removed to (affected - removed)
     }
+
+    private fun hashOf(spans: List<LongRange>, d: Found, removed: Set<String>, shrunk: Set<String>): String = ForgetPlanHash.of(
+        ForgetScope.MOMENT, spans, mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to removed, "scenesShrunk" to shrunk),
+    )
 
     private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
         val lo = Math.floorDiv(maxOf(it.first, 0L), 1000L).coerceAtMost(MomentId.MAX_SECOND); val hi = Math.floorDiv(it.last, 1000L).coerceAtMost(MomentId.MAX_SECOND)
@@ -126,7 +132,7 @@ class MomentForget(
         return Found(frames, memories, labels, projected, moments)
     }
 
-    private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String> = emptyList(), byKey: Boolean = false): Result {
+    private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String> = emptyList(), byKey: Boolean = false, expectedHash: String? = null): Result {
         var counts = Result.EMPTY
         service.notifying {
         db.withTransaction {
@@ -137,6 +143,10 @@ class MomentForget(
             // 2. Independent discovery, unioned with the projection.
             val found = discover(requestedSeconds, spans)
             val frames = found.frames; val memories = found.memories; val labels = found.labels; val projected = found.projected
+            if (expectedHash != null) { // the confirmed set must be EXACTLY the one that was previewed; anything else rolls this transaction back (fences included) and deletes nothing
+                val (removed, shrunk) = sceneEffect(found.moments, sceneIds)
+                if (hashOf(spans, found, removed, shrunk) != expectedHash) throw ForgetContentChanged()
+            }
             val wire = frames.toList().chunked(CHUNK).flatMap { md.wireIds(it) }.map { it.wireFrameId }
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
             // 3. The cascade: the existing code paths, in this transaction.

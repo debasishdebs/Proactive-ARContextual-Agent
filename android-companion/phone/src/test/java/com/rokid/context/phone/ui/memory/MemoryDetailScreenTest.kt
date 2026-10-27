@@ -13,6 +13,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
+import org.junit.Assert.assertTrue
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
@@ -103,5 +105,10 @@ class MemoryDetailScreenTest {
         assertEquals("This deletes 1 photo, 1 fact, 1 mark, 1 Moment.", ForgetScopeCopy.counts(1, 1, 1, 1, 0, 0))
         assertEquals("This deletes 0 photos, 2 facts, 0 marks, 0 Moments. 2 Scenes removed.", ForgetScopeCopy.counts(0, 2, 0, 0, 2, 0))
         assertEquals("This deletes 1 photo, 1 fact, 0 marks, 1 Moment. 1 Scene shrinks.", ForgetScopeCopy.counts(1, 1, 0, 1, 0, 1))
+    }
+
+    @Test fun theDialogShowsTheContentChangedMessage() {
+        compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = scene, forgetConfirmable = true, message = ForgetCopy.CONTENT_CHANGED), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
+        assertEquals("the page and the dialog both show it", 2, compose.onAllNodesWithText("Content changed since the preview. Review again.").fetchSemanticsNodes().size)
     }
 }

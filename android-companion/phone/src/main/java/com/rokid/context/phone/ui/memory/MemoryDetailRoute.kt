@@ -35,11 +35,11 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
                 val target = targetOf(kind, memoryId, frameId) ?: return null
                 val scope = ForgetScopeSetting.get() // read once: the counts and the delete name this scope
                 val p = ForgetActions.previewScoped(app, target, scope)
-                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk)
+                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk, p.planHash)
             }
-            override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: ForgetScope): Boolean {
+            override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: ForgetScope, planHash: String?): Boolean {
                 val target = targetOf(kind, memoryId, frameId) ?: return false
-                return done(ForgetActions.forgetScopedOutcome(app, target, scope, onForgotten))
+                return done(ForgetActions.forgetScopedOutcome(app, target, scope, planHash, onForgotten))
             }
             /** The typed outcome: a blocked Forget becomes the typed exception the view model names to the user (an export, a Canvas save, or a cached export that could not be deleted). */
             private fun done(o: ForgetActions.Outcome): Boolean = when (o) {
@@ -47,6 +47,7 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
                 ForgetActions.Outcome.EXPORT_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.ExportInProgress()
                 ForgetActions.Outcome.SAVE_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.WriteInProgress()
                 ForgetActions.Outcome.CACHE_CLEANUP_FAILED -> throw CacheCleanupFailed()
+                ForgetActions.Outcome.CONTENT_CHANGED -> throw ContentChanged()
                 ForgetActions.Outcome.FAILED -> false
             }
         }, onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })

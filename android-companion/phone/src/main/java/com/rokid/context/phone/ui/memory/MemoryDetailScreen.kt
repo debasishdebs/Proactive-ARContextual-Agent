@@ -71,6 +71,7 @@ fun MemoryDetailScreen(
                         Text(ForgetScopeCopy.dialogScope(p.effective), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                         Text(ForgetScopeCopy.counts(p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk))
                     }
+                    state.message?.let { Text(it, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) } // e.g. "Content changed since the preview. Review again."
                     if (state.forgetPreviewing) Text(ForgetScopeCopy.COUNTING)
                     if (state.forgetPreviewFailed) Text(ForgetScopeCopy.COUNTS_FAILED)
                 }
