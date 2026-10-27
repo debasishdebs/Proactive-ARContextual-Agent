@@ -26,6 +26,9 @@ import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.SwitchRow
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -49,7 +52,9 @@ data class SignalSettingsUi(
  * The derived-signal editor (v0.9.7 B). [problem] is the FIRST problem of [DerivedSignals.validate] (the validator `PUT /api/signals/derived/<name>` runs) or a parse problem; null while valid or while both fields are empty.
  * [canSave] only when both fields are filled and nothing is wrong.
  */
-data class DerivedEditorUi(val open: Boolean = false, val name: String = "", val text: String = "", val editing: Boolean = false, val problem: String? = null, val canSave: Boolean = false)
+data class DerivedEditorUi(val open: Boolean = false, val name: String = "", val text: String = "", val editing: Boolean = false, val problem: String? = null, val canSave: Boolean = false,
+    /** The check of the latest text is still pending (debounced, off the main thread): Save stays disabled. */
+    val checking: Boolean = false)
 
 /** The editor's callbacks, bundled for the screen. */
 class DerivedEditorActions(val onNew: () -> Unit = {}, val onEdit: (String) -> Unit = {}, val onName: (String) -> Unit = {}, val onText: (String) -> Unit = {}, val onSave: () -> Unit = {}, val onClose: () -> Unit = {})
@@ -60,6 +65,9 @@ class SignalSettingsViewModel(
     private val store: SignalConfigStore,
     private val glassesHash: StateFlow<String?>,
     private val fusionStore: FusionSettingsStore = FusionSettingsStore(),
+    /** Where the expression is checked and saved (never the main thread in production) and how long typing must pause first. Tests pass Unconfined and 0. */
+    editorDispatcher: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.Default,
+    private val editorDebounceMs: Long = EDITOR_DEBOUNCE_MS,
 ) : ViewModel() {
     private fun of(h: com.rokid.context.core.model.HudSettings, c: SignalConfig, reported: String?, f: Map<String, Double> = fusionStore.overrides.value): SignalSettingsUi {
         val clean = ClassifierThresholds.clean(h.classifier)
@@ -85,29 +93,59 @@ class SignalSettingsViewModel(
 
     private val editorState = MutableStateFlow(DerivedEditorUi())
     val editor: StateFlow<DerivedEditorUi> = editorState
+    private val editorScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + editorDispatcher)
+    private var checkJob: kotlinx.coroutines.Job? = null
+    private val latest = java.util.concurrent.atomic.AtomicInteger()
+    /** Test seams: how many checks ran and the thread of the last one. */
+    internal val checks = java.util.concurrent.atomic.AtomicInteger()
+    @Volatile internal var lastCheckThread: String? = null
+    @Volatile internal var checkHook: (() -> Unit)? = null
 
+    override fun onCleared() { editorScope.cancel(); super.onCleared() }
+
+    /** The same limit the API has for a request body ([com.rokid.context.phone.canvas.server.CanvasServer.MAX_BODY]), applied to the UTF-8 bytes BEFORE anything is parsed. */
     private fun check(open: Boolean, name: String, text: String, editing: Boolean): DerivedEditorUi {
+        checks.incrementAndGet(); lastCheckThread = Thread.currentThread().name; checkHook?.invoke()
         if (name.isBlank() && text.isBlank()) return DerivedEditorUi(open, name, text, editing)
+        if (utf8Size(text) > SignalConfigStore.MAX_DEFINITION_BYTES) return DerivedEditorUi(open, name, text, editing, "the expression is larger than ${SignalConfigStore.MAX_DEFINITION_BYTES / 1024} KiB", false)
         val graph = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) }.getOrNull()
         val problem = if (graph == null) (if (text.isBlank()) "write the expression" else "the expression is not valid JSON")
         else DerivedSignals.validate(name, graph, store.config.value).firstOrNull()
         return DerivedEditorUi(open, name, text, editing, problem, problem == null)
     }
-    private fun edit(name: String = editorState.value.name, text: String = editorState.value.text) { editorState.value = check(true, name, text, editorState.value.editing) }
-    fun newDerived() { editorState.value = DerivedEditorUi(open = true) }
+
+    /** The text is shown at once; its check runs after a pause in typing, off the main thread, and only the newest one lands. */
+    private fun edit(name: String = editorState.value.name, text: String = editorState.value.text) {
+        val editing = editorState.value.editing
+        val v = latest.incrementAndGet()
+        editorState.value = DerivedEditorUi(true, name, text, editing, null, false, checking = !(name.isBlank() && text.isBlank()))
+        checkJob?.cancel()
+        checkJob = editorScope.launch {
+            if (editorDebounceMs > 0) delay(editorDebounceMs)
+            val r = check(true, name, text, editing)
+            if (latest.get() == v) editorState.value = r
+        }
+    }
+    fun newDerived() { latest.incrementAndGet(); checkJob?.cancel(); editorState.value = DerivedEditorUi(open = true) }
     fun editDerived(name: String) {
         val d = store.config.value.derived.firstOrNull { it.name == name } ?: return
-        editorState.value = check(true, d.name, d.graph.toString(), true)
+        latest.incrementAndGet(); checkJob?.cancel()
+        editorState.value = DerivedEditorUi(true, d.name, d.graph.toString(), true, null, false, checking = true)
+        val e = editorState.value; val v = latest.get()
+        checkJob = editorScope.launch { val r = check(true, e.name, e.text, true); if (latest.get() == v) editorState.value = r }
     }
     fun setEditorName(name: String) = edit(name = name)
     fun setEditorText(text: String) = edit(text = text)
-    fun closeEditor() { editorState.value = DerivedEditorUi() }
-    /** Saves through [SignalConfigStore.saveDerived] (validated again there; the 16-entry history and the logging are its). Closes the editor on success. */
+    fun closeEditor() { latest.incrementAndGet(); checkJob?.cancel(); editorState.value = DerivedEditorUi() }
+    /** Saves through [SignalConfigStore.saveDerived] (validated and size-checked again there; the 16-entry history and the logging are its), off the main thread. Closes the editor on success. */
     fun saveEditor() {
         val e = editorState.value
         if (!e.canSave) return
-        val problems = store.saveDerived(e.name, runCatching { kotlinx.serialization.json.Json.parseToJsonElement(e.text) }.getOrNull())
-        if (problems.isEmpty()) closeEditor() else editorState.value = e.copy(problem = problems.first(), canSave = false)
+        val v = latest.incrementAndGet()
+        editorScope.launch {
+            val problems = store.saveDerived(e.name, runCatching { kotlinx.serialization.json.Json.parseToJsonElement(e.text) }.getOrNull())
+            if (latest.get() == v) { if (problems.isEmpty()) closeEditor() else editorState.value = e.copy(problem = problems.first(), canSave = false) }
+        }
     }
     fun editorActions() = DerivedEditorActions(::newDerived, ::editDerived, ::setEditorName, ::setEditorText, ::saveEditor, ::closeEditor)
 
@@ -119,6 +157,8 @@ class SignalSettingsViewModel(
 
     companion object {
         private const val TAG = "SignalSettings"
+        const val EDITOR_DEBOUNCE_MS = 250L
+        internal fun utf8Size(t: String): Int { var n = 0; var i = 0; while (i < t.length) { val c = t[i]; n += when { c.code < 0x80 -> 1; c.code < 0x800 -> 2; Character.isHighSurrogate(c) && i + 1 < t.length -> { i++; 4 }; else -> 3 }; i++ }; return n }
 
         /** Five presets across the safe range (min, between, default, between, max), plus a stored custom value so it stays selectable. */
         fun options(key: String, current: Double): List<Double> {
@@ -210,7 +250,7 @@ fun SignalSettingsScreen(
                     OutlinedTextField(editor.text, editorActions.onText, label = { Text("Expression (graph JSON)") }, minLines = 4, modifier = Modifier.fillMaxWidth().testTag("derived_text"))
                     editor.problem?.let { NoticeText(it, error = true, tag = "derived_problem") }
                     Row {
-                        Button(onClick = editorActions.onSave, enabled = editor.canSave, modifier = Modifier.testTag("derived_save")) { Text("Save") }
+                        Button(onClick = editorActions.onSave, enabled = editor.canSave && !editor.checking, modifier = Modifier.testTag("derived_save")) { Text("Save") }
                         TextButton(onClick = editorActions.onClose, modifier = Modifier.testTag("derived_close")) { Text("Cancel") }
                     }
                 }
