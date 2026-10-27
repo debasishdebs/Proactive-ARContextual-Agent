@@ -6,15 +6,41 @@ import com.rokid.context.memory.db.CanvasSlice3Dao
 import com.rokid.context.memory.db.MomentDao
 import com.rokid.context.memory.db.MomentSensorEntity
 
-/** The production [MomentSource]: reads the existing frame, memory and mark tables. Nothing here writes, and a forgotten (tombstoned) frame is never returned. */
+/**
+ * The production [MomentSource]: reads the existing frame, memory and mark tables. Nothing here writes, and a forgotten (tombstoned) frame is never returned.
+ * Given the Moment DAO (the listing, the run resolution), it also honours the MOMENT fences (v0.9.7 review fix): a second with a `moment_tombstone` row (a Moment Forget, the invalid purge) or inside the Moment Forget
+ * range yields neither photos nor marks, so a purged Moment is never re-invented from the sources that survive (a bare mark stays a mark, listed by the Activity, but makes no Moment).
+ * The builder's own resolver is built without it: the builder checks the same fences inside its transaction.
+ */
 class DaoMomentSource(
     private val dao: CanvasDao, private val dao3: CanvasSlice3Dao, private val moments: MomentDao? = null,
     /** Phone clock: a mark still waiting for its photo is held back until [PHOTO_WAIT_MS] after it was received. */
     private val clock: () -> Long = System::currentTimeMillis,
 ) : MomentSource {
-    override suspend fun frames(fromMs: Long, toMs: Long, limit: Int) = dao.momentFrames(fromMs, toMs, limit).map { MomentFrame(it.id, it.ts, it.rev) }
+    /** The seconds among [times] (epoch ms) that a Moment tombstone or the Moment Forget range fences; empty when this source was not given the Moment DAO. */
+    private suspend fun fencedSeconds(times: Collection<Long>): Set<Long> {
+        val m = moments ?: return emptySet()
+        val seconds = times.map { Math.floorDiv(it, 1000L) }.filter { it in 0..com.rokid.context.memory.moment.MomentId.MAX_SECOND }.distinct()
+        if (seconds.isEmpty()) return emptySet()
+        val ranges = dao3.momentForgetRanges()
+        val byId = seconds.associateBy { com.rokid.context.memory.moment.MomentId.format(it) }
+        val tomb = byId.keys.toList().chunked(CHUNK).flatMap { m.tombstonedAmong(it) }.toSet()
+        return seconds.filter { s -> com.rokid.context.memory.moment.MomentId.format(s) in tomb || ranges.any { it.first <= s * 1000 + 999 && it.last >= s * 1000 } }.toSet()
+    }
 
-    override suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int) = dao.momentFramesNewest(fromMs, toMs, limit).map { MomentFrame(it.id, it.ts, it.rev) }
+    private suspend fun unfencedFrames(rows: List<com.rokid.context.memory.db.MomentFrameRow>): List<MomentFrame> {
+        val fenced = fencedSeconds(rows.map { it.ts })
+        return rows.filter { Math.floorDiv(it.ts, 1000L) !in fenced }.map { MomentFrame(it.id, it.ts, it.rev) }
+    }
+
+    private suspend fun unfencedMarks(marks: List<MomentMark>): List<MomentMark> {
+        val fenced = fencedSeconds(marks.map { it.atMs })
+        return marks.filter { Math.floorDiv(it.atMs, 1000L) !in fenced }
+    }
+
+    override suspend fun frames(fromMs: Long, toMs: Long, limit: Int) = unfencedFrames(dao.momentFrames(fromMs, toMs, limit))
+
+    override suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int) = unfencedFrames(dao.momentFramesNewest(fromMs, toMs, limit))
 
     override suspend fun memories(frameIds: List<String>): List<Pair<String, MomentRef>> =
         frameIds.chunked(CHUNK).flatMap { c -> dao.momentMemories(c).map { it.frameId to MomentRef(it.id, it.rev) } }
@@ -26,11 +52,11 @@ class DaoMomentSource(
      * The marks of a range by their EFFECTIVE time (v0.9.6 slice C): a mark whose photo arrived belongs to the second of that photo, a mark with no photo to its own second; a mark still waiting for its photo
      * is not read yet, one whose wait ran out reads as `photo_timeout`; the intent row of a mark follows it. A mark whose photo is gone makes no Moment.
      */
-    override suspend fun marks(fromMs: Long, toMs: Long) = dao3.momentMarksBetween(fromMs, toMs, clock() - PHOTO_WAIT_MS).map {
+    override suspend fun marks(fromMs: Long, toMs: Long): List<MomentMark> = unfencedMarks(dao3.momentMarksBetween(fromMs, toMs, clock() - PHOTO_WAIT_MS).map {
         val state = if (it.photo == MarkPhotoReason.PENDING) MarkPhotoReason.TIMEOUT else it.photo
         // a mark from before v15 (no photo state) keeps its old revision text, so no stored Moment of an old mark is rebuilt for nothing
         MomentMark(it.labelId, it.atMs, "${it.kind}:${it.name}:${it.deletionCounter}:${it.provenance}" + (state?.let { s -> ":$s" } ?: ""), it.source, state)
-    }
+    })
 
     /** The stored sensor rows, when this source was given the Moment DAO (the builder's own resolver is not: it never reads them). */
     override suspend fun sensor(momentIds: List<String>): List<MomentSensorEntity> = moments?.let { m -> momentIds.chunked(CHUNK).flatMap { m.sensorOf(it) } } ?: emptyList()
