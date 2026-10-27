@@ -22,6 +22,8 @@ abstract class ForgetDao {
             "UNION SELECT ms.memoryId FROM memory_source ms JOIN d ON ms.sourceMemoryId = d.id) SELECT id FROM d",
     )
     abstract suspend fun descendants(ids: List<String>): List<String>
+    /** The facts built DIRECTLY from [ids] (one level of `memory_source`): the bounded walk of the Forget scope uses it instead of the unbounded recursive query. */
+    @Query("SELECT DISTINCT memoryId FROM memory_source WHERE sourceMemoryId IN (:ids)") abstract suspend fun childrenOf(ids: List<String>): List<String>
 
     @Query("SELECT * FROM memory WHERE id IN (:ids)") abstract suspend fun memories(ids: List<String>): List<MemoryEntity>
     /** Memories citing [frameId], through `memory.frameId` or `frame_source`. */

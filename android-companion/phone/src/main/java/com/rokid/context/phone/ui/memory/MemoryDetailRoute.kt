@@ -35,7 +35,7 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
                 val target = targetOf(kind, memoryId, frameId) ?: return null
                 val scope = ForgetScopeSetting.get() // read once: the counts and the delete name this scope
                 val p = ForgetActions.previewScoped(app, target, scope)
-                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk, p.planHash, p.outside)
+                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk, p.planHash, p.outside, p.tooLarge)
             }
             override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: ForgetScope, planHash: String?): Boolean {
                 val target = targetOf(kind, memoryId, frameId) ?: return false
@@ -48,6 +48,7 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
                 ForgetActions.Outcome.SAVE_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.WriteInProgress()
                 ForgetActions.Outcome.CACHE_CLEANUP_FAILED -> throw CacheCleanupFailed()
                 ForgetActions.Outcome.CONTENT_CHANGED -> throw ContentChanged()
+                ForgetActions.Outcome.TOO_LARGE -> throw TooLarge()
                 ForgetActions.Outcome.FAILED -> false
             }
         }, onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })

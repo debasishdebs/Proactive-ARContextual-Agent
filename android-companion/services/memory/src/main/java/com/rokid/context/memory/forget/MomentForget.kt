@@ -66,15 +66,17 @@ class MomentForget(
         /** Identifies exactly the set counted (ids, spans, Scene effect): a Forget confirmed with it deletes that set or nothing ([ForgetContentChanged]). */
         val planHash: String = "",
         /** Items OUTSIDE the spans that are affected but NOT deleted: photos an in-span fact cites (locked only) and derived facts elsewhere that become invalid. */
-        val outside: Int = 0)
+        val outside: Int = 0,
+        /** The set is too connected to forget in one step (depth or node cap): nothing can be deleted by this scope. */
+        val tooLarge: Boolean = false)
     suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
         val merged = wholeSeconds(spans)
         if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0, 0)
-        return db.withTransaction {
+        return try { db.withTransaction {
             val d = discover(secondsOf(merged), merged, bounded = true)
             val e = sceneEffect(d.moments, sceneIds)
             Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e), outside = d.outsideFrames.size + d.descendants.size)
-        }
+        } } catch (e: ForgetTooLarge) { Counts(0, 0, 0, 0, 0, 0, tooLarge = true) }
     }
 
     /** (removed, shrunk): of the Scenes holding any of [momentIds] (and the named [sceneIds]), those left with no Moment (or named) go; the others only lose parts. */
@@ -150,8 +152,21 @@ class MomentForget(
         if (!bounded) return Found(frames, memories, labels, projected, moments)
         val ml = memories.toList()
         val cited = ml.chunked(CHUNK).flatMap { c -> fd.memories(c).mapNotNull { it.frameId } + fd.sourceFramesOf(c) }.toSet()
-        val descendants = ml.chunked(CHUNK).flatMap { fd.descendants(it) }.toSet() - memories
+        val descendants = boundedDescendants(ml)
         return Found(frames, memories, labels, projected, moments, outsideFrames = cited - frames, descendants = descendants)
+    }
+
+    /** The derived facts that depend on [seed], found level by level with a HARD cap of [maxDepth] levels and [maxNodes] facts; past either, [ForgetTooLarge] (nothing is deleted). */
+    private suspend fun boundedDescendants(seed: List<String>): Set<String> {
+        val fd = db.forgetDao(); val seen = HashSet<String>(seed); val out = LinkedHashSet<String>()
+        var frontier = seed.toList(); var depth = 0
+        while (frontier.isNotEmpty()) {
+            if (++depth > maxDepth) throw ForgetTooLarge()
+            val next = frontier.chunked(CHUNK).flatMap { fd.childrenOf(it) }.filter { seen.add(it) }
+            out += next; if (out.size > maxNodes) throw ForgetTooLarge()
+            frontier = next
+        }
+        return out
     }
 
     private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String> = emptyList(), byKey: Boolean = false, expectedHash: String? = null): Result {
@@ -216,5 +231,8 @@ class MomentForget(
         private const val CHUNK = 500
         /** A range up to this many seconds gets one `moment_tombstone` per second; a longer one is fenced by the durable range alone (the builder and the frame commit both check it). */
         const val MAX_TOMBSTONED_SPAN = 3600L
+        /** Hard caps of the derived-fact walk of the bounded scopes (levels, facts). Variables only so a test can lower them. */
+        @Volatile internal var maxDepth = 32
+        @Volatile internal var maxNodes = 5_000
     }
 }
