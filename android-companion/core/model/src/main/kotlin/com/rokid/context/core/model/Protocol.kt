@@ -237,7 +237,15 @@ data class HudSettings(
     val markPhotoHoldMs: Int = MARK_PHOTO_HOLD_DEFAULT_MS,
     /** v0.9.7 A, additive: edited classifier thresholds (only non-default keys, see [com.rokid.context.core.model.signals.ClassifierThresholds]). Empty = defaults. Old glasses ignore it. */
     val classifier: Map<String, Double> = emptyMap(),
+    /**
+     * v0.9.7 B, additive: developer-only RECORDING of raw glasses sensor samples (gyro, linear acceleration) at this rate, in batches on the glasses (0 = off, else one of [SENSOR_REC_PRESETS_HZ]; see [normalized]).
+     * Never read by the motion classifier, the capture decisions or the sampling-rate policy, and not part of any settings hash. Old glasses ignore it.
+     */
+    val sensorRecHz: Int = 0,
 )
+
+/** The recording rates the phone offers (Hz); the sensors run at 50 Hz and more in the classifier's FULL mode, so these are inside their real capability. */
+val SENSOR_REC_PRESETS_HZ: List<Int> = listOf(5, 10, 25)
 
 const val MARK_PHOTO_HOLD_MIN_MS = 2_000
 const val MARK_PHOTO_HOLD_MAX_MS = 4_000
@@ -289,6 +297,7 @@ fun HudSettings.normalized(): HudSettings {
         wearParkWornSec = wearParkWornSec.coerceIn(WEAR_PARK_MIN_SEC, WEAR_PARK_MAX_SEC),
         markPhotoHoldMs = markPhotoHoldMs.coerceIn(MARK_PHOTO_HOLD_MIN_MS, MARK_PHOTO_HOLD_MAX_MS),
         classifier = com.rokid.context.core.model.signals.ClassifierThresholds.clean(classifier),
+        sensorRecHz = sensorRecHz.takeIf { it in SENSOR_REC_PRESETS_HZ } ?: 0,
     )
 }
 

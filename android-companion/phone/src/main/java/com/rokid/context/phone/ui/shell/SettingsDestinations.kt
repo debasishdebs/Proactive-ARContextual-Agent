@@ -1,6 +1,7 @@
 package com.rokid.context.phone.ui.shell
 
 import com.rokid.context.core.model.carriesData
+import com.rokid.context.core.model.normalized
 import com.rokid.context.ai.local.LocalModels
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -311,10 +312,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
             developerMode = devOn,
+            sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
+            onSensorRecHz = { hz -> s.hud.update { it.copy(sensorRecHz = hz).normalized() } },
             contextHub = contextHub,
             onOpenPhotoDimTest = if (PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) ({ nav.navigate(Routes.DIAGNOSTICS_PHOTO_DIM) }) else null,
             onDeveloperMode = { on ->
                 dev.set(on)
+                if (!on) s.hud.update { it.copy(sensorRecHz = 0) } // the developer sensor recording goes back to Off with Developer mode (it is also never sent while that is off)
                 if (!on) { // off: the server stops and every browser session ends, now
                     CanvasGraph.get(app).let { it.terminateSession(com.rokid.context.phone.canvas.helper.SessionEnd.DEVELOPER_MODE_OFF); it.revokeAll() }
                     CanvasService.stop(app)

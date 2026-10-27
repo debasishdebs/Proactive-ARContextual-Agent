@@ -167,6 +167,8 @@ class GlassesRuntime private constructor(private val app: Context) {
     }
     /** Prints the state line when the blocker changed or a minute passed. A no-op until the recorder exists (this never constructs it on the calling thread); memory reads only. */
     fun pollTraceState() { if (traceRecorderReady) traceState.poll() }
+    /** v0.9.7 B: runs [r] on the trace writer thread (the sensor-recording batches are written there, ordered with the epoch wipe and the forget run). */
+    fun traceWriterExecute(r: Runnable) { traceWriter.execute(r) }
     /** The single storage writer (idle-blocked daemon thread, no timer): the recorder's epoch wipe / recovery and the `diag_state` load and saves run on it, in order. */
     private val traceWriter: java.util.concurrent.ExecutorService by lazy {
         java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace").also { it.isDaemon = true } }
