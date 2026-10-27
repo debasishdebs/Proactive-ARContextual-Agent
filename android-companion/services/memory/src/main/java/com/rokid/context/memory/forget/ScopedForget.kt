@@ -114,7 +114,7 @@ class ScopedForget(
         val hash = ForgetPlanHash.of(ForgetScope.PHOTO, windows, mapOf(
             "target" to listOf(plan.factId ?: plan.frameId.orEmpty()), "cited" to cited, "photos" to photos, "memories" to seed, "invalidated" to invalidated, "marks" to marks, "moments" to moments,
             "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk) + e.membership.mapKeys { "scene:" + it.key })
-        return MomentForget.Counts(photos.size, seed.size, marks.size, moments.size, e.removed.size, e.shrunk.size, hash)
+        return MomentForget.Counts(photos.size, seed.size, marks.size, moments.size, e.removed.size, e.shrunk.size, hash, outside = (cited - photos.toSet()).size + invalidated.size)
     }
 
     /**

@@ -157,20 +157,37 @@ class ScopedForgetTest {
         }
     }
 
-    @Test fun aPhotoCitedByAFactOfTheSpanIsInThePreviewTheHashAndTheOutbox() = runBlocking<Unit> {
+    /** Round 3 design: BOUNDED exact-span. An outside photo cited by an in-span fact is KEPT (only locked); nothing is followed transitively. */
+    @Test fun aPhotoOutsideTheSpansThatAnInSpanFactCitesIsKeptAndOnlyCountedAsAffected() = runBlocking<Unit> {
         world(); db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("n1", "g1_n1", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = MS + 90_005))
         fx.memory("mx", "n1", createdAt = MS + 500) // a fact born in the span that cites the photo 90 s away
         val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
-        assertEquals("a1, a2 and the cited n1", 3, c.photos); assertEquals("ma1, ma2, mx and n1's own mn1", 4, c.memories)
-        engine.forget(p, c.planHash)
-        assertEquals(listOf("a3"), frames()); assertTrue("n1's glasses copy is queued", fx.outbox().contains(com.rokid.context.memory.db.CleanupTarget.GLASSES_FRAME to "{\"wireFrameId\":\"g1_n1\"}"))
-        assertTrue(mid(90) !in moments())
+        assertEquals("a1 and a2 only", 2, c.photos); assertEquals("ma1, ma2 and mx; n1's own mn1 is NOT reached", 3, c.memories); assertEquals("n1 is outside and affected", 1, c.outside)
+        val done = engine.forget(p, c.planHash)
+        assertEquals("n1 and a3 are kept", listOf("a3", "n1"), frames()); assertEquals("mx is gone, n1's own fact stays", listOf("ma3", "mn1"), memories())
+        assertTrue("n1 is only locked", "n1" in db.forgetDao().tombstoned(listOf("n1")))
+        assertTrue("no file of n1 is deleted", done.cascade.framesToDelete.none { it.contains("n1") }); assertTrue(fx.outbox().none { it.second.contains("n1") })
+        assertTrue("n1's Moment survives", mid(90) in moments())
     }
 
-    @Test fun aChangeToAPhotoThatOnlyACitingFactReachesIsRefused() = runBlocking<Unit> {
-        world(); fx.memory("mx", "n1", createdAt = MS + 500)
-        val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)); fx.memory("mn2", "n1") // a new fact of the outside photo
-        refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash); assertTrue("n1" in frames())
+    @Test fun aNewInSpanFactCitingAnotherOutsidePhotoAfterThePreviewIsRefused() = runBlocking<Unit> {
+        world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)); fx.memory("mx", "a3", createdAt = MS + 500)
+        refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash); assertTrue("a3" in frames())
+    }
+
+    @Test fun aDerivedFactThatAppearsAfterThePreviewIsRefused() = runBlocking<Unit> {
+        world(); val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT))
+        fx.memory("dnew", null, derived = true, createdAt = MS + 300_000); fx.derivedFrom("dnew", "ma1")
+        refused(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash)
+    }
+
+    @Test fun aDerivedFactElsewhereIsHiddenNotDeletedAndItsMomentSurvivesAndRebuilds() = runBlocking<Unit> {
+        world(); fx.memory("dsum", null, derived = true, createdAt = MS + 200_000); fx.derivedFrom("dsum", "ma1")
+        db.momentDao().replace(com.rokid.context.memory.db.MomentEntity(mid(200), 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME, text = "TEXT OF dsum"), listOf(com.rokid.context.memory.db.MomentPartEntity(mid(200), MomentPartKind.MEMORY, "dsum", "r", 1)))
+        val c = engine.preview(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)); assertEquals("the derived fact is outside and affected", 1, c.outside)
+        engine.forget(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT), c.planHash)
+        assertEquals(com.rokid.context.memory.db.ReviewState.INVALIDATED, db.forgetDao().memories(listOf("dsum")).single().reviewState)
+        assertTrue("the remote Moment survives", mid(200) in moments()); assertEquals("but its text copy is gone", null, db.momentDao().moment(mid(200))!!.text)
     }
 
     @Test fun aSharedPhotoIsLockedAndRadiusCleanedSoItsWindowIsInThePlan() = runBlocking<Unit> {
