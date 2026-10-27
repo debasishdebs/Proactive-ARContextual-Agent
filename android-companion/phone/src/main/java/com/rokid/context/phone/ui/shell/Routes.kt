@@ -29,6 +29,8 @@ object Routes {
     const val SETTINGS_CAPTURE = "settings/capture"
     /** Settings > Capture > Phone, car, watch and photo context (Wave B). */
     const val SETTINGS_CONTEXT = "settings/capture/context"
+    /** v0.9.7 A: Settings > Capture > Signals and classifier thresholds. */
+    const val SETTINGS_SIGNALS = "settings/capture/signals"
     const val SETTINGS_ENDPOINT = "settings/endpoints/{id}"
     const val SETTINGS_ROLES = "settings/roles"
     const val SETTINGS_PROMPTS = "settings/prompts"

@@ -148,6 +148,14 @@ class ContextHubTest {
         assertTrue(f.msgs.filterNotNull().none { it.state == ContextState.VEHICLE_DRIVING })
     }
 
+    @Test fun aGlassesHintCarriesTheClassifierHashToTheStatus() = runTest {
+        val f = Fx(this); f.start()
+        f.hub.onMotionHint(MotionHint(MotionState.STILL, f.clock(), stillFrac5m = 0.9f, classifierHash = "0123456789ab"))
+        assertEquals("0123456789ab", GlassesClassifierStatus.reported.value)
+        f.hub.onMotionHint(MotionHint(MotionState.STILL, f.clock(), stillFrac5m = 0.9f))
+        assertEquals("an old glasses hint without a hash leaves the last report", "0123456789ab", GlassesClassifierStatus.reported.value)
+    }
+
     @Test fun watchAsleepIsRestWithZeroConfidenceAfterTwoMinutes() = runTest {
         val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
         // a glasses hint whose still fraction is unknown (-1) makes the engine's REST confidence negative; the hub clamps it
