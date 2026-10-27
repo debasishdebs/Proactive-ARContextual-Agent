@@ -55,6 +55,7 @@ class ReplayRoutes(
         } catch (e: ReplayBusy) { HttpResponse.error(409, "busy", "A replay is already running.")
         } catch (e: ReplayDeveloperModeOff) { HttpResponse.error(403, "developer_mode_off", "Developer mode is off.")
         } catch (e: ReplayUnknownTrace) { HttpResponse.error(404, "not_found", "Trace not found.")
+        } catch (e: com.rokid.context.canvas.plan.AmbiguousConfigHash) { HttpResponse.error(409, "ambiguous_hash", "More than one plan carries this config hash.")
         } catch (e: NoSuchElementException) { HttpResponse.error(404, "not_found", "Not found.")
         } catch (e: IllegalArgumentException) { HttpResponse.error(400, "bad_request", "Bad request.")
         } catch (e: Throwable) { HttpResponse.error(500, "internal", "Something went wrong.") }

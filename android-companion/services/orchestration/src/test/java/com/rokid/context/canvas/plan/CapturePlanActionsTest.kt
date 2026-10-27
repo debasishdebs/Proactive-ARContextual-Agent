@@ -298,6 +298,34 @@ class CapturePlanActionsTest {
         } finally { com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.ai.canvas.plan.SignalConfig() }; com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { emptyList() } }
     }
 
+    private val winDef = kotlinx.serialization.json.Json.parseToJsonElement("""{"steps":[{"name":"s","inputs":[{"name":"k","const":1.2}],"nodes":[{"id":"w","op":"win","agg":"mean","sec":10,"name":"stepHz"},{"id":"c","op":"cmp","f":">"}],"wires":[["w","c.a"],["k","c.b"]],"out":"c"}],"out":"s"}""") as kotlinx.serialization.json.JsonObject
+    private val useFast = """{"steps":[{"name":"g","inputs":[{"name":"w","sig":"d_fast"}],"nodes":[{"id":"n","op":"not"}],"wires":[["w","n.a"]],"out":"n"}],"out":"g"}"""
+
+    @Test fun aWindowInsideADerivedDefinitionKeepsItsHashAfterTheToleranceChanges() = runBlocking {
+        val a = com.rokid.context.ai.canvas.plan.SignalConfig(derived = listOf(com.rokid.context.ai.canvas.plan.DerivedSignal("fast", winDef)))
+        val p = guardedPipeline("Dw", useFast)
+        val hash = try {
+            com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { a }
+            h.frozen(p, ran = false)
+            com.rokid.context.ai.canvas.plan.PlanCompiler.compile(p, windowMinValidPct = 90, signals = a).plan!!.configHash
+        } finally { com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.ai.canvas.plan.SignalConfig() } }
+        try {
+            com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { 60 }
+            com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { listOf(a) }
+            assertEquals(hash, ReplayCandidates(h.canvas).forHash(hash)!!.configHash)
+        } finally { com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { 90 }; com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { emptyList() } }
+    }
+
+    @Test fun twoDifferentPlansWithOneHashAreAmbiguousNeverFirstWins() = runBlocking {
+        val calm = """{"steps":[{"name":"calm","inputs":[],"nodes":[{"id":"w","op":"win","name":"stepHz","agg":"mean","sec":10},{"id":"k","op":"const","value":1.2},{"id":"c","op":"cmp","f":"<"}],"wires":[["w","c.a"],["k","c.b"]],"out":"c"}],"out":"calm"}"""
+        h.frozen(guardedPipeline("Amb", calm), ran = false)
+        // every tolerance gives another plan; a lookup that says they all carry the hash must refuse, not pick one
+        try { ReplayCandidates(h.canvas, carries = { _, _ -> true }).forHash("abcdef012345"); error("expected AmbiguousConfigHash") } catch (e: AmbiguousConfigHash) { }
+        // the same single plan reached through several configs is not ambiguity
+        h.frozen(guardedPipeline("One", """{"steps":[{"name":"g","inputs":[{"name":"x","sig":"gyroMax"}],"nodes":[{"id":"k","op":"const","value":1.5},{"id":"c","op":"cmp","f":">"}],"wires":[["x","c.a"],["k","c.b"]],"out":"c"}],"out":"g"}"""), ran = false)
+        assertNull(ReplayCandidates(h.canvas).forHash("abcdef012345"))
+    }
+
     @Test fun aFrozenVersionStaysReplayableAfterASignalIsSwitchedOff() = runBlocking {
         val p = guardedPipeline("Sw", """{"steps":[{"name":"g","inputs":[{"name":"x","sig":"gyroMax"}],"nodes":[{"id":"k","op":"const","value":1.5},{"id":"c","op":"cmp","f":">"}],"wires":[["x","c.a"],["k","c.b"]],"out":"c"}],"out":"g"}""")
         h.frozen(p, ran = false)
