@@ -8,8 +8,12 @@ import com.rokid.context.glasses.capture.motion.SampleTap
  * Buffers raw glasses sensor samples (gyro, linear acceleration) at a developer-chosen rate and writes them in BATCHES through [SensorRecStore] (v0.9.7 B). It owns NO sensor registration:
  * it is a read-only [SampleTap] on the samples the classifier's existing `SensorFeed` already delivers (the same tap mechanism the trace recorder uses), so the requested sensor rates and the
  * rate policy are untouched and it can never see more than the policy delivers. It holds no reference to the classifier and nothing it records is read by it or by the capture session.
- * Samples are down-sampled in software to the chosen rate (the effective rate is therefore min(chosen, delivered)), the buffer is bounded ([maxBuffered]; overflow is counted, not kept), a batch goes out every [flushEvery] samples or [flushMs]
- * (on [poll], the supervisor's 1 s beat) and at a stop. Writes run on [io] (the trace writer thread). Logs name events only.
+ * Samples are down-sampled in software to the chosen rate (the effective rate is therefore min(chosen, delivered)), the buffer is bounded ([maxBuffered]; overflow drops the NEWEST sample and is counted), a batch goes out
+ * from [poll] (the supervisor's 1 s beat) every [flushEvery] samples or [flushMs], and at a stop. Writes run on [io] (the trace writer thread). Logs name events only.
+ *
+ * The tap path runs on the sensor thread inside the classifier's callback and must never wait: it reads two volatile fields ([hz], [eligible]), owns its schedule fields, and appends to a lock-free queue; no lock,
+ * log or I/O is taken there, and a throw is caught and counted ([errors]), never passed to the classifier. [setEligible] is flipped by the pause/park/heat/battery/rate-policy transitions themselves; going
+ * ineligible DROPS the buffered samples (they are not flushed).
  */
 class SensorRecorder internal constructor(
     private val store: SensorRecStore,
@@ -21,31 +25,43 @@ class SensorRecorder internal constructor(
     private val maxBuffered: Int = 6_000,
     private val flushMs: Long = 60_000,
 ) : SampleTap {
-    private val lock = Any()
-    private var hz = 0
-    private var buf = ArrayList<TraceEvent>()
-    private var firstWall = 0L
-    private var firstElapsed = 0L
-    /** The next due sensor time per sensor (ms); MIN_VALUE = none yet. */
+    @Volatile private var hz = 0
+    @Volatile private var eligible = true
+    /** Bumped when the schedule must restart (a new rate, eligible again); the tap thread resets its own due times when it sees a new value. */
+    @Volatile private var scheduleEpoch = 0
+    private val queue = java.util.concurrent.ConcurrentLinkedQueue<TraceEvent>()
+    private val size = java.util.concurrent.atomic.AtomicInteger()
+    private val drops = java.util.concurrent.atomic.AtomicLong()
+    private val errs = java.util.concurrent.atomic.AtomicLong()
+    private val generation = java.util.concurrent.atomic.AtomicInteger()
+    // tap-thread-only: the next due sensor time per sensor (ms), MIN_VALUE = none yet
+    private var seenEpoch = 0
     private var lastG = Long.MIN_VALUE
     private var lastA = Long.MIN_VALUE
-    private var dropped = 0L
+    // consumer side only (poll / flush / configure), never touched by the tap
+    private val consumer = Any()
     private var seq = 0
 
-    fun buffered(): Int = synchronized(lock) { buf.size }
-    fun dropped(): Long = synchronized(lock) { dropped }
+    fun buffered(): Int = size.get()
+    fun dropped(): Long = drops.get()
+    fun errors(): Long = errs.get()
 
-    /** 0 = off (flushes what was recorded), else a preset rate. */
+    /** 0 = off (what was recorded is written), else a preset rate. Volatile writes first; logging after, outside everything the tap touches. */
     fun configure(newHz: Int) {
-        val flush: Batch?
-        synchronized(lock) {
-            if (newHz == hz) return
-            val was = hz; hz = newHz
-            if (newHz > 0 && was == 0) { log("sensor recording started"); lastG = Long.MIN_VALUE; lastA = Long.MIN_VALUE }
-            flush = if (newHz == 0) takeLocked() else null
-            if (newHz == 0 && was > 0) log("sensor recording stopped")
-        }
-        flush?.let { writeAsync(it) }
+        val was = hz
+        if (newHz == was) return
+        hz = newHz
+        scheduleEpoch = scheduleEpoch + 1
+        if (newHz > 0 && was == 0) log("sensor recording started")
+        if (newHz == 0) { flush(); if (was > 0) log("sensor recording stopped") }
+    }
+
+    /** False = a pause, park, heat, battery or rate-policy state forbids recording right now: samples are ignored at once and what is buffered is DROPPED, not written. */
+    fun setEligible(e: Boolean) {
+        val was = eligible
+        eligible = e
+        if (was && !e) dropBuffer()
+        if (!was && e) scheduleEpoch = scheduleEpoch + 1
     }
 
     fun onGyro(x: Float, y: Float, z: Float, sMs: Long) = add(true, x, y, z, sMs)
@@ -55,56 +71,66 @@ class SensorRecorder internal constructor(
     override fun onAccel(x: Float, y: Float, z: Float, tMs: Long, gyroNewestMs: Long, state: MotionState) = add(false, x, y, z, tMs)
 
     private fun add(gyro: Boolean, x: Float, y: Float, z: Float, sMs: Long) {
-        var flush: Batch? = null
-        synchronized(lock) {
+        try {
             val rate = hz
-            if (rate == 0 || sMs < 0 || !x.isFinite() || !y.isFinite() || !z.isFinite()) return
+            if (rate == 0 || !eligible || sMs < 0 || !x.isFinite() || !y.isFinite() || !z.isFinite()) return
+            val e = scheduleEpoch
+            if (e != seenEpoch) { seenEpoch = e; lastG = Long.MIN_VALUE; lastA = Long.MIN_VALUE }
             // a schedule, not a gap: the next sample is due one period after the previous DUE time, so the mean rate is the chosen one whatever the sensor's own rate and jitter
             val due = if (gyro) lastG else lastA
             val period = 1_000L / rate
             if (due != Long.MIN_VALUE && sMs < due && due - sMs <= period) return
             val next = if (due == Long.MIN_VALUE || sMs - due >= period || sMs < due) sMs + period else due + period
             if (gyro) lastG = next else lastA = next
-            if (buf.size >= maxBuffered) { dropped++; return }
+            if (size.get() >= maxBuffered) { drops.incrementAndGet(); return } // drop-newest
             val t = clock()
-            if (buf.isEmpty()) { firstWall = wallClock(); firstElapsed = t }
-            buf.add(if (gyro) TraceEvent.Gyro(t, sMs, x, y, z) else TraceEvent.Accel(t, sMs, x, y, z))
-            if (buf.size >= flushEvery) flush = takeLocked()
-        }
-        flush?.let { writeAsync(it) }
+            queue.add(if (gyro) TraceEvent.Gyro(t, sMs, x, y, z) else TraceEvent.Accel(t, sMs, x, y, z))
+            size.incrementAndGet()
+        } catch (t: Throwable) { errs.incrementAndGet() }
     }
 
-    /** The supervisor's beat: a batch that has been collecting for [flushMs] goes out. */
+    /** The supervisor's beat: full batches go out, and a batch that has been collecting for [flushMs] too. */
     fun poll() {
-        val flush = synchronized(lock) { if (hz > 0 && buf.isNotEmpty() && clock() - firstElapsed >= flushMs) takeLocked() else null }
-        flush?.let { writeAsync(it) }
+        if (hz == 0) return
+        repeat(MAX_BATCHES_PER_POLL) {
+            val n = size.get()
+            if (n == 0) return
+            val old = queue.peek()?.let { clock() - it.tMs >= flushMs } ?: false
+            if (n < flushEvery && !old) return
+            take()?.let { writeAsync(it) }
+        }
     }
 
     /** Writes whatever is buffered now. */
-    fun flush() { val b = synchronized(lock) { takeLocked() }; b?.let { writeAsync(it) } }
+    fun flush() { while (true) { val b = take() ?: return; writeAsync(b) } }
 
     /** A Forget (range or epoch) arrived: what is buffered goes without being written, and a batch already taken is dropped when it reaches the writer. */
-    fun discard() { synchronized(lock) { buf = ArrayList(); generation++ } }
+    fun discard() { generation.incrementAndGet(); dropBuffer() }
 
-    /** Counts cleanups ([discard]); a batch taken before one is never written after it (under [lock]). */
-    private var generation = 0
+    private fun dropBuffer() { while (queue.poll() != null) size.decrementAndGet() }
+
     private class Batch(val events: List<TraceEvent>, val startWall: Long, val seq: Int, val generation: Int, val storeEpoch: Int)
 
-    private fun takeLocked(): Batch? {
-        if (buf.isEmpty()) return null
-        val out = Batch(buf, firstWall, seq++, generation, store.epoch.get()); buf = ArrayList()
-        return out
+    /** Up to [flushEvery] samples off the queue, with the generation and store epoch of this moment; null when empty. */
+    private fun take(): Batch? = synchronized(consumer) {
+        val out = ArrayList<TraceEvent>(minOf(size.get(), flushEvery))
+        while (out.size < flushEvery) { val e = queue.poll() ?: break; size.decrementAndGet(); out.add(e) }
+        if (out.isEmpty()) return null
+        val now = clock()
+        Batch(out, (wallClock() - (now - out.first().tMs)).coerceAtLeast(0), seq++, generation.get(), store.epoch.get())
     }
 
     private fun writeAsync(b: Batch) {
         val end = wallClock().coerceAtLeast(b.startWall)
         io(Runnable {
             // A Forget (range or epoch) that completed after this batch was taken, in memory ([generation]) or on disk (the store's wipe/forget epoch), means these samples are forgotten: drop them
-            if (synchronized(lock) { b.generation != generation } || b.storeEpoch != store.epoch.get()) return@Runnable
+            if (b.generation != generation.get() || b.storeEpoch != store.epoch.get()) return@Runnable
             when (store.write(b.startWall, end, b.seq, b.events)) {
                 SensorRecStore.Result.WRITTEN -> { log("sensor batch written"); if (store.lastPruned > 0) log("sensor batch pruned") }
                 else -> log("sensor recording blocked")
             }
         })
     }
+
+    private companion object { const val MAX_BATCHES_PER_POLL = 4 }
 }
