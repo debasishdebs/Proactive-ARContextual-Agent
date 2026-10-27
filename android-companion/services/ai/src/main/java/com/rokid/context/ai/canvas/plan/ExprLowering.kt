@@ -34,14 +34,17 @@ object ExprLowering {
         lowerAll(graphs.map { Entry(it.first, it.second, role) }, windowMinValidPct)
 
     /** Guards and values of one plan together: the 6 programs, 32 nodes and 4 window terms are shared limits over ALL of them. */
-    fun lowerAll(entries: List<Entry>, windowMinValidPct: Int = ExprProgram.DEFAULT_MIN_VALID_PCT): Result {
+    fun lowerAll(entries: List<Entry>, windowMinValidPct: Int = ExprProgram.DEFAULT_MIN_VALID_PCT, cfg: SignalConfig = SignalConfigs.current()): Result {
         val problems = ArrayList<String>(); val warnings = ArrayList<String>()
         val exprs = ArrayList<JsonObject>()
         var nodes = 0; var cost = 0
         val terms = LinkedHashSet<ExprWindows.Term>()
         val targets = HashSet<String>()
         for ((n, e) in entries.sortedBy { it.id }.withIndex()) {
-            val id = e.id; val el = e.graph; val role = e.role
+            val id = e.id; val role = e.role
+            val expanded = DerivedSignals.expand(e.graph, cfg)
+            val el = expanded.graph
+            if (expanded.problems.isNotEmpty()) { problems += expanded.problems.map { "node $id: $it" }; continue }
             if (role == ExprRole.VALUE) {
                 val bad = when {
                     e.row == "WALKING" || e.row == "UNKNOWN" -> "row ${e.row} is locked: a value program tunes only REST, VEHICLE_PASSENGER, VEHICLE_DRIVING or FLIGHT"
