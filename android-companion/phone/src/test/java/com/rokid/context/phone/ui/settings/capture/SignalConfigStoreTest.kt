@@ -84,7 +84,7 @@ class SignalConfigStoreTest {
         s.deleteDerived("walky")
         assertTrue(s.config.value.derived.isEmpty())
         assertEquals(listOf("walky"), SignalConfigStore(p).history.flatMap { c -> c.derived.map { it.name } }.distinct())
-        for (i in 1..30) s.saveDerived("n$i", walky)
+        for (i in 1..30) s.saveDerived("w", Json.parseToJsonElement(walky.toString().replace("1.2", "$i.5")) as JsonObject)
         assertTrue(SignalConfigStore(p).history.size <= SignalConfigStore.MAX_HISTORY)
     }
 }
