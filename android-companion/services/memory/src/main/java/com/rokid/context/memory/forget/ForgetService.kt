@@ -51,9 +51,9 @@ class ForgetService(
      * (`frame_meta`, `frame_vector`, state, no `frame` row, no memory) is still a moment (S2). Saved answers that cited it (`frame:<id>`) are
      * redacted with their proposals and alarms (S1), unless [redactCites] is false (retention's legacy-frame expiry never redacts). Empty only when no frame, metadata, vector, state or memory exists.
      */
-    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true, phoneFilesOnly: Boolean = false): Result = notifying { forgetMomentTx(frameId, redactCites, phoneFilesOnly = phoneFilesOnly) }
+    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true, phoneFilesOnly: Boolean = false, fenceOwnSecond: Boolean = false): Result = notifying { forgetMomentTx(frameId, redactCites, phoneFilesOnly = phoneFilesOnly, fenceOwnSecond = fenceOwnSecond) }
 
-    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false): Result = db.withTransaction {
+    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, fenceOwnSecond: Boolean = false): Result = db.withTransaction {
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
@@ -63,6 +63,7 @@ class ForgetService(
             dropCanvasOutputs(listOf(frameId))
             return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites)
         }
+        if (fenceOwnSecond) fenceSecondsOf(frameId) // PHOTO scope: the forgotten photo's own second, in this very transaction
         val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly)
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
@@ -131,6 +132,18 @@ class ForgetService(
         val spans = dropCanvasOutputs(expiredIds, expiredTimes) // S25: frame retention uses the same cascade, once for the whole set
         queueCleanup(paths, wire, spans, phoneFilesOnly = true) // same transaction as the expiry; routine retention is storage hygiene: phone files only (glasses and helper rows are for user Forgets)
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
+    }
+
+    /**
+     * PHOTO scope (v0.9.7 slice C): fences the second(s) the photo is known by (capture time first, row time too), the way [MomentForget] fences a Moment: a `moment_tombstone` plus the durable
+     * `momentForgetRanges` entry, so no Moment rebuild resolves a source of that second again. Whole seconds; nothing else around it is touched.
+     */
+    private suspend fun fenceSecondsOf(frameId: String) {
+        val seconds = db.momentDao().captureTimes(listOf(frameId)).map { Math.floorDiv(it.ms, 1000L) }.filter { it in 0..com.rokid.context.memory.moment.MomentId.MAX_SECOND }.distinct().sorted()
+        if (seconds.isEmpty()) return
+        val now = clock()
+        seconds.forEach { db.canvasSlice3Dao().addMomentForgetRange(it * 1000, it * 1000 + 999) }
+        db.momentDao().insertTombstones(seconds.map { com.rokid.context.memory.db.MomentTombstoneEntity(com.rokid.context.memory.moment.MomentId.format(it), now) })
     }
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
