@@ -245,28 +245,32 @@ class CaptureService : LifecycleService() {
         smart?.let { it.feed.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime(), state ?: it.motion.state.value)) }
     }
 
-    // ---- developer sensor recording (v0.9.7 B): its own sensor registration and buffer; nothing here is read by the classifier, the session or the rate policy ----
+    // ---- developer sensor recording (v0.9.7 B): a read-only tap on the samples the classifier's own feed delivers; no sensor registration, no rate change, nothing read back by the classifier ----
     private var sensorRecorder: com.rokid.context.glasses.capture.trace.SensorRecorder? = null
-    private var sensorFeed: com.rokid.context.glasses.capture.trace.SensorRecFeed? = null
 
-    /** Once a second: the phone's rate (0 = off) filtered by the pause, park, heat and battery policy ([com.rokid.context.glasses.capture.trace.SensorRecPolicy]), then the recorder and its feed follow it. */
+    /** Once a second: the phone's rate (0 = off) filtered by the pause, park, heat and battery policy and by every state where the sensor rate policy lowers sampling ([com.rokid.context.glasses.capture.trace.SensorRecPolicy]). */
     private fun applySensorRecording() {
         val tr = runtime.traceRecorderOrNull ?: return
+        val sm = smart
         val rate = com.rokid.context.glasses.capture.trace.SensorRecPolicy.rateFor(
-            runtime.settingsCache.readNormalized().sensorRecHz, sessionRunning = smart != null, captureAllowed = runtime.pauses.captureAllowed(), parked = runtime.wear.parked.value,
+            runtime.settingsCache.readNormalized().sensorRecHz, sessionRunning = sm != null, captureAllowed = runtime.pauses.captureAllowed(), parked = runtime.wear.parked.value,
             heatStop = heat.level.value == HeatLevel.STOP, lowBattery = FrameGuard.lowBattery(batteryPercent(), isCharging()), batterySaver = isBatterySaverOn(),
+            sessionReason = runtime.captureStatus.value.reason?.toString(),
         )
         if (rate == 0 && sensorRecorder == null) return
         val rec = sensorRecorder ?: com.rokid.context.glasses.capture.trace.SensorRecorder(
             tr.sensorStore, SystemClock::elapsedRealtime, System::currentTimeMillis, io = { r -> runtime.traceWriterExecute(r) }, log = { DiagLog.i(TAG, it) },
         ).also { sensorRecorder = it; tr.onCleanupQueued = it::discard }
-        val feed = sensorFeed ?: com.rokid.context.glasses.capture.trace.SensorRecFeed(this, rec).also { sensorFeed = it }
+        sm?.motion?.addTap(rec) // idempotent; the recorder ignores samples while its rate is 0
         rec.configure(rate)
-        if (rate > 0) feed.start(rate) else feed.stop()
         rec.poll()
     }
 
-    private fun stopSensorRecording() { sensorRecorder?.configure(0); sensorFeed?.stop() }
+    /** Test seams: the running session's classifier and what the recording tap holds. */
+    internal val smartMotionForTest: MotionClassifier? get() = smart?.motion
+    internal fun sensorRecBuffered(): Int = sensorRecorder?.buffered() ?: 0
+
+    private fun stopSensorRecording(motion: MotionClassifier? = null) { sensorRecorder?.let { r -> motion?.removeTap(r); r.configure(0) } }
 
     /** v0.9.7 A: the classifier thresholds in force (hash echoed to the phone and recorded in the trace settings hash). */
     @Volatile private var classifierHashNow = "default"
@@ -351,7 +355,7 @@ class CaptureService : LifecycleService() {
         runtime.traceRecorderOrNull?.let { cur.motion.removeTap(it) }
         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
         cur.feed.stop()
-        stopSensorRecording()
+        stopSensorRecording(cur.motion)
         runtime.smartCapture.value = false
     }
 

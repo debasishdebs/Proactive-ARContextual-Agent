@@ -38,8 +38,8 @@ class SensorRecSettingTest {
         show(dev = true, hz = 25)
         compose.onNodeWithTag("sensor_rec_warning").assertIsDisplayed()
         val t = SensorRecCopy.warning(25)
-        assertTrue(t, t.contains("25 Hz") && t.contains("batches") && t.contains("more battery"))
-        assertEquals("records sensor data at 10 Hz and saves it in batches on the glasses (not sent to the phone yet; a developer pull reads it). Uses more battery.", SensorRecCopy.warning(10))
+        assertTrue(t, t.contains("25 Hz at most") && t.contains("never faster than the glasses already sample") && t.contains("batches") && t.contains("more battery"))
+        assertEquals("records sensor data at 10 Hz at most (never faster than the glasses already sample, and nothing while they save battery, rest or are paused) and saves it in batches on the glasses (not sent to the phone yet; a developer pull reads it). Uses more battery.", SensorRecCopy.warning(10))
     }
 
     @Test fun choosingARateReportsAPreset() {
