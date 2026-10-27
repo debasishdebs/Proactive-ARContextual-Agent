@@ -83,7 +83,7 @@ class ScopedForget(
 
     /** The numbers of the confirm dialog: exactly what [forget] removes for spans (the same discovery); for a single photo or fact, what its cascade and the radius path reach. */
     suspend fun preview(plan: Plan): MomentForget.Counts {
-        if (plan.isEmpty) return MomentForget.Counts(0, 0, 0, 0, 0)
+        if (plan.isEmpty) return MomentForget.Counts(0, 0, 0, 0, 0, 0)
         val dao = db.forgetDao(); val md = db.momentDao()
         if (plan.spans.isNotEmpty()) return MomentForget(db, service, clock).preview(plan.spans, plan.sceneIds)
         val radius = ForgetRadius.ms()
@@ -100,8 +100,8 @@ class ScopedForget(
         val windows = secondsOfFrames(frames).map { window(it, radius) }.let(com.rokid.context.memory.db.CanvasSlice3Dao::mergeRanges)
         val marks = windows.flatMap { md.labelIdsBetween(it.first, it.last) }.distinct()
         val moments = (windows.flatMap { md.momentIdsBetween(MomentId.format(it.first / 1000), MomentId.format(it.last / 1000)) } + frames.chunked(500).flatMap { c -> md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.FRAME, com.rokid.context.memory.db.MomentPartKind.CITE), c + c.map { "frame:$it" }) } + memories.toList().chunked(500).flatMap { md.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.SUMMARY), it) }).distinct()
-        val scenes = moments.chunked(500).flatMap { db.sceneDao().sceneIdsHoldingMoments(it) }.distinct()
-        return MomentForget.Counts(frames.size, memories.size, marks.size, moments.size, scenes.size)
+        val (removed, shrunk) = MomentForget(db, service, clock).sceneEffect(moments)
+        return MomentForget.Counts(frames.size, memories.size, marks.size, moments.size, removed, shrunk)
     }
 
     /** Runs the plan in one transaction (the caller holds the delete gate and runs the post-commit cleanup on [Done.cascade]). */

@@ -69,7 +69,7 @@ fun MemoryDetailScreen(
                     // v0.9.7 slice C: the scope that will really run, in plain words, then the counts (a Scene Forget never runs without them)
                     state.forgetPreview?.let { p ->
                         Text(ForgetScopeCopy.dialogScope(p.effective), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
-                        Text(ForgetScopeCopy.counts(p.photos, p.memories, p.marks, p.moments, p.scenes))
+                        Text(ForgetScopeCopy.counts(p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk))
                     }
                     if (state.forgetPreviewing) Text(ForgetScopeCopy.COUNTING)
                     if (state.forgetPreviewFailed) Text(ForgetScopeCopy.COUNTS_FAILED)

@@ -61,16 +61,27 @@ class MomentForget(
     }
 
     /** What [forgetSpans] would remove, from the SAME discovery (read-only, one snapshot): the numbers the confirm dialog shows. */
-    data class Counts(val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenes: Int)
+    /** [scenesRemoved] = Scenes that go whole (named, or every one of their Moments goes); [scenesShrunk] = Scenes that lose some Moments but survive. */
+    data class Counts(val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int)
     suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
         val merged = wholeSeconds(spans)
-        if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0)
+        if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0, 0)
         return db.withTransaction {
             val d = discover(secondsOf(merged), merged)
-            val scenes = LinkedHashSet<String>(sceneIds)
-            d.moments.toList().chunked(CHUNK).forEach { scenes += db.sceneDao().sceneIdsHoldingMoments(it) }
-            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, scenes.size)
+            val (removed, shrunk) = sceneEffect(d.moments, sceneIds)
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, removed, shrunk)
         }
+    }
+
+    /** (removed, shrunk): of the Scenes holding any of [momentIds] (and the named [sceneIds]), those left with no Moment (or named) go; the others only lose parts. */
+    internal suspend fun sceneEffect(momentIds: Collection<String>, sceneIds: Collection<String> = emptyList()): Pair<Int, Int> {
+        val named = sceneIds.toSet(); val going = momentIds.toSet()
+        val affected = LinkedHashSet<String>(named)
+        going.toList().chunked(CHUNK).forEach { affected += db.sceneDao().sceneIdsHoldingMoments(it) }
+        if (affected.isEmpty()) return 0 to 0
+        val parts = affected.toList().chunked(CHUNK).flatMap { db.sceneDao().partsOf(it) }.filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.groupBy({ it.sceneId }, { it.refId })
+        val removed = affected.count { it in named || (parts[it].orEmpty().all { r -> r in going }) }
+        return removed to affected.size - removed
     }
 
     private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {

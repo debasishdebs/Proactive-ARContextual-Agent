@@ -71,17 +71,17 @@ class MemoryDetailScreenTest {
     }
 
     // ---- v0.9.7 slice C: the dialog names the scope in plain words and the counts; Forget stays disabled until they are shown ----
-    private val scene = ForgetPreview(com.rokid.context.memory.forget.ForgetScope.SCENE, com.rokid.context.memory.forget.ForgetScope.SCENE, 4, 5, 1, 3, 1)
+    private val scene = ForgetPreview(com.rokid.context.memory.forget.ForgetScope.SCENE, com.rokid.context.memory.forget.ForgetScope.SCENE, 4, 5, 1, 3, 1, 2)
 
     @Test fun theDialogStatesTheScopeInPlainWordsAndTheCounts() {
         compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = scene, forgetConfirmable = true), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
         compose.onNodeWithText(ForgetScopeCopy.dialogScope(com.rokid.context.memory.forget.ForgetScope.SCENE)).assertExists()
-        compose.onNodeWithText("This deletes 4 photos, 5 facts, 1 mark, 3 Moments and 1 Scene.").assertExists()
+        compose.onNodeWithText("This deletes 4 photos, 5 facts, 1 mark, 3 Moments. 1 Scene removed, 2 Scenes shrink.").assertExists()
         compose.onNodeWithText("Forget").assertIsEnabled()
     }
 
     @Test fun theDialogShowsTheEffectiveScopeNotTheSetting() {
-        val p = ForgetPreview(com.rokid.context.memory.forget.ForgetScope.SCENE, com.rokid.context.memory.forget.ForgetScope.MOMENT, 1, 1, 0, 1, 0)
+        val p = ForgetPreview(com.rokid.context.memory.forget.ForgetScope.SCENE, com.rokid.context.memory.forget.ForgetScope.MOMENT, 1, 1, 0, 1, 0, 0)
         compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", confirm = ForgetKind.MOMENT, forgetPreview = p, forgetConfirmable = true), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
         compose.onNodeWithText(ForgetScopeCopy.dialogScope(com.rokid.context.memory.forget.ForgetScope.MOMENT)).assertExists()
         compose.onNodeWithText("This deletes 1 photo, 1 fact, 0 marks, 1 Moment.").assertExists()
@@ -100,7 +100,8 @@ class MemoryDetailScreenTest {
     @Test fun theCopyIsPlainAndDistinct() {
         val all = com.rokid.context.memory.forget.ForgetScope.values()
         assertEquals(3, all.map { ForgetScopeCopy.dialogScope(it) }.distinct().size); assertEquals(listOf("Photo", "Moment", "Scene"), all.map { ForgetScopeCopy.label(it) })
-        assertEquals("This deletes 1 photo, 1 fact, 1 mark, 1 Moment.", ForgetScopeCopy.counts(1, 1, 1, 1, 0))
-        assertEquals("This deletes 0 photos, 2 facts, 0 marks, 0 Moments and 2 Scenes.", ForgetScopeCopy.counts(0, 2, 0, 0, 2))
+        assertEquals("This deletes 1 photo, 1 fact, 1 mark, 1 Moment.", ForgetScopeCopy.counts(1, 1, 1, 1, 0, 0))
+        assertEquals("This deletes 0 photos, 2 facts, 0 marks, 0 Moments. 2 Scenes removed.", ForgetScopeCopy.counts(0, 2, 0, 0, 2, 0))
+        assertEquals("This deletes 1 photo, 1 fact, 0 marks, 1 Moment. 1 Scene shrinks.", ForgetScopeCopy.counts(1, 1, 0, 1, 0, 1))
     }
 }
