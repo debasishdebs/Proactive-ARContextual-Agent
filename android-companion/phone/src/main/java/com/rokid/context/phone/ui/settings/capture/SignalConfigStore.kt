@@ -67,6 +67,8 @@ class SignalConfigStore(private val prefs: SharedPreferences? = null) {
 
     /** Saves (or replaces) a derived signal; the returned problems are empty when it was saved. */
     @Synchronized fun saveDerived(name: String, graph: JsonElement?): List<String> {
+        // the persist-size guard: the API's body limit, on the stored form, before the validator parses anything further
+        if (graph != null && graph.toString().toByteArray(Charsets.UTF_8).size > MAX_DEFINITION_BYTES) { PcLog.w(TAG, "signal config rejected"); return listOf("the definition is larger than ${MAX_DEFINITION_BYTES / 1024} KiB") }
         val problems = DerivedSignals.validate(name, graph, state.value)
         if (problems.isNotEmpty()) { PcLog.w(TAG, "signal config rejected"); return problems }
         val c = state.value
@@ -109,6 +111,8 @@ class SignalConfigStore(private val prefs: SharedPreferences? = null) {
         private const val DERIVED = "derived"
         private const val HISTORY = "history"
         const val MAX_HISTORY = 16
+        /** The largest definition: the canvas API's request-body limit ([com.rokid.context.phone.canvas.server.CanvasServer.MAX_BODY]), one constant for the route, the editor and the store. */
+        const val MAX_DEFINITION_BYTES = com.rokid.context.phone.canvas.server.CanvasServer.MAX_BODY
         private const val TAG = "SignalConfig"
 
         /** The Delete all hook (registered once at start-up by `ContextApp`): wipes the process store. */

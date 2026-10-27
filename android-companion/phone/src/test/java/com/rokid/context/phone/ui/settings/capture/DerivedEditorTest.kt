@@ -14,6 +14,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.phone.ui.settings.FakeHudSettings
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.asCoroutineDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -30,7 +31,7 @@ import org.robolectric.annotation.Config
 class DerivedEditorTest {
     @get:Rule val compose = createComposeRule()
     private val walky = """{"steps":[{"name":"s","inputs":[{"name":"k","const":1.2}],"nodes":[{"id":"w","op":"win","agg":"mean","sec":10,"name":"stepHz"},{"id":"c","op":"cmp","f":">"}],"wires":[["w","c.a"],["k","c.b"]],"out":"c"}],"out":"s"}"""
-    private fun vm(store: SignalConfigStore = SignalConfigStore()) = SignalSettingsViewModel(FakeHudSettings(), store, MutableStateFlow<String?>(null))
+    private fun vm(store: SignalConfigStore = SignalConfigStore()) = SignalSettingsViewModel(FakeHudSettings(), store, MutableStateFlow<String?>(null), editorDispatcher = kotlinx.coroutines.Dispatchers.Unconfined, editorDebounceMs = 0)
 
     @Test fun aValidDefinitionCanBeSavedAndAppearsInTheList() {
         val store = SignalConfigStore(); val v = vm(store)
@@ -102,5 +103,68 @@ class DerivedEditorTest {
         compose.waitForIdle()
         compose.onNodeWithTag("derived_problem").assertExists()
         compose.onNodeWithTag("derived_save").assertIsNotEnabled()
+    }
+
+    // ---- review fix: the size limit before parsing, and validation off the main thread and debounced ----
+    private val limit = SignalConfigStore.MAX_DEFINITION_BYTES
+
+    @Test fun theLimitIsTheApisBodyLimit() = assertEquals(com.rokid.context.phone.canvas.server.CanvasServer.MAX_BODY, limit)
+
+    @Test fun aTextOverTheLimitIsRefusedWithASizeProblemBeforeAnythingIsParsed() {
+        val v = vm(); v.newDerived(); v.setEditorName("big")
+        v.setEditorText(" ".repeat(limit) + walky)
+        assertTrue(v.editor.value.problem.toString(), v.editor.value.problem!!.contains("256 KiB")); assertFalse(v.editor.value.canSave)
+        v.saveEditor()
+        assertFalse("nothing is saved", v.editor.value.canSave)
+    }
+
+    @Test fun theLimitCountsUtf8BytesNotCharacters() {
+        val v = vm(); v.newDerived(); v.setEditorName("big")
+        v.setEditorText("\u00e9".repeat(limit / 2 + 10)) // 2 bytes each: under the limit in characters, over it in bytes
+        assertTrue(v.editor.value.problem!!.contains("KiB"))
+        v.setEditorText(walky + " ".repeat(limit - walky.length)) // exactly the limit in bytes: not a size problem
+        assertFalse(v.editor.value.problem.toString(), v.editor.value.problem?.contains("KiB") == true)
+        assertTrue(v.editor.value.canSave)
+    }
+
+    @Test fun theStoreRefusesAnOversizedDefinitionToo() {
+        val store = SignalConfigStore()
+        val pad = "x".repeat(limit)
+        val big = kotlinx.serialization.json.Json.parseToJsonElement("""{"steps":[],"out":"s","pad":"$pad"}""")
+        val problems = store.saveDerived("big", big)
+        assertTrue(problems.toString(), problems.single().contains("256 KiB")); assertTrue(store.config.value.derived.isEmpty())
+    }
+
+    @Test fun theCheckRunsOffTheCallingThreadAndTypingIsDebounced() {
+        val exec = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "editor-check-test") }
+        try {
+            val v = SignalSettingsViewModel(FakeHudSettings(), SignalConfigStore(), MutableStateFlow<String?>(null), editorDispatcher = exec.asCoroutineDispatcher(), editorDebounceMs = 150)
+            v.newDerived(); v.setEditorName("walky")
+            repeat(6) { v.setEditorText(walky.take(5 + it)); Thread.sleep(30) } // six quick edits, each within the pause
+            v.setEditorText(walky)
+            assertTrue("pending while the check has not run", v.editor.value.checking && !v.editor.value.canSave)
+            val end = System.currentTimeMillis() + 5_000
+            while (v.editor.value.checking && System.currentTimeMillis() < end) Thread.sleep(20)
+            assertTrue(v.editor.value.canSave)
+            assertTrue("the check ran on its own thread: ${v.lastCheckThread}", v.lastCheckThread!!.startsWith("editor-check-test"))
+            assertTrue("one check for the burst, not one per key (${v.checks.get()})", v.checks.get() <= 2)
+        } finally { exec.shutdownNow() }
+    }
+
+    @Test fun anOlderCheckThatFinishesLateNeverOverwritesANewerText() {
+        val exec = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val v = SignalSettingsViewModel(FakeHudSettings(), SignalConfigStore(), MutableStateFlow<String?>(null), editorDispatcher = exec.asCoroutineDispatcher(), editorDebounceMs = 0)
+            val gate = java.util.concurrent.CountDownLatch(1); val started = java.util.concurrent.CountDownLatch(1)
+            v.checkHook = { if (v.checks.get() == 1) { started.countDown(); gate.await(5, java.util.concurrent.TimeUnit.SECONDS) } }
+            v.newDerived(); v.setEditorName("walky"); v.setEditorText("not json")   // the first check blocks inside
+            assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            v.setEditorText(walky)                                                  // the newer text is checked meanwhile and is valid
+            val end = System.currentTimeMillis() + 5_000
+            while (v.editor.value.checking && System.currentTimeMillis() < end) Thread.sleep(10)
+            assertTrue(v.editor.value.canSave)
+            gate.countDown(); Thread.sleep(200)                                    // the old check ("not json") now finishes
+            assertTrue("the newer text keeps its verdict", v.editor.value.canSave && v.editor.value.text == walky)
+        } finally { exec.shutdownNow() }
     }
 }
