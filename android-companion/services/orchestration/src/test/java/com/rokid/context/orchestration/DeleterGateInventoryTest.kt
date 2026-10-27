@@ -11,7 +11,7 @@ import java.io.File
  */
 class DeleterGateInventoryTest {
     private val deleting = listOf(
-        ".deleteLabel(", ".deleteLabelsForFrames(", ".deleteRunRowsOfLabels(", ".deleteWatchRuns(", ".forgetRangeTx(", "ForgetService(", "CanvasSlice3Forget(", "MomentForget(", ".wipeMemory(",
+        ".deleteLabel(", ".deleteLabelsForFrames(", ".deleteRunRowsOfLabels(", ".deleteWatchRuns(", ".forgetRangeTx(", "ForgetService(", "CanvasSlice3Forget(", "MomentForget(", "ScopedForget(", ".wipeMemory(",
         ".deleteSliceOutputsForFrames(", ".deleteCanvasOutputsForFrames(",
     )
     /** Files that call a deleting API and are NOT themselves gated, each with why that is fine. */
@@ -38,5 +38,22 @@ class DeleterGateInventoryTest {
         assertTrue("the scan sees the coordinator: ${callers.map { it.name }}", callers.any { it.name == "CanvasForgetCoordinator.kt" })
         val offenders = callers.filter { f -> val t = f.readText(); !t.contains("afterCascade(") && !t.contains("ForgetActions.apply(") && !t.contains("ForgetActions.afterRange(") }.map { it.name }
         assertEquals("a range Forget entry point without the post-commit cleanup", emptyList<String>(), offenders)
+    }
+
+    /**
+     * v0.9.7 slice C: every GRANULAR Forget a user can start (Forget fact, Forget photo, Forget Moment, Forget Scene) runs through `ForgetActions.forgetScopedOutcome` (the Forget scope setting). A phone file that calls the
+     * unscoped `forgetFactOutcome` / `forgetMomentOutcome` fails this test unless it is listed here with the reason it is not a scoped Forget.
+     */
+    private val unscopedByRuling = mapOf("MarkGraph.kt" to "mark undo: it removes the photo of the mark being undone (an Undo, not a Forget action; decision D1 of the slice C handoff)")
+
+    @Test fun everyGranularForgetEntryOfThePhoneUsesTheForgetScope() {
+        val unscoped = listOf("forgetFactOutcome(", "forgetMomentOutcome(", "ForgetActions.forgetMoment(", "ForgetActions.forgetFact(")
+        val phone = File("../../phone/src/main").also { assertTrue("the phone sources exist", it.exists()) }
+        val code = { f: File -> f.readLines().filter { l -> l.trimStart().let { !it.startsWith("*") && !it.startsWith("//") && !it.startsWith("/*") } }.joinToString("\n") }
+        val files = phone.walkTopDown().filter { it.isFile && it.name.endsWith(".kt") }.toList()
+        assertTrue("the scan sees the memory detail route and the mark graph", files.any { it.name == "MemoryDetailRoute.kt" } && files.any { it.name == "MarkGraph.kt" })
+        val offenders = files.filter { f -> unscoped.any { it in code(f) } && f.name !in unscopedByRuling }.map { it.name }
+        assertEquals("a granular Forget that ignores the Forget scope", emptyList<String>(), offenders)
+        assertTrue("the memory detail Forget is scoped", files.single { it.name == "MemoryDetailRoute.kt" }.readText().contains("forgetScopedOutcome("))
     }
 }
