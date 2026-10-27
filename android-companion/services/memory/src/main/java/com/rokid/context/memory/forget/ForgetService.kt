@@ -53,21 +53,21 @@ class ForgetService(
      */
     suspend fun forgetMoment(frameId: String, redactCites: Boolean = true, phoneFilesOnly: Boolean = false): Result = notifying { forgetMomentTx(frameId, redactCites, phoneFilesOnly = phoneFilesOnly) }
 
-    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false): Result = db.withTransaction {
+    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, radiusCascade: Boolean = true): Result = db.withTransaction {
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
         if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
             // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan canvas rows (safer default). No frame_source row
             // can exist here: memoryIdsOfFrame already lists them, so an orphan one takes the main path below.
-            dropCanvasOutputs(listOf(frameId))
-            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites)
+            dropCanvasOutputs(listOf(frameId), null, radiusCascade)
+            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, radiusCascade = radiusCascade)
         }
-        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly)
+        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, radiusCascade = radiusCascade)
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         db.momentDao().dropHolding(listOf(frameId), ids) // source-to-projection cleanup: no stored Moment keeps a reference to what Forget removed
-        val spans = dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts))
+        val spans = dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts), radiusCascade)
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
         val out = r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct())
@@ -81,8 +81,8 @@ class ForgetService(
      */
     suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { forgetFactsTx(ids, lockFrames) }
 
-    internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true): Result = db.withTransaction {
-        cascade(ids.distinct(), lockFrames, queueOutbox = queueOutbox)
+    internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, radiusCascade: Boolean = true): Result = db.withTransaction {
+        cascade(ids.distinct(), lockFrames, queueOutbox = queueOutbox, radiusCascade = radiusCascade)
     }
 
     /**
@@ -135,7 +135,7 @@ class ForgetService(
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, radiusCascade: Boolean = true): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
@@ -156,7 +156,7 @@ class ForgetService(
         // 4. Extraction lock.
         val now = clock()
         var spans = emptyList<Triple<Long, Long, List<String>>>()
-        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; spans = dropCanvasOutputs(frames) }
+        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; spans = dropCanvasOutputs(frames, null, radiusCascade) }
         // 5. Redaction (exact JSON match after a LIKE prefilter: "A1" never matches "A").
         val cited = forgotten + invalidated + extraCited // extraCited: `frame:<id>` photo cites (S1)
         val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
@@ -208,13 +208,17 @@ class ForgetService(
     }
 
     /** Returns the time spans it fenced (from, to, tombstoned trace ids) so the caller can queue the glasses cleanup in the same transaction. */
-    private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null): List<Triple<Long, Long, List<String>>> {
+    /**
+     * [radiusCascade] false (the Forget scope MOMENT / SCENE, whose planned spans ALREADY include the radius): no per-photo radius cascade, so the deletion set is exactly the previewed spans and a photo at the edge cannot
+     * cascade to marks or Moments outside them. The photo's own outputs are still deleted.
+     */
+    private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null, radiusCascade: Boolean = true): List<Triple<Long, Long, List<String>>> {
         val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { dao.frame(it)?.ts }
         // A mark carries no frame id (the glasses tap does not know which photo it is near), so the link between a photo and the marks and traces of its moment is TIME:
         // everything within the [ForgetRadius] (default PHOTO_LINK_MS) of a forgotten photo goes with it (marks, traces, and the results that read them), through the same durable range fence as a
         // range Forget. Conservative on purpose: a privacy action errs on deleting a little more.
         val radius = ForgetRadius.ms() // read once per Forget: the user's setting, default PHOTO_LINK_MS
-        val spans = capturedAt.map { (it - radius)..(it + radius) }.let(CanvasSlice3Dao::mergeRanges).map { r ->
+        val spans = (if (radiusCascade) capturedAt else emptyList()).map { (it - radius)..(it + radius) }.let(CanvasSlice3Dao::mergeRanges).map { r ->
             val o = db.canvasSlice3Dao().forgetRangeTx(r.first, r.last, clock())
             db.momentDao().dropBetween(r.first, r.last) // the marks of that time are gone: so are the stored Moments that held them
             Triple(r.first, r.last, o.tombstonedTraceIds)
