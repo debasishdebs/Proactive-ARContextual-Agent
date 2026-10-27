@@ -237,9 +237,9 @@ export const tests = {
       eq(est.body, { pipelineId: 'mp1', momentIds: ['69011b80', '69011b85'], version: 1 });
       ok(!('frameIds' in est.body), 'no frame ids');
       has(ctx.modals[0].content, '2 Moments');
-      await E.runAction(ctx, 'Start');
+      await E.runAction(ctx, 'Run'); // no memory node: a playground run that ends in the output dialog
       eq(api.calls.find((c) => c.path === '/api/runs').body, { confirmToken: 'tok', pipelineId: 'mp1', momentIds: ['69011b80', '69011b85'], version: 1 });
-      eq(ctx.gone, ['#/run/r9']);
+      eq(ctx.gone, ['#/run/r9?after=play']);
       // the page has no control that confirms anything: only the select/clear/estimate/day controls
       eq(api.calls.filter((c) => c.method !== 'GET').map((c) => c.path), ['/api/runs/estimate', '/api/runs']);
     });
@@ -285,9 +285,9 @@ export const tests = {
       E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
       eq(api.calls.find((c) => c.path === '/api/runs/estimate').body, { pipelineId: 'sp1', sceneIds: ['S69011b80'], version: 1 });
       has(ctx.modals[0].content, '2 Scenes');
-      await E.runAction(ctx, 'Start');
+      await E.runAction(ctx, 'Run');
       eq(api.calls.find((c) => c.path === '/api/runs').body, { confirmToken: 'tok', pipelineId: 'sp1', sceneIds: ['S69011b80'], version: 1 });
-      eq(ctx.gone, ['#/run/r8']);
+      eq(ctx.gone, ['#/run/r8?after=play']);
     });
   },
   async newRunOverScenesWithNothingSelectedAsksForOne() {
