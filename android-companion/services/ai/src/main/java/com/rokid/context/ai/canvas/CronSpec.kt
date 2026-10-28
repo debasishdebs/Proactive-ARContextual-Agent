@@ -16,23 +16,26 @@ class CronSpec private constructor(
 ) {
     private val times: List<Int> = hours.flatMap { h -> minutes.map { m -> h * 60 + m } }.sorted()
 
-    private fun dayMatches(d: LocalDate): Boolean {
+    internal fun dayMatches(d: LocalDate): Boolean {
         if (d.monthValue !in months) return false
         val dom = d.dayOfMonth in doms
         val dow = d.dayOfWeek.value % 7 in dows
         return if (domAny || dowAny) dom && dow else dom || dow
     }
 
-    /** The first occurrence strictly after [afterMs], or null when none falls in the next 366 days (e.g. 31 February). */
+    /**
+     * The first occurrence strictly after [afterMs] as a real instant, or null when none falls in the next 366 days (a valid spec always has one: see [parseOrReason]).
+     * DST policy: a local time that does not exist (the spring-forward gap) is skipped that day; one that happens twice (the fall-back overlap) runs once, at its first
+     * instant. The day's instants are ordered as instants, so a zone with a 30 minute shift cannot return them out of order.
+     */
     fun nextAfter(afterMs: Long, zone: ZoneId): Long? {
-        val start = ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(afterMs), zone)
-        for (i in 0..366) {
-            val day = start.toLocalDate().plusDays(i.toLong())
+        val start = ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(afterMs), zone).toLocalDate().minusDays(1)
+        for (i in 0..367) {
+            val day = start.plusDays(i.toLong())
             if (!dayMatches(day)) continue
-            for (t in times) {
-                val at = ZonedDateTime.of(day, LocalTime.of(t / 60, t % 60), zone).toInstant().toEpochMilli()
-                if (at > afterMs) return at
-            }
+            val local = times.map { LocalTime.of(it / 60, it % 60) }
+            val at = local.mapNotNull { t -> ZonedDateTime.of(day, t, zone).takeIf { it.toLocalTime() == t }?.toInstant()?.toEpochMilli() }.sorted().firstOrNull { it > afterMs }
+            if (at != null) return at
         }
         return null
     }
@@ -43,8 +46,8 @@ class CronSpec private constructor(
         for (i in 1 until times.size) min = minOf(min, times[i] - times[i - 1])
         if (times.isEmpty()) return min
         val wrap = DAY_MIN - times.last() + times.first()
-        val base = LocalDate.of(2025, 1, 1)
-        val adjacent = (0..366).any { dayMatches(base.plusDays(it.toLong())) && dayMatches(base.plusDays(it + 1L)) }
+        val base = LocalDate.of(2027, 1, 1) // 2027 (normal) then 2028 (leap): every adjacent pair of days, the leap day's too
+        val adjacent = (0..730).any { dayMatches(base.plusDays(it.toLong())) && dayMatches(base.plusDays(it + 1L)) }
         return if (adjacent) minOf(min, wrap) else min
     }
 
@@ -71,6 +74,10 @@ class CronSpec private constructor(
             val dw = field(f[4], 0, 7)?.map { it % 7 }?.toSet() ?: return Parsed.Bad("cron: weekday field is not valid")
             val spec = CronSpec(m, h, dm, mo, dw, f[2] == "*", f[4] == "*")
             if (spec.times.isEmpty()) return Parsed.Bad("cron: never runs")
+            // only dates that occur in every year: no 29 February (and no 31 April, 30 February...), so a schedule never waits years or stalls on a leap day
+            if (!f[2].equals("*") && 2 in mo && 29 in dm) return Parsed.Bad("cron: 29 February is not allowed")
+            val normalYear = LocalDate.of(2027, 1, 1)
+            if ((0..364).none { spec.dayMatches(normalYear.plusDays(it.toLong())) }) return Parsed.Bad("cron: never runs")
             if (spec.minIntervalMin() < MIN_INTERVAL_MIN) return Parsed.Bad("cron: runs more often than every $MIN_INTERVAL_MIN minutes")
             return Parsed.Ok(spec)
         }

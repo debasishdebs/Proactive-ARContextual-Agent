@@ -24,8 +24,15 @@ class SceneSignalValues(db: ContextDatabase) : SignalValues {
 }
 
 /** The image embedding of the newest stored photo of the last [windowMs] (by Moment), the query of an IMAGE retrieval; null when there is none or it has no embedding yet. */
-class NewestPhotoVector(private val db: ContextDatabase, private val windowMs: Long = 10 * 60_000L) : TriggerImages {
-    override suspend fun vector(nowMs: Long): FloatArray? {
+class NewestPhotoVector(
+    private val db: ContextDatabase, private val windowMs: Long = 10 * 60_000L,
+    /** The id of the ACTIVE image space (the one recall searches); null = unknown. A photo embedded in another space is never used as a query. */
+    private val activeSpace: suspend () -> String? = { null },
+    /** Called with a fixed reason token when a photo is skipped (recorded as a trace row by the app). */
+    private val onSkip: suspend (String) -> Unit = {},
+) : TriggerImages {
+    override suspend fun photo(nowMs: Long): TriggerPhoto? {
+        val active = activeSpace()
         val md = db.momentDao()
         val moments = md.momentsBetween(MomentId.ofMs(maxOf(0L, nowMs - windowMs)), MomentId.ofMs(nowMs)).sortedByDescending { it.momentId }.take(MAX_MOMENTS)
         for (m in moments) {
@@ -33,8 +40,9 @@ class NewestPhotoVector(private val db: ContextDatabase, private val windowMs: L
             for (part in frames) {
                 val meta = db.frameMetaDao().byIds(listOf(part.refId)).firstOrNull() ?: continue
                 val space = meta.imageVectorSpace ?: continue
+                if (space != active) { onSkip("image_space_mismatch"); return null } // incompatible embeddings of equal size would match wrongly: skip, never guess
                 val blob = db.frameVectorDao().get(meta.frameId, space)?.blob ?: continue
-                runCatching { VectorCodec.decode(blob) }.getOrNull()?.let { return it }
+                runCatching { VectorCodec.decode(blob) }.getOrNull()?.let { return TriggerPhoto(meta.frameId, it) }
             }
         }
         return null
@@ -48,7 +56,11 @@ object NudgeSeamsFactory {
     fun seams(app: Context): TriggerSeams {
         val mem = MemoryGraph.get(app)
         return TriggerSeams(
-            meta = DaoTriggerMeta(mem.db.canvasSlice3Dao()), signals = SceneSignalValues(mem.db), images = NewestPhotoVector(mem.db),
+            meta = DaoTriggerMeta(mem.db.canvasSlice3Dao()), signals = SceneSignalValues(mem.db), images = NewestPhotoVector(
+                mem.db,
+                activeSpace = { com.rokid.context.work.frames.scene.SpaceImageSpaces(mem.spaces, com.rokid.context.ai.AiGraph.get(app).embedders).targets().firstOrNull { it.active }?.spaceId },
+                onSkip = { r -> val t = System.currentTimeMillis(); mem.traces.upsert(com.rokid.context.memory.db.SummaryTraceEntity("nudge_image_$t", "NUDGE_IMAGE_SKIPPED", t, r)) },
+            ),
             paused = { mem.db.pauseDao().countCovering(System.currentTimeMillis()) > 0 || (app.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isPowerSaveMode == true },
         )
     }

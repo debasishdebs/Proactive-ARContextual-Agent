@@ -18,7 +18,8 @@ class DaoFlowPlans(private val dao: CanvasDao) : FlowPlans {
         val pub = dao.activeFlow(kind.component) ?: return null
         cache[pub.id]?.let { return it.orElse(null) }
         val compiled = dao.version(pub.pipelineId, pub.version)?.let { v -> PipelineJson.decode(v.json).getOrNull() }?.let(FlowPlan::compile)
-        val plan = (compiled as? FlowPlan.Compiled.Ok)?.plan?.takeIf { it.kind == kind }
+        // a trigger flow carries its publication id (state scope); a summarizer-rooted plan stays equal to the built-in when the pipeline is the default one
+        val plan = (compiled as? FlowPlan.Compiled.Ok)?.plan?.takeIf { it.kind == kind }?.let { if (it.trigger == com.rokid.context.ai.canvas.NodeTypes.TRIGGER_SUMMARIZER) it else it.copy(scope = "p${pub.id}") }
         if (plan == null) PcLog.w("DaoFlowPlans", "published flow pipeline is not runnable; built-in flow")
         cache[pub.id] = java.util.Optional.ofNullable(plan)
         return plan

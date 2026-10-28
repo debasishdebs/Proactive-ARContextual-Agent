@@ -19,6 +19,7 @@ import com.rokid.context.memory.ProposalOrigin
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.forget.ForgetFence
+import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 import com.rokid.context.orchestration.AskSources
 import com.rokid.context.orchestration.FlowPlans
 import com.rokid.context.orchestration.AskText
@@ -71,17 +72,22 @@ class NudgeEngine(
 
     private suspend fun runLocked(trigger: String): NudgeRun {
         val now = clock()
-        val plan = lookupPlan()
-        if (trigger != (plan?.trigger ?: NodeTypes.TRIGGER_SUMMARIZER)) return NudgeRun.NotThisTrigger
+        val lookup = lookupPlan()
+        val plan = lookup.plan
+        // a plan lookup that failed runs the built-in flow, whatever started the run (the fallback must not depend on the trigger)
+        if (!lookup.failed && trigger != (plan?.trigger ?: NodeTypes.TRIGGER_SUMMARIZER)) return NudgeRun.NotThisTrigger
         val h = hud() ?: return NudgeRun.NoHud
-        val event = trigger != NodeTypes.TRIGGER_SUMMARIZER
+        val event = trigger != NodeTypes.TRIGGER_SUMMARIZER && !lookup.failed
         if (event && triggers.paused()) return NudgeRun.Paused
         // the edge state is updated even when a gate below drops the run
-        plan?.signal?.let { if (!SignalGate(triggers.meta, triggers.signals).fires(it, now)) return NudgeRun.NoSignal }
+        plan?.signal?.let { sig -> if (!SignalGate(triggers.meta, plan.scope, triggers.signals).fires(sig, now)) return NudgeRun.NoSignal }
         gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }
-        val prepared = buildInputs(now, plan, if (plan != null && plan.imageQuery && trigger in PHOTO_TRIGGERS) imageVector(now) else null)
+        val photo = if (plan != null && plan.imageQuery && trigger in PHOTO_TRIGGERS) triggerPhoto(now) else null
+        val built = buildInputs(now, plan, photo?.vector)
+        // the query photo is a source of the nudge: Forget of it (while the model runs) drops the nudge, and it is stored as a dependency
+        val prepared = if (photo == null) built else built.copy(fenceIds = built.fenceIds + (PHOTO_CITE_PREFIX + photo.frameId))
         if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
-        if (plan != null && !triggers.limiter.admit(trigger, plan.maxPerHour)) {
+        if (plan != null && !triggers.limiter.admit(trigger, plan.maxPerHour, plan.scope)) {
             memory.traces.upsert(SummaryTraceEntity("nudge_drop_$now", "NUDGE_DROPPED", now, "TRIGGER_RATE"))
             return NudgeRun.RateLimited
         }
@@ -118,12 +124,17 @@ class NudgeEngine(
         return NudgeRun.Shown(id)
     }
 
-    /** The published Nudge plan (null = the built-in flow); a lookup that throws is the built-in flow. */
-    private suspend fun lookupPlan(): FlowPlan? = try { flows.plan(FlowPlan.Kind.NUDGE)?.takeIf { it != FlowPlan.BUILT_IN_NUDGE } } catch (c: CancellationException) { throw c } catch (e: Exception) {
-        PcLog.i(TAG, "nudge pipeline lookup failed (${e.javaClass.simpleName}); built-in flow"); null
+    private class Lookup(val plan: FlowPlan?, val failed: Boolean = false)
+
+    /** The published Nudge plan (null plan = the built-in flow); a lookup that throws is the built-in flow too, flagged so any trigger may run it. */
+    private suspend fun lookupPlan(): Lookup = try { Lookup(flows.plan(FlowPlan.Kind.NUDGE)?.takeIf { it != FlowPlan.BUILT_IN_NUDGE }) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+        PcLog.i(TAG, "nudge pipeline lookup failed (${e.javaClass.simpleName}); built-in flow"); Lookup(null, failed = true)
     }
 
-    private suspend fun imageVector(now: Long): FloatArray? = try { triggers.images.vector(now) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+    /** The trigger's photo, only while it is not forgotten (it was read just now; the commit fence checks it again). */
+    private suspend fun triggerPhoto(now: Long): TriggerPhoto? = try {
+        triggers.images.photo(now)?.takeIf { com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, setOf(PHOTO_CITE_PREFIX + it.frameId)) }
+    } catch (c: CancellationException) { throw c } catch (e: Exception) {
         PcLog.i(TAG, "trigger image failed (${e.javaClass.simpleName})"); null
     }
 

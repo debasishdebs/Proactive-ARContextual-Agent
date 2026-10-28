@@ -50,6 +50,7 @@ class NudgeTriggerEngineTest {
     private var paused = false
     private var reach = GlassesReach.UP
     private var image: FloatArray? = null
+    private var imageFrame = "f1"
     private var imageAsked = 0
     private var signalValues: List<Double?> = emptyList()
     private val meta = MemoryTriggerMeta()
@@ -71,7 +72,7 @@ class NudgeTriggerEngineTest {
     private fun engine(): NudgeEngine {
         val mem = MemoryGraph.get(ctx)
         val seams = TriggerSeams(
-            meta, { _, _, _ -> signalValues }, TriggerImages { imageAsked++; image }, { paused }, { reach }, { now },
+            meta, { _, _, _ -> signalValues }, TriggerImages { imageAsked++; image?.let { v -> TriggerPhoto(imageFrame, v) } }, { paused }, { reach }, { now },
         )
         return NudgeEngine(
             NudgeInputs(mem, ContextSourceProvider { _, _ -> emptyList() }) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
@@ -208,11 +209,27 @@ class NudgeTriggerEngineTest {
         // a new engine on the same stored state (the app restarted): the budget is still spent
         val mem = MemoryGraph.get(ctx)
         val stored = DaoTriggerMeta(mem.db.canvasSlice3Dao())
-        stored.put(TriggerRateLimiter.KEY + NodeTypes.TRIGGER_MOMENT, meta.get(TriggerRateLimiter.KEY + NodeTypes.TRIGGER_MOMENT)!!)
+        stored.put(TriggerRateLimiter.KEY + "|" + NodeTypes.TRIGGER_MOMENT, meta.get(TriggerRateLimiter.KEY + "|" + NodeTypes.TRIGGER_MOMENT)!!)
         val restarted = NudgeEngine(NudgeInputs(mem, ContextSourceProvider { _, _ -> emptyList() }) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
             ProposalIntake { _, _, _, _ -> "p" }, clock = { now }, hud = { hud }, flows = FlowPlans { plan }, triggers = TriggerSeams(meta = DaoTriggerMeta(mem.db.canvasSlice3Dao()), clock = { now }))
         assertEquals(NudgeRun.RateLimited, restarted.runOnce(NodeTypes.TRIGGER_MOMENT))
         assertNull(rows().firstOrNull { it.text.endsWith("2") })
     }
 
+
+    @Test fun aFailingPlanLookupRunsTheBuiltInFlowEvenForAnEventTrigger() = runBlocking {
+        val mem = MemoryGraph.get(ctx)
+        val e = NudgeEngine(NudgeInputs(mem, ContextSourceProvider { _, _ -> emptyList() }) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
+            ProposalIntake { _, _, _, _ -> "p" }, clock = { now }, hud = { hud }, flows = FlowPlans { throw IllegalStateException("db") }, triggers = TriggerSeams(paused = { true }))
+        assertTrue(e.runOnce(NodeTypes.TRIGGER_MOMENT) is NudgeRun.Shown)
+    }
+
+    @Test fun theQueryPhotoIsFencedAndStoredAsADependency() = runBlocking {
+        image = floatArrayOf(0.1f)
+        MemoryGraph.get(ctx).db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("f1", null, null, "STILL", false, null, null, null, null, null, null, null, null, null, 1_000))
+        plan = planOf(NodeTypes.TRIGGER_MOMENT)
+        val run = engine().runOnce(NodeTypes.TRIGGER_MOMENT)
+        assertTrue(run is NudgeRun.Shown)
+        assertTrue(rows().single().sourceIdsJson, rows().single().sourceIdsJson.contains("frame:f1"))
+    }
 }
