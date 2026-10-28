@@ -119,6 +119,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         com.rokid.context.phone.ui.settings.glasses.NearbyDevicesRoute(source, onBack = back)
     }
 
+    composable(Routes.SETTINGS_DEVICE_CAPABILITIES) {
+        val app = LocalContext.current.applicationContext
+        val vm = viewModel { com.rokid.context.phone.ui.settings.devices.DeviceCapabilitiesViewModel(com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(app)) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        com.rokid.context.phone.ui.settings.devices.DeviceCapabilitiesScreen(state, onBack = back, onChange = vm::set)
+    }
+
     composable(Routes.SETTINGS_PHONE_INPUTS) {
         val vm = viewModel { PhoneInputsViewModel(s.voice, s.capture) }
         val state by vm.state.collectAsStateWithLifecycle()

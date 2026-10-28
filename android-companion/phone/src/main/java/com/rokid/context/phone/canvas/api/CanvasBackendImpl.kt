@@ -164,7 +164,7 @@ class CanvasBackendImpl(
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
-            val publisher = sharedPublisher ?: CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db))
+            val publisher = sharedPublisher ?: CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db), { com.rokid.context.orchestration.DeliveryEnvironment.caps() })
             val momentResolver = com.rokid.context.canvas.moment.MomentResolver(com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao(), MemoryGraph.get(app).db.momentDao()))
             val runner = CanvasRunner(
                 dao, photos, composeExecutors(extraExecutors),

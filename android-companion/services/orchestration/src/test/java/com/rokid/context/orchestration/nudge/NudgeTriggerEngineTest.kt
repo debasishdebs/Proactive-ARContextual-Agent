@@ -11,6 +11,7 @@ import com.rokid.context.ai.canvas.WindowAggregate
 import com.rokid.context.connectors.ContextSourceProvider
 import com.rokid.context.connectors.ProposalIntake
 import com.rokid.context.core.model.DeliveryRoute
+import com.rokid.context.core.model.DeviceCapabilities
 import com.rokid.context.core.model.GlassesReach
 import com.rokid.context.core.model.QuietHours
 import com.rokid.context.core.model.Verbosity
@@ -49,6 +50,7 @@ class NudgeTriggerEngineTest {
     private var plan: FlowPlan? = null
     private var paused = false
     private var reach = GlassesReach.UP
+    private var caps = com.rokid.context.core.model.DeviceCapabilities.ALL
     private var image: FloatArray? = null
     private var imageFrame = "f1"
     private var imageAsked = 0
@@ -72,7 +74,7 @@ class NudgeTriggerEngineTest {
     private fun engine(): NudgeEngine {
         val mem = MemoryGraph.get(ctx)
         val seams = TriggerSeams(
-            meta, { _, _, _ -> signalValues }, TriggerImages { imageAsked++; image?.let { v -> TriggerPhoto(imageFrame, "s1", v) } }, { paused }, { reach }, { now },
+            meta, { _, _, _ -> signalValues }, TriggerImages { imageAsked++; image?.let { v -> TriggerPhoto(imageFrame, "s1", v) } }, { paused }, { reach }, { now }, { caps },
         )
         return NudgeEngine(
             NudgeInputs(mem, ContextSourceProvider { _, _ -> emptyList() }) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
@@ -201,6 +203,22 @@ class NudgeTriggerEngineTest {
         assertEquals("phone", shownOn("glasses"))
         assertEquals(before + 1, rows().size)
         assertEquals(listOf(DeliveryRoute.GLASSES_NOT_CONNECTED), traces("NUDGE_DELIVERY_FALLBACK").map { it.note })
+    }
+
+    @Test fun aSwitchedOffDisplayIsNotASurfaceAndTheFallbackIsRecorded() = runBlocking {
+        fun shownOn(target: String): String { plan = planOf(NodeTypes.TRIGGER_MOMENT, target = target, perHour = 12); now += 2_700_000L; runBlocking { engine().runOnce(NodeTypes.TRIGGER_MOMENT) }; return runBlocking { rows().first().shownOn } }
+        reach = GlassesReach.UP; cap = 20
+        hud = NudgeHud(null, Verbosity.MAX, zone)
+        caps = caps.with("glasses", "display", false)
+        assertEquals("phone", shownOn("glasses")); assertEquals("phone", shownOn("both")); assertEquals("phone", shownOn("phone"))
+        assertEquals(listOf(DeviceCapabilities.GLASSES_DISPLAY_OFF, DeviceCapabilities.GLASSES_DISPLAY_OFF), traces("NUDGE_DELIVERY_FALLBACK").map { it.note })
+        // the phone display off: a phone target moves to the glasses HUD, both keeps the user's verbosity routing
+        caps = com.rokid.context.core.model.DeviceCapabilities.ALL.with("phone", "display", false)
+        assertEquals("toast", shownOn("phone")); assertEquals("toast", shownOn("both"))
+        assertEquals(2, traces("NUDGE_DELIVERY_FALLBACK").count { it.note == DeviceCapabilities.PHONE_DISPLAY_OFF })
+        // no display at all: still one stored row, on the phone, with the reason
+        caps = caps.with("glasses", "display", false)
+        assertEquals("phone", shownOn("phone")); assertEquals(1, traces("NUDGE_DELIVERY_FALLBACK").count { it.note == DeviceCapabilities.NO_DISPLAY })
     }
 
     @Test fun theRateStampsSurviveARestart() = runBlocking {

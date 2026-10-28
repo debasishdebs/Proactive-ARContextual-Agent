@@ -36,6 +36,9 @@ class ContextApp : Application() {
         val signalConfig = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).config
         com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { signalConfig.value }
         com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).history }
+        // v0.9.8 D: delivery and the voice surfaces read the user's device capabilities (mic and display) from Settings; unset = everything on.
+        val deviceCaps = com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(this).capabilities
+        com.rokid.context.orchestration.DeliveryEnvironment.capabilities = { deviceCaps.value }
         // The photo Forget radius follows Settings > Capture > Forget (default 10 s); the Forget path reads it once per Forget through ForgetRadius.ms().
         val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this)
         com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }

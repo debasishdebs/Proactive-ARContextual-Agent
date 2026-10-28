@@ -50,6 +50,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 plans = { HubGraph.get(app); PlanGraph.current()?.publisher }, m1 = { HubGraph.get(app); PlanGraph.current()?.m1 }, sweeps = sweeps,
                 candidates = com.rokid.context.canvas.plan.ReplayCandidates(db.canvasDao())::forHash,
                 signals = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app),
+                devices = com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(app),
             )
         }
 
@@ -69,6 +70,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             moments: (suspend (Long, Long, Long) -> com.rokid.context.canvas.moment.MomentBuilder.DayReport)? = null,
             /** v0.9.7 A: the signal configuration store (`/api/signals`); null = the routes are not registered. */
             signals: com.rokid.context.phone.ui.settings.capture.SignalConfigStore? = null,
+            /** v0.9.8 slice D: the device capability store (`/api/devices`); null = the routes are not registered. */
+            devices: com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore? = null,
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
             val replays = ReplayRoutes(replay, candidates ?: { null })
@@ -80,6 +83,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 if (moments != null) MomentRoutes(devMode::value, moments).let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
                 signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it)::handle)) }
+                devices?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.DeviceRoutes(it)::handle)) }
             }
             return CanvasExtras(all, replay, startup, sweeps)
         }

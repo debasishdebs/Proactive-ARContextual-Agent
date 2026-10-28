@@ -68,6 +68,8 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.settings.capture.SignalConfigStore.PREFS,
         // v0.9.7 B: the user's phone fusion thresholds are a per-device setting: back to the defaults after a restore.
         com.rokid.context.phone.ui.settings.capture.FusionSettingsStore.PREFS,
+        // v0.9.8 D: the user's mic and display switches describe this phone's pairing with its glasses: back to all on after a restore.
+        com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.PREFS,
         com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.PREFS,
         // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
         com.rokid.context.orchestration.AskPhotoPolicy.PREFS,

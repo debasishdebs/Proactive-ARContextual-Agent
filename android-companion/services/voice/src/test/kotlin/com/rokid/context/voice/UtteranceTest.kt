@@ -76,4 +76,17 @@ class UtteranceTest {
         assertEquals(UtteranceResult.Handled(Utterance.COULDNT_UNDO), u(Fake(failure = CommandFailure.OTHER)).handle("undo mark and what is this", UtteranceSource.PHONE_CHAT, true), "a failed write is never followed by an ask")
         assertEquals(UtteranceResult.Handled(Utterance.COULDNT_MARK), u(Fake(failure = CommandFailure.OTHER)).handle("mark this moment", UtteranceSource.PHONE_CHAT, true))
     }
+
+    @Test fun aSwitchedOffMicIgnoresThatSurfacesVoiceWithATruthfulReplyButNotTypedText() = kotlinx.coroutines.runBlocking<Unit> {
+        val f = Fake()
+        val caps = com.rokid.context.core.model.DeviceCapabilities.ALL.with("glasses", "mic", false).with("phone", "mic", false)
+        val u = Utterance(f, { 7L }, { caps })
+        assertEquals(UtteranceResult.Handled(VoiceCopy.GLASSES_MIC_OFF), u.handle("mark this moment", UtteranceSource.GLASSES_VOICE, true))
+        assertEquals(UtteranceResult.Handled(VoiceCopy.PHONE_MIC_OFF), u.handle("what is this", UtteranceSource.PHONE_VOICE, true))
+        assertTrue(f.applied.isEmpty() && f.asks.isEmpty(), "nothing was recorded or asked")
+        assertEquals(UtteranceResult.Handled(Utterance.MARKED), u.handle("mark this moment", UtteranceSource.PHONE_CHAT, true), "typed text has no mic")
+        assertEquals(UtteranceResult.PassThrough, u.handle("what is this", UtteranceSource.GLASSES_TEXT, true))
+        val onlyPhone = Utterance(f, { 7L }, { com.rokid.context.core.model.DeviceCapabilities.ALL.with("phone", "mic", false) })
+        assertEquals(UtteranceResult.PassThrough, onlyPhone.handle("what is this", UtteranceSource.GLASSES_VOICE, true))
+    }
 }

@@ -54,7 +54,8 @@ class FlowPublishTest {
     @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(app).db.close(); MemoryGraph.resetForTests(null) }
 
     private val db get() = MemoryGraph.get(app).db
-    private fun publisher() = CanvasPublisher(dao, ai.prompts, { _, _ -> emptyList() }, { now++ }, CanvasPublisher.inTransaction(db))
+    private var caps = com.rokid.context.core.model.DeviceCapabilities.ALL
+    private fun publisher() = CanvasPublisher(dao, ai.prompts, { _, _ -> emptyList() }, { now++ }, CanvasPublisher.inTransaction(db), { caps })
 
     /** A frozen copy of a default flow with the retrieve node's params replaced. */
     private suspend fun version(from: String, retrieve: JsonObject? = null, edit: (Pipeline) -> Pipeline = { it }): Pair<String, Int> {
@@ -107,6 +108,18 @@ class FlowPublishTest {
         assertEquals("glasses", DaoFlowPlans(dao).plan(FlowPlan.Kind.QUERY)!!.target)
     }
 
+    @Test fun aFlowWhoseOnlyDeliveryTargetIsSwitchedOffPublishesWithAWarning() = runBlocking {
+        fun queryTo(target: String) = runBlocking { version(DefaultPipelines.DEFAULT_QUERY) { p -> p.copy(nodes = p.nodes.map { if (it.id == "deliver") it.copy(params = buildJsonObject { put("target", target) }) else it }) } }
+        fun warnings(target: String) = (runBlocking { queryTo(target).let { (id, v) -> publisher().publishFlow(id, v) } } as CanvasPublisher.Outcome.Published).warnings
+        assertTrue(warnings("glasses").isEmpty())
+        caps = caps.with("glasses", "display", false)
+        assertEquals(1, warnings("glasses").size)
+        assertTrue("both still has the phone", warnings("both").isEmpty()); assertTrue(warnings("phone").isEmpty()); assertTrue(warnings("caller").isEmpty())
+        caps = caps.with("phone", "display", false)
+        assertEquals(1, warnings("both").size); assertEquals(1, warnings("phone").size)
+        assertEquals("a warning never blocks: the flow is live", "phone", DaoFlowPlans(dao).plan(FlowPlan.Kind.QUERY)!!.target)
+    }
+
     @Test fun badSchedulesAndRangesNeverFreezeAndAMeaninglessTargetIsRefusedAtPublish() = runBlocking {
         // a version with a validation problem cannot be frozen, so it can never reach a publish
         for (edit in listOf(nudgeEdit("trigger.schedule", buildJsonObject { put("cron", "*/5 * * * *") }), nudgeEdit("trigger.moment", buildJsonObject { put("maxPerHour", 50) }))) {
@@ -156,10 +169,18 @@ class FlowPublishTest {
             // the hub is not built yet: unknown counts as not connected
             DeliveryEnvironment.glassesConnected = null
             assertEquals(DeliveryRoute.GLASSES_NOT_CONNECTED, route("both", "glasses_voice")!!.fallback)
+            // slice D: a switched-off glasses display is not a surface (recorded), and a glasses-voice caller then answers on the phone
+            DeliveryEnvironment.glassesConnected = { true }
+            DeliveryEnvironment.capabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL.with("glasses", "display", false) }
+            assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("glasses", "phone_voice"))
+            assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("caller", "glasses_voice"))
+            assertNull("a phone-voice caller is untouched", route("caller", "phone_voice"))
+            assertTrue(MemoryGraph.get(app).traces.recent(10).any { it.note == com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF })
+            DeliveryEnvironment.capabilities = null
             // a chat ask has no path to the glasses even when they are connected
             DeliveryEnvironment.glassesConnected = { true }
             assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = DeliveryRoute.NO_GLASSES_PATH), route("glasses", "phone"))
-        } finally { DeliveryEnvironment.glassesConnected = null }
+        } finally { DeliveryEnvironment.glassesConnected = null; DeliveryEnvironment.capabilities = null }
     }
 
     @Test fun aPublishedRowThatNoLongerCompilesRunsTheBuiltIn() = runBlocking {

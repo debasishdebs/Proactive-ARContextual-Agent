@@ -47,6 +47,8 @@ class CanvasPublisher(
     private val compatibility: suspend (PromptKey, PromptDraft) -> List<String>,
     private val clock: () -> Long = System::currentTimeMillis,
     private val transact: suspend (suspend () -> Unit) -> Unit,
+    /** The user's device capabilities (slice D); default = everything on. */
+    private val capabilities: () -> com.rokid.context.core.model.DeviceCapabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL },
 ) {
     companion object {
         /** The production transaction runner: both DAOs live in one Room database, and Room nests transactions. */
@@ -72,7 +74,8 @@ class CanvasPublisher(
     }
 
     sealed interface Outcome {
-        data class Published(val publishId: Long, val keys: List<PromptKey>) : Outcome
+        /** [warnings] never block (v0.9.8 slice D: a flow whose only delivery target is switched off in Settings). */
+        data class Published(val publishId: Long, val keys: List<PromptKey>, val warnings: List<String> = emptyList()) : Outcome
         data class Blocked(val reasons: List<String>) : Outcome
     }
 
@@ -145,7 +148,7 @@ class CanvasPublisher(
                 dao.activePublishes().filter { it.kind == KIND_FLOW && it.component == plan.kind.component }.forEach { dao.markRolledBackWithReason(it.id, now, "superseded") }
                 val id = dao.insertPublish(CanvasPublishEntity(pipelineId = pipelineId, version = version, hash = v.hash, publishedAt = now, rolledBackAt = null,
                     snapshotJson = snapshot, kind = KIND_FLOW, component = plan.kind.component))
-                result = Outcome.Published(id, emptyList())
+                result = Outcome.Published(id, emptyList(), listOfNotNull(capabilities().deliveryWarning(plan.target)))
             }
         } catch (e: CancellationException) {
             throw e

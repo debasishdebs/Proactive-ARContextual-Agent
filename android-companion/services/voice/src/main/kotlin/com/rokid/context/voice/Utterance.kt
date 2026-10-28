@@ -17,6 +17,8 @@ import com.rokid.context.voice.commands.MarkCommandParser
 enum class UtteranceSource { GLASSES_VOICE, PHONE_VOICE, PHONE_CHAT, GLASSES_TEXT;
     /** The utterance was made on the glasses' side (it may join the wearer's tap mark; a photo is the glasses' own business). */
     val fromGlasses: Boolean get() = this == GLASSES_VOICE || this == GLASSES_TEXT
+    /** Uses a microphone (v0.9.8 slice D): the surface the `mic` device capability can switch off. Typed text has no mic. */
+    val usesMic: Boolean get() = this == GLASSES_VOICE || this == PHONE_VOICE
 }
 
 /** What [Utterance.handle] decided: not ours ([PassThrough]), consumed with a short fixed reply ([Handled], no model call) or only these clauses go on to Ask ([Ask]). */
@@ -42,12 +44,19 @@ interface UtteranceCommands {
     fun onAsk(source: UtteranceSource)
 }
 
-class Utterance(private val commands: UtteranceCommands, private val clock: () -> Long = System::currentTimeMillis) {
+class Utterance(
+    private val commands: UtteranceCommands,
+    private val clock: () -> Long = System::currentTimeMillis,
+    /** The user's device capabilities (v0.9.8 slice D); default = everything on. */
+    private val caps: () -> com.rokid.context.core.model.DeviceCapabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL },
+) {
     /**
      * [genuineFinal] false (a timeout or error partial) is never a command. No command clause: [UtteranceResult.PassThrough] and the ask continues unchanged. Commands only: [UtteranceResult.Handled].
      * Commands plus other clauses: the commands are recorded and ONLY the unmatched clauses are returned for Ask. The transcript is never stored or logged here.
      */
     suspend fun handle(text: String, source: UtteranceSource, genuineFinal: Boolean): UtteranceResult {
+        // a voice surface whose mic was switched off in Settings (mid-listen): nothing is recorded and nothing is asked; the reply says why. Typed text has no mic.
+        if (source.usesMic && !caps().micOn(source.fromGlasses)) return UtteranceResult.Handled(if (source.fromGlasses) VoiceCopy.GLASSES_MIC_OFF else VoiceCopy.PHONE_MIC_OFF)
         if (!genuineFinal) return UtteranceResult.PassThrough
         val parsed = MarkCommandParser.parseUtterance(text)
         if (parsed.commands.isEmpty()) { commands.onAsk(source); return UtteranceResult.PassThrough }
