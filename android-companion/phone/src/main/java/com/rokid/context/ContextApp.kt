@@ -43,6 +43,8 @@ class ContextApp : Application() {
         val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this)
         com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }
         com.rokid.context.memory.forget.ForgetScopeSetting.provider = { timing.forgetScopeNow() } // the Forget scope (Photo | Moment | Scene), read when a Forget starts
+        val devMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled
+        com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { devMode.value } // the engine re-checks Developer mode at every Moment/Scene Forget
         // Phone power policy inputs (spec P2.5): the real thermal status and whether the app is in the foreground.
         com.rokid.context.work.frames.KeyframeGraph.thermal = com.rokid.context.work.frames.KeyframeGraph.systemThermal(this)
         com.rokid.context.work.frames.KeyframeGraph.foreground = {

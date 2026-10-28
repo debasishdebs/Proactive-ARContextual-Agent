@@ -41,6 +41,7 @@ class ScopedForget(
 
     suspend fun plan(target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): Plan {
         val eff = scope.atLeast(target.level)
+        if (eff != ForgetScope.PHOTO) requireExperimental() // the engine's own gate: whatever the caller (route, voice, API) passed
         val dao = db.forgetDao(); val radius = ForgetRadius.ms()
         fun only(factId: String? = null, frameId: String? = null) = Plan(target, scope, ForgetScope.PHOTO, factId, frameId, emptyList(), emptyList())
         // The Moment seconds the target lives in (empty = unknown).
@@ -74,6 +75,8 @@ class ScopedForget(
         val effective = if (sceneIds.isNotEmpty()) ForgetScope.SCENE else ForgetScope.MOMENT
         return Plan(target, scope, effective, null, null, spans, sceneIds)
     }
+
+    private fun requireExperimental() { if (!ForgetScopeSetting.experimentalOn()) throw ForgetScopeNotAllowed() }
 
     /** A Moment's second plus the radius on both sides (whole seconds; never before the epoch). */
     private fun window(second: Long, radius: Long): LongRange = maxOf(0L, second * 1000 - radius)..(second * 1000 + 999 + radius)
@@ -122,6 +125,7 @@ class ScopedForget(
      * set is rediscovered INSIDE the deleting transaction and, if it differs in any id (a photo or mark that arrived, a changed Scene membership, a changed radius or scope fallback), [ForgetContentChanged] rolls everything back.
      */
     suspend fun forget(plan: Plan, expectedHash: String? = null): Done {
+        if (plan.effective != ForgetScope.PHOTO) requireExperimental() // a plan made (or confirmed) before Developer mode went off must not run
         if (plan.isEmpty) return Done(plan, ForgetService.Result.EMPTY, emptyList(), emptyList())
         if (plan.factId != null || plan.frameId != null) {
             val r = service.notifying {

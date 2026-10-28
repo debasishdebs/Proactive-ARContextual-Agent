@@ -64,3 +64,11 @@ class AppAnswerer(
         val LABEL_DAY_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE HH:mm", Locale.US)
     }
 }
+
+/**
+ * The Home chat's delivery to the glasses HUD (v0.9.8 slice E): a typed ask's answer is mirrored when its [AskOutcome.Answered.route] puts it on the glasses
+ * ([com.rokid.context.core.model.DeliveryRoute.mirrorsChatToHud]; no route = today's mirror), the same DeliveryRoute the voice pipeline follows. At most one mirror per answer.
+ */
+fun mirrorTypedAnswer(outcome: AskOutcome, mirror: (askId: String) -> Unit) {
+    if (outcome is AskOutcome.Answered && (outcome.route?.mirrorsChatToHud ?: true)) mirror(outcome.askId)
+}

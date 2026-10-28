@@ -149,12 +149,16 @@ class NudgeTriggerEngineTest {
         assertTrue(engine().runOnce(NodeTypes.TRIGGER_SCENE) is NudgeRun.Shown)
     }
 
-    @Test fun aPauseStopsAnEventTriggerButNotTheSummarizerPass() = runBlocking {
+    /** v0.9.8 E: one pause gate for every trigger (the summarizer pass used to ignore it); the default Nudge still runs when nothing is paused. */
+    @Test fun aPauseStopsEveryTriggerIncludingTheSummarizerPass() = runBlocking {
         paused = true
         plan = planOf(NodeTypes.TRIGGER_MOMENT)
         assertEquals(NudgeRun.Paused, engine().runOnce(NodeTypes.TRIGGER_MOMENT)); assertEquals(0, calls)
         plan = null
-        assertTrue("the built-in flow behaves as before", engine().runOnce() is NudgeRun.Shown)
+        assertEquals(NudgeRun.Paused, engine().runOnce()); assertEquals(NudgeRun.Paused, engine().runOnce(NodeTypes.TRIGGER_SUMMARIZER, builtInOnly = true))
+        assertEquals("no model call, no row", 0, calls); assertTrue(rows().isEmpty())
+        paused = false
+        assertTrue("the default Nudge keeps working when not paused", engine().runOnce() is NudgeRun.Shown)
     }
 
     @Test fun theSignalTriggerFiresOnTheEdgeThroughTheGates() = runBlocking {
@@ -245,7 +249,7 @@ class NudgeTriggerEngineTest {
     @Test fun aFailingPlanLookupRunsTheBuiltInFlowEvenForAnEventTrigger() = runBlocking {
         val mem = MemoryGraph.get(ctx)
         val e = NudgeEngine(NudgeInputs(mem, ContextSourceProvider { _, _ -> emptyList() }) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
-            ProposalIntake { _, _, _, _ -> "p" }, clock = { now }, hud = { hud }, flows = FlowPlans { throw IllegalStateException("db") }, triggers = TriggerSeams(paused = { true }))
+            ProposalIntake { _, _, _, _ -> "p" }, clock = { now }, hud = { hud }, flows = FlowPlans { throw IllegalStateException("db") })
         assertTrue(e.runOnce(NodeTypes.TRIGGER_MOMENT) is NudgeRun.Shown)
         // a queued built-in fallback runs the built-in flow even when the lookup has recovered to an event-rooted plan
         plan = planOf(NodeTypes.TRIGGER_MOMENT); now += 3_600_000L

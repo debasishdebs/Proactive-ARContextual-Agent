@@ -177,9 +177,20 @@ class FlowPublishTest {
             assertNull("a phone-voice caller is untouched", route("caller", "phone_voice"))
             assertTrue(MemoryGraph.get(app).traces.recent(10).any { it.note == com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF })
             DeliveryEnvironment.capabilities = null
-            // a chat ask has no path to the glasses even when they are connected
+            // a queue or other ask has no path to the glasses even when they are connected
             DeliveryEnvironment.glassesConnected = { true }
             assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = DeliveryRoute.NO_GLASSES_PATH), route("glasses", "phone"))
+            // v0.9.8 E: the Home chat (typed ask) reaches the HUD through the phone's mirror, by the same route the voice asks follow
+            val chat = com.rokid.context.orchestration.AskActions.TYPED_SOURCE
+            assertEquals(DeliveryRoute(phone = false, glasses = true), route("glasses", chat))
+            assertEquals(DeliveryRoute(phone = true, glasses = true), route("both", chat))
+            assertEquals(DeliveryRoute(phone = true, glasses = false), route("phone", chat))
+            assertNull("the built-in flow from chat is untouched", route("caller", chat))
+            DeliveryEnvironment.glassesConnected = { false }
+            assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = DeliveryRoute.GLASSES_NOT_CONNECTED), route("glasses", chat))
+            DeliveryEnvironment.glassesConnected = { true }
+            DeliveryEnvironment.capabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL.with("glasses", "display", false) }
+            assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("both", chat))
         } finally { DeliveryEnvironment.glassesConnected = null; DeliveryEnvironment.capabilities = null }
     }
 

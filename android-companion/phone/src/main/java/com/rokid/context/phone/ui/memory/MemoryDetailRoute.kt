@@ -35,7 +35,7 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
                 val target = targetOf(kind, memoryId, frameId) ?: return null
                 val scope = ForgetScopeSetting.get() // read once: the counts and the delete name this scope
                 val p = ForgetActions.previewScoped(app, target, scope)
-                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk, p.planHash, p.outside, p.tooLarge)
+                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk, p.planHash, p.outside, p.tooLarge, p.peerResults)
             }
             override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: ForgetScope, planHash: String?): Boolean {
                 val target = targetOf(kind, memoryId, frameId) ?: return false

@@ -18,6 +18,18 @@ class AppAnswererTest {
         assertEquals(listOf("milk?" to "glasses_voice"), asked)
     }
 
+    /** v0.9.8 E: a chat answer reaches the HUD by its DeliveryRoute, once; no route keeps today's mirror; a failure never mirrors. */
+    @Test fun theChatMirrorsAnAnswerToTheHudOnlyWhenItsRouteSaysSo() {
+        val mirrored = mutableListOf<String>()
+        fun run(o: AskOutcome) { mirrored.clear(); mirrorTypedAnswer(o) { mirrored += it } }
+        run(AskOutcome.Answered("a1")); assertEquals(listOf("a1"), mirrored)
+        run(AskOutcome.Answered("a2", route = com.rokid.context.core.model.DeliveryRoute(phone = false, glasses = true))); assertEquals(listOf("a2"), mirrored)
+        run(AskOutcome.Answered("a3", route = com.rokid.context.core.model.DeliveryRoute(phone = true, glasses = true))); assertEquals(listOf("a3"), mirrored)
+        run(AskOutcome.Answered("a4", route = com.rokid.context.core.model.DeliveryRoute(phone = true, glasses = false))); assertEquals(emptyList<String>(), mirrored)
+        run(AskOutcome.Answered("a5", route = com.rokid.context.core.model.DeliveryRoute(phone = true, glasses = false, fallback = "glasses_not_connected"))); assertEquals(emptyList<String>(), mirrored)
+        run(AskOutcome.Failed("x")); assertEquals(emptyList<String>(), mirrored)
+    }
+
     /** "note that…" (user notes): an ask whose action is turned off answers (HUD and TTS) with the off notice. */
     @Test fun aTurnedOffActionAnswersWithTheOffNotice() = runBlocking {
         val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", proposalId = "p1") }, answerText = { "Noted." }, offNotice = { id -> "Notes are off.".takeIf { id == "p1" } })

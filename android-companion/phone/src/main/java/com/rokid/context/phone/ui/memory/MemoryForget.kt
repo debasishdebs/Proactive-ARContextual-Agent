@@ -33,6 +33,8 @@ data class ForgetPreview(
     val outside: Int = 0,
     /** Too much is connected to forget in one step: the dialog explains and Forget stays disabled. */
     val tooLarge: Boolean = false,
+    /** Regenerable run results of other photos that share a provider call with an outside photo whose outputs are scrubbed: DELETED too (the next run recreates them). */
+    val peerResults: Int = 0,
 )
 
 /** The Forget was refused because too much is connected to it: nothing was deleted. */
@@ -99,6 +101,7 @@ object ForgetScopeCopy {
     }
     /** The extra line when the Forget touches things it does not delete: counts only. */
     fun outsideLine(n: Int) = "$n ${if (n == 1) "item outside this window is" else "items outside this window are"} affected (not deleted)."
+    fun peerResultsLine(n: Int) = "$n other generated ${if (n == 1) "result" else "results"} from the same run will also be deleted (the next run recreates ${if (n == 1) "it" else "them"})."
     /** Why Moment and Scene are greyed out in Settings. */
     const val EXPERIMENTAL = "Moment and Scene are experimental until a worn test: turn on Developer mode (Settings > Diagnostics) to use them. Photo is used until then."
     const val TOO_LARGE = "Too much is connected to this to forget in one step; use a smaller scope or Delete all"

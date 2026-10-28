@@ -96,8 +96,8 @@ class ResidueOracleTest {
      */
     private val tableFilter = mapOf("canvas_meta" to " WHERE `key` NOT LIKE 'mark\\_undone:%' ESCAPE '\\'")
 
-    @Before fun setUp() { WorkManagerTestInitHelper.initializeTestWorkManager(app); h = PyFnRunHarness(app) }
-    @After fun tearDown() { h.close() }
+    @Before fun setUp() { WorkManagerTestInitHelper.initializeTestWorkManager(app); h = PyFnRunHarness(app); com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { true } } // Developer mode on for the Moment/Scene scopes
+    @After fun tearDown() { com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { false }; h.close() }
 
     // ---- the scan ----
 

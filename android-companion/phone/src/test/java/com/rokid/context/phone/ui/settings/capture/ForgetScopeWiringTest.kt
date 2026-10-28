@@ -9,6 +9,7 @@ class ForgetScopeWiringTest {
     @Test fun theApplicationBindsTheScopeProviderToTheStoredSetting() {
         val src = File("src/main/java/com/rokid/context/ContextApp.kt").also { assertTrue("run from the phone module: ${it.absolutePath}", it.exists()) }.readText()
         assertTrue(src.lines().any { "ForgetScopeSetting.provider" in it && "timing.forgetScopeNow()" in it && !it.trimStart().startsWith("//") })
+        assertTrue("the engine's Developer-mode gate is bound", src.lines().any { "ForgetScopeSetting.experimentalAllowed" in it && "devMode.value" in it && !it.trimStart().startsWith("//") })
         assertTrue("the radius binding it sits next to", src.contains("ForgetRadius.provider = { timing.forgetRadiusMs() }"))
     }
 }

@@ -67,6 +67,8 @@ class MomentForget(
         val planHash: String = "",
         /** Items OUTSIDE the spans that are affected but NOT deleted: photos an in-span fact cites (locked only) and derived facts elsewhere that become invalid. */
         val outside: Int = 0,
+        /** Regenerable run results of OTHER photos that share a provider call with an outside cited photo whose outputs are scrubbed: they ARE deleted (the next run recreates them); counted so the user sees them. */
+        val peerResults: Int = 0,
         /** The set is too connected to forget in one step (depth or node cap): nothing can be deleted by this scope. */
         val tooLarge: Boolean = false)
     suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
@@ -75,7 +77,7 @@ class MomentForget(
         return try { db.withTransaction {
             val d = discover(secondsOf(merged), merged, bounded = true)
             val e = sceneEffect(d.moments, sceneIds)
-            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e), outside = d.outsideFrames.size + d.descendants.size)
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e), outside = d.outsideFrames.size + d.descendants.size, peerResults = d.peerResults.size)
         } } catch (e: ForgetTooLarge) { Counts(0, 0, 0, 0, 0, 0, tooLarge = true) }
     }
 
@@ -96,7 +98,7 @@ class MomentForget(
 
     private fun hashOf(spans: List<LongRange>, d: Found, e: SceneEffect): String = ForgetPlanHash.of(
         ForgetScope.MOMENT, spans,
-        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
+        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants, "peerResults" to d.peerResults) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
     )
 
     private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
@@ -117,7 +119,7 @@ class MomentForget(
      */
     private class Found(
         val frames: Set<String>, val memories: Set<String>, val labels: Set<String>, val projected: Set<String>, val moments: Set<String>,
-        val outsideFrames: Set<String> = emptySet(), val descendants: Set<String> = emptySet(),
+        val outsideFrames: Set<String> = emptySet(), val descendants: Set<String> = emptySet(), val peerResults: Set<String> = emptySet(),
     )
 
     private suspend fun discover(requestedSeconds: List<Long>, spans: List<LongRange>, bounded: Boolean = false): Found {
@@ -153,7 +155,10 @@ class MomentForget(
         val ml = memories.toList()
         val cited = ml.chunked(CHUNK).flatMap { c -> fd.memories(c).mapNotNull { it.frameId } + fd.sourceFramesOf(c) }.toSet()
         val descendants = boundedDescendants(ml)
-        return Found(frames, memories, labels, projected, moments, outsideFrames = cited - frames, descendants = descendants)
+        val outsideFrames = cited - frames
+        // the cascade scrubs an outside cited photo's outputs batch-wide (ForgetService.cascade): the results of its batch peers go too, so they are discovered here for the count and the hash
+        val peers = if (outsideFrames.isEmpty()) emptySet() else db.canvasDao().batchPeersOf(outsideFrames.toList()) - frames
+        return Found(frames, memories, labels, projected, moments, outsideFrames = outsideFrames, descendants = descendants, peerResults = peers)
     }
 
     /** The derived facts that depend on [seed], found level by level with a HARD cap of [maxDepth] levels and [maxNodes] facts; past either, [ForgetTooLarge] (nothing is deleted). */
