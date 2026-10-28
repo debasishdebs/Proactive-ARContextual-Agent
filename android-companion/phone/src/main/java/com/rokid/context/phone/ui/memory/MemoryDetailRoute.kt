@@ -35,7 +35,7 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
                 val target = targetOf(kind, memoryId, frameId) ?: return null
                 val scope = ForgetScopeSetting.get() // read once: the counts and the delete name this scope
                 val p = ForgetActions.previewScoped(app, target, scope)
-                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk, p.planHash, p.outside, p.tooLarge, p.peerResults)
+                return ForgetPreview(scope, p.effective, p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk, p.planHash, p.outside, p.tooLarge, p.peerResults, p.needsAck, p.ackHash)
             }
             override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: ForgetScope, planHash: String?): Boolean {
                 val target = targetOf(kind, memoryId, frameId) ?: return false
@@ -64,6 +64,6 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
     MemoryDetailScreen(
         state, onBack = back, onTrust = vm::trust, onStartEdit = vm::startEdit, onDraftChange = vm::updateDraft, onSaveEdit = vm::saveEdit,
         onCancelEdit = vm::cancelEdit, onOpenFrames = { date, frameId -> nav.navigate(Routes.frames(date, frameId)) },
-        onForget = vm::askForget, onConfirmForget = vm::confirmForget, onDismissForget = vm::dismissForget,
+        onForget = vm::askForget, onConfirmForget = vm::confirmForget, onDismissForget = vm::dismissForget, onAckForget = vm::acknowledgeForget,
     )
 }

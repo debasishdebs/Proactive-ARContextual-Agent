@@ -107,6 +107,36 @@ class ScopedForgetTest {
     }
     private suspend fun itemKeys() = db.canvasDao().items("r1").map { it.frameId }.sorted()
 
+    /** v1 ruling: a closure beyond MAX_UNACKED_RESULTS warns in the preview and the delete needs the acknowledged token; beyond the hard ceiling nothing is deleted. */
+    @Test fun aLargeClosureNeedsTheExplicitAcknowledgementAndAHugeOneIsRefused() = runBlocking<Unit> {
+        world()
+        runWith(*(listOf("a1" to "x") + (1..MomentForget.MAX_UNACKED_RESULTS + 1).map { "p$it" to "x" }).toTypedArray())
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertTrue(c.needsAck); assertEquals(MomentForget.MAX_UNACKED_RESULTS + 1, c.peerResults); assertEquals(c.planHash + MomentForget.ACK_SUFFIX, c.ackHash)
+        assertTrue("the plain token is refused", runCatching { engine.forget(p, c.planHash) }.exceptionOrNull() is ForgetNeedsAck)
+        assertTrue("no token at all is refused too", runCatching { engine.forget(p) }.exceptionOrNull() is ForgetNeedsAck)
+        assertEquals("nothing was deleted", MomentForget.MAX_UNACKED_RESULTS + 2, db.canvasDao().items("r1").size); assertTrue("a1" in frames())
+        engine.forget(p, c.ackHash)
+        assertTrue(db.canvasDao().items("r1").isEmpty()); assertFalse("a1" in frames())
+    }
+
+    @Test fun aSmallClosureNeedsNoAcknowledgement() = runBlocking<Unit> {
+        world(); runWith("a1" to "x", "u1" to "x")
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertFalse(c.needsAck); assertEquals(c.planHash, c.ackHash); engine.forget(p, c.planHash)
+    }
+
+    @Test fun aClosureBeyondTheHardCeilingIsTooLargeAndDeletesNothing() = runBlocking<Unit> {
+        world(); runWith(*(listOf("a1" to "x") + (1..6).map { "p$it" to "x" }).toTypedArray())
+        MomentForget.hardCeiling = 5
+        try {
+            val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT)
+            assertTrue(engine.preview(p).tooLarge)
+            assertTrue(runCatching { engine.forget(p, null) }.exceptionOrNull() is ForgetTooLarge)
+            assertEquals(7, db.canvasDao().items("r1").size); assertTrue("a1" in frames())
+        } finally { MomentForget.hardCeiling = MomentForget.HARD_CEILING_RESULTS }
+    }
+
     /** Codex round 2 (3): roots A:x, B:x|y and peer C:y. Deleting A first used to erase B's lineage and leave C; the closure is computed before anything is deleted. */
     @Test fun theLineageClosureIsComputedBeforeAnyPhotoIsDeleted() = runBlocking<Unit> {
         world(); runWith("a1" to "x", "a2" to "x|y", "u1" to "y", "u2" to "z")

@@ -58,6 +58,7 @@ fun MemoryDetailScreen(
     onForget: (ForgetKind) -> Unit = {},
     onConfirmForget: () -> Unit = {},
     onDismissForget: () -> Unit = {},
+    onAckForget: (Boolean) -> Unit = {},
 ) {
     state.confirm?.let { kind ->
         AlertDialog(
@@ -72,6 +73,13 @@ fun MemoryDetailScreen(
                         if (!p.tooLarge) Text(ForgetScopeCopy.counts(p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk))
                         if (!p.tooLarge && p.outside > 0) Text(ForgetScopeCopy.outsideLine(p.outside))
                         if (!p.tooLarge && p.peerResults > 0) Text(ForgetScopeCopy.peerResultsLine(p.peerResults))
+                        if (!p.tooLarge && p.needsAck) {
+                            Text(ForgetScopeCopy.rebuildWarning(p.peerResults), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                            androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                androidx.compose.material3.Checkbox(checked = state.forgetAcked, onCheckedChange = onAckForget)
+                                Text(ForgetScopeCopy.ACK_LABEL)
+                            }
+                        }
                     }
                     state.message?.let { Text(it, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) } // e.g. "Content changed since the preview. Review again."
                     if (state.forgetPreview?.tooLarge == true) Text(ForgetScopeCopy.TOO_LARGE)

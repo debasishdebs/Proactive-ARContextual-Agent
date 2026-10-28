@@ -41,6 +41,7 @@ data class MemoryDetailUiState(
     val forgetPreviewFailed: Boolean = false,
     /** False when the dialog must not be confirmed yet (counting, or a Moment/Scene scope whose counts failed). */
     val forgetConfirmable: Boolean = true,
+    val forgetAcked: Boolean = false,
     /** A Forget is running: both Forget buttons are disabled. */
     val forgetting: Boolean = false,
     /** The Forget finished: the route refreshes the hub, says "Forgotten" and goes back. */

@@ -27,7 +27,7 @@ class MemoryDetailViewModel(
     private data class Local(
         val draft: String? = null, val message: String? = null, val confirm: ForgetKind? = null,
         val forgetting: Boolean = false, val forgotten: Boolean = false,
-        val preview: ForgetPreview? = null, val previewing: Boolean = false, val previewFailed: Boolean = false, val blockedByCount: Boolean = false,
+        val preview: ForgetPreview? = null, val acked: Boolean = false, val previewing: Boolean = false, val previewFailed: Boolean = false, val blockedByCount: Boolean = false,
     )
     private var previewJob: kotlinx.coroutines.Job? = null
     private val local = MutableStateFlow(Local())
@@ -38,7 +38,7 @@ class MemoryDetailViewModel(
     ) { base, l ->
         // `forgotten` survives the row disappearing (the Forget itself deletes it).
         if (base.found) base.copy(draft = l.draft, message = l.message, confirm = l.confirm, forgetting = l.forgetting, forgotten = l.forgotten,
-            forgetPreview = l.preview, forgetPreviewing = l.previewing, forgetPreviewFailed = l.previewFailed, forgetConfirmable = !l.previewing && !l.blockedByCount)
+            forgetPreview = l.preview, forgetPreviewing = l.previewing, forgetPreviewFailed = l.previewFailed, forgetConfirmable = !l.previewing && !l.blockedByCount && (l.preview?.needsAck != true || l.acked), forgetAcked = l.acked)
         else base.copy(forgotten = l.forgotten, message = if (l.forgotten) l.message else base.message) // the cached-export notice outlives the row
     }
         .stateIn(viewModelScope, SharingStarted.Eagerly, MemoryDetailUiState())
@@ -70,7 +70,7 @@ class MemoryDetailViewModel(
 
     private fun openDialog(kind: ForgetKind, frameId: String?, keepMessage: Boolean = true) {
         previewJob?.cancel()
-        local.update { it.copy(confirm = kind, message = if (keepMessage) it.message else null, preview = null, previewFailed = false, blockedByCount = false, previewing = true) }
+        local.update { it.copy(confirm = kind, message = if (keepMessage) it.message else null, preview = null, acked = false, previewFailed = false, blockedByCount = false, previewing = true) }
         previewJob = viewModelScope.launch {
             var preview: ForgetPreview? = null; var failed = false
             try { preview = forget.preview(kind, memoryId, frameId) } catch (c: CancellationException) { throw c } catch (e: Exception) { failed = true }
@@ -80,6 +80,9 @@ class MemoryDetailViewModel(
         }
     }
 
+    /** The explicit acknowledgement of a large rebuild; the delete sends the preview's ackHash only once it is given. */
+    fun acknowledgeForget(on: Boolean) = local.update { it.copy(acked = on) }
+
     fun dismissForget() { previewJob?.cancel(); local.update { it.copy(confirm = null, preview = null, previewing = false, previewFailed = false, blockedByCount = false) } }
 
     /** Runs once: a second tap while running (or after success) is ignored. Failure shows fixed copy, never the error. */
@@ -87,6 +90,7 @@ class MemoryDetailViewModel(
         val kind = local.value.confirm ?: return
         if (local.value.previewing || local.value.blockedByCount) return // counts first: nothing runs while they are being counted or when a Moment/Scene scope could not count
         val preview = local.value.preview
+        if (preview?.needsAck == true && !local.value.acked) return // a large rebuild is never confirmed without the explicit acknowledgement
         val frameId = state.value.frameId
         var start = false
         local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null, preview = null) } }
@@ -94,7 +98,7 @@ class MemoryDetailViewModel(
         viewModelScope.launch {
             var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false; var tooLarge = false
             val ok = try {
-                if (preview != null) forget.forgetScoped(kind, memoryId, frameId, preview.requested, preview.planHash.ifEmpty { null }) // the scope the dialog showed
+                if (preview != null) forget.forgetScoped(kind, memoryId, frameId, preview.requested, (if (preview.needsAck) preview.ackHash else preview.planHash).ifEmpty { null }) // the scope the dialog showed
                 else when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId) }
             } catch (c: CancellationException) {
                 throw c
