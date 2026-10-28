@@ -1,0 +1,17 @@
+question=
+---
+memories=
+---
+recent=BEGIN_DATA memories
+- id=rokid_mem_1 · 12:30 · Milk carton nearly empty
+- id=rokid_mem_2 · 11:30 · Bought bread and milk at the corner shop
+END_DATA memories
+BEGIN_DATA recent_nudges
+(none)
+END_DATA recent_nudges
+---
+sources=BEGIN_DATA sources
+- event · Dentist · Mon 19:00
+END_DATA sources
+---
+[rokid_mem_1, rokid_mem_2]

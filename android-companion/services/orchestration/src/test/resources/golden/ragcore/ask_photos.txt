@@ -1,0 +1,17 @@
+question=BEGIN_DATA question
+- milk?
+END_DATA question
+---
+memories=BEGIN_DATA memories
+- id=rokid_mem_1 · 2027-01-15 07:00 · confidence 0.90 · frame=none · Milk carton nearly empty
+- note: image=N on a photo line is the Nth attached image
+- id=rokid_mem_2 · 2027-01-15 07:59 · photo · image=1 · A red mug on a desk
+END_DATA memories
+---
+recent=
+---
+sources=BEGIN_DATA sources
+- event · Dentist · milk?
+END_DATA sources
+---
+[rokid_mem_1]|[PhotoCite(citeId=rokid_mem_2, frameId=f1, ts=1799999999000, stored=true, receivedAt=1799999999500)]|[ModelImageInput(mimeType=image/jpeg, base64Data=AAAA, detail=low)]|az|[rokid_mem_1, rokid_mem_2]
