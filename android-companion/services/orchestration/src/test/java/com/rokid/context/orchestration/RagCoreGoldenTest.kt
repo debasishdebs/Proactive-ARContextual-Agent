@@ -20,6 +20,7 @@ import java.io.File
 import java.time.ZoneId
 import java.time.ZoneOffset
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -100,6 +101,56 @@ class RagCoreGoldenTest {
         golden("nudge_plain", p.vars, "${p.inputIds.sorted()}")
         val e = inputs.build(now, "extra line")
         golden("nudge_extra", e.vars, "${e.inputIds.sorted()}")
+    }
+
+    // ---- v0.9.8 slice B: the default pipelines' compiled plans give the very same goldens as the built-in flows ----
+
+    private fun planOf(p: com.rokid.context.ai.canvas.Pipeline) = (com.rokid.context.ai.canvas.FlowPlan.compile(p) as com.rokid.context.ai.canvas.FlowPlan.Compiled.Ok).plan
+    private val queryPlan get() = planOf(com.rokid.context.ai.canvas.DefaultPipelines.defaultQuery())
+
+    @Test fun defaultQueryPipelineGivesTheAskGoldens() = runBlocking<Unit> {
+        seed()
+        val a = service(false).retrieve("milk?", now, queryPlan)
+        golden("ask_plain", a.vars, "${a.memories.map { it.id }}|${a.photos}|${a.images}|${a.imageEndpointId}|${a.ids}")
+        val b = service(true, photoHits).retrieve("milk?", now, queryPlan)
+        golden("ask_photos", b.vars, "${b.memories.map { it.id }}|${b.photos}|${b.images}|${b.imageEndpointId}|${b.ids}")
+        val c = service(false).retrieve("zzzqqq", now, queryPlan)
+        golden("ask_fallback", c.vars, "${c.memories.map { it.id }}|${c.photos}|${c.images}|${c.ids}")
+    }
+
+    @Test fun defaultNudgePipelineGivesTheNudgeGoldens() = runBlocking<Unit> {
+        seed()
+        val sources = ContextSourceProvider { q, _ -> if (q == null) listOf("event · Dentist · Mon 19:00") else emptyList() }
+        val inputs = NudgeInputs(MemoryGraph.get(ctx), sources) { ZoneId.of("Asia/Kolkata") }
+        val plan = planOf(com.rokid.context.ai.canvas.DefaultPipelines.defaultNudge())
+        val p = inputs.build(now, plan = plan)
+        golden("nudge_plain", p.vars, "${p.inputIds.sorted()}")
+        val e = inputs.build(now, "extra line", plan = plan)
+        golden("nudge_extra", e.vars, "${e.inputIds.sorted()}")
+    }
+
+    @Test fun thePlansMeanTheSourcesAndParamsOfToday() {
+        assertEquals(listOf(RagSource.MemoryStore(), RagSource.PhotoStore()), queryPlan.askSources())
+        assertEquals(RagParams(), queryPlan.ragParams())
+        val n = planOf(com.rokid.context.ai.canvas.DefaultPipelines.defaultNudge())
+        assertEquals(listOf(RagSource.RecentWindow(6 * 3_600_000L), RagSource.NudgeHistory(24 * 3_600_000L)), n.nudgeSources(false))
+        assertEquals(RagSource.PhotoStore(), n.nudgeSources(true).last())
+        val base = RagParams(maxRecent = 10, maxChars = 1_000_000)
+        assertEquals(base, n.ragParams(base))
+        // a pipeline's own fields replace the base's, the rest stay
+        val tuned = queryPlan.copy(rag = kotlinx.serialization.json.buildJsonObject { put("topK", 3); put("mode", "LEXICAL"); put("recencyBoost", false) })
+        assertEquals(RagParams(mode = RetrievalMode.LEXICAL, topK = 3, recencyBoost = false), tuned.ragParams())
+    }
+
+    /** The canvas `rag.retrieve` schema (the ai module cannot see [RagParams]) names the same fields, types, ranges and options as [RagParams.SCHEMA]. */
+    @Test fun theNodeSchemaMirrorsRagParamsSchema() {
+        val node = com.rokid.context.ai.canvas.RagRetrieveParams.schema.specs.associateBy { it.name }
+        assertEquals(RagParams.SCHEMA.map { it.name }, com.rokid.context.ai.canvas.RagRetrieveParams.ragNames)
+        for (f in RagParams.SCHEMA) {
+            val s = node.getValue(f.name)
+            assertEquals(f.name, f.type, s.kind.wire)
+            assertEquals(f.name, f.min, s.min); assertEquals(f.name, f.max, s.max); assertEquals(f.name, f.options, s.options)
+        }
     }
 
     /** An all-null [RagParams] changes nothing: the settings come out as the clamped user settings, and a retrieval equals one with the defaults spelled out. */

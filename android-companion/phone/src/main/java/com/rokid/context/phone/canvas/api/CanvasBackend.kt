@@ -40,6 +40,8 @@ interface CanvasBackend {
     suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome
     /** An interpreter publish in [mode] (Shadow or Live); the gates' reasons come back as `Blocked`. */
     suspend fun publishInterpreter(id: String, version: Int, mode: LiveMode): CanvasPublisher.Outcome
+    /** v0.9.8 slice B: a Query or Nudge pipeline goes live. */
+    suspend fun publishFlow(id: String, version: Int): CanvasPublisher.Outcome
     /**
      * The active stack, newest first: `{active, publishId, pipelineId, version, publishedAt}` of the newest prompts publish (as before), plus
      * `stack:[{id,kind,mode,pipelineId,version,publishedAt}]` and `interpreter:{id,kind,mode,pipelineId,version,publishedAt,interpreted,fallbacks}|null`.

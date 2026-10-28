@@ -163,8 +163,9 @@ class InterpretableShapeTest {
         // type behind an extractor. This fails the day a type that accepts PHOTOS or JSON is added, so the rule gets a real test then.
         val early = NodeTypes.all.filter { PortType.PHOTOS in it.inputs || PortType.JSON in it.inputs }.map { it.type }.toSet()
         // WP7: `py.fn` takes JSON. It is tier 3 (S6: never published, refused before this shape rule is reached) and the rule does name it, as the comment above promised.
+        // v0.9.8: `gate.nudge` and `out.deliver` (Nudge flow) take JSON; no photo root can reach them (a flow has its own root) and the rule above names them if it ever did
         // v0.9.4: `proc.summary` takes JSON too; the rule that keeps it out of an interpreter is exercised below (summaryAfterAPromptBlocked)
-        assertEquals(setOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.SUMMARY, NodeTypes.SWITCH, NodeTypes.PY_FN), early)
+        assertEquals(setOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.SUMMARY, NodeTypes.SWITCH, NodeTypes.PY_FN, NodeTypes.GATE_NUDGE, NodeTypes.OUT_DELIVER), early)
     }
 
     @Test fun summaryAfterAPromptBlocked() {

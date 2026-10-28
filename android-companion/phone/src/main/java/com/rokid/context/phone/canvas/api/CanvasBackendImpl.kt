@@ -6,6 +6,7 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.canvas.ExtractComposite
 import com.rokid.context.ai.canvas.InterpretableShape
+import com.rokid.context.ai.canvas.FlowPlan
 import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.FrameFact
 import com.rokid.context.ai.canvas.InnerFlow
@@ -316,7 +317,7 @@ class CanvasBackendImpl(
     /** A frozen version with its OWN publish-relevant shape (Task 12 fix): the dialog prices the version it publishes, not the draft. */
     private fun versionWithShape(v: CanvasPipelineVersionEntity): JsonObject {
         val p = PipelineJson.decode(v.json).getOrNull()
-        return JsonObject(versionJson(v) + mapOf("liveShape" to JsonPrimitive(p != null && LiveShape.matches(p)), "interpretable" to interpretableJson(p)))
+        return JsonObject(versionJson(v) + mapOf("liveShape" to JsonPrimitive(p != null && LiveShape.matches(p)), "flow" to JsonPrimitive(p != null && FlowPlan.isFlow(p)), "interpretable" to interpretableJson(p)))
     }
 
     private suspend fun liveJson(id: String): JsonElement =
@@ -470,6 +471,8 @@ class CanvasBackendImpl(
         start()
         return publisher.publishInterpreter(id, version, mode)
     }
+
+    override suspend fun publishFlow(id: String, version: Int): CanvasPublisher.Outcome = publisher.publishFlow(id, version)
 
     override suspend fun publishHistory(limit: Int): JsonArray {
         prune()

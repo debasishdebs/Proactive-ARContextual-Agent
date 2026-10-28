@@ -71,11 +71,13 @@ object PipelineValidator {
 
         // Roots: one per domain that has nodes (S34). Slice 2's single `input.photos` rule is kept for any graph with an ASYNC half or no RT half.
         val rtNodes = domains.values.any { it == Domain.RT_GLASSES || it == Domain.RT_PHONE }
-        val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS || it.type == NodeTypes.INPUT_MOMENTS || it.type == NodeTypes.INPUT_SCENES || it.type == NodeTypes.SRC_WATCH_MOTION }
+        val flow = FlowPlan.isFlow(p)
+        val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS || it.type == NodeTypes.INPUT_MOMENTS || it.type == NodeTypes.INPUT_SCENES || it.type == NodeTypes.SRC_WATCH_MOTION || it.type == NodeTypes.INPUT_UTTERANCE || it.type.startsWith("trigger.") }
         val asyncNodes = domains.values.any { it == Domain.ASYNC }
         // Moment-lite: the ASYNC half has exactly ONE input root, either `input.photos` or `input.moments`; both together are refused (mixed item types).
         if ((asyncNodes || !rtNodes) && inputs.size != 1) {
             out += when {
+                flow -> "exactly one input root (input.utterance or a trigger) required"
                 inputs.any { it.type == NodeTypes.SRC_WATCH_MOTION } -> "exactly one input root (input.photos, input.moments, input.scenes or src.watch_motion) required"
                 inputs.any { it.type == NodeTypes.INPUT_SCENES } -> "exactly one input root (input.photos, input.moments or input.scenes) required"
                 inputs.any { it.type == NodeTypes.INPUT_MOMENTS } -> "exactly one input root (input.photos or input.moments) required"
@@ -150,7 +152,8 @@ object PipelineValidator {
         }
 
         // Params
-        byId.forEach { (id, n) -> types[id]?.let { t -> paramProblems(id, n, t).forEach { out.node(id, it) } } }
+        byId.forEach { (id, n) -> types[id]?.let { t -> paramProblems(id, n, t, flow).forEach { out.node(id, it) } } }
+        if (flow) out += FlowPlan.shapeProblems(p)
         pyFnProblems(byId.values.filter { it.type == NodeTypes.PY_FN && types[it.id] != null }, valid).forEach { out.node(it.first, it.second) }
         return out
     }
@@ -175,7 +178,7 @@ object PipelineValidator {
         return out
     }
 
-    private fun paramProblems(id: String, n: PipelineNode, t: NodeType): List<String> {
+    private fun paramProblems(id: String, n: PipelineNode, t: NodeType, flow: Boolean = false): List<String> {
         val out = mutableListOf<String>()
         val params = n.params
         out += ParamCheck.problems(id, t, params)
@@ -205,7 +208,7 @@ object PipelineValidator {
                 if (r == null) out += "node $id: unknown role" else if (r == Role.EMBED) out += "node $id: role not allowed"
             }
             (params["template"] as? JsonPrimitive)?.content?.let { if (it.length > MAX_TEXT) out += "node $id: template too long" }
-            schemaProblem(id, params["schema"], required = true)?.let { out += it }
+            if (!flow) schemaProblem(id, params["schema"], required = true)?.let { out += it }
             params["images"]?.let { v -> if ((v as? JsonPrimitive)?.takeIf { !it.isString }?.content !in listOf("true", "false")) out += "node $id: images must be true or false" }
         }
         if (n.type == NodeTypes.SWITCH) {

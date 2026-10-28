@@ -700,7 +700,7 @@ class CanvasBackendImplTest {
             "ai.prompt" to "AI", "route.switch" to "Routing", "memory.write" to "Memory",
         ), types.keys.associateWith { s(it, "category") })
         // exactly one photo input per pipeline: not offered by the palette
-        assertEquals(listOf("input.photos"), all.keys.filter { s(it, "palette") == "false" })
+        assertEquals(listOf("input.photos", "trigger.moment", "trigger.scene", "trigger.signal", "trigger.schedule"), all.keys.filter { s(it, "palette") == "false" })
         // py.fn IS offered (WP9 UI exists): in Code, labelled, with the hint; S6 flags unchanged (never liveable)
         assertEquals("true", s("py.fn", "palette")); assertEquals("Code", s("py.fn", "category")); assertEquals("Python (experiment)", s("py.fn", "label"))
         assertEquals("false", s("py.fn", "liveable")); assertEquals("ASYNC", s("py.fn", "domain")); assertEquals("PYTHON", s("py.fn", "executor"))

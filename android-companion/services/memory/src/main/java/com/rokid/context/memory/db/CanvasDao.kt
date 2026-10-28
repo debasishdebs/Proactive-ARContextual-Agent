@@ -75,6 +75,8 @@ abstract class CanvasDao {
     @Query("SELECT * FROM canvas_publish WHERE rolledBackAt IS NULL ORDER BY id DESC") abstract fun observeActivePublishes(): Flow<List<CanvasPublishEntity>>
     @Query("UPDATE canvas_publish SET rolledBackAt = :at WHERE id = :id AND rolledBackAt IS NULL") abstract suspend fun markRolledBack(id: Long, at: Long): Int
     @Query("SELECT * FROM canvas_publish WHERE rolledBackAt IS NULL AND kind = 'interpreter' ORDER BY id DESC LIMIT 1") abstract suspend fun activeInterpreter(): CanvasPublishEntity?
+    /** The active Query or Nudge pipeline publish (`kind = flow`, `component` query or nudge; v0.9.8 slice B). */
+    @Query("SELECT * FROM canvas_publish WHERE rolledBackAt IS NULL AND kind = 'flow' AND component = :component ORDER BY id DESC LIMIT 1") abstract suspend fun activeFlow(component: String): CanvasPublishEntity?
     @Query("UPDATE canvas_publish SET rolledBackAt = :at, rollbackReason = :reason WHERE id = :id AND rolledBackAt IS NULL") abstract suspend fun markRolledBackWithReason(id: Long, at: Long, reason: String?): Int
     /** Every publish row, newest first (S43 history route). */
     @Query("SELECT * FROM canvas_publish WHERE id = :id") abstract suspend fun publishRow(id: Long): CanvasPublishEntity?

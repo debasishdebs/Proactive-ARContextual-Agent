@@ -14,6 +14,7 @@ import com.rokid.context.memory.ProposalOrigin
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.orchestration.TestAi
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -50,12 +51,14 @@ class NudgeEngineTest {
 
     @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
+    private var flows: com.rokid.context.orchestration.FlowPlans = com.rokid.context.orchestration.FlowPlans.None
+
     private fun engine(gapMs: Long = 0L): NudgeEngine {
         val mem = MemoryGraph.get(ctx)
         val sources = ContextSourceProvider { q, _ -> if (q == null) listOf("event \u00b7 Dentist \u00b7 Mon 19:00\u201319:30") else emptyList() }
         return NudgeEngine(
             NudgeInputs(mem, sources) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { gapMs }) { cap }, mem,
-            ProposalIntake { o, id, _, _ -> proposed += o to id; "p1" }, clock = { now }, hud = { hud },
+            ProposalIntake { o, id, _, _ -> proposed += o to id; "p1" }, clock = { now }, hud = { hud }, flows = flows,
         )
     }
 
@@ -176,5 +179,52 @@ class NudgeEngineTest {
         NudgeRunLock.mutex.unlock()
         assertTrue(run.await() is NudgeRun.Shown)
         assertEquals(1, calls)
+    }
+
+    // ---- v0.9.8 slice B: the same engine under a published Nudge pipeline ----
+
+    private fun planOf(p: com.rokid.context.ai.canvas.Pipeline) = (com.rokid.context.ai.canvas.FlowPlan.compile(p) as com.rokid.context.ai.canvas.FlowPlan.Compiled.Ok).plan
+    private fun nudgeWith(retrieve: kotlinx.serialization.json.JsonObject): com.rokid.context.ai.canvas.Pipeline = com.rokid.context.ai.canvas.DefaultPipelines.defaultNudge().let { d ->
+        d.copy(nodes = d.nodes.map { if (it.id == "retrieve") it.copy(params = retrieve) else it })
+    }
+
+    /** The default pipeline's plan is the built-in one: the same inputs, and the engine shows the nudge. */
+    @Test fun theDefaultPipelineRunsLikeTheBuiltIn() = runBlocking {
+        memory()
+        val inputs = NudgeInputs(MemoryGraph.get(ctx), ContextSourceProvider { _, _ -> emptyList() }) { zone }
+        val plan = planOf(com.rokid.context.ai.canvas.DefaultPipelines.defaultNudge())
+        assertEquals(inputs.build(now), inputs.build(now, plan = plan))
+        flows = com.rokid.context.orchestration.FlowPlans { plan }
+        assertTrue(engine().runOnce() is NudgeRun.Shown)
+        assertEquals("Milk is nearly out", rows().single().text)
+    }
+
+    @Test fun aPlanChangesTheInputsAndTheGatesStillHold() = runBlocking {
+        memory()
+        // a 30 minute window no longer sees the hour-old memory
+        flows = com.rokid.context.orchestration.FlowPlans { planOf(nudgeWith(kotlinx.serialization.json.buildJsonObject { put("recent", true); put("history", true); put("recentWindowMin", 30) })) }
+        assertEquals(NudgeRun.NoMemories, engine().runOnce()); assertEquals(0, calls)
+        flows = com.rokid.context.orchestration.FlowPlans { planOf(com.rokid.context.ai.canvas.DefaultPipelines.defaultNudge()) }
+        hud = NudgeHud(QuietHours(17 * 60, 19 * 60), Verbosity.MAX, zone)
+        assertEquals(NudgeRun.Dropped(Gate.QUIET_HOURS), engine().runOnce())
+        hud = NudgeHud(null, Verbosity.MEDIUM, zone); cap = 0
+        assertEquals(NudgeRun.Dropped(Gate.OFF), engine().runOnce()); assertEquals(0, calls)
+        cap = 6
+        assertTrue(engine().runOnce() is NudgeRun.Shown)
+        assertEquals(NudgeRun.Dropped(Gate.DUPLICATE), engine().runOnce())
+    }
+
+    @Test fun theForgetFenceHoldsUnderAPlan() = runBlocking {
+        memory()
+        flows = com.rokid.context.orchestration.FlowPlans { planOf(com.rokid.context.ai.canvas.DefaultPipelines.defaultNudge()) }
+        duringCall = { val g = MemoryGraph.get(ctx); com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_1") }
+        assertEquals(NudgeRun.Forgotten, engine().runOnce()); assertTrue(rows().isEmpty())
+    }
+
+    /** A pipeline that cannot be looked up never silences the nudge. */
+    @Test fun aBrokenPipelineLookupFallsBackToTheBuiltIn() = runBlocking {
+        memory()
+        flows = com.rokid.context.orchestration.FlowPlans { throw IllegalStateException("db") }
+        assertTrue(engine().runOnce() is NudgeRun.Shown)
     }
 }

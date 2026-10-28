@@ -18,8 +18,8 @@ object PipelineFlows {
         nodes = p.nodes.map { n ->
             val key = NodeTypes.byType(n.type)?.promptKey
             when {
-                n.type == NodeTypes.INPUT_PHOTOS -> FlowNode(n.id, n.title, NodeKind.INPUT)
-                n.type == NodeTypes.MEMORY_WRITE -> FlowNode(n.id, n.title, NodeKind.OUTPUT)
+                n.type == NodeTypes.INPUT_PHOTOS || n.type == NodeTypes.INPUT_UTTERANCE || n.type.startsWith("trigger.") -> FlowNode(n.id, n.title, NodeKind.INPUT)
+                n.type == NodeTypes.MEMORY_WRITE || n.type == NodeTypes.OUT_DELIVER -> FlowNode(n.id, n.title, NodeKind.OUTPUT)
                 n.type == NodeTypes.PROMPT -> FlowNode(n.id, n.title, NodeKind.STEP, listOf(Facet.Custom("canvas.prompt")))
                 key != null -> FlowNode(n.id, n.title, NodeKind.STEP, listOf(Facet.Prompt(key), Facet.Model(requireNotNull(key.role))))
                 else -> FlowNode(n.id, n.title, NodeKind.STEP)

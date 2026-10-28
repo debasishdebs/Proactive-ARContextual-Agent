@@ -107,6 +107,8 @@ class GlassesCompositeTest {
         DefaultPipelines.DEFAULT_CAPTURE -> DefaultPipelines.defaultCapture()
         DefaultPipelines.STARTER -> DefaultPipelines.starter()
         DefaultPipelines.STARTER_WATCH_MOTION -> DefaultPipelines.starterWatchMotion()
+        DefaultPipelines.DEFAULT_QUERY -> DefaultPipelines.defaultQuery()
+        DefaultPipelines.DEFAULT_NUDGE -> DefaultPipelines.defaultNudge()
         else -> DefaultPipelines.starterMomentSummary()
     }
 
@@ -119,6 +121,8 @@ class GlassesCompositeTest {
             "starter-capture-extract" to "f5782e0d8610:db81ad1a86a50070",
             "starter-moment-summary" to "f5782e0d8610:3ff66ed4cf6aaf77",
             "starter-watch-motion" to "f5782e0d8610:28c9cf15a753d921",
+            "default-query" to "none:pipeline has no capture half",
+            "default-nudge" to "none:pipeline has no capture half",
         )
         assertEquals(DefaultPipelines.all.toSet(), pinned.keys)
         val got = DefaultPipelines.all.associateWith { id ->

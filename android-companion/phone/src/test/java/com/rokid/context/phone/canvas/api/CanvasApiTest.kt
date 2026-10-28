@@ -85,6 +85,8 @@ private class FakeBackend : CanvasBackend {
     var lastHistoryLimit = -1
     override suspend fun publishHistory(limit: Int): JsonArray { enter("history"); lastHistoryLimit = limit; return JsonArray(listOf(buildJsonObject { put("id", 1); put("kind", "interpreter") })) }
     var lastLiveLimit = -1
+    override suspend fun publishFlow(id: String, version: Int): CanvasPublisher.Outcome { enter("publishFlow"); known(0); lastFlowPublish = id to version; return publishOutcome }
+    var lastFlowPublish: Pair<String, Int>? = null
     override suspend fun live(limit: Int): JsonObject { enter("live"); lastLiveLimit = limit; return buildJsonObject { put("active", false); put("frames", JsonArray(emptyList())) } }
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> { enter("check:$nodeType"); return listOf("bad") }
     override suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray { enter("frames"); lastFrames = listOf(afterMs, beforeMs, limit, dwellOnly); return JsonArray(emptyList()) }
@@ -534,6 +536,14 @@ class CanvasApiTest {
         assertEquals(200, call("POST", "/api/pipelines/p-1/versions/3/publish", """{"mode":"live"}""").status)
         assertEquals(LiveMode.LIVE, be.lastInterpreterPublish!!.third)
         assertTrue("publish:3" !in be.calls)
+    }
+
+    @Test fun publishFlowGoesThroughItsOwnPath() {
+        val r = call("POST", "/api/pipelines/p-1/versions/3/publish", """{"mode":"flow"}""")
+        assertEquals(200, r.status)
+        assertEquals("p-1" to 3, be.lastFlowPublish)
+        assertEquals("flow", r.obj()["kind"]!!.jsonPrimitive.content)
+        assertTrue("publish:3" !in be.calls && be.lastInterpreterPublish == null)
     }
 
     @Test fun publishBlockedAndBadModeMapToFixedErrors() {

@@ -16,7 +16,9 @@ object DefaultPipelines {
     const val STARTER = "starter-capture-extract"
     const val STARTER_MOMENT_SUMMARY = "starter-moment-summary"
     const val STARTER_WATCH_MOTION = "starter-watch-motion"
-    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER, STARTER_MOMENT_SUMMARY, STARTER_WATCH_MOTION)
+    const val DEFAULT_QUERY = "default-query"
+    const val DEFAULT_NUDGE = "default-nudge"
+    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER, STARTER_MOMENT_SUMMARY, STARTER_WATCH_MOTION, DEFAULT_QUERY, DEFAULT_NUDGE)
 
     private val none = JsonObject(emptyMap())
     private val livePrompt = buildJsonObject { putJsonObject("prompt") { put("source", "live") } }
@@ -171,4 +173,34 @@ object DefaultPipelines {
         val edges = listOf(PipelineEdge("watch", "win"), PipelineEdge("win", "model"), PipelineEdge("model", "freq"))
         return Pipeline(PipelineJson.SCHEMA_V2, STARTER_WATCH_MOTION, "Starter: watch motion to capture rate", glasses.nodes + nodes, glasses.edges + edges)
     }
+
+    private fun flowPrompt(role: String) = buildJsonObject { put("role", role); putJsonObject("prompt") { put("source", "live") } }
+
+    /** Ask as it is today: utterance, embed, the memory and photo stores with the user's retrieval settings, the live ANSWER prompt, the answer to the caller. Compiles to [FlowPlan.BUILT_IN_QUERY]. */
+    fun defaultQuery(): Pipeline = Pipeline(
+        PipelineJson.SCHEMA_V2, DEFAULT_QUERY, "Default Query (Ask)",
+        nodes = listOf(
+            PipelineNode("utterance", NodeTypes.INPUT_UTTERANCE, "Utterance", none),
+            PipelineNode("embed", NodeTypes.EMBED_TEXT, "Embed text", none),
+            PipelineNode("retrieve", NodeTypes.RAG_RETRIEVE, "Memories and photos", buildJsonObject { put("memories", true); put("photos", true) }),
+            PipelineNode("answer", NodeTypes.PROMPT, "Answer", flowPrompt("ANSWER")),
+            PipelineNode("deliver", NodeTypes.OUT_DELIVER, "Answer to the caller", buildJsonObject { put("target", "caller") }),
+        ),
+        edges = listOf(PipelineEdge("utterance", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "answer"), PipelineEdge("answer", "deliver")),
+    )
+
+    /** Nudge as it is today: after a summarizer pass, the last 6 h of memories and the last 24 h of nudges, the live NUDGE prompt, the gates, shown by the verbosity setting. Compiles to [FlowPlan.BUILT_IN_NUDGE]. */
+    fun defaultNudge(): Pipeline = Pipeline(
+        PipelineJson.SCHEMA_V2, DEFAULT_NUDGE, "Default Nudge",
+        nodes = listOf(
+            PipelineNode("trigger", NodeTypes.TRIGGER_SUMMARIZER, "After summarizer pass", none),
+            PipelineNode("retrieve", NodeTypes.RAG_RETRIEVE, "Recent memories and nudges", buildJsonObject {
+                put("recent", true); put("history", true); put("recentWindowMin", 360); put("historyWindowMin", 1440)
+            }),
+            PipelineNode("nudge", NodeTypes.PROMPT, "Nudge", flowPrompt("NUDGE")),
+            PipelineNode("gates", NodeTypes.GATE_NUDGE, "Nudge gates", none),
+            PipelineNode("deliver", NodeTypes.OUT_DELIVER, "Show the nudge", buildJsonObject { put("target", "both") }),
+        ),
+        edges = listOf(PipelineEdge("trigger", "retrieve"), PipelineEdge("retrieve", "nudge"), PipelineEdge("nudge", "gates"), PipelineEdge("gates", "deliver")),
+    )
 }
