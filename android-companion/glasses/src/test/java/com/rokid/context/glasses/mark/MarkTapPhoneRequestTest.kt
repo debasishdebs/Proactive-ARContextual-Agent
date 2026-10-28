@@ -89,7 +89,7 @@ class MarkTapPhoneRequestTest {
         val r = Runner(); val (t, _) = rig(r)
         t.onPhoneRequest(req(refMs = wall)); runCurrent()
         val sentAt = wall; wall += 61_000
-        t.onPhoneRequest(req(refMs = wall - 1_000, at = sentAt)); runCurrent()
+        t.onPhoneRequest(req(refMs = wall - 1_000, at = sentAt, session = sentAt - 10_000)); runCurrent()
         assertEquals(1, r.takes.size)
     }
 
@@ -101,14 +101,12 @@ class MarkTapPhoneRequestTest {
 
     @Test fun aConsumedReferenceStaysConsumedForTheWholeFreshnessWindowWhateverElseCameIn() = runTest {
         val r = Runner(); val (t, _) = rig(r)
-        t.onPhoneRequest(req(refMs = wall)); runCurrent()
         val first = wall
-        // 6 attempts a minute is all the glasses allow: spread more than 32 distinct refs over minutes, then replay the first inside its freshness window
-        for (i in 1..40) { wall += 12_000; t.onPhoneRequest(req(refMs = wall)); runCurrent() }
-        wall = first + 30_000 // back inside the window of the first ref (a replayed old message)
-        val before = r.takes.size
+        t.onPhoneRequest(req(refMs = first)); runCurrent()
+        for (i in 1..4) { wall += 8_000; t.onPhoneRequest(req(refMs = wall)); runCurrent() } // five distinct refs inside the window, no cache of 3 may forget the first
+        wall = first + 40_000
         t.onPhoneRequest(req(refMs = first, at = wall)); runCurrent()
-        assertEquals(before, r.takes.size, "not run again")
+        assertEquals(5, r.takes.size, "the replay of the first was refused")
     }
 
     @Test fun moreThanSixRequestsInAMinuteAreRateLimitedAndRefusedOnesCountToo() = runTest {
@@ -128,8 +126,8 @@ class MarkTapPhoneRequestTest {
         val r = Runner(); val (t, _) = rig(r)
         t.onPhoneRequest(req(refMs = wall)); runCurrent()
         t.onSessionClosed()
-        wall += 7_200_000 // the phone clock is now 2 h away: only a re-learned offset accepts it
-        t.onPhoneRequest(req(refMs = wall)); runCurrent()
+        val phone = wall + 7_200_000 // the phone clock is now 2 h away from the glasses': only a re-learned offset accepts it
+        t.onPhoneRequest(MarkPhotoRequest(ref = "phone:$phone", atMs = phone, sessionStartMs = phone - 10_000)); runCurrent()
         assertEquals(2, r.takes.size)
     }
 }
