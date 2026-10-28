@@ -126,9 +126,9 @@ class RagCoreGoldenTest {
         ids.forEach { MemoryGraph.get(ctx).db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(it, null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1)) }
     }
 
-    private fun core(hits: List<PhotoHit> = emptyList(), endpoint: suspend () -> String? = { "az" }, loads: MutableList<String>? = null, byVector: (Long?) -> Unit = {}) =
+    private fun core(hits: List<PhotoHit> = emptyList(), endpoint: suspend () -> String? = { "az" }, loads: MutableList<String>? = null, byVector: (Long?) -> Unit = {}, windowed: (suspend (String, Long, Long?, Long) -> List<PhotoHit>)? = null) =
         RagCore(MemoryGraph.get(ctx), AiGraph.get(ctx).retriever, { RetrievalSettings() }, { zone },
-            photos = { _, _ -> hits }, photosAsOf = { _, _ -> hits }, photosByVector = { _, _, na, _ -> byVector(na); hits },
+            photos = { _, _ -> hits }, photosWindowed = windowed, photosAsOf = { _, _ -> hits }, photosByVector = { _, _, na, _ -> byVector(na); hits },
             photosAllowed = { true }, imageEndpointId = endpoint,
             photoImages = { ids -> loads?.addAll(ids); ids.associateWith { ModelImageInput("image/jpeg", "AAAA") } })
 
@@ -213,5 +213,31 @@ class RagCoreGoldenTest {
         com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_1")
         val row = g.db.nudgeGateDao().lastNudges(0)
         assertEquals(true, row.isEmpty()) // redacted rows are left out of the history
+    }
+
+    @Test fun aTextWindowReachesTheSearchBeforeTopK() = runBlocking<Unit> {
+        meta("fresh")
+        var bound = -1L
+        val h = listOf(hit("fresh", 0.9).copy(ts = now - 1_000L, receivedAt = now - 1_000L))
+        val c = core(h, windowed = { _, _, _, nb -> bound = nb; h })
+        val r = c.retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore(windowMs = 60_000L)), RagParams(), now)
+        assertEquals(now - 60_000L, bound); assertEquals(1, r.photos.size)
+        // no windowed search bound: nothing is searched (never an unwindowed top-k filtered afterwards)
+        assertEquals(0, core(h).retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore(windowMs = 60_000L)), RagParams(), now).photos.size)
+    }
+
+    @Test fun photosSpendTheSameBudgetAndStayAligned() = runBlocking<Unit> {
+        meta("f1", "f2")
+        val hs = listOf(hit("f1", 0.9, cap = "first"), hit("f2", 0.88, cap = "second"))
+        val c = core(hs)
+        val full = c.retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore()), RagParams(), now)
+        assertEquals(2, full.images.size); assertEquals(3, full.photoLines.size)
+        val cost = full.photoLines.sumOf { it.length + 1 }
+        val tight = c.retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore()), RagParams(maxChars = cost - 1), now)
+        assertEquals(1, tight.images.size); assertEquals(1, tight.photos.size)
+        assertEquals(true, tight.photoLines.any { it.contains("image=1") } && tight.photoLines.none { it.contains("image=2") })
+        assertEquals(true, tight.photoLines.sumOf { it.length + 1 } <= cost - 1)
+        val none = c.retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore()), RagParams(maxChars = 1), now)
+        assertEquals(emptyList<Any>(), none.photos); assertEquals(emptyList<Any>(), none.images); assertEquals(emptyList<String>(), none.photoLines)
     }
 }

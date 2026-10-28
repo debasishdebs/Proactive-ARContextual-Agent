@@ -142,6 +142,8 @@ class RagCore(
     private val photos: suspend (question: String, nowMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
     /** [PhotoRecall.search] with the ask time as the cutoff, applied BEFORE top-k (vectors and captions). */
     private val photosAsOf: suspend (question: String, notAfterMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
+    /** Words to photos inside a time window ([notBeforeMs] reaches the scan before top-k; [notAfterMs] null = now). */
+    private val photosWindowed: (suspend (question: String, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long) -> List<PhotoHit>)? = null,
     /** The photos near a ready image embedding (IMAGE queries with a vector). */
     private val photosByVector: suspend (vector: FloatArray, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?) -> List<PhotoHit> = { _, _, _, _ -> emptyList() },
     /** Asked before every photo search ([AskPhotoPolicy.allowed]). False = no scan, no image, no photo line. */
@@ -166,7 +168,7 @@ class RagCore(
             query.text != null -> recalledPhotos(query.text, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
             else -> emptyList()
         }
-        val photoPart = photoPart(fenceCites(recalled))
+        val photoPart = photoPart(fenceCites(recalled), params.charBound)
         var ctx = RagContext(photoLines = photoPart.lines, photos = photoPart.photos, images = photoPart.images, imageEndpointId = photoPart.endpoint)
         var left = params.charBound - photoPart.lines.sumOf { it.length + 1 }
         // Gather (the order of [sources] decides only which memories come first within a kind), then spend the one budget in the fixed order.
@@ -232,26 +234,45 @@ class RagCore(
 
     private class PhotoPart(val lines: List<String> = emptyList(), val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(), val endpoint: String? = null)
 
-    private suspend fun photoPart(recalled: List<Pair<PhotoHit, String>>): PhotoPart {
+    /**
+     * The photo lines and attachments, spending [budget] chars first (a line costs its length + 1; the image note counts when an image is attached).
+     * A photo that does not fit is dropped with its line, its cite and its attachment together, and the `image=<n>` numbers of the rest stay the order of
+     * the attached images; the cut is always a suffix of the recalled order, so the numbering never has to change.
+     */
+    private suspend fun photoPart(recalled: List<Pair<PhotoHit, String>>, budget: Int): PhotoPart {
+        if (recalled.isEmpty() || budget <= 0) return PhotoPart()
         // Fail closed: the endpoint the gate checked is resolved BEFORE any image is decrypted; no endpoint (or a lookup that throws) = no attachment.
         val endpoint = if (recalled.none { it.first.photoStored }) null else try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
-        val images = mutableListOf<ModelImageInput>()
-        val imageNo = HashMap<String, Int>()
-        for ((hit, citeId) in recalled) {
-            if (endpoint == null || images.size >= MAX_PHOTO_IMAGES || !hit.photoStored) continue
+        val loaded = ArrayList<Pair<Int, ModelImageInput>>() // index into [recalled] to its image, in order
+        for ((i, p) in recalled.withIndex()) {
+            val (hit, _) = p
+            if (endpoint == null || loaded.size >= MAX_PHOTO_IMAGES || !hit.photoStored) continue
             val image = try { photoImages(listOf(hit.frameId))[hit.frameId] } catch (c: CancellationException) { throw c } catch (e: Exception) { null }
-            if (image != null) { images += image; imageNo[citeId] = images.size }
+            if (image != null) loaded += i to image
         }
-        val lines = recalled.map { (hit, citeId) -> photoLine(hit, citeId, imageNo[citeId]) }.let { if (images.isEmpty()) it else listOf(IMAGE_NOTE) + it }
-        return PhotoPart(
-            lines, recalled.map { (hit, citeId) -> PhotoCite(citeId, hit.frameId, hit.ts, hit.photoStored, hit.receivedAt) }, images,
-            endpoint.takeIf { images.isNotEmpty() },
-        )
+        for (keep in recalled.size downTo 1) {
+            val imgs = loaded.filter { it.first < keep }
+            val imageNo = imgs.mapIndexed { n, (i, _) -> recalled[i].second to n + 1 }.toMap()
+            val lines = recalled.take(keep).map { (hit, citeId) -> photoLine(hit, citeId, imageNo[citeId]) }.let { if (imgs.isEmpty()) it else listOf(IMAGE_NOTE) + it }
+            if (lines.sumOf { it.length + 1 } > budget) continue
+            return PhotoPart(
+                lines, recalled.take(keep).map { (hit, citeId) -> PhotoCite(citeId, hit.frameId, hit.ts, hit.photoStored, hit.receivedAt) }, imgs.map { it.second },
+                endpoint.takeIf { imgs.isNotEmpty() },
+            )
+        }
+        return PhotoPart()
     }
 
     /** The gated photo search (words to photos), cutoff and relevance floor applied: the hit with its cite id. */
     internal suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null, notBeforeMs: Long? = null): List<Pair<PhotoHit, String>> =
-        select(guarded { if (notAfterMs != null) photosAsOf(q, notAfterMs) else photos(q, nowMs) }, notAfterMs, notBeforeMs)
+        select(guarded {
+            when {
+                // A window's lower bound must reach the scan (before top-k): only the windowed search can honour it, so without one nothing is searched.
+                notBeforeMs != null -> photosWindowed?.invoke(q, nowMs, notAfterMs, notBeforeMs) ?: run { PcLog.i(TAG, "no windowed photo search bound"); emptyList() }
+                notAfterMs != null -> photosAsOf(q, notAfterMs)
+                else -> photos(q, nowMs)
+            }
+        }, notAfterMs, notBeforeMs)
 
     private suspend fun recalledByVector(v: FloatArray, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?): List<Pair<PhotoHit, String>> =
         select(guarded { photosByVector(v, nowMs, notAfterMs, notBeforeMs) }, notAfterMs, notBeforeMs)
@@ -322,6 +343,13 @@ class RagCore(
         private const val MAX_PHOTO_CAPTION = 300
         internal const val IMAGE_NOTE = "note: image=N on a photo line is the Nth attached image"
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
+
+        /** The production windowed words-to-photos search: [PhotoRecall.search] with both bounds, the Ask's budget and timeout. */
+        fun photosWindowedFrom(context: Context): suspend (String, Long, Long?, Long) -> List<PhotoHit> = { q, _, notAfter, notBefore ->
+            kotlinx.coroutines.withTimeoutOrNull(AskPhotoPolicy.ASK_TIMEOUT_MS) {
+                PhotoRecall.forApp(context).search(q, imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, notAfterMs = notAfter, notBeforeMs = notBefore).image
+            }.orEmpty()
+        }
 
         /** The production image-vector search: the Ask's photo budget and timeout, a ready embedding instead of words. */
         fun photosByVectorFrom(context: Context): suspend (FloatArray, Long, Long?, Long?) -> List<PhotoHit> = { v, _, notAfter, notBefore ->
