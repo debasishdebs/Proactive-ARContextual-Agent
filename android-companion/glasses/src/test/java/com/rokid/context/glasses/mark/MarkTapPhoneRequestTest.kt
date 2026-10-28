@@ -26,7 +26,7 @@ class MarkTapPhoneRequestTest {
     private val sent = ArrayList<MarkMessage>()
     private var wall = 5_000_000L
     /** A request as the phone sends it: the ref is the phone ms of the mark, `atMs` the send time (phone clock = glasses clock here: offset 0). */
-    private fun req(refMs: Long = wall, at: Long = wall, session: Long = wall - 10_000) = MarkPhotoRequest(ref = "phone:$refMs", atMs = at, sessionStartMs = session)
+    private fun req(refMs: Long = wall, at: Long = wall, session: Long = 1) = MarkPhotoRequest(ref = "phone:$refMs", atMs = at, sessionStartMs = session)
 
     private fun TestScope.rig(runner: MarkPhotoRunner?): Pair<MarkTap, MarkCue> {
         val cue = MarkCue(backgroundScope)
@@ -45,7 +45,7 @@ class MarkTapPhoneRequestTest {
 
     @Test fun aFailureIsReportedWithTheMarksEpochAndSeq() = runTest {
         val r = Runner(outcome = MarkPhotoOutcome.Failed(MarkPhotoReason.CAMERA_BUSY)); val (t, _) = rig(r)
-        t.onPhoneRequest(req(refMs = wall)); runCurrent()
+        t.onPhoneRequest(req()); runCurrent()
         assertEquals(listOf(MarkPhotoResult(epoch = "phone", seq = wall, reason = MarkPhotoReason.CAMERA_BUSY)), reports)
     }
 
@@ -55,11 +55,12 @@ class MarkTapPhoneRequestTest {
         assertEquals(1, r.takes.size)
     }
 
-    @Test fun aMalformedReferenceIsIgnored() = runTest {
+    @Test fun aMalformedReferenceIsDroppedBeforeAnyBookkeepingAndNeverTakesARateSlot() = runTest {
         val r = Runner(); val (t, _) = rig(r)
-        for (bad in listOf("", "nocolon", "phone:abc", "phone:1:2", "a b:1", "phone:")) t.onPhoneRequest(MarkPhotoRequest(ref = bad, atMs = wall, sessionStartMs = 1))
-        runCurrent()
-        assertTrue(r.takes.isEmpty()); assertTrue(reports.isEmpty())
+        repeat(20) { for (bad in listOf("", "nocolon", "phone:abc", "phone:1:2", "a b:1", "phone:")) t.onPhoneRequest(MarkPhotoRequest(ref = bad)) }
+        assertEquals(0, t.consumedCount)
+        for (i in 1..6) { t.onPhoneRequest(req(refMs = wall + i)); runCurrent() }
+        assertEquals(6, r.takes.size, "the malformed flood used none of the six slots")
     }
 
     @Test fun aFourthRequestInFlightFailsFastWithCameraBusy() = runTest {
@@ -76,58 +77,42 @@ class MarkTapPhoneRequestTest {
         assertTrue(reports.isEmpty())
     }
 
-    @Test fun aReferenceOlderThanAMinuteOrAheadOfThePhoneIsRefused() = runTest {
+    @Test fun atMostSixOpensPerRollingMinuteWhateverTheRefsAndTheTimestamps() = runTest {
         val r = Runner(); val (t, _) = rig(r)
-        t.onPhoneRequest(req(refMs = wall)); runCurrent() // teaches the offset
-        t.onPhoneRequest(req(refMs = wall - 61_000)); t.onPhoneRequest(req(refMs = wall + 6_000)); runCurrent()
-        assertEquals(listOf("phone:$wall"), r.takes)
-        t.onPhoneRequest(req(refMs = wall - 59_000)); t.onPhoneRequest(req(refMs = wall + 4_000)); runCurrent()
-        assertEquals(3, r.takes.size)
+        // any phone timestamps (stale, future, zero) change nothing: the glasses' own clock decides
+        for (i in 1..9) { t.onPhoneRequest(req(refMs = i.toLong(), at = if (i % 2 == 0) 0 else Long.MAX_VALUE / 2)); runCurrent() }
+        assertEquals(6, r.takes.size)
+        assertEquals(listOf(MarkPhotoReason.RATE_LIMITED), reports.map { it.reason }.distinct())
+        assertEquals(3, reports.size)
+        wall += 60_000
+        t.onPhoneRequest(req(refMs = 99)); runCurrent()
+        assertEquals(7, r.takes.size, "the minute rolls")
     }
 
-    @Test fun aRequestDeliveredLongAfterItWasSentIsRefused() = runTest {
+    @Test fun refusedAndReplayedArrivalsCountAgainstTheSix() = runTest {
         val r = Runner(); val (t, _) = rig(r)
-        t.onPhoneRequest(req(refMs = wall)); runCurrent()
-        val sentAt = wall; wall += 61_000
-        t.onPhoneRequest(req(refMs = wall - 1_000, at = sentAt, session = sentAt - 10_000)); runCurrent()
+        t.onPhoneRequest(req(refMs = 1)); runCurrent()
+        repeat(5) { t.onPhoneRequest(req(refMs = 1)) } // five replays use five slots
+        t.onPhoneRequest(req(refMs = 2)); runCurrent()
         assertEquals(1, r.takes.size)
-    }
-
-    @Test fun aRequestWithNoClockOrOlderThanItsSessionIsRefused() = runTest {
-        val r = Runner(); val (t, _) = rig(r)
-        t.onPhoneRequest(MarkPhotoRequest(ref = "phone:$wall")); t.onPhoneRequest(req(session = wall + 1)); runCurrent()
-        assertTrue(r.takes.isEmpty())
-    }
-
-    @Test fun aConsumedReferenceStaysConsumedForTheWholeFreshnessWindowWhateverElseCameIn() = runTest {
-        val r = Runner(); val (t, _) = rig(r)
-        val first = wall
-        t.onPhoneRequest(req(refMs = first)); runCurrent()
-        for (i in 1..4) { wall += 8_000; t.onPhoneRequest(req(refMs = wall)); runCurrent() } // five distinct refs inside the window, no cache of 3 may forget the first
-        wall = first + 40_000
-        t.onPhoneRequest(req(refMs = first, at = wall)); runCurrent()
-        assertEquals(5, r.takes.size, "the replay of the first was refused")
-    }
-
-    @Test fun moreThanSixRequestsInAMinuteAreRateLimitedAndRefusedOnesCountToo() = runTest {
-        val r = Runner(); val (t, _) = rig(r)
-        repeat(3) { t.onPhoneRequest(req(refMs = wall - 70_000 - it)) } // stale ones count against the rate
-        for (i in 1..3) { t.onPhoneRequest(req(refMs = wall + i)); runCurrent() }
-        assertEquals(3, r.takes.size)
-        t.onPhoneRequest(req(refMs = wall + 10)); runCurrent()
-        assertEquals(3, r.takes.size)
         assertEquals(listOf(MarkPhotoReason.RATE_LIMITED), reports.map { it.reason })
-        wall += 61_000
-        t.onPhoneRequest(req(refMs = wall)); runCurrent()
-        assertEquals(4, r.takes.size, "the window rolls")
     }
 
-    @Test fun aNewSessionLearnsTheClockAgain() = runTest {
+    @Test fun anAdmittedRefStaysConsumedForTenMinutesAndOnlyThen() = runTest {
         val r = Runner(); val (t, _) = rig(r)
-        t.onPhoneRequest(req(refMs = wall)); runCurrent()
-        t.onSessionClosed()
-        val phone = wall + 7_200_000 // the phone clock is now 2 h away from the glasses': only a re-learned offset accepts it
-        t.onPhoneRequest(MarkPhotoRequest(ref = "phone:$phone", atMs = phone, sessionStartMs = phone - 10_000)); runCurrent()
-        assertEquals(2, r.takes.size)
+        t.onPhoneRequest(req(refMs = 5)); runCurrent()
+        wall += 540_000; t.onPhoneRequest(req(refMs = 5)); runCurrent()
+        assertEquals(1, r.takes.size, "still consumed after 9 minutes")
+        wall += 70_000; t.onPhoneRequest(req(refMs = 5)); runCurrent()
+        assertEquals(2, r.takes.size, "forgotten after 10 minutes")
+    }
+
+    @Test fun theConsumedSetStaysSmallAndOnlyHoldsAdmittedRefs() = runTest {
+        val r = Runner(); val (t, _) = rig(r)
+        for (i in 1..200) { wall += 10_000; t.onPhoneRequest(req(refMs = i.toLong())); runCurrent(); assertTrue(t.consumedCount <= 64) }
+        assertTrue(t.consumedCount in 1..64)
+        val n = t.consumedCount
+        repeat(30) { t.onPhoneRequest(req(refMs = 10_000L + it)); t.onPhoneRequest(MarkPhotoRequest(ref = "bad")) }
+        assertTrue(t.consumedCount <= 64 && n <= 64)
     }
 }

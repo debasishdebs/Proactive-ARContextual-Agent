@@ -96,52 +96,43 @@ class MarkTap(
     /** Session open or hello: re-send what the phone has not acked (at most one burst), whatever its age up to 24 h. */
     fun flush() { for (m in outbox.pending()) if (!trySend(m)) break }
 
-    /** refs already consumed -> when (glasses wall clock). Entries leave ONLY when expired ([CONSUMED_MS], longer than a ref stays fresh), never by count: the rate limit bounds how many can exist. */
+    /** Admitted refs -> when (glasses wall clock). Only admitted refs are stored; kept [CONSUMED_MS], at most [MAX_CONSUMED] (expired first, then the oldest). A replay of an evicted ref is still limited by [arrivals]. */
     private val consumed = LinkedHashMap<String, Long>()
-    /** Every request that reached the glasses in the last minute, accepted or not (a rejected or busy request still counts). */
-    private val attempts = java.util.ArrayDeque<Long>()
-    /** Glasses wall clock minus phone clock, learned from the first request of a session (reset when it closes). */
-    private var phoneOffset: Long? = null
+    /** The arrival times of the last [com.rokid.context.core.model.MarkPhotoRequestLimits.PER_MINUTE] well-formed requests, a fixed ring (O(1) memory): the camera opens at most that often per rolling minute. */
+    private val arrivals = LongArray(com.rokid.context.core.model.MarkPhotoRequestLimits.PER_MINUTE) { Long.MIN_VALUE / 2 }
+    private var arrivalAt = 0
     private val remote = java.util.concurrent.ConcurrentHashMap<String, Job>()
-
-    /** The session closed: the next request teaches the clock offset again. */
-    fun onSessionClosed() { synchronized(consumed) { phoneOffset = null } }
+    internal val consumedCount: Int get() = synchronized(consumed) { consumed.size }
 
     /**
-     * The phone asks for the photo of its own mark ([MarkPhotoRequest.ref], `phone:<phone ms>`): the SAME photo job as a tap mark, bounded by TIME: a request is refused when its reference is
-     * older than [MarkPhotoRequestLimits.MAX_AGE_MS] or more than [MarkPhotoRequestLimits.MAX_FUTURE_MS] ahead of the phone clock (estimated from the request's own phone timestamp and the offset of the
-     * session's first request), when the same ref was already consumed (kept for the whole freshness window), and beyond [MarkPhotoRequestLimits.PER_MINUTE] requests in a rolling minute
-     * (`rate_limited`; every request counts, refused ones too) or [MAX_IN_FLIGHT] at once (`camera_busy`). Never throws.
+     * The phone asks for the photo of its own mark ([MarkPhotoRequest.ref], `phone:<ms>`): the SAME photo job as a tap mark. The paired, authenticated link is the trust boundary; this is a hard BOUND on abuse by
+     * the glasses' OWN clock only: a malformed ref is dropped before any bookkeeping; every well-formed arrival (admitted, refused or a replay) takes a slot in a ring of [PER_MINUTE] arrival times, so at most that
+     * many camera opens happen per rolling minute (`rate_limited` beyond); a ref admitted before is ignored for [CONSUMED_MS]; at most [MAX_IN_FLIGHT] run at once (`camera_busy`). Never throws.
      */
     fun onPhoneRequest(r: com.rokid.context.core.model.MarkPhotoRequest) {
         val runner = photo ?: return; val sc = scope ?: return
-        val now = wallClock()
         val ref = r.ref
-        val limited = synchronized(consumed) {
-            while (attempts.isNotEmpty() && now - attempts.first > 60_000L) attempts.removeFirst()
-            attempts.addLast(now)
-            attempts.size > com.rokid.context.core.model.MarkPhotoRequestLimits.PER_MINUTE
-        }
         if (!MarkRef.isValid(ref)) return
-        val epoch = ref.substringBeforeLast(':'); val refMs = ref.substringAfterLast(':').toLongOrNull() ?: return
-        val m = MarkMessage(epoch = epoch, seq = refMs, atMs = 0, atElapsedMs = 0)
-        if (limited) { fail(m, MarkPhotoReason.RATE_LIMITED); return }
-        if (r.atMs <= 0 || r.sessionStartMs > r.atMs) return // no clock, or older than its own session: stale
-        val fresh = synchronized(consumed) {
-            val offset = phoneOffset ?: (now - r.atMs).also { phoneOffset = it }
-            val phoneNow = now - offset
-            val lim = com.rokid.context.core.model.MarkPhotoRequestLimits
-            val age = phoneNow - refMs; val sentAge = phoneNow - r.atMs
+        val epoch = ref.substringBeforeLast(':'); val seq = ref.substringAfterLast(':').toLongOrNull() ?: return
+        val m = MarkMessage(epoch = epoch, seq = seq, atMs = 0, atElapsedMs = 0)
+        val now = wallClock()
+        val verdict = synchronized(consumed) {
+            val limited = now - arrivals[arrivalAt] < 60_000L // the arrival 6 slots ago is still inside the minute
+            arrivals[arrivalAt] = now; arrivalAt = (arrivalAt + 1) % arrivals.size
             consumed.entries.removeIf { now - it.value > CONSUMED_MS }
             when {
-                age > lim.MAX_AGE_MS || age < -lim.MAX_FUTURE_MS -> false
-                sentAge > lim.MAX_AGE_MS || sentAge < -lim.MAX_FUTURE_MS -> false
-                consumed.containsKey(ref) -> false
-                else -> { consumed[ref] = now; true }
+                limited -> Verdict.RATE
+                consumed.containsKey(ref) -> Verdict.IGNORE
+                jobs.size + remote.size >= MAX_IN_FLIGHT -> Verdict.BUSY
+                else -> { consumed[ref] = now; while (consumed.size > MAX_CONSUMED) consumed.remove(consumed.keys.first()); Verdict.RUN }
             }
         }
-        if (!fresh) return
-        if (jobs.size + remote.size >= MAX_IN_FLIGHT) { fail(m, MarkPhotoReason.CAMERA_BUSY); return }
+        when (verdict) {
+            Verdict.IGNORE -> return
+            Verdict.RATE -> { fail(m, MarkPhotoReason.RATE_LIMITED); return }
+            Verdict.BUSY -> { fail(m, MarkPhotoReason.CAMERA_BUSY); return }
+            Verdict.RUN -> Unit
+        }
         val job = sc.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             val out = try { runner.take(ref) } catch (e: CancellationException) { throw e } catch (e: Exception) { MarkPhotoOutcome.Failed(MarkPhotoReason.NO_FRAME) }
             remote.remove(ref)
@@ -153,6 +144,8 @@ class MarkTap(
         remote[ref] = job
         job.start()
     }
+
+    private enum class Verdict { RUN, IGNORE, RATE, BUSY }
 
     private fun startPhoto(m: MarkMessage) {
         val runner = photo ?: return; val sc = scope ?: return
@@ -186,5 +179,5 @@ class MarkTap(
 
     private fun trySend(m: MarkMessage): Boolean = try { send(m) } catch (e: Exception) { false }
 
-    private companion object { const val MAX_IN_FLIGHT = 3; const val CONSUMED_MS = 130_000L }
+    private companion object { const val MAX_IN_FLIGHT = 3; const val CONSUMED_MS = 600_000L; const val MAX_CONSUMED = 64 }
 }

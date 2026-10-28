@@ -148,6 +148,7 @@ object MarkRows {
         MarkPhotoReason.CANCELLED -> "the photo was cancelled"
         MarkPhotoReason.RATE_LIMITED -> "too many photo requests in a minute"
         MarkPhotoReason.SESSION_CLOSED -> "the glasses link had closed"
+        MarkPhotoReason.UNKNOWN_SESSION -> "the glasses link was not ready"
         else -> token
     }
 

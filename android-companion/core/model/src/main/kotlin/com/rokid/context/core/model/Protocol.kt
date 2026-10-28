@@ -415,15 +415,13 @@ data class MarkMessage(
  */
 @Serializable data class MarkPhotoRequest(
     val v: Int = PROTOCOL_VERSION, val ref: String,
-    /** Phone clock when it was sent, and the phone clock of its session start (the same pair every phone message carries): the glasses refuse a request that is stale, from another session, or has none (0). */
+    /** Phone clock when it was sent (informational: the glasses do not judge freshness by it) and the phone clock of its session start: the glasses refuse a request of another or an unknown session (0). */
     val atMs: Long = 0, val sessionStartMs: Long = 0,
 )
 
-/** Bounds of the phone-origin photo request on the glasses (time, not cache size). */
+/** The bound of the phone-origin photo request on the glasses: by the glasses' own clock, not by phone time or cache size. */
 object MarkPhotoRequestLimits {
     const val PER_MINUTE = 6
-    const val MAX_AGE_MS = 60_000L
-    const val MAX_FUTURE_MS = 5_000L
 }
 
 /** The tokens of why a mark has no photo (stored on the label, shown to the user as words by the phone). A token the phone does not know is shown as is. */
@@ -447,6 +445,7 @@ object MarkPhotoReason {
     /** v0.9.7 slice D review: the glasses refused a phone request (more than [MarkPhotoRequestLimits.PER_MINUTE] in a minute) / got it after its session closed. */
     const val RATE_LIMITED = "rate_limited"
     const val SESSION_CLOSED = "session_closed"
+    const val UNKNOWN_SESSION = "unknown_session"
     /** Only a short token is ever stored: a wild value from the wire is cut and cleaned. */
     fun clean(raw: String): String = raw.filter { it.isLetterOrDigit() || it == '_' }.take(32).ifEmpty { NO_FRAME }
 }
