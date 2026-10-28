@@ -80,6 +80,12 @@ class PhoneOriginMarkTest {
         assertEquals(2, dao.labels().size); assertEquals(2, requests.size)
     }
 
+    @Test fun aChatMarkNeverJoinsTheListenOfAnEarlierPhoneVoiceMark() = runBlocking<Unit> {
+        rec.onPhoneListenStart(t0); voice(VoiceMark.Mark(null), at = t0 + 1_000)
+        chat(VoiceMark.Mark(null), at = t0 + 60_000)
+        assertEquals(setOf("mk:phone:$t0", "mk:phone:${t0 + 60_000}"), dao.labels().map { it.labelId }.toSet()); assertEquals(2, requests.size)
+    }
+
     @Test fun whenThePhoneKnowsThereIsNoPhotoItRecordsTheReasonAndAsksNobody() = runBlocking<Unit> {
         for ((i, r) in listOf(MarkPhotoReason.CAMERA_BUSY, MarkPhotoReason.GLASSES_NOT_CONNECTED, MarkPhotoReason.GLASSES_NOT_WORN, MarkPhotoReason.NO_PHOTO_SUPPORT).withIndex()) {
             reason = r; chat(VoiceMark.Mark(null), at = t0 + i * 1_000L)

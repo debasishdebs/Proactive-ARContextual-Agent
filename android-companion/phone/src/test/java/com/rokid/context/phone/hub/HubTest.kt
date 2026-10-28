@@ -904,6 +904,20 @@ class HubTest {
         assertTrue(link.sent.none { it.first == Channels.MARK_ACK })
     }
 
+    @Test fun aHelloSaysWhetherTheGlassesAnswerAPhotoRequestAndTheRequestGoesOnItsOwnChannel() = runTest {
+        val link = FakeGlassesLink(); val h = hub(link)
+        link.emitReady(); runCurrent()
+        assertFalse("nothing is promised before a Hello", h.peerMarkPhoto)
+        link.emit(hello()); runCurrent()
+        assertFalse("an old glasses Hello says nothing", h.peerMarkPhoto)
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), markPhotoRequest = true))); runCurrent()
+        assertTrue(h.peerMarkPhoto)
+        link.sent.clear()
+        assertTrue(h.requestMarkPhoto("phone:5")); runCurrent()
+        val sent = Wire.decode<com.rokid.context.core.model.MarkPhotoRequest>(link.lastOn(Channels.MARK_PHOTO_REQUEST)) as Decoded.Ok
+        assertEquals("phone:5", sent.value.ref)
+    }
+
     @Test fun aFailingMarkPhotoReportDoesNotBreakTheHub() = runTest {
         val link = FakeGlassesLink(); var n = 0
         hub(link, onMarkPhoto = { n++; throw IllegalStateException("db") }, onMark = { _, _ -> true })
