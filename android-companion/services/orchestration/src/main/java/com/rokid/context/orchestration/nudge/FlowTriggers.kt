@@ -54,7 +54,7 @@ class TriggerRateLimiter(private val meta: TriggerMeta, private val clock: () ->
 fun interface SignalValues { suspend fun values(feature: String, count: Int, nowMs: Long): List<Double?> }
 
 /** The photo behind an IMAGE query: its frame id (fenced and stored as a dependency of the nudge) and its embedding, already checked to be in the ACTIVE image space. */
-class TriggerPhoto(val frameId: String, val vector: FloatArray)
+class TriggerPhoto(val frameId: String, val spaceId: String, val vector: FloatArray)
 
 /** The newest photo of the last few minutes for an IMAGE query, or null (none, no embedding, or an embedding of another space). Never throws for a missing photo. */
 fun interface TriggerImages { suspend fun photo(nowMs: Long): TriggerPhoto? }
@@ -82,7 +82,7 @@ class SignalGate(private val meta: TriggerMeta, private val scope: String = "", 
  * Event triggers (a Moment landed, a Scene stored): asks [enqueue] to run the Nudge flow only when the PUBLISHED Nudge flow's root is that trigger (one cheap plan lookup, cached per
  * publish id), and at most once per [debounceMs] per trigger. A burst of events is therefore one queued run; the engine's own gates and the rate limit decide what it does.
  */
-class FlowTriggers(private val plans: FlowPlans, private val enqueue: suspend (String) -> Boolean, private val clock: () -> Long = System::currentTimeMillis, private val debounceMs: Long = DEBOUNCE_MS) {
+class FlowTriggers(private val plans: FlowPlans, private val enqueue: suspend (String, String?) -> Boolean, private val clock: () -> Long = System::currentTimeMillis, private val debounceMs: Long = DEBOUNCE_MS) {
     private val last = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     suspend fun fire(trigger: String): Boolean {
@@ -93,13 +93,13 @@ class FlowTriggers(private val plans: FlowPlans, private val enqueue: suspend (S
         val plan = try { plans.plan(FlowPlan.Kind.NUDGE) } catch (c: CancellationException) { throw c } catch (e: Exception) {
             // a lookup that fails must not silence the built-in flow: run it as a summarizer pass (that path has its own 30 minute gap)
             PcLog.i(TAG, "trigger lookup failed (${e.javaClass.simpleName}); built-in flow")
-            return enqueue(NodeTypes.TRIGGER_SUMMARIZER)
+            return enqueue(BUILTIN_FALLBACK, null) // an explicit instruction: the run uses the built-in flow even if the lookup recovers before it executes
         }
         if (plan?.trigger != trigger) return false
-        return enqueue(trigger)
+        return enqueue(trigger, null)
     }
 
-    companion object { const val DEBOUNCE_MS = 60_000L; private const val TAG = "FlowTriggers" }
+    companion object { const val DEBOUNCE_MS = 60_000L; const val BUILTIN_FALLBACK = "builtin_fallback"; private const val TAG = "FlowTriggers" }
 }
 
 /**
@@ -108,7 +108,8 @@ class FlowTriggers(private val plans: FlowPlans, private val enqueue: suspend (S
  * schedule never fires retroactively. The last-check time persists in [meta], so a restart neither loses nor repeats an occurrence.
  */
 class ScheduleTick(
-    private val plans: FlowPlans, private val meta: TriggerMeta, private val fire: suspend (String) -> Boolean,
+    private val plans: FlowPlans, private val meta: TriggerMeta, /** (trigger, unique key): the key names this publication and occurrence, so a queued or running run of another publication can never swallow it. */
+    private val fire: suspend (String, String) -> Boolean,
     private val clock: () -> Long = System::currentTimeMillis, private val zone: () -> ZoneId = ZoneId::systemDefault,
 ) {
     /**
@@ -132,7 +133,7 @@ class ScheduleTick(
             pending = next
             meta.put(key, "$last;$pending")
         }
-        if (!fire(NodeTypes.TRIGGER_SCHEDULE)) return false // not durably enqueued: the pending occurrence stays for the next tick
+        if (!fire(NodeTypes.TRIGGER_SCHEDULE, "${plan.scope}_$pending")) return false // not durably enqueued: the pending occurrence stays for the next tick
         meta.put(key, "${maxOf(last, now, pending)};")
         return true
     }

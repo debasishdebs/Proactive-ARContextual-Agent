@@ -68,11 +68,11 @@ class NudgeEngine(
      * Serialized with every other run through [NudgeRunLock] (the daily cap is read-then-write). [trigger] is the node type that started the run: a published Nudge flow runs
      * only on its own root, so any other trigger returns [NudgeRun.NotThisTrigger]; the built-in flow's root is the summarizer pass.
      */
-    suspend fun runOnce(trigger: String = NodeTypes.TRIGGER_SUMMARIZER): NudgeRun = NudgeRunLock.mutex.withLock { runLocked(trigger) }
+    suspend fun runOnce(trigger: String = NodeTypes.TRIGGER_SUMMARIZER, builtInOnly: Boolean = false): NudgeRun = NudgeRunLock.mutex.withLock { runLocked(trigger, builtInOnly) }
 
-    private suspend fun runLocked(trigger: String): NudgeRun {
+    private suspend fun runLocked(trigger: String, builtInOnly: Boolean): NudgeRun {
         val now = clock()
-        val lookup = lookupPlan()
+        val lookup = if (builtInOnly) Lookup(null, failed = true) else lookupPlan() // builtInOnly: a lookup failed when the run was queued; no later recovery may change what it runs
         val plan = lookup.plan
         // a plan lookup that failed runs the built-in flow, whatever started the run (the fallback must not depend on the trigger)
         if (!lookup.failed && trigger != (plan?.trigger ?: NodeTypes.TRIGGER_SUMMARIZER)) return NudgeRun.NotThisTrigger
@@ -83,7 +83,7 @@ class NudgeEngine(
         plan?.signal?.let { sig -> if (!SignalGate(triggers.meta, plan.scope, triggers.signals).fires(sig, now)) return NudgeRun.NoSignal }
         gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }
         val photo = if (plan != null && plan.imageQuery && trigger in PHOTO_TRIGGERS) triggerPhoto(now) else null
-        val built = buildInputs(now, plan, photo?.vector)
+        val built = buildInputs(now, plan, photo)
         // the query photo is a source of the nudge: Forget of it (while the model runs) drops the nudge, and it is stored as a dependency
         val prepared = if (photo == null) built else built.copy(fenceIds = built.fenceIds + (PHOTO_CITE_PREFIX + photo.frameId))
         if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
@@ -148,9 +148,9 @@ class NudgeEngine(
     private class NudgeRoute(val shownOn: String, val fallback: String? = null)
 
     /** The published Nudge pipeline's inputs; any problem with it (retrieval) runs the built-in inputs instead. The gates around it are the engine's own. */
-    private suspend fun buildInputs(now: Long, plan: FlowPlan?, photoVector: FloatArray?): NudgeInputs.Prepared {
+    private suspend fun buildInputs(now: Long, plan: FlowPlan?, photo: TriggerPhoto?): NudgeInputs.Prepared {
         if (plan == null) return inputs.build(now)
-        return try { inputs.build(now, photoVector = photoVector, plan = plan) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+        return try { inputs.build(now, photoVector = photo?.vector, plan = plan, photoSpace = photo?.spaceId) } catch (c: CancellationException) { throw c } catch (e: Exception) {
             PcLog.i(TAG, "nudge pipeline failed (${e.javaClass.simpleName}); built-in flow"); inputs.build(now)
         }
     }

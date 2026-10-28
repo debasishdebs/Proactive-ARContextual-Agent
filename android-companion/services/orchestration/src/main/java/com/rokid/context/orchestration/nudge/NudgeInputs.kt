@@ -33,8 +33,8 @@ class NudgeInputs(
      * [photoVector]: a photo's image embedding (a later Nudge trigger, not wired yet). The photos near it join the memory lines as photo lines
      * (same gates as an Ask's photos) and their cite ids join the inputs.
      */
-    suspend fun build(nowMs: Long, extraText: String? = null, photoVector: FloatArray? = null, plan: FlowPlan = FlowPlan.BUILT_IN_NUDGE): Prepared {
-        val c = core.retrieve(RagQuery(vector = photoVector), plan.nudgeSources(photoVector != null), plan.ragParams(RagParams(maxRecent = MAX_MEMORIES, maxChars = NO_BOUND)), nowMs)
+    suspend fun build(nowMs: Long, extraText: String? = null, photoVector: FloatArray? = null, plan: FlowPlan = FlowPlan.BUILT_IN_NUDGE, photoSpace: String? = null): Prepared {
+        val c = core.retrieve(RagQuery(vector = photoVector, vectorSpace = photoSpace), plan.nudgeSources(photoVector != null), plan.ragParams(RagParams(maxRecent = MAX_MEMORIES, maxChars = NO_BOUND)), nowMs)
         val lines = c.recentLines + c.photoLines + listOfNotNull(extraText?.takeIf { it.isNotBlank() })
         return Prepared(
             PromptVars(

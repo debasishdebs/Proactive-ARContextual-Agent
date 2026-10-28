@@ -51,7 +51,7 @@ class FlowTriggersTest {
         var now = 1_000_000L
         val queued = mutableListOf<String>()
         var published: FlowPlan? = plan(NodeTypes.TRIGGER_MOMENT)
-        val t = FlowTriggers(FlowPlans { published }, { queued += it; true }, { now }, debounceMs = 60_000)
+        val t = FlowTriggers(FlowPlans { published }, { t, _ -> queued += t; true }, { now }, debounceMs = 60_000)
         assertFalse("a scene event does nothing while the flow is rooted at moments", t.fire(NodeTypes.TRIGGER_SCENE))
         assertTrue(t.fire(NodeTypes.TRIGGER_MOMENT)); now += 1_000
         assertFalse("a burst is one run", t.fire(NodeTypes.TRIGGER_MOMENT)); now += 60_000
@@ -63,8 +63,8 @@ class FlowTriggersTest {
 
     @Test fun aThrowingPlanLookupRunsTheBuiltInFlowInstead() = runBlocking {
         val queued = mutableListOf<String>()
-        assertTrue(FlowTriggers(FlowPlans { throw IllegalStateException("db") }, { queued += it; true }).fire(NodeTypes.TRIGGER_MOMENT))
-        assertEquals("the built-in flow still runs, as a summarizer pass", listOf(NodeTypes.TRIGGER_SUMMARIZER), queued)
+        assertTrue(FlowTriggers(FlowPlans { throw IllegalStateException("db") }, { t, _ -> queued += t; true }).fire(NodeTypes.TRIGGER_MOMENT))
+        assertEquals("the built-in flow still runs, as a summarizer pass", listOf(FlowTriggers.BUILTIN_FALLBACK), queued)
     }
 
     @Test fun theScheduleFiresOnceWhenDueSurvivesARestartAndNeverReplaysMissedRuns() = runBlocking {
@@ -72,7 +72,7 @@ class FlowTriggersTest {
         val fired = mutableListOf<String>()
         val meta = MemoryTriggerMeta()
         val plans = FlowPlans { plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *") }
-        fun tick() = ScheduleTick(plans, meta, { fired += it; true }, { now }, { zone }) // a new instance each time: only the meta carries state (a restart)
+        fun tick() = ScheduleTick(plans, meta, { t, _ -> fired += t; true }, { now }, { zone }) // a new instance each time: only the meta carries state (a restart)
         assertFalse("the first check only records the time", tick().tick())
         now = at(8, 45); assertFalse(tick().tick())
         now = at(9, 5); assertTrue(tick().tick())
@@ -89,7 +89,7 @@ class FlowTriggersTest {
         var published: FlowPlan? = plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *").copy(scope = "p1")
         val fired = mutableListOf<String>()
         val meta = MemoryTriggerMeta()
-        fun tick() = ScheduleTick(FlowPlans { published }, meta, { fired += it; true }, { now }, { zone })
+        fun tick() = ScheduleTick(FlowPlans { published }, meta, { t, _ -> fired += t; true }, { now }, { zone })
         tick().tick()
         published = null; now = at(8, 30); assertFalse(tick().tick())
         published = plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *").copy(scope = "p2"); now = at(12, 0); assertFalse("09:00 passed before this publication existed", tick().tick())
@@ -101,7 +101,7 @@ class FlowTriggersTest {
         val fired = mutableListOf<String>()
         val meta = MemoryTriggerMeta()
         val plans = FlowPlans { plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *") }
-        fun tick() = ScheduleTick(plans, meta, { fired += it; true }, { now }, { zone })
+        fun tick() = ScheduleTick(plans, meta, { t, _ -> fired += t; true }, { now }, { zone })
         tick().tick(); now = at(9, 5); assertTrue(tick().tick())
         now = at(8, 0); assertFalse("clock back before the occurrence: the 09:00 run is not replayed", tick().tick())
         now = at(9, 30); assertFalse(tick().tick())
@@ -120,7 +120,7 @@ class FlowTriggersTest {
         val fired = mutableListOf<String>()
         val meta = MemoryTriggerMeta()
         val plans = FlowPlans { plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *") }
-        fun tick() = ScheduleTick(plans, meta, { fired += it; ok }, { now }, { zone })
+        fun tick() = ScheduleTick(plans, meta, { t, _ -> fired += t; ok }, { now }, { zone })
         tick().tick(); now = at(9, 5)
         assertFalse("enqueue failed", tick().tick()); now = at(9, 20)
         assertFalse(tick().tick()); ok = true

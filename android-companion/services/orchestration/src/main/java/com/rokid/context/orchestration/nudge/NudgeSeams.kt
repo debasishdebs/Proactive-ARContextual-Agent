@@ -42,7 +42,7 @@ class NewestPhotoVector(
                 val space = meta.imageVectorSpace ?: continue
                 if (space != active) { onSkip("image_space_mismatch"); return null } // incompatible embeddings of equal size would match wrongly: skip, never guess
                 val blob = db.frameVectorDao().get(meta.frameId, space)?.blob ?: continue
-                runCatching { VectorCodec.decode(blob) }.getOrNull()?.let { return TriggerPhoto(meta.frameId, it) }
+                runCatching { VectorCodec.decode(blob) }.getOrNull()?.let { return TriggerPhoto(meta.frameId, space, it) }
             }
         }
         return null

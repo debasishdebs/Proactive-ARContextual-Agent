@@ -45,23 +45,23 @@ object NudgeTrigger {
     }
 
     suspend fun fire(app: Context, trigger: String): Boolean {
-        val t = events ?: synchronized(this) { events ?: FlowTriggers(DaoFlowPlans(MemoryGraph.get(app).db.canvasDao()), { enqueue(app, it) }).also { events = it } }
+        val t = events ?: synchronized(this) { events ?: FlowTriggers(DaoFlowPlans(MemoryGraph.get(app).db.canvasDao()), { t, k -> enqueue(app, t, k) }).also { events = it } }
         return t.fire(trigger)
     }
 
     /** `trigger.schedule`, called by the existing 15 minute cadence worker: fires at most once when a cron occurrence has passed since the last check (see [ScheduleTick]). */
     suspend fun tickSchedule(app: Context): Boolean {
         val db = MemoryGraph.get(app).db
-        return ScheduleTick(DaoFlowPlans(db.canvasDao()), DaoTriggerMeta(db.canvasSlice3Dao()), { enqueue(app, it) }).tick()
+        return ScheduleTick(DaoFlowPlans(db.canvasDao()), DaoTriggerMeta(db.canvasSlice3Dao()), { t, key -> enqueue(app, t, key) }).tick()
     }
 
     /** One unique run per trigger type (KEEP): a burst is one queued run. Not while the battery is low; no wake lock, no expedited work. */
-    suspend fun enqueue(context: Context, trigger: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun enqueue(context: Context, trigger: String, key: String? = null): Boolean = withContext(Dispatchers.IO) {
         try {
             val request = OneTimeWorkRequestBuilder<NudgeWorker>().setInputData(workDataOf(KEY_TRIGGER to trigger))
                 .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build()).build()
             // durable only once WorkManager has the work: wait for its result (a unique KEEP enqueue is idempotent)
-            WorkManager.getInstance(context).enqueueUniqueWork(if (trigger == NodeTypes.TRIGGER_SUMMARIZER) WORK else "${WORK}_$trigger", ExistingWorkPolicy.KEEP, request).result.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            WorkManager.getInstance(context).enqueueUniqueWork(if (trigger == NodeTypes.TRIGGER_SUMMARIZER) WORK else "${WORK}_$trigger" + (key?.let { "_$it" } ?: ""), ExistingWorkPolicy.KEEP, request).result.get(10, java.util.concurrent.TimeUnit.SECONDS)
             true
         } catch (e: Exception) {
             PcLog.i("NudgeTrigger", "nudge not scheduled: ${SafeLog.describe(e)}")
