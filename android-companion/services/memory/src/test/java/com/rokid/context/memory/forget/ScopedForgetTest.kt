@@ -78,6 +78,30 @@ class ScopedForgetTest {
         assertEquals(listOf("a1", "a2", "a3", "n1"), frames()); assertEquals(listOf("sc-A", "sc-N"), scenes())
     }
 
+    /** Review P1: Developer mode switched off after the plan was made (or while the delete waited for Room): previewed no more, refused, nothing deleted. */
+    @Test fun developerModeSwitchedOffAfterThePlanRefusesPreviewAndTheDeleteInsideTheTransaction() = runBlocking<Unit> {
+        world(); val plan = engine.plan(ForgetTarget.Scene("sc-A"), ForgetScope.SCENE)
+        ForgetScopeSetting.experimentalAllowed = { false }
+        assertTrue(runCatching { engine.preview(plan) }.exceptionOrNull() is ForgetScopeNotAllowed)
+        // the gate flips between the entry check and the transaction: the in-transaction check rolls the Forget back
+        var calls = 0; ForgetScopeSetting.experimentalAllowed = { ++calls <= 1 }
+        assertTrue(runCatching { engine.forget(plan) }.exceptionOrNull() is ForgetScopeNotAllowed)
+        assertEquals(listOf("a1", "a2", "a3", "n1"), frames()); assertEquals(listOf("sc-A", "sc-N"), scenes()); assertEquals(0, db.momentDao().tombstoneCount())
+    }
+
+    /** Review P1: a batch peer of an IN-SPAN photo (its result is outside the span) is counted and hashed too. */
+    @Test fun aBatchPeerOfAnInSpanPhotoIsCountedAndHashed() = runBlocking<Unit> {
+        world()
+        db.canvasDao().insertRun(com.rokid.context.memory.db.CanvasRunEntity("r1", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        suspend fun item(f: String, batch: String?) = db.canvasDao().upsertItem(com.rokid.context.memory.db.CanvasRunItemEntity("r1", f, "ext", "OK", null, "{\"fact\":\"t$f\"}", null, null, null, null, null, null, batch))
+        item("a1", "b1"); item("n1", "b1")
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertEquals("n1 shares a1's batch", 1, c.peerResults)
+        item("zz", "b1"); refused(p, c.planHash)
+        val c2 = engine.preview(p); assertEquals(2, c2.peerResults); engine.forget(p, c2.planHash)
+        assertTrue("the peers' results went with the counted set", db.canvasDao().items("r1").isEmpty())
+    }
+
     // ---- PHOTO ----
     @Test fun photoScopeDeletesExactlyThatPhotoAndItsRadiusAndFencesNothing() = runBlocking<Unit> {
         world(); val d = run(ForgetTarget.Photo("a1"), ForgetScope.PHOTO)

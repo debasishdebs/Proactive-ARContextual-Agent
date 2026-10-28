@@ -87,6 +87,7 @@ class ScopedForget(
 
     /** The numbers of the confirm dialog: exactly what [forget] removes for spans (the same discovery); for a single photo or fact, what its cascade and the radius path reach. */
     suspend fun preview(plan: Plan): MomentForget.Counts {
+        if (plan.effective != ForgetScope.PHOTO) requireExperimental() // a plan made earlier is not previewed once Developer mode is off
         if (plan.isEmpty) return MomentForget.Counts(0, 0, 0, 0, 0, 0)
         val dao = db.forgetDao(); val md = db.momentDao()
         if (plan.spans.isNotEmpty()) return MomentForget(db, service, clock).preview(plan.spans, plan.sceneIds)
@@ -136,7 +137,7 @@ class ScopedForget(
             }
             return Done(plan, r, emptyList(), emptyList())
         }
-        val r = MomentForget(db, service, clock).forgetSpans(plan.spans, plan.sceneIds, expectedHash)
+        val r = MomentForget(db, service, clock).forgetSpans(plan.spans, plan.sceneIds, expectedHash) { requireExperimental() }
         // files and glasses follow the committed range (trace folders, the glasses' unsent traces): the same listener call as a range Forget
         for (s in plan.spans) ForgetListeners.rangeForgotten(s.first, s.last, r.tombstonedTraceIds)
         return Done(plan, r.cascade, plan.spans, r.tombstonedTraceIds)

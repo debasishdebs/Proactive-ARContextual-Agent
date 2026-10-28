@@ -275,6 +275,8 @@ class AndroidRelaunchGuards(
     private var normalSinceMs: Long? = Long.MIN_VALUE / 2
     private val lock = Any()
     @Volatile private var lastInputs: String? = null
+    /** The last READABLE telephony state: the mode listener cannot read it (null), so it must not start the settle while the last known state is a call. */
+    private var lastCallState: Int? = null
 
     init {
         // API 31+: the listener sees a hang-up the moment it happens, between two polls.
@@ -288,7 +290,8 @@ class AndroidRelaunchGuards(
     /** A sample (the mode listener, or a poll). The end of a call is stamped once; a call sample (a call mode, or a readable non-idle [callState]) clears it. */
     internal fun onModeChanged(mode: Int, callState: Int? = null) {
         synchronized(lock) {
-            if (callBusy(mode, callState)) normalSinceMs = null
+            if (callState != null) lastCallState = callState
+            if (callBusy(mode, callState ?: lastCallState)) normalSinceMs = null
             else if (normalSinceMs == null) normalSinceMs = elapsed()
         }
     }
