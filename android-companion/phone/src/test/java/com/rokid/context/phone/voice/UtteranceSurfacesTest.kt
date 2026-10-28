@@ -155,6 +155,19 @@ class UtteranceSurfacesTest {
     }
     private var exportRuns = false
 
+    @Test fun anUndoThatFailsForAnyOtherReasonSaysSoAndLosesNothing() = runBlocking<Unit> {
+        rec = MarkRecorder(graph.db.canvasSlice3Dao(), { DaoFence(0, epoch, { 0 }, { epoch }) }, { now }, forgetPhoto = { throw IllegalStateException("db") },
+            phonePhoto = object : com.rokid.context.canvas.marks.PhonePhotoRequester { override fun reasonNow(): String? = null; override suspend fun request(markRef: String) = true })
+        val u = Utterance(MarkUtteranceCommands({ rec }, scope), { now })
+        u.asInterceptor().intercept("mark this moment", VoiceSource.PHONE, true); rec.awaitIdle()
+        val id = graph.db.canvasSlice3Dao().labels().single().labelId
+        val meta = com.rokid.context.memory.db.FrameMetaEntity("pf", "w_pf", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = now + 500, markRef = id.removePrefix("mk:"))
+        com.rokid.context.memory.FrameIntake(graph.db).commit(com.rokid.context.memory.db.FrameEntity("pf", now + 500, "/p/pf.jpg", "rokid_glasses"), com.rokid.context.memory.FrameRows(meta, com.rokid.context.memory.db.FrameStateEntity("pf", "PENDING", 0, null, null, null, 1)))
+        val before = marks()
+        assertEquals(Utterance.COULDNT_UNDO, viaChatWith(u, "undo the mark").reply)
+        assertEquals(before, marks())
+    }
+
     private suspend fun viaChatWith(u: Utterance, text: String): Outcome {
         val vm = HomeViewModel(FakeGlassesStatusSource(), FakePipelineControl(), graph.timeline, graph.asks, graph.nudges, AskService { AskOutcome.Failed("x") },
             clock = flowOf(Fixtures.NOW), storagePct = flowOf(10), zone = { Fixtures.ZONE }, utterance = u)
