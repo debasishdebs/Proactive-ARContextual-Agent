@@ -74,4 +74,17 @@ class AndroidRelaunchGuardsTest {
         cs = android.telephony.TelephonyManager.CALL_STATE_IDLE; e = 200_000L; assertFalse("settling after the call", g.callIdle())
         e = 215_000L; assertTrue(g.callIdle())
     }
+
+    /** Review P2: a mode callback (no readable call state) must not start the settle while the last known telephony state is a call. */
+    @Test fun aModeCallbackDoesNotStartTheSettleWhileTelephonyWasLastBusy() {
+        var cs: Int? = android.telephony.TelephonyManager.CALL_STATE_OFFHOOK
+        val g = AndroidRelaunchGuards(ApplicationProvider.getApplicationContext(), { null }, clock = { 0L }, elapsed = { e }, modeSource = { mode }, callStateSource = { cs }, watchModeChanges = false)
+        e = 0L; assertFalse(g.callIdle())                                  // busy poll
+        e = 1_000L; g.onModeChanged(AudioManager.MODE_NORMAL)              // NORMAL callback, telephony unreadable to it
+        cs = android.telephony.TelephonyManager.CALL_STATE_IDLE            // hang-up at 9 s, seen by the poll at 10 s
+        e = 10_000L; assertFalse(g.callIdle())
+        e = 20_000L; assertFalse("only 10 s after the hang-up was seen", g.callIdle())
+        e = 24_900L; assertFalse(g.callIdle())
+        e = 25_000L; assertTrue(g.callIdle())
+    }
 }
