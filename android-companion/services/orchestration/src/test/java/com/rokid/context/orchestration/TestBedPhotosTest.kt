@@ -33,7 +33,7 @@ class TestBedPhotosTest {
 
     private fun answers(allowed: Boolean, decrypts: MutableList<String>): AnswerService {
         val ai = AiGraph.get(ctx)
-        return AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }, photosAllowed = { allowed },
+        return AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }, photosAllowed = { allowed }, imageEndpointId = { "az" },
             photos = { _, _ -> listOf(PhotoHit("f1", PhotoSource.IMAGE, 0.5, 1_000, 2_000, true, false, null, null, null)) },
             photoImages = { ids -> decrypts += ids; ids.associateWith { ModelImageInput("image/jpeg", "AAA") } })
     }

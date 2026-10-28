@@ -119,4 +119,71 @@ class RagCoreGoldenTest {
         }
         assertEquals(RagParams::class.java.declaredFields.count { !java.lang.reflect.Modifier.isStatic(it.modifiers) }, RagParams.SCHEMA.size)
     }
+
+    // ---- slice A review fixes ----
+
+    private fun meta(vararg ids: String) = runBlocking {
+        ids.forEach { MemoryGraph.get(ctx).db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(it, null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1)) }
+    }
+
+    private fun core(hits: List<PhotoHit> = emptyList(), endpoint: suspend () -> String? = { "az" }, loads: MutableList<String>? = null, byVector: (Long?) -> Unit = {}) =
+        RagCore(MemoryGraph.get(ctx), AiGraph.get(ctx).retriever, { RetrievalSettings() }, { zone },
+            photos = { _, _ -> hits }, photosAsOf = { _, _ -> hits }, photosByVector = { _, _, na -> byVector(na); hits },
+            photosAllowed = { true }, imageEndpointId = endpoint,
+            photoImages = { ids -> loads?.addAll(ids); ids.associateWith { ModelImageInput("image/jpeg", "AAAA") } })
+
+    @Test fun noCheckedEndpointMeansNoAttachmentAndNoDecrypt() = runBlocking<Unit> {
+        meta("f1")
+        for (ep in listOf<suspend () -> String?>({ null }, { throw java.io.IOException("down") })) {
+            val loads = mutableListOf<String>()
+            val c = core(listOf(hit("f1", 0.9)), ep, loads).retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore()), RagParams(), now)
+            assertEquals(1, c.photos.size); assertEquals(emptyList<Any>(), c.images); assertEquals(null, c.imageEndpointId); assertEquals(emptyList<String>(), loads)
+            assertEquals(false, c.photoLines.any { it.contains("image=") })
+        }
+    }
+
+    @Test fun aPhotoForgottenAfterEnrichmentIsDropped() = runBlocking<Unit> {
+        meta("f1") // f2 has no frame_meta: forgotten between the recall and the prompt (a deliberate fence the old Ask path lacked)
+        val c = core(listOf(hit("f1", 0.9), hit("f2", 0.85))).retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore()), RagParams(), now)
+        assertEquals(listOf("frame:f1"), c.photos.map { it.citeId })
+    }
+
+    @Test fun historicalNudgesAreFencedAndTheirSourcesJoinTheIds() = runBlocking<Unit> {
+        seed()
+        val mem = MemoryGraph.get(ctx)
+        mem.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("n1", now - 60_000L, "milk is low", "", "[\"rokid_mem_1\"]", 1, "h1", "glance", false))
+        mem.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("n2", now - 50_000L, "car is on 3", "", "[\"rokid_mem_3\"]", 1, "h2", "glance", false))
+        val srcs = listOf(RagSource.NudgeHistory(86_400_000L))
+        val c = core().retrieve(RagQuery(), srcs, RagParams(), now)
+        assertEquals(listOf("car is on 3", "milk is low"), c.history); assertEquals(setOf("rokid_mem_1", "rokid_mem_3"), c.ids)
+        mem.db.memoryDao().insert(mem.memories.recent(10).first { it.id == "rokid_mem_3" }.copy(reviewState = com.rokid.context.memory.db.ReviewState.INVALIDATED))
+        val d = core().retrieve(RagQuery(), srcs, RagParams(), now)
+        assertEquals(listOf("milk is low"), d.history); assertEquals(setOf("rokid_mem_1"), d.ids)
+    }
+
+    @Test fun photoCutoffAndWindowApplyToVectorSearch() = runBlocking<Unit> {
+        meta("old", "late", "fresh")
+        var seen: Long? = -1L
+        val hits = listOf(hit("old", 0.9).copy(ts = now - 10_000_000L, receivedAt = now - 10_000_000L), hit("late", 0.9).copy(ts = now + 5_000L, receivedAt = now + 5_000L), hit("fresh", 0.9).copy(ts = now - 1_000L, receivedAt = now - 1_000L))
+        val c = core(hits, byVector = { seen = it })
+        val q = RagQuery(vector = floatArrayOf(1f))
+        val cut = c.retrieve(q, listOf(RagSource.PhotoStore(notAfterMs = now)), RagParams(), now)
+        assertEquals(now, seen); assertEquals(setOf("frame:old", "frame:fresh"), cut.photos.map { it.citeId }.toSet())
+        val win = c.retrieve(q, listOf(RagSource.PhotoStore(notAfterMs = now, windowMs = 60_000L)), RagParams(), now)
+        assertEquals(listOf("frame:fresh"), win.photos.map { it.citeId })
+    }
+
+    @Test fun recentAndExplicitObeyTheSharedBounds() = runBlocking<Unit> {
+        seed()
+        val c = core()
+        val recent = RagSource.RecentWindow(6 * 3_600_000L)
+        val both = listOf(recent, RagSource.Explicit(listOf("rokid_mem_1", "rokid_mem_2", "rokid_mem_3")), recent)
+        assertEquals(RagContext(), c.retrieve(RagQuery("milk?"), both, RagParams(maxChars = 0), now))
+        assertEquals(1, c.retrieve(RagQuery(), both, RagParams(maxRecent = 1), now).recent.size)
+        val three = c.retrieve(RagQuery(), both, RagParams(), now)
+        assertEquals(3, three.recent.size); assertEquals(three.recent.size, three.recentLines.size)
+        val one = three.recentLines.first().length
+        val tight = c.retrieve(RagQuery(), both, RagParams(maxChars = one + 1), now)
+        assertEquals(1, tight.recentLines.size)
+    }
 }

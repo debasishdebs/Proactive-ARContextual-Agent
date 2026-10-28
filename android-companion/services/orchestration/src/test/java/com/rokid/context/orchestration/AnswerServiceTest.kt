@@ -151,7 +151,7 @@ class AnswerServiceTest {
     ): AnswerService {
         val fn: suspend (String, Long) -> List<PhotoHit> = photoFn ?: { _, _ -> photos }
         return AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }, zone = { ZoneOffset.UTC },
-        photosAllowed = { allowed }, imageEndpointId = { null }, photos = fn, photoImages = { ids: List<String> -> imageCalls += ids; ids.mapNotNull { id -> images[id]?.let { id to it } }.toMap() })
+        photosAllowed = { allowed }, imageEndpointId = { "az" }, photos = fn, photoImages = { ids: List<String> -> imageCalls += ids; ids.mapNotNull { id -> images[id]?.let { id to it } }.toMap() })
     }
 
     @Test fun twoPhotoLinesAndImagesReachAnswer() = runBlocking {

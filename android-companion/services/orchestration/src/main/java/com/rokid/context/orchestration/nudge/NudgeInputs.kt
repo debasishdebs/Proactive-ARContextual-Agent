@@ -24,7 +24,8 @@ class NudgeInputs(
 ) {
     private val core = rag ?: RagCore(memory, zone = zone)
 
-    data class Prepared(val vars: PromptVars, val inputIds: Set<String>)
+    /** [inputIds]: what the prompt may cite. [fenceIds]: also the sources of the nudges it shows; the commit fence checks both. */
+    data class Prepared(val vars: PromptVars, val inputIds: Set<String>, val fenceIds: Set<String> = emptySet())
 
     /**
      * [photoVector]: a photo's image embedding (a later Nudge trigger, not wired yet). The photos near it join the memory lines as photo lines
@@ -39,7 +40,7 @@ class NudgeInputs(
                 recentContext = PromptComposer.dataBlock("memories", lines) + "\n" + PromptComposer.dataBlock("recent_nudges", c.history),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(null, nowMs)),
             ),
-            c.ids,
+            (c.recent.map { it.id } + c.photos.map { it.citeId }).toSet(), c.historyIds,
         )
     }
 
