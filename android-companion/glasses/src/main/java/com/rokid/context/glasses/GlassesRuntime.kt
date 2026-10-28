@@ -310,6 +310,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         }
         c.onMarkAck = { a -> markOutbox.onAck(a) }
         c.onMarkPhotoRequest = { r -> markTap.onPhoneRequest(r) }
+        c.onMarkPhotoSessionClosed = { markTap.onSessionClosed() }
         c.onMarksDue = { markTap.flush() }
         c.statusAck = { plan.onLinkSession(); plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
         attachJob?.cancel()
