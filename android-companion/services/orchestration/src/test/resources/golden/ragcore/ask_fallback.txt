@@ -1,0 +1,17 @@
+question=BEGIN_DATA question
+- zzzqqq
+END_DATA question
+---
+memories=BEGIN_DATA memories
+- id=rokid_mem_1 · 2027-01-15 07:00 · confidence 0.90 · frame=none · Milk carton nearly empty
+- id=rokid_mem_2 · 2027-01-15 06:00 · confidence 0.80 · frame=none · Bought bread and milk at the corner shop
+- id=rokid_mem_3 · 2027-01-14 02:00 · confidence 0.70 · frame=none · Parked the car on level 3
+END_DATA memories
+---
+recent=
+---
+sources=BEGIN_DATA sources
+- event · Dentist · zzzqqq
+END_DATA sources
+---
+[rokid_mem_1, rokid_mem_2, rokid_mem_3]|[]|[]|[rokid_mem_1, rokid_mem_2, rokid_mem_3]
