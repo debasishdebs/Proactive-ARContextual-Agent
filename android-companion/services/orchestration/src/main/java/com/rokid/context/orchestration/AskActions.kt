@@ -77,7 +77,10 @@ object AskActions {
 
     /** Built on IO: the first ask reads SharedPreferences (RetrievalSettingsStore) and the key store, never on Main. */
     suspend fun ask(context: Context, question: String, nowMs: Long = System.currentTimeMillis()): AskOutcome =
-        askFrom(context, question, "phone_typed", nowMs)
+        askFrom(context, question, TYPED_SOURCE, nowMs)
+
+    /** The `ask.source` of a typed (Home chat) ask. Its answer reaches the glasses HUD through the phone's mirror ([DeliveryRoute.mirrorsChatToHud]). */
+    const val TYPED_SOURCE = "phone_typed"
 
     /**
      * Voice asks (Phase 6): the same answer path and messages, recorded with their [source] (`glasses_voice`,

@@ -71,6 +71,7 @@ fun MemoryDetailScreen(
                         Text(ForgetScopeCopy.dialogScope(p.effective), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                         if (!p.tooLarge) Text(ForgetScopeCopy.counts(p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk))
                         if (!p.tooLarge && p.outside > 0) Text(ForgetScopeCopy.outsideLine(p.outside))
+                        if (!p.tooLarge && p.peerResults > 0) Text(ForgetScopeCopy.peerResultsLine(p.peerResults))
                     }
                     state.message?.let { Text(it, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold) } // e.g. "Content changed since the preview. Review again."
                     if (state.forgetPreview?.tooLarge == true) Text(ForgetScopeCopy.TOO_LARGE)

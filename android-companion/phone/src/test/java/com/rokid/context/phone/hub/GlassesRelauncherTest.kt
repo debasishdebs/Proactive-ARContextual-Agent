@@ -16,9 +16,10 @@ import org.junit.Test
 /** Fix wave H2: the phone reopens the glasses app after Rokid closes it, only when every guard allows. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class GlassesRelauncherTest {
-    private class Guards : RelaunchGuards {
-        var call = true; var media = true; var wornNow: Boolean? = null
+    private open class Guards : RelaunchGuards {
+        var call = true; var media = true; var wornNow: Boolean? = null; var inputs: String? = null
         override fun callIdle() = call
+        override fun callInputs() = inputs
         override fun mediaIdle() = media
         override fun worn() = wornNow
     }
@@ -51,6 +52,38 @@ class GlassesRelauncherTest {
         advanceTimeBy(120_000); assertEquals("a call blocks every attempt", 0, r.reopens)
         g.call = true
         advanceTimeBy(10_100); assertEquals("the attempt goes ahead when the call ended", 1, r.reopens)
+    }
+
+    /** 2026-10-28 diagnostics: a long "call active" block says why (values only), when the inputs change, and when it clears, without growing the log. */
+    @Test fun aLongBlockIsLoggedWithItsInputsRateLimitedAndTheClearIsLogged() = runTest {
+        val g = Guards().apply { call = false; inputs = "audioMode=0 callState=unreadable sinceNormal=<15s sinceScene=<15s" }
+        val r = rig(g)
+        r.close(); runCurrent()
+        advanceTimeBy(30 * 60_000L)
+        val blocked = r.logs.filter { it.startsWith("relaunch: blocked") }
+        assertTrue("the first line and a heartbeat every 5 min: $blocked", blocked.size in 5..8)
+        assertTrue(blocked.first(), blocked.first().contains("(call active) audioMode=0 callState=unreadable sinceNormal=<15s sinceScene=<15s poll=alive for=0 s"))
+        assertEquals("the existing waiting line is logged once, as before", 1, r.logs.count { it == "relaunch: waiting (call active)" })
+        val before = blocked.size
+        g.inputs = "audioMode=2 callState=unreadable sinceNormal=<15s sinceScene=>=30m"
+        advanceTimeBy(60_000L)
+        val after = r.logs.filter { it.startsWith("relaunch: blocked") }
+        assertTrue("a changed input is logged once: ${after.drop(before)}", after.size - before in 1..2 && after.last().contains("audioMode=2"))
+        g.call = true
+        advanceTimeBy(10_100L)
+        assertEquals(1, r.reopens)
+        assertTrue(r.logs.any { it.startsWith("relaunch: block cleared (was call active, ") })
+        assertTrue("nothing caller-identifying: values and buckets only", r.logs.none { Regex("\\d{7,}").containsMatchIn(it) })
+    }
+
+    @Test fun aFlappingInputCannotGrowTheLogFasterThanTheChangeFloor() = runTest {
+        val g = Guards().apply { call = false }
+        val r = rig(g)
+        r.close(); runCurrent()
+        var n = 0
+        repeat(60) { g.inputs = "audioMode=${n++ % 3} callState=unreadable sinceNormal=<15s sinceScene=<15s"; advanceTimeBy(10_000L) } // 10 minutes of a flapping mode
+        val blocked = r.logs.count { it.startsWith("relaunch: blocked") }
+        assertTrue("at most one line per 30 s: $blocked", blocked <= 21)
     }
 
     /** Fix wave I: the reopen goes to icon mode, so music alone never blocks it; a (hypothetical) full-screen reopen still waits for it. */
@@ -184,7 +217,8 @@ class GlassesRelauncherTest {
         val idle = android.telephony.TelephonyManager.CALL_STATE_IDLE
         assertTrue(AndroidRelaunchGuards.callIdle(normal, idle, 0, far))
         assertFalse(AndroidRelaunchGuards.callIdle(normal, android.telephony.TelephonyManager.CALL_STATE_RINGING, 60_000, far))
-        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_COMMUNICATION, idle, 60_000, far))
+        assertTrue("user ruling 2026-10-28: a VoIP mode is not a call", AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_COMMUNICATION, idle, 60_000, far))
+        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_CALL, idle, 60_000, far))
         assertFalse("unknown call state right after the scene counts as a call", AndroidRelaunchGuards.callIdle(normal, null, 5_000, far))
         assertTrue(AndroidRelaunchGuards.callIdle(normal, null, AndroidRelaunchGuards.UNKNOWN_CALL_HOLD_MS, far))
     }
@@ -201,8 +235,26 @@ class GlassesRelauncherTest {
         assertTrue(AndroidRelaunchGuards.callIdle(normal, null, 30_000, 15_000))
     }
 
-    @Test fun ringtoneModeIsBusy() {
-        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_RINGTONE, null, far, far))
+    /** User ruling 2026-10-28: only a real call blocks (IN_CALL, CALL_SCREENING, a readable non-idle call state); every other non-NORMAL mode does not. */
+    @Test fun onlyARealCallModeIsBusy() {
+        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_CALL, null, far, far))
+        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_CALL_SCREENING, null, far, far))
+        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_NORMAL, android.telephony.TelephonyManager.CALL_STATE_OFFHOOK, far, far))
+        assertTrue(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_COMMUNICATION, null, far, far))
+        assertTrue(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_RINGTONE, null, far, far))
+    }
+
+    /** The relaunch against the real decision: a VoIP/meeting mode lets it proceed; a real call mode blocks until it ends. */
+    @Test fun aVoipModeLetsTheRelaunchProceedAndACallModeBlocksIt() = runTest {
+        var mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+        val g = object : Guards() { override fun callIdle() = AndroidRelaunchGuards.callIdle(mode, null, far, far) }
+        val voip = rig(g)
+        voip.close(); runCurrent(); advanceTimeBy(8_100); assertEquals("VoIP does not defer the reopen", 1, voip.reopens)
+        mode = android.media.AudioManager.MODE_IN_CALL
+        val call = rig(g)
+        call.close(); runCurrent(); advanceTimeBy(60_000); assertEquals("a real call does", 0, call.reopens)
+        mode = android.media.AudioManager.MODE_NORMAL
+        advanceTimeBy(10_100); assertEquals(1, call.reopens)
     }
 
     @Test fun everyDecisionLeavesACountsOnlyLine() = runTest {

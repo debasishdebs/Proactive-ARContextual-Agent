@@ -29,6 +29,17 @@ class DeliveryRouteTest {
         assertNull(DeliveryRoute.resolve("phone", false, GlassesReach.DOWN).fallback)
     }
 
+    /** v0.9.8 E: the Home chat's HUD mirror runs exactly once, exactly when the route puts the answer on the glasses. */
+    @Test fun theChatMirrorFollowsTheRoute() {
+        assertTrue(DeliveryRoute.resolve("glasses", false, GlassesReach.UP).mirrorsChatToHud)
+        assertTrue(DeliveryRoute.resolve("both", false, GlassesReach.UP).mirrorsChatToHud)
+        assertFalse(DeliveryRoute.resolve("phone", false, GlassesReach.UP).mirrorsChatToHud, "phone only: never also on the HUD")
+        assertFalse(DeliveryRoute.resolve("glasses", false, GlassesReach.DOWN).mirrorsChatToHud)
+        assertFalse(DeliveryRoute.resolve("both", false, GlassesReach.UP, DeviceCapabilities.ALL.with("glasses", "display", false)).mirrorsChatToHud)
+        assertTrue(DeliveryRoute.resolve("caller", false, GlassesReach.UP).mirrorsChatToHud, "caller: today's mirror")
+        assertFalse(DeliveryRoute.resolve("caller", false, GlassesReach.UP, DeviceCapabilities.ALL.with("glasses", "display", false).with("phone", "display", false)).mirrorsChatToHud, "caller with no display at all")
+    }
+
     private val noGlassesDisplay = DeviceCapabilities.ALL.with("glasses", "display", false)
     private val noPhoneDisplay = DeviceCapabilities.ALL.with("phone", "display", false)
     private val none = noGlassesDisplay.with("phone", "display", false)

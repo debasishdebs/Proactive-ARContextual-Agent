@@ -268,13 +268,13 @@ class AnswerService(
     }
 
     /**
-     * The delivery of a published flow's answer. Only the voice surfaces have a glasses path (the pipeline's HUD overlay): a chat or queue ask has none, so a glasses target
+     * The delivery of a published flow's answer. The voice surfaces (the pipeline's HUD overlay) and the Home chat (the typed-answer mirror to the HUD, [com.rokid.context.core.model.DeliveryRoute.mirrorsChatToHud]) have a glasses path: a queue or other ask has none, so a glasses target
      * lands on the phone with `no_glasses_path`. A fallback is recorded as a trace row (a fixed reason token, no text): never silent. `caller` (the built-in flow) returns null.
      */
     private suspend fun routeOf(target: String, source: String, askId: String, nowMs: Long): com.rokid.context.core.model.DeliveryRoute? {
         val caps = DeliveryEnvironment.caps()
-        val voice = source == "glasses_voice" || source == "phone_voice"
-        val reach = if (voice) DeliveryEnvironment.reach() else com.rokid.context.core.model.GlassesReach.NO_PATH
+        val hasGlassesPath = source == "glasses_voice" || source == "phone_voice" || source == AskActions.TYPED_SOURCE // the Home chat reaches the HUD through the phone's typed-answer mirror
+        val reach = if (hasGlassesPath) DeliveryEnvironment.reach() else com.rokid.context.core.model.GlassesReach.NO_PATH
         val route = com.rokid.context.core.model.DeliveryRoute.resolve(target, source == "glasses_voice", reach, caps)
         if (target == "caller" && route.fallback == null) return null
         route.fallback?.let { memory.traces.upsert(com.rokid.context.memory.db.SummaryTraceEntity("ask_deliver_$askId", "ASK_DELIVERY_FALLBACK", nowMs, it)) }

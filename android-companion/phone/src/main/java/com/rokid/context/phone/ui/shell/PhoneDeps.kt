@@ -91,8 +91,8 @@ class PhoneDeps(
                 glasses = com.rokid.context.phone.hub.HubGraph.glassesStatus(app),
                 pipeline = CapturePauses.control(app),
                 onboarding = OnboardingStore(app),
-                // Typed asks are mirrored to the HUD (spec §2.4) without being spoken.
-                askService = AskService { q -> AskActions.ask(app, q).also { r -> if (r is com.rokid.context.orchestration.AskOutcome.Answered) voice.mirrorTyped(r.askId) } },
+                // Typed asks are mirrored to the HUD (spec §2.4) without being spoken, when the answer's DeliveryRoute puts it on the glasses.
+                askService = AskService { q -> AskActions.ask(app, q).also { r -> com.rokid.context.phone.voice.mirrorTypedAnswer(r) { voice.mirrorTyped(it) } } },
                 rateAsk = { id, up -> AskActions.rate(app, id, up) },
                 diagnostics = SchedulerDiagnosticsActions(scheduler),
                 queues = LegacyQueueActions(app, scheduler),

@@ -19,7 +19,7 @@ import kotlinx.coroutines.launch
 
 /** What may stop the phone from reopening the glasses app right now. Every answer is read fresh at the moment of the attempt. */
 interface RelaunchGuards {
-    /** No call is ringing or active (TelephonyManager.callState IDLE and AudioManager.mode NORMAL). */
+    /** No REAL call (user ruling 2026-10-28): AudioManager.mode is not IN_CALL / CALL_SCREENING, TelephonyManager.callState is IDLE when readable, and a call just ended has settled. A VoIP mode (IN_COMMUNICATION) is not a call. */
     fun callIdle(): Boolean
     /** No Rokid scene of ours to hijack: phone audio is not playing (the `mobile_music` scene). */
     fun mediaIdle(): Boolean
@@ -27,6 +27,8 @@ interface RelaunchGuards {
     fun worn(): Boolean?
     /** Fix wave I: the glasses app just closed (a scene event, [nowMs] on the relauncher's clock); a guard that cannot read the call state fails closed for a while after it. */
     fun onSceneEvent(nowMs: Long) {}
+    /** Diagnostics only (never a guard input): the values behind the last [callIdle] answer as counts and buckets (`audioMode=.. callState=.. sinceNormal=.. sinceScene=..`), never a caller's number or name; null = none kept. */
+    fun callInputs(): String? = null
 }
 
 /** Fix wave I: where the wearer's "I exited the app" is kept; the real one survives a phone process restart ([PrefsStandDown]). */
@@ -103,6 +105,11 @@ class GlassesRelauncher(
     private var lastReopenAt: Long? = null
     /** The pending attempt follows a failed reopen, so it may run while the link is OFFLINE. */
     private var afterFailure = false
+    /** Diagnostics for a long block (2026-10-28: 29 silent minutes of "call active"): what was last logged, when, and since when the guard has been blocking. */
+    private var blockSig: String? = null
+    private var blockLoggedAt = 0L
+    private var blockedSince: Long? = null
+    private var blockedWhy = ""
 
     /** Observes the link until the returned job is cancelled (the hub's lifetime). */
     fun start(): Job = scope.launch {
@@ -163,8 +170,9 @@ class GlassesRelauncher(
         while (state.value == LinkState.CLOSED_ON_GLASSES || (afterFailure && state.value == LinkState.OFFLINE)) {
             if (standDown.active) return
             val why = blocker()
-            if (why == null) { doReopen(); return }
+            if (why == null) { noteCleared(); doReopen(); return }
             if (why != lastWhy) { log("relaunch: waiting ($why)"); lastWhy = why }
+            noteBlocked(why)
             delay(pollMs)
         }
     }
@@ -183,9 +191,32 @@ class GlassesRelauncher(
         if (standDown.active) return "stood down"
         if (job?.isActive == true) return "pending"
         val why = blocker()
-        if (why != null) { log("relaunch: watchdog waiting ($why)"); return why }
+        if (why != null) { log("relaunch: watchdog waiting ($why)"); noteBlocked(why); return why }
+        noteCleared()
         doReopen()
         return null
+    }
+
+    /**
+     * Diagnostics only (the guard logic is untouched): one `blocked` line when the blocker or its inputs change (at most every [BLOCK_CHANGE_MIN_MS], so a flapping mode cannot grow the log) and a heartbeat every
+     * [BLOCK_HEARTBEAT_MS] while it holds. Values and buckets only. [noteCleared] says when the block ended and how long it lasted.
+     */
+    private fun noteBlocked(why: String) {
+        val t = now()
+        if (blockedSince == null || blockedWhy != why) { blockedSince = t; blockedWhy = why }
+        val inputs = if (why == CALL_ACTIVE) guards.callInputs() else null
+        val sig = "$why|$inputs"
+        val since = t - blockLoggedAt
+        val changed = sig != blockSig && since >= BLOCK_CHANGE_MIN_MS
+        if (blockSig != null && !changed && since < BLOCK_HEARTBEAT_MS) return
+        blockSig = sig; blockLoggedAt = t
+        log("relaunch: blocked ($why)${inputs?.let { " $it" } ?: ""} poll=${if (job?.isActive == true) "alive" else "idle"} for=${(t - (blockedSince ?: t)) / 1000} s")
+    }
+
+    private fun noteCleared() {
+        val since = blockedSince ?: return
+        log("relaunch: block cleared (was $blockedWhy, ${(now() - since) / 1000} s)")
+        blockedSince = null; blockSig = null; blockedWhy = ""
     }
 
     /** The first reason not to reopen now, or null. */
@@ -194,7 +225,7 @@ class GlassesRelauncher(
         val cutoff = now() - HOUR_MS
         while (attempts.isNotEmpty() && attempts.first() <= cutoff) attempts.removeFirst()
         if (attempts.size >= maxPerHour) return "hourly limit"
-        if (!guards.callIdle()) return "call active"
+        if (!guards.callIdle()) return CALL_ACTIVE
         if (reopenIsFullScreen() && !guards.mediaIdle()) return "media active"
         if (guards.worn() == false) return "glasses not worn"
         return null
@@ -205,6 +236,10 @@ class GlassesRelauncher(
         val STEPS_MS = listOf(8_000L, 30_000L, 120_000L, 300_000L, 600_000L)
         const val MAX_PER_HOUR = 6
         const val POLL_MS = 10_000L
+        private const val CALL_ACTIVE = "call active"
+        /** Diagnostics: a changed blocker or input is logged at most this often; an unchanged block repeats this often. */
+        const val BLOCK_CHANGE_MIN_MS = 30_000L
+        const val BLOCK_HEARTBEAT_MS = 300_000L
         const val STABLE_MS = 60_000L
         const val HOUR_MS = 3_600_000L
         /** A reopen whose link is OFFLINE again within this long failed. */
@@ -216,10 +251,11 @@ class GlassesRelauncher(
 /**
  * The real guards. A call is TelephonyManager.callState != IDLE or an AudioManager mode other than NORMAL. READ_PHONE_STATE is deliberately not
  * requested (2026-10-21 ruling R12); callState is read only if a merged library declared it and it was granted. Without it the audio mode is all
- * we have, and a VoIP call that still rings has mode NORMAL: so the call state is treated as unknown, and unknown counts as "in a call" for
- * [UNKNOWN_CALL_HOLD_MS] after a scene event ([callIdle] with a null call state). A call just ended is not idle either: the guard stamps
- * `normalSinceMs` on the transition INTO NORMAL (the mode listener on API 31+, or the poll that first sees NORMAL after a non-NORMAL sample), on the
- * monotonic clock [elapsed], and [callIdle] needs [CALL_END_SETTLE_MS] since then (S12). [wearing] is the last CXR `wearingStatus`.
+ * we have, so the call state is treated as unknown, and unknown counts as "in a call" for [UNKNOWN_CALL_HOLD_MS] after a scene event ([callIdle] with a
+ * null call state). User ruling 2026-10-28: only a REAL call blocks: audio mode IN_CALL or CALL_SCREENING, or a readable call state that is not IDLE; the other
+ * non-NORMAL modes (IN_COMMUNICATION of VoIP and meeting apps, RINGTONE, ...) do not (risk: a VoIP call no longer defers the reopen; the diagnostics line still logs the mode).
+ * A call just ended is not idle either: the guard stamps `normalSinceMs` on the transition OUT OF a call (the mode listener on API 31+, or the poll that first sees no call
+ * after a call sample), on the monotonic clock [elapsed], and [callIdle] needs [CALL_END_SETTLE_MS] since then (S12). [wearing] is the last CXR `wearingStatus`.
  * [modeSource] and [callStateSource] are test seams; null = the real AudioManager and TelephonyManager.
  */
 class AndroidRelaunchGuards(
@@ -238,6 +274,7 @@ class AndroidRelaunchGuards(
     /** Monotonic time we last entered NORMAL; null while the mode is not NORMAL; "long ago" until a non-NORMAL mode was seen. */
     private var normalSinceMs: Long? = Long.MIN_VALUE / 2
     private val lock = Any()
+    @Volatile private var lastInputs: String? = null
 
     init {
         // API 31+: the listener sees a hang-up the moment it happens, between two polls.
@@ -248,21 +285,25 @@ class AndroidRelaunchGuards(
 
     override fun onSceneEvent(nowMs: Long) { sceneAtMs = nowMs }
 
-    /** A mode sample (the listener, or a poll). The transition into NORMAL is stamped once; any non-NORMAL mode clears it. */
-    internal fun onModeChanged(mode: Int) {
+    /** A sample (the mode listener, or a poll). The end of a call is stamped once; a call sample (a call mode, or a readable non-idle [callState]) clears it. */
+    internal fun onModeChanged(mode: Int, callState: Int? = null) {
         synchronized(lock) {
-            if (mode != AudioManager.MODE_NORMAL) normalSinceMs = null
+            if (callBusy(mode, callState)) normalSinceMs = null
             else if (normalSinceMs == null) normalSinceMs = elapsed()
         }
     }
 
     override fun callIdle(): Boolean {
         val mode = modeSource?.invoke() ?: try { audio?.mode ?: AudioManager.MODE_NORMAL } catch (e: Exception) { AudioManager.MODE_NORMAL }
-        onModeChanged(mode) // every poll samples the mode too
         val state = callStateSource?.invoke() ?: if (callStateSource != null) null else readCallState()
+        onModeChanged(mode, state) // every poll samples the mode too
         val sinceNormal = synchronized(lock) { normalSinceMs }?.let { elapsed() - it } ?: 0L
-        return callIdle(mode, state, clock() - sceneAtMs, sinceNormal)
+        val sinceScene = clock() - sceneAtMs
+        lastInputs = "audioMode=$mode callState=${state ?: "unreadable"} sinceNormal=${bucket(sinceNormal)} sinceScene=${bucket(sinceScene)}"
+        return callIdle(mode, state, sinceScene, sinceNormal)
     }
+
+    override fun callInputs(): String? = lastInputs
 
     private fun readCallState(): Int? {
         val permitted = app.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
@@ -274,13 +315,26 @@ class AndroidRelaunchGuards(
     override fun worn(): Boolean? = wearing()
 
     companion object {
+        /** Diagnostics: a duration as a coarse bucket (never a time of day). */
+        internal fun bucket(ms: Long): String = when {
+            ms < 15_000L -> "<15s"
+            ms < 60_000L -> "<1m"
+            ms < 300_000L -> "<5m"
+            ms < 1_800_000L -> "<30m"
+            else -> ">=30m"
+        }
+
         const val UNKNOWN_CALL_HOLD_MS = 30_000L
         /** After the mode returns to NORMAL the call is treated as still ending for this long (a VoIP app may flip the mode back right away). */
         const val CALL_END_SETTLE_MS = 15_000L
 
-        /** Pure: [callState] null = unreadable (no permission). Unknown holds the reopen back until [UNKNOWN_CALL_HOLD_MS] after the scene event. */
+        /** A real call in progress: the call audio modes (not VoIP's IN_COMMUNICATION), or a readable telephony state that is not idle. */
+        internal fun callBusy(audioMode: Int, callState: Int?): Boolean =
+            audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_CALL_SCREENING || (callState != null && callState != TelephonyManager.CALL_STATE_IDLE)
+
+        /** Pure: [callState] null = unreadable (no permission). Unknown holds the reopen back until [UNKNOWN_CALL_HOLD_MS] after the scene event. [sinceNormalMs] = time since the last call sample ended. */
         fun callIdle(audioMode: Int, callState: Int?, sinceSceneMs: Long, sinceNormalMs: Long): Boolean = when {
-            audioMode != AudioManager.MODE_NORMAL -> false
+            callBusy(audioMode, callState) -> false
             sinceNormalMs < CALL_END_SETTLE_MS -> false
             callState != null -> callState == TelephonyManager.CALL_STATE_IDLE
             else -> sinceSceneMs >= UNKNOWN_CALL_HOLD_MS

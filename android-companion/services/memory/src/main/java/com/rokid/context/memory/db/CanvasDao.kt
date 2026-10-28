@@ -222,6 +222,8 @@ abstract class CanvasDao {
     // batchId is a lineage list ("own|earlier|..."): a row belongs to a call when the call is one of its '|'-separated tokens.
     @Query("SELECT DISTINCT batchId FROM canvas_run_item WHERE frameId IN (:frameIds) AND batchId IS NOT NULL") protected abstract suspend fun itemBatchesOf(frameIds: List<String>): List<String>
     @Query("SELECT DISTINCT batchId FROM canvas_live_trace WHERE frameId IN (:frameIds) AND batchId IS NOT NULL") protected abstract suspend fun traceBatchesOf(frameIds: List<String>): List<String>
+    @Query("SELECT DISTINCT frameId FROM canvas_run_item WHERE batchId IS NOT NULL AND instr('|' || batchId || '|', '|' || :token || '|') > 0") protected abstract suspend fun itemKeysOfBatch(token: String): List<String>
+    @Query("SELECT DISTINCT frameId FROM canvas_live_trace WHERE batchId IS NOT NULL AND instr('|' || batchId || '|', '|' || :token || '|') > 0") protected abstract suspend fun traceKeysOfBatch(token: String): List<String>
     @Query("DELETE FROM canvas_score WHERE EXISTS (SELECT 1 FROM canvas_run_item i WHERE i.runId = canvas_score.runId AND i.frameId = canvas_score.frameId AND i.nodeId = canvas_score.nodeId AND i.batchId IS NOT NULL AND instr('|' || i.batchId || '|', '|' || :token || '|') > 0)")
     protected abstract suspend fun deleteScoresOfBatch(token: String): Int
     @Query("DELETE FROM canvas_run_item WHERE batchId IS NOT NULL AND instr('|' || batchId || '|', '|' || :token || '|') > 0") protected abstract suspend fun deleteItemsOfBatch(token: String): Int
@@ -233,13 +235,25 @@ abstract class CanvasDao {
      */
     @Transaction open suspend fun deleteCanvasOutputsForFrames(frameIds: List<String>) {
         if (frameIds.isEmpty()) return
-        // Moment runs list every member photo as an "mf:<frameId>" lineage token on all their rows, so a Forget of any member photo finds the Moment's rows (no schema change).
-        val tokens = (frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.flatMap { it.split('|') } + frameIds.map { "mf:$it" }).filter { it.isNotEmpty() }.distinct()
+        val tokens = lineageTokensOf(frameIds)
         // Scores first: they are matched through the items that still exist.
         tokens.forEach { deleteScoresOfBatch(it) }
         frameIds.chunked(CHUNK).forEach { deleteScoresForFrames(it) }
         tokens.forEach { deleteItemsOfBatch(it); deleteTracesOfBatch(it) }
         frameIds.chunked(CHUNK).forEach { deleteItemsForFrames(it); deleteTracesForFrames(it) }
+    }
+
+    // Moment runs list every member photo as an "mf:<frameId>" lineage token on all their rows, so a Forget of any member photo finds the Moment's rows (no schema change).
+    private suspend fun lineageTokensOf(frameIds: List<String>): List<String> =
+        (frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.flatMap { it.split('|') } + frameIds.map { "mf:$it" }).filter { it.isNotEmpty() }.distinct()
+
+    /**
+     * The row keys (photo ids, `moment:`/`scene:` keys) OTHER than [frameIds] whose results [deleteCanvasOutputsForFrames] would also delete through a shared lineage token: the batch peers. Read only, the same discovery the delete uses,
+     * so a Forget preview can count and hash them (the cascade stays batch-wide on purpose: one provider call produced them all, and a peer's result may carry text of the forgotten photo).
+     */
+    open suspend fun batchPeersOf(frameIds: List<String>): Set<String> {
+        if (frameIds.isEmpty()) return emptySet()
+        return lineageTokensOf(frameIds).flatMap { itemKeysOfBatch(it) + traceKeysOfBatch(it) }.toSet() - frameIds.toSet()
     }
 
     private companion object { const val CHUNK = 500 }

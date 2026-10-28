@@ -21,4 +21,12 @@ object ForgetScopeSetting {
     @Volatile var provider: () -> ForgetScope = { ForgetScope.PHOTO }
 
     fun get(): ForgetScope = try { provider() } catch (e: Exception) { ForgetScope.PHOTO }
+
+    /** Moment and Scene Forget are EXPERIMENTAL (Developer mode only). The phone binds this to Developer mode at start; the engine ([ScopedForget]) asks it at every entry, so no caller can bypass the gate. Unbound or throwing = not allowed (fail closed). */
+    @Volatile var experimentalAllowed: () -> Boolean = { false }
+
+    fun experimentalOn(): Boolean = try { experimentalAllowed() } catch (e: Exception) { false }
 }
+
+/** A Moment or Scene Forget was asked for while the experimental scopes are not allowed (Developer mode off): nothing was read or deleted. */
+class ForgetScopeNotAllowed : IllegalStateException("moment and scene forget need developer mode")

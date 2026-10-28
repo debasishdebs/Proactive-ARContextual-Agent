@@ -34,8 +34,8 @@ class ScopedForgetTest {
     private lateinit var s3: com.rokid.context.memory.db.CanvasSlice3Dao
     private lateinit var engine: ScopedForget
     private fun fresh() { if (this::db.isInitialized) db.close(); db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext()); fx = MomentForgetFixture(db); s3 = db.canvasSlice3Dao(); engine = ScopedForget(db, fx.service) { 1_000 } }
-    @org.junit.Before fun open() = fresh()
-    @After fun close() { ForgetRadius.provider = { ForgetRadius.DEFAULT_MS }; db.close() }
+    @org.junit.Before fun open() { ForgetScopeSetting.experimentalAllowed = { true }; fresh() } // Developer mode on (the gate has its own tests)
+    @After fun close() { ForgetScopeSetting.experimentalAllowed = { false }; ForgetRadius.provider = { ForgetRadius.DEFAULT_MS }; db.close() }
     private fun mid(sec: Long) = MomentId.format(SEC + sec)
 
     private suspend fun scene(id: String, vararg moments: Long) = db.sceneDao().replace(
@@ -58,6 +58,25 @@ class ScopedForgetTest {
     private suspend fun moments() = db.momentDao().allMoments().map { it.momentId }.sorted()
     private suspend fun scenes() = db.sceneDao().allScenes().map { it.sceneId }.sorted()
     private suspend fun run(target: ForgetTarget, scope: ForgetScope) = engine.forget(engine.plan(target, scope))
+
+    // ---- the Developer-mode gate lives in the engine ----
+    @Test fun momentAndSceneAreRefusedAtTheEngineWithoutDeveloperMode() = runBlocking<Unit> {
+        world(); ForgetScopeSetting.experimentalAllowed = { false }
+        for ((t, sc) in listOf(ForgetTarget.Moment(mid(0)) to ForgetScope.PHOTO, ForgetTarget.Scene("sc-A") to ForgetScope.SCENE, ForgetTarget.Photo("a1") to ForgetScope.MOMENT, ForgetTarget.Fact("ma1") to ForgetScope.SCENE))
+            assertTrue("$t at $sc", runCatching { engine.plan(t, sc) }.exceptionOrNull() is ForgetScopeNotAllowed)
+        ForgetScopeSetting.experimentalAllowed = { error("boom") }
+        assertTrue("a throwing gate is closed", runCatching { engine.plan(ForgetTarget.Scene("sc-A")) }.exceptionOrNull() is ForgetScopeNotAllowed)
+        assertEquals("nothing was touched", listOf("a1", "a2", "a3", "n1"), frames())
+        ForgetScopeSetting.experimentalAllowed = { false }
+        engine.forget(engine.plan(ForgetTarget.Photo("a1"), ForgetScope.PHOTO)); assertEquals("PHOTO scope is not gated", listOf("a2", "a3", "n1"), frames())
+    }
+
+    @Test fun aPlanMadeBeforeDeveloperModeWentOffDoesNotRun() = runBlocking<Unit> {
+        world(); val plan = engine.plan(ForgetTarget.Scene("sc-A"), ForgetScope.SCENE); val hash = engine.preview(plan).planHash
+        ForgetScopeSetting.experimentalAllowed = { false }
+        assertTrue(runCatching { engine.forget(plan, hash) }.exceptionOrNull() is ForgetScopeNotAllowed)
+        assertEquals(listOf("a1", "a2", "a3", "n1"), frames()); assertEquals(listOf("sc-A", "sc-N"), scenes())
+    }
 
     // ---- PHOTO ----
     @Test fun photoScopeDeletesExactlyThatPhotoAndItsRadiusAndFencesNothing() = runBlocking<Unit> {
@@ -180,6 +199,21 @@ class ScopedForgetTest {
         val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); engine.forget(p, engine.preview(p).planHash)
         assertEquals("n1 is kept", true, "n1" in frames()); assertEquals("only the other photo's output stays", listOf("a3"), db.canvasDao().items("r1").map { it.frameId })
         assertEquals("the helper result is scrubbed", null, s3.helperJob("hj")?.resultJson)
+    }
+
+    /** v0.9.8 E: scrubbing an outside photo's outputs is batch-wide (one provider call produced the peers' results too); the peers' regenerable results are COUNTED and HASHED, and exactly them go (nothing uncounted, other photos' own batches stay). */
+    @Test fun aBatchPeerOfAnOutsidePhotoIsCountedHashedAndTheOnlyExtraThingDeleted() = runBlocking<Unit> {
+        world(); fx.memory("mx", "n1", createdAt = MS + 500)
+        db.canvasDao().insertRun(com.rokid.context.memory.db.CanvasRunEntity("r1", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        suspend fun item(f: String, batch: String?) = db.canvasDao().upsertItem(com.rokid.context.memory.db.CanvasRunItemEntity("r1", f, "ext", "OK", null, "{\"fact\":\"t$f\"}", null, null, null, null, null, null, batch))
+        item("n1", "b1"); item("a3", "b1"); item("u1", "b2")
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
+        assertEquals("a3 shares n1's batch and is outside", 1, c.peerResults)
+        item("zz", "b1") // a new peer after the preview changes the set
+        refused(p, c.planHash)
+        val c2 = engine.preview(p); assertEquals(2, c2.peerResults)
+        engine.forget(p, c2.planHash)
+        assertEquals("n1's and its peers' results went, the unrelated batch stays", listOf("u1"), db.canvasDao().items("r1").map { it.frameId })
     }
 
     @Test fun aNewInSpanFactCitingAnotherOutsidePhotoAfterThePreviewIsRefused() = runBlocking<Unit> {

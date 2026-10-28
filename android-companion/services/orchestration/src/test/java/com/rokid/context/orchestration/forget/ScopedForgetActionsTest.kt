@@ -53,8 +53,10 @@ class ScopedForgetActionsTest {
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx); MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         DataOpGate.shared = DataOpGate(waitMs = 200); MemoryExport.productionBuild = { true }; MemoryExport.dir(ctx).deleteRecursively()
+        com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { true } // Developer mode on (the gate has its own tests)
     }
     @After fun tearDown() {
+        com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { false }
         MemoryExport.testDelete = null; MemoryExport.productionBuild = MemoryExport.defaultProductionBuild; MemoryExport.dir(ctx).deleteRecursively()
         ctx.getSharedPreferences(MemoryExport.CLEANUP_PREFS, Context.MODE_PRIVATE).edit().clear().commit()
         DataOpGate.shared = original; graph.db.close(); MemoryGraph.resetForTests(null)

@@ -10,6 +10,12 @@ enum class GlassesReach { UP, DOWN, NO_PATH }
  * today's behaviour untouched.
  */
 data class DeliveryRoute(val phone: Boolean, val glasses: Boolean, val fallback: String? = null, val explicit: Boolean = true) {
+    /**
+     * The Home chat has no HUD pipeline of its own: its answer is mirrored to the glasses by the phone. The mirror runs exactly when this route puts the answer on the glasses (once, never on top of a phone-only target);
+     * `caller` without a fallback is today's behaviour (mirrored), and a `caller` that fell back (a display switched off) is not.
+     */
+    val mirrorsChatToHud: Boolean get() = if (explicit) glasses else fallback == null
+
     companion object {
         const val GLASSES_NOT_CONNECTED = "glasses_not_connected"
         const val NO_GLASSES_PATH = "no_glasses_path"

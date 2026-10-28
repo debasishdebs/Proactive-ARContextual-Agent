@@ -37,7 +37,7 @@ sealed interface NudgeRun {
     data object Forgotten : NudgeRun
     /** v0.9.8 slice C: the run was started by a trigger the published Nudge flow does not use. Nothing was read or called. */
     data object NotThisTrigger : NudgeRun
-    /** A pause is active (or Battery Saver): a trigger other than the summarizer pass does nothing. */
+    /** A pause is active (or Battery Saver): no trigger, the summarizer pass included, reads anything or calls the model. */
     data object Paused : NudgeRun
     /** `trigger.signal`: the condition does not newly hold. */
     data object NoSignal : NudgeRun
@@ -78,8 +78,7 @@ class NudgeEngine(
         // a plan lookup that failed runs the built-in flow, whatever started the run (the fallback must not depend on the trigger)
         if (!lookup.failed && trigger != (plan?.trigger ?: NodeTypes.TRIGGER_SUMMARIZER)) return NudgeRun.NotThisTrigger
         val h = hud() ?: return NudgeRun.NoHud
-        val event = trigger != NodeTypes.TRIGGER_SUMMARIZER && !lookup.failed
-        if (event && triggers.paused()) return NudgeRun.Paused
+        if (triggers.paused()) return NudgeRun.Paused // every trigger, the summarizer pass included: a pause (or Battery Saver) stops the model call, before anything is read
         // the edge state is updated even when a gate below drops the run
         plan?.signal?.let { sig -> if (!SignalGate(triggers.meta, plan.scope, triggers.signals).fires(sig, now)) return NudgeRun.NoSignal }
         gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }

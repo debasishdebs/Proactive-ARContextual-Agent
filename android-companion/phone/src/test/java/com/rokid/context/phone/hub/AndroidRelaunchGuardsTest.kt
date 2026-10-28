@@ -21,6 +21,16 @@ class AndroidRelaunchGuardsTest {
         modeSource = { mode }, callStateSource = { null }, watchModeChanges = false,
     )
 
+    /** 2026-10-28 diagnostics: the inputs of the last answer, as values and buckets; reading them changes nothing. */
+    @Test fun theLastInputsAreKeptAsValuesAndBucketsAndTheAnswerIsUnchanged() {
+        val g = guards()
+        assertTrue(g.callInputs() == null)
+        mode = AudioManager.MODE_IN_CALL; assertFalse(g.callIdle())
+        assertTrue(g.callInputs(), g.callInputs() == "audioMode=2 callState=unreadable sinceNormal=<15s sinceScene=>=30m")
+        assertTrue(g.callInputs() == g.callInputs())
+        assertTrue(AndroidRelaunchGuards.bucket(14_999) == "<15s" && AndroidRelaunchGuards.bucket(15_000) == "<1m" && AndroidRelaunchGuards.bucket(299_999) == "<5m" && AndroidRelaunchGuards.bucket(1_799_999) == "<30m" && AndroidRelaunchGuards.bucket(1_800_000) == ">=30m")
+    }
+
     @Test fun hangUpJustBeforePollStillSettles15s() {
         val g = guards()
         mode = AudioManager.MODE_IN_CALL; assertFalse(g.callIdle())
@@ -44,13 +54,24 @@ class AndroidRelaunchGuardsTest {
         assertTrue(g.callIdle())
     }
 
-    @Test fun anotherNonNormalModeRestartsTheSettle() {
+    /** User ruling 2026-10-28: a VoIP mode and other non-call modes never block and never restart the settle; a call mode does, and the settle follows its end. */
+    @Test fun onlyACallModeBlocksAndRestartsTheSettle() {
         val g = guards()
-        mode = AudioManager.MODE_RINGTONE; assertFalse(g.callIdle())
-        e = 120_000L; mode = AudioManager.MODE_NORMAL; assertFalse(g.callIdle())
-        e = 130_000L; mode = AudioManager.MODE_IN_COMMUNICATION; assertFalse(g.callIdle())
-        e = 140_000L; mode = AudioManager.MODE_NORMAL; assertFalse(g.callIdle())
+        mode = AudioManager.MODE_IN_COMMUNICATION; assertTrue("VoIP is not a call", g.callIdle())
+        assertTrue("the diagnostics still show the mode", g.callInputs()!!.startsWith("audioMode=3 "))
+        mode = AudioManager.MODE_RINGTONE; assertTrue(g.callIdle())
+        e = 120_000L; mode = AudioManager.MODE_IN_CALL; assertFalse(g.callIdle())
+        e = 130_000L; mode = AudioManager.MODE_CALL_SCREENING; assertFalse(g.callIdle())
+        e = 140_000L; mode = AudioManager.MODE_IN_COMMUNICATION; assertFalse("the call just ended: settling", g.callIdle())
         e = 154_999L; assertFalse(g.callIdle())
         e = 155_000L; assertTrue(g.callIdle())
+    }
+
+    @Test fun aReadableNonIdleCallStateBlocksAndSettlesAfterItEnds() {
+        var cs: Int? = android.telephony.TelephonyManager.CALL_STATE_OFFHOOK
+        val g = AndroidRelaunchGuards(ApplicationProvider.getApplicationContext(), { null }, clock = { 0L }, elapsed = { e }, modeSource = { mode }, callStateSource = { cs }, watchModeChanges = false)
+        assertFalse(g.callIdle())
+        cs = android.telephony.TelephonyManager.CALL_STATE_IDLE; e = 200_000L; assertFalse("settling after the call", g.callIdle())
+        e = 215_000L; assertTrue(g.callIdle())
     }
 }
