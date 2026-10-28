@@ -59,7 +59,7 @@ class AndroidRelaunchGuardsTest {
         val g = guards()
         mode = AudioManager.MODE_IN_COMMUNICATION; assertTrue("VoIP is not a call", g.callIdle())
         assertTrue("the diagnostics still show the mode", g.callInputs()!!.startsWith("audioMode=3 "))
-        mode = AudioManager.MODE_RINGTONE; assertTrue(g.callIdle())
+        mode = AudioManager.MODE_RINGTONE; assertFalse("ringing blocks", g.callIdle())
         e = 120_000L; mode = AudioManager.MODE_IN_CALL; assertFalse(g.callIdle())
         e = 130_000L; mode = AudioManager.MODE_CALL_SCREENING; assertFalse(g.callIdle())
         e = 140_000L; mode = AudioManager.MODE_IN_COMMUNICATION; assertFalse("the call just ended: settling", g.callIdle())
