@@ -152,6 +152,26 @@ class MemoryDetailViewModelTest {
         assertEquals(ForgetKind.MOMENT to com.rokid.context.memory.forget.ForgetScope.SCENE, ran)
     }
 
+    @Test fun aLargeRebuildNeedsTheTickAndSendsTheAcknowledgedToken() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
+        var sent: String? = null
+        val port = object : MemoryForget {
+            override suspend fun forgetFact(memoryId: String) = true
+            override suspend fun forgetMoment(frameId: String) = true
+            override fun activeScope() = com.rokid.context.memory.forget.ForgetScope.SCENE
+            override suspend fun preview(kind: ForgetKind, memoryId: String, frameId: String?) = sceneCounts().copy(planHash = "h", needsAck = true, ackHash = "h+ack", peerResults = 250)
+            override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String?): Boolean { sent = planHash; return true }
+        }
+        val model = vm(port)
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.askForget(ForgetKind.MOMENT)
+        assertTrue(!withTimeout(5_000) { model.state.first { it.forgetPreview != null } }.forgetConfirmable)
+        model.confirmForget(); assertEquals("not without the tick", null, sent)
+        model.acknowledgeForget(true); assertTrue(withTimeout(5_000) { model.state.first { it.forgetConfirmable } }.forgetAcked)
+        model.confirmForget(); withTimeout(5_000) { model.state.first { it.forgotten } }
+        assertEquals("h+ack", sent)
+    }
+
     @Test fun theConfirmIsRefusedWhileTheCountsAreStillBeingCounted() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
         val gate = CompletableDeferred<ForgetPreview?>(); var ran = 0

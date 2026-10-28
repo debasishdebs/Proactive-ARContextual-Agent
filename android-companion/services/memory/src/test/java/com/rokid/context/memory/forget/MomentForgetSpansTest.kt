@@ -98,7 +98,7 @@ class MomentForgetSpansTest {
         scene("sc-1", 0)
         val spans = listOf(MS..(MS + 999))
         val c = fx.forget.preview(spans, listOf("sc-1"))
-        assertEquals(MomentForget.Counts(photos = 2, memories = 2, marks = 1, moments = 1, scenesRemoved = 1, scenesShrunk = 0), c.copy(planHash = ""))
+        assertEquals(MomentForget.Counts(photos = 2, memories = 2, marks = 1, moments = 1, scenesRemoved = 1, scenesShrunk = 0), c.copy(planHash = "", ackHash = ""))
         assertEquals("preview wrote nothing", listOf("a", "b", "far"), fx.frameIds()); assertEquals(0, db.momentDao().tombstoneCount()); assertTrue(s3.momentForgetRanges().isEmpty())
         val r = fx.forget.forgetSpans(spans, listOf("sc-1"))
         assertEquals(listOf(c.photos, c.memories, c.marks), listOf(r.frames, r.memories, r.marks))

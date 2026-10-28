@@ -71,6 +71,10 @@ class MomentForget(
         val outside: Int = 0,
         /** Regenerable run results of OTHER photos that share a provider call with an outside cited photo whose outputs are scrubbed: they ARE deleted (the next run recreates them); counted so the user sees them. */
         val peerResults: Int = 0,
+        /** More than [MAX_UNACKED_RESULTS] regenerable results would be rebuilt: the dialog warns, and the delete needs [ackHash] (the plan hash plus the explicit acknowledgement) instead of [planHash]. */
+        val needsAck: Boolean = false,
+        /** The token that confirms a Forget WITH the acknowledgement of a large closure ([needsAck]); equals [planHash] when none is needed. */
+        val ackHash: String = "",
         /** The set is too connected to forget in one step (depth or node cap): nothing can be deleted by this scope. */
         val tooLarge: Boolean = false)
     suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
@@ -79,7 +83,9 @@ class MomentForget(
         return try { db.withTransaction {
             val d = discover(secondsOf(merged), merged, bounded = true)
             val e = sceneEffect(d.moments, sceneIds); val peers = peersOf(d, sceneEffect(d.moments + d.projected, sceneIds))
-            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e), outside = d.outsideFrames.size + d.descendants.size, peerResults = peers.size)
+            val hash = hashOf(merged, d, e); val big = peers.size > MAX_UNACKED_RESULTS
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hash, outside = d.outsideFrames.size + d.descendants.size, peerResults = peers.size,
+                needsAck = big, ackHash = if (big) hash + ACK_SUFFIX else hash)
         } } catch (e: ForgetTooLarge) { Counts(0, 0, 0, 0, 0, 0, tooLarge = true) }
     }
 
@@ -107,7 +113,11 @@ class MomentForget(
         // the range / id Forget keeps its old behaviour: only the photos' lineage (the by-key rows are the scoped Forget's)
         val base = (if (!byKey) d.frames else d.frames + d.outsideFrames + d.labels + (d.moments + d.projected).map { "moment:$it" } + ((e?.removed ?: emptySet()) + sceneIds).map { "scene:$it" }).toSet()
         var keys = base
-        while (true) { val more = db.canvasDao().batchPeersOf(keys.toList()) - keys; if (more.isEmpty()) break; keys = keys + more }
+        while (true) {
+            val more = db.canvasDao().batchPeersOf(keys.toList()) - keys; if (more.isEmpty()) break
+            keys = keys + more
+            if (keys.size - base.size > hardCeiling) throw ForgetTooLarge() // the lineage keeps growing: nothing is deleted
+        }
         return keys to (keys - base)
     }
 
@@ -202,10 +212,12 @@ class MomentForget(
             val found = discover(requestedSeconds, spans, bounded = byKey)
             val frames = found.frames; val memories = found.memories; val labels = found.labels; val projected = found.projected
             if (expectedHash != null) { // the confirmed set must be EXACTLY the one that was previewed; anything else rolls this transaction back (fences included) and deletes nothing
-                if (hashOf(spans, found, sceneEffect(found.moments, sceneIds)) != expectedHash) throw ForgetContentChanged()
+                if (hashOf(spans, found, sceneEffect(found.moments, sceneIds)) != expectedHash.removeSuffix(ACK_SUFFIX)) throw ForgetContentChanged()
             }
             // the closure of the run results, computed BEFORE anything is deleted and removed in one call (the cascade below then finds nothing left to follow)
             val closure = closureOf(found, if (byKey) sceneEffect(found.moments + found.projected, sceneIds) else null, sceneIds, byKey)
+            // a large closure is deleted only when the confirm token carried the explicit acknowledgement (the preview's ackHash); rolled back otherwise
+            if (closure.second.size > MAX_UNACKED_RESULTS && expectedHash?.endsWith(ACK_SUFFIX) != true) throw ForgetNeedsAck()
             db.canvasDao().deleteCanvasOutputsForFrames(closure.first.toList())
             val wire = frames.toList().chunked(CHUNK).flatMap { md.wireIds(it) }.map { it.wireFrameId }
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
@@ -253,9 +265,16 @@ class MomentForget(
 
     companion object {
         private const val CHUNK = 500
+        /** A Moment/Scene Forget that would rebuild more regenerable results than this needs an explicit acknowledgement (in the confirm token). */
+        const val MAX_UNACKED_RESULTS = 200
+        /** Past this many the lineage is too connected to delete in one step: [ForgetTooLarge]. */
+        const val HARD_CEILING_RESULTS = 5_000
+        /** Appended to the plan hash by the preview's `ackHash`: the user acknowledged the large rebuild. */
+        const val ACK_SUFFIX = "+ack"
         /** A range up to this many seconds gets one `moment_tombstone` per second; a longer one is fenced by the durable range alone (the builder and the frame commit both check it). */
         const val MAX_TOMBSTONED_SPAN = 3600L
         /** Hard caps of the derived-fact walk of the bounded scopes (levels, facts). Variables only so a test can lower them. */
+        @Volatile internal var hardCeiling = HARD_CEILING_RESULTS
         @Volatile internal var maxDepth = 32
         @Volatile internal var maxNodes = 5_000
     }

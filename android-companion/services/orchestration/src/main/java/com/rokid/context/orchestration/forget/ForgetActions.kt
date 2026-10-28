@@ -63,12 +63,12 @@ object ForgetActions {
         }
 
     /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
-    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0, val tooLarge: Boolean = false, val peerResults: Int = 0)
+    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0, val tooLarge: Boolean = false, val peerResults: Int = 0, val needsAck: Boolean = false, val ackHash: String = "")
     suspend fun previewScoped(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): ScopedPreview = withContext(Dispatchers.IO) {
         val graph = MemoryGraph.get(context)
         val engine = ScopedForget(graph.db, ForgetService(graph.db, graph.proposals))
         val plan = engine.plan(target, scope); val c = engine.preview(plan)
-        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash, c.outside, c.tooLarge, c.peerResults)
+        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash, c.outside, c.tooLarge, c.peerResults, c.needsAck, c.ackHash)
     }
 
     /**
@@ -155,6 +155,9 @@ object ForgetActions {
             op(ForgetService(graph.db, graph.proposals))
         } catch (e: com.rokid.context.memory.forget.ForgetContentChanged) {
             PcLog.w(TAG, "forget not run: content changed")
+            return Outcome.CONTENT_CHANGED
+        } catch (e: com.rokid.context.memory.forget.ForgetNeedsAck) {
+            PcLog.w(TAG, "forget not run: acknowledgement needed") // the dialog opens again with the warning and the acknowledgement
             return Outcome.CONTENT_CHANGED
         } catch (e: com.rokid.context.memory.forget.ForgetTooLarge) {
             PcLog.w(TAG, "forget not run: too large")
