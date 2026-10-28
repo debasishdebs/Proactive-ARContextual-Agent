@@ -39,6 +39,8 @@ class VoiceGraph private constructor(private val app: Context) {
         AndroidVoicePlatform(app), PrefsProbeRecords({ app.getSharedPreferences("voice_probe", Context.MODE_PRIVATE) }),
         language = { settings.settings.value.language }, scope = scope, micHeld = ContextHubService.micHeld, log = { PcLog.i(TAG, it) },
     )
+    /** v0.9.7 slice D: the ONE text backend of every surface (voice pipeline below, the Home chat through PhoneDeps). */
+    val utterance = com.rokid.context.voice.Utterance(MarkUtteranceCommands({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { PcLog.i(TAG, it) }))
     val pipeline = VoicePipeline(
         scope, AndroidOnDeviceStt(app), capabilities.capabilities, { settings.settings.value.language },
         AppAnswerer(
@@ -54,7 +56,7 @@ class VoiceGraph private constructor(private val app: Context) {
         AndroidSpeaker(app), bluetoothMedia = { AudioRoutes.hasBluetoothMedia(app) },
         onFallbackSuspected = { capabilities.onFallbackSuspected() },
         log = { PcLog.i(TAG, it) },
-        interceptor = MarkVoiceInterceptor({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { PcLog.i(TAG, it) }),
+        interceptor = utterance.asInterceptor(),
     )
     /** G7: Battery Saver, for the glasses tap's blocked reason (the ask path refuses the ask itself). */
     private val batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app)

@@ -26,6 +26,16 @@ object MarkGraph {
                 onChanged = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
                 // an undone mark's photo goes through the one gated Forget path (tombstone, Moment cleanup, outbox); a running export refuses it and the undo is resent
                 forgetPhoto = { frameId -> com.rokid.context.orchestration.forget.ForgetActions.forgetMomentOutcome(ctx, frameId).committed },
+                // v0.9.7 slice D: a phone-origin mark asks the glasses for its photo through the hub (read lazily: the hub is built on first use); the call tag uses the existing call detection
+                phonePhoto = com.rokid.context.phone.hub.HubMarkPhoto(
+                    connected = { com.rokid.context.phone.hub.HubGraph.get(ctx).carriesData() },
+                    supportsRequest = { com.rokid.context.phone.hub.HubGraph.get(ctx).peerMarkPhoto },
+                    worn = { com.rokid.context.phone.hub.HubGraph.get(ctx).wornNow() },
+                    captureRunning = { com.rokid.context.phone.hub.HubGraph.get(ctx).captureRunning() },
+                    callActive = com.rokid.context.phone.hub.HubGraph::callActive,
+                    send = { ref -> com.rokid.context.phone.hub.HubGraph.get(ctx).requestMarkPhoto(ref) },
+                ),
+                callActive = com.rokid.context.phone.hub.HubGraph::callActive,
             )
         }.also { recorder = it }
     }

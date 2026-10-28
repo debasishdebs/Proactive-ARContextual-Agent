@@ -34,7 +34,7 @@ object MarkPhrases {
     val RETRO: List<String> = listOf("i missed that")
 
     /** Deletes this listen's mark, or the newest voice/tap mark within 2 min. */
-    val UNDO: List<String> = listOf("undo mark", "cancel mark", "remove mark")
+    val UNDO: List<String> = listOf("undo mark", "cancel mark", "remove mark", "undo the mark", "undo that mark", "undo this mark")
 
     /** Leading fillers, optional, before a command. */
     val FILLERS: Set<String> = setOf("please", "ok", "okay", "hey", "um", "uh", "so")

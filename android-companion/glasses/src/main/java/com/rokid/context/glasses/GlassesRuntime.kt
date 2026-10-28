@@ -309,6 +309,7 @@ class GlassesRuntime private constructor(private val app: Context) {
             }
         }
         c.onMarkAck = { a -> markOutbox.onAck(a) }
+        c.onMarkPhotoRequest = { r -> markTap.onPhoneRequest(r.ref) }
         c.onMarksDue = { markTap.flush() }
         c.statusAck = { plan.onLinkSession(); plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
         attachJob?.cancel()
@@ -343,6 +344,7 @@ class GlassesRuntime private constructor(private val app: Context) {
 
     /** `pc_hello`: clock, battery, buffer size, local pauses, unconfirmed resumes, next capture (all glasses clock). */
     fun hello(nextCaptureAtMs: Long?): Hello = Hello(
+        markPhotoRequest = true, // v0.9.7 slice D: this build answers pc_mark_photo_request
         glassesBatteryPct = batteryPct(),
         bufferSize = buffer.size,
         glassesNowMs = System.currentTimeMillis(),

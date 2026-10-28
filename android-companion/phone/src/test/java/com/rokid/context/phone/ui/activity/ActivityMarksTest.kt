@@ -61,9 +61,9 @@ class ActivityMarksTest {
         clock = flowOf(Fixtures.at(TODAY, 20)), storagePct = flowOf(null), zone = { Fixtures.ZONE },
     ).also { vms += it }
 
-    private suspend fun mark(id: String, at: Long, code: String) {
+    private suspend fun mark(id: String, at: Long, code: String, provenance: String = "clock:mapped") {
         val e = DeletionEpoch("i", 1, 0)
-        graph.db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, "MOMENT", code, "MOMENT", at, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
+        graph.db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, "MOMENT", code, "MOMENT", at, provenance = provenance, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
     }
 
     @Test fun aFallbackMomentSaysWhyAndAMarkWithNoMomentYetShowsItsOwnPhotoState() = runBlocking<Unit> {
@@ -87,14 +87,14 @@ class ActivityMarksTest {
     }
 
     @Test fun marksAreListedNewestFirstWithTimeCodeAndTheMomentThatHoldsThem() = runBlocking<Unit> {
-        mark("a", Fixtures.at(TODAY, 8, 5), "tap"); mark("b", Fixtures.at(TODAY, 9, 30), "voice"); mark("c", Fixtures.at(TODAY, 9, 45), "ask_tap")
+        mark("a", Fixtures.at(TODAY, 8, 5), "tap"); mark("b", Fixtures.at(TODAY, 9, 30), "voice", "clock:receipt;call"); mark("c", Fixtures.at(TODAY, 9, 45), "ask_tap")
         mark("old", Fixtures.at(TODAY.minusDays(1), 23), "tap")
         graph.db.momentDao().replace(MomentEntity("0000000b", 1, 1, "h", 1, MomentType.MARK, NoPhotoReason.UNKNOWN), listOf(MomentPartEntity("0000000b", MomentPartKind.MARK, "b", "r", 1, "voice")))
         graph.db.momentDao().replace(MomentEntity("0000000a", 1, 1, "h", 1, MomentType.FRAME), listOf(MomentPartEntity("0000000a", MomentPartKind.MARK, "a", "r", 1, "tap")))
         val s = withTimeout(5_000) { vm().state.first { it.today == TODAY && it.marks.size == 3 } }
         assertEquals(listOf("c", "b", "a"), s.marks.map { it.labelId })
         assertEquals(listOf("09:45", "09:30", "08:05"), s.marks.map { it.time })
-        assertEquals(listOf("Ask", "Voice", "Tap"), s.marks.map { it.code })
+        assertEquals("only a mark made during a call is labelled; how a mark was made is never shown", listOf("", "During a call", ""), s.marks.map { it.code })
         assertEquals(listOf("Not in a Moment yet", "Moment with no photo", "In a Moment with a photo"), s.marks.map { it.joined })
         assertEquals(listOf(null, "No photo: reason unknown", null), s.marks.map { it.reason })
     }
@@ -102,7 +102,7 @@ class ActivityMarksTest {
     @Test fun theWeekShowsTheDayWithTheTimeAndAnEmptyPeriodHasNoMarks() = runBlocking<Unit> {
         mark("later", Fixtures.at(TODAY.plusDays(2), 9), "retro")
         val week = withTimeout(5_000) { vm(Period.WEEK).state.first { it.period == Period.WEEK && it.marks.isNotEmpty() } }
-        assertEquals(listOf("Wed 14 Oct 09:00"), week.marks.map { it.time }); assertEquals(listOf("Said afterwards"), week.marks.map { it.code })
+        assertEquals(listOf("Wed 14 Oct 09:00"), week.marks.map { it.time }); assertEquals(listOf(""), week.marks.map { it.code })
         val today = withTimeout(5_000) { vm().state.first { it.today == TODAY } }
         assertEquals(emptyList<MarkRowUi>(), today.marks)
     }
@@ -118,7 +118,9 @@ class ActivityMarksTest {
         assertEquals(listOf("In a Moment with a photo", "Moment with no photo"), MomentType.entries.map { MarkRows.joinedLabel(it) })
         assertEquals(listOf("No photo: reason unknown"), NoPhotoReason.entries.map { MarkRows.reasonLabel(MomentType.MARK, it) })
         assertNull("a photo Moment has no reason to show", MarkRows.reasonLabel(MomentType.FRAME, null))
-        assertEquals("a code the app does not know shows as it is", "future", MarkRows.codeLabel("future"))
+        assertEquals("During a call", MarkRows.callLabel("clock:mapped;call"))
+        assertEquals("a normal mark has no label", "", MarkRows.callLabel("clock:receipt"))
+        assertEquals("a chat or voice or tap source never becomes a label", "", MarkRows.callLabel(""))
     }
 
     private val status = StatusUi("Capturing", live = true, paused = false, batteryPct = 82, banner = null)

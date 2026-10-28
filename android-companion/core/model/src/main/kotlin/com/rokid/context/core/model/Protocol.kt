@@ -39,6 +39,8 @@ object Channels {
     const val MARK_ACK = "pc_mark_ack"
     /** v0.9.6 slice C, glasses to phone: a [MarkPhotoResult] (a mark's photo could not be taken). Additive; an old phone ignores the channel. */
     const val MARK_PHOTO = "pc_mark_photo"
+    /** v0.9.7 slice D, phone to glasses: a [MarkPhotoRequest] (a mark made on the phone, by voice or in the chat, wants the glasses' photo). Additive; old glasses ignore the channel. */
+    const val MARK_PHOTO_REQUEST = "pc_mark_photo_request"
     /** Slice 3a, phone to glasses: a [TraceControl] (collect, tombstones, send). Additive. */
     const val TRACE_CTL = "pc_trace_ctl"
     /** Slice 3a, glasses to phone: a [TraceChunk]. Additive. */
@@ -407,6 +409,12 @@ data class MarkMessage(
 /** v0.9.6 slice C, glasses to phone on [Channels.MARK_PHOTO]: the photo of mark `(epoch, seq)` could not be taken; [reason] is a [MarkPhotoReason] token, never text. */
 @Serializable data class MarkPhotoResult(val v: Int = PROTOCOL_VERSION, val epoch: String, val seq: Long, val reason: String)
 
+/**
+ * v0.9.7 slice D, phone to glasses on [Channels.MARK_PHOTO_REQUEST]: take the photo of the phone-origin mark [ref] (a [MarkRef] `"<epoch>:<seq>"` the phone chose; the epoch is `phone`).
+ * The glasses answer exactly like a tap mark: a frame carrying `FrameMeta.markRef = ref`, or a [MarkPhotoResult] with a reason. Old glasses ignore it.
+ */
+@Serializable data class MarkPhotoRequest(val v: Int = PROTOCOL_VERSION, val ref: String)
+
 /** The tokens of why a mark has no photo (stored on the label, shown to the user as words by the phone). A token the phone does not know is shown as is. */
 object MarkPhotoReason {
     const val PENDING = "pending"
@@ -422,6 +430,9 @@ object MarkPhotoReason {
     const val HEAT = "heat"
     const val NOT_STORED = "not_stored"
     const val CANCELLED = "cancelled"
+    /** v0.9.7 slice D (phone-origin marks, decided on the phone before any request): */
+    const val GLASSES_NOT_CONNECTED = "glasses_not_connected"
+    const val GLASSES_NOT_WORN = "glasses_not_worn"
     /** Only a short token is ever stored: a wild value from the wire is cut and cleaned. */
     fun clean(raw: String): String = raw.filter { it.isLetterOrDigit() || it == '_' }.take(32).ifEmpty { NO_FRAME }
 }
@@ -507,6 +518,8 @@ data class Hello(
     val diagFlagState: String? = null,
     /** LGC6-min, additive: why no trace can start right now, one fixed word (`none`, `gate_off`, `armed_no_epoch`, ...); never free text. Null from an older glasses. */
     val traceBlocker: String? = null,
+    /** v0.9.7 slice D, additive: this glasses build answers a `pc_mark_photo_request`. False/absent from an older glasses: the phone records `no_photo_support` at once instead of waiting. */
+    val markPhotoRequest: Boolean = false,
 )
 
 /** Phone → glasses on `pc_hello_request`: the glasses answer with [Hello]. Sent rate-limited when a frame is held. */

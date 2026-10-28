@@ -194,6 +194,7 @@ private fun AskHero(
                 modifier = Modifier.fillMaxWidth(),
             )
             if (state.asking) Text("Thinking…", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(top = 8.dp))
+            state.reply?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(top = 8.dp)) }
             state.askError?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.ChipCoral.second, modifier = Modifier.padding(top = 8.dp)) }
             state.lastAnswer?.let { a ->
                 SoftCard(Modifier.padding(top = 12.dp).fillMaxWidth(), onClick = { onOpenAsk(a.id) }) {

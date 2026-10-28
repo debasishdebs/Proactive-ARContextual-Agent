@@ -7,6 +7,7 @@ import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.MarkMessage
 import com.rokid.context.core.model.MarkPhotoReason
 import com.rokid.context.core.model.MarkPhotoResult
+import com.rokid.context.core.model.MarkRef
 import com.rokid.context.memory.FrameIntake
 import com.rokid.context.memory.db.CanvasLabelEntity
 import com.rokid.context.memory.db.CanvasSlice3Dao
@@ -23,6 +24,18 @@ sealed interface VoiceMark {
     data class Mark(val intent: String?) : VoiceMark
     data class Retro(val intent: String?) : VoiceMark
     data object Undo : VoiceMark
+}
+
+/** Where an utterance came from, as far as marks care (v0.9.7 slice D). The glasses variants join the glasses' own tap mark; the phone variants make their own mark and may ask the glasses for a photo. */
+enum class MarkOrigin(val glasses: Boolean) { GLASSES_VOICE(true), PHONE_VOICE(false), PHONE_CHAT(false) }
+
+/**
+ * v0.9.7 slice D: how a PHONE-origin mark gets its photo. [reasonNow] is a pure, instant decision from the current state (null = a photo can be requested; else a [MarkPhotoReason] token such as
+ * `glasses_not_connected`, `glasses_not_worn`, `camera_busy`, `no_photo_support`); [request] sends `pc_mark_photo_request` for the mark's reference (false = it could not be sent now).
+ */
+interface PhonePhotoRequester {
+    fun reasonNow(): String?
+    suspend fun request(markRef: String): Boolean
 }
 
 /**
@@ -50,6 +63,10 @@ class MarkRecorder(
      * then throws, is not acknowledged and the glasses resend it. The default (tests of other behaviour) forgets nothing.
      */
     private val forgetPhoto: suspend (frameId: String) -> Boolean = { true },
+    /** v0.9.7 slice D: null (tests of other behaviour) = a phone-origin mark has no photo (`phone_mark_no_photo`, as before). */
+    private val phonePhoto: PhonePhotoRequester? = null,
+    /** v0.9.7 slice D: a phone call is active right now (the existing call detection); a mark made then carries the `call` tag in its provenance. */
+    private val callActive: () -> Boolean = { false },
 ) {
     private val lock = Mutex()
     private class Listen(val startAt: Long, var bound: String? = null, val glasses: Boolean = true)
@@ -91,7 +108,7 @@ class MarkRecorder(
         // a mark that touches capture (v0.9.6 slice C): `photo` = the glasses will take a photo and say how it went; an old glasses build cannot
         val photo = if (m.photo) MarkPhotoReason.PENDING else MarkPhotoReason.NO_PHOTO_SUPPORT
         val ok = dao.insertLabelFenced(
-            CanvasLabelEntity(id, KIND_MOMENT, SRC_TAP, MOMENT, arrival.mappedAtMs, provenance = if (arrival.mapped) "clock:mapped" else "clock:receipt", deletionCounter = maxOf(m.deletionCounter, 0), createdAt = wallClock(), photo = photo),
+            CanvasLabelEntity(id, KIND_MOMENT, SRC_TAP, MOMENT, arrival.mappedAtMs, provenance = (if (arrival.mapped) "clock:mapped" else "clock:receipt") + callTag(), deletionCounter = maxOf(m.deletionCounter, 0), createdAt = wallClock(), photo = photo),
             f,
         )
         if (!ok) { log("mark dropped: before the wipe or fence moved"); return@withLock true }
@@ -139,15 +156,27 @@ class MarkRecorder(
         l?.atMs?.let(onChanged)
     }
 
+    /** What a phone-origin mark would do about its photo right now: null = ask the glasses, else the reason token. Instant and pure; the caller uses it for the reply and passes it to [applyVoice]. */
+    fun phonePhotoDecision(): String? = phonePhoto?.reasonNow() ?: if (phonePhoto == null) MarkPhotoReason.PHONE_MARK else null
+
     /** The recognised utterance carried these commands (in spoken order). [glasses] false = a phone-mic ask. */
-    suspend fun applyVoice(commands: List<VoiceMark>, glasses: Boolean, nowMs: Long) = lock.withLock {
-        val l = listen?.takeIf { it.glasses == glasses } ?: Listen(nowMs, glasses = glasses).also { listen = it }
+    suspend fun applyVoice(commands: List<VoiceMark>, glasses: Boolean, nowMs: Long) =
+        applyVoice(commands, if (glasses) MarkOrigin.GLASSES_VOICE else MarkOrigin.PHONE_VOICE, nowMs, if (glasses) null else phonePhotoDecision())
+
+    /**
+     * The one entry for every surface. A glasses origin joins the tap mark of its listen; a phone origin makes its OWN mark `mk:phone:<start>` (idempotent: the same start never makes a second one) and,
+     * when [phonePhotoReason] is null, asks the glasses for its photo through [phonePhoto] (one request per new mark; a request that cannot be sent leaves `glasses_not_connected`). [PHONE_CHAT][MarkOrigin.PHONE_CHAT]
+     * never reuses an earlier listen.
+     */
+    suspend fun applyVoice(commands: List<VoiceMark>, origin: MarkOrigin, nowMs: Long, phonePhotoReason: String?) = lock.withLock {
+        val glasses = origin.glasses
+        val l = (if (origin == MarkOrigin.PHONE_CHAT) null else listen?.takeIf { it.glasses == glasses }) ?: Listen(nowMs, glasses = glasses).also { if (origin != MarkOrigin.PHONE_CHAT) listen = it }
         val f = fence()
-        val srcVoice = if (glasses) SRC_VOICE else SRC_PHONE_VOICE
+        val srcVoice = when (origin) { MarkOrigin.GLASSES_VOICE -> SRC_VOICE; MarkOrigin.PHONE_VOICE -> SRC_PHONE_VOICE; MarkOrigin.PHONE_CHAT -> SRC_PHONE_CHAT }
         var momentId: String? = null
         for (c in commands) when (c) {
-            is VoiceMark.Mark -> momentId = ensureMoment(l, f, srcVoice, momentId, c.intent, nowMs)
-            is VoiceMark.Retro -> momentId = ensureMoment(l, f, SRC_RETRO, momentId, c.intent, nowMs)
+            is VoiceMark.Mark -> momentId = ensureMoment(l, f, srcVoice, momentId, c.intent, nowMs, phonePhotoReason)
+            is VoiceMark.Retro -> momentId = ensureMoment(l, f, SRC_RETRO, momentId, c.intent, nowMs, phonePhotoReason)
             VoiceMark.Undo -> {
                 val target = momentId ?: l.bound ?: newestUndoable(nowMs)
                 if (target != null) {
@@ -167,11 +196,17 @@ class MarkRecorder(
         l.bound?.let { id -> val at = dao.label(id)?.atMs; dao.retagLabel(id, SRC_ASK_TAP); at?.let(onChanged) }
     }
 
-    private suspend fun ensureMoment(l: Listen, f: DaoFence, source: String, already: String?, intent: String?, nowMs: Long): String? {
-        val id = already ?: l.bound ?: "vm:${l.startAt}:${if (l.glasses) 'g' else 'p'}"
+    private suspend fun ensureMoment(l: Listen, f: DaoFence, source: String, already: String?, intent: String?, nowMs: Long, phonePhotoReason: String?): String? {
+        val id = already ?: l.bound ?: if (l.glasses) "vm:${l.startAt}:g" else MarkRef.labelId(MarkRef.of(PHONE_EPOCH, l.startAt))
         if (already == null) {
             if (l.bound != null) { val at = dao.label(id)?.atMs; dao.retagLabel(id, source); at?.let(onChanged) }
-            else if (dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, l.startAt, provenance = "clock:receipt", deletionCounter = f.now().counter, createdAt = wallClock(), photo = noPhotoReasonOf(l, source)), f)) onRecorded(l.startAt)
+            else if (dao.label(id) == null) {
+                val reason = if (source == SRC_RETRO) MarkPhotoReason.RETRO else if (l.glasses) MarkPhotoReason.NO_PHOTO_SUPPORT else phonePhotoReason ?: MarkPhotoReason.PENDING
+                if (dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, l.startAt, provenance = "clock:receipt" + callTag(), deletionCounter = f.now().counter, createdAt = wallClock(), photo = reason), f)) {
+                    onRecorded(l.startAt)
+                    if (reason == MarkPhotoReason.PENDING) requestPhoto(id, l.startAt)
+                }
+            }
         }
         if (intent != null && dao.label("$id:i") == null) {
             // the intent row follows its mark: same photo link, same state (a mark with no glasses photo possible says why)
@@ -181,6 +216,15 @@ class MarkRecorder(
         log("voice mark recorded")
         return id
     }
+
+    /** The one photo request of a new phone-origin mark. A request that cannot be sent now makes the mark's reason `glasses_not_connected` (the mark itself stays). */
+    private suspend fun requestPhoto(labelId: String, startAt: Long) {
+        val sent = try { phonePhoto?.request(MarkRef.of(PHONE_EPOCH, startAt)) ?: false } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { false }
+        if (sent) { log("mark photo requested"); return }
+        if (dao.markPhotoFailed(labelId, MarkPhotoReason.GLASSES_NOT_CONNECTED)) { log("mark photo request not sent"); onRecorded(startAt) }
+    }
+
+    private fun callTag(): String = if (try { callActive() } catch (e: Exception) { false }) CALL_TAG else ""
 
     /** A voice mark with no glasses tap behind it cannot have a photo: a retro mark (the moment is past), a phone-mic mark (no camera here), or a glasses utterance whose tap mark never arrived (old glasses). */
     private fun noPhotoReasonOf(l: Listen, source: String): String = when {
@@ -201,7 +245,13 @@ class MarkRecorder(
         private const val PRUNE_MS = 60_000L
         const val KIND_MOMENT = "MOMENT"; const val KIND_INTENT = "INTENT"; const val MOMENT = "MOMENT"
         const val SRC_TAP = "tap"; const val SRC_VOICE = "voice"; const val SRC_PHONE_VOICE = "phone_voice"; const val SRC_RETRO = "retro"; const val SRC_ASK_TAP = "ask_tap"
-        private val UNDOABLE = setOf(SRC_TAP, SRC_VOICE, SRC_PHONE_VOICE, SRC_RETRO)
+        /** v0.9.7 slice D: a mark made in the Home chat window (never shown as a label; only the `call` tag is). */
+        const val SRC_PHONE_CHAT = "phone_chat"
+        /** The epoch of a phone-origin mark reference (`phone:<start ms>`); a glasses epoch is a UUID, so the two never collide. */
+        const val PHONE_EPOCH = "phone"
+        /** Appended to a mark's provenance when a phone call was active as it was made. */
+        const val CALL_TAG = ";call"
+        private val UNDOABLE = setOf(SRC_TAP, SRC_VOICE, SRC_PHONE_VOICE, SRC_PHONE_CHAT, SRC_RETRO)
         fun labelId(m: MarkMessage) = "mk:${m.epoch}:${m.seq}"
     }
 }

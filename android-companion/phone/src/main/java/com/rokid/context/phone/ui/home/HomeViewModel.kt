@@ -15,6 +15,9 @@ import com.rokid.context.phone.ui.status.PipelineControl
 import com.rokid.context.phone.ui.banner.IndexState
 import com.rokid.context.phone.ui.status.StatusUi
 import com.rokid.context.phone.voice.PhoneVoice
+import com.rokid.context.voice.Utterance
+import com.rokid.context.voice.UtteranceResult
+import com.rokid.context.voice.UtteranceSource
 import com.rokid.context.voice.VoiceStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -51,8 +54,10 @@ class HomeViewModel(
     batterySaver: Flow<Boolean> = flowOf(false),
     /** G3: the "Some features are limited" banner. */
     private val limitedMode: LimitedModeControl = LimitedModeControl.None,
+    /** v0.9.7 slice D: the shared text backend, called with the chat text before any model call; null = every text is a plain ask. This class has no command logic of its own. */
+    private val utterance: Utterance? = null,
 ) : ViewModel() {
-    private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null)
+    private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null, val reply: String? = null)
 
     private val local = MutableStateFlow(Local())
 
@@ -83,7 +88,7 @@ class HomeViewModel(
         lastAnswer,
         local,
     ) { status, suggestions, items, last, l ->
-        HomeUiState(status, suggestions, items, l.question, l.asking, l.error, last)
+        HomeUiState(status, suggestions, items, l.question, l.asking, l.error, last, reply = l.reply)
     }
 
     /** Live: Room re-emits on every frame insert; a new local day (or zone) re-queries. */
@@ -95,15 +100,21 @@ class HomeViewModel(
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
-    fun onQuestionChange(text: String) = local.update { it.copy(question = text.take(500), error = null) }
+    fun onQuestionChange(text: String) = local.update { it.copy(question = text.take(500), error = null, reply = null) }
 
     fun ask(question: String = local.value.question) {
         val q = question.trim()
         if (q.isEmpty() || local.value.asking) return
-        local.update { it.copy(question = q, asking = true, error = null) }
+        // the shared backend first: a handled text is answered here with its short fixed reply (no model call); the unmatched clauses of a mixed text are all that is asked
+        val toAsk = when (val u = utterance?.handle(q, UtteranceSource.PHONE_CHAT, genuineFinal = true) ?: UtteranceResult.PassThrough) {
+            UtteranceResult.PassThrough -> q
+            is UtteranceResult.Handled -> { local.update { it.copy(question = "", asking = false, error = null, reply = u.replyText) }; return }
+            is UtteranceResult.Ask -> u.question
+        }
+        local.update { it.copy(question = q, asking = true, error = null, reply = null) }
         viewModelScope.launch {
             try {
-                when (val r = askService.ask(q)) {
+                when (val r = askService.ask(toAsk)) {
                     is AskOutcome.Answered -> local.update { it.copy(question = "", asking = false, lastAskId = r.askId) }
                     is AskOutcome.Failed -> local.update { it.copy(asking = false, error = r.message) }
                 }

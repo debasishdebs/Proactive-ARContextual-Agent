@@ -59,6 +59,9 @@ Deletes the mark from this listen, or your newest voice or tap mark from the las
 - `undo mark`
 - `cancel mark`
 - `remove mark`
+- `undo the mark`
+- `undo that mark`
+- `undo this mark`
 
 #### Polite starts you can add before any command
 - `please`
