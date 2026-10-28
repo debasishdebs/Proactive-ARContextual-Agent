@@ -217,18 +217,31 @@ class VoicePipeline(
         var question = VoiceText.clean(transcript)
         if (question.isEmpty()) { problem(g, source, VoiceOutcome.NO_SPEECH, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE); return }
         // Before Thinking is published (the interceptor gets the unclipped transcript: the 500-char rule must see the real length): a handled utterance never shows Thinking and never reaches the answerer.
-        when (val r = try { interceptor.intercept(transcript, source, genuineFinal) } catch (e: Exception) {
-            log("interceptor failed (${e.javaClass.simpleName})"); InterceptResult.PassThrough
-        }) {
-            InterceptResult.PassThrough -> Unit
-            is InterceptResult.Handled -> { marked(g, source, r.hud); return }
-            is InterceptResult.Ask -> {
-                question = VoiceText.clean(r.question)
-                if (question.isEmpty()) { outcome(VoiceOutcome.MARKED, source); set(VoiceState.Idle); return }
+        // The interceptor may suspend (an undo waits for its removal, bounded by the data gate), so it runs inside the work job: a new listen or a cancel bumps the generation and drops its result.
+        // UNDISPATCHED: an interceptor that does not suspend (a pass-through) leaves the pipeline in Thinking before this call returns, as before
+        work = scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            when (val r = try { interceptor.intercept(transcript, source, genuineFinal) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+                log("interceptor failed (${e.javaClass.simpleName})"); InterceptResult.PassThrough
+            }) {
+                InterceptResult.PassThrough -> Unit
+                is InterceptResult.Handled -> { if (g == gen) marked(g, source, r.hud); return@launch }
+                is InterceptResult.Ask -> {
+                    question = VoiceText.clean(r.question)
+                    if (question.isEmpty()) { if (g == gen) { outcome(VoiceOutcome.MARKED, source); set(VoiceState.Idle) }; return@launch }
+                }
             }
-        }
-        set(VoiceState.Thinking(source, question))
-        work = scope.launch {
+            if (g != gen) return@launch
+            set(VoiceState.Thinking(source, question))
+            kotlinx.coroutines.yield() // the answer is dispatched, not run inside the caller (as when it was its own launch)
+            if (g != gen) return@launch
+            // A timer, not withTimeout: an answer path that ignores cancellation (a NonCancellable write) can't hold Thinking.
+            timer = scope.launch {
+                delay(timings.answerTimeoutMs)
+                if (g != gen) return@launch
+                log("answer timed out")
+                // New generation: a late answer is ignored.
+                problem(newGeneration(), source, VoiceOutcome.ANSWER_TIMEOUT, VoiceCopy.TOO_LONG, VoiceCopy.TOO_LONG)
+            }
             val r = try {
                 answerer.answer(question, source)
             } catch (c: CancellationException) {
@@ -243,14 +256,6 @@ class VoicePipeline(
                 is AnswerResult.Answered -> answered(g, source, question, r)
                 is AnswerResult.Failed -> problem(g, source, VoiceOutcome.ANSWER_FAILED, r.hudText, r.phoneText)
             }
-        }
-        // A timer, not withTimeout: an answer path that ignores cancellation (a NonCancellable write) can't hold Thinking.
-        timer = scope.launch {
-            delay(timings.answerTimeoutMs)
-            if (g != gen) return@launch
-            log("answer timed out")
-            // New generation: a late answer is ignored.
-            problem(newGeneration(), source, VoiceOutcome.ANSWER_TIMEOUT, VoiceCopy.TOO_LONG, VoiceCopy.TOO_LONG)
         }
     }
 
