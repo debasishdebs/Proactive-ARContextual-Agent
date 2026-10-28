@@ -123,4 +123,19 @@ class FlowPublishTest {
         assertNull(DaoFlowPlans(dao).plan(FlowPlan.Kind.QUERY))
         assertTrue(service(DaoFlowPlans(dao)).answer("milk?", "t") is AskOutcome.Answered)
     }
+
+    /** A history-only dependency (the source of an earlier nudge a plan reads) forgotten while the model answers redacts the answer; the row keeps it as a dependency. */
+    @Test fun aHistoryOnlyDependencyIsFencedAndPersisted() = runBlocking {
+        val g = MemoryGraph.get(app)
+        seed()
+        g.memories.add(LegacyImporter.toMemory("rokid_mem_9", "short_term", 0.9, now, "Parked on level 3"))
+        g.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("n1", now - 60_000L, "car is on 3", "", "[\"rokid_mem_9\"]", 1, "h1", "glance", false))
+        val plan = FlowPlan.BUILT_IN_QUERY.copy(history = true, historyWindowMin = 1440)
+        val ok = service(FlowPlans { plan }).answerOrThrow("milk?", "t", now)
+        assertEquals(listOf("rokid_mem_9"), com.rokid.context.orchestration.AskSources.parseAll(g.asks.byId(ok.askId)!!.sourcesJson).filter { it == "rokid_mem_9" })
+        val dropping = TestAi.graph(app) { com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_9"); reply }.also { TestAi.bindAll(it) }
+        val svc = AnswerService(g, dropping.runner, dropping.retriever, { RetrievalSettings() }, flows = FlowPlans { plan })
+        val row = g.asks.byId(svc.answerOrThrow("milk?", "t", now).askId)!!
+        assertEquals(true, row.redacted); assertEquals(com.rokid.context.memory.forget.ForgetService.REDACTED, row.answer)
+    }
 }

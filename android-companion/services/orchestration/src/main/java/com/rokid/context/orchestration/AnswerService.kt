@@ -114,6 +114,8 @@ class AnswerService(
     data class Retrieved(
         val vars: PromptVars, val memories: List<MemoryEntity>, val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(),
         val imageEndpointId: String? = null,
+        /** The sources of the nudges a plan's history read (not citable): the commit fence covers them and the row keeps them as dependencies, as a nudge does. */
+        val fenceIds: Set<String> = emptySet(),
     ) {
         val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
     }
@@ -132,7 +134,7 @@ class AnswerService(
                 retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines + c.photoLines + c.recentLines + c.history),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
-            c.memories + c.recent, c.photos, c.images, c.imageEndpointId,
+            c.memories + c.recent, c.photos, c.images, c.imageEndpointId, c.historyIds,
         )
     }
 
@@ -238,10 +240,10 @@ class AnswerService(
             if (MemoryWipe.generation.get() != generation) return@withTransaction false
             // Phase 7 Forget fence (Stream F fix round 1 I1): a memory in the prompt or cited was forgotten while the
             // model answered, so the reply may hold forgotten text: store it redacted, with no sources and no proposal.
-            redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + out.sources)
+            redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + r.fenceIds + out.sources)
             memory.asks.add(
                 if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
-                else AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false),
+                else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds), null, source, false),
             )
             true
         }
