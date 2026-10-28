@@ -5,6 +5,7 @@ import com.rokid.context.core.hud.render.HudConnection
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Command
+import com.rokid.context.core.model.MarkRef
 import com.rokid.context.core.model.AutoOpen
 import com.rokid.context.core.model.UserExit
 import com.rokid.context.core.model.PhoneContextMessage
@@ -87,6 +88,10 @@ class HudController(
     @Volatile var onMarkAck: (com.rokid.context.core.model.MarkAck) -> Unit = {}
     /** v0.9.7 slice D: the phone asks for the photo of a phone-origin mark. */
     @Volatile var onMarkPhotoRequest: (com.rokid.context.core.model.MarkPhotoRequest) -> Unit = {}
+    /** The session closed: the mark photo requests forget the phone clock they learned. */
+    @Volatile var onMarkPhotoSessionClosed: () -> Unit = {}
+    /** The phone's session start (phone clock) as its last accepted message named it; 0 = none yet. A photo request of another session is refused. */
+    @Volatile private var phoneSessionStartMs = 0L
     /** The session is open and the phone is talking (session open, or a hello request on an open session): re-send unacked marks. */
     @Volatile var onMarksDue: () -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
@@ -120,20 +125,36 @@ class HudController(
         bridge.subscribe(Channels.CAPTURE_PLAN) { text -> (Wire.decode<com.rokid.context.core.model.CapturePlanMessage>(text) as? Decoded.Ok)?.value?.let(::onPlanMessage) }
         bridge.subscribe(Channels.TRACE_CTL) { text -> (Wire.decode<com.rokid.context.core.model.TraceControl>(text) as? Decoded.Ok)?.value?.let { m -> try { onTraceControl(m) } catch (e: Exception) { PcLog.w(TAG, "trace control failed: ${e.javaClass.simpleName}") } } }
         bridge.subscribe(Channels.MARK_ACK) { text -> (Wire.decode<com.rokid.context.core.model.MarkAck>(text) as? Decoded.Ok)?.value?.let { a -> try { onMarkAck(a) } catch (e: Exception) { PcLog.w(TAG, "mark ack failed: ${e.javaClass.simpleName}") } } }
-        bridge.subscribe(Channels.MARK_PHOTO_REQUEST) { text -> (Wire.decode<com.rokid.context.core.model.MarkPhotoRequest>(text) as? Decoded.Ok)?.value?.let { r -> try { onMarkPhotoRequest(r) } catch (e: Exception) { PcLog.w(TAG, "mark photo request failed: ${e.javaClass.simpleName}") } } }
+        bridge.subscribe(Channels.MARK_PHOTO_REQUEST) { text -> (Wire.decode<com.rokid.context.core.model.MarkPhotoRequest>(text) as? Decoded.Ok)?.value?.let { r -> try { acceptMarkPhotoRequest(r) } catch (e: Exception) { PcLog.w(TAG, "mark photo request failed: ${e.javaClass.simpleName}") } } }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { PcLog.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { PcLog.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
     }
 
+    /**
+     * v0.9.7 slice D: a photo request runs only inside an OPEN session of a live (not exited) app, and only when it names the phone session this session belongs to (the session start of the
+     * phone's other messages). Anything else is ignored and, best effort, answered `session_closed` (a closed session usually cannot carry it; nothing is sent after the wearer exited).
+     */
+    private fun acceptMarkPhotoRequest(r: com.rokid.context.core.model.MarkPhotoRequest) {
+        val known = phoneSessionStartMs
+        val sameSession = known == 0L || r.sessionStartMs == known
+        if (!exited && _sessionOpen.value && sameSession) { onMarkPhotoRequest(r); return }
+        PcLog.i(TAG, "pc_mark_photo_request outside its session ignored")
+        if (exited || !MarkRef.isValid(r.ref)) return
+        val seq = r.ref.substringAfterLast(':').toLongOrNull() ?: return
+        try { bridge.send(Channels.MARK_PHOTO, Wire.encode(com.rokid.context.core.model.MarkPhotoResult(epoch = r.ref.substringBeforeLast(':'), seq = seq, reason = com.rokid.context.core.model.MarkPhotoReason.SESSION_CLOSED))) } catch (e: Exception) { /* best effort */ }
+    }
+
     private fun onPhoneContextMessage(m: PhoneContextMessage) {
         if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_phone_ctx ignored"); return }
+        phoneSessionStartMs = m.sessionStartMs
         onPhoneUse(m.inUse)
     }
 
     private fun onPlanMessage(m: com.rokid.context.core.model.CapturePlanMessage) {
         // A transport copy older than this session is stale; the phone re-sends its current gen on the new session.
         if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_capture_plan ignored"); return }
+        phoneSessionStartMs = m.sessionStartMs
         onCapturePlan(m)
     }
 
@@ -153,6 +174,7 @@ class HudController(
     /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
     private fun onWearMessage(m: WearMessage) {
         if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_wear ignored"); return }
+        phoneSessionStartMs = m.sessionStartMs
         onWear(m.worn)
     }
 
@@ -235,7 +257,7 @@ class HudController(
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
         synchronized(ctxLock) {
-            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
+            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); phoneSessionStartMs = 0L; try { onMarkPhotoSessionClosed() } catch (e: Exception) { }; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
         }
         refreshConnection()
     }
