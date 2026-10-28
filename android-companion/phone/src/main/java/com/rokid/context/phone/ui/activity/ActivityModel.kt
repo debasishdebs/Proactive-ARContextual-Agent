@@ -146,6 +146,8 @@ object MarkRows {
         MarkPhotoReason.HEAT -> "the glasses were too warm"
         MarkPhotoReason.NOT_STORED -> "the glasses could not save it"
         MarkPhotoReason.CANCELLED -> "the photo was cancelled"
+        MarkPhotoReason.RATE_LIMITED -> "too many photo requests in a minute"
+        MarkPhotoReason.SESSION_CLOSED -> "the glasses link had closed"
         else -> token
     }
 

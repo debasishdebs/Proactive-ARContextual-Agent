@@ -337,7 +337,7 @@ class Hub(
     fun carriesData(): Boolean = _state.value.link.carriesData
     fun captureRunning(): Boolean = _activePauses.value.isEmpty()
     /** v0.9.7 slice D: asks the glasses for the photo of the phone-origin mark [ref]; false = it could not be sent (the caller records the reason). */
-    suspend fun requestMarkPhoto(ref: String): Boolean = link.send(Channels.MARK_PHOTO_REQUEST, Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = ref)))
+    suspend fun requestMarkPhoto(ref: String): Boolean = link.send(Channels.MARK_PHOTO_REQUEST, Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = ref, atMs = clock(), sessionStartMs = sessionStartMs)))
 
     fun watchdogReconnect() = link.connectOnResume()
     fun watchdogProbe() = link.probeAlive()

@@ -104,7 +104,7 @@ class GlassesRuntimeTest {
         runtime.attach(c)
         assertEquals(true, bridge.subscriptions.contains(Channels.MARK_PHOTO_REQUEST))
         bridge.phone(Channels.STATE, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.StateFrame(seq = 1, capture = com.rokid.context.core.model.CaptureState.Running, intervalSec = 300, phoneLinked = true, aiHealth = com.rokid.context.core.model.Health.Ok))) // opens the session
-        bridge.phone(Channels.MARK_PHOTO_REQUEST, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = "phone:77")))
+        bridge.phone(Channels.MARK_PHOTO_REQUEST, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = "phone:${System.currentTimeMillis()}", atMs = System.currentTimeMillis(), sessionStartMs = 1)))
         val deadline = System.currentTimeMillis() + 5_000
         while (bridge.sent.none { it.first == Channels.MARK_PHOTO } && System.currentTimeMillis() < deadline) Thread.sleep(20)
         assertEquals(1, bridge.sent.count { it.first == Channels.MARK_PHOTO })
