@@ -101,7 +101,7 @@ object ForgetScopeCopy {
     }
     /** The extra line when the Forget touches things it does not delete: counts only. */
     fun outsideLine(n: Int) = "$n ${if (n == 1) "item outside this window is" else "items outside this window are"} affected (not deleted)."
-    fun peerResultsLine(n: Int) = "$n other generated ${if (n == 1) "result" else "results"} from the same run will also be deleted (the next run recreates ${if (n == 1) "it" else "them"})."
+    fun peerResultsLine(n: Int) = "Up to $n other generated ${if (n == 1) "result" else "results"} from the same run will also be deleted (the next run recreates ${if (n == 1) "it" else "them"})."
     /** Why Moment and Scene are greyed out in Settings. */
     const val EXPERIMENTAL = "Moment and Scene are experimental until a worn test: turn on Developer mode (Settings > Diagnostics) to use them. Photo is used until then."
     const val TOO_LARGE = "Too much is connected to this to forget in one step; use a smaller scope or Delete all"
