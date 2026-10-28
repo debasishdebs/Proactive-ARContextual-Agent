@@ -240,4 +240,16 @@ class RagCoreGoldenTest {
         val none = c.retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore()), RagParams(maxChars = 1), now)
         assertEquals(emptyList<Any>(), none.photos); assertEquals(emptyList<Any>(), none.images); assertEquals(emptyList<String>(), none.photoLines)
     }
+
+    @Test fun aWindowedTextPhotoSourceWorksThroughAnswerService() = runBlocking<Unit> {
+        meta("fresh")
+        val h = listOf(hit("fresh", 0.9).copy(ts = now - 1_000L, receivedAt = now - 1_000L))
+        var bound = -1L
+        val svc = AnswerService(
+            MemoryGraph.get(ctx), AiGraph.get(ctx).runner, AiGraph.get(ctx).retriever, { RetrievalSettings() }, zone = { zone },
+            photosWindowed = { _, _, _, nb -> bound = nb; h }, photosAllowed = { true },
+        )
+        val r = svc.rag.retrieve(RagQuery("mug"), listOf(RagSource.PhotoStore(windowMs = 60_000L)), RagParams(), now)
+        assertEquals(1, r.photos.size); assertEquals(now - 60_000L, bound)
+    }
 }

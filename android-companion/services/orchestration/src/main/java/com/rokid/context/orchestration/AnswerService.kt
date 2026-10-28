@@ -99,6 +99,8 @@ class AnswerService(
     /** The Ask debug view's historical photo search: [PhotoRecall.search] with the ask time as the cutoff, applied BEFORE top-k (vectors and captions). */
     private val photosAsOf: suspend (question: String, notAfterMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
     /** Asked before every photo search ([AskPhotoPolicy.allowed]: the user's switch, pipeline pause, quiet hours, an Answer model that sees images). False = no scan, no image, no photo line. */
+    /** Words to photos inside a time window (a windowed [RagSource.PhotoStore]); null = no windowed search, which finds nothing. Ask itself uses no window. */
+    private val photosWindowed: (suspend (question: String, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long) -> List<PhotoHit>)? = null,
     private val photosAllowed: suspend () -> Boolean = { false },
     /** The endpoint the gate checked (the ANSWER primary): images are sent only there, never to a fallback. */
     private val imageEndpointId: suspend () -> String? = { null },
@@ -114,7 +116,7 @@ class AnswerService(
     }
 
     /** The shared retrieval core (v0.9.8): memories and photos with every gate; the prompt vars of the ask are built here. */
-    private val rag = RagCore(memory, retriever, settings, zone, photos, photosAsOf, photosAllowed = photosAllowed, imageEndpointId = imageEndpointId, photoImages = photoImages)
+    internal val rag = RagCore(memory, retriever, settings, zone, photos, photosAsOf, photosWindowed = photosWindowed, photosAllowed = photosAllowed, imageEndpointId = imageEndpointId, photoImages = photoImages)
 
     suspend fun retrieve(question: String, nowMs: Long): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
@@ -315,6 +317,7 @@ class AnswerService(
                 MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
                 sources = sourcesFrom(provider),
                 proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
+                photosWindowed = RagCore.photosWindowedFrom(context),
                 photosAllowed = { photosAllowedNow(context) },
                 imageEndpointId = { answerImageEndpoint(context) },
                 // The scan has its own budget (below the outer timeout), so partial hits survive; the timeout is only the backstop.
