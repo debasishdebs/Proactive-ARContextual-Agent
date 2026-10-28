@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.FrameMetaEntity
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.PauseIntervalEntity
 import com.rokid.context.memory.retrieval.RetrievalSettings
@@ -41,7 +42,13 @@ class AnswerServiceDebugPhotosTest {
 
     private fun hit(id: String, score: Double, stored: Boolean = true) = PhotoHit(id, PhotoSource.IMAGE, score, 1_000L, 1_000L, stored, false, null, null, null)
 
-    private fun service(hits: List<PhotoHit>) = AnswerService(
+    /** The core fences every photo it hands out (Forget): a recalled frame has its `frame_meta` row, as a real recall guarantees. */
+    private fun service(hits: List<PhotoHit>): AnswerService {
+        runBlocking { hits.forEach { MemoryGraph.get(ctx).db.frameMetaDao().upsert(FrameMetaEntity(it.frameId, null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1)) } }
+        return build(hits)
+    }
+
+    private fun build(hits: List<PhotoHit>) = AnswerService(
         MemoryGraph.get(ctx), AiGraph.get(ctx).runner, AiGraph.get(ctx).retriever, { RetrievalSettings() },
         photosAllowed = { allow }, imageEndpointId = { endpoint },
         photos = { _, _ -> searches++; hits },

@@ -2,43 +2,44 @@ package com.rokid.context.orchestration.nudge
 
 import com.rokid.context.connectors.ContextSourceProvider
 import com.rokid.context.memory.MemoryGraph
-import com.rokid.context.memory.db.ReviewState
-import com.rokid.context.orchestration.AskText
+import com.rokid.context.orchestration.RagCore
+import com.rokid.context.orchestration.RagParams
+import com.rokid.context.orchestration.RagQuery
+import com.rokid.context.orchestration.RagSource
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
-import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 /**
- * The NUDGE prompt's inputs (R-61), shared by production and the test bed: OK memories of the last 6 h (newest 10,
+ * The NUDGE prompt's inputs (R-61), shared by production and the test bed: OK memories of the last 6 h, read through [RagCore] (newest 10,
  * `id=… · HH:mm · <text ≤ 300>`) as `memories`, the last 24 h of nudge texts as `recent_nudges` (both in
  * `{{recent_context}}`), and `sources.lines(null, now)` as `sources` in `{{context_sources}}`.
  */
 class NudgeInputs(
     private val memory: MemoryGraph,
     private val sources: ContextSourceProvider,
+    /** The shared core (v0.9.8); null = one that reads recent memories and nudge history, with no photo store behind it. */
+    rag: RagCore? = null,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
 ) {
+    private val core = rag ?: RagCore(memory, zone = zone)
+
     data class Prepared(val vars: PromptVars, val inputIds: Set<String>)
 
-    suspend fun build(nowMs: Long, extraText: String? = null): Prepared {
-        val candidates = memory.db.memoryDao().between(nowMs - WINDOW_MS, nowMs + 1).filter { it.reviewState == ReviewState.OK }
-        // A memory about an old photo (a night describe or a late backlog extraction: its photo was captured more than the window before the memory
-        // was written) is not a live moment, whatever its createdAt says. frame_meta outlives the photo, so the check survives expiry.
-        val captured = candidates.mapNotNull { it.frameId }.distinct().chunked(500).flatMap { memory.db.frameMetaDao().byIds(it) }.associate { it.frameId to it.createdAt }
-        val recent = candidates.filter { m -> m.frameId?.let { captured[it] }?.let { m.createdAt - it <= WINDOW_MS } ?: true }.take(MAX_MEMORIES)
-        val time = TIME.withZone(zone())
-        val lines = recent.map { "id=${it.id} \u00b7 ${time.format(Instant.ofEpochMilli(it.createdAt))} \u00b7 ${AskText.clip(AskText.collapse(it.text), MAX_TEXT)}" } +
-            listOfNotNull(extraText?.takeIf { it.isNotBlank() })
-        val nudges = memory.db.nudgeGateDao().lastNudges(nowMs - DAY_MS).map { AskText.collapse(it.text) }
+    /**
+     * [photoVector]: a photo's image embedding (a later Nudge trigger, not wired yet). The photos near it join the memory lines as photo lines
+     * (same gates as an Ask's photos) and their cite ids join the inputs.
+     */
+    suspend fun build(nowMs: Long, extraText: String? = null, photoVector: FloatArray? = null): Prepared {
+        val sourceList = listOfNotNull(RagSource.RecentWindow(WINDOW_MS), RagSource.NudgeHistory(DAY_MS), RagSource.PhotoStore().takeIf { photoVector != null })
+        val c = core.retrieve(RagQuery(vector = photoVector), sourceList, RagParams(maxRecent = MAX_MEMORIES), nowMs)
+        val lines = c.recentLines + c.photoLines + listOfNotNull(extraText?.takeIf { it.isNotBlank() })
         return Prepared(
             PromptVars(
-                recentContext = PromptComposer.dataBlock("memories", lines) + "\n" + PromptComposer.dataBlock("recent_nudges", nudges),
+                recentContext = PromptComposer.dataBlock("memories", lines) + "\n" + PromptComposer.dataBlock("recent_nudges", c.history),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(null, nowMs)),
             ),
-            recent.map { it.id }.toSet(),
+            c.ids,
         )
     }
 
@@ -46,7 +47,5 @@ class NudgeInputs(
         private const val WINDOW_MS = 6 * 3_600_000L
         private const val DAY_MS = 24 * 3_600_000L
         private const val MAX_MEMORIES = 10
-        private const val MAX_TEXT = 300
-        private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
     }
 }

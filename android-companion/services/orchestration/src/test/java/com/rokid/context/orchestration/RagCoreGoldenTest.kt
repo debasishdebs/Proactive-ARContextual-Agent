@@ -8,6 +8,8 @@ import com.rokid.context.connectors.ContextSourceProvider
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.legacy.LegacyImporter
+import com.rokid.context.memory.retrieval.FusionStrategy
+import com.rokid.context.memory.retrieval.RetrievalMode
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.orchestration.nudge.NudgeInputs
@@ -98,5 +100,23 @@ class RagCoreGoldenTest {
         golden("nudge_plain", p.vars, "${p.inputIds.sorted()}")
         val e = inputs.build(now, "extra line")
         golden("nudge_extra", e.vars, "${e.inputIds.sorted()}")
+    }
+
+    /** An all-null [RagParams] changes nothing: the settings come out as the clamped user settings, and a retrieval equals one with the defaults spelled out. */
+    @Test fun allNullParamsEqualToday() = runBlocking<Unit> {
+        val all = listOf(
+            RetrievalSettings(), RetrievalSettings(fusion = FusionStrategy.Rrf(30), topK = 3), RetrievalSettings(fusion = FusionStrategy.CombMnz, mode = RetrievalMode.LEXICAL),
+            RetrievalSettings(fusion = FusionStrategy.WeightedScore(0.3), recencyBoost = false, halfLifeDays = 9.0, minConfidence = 0.5), RetrievalSettings(topK = 99, halfLifeDays = Double.NaN),
+        )
+        for (st in all) assertEquals(st.clamped(), RagParams().over(st))
+        seed()
+        val core = RagCore(MemoryGraph.get(ctx), AiGraph.get(ctx).retriever, { RetrievalSettings() }, { zone })
+        val srcs = listOf(RagSource.MemoryStore(), RagSource.RecentWindow(6 * 3_600_000L), RagSource.NudgeHistory(86_400_000L))
+        for (q in listOf("milk?", "zzzqqq")) {
+            val a = core.retrieve(RagQuery(q), srcs, RagParams(), now)
+            val spelled = RagParams(RetrievalMode.HYBRID, RagFusion.WEIGHTED, 0.6, null, 8, null, 0.0, true, 3.0, 5_000, 10)
+            assertEquals(a, core.retrieve(RagQuery(q), srcs, spelled, now))
+        }
+        assertEquals(RagParams::class.java.declaredFields.count { !java.lang.reflect.Modifier.isStatic(it.modifiers) }, RagParams.SCHEMA.size)
     }
 }

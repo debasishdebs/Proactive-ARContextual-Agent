@@ -32,10 +32,7 @@ import com.rokid.context.prompt.PromptVars
 import com.rokid.context.work.frames.FramePhotos
 import com.rokid.context.work.frames.recall.PhotoHit
 import com.rokid.context.work.frames.recall.PhotoRecall
-import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -116,43 +113,20 @@ class AnswerService(
         val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
     }
 
-    /** [citeId] = the caption memory's id, else `frame:<frameId>`. [ts] is the capture time (the stored `frame.ts`, or `frame_meta.capturedAtMs` once expired). */
-    data class PhotoCite(val citeId: String, val frameId: String, val ts: Long?, val stored: Boolean, val receivedAt: Long? = null)
+    /** The shared retrieval core (v0.9.8): memories and photos with every gate; the prompt vars of the ask are built here. */
+    private val rag = RagCore(memory, retriever, settings, zone, photos, photosAsOf, photosAllowed = photosAllowed, imageEndpointId = imageEndpointId, photoImages = photoImages)
 
     suspend fun retrieve(question: String, nowMs: Long): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val s = settings().clamped()
-        val hits = retriever.retrieve(q, s, nowMs).hits.map { it.memory }
-        // No hits: the newest trusted memories, under the same minConfidence and top-k the retriever applies.
-        val poolAll = hits.ifEmpty {
-            memory.memories.recent(30).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
-        }
-        val recalled = recalledPhotos(q, nowMs)
-        // A photo whose caption is already a retrieved memory is listed once, as the photo line.
-        val citeIds = recalled.map { it.second }.toSet()
-        val pool = poolAll.filter { it.id !in citeIds }
-        val images = mutableListOf<ModelImageInput>()
-        val imageNo = HashMap<String, Int>()
-        for ((hit, citeId) in recalled) {
-            if (images.size >= MAX_PHOTO_IMAGES || !hit.photoStored) continue
-            val image = try { photoImages(listOf(hit.frameId))[hit.frameId] } catch (c: CancellationException) { throw c } catch (e: Exception) { null }
-            if (image != null) { images += image; imageNo[citeId] = images.size }
-        }
-        val photoLines = recalled.map { (hit, citeId) -> photoLine(hit, citeId, imageNo[citeId]) }
-            .let { if (images.isEmpty()) it else listOf(IMAGE_NOTE) + it }
-        val lines = AskText.bounded(pool.map(::line), 5_000 - photoLines.sumOf { it.length + 1 })
-        val kept = pool.take(lines.size)
+        val c = rag.retrieve(RagQuery(q), ASK_SOURCES, RagParams(), nowMs)
         return Retrieved(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
                 question = PromptComposer.dataBlock("question", listOf(q)),
-                retrievedMemories = PromptComposer.dataBlock("memories", lines + photoLines),
+                retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines + c.photoLines),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
-            kept,
-            recalled.map { (hit, citeId) -> PhotoCite(citeId, hit.frameId, hit.ts, hit.photoStored, hit.receivedAt) },
-            images,
-            if (images.isEmpty()) null else try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null },
+            c.memories, c.photos, c.images, c.imageEndpointId,
         )
     }
 
@@ -172,40 +146,13 @@ class AnswerService(
      */
     suspend fun retrieveScored(question: String, nowMs: Long, notAfterMs: Long? = null): ScoredRetrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val s = settings().clamped()
-        val r = retriever.retrieve(q, s, nowMs, notAfterMs = notAfterMs)
-        val fallback = r.hits.isEmpty()
-        val pool = if (!fallback) r.hits.map { it.memory } else
-            memory.memories.recent(30, notAfterMs).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
-        val lines = AskText.bounded(pool.map(::line))
-        val kept = pool.take(lines.size)
+        val c = rag.retrieve(RagQuery(q), listOf(RagSource.MemoryStore(notAfterMs)), RagParams(), nowMs)
         val vars = PromptVars(
             question = PromptComposer.dataBlock("question", listOf(q)),
-            retrievedMemories = PromptComposer.dataBlock("memories", lines),
+            retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines),
             contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
         )
-        return ScoredRetrieved(Retrieved(vars, kept), r.hits, r.modeUsed, r.semanticUnavailable, fallback, lines)
-    }
-
-    private suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null): List<Pair<PhotoHit, String>> {
-        val hits = try { if (!photosAllowed()) emptyList() else if (notAfterMs != null) photosAsOf(q, notAfterMs) else photos(q, nowMs) } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            PcLog.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); emptyList()
-        }
-        // The relevance floor: below it a photo gets neither an image nor a line (provisional values: AskPhotoPolicy).
-        // Ask debug only: a photo known to be captured (else received) after the ask did not exist for it.
-        val visible = if (notAfterMs == null) hits else hits.filter { h -> ((h.ts ?: h.receivedAt)?.let { it <= notAfterMs } ?: true) && (h.receivedAt?.let { it <= notAfterMs } ?: true) }
-        return AskPhotoPolicy.select(visible.distinctBy { it.frameId }).map { it to (it.captionMemoryId ?: (PHOTO_CITE_PREFIX + it.frameId)) }
-    }
-
-    /**
-     * `id=<cite> · <time> · photo[ · image=<n>] · <caption | no caption yet>`. The time is the capture time; an expired photo without one falls back to
-     * the receive time and says so ("received", user ruling 2026-10-22 over S9).
-     */
-    private fun photoLine(hit: PhotoHit, citeId: String, imageNo: Int?): String {
-        val fmt = TIME.withZone(zone())
-        val at = hit.ts?.let { fmt.format(Instant.ofEpochMilli(it)) } ?: hit.receivedAt?.let { "received " + fmt.format(Instant.ofEpochMilli(it)) } ?: "time unknown"
-        val caption = hit.captionText?.let { AskText.collapse(it) }?.takeIf { it.isNotEmpty() }?.let { AskText.clip(it, MAX_PHOTO_CAPTION) } ?: "no caption yet"
-        return "id=$citeId · $at · photo" + (imageNo?.let { " · image=$it" } ?: "") + " · $caption"
+        return ScoredRetrieved(Retrieved(vars, c.memories), c.hits, c.mode!!, c.semanticUnavailable, c.fallback, c.memoryLines)
     }
 
     /**
@@ -222,14 +169,12 @@ class AnswerService(
     internal suspend fun debugPhotoRecall(question: String, nowMs: Long): com.rokid.context.canvas.AskPhotoRecall {
         val none = com.rokid.context.canvas.AskPhotoRecall(emptyList(), emptySet(), emptySet())
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val recalled = recalledPhotos(q, nowMs, notAfterMs = nowMs) // re-checks the gate before any search; photos after the ask are dropped
-        if (recalled.isEmpty()) return none
-        val endpoint = try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
-        val withImage = if (endpoint == null) emptyList() else recalled.filter { it.first.photoStored }.take(MAX_PHOTO_IMAGES)
-        val imageNo = withImage.mapIndexed { i, (_, cite) -> cite to i + 1 }.toMap()
-        val lines = recalled.map { (hit, cite) -> photoLine(hit, cite, imageNo[cite]) }.let { if (imageNo.isEmpty()) it else listOf(IMAGE_NOTE) + it }
+        val d = rag.debugRecall(q, nowMs) { try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null } } ?: return none
+        val endpoint = d.endpoint
+        val recalled = d.recalled
+        val withImage = d.withImage
         return com.rokid.context.canvas.AskPhotoRecall(
-            lines, recalled.map { it.second }.toSet(), recalled.map { it.first.frameId }.toSet(), recalled.mapNotNull { it.first.captionMemoryId }.toSet(),
+            d.lines, recalled.map { it.second }.toSet(), recalled.map { it.first.frameId }.toSet(), recalled.mapNotNull { it.first.captionMemoryId }.toSet(),
             images = { withImage.mapNotNull { (hit, _) -> photoImages(listOf(hit.frameId))[hit.frameId] } },
             imageEndpointId = endpoint.takeIf { withImage.isNotEmpty() },
             imageCount = withImage.size,
@@ -328,21 +273,13 @@ class AnswerService(
         return null
     }
 
-    private fun line(m: MemoryEntity): String =
-        "id=${m.id} · ${TIME.withZone(zone()).format(Instant.ofEpochMilli(m.createdAt))} · confidence ${"%.2f".format(Locale.US, m.confidence)} · " +
-            "frame=${m.frameId ?: "none"} · ${AskText.clip(AskText.collapse(m.text), MAX_MEMORY_CHARS)}"
-
     companion object {
         private const val TAG = "AnswerService"
         private const val MAX_QUESTION = 500
+        /** The live Ask reads the memory store and the photo store. */
+        private val ASK_SOURCES = listOf(RagSource.MemoryStore(), RagSource.PhotoStore())
         private const val MAX_ANSWER = 2_000
-        private const val MAX_MEMORY_CHARS = 500
-        private const val FALLBACK = 10
-        private const val MAX_PHOTO_IMAGES = AskPhotoPolicy.MAX_PHOTOS
-        private const val MAX_PHOTO_CAPTION = 300
-        private const val IMAGE_NOTE = "note: image=N on a photo line is the Nth attached image"
         private const val ASK_EXTRACT_TIMEOUT_MS = 30_000L
-        private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
 
         /**
          * The privacy gate of Ask photos: the user's switch (off by default), the pipeline not paused, not inside quiet hours (unknown quiet hours count as
