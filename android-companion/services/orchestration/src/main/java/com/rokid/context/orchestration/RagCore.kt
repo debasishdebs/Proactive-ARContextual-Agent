@@ -29,7 +29,7 @@ enum class RagType { TEXT, IMAGE }
  * One retrieval request: [text] and/or [vector] (a photo's image embedding, e.g. a later Nudge trigger). With a [vector] the photo store is searched
  * by it; with only [text] by words (what an Ask does for its photo lines). [type] says which kind the query is.
  */
-class RagQuery(val text: String? = null, val vector: FloatArray? = null) {
+class RagQuery(val text: String? = null, val vector: FloatArray? = null, val vectorSpace: String? = null) {
     val type: RagType get() = if (vector != null) RagType.IMAGE else RagType.TEXT
 }
 
@@ -145,7 +145,7 @@ class RagCore(
     /** Words to photos inside a time window ([notBeforeMs] reaches the scan before top-k; [notAfterMs] null = now). */
     private val photosWindowed: (suspend (question: String, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long) -> List<PhotoHit>)? = null,
     /** The photos near a ready image embedding (IMAGE queries with a vector). */
-    private val photosByVector: suspend (vector: FloatArray, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?) -> List<PhotoHit> = { _, _, _, _ -> emptyList() },
+    private val photosByVector: suspend (vector: FloatArray, space: String?, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?) -> List<PhotoHit> = { _, _, _, _, _ -> emptyList() },
     /** Asked before every photo search ([AskPhotoPolicy.allowed]). False = no scan, no image, no photo line. */
     private val photosAllowed: suspend () -> Boolean = { false },
     /** The endpoint the gate checked (the ANSWER primary): images are sent only there, never to a fallback. */
@@ -164,7 +164,7 @@ class RagCore(
         val s = params.over(settings())
         val photoSrc = sources.filterIsInstance<RagSource.PhotoStore>().firstOrNull()
         val recalled = if (photoSrc == null) emptyList() else when {
-            query.vector != null -> recalledByVector(query.vector, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
+            query.vector != null -> recalledByVector(query.vector, query.vectorSpace, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
             query.text != null -> recalledPhotos(query.text, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
             else -> emptyList()
         }
@@ -274,8 +274,8 @@ class RagCore(
             }
         }, notAfterMs, notBeforeMs)
 
-    private suspend fun recalledByVector(v: FloatArray, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?): List<Pair<PhotoHit, String>> =
-        select(guarded { photosByVector(v, nowMs, notAfterMs, notBeforeMs) }, notAfterMs, notBeforeMs)
+    private suspend fun recalledByVector(v: FloatArray, space: String?, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?): List<Pair<PhotoHit, String>> =
+        select(guarded { photosByVector(v, space, nowMs, notAfterMs, notBeforeMs) }, notAfterMs, notBeforeMs)
 
     private suspend fun guarded(search: suspend () -> List<PhotoHit>): List<PhotoHit> =
         try { if (!photosAllowed()) emptyList() else search() } catch (c: CancellationException) { throw c } catch (e: Exception) {
@@ -352,9 +352,9 @@ class RagCore(
         }
 
         /** The production image-vector search: the Ask's photo budget and timeout, a ready embedding instead of words. */
-        fun photosByVectorFrom(context: Context): suspend (FloatArray, Long, Long?, Long?) -> List<PhotoHit> = { v, _, notAfter, notBefore ->
+        fun photosByVectorFrom(context: Context): suspend (FloatArray, String?, Long, Long?, Long?) -> List<PhotoHit> = { v, space, _, notAfter, notBefore ->
             kotlinx.coroutines.withTimeoutOrNull(AskPhotoPolicy.ASK_TIMEOUT_MS) {
-                PhotoRecall.forApp(context).search("", imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, notAfterMs = notAfter, queryVector = v, notBeforeMs = notBefore).image
+                PhotoRecall.forApp(context).search("", imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, notAfterMs = notAfter, queryVector = v, notBeforeMs = notBefore, queryVectorSpace = space).image
             }.orEmpty()
         }
     }

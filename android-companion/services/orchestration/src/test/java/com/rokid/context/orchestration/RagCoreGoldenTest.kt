@@ -189,7 +189,7 @@ class RagCoreGoldenTest {
 
     private fun core(hits: List<PhotoHit> = emptyList(), endpoint: suspend () -> String? = { "az" }, loads: MutableList<String>? = null, byVector: (Long?) -> Unit = {}, windowed: (suspend (String, Long, Long?, Long) -> List<PhotoHit>)? = null) =
         RagCore(MemoryGraph.get(ctx), AiGraph.get(ctx).retriever, { RetrievalSettings() }, { zone },
-            photos = { _, _ -> hits }, photosWindowed = windowed, photosAsOf = { _, _ -> hits }, photosByVector = { _, _, na, _ -> byVector(na); hits },
+            photos = { _, _ -> hits }, photosWindowed = windowed, photosAsOf = { _, _ -> hits }, photosByVector = { _, _, _, na, _ -> byVector(na); hits },
             photosAllowed = { true }, imageEndpointId = endpoint,
             photoImages = { ids -> loads?.addAll(ids); ids.associateWith { ModelImageInput("image/jpeg", "AAAA") } })
 

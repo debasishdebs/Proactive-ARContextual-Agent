@@ -67,5 +67,7 @@ class CronSpecTest {
         assertNull(CronSpec.parse("0,50 0,23 28,29 2 *")) // also the leap-day boundary is a ten minute gap
         assertNotNull(CronSpec.parse("0 9 28 2 *"))
         assertNotNull(CronSpec.parse("0 9 31 * *"))
+        assertNotNull(CronSpec.parse("0 9 29 * *")) // 29th of every month: occurs in a normal year
+        assertNotNull(CronSpec.parse("0 9 1-31 * *"))
     }
 }

@@ -74,8 +74,7 @@ class CronSpec private constructor(
             val dw = field(f[4], 0, 7)?.map { it % 7 }?.toSet() ?: return Parsed.Bad("cron: weekday field is not valid")
             val spec = CronSpec(m, h, dm, mo, dw, f[2] == "*", f[4] == "*")
             if (spec.times.isEmpty()) return Parsed.Bad("cron: never runs")
-            // only dates that occur in every year: no 29 February (and no 31 April, 30 February...), so a schedule never waits years or stalls on a leap day
-            if (!f[2].equals("*") && 2 in mo && 29 in dm) return Parsed.Bad("cron: 29 February is not allowed")
+            // a schedule must occur in a normal year: leap-day-only (29 February alone) and impossible dates (31 April) are refused, so it never waits years; 29 of every month is fine
             val normalYear = LocalDate.of(2027, 1, 1)
             if ((0..364).none { spec.dayMatches(normalYear.plusDays(it.toLong())) }) return Parsed.Bad("cron: never runs")
             if (spec.minIntervalMin() < MIN_INTERVAL_MIN) return Parsed.Bad("cron: runs more often than every $MIN_INTERVAL_MIN minutes")

@@ -72,7 +72,7 @@ class NudgeTriggerEngineTest {
     private fun engine(): NudgeEngine {
         val mem = MemoryGraph.get(ctx)
         val seams = TriggerSeams(
-            meta, { _, _, _ -> signalValues }, TriggerImages { imageAsked++; image?.let { v -> TriggerPhoto(imageFrame, v) } }, { paused }, { reach }, { now },
+            meta, { _, _, _ -> signalValues }, TriggerImages { imageAsked++; image?.let { v -> TriggerPhoto(imageFrame, "s1", v) } }, { paused }, { reach }, { now },
         )
         return NudgeEngine(
             NudgeInputs(mem, ContextSourceProvider { _, _ -> emptyList() }) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
@@ -222,6 +222,9 @@ class NudgeTriggerEngineTest {
         val e = NudgeEngine(NudgeInputs(mem, ContextSourceProvider { _, _ -> emptyList() }) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
             ProposalIntake { _, _, _, _ -> "p" }, clock = { now }, hud = { hud }, flows = FlowPlans { throw IllegalStateException("db") }, triggers = TriggerSeams(paused = { true }))
         assertTrue(e.runOnce(NodeTypes.TRIGGER_MOMENT) is NudgeRun.Shown)
+        // a queued built-in fallback runs the built-in flow even when the lookup has recovered to an event-rooted plan
+        plan = planOf(NodeTypes.TRIGGER_MOMENT); now += 3_600_000L
+        assertTrue(engine().runOnce(NodeTypes.TRIGGER_SUMMARIZER, builtInOnly = true) is NudgeRun.Shown)
     }
 
     @Test fun theQueryPhotoIsFencedAndStoredAsADependency() = runBlocking {
