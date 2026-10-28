@@ -94,6 +94,22 @@ class GlassesRuntimeTest {
         assertEquals(1, bridge.sent.count { it.first == Channels.HELLO })
     }
 
+    /** v0.9.7 slice D: the glasses say they answer a photo request, and a request on its channel reaches the mark photo job (here: no capture service, so the phone hears `no_capture_service`). */
+    @Test fun theGlassesAnswerAPhoneMarkPhotoRequest() {
+        val runtime = GlassesRuntime.get(app)
+        assertEquals(true, runtime.hello(null).markPhotoRequest)
+        val bridge = FakeBridge()
+        val c = HudController(runtime.scope, bridge, HudSettingsCache(app.getSharedPreferences("rt_test_req", 0)), { Hello(glassesBatteryPct = 80, bufferSize = 0, glassesNowMs = 0, pauses = emptyList()) })
+        c.start()
+        runtime.attach(c)
+        assertEquals(true, bridge.subscriptions.contains(Channels.MARK_PHOTO_REQUEST))
+        bridge.phone(Channels.STATE, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.StateFrame(seq = 1, capture = com.rokid.context.core.model.CaptureState.Running, intervalSec = 300, phoneLinked = true, aiHealth = com.rokid.context.core.model.Health.Ok))) // opens the session
+        bridge.phone(Channels.MARK_PHOTO_REQUEST, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = "phone:77")))
+        val deadline = System.currentTimeMillis() + 5_000
+        while (bridge.sent.none { it.first == Channels.MARK_PHOTO } && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(1, bridge.sent.count { it.first == Channels.MARK_PHOTO })
+    }
+
     /** LGC4: a `pc_settings` push with `diagRecord=true` reaches the persisted request (armed: no epoch yet), under `dataDir/files/diag_state`; an old push (no field) leaves it off. */
     @Test fun aSettingsPushDrivesTheDiagRecordRequestAndPersistsItWithoutAnEpoch() {
         val runtime = GlassesRuntime.get(app)
