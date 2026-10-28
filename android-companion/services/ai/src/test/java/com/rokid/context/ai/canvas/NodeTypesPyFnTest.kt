@@ -31,7 +31,7 @@ class NodeTypesPyFnTest {
         for (w in listOf("laptop helper", "confirm", "never published to the glasses")) assertTrue("hint mentions $w: ${t.hint}", t.hint.contains(w))
         assertTrue("short hint", t.hint.length <= 160)
         assertEquals("every other palette type has no hint", emptyList<String>(), NodeTypes.all.filter { it.type != "py.fn" && it.hint.isNotEmpty() }.map { it.type })
-        assertEquals("only the photo input is hidden", listOf("input.photos"), NodeTypes.all.filter { !it.palette }.map { it.type })
+        assertEquals("only the photo input and the slice C trigger stubs are hidden", listOf("input.photos", "trigger.moment", "trigger.scene", "trigger.signal", "trigger.schedule"), NodeTypes.all.filter { !it.palette }.map { it.type })
     }
 
     @Test fun v1SchemaCannotHoldPyFn() {

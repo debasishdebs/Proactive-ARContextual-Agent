@@ -31,29 +31,30 @@ export function publishDialog(ctx, id, version, data, mayLeave) {
   // the version's own shape when the server sent it; otherwise the draft's numbers would be another pipeline's, so none are shown
   const row = (data.versions || []).find((v) => v.version === version) || {};
   const it = row.interpretable || null;
-  const radios = MODES.map((m) => {
+  const ms = MODES.filter((m) => (m.mode === 'flow') === !!row.flow); // a flow version has its own mode only
+  const radios = ms.map((m) => {
     const r = h('input', { type: 'radio', name: 'mode', value: m.mode });
-    r.checked = m.mode === (row.liveShape === false ? 'shadow' : 'prompts');
+    r.checked = m.mode === (row.flow ? 'flow' : row.liveShape === false ? 'shadow' : 'prompts');
     return r;
   });
   const range = it ? callRangeText(it.callRange) : '';
   const body = h('div', null,
-    MODES.map((m, i) => h('label', { class: 'field' }, h('span', null, radios[i], ' ', h('strong', null, m.label)), h('span', { class: 'muted' }, m.text))),
-    row.liveShape === false ? h('p', { class: 'muted' }, 'This version is not the live shape, so Prompts only may be refused.') : null,
-    !it ? h('p', { class: 'muted' }, 'The cost estimate describes your current draft; this version may differ. See Diff with draft.')
+    ms.map((m, i) => h('label', { class: 'field' }, h('span', null, radios[i], ' ', h('strong', null, m.label)), h('span', { class: 'muted' }, m.text))),
+    row.liveShape === false && !row.flow ? h('p', { class: 'muted' }, 'This version is not the live shape, so Prompts only may be refused.') : null,
+    row.flow ? null : !it ? h('p', { class: 'muted' }, 'The cost estimate describes your current draft; this version may differ. See Diff with draft.')
       : it.problems.length ? h('div', null, h('p', { class: 'muted' }, 'This version cannot be an interpreter yet:'), h('ul', { class: 'problems' }, it.problems.map((p) => h('li', null, p))))
       : (range ? h('p', null, range + '.') : null),
     it ? (it.warnings || []).map((w) => h('p', { class: 'muted' }, w)) : null,
     h('p', { class: 'muted' }, 'The server checks the version you publish and says what blocks it.'));
   ctx.modal('Publish v' + version, body, [{ label: 'Publish', cls: 'btn primary', run: async (close) => {
-    const mode = MODES[radios.findIndex((r) => r.checked)].mode;
+    const mode = ms[radios.findIndex((r) => r.checked)].mode;
     if (mode === 'live' && !window.confirm('Live replaces the extraction step for every batch. Publish v' + version + ' as Live?')) return;
     if (mayLeave && !mayLeave()) return;
     close();
     try {
       const r = await ctx.api('POST', '/api/pipelines/' + enc(id) + '/versions/' + version + '/publish', { mode });
       await ctx.reload();
-      ctx.showNotice(r.kind === 'interpreter' ? 'Published as ' + r.mode + '.' : 'Published: ' + (r.keys || []).join(', '));
+      ctx.showNotice(r.kind === 'flow' ? 'Published as a live flow.' : r.kind === 'interpreter' ? 'Published as ' + r.mode + '.' : 'Published: ' + (r.keys || []).join(', '));
     } catch (e) {
       if (e.code === 'publish_blocked') ctx.showError({ message: 'Publish blocked.', problems: e.problems });
       else ctx.showError(e);

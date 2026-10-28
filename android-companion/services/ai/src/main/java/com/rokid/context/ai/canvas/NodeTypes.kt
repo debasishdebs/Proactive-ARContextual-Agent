@@ -5,7 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS, SCENES, SUMMARY, NUMBER, WATCH }
+enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS, SCENES, SUMMARY, NUMBER, WATCH, RAG }
 
 /** Where a node runs (slice 3 section 2). A `signal.*` node's domain is its `params.domain`, per instance. WATCH is the watch lane: its one node reads what the phone hub already received from the watch. */
 enum class Domain { WATCH, RT_GLASSES, RT_PHONE, ASYNC, REPLAY_ONLY }
@@ -108,6 +108,19 @@ object NodeTypes {
     /** Scenes: an ASYNC input root next to `input.moments`, read by the phone-side scene executor (stored Scenes of a time window). Never published, no glasses plan; `ai.prompt` and `py.fn` accept its SCENES output (a run item per Scene with its visible text). */
     const val INPUT_SCENES = "input.scenes"
 
+    /** v0.9.8 slice B, the Query (Ask) and Nudge flows: phone-side ASYNC nodes over [com.rokid.context.ai.canvas.FlowPlan]. Never in a photo graph. */
+    const val INPUT_UTTERANCE = "input.utterance"
+    const val EMBED_TEXT = "embed.text"
+    const val RAG_RETRIEVE = "rag.retrieve"
+    const val GATE_NUDGE = "gate.nudge"
+    const val OUT_DELIVER = "out.deliver"
+    const val TRIGGER_SUMMARIZER = "trigger.summarizer_pass"
+    /** Slice C triggers: types only (a graph may hold them, nothing runs or publishes them yet). */
+    const val TRIGGER_MOMENT = "trigger.moment"
+    const val TRIGGER_SCENE = "trigger.scene"
+    const val TRIGGER_SIGNAL = "trigger.signal"
+    const val TRIGGER_SCHEDULE = "trigger.schedule"
+
     const val OTHER = "other"
 
     /** The domains a `signal.*` node may run in. */
@@ -125,7 +138,7 @@ object NodeTypes {
             category = Category.CHECKS, short = "trust", params = LocalTrust.schema, inner = LocalTrust.inner, family = Family.CONDITION),
         NodeType(CRITIC, "Critic", setOf(PortType.EXTRACTION), PortType.EXTRACTION, PromptKey.CRITIC, branches = { listOf("pass", "fail") },
             executor = ExecutorKind.PROMPT, short = "critic", inner = CriticComposite.inner, family = Family.PROCESS),
-        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES, PortType.MOMENTS), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt", family = Family.PROCESS),
+        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES, PortType.MOMENTS, PortType.RAG), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt", family = Family.PROCESS),
         // new in v0.9.4: a schema-2 type (a v1 graph never holds it), no params and no prompt of its own; its executor is the phone-side text path of `ai.prompt`
         NodeType(SUMMARY, "Summary", setOf(PortType.JSON, PortType.EXTRACTION, PortType.MOMENTS, PortType.SCENES), PortType.SUMMARY, sinceSchema = 2, executor = ExecutorKind.PROMPT,
             short = "summary", family = Family.PROCESS),
@@ -191,7 +204,25 @@ object NodeTypes {
             )), family = Family.PROCESS),
     )
 
-    val all: List<NodeType> = legacy + capture + experiments
+    /** Slice B: the Query and Nudge flows. Roots are `input.utterance` and the `trigger.*` types; the shape rules live in [FlowPlan]. */
+    private val flows: List<NodeType> = listOf(
+        NodeType(INPUT_UTTERANCE, "Utterance", emptySet(), PortType.TEXT, sinceSchema = 2, category = Category.INPUTS, short = "utterance", root = true, family = Family.SOURCE),
+        NodeType(EMBED_TEXT, "Embed text", setOf(PortType.TEXT), PortType.VECTOR, sinceSchema = 2, category = Category.DATA, executor = ExecutorKind.EMBED, short = "embed", family = Family.PROCESS),
+        NodeType(TRIGGER_SUMMARIZER, "After summarizer pass", emptySet(), PortType.TRIGGER, sinceSchema = 2, category = Category.INPUTS, short = "after", root = true, family = Family.SOURCE),
+    ) + listOf(
+        TRIGGER_MOMENT to "Moment", TRIGGER_SCENE to "Scene", TRIGGER_SIGNAL to "Signal aggregate", TRIGGER_SCHEDULE to "Schedule",
+    ).map { (t, label) ->
+        NodeType(t, label, emptySet(), PortType.TRIGGER, sinceSchema = 2, category = Category.INPUTS, short = t.substringAfter('.'), palette = false, liveable = false, root = true,
+            family = Family.SOURCE)
+    } + listOf(
+        NodeType(RAG_RETRIEVE, "Retrieve", setOf(PortType.TEXT, PortType.VECTOR, PortType.TRIGGER), PortType.RAG, sinceSchema = 2, category = Category.MEMORY, short = "rag",
+            params = RagRetrieveParams.schema, family = Family.PROCESS),
+        NodeType(GATE_NUDGE, "Nudge gates", setOf(PortType.JSON), PortType.JSON, sinceSchema = 2, category = Category.CHECKS, short = "gates", family = Family.CONDITION),
+        NodeType(OUT_DELIVER, "Deliver", setOf(PortType.JSON), PortType.PREVIEW, sinceSchema = 2, category = Category.ACTIONS_CAPTURE, short = "deliver", family = Family.OUTCOME,
+            params = ParamSchema(listOf(ParamSpec("target", ParamKind.ENUM, label = "Deliver to", options = FlowPlan.TARGETS, default = JsonPrimitive("caller"))))),
+    )
+
+    val all: List<NodeType> = legacy + capture + experiments + flows
 
     private val index = all.associateBy { it.type }
 

@@ -6,6 +6,7 @@ import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
+import com.rokid.context.ai.canvas.FlowPlan
 import com.rokid.context.ai.contract.AnswerOutput
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.run.RoleCall
@@ -106,6 +107,8 @@ class AnswerService(
     private val imageEndpointId: suspend () -> String? = { null },
     /** Decrypted in memory only (`FramePhotos.load`); a missing key = unreadable photo, which is skipped. */
     private val photoImages: suspend (frameIds: List<String>) -> Map<String, ModelImageInput> = { emptyMap() },
+    /** The published Query pipeline (v0.9.8 slice B); none = the built-in plan. */
+    private val flows: FlowPlans = FlowPlans.None,
 ) {
     /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
     data class Retrieved(
@@ -118,9 +121,10 @@ class AnswerService(
     /** The shared retrieval core (v0.9.8): memories and photos with every gate; the prompt vars of the ask are built here. */
     internal val rag = RagCore(memory, retriever, settings, zone, photos, photosAsOf, photosWindowed = photosWindowed, photosAllowed = photosAllowed, imageEndpointId = imageEndpointId, photoImages = photoImages)
 
-    suspend fun retrieve(question: String, nowMs: Long): Retrieved {
+    /** [plan]: the sources and params of the Query flow; the built-in plan is today's Ask (the memory and photo stores, the user's settings). */
+    suspend fun retrieve(question: String, nowMs: Long, plan: FlowPlan = FlowPlan.BUILT_IN_QUERY): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val c = rag.retrieve(RagQuery(q), ASK_SOURCES, RagParams(), nowMs)
+        val c = rag.retrieve(RagQuery(q), plan.askSources(), plan.ragParams(), nowMs)
         return Retrieved(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
@@ -219,7 +223,7 @@ class AnswerService(
         } catch (e: Exception) {
             PcLog.i(TAG, "backlog extraction before ask failed (${e.javaClass.simpleName})")
         }
-        val r = retrieve(q, nowMs)
+        val r = retrieveWithFlow(q, nowMs)
         // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
         if (r.memories.isEmpty() && r.photos.isEmpty() && !ActionTriggers.matches(q)) {
             runCatching(onNoMatch).onFailure { PcLog.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
@@ -259,6 +263,17 @@ class AnswerService(
         return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second)
     }
 
+    /** The published Query pipeline's retrieval; any problem with it (lookup, compile, retrieval) runs the built-in flow instead. Cancellation propagates. */
+    private suspend fun retrieveWithFlow(q: String, nowMs: Long): Retrieved {
+        val plan = try { flows.plan(FlowPlan.Kind.QUERY) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            PcLog.w(TAG, "query pipeline lookup failed (${e.javaClass.simpleName}); built-in flow"); null
+        }
+        if (plan == null || plan == FlowPlan.BUILT_IN_QUERY) return retrieve(q, nowMs)
+        return try { retrieve(q, nowMs, plan) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            PcLog.w(TAG, "query pipeline failed (${e.javaClass.simpleName}); built-in flow"); retrieve(q, nowMs)
+        }
+    }
+
     /** The first cited source that is a photo still in storage: (frame id, capture time). An expired photo gives no HUD label (S9). */
     internal suspend fun firstCitedPhoto(r: Retrieved, cited: List<String>): Pair<String, Long>? {
         val cites = r.photos.associateBy { it.citeId }
@@ -278,8 +293,6 @@ class AnswerService(
     companion object {
         private const val TAG = "AnswerService"
         private const val MAX_QUESTION = 500
-        /** The live Ask reads the memory store and the photo store. */
-        private val ASK_SOURCES = listOf(RagSource.MemoryStore(), RagSource.PhotoStore())
         private const val MAX_ANSWER = 2_000
         private const val ASK_EXTRACT_TIMEOUT_MS = 30_000L
 
@@ -318,6 +331,7 @@ class AnswerService(
                 sources = sourcesFrom(provider),
                 proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
                 photosWindowed = RagCore.photosWindowedFrom(context),
+                flows = com.rokid.context.canvas.DaoFlowPlans(MemoryGraph.get(context).db.canvasDao()),
                 photosAllowed = { photosAllowedNow(context) },
                 imageEndpointId = { answerImageEndpoint(context) },
                 // The scan has its own budget (below the outer timeout), so partial hits survive; the timeout is only the backstop.

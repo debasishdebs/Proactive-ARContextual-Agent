@@ -14,6 +14,7 @@ object NudgeEngineFactory {
         return NudgeEngine(
             NudgeInputs(memory, sources.provider), AiGraph.get(app).runner, NudgeGates(memory.db.nudgeGateDao(), { sources.settings.shownGapMin.value * 60_000L }) { sources.settings.nudgesPerDay.value },
             memory, com.rokid.context.orchestration.OriginFencedIntake(app, memory, ActionsGraph.get(app).intake),
+            flows = com.rokid.context.canvas.DaoFlowPlans(memory.db.canvasDao()),
         )
     }
 }

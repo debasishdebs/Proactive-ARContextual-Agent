@@ -36,11 +36,12 @@ export const tests = {
     eq(F.callRangeText([0, 0]), '');
   },
   modesStateTheHonestCost() {
-    eq(F.MODES.map((m) => m.mode), ['prompts', 'shadow', 'live']);
+    eq(F.MODES.map((m) => m.mode), ['prompts', 'shadow', 'live', 'flow']);
     const by = Object.fromEntries(F.MODES.map((m) => [m.mode, m.text]));
     ok(by.shadow.includes('unmetered') && by.shadow.includes('1 in 4') && by.shadow.includes('2–2.5×'), by.shadow);
     ok(by.live.includes('3 intent calls') && by.live.includes('1–3 extract calls') && by.live.includes('240 s') && by.live.includes('one live fallback'), by.live);
     ok(by.live.includes('confidence check') && by.live.includes('critic') && by.live.includes('save rules'));
+    ok(by.flow.includes('built-in flow runs') && by.flow.includes('Forget'), by.flow);
   },
   rollbackRaceTexts() {
     eq(F.rollbackProblems(['That publish was already rolled back.']), ['That publish was already rolled back.']);

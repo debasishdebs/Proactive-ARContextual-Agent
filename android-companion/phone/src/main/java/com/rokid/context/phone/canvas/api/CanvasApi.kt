@@ -299,15 +299,16 @@ class CanvasApi(
             "prompts" -> outcome(backend.publish(id, version.toInt()), "publish_blocked")
             "shadow" -> outcome(backend.publishInterpreter(id, version.toInt(), LiveMode.SHADOW), "publish_blocked", LiveMode.SHADOW)
             "live" -> outcome(backend.publishInterpreter(id, version.toInt(), LiveMode.LIVE), "publish_blocked", LiveMode.LIVE)
+            "flow" -> outcome(backend.publishFlow(id, version.toInt()), "publish_blocked", kind = CanvasPublisher.KIND_FLOW)
             else -> throw bad("Bad \"mode\".")
         }
     }
 
-    private fun outcome(o: CanvasPublisher.Outcome, blockedCode: String, mode: LiveMode? = null): HttpResponse = when (o) {
+    private fun outcome(o: CanvasPublisher.Outcome, blockedCode: String, mode: LiveMode? = null, kind: String? = null): HttpResponse = when (o) {
         is CanvasPublisher.Outcome.Published -> json(buildJsonObject {
             put("publishId", o.publishId)
             put("keys", JsonArray(o.keys.map { JsonPrimitive(it.name) }))
-            put("kind", if (mode == null) CanvasPublisher.KIND_PROMPTS else CanvasPublisher.KIND_INTERPRETER)
+            put("kind", kind ?: if (mode == null) CanvasPublisher.KIND_PROMPTS else CanvasPublisher.KIND_INTERPRETER)
             mode?.let { put("mode", it.name) }
         })
         is CanvasPublisher.Outcome.Blocked -> throw ApiError(409, blockedCode, "Blocked.", o.reasons)

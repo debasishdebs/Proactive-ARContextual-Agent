@@ -70,7 +70,7 @@ class StarterMomentSummaryTest {
 
     @Test fun itIsListedAfterTheOthersSoTheirOrderIsKept() {
         assertEquals(
-            listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT, DefaultPipelines.DEFAULT_CAPTURE, DefaultPipelines.STARTER, DefaultPipelines.STARTER_MOMENT_SUMMARY, DefaultPipelines.STARTER_WATCH_MOTION),
+            listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT, DefaultPipelines.DEFAULT_CAPTURE, DefaultPipelines.STARTER, DefaultPipelines.STARTER_MOMENT_SUMMARY, DefaultPipelines.STARTER_WATCH_MOTION, DefaultPipelines.DEFAULT_QUERY, DefaultPipelines.DEFAULT_NUDGE),
             DefaultPipelines.all,
         )
     }

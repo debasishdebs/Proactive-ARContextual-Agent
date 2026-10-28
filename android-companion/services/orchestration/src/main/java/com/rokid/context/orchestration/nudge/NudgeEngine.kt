@@ -3,6 +3,7 @@ package com.rokid.context.orchestration.nudge
 import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.ai.SafeLog
+import com.rokid.context.ai.canvas.FlowPlan
 import com.rokid.context.ai.contract.NudgeOutput
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.run.RoleCall
@@ -15,6 +16,7 @@ import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.forget.ForgetFence
 import com.rokid.context.orchestration.AskSources
+import com.rokid.context.orchestration.FlowPlans
 import com.rokid.context.orchestration.AskText
 import kotlinx.coroutines.sync.withLock
 import java.util.UUID
@@ -44,6 +46,8 @@ class NudgeEngine(
     private val intake: ProposalIntake,
     private val clock: () -> Long = System::currentTimeMillis,
     private val hud: () -> NudgeHud? = { NudgeEnvironment.hud?.invoke() },
+    /** The published Nudge pipeline (v0.9.8 slice B); none = the built-in plan. */
+    private val flows: FlowPlans = FlowPlans.None,
 ) {
     /** Serialized with every other run through [NudgeRunLock] (the daily cap is read-then-write). */
     suspend fun runOnce(): NudgeRun = NudgeRunLock.mutex.withLock { runLocked() }
@@ -52,7 +56,7 @@ class NudgeEngine(
         val now = clock()
         val h = hud() ?: return NudgeRun.NoHud
         gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }
-        val prepared = inputs.build(now)
+        val prepared = buildInputs(now)
         if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
         val out = try {
             runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds, callClass = com.rokid.context.model.CallClass.NUDGE)).output as NudgeOutput
@@ -83,6 +87,17 @@ class NudgeEngine(
         if (!live) return NudgeRun.Forgotten
         out.proposedAction?.let { intake.onProposed(ProposalOrigin.NUDGE, id, it, now) }
         return NudgeRun.Shown(id)
+    }
+
+    /** The published Nudge pipeline's inputs; any problem with it (lookup, compile, retrieval) runs the built-in inputs instead. The gates around it are the engine's own. */
+    private suspend fun buildInputs(now: Long): NudgeInputs.Prepared {
+        val plan = try { flows.plan(FlowPlan.Kind.NUDGE) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            PcLog.i(TAG, "nudge pipeline lookup failed (${e.javaClass.simpleName}); built-in flow"); null
+        }
+        if (plan == null || plan == FlowPlan.BUILT_IN_NUDGE) return inputs.build(now)
+        return try { inputs.build(now, plan = plan) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            PcLog.i(TAG, "nudge pipeline failed (${e.javaClass.simpleName}); built-in flow"); inputs.build(now)
+        }
     }
 
     companion object {

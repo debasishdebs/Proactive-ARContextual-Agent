@@ -1,5 +1,6 @@
 package com.rokid.context.canvas
 
+import com.rokid.context.ai.canvas.FlowPlan
 import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.NodeTypes
@@ -53,6 +54,8 @@ class CanvasPublisher(
 
         const val KIND_PROMPTS = "prompts"
         const val KIND_INTERPRETER = "interpreter"
+        /** v0.9.8 slice B: a Query or Nudge pipeline (`component` `query` or `nudge`). Not a prompts or interpreter publish: those stacks ignore it. */
+        const val KIND_FLOW = "flow"
         /** Slice 3a: a capture-plan publish row (`component` = `capture_plan`, one per publish group). It is NOT a prompts or interpreter publish: those stacks ignore it. */
         const val KIND_CAPTURE_PLAN = "capture_plan"
         /** The `component` of an ASYNC interpreter row that belongs to a publish group. */
@@ -121,6 +124,36 @@ class CanvasPublisher(
             PcLog.w(TAG, "interpreter publish failed: ${e.javaClass.simpleName}")
             Outcome.Blocked(listOf(PUBLISH_FAILED))
         }
+    }
+
+    /**
+     * Publishes a frozen Query or Nudge pipeline (v0.9.8 slice B): it must validate and compile ([FlowPlan.compile]; a slice C trigger or an unrouted delivery target is refused).
+     * It writes no prompts (a flow always uses the live ANSWER or NUDGE prompt), so there is no untested text to gate on. One row, superseding the active row of the same component.
+     */
+    suspend fun publishFlow(pipelineId: String, version: Int): Outcome = lock.withLock {
+        val v = dao.version(pipelineId, version) ?: return@withLock Outcome.Blocked(listOf("Version not found"))
+        val p = PipelineJson.decode(v.json).getOrNull() ?: return@withLock Outcome.Blocked(listOf("Version is unreadable"))
+        val plan = when (val c = FlowPlan.compile(p)) {
+            is FlowPlan.Compiled.Refused -> return@withLock Outcome.Blocked(c.reasons)
+            is FlowPlan.Compiled.Ok -> c.plan
+        }
+        val snapshot = buildJsonObject { put("pipelineId", pipelineId); put("version", version); put("hash", v.hash) }.toString()
+        var result: Outcome = Outcome.Blocked(listOf(PUBLISH_FAILED))
+        try {
+            transact {
+                val now = clock()
+                dao.activePublishes().filter { it.kind == KIND_FLOW && it.component == plan.kind.component }.forEach { dao.markRolledBackWithReason(it.id, now, "superseded") }
+                val id = dao.insertPublish(CanvasPublishEntity(pipelineId = pipelineId, version = version, hash = v.hash, publishedAt = now, rolledBackAt = null,
+                    snapshotJson = snapshot, kind = KIND_FLOW, component = plan.kind.component))
+                result = Outcome.Published(id, emptyList())
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            PcLog.w(TAG, "flow publish failed: ${e.javaClass.simpleName}")
+            return@withLock Outcome.Blocked(listOf(PUBLISH_FAILED))
+        }
+        result
     }
 
     /** Rolls an interpreter publish back with a fixed [reason] (auto-rollback). False when it is not an active interpreter publish (already rolled back). */
@@ -195,7 +228,7 @@ class CanvasPublisher(
             if (active.first().id != expectedId) return Outcome.Blocked(listOf("A newer publish exists. Reload and try again."))
         }
         val pub = active.firstOrNull() ?: return Outcome.Blocked(listOf("Nothing to roll back"))
-        if (pub.kind == KIND_INTERPRETER) return rollbackInterpreter(pub)
+        if (pub.kind == KIND_INTERPRETER || pub.kind == KIND_FLOW) return rollbackInterpreter(pub) // neither holds prompts: undoing is the mark
         val snap = runCatching { Json.parseToJsonElement(pub.snapshotJson).jsonObject }.getOrNull()
             ?: return Outcome.Blocked(listOf("The publish record is unreadable"))
         val published = snap["published"]?.jsonArray.orEmpty().mapNotNull { e ->
