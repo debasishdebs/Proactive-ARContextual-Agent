@@ -104,7 +104,8 @@ class GlassesRuntimeTest {
         runtime.attach(c)
         assertEquals(true, bridge.subscriptions.contains(Channels.MARK_PHOTO_REQUEST))
         bridge.phone(Channels.STATE, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.StateFrame(seq = 1, capture = com.rokid.context.core.model.CaptureState.Running, intervalSec = 300, phoneLinked = true, aiHealth = com.rokid.context.core.model.Health.Ok))) // opens the session
-        bridge.phone(Channels.MARK_PHOTO_REQUEST, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = "phone:${System.currentTimeMillis()}", atMs = System.currentTimeMillis(), sessionStartMs = 1)))
+        bridge.phone(Channels.WEAR, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.WearMessage(worn = true, atMs = 5_000, sessionStartMs = 4_000)))
+        bridge.phone(Channels.MARK_PHOTO_REQUEST, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = "phone:${System.currentTimeMillis()}", atMs = System.currentTimeMillis(), sessionStartMs = 4_000)))
         val deadline = System.currentTimeMillis() + 5_000
         while (bridge.sent.none { it.first == Channels.MARK_PHOTO } && System.currentTimeMillis() < deadline) Thread.sleep(20)
         assertEquals(1, bridge.sent.count { it.first == Channels.MARK_PHOTO })
@@ -118,29 +119,29 @@ class GlassesRuntimeTest {
         return c to bridge
     }
     private fun openSession(b: FakeBridge) = b.phone(Channels.STATE, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.StateFrame(seq = 1, capture = com.rokid.context.core.model.CaptureState.Running, intervalSec = 300, phoneLinked = true, aiHealth = com.rokid.context.core.model.Health.Ok)))
-    private fun photoRequest(b: FakeBridge, session: Long = 1) { val now = System.currentTimeMillis(); b.phone(Channels.MARK_PHOTO_REQUEST, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = "phone:$now", atMs = now, sessionStartMs = session))) }
+    private var refSeq = System.currentTimeMillis()
+    private fun photoRequest(b: FakeBridge, session: Long = 4_000) { val now = ++refSeq; b.phone(Channels.MARK_PHOTO_REQUEST, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = "phone:$now", atMs = now, sessionStartMs = session))) }
     private fun photoReports(b: FakeBridge) = b.sent.filter { it.first == Channels.MARK_PHOTO }.map { it.second.joinToString() }
     private fun waitFor(b: FakeBridge, n: Int) { val d = System.currentTimeMillis() + 3_000; while (photoReports(b).size < n && System.currentTimeMillis() < d) Thread.sleep(20) }
 
-    /** Review fix: a photo request before the session opened, after it closed or after the wearer exited never reaches the camera (the answer, when one can go, is `session_closed`). */
-    @Test fun aPhotoRequestOutsideAnOpenSessionIsRefused() {
+    private fun wear(b: FakeBridge) = b.phone(Channels.WEAR, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.WearMessage(worn = true, atMs = 5_000, sessionStartMs = 4_000)))
+
+    /** Review fixes: a photo request FAILS CLOSED. Before the session opened, between the session opening and the phone's session identity arriving (wear/plan/phone-context), with another or no session start, or after the wearer exited, it never reaches the camera. */
+    @Test fun aPhotoRequestWithoutAnOpenKnownSessionIsRefused() {
         val (c, b) = requestRig()
         photoRequest(b); waitFor(b, 1)
-        assertEquals(1, photoReports(b).size); assertEquals(true, photoReports(b).single().contains("session_closed"))
+        assertEquals(true, photoReports(b).single().contains("session_closed"), "no session yet")
         openSession(b); photoRequest(b); waitFor(b, 2)
-        assertEquals(true, photoReports(b).last().contains("no_capture_service"), "an open session runs the job (no capture service here: its own reason)")
+        assertEquals(true, photoReports(b).last().contains("unknown_session"), "the window between the session opening and the phone's identity: refused")
+        wear(b)
+        photoRequest(b, session = 0); waitFor(b, 3)
+        assertEquals(true, photoReports(b).last().contains("session_closed"), "a request that names no session")
+        photoRequest(b, session = 3_000); waitFor(b, 4)
+        assertEquals(true, photoReports(b).last().contains("session_closed"), "another phone session")
+        photoRequest(b); waitFor(b, 5)
+        assertEquals(true, photoReports(b).last().contains("no_capture_service"), "the known session runs the job (no capture service here: its own reason)")
         c.onActivityExit(); b.sent.clear(); photoRequest(b); Thread.sleep(300)
         assertEquals(0, photoReports(b).size, "nothing goes out after the wearer exited")
-    }
-
-    @Test fun aPhotoRequestOfAnotherPhoneSessionIsRefused() {
-        val (_, b) = requestRig()
-        openSession(b)
-        b.phone(Channels.WEAR, com.rokid.context.core.model.Wire.encode(com.rokid.context.core.model.WearMessage(worn = true, atMs = 5_000, sessionStartMs = 4_000)))
-        photoRequest(b, session = 3_000); waitFor(b, 1)
-        assertEquals(true, photoReports(b).single().contains("session_closed"))
-        photoRequest(b, session = 4_000); waitFor(b, 2)
-        assertEquals(true, photoReports(b).last().contains("no_capture_service"))
     }
 
     /** LGC4: a `pc_settings` push with `diagRecord=true` reaches the persisted request (armed: no epoch yet), under `dataDir/files/diag_state`; an old push (no field) leaves it off. */

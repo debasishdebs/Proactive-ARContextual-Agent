@@ -88,8 +88,6 @@ class HudController(
     @Volatile var onMarkAck: (com.rokid.context.core.model.MarkAck) -> Unit = {}
     /** v0.9.7 slice D: the phone asks for the photo of a phone-origin mark. */
     @Volatile var onMarkPhotoRequest: (com.rokid.context.core.model.MarkPhotoRequest) -> Unit = {}
-    /** The session closed: the mark photo requests forget the phone clock they learned. */
-    @Volatile var onMarkPhotoSessionClosed: () -> Unit = {}
     /** The phone's session start (phone clock) as its last accepted message named it; 0 = none yet. A photo request of another session is refused. */
     @Volatile private var phoneSessionStartMs = 0L
     /** The session is open and the phone is talking (session open, or a hello request on an open session): re-send unacked marks. */
@@ -137,12 +135,13 @@ class HudController(
      */
     private fun acceptMarkPhotoRequest(r: com.rokid.context.core.model.MarkPhotoRequest) {
         val known = phoneSessionStartMs
-        val sameSession = known == 0L || r.sessionStartMs == known
+        // FAIL CLOSED: the phone session identity must be known (a wear/plan/phone-context message of this session arrived) and the request must name exactly it
+        val sameSession = known != 0L && r.sessionStartMs != 0L && r.sessionStartMs == known
         if (!exited && _sessionOpen.value && sameSession) { onMarkPhotoRequest(r); return }
         PcLog.i(TAG, "pc_mark_photo_request outside its session ignored")
         if (exited || !MarkRef.isValid(r.ref)) return
         val seq = r.ref.substringAfterLast(':').toLongOrNull() ?: return
-        try { bridge.send(Channels.MARK_PHOTO, Wire.encode(com.rokid.context.core.model.MarkPhotoResult(epoch = r.ref.substringBeforeLast(':'), seq = seq, reason = com.rokid.context.core.model.MarkPhotoReason.SESSION_CLOSED))) } catch (e: Exception) { /* best effort */ }
+        try { bridge.send(Channels.MARK_PHOTO, Wire.encode(com.rokid.context.core.model.MarkPhotoResult(epoch = r.ref.substringBeforeLast(':'), seq = seq, reason = if (_sessionOpen.value && known == 0L) com.rokid.context.core.model.MarkPhotoReason.UNKNOWN_SESSION else com.rokid.context.core.model.MarkPhotoReason.SESSION_CLOSED))) } catch (e: Exception) { /* best effort */ }
     }
 
     private fun onPhoneContextMessage(m: PhoneContextMessage) {
@@ -257,7 +256,7 @@ class HudController(
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
         synchronized(ctxLock) {
-            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); phoneSessionStartMs = 0L; try { onMarkPhotoSessionClosed() } catch (e: Exception) { }; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
+            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); phoneSessionStartMs = 0L; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
         }
         refreshConnection()
     }
