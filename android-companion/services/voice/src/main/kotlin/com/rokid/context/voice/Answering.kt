@@ -71,6 +71,9 @@ object VoiceCopy {
     const val MIC_PHONE = "Allow the microphone to ask by voice"
     const val PHONE_BUSY_HUD = "Phone is listening — try again"
     const val GLASSES_BUSY_PHONE = "Your glasses are listening — try again"
+    /** v0.9.8 slice D: the mic of that device is switched off in Settings (Devices > Mic and display). */
+    const val GLASSES_MIC_OFF = "The glasses mic is off in Settings"
+    const val PHONE_MIC_OFF = "The phone mic is off in Settings"
     const val FAILED_HUD = "Couldn't answer that"
     const val FAILED_PHONE = "Couldn't answer that — try again"
     /** Thinking ran past [VoiceTimings.answerTimeoutMs]: the same copy on the HUD and Home. */

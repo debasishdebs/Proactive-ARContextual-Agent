@@ -54,7 +54,7 @@ export function publishDialog(ctx, id, version, data, mayLeave) {
     try {
       const r = await ctx.api('POST', '/api/pipelines/' + enc(id) + '/versions/' + version + '/publish', { mode });
       await ctx.reload();
-      ctx.showNotice(r.kind === 'flow' ? 'Published as a live flow.' : r.kind === 'interpreter' ? 'Published as ' + r.mode + '.' : 'Published: ' + (r.keys || []).join(', '));
+      ctx.showNotice((r.kind === 'flow' ? 'Published as a live flow.' : r.kind === 'interpreter' ? 'Published as ' + r.mode + '.' : 'Published: ' + (r.keys || []).join(', ')) + (r.warnings && r.warnings.length ? ' Warning: ' + r.warnings.join('; ') : ''));
     } catch (e) {
       if (e.code === 'publish_blocked') ctx.showError({ message: 'Publish blocked.', problems: e.problems });
       else ctx.showError(e);

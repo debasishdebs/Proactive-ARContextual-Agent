@@ -6,6 +6,7 @@ import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.canvas.FlowPlan
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.core.model.DeliveryRoute
+import com.rokid.context.core.model.DeviceCapabilities
 import com.rokid.context.core.model.GlassesReach
 import com.rokid.context.orchestration.DeliveryEnvironment
 import com.rokid.context.ai.contract.NudgeOutput
@@ -139,10 +140,33 @@ class NudgeEngine(
     }
 
     /** Where the nudge shows. `both` (and the built-in flow) is today's verbosity routing; `phone` stays in the feed; `glasses` is the HUD overlay, or the phone with a recorded reason when they are not connected. */
-    private fun routeOf(plan: FlowPlan?, verbosity: Verbosity): NudgeRoute = when (plan?.target) {
-        "phone" -> NudgeRoute("phone")
-        "glasses" -> if (triggers.reach() == GlassesReach.UP) NudgeRoute("toast") else NudgeRoute("phone", DeliveryRoute.GLASSES_NOT_CONNECTED)
-        else -> NudgeRoute(shownOn(verbosity))
+    private fun routeOf(plan: FlowPlan?, verbosity: Verbosity): NudgeRoute {
+        val caps = triggers.capabilities()
+        val pd = caps.phoneDisplay; val gd = caps.glassesDisplay
+        val none = if (pd) DeviceCapabilities.GLASSES_DISPLAY_OFF else DeviceCapabilities.NO_DISPLAY
+        val up = triggers.reach() == GlassesReach.UP
+        return when (plan?.target) {
+            "phone" -> when {
+                pd -> NudgeRoute("phone")
+                gd && up -> NudgeRoute("toast", DeviceCapabilities.PHONE_DISPLAY_OFF)
+                else -> NudgeRoute("phone", if (gd) DeviceCapabilities.PHONE_DISPLAY_OFF else DeviceCapabilities.NO_DISPLAY)
+            }
+            "glasses" -> when {
+                !gd -> NudgeRoute("phone", none)
+                up -> NudgeRoute("toast")
+                else -> NudgeRoute("phone", DeliveryRoute.GLASSES_NOT_CONNECTED)
+            }
+            else -> {
+                // `both` and the built-in flow: the user's verbosity picks the surface (never raised); a HUD choice needs the glasses display
+                val base = shownOn(verbosity)
+                when {
+                    base == "phone" -> NudgeRoute(base)
+                    !gd -> NudgeRoute("phone", none)
+                    !pd -> NudgeRoute(base, DeviceCapabilities.PHONE_DISPLAY_OFF)
+                    else -> NudgeRoute(base)
+                }
+            }
+        }
     }
 
     private class NudgeRoute(val shownOn: String, val fallback: String? = null)
@@ -186,6 +210,8 @@ class TriggerSeams(
     val paused: suspend () -> Boolean = { false },
     val reach: () -> GlassesReach = { DeliveryEnvironment.reach() },
     clock: () -> Long = System::currentTimeMillis,
+    /** v0.9.8 slice D: the user's device capabilities (a switched-off display is not a delivery surface). */
+    val capabilities: () -> DeviceCapabilities = { DeliveryEnvironment.caps() },
 ) {
     val limiter = TriggerRateLimiter(meta, clock)
 }

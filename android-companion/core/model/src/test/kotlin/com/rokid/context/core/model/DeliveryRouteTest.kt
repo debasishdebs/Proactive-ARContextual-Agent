@@ -28,4 +28,37 @@ class DeliveryRouteTest {
         }
         assertNull(DeliveryRoute.resolve("phone", false, GlassesReach.DOWN).fallback)
     }
+
+    private val noGlassesDisplay = DeviceCapabilities.ALL.with("glasses", "display", false)
+    private val noPhoneDisplay = DeviceCapabilities.ALL.with("phone", "display", false)
+    private val none = noGlassesDisplay.with("phone", "display", false)
+
+    @Test fun aDisabledGlassesDisplayFallsBackToThePhoneWithAReason() {
+        for (target in listOf("glasses", "both")) {
+            val r = DeliveryRoute.resolve(target, false, GlassesReach.UP, noGlassesDisplay)
+            assertTrue(r.phone); assertFalse(r.glasses); assertEquals(DeviceCapabilities.GLASSES_DISPLAY_OFF, r.fallback)
+        }
+        val caller = DeliveryRoute.resolve("caller", true, GlassesReach.UP, noGlassesDisplay)
+        assertTrue(caller.phone); assertFalse(caller.glasses); assertTrue(caller.explicit); assertEquals(DeviceCapabilities.GLASSES_DISPLAY_OFF, caller.fallback)
+        assertNull(DeliveryRoute.resolve("phone", false, GlassesReach.UP, noGlassesDisplay).fallback)
+    }
+
+    @Test fun aDisabledPhoneDisplayMovesToTheGlassesWhenTheyAreUp() {
+        DeliveryRoute.resolve("phone", false, GlassesReach.UP, noPhoneDisplay).let { assertTrue(it.glasses); assertFalse(it.phone); assertEquals(DeviceCapabilities.PHONE_DISPLAY_OFF, it.fallback) }
+        DeliveryRoute.resolve("both", false, GlassesReach.UP, noPhoneDisplay).let { assertTrue(it.glasses); assertFalse(it.phone); assertEquals(DeviceCapabilities.PHONE_DISPLAY_OFF, it.fallback) }
+        DeliveryRoute.resolve("phone", false, GlassesReach.DOWN, noPhoneDisplay).let { assertTrue(it.phone); assertEquals(DeviceCapabilities.PHONE_DISPLAY_OFF, it.fallback) }
+        assertNull(DeliveryRoute.resolve("glasses", false, GlassesReach.UP, noPhoneDisplay).fallback)
+    }
+
+    @Test fun noDisplayAtAllStillStoresOnThePhoneAndSaysSo() {
+        for (target in listOf("phone", "glasses", "both")) {
+            val r = DeliveryRoute.resolve(target, false, GlassesReach.UP, none)
+            assertTrue(r.phone); assertFalse(r.glasses); assertEquals(DeviceCapabilities.NO_DISPLAY, r.fallback)
+        }
+    }
+
+    @Test fun defaultCapabilitiesChangeNothing() {
+        for (target in listOf("caller", "phone", "glasses", "both")) for (reach in GlassesReach.values()) for (g in listOf(true, false))
+            assertEquals(DeliveryRoute.resolve(target, g, reach), DeliveryRoute.resolve(target, g, reach, DeviceCapabilities.ALL))
+    }
 }

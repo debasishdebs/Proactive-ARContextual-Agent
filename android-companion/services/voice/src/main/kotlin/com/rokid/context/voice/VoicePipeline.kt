@@ -35,6 +35,8 @@ class VoicePipeline(
     private val timings: VoiceTimings = VoiceTimings(),
     private val log: (String) -> Unit = {},
     private val interceptor: UtteranceInterceptor = UtteranceInterceptor.PASS_THROUGH,
+    /** The user's device capabilities (v0.9.8 slice D): a switched-off mic does not start a listen. Default = everything on. */
+    private val deviceCaps: () -> com.rokid.context.core.model.DeviceCapabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL },
 ) {
     private val _state = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val state: StateFlow<VoiceState> = _state.asStateFlow()
@@ -61,6 +63,7 @@ class VoicePipeline(
         capabilities.value.askBlockedReason?.let { reason ->
             log("glasses ask blocked"); outcome(VoiceOutcome.BLOCKED, VoiceSource.GLASSES); toastHud(reason); return
         }
+        if (!deviceCaps().micOn(glasses = true)) { log("glasses mic off"); outcome(VoiceOutcome.BLOCKED, VoiceSource.GLASSES); toastHud(VoiceCopy.GLASSES_MIC_OFF); return }
         if (busyWith(VoiceSource.PHONE)) { outcome(VoiceOutcome.BUSY, VoiceSource.GLASSES); toastHud(VoiceCopy.PHONE_BUSY_HUD); return }
         begin(VoiceSource.GLASSES)
     }
@@ -95,6 +98,7 @@ class VoicePipeline(
         if (status != VoiceStatus.SUPPORTED) {
             outcome(VoiceOutcome.BLOCKED, VoiceSource.PHONE); showPhoneError(VoiceCopy.phoneHint(status)); publish(); return
         }
+        if (!deviceCaps().micOn(glasses = false)) { log("phone mic off"); outcome(VoiceOutcome.BLOCKED, VoiceSource.PHONE); showPhoneError(VoiceCopy.PHONE_MIC_OFF); publish(); return }
         if (busyWith(VoiceSource.GLASSES)) {
             outcome(VoiceOutcome.BUSY, VoiceSource.PHONE); showPhoneError(VoiceCopy.GLASSES_BUSY_PHONE); publish(); return
         }

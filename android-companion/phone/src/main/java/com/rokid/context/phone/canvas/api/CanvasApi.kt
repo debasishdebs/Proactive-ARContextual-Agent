@@ -309,6 +309,7 @@ class CanvasApi(
             put("publishId", o.publishId)
             put("keys", JsonArray(o.keys.map { JsonPrimitive(it.name) }))
             put("kind", kind ?: if (mode == null) CanvasPublisher.KIND_PROMPTS else CanvasPublisher.KIND_INTERPRETER)
+            if (o.warnings.isNotEmpty()) put("warnings", JsonArray(o.warnings.map { JsonPrimitive(it) })) // additive: only when there is one (a flow whose delivery target is switched off)
             mode?.let { put("mode", it.name) }
         })
         is CanvasPublisher.Outcome.Blocked -> throw ApiError(409, blockedCode, "Blocked.", o.reasons)

@@ -119,7 +119,7 @@ class PlanGraph(
             installed = lazy {
                 val ai = AiGraph.get(app)
                 val db = MemoryGraph.get(app).db
-                val publisher = CanvasPublisher(db.canvasDao(), ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, System::currentTimeMillis, CanvasPublisher.inTransaction(db))
+                val publisher = CanvasPublisher(db.canvasDao(), ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, System::currentTimeMillis, CanvasPublisher.inTransaction(db), { com.rokid.context.orchestration.DeliveryEnvironment.caps() })
                 PlanGraph(db.canvasDao(), db.canvasSlice3Dao(), publisher, transport, install, glasses, phoneRt, scope, log = { PcLog.i(TAG, it) }).also { it.start() }
             }
         }

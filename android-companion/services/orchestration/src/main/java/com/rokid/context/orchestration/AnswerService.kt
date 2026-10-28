@@ -272,10 +272,13 @@ class AnswerService(
      * lands on the phone with `no_glasses_path`. A fallback is recorded as a trace row (a fixed reason token, no text): never silent. `caller` (the built-in flow) returns null.
      */
     private suspend fun routeOf(target: String, source: String, askId: String, nowMs: Long): com.rokid.context.core.model.DeliveryRoute? {
-        if (target == "caller") return null
+        val caps = DeliveryEnvironment.caps()
+        // `caller` keeps today's path (no route) unless the asker is the glasses and their display is switched off in Settings (slice D)
+        if (target == "caller" && !(source == "glasses_voice" && !caps.glassesDisplay)) return null
         val voice = source == "glasses_voice" || source == "phone_voice"
         val reach = if (voice) DeliveryEnvironment.reach() else com.rokid.context.core.model.GlassesReach.NO_PATH
-        val route = com.rokid.context.core.model.DeliveryRoute.resolve(target, source == "glasses_voice", reach)
+        val route = com.rokid.context.core.model.DeliveryRoute.resolve(target, source == "glasses_voice", reach, caps)
+        if (target == "caller" && route.fallback == null) return null
         route.fallback?.let { memory.traces.upsert(com.rokid.context.memory.db.SummaryTraceEntity("ask_deliver_$askId", "ASK_DELIVERY_FALLBACK", nowMs, it)) }
         return route
     }

@@ -30,13 +30,32 @@ class VoicePipelineTest {
 
     private var interceptor: UtteranceInterceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.PassThrough }
     private val logs = mutableListOf<String>()
+    private var deviceCaps = com.rokid.context.core.model.DeviceCapabilities.ALL
 
     private fun TestScope.pipeline() = VoicePipeline(
         backgroundScope, engine, caps, { language() },
         Answerer { q, source -> asked += q to source; answer(q) },
         speaker, bluetoothMedia = { bluetooth }, onFallbackSuspected = { fallbacks++ },
-        interceptor = { t, s, g -> interceptor.intercept(t, s, g) }, log = { logs += it },
+        interceptor = { t, s, g -> interceptor.intercept(t, s, g) }, log = { logs += it }, deviceCaps = { deviceCaps },
     ).also { runCurrent() }
+
+    @Test fun aSwitchedOffGlassesMicStartsNoListenAndSaysSo() = runTest {
+        deviceCaps = deviceCaps.with("glasses", "mic", false)
+        val p = pipeline()
+        p.glassesListenStart(); runCurrent()
+        assertEquals(Overlay.Toast(VoiceCopy.GLASSES_MIC_OFF), p.overlay.value)
+        assertTrue(engine.sessions.isEmpty(), "no recognizer was started"); assertTrue(asked.isEmpty())
+        assertTrue(logs.any { it == "outcome=BLOCKED source=GLASSES" })
+    }
+
+    @Test fun aSwitchedOffPhoneMicStartsNoListenAndTheGlassesStillWork() = runTest {
+        deviceCaps = deviceCaps.with("phone", "mic", false)
+        val p = pipeline()
+        p.phoneStart(); runCurrent()
+        assertEquals(VoiceCopy.PHONE_MIC_OFF, p.phone.value.error); assertTrue(engine.sessions.isEmpty())
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertEquals(listOf("milk?" to VoiceSource.GLASSES), asked)
+    }
 
     @Test fun interceptorRunsBeforeThinking() = runTest {
         val seen = mutableListOf<Triple<String, VoiceSource, Boolean>>()

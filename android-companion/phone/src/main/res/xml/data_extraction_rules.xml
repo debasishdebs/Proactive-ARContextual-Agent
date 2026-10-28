@@ -47,6 +47,7 @@
         <exclude domain="sharedpref" path="ai_call_pace.xml" />
         <exclude domain="sharedpref" path="window_tolerance.xml" />
     <exclude domain="sharedpref" path="signal_config.xml" />
+    <exclude domain="sharedpref" path="device_capabilities.xml" />
     <exclude domain="sharedpref" path="fusion_settings.xml" />
         <exclude domain="sharedpref" path="capture_timing.xml" />
         <exclude domain="sharedpref" path="ask_photos.xml" />
@@ -114,6 +115,7 @@
         <exclude domain="sharedpref" path="ai_call_pace.xml" />
         <exclude domain="sharedpref" path="window_tolerance.xml" />
     <exclude domain="sharedpref" path="signal_config.xml" />
+    <exclude domain="sharedpref" path="device_capabilities.xml" />
     <exclude domain="sharedpref" path="fusion_settings.xml" />
         <exclude domain="sharedpref" path="capture_timing.xml" />
         <exclude domain="sharedpref" path="ask_photos.xml" />
