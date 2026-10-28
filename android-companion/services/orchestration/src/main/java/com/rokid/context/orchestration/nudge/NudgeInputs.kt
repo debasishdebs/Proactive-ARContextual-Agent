@@ -33,7 +33,7 @@ class NudgeInputs(
      */
     suspend fun build(nowMs: Long, extraText: String? = null, photoVector: FloatArray? = null): Prepared {
         val sourceList = listOfNotNull(RagSource.RecentWindow(WINDOW_MS), RagSource.NudgeHistory(DAY_MS), RagSource.PhotoStore().takeIf { photoVector != null })
-        val c = core.retrieve(RagQuery(vector = photoVector), sourceList, RagParams(maxRecent = MAX_MEMORIES), nowMs)
+        val c = core.retrieve(RagQuery(vector = photoVector), sourceList, RagParams(maxRecent = MAX_MEMORIES, maxChars = NO_BOUND), nowMs)
         val lines = c.recentLines + c.photoLines + listOfNotNull(extraText?.takeIf { it.isNotBlank() })
         return Prepared(
             PromptVars(
@@ -48,5 +48,7 @@ class NudgeInputs(
         private const val WINDOW_MS = 6 * 3_600_000L
         private const val DAY_MS = 24 * 3_600_000L
         private const val MAX_MEMORIES = 10
+        /** The nudge inputs are bounded by their own counts (10 memories, 20 nudges), so no shared char bound applies. */
+        private const val NO_BOUND = 1_000_000
     }
 }

@@ -57,15 +57,15 @@ class PhotoRecall(
     /** `MemoryRetriever.retrieve(..., notAfterMs = ...)`: the caption fallback of a historical search. Without it a search with a cutoff has no caption fallback. */
     private val captionsAsOf: (suspend (query: String, pool: Int, nowMs: Long, notAfterMs: Long) -> List<ScoredMemory>)? = null,
 ) {
-    /** [imageK] = 0 skips the image scan; [captionK] = 0 skips the fallback. [queryVector]: a ready image-space embedding (a photo, v0.9.8): the scan skips the text embed. */
-    suspend fun search(query: String, imageK: Int = 24, captionK: Int = 24, budgetMs: Long = ImageScan.BUDGET_MS, notAfterMs: Long? = null, queryVector: FloatArray? = null): RecallResult {
+    /** [imageK] = 0 skips the image scan; [captionK] = 0 skips the fallback. [queryVector]: a ready image-space embedding (a photo, v0.9.8): the scan skips the text embed. [notBeforeMs]: a window's lower bound, applied to the scan BEFORE top-k (image scan only). */
+    suspend fun search(query: String, imageK: Int = 24, captionK: Int = 24, budgetMs: Long = ImageScan.BUDGET_MS, notAfterMs: Long? = null, queryVector: FloatArray? = null, notBeforeMs: Long? = null): RecallResult {
         val t0 = clock()
         var state = ImageSearchState.RAN
         var imageIds = emptyList<Pair<String, Double>>()
         var scanned = 0
         var truncated = false
         if (imageK > 0) {
-            val scan = imageScan(query, imageK, budgetMs, t0, notAfterMs, queryVector)
+            val scan = imageScan(query, imageK, budgetMs, t0, notAfterMs, queryVector, notBeforeMs)
             state = scan.state; imageIds = scan.hits; scanned = scan.scanned; truncated = scan.truncated
         }
         val imageSet = imageIds.map { it.first }.toSet()
@@ -91,7 +91,7 @@ class PhotoRecall(
 
     private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
 
-    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long, notAfterMs: Long?, queryVector: FloatArray? = null): ImageScanOutcome {
+    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long, notAfterMs: Long?, queryVector: FloatArray? = null, notBeforeMs: Long? = null): ImageScanOutcome {
         fun failed() = ImageScanOutcome(ImageSearchState.FAILED, emptyList(), 0, false)
         val target: ImageSpaceTarget = try {
             images.targets().firstOrNull { it.active } // S7: the ACTIVE one by flag, never "the first"
@@ -108,7 +108,7 @@ class PhotoRecall(
         val q = (if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }) ?: return failed()
         return try {
             val r = withContext(Dispatchers.Default) {
-                ImageScan.topK(q, k, { before -> (if (notAfterMs == null) db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE) else db.frameVectorDao().pageDescNotAfter(target.spaceId, before, ImageScan.PAGE, notAfterMs)).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = remaining)
+                ImageScan.topK(q, k, { before -> (if (notBeforeMs != null) db.frameVectorDao().pageDescBetween(target.spaceId, before, ImageScan.PAGE, notBeforeMs, notAfterMs ?: Long.MAX_VALUE) else if (notAfterMs == null) db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE) else db.frameVectorDao().pageDescNotAfter(target.spaceId, before, ImageScan.PAGE, notAfterMs)).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = remaining)
             }
             ImageScanOutcome(if (r.timedOut) ImageSearchState.TIMED_OUT else ImageSearchState.RAN, r.hits, r.scanned, r.truncated)
         } catch (c: CancellationException) { throw c } catch (_: Exception) { failed() }

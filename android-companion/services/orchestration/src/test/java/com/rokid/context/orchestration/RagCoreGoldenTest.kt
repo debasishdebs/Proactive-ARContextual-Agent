@@ -128,7 +128,7 @@ class RagCoreGoldenTest {
 
     private fun core(hits: List<PhotoHit> = emptyList(), endpoint: suspend () -> String? = { "az" }, loads: MutableList<String>? = null, byVector: (Long?) -> Unit = {}) =
         RagCore(MemoryGraph.get(ctx), AiGraph.get(ctx).retriever, { RetrievalSettings() }, { zone },
-            photos = { _, _ -> hits }, photosAsOf = { _, _ -> hits }, photosByVector = { _, _, na -> byVector(na); hits },
+            photos = { _, _ -> hits }, photosAsOf = { _, _ -> hits }, photosByVector = { _, _, na, _ -> byVector(na); hits },
             photosAllowed = { true }, imageEndpointId = endpoint,
             photoImages = { ids -> loads?.addAll(ids); ids.associateWith { ModelImageInput("image/jpeg", "AAAA") } })
 
@@ -185,5 +185,33 @@ class RagCoreGoldenTest {
         val one = three.recentLines.first().length
         val tight = c.retrieve(RagQuery(), both, RagParams(maxChars = one + 1), now)
         assertEquals(1, tight.recentLines.size)
+    }
+
+    @Test fun oneBudgetAcrossSourcesWhateverTheirOrder() = runBlocking<Unit> {
+        seed()
+        val mem = MemoryGraph.get(ctx)
+        mem.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("n1", now - 60_000L, "x".repeat(200), "", "[]", 1, "h1", "glance", false))
+        val recent = RagSource.RecentWindow(6 * 3_600_000L); val store = RagSource.MemoryStore(); val hist = RagSource.NudgeHistory(86_400_000L)
+        val c = core()
+        fun total(x: RagContext) = (x.memoryLines + x.recentLines + x.photoLines + x.history).sumOf { it.length + 1 }
+        for (bound in listOf(150, 300, 450, 800)) {
+            val a = c.retrieve(RagQuery("milk?"), listOf(recent, store, hist), RagParams(maxChars = bound), now)
+            val b = c.retrieve(RagQuery("milk?"), listOf(hist, store, recent), RagParams(maxChars = bound), now)
+            assertEquals(a, b)
+            assertEquals(true, total(a) <= bound)
+        }
+        val h = c.retrieve(RagQuery(), listOf(hist), RagParams(maxChars = 100), now)
+        assertEquals(emptyList<String>(), h.history)
+    }
+
+    @Test fun forgettingADependencyRedactsTheDerivativeNudge() = runBlocking<Unit> {
+        seed()
+        val g = MemoryGraph.get(ctx)
+        // The new nudge cites B but was written from a history nudge sourced from A.
+        g.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("n_new", now, "t", "", AskSources.encodeWithDeps(listOf("rokid_mem_2"), listOf("rokid_mem_1")), 1, "h", "glance", false))
+        assertEquals(listOf("rokid_mem_2"), AskSources.parse(g.db.nudgeGateDao().lastNudges(0).single().sourceIdsJson))
+        com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_1")
+        val row = g.db.nudgeGateDao().lastNudges(0)
+        assertEquals(true, row.isEmpty()) // redacted rows are left out of the history
     }
 }

@@ -36,6 +36,22 @@ sealed interface AskOutcome {
 object AskSources {
     fun encode(ids: List<String>): String = JsonArray(ids.distinct().map { JsonPrimitive(it) }).toString()
 
+    /**
+     * [cited] as the array, plus (when there are any) a trailing `{"dependsOn":[...]}` object: ids the text was built from without citing them (a
+     * nudge written from earlier nudges). Readers of the cited ids ([parse]) skip the object; Forget matches both ([parseAll]).
+     */
+    fun encodeWithDeps(cited: List<String>, deps: Collection<String>): String {
+        val extra = deps.filter { it !in cited }.distinct()
+        if (extra.isEmpty()) return encode(cited)
+        return JsonArray(cited.distinct().map { JsonPrimitive(it) } + kotlinx.serialization.json.buildJsonObject { put("dependsOn", JsonArray(extra.map { JsonPrimitive(it) })) }).toString()
+    }
+
+    /** Cited ids and dependency ids. */
+    fun parseAll(json: String): List<String> = parse(json) + runCatching {
+        Json.parseToJsonElement(json).jsonArray.filterIsInstance<kotlinx.serialization.json.JsonObject>()
+            .flatMap { (it["dependsOn"] as? kotlinx.serialization.json.JsonArray).orEmpty().mapNotNull { e -> (e as? JsonPrimitive)?.takeIf { p -> p.isString }?.content } }
+    }.getOrDefault(emptyList())
+
     fun parse(json: String): List<String> = runCatching {
         Json.parseToJsonElement(json).jsonArray
             .mapNotNull { e -> (e as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() } }

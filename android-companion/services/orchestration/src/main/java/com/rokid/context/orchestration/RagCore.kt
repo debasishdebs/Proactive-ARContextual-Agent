@@ -4,6 +4,7 @@ import android.content.Context
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.MemoryEntity
+import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.forget.ForgetFence
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
@@ -40,8 +41,8 @@ sealed interface RagSource {
     /** The memory store through the user's retrieval mode (lexical/semantic/hybrid), the newest trusted memories when nothing matches. [notAfterMs]: the Ask debug view's cutoff (S34), before the retriever's limits. Needs a text query. */
     data class MemoryStore(val notAfterMs: Long? = null) : RagSource
     /**
-     * The photo store (image vectors; words or a vector query), behind the photo gate. [notAfterMs]: the cutoff (the debug view's, S34), pushed into the
-     * search so it applies BEFORE top-k. [windowMs]: only photos of the last [windowMs] before the query time; its lower bound is applied to the hits (the scan has no lower bound).
+     * The photo store (image vectors; words or a vector query), behind the photo gate. [notAfterMs]: the cutoff (the debug view's, S34) and [windowMs] (only photos of the last [windowMs]) both go into
+     * the search and the selection, so they apply BEFORE top-k and the relevance margin (the caption fallback is not searched: captionK = 0).
      */
     data class PhotoStore(val notAfterMs: Long? = null, val windowMs: Long? = null) : RagSource
     /** OK memories of the last [windowMs], newest [RagParams.maxRecent], minus those about an old photo: what just happened (no query). */
@@ -142,7 +143,7 @@ class RagCore(
     /** [PhotoRecall.search] with the ask time as the cutoff, applied BEFORE top-k (vectors and captions). */
     private val photosAsOf: suspend (question: String, notAfterMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
     /** The photos near a ready image embedding (IMAGE queries with a vector). */
-    private val photosByVector: suspend (vector: FloatArray, nowMs: Long, notAfterMs: Long?) -> List<PhotoHit> = { _, _, _ -> emptyList() },
+    private val photosByVector: suspend (vector: FloatArray, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?) -> List<PhotoHit> = { _, _, _, _ -> emptyList() },
     /** Asked before every photo search ([AskPhotoPolicy.allowed]). False = no scan, no image, no photo line. */
     private val photosAllowed: suspend () -> Boolean = { false },
     /** The endpoint the gate checked (the ANSWER primary): images are sent only there, never to a fallback. */
@@ -153,59 +154,69 @@ class RagCore(
     /**
      * Runs every [sources] entry against [query] with [params]. Whatever a source returns is fenced (a memory or photo that was forgotten is dropped)
      * and the photo gate is asked before any photo search. A source the query cannot feed (a MemoryStore without text) gives nothing.
+     * [RagParams.maxChars] is ONE budget for all the lines, spent in a fixed order whatever the order of [sources]: photo lines, memory lines, recent
+     * lines, nudge history.
      */
     suspend fun retrieve(query: RagQuery, sources: List<RagSource>, params: RagParams, nowMs: Long): RagContext {
         if (params.charBound == 0) return RagContext() // a zero bound is no context at all
         val s = params.over(settings())
         val photoSrc = sources.filterIsInstance<RagSource.PhotoStore>().firstOrNull()
         val recalled = if (photoSrc == null) emptyList() else when {
-            query.vector != null -> recalledByVector(query.vector, nowMs, photoSrc.notAfterMs)
-            query.text != null -> recalledPhotos(query.text, nowMs, photoSrc.notAfterMs)
+            query.vector != null -> recalledByVector(query.vector, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
+            query.text != null -> recalledPhotos(query.text, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
             else -> emptyList()
-        }.let { r -> photoSrc?.windowMs?.let { w -> r.filter { (h, _) -> (h.ts ?: h.receivedAt)?.let { it >= nowMs - w } ?: true } } ?: r }
+        }
         val photoPart = photoPart(fenceCites(recalled))
         var ctx = RagContext(photoLines = photoPart.lines, photos = photoPart.photos, images = photoPart.images, imageEndpointId = photoPart.endpoint)
-        for (src in sources) ctx = when (src) {
-            is RagSource.MemoryStore -> if (query.text == null) ctx else memoryStore(ctx, query.text, src, s, params, nowMs)
-            is RagSource.RecentWindow -> recentWindow(ctx, recent(nowMs, src.windowMs, params.recentCap), params)
-            is RagSource.Explicit -> recentWindow(ctx, explicit(src.memoryIds), params)
-            is RagSource.NudgeHistory -> nudgeHistory(ctx, nowMs - src.windowMs)
-            is RagSource.PhotoStore -> ctx
+        var left = params.charBound - photoPart.lines.sumOf { it.length + 1 }
+        // Gather (the order of [sources] decides only which memories come first within a kind), then spend the one budget in the fixed order.
+        var store: MemoryStoreResult? = null
+        val recentFound = mutableListOf<MemoryEntity>()
+        var history: List<Pair<NudgeEntity, List<String>>>? = null
+        for (src in sources) when (src) {
+            is RagSource.MemoryStore -> if (query.text != null && store == null) store = memoryStore(query.text, src, s, params, nowMs, ctx.photos.map { it.citeId }.toSet())
+            is RagSource.RecentWindow -> recentFound += recent(nowMs, src.windowMs, params.recentCap)
+            is RagSource.Explicit -> recentFound += explicit(src.memoryIds)
+            is RagSource.NudgeHistory -> if (history == null) history = nudgeHistory(nowMs - src.windowMs)
+            is RagSource.PhotoStore -> Unit
+        }
+        store?.let { m ->
+            val lines = AskText.bounded(m.pool.map(::line), left)
+            left -= lines.sumOf { it.length + 1 }
+            ctx = ctx.copy(memories = m.pool.take(lines.size), memoryLines = lines, fallback = m.fallback, hits = m.result?.hits.orEmpty(), mode = m.result?.modeUsed, semanticUnavailable = m.result?.semanticUnavailable ?: false)
+        }
+        if (recentFound.isNotEmpty()) {
+            val fresh = recentFound.distinctBy { it.id }.take(params.recentCap)
+            val lines = AskText.bounded(fresh.map(::recentLine), left)
+            left -= lines.sumOf { it.length + 1 }
+            ctx = ctx.copy(recent = fresh.take(lines.size), recentLines = lines)
+        }
+        history?.let { h ->
+            val texts = h.map { AskText.collapse(it.first.text) }
+            val kept = AskText.bounded(texts, left).size
+            ctx = ctx.copy(history = texts.take(kept), historyIds = h.take(kept).flatMap { it.second }.toSet())
         }
         return ctx
     }
 
-    private suspend fun memoryStore(ctx: RagContext, q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long): RagContext {
+    private class MemoryStoreResult(val pool: List<MemoryEntity>, val fallback: Boolean, val result: com.rokid.context.memory.retrieval.RetrievalResult?)
+
+    private suspend fun memoryStore(q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long, citeIds: Set<String>): MemoryStoreResult {
         val r = retriever?.retrieve(q, s, nowMs, poolOverride = params.poolSize, notAfterMs = src.notAfterMs)
         val fallback = r == null || r.hits.isEmpty()
         // No hits: the newest trusted memories, under the same minConfidence and top-k the retriever applies.
         val poolAll = if (!fallback) r!!.hits.map { it.memory } else
             memory.memories.recent(30, src.notAfterMs).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
         // A photo whose caption is already a retrieved memory is listed once, as the photo line.
-        val citeIds = ctx.photos.map { it.citeId }.toSet()
-        val pool = fence(poolAll).filter { it.id !in citeIds }
-        val lines = AskText.bounded(pool.map(::line), params.charBound - ctx.photoLines.sumOf { it.length + 1 })
-        return ctx.copy(memories = pool.take(lines.size), memoryLines = lines, fallback = fallback, hits = r?.hits.orEmpty(), mode = r?.modeUsed, semanticUnavailable = r?.semanticUnavailable ?: false)
-    }
-
-    /** Adds [found] under the shared bounds: [RagParams.maxRecent] memories in all and what is left of [RagParams.maxChars] after every line already in [ctx]. */
-    private fun recentWindow(ctx: RagContext, found: List<MemoryEntity>, params: RagParams): RagContext {
-        val have = ctx.recent.map { it.id }.toSet()
-        val fresh = found.filter { it.id !in have }.take((params.recentCap - ctx.recent.size).coerceAtLeast(0))
-        val used = (ctx.memoryLines + ctx.recentLines + ctx.photoLines).sumOf { it.length + 1 }
-        val lines = AskText.bounded(fresh.map(::recentLine), params.charBound - used)
-        return ctx.copy(recent = ctx.recent + fresh.take(lines.size), recentLines = ctx.recentLines + lines)
+        return MemoryStoreResult(fence(poolAll).filter { it.id !in citeIds }, fallback, r)
     }
 
     /**
-     * The texts of the nudges since [sinceMs]. A nudge whose own sources were forgotten is dropped (Forget redacts it; its text must not propagate), and
-     * the sources of the ones kept go into [RagContext.historyIds] so the caller's commit fence covers them.
+     * The nudges since [sinceMs], each with its sources and dependencies. A nudge whose own sources were forgotten is dropped (Forget redacts it; its
+     * text must not propagate); the sources of the ones kept end up in [RagContext.historyIds] so the caller's commit fence covers them.
      */
-    private suspend fun nudgeHistory(ctx: RagContext, sinceMs: Long): RagContext {
-        val kept = memory.db.nudgeGateDao().lastNudges(sinceMs).map { it to AskSources.parse(it.sourceIdsJson) }
-            .filter { (_, ids) -> ForgetFence.allLive(memory.db, ids) }
-        return ctx.copy(history = kept.map { AskText.collapse(it.first.text) }, historyIds = kept.flatMap { it.second }.toSet())
-    }
+    private suspend fun nudgeHistory(sinceMs: Long): List<Pair<NudgeEntity, List<String>>> =
+        memory.db.nudgeGateDao().lastNudges(sinceMs).map { it to AskSources.parseAll(it.sourceIdsJson) }.filter { (_, ids) -> ForgetFence.allLive(memory.db, ids) }
 
     private suspend fun explicit(ids: List<String>): List<MemoryEntity> {
         val byId = ids.distinct().chunked(500).flatMap { memory.db.forgetDao().memories(it) }.filter { it.reviewState == ReviewState.OK }.associateBy { it.id }
@@ -239,21 +250,23 @@ class RagCore(
     }
 
     /** The gated photo search (words to photos), cutoff and relevance floor applied: the hit with its cite id. */
-    internal suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null): List<Pair<PhotoHit, String>> =
-        select(guarded { if (notAfterMs != null) photosAsOf(q, notAfterMs) else photos(q, nowMs) }, notAfterMs)
+    internal suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null, notBeforeMs: Long? = null): List<Pair<PhotoHit, String>> =
+        select(guarded { if (notAfterMs != null) photosAsOf(q, notAfterMs) else photos(q, nowMs) }, notAfterMs, notBeforeMs)
 
-    private suspend fun recalledByVector(v: FloatArray, nowMs: Long, notAfterMs: Long?): List<Pair<PhotoHit, String>> =
-        select(guarded { photosByVector(v, nowMs, notAfterMs) }, notAfterMs)
+    private suspend fun recalledByVector(v: FloatArray, nowMs: Long, notAfterMs: Long?, notBeforeMs: Long?): List<Pair<PhotoHit, String>> =
+        select(guarded { photosByVector(v, nowMs, notAfterMs, notBeforeMs) }, notAfterMs, notBeforeMs)
 
     private suspend fun guarded(search: suspend () -> List<PhotoHit>): List<PhotoHit> =
         try { if (!photosAllowed()) emptyList() else search() } catch (c: CancellationException) { throw c } catch (e: Exception) {
             PcLog.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); emptyList()
         }
 
-    private fun select(hits: List<PhotoHit>, notAfterMs: Long?): List<Pair<PhotoHit, String>> {
+    private fun select(hits: List<PhotoHit>, notAfterMs: Long?, notBeforeMs: Long? = null): List<Pair<PhotoHit, String>> {
         // The relevance floor: below it a photo gets neither an image nor a line (provisional values: AskPhotoPolicy).
         // Ask debug only: a photo known to be captured (else received) after the ask did not exist for it.
-        val visible = if (notAfterMs == null) hits else hits.filter { h -> ((h.ts ?: h.receivedAt)?.let { it <= notAfterMs } ?: true) && (h.receivedAt?.let { it <= notAfterMs } ?: true) }
+        // A window's lower bound likewise: before the floor and the margin, so an old photo never sets the top score.
+        val windowed = if (notBeforeMs == null) hits else hits.filter { h -> (h.ts ?: h.receivedAt)?.let { it >= notBeforeMs } ?: true }
+        val visible = if (notAfterMs == null) windowed else windowed.filter { h -> ((h.ts ?: h.receivedAt)?.let { it <= notAfterMs } ?: true) && (h.receivedAt?.let { it <= notAfterMs } ?: true) }
         return AskPhotoPolicy.select(visible.distinctBy { it.frameId }).map { it to (it.captionMemoryId ?: (PHOTO_CITE_PREFIX + it.frameId)) }
     }
 
@@ -311,9 +324,9 @@ class RagCore(
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
 
         /** The production image-vector search: the Ask's photo budget and timeout, a ready embedding instead of words. */
-        fun photosByVectorFrom(context: Context): suspend (FloatArray, Long, Long?) -> List<PhotoHit> = { v, _, notAfter ->
+        fun photosByVectorFrom(context: Context): suspend (FloatArray, Long, Long?, Long?) -> List<PhotoHit> = { v, _, notAfter, notBefore ->
             kotlinx.coroutines.withTimeoutOrNull(AskPhotoPolicy.ASK_TIMEOUT_MS) {
-                PhotoRecall.forApp(context).search("", imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, notAfterMs = notAfter, queryVector = v).image
+                PhotoRecall.forApp(context).search("", imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, notAfterMs = notAfter, queryVector = v, notBeforeMs = notBefore).image
             }.orEmpty()
         }
     }
