@@ -455,6 +455,13 @@ interface FrameVectorDao {
     )
     suspend fun pageDescNotAfter(spaceId: String, beforeRowid: Long, limit: Int, notAfter: Long): List<FrameVectorRow>
 
+    /** As [pageDescNotAfter] with a lower bound too: only frames captured in [notBefore, notAfter] are scanned (a time window, applied BEFORE top-k). */
+    @Query(
+        "SELECT v.rowid AS rowid, v.frameId AS frameId, v.blob AS blob FROM frame_vector v JOIN frame_meta m ON m.frameId = v.frameId LEFT JOIN frame f ON f.id = v.frameId " +
+            "WHERE v.spaceId = :spaceId AND v.rowid < :beforeRowid AND COALESCE(f.ts, m.capturedAtMs, m.createdAt) BETWEEN :notBefore AND :notAfter AND m.createdAt <= :notAfter ORDER BY v.rowid DESC LIMIT :limit",
+    )
+    suspend fun pageDescBetween(spaceId: String, beforeRowid: Long, limit: Int, notBefore: Long, notAfter: Long): List<FrameVectorRow>
+
     @Query("SELECT * FROM frame_vector WHERE spaceId = :spaceId AND frameId IN (:frameIds)") suspend fun forFrames(spaceId: String, frameIds: List<String>): List<FrameVectorEntity>
 }
 

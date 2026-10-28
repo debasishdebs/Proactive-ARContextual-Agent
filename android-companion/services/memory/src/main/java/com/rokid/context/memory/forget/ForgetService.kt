@@ -256,7 +256,14 @@ class ForgetService(
 
         private fun parseIds(json: String): Set<String> = runCatching {
             val a = JSONArray(json)
-            (0 until a.length()).mapNotNull { i -> (a.opt(i) as? String)?.trim() }.toSet()
+            // A trailing {"dependsOn":[...]} (a nudge built from earlier nudges) lists ids the text rests on without citing them: forgetting one redacts too.
+            (0 until a.length()).flatMap { i ->
+                when (val e = a.opt(i)) {
+                    is String -> listOf(e.trim())
+                    is org.json.JSONObject -> e.optJSONArray("dependsOn")?.let { d -> (0 until d.length()).mapNotNull { (d.opt(it) as? String)?.trim() } }.orEmpty()
+                    else -> emptyList()
+                }
+            }.toSet()
         }.getOrDefault(emptySet())
     }
 
