@@ -70,6 +70,32 @@ class VoicePipelineTest {
         assertTrue(logs.any { it == "outcome=MARKED source=GLASSES" })
     }
 
+    @Test fun aSuspendedInterceptionIsConsumedOnceWhateverEndsTheListenAfterIt() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>(); var calls = 0
+        interceptor = UtteranceInterceptor { _, _, _ -> calls++; gate.await(); InterceptResult.Handled("mark undone") }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("undo mark")); runCurrent()
+        assertEquals(1, calls)
+        p.glassesListenEnd(); p.phoneStop(); engine.last.listener.onFinal(SttResult.Text("undo mark")); engine.last.listener.onPartial("again")
+        advanceTimeBy(60_000); runCurrent() // every leftover timer of the listen: audio idle, max listen, final timeout
+        assertEquals(1, calls, "exactly one interception for the one final")
+        assertTrue(logs.none { it.startsWith("outcome=NO_FINAL") || it.startsWith("outcome=NO_SPEECH") }, "no timeout verdict on a consumed final")
+        gate.complete(Unit); runCurrent()
+        assertEquals(Overlay.Toast("mark undone"), p.overlay.value)
+        assertEquals(1, logs.count { it == "outcome=MARKED source=GLASSES" }, "one reply")
+    }
+
+    @Test fun aNewListenCancelsAnInterceptionStillWaiting() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>(); var finished = 0
+        interceptor = UtteranceInterceptor { _, _, _ -> try { gate.await() } finally { finished++ }; InterceptResult.Handled("mark undone") }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("undo mark")); runCurrent()
+        p.glassesCancel(); runCurrent()
+        assertEquals(1, finished, "the waiting job was cancelled")
+        gate.complete(Unit); runCurrent()
+        assertTrue(p.overlay.value !is Overlay.Toast || (p.overlay.value as Overlay.Toast).text != "mark undone", "a cancelled interception never replies")
+    }
+
     @Test fun interceptorCanNarrowTheQuestionToUnmatchedClauses() = runTest {
         interceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.Ask("what's this building") }
         val p = pipeline()

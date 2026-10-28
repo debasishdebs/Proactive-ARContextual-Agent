@@ -163,8 +163,15 @@ class VoicePipeline(
         timer = scope.launch { delay(timings.audioIdleMs); log("glasses audio stopped"); endListening(g) }
     }
 
+    /**
+     * The generation whose final was ACCEPTED: its interception (which may suspend, e.g. an undo waiting on the data gate) is running or done. Nothing that is left over from the listening of that
+     * generation (a late listen end / Stop, the audio-idle or final timeouts, a late partial or final) may act on it again: one final, one interception job, one reply. A new listen or a cancel starts
+     * a new generation, which cancels that job.
+     */
+    private var consumedGen = -1L
+
     private fun endListening(g: Long) {
-        if (g != gen) return
+        if (g != gen || g == consumedGen) return
         val s = _state.value as? VoiceState.Listening ?: return
         if (s.ended) return
         timer?.cancel(); maxTimer?.cancel()
@@ -182,15 +189,16 @@ class VoicePipeline(
     }
 
     private fun onPartial(g: Long, text: String) {
-        if (g != gen) return
+        if (g != gen || g == consumedGen) return
         val s = _state.value as? VoiceState.Listening ?: return
         set(s.copy(partial = VoiceText.clean(text)))
     }
 
     /** [finalTimedOut]: no final came within [VoiceTimings.finalTimeoutMs]; nothing heard is then NO_FINAL. */
     private fun onFinal(g: Long, result: SttResult, finalTimedOut: Boolean = false) {
-        if (g != gen) return
+        if (g != gen || g == consumedGen) return
         val s = _state.value as? VoiceState.Listening ?: return
+        consumedGen = g
         session = null
         timer?.cancel(); maxTimer?.cancel()
         when (result) {
