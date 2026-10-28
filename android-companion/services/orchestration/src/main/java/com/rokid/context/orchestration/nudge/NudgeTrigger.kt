@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Called after each summarizer pass (trusted summary or reprocess): enqueues the unique work "nudge_engine" (KEEP). */
 object NudgeTrigger {
@@ -55,13 +56,16 @@ object NudgeTrigger {
     }
 
     /** One unique run per trigger type (KEEP): a burst is one queued run. Not while the battery is low; no wake lock, no expedited work. */
-    fun enqueue(context: Context, trigger: String) {
+    suspend fun enqueue(context: Context, trigger: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val request = OneTimeWorkRequestBuilder<NudgeWorker>().setInputData(workDataOf(KEY_TRIGGER to trigger))
                 .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build()).build()
-            WorkManager.getInstance(context).enqueueUniqueWork("${WORK}_$trigger", ExistingWorkPolicy.KEEP, request)
+            // durable only once WorkManager has the work: wait for its result (a unique KEEP enqueue is idempotent)
+            WorkManager.getInstance(context).enqueueUniqueWork(if (trigger == NodeTypes.TRIGGER_SUMMARIZER) WORK else "${WORK}_$trigger", ExistingWorkPolicy.KEEP, request).result.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            true
         } catch (e: Exception) {
             PcLog.i("NudgeTrigger", "nudge not scheduled: ${SafeLog.describe(e)}")
+            false
         }
     }
 }

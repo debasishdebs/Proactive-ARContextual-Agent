@@ -42,7 +42,30 @@ class CronSpecTest {
             assertNull(bad, CronSpec.parse(bad))
     }
 
-    @Test fun anImpossibleDateParsesButNeverComes() {
-        assertNull(spec("0 9 31 2 *").nextAfter(ms(2026, 10, 28, 9, 0), zone))
+    @Test fun daylightSavingGapIsSkippedAndInstantsAreOrdered() {
+        // Lord Howe springs forward 2026-10-04 02:00 -> 02:30: 02:00 and 02:20 do not exist, 02:40 does
+        val lh = ZoneId.of("Australia/Lord_Howe")
+        fun lms(d: Int, h: Int, m: Int) = LocalDateTime.of(2026, 10, d, h, m).atZone(lh).toInstant().toEpochMilli()
+        val s = spec("0,20,40 2 * * *")
+        assertEquals(lms(4, 2, 40), s.nextAfter(lms(4, 1, 0), lh))
+        assertEquals(lms(5, 2, 0), s.nextAfter(lms(4, 2, 40), lh))
+        // US fall back 2026-11-01: 01:30 happens twice and runs once, at its first instant
+        val ny = ZoneId.of("America/New_York")
+        val first = LocalDateTime.of(2026, 11, 1, 1, 30).atZone(ny).toInstant().toEpochMilli()
+        val daily = spec("30 1 * * *")
+        assertEquals(first, daily.nextAfter(first - 3_600_000L, ny))
+        assertEquals(LocalDateTime.of(2026, 11, 2, 1, 30).atZone(ny).toInstant().toEpochMilli(), daily.nextAfter(first, ny)) // not again an hour later
+        // US spring forward 2026-03-08: 02:30 does not exist that day (skipped), back on the 9th
+        val gap = spec("30 2 * * *")
+        assertEquals(LocalDateTime.of(2026, 3, 9, 2, 30).atZone(ny).toInstant().toEpochMilli(), gap.nextAfter(LocalDateTime.of(2026, 3, 8, 0, 0).atZone(ny).toInstant().toEpochMilli(), ny))
+    }
+
+    @Test fun onlyDatesThatOccurEveryYearAreAllowed() {
+        assertNull(CronSpec.parse("0 9 29 2 *")) // leap day only
+        assertNull(CronSpec.parse("0 9 31 4 *")) // never
+        assertNull(CronSpec.parse("0 9 31 2 *"))
+        assertNull(CronSpec.parse("0,50 0,23 28,29 2 *")) // also the leap-day boundary is a ten minute gap
+        assertNotNull(CronSpec.parse("0 9 28 2 *"))
+        assertNotNull(CronSpec.parse("0 9 31 * *"))
     }
 }

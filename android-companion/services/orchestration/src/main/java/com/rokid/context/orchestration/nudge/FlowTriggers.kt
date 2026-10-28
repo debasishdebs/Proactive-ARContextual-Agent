@@ -36,11 +36,12 @@ class DaoTriggerMeta(private val dao: CanvasSlice3Dao) : TriggerMeta {
  * cannot spam model calls. A refused call is not counted. Stamps persist in [meta], so a restart does not reset the budget. `perHour <= 0` = unlimited.
  */
 class TriggerRateLimiter(private val meta: TriggerMeta, private val clock: () -> Long = System::currentTimeMillis) {
-    suspend fun admit(trigger: String, perHour: Int): Boolean {
+    /** [scope] = the publication (a new publish starts with a clean budget). A stamp in the future (the clock went back) still counts: a rollback never reopens the budget. */
+    suspend fun admit(trigger: String, perHour: Int, scope: String = ""): Boolean {
         if (perHour <= 0) return true
         val now = clock()
-        val key = KEY + trigger
-        val live = meta.get(key)?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty().filter { it in (now - HOUR_MS + 1)..now }
+        val key = "$KEY$scope|$trigger"
+        val live = meta.get(key)?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty().filter { it > now - HOUR_MS }
         if (live.size >= perHour) return false
         meta.put(key, (live + now).joinToString(","))
         return true
@@ -52,21 +53,25 @@ class TriggerRateLimiter(private val meta: TriggerMeta, private val clock: () ->
 /** The numbers `trigger.signal` measures: the sensor [feature] of the newest [count] Scenes, oldest first, null where a Scene has none (`WindowAggregate.featureOf`). */
 fun interface SignalValues { suspend fun values(feature: String, count: Int, nowMs: Long): List<Double?> }
 
-/** A photo's image embedding for an IMAGE query (the newest photo of the last few minutes), or null. Never throws for a missing photo. */
-fun interface TriggerImages { suspend fun vector(nowMs: Long): FloatArray? }
+/** The photo behind an IMAGE query: its frame id (fenced and stored as a dependency of the nudge) and its embedding, already checked to be in the ACTIVE image space. */
+class TriggerPhoto(val frameId: String, val vector: FloatArray)
+
+/** The newest photo of the last few minutes for an IMAGE query, or null (none, no embedding, or an embedding of another space). Never throws for a missing photo. */
+fun interface TriggerImages { suspend fun photo(nowMs: Long): TriggerPhoto? }
 
 /**
  * `trigger.signal`: [WindowAggregate] over the newest Scenes, then [NumberCompare]. It fires on the EDGE (the condition holds now and did not at the last check), so a signal that stays
  * high for an hour is one nudge decision, not one per Scene. The held state persists in [meta].
  */
-class SignalGate(private val meta: TriggerMeta, private val values: SignalValues) {
+class SignalGate(private val meta: TriggerMeta, private val scope: String = "", private val values: SignalValues) {
     suspend fun fires(signal: FlowPlan.Signal, nowMs: Long): Boolean {
         val a = signal.aggregate
         val v = values.values(a.feature, a.window, nowMs)
         val number = WindowAggregate.over(v, a.op, a.window).lastOrNull()
         val holds = number != null && NumberCompare.holds(number, signal.compare)
-        val was = meta.get(KEY) == "1"
-        if (holds != was) meta.put(KEY, if (holds) "1" else "0")
+        val key = KEY + scope
+        val was = meta.get(key) == "1"
+        if (holds != was) meta.put(key, if (holds) "1" else "0")
         return holds && !was
     }
 
@@ -77,7 +82,7 @@ class SignalGate(private val meta: TriggerMeta, private val values: SignalValues
  * Event triggers (a Moment landed, a Scene stored): asks [enqueue] to run the Nudge flow only when the PUBLISHED Nudge flow's root is that trigger (one cheap plan lookup, cached per
  * publish id), and at most once per [debounceMs] per trigger. A burst of events is therefore one queued run; the engine's own gates and the rate limit decide what it does.
  */
-class FlowTriggers(private val plans: FlowPlans, private val enqueue: (String) -> Unit, private val clock: () -> Long = System::currentTimeMillis, private val debounceMs: Long = DEBOUNCE_MS) {
+class FlowTriggers(private val plans: FlowPlans, private val enqueue: suspend (String) -> Boolean, private val clock: () -> Long = System::currentTimeMillis, private val debounceMs: Long = DEBOUNCE_MS) {
     private val last = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     suspend fun fire(trigger: String): Boolean {
@@ -85,10 +90,13 @@ class FlowTriggers(private val plans: FlowPlans, private val enqueue: (String) -
         val before = last[trigger]
         if (before != null && now - before in 0 until debounceMs) return false
         last[trigger] = now
-        val plan = try { plans.plan(FlowPlan.Kind.NUDGE) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "trigger lookup failed (${e.javaClass.simpleName})"); null }
+        val plan = try { plans.plan(FlowPlan.Kind.NUDGE) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            // a lookup that fails must not silence the built-in flow: run it as a summarizer pass (that path has its own 30 minute gap)
+            PcLog.i(TAG, "trigger lookup failed (${e.javaClass.simpleName}); built-in flow")
+            return enqueue(NodeTypes.TRIGGER_SUMMARIZER)
+        }
         if (plan?.trigger != trigger) return false
-        enqueue(trigger)
-        return true
+        return enqueue(trigger)
     }
 
     companion object { const val DEBOUNCE_MS = 60_000L; private const val TAG = "FlowTriggers" }
@@ -100,21 +108,34 @@ class FlowTriggers(private val plans: FlowPlans, private val enqueue: (String) -
  * schedule never fires retroactively. The last-check time persists in [meta], so a restart neither loses nor repeats an occurrence.
  */
 class ScheduleTick(
-    private val plans: FlowPlans, private val meta: TriggerMeta, private val fire: (String) -> Unit,
+    private val plans: FlowPlans, private val meta: TriggerMeta, private val fire: suspend (String) -> Boolean,
     private val clock: () -> Long = System::currentTimeMillis, private val zone: () -> ZoneId = ZoneId::systemDefault,
 ) {
+    /**
+     * State per publication, ONE value `checkpoint;pending` so it changes atomically: the occurrence is written as pending BEFORE the enqueue and cleared (checkpoint moved) only after
+     * the unique work was durably enqueued; a death in between retries the same occurrence (unique KEEP work: at most one extra run, which the rate limit and gates still bound).
+     * The checkpoint never moves backwards (a clock set back neither replays nor skips), and an occurrence search that finds nothing moves it to now instead of wedging.
+     */
     suspend fun tick(): Boolean {
-        val plan = plans.plan(FlowPlan.Kind.NUDGE)?.takeIf { it.trigger == NodeTypes.TRIGGER_SCHEDULE } ?: run { meta.put(KEY, ""); return false }
+        val plan = plans.plan(FlowPlan.Kind.NUDGE)?.takeIf { it.trigger == NodeTypes.TRIGGER_SCHEDULE } ?: return false
         val spec = plan.cron?.let(CronSpec::parse) ?: return false
+        val key = KEY + plan.scope
         val now = clock()
-        val last = meta.get(KEY)?.toLongOrNull()
-        if (last == null || last > now) { meta.put(KEY, now.toString()); return false }
-        val next = spec.nextAfter(last, zone())
-        if (next == null || next > now) return false // not due: the older mark stays, so the occurrence is not skipped
-        meta.put(KEY, now.toString())
-        fire(NodeTypes.TRIGGER_SCHEDULE)
+        val state = meta.get(key)?.split(';')
+        val last = state?.getOrNull(0)?.toLongOrNull()
+        var pending = state?.getOrNull(1)?.toLongOrNull()
+        if (last == null) { meta.put(key, "$now;"); return false } // a new publication only records the time: never retroactive
+        if (pending == null) {
+            val next = spec.nextAfter(last, zone())
+            if (next == null) { meta.put(key, "${maxOf(last, now)};"); return false }
+            if (next > now) return false
+            pending = next
+            meta.put(key, "$last;$pending")
+        }
+        if (!fire(NodeTypes.TRIGGER_SCHEDULE)) return false // not durably enqueued: the pending occurrence stays for the next tick
+        meta.put(key, "${maxOf(last, now, pending)};")
         return true
     }
 
-    companion object { const val KEY = "nudge_schedule_last_ms" }
+    companion object { const val KEY = "nudge_schedule_state_" }
 }

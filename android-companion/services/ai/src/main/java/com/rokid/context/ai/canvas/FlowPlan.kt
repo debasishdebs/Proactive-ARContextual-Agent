@@ -69,6 +69,8 @@ data class FlowPlan(
     val signal: Signal? = null,
     /** `trigger.schedule`: the validated cron expression. */
     val cron: String? = null,
+    /** The publication this plan was read from ("" = not from a publish). Persisted trigger state (rate stamps, held signal, schedule checkpoint) is keyed by it, so a new publish starts clean. */
+    val scope: String = "",
 ) {
     data class Signal(val aggregate: WindowAggregate.Settings, val compare: NumberCompare.Settings)
 

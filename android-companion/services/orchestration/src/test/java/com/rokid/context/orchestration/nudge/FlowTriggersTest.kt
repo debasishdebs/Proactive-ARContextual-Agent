@@ -51,7 +51,7 @@ class FlowTriggersTest {
         var now = 1_000_000L
         val queued = mutableListOf<String>()
         var published: FlowPlan? = plan(NodeTypes.TRIGGER_MOMENT)
-        val t = FlowTriggers(FlowPlans { published }, { queued += it }, { now }, debounceMs = 60_000)
+        val t = FlowTriggers(FlowPlans { published }, { queued += it; true }, { now }, debounceMs = 60_000)
         assertFalse("a scene event does nothing while the flow is rooted at moments", t.fire(NodeTypes.TRIGGER_SCENE))
         assertTrue(t.fire(NodeTypes.TRIGGER_MOMENT)); now += 1_000
         assertFalse("a burst is one run", t.fire(NodeTypes.TRIGGER_MOMENT)); now += 60_000
@@ -61,10 +61,10 @@ class FlowTriggersTest {
         assertEquals(listOf(NodeTypes.TRIGGER_MOMENT, NodeTypes.TRIGGER_MOMENT), queued)
     }
 
-    @Test fun aThrowingPlanLookupEnqueuesNothing() = runBlocking {
+    @Test fun aThrowingPlanLookupRunsTheBuiltInFlowInstead() = runBlocking {
         val queued = mutableListOf<String>()
-        assertFalse(FlowTriggers(FlowPlans { throw IllegalStateException("db") }, { queued += it }).fire(NodeTypes.TRIGGER_MOMENT))
-        assertTrue(queued.isEmpty())
+        assertTrue(FlowTriggers(FlowPlans { throw IllegalStateException("db") }, { queued += it; true }).fire(NodeTypes.TRIGGER_MOMENT))
+        assertEquals("the built-in flow still runs, as a summarizer pass", listOf(NodeTypes.TRIGGER_SUMMARIZER), queued)
     }
 
     @Test fun theScheduleFiresOnceWhenDueSurvivesARestartAndNeverReplaysMissedRuns() = runBlocking {
@@ -72,7 +72,7 @@ class FlowTriggersTest {
         val fired = mutableListOf<String>()
         val meta = MemoryTriggerMeta()
         val plans = FlowPlans { plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *") }
-        fun tick() = ScheduleTick(plans, meta, { fired += it }, { now }, { zone }) // a new instance each time: only the meta carries state (a restart)
+        fun tick() = ScheduleTick(plans, meta, { fired += it; true }, { now }, { zone }) // a new instance each time: only the meta carries state (a restart)
         assertFalse("the first check only records the time", tick().tick())
         now = at(8, 45); assertFalse(tick().tick())
         now = at(9, 5); assertTrue(tick().tick())
@@ -84,15 +84,56 @@ class FlowTriggersTest {
         assertEquals(listOf(NodeTypes.TRIGGER_SCHEDULE, NodeTypes.TRIGGER_SCHEDULE), fired)
     }
 
-    @Test fun anUnpublishedScheduleResetsSoARepublishNeverFiresRetroactively() = runBlocking {
+    @Test fun aNewPublicationNeverFiresRetroactivelyAndHasItsOwnState() = runBlocking {
         var now = at(8, 0)
-        var published: FlowPlan? = plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *")
+        var published: FlowPlan? = plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *").copy(scope = "p1")
         val fired = mutableListOf<String>()
         val meta = MemoryTriggerMeta()
-        fun tick() = ScheduleTick(FlowPlans { published }, meta, { fired += it }, { now }, { zone })
+        fun tick() = ScheduleTick(FlowPlans { published }, meta, { fired += it; true }, { now }, { zone })
         tick().tick()
         published = null; now = at(8, 30); assertFalse(tick().tick())
-        published = plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *"); now = at(12, 0); assertFalse("09:00 passed while it was not published", tick().tick())
+        published = plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *").copy(scope = "p2"); now = at(12, 0); assertFalse("09:00 passed before this publication existed", tick().tick())
         assertTrue(fired.isEmpty())
+    }
+
+    @Test fun aClockSetBackNeitherReplaysNorReopensTheBudget() = runBlocking {
+        var now = at(8, 0)
+        val fired = mutableListOf<String>()
+        val meta = MemoryTriggerMeta()
+        val plans = FlowPlans { plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *") }
+        fun tick() = ScheduleTick(plans, meta, { fired += it; true }, { now }, { zone })
+        tick().tick(); now = at(9, 5); assertTrue(tick().tick())
+        now = at(8, 0); assertFalse("clock back before the occurrence: the 09:00 run is not replayed", tick().tick())
+        now = at(9, 30); assertFalse(tick().tick())
+        assertEquals(1, fired.size)
+        // rate stamps in the future still count
+        var t = at(10, 0)
+        val limiter = TriggerRateLimiter(MemoryTriggerMeta()) { t }
+        assertTrue(limiter.admit("m", 1, "p1")); t = at(9, 0)
+        assertFalse(limiter.admit("m", 1, "p1"))
+        assertTrue("another publication has its own budget", limiter.admit("m", 1, "p2"))
+    }
+
+    @Test fun anOccurrenceIsKeptPendingUntilTheEnqueueIsDurable() = runBlocking {
+        var now = at(8, 0)
+        var ok = false
+        val fired = mutableListOf<String>()
+        val meta = MemoryTriggerMeta()
+        val plans = FlowPlans { plan(NodeTypes.TRIGGER_SCHEDULE, cron = "0 9 * * *") }
+        fun tick() = ScheduleTick(plans, meta, { fired += it; ok }, { now }, { zone })
+        tick().tick(); now = at(9, 5)
+        assertFalse("enqueue failed", tick().tick()); now = at(9, 20)
+        assertFalse(tick().tick()); ok = true
+        assertTrue("retried until it is durable", tick().tick())
+        now = at(9, 40); assertFalse(tick().tick())
+        assertEquals(3, fired.size)
+    }
+
+    @Test fun aSignalHasItsOwnStatePerPublication() = runBlocking {
+        val signal = FlowPlan.Signal(WindowAggregate.Settings("gyroMean", "mean", 3), NumberCompare.Settings(">=", 0.5))
+        val meta = MemoryTriggerMeta()
+        val v = listOf<Double?>(0.9, 0.9, 0.9)
+        assertTrue(SignalGate(meta, "p1") { _, _, _ -> v }.fires(signal, 0))
+        assertTrue("a new publication starts clean", SignalGate(meta, "p2") { _, _, _ -> v }.fires(signal, 0))
     }
 }
