@@ -241,7 +241,7 @@ class GlassesRelauncherTest {
         assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_CALL_SCREENING, null, far, far))
         assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_NORMAL, android.telephony.TelephonyManager.CALL_STATE_OFFHOOK, far, far))
         assertTrue(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_COMMUNICATION, null, far, far))
-        assertTrue(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_RINGTONE, null, far, far))
+        assertFalse("a ringing call is a call", AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_RINGTONE, null, far, far))
     }
 
     /** The relaunch against the real decision: a VoIP/meeting mode lets it proceed; a real call mode blocks until it ends. */

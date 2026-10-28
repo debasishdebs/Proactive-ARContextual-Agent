@@ -252,8 +252,8 @@ class GlassesRelauncher(
  * The real guards. A call is TelephonyManager.callState != IDLE or an AudioManager mode other than NORMAL. READ_PHONE_STATE is deliberately not
  * requested (2026-10-21 ruling R12); callState is read only if a merged library declared it and it was granted. Without it the audio mode is all
  * we have, so the call state is treated as unknown, and unknown counts as "in a call" for [UNKNOWN_CALL_HOLD_MS] after a scene event ([callIdle] with a
- * null call state). User ruling 2026-10-28: only a REAL call blocks: audio mode IN_CALL or CALL_SCREENING, or a readable call state that is not IDLE; the other
- * non-NORMAL modes (IN_COMMUNICATION of VoIP and meeting apps, RINGTONE, ...) do not (risk: a VoIP call no longer defers the reopen; the diagnostics line still logs the mode).
+ * null call state). User ruling 2026-10-28: only a REAL call blocks: audio mode IN_CALL, RINGTONE (a ringing call) or CALL_SCREENING, or a readable call state that is not IDLE; the other
+ * non-NORMAL modes (IN_COMMUNICATION of VoIP and meeting apps, ...) do not (risk: a VoIP call no longer defers the reopen; the diagnostics line still logs the mode).
  * A call just ended is not idle either: the guard stamps `normalSinceMs` on the transition OUT OF a call (the mode listener on API 31+, or the poll that first sees no call
  * after a call sample), on the monotonic clock [elapsed], and [callIdle] needs [CALL_END_SETTLE_MS] since then (S12). [wearing] is the last CXR `wearingStatus`.
  * [modeSource] and [callStateSource] are test seams; null = the real AudioManager and TelephonyManager.
@@ -330,7 +330,7 @@ class AndroidRelaunchGuards(
 
         /** A real call in progress: the call audio modes (not VoIP's IN_COMMUNICATION), or a readable telephony state that is not idle. */
         internal fun callBusy(audioMode: Int, callState: Int?): Boolean =
-            audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_CALL_SCREENING || (callState != null && callState != TelephonyManager.CALL_STATE_IDLE)
+            audioMode == AudioManager.MODE_IN_CALL || audioMode == AudioManager.MODE_RINGTONE || audioMode == AudioManager.MODE_CALL_SCREENING || (callState != null && callState != TelephonyManager.CALL_STATE_IDLE)
 
         /** Pure: [callState] null = unreadable (no permission). Unknown holds the reopen back until [UNKNOWN_CALL_HOLD_MS] after the scene event. [sinceNormalMs] = time since the last call sample ended. */
         fun callIdle(audioMode: Int, callState: Int?, sinceSceneMs: Long, sinceNormalMs: Long): Boolean = when {
