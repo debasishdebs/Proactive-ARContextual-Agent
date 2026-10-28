@@ -206,7 +206,7 @@ class NudgeTriggerEngineTest {
     }
 
     @Test fun aSwitchedOffDisplayIsNotASurfaceAndTheFallbackIsRecorded() = runBlocking {
-        fun shownOn(target: String): String { plan = planOf(NodeTypes.TRIGGER_MOMENT, target = target, perHour = 12); now += 2_700_000L; runBlocking { engine().runOnce(NodeTypes.TRIGGER_MOMENT) }; return runBlocking { rows().first().shownOn } }
+        fun shownOn(target: String): String { plan = planOf(NodeTypes.TRIGGER_MOMENT, target = target, perHour = 12); now += 1_900_000L; runBlocking { engine().runOnce(NodeTypes.TRIGGER_MOMENT) }; return runBlocking { rows().first().shownOn } }
         reach = GlassesReach.UP; cap = 20
         hud = NudgeHud(null, Verbosity.MAX, zone)
         caps = caps.with("glasses", "display", false)
@@ -219,6 +219,13 @@ class NudgeTriggerEngineTest {
         // no display at all: still one stored row, on the phone, with the reason
         caps = caps.with("glasses", "display", false)
         assertEquals("phone", shownOn("phone")); assertEquals(1, traces("NUDGE_DELIVERY_FALLBACK").count { it.note == DeviceCapabilities.NO_DISPLAY })
+        // SILENT is a ceiling: a switched-off phone display never raises it to the HUD; no display at all is recorded even when SILENT
+        hud = NudgeHud(null, Verbosity.SILENT, zone)
+        caps = com.rokid.context.core.model.DeviceCapabilities.ALL.with("phone", "display", false)
+        val rowsBefore = rows().size; val offBefore = traces("NUDGE_DELIVERY_FALLBACK").count { it.note == DeviceCapabilities.PHONE_DISPLAY_OFF }
+        assertEquals("phone", shownOn("phone")); assertEquals(rowsBefore + 1, rows().size); assertEquals(offBefore + 1, traces("NUDGE_DELIVERY_FALLBACK").count { it.note == DeviceCapabilities.PHONE_DISPLAY_OFF })
+        caps = caps.with("glasses", "display", false)
+        assertEquals("phone", shownOn("both")); assertEquals(2, traces("NUDGE_DELIVERY_FALLBACK").count { it.note == DeviceCapabilities.NO_DISPLAY })
     }
 
     @Test fun theRateStampsSurviveARestart() = runBlocking {

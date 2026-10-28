@@ -61,4 +61,13 @@ class DeliveryRouteTest {
         for (target in listOf("caller", "phone", "glasses", "both")) for (reach in GlassesReach.values()) for (g in listOf(true, false))
             assertEquals(DeliveryRoute.resolve(target, g, reach), DeliveryRoute.resolve(target, g, reach, DeviceCapabilities.ALL))
     }
+
+    @Test fun aSwitchedOffGlassesDisplayFallsBackWhateverTheLinkDoes() {
+        for (reach in GlassesReach.values()) {
+            val r = DeliveryRoute.resolve("caller", true, reach, noGlassesDisplay)
+            assertTrue(r.explicit && r.phone && !r.glasses); assertEquals(DeviceCapabilities.GLASSES_DISPLAY_OFF, r.fallback)
+            assertEquals(DeviceCapabilities.NO_DISPLAY, DeliveryRoute.resolve("caller", true, reach, none).fallback)
+            assertEquals(DeviceCapabilities.NO_DISPLAY, DeliveryRoute.resolve("caller", false, reach, none).fallback)
+        }
+    }
 }

@@ -145,11 +145,14 @@ class NudgeEngine(
         val pd = caps.phoneDisplay; val gd = caps.glassesDisplay
         val none = if (pd) DeviceCapabilities.GLASSES_DISPLAY_OFF else DeviceCapabilities.NO_DISPLAY
         val up = triggers.reach() == GlassesReach.UP
+        // no display anywhere: still one stored row on the phone, and the reason is always recorded (whatever the verbosity or target)
+        if (!pd && !gd) return NudgeRoute("phone", DeviceCapabilities.NO_DISPLAY)
+        val base = shownOn(verbosity)
         return when (plan?.target) {
             "phone" -> when {
                 pd -> NudgeRoute("phone")
-                gd && up -> NudgeRoute("toast", DeviceCapabilities.PHONE_DISPLAY_OFF)
-                else -> NudgeRoute("phone", if (gd) DeviceCapabilities.PHONE_DISPLAY_OFF else DeviceCapabilities.NO_DISPLAY)
+                gd && up && base != "phone" -> NudgeRoute(base, DeviceCapabilities.PHONE_DISPLAY_OFF) // the verbosity ceiling holds: SILENT is never raised
+                else -> NudgeRoute("phone", DeviceCapabilities.PHONE_DISPLAY_OFF)
             }
             "glasses" -> when {
                 !gd -> NudgeRoute("phone", none)
@@ -158,7 +161,6 @@ class NudgeEngine(
             }
             else -> {
                 // `both` and the built-in flow: the user's verbosity picks the surface (never raised); a HUD choice needs the glasses display
-                val base = shownOn(verbosity)
                 when {
                     base == "phone" -> NudgeRoute(base)
                     !gd -> NudgeRoute("phone", none)
