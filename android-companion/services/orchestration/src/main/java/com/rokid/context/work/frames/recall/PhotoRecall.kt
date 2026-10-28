@@ -57,15 +57,15 @@ class PhotoRecall(
     /** `MemoryRetriever.retrieve(..., notAfterMs = ...)`: the caption fallback of a historical search. Without it a search with a cutoff has no caption fallback. */
     private val captionsAsOf: (suspend (query: String, pool: Int, nowMs: Long, notAfterMs: Long) -> List<ScoredMemory>)? = null,
 ) {
-    /** [imageK] = 0 skips the image scan; [captionK] = 0 skips the fallback. */
-    suspend fun search(query: String, imageK: Int = 24, captionK: Int = 24, budgetMs: Long = ImageScan.BUDGET_MS, notAfterMs: Long? = null): RecallResult {
+    /** [imageK] = 0 skips the image scan; [captionK] = 0 skips the fallback. [queryVector]: a ready image-space embedding (a photo, v0.9.8): the scan skips the text embed. */
+    suspend fun search(query: String, imageK: Int = 24, captionK: Int = 24, budgetMs: Long = ImageScan.BUDGET_MS, notAfterMs: Long? = null, queryVector: FloatArray? = null): RecallResult {
         val t0 = clock()
         var state = ImageSearchState.RAN
         var imageIds = emptyList<Pair<String, Double>>()
         var scanned = 0
         var truncated = false
         if (imageK > 0) {
-            val scan = imageScan(query, imageK, budgetMs, t0, notAfterMs)
+            val scan = imageScan(query, imageK, budgetMs, t0, notAfterMs, queryVector)
             state = scan.state; imageIds = scan.hits; scanned = scan.scanned; truncated = scan.truncated
         }
         val imageSet = imageIds.map { it.first }.toSet()
@@ -91,7 +91,7 @@ class PhotoRecall(
 
     private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
 
-    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long, notAfterMs: Long?): ImageScanOutcome {
+    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long, notAfterMs: Long?, queryVector: FloatArray? = null): ImageScanOutcome {
         fun failed() = ImageScanOutcome(ImageSearchState.FAILED, emptyList(), 0, false)
         val target: ImageSpaceTarget = try {
             images.targets().firstOrNull { it.active } // S7: the ACTIVE one by flag, never "the first"
@@ -99,7 +99,7 @@ class PhotoRecall(
             ?: return ImageScanOutcome(ImageSearchState.NO_IMAGE_SPACE, emptyList(), 0, false)
         // The query embed (a cold on-device model load can block) gets the scan's own budget, on a detached coroutine: awaiting it is cancellable even when
         // the embed itself is not, so the ask is never held past the budget. Whatever it finishes later is dropped.
-        val embed = CoroutineScope(SupervisorJob() + Dispatchers.Default).async { target.embedQueryFull(query) }
+        val embed = CoroutineScope(SupervisorJob() + Dispatchers.Default).async { queryVector ?: target.embedQueryFull(query) }
         val full = try { withTimeoutOrNull(budgetMs) { embed.await() } } catch (c: CancellationException) { embed.cancel(); throw c } catch (_: Exception) { return failed() }
         if (full == null) { embed.cancel(); return ImageScanOutcome(ImageSearchState.TIMED_OUT, emptyList(), 0, false) }
         // One deadline for the embed and the scan: what the embed used is not given to the scan again.
