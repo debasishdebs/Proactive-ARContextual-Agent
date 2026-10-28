@@ -68,4 +68,13 @@ class FlowPlanTest {
         }
         assertEquals(false, NodeTypes.byType(NodeTypes.TRIGGER_SCHEDULE)!!.liveable)
     }
+
+    @Test fun unreadSettingsAndNodeTextAreRefusedNotIgnored() {
+        assertTrue(PipelineValidator.validate(with(query, "answer", buildJsonObject { put("role", "ANSWER"); put("template", "x"); putJsonObject("prompt") { put("source", "live") } }))
+            .contains("node answer: a flow takes its prompt text from Settings, not from the node"))
+        assertEquals(listOf("node retrieve: a Nudge reads recent memories and nudge history; memory and photo stores are for a Query"),
+            refused(with(nudge, "retrieve", buildJsonObject { put("recent", true); put("memories", true) })))
+        assertEquals(listOf("node retrieve: a Query has no image to search with"), refused(with(query, "retrieve", buildJsonObject { put("memories", true); put("imageQuery", true) })))
+        assertEquals(true, plan(with(query, "retrieve", buildJsonObject { put("memories", true); put("recent", true); put("recentWindowMin", 30) })).recent)
+    }
 }

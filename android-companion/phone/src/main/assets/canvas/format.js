@@ -33,7 +33,7 @@ export const MODES = [
   { mode: 'prompts', label: 'Prompts only', text: 'Live extraction keeps its own steps and uses this version\'s prompts. No extra model calls.' },
   { mode: 'shadow', label: 'Shadow', text: 'Live extraction stays as it is. On about 1 in 4 batches, after the live save, the pipeline also runs as unmetered experiment calls: roughly 2–2.5× the model calls of those batches. It saves traces only, and it pauses while Developer mode is off.' },
   { mode: 'live', label: 'Live', text: 'The pipeline replaces the extraction step for every batch: about 3 intent calls plus 1–3 extract calls per batch. A batch gets up to 240 s, then one live fallback. Live always runs the confidence check, the critic and the save rules.' },
-  { mode: 'flow', label: 'Live flow', text: 'This Query or Nudge pipeline runs instead of the built-in flow; if it fails, the built-in flow runs. The prompt, the Forget check and the nudge gates stay as they are.' },
+  { mode: 'flow', label: 'Live flow', text: 'This Query or Nudge pipeline runs instead of the built-in flow; if it fails, the built-in flow runs. The prompt text comes from Settings (a template on the node is refused); the Forget check and the nudge gates stay as they are.' },
 ];
 
 const RACE = ['That publish was already rolled back.', 'A newer publish exists. Reload and try again.'];
