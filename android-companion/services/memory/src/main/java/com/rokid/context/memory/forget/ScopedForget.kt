@@ -37,7 +37,7 @@ class ScopedForget(
     }
 
     /** The committed Forget: the cascade for the caller's post-commit cleanup, and the spans and traces for the file and glasses listeners. */
-    data class Done(val plan: Plan, val cascade: ForgetService.Result, val spans: List<LongRange>, val tombstonedTraceIds: List<String>)
+    data class Done(val plan: Plan, val cascade: ForgetService.Result, val spans: List<LongRange>, val tombstonedTraceIds: List<String>, val peerResultsDeleted: Int = 0)
 
     suspend fun plan(target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): Plan {
         val eff = scope.atLeast(target.level)
@@ -140,6 +140,6 @@ class ScopedForget(
         val r = MomentForget(db, service, clock).forgetSpans(plan.spans, plan.sceneIds, expectedHash) { requireExperimental() }
         // files and glasses follow the committed range (trace folders, the glasses' unsent traces): the same listener call as a range Forget
         for (s in plan.spans) ForgetListeners.rangeForgotten(s.first, s.last, r.tombstonedTraceIds)
-        return Done(plan, r.cascade, plan.spans, r.tombstonedTraceIds)
+        return Done(plan, r.cascade, plan.spans, r.tombstonedTraceIds, r.peerResultsDeleted)
     }
 }

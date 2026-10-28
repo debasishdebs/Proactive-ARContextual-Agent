@@ -28,6 +28,8 @@ class MomentForget(
         val cascade: ForgetService.Result = ForgetService.Result.EMPTY,
         /** The glasses traces this Forget tombstoned (ids, for the file and glasses follow-up of the canvas range Forget), the marks deleted and the results invalidated by the range cascade. */
         val tombstonedTraceIds: List<String> = emptyList(), val labelsDeleted: Int = 0, val resultsInvalidated: Int = 0,
+        /** Regenerable run results of OTHER keys deleted because they share a provider call with the closure (the actual count, not the preview's estimate). */
+        val peerResultsDeleted: Int = 0,
     ) { companion object { val EMPTY = Result(0, 0, 0, 0, 0, 0) } }
 
     /** Test seam: runs inside the transaction after everything was written, so a test can throw and prove all of it rolls back. Always null in production. */
@@ -76,8 +78,8 @@ class MomentForget(
         if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0, 0)
         return try { db.withTransaction {
             val d = discover(secondsOf(merged), merged, bounded = true)
-            val e = sceneEffect(d.moments, sceneIds); val peers = peersOf(d, e)
-            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e, peers), outside = d.outsideFrames.size + d.descendants.size, peerResults = peers.size)
+            val e = sceneEffect(d.moments, sceneIds); val peers = peersOf(d, sceneEffect(d.moments + d.projected, sceneIds))
+            Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hashOf(merged, d, e), outside = d.outsideFrames.size + d.descendants.size, peerResults = peers.size)
         } } catch (e: ForgetTooLarge) { Counts(0, 0, 0, 0, 0, 0, tooLarge = true) }
     }
 
@@ -97,17 +99,24 @@ class MomentForget(
     }
 
     /**
-     * The batch peers the delete removes besides the set itself (same selection as the delete: [CanvasDao.batchPeersOf] over EVERY key whose outputs the cascade deletes batch-wide: in-span photos, the scrubbed outside photos,
-     * marks, the Moments that go and the Scenes that go whole). Computed from the same discovery in the preview and inside the deleting transaction, and hashed, so a peer that appears in between forces a new preview.
+     * The lineage CLOSURE of a Forget: every key whose run results go (photos, scrubbed outside photos, marks, every Moment that is requested, stored or dropped, every Scene that goes whole, auto-removed ones included),
+     * grown with the batch-wide peers of every key in it until nothing is added. Batch peers are regenerable run results, not user data: they are NOT part of the plan hash (the preview's count is an estimate); the delete
+     * computes this closure once, before it deletes anything, and removes it in one call, so no per-photo step can lose the lineage a later step needs. Returns (all keys, the peers among them).
      */
-    private suspend fun peersOf(d: Found, e: SceneEffect): Set<String> {
-        val keys = (d.frames + d.outsideFrames + d.labels + d.moments.map { "moment:$it" } + e.removed.map { "scene:$it" }).toList()
-        return db.canvasDao().batchPeersOf(keys)
+    private suspend fun closureOf(d: Found, e: SceneEffect?, sceneIds: Collection<String>, byKey: Boolean = true): Pair<Set<String>, Set<String>> {
+        // the range / id Forget keeps its old behaviour: only the photos' lineage (the by-key rows are the scoped Forget's)
+        val base = (if (!byKey) d.frames else d.frames + d.outsideFrames + d.labels + (d.moments + d.projected).map { "moment:$it" } + ((e?.removed ?: emptySet()) + sceneIds).map { "scene:$it" }).toSet()
+        var keys = base
+        while (true) { val more = db.canvasDao().batchPeersOf(keys.toList()) - keys; if (more.isEmpty()) break; keys = keys + more }
+        return keys to (keys - base)
     }
 
-    private fun hashOf(spans: List<LongRange>, d: Found, e: SceneEffect, peers: Set<String>): String = ForgetPlanHash.of(
+    /** The preview's estimate of the regenerable results that will be rebuilt (informational, never hashed). */
+    private suspend fun peersOf(d: Found, e: SceneEffect): Set<String> = closureOf(d, e, emptyList()).second
+
+    private fun hashOf(spans: List<LongRange>, d: Found, e: SceneEffect): String = ForgetPlanHash.of(
         ForgetScope.MOMENT, spans,
-        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants, "peerResults" to peers) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
+        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
     )
 
     private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
@@ -193,8 +202,11 @@ class MomentForget(
             val found = discover(requestedSeconds, spans, bounded = byKey)
             val frames = found.frames; val memories = found.memories; val labels = found.labels; val projected = found.projected
             if (expectedHash != null) { // the confirmed set must be EXACTLY the one that was previewed; anything else rolls this transaction back (fences included) and deletes nothing
-                if (sceneEffect(found.moments, sceneIds).let { hashOf(spans, found, it, peersOf(found, it)) } != expectedHash) throw ForgetContentChanged()
+                if (hashOf(spans, found, sceneEffect(found.moments, sceneIds)) != expectedHash) throw ForgetContentChanged()
             }
+            // the closure of the run results, computed BEFORE anything is deleted and removed in one call (the cascade below then finds nothing left to follow)
+            val closure = closureOf(found, if (byKey) sceneEffect(found.moments + found.projected, sceneIds) else null, sceneIds, byKey)
+            db.canvasDao().deleteCanvasOutputsForFrames(closure.first.toList())
             val wire = frames.toList().chunked(CHUNK).flatMap { md.wireIds(it) }.map { it.wireFrameId }
             val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
             // 3. The cascade: the existing code paths, in this transaction.
@@ -227,7 +239,7 @@ class MomentForget(
             val tombstonedTraces = liveTracesBefore - s3.forgettableTraces().map { it.traceId }.toSet()
             val inserted = CleanupOutbox.queue(md, now, cascade.framesToDelete, wire, tombstonedTraces, spans)
             testFaultBeforeCommit?.invoke()
-            counts = Result(requestedSeconds.size, frames.size, memories.size, labels.size, dropped.size, inserted, cascade, tombstonedTraces.toList(), labelsDeleted, resultsInvalidated)
+            counts = Result(requestedSeconds.size, frames.size, memories.size, labels.size, dropped.size, inserted, cascade, tombstonedTraces.toList(), labelsDeleted, resultsInvalidated, closure.second.size)
             cascade
         }
         }

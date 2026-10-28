@@ -90,16 +90,43 @@ class ScopedForgetTest {
     }
 
     /** Review P1: a batch peer of an IN-SPAN photo (its result is outside the span) is counted and hashed too. */
-    @Test fun aBatchPeerOfAnInSpanPhotoIsCountedAndHashed() = runBlocking<Unit> {
+    @Test fun aBatchPeerOfAnInSpanPhotoIsCountedAndGoesWithTheClosure() = runBlocking<Unit> {
         world()
         db.canvasDao().insertRun(com.rokid.context.memory.db.CanvasRunEntity("r1", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
         suspend fun item(f: String, batch: String?) = db.canvasDao().upsertItem(com.rokid.context.memory.db.CanvasRunItemEntity("r1", f, "ext", "OK", null, "{\"fact\":\"t$f\"}", null, null, null, null, null, null, batch))
         item("a1", "b1"); item("n1", "b1")
         val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
         assertEquals("n1 shares a1's batch", 1, c.peerResults)
-        item("zz", "b1"); refused(p, c.planHash)
-        val c2 = engine.preview(p); assertEquals(2, c2.peerResults); engine.forget(p, c2.planHash)
+        item("zz", "b1"); engine.forget(p, c.planHash)
         assertTrue("the peers' results went with the counted set", db.canvasDao().items("r1").isEmpty())
+    }
+
+    private suspend fun runWith(vararg rows: Pair<String, String>) {
+        db.canvasDao().insertRun(com.rokid.context.memory.db.CanvasRunEntity("r1", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
+        rows.forEach { (f, b) -> db.canvasDao().upsertItem(com.rokid.context.memory.db.CanvasRunItemEntity("r1", f, "ext", "OK", null, "{\"fact\":\"t$f\"}", null, null, null, null, null, null, b)) }
+    }
+    private suspend fun itemKeys() = db.canvasDao().items("r1").map { it.frameId }.sorted()
+
+    /** Codex round 2 (3): roots A:x, B:x|y and peer C:y. Deleting A first used to erase B's lineage and leave C; the closure is computed before anything is deleted. */
+    @Test fun theLineageClosureIsComputedBeforeAnyPhotoIsDeleted() = runBlocking<Unit> {
+        world(); runWith("a1" to "x", "a2" to "x|y", "u1" to "y", "u2" to "z")
+        val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val d = engine.forget(p, engine.preview(p).planHash)
+        assertEquals("nothing outside the closure is touched", listOf("u2"), itemKeys())
+        assertEquals("the actual count of the regenerable peers deleted", 1, d.peerResultsDeleted)
+    }
+
+    /** Codex round 2 (1): a requested second with no stored Moment still has `moment:<id>` outputs, and their peers go. */
+    @Test fun aRequestedSecondWithNoStoredMomentTakesItsOutputsAndPeers() = runBlocking<Unit> {
+        world(); runWith("moment:${mid(40)}" to "m1", "u1" to "m1", "u2" to "z")
+        run(ForgetTarget.Moment(mid(40)), ForgetScope.MOMENT)
+        assertEquals(listOf("u2"), itemKeys())
+    }
+
+    /** Codex round 2 (2): a Scene that goes because its last Moment goes (auto-removed) takes its own outputs and peers. */
+    @Test fun anAutoRemovedSceneTakesItsOutputsAndPeers() = runBlocking<Unit> {
+        world(); scene("sc-S", 40); runWith("scene:sc-S" to "s1", "u1" to "s1", "u2" to "z")
+        run(ForgetTarget.Moment(mid(40)), ForgetScope.MOMENT)
+        assertFalse("sc-S" in scenes()); assertEquals(listOf("u2"), itemKeys())
     }
 
     // ---- PHOTO ----
@@ -226,17 +253,15 @@ class ScopedForgetTest {
     }
 
     /** v0.9.8 E: scrubbing an outside photo's outputs is batch-wide (one provider call produced the peers' results too); the peers' regenerable results are COUNTED and HASHED, and exactly them go (nothing uncounted, other photos' own batches stay). */
-    @Test fun aBatchPeerOfAnOutsidePhotoIsCountedHashedAndTheOnlyExtraThingDeleted() = runBlocking<Unit> {
+    @Test fun aBatchPeerOfAnOutsidePhotoIsCountedAndGoesWithTheClosureWithoutBeingHashed() = runBlocking<Unit> {
         world(); fx.memory("mx", "n1", createdAt = MS + 500)
         db.canvasDao().insertRun(com.rokid.context.memory.db.CanvasRunEntity("r1", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 1, null, "[]"))
         suspend fun item(f: String, batch: String?) = db.canvasDao().upsertItem(com.rokid.context.memory.db.CanvasRunItemEntity("r1", f, "ext", "OK", null, "{\"fact\":\"t$f\"}", null, null, null, null, null, null, batch))
         item("n1", "b1"); item("a3", "b1"); item("u1", "b2")
         val p = engine.plan(ForgetTarget.Photo("a1"), ForgetScope.MOMENT); val c = engine.preview(p)
         assertEquals("a3 shares n1's batch and is outside", 1, c.peerResults)
-        item("zz", "b1") // a new peer after the preview changes the set
-        refused(p, c.planHash)
-        val c2 = engine.preview(p); assertEquals(2, c2.peerResults)
-        engine.forget(p, c2.planHash)
+        item("zz", "b1") // a peer that arrives after the preview is a regenerable result: it is NOT in the hash, and it goes with the closure
+        val done = engine.forget(p, c.planHash)
         assertEquals("n1's and its peers' results went, the unrelated batch stays", listOf("u1"), db.canvasDao().items("r1").map { it.frameId })
     }
 
