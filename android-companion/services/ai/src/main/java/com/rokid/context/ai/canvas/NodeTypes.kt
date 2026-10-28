@@ -115,7 +115,7 @@ object NodeTypes {
     const val GATE_NUDGE = "gate.nudge"
     const val OUT_DELIVER = "out.deliver"
     const val TRIGGER_SUMMARIZER = "trigger.summarizer_pass"
-    /** Slice C triggers: types only (a graph may hold them, nothing runs or publishes them yet). */
+    /** Slice C triggers: live roots of a Nudge flow (params in [TriggerParams]). */
     const val TRIGGER_MOMENT = "trigger.moment"
     const val TRIGGER_SCENE = "trigger.scene"
     const val TRIGGER_SIGNAL = "trigger.signal"
@@ -210,10 +210,10 @@ object NodeTypes {
         NodeType(EMBED_TEXT, "Embed text", setOf(PortType.TEXT), PortType.VECTOR, sinceSchema = 2, category = Category.DATA, executor = ExecutorKind.EMBED, short = "embed", family = Family.PROCESS),
         NodeType(TRIGGER_SUMMARIZER, "After summarizer pass", emptySet(), PortType.TRIGGER, sinceSchema = 2, category = Category.INPUTS, short = "after", root = true, family = Family.SOURCE),
     ) + listOf(
-        TRIGGER_MOMENT to "Moment", TRIGGER_SCENE to "Scene", TRIGGER_SIGNAL to "Signal aggregate", TRIGGER_SCHEDULE to "Schedule",
-    ).map { (t, label) ->
-        NodeType(t, label, emptySet(), PortType.TRIGGER, sinceSchema = 2, category = Category.INPUTS, short = t.substringAfter('.'), palette = false, liveable = false, root = true,
-            family = Family.SOURCE)
+        Triple(TRIGGER_MOMENT, "Moment", TriggerParams.moment), Triple(TRIGGER_SCENE, "Scene", TriggerParams.scene),
+        Triple(TRIGGER_SIGNAL, "Signal aggregate", TriggerParams.signal), Triple(TRIGGER_SCHEDULE, "Schedule", TriggerParams.schedule),
+    ).map { (t, label, schema) ->
+        NodeType(t, label, emptySet(), PortType.TRIGGER, sinceSchema = 2, category = Category.INPUTS, short = t.substringAfter('.'), root = true, params = schema, family = Family.SOURCE)
     } + listOf(
         NodeType(RAG_RETRIEVE, "Retrieve", setOf(PortType.TEXT, PortType.VECTOR, PortType.TRIGGER), PortType.RAG, sinceSchema = 2, category = Category.MEMORY, short = "rag",
             params = RagRetrieveParams.schema, family = Family.PROCESS),

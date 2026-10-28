@@ -277,10 +277,13 @@ class VoicePipeline(
     }
 
     private fun answered(g: Long, source: VoiceSource, question: String, r: AnswerResult.Answered) {
-        if (source == VoiceSource.PHONE) lastPhoneAskId = r.askId
+        // A flow's delivery target (v0.9.8 slice C): each surface is in or out, once. No route = the surface that asked, exactly as before.
+        val route = r.route?.takeIf { it.explicit }
+        if (route?.phone ?: (source == VoiceSource.PHONE)) lastPhoneAskId = r.askId
         val text = VoiceText.clean(r.text, MAX_SPOKEN)
-        val speak = source == VoiceSource.PHONE || bluetoothMedia()
-        set(VoiceState.Answer(source, r.askId, question, text, speaking = speak, photoLabel = r.photoLabel))
+        val speak = if (route == null) source == VoiceSource.PHONE || bluetoothMedia() else (route.phone && source == VoiceSource.PHONE) || (route.glasses && bluetoothMedia())
+        set(VoiceState.Answer(source, r.askId, question, text, speaking = speak, photoLabel = r.photoLabel, hud = route?.glasses ?: true))
+        route?.fallback?.let { log("deliver fallback=$it") } // the reason is a fixed token; the row's trace holds it too
         log("answered ${source.name} spoken=$speak")
         outcome(VoiceOutcome.ANSWERED, source)
         if (!speak || !speaker.speak(r.askId, text) { speechDone(g) }) speechDone(g)
@@ -354,7 +357,7 @@ class VoicePipeline(
         VoiceState.Idle -> null
         is VoiceState.Listening -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.partial, HUD_TEXT)) else null
         is VoiceState.Thinking -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.question, HUD_TEXT)) else null
-        is VoiceState.Answer -> Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), hudAnswer(s), s.speaking)
+        is VoiceState.Answer -> if (s.hud) Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), hudAnswer(s), s.speaking) else null
         is VoiceState.Problem -> if (s.source == VoiceSource.GLASSES) Overlay.Toast(VoiceText.clip(s.hudText, HUD_TEXT)) else null
     }
 

@@ -229,6 +229,8 @@ object HubGraph {
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
         ).also { hubRef.set(it) }.also { hub ->
+            // v0.9.8 slice C: a flow's glasses delivery target asks this (not connected = the phone, with the reason recorded)
+            com.rokid.context.orchestration.DeliveryEnvironment.glassesConnected = { hub.link.state.value == com.rokid.context.core.model.LinkState.CONNECTED }
             // Process-lifetime watchdog: it outlives the hub service, so it can also bring a dead service back (ensureRunning is refused harmlessly where Android forbids it).
             GlassesWatchdog(
                 now = System::currentTimeMillis, enabled = { KeepRunningNearby.of(app).enabled() },

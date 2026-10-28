@@ -28,6 +28,8 @@ sealed interface AskOutcome {
     data class Answered(
         val askId: String, val proposedAction: com.rokid.context.ai.contract.ProposedAction? = null, val proposalId: String? = null,
         val photoFrameId: String? = null, val photoAtMs: Long? = null,
+        /** v0.9.8 slice C: where the published Query flow sends the answer; null = the surface that asked (the built-in flow). */
+        val route: com.rokid.context.core.model.DeliveryRoute? = null,
     ) : AskOutcome
     data class Failed(val message: String) : AskOutcome
 }

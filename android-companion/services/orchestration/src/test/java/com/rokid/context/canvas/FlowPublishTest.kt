@@ -14,7 +14,9 @@ import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.orchestration.AnswerService
+import com.rokid.context.core.model.DeliveryRoute
 import com.rokid.context.orchestration.AskOutcome
+import com.rokid.context.orchestration.DeliveryEnvironment
 import com.rokid.context.orchestration.FlowPlans
 import com.rokid.context.orchestration.TestAi
 import kotlinx.coroutines.runBlocking
@@ -87,10 +89,33 @@ class FlowPublishTest {
         assertTrue(first.publishId != second.publishId)
     }
 
-    @Test fun whatIsNotLiveYetIsRefusedWithFixedReasons() = runBlocking {
-        val (id, v) = version(DefaultPipelines.DEFAULT_NUDGE) { p -> p.copy(nodes = p.nodes.map { if (it.id == "trigger") it.copy(type = "trigger.schedule") else if (it.id == "deliver") it.copy(params = buildJsonObject { put("target", "phone") }) else it }) }
-        val r = publisher().publishFlow(id, v) as CanvasPublisher.Outcome.Blocked
-        assertEquals(listOf("node trigger: this trigger is not live yet", "node deliver: delivery to phone is not live yet (only both)"), r.reasons)
+    private fun nudgeEdit(trigger: String, params: JsonObject = JsonObject(emptyMap()), target: String = "phone"): (Pipeline) -> Pipeline = { p ->
+        p.copy(nodes = p.nodes.map { if (it.id == "trigger") it.copy(type = trigger, params = params) else if (it.id == "deliver") it.copy(params = buildJsonObject { put("target", target) }) else it })
+    }
+
+    @Test fun everySlice3CTriggerAndTargetPublishesAndIsReadBack() = runBlocking {
+        for ((t, target) in listOf("trigger.moment" to "phone", "trigger.scene" to "glasses", "trigger.signal" to "both", "trigger.schedule" to "phone")) {
+            val (id, v) = version(DefaultPipelines.DEFAULT_NUDGE, edit = nudgeEdit(t, target = target))
+            assertTrue(t, publisher().publishFlow(id, v) is CanvasPublisher.Outcome.Published)
+            val plan = DaoFlowPlans(dao).plan(FlowPlan.Kind.NUDGE)!!
+            assertEquals(t, plan.trigger); assertEquals(target, plan.target)
+        }
+        assertEquals(1, dao.activePublishes().count { it.kind == "flow" })
+        // a Query may deliver to the glasses now
+        val (qid, qv) = version(DefaultPipelines.DEFAULT_QUERY) { p -> p.copy(nodes = p.nodes.map { if (it.id == "deliver") it.copy(params = buildJsonObject { put("target", "glasses") }) else it }) }
+        assertTrue(publisher().publishFlow(qid, qv) is CanvasPublisher.Outcome.Published)
+        assertEquals("glasses", DaoFlowPlans(dao).plan(FlowPlan.Kind.QUERY)!!.target)
+    }
+
+    @Test fun badSchedulesAndRangesNeverFreezeAndAMeaninglessTargetIsRefusedAtPublish() = runBlocking {
+        // a version with a validation problem cannot be frozen, so it can never reach a publish
+        for (edit in listOf(nudgeEdit("trigger.schedule", buildJsonObject { put("cron", "*/5 * * * *") }), nudgeEdit("trigger.moment", buildJsonObject { put("maxPerHour", 50) }))) {
+            val id = repo.duplicate(DefaultPipelines.DEFAULT_NUDGE, null, "Mine")
+            repo.saveDraft(id, PipelineJson.encode(edit(PipelineJson.decode(repo.get(id)!!.draftJson).getOrThrow())), 0)
+            assertTrue(runCatching { repo.freeze(id, "v") }.exceptionOrNull() is IllegalArgumentException)
+        }
+        val (id, v) = version(DefaultPipelines.DEFAULT_NUDGE, edit = nudgeEdit("trigger.scene", target = "caller"))
+        assertEquals(listOf("node deliver: a Nudge has no caller; deliver to phone, glasses or both"), (publisher().publishFlow(id, v) as CanvasPublisher.Outcome.Blocked).reasons)
         assertNull(dao.activeFlow("nudge"))
         assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Version not found")), publisher().publishFlow("nope", 1))
         // a photo pipeline is not a flow
@@ -112,6 +137,29 @@ class FlowPublishTest {
         assertEquals(AskOutcome.Failed(com.rokid.context.orchestration.AskActions.NO_MEMORIES), service(FlowPlans { photosOnly }).answer("milk?", "t"))
         // a lookup that throws never silences the user: the built-in flow answers
         assertTrue(service(FlowPlans { throw IllegalStateException("db") }).answer("milk?", "t") is AskOutcome.Answered)
+    }
+
+    @Test fun queryDeliveryFollowsTheTargetAndFallsBackToThePhoneWithARecordedReason() = runBlocking {
+        seed()
+        fun route(target: String, source: String) = (runBlocking { service(FlowPlans { FlowPlan.BUILT_IN_QUERY.copy(target = target) }).answer("milk?", source) } as AskOutcome.Answered).route
+        try {
+            DeliveryEnvironment.glassesConnected = { true }
+            assertNull("the built-in flow answers the surface that asked, untouched", route("caller", "glasses_voice"))
+            assertEquals(DeliveryRoute(phone = false, glasses = true), route("glasses", "phone_voice"))
+            assertEquals(DeliveryRoute(phone = true, glasses = false), route("phone", "glasses_voice"))
+            assertEquals(DeliveryRoute(phone = true, glasses = true), route("both", "glasses_voice"))
+            assertTrue(MemoryGraph.get(app).traces.recent(10).none { it.state == "ASK_DELIVERY_FALLBACK" })
+            // not connected: the phone, and the reason is on record
+            DeliveryEnvironment.glassesConnected = { false }
+            assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = DeliveryRoute.GLASSES_NOT_CONNECTED), route("glasses", "phone_voice"))
+            assertEquals(listOf(DeliveryRoute.GLASSES_NOT_CONNECTED), MemoryGraph.get(app).traces.recent(10).filter { it.state == "ASK_DELIVERY_FALLBACK" }.map { it.note })
+            // the hub is not built yet: unknown counts as not connected
+            DeliveryEnvironment.glassesConnected = null
+            assertEquals(DeliveryRoute.GLASSES_NOT_CONNECTED, route("both", "glasses_voice")!!.fallback)
+            // a chat ask has no path to the glasses even when they are connected
+            DeliveryEnvironment.glassesConnected = { true }
+            assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = DeliveryRoute.NO_GLASSES_PATH), route("glasses", "phone"))
+        } finally { DeliveryEnvironment.glassesConnected = null }
     }
 
     @Test fun aPublishedRowThatNoLongerCompilesRunsTheBuiltIn() = runBlocking {
