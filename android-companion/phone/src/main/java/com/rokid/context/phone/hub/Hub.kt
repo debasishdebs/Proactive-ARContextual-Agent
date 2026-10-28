@@ -329,6 +329,16 @@ class Hub(
     // Watchdog hooks (all on the hub's thread).
     /** One guarded reopen attempt for the watchdog; see [GlassesRelauncher.attemptNow]. */
     fun watchdogRelaunch(): String? = relauncher?.attemptNow() ?: "no relauncher"
+    /** v0.9.7 slice D: this glasses build answers `pc_mark_photo_request` (its last Hello said so). */
+    @Volatile var peerMarkPhoto: Boolean = false
+        private set
+    /** v0.9.7 slice D: the Rokid SDK's wear state (null = unknown), the link carries data, and capture is not paused: the inputs of a phone-origin mark's photo decision. */
+    fun wornNow(): Boolean? = lastWorn
+    fun carriesData(): Boolean = _state.value.link.carriesData
+    fun captureRunning(): Boolean = _activePauses.value.isEmpty()
+    /** v0.9.7 slice D: asks the glasses for the photo of the phone-origin mark [ref]; false = it could not be sent (the caller records the reason). */
+    suspend fun requestMarkPhoto(ref: String): Boolean = link.send(Channels.MARK_PHOTO_REQUEST, Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = ref)))
+
     fun watchdogReconnect() = link.connectOnResume()
     fun watchdogProbe() = link.probeAlive()
     fun standingDown(): Boolean = standDown.active
@@ -399,6 +409,7 @@ class Hub(
         when (e) {
             is GlassesEvent.HelloReceived -> {
                 val h = e.hello
+                peerMarkPhoto = h.markPhotoRequest
                 diagStatus?.onHello(h)
                 peerTracker.onHello(now)
                 val measured = ClockOffset.fromHello(h.glassesNowMs, now)

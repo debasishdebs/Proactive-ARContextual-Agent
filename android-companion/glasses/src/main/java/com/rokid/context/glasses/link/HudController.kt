@@ -85,6 +85,8 @@ class HudController(
     @Volatile var onTraceControl: (com.rokid.context.core.model.TraceControl) -> Unit = {}
     /** `pc_mark_ack` (slice 3a): the phone stored these marks; the outbox drops them. */
     @Volatile var onMarkAck: (com.rokid.context.core.model.MarkAck) -> Unit = {}
+    /** v0.9.7 slice D: the phone asks for the photo of a phone-origin mark. */
+    @Volatile var onMarkPhotoRequest: (com.rokid.context.core.model.MarkPhotoRequest) -> Unit = {}
     /** The session is open and the phone is talking (session open, or a hello request on an open session): re-send unacked marks. */
     @Volatile var onMarksDue: () -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
@@ -118,6 +120,7 @@ class HudController(
         bridge.subscribe(Channels.CAPTURE_PLAN) { text -> (Wire.decode<com.rokid.context.core.model.CapturePlanMessage>(text) as? Decoded.Ok)?.value?.let(::onPlanMessage) }
         bridge.subscribe(Channels.TRACE_CTL) { text -> (Wire.decode<com.rokid.context.core.model.TraceControl>(text) as? Decoded.Ok)?.value?.let { m -> try { onTraceControl(m) } catch (e: Exception) { PcLog.w(TAG, "trace control failed: ${e.javaClass.simpleName}") } } }
         bridge.subscribe(Channels.MARK_ACK) { text -> (Wire.decode<com.rokid.context.core.model.MarkAck>(text) as? Decoded.Ok)?.value?.let { a -> try { onMarkAck(a) } catch (e: Exception) { PcLog.w(TAG, "mark ack failed: ${e.javaClass.simpleName}") } } }
+        bridge.subscribe(Channels.MARK_PHOTO_REQUEST) { text -> (Wire.decode<com.rokid.context.core.model.MarkPhotoRequest>(text) as? Decoded.Ok)?.value?.let { r -> try { onMarkPhotoRequest(r) } catch (e: Exception) { PcLog.w(TAG, "mark photo request failed: ${e.javaClass.simpleName}") } } }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { PcLog.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { PcLog.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }

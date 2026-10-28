@@ -48,6 +48,11 @@ object HubGraph {
     /** The glasses' reported diagnostic flag state and trace blocker, fed by the hub on every Hello (LGC6-min); unknown until then. */
     val diagStatus = com.rokid.context.phone.hub.plan.MutableGlassesDiagStatus()
 
+    /** v0.9.7 slice D: the existing call detection (the relaunch guards), read by the marks (a `call` tag, no photo request while one is active). Null before the hub is built. */
+    @Volatile var callGuards: RelaunchGuards? = null
+        private set
+    fun callActive(): Boolean = callGuards?.callIdle() == false
+
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
     /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
@@ -212,7 +217,7 @@ object HubGraph {
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
             actions = PhoneActions.hubPort(app) { settings.read() }, nudges = PhoneNudges.hubPort(app) { settings.read() },
-            reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }), reopenEnabled = { KeepRunningNearby.of(app).enabled() },
+            reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }).also { callGuards = it }, reopenEnabled = { KeepRunningNearby.of(app).enabled() },
             standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
             phoneUse = phoneUse.inUse,
             motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,

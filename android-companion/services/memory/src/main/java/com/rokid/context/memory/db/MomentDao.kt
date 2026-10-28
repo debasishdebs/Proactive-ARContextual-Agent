@@ -150,7 +150,7 @@ abstract class MomentDao : DerivedStaleDao() {
      * Moment holds it yet). Only MOMENT rows: an INTENT row is the word that goes with a mark, not a mark.
      */
     @Query(
-        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo " +
+        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance " +
             "FROM canvas_label l LEFT JOIN moment_part p ON p.kind = 'MARK' AND p.refId = l.labelId LEFT JOIN moment m ON m.momentId = p.momentId " +
             "WHERE l.kind = 'MOMENT' AND l.atMs >= :fromMs AND l.atMs <= :toMs ORDER BY l.atMs DESC, l.labelId",
     )
@@ -163,6 +163,8 @@ abstract class MomentDao : DerivedStaleDao() {
         val errorReason: String? = null,
         /** The mark's own photo state token (`pending`, `ok` or the reason); null for a mark from before v15. */
         val photo: String? = null,
+        /** The mark's provenance token (`clock:...`, with `;call` when a phone call was active as it was made); empty from a row without one. */
+        val provenance: String = "",
     )
 
     @Query("SELECT m.id FROM memory m WHERE m.derived = 1 AND m.id IN (:ids)") abstract suspend fun derivedAmong(ids: List<String>): List<String>

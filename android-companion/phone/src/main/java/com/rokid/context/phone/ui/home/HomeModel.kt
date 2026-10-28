@@ -76,6 +76,8 @@ data class HomeUiState(
     val photosToday: Int = 0,
     /** G3: optional permissions were skipped and the user has not dismissed the limited-mode banner. */
     val limited: Boolean = false,
+    /** v0.9.7 slice D: the short fixed reply of a command typed in the chat ("✓ marked", "mark undone"); no model was called. */
+    val reply: String? = null,
 )
 
 /**

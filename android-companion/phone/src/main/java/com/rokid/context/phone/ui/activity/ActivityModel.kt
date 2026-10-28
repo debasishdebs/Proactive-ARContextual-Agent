@@ -106,14 +106,11 @@ object MarkRows {
     private val DAY_HHMM = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH)
     const val EMPTY = "No marks yet. A tap or a voice mark on your glasses will show up here."
 
-    fun codeLabel(code: String): String = when (code) {
-        "tap" -> "Tap"
-        "voice" -> "Voice"
-        "phone_voice" -> "Voice (phone)"
-        "retro" -> "Said afterwards"
-        "ask_tap" -> "Ask"
-        else -> code
-    }
+    /**
+     * v0.9.7 slice D (user ruling): a mark shows ONE distinction, "During a call" (a phone call was active as it was made, the `;call` tag of its provenance); every other mark has no label.
+     * How it was made (tap, voice, chat) is deliberately not shown.
+     */
+    fun callLabel(provenance: String): String = if (provenance.endsWith(";call")) "During a call" else ""
 
     /** Whether a Moment holds the mark, and which kind. Exhaustive over the Moment type: a new type must say what it shows. */
     fun joinedLabel(type: MomentType?): String = when (type) {
@@ -155,7 +152,7 @@ object MarkRows {
     /** [withDay] adds the weekday and date (Week and Month). Order is the one the rows come in (newest first). */
     fun rows(rows: List<MomentDao.MarkRow>, zone: ZoneId, withDay: Boolean): List<MarkRowUi> = rows.map { r ->
         val at = Instant.ofEpochMilli(r.atMs).atZone(zone)
-        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), codeLabel(r.code), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason, r.errorReason, r.photo))
+        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), callLabel(r.provenance), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason, r.errorReason, r.photo))
     }
 }
 

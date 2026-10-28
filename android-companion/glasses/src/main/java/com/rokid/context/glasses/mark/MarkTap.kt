@@ -96,10 +96,37 @@ class MarkTap(
     /** Session open or hello: re-send what the phone has not acked (at most one burst), whatever its age up to 24 h. */
     fun flush() { for (m in outbox.pending()) if (!trySend(m)) break }
 
+    /** v0.9.7 slice D: refs of phone-origin marks already requested (bounded): a resent request never takes a second photo. */
+    private val requested = LinkedHashSet<String>()
+    private val remote = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /**
+     * The phone asks for the photo of its own mark [ref] (`phone:<ms>`): the SAME photo job as a tap mark (explicit camera open, hold, the bounded pause exception, one camera user), with its
+     * failures reported on `pc_mark_photo`. A malformed ref, a duplicate, a build without a photo runner and a 4th job in flight are ignored or fail fast (`camera_busy`). Never throws.
+     */
+    fun onPhoneRequest(ref: String) {
+        val runner = photo ?: return; val sc = scope ?: return
+        if (!MarkRef.isValid(ref)) return
+        val epoch = ref.substringBeforeLast(':'); val seq = ref.substringAfterLast(':').toLongOrNull() ?: return
+        synchronized(requested) { if (!requested.add(ref)) return; while (requested.size > MAX_REMEMBERED) requested.remove(requested.first()) }
+        val m = MarkMessage(epoch = epoch, seq = seq, atMs = 0, atElapsedMs = 0)
+        if (jobs.size + remote.size >= MAX_IN_FLIGHT) { fail(m, MarkPhotoReason.CAMERA_BUSY); return }
+        val job = sc.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            val r = try { runner.take(ref) } catch (e: CancellationException) { throw e } catch (e: Exception) { MarkPhotoOutcome.Failed(MarkPhotoReason.NO_FRAME) }
+            remote.remove(ref)
+            when (r) {
+                is MarkPhotoOutcome.Taken -> cue.show(MarkCue.PHOTO_OK)
+                is MarkPhotoOutcome.Failed -> fail(m, r.reason)
+            }
+        }
+        remote[ref] = job
+        job.start()
+    }
+
     private fun startPhoto(m: MarkMessage) {
         val runner = photo ?: return; val sc = scope ?: return
         val ref = MarkRef.of(m.epoch, m.seq)
-        if (jobs.size >= MAX_IN_FLIGHT) { fail(m, MarkPhotoReason.CAMERA_BUSY); return }
+        if (jobs.size + remote.size >= MAX_IN_FLIGHT) { fail(m, MarkPhotoReason.CAMERA_BUSY); return }
         // registered BEFORE it starts: a photo that ends at once (on another thread) must find its entry to remove
         val job = sc.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             val r = try { runner.take(ref) } catch (e: CancellationException) { throw e } catch (e: Exception) { MarkPhotoOutcome.Failed(MarkPhotoReason.NO_FRAME) }
@@ -128,5 +155,5 @@ class MarkTap(
 
     private fun trySend(m: MarkMessage): Boolean = try { send(m) } catch (e: Exception) { false }
 
-    private companion object { const val MAX_IN_FLIGHT = 3 }
+    private companion object { const val MAX_IN_FLIGHT = 3; const val MAX_REMEMBERED = 32 }
 }

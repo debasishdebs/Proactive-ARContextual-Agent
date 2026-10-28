@@ -63,6 +63,8 @@ class PhoneDeps(
     val limitedMode: com.rokid.context.phone.ui.home.LimitedModeControl = com.rokid.context.phone.ui.home.LimitedModeControl.None,
     /** Find a photo (wave 3): recall, describe on demand, stored paths and the Room change signal. */
     val photoSearch: com.rokid.context.phone.ui.photos.PhotoSearchDeps = com.rokid.context.phone.ui.photos.PhotoSearchDeps.None,
+    /** v0.9.7 slice D: the shared utterance backend; the Home chat calls it before the ask (null in tests = every text is a plain ask). */
+    val utterance: com.rokid.context.voice.Utterance? = null,
 ) {
     fun today(): LocalDate = LocalDate.now(zone())
 
@@ -110,6 +112,7 @@ class PhoneDeps(
                 batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app),
                 limitedMode = com.rokid.context.phone.ui.home.PrefsLimitedMode.forApp(app),
                 photoSearch = com.rokid.context.phone.ui.photos.PhotoSearchDeps.create(app),
+                utterance = voice.utterance,
             )
         }
     }

@@ -152,7 +152,7 @@ private fun SortMenu(current: ActivitySort, onSelect: (ActivitySort) -> Unit) {
 private fun MarkCard(row: MarkRowUi) {
     SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth().testTag("mark_row")) {
         Column(Modifier.padding(12.dp)) {
-            Text("${row.time}  \u00b7  ${row.code}", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
+            Text(if (row.code.isEmpty()) row.time else "${row.time}  \u00b7  ${row.code}", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
             Text(row.joined, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink)
             row.reason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft) }
         }

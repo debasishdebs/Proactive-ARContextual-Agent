@@ -39,11 +39,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
-/** Real VoicePipeline + real MarkVoiceInterceptor + real MarkRecorder on an in-memory DB; only the recognizer and the answer service are spies. */
+/** Real VoicePipeline + real Utterance backend (MarkUtteranceCommands) + real MarkRecorder on an in-memory DB; only the recognizer and the answer service are spies. */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], application = android.app.Application::class)
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-class MarkVoiceInterceptorTest {
+class UtteranceVoicePathTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val epoch = DeletionEpoch("inst", 0, 0)
     private lateinit var dao: CanvasSlice3Dao
@@ -58,8 +58,8 @@ class MarkVoiceInterceptorTest {
 
     private val engine = object : SpeechEngine {
         private fun s() = object : SttSession { override fun feed(pcm: ByteArray) = Unit; override fun end() = Unit; override fun cancel() = Unit }
-        override fun startExternal(localeTag: String, listener: SttListener): SttSession { this@MarkVoiceInterceptorTest.listener = listener; return s() }
-        override fun startPhoneMic(localeTag: String, listener: SttListener): SttSession { this@MarkVoiceInterceptorTest.listener = listener; return s() }
+        override fun startExternal(localeTag: String, listener: SttListener): SttSession { this@UtteranceVoicePathTest.listener = listener; return s() }
+        override fun startPhoneMic(localeTag: String, listener: SttListener): SttSession { this@UtteranceVoicePathTest.listener = listener; return s() }
     }
     private val speaker = object : Speaker { override fun speak(id: String, text: String, onDone: () -> Unit) = false; override fun stop() = Unit }
     private val caps = MutableStateFlow(VoiceCapabilities(VoiceStatus.SUPPORTED, VoiceStatus.SUPPORTED, true))
@@ -67,7 +67,7 @@ class MarkVoiceInterceptorTest {
     private class Rig(val recorder: MarkRecorder, val pipeline: VoicePipeline)
     private fun TestScope.rig(): Rig {
         val rec = MarkRecorder(dao, { DaoFence(0, epoch, { 0 }, { epoch }) }, { now }, { logs += it })
-        val interceptor = MarkVoiceInterceptor({ rec }, backgroundScope, { now }, { logs += it })
+        val interceptor = com.rokid.context.voice.Utterance(MarkUtteranceCommands({ rec }, backgroundScope, { logs += it }), { now }).asInterceptor()
         val p = VoicePipeline(
             backgroundScope, engine, caps, { SpeechLanguage.ENGLISH }, Answerer { q, _ -> asked += q; AnswerResult.Answered("a1", "ok") }, speaker, { false },
             log = { logs += it }, interceptor = interceptor,
