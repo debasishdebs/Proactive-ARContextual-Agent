@@ -116,6 +116,8 @@ class AnswerService(
         val imageEndpointId: String? = null,
         /** The sources of the nudges a plan's history read (not citable): the commit fence covers them and the row keeps them as dependencies, as a nudge does. */
         val fenceIds: Set<String> = emptySet(),
+        /** The plan's delivery target (`caller` for the built-in flow). */
+        val target: String = "caller",
     ) {
         val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
     }
@@ -262,7 +264,20 @@ class AnswerService(
                 null
             }
         }
-        return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second)
+        return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = routeOf(r.target, source, id, nowMs))
+    }
+
+    /**
+     * The delivery of a published flow's answer. Only the voice surfaces have a glasses path (the pipeline's HUD overlay): a chat or queue ask has none, so a glasses target
+     * lands on the phone with `no_glasses_path`. A fallback is recorded as a trace row (a fixed reason token, no text): never silent. `caller` (the built-in flow) returns null.
+     */
+    private suspend fun routeOf(target: String, source: String, askId: String, nowMs: Long): com.rokid.context.core.model.DeliveryRoute? {
+        if (target == "caller") return null
+        val voice = source == "glasses_voice" || source == "phone_voice"
+        val reach = if (voice) DeliveryEnvironment.reach() else com.rokid.context.core.model.GlassesReach.NO_PATH
+        val route = com.rokid.context.core.model.DeliveryRoute.resolve(target, source == "glasses_voice", reach)
+        route.fallback?.let { memory.traces.upsert(com.rokid.context.memory.db.SummaryTraceEntity("ask_deliver_$askId", "ASK_DELIVERY_FALLBACK", nowMs, it)) }
+        return route
     }
 
     /** The published Query pipeline's retrieval; any problem with it (lookup, compile, retrieval) runs the built-in flow instead. Cancellation propagates. */
@@ -271,8 +286,9 @@ class AnswerService(
             PcLog.w(TAG, "query pipeline lookup failed (${e.javaClass.simpleName}); built-in flow"); null
         }
         if (plan == null || plan == FlowPlan.BUILT_IN_QUERY) return retrieve(q, nowMs)
-        return try { retrieve(q, nowMs, plan) } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            PcLog.w(TAG, "query pipeline failed (${e.javaClass.simpleName}); built-in flow"); retrieve(q, nowMs)
+        // the delivery target belongs to the plan, not to its retrieval: a retrieval that fell back still answers where the flow says
+        return try { retrieve(q, nowMs, plan).copy(target = plan.target) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            PcLog.w(TAG, "query pipeline failed (${e.javaClass.simpleName}); built-in flow"); retrieve(q, nowMs).copy(target = plan.target)
         }
     }
 

@@ -53,6 +53,12 @@ class NudgeRunGate(
 class NudgeWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val app = applicationContext
+        val trigger = inputData.getString(NudgeTrigger.KEY_TRIGGER)
+        if (trigger != null && trigger != com.rokid.context.ai.canvas.NodeTypes.TRIGGER_SUMMARIZER) {
+            // a slice C trigger: its own rate limit and the engine's gates replace the backstop's 30 minute gap
+            try { NudgeEngineFactory.engine(app).runOnce(trigger) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i("NudgeWorker", "trigger run failed: ${SafeLog.describe(e)}") }
+            return Result.success()
+        }
         val prefs = app.getSharedPreferences(NudgeRunGate.PREFS, Context.MODE_PRIVATE)
         NudgeRunGate(prefs, System::currentTimeMillis, { NudgeEnvironment.hud?.invoke() }) { NudgeEngineFactory.engine(app).runOnce() }.run()
         return Result.success()

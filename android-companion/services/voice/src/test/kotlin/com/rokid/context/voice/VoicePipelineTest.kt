@@ -254,6 +254,52 @@ class VoicePipelineTest {
         assertEquals("ask_1", p.phone.value.lastAskId)
     }
 
+    // ---- v0.9.8 slice C: a flow's delivery target, one surface each, never twice ----
+
+    private fun routed(phone: Boolean, glasses: Boolean, fallback: String? = null): suspend (String) -> AnswerResult =
+        { _ -> AnswerResult.Answered("ask_1", "Milk and eggs.", route = com.rokid.context.core.model.DeliveryRoute(phone, glasses, fallback)) }
+
+    @Test fun aGlassesTargetFromThePhoneMicShowsOnTheHudAndNotOnThePhone() = runTest {
+        bluetooth = false
+        answer = routed(phone = false, glasses = true)
+        val p = pipeline()
+        p.phoneStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = false), p.overlay.value)
+        assertTrue(speaker.spoken.isEmpty(), "not spoken on the phone")
+        assertNull(p.phone.value.lastAskId, "not offered to Home either")
+    }
+
+    @Test fun aPhoneTargetFromTheGlassesLeavesTheHudAndAnswersOnThePhone() = runTest {
+        answer = routed(phone = true, glasses = false)
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
+        assertNull(p.overlay.value, "the HUD shows nothing")
+        assertEquals("ask_1", p.phone.value.lastAskId)
+        assertTrue(speaker.spoken.isEmpty())
+    }
+
+    @Test fun bothDeliversToTheHudAndThePhoneOnce() = runTest {
+        bluetooth = false
+        answer = routed(phone = true, glasses = true)
+        val p = pipeline()
+        p.phoneStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true), p.overlay.value)
+        assertEquals(listOf("Milk and eggs."), speaker.spoken)
+        assertEquals("ask_1", p.phone.value.lastAskId)
+    }
+
+    @Test fun aFallbackReasonIsLoggedAndAnImplicitRouteChangesNothing() = runTest {
+        answer = routed(phone = true, glasses = false, fallback = "glasses_not_connected")
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
+        assertTrue(logs.any { it == "deliver fallback=glasses_not_connected" })
+        // the caller route (not explicit) is the pipeline's own behaviour: the surface that asked, HUD as before
+        answer = { AnswerResult.Answered("ask_2", "Milk and eggs.", route = com.rokid.context.core.model.DeliveryRoute(phone = false, glasses = true, explicit = false)) }
+        advanceTimeBy(30_001)
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true), p.overlay.value)
+    }
+
     @Test fun providerTextNeverReachesTheHud() = runTest {
         answer = { throw IllegalStateException("401 Incorrect API key sk-live-999") }
         val p = pipeline()

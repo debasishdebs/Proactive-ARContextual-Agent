@@ -138,7 +138,8 @@ object MomentTriggers {
             val sensors = MomentSensors(db.canvasSlice3Dao(), java.io.File(context.filesDir, com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR), DeletionEpochStore.of(context)::read)
             val builder = MomentBuilder(db, sensors = sensors).also { builderInstance = it }
             MomentBuildTrigger(
-                build = builder::build, rebuild = builder::rebuildWindow, enabled = { MomentStoreSwitch.DEFAULT_ENABLED },
+                build = { ids -> builder.build(ids).also { if (it.stored > 0) com.rokid.context.orchestration.nudge.NudgeTrigger.onEvent(context, com.rokid.context.ai.canvas.NodeTypes.TRIGGER_MOMENT) } }, // a Moment landed: the Nudge flow rooted at it may run
+                rebuild = builder::rebuildWindow, enabled = { MomentStoreSwitch.DEFAULT_ENABLED },
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
                 catchUp = { builder.catchUpMarks(it) },
             )

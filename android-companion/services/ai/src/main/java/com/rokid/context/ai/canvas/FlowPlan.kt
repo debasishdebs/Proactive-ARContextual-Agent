@@ -35,6 +35,21 @@ object RagRetrieveParams {
 }
 
 /**
+ * The params of the slice C Nudge triggers. Every one has `maxPerHour`, the per-pipeline rate limit (runs the trigger may start in a rolling hour; absent = [DEFAULT_PER_HOUR]).
+ * `trigger.signal` embeds `agg.window` and `gate.compare` (their own schemas, one evaluation: the newest `window` Scenes' sensor feature, `op` over it, then the comparison) rather than
+ * chaining the nodes, so the Nudge chain keeps one linear shape. `trigger.schedule` takes a [CronSpec].
+ */
+object TriggerParams {
+    const val DEFAULT_PER_HOUR = 4
+    const val MAX_PER_HOUR = 12
+    private val rate = ParamSpec("maxPerHour", ParamKind.INT, label = "Most runs per hour", min = 1.0, max = MAX_PER_HOUR.toDouble(), step = 1.0, default = JsonPrimitive(DEFAULT_PER_HOUR))
+    val moment = ParamSchema(listOf(rate))
+    val scene = ParamSchema(listOf(rate))
+    val signal = ParamSchema(WindowAggregate.schema.specs + NumberCompare.schema.specs + rate)
+    val schedule = ParamSchema(listOf(ParamSpec("cron", ParamKind.TEXT, label = "Cron: minute hour day month weekday (at most every ${CronSpec.MIN_INTERVAL_MIN} min)", maxLen = CronSpec.MAX_LEN, default = JsonPrimitive(CronSpec.DEFAULT)), rate))
+}
+
+/**
  * What a published Query or Nudge pipeline means to the code that runs it: which sources the shared RAG core reads, with which params, and where the
  * result goes. The built-in flows are the constants [BUILT_IN_QUERY] and [BUILT_IN_NUDGE]; AnswerService and NudgeEngine run the same code for those
  * and for a compiled pipeline, so a default pipeline cannot differ from the built-in. The prompt is always the live ANSWER or NUDGE prompt.
@@ -46,7 +61,17 @@ data class FlowPlan(
     /** The `RagParams` fields the pipeline sets (names from [RagRetrieveParams.ragNames]); the rest stay unset. */
     val rag: JsonObject = JsonObject(emptyMap()),
     val target: String,
+    /** The Nudge root (a `trigger.*` type); the built-in is the summarizer pass. A published flow runs only on its own trigger. */
+    val trigger: String = NodeTypes.TRIGGER_SUMMARIZER,
+    /** Runs per rolling hour the trigger may start; 0 = unlimited (the summarizer pass keeps its own 30 minute gap). */
+    val maxPerHour: Int = 0,
+    /** `trigger.signal`: what to measure and when it fires. */
+    val signal: Signal? = null,
+    /** `trigger.schedule`: the validated cron expression. */
+    val cron: String? = null,
 ) {
+    data class Signal(val aggregate: WindowAggregate.Settings, val compare: NumberCompare.Settings)
+
     enum class Kind(val component: String) { QUERY("query"), NUDGE("nudge") }
 
     /** A compiled plan, or why the pipeline is not live-able. The reasons are fixed texts naming node ids only. */
@@ -63,8 +88,6 @@ data class FlowPlan(
 
         /** Today's Nudge: OK memories of the last 6 h and the nudges of the last 24 h; its own counts bound it. The trigger's image, when it gives one, joins (as today). Shown by the verbosity setting (`both`). */
         val BUILT_IN_NUDGE = FlowPlan(Kind.NUDGE, memories = false, photos = false, recent = true, history = true, imageQuery = true, recentWindowMin = 360, historyWindowMin = 1440, target = "both")
-
-        private val STUB_TRIGGERS = setOf(NodeTypes.TRIGGER_MOMENT, NodeTypes.TRIGGER_SCENE, NodeTypes.TRIGGER_SIGNAL, NodeTypes.TRIGGER_SCHEDULE)
 
         fun isFlowType(type: String) = type == NodeTypes.INPUT_UTTERANCE || type.startsWith("trigger.") || type == NodeTypes.RAG_RETRIEVE || type == NodeTypes.GATE_NUDGE || type == NodeTypes.OUT_DELIVER || type == NodeTypes.EMBED_TEXT
 
@@ -117,10 +140,14 @@ data class FlowPlan(
                 if ("template" in prompt.params || "schema" in prompt.params) out += Problem("node ${prompt.id}: a flow takes its prompt text from Settings, not from the node", nodeId = prompt.id)
                 if (prompt.promptSource() != PromptSource.Live) out += Problem("node ${prompt.id}: a flow uses the live prompt", nodeId = prompt.id)
             }
+            roots[0].takeIf { it.type == NodeTypes.TRIGGER_SCHEDULE }?.let { t ->
+                val cron = (t.params["cron"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: CronSpec.DEFAULT
+                (CronSpec.parseOrReason(cron) as? CronSpec.Companion.Parsed.Bad)?.let { out += Problem("node ${t.id}: ${it.reason}", nodeId = t.id) }
+            }
             return out
         }
 
-        /** [shapeProblems] plus what is not live yet (a slice C trigger, a delivery target the callers do not route). A refused pipeline can still be saved and edited. */
+        /** [shapeProblems] plus what the callers do not route (a delivery target that means nothing for the flow). A refused pipeline can still be saved and edited. */
         fun compile(p: Pipeline): Compiled {
             if (!isFlow(p)) return Compiled.Refused(listOf("not a Query or Nudge pipeline"))
             val shape = PipelineValidator.problems(p).map { it.text }
@@ -128,11 +155,10 @@ data class FlowPlan(
             val kind = requireNotNull(kindOf(p))
             val base = if (kind == Kind.QUERY) BUILT_IN_QUERY else BUILT_IN_NUDGE
             val reasons = mutableListOf<String>()
-            p.nodes.filter { it.type in STUB_TRIGGERS }.forEach { reasons += "node ${it.id}: this trigger is not live yet" }
             val rag = p.nodes.first { it.type == NodeTypes.RAG_RETRIEVE }.params
             val deliver = p.nodes.first { it.type == NodeTypes.OUT_DELIVER }
             val target = (deliver.params["target"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: base.target
-            if (target != base.target) reasons += "node ${deliver.id}: delivery to $target is not live yet (only ${base.target})"
+            if (kind == Kind.NUDGE && target == "caller") reasons += "node ${deliver.id}: a Nudge has no caller; deliver to phone, glasses or both"
             fun flag(name: String, d: Boolean) = (rag[name] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: d
             fun int(name: String, d: Int) = (rag[name] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: d
             val out = base.copy(
@@ -140,13 +166,22 @@ data class FlowPlan(
                 imageQuery = flag("imageQuery", base.imageQuery), recentWindowMin = int("recentWindowMin", base.recentWindowMin), historyWindowMin = int("historyWindowMin", base.historyWindowMin),
                 rag = JsonObject(rag.filterKeys { it in RagRetrieveParams.ragNames }), target = target,
             )
+            val root = p.nodes.first { it.type.startsWith("trigger.") || it.type == NodeTypes.INPUT_UTTERANCE }
+            val withTrigger = if (kind == Kind.NUDGE && root.type != NodeTypes.TRIGGER_SUMMARIZER) {
+                val perHour = (root.params["maxPerHour"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: TriggerParams.DEFAULT_PER_HOUR
+                out.copy(
+                    trigger = root.type, maxPerHour = perHour,
+                    signal = if (root.type == NodeTypes.TRIGGER_SIGNAL) Signal(WindowAggregate.settings(root.params), NumberCompare.settings(root.params)) else null,
+                    cron = if (root.type == NodeTypes.TRIGGER_SCHEDULE) (root.params["cron"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: CronSpec.DEFAULT else null,
+                )
+            } else out
             val retrieve = p.nodes.first { it.type == NodeTypes.RAG_RETRIEVE }
             if (if (kind == Kind.QUERY) !out.memories && !out.photos else !out.recent && !out.history) reasons += "node ${retrieve.id}: choose at least one source"
             // what the flow's own code does not read is refused, never silently ignored
             if (kind == Kind.NUDGE && (out.memories || out.photos)) reasons += "node ${retrieve.id}: a Nudge reads recent memories and nudge history; memory and photo stores are for a Query"
             if (kind == Kind.QUERY && out.imageQuery) reasons += "node ${retrieve.id}: a Query has no image to search with"
             if (reasons.isNotEmpty()) return Compiled.Refused(reasons)
-            return Compiled.Ok(out)
+            return Compiled.Ok(withTrigger)
         }
     }
 }
