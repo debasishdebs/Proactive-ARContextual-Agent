@@ -114,6 +114,7 @@ data class FlowPlan(
                 val role = (prompt.params["role"] as? JsonPrimitive)?.takeIf { it.isString }?.content
                 val need = if (kind == Kind.QUERY) Role.ANSWER.name else Role.NUDGE.name
                 if (role != need) out += Problem("node ${prompt.id}: role must be $need", nodeId = prompt.id)
+                if ("template" in prompt.params || "schema" in prompt.params) out += Problem("node ${prompt.id}: a flow takes its prompt text from Settings, not from the node", nodeId = prompt.id)
                 if (prompt.promptSource() != PromptSource.Live) out += Problem("node ${prompt.id}: a flow uses the live prompt", nodeId = prompt.id)
             }
             return out
@@ -141,6 +142,9 @@ data class FlowPlan(
             )
             val retrieve = p.nodes.first { it.type == NodeTypes.RAG_RETRIEVE }
             if (if (kind == Kind.QUERY) !out.memories && !out.photos else !out.recent && !out.history) reasons += "node ${retrieve.id}: choose at least one source"
+            // what the flow's own code does not read is refused, never silently ignored
+            if (kind == Kind.NUDGE && (out.memories || out.photos)) reasons += "node ${retrieve.id}: a Nudge reads recent memories and nudge history; memory and photo stores are for a Query"
+            if (kind == Kind.QUERY && out.imageQuery) reasons += "node ${retrieve.id}: a Query has no image to search with"
             if (reasons.isNotEmpty()) return Compiled.Refused(reasons)
             return Compiled.Ok(out)
         }

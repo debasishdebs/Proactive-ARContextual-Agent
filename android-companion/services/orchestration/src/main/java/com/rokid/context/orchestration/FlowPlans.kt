@@ -12,8 +12,11 @@ fun interface FlowPlans {
     companion object { val None = FlowPlans { null } }
 }
 
-/** The sources a plan reads for an Ask (the built-in plan gives exactly the memory store and the photo store). */
-internal fun FlowPlan.askSources(): List<RagSource> = listOfNotNull(RagSource.MemoryStore().takeIf { memories }, RagSource.PhotoStore().takeIf { photos })
+/** The sources a plan reads for an Ask (the built-in plan gives exactly the memory store and the photo store; a recent window or nudge history is opt-in). */
+internal fun FlowPlan.askSources(): List<RagSource> = listOfNotNull(
+    RagSource.MemoryStore().takeIf { memories }, RagSource.PhotoStore().takeIf { photos },
+    RagSource.RecentWindow(recentWindowMin * 60_000L).takeIf { recent }, RagSource.NudgeHistory(historyWindowMin * 60_000L).takeIf { history },
+)
 
 /** The sources of a Nudge; the photo store joins only when the trigger gave an image vector and the plan uses it. */
 internal fun FlowPlan.nudgeSources(hasPhotoVector: Boolean): List<RagSource> = listOfNotNull(

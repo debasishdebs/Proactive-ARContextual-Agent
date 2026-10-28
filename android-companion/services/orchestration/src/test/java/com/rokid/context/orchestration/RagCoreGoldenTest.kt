@@ -129,6 +129,16 @@ class RagCoreGoldenTest {
         golden("nudge_extra", e.vars, "${e.inputIds.sorted()}")
     }
 
+    @Test fun aQueryPlanCanReadARecentWindowAndHistory() = runBlocking<Unit> {
+        seed()
+        val plan = queryPlan.copy(recent = true, history = true, recentWindowMin = 120)
+        assertEquals(listOf(RagSource.MemoryStore(), RagSource.PhotoStore(), RagSource.RecentWindow(7_200_000L), RagSource.NudgeHistory(86_400_000L)), plan.askSources())
+        val r = service(false).retrieve("milk?", now, plan)
+        // the 1 h and 2 h old memories are in the window (the 30 h one is not); they reach the prompt as recent lines
+        assertEquals(true, r.vars.retrievedMemories.contains("Milk carton nearly empty"))
+        assertEquals(true, r.ids.containsAll(setOf("rokid_mem_1", "rokid_mem_2")))
+    }
+
     @Test fun thePlansMeanTheSourcesAndParamsOfToday() {
         assertEquals(listOf(RagSource.MemoryStore(), RagSource.PhotoStore()), queryPlan.askSources())
         assertEquals(RagParams(), queryPlan.ragParams())

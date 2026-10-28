@@ -129,10 +129,10 @@ class AnswerService(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
                 question = PromptComposer.dataBlock("question", listOf(q)),
-                retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines + c.photoLines),
+                retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines + c.photoLines + c.recentLines + c.history),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
-            c.memories, c.photos, c.images, c.imageEndpointId,
+            c.memories + c.recent, c.photos, c.images, c.imageEndpointId,
         )
     }
 
