@@ -3,6 +3,9 @@ package com.rokid.context.phone.voice
 import com.rokid.context.canvas.marks.MarkOrigin
 import com.rokid.context.canvas.marks.MarkRecorder
 import com.rokid.context.canvas.marks.VoiceMark
+import com.rokid.context.orchestration.DataOpGate
+import com.rokid.context.voice.CommandFailure
+import com.rokid.context.voice.CommandOutcome
 import com.rokid.context.voice.UtteranceCommands
 import com.rokid.context.voice.UtteranceSource
 import com.rokid.context.voice.commands.MarkCommand
@@ -19,7 +22,7 @@ class MarkUtteranceCommands(
     private val scope: CoroutineScope,
     private val log: (String) -> Unit = {},
 ) : UtteranceCommands {
-    override fun apply(commands: List<MarkCommand>, source: UtteranceSource, nowMs: Long): String? {
+    override suspend fun apply(commands: List<MarkCommand>, source: UtteranceSource, nowMs: Long): CommandOutcome {
         val marks = commands.map {
             when (it) {
                 is MarkCommand.Mark -> VoiceMark.Mark(it.intent)
@@ -36,8 +39,13 @@ class MarkUtteranceCommands(
         // only a phone-origin mark that is not retro and not an undo-only utterance reports a photo reason
         val makesMark = commands.any { it is MarkCommand.Mark }
         val reason = if (!origin.glasses) recorder.phonePhotoDecision() else null
-        launch("apply") { recorder.applyVoice(marks, origin, nowMs, reason) }
-        return if (makesMark) reason else null
+        // awaited: the reply must be true (an undo that waits out a running export and fails is reported, the mark and its photo stay)
+        val failure = try { recorder.applyVoice(marks, origin, nowMs, reason); null }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: DataOpGate.WriteInProgress) { log("mark apply refused (save)"); CommandFailure.SAVE_BUSY }
+        catch (e: DataOpGate.ExportInProgress) { log("mark apply refused (export)"); CommandFailure.EXPORT_BUSY }
+        catch (e: Exception) { log("mark apply failed (${e.javaClass.simpleName})"); CommandFailure.OTHER }
+        return CommandOutcome(if (makesMark) reason else null, failure)
     }
 
     override fun onAsk(source: UtteranceSource) {

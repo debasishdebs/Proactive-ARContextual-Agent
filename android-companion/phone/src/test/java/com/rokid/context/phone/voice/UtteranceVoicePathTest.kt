@@ -80,7 +80,10 @@ class UtteranceVoicePathTest {
         r.recorder.onListenStart(now)
         r.pipeline.glassesListenStart(); runCurrent()
         listener!!.onFinal(SttResult.Text(text)); runCurrent()
-        overlayRightAfter = r.pipeline.overlay.value // before any wait on the DB: runTest skips virtual time while the test thread waits
+        // the pipeline now waits for the recorder (the reply must be true): poll in REAL time (runTest would skip the toast timer while the test thread waits on the DB), resuming the test scheduler as we go
+        val until = System.currentTimeMillis() + 5_000
+        while (r.pipeline.overlay.value !is Overlay.Toast && r.pipeline.state.value !is VoiceState.Thinking && System.currentTimeMillis() < until) { Thread.sleep(5); runCurrent() }
+        overlayRightAfter = r.pipeline.overlay.value
         r.recorder.awaitIdle()
     }
     private var overlayRightAfter: Overlay? = null

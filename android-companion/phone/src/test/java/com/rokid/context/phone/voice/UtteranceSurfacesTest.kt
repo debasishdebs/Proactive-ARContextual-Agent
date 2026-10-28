@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -120,6 +121,48 @@ class UtteranceSurfacesTest {
         viaChat("mark this moment"); assertEquals(1, marks().size)
         assertEquals(Utterance.UNDONE, viaChat("undo mark").reply)
         assertTrue(marks().isEmpty())
+    }
+
+    /**
+     * Review fix: an undo is awaited and tells the truth. Here the gate refuses the removal (the recorder's photo forget throws what a delete does while an export holds the gate): nothing is deleted
+     * and nothing is confirmed, on every surface, and the same words work once it is free.
+     */
+    @Test fun anUndoRefusedByTheGateIsReportedNotConfirmedAndNothingIsLostOnEverySurface() = runBlocking<Unit> {
+        val busy = "Couldn't undo: an export is running. Try again in a minute."
+        for (surface in listOf("chat", "phone", "glasses")) {
+            val at = now + 1_000L * surface.length
+            rec = MarkRecorder(graph.db.canvasSlice3Dao(), { DaoFence(0, epoch, { 0 }, { epoch }) }, { at }, forgetPhoto = { if (exportRuns) throw com.rokid.context.orchestration.DataOpGate.ExportInProgress() else true },
+                phonePhoto = object : com.rokid.context.canvas.marks.PhonePhotoRequester { override fun reasonNow(): String? = null; override suspend fun request(markRef: String) = true })
+            exportRuns = false
+            val u = Utterance(MarkUtteranceCommands({ rec }, scope), { at })
+            u.asInterceptor().intercept("mark this moment", VoiceSource.PHONE, true); rec.awaitIdle()
+            val id = graph.db.canvasSlice3Dao().labels().single().labelId
+            val meta = com.rokid.context.memory.db.FrameMetaEntity("p$at", "w_p$at", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = at + 500, markRef = id.removePrefix("mk:"))
+            com.rokid.context.memory.FrameIntake(graph.db).commit(com.rokid.context.memory.db.FrameEntity("p$at", at + 500, "/p/p$at.jpg", "rokid_glasses"), com.rokid.context.memory.FrameRows(meta, com.rokid.context.memory.db.FrameStateEntity("p$at", "PENDING", 0, null, null, null, 1)))
+            val before = marks()
+            exportRuns = true
+            val reply = when (surface) {
+                "chat" -> viaChatWith(u, "undo the mark").reply
+                "phone" -> (u.asInterceptor().intercept("undo the mark", VoiceSource.PHONE, true) as InterceptResult.Handled).hud
+                else -> (u.asInterceptor().intercept("undo the mark", VoiceSource.GLASSES, true) as InterceptResult.Handled).hud
+            }
+            assertEquals("$surface: the failure is the reply", busy, reply)
+            assertEquals("$surface: the mark and its rows stay", before, marks())
+            exportRuns = false
+            assertEquals("$surface: the same words work once it is free", Utterance.UNDONE, viaChatWith(u, "undo the mark").reply)
+            assertTrue(marks().isEmpty()); reset()
+        }
+    }
+    private var exportRuns = false
+
+    private suspend fun viaChatWith(u: Utterance, text: String): Outcome {
+        val vm = HomeViewModel(FakeGlassesStatusSource(), FakePipelineControl(), graph.timeline, graph.asks, graph.nudges, AskService { AskOutcome.Failed("x") },
+            clock = flowOf(Fixtures.NOW), storagePct = flowOf(10), zone = { Fixtures.ZONE }, utterance = u)
+        try {
+            vm.ask(text)
+            val s = withTimeout(5_000) { vm.state.first { !it.asking && (it.reply != null || it.askError != null) } }
+            return Outcome(s.reply, null, marks())
+        } finally { vm.cancelScope() }
     }
 
     @Test fun noSurfaceHasCommandParsingOfItsOwn() {

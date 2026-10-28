@@ -27,10 +27,17 @@ sealed interface UtteranceResult {
     data class Ask(val question: String) : UtteranceResult
 }
 
+/** Why a command did not take effect (the reply says so; nothing is silently lost). */
+enum class CommandFailure { EXPORT_BUSY, SAVE_BUSY, OTHER }
+data class CommandOutcome(val noPhotoReason: String? = null, val failure: CommandFailure? = null)
+
 /** The effects of the matched commands. Implemented over the mark recorder; must not block (the writes run on the implementation's own scope). */
 interface UtteranceCommands {
-    /** Records [commands]. Returns why a PHONE-origin mark has no photo right now (a `MarkPhotoReason` token), null when it has none to report (a photo was requested, or the mark is not phone-origin / was an undo). */
-    fun apply(commands: List<MarkCommand>, source: UtteranceSource, nowMs: Long): String?
+    /**
+     * Records [commands] and WAITS for the result (an undo waits for its removal, which may wait for a running export): the reply must be true. [CommandOutcome.noPhotoReason] says why a PHONE-origin mark
+     * has no photo right now (a `MarkPhotoReason` token), null when it has none to report; [CommandOutcome.failure] is set when a write did not happen.
+     */
+    suspend fun apply(commands: List<MarkCommand>, source: UtteranceSource, nowMs: Long): CommandOutcome
     /** The utterance was an ordinary question (no command): a glasses tap mark bound to this listen becomes `ask_tap`. */
     fun onAsk(source: UtteranceSource)
 }
@@ -40,13 +47,14 @@ class Utterance(private val commands: UtteranceCommands, private val clock: () -
      * [genuineFinal] false (a timeout or error partial) is never a command. No command clause: [UtteranceResult.PassThrough] and the ask continues unchanged. Commands only: [UtteranceResult.Handled].
      * Commands plus other clauses: the commands are recorded and ONLY the unmatched clauses are returned for Ask. The transcript is never stored or logged here.
      */
-    fun handle(text: String, source: UtteranceSource, genuineFinal: Boolean): UtteranceResult {
+    suspend fun handle(text: String, source: UtteranceSource, genuineFinal: Boolean): UtteranceResult {
         if (!genuineFinal) return UtteranceResult.PassThrough
         val parsed = MarkCommandParser.parseUtterance(text)
         if (parsed.commands.isEmpty()) { commands.onAsk(source); return UtteranceResult.PassThrough }
-        val noPhoto = commands.apply(parsed.commands, source, clock())
+        val out = commands.apply(parsed.commands, source, clock())
+        out.failure?.let { return UtteranceResult.Handled(failureReply(parsed.commands, it)) } // a failed write is never confirmed, and nothing else is asked
         val rest = parsed.askText
-        return if (rest == null) UtteranceResult.Handled(reply(parsed.commands, noPhoto)) else UtteranceResult.Ask(rest)
+        return if (rest == null) UtteranceResult.Handled(reply(parsed.commands, out.noPhotoReason)) else UtteranceResult.Ask(rest)
     }
 
     /** The [VoicePipeline] seam over [handle] (the pipeline has no command logic of its own). */
@@ -57,6 +65,14 @@ class Utterance(private val commands: UtteranceCommands, private val clock: () -
             is UtteranceResult.Ask -> InterceptResult.Ask(r.question)
         }
     }
+
+    private fun failureReply(cmds: List<MarkCommand>, f: CommandFailure): String =
+        if (cmds.none { it is MarkCommand.Undo }) COULDNT_MARK
+        else when (f) {
+            CommandFailure.EXPORT_BUSY -> "Couldn't undo: an export is running. Try again in a minute."
+            CommandFailure.SAVE_BUSY -> "Couldn't undo: a save is running. Try again in a minute."
+            CommandFailure.OTHER -> COULDNT_UNDO
+        }
 
     private fun reply(cmds: List<MarkCommand>, noPhoto: String?): String {
         val last = cmds.last()
@@ -76,5 +92,5 @@ class Utterance(private val commands: UtteranceCommands, private val clock: () -
         else -> token.replace('_', ' ')
     }
 
-    companion object { const val MARKED = "✓ marked"; const val UNDONE = "mark undone" }
+    companion object { const val MARKED = "✓ marked"; const val UNDONE = "mark undone"; const val COULDNT_UNDO = "Couldn't undo the mark. Try again."; const val COULDNT_MARK = "Couldn't mark this moment. Try again." }
 }

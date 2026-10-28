@@ -12,10 +12,10 @@ sealed interface InterceptResult {
 
 /**
  * Runs on the final transcript before `Thinking` is published. [genuineFinal] is false for a partial standing in for a
- * final (timeout or recognizer error): such text must not be acted on as a command. Runs on the pipeline's thread.
+ * final (timeout or recognizer error): such text must not be acted on as a command. Suspends (an undo waits for its removal); the pipeline runs it in its work job.
  */
 fun interface UtteranceInterceptor {
-    fun intercept(text: String, source: VoiceSource, genuineFinal: Boolean): InterceptResult
+    suspend fun intercept(text: String, source: VoiceSource, genuineFinal: Boolean): InterceptResult
 
     companion object { val PASS_THROUGH = UtteranceInterceptor { _, _, _ -> InterceptResult.PassThrough } }
 }

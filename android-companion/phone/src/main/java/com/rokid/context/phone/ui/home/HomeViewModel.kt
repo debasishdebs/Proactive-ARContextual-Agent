@@ -105,15 +105,15 @@ class HomeViewModel(
     fun ask(question: String = local.value.question) {
         val q = question.trim()
         if (q.isEmpty() || local.value.asking) return
-        // the shared backend first: a handled text is answered here with its short fixed reply (no model call); the unmatched clauses of a mixed text are all that is asked
-        val toAsk = when (val u = utterance?.handle(q, UtteranceSource.PHONE_CHAT, genuineFinal = true) ?: UtteranceResult.PassThrough) {
-            UtteranceResult.PassThrough -> q
-            is UtteranceResult.Handled -> { local.update { it.copy(question = "", asking = false, error = null, reply = u.replyText) }; return }
-            is UtteranceResult.Ask -> u.question
-        }
         local.update { it.copy(question = q, asking = true, error = null, reply = null) }
         viewModelScope.launch {
             try {
+                // the shared backend first: a handled text is answered here with its short fixed reply (no model call; an undo waits for its removal); the unmatched clauses of a mixed text are all that is asked
+                val toAsk = when (val u = utterance?.handle(q, UtteranceSource.PHONE_CHAT, genuineFinal = true) ?: UtteranceResult.PassThrough) {
+                    UtteranceResult.PassThrough -> q
+                    is UtteranceResult.Handled -> { local.update { it.copy(question = "", asking = false, error = null, reply = u.replyText) }; return@launch }
+                    is UtteranceResult.Ask -> u.question
+                }
                 when (val r = askService.ask(toAsk)) {
                     is AskOutcome.Answered -> local.update { it.copy(question = "", asking = false, lastAskId = r.askId) }
                     is AskOutcome.Failed -> local.update { it.copy(asking = false, error = r.message) }
