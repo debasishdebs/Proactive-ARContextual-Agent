@@ -71,7 +71,7 @@ class NudgeEngine(
         // Forget fence (integration carry 1): a memory in the prompt or cited forgotten while the model ran means the
         // text may hold forgotten content, so the nudge is dropped (no row, no proposal). Checked in the insert transaction.
         val live = memory.db.withTransaction {
-            if (!ForgetFence.allLive(memory.db, prepared.inputIds + out.sourceIds)) return@withTransaction false
+            if (!ForgetFence.allLive(memory.db, prepared.inputIds + prepared.fenceIds + out.sourceIds)) return@withTransaction false
             memory.nudges.addIgnore(
                 NudgeEntity(
                     id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encode(out.sourceIds),

@@ -39,8 +39,11 @@ class RagQuery(val text: String? = null, val vector: FloatArray? = null) {
 sealed interface RagSource {
     /** The memory store through the user's retrieval mode (lexical/semantic/hybrid), the newest trusted memories when nothing matches. [notAfterMs]: the Ask debug view's cutoff (S34), before the retriever's limits. Needs a text query. */
     data class MemoryStore(val notAfterMs: Long? = null) : RagSource
-    /** The photo store (image vectors; words or a vector query), behind the photo gate. [notAfterMs]: the debug view's cutoff, applied before top-k. */
-    data class PhotoStore(val notAfterMs: Long? = null) : RagSource
+    /**
+     * The photo store (image vectors; words or a vector query), behind the photo gate. [notAfterMs]: the cutoff (the debug view's, S34), pushed into the
+     * search so it applies BEFORE top-k. [windowMs]: only photos of the last [windowMs] before the query time; its lower bound is applied to the hits (the scan has no lower bound).
+     */
+    data class PhotoStore(val notAfterMs: Long? = null, val windowMs: Long? = null) : RagSource
     /** OK memories of the last [windowMs], newest [RagParams.maxRecent], minus those about an old photo: what just happened (no query). */
     data class RecentWindow(val windowMs: Long) : RagSource
     /** The texts of the nudges of the last [windowMs] (what was already said). */
@@ -117,10 +120,11 @@ data class RagContext(
     val memories: List<MemoryEntity> = emptyList(), val memoryLines: List<String> = emptyList(),
     val recent: List<MemoryEntity> = emptyList(), val recentLines: List<String> = emptyList(), val history: List<String> = emptyList(),
     val photoLines: List<String> = emptyList(), val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(),
-    val imageEndpointId: String? = null, val fallback: Boolean = false,
+    val imageEndpointId: String? = null, val fallback: Boolean = false, val historyIds: Set<String> = emptySet(),
     val hits: List<ScoredMemory> = emptyList(), val mode: RetrievalMode? = null, val semanticUnavailable: Boolean = false,
 ) {
-    val ids: Set<String> get() = (memories + recent).map { it.id }.toSet() + photos.map { it.citeId }
+    /** Everything the prompt rests on, including the sources of the historical nudges in [history]: a caller's commit fence covers all of it. */
+    val ids: Set<String> get() = (memories + recent).map { it.id }.toSet() + photos.map { it.citeId } + historyIds
 }
 
 /**
@@ -138,7 +142,7 @@ class RagCore(
     /** [PhotoRecall.search] with the ask time as the cutoff, applied BEFORE top-k (vectors and captions). */
     private val photosAsOf: suspend (question: String, notAfterMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
     /** The photos near a ready image embedding (IMAGE queries with a vector). */
-    private val photosByVector: suspend (vector: FloatArray, nowMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
+    private val photosByVector: suspend (vector: FloatArray, nowMs: Long, notAfterMs: Long?) -> List<PhotoHit> = { _, _, _ -> emptyList() },
     /** Asked before every photo search ([AskPhotoPolicy.allowed]). False = no scan, no image, no photo line. */
     private val photosAllowed: suspend () -> Boolean = { false },
     /** The endpoint the gate checked (the ANSWER primary): images are sent only there, never to a fallback. */
@@ -151,20 +155,21 @@ class RagCore(
      * and the photo gate is asked before any photo search. A source the query cannot feed (a MemoryStore without text) gives nothing.
      */
     suspend fun retrieve(query: RagQuery, sources: List<RagSource>, params: RagParams, nowMs: Long): RagContext {
+        if (params.charBound == 0) return RagContext() // a zero bound is no context at all
         val s = params.over(settings())
         val photoSrc = sources.filterIsInstance<RagSource.PhotoStore>().firstOrNull()
         val recalled = if (photoSrc == null) emptyList() else when {
-            query.vector != null -> recalledByVector(query.vector, nowMs)
+            query.vector != null -> recalledByVector(query.vector, nowMs, photoSrc.notAfterMs)
             query.text != null -> recalledPhotos(query.text, nowMs, photoSrc.notAfterMs)
             else -> emptyList()
-        }
+        }.let { r -> photoSrc?.windowMs?.let { w -> r.filter { (h, _) -> (h.ts ?: h.receivedAt)?.let { it >= nowMs - w } ?: true } } ?: r }
         val photoPart = photoPart(fenceCites(recalled))
         var ctx = RagContext(photoLines = photoPart.lines, photos = photoPart.photos, images = photoPart.images, imageEndpointId = photoPart.endpoint)
         for (src in sources) ctx = when (src) {
             is RagSource.MemoryStore -> if (query.text == null) ctx else memoryStore(ctx, query.text, src, s, params, nowMs)
-            is RagSource.RecentWindow -> recentWindow(ctx, recent(nowMs, src.windowMs, params.recentCap))
-            is RagSource.Explicit -> recentWindow(ctx, explicit(src.memoryIds))
-            is RagSource.NudgeHistory -> ctx.copy(history = memory.db.nudgeGateDao().lastNudges(nowMs - src.windowMs).map { AskText.collapse(it.text) })
+            is RagSource.RecentWindow -> recentWindow(ctx, recent(nowMs, src.windowMs, params.recentCap), params)
+            is RagSource.Explicit -> recentWindow(ctx, explicit(src.memoryIds), params)
+            is RagSource.NudgeHistory -> nudgeHistory(ctx, nowMs - src.windowMs)
             is RagSource.PhotoStore -> ctx
         }
         return ctx
@@ -183,7 +188,24 @@ class RagCore(
         return ctx.copy(memories = pool.take(lines.size), memoryLines = lines, fallback = fallback, hits = r?.hits.orEmpty(), mode = r?.modeUsed, semanticUnavailable = r?.semanticUnavailable ?: false)
     }
 
-    private fun recentWindow(ctx: RagContext, found: List<MemoryEntity>) = ctx.copy(recent = ctx.recent + found, recentLines = ctx.recentLines + found.map(::recentLine))
+    /** Adds [found] under the shared bounds: [RagParams.maxRecent] memories in all and what is left of [RagParams.maxChars] after every line already in [ctx]. */
+    private fun recentWindow(ctx: RagContext, found: List<MemoryEntity>, params: RagParams): RagContext {
+        val have = ctx.recent.map { it.id }.toSet()
+        val fresh = found.filter { it.id !in have }.take((params.recentCap - ctx.recent.size).coerceAtLeast(0))
+        val used = (ctx.memoryLines + ctx.recentLines + ctx.photoLines).sumOf { it.length + 1 }
+        val lines = AskText.bounded(fresh.map(::recentLine), params.charBound - used)
+        return ctx.copy(recent = ctx.recent + fresh.take(lines.size), recentLines = ctx.recentLines + lines)
+    }
+
+    /**
+     * The texts of the nudges since [sinceMs]. A nudge whose own sources were forgotten is dropped (Forget redacts it; its text must not propagate), and
+     * the sources of the ones kept go into [RagContext.historyIds] so the caller's commit fence covers them.
+     */
+    private suspend fun nudgeHistory(ctx: RagContext, sinceMs: Long): RagContext {
+        val kept = memory.db.nudgeGateDao().lastNudges(sinceMs).map { it to AskSources.parse(it.sourceIdsJson) }
+            .filter { (_, ids) -> ForgetFence.allLive(memory.db, ids) }
+        return ctx.copy(history = kept.map { AskText.collapse(it.first.text) }, historyIds = kept.flatMap { it.second }.toSet())
+    }
 
     private suspend fun explicit(ids: List<String>): List<MemoryEntity> {
         val byId = ids.distinct().chunked(500).flatMap { memory.db.forgetDao().memories(it) }.filter { it.reviewState == ReviewState.OK }.associateBy { it.id }
@@ -200,17 +222,19 @@ class RagCore(
     private class PhotoPart(val lines: List<String> = emptyList(), val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(), val endpoint: String? = null)
 
     private suspend fun photoPart(recalled: List<Pair<PhotoHit, String>>): PhotoPart {
+        // Fail closed: the endpoint the gate checked is resolved BEFORE any image is decrypted; no endpoint (or a lookup that throws) = no attachment.
+        val endpoint = if (recalled.none { it.first.photoStored }) null else try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
         val images = mutableListOf<ModelImageInput>()
         val imageNo = HashMap<String, Int>()
         for ((hit, citeId) in recalled) {
-            if (images.size >= MAX_PHOTO_IMAGES || !hit.photoStored) continue
+            if (endpoint == null || images.size >= MAX_PHOTO_IMAGES || !hit.photoStored) continue
             val image = try { photoImages(listOf(hit.frameId))[hit.frameId] } catch (c: CancellationException) { throw c } catch (e: Exception) { null }
             if (image != null) { images += image; imageNo[citeId] = images.size }
         }
         val lines = recalled.map { (hit, citeId) -> photoLine(hit, citeId, imageNo[citeId]) }.let { if (images.isEmpty()) it else listOf(IMAGE_NOTE) + it }
         return PhotoPart(
             lines, recalled.map { (hit, citeId) -> PhotoCite(citeId, hit.frameId, hit.ts, hit.photoStored, hit.receivedAt) }, images,
-            if (images.isEmpty()) null else try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null },
+            endpoint.takeIf { images.isNotEmpty() },
         )
     }
 
@@ -218,7 +242,8 @@ class RagCore(
     internal suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null): List<Pair<PhotoHit, String>> =
         select(guarded { if (notAfterMs != null) photosAsOf(q, notAfterMs) else photos(q, nowMs) }, notAfterMs)
 
-    private suspend fun recalledByVector(v: FloatArray, nowMs: Long): List<Pair<PhotoHit, String>> = select(guarded { photosByVector(v, nowMs) }, null)
+    private suspend fun recalledByVector(v: FloatArray, nowMs: Long, notAfterMs: Long?): List<Pair<PhotoHit, String>> =
+        select(guarded { photosByVector(v, nowMs, notAfterMs) }, notAfterMs)
 
     private suspend fun guarded(search: suspend () -> List<PhotoHit>): List<PhotoHit> =
         try { if (!photosAllowed()) emptyList() else search() } catch (c: CancellationException) { throw c } catch (e: Exception) {
@@ -286,9 +311,9 @@ class RagCore(
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
 
         /** The production image-vector search: the Ask's photo budget and timeout, a ready embedding instead of words. */
-        fun photosByVectorFrom(context: Context): suspend (FloatArray, Long) -> List<PhotoHit> = { v, _ ->
+        fun photosByVectorFrom(context: Context): suspend (FloatArray, Long, Long?) -> List<PhotoHit> = { v, _, notAfter ->
             kotlinx.coroutines.withTimeoutOrNull(AskPhotoPolicy.ASK_TIMEOUT_MS) {
-                PhotoRecall.forApp(context).search("", imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, queryVector = v).image
+                PhotoRecall.forApp(context).search("", imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, notAfterMs = notAfter, queryVector = v).image
             }.orEmpty()
         }
     }
