@@ -40,7 +40,8 @@ data class DeliveryRoute(val phone: Boolean, val glasses: Boolean, val fallback:
                     else -> DeliveryRoute(phone = false, glasses = true, fallback = DeviceCapabilities.PHONE_DISPLAY_OFF)
                 }
                 else -> when {
-                    callerOnGlasses && reach == GlassesReach.UP && !gd -> phoneOnly(DeviceCapabilities.GLASSES_DISPLAY_OFF)
+                    !pd && !gd -> phoneOnly(DeviceCapabilities.NO_DISPLAY)
+                    callerOnGlasses && !gd -> phoneOnly(DeviceCapabilities.GLASSES_DISPLAY_OFF) // whatever the link does meanwhile
                     callerOnGlasses && reach == GlassesReach.UP -> DeliveryRoute(phone = false, glasses = true, explicit = false)
                     else -> DeliveryRoute(phone = true, glasses = false, explicit = false)
                 }

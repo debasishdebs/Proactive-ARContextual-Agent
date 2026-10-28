@@ -273,8 +273,6 @@ class AnswerService(
      */
     private suspend fun routeOf(target: String, source: String, askId: String, nowMs: Long): com.rokid.context.core.model.DeliveryRoute? {
         val caps = DeliveryEnvironment.caps()
-        // `caller` keeps today's path (no route) unless the asker is the glasses and their display is switched off in Settings (slice D)
-        if (target == "caller" && !(source == "glasses_voice" && !caps.glassesDisplay)) return null
         val voice = source == "glasses_voice" || source == "phone_voice"
         val reach = if (voice) DeliveryEnvironment.reach() else com.rokid.context.core.model.GlassesReach.NO_PATH
         val route = com.rokid.context.core.model.DeliveryRoute.resolve(target, source == "glasses_voice", reach, caps)
