@@ -120,7 +120,7 @@ fun MemoryDetailScreen(
 
 @OptIn(ExperimentalFoundationApi::class) // transformable(canPan) is experimental in foundation 1.7
 @Composable
-private fun ZoomableFrame(path: String, modifier: Modifier) {
+fun ZoomableFrame(path: String, modifier: Modifier) {
     var scale by remember(path) { mutableFloatStateOf(1f) }
     var offset by remember(path) { mutableStateOf(Offset.Zero) }
     var size by remember { mutableStateOf(IntSize.Zero) }

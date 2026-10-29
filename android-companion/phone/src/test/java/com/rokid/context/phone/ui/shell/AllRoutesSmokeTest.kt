@@ -189,6 +189,8 @@ class AllRoutesSmokeTest {
             "date" -> java.time.LocalDate.now(Fixtures.ZONE).toString() // PhoneDeps.today()
             "period" -> "week"
             "start" -> FRAME_ID
+            "ref" -> "memory:$MEMORY_ID" // the previewer
+            "kind" -> "frames" // the common list of an Activity kind
             "ids" -> "capture,ask,nudge"
             "q" -> "keys" // Find a photo: a non-blank q searches once on open (PhotoSearchDeps.None: no photos)
             else -> null

@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.SwapVert
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -50,6 +49,11 @@ import com.rokid.context.core.ui.components.StatusStrip
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.banner.BannerHost
+import com.rokid.context.phone.ui.list.ListItemCard
+import com.rokid.context.phone.ui.list.ListKind
+import com.rokid.context.phone.ui.preview.MarkPreview
+import com.rokid.context.phone.ui.preview.PreviewRef
+import com.rokid.context.phone.ui.preview.RefKind
 import java.time.LocalDate
 
 /** Activity tab (spec §2.4, mock activity-tab.html option A). Stateless. */
@@ -59,14 +63,14 @@ fun ActivityScreen(
     onSelectPeriod: (Period) -> Unit,
     onTogglePause: () -> Unit,
     onBannerAction: (BannerAction) -> Unit,
-    onOpenMemory: (String) -> Unit,
-    onOpenFrames: (LocalDate) -> Unit,
+    /** THE way an item opens: [com.rokid.context.phone.ui.preview.previewMoment] over these ref strings ([PreviewRef.of]). Every tap on a row calls it. */
+    onPreview: (List<String>) -> Unit,
+    /** THE way a list opens: [com.rokid.context.phone.ui.list.listView] over the kind and its raw ids. */
+    onOpenList: (ListKind, List<String>) -> Unit,
     onOpenDay: (LocalDate) -> Unit,
     onSelectSort: (ActivitySort) -> Unit = {},
     /** Opens "Find a photo" (wave 3). */
     onSearchPhotos: () -> Unit = {},
-    /** Opens the viewer on one photo (its Forget is there). */
-    onOpenPhoto: (LocalDate, String) -> Unit = { d, _ -> onOpenFrames(d) },
 ) {
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("activity_list")) {
         item { GradientHeader("Activity", "What your glasses noticed") {
@@ -91,22 +95,29 @@ fun ActivityScreen(
         }
         item { Text(state.header, style = MaterialTheme.typography.titleMedium, color = PcColors.Ink, modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 8.dp)) }
         item {
-            val framesClick = if (state.period == Period.TODAY && state.today != null) ({ onOpenFrames(state.today) }) else null
+            // Each card opens the list of its kind over that period's ids; an empty kind opens its empty state, never a dead tap.
+            val open = { kind: ListKind -> onOpenList(kind, state.tileIds.of(kind)) }
             Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricTile(Icons.Outlined.Image, PcColors.ChipMint, "${state.tiles.frames}", "Frames", Modifier.weight(1f), onClick = framesClick)
-                MetricTile(Icons.Outlined.Psychology, PcColors.ChipViolet, "${state.tiles.memories}", "Memories", Modifier.weight(1f))
+                MetricTile(Icons.Outlined.Image, PcColors.ChipMint, "${state.tiles.frames}", "Frames", Modifier.weight(1f), onClick = { open(ListKind.FRAMES) })
+                MetricTile(Icons.Outlined.Psychology, PcColors.ChipViolet, "${state.tiles.memories}", "Memories", Modifier.weight(1f), onClick = { open(ListKind.MEMORIES) })
             }
             Spacer(Modifier.height(12.dp))
             Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricTile(Icons.Outlined.ChatBubbleOutline, PcColors.ChipSky, "${state.tiles.answers}", "Answers", Modifier.weight(1f))
-                MetricTile(Icons.Outlined.Lightbulb, PcColors.ChipAmber, "${state.tiles.nudges}", "Nudges", Modifier.weight(1f))
+                MetricTile(Icons.Outlined.ChatBubbleOutline, PcColors.ChipSky, "${state.tiles.answers}", "Answers", Modifier.weight(1f), onClick = { open(ListKind.ANSWERS) })
+                MetricTile(Icons.Outlined.Lightbulb, PcColors.ChipAmber, "${state.tiles.nudges}", "Nudges", Modifier.weight(1f), onClick = { open(ListKind.NUDGES) })
             }
         }
         item { SectionLabel("Marks") }
         if (state.marks.isEmpty()) item { Hint(MarkRows.EMPTY) }
-        items(state.marks, key = { "mark_${it.labelId}" }) { MarkCard(it, onOpenMemory, onOpenPhoto, onOpenDay) }
+        items(state.marks, key = { "mark_${it.labelId}" }) { row ->
+            ListItemCard(MarkPreview.item(row), onClick = { onPreview(listOf(PreviewRef.of(RefKind.MARK, row.labelId))) }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp).testTag("mark_row"))
+        }
+        if (state.marks.isNotEmpty()) item { SeeAll("See all marks", "marks_all") { onOpenList(ListKind.MARKS, state.marks.map { it.labelId }) } }
         if (state.period == Period.TODAY) {
-            if (state.sections.isNotEmpty()) timelineItems(state.sections, onOpenMemory)
+            if (state.sections.isNotEmpty()) {
+                timelineItems(state.sections) { onPreview(listOf(PreviewRef.of(RefKind.MEMORY, it))) }
+                item { SeeAll("See all moments", "moments_all") { onOpenList(ListKind.MOMENTS, state.sections.flatMap { s -> s.rows.map { it.memoryId } }) } }
+            }
             else if (state.today != null) item { Hint("Nothing captured yet today") }
         } else {
             item {
@@ -151,34 +162,10 @@ private fun SortMenu(current: ActivitySort, onSelect: (ActivitySort) -> Unit) {
     }
 }
 
-/** One mark: when, how it was made, whether a Moment holds it and why there is no photo. A tap opens its photo (the memory detail screen, which carries Forget) or, with no photo, says why and offers its day. */
+/** Opens the whole list of a section (the section shows its rows; the list is the same rows with search). */
 @Composable
-private fun MarkCard(row: MarkRowUi, onOpenMemory: (String) -> Unit, onOpenPhoto: (LocalDate, String) -> Unit, onOpenDay: (LocalDate) -> Unit) {
-    var noPhoto by remember { mutableStateOf<MarkTarget.NoPhoto?>(null) }
-    val target = MarkRows.target(row)
-    val open: (() -> Unit)? = when (target) {
-        is MarkTarget.Memory -> ({ onOpenMemory(target.memoryId) })
-        is MarkTarget.Photo -> ({ onOpenPhoto(target.date, target.frameId) })
-        is MarkTarget.NoPhoto -> ({ noPhoto = target })
-        null -> null
-    }
-    SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth().testTag("mark_row"), onClick = open) {
-        Column(Modifier.padding(12.dp)) {
-            Text(if (row.code.isEmpty()) row.time else "${row.time}  \u00b7  ${row.code}", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
-            Text(row.joined, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink)
-            row.reason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft) }
-            if (target is MarkTarget.Memory || target is MarkTarget.Photo) Text(MarkRows.TAP_HINT, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
-        }
-    }
-    noPhoto?.let { t ->
-        AlertDialog(
-            onDismissRequest = { noPhoto = null },
-            title = { Text("No photo for this mark") },
-            text = { Text(t.reason) },
-            confirmButton = { TextButton(onClick = { noPhoto = null; onOpenDay(t.date) }, modifier = Modifier.testTag("mark_show_time")) { Text("Show that time") } },
-            dismissButton = { TextButton(onClick = { noPhoto = null }) { Text("Close") } },
-        )
-    }
+private fun SeeAll(text: String, tag: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick, modifier = Modifier.padding(start = 8.dp).testTag(tag)) { Text(text, color = PcColors.MintDeep) }
 }
 
 @Composable

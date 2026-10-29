@@ -56,6 +56,8 @@ interface ListSource {
     val statusLabels: Map<ItemStatus, String> get() = emptyMap()
     /** False keeps the source's own order and hides the A-Z toggle. */
     val sortable: Boolean get() = true
+    /** What an empty source says (a clear empty state, never a dead screen). */
+    val emptyText: String get() = "Nothing here yet"
     val doneSection: String get() = ""
     val actionSection: String get() = ""
     /** Trailing icon for [ItemStatus.ActionNeeded] rows. */

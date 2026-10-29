@@ -2,6 +2,7 @@ package com.rokid.context.phone.ui.activity
 
 import android.app.Application
 import androidx.compose.ui.test.assertCountEquals
+import com.rokid.context.phone.ui.list.ListKind
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.hasContentDescription
@@ -29,7 +30,7 @@ class ActivityScreenTest {
     @get:Rule val compose = createComposeRule()
     private val periods = mutableListOf<Period>()
     private val memories = mutableListOf<String>()
-    private val frameDays = mutableListOf<LocalDate>()
+    private val lists = mutableListOf<Pair<ListKind, List<String>>>()
     private val days = mutableListOf<LocalDate>()
     private var pauses = 0
     private var photoSearches = 0
@@ -40,7 +41,7 @@ class ActivityScreenTest {
         PcTheme {
             ActivityScreen(
                 state, onSelectPeriod = { periods += it }, onTogglePause = { pauses++ }, onBannerAction = {},
-                onOpenMemory = { memories += it }, onOpenFrames = { frameDays += it }, onOpenDay = { days += it },
+                onPreview = { memories += it }, onOpenList = { k, ids -> lists += k to ids }, onOpenDay = { days += it },
                 onSelectSort = { sorts += it }, onSearchPhotos = { photoSearches++ },
             )
         }
@@ -62,6 +63,7 @@ class ActivityScreenTest {
         show(
             ActivityUiState(
                 period = Period.TODAY, header = "Mon 12 Oct", status = status, tiles = Tiles(14, 2, 3, 1), today = TODAY,
+                tileIds = TileIds(frames = listOf("f1", "f2")),
                 sections = listOf(TimelineSection("Morning", listOf(TimelineRow("m1", "07:40", "Oatmeal and coffee at the counter", 0.92, null, null)))),
             ),
         )
@@ -71,12 +73,12 @@ class ActivityScreenTest {
         assertEquals(1, pauses)
         compose.onNodeWithText("14").assertIsDisplayed()
         compose.onNodeWithText("Frames").performClick()
-        assertEquals(listOf(TODAY), frameDays)
+        assertEquals(listOf(ListKind.FRAMES to listOf("f1", "f2")), lists)
         compose.onNodeWithTag("activity_list").performScrollToNode(hasText("Oatmeal and coffee at the counter"))
         compose.onNodeWithText("MORNING").assertIsDisplayed()
         compose.onNodeWithText("92%").assertIsDisplayed()
         compose.onNodeWithText("Oatmeal and coffee at the counter").performClick()
-        assertEquals(listOf("m1"), memories)
+        assertEquals(listOf("memory:m1"), memories)
     }
 
     /** Final review I1: under a glasses pause the strip has no ⏸/▶ (a tap would switch the phone pipeline off). */
@@ -124,5 +126,21 @@ class ActivityScreenTest {
         compose.onNodeWithContentDescription("Find a photo").assertIsDisplayed()
         compose.onNodeWithTag("photo_search").performClick()
         assertEquals(1, photoSearches)
+    }
+
+    /** Every top card opens the list of its kind over that period's ids (an empty kind too: its list shows the empty state). */
+    @Test fun eachTopCardOpensItsKindWithTheIdsOfThePeriod() {
+        show(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, tiles = Tiles(2, 1, 1, 0), today = TODAY,
+            tileIds = TileIds(frames = listOf("f1", "f2"), memories = listOf("m1"), answers = listOf("a1"), nudges = emptyList())))
+        listOf("Frames", "Memories", "Answers", "Nudges").forEach { compose.onNodeWithText(it).performClick() }
+        assertEquals(
+            listOf(ListKind.FRAMES to listOf("f1", "f2"), ListKind.MEMORIES to listOf("m1"), ListKind.ANSWERS to listOf("a1"), ListKind.NUDGES to emptyList()),
+            lists,
+        )
+    }
+
+    @Test fun theTilesPassTheSameKindsFromTheModel() {
+        val ids = TileIds(listOf("f"), listOf("m"), listOf("a"), listOf("n"))
+        assertEquals(listOf(listOf("f"), listOf("m"), listOf("a"), listOf("n")), listOf(ListKind.FRAMES, ListKind.MEMORIES, ListKind.ANSWERS, ListKind.NUDGES).map(ids::of))
     }
 }
