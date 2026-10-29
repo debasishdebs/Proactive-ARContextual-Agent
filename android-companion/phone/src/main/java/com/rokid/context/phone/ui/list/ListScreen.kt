@@ -182,6 +182,9 @@ fun ListScreen(
                             item { if (grouped) GroupLabel(source.actionSection, others.size) else Spacer(Modifier.height(12.dp)) }
                             item { RowsCard(others, source, rowSelection, rowActions) }
                         }
+                        if (source.hasMore) item {
+                            TextButton(onClick = { source.showMore(); reloadKey++ }, modifier = Modifier.padding(horizontal = 8.dp).testTag("list_show_more")) { Text("Show more") }
+                        }
                     }
                 }
             }

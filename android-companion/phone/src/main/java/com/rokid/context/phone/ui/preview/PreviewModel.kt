@@ -79,6 +79,8 @@ interface ActivityData {
     suspend fun nudges(ids: List<String>): List<NudgeEntity>
     /** The photos of [date], oldest first. */
     suspend fun dayFrames(date: LocalDate): List<FrameEntity>
+    /** The ids of every item of [kind] in [range] (epoch ms), newest first: what a period's list opens over, so its route never carries them. */
+    suspend fun idsIn(kind: ListKind, range: LongRange): List<String> = emptyList()
     /** Emits when the item [ref] names, or something it cites, changes (a Forget, a redaction, a Trust): the previewer then reads it again. The first emission is the current state. Nothing by default. */
     fun changes(ref: PreviewRef): Flow<Unit> = emptyFlow()
 }

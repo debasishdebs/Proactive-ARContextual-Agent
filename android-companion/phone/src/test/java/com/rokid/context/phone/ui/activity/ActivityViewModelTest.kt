@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.phone.ui.FakePipelineControl
 import com.rokid.context.phone.ui.Fixtures
+import com.rokid.context.phone.ui.list.ListKind as LK
 import com.rokid.context.phone.ui.Fixtures.TODAY
 import com.rokid.context.phone.ui.MainDispatcherRule
 import com.rokid.context.phone.ui.TestGraph
@@ -59,20 +60,18 @@ class ActivityViewModelTest {
         assertEquals("Week of 12 Oct", week.header)
     }
 
-    /** The four top cards each carry the ids of their kind for the period, so the list they open holds exactly what the count says. */
-    @Test fun eachTopCardCarriesTheIdsOfItsKindForThePeriod() = runBlocking {
+    /** A period's list resolves the ids of its kind itself (the route carries a key only): exactly what the card's count says, newest first. */
+    @Test fun aPeriodsListResolvesTheIdsOfItsKind() = runBlocking {
         graph.frames.add(Fixtures.frame("f1", Fixtures.at(TODAY, 8)))
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", Fixtures.at(TODAY, 9)))
         graph.asks.upsert(Fixtures.ask("a1", Fixtures.at(TODAY, 9)))
         graph.asks.upsert(Fixtures.ask("a0", Fixtures.at(TODAY.minusDays(1), 9)))
         graph.nudges.addIgnore(Fixtures.nudge("n1", Fixtures.at(TODAY, 9)))
-        val model = vm(flowOf(Fixtures.at(TODAY, 10)))
-        val s = withTimeout(5_000) { model.state.first { it.today == TODAY && it.tileIds.nudges.isNotEmpty() && it.tileIds.answers.isNotEmpty() } }
-        assertEquals(listOf("f1"), s.tileIds.frames); assertEquals(listOf("m1"), s.tileIds.memories)
-        assertEquals(listOf("a1"), s.tileIds.answers); assertEquals(listOf("n1"), s.tileIds.nudges)
-        model.selectPeriod(Period.WEEK)
-        val week = withTimeout(5_000) { model.state.first { it.period == Period.WEEK && it.tileIds.answers.isNotEmpty() } }
-        assertEquals(listOf(1, 1, 1, 1), listOf(week.tileIds.frames, week.tileIds.memories, week.tileIds.answers, week.tileIds.nudges).map { it.size })
+        val data = com.rokid.context.phone.ui.preview.RepoActivityData(graph.timeline, graph.asks, graph.nudges, graph.marks, { Fixtures.ZONE })
+        fun ids(kind: LK, p: Period) = runBlocking { data.idsIn(kind, PeriodWindow.of(p, TODAY).millis(Fixtures.ZONE)) }
+        assertEquals(listOf("f1"), ids(LK.FRAMES, Period.TODAY)); assertEquals(listOf("m1"), ids(LK.MEMORIES, Period.TODAY))
+        assertEquals(listOf("a1"), ids(LK.ANSWERS, Period.TODAY)); assertEquals(listOf("n1"), ids(LK.NUDGES, Period.TODAY))
+        assertEquals("the week starts on Monday: Sunday's answer is not in it", listOf("a1"), ids(LK.ANSWERS, Period.WEEK))
     }
 
     @Test fun backlogMemoryFromAnEarlierDayPhotoKeepsItsPhoto() = runBlocking {

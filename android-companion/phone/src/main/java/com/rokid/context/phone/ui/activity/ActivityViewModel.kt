@@ -52,21 +52,17 @@ class ActivityViewModel(
     private fun query(p: Period, d: java.time.LocalDate, z: ZoneId, o: ActivitySort): Flow<ActivityUiState> {
         val w = PeriodWindow.of(p, d)
         val r = w.millis(z)
-        // Ids behind the answer and nudge cards come from the recent rows (the repositories read only times by range); a card opens the list of its kind over these.
-        val answerIds = asks.recent(RECENT).map { rows -> rows.filter { it.ts in r }.map { it.id } }
-        val nudgeIds = nudges.recent(RECENT).map { rows -> rows.filter { it.ts in r }.map { it.id } }
-        val base = if (p == Period.TODAY) {
+        return if (p == Period.TODAY) {
             combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), asks.timesIn(r), nudges.timesIn(r), marks.marksIn(r)) { mems, frames, a, n, k ->
-                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), tileIds = TileIds(frames = frames.map { it.id }, memories = mems.map { it.id }), sections = Timeline.sections(mems, Timeline.framesFor(mems, frames, timeline::framesByIds), z, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = false))
+                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), sections = Timeline.sections(mems, Timeline.framesFor(mems, frames, timeline::framesByIds), z, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = false))
             }
         } else {
             combine(timeline.framesIn(r), timeline.visibleMemoriesIn(r), asks.timesIn(r), nudges.timesIn(r), marks.marksIn(r)) { frames, mems, a, n, k ->
                 val fc = ActivityModel.countByDay(frames.map { it.ts }, w, z)
                 val mc = ActivityModel.countByDay(mems.map { it.createdAt }, w, z)
-                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), tileIds = TileIds(frames = frames.map { it.id }, memories = mems.map { it.id }), bars = ActivityModel.bars(w, fc), dayRows = ActivityModel.dayRows(w, fc, mc, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = true))
+                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), bars = ActivityModel.bars(w, fc), dayRows = ActivityModel.dayRows(w, fc, mc, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = true))
             }
         }
-        return combine(base, answerIds, nudgeIds) { st, a, n -> st.copy(tileIds = st.tileIds.copy(answers = a, nudges = n)) }
     }
 
     val state: StateFlow<ActivityUiState> = combine(content, StatusUi.flow(glasses, pipeline, clock, storagePct, index)) { c, s -> c.copy(status = s) }
@@ -76,6 +72,4 @@ class ActivityViewModel(
     fun selectSort(o: ActivitySort) = sort.set(o)
     fun togglePause() = pipeline.toggle()
     fun onBannerAction(action: BannerAction) = BannerActions.apply(action, glasses, pipeline)
-
-    private companion object { const val RECENT = 1000 }
 }

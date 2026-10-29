@@ -33,7 +33,9 @@ Moved (not rewritten): `ForgetDialog` (memory/ForgetDialog.kt), `productionMemor
 - P2 Resume refresh flag lives in the view model (survives the composition being disposed). Answer and nudge lookup is by id (`asks.observe`, `nudgeGateDao().observe`), no longer `recent(1000)`. Level, Trust and Confidence in the Config section follow the live memory state.
 - P2 After Forget photo with more than one photo in the pager the previewer stays on the neighbour (`photoAfterForget`); it closes only when none remain (this reverses the earlier "goes back" note above).
 
-Deferred (not cheap or no old behaviour): Forget for Answers, Nudges and photo-less marks (the old screens had none); passing a list key instead of the id list in `list/{kind}?ids=` and paging `ListKind` loads (the lists still read all ids and render lazily).
+Lists by key (done): the Activity cards, "See all marks" and "See all moments" open `list/{kind}?scope=MONTH:2026-10-12` (`ListScope`, `listView(kind, period, anchor)`), a few bytes however big the period; `TileIds` is gone. `RecordListSource` resolves the ids itself (`ActivityData.idsIn`, newest first) and reads rows 200 at a time with "Show more" (`ListSource.hasMore/showMore`). Search and filters cover the rows loaded so far. `list/{kind}?ids=` stays for small sets from `previewMoment`. Test: 20,000 frames open by key and page 200 at a time.
+
+Deferred (no old behaviour): Forget for Answers, Nudges and photo-less marks (the old screens had none).
 
 ## Measured since baseline 68c84585 (git diff --shortstat 68c84585..HEAD)
 

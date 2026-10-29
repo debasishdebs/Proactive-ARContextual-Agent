@@ -65,8 +65,8 @@ fun ActivityScreen(
     onBannerAction: (BannerAction) -> Unit,
     /** THE way an item opens: [com.rokid.context.phone.ui.preview.previewMoment] over these ref strings ([PreviewRef.of]). Every tap on a row calls it. */
     onPreview: (List<String>) -> Unit,
-    /** THE way a list opens: [com.rokid.context.phone.ui.list.listView] over the kind and its raw ids. */
-    onOpenList: (ListKind, List<String>) -> Unit,
+    /** THE way a list opens: [com.rokid.context.phone.ui.list.listView] over the kind and the period (a key, never the ids). */
+    onOpenList: (ListKind, Period) -> Unit,
     onOpenDay: (LocalDate) -> Unit,
     onSelectSort: (ActivitySort) -> Unit = {},
     /** Opens "Find a photo" (wave 3). */
@@ -96,7 +96,7 @@ fun ActivityScreen(
         item { Text(state.header, style = MaterialTheme.typography.titleMedium, color = PcColors.Ink, modifier = Modifier.padding(start = 20.dp, top = 8.dp, bottom = 8.dp)) }
         item {
             // Each card opens the list of its kind over that period's ids; an empty kind opens its empty state, never a dead tap.
-            val open = { kind: ListKind -> onOpenList(kind, state.tileIds.of(kind)) }
+            val open = { kind: ListKind -> onOpenList(kind, state.period) }
             Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MetricTile(Icons.Outlined.Image, PcColors.ChipMint, "${state.tiles.frames}", "Frames", Modifier.weight(1f), onClick = { open(ListKind.FRAMES) })
                 MetricTile(Icons.Outlined.Psychology, PcColors.ChipViolet, "${state.tiles.memories}", "Memories", Modifier.weight(1f), onClick = { open(ListKind.MEMORIES) })
@@ -112,11 +112,11 @@ fun ActivityScreen(
         items(state.marks, key = { "mark_${it.labelId}" }) { row ->
             ListItemCard(MarkPreview.item(row), onClick = { onPreview(listOf(PreviewRef.of(RefKind.MARK, row.labelId))) }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp).testTag("mark_row"))
         }
-        if (state.marks.isNotEmpty()) item { SeeAll("See all marks", "marks_all") { onOpenList(ListKind.MARKS, state.marks.map { it.labelId }) } }
+        if (state.marks.isNotEmpty()) item { SeeAll("See all marks", "marks_all") { onOpenList(ListKind.MARKS, state.period) } }
         if (state.period == Period.TODAY) {
             if (state.sections.isNotEmpty()) {
                 timelineItems(state.sections) { onPreview(listOf(PreviewRef.of(RefKind.MEMORY, it))) }
-                item { SeeAll("See all moments", "moments_all") { onOpenList(ListKind.MOMENTS, state.sections.flatMap { s -> s.rows.map { it.memoryId } }) } }
+                item { SeeAll("See all moments", "moments_all") { onOpenList(ListKind.MOMENTS, state.period) } }
             }
             else if (state.today != null) item { Hint("Nothing captured yet today") }
         } else {

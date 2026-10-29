@@ -14,7 +14,7 @@ object Routes {
     const val PHOTOS = "photos?q={q}"
     /** The composite previewer of ANY item (`ref` is a [com.rokid.context.phone.ui.preview.PreviewRef.raw]) and the common list of a kind (`ids` comma-joined). */
     const val PREVIEW = "preview/{ref}"
-    const val LIST = "list/{kind}?ids={ids}"
+    const val LIST = "list/{kind}?ids={ids}&scope={scope}"
     const val SETTINGS = "settings"
     const val SETTINGS_ENDPOINTS = "settings/endpoints"
     const val SETTINGS_DIAGNOSTICS = "settings/diagnostics"
@@ -83,7 +83,10 @@ object Routes {
     /** Encoded with `android.net.Uri.encode` (a platform API, not hand-written escaping). */
     fun photos(q: String = "") = if (q.isBlank()) "photos" else "photos?q=${android.net.Uri.encode(q)}"
     fun preview(ref: String) = "preview/${enc(ref)}"
+    /** A small set of ids (previewMoment's several items). A period's list never carries its ids: see [listIn]. */
     fun list(kind: com.rokid.context.phone.ui.list.ListKind, ids: List<String>) = "list/${kind.name}?ids=${enc(ids.joinToString(","))}"
+    /** The list of [kind] over a period (`MONTH:2026-10-12`, see [com.rokid.context.phone.ui.list.ListScope]): a few bytes however many items it holds; the list resolves the ids itself. */
+    fun listIn(kind: com.rokid.context.phone.ui.list.ListKind, scope: String) = "list/${kind.name}?scope=${enc(scope)}"
     fun startRoute(onboardingComplete: Boolean) = if (onboardingComplete) HOME else ONBOARDING
 
     /** [route] is the destination's pattern (`NavDestination.route`). */

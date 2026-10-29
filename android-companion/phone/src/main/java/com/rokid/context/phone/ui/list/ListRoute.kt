@@ -12,13 +12,13 @@ import com.rokid.context.phone.ui.shell.PhoneDeps
 
 /** The common list of an Activity kind ([listView]); a row's tap goes through [previewMoment]. */
 @Composable
-fun ListViewRoute(kind: ListKind, ids: List<String>, deps: PhoneDeps, nav: NavController) {
+fun ListViewRoute(kind: ListKind, ids: List<String>, scope: ListScope?, deps: PhoneDeps, nav: NavController) {
     val back: () -> Unit = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
     val app = LocalContext.current.applicationContext
-    val source = remember(kind, ids) {
+    val source = remember(kind, ids, scope) {
         RecordListSource(
             kind, ids, activityData(deps), deps.zone, deps::today,
-            onPreview = { ref -> nav.navigate(previewMoment(listOf(ref), PreviewMode.OPEN).route) },
+            onPreview = { ref -> nav.navigate(previewMoment(listOf(ref), PreviewMode.OPEN).route) }, scope = scope,
         )
     }
     ListScreen(source, onBack = back, onMessage = { Toast.makeText(app, it, Toast.LENGTH_SHORT).show() })

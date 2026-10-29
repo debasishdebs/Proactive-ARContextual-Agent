@@ -7,7 +7,6 @@ import com.rokid.context.memory.db.MomentDao
 import com.rokid.context.memory.moment.MomentType
 import com.rokid.context.core.model.MarkPhotoReason
 import com.rokid.context.memory.moment.NoPhotoReason
-import com.rokid.context.phone.ui.list.ListKind
 import com.rokid.context.phone.ui.status.StatusUi
 import java.time.DayOfWeek
 import java.time.Instant
@@ -43,16 +42,6 @@ data class PeriodWindow(val period: Period, val start: LocalDate, val endExclusi
 }
 
 data class Tiles(val frames: Int, val memories: Int, val answers: Int, val nudges: Int)
-/** The ids behind each top card in the period: a card opens the list of its kind over these. Raw ids (no [com.rokid.context.phone.ui.preview.PreviewRef] prefix). */
-data class TileIds(val frames: List<String> = emptyList(), val memories: List<String> = emptyList(), val answers: List<String> = emptyList(), val nudges: List<String> = emptyList()) {
-    fun of(kind: ListKind): List<String> = when (kind) {
-        ListKind.FRAMES -> frames
-        ListKind.MEMORIES -> memories
-        ListKind.ANSWERS -> answers
-        ListKind.NUDGES -> nudges
-        ListKind.MARKS, ListKind.MOMENTS -> emptyList() // not a card: the Marks and Moments sections list their own rows
-    }
-}
 data class TimelineRow(val memoryId: String, val time: String, val text: String, val confidence: Double, val framePath: String?, val frameId: String?)
 data class TimelineSection(val label: String, val rows: List<TimelineRow>)
 data class DayBar(val date: LocalDate, val label: String, val count: Int)
@@ -232,7 +221,6 @@ data class ActivityUiState(
     val header: String = "",
     val status: StatusUi = StatusUi.Initial,
     val tiles: Tiles = Tiles(0, 0, 0, 0),
-    val tileIds: TileIds = TileIds(),
     /** Today only. */
     val sections: List<TimelineSection> = emptyList(),
     /** Week / Month only. */
