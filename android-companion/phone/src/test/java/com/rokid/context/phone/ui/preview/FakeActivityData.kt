@@ -10,12 +10,15 @@ import java.time.LocalDate
 /** A fixed set of rows behind [ActivityData], for the presenter and screen tests. */
 class FakeActivityData(
         val mems: List<MemoryEntity> = emptyList(), val frames: List<FrameEntity> = emptyList(), val marks: List<MarkRowUi> = emptyList(),
-        val asks: List<AskEntity> = emptyList(), val nudges: List<NudgeEntity> = emptyList(),
+        var asks: List<AskEntity> = emptyList(), val nudges: List<NudgeEntity> = emptyList(),
     ) : ActivityData {
         override suspend fun memories(ids: List<String>) = mems.filter { it.id in ids }
         override suspend fun frames(ids: List<String>) = frames.filter { it.id in ids }
         override suspend fun marks(ids: List<String>) = marks.filter { it.labelId in ids }
         override suspend fun asks(ids: List<String>) = asks.filter { it.id in ids }
         override suspend fun nudges(ids: List<String>) = nudges.filter { it.id in ids }
-        override suspend fun dayFrames(date: LocalDate) = frames.sortedBy { it.ts }
+        /** Emit to say the item changed (the previewer reads it again). */
+    val changed = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(replay = 1).also { it.tryEmit(Unit) }
+    override fun changes(ref: PreviewRef) = changed
+    override suspend fun dayFrames(date: LocalDate) = frames.sortedBy { it.ts }
     }

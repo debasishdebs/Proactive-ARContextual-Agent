@@ -94,15 +94,24 @@ class PreviewMomentTest {
 
     @Test fun aPhotoWithNoCaptionIsTheDaysPhotosOpenedAtItAndForgetsThePhoto() {
         val p = one(RefKind.FRAME, "f2")
-        assertEquals(ImageSection(listOf("f1", "f2"), "f2", labels = listOf("09:00", "09:01")), p.sections().first())
+        assertEquals(ImageSection(listOf("f1", "f2"), "f2", canForgetPhoto = true, labels = listOf("09:00", "09:01")), p.sections().first())
         assertEquals(AudioSection, p.sections().last())
-        assertEquals(ForgetTarget.Photo("f2"), p.forgetTarget())
+        assertNull("Forget photo is the section's: it follows the photo on screen", p.forgetTarget())
+    }
+
+    @Test fun photoAfterForgetStaysOnTheNeighbourAndNullWhenNoneRemain() {
+        assertEquals("c", photoAfterForget(listOf("a", "b", "c"), "b"))
+        assertEquals("b", photoAfterForget(listOf("a", "b", "c"), "c"))
+        assertEquals("b", photoAfterForget(listOf("a", "b"), "a"))
+        assertNull(photoAfterForget(listOf("a"), "a"))
+        assertNull(photoAfterForget(emptyList(), "a"))
     }
 
     @Test fun aMarkShowsItsMomentsCaptionOrItsPhotoOrOnlyWhyThereIsNone() {
         assertEquals(kinds(one(RefKind.MEMORY, "m1")), kinds(one(RefKind.MARK, "k1")))
         assertEquals(ForgetTarget.Fact("m1"), one(RefKind.MARK, "k1").forgetTarget())
         assertEquals(listOf("f1", "f2"), (one(RefKind.MARK, "k2").sections().first() as ImageSection).frameIds)
+        assertNull("a photo-only mark forgets the photo on screen, through its section", one(RefKind.MARK, "k2").forgetTarget())
         val none = one(RefKind.MARK, "k3")
         assertEquals(
             listOf(TextSection("Time", "09:00"), StatusSection("camera_busy", "No photo: the camera was busy", Severity.WARNING, showTimeOn = TODAY), AudioSection),
@@ -156,7 +165,7 @@ class PreviewMomentTest {
 
     @Test fun aRetentionDeletedPhotoStillOpensAndAMissingItemIsAbsent() {
         val gone = runBlocking { Previewables.forRef(RefKind.FRAME).load(listOf("zz"), ctx()).single() }
-        assertEquals(ImageSection(listOf("zz"), "zz"), gone.sections().first())
+        assertEquals(ImageSection(listOf("zz"), "zz", canForgetPhoto = true), gone.sections().first())
         assertTrue(runBlocking { Previewables.forRef(RefKind.MEMORY).load(listOf("nope"), ctx()).isEmpty() })
     }
 

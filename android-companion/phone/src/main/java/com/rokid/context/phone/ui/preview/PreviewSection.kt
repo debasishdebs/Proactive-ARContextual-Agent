@@ -115,9 +115,9 @@ sealed interface PreviewSection {
         @Composable override fun Content(host: PreviewHost) = StatusContent(this, host)
     }
 
-    /** Label to value, fixed known keys only (never a secret or a key). */
-    data class ConfigSection(val entries: List<Pair<String, String>>) : PreviewSection {
-        @Composable override fun Content(host: PreviewHost) = ConfigContent(this)
+    /** Label to value, fixed known keys only (never a secret or a key). [live]: Level and Confidence follow the memory detail's live state (a Trust shows at once). */
+    data class ConfigSection(val entries: List<Pair<String, String>>, val live: Boolean = false) : PreviewSection {
+        @Composable override fun Content(host: PreviewHost) = ConfigContent(this, host)
     }
 
     /** The answer's thumbs. [rating] is 1, -1 or null; the choice is shown at once and sent through [PreviewHost.rate]. */
@@ -259,6 +259,11 @@ private fun SourceCardRow(src: SourceItem, host: PreviewHost) {
 private fun TextContent(s: PreviewSection.TextSection, host: PreviewHost) {
     val d = host.detail
     val memory = s.memoryId != null && d.found
+    // A forgotten or missing memory never shows its cached words.
+    if (s.memoryId != null && !d.loading && !d.found) {
+        Text("This memory is no longer available", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(20.dp).testTag("preview_missing"))
+        return
+    }
     SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().testTag("preview_text")) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             s.label?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft) }
@@ -278,7 +283,6 @@ private fun TextContent(s: PreviewSection.TextSection, host: PreviewHost) {
                     OutlinedButton(onClick = host.edit, enabled = memory && d.editable && d.draft == null) { Text("Edit") }
                 }
             }
-            if (memory) d.message?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = PcColors.MintDeep) }
         }
     }
 }
@@ -294,9 +298,16 @@ private fun StatusContent(s: PreviewSection.StatusSection, host: PreviewHost) {
 }
 
 @Composable
-private fun ConfigContent(s: PreviewSection.ConfigSection) {
+private fun ConfigContent(s: PreviewSection.ConfigSection, host: PreviewHost) {
+    val d = host.detail
     Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp).testTag("preview_config"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        s.entries.forEach { (k, v) -> Text("$k: $v", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft) }
+        s.entries.map { (k, v) ->
+            when {
+                s.live && d.found && k == "Level" -> k to "${d.tierLabel} \u00b7 ${d.reviewLabel}${if (d.trusted) " \u00b7 Trusted" else ""}"
+                s.live && d.found && k == "Confidence" -> k to "${(d.confidence * 100).toInt()}%"
+                else -> k to v
+            }
+        }.forEach { (k, v) -> Text("$k: $v", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft) }
     }
 }
 

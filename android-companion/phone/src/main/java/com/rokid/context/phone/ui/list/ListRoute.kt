@@ -6,7 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavController
 import com.rokid.context.phone.ui.preview.PreviewMode
-import com.rokid.context.phone.ui.preview.RepoActivityData
+import com.rokid.context.phone.ui.preview.activityData
 import com.rokid.context.phone.ui.preview.previewMoment
 import com.rokid.context.phone.ui.shell.PhoneDeps
 
@@ -17,7 +17,7 @@ fun ListViewRoute(kind: ListKind, ids: List<String>, deps: PhoneDeps, nav: NavCo
     val app = LocalContext.current.applicationContext
     val source = remember(kind, ids) {
         RecordListSource(
-            kind, ids, RepoActivityData(deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.zone), deps.zone, deps::today,
+            kind, ids, activityData(deps), deps.zone, deps::today,
             onPreview = { ref -> nav.navigate(previewMoment(listOf(ref), PreviewMode.OPEN).route) },
         )
     }

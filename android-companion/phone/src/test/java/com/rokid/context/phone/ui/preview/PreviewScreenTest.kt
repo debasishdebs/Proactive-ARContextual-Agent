@@ -62,7 +62,7 @@ class PreviewScreenTest {
     private fun load(kind: RefKind, id: String): Previewable = runBlocking { Previewables.forRef(kind).load(listOf(id), PreviewCtx(data, Fixtures.ZONE, TODAY, withDay = true)).single() }
 
     /** What the memory detail view model would say for the memory on screen. */
-    private val base = MemoryDetailUiState(loading = false, found = true, text = "Keys on shelf", tierLabel = "Short-term", reviewLabel = "Reviewed", frameId = "f1")
+    private val base = MemoryDetailUiState(loading = false, found = true, text = "Keys on shelf", tierLabel = "Short-term", reviewLabel = "Reviewed", confidence = 0.8, frameId = "f1")
     private val forgetAsked = mutableListOf<ForgetTarget>()
     private val photosForgotten = mutableListOf<String>()
     private val opened = mutableListOf<String>()
@@ -223,11 +223,40 @@ class PreviewScreenTest {
         compose.onNodeWithContentDescription("Pause").assertIsDisplayed()
     }
 
-    @Test fun aPhotoWithNoCaptionForgetsThePhotoAndPhotoTestLabellingIsOnlyWhenWired() {
+    @Test fun forgetPhotoOnAFramePreviewTargetsThePhotoNowOnScreenNotTheOpeningOne() {
         show(load(RefKind.FRAME, "f1"), MemoryDetailUiState(loading = false))
-        compose.onNodeWithTag("preview_forget").performScrollTo().performClick()
-        assertEquals(listOf<ForgetTarget>(ForgetTarget.Photo("f1")), forgetAsked)
+        compose.onNodeWithTag("preview_forget").assertDoesNotExist()
+        compose.onNodeWithTag("frame_pager").performTouchInput { swipeLeft() }
+        compose.onNodeWithText("2 / 2 \u00b7 09:05").assertIsDisplayed()
+        compose.onNodeWithTag("forget_photo").performScrollTo().performClick()
+        assertEquals("the swiped-to photo, never the one it opened on", listOf("f2"), photosForgotten)
         compose.onNodeWithTag("add_to_photo_test").assertDoesNotExist()
+    }
+
+    @Test fun aPhotoOnlyMarkForgetsThePhotoOnScreenToo() {
+        val marks = FakeActivityData(frames = data.frames, marks = listOf(com.rokid.context.phone.ui.activity.MarkRowUi("k2", t, "09:00", "", "x", null, frameId = "f2", date = TODAY)))
+        val p = runBlocking { Previewables.forRef(RefKind.MARK).load(listOf("k2"), PreviewCtx(marks, Fixtures.ZONE, TODAY, true)).single() }
+        show(p, MemoryDetailUiState(loading = false))
+        compose.onNodeWithTag("forget_photo").performScrollTo().performClick()
+        assertEquals(listOf("f2"), photosForgotten)
+    }
+
+    @Test fun aForgottenOrMissingMemoryNeverShowsItsCachedWords() {
+        show(load(RefKind.MEMORY, "m2"), com.rokid.context.phone.ui.memory.MemoryDetailModel.NOT_FOUND)
+        compose.onNodeWithText("This memory is no longer available").assertIsDisplayed()
+        compose.onAllNodesWithText("Typed note").assertCountEquals(0)
+        compose.onAllNodesWithText("Trust").assertCountEquals(0)
+    }
+
+    @Test fun everyKindShowsAForgetFailureWithItsRetryHint() {
+        show(load(RefKind.FRAME, "f1"), MemoryDetailUiState(loading = false, found = true, frameId = "f1", message = ForgetCopy.EXPORT_RUNNING))
+        compose.onNodeWithTag("preview_message").assertIsDisplayed()
+        compose.onNodeWithText(ForgetCopy.EXPORT_RUNNING).assertIsDisplayed()
+    }
+
+    @Test fun trustAndReviewStateFollowTheLiveMemoryNotTheOpeningSnapshot() {
+        show(load(RefKind.MEMORY, "m1"), base.copy(trusted = true, reviewLabel = "Needs review"))
+        compose.onNodeWithText("Level: Short-term \u00b7 Needs review \u00b7 Trusted").performScrollTo().assertIsDisplayed()
     }
 
     @Test fun addToPhotoTestSendsTheQueryTheFrameAndTheSmallFlag() {

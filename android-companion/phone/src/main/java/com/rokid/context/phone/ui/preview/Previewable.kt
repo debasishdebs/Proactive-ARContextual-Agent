@@ -69,11 +69,12 @@ object Previewables {
     fun registered(): Set<ListKind> = registry.keys
 }
 
-/** A photo with no caption: its day's photos (swipe), and Forget photo. */
+/** A photo with no caption: its day's photos (swipe), and Forget photo for the one on screen. */
 class FramePreview(override val id: String, private val frame: FrameEntity?, private val ctx: PreviewCtx, private val day: List<FrameEntity>) : Previewable {
     override fun summary() = ListItem(id, frame?.let { ctx.at(it.ts) } ?: "Photo", subtitle = frame?.placeLabel ?: if (frame == null) PHOTO_GONE else "Photo", icon = Icons.Outlined.Image)
-    override fun sections() = listOf(ImageSection(day.map { it.id }.ifEmpty { listOf(id) }, startId = id, labels = day.map { ctx.clock(it.ts) }), AudioSection)
-    override fun forgetTarget(): ForgetTarget? = ForgetTarget.Photo(id)
+    override fun sections() = listOf(ImageSection(day.map { it.id }.ifEmpty { listOf(id) }, startId = id, canForgetPhoto = true, labels = day.map { ctx.clock(it.ts) }), AudioSection)
+    /** None here: Forget photo is the section's, and it follows the photo on screen after a swipe. */
+    override fun forgetTarget(): ForgetTarget? = null
 
     companion object : PreviewableFactory {
         const val PHOTO_GONE = "Photo expired"
@@ -100,7 +101,7 @@ class MemoryPreview(private val m: MemoryEntity, private val frame: FrameEntity?
     override fun sections() = listOfNotNull(
         m.frameId?.let { ImageSection(listOf(it), startId = it, canForgetPhoto = true, openDay = true) },
         TextSection(null, m.text, memoryId = m.id),
-        ConfigSection(listOfNotNull(
+        ConfigSection(live = true, entries = listOfNotNull(
             "Level" to "${d.tierLabel} · ${d.reviewLabel}${if (d.trusted) " · Trusted" else ""}",
             "Confidence" to "${(m.confidence * 100).toInt()}%",
             d.tags.takeIf { it.isNotEmpty() }?.let { "Tags" to it.joinToString(" · ") },
@@ -129,7 +130,7 @@ class MarkPreview(private val row: MarkRowUi, private val inner: Previewable?) :
     override fun summary() = item(row)
 
     override fun sections(): List<PreviewSection> = inner?.sections() ?: when {
-        row.frameId != null && row.reason == null -> listOf(ImageSection(listOf(row.frameId), startId = row.frameId), AudioSection)
+        row.frameId != null && row.reason == null -> listOf(ImageSection(listOf(row.frameId), startId = row.frameId, canForgetPhoto = true), AudioSection)
         else -> listOf(
             TextSection("Time", row.time),
             StatusSection(row.reasonCode ?: "unknown", row.reason ?: "No photo", if (row.reasonCode == "pending") Severity.INFO else Severity.WARNING, showTimeOn = row.date),
@@ -137,7 +138,7 @@ class MarkPreview(private val row: MarkRowUi, private val inner: Previewable?) :
         )
     }
 
-    override fun forgetTarget(): ForgetTarget? = inner?.forgetTarget() ?: row.frameId?.takeIf { row.reason == null }?.let { ForgetTarget.Photo(it) }
+    override fun forgetTarget(): ForgetTarget? = inner?.forgetTarget()
 
     companion object : PreviewableFactory {
         /** A mark as a row (the Activity page's Marks section draws the same row). */

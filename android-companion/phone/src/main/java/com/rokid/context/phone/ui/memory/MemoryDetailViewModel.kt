@@ -70,6 +70,9 @@ class MemoryDetailViewModel(
         openDialog(ForgetKind.MOMENT, frameId, keepMessage = false)
     }
 
+    /** The previewer showed "Forgotten" and stays (more photos remain): clear it so the next photo can be forgotten. */
+    fun forgetShown() = local.update { it.copy(forgotten = false, photo = null, message = null) }
+
     /** Opens the dialog. Forget fact needs a visible memory; Forget moment needs a frame. */
     fun askForget(kind: ForgetKind) {
         val s = state.value
