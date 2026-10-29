@@ -11,5 +11,6 @@ class JsViewsTest {
     @Test fun appRoutesTests() = JsHarness.assertAllPass("app-routes.test.js")
     @Test fun paretoTests() = JsHarness.assertAllPass("pareto.test.js")
     @Test fun replayViewTests() = JsHarness.assertAllPass("replay-views.test.js")
+    @Test fun devicesViewTests() = JsHarness.assertAllPass("devices-view.test.js")
     @Test fun planPublishTests() = JsHarness.assertAllPass("planpublish.test.js")
 }

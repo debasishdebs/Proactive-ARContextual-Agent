@@ -59,12 +59,17 @@ data class PhoneInputsUiState(
     val capturePaused: Boolean = false,
     val captureBusy: Boolean = false,
     val captureNotice: String? = null,
+    /** READ_PHONE_STATE: lets the relaunch guard see a real call. Denied is fine: the audio-mode fallback stays. */
+    val callStateGranted: Boolean = false,
+    /** Denied with "don't ask again": only the app's system settings can grant it now. */
+    val callStateBlocked: Boolean = false,
 )
 
 /** spec §2.4 Devices › Phone camera & mic and §5.1.1 Voice status (Supported / Needs speech pack / Needs Android 13+). */
 class PhoneInputsViewModel(
     private val voice: VoiceControls,
     private val capture: CaptureNowControl = CaptureNowControl.None,
+    private val callStateGranted: () -> Boolean = { false },
 ) : ViewModel() {
     private data class Local(
         val busy: Boolean = false,
@@ -75,8 +80,10 @@ class PhoneInputsViewModel(
         val checkingFrom: VoiceCapabilities? = null,
         val captureBusy: Boolean = false,
         val captureNotice: String? = null,
+        val callGranted: Boolean = false,
+        val callBlocked: Boolean = false,
     )
-    private val local = MutableStateFlow(Local())
+    private val local = MutableStateFlow(Local(callGranted = callStateGranted()))
     private var resumedOnce = false
 
     val state: StateFlow<PhoneInputsUiState> = combine(voice.capabilities, voice.settings, local, capture.paused) { c, s, l, paused ->
@@ -87,6 +94,7 @@ class PhoneInputsViewModel(
             canDownload = c.canDownloadPack, offerSettings = l.offerSettings, language = s.language, phoneMic = s.phoneMic,
             busy = l.busy, notice = l.notice,
             capturePaused = paused, captureBusy = l.captureBusy, captureNotice = l.captureNotice,
+            callStateGranted = l.callGranted, callStateBlocked = l.callBlocked && !l.callGranted,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PhoneInputsUiState())
 
@@ -115,8 +123,14 @@ class PhoneInputsViewModel(
         voice.recheck()
     }
 
+    /** The READ_PHONE_STATE dialog closed. A denial changes nothing else: the relaunch guard keeps its audio-mode fallback. */
+    fun onCallStateResult(granted: Boolean, canAskAgain: Boolean) {
+        local.update { it.copy(callGranted = granted, callBlocked = !granted && !canAskAgain) }
+    }
+
     /** ON_RESUME (e.g. back from app or speech settings): re-read permission and capabilities. The first resume follows [init]. */
     fun onResume() {
+        local.update { it.copy(callGranted = callStateGranted()) } // may have been changed in the system settings
         if (!resumedOnce) { resumedOnce = true; return }
         voice.recheck()
         capture.refresh()
@@ -202,6 +216,7 @@ fun PhoneInputsScreen(
     onLanguage: (SpeechLanguage) -> Unit,
     onPhoneMic: (Boolean) -> Unit,
     onOpenAppSettings: () -> Unit = {},
+    onAllowCallState: () -> Unit = {},
     onResume: () -> Unit = {},
     /** R-66: asks for a camera target; the screen then launches TakePicture with it. */
     onCaptureNow: ((Uri) -> Unit) -> Unit = {},
@@ -226,6 +241,17 @@ fun PhoneInputsScreen(
                 SecondaryAction("Check again", onRecheck, tag = "voice_recheck", enabled = !state.busy)
                 state.notice?.let { NoticeText(it, tag = "voice_notice") }
                 NoticeText("Speech is recognised on this phone; audio never leaves it.", tag = "voice_privacy")
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Phone calls", style = MaterialTheme.typography.titleMedium)
+                StatusLine("Call detection", if (state.callStateGranted) "Granted" else "Not granted", tag = "call_state_status")
+                if (!state.callStateGranted) {
+                    if (state.callStateBlocked) SecondaryAction("Open app settings", onOpenAppSettings, tag = "call_state_open_settings")
+                    else SecondaryAction("Allow call detection", onAllowCallState, tag = "call_state_allow")
+                }
+                NoticeText("Detects a real phone call so the glasses app is not reopened during one; no call data is read or stored. Optional: without it the app uses the phone's audio mode instead.", tag = "call_state_note")
             }
         }
         item {

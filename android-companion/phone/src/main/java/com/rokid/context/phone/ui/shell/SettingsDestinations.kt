@@ -127,9 +127,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_PHONE_INPUTS) {
-        val vm = viewModel { PhoneInputsViewModel(s.voice, s.capture) }
+        val appCtx = LocalContext.current.applicationContext
+        val vm = viewModel { PhoneInputsViewModel(s.voice, s.capture, callStateGranted = { androidx.core.content.ContextCompat.checkSelfPermission(appCtx, Manifest.permission.READ_PHONE_STATE) == android.content.pm.PackageManager.PERMISSION_GRANTED }) }
         val state by vm.state.collectAsStateWithLifecycle()
         val activity = LocalContext.current.findActivity()
+        val callState = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            vm.onCallStateResult(granted, activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.READ_PHONE_STATE) } ?: true)
+        }
         val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             // After a denial, no rationale means "don't ask again" (or a dialog the system no longer shows).
             val canAskAgain = activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.RECORD_AUDIO) } ?: true
@@ -138,7 +142,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         PhoneInputsScreen(
             state, onBack = back, onAllowMic = { mic.launch(Manifest.permission.RECORD_AUDIO) }, onDownload = vm::download,
             onOpenSettings = vm::openSettings, onRecheck = vm::recheck, onLanguage = vm::setLanguage, onPhoneMic = vm::setPhoneMic,
-            onOpenAppSettings = s.openAppSettings, onResume = vm::onResume,
+            onOpenAppSettings = s.openAppSettings, onAllowCallState = { callState.launch(Manifest.permission.READ_PHONE_STATE) }, onResume = vm::onResume,
             onCaptureNow = vm::captureNow, onPictureTaken = vm::onPictureTaken,
         )
     }
