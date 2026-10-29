@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger
 @Config(sdk = [34], application = Application::class)
 class ContextHubTest {
     private val ctx = ApplicationProvider.getApplicationContext<Application>()
-    private val six = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_livefit", "image_intent")
+    private val six = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_app", "image_intent")
 
     private class FakeSource(override val id: String, var avail: Boolean = true, var startOk: Boolean = true) : ContextSource {
         var starts = 0; var stops = 0
@@ -89,11 +89,11 @@ class ContextHubTest {
     }
 
     @Test fun sourceRegisteredAfterStartIsStartedOnce() = runTest {
-        val f = Fx(this); f.on("watch_livefit"); f.start()
-        assertEquals(SourceStatus.UNAVAILABLE, f.hub.status.value["watch_livefit"])
-        val s = f.reg("watch_livefit"); f.ts.runCurrent()
+        val f = Fx(this); f.on("watch_app"); f.start()
+        assertEquals(SourceStatus.UNAVAILABLE, f.hub.status.value["watch_app"])
+        val s = f.reg("watch_app"); f.ts.runCurrent()
         assertEquals(1, s.starts)
-        assertEquals(SourceStatus.ON, f.hub.status.value["watch_livefit"])
+        assertEquals(SourceStatus.ON, f.hub.status.value["watch_app"])
         f.adv(30_000)
         assertEquals(1, s.starts)
     }
@@ -136,13 +136,13 @@ class ContextHubTest {
     }
 
     @Test fun watchWalkingAppliesAtOnce() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
+        val f = Fx(this); f.reg("watch_app"); f.on("watch_app"); f.start()
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f))
         assertEquals(ContextState.WALKING, f.hub.message.value!!.state)
     }
 
     @Test fun watchInVehicleIsPassengerNeverDriving() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
+        val f = Fx(this); f.reg("watch_app"); f.on("watch_app"); f.start()
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.IN_VEHICLE, 0.9f)); f.adv(31_000)
         assertEquals(ContextState.VEHICLE_PASSENGER, f.hub.message.value!!.state)
         assertTrue(f.msgs.filterNotNull().none { it.state == ContextState.VEHICLE_DRIVING })
@@ -181,7 +181,7 @@ class ContextHubTest {
     }
 
     @Test fun watchAsleepIsRestWithZeroConfidenceAfterTwoMinutes() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
+        val f = Fx(this); f.reg("watch_app"); f.on("watch_app"); f.start()
         // a glasses hint whose still fraction is unknown (-1) makes the engine's REST confidence negative; the hub clamps it
         f.hub.onMotionHint(MotionHint(MotionState.STILL, f.clock(), stillFrac5m = -1f))
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.ASLEEP, 0.9f)); f.adv(121_000)
@@ -193,7 +193,7 @@ class ContextHubTest {
     }
 
     @Test fun watchStillIsUnknown() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
+        val f = Fx(this); f.reg("watch_app"); f.on("watch_app"); f.start()
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.STILL, 0.9f)); f.adv(130_000)
         assertEquals(ContextState.UNKNOWN, f.hub.message.value!!.state)
     }
@@ -307,7 +307,7 @@ class ContextHubTest {
     }
 
     @Test fun revokingOneSourceClearsOnlyItsEvidenceAndKeepsTheRest() = runTest {
-        val f = Fx(this); f.reg("phone_car"); f.reg("watch_livefit"); f.on("phone_car", "watch_livefit"); f.start()
+        val f = Fx(this); f.reg("phone_car"); f.reg("watch_app"); f.on("phone_car", "watch_app"); f.start()
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f))
         f.accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true)); f.adv(60_000)
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f))
@@ -317,22 +317,22 @@ class ContextHubTest {
     }
 
     @Test fun theHubKeepsTheRecentWatchValuesAndForgetsThemWhenTheWatchSourceIsSwitchedOff() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
+        val f = Fx(this); f.reg("watch_app"); f.on("watch_app"); f.start()
         val t = f.clock()
         f.accept(Evidence.WatchMotion(t, WatchState.WALKING, 0.9f)); f.adv(40_000)
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.RUNNING, 0.8f))
         assertEquals(listOf(WatchState.WALKING, WatchState.RUNNING), f.hub.watchRing.recent(0, Long.MAX_VALUE).map { it.state })
         assertEquals("the window is honoured", listOf(WatchState.WALKING), f.hub.watchRing.recent(t, t + 1).map { it.state })
-        f.off("watch_livefit")
+        f.off("watch_app")
         assertTrue("a source switched off forgets what it gave", f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
     }
 
     @Test fun switchingTheWatchSourceOffTellsTheOwnersOfItsValuesAndNoOtherSourceDoes() = runTest {
-        val f = Fx(this); f.reg("watch_livefit"); f.reg("phone_car"); f.on("watch_livefit", "phone_car"); f.start()
+        val f = Fx(this); f.reg("watch_app"); f.reg("phone_car"); f.on("watch_app", "phone_car"); f.start()
         f.accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f))
         f.off("phone_car")
         assertEquals("another source going off is not the watch", 0, f.watchOffs)
-        f.off("watch_livefit")
+        f.off("watch_app")
         assertEquals(1, f.watchOffs)
         assertTrue(f.hub.watchRing.recent(0, Long.MAX_VALUE).isEmpty())
     }
@@ -366,9 +366,9 @@ class ContextHubTest {
     }
 
     @Test fun evidenceEmittedInsideStartIsAccepted() = runTest {
-        val f = Fx(this); val w = f.reg("watch_livefit")
-        w.onStart = { f.hub.sinkFor("watch_livefit").accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f)) }
-        f.on("watch_livefit"); f.start()
+        val f = Fx(this); val w = f.reg("watch_app")
+        w.onStart = { f.hub.sinkFor("watch_app").accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f)) }
+        f.on("watch_app"); f.start()
         assertEquals(1L, f.stats.snapshot()["watch"])
         assertEquals(ContextState.WALKING, f.hub.message.value!!.state)
     }
@@ -407,7 +407,7 @@ class ContextHubTest {
     }
 
     @Test fun concurrentIntakeWithSettingsTogglesMatchesAReorderedSerialReplay() = runTest {
-        val f = Fx(this); f.reg("phone_car"); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
+        val f = Fx(this); f.reg("phone_car"); f.reg("watch_app"); f.on("watch_app"); f.start()
         val at = f.clock()
         // Thread i sends states of its own with distinct stamps: the engine keeps the newest stamp, whatever the arrival order.
         fun ev(i: Int, k: Int) = Evidence.WatchMotion(at + i * 1_000L + k, if (i % 2 == 0) WatchState.WALKING else WatchState.IN_VEHICLE, 0.9f)

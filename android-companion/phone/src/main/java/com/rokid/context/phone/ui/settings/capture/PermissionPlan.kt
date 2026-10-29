@@ -8,7 +8,7 @@ import android.os.Build
  * Background location is never requested: the speed source runs only while the app is in use or its service is foreground.
  */
 object PermissionPlan {
-    val SOURCE_IDS = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_livefit", "image_intent", "phone_airplane")
+    val SOURCE_IDS = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_app", "image_intent", "phone_airplane")
 
     fun forSource(id: String, sdk: Int = Build.VERSION.SDK_INT): List<String> = when (id) {
         "phone_activity", "phone_steps" -> if (sdk >= 29) listOf(Manifest.permission.ACTIVITY_RECOGNITION) else emptyList()

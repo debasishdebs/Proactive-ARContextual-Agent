@@ -22,6 +22,7 @@ import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.phone.context.ContextHubStats
 import com.rokid.context.phone.context.ContextSourceSettings
 import com.rokid.context.phone.context.SourceStatus
+import com.rokid.context.phone.context.WatchLinkSnapshot
 import com.rokid.context.phone.ui.MainDispatcherRule
 import com.rokid.context.phone.ui.cancelScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,7 +49,7 @@ class ContextSourcesSettingsTest {
     private val ctx = ApplicationProvider.getApplicationContext<Application>()
     private val settings = ContextSourceSettings(ctx.getSharedPreferences("css_${n.incrementAndGet()}", 0).also { it.edit().clear().commit() })
     private val decision = MutableStateFlow(ContextDecision(ContextState.UNKNOWN, 0f, 0L, emptySet(), null, ContextState.UNKNOWN, false))
-    private val status = MutableStateFlow(mapOf("watch_livefit" to SourceStatus.OFF))
+    private val status = MutableStateFlow(mapOf("watch_app" to SourceStatus.OFF))
     private val stats = ContextHubStats { 0L }
     private val digest = "ab".repeat(32)
 
@@ -62,7 +63,8 @@ class ContextSourcesSettingsTest {
     private val finePerm = "android.permission.ACCESS_FINE_LOCATION"
     private val coarsePerm = "android.permission.ACCESS_COARSE_LOCATION"
 
-    private fun vm(cert: String? = digest) = ContextSourcesViewModel(settings, LiveFitCertLookup { cert }, decision, status, stats, granted = { it in grantedPerms }, bonded = { bonded }, bluetoothOn = { btOn })
+    private val link = MutableStateFlow(WatchLinkSnapshot())
+    private fun vm(cert: String? = digest) = ContextSourcesViewModel(settings, LiveFitCertLookup { cert }, decision, status, stats, granted = { it in grantedPerms }, bonded = { bonded }, bluetoothOn = { btOn }, link = link, now = { 1_000L }, timeText = { "t" })
 
     private fun show(vm: ContextSourcesViewModel) {
         compose.setContent {
@@ -77,35 +79,39 @@ class ContextSourcesSettingsTest {
     @Test fun bothSwitchesRenderWatchOffApplyOn() {
         val v = vm(); show(v)
         compose.onNodeWithTag("ctx_apply").assertIsOn()
-        compose.onNodeWithTag("ctx_watch_livefit").assertIsOff()
+        compose.onNodeWithTag("ctx_watch_app").assertIsOff()
         compose.onNodeWithTag("ctx_watch_missing").assertDoesNotExist()
         v.cancelScope()
     }
 
-    @Test fun liveFitMissingShowsNoteAndStaysOff() {
-        val v = vm(cert = null); show(v)
-        compose.onNodeWithTag("ctx_watch_livefit").performClick(); compose.waitForIdle()
-        compose.onNodeWithTag("ctx_watch_missing").assertTextContains("Install LiveFit on this phone first.")
-        compose.onNodeWithTag("ctx_watch_livefit").assertIsOff()
-        assertFalse(settings.enabled("watch_livefit")); assertNull(settings.liveFitCertSha256)
+    @Test fun turningWatchOnSetsActiveSourceWithoutAnyPin() {
+        val v = vm(); show(v)
+        compose.onNodeWithTag("ctx_watch_app").performClick(); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_watch_app").assertIsOn()
+        assertTrue(settings.enabled("watch_app")); assertEquals("watch_app", settings.activeWatchSource); assertNull(settings.liveFitCertSha256)
         v.cancelScope()
     }
 
-    @Test fun liveFitPresentPinsDigestAndTurnsOn() {
+    @Test fun turningWatchOffSetsNone() {
         val v = vm(); show(v)
-        compose.onNodeWithTag("ctx_watch_livefit").performClick(); compose.waitForIdle()
-        compose.onNodeWithTag("ctx_watch_livefit").assertIsOn()
-        assertTrue(settings.enabled("watch_livefit")); assertEquals(digest, settings.liveFitCertSha256)
-        compose.onNodeWithTag("ctx_watch_missing").assertDoesNotExist()
+        compose.onNodeWithTag("ctx_watch_app").performClick(); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_watch_app").performClick(); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_watch_app").assertIsOff()
+        assertFalse(settings.enabled("watch_app")); assertEquals("none", settings.activeWatchSource)
         v.cancelScope()
     }
 
-    @Test fun turningWatchOffClearsDigest() {
+    @Test fun statusRowAndCheckLinkShowOnlyWhileWatchIsOn() {
         val v = vm(); show(v)
-        compose.onNodeWithTag("ctx_watch_livefit").performClick(); compose.waitForIdle()
-        compose.onNodeWithTag("ctx_watch_livefit").performClick(); compose.waitForIdle()
-        compose.onNodeWithTag("ctx_watch_livefit").assertIsOff()
-        assertFalse(settings.enabled("watch_livefit")); assertNull(settings.liveFitCertSha256)
+        compose.onNodeWithTag("ctx_watch_status").assertDoesNotExist(); compose.onNodeWithTag("ctx_watch_check").assertDoesNotExist()
+        compose.onNodeWithTag("ctx_watch_app").performClick(); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_watch_status").assertTextContains("Watch: no data in the last 15 min")
+        compose.onNodeWithTag("ctx_watch_check").performClick(); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_watch_link_line").assertTextContains("Waiting for the watch", substring = true)
+        link.value = WatchLinkSnapshot(lastAcceptedAtMs = 1_000L, lastState = com.rokid.context.core.model.context.WatchState.WALKING, accepted = 1)
+        compose.waitForIdle()
+        compose.onNodeWithTag("ctx_watch_link_line").assertTextContains("Watch link confirmed", substring = true)
+        compose.onNodeWithTag("ctx_watch_status").assertTextContains("Last motion: WALKING", substring = true)
         v.cancelScope()
     }
 
@@ -120,35 +126,11 @@ class ContextSourcesSettingsTest {
 
     @Test fun stateLineShowsDecisionWatchStatusAndCounts() {
         decision.value = decision.value.copy(state = ContextState.VEHICLE_DRIVING)
-        status.value = mapOf("watch_livefit" to SourceStatus.FAILED)
+        status.value = mapOf("watch_app" to SourceStatus.FAILED)
         stats.onWatchRejected(); stats.onWatchRejected()
         val v = vm(); show(v)
         compose.onNodeWithTag("ctx_state").assertTextContains("Driving", substring = true)
             .assertTextContains("FAILED", substring = true).assertTextContains("rejected 2", substring = true).assertTextContains("watch msgs 0", substring = true)
-        v.cancelScope()
-    }
-
-    @Test fun multiSignerLiveFitCannotBePinned() {
-        val lookup = object : LiveFitCertLookup { override fun sha256(): String? = null; override fun cannotPin() = true }
-        val v = ContextSourcesViewModel(settings, lookup, decision, status, stats); show(v)
-        compose.onNodeWithTag("ctx_watch_livefit").performClick(); compose.waitForIdle()
-        compose.onNodeWithTag("ctx_watch_missing").assertTextContains("more than one signing certificate", substring = true)
-        compose.onNodeWithTag("ctx_watch_livefit").assertIsOff()
-        assertFalse(settings.enabled("watch_livefit")); assertNull(settings.liveFitCertSha256)
-        v.cancelScope()
-    }
-
-    @Test fun rejectedWithNoAcceptedShowsReToggleHint() {
-        settings.setEnabled("watch_livefit", true); settings.liveFitCertSha256 = digest
-        stats.onWatchRejected()
-        val v = vm(); show(v)
-        compose.onNodeWithTag("ctx_watch_hint").assertTextContains("off and on", substring = true)
-        v.cancelScope()
-    }
-
-    @Test fun noHintWhenWatchOffOrNothingRejected() {
-        val v = vm(); show(v)
-        compose.onNodeWithTag("ctx_watch_hint").assertDoesNotExist()
         v.cancelScope()
     }
 
@@ -168,7 +150,7 @@ class ContextSourcesSettingsTest {
 
     @Test fun everySwitchIsOffByDefault() {
         val v = vm(); show(v)
-        for (id in phoneIds + "watch_livefit") { compose.onNodeWithTag("ctx_$id").assertIsOff(); assertFalse(settings.enabled(id)) }
+        for (id in phoneIds + "watch_app") { compose.onNodeWithTag("ctx_$id").assertIsOff(); assertFalse(settings.enabled(id)) }
         compose.onNodeWithTag("ctx_my_cars").assertDoesNotExist()
         v.cancelScope()
     }

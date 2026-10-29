@@ -76,6 +76,14 @@
             android:authorities="com.rokid.context.motionsource"
             android:exported="true" />
 
+        <!-- v0.99: the PCA watch app's motion messages over the Data Layer (same applicationId and signing key; the platform pairs them). -->
+        <service android:name="com.rokid.context.phone.context.PcaWatchListener" android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data android:scheme="wear" android:host="*" android:pathPrefix="/pca/motion" />
+            </intent-filter>
+        </service>
+
         <!-- P7-B proposals -->
         <receiver android:name=".phone.actions.ProposalActionReceiver" android:exported="false" />
         <receiver android:name=".phone.hub.ClosedNoticeReceiver" android:exported="false" />

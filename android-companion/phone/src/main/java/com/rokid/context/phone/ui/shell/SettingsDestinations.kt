@@ -180,6 +180,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
                     bonded = { com.rokid.context.phone.context.CarSource.bondedDevicesForPicker(app) },
                     tick = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(5_000) } },
                     bluetoothOn = { (app.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter?.isEnabled != false },
+                    probe = com.rokid.context.phone.context.WearWatchNodeProbe(app),
                 )
             }
             ContextSourcesRoute(vm, onBack = back, onOpenAppSettings = s.openAppSettings)

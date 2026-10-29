@@ -103,6 +103,7 @@ class AppShellTest {
         compose.onNodeWithText("Get started").performClick()
         compose.onNodeWithText("Continue").performClick() // Permissions
         compose.onNodeWithText("Set up later").performClick() // Glasses
+        compose.onNodeWithText("Skip").performClick() // Watch link
         compose.onNodeWithText("Set up later").performClick() // AI
         compose.onNodeWithText("Continue").performClick() // Persona (stores off Main)
         waitForText("Glasses gestures")

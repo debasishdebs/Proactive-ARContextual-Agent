@@ -143,9 +143,10 @@ object HubGraph {
         )
         ctxRegistry.register(com.rokid.context.phone.context.WatchSource(
             settings = com.rokid.context.phone.context.ContextSourceSettings.of(app),
-            installed = { runCatching { app.packageManager.getPackageInfo(com.rokid.context.phone.context.WatchMotionIntake.LIVEFIT_PACKAGE, 0) }.isSuccess },
+            installed = { true }, // the Data Layer needs no installed package; the status row reports a missing watch app
             sinkFor = ctxHub::sinkFor, onRejected = ctxHub.stats::onWatchRejected, onEpochReset = ctxHub.stats::onWatchEpoch,
         ))
+        com.rokid.context.phone.context.WatchLinkState.shared.offSink = ctxHub.stats::onWatchRejected // a drop with the source off is counted, never silent
         // Wave B phone sources (opt-in, default off): each takes ctxHub.sinkFor(id) inside start(); nothing runs until switched on.
         ctxRegistry.register(com.rokid.context.phone.context.ActivitySource.create(app, ctxHub::sinkFor, ctxHub::failFor))
         ctxRegistry.register(com.rokid.context.phone.context.StepSource.create(app, ctxHub::sinkFor))

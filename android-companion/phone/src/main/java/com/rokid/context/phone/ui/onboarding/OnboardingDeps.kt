@@ -12,6 +12,7 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
 import com.rokid.context.ai.TestResult
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.phone.context.WatchLinkStep
 import com.rokid.context.phone.ui.shell.PhoneDeps
 import com.rokid.context.phone.voice.VoiceControls
 import com.rokid.context.prompt.PersonaSettings
@@ -122,6 +123,13 @@ class AiGraphOnboardingAi(private val ai: () -> AiGraph) : OnboardingAi {
     }
 }
 
+/** The optional Watch link step's seam: [confirmed] turns true on the first accepted `/pca/motion` message, [enable] opts the watch source in. */
+class OnboardingWatch(
+    val confirmed: Flow<Boolean> = kotlinx.coroutines.flow.flowOf(false),
+    val isOn: () -> Boolean = { false },
+    val enable: () -> Unit = {},
+)
+
 /** Everything the wizard needs, as seams (tests build it from fakes; [from] wires the app). */
 class OnboardingDeps(
     val link: Flow<LinkState>,
@@ -136,6 +144,7 @@ class OnboardingDeps(
     val sdk: Int = Build.VERSION.SDK_INT,
     /** What a preset's form starts with (the build defaults in the app). */
     val presetDefaults: (AiPreset) -> PresetDefaults = { PresetDefaults.from(it) },
+    val watch: OnboardingWatch = OnboardingWatch(),
 ) {
     companion object {
         fun from(deps: PhoneDeps): OnboardingDeps {
@@ -148,6 +157,13 @@ class OnboardingDeps(
                 ai = AiGraphOnboardingAi { s.ai },
                 persona = { s.ai.persona },
                 markComplete = { deps.onboarding.markCompleteDurably() },
+                watch = s.contextSources.settings?.let { cs ->
+                    OnboardingWatch(
+                        confirmed = com.rokid.context.phone.context.WatchLinkState.shared.snapshot.map { com.rokid.context.phone.context.WatchLinkStep.confirmed(it) }.distinctUntilChanged(),
+                        isOn = { cs.activeWatchSource == com.rokid.context.phone.context.ContextSourceSettings.WATCH_APP },
+                        enable = { cs.activeWatchSource = com.rokid.context.phone.context.ContextSourceSettings.WATCH_APP },
+                    )
+                } ?: OnboardingWatch(),
             )
         }
     }

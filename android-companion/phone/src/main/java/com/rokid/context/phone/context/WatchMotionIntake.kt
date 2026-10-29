@@ -42,20 +42,29 @@ class WatchMotionIntake(
     private var timerArmed = false
     private var closed = false
 
+    /** The LiveFit provider path (caller and certificate gate; removed in slice C). */
     @Synchronized
     fun accept(callerPackage: String?, certMatches: (String) -> Boolean, json: String?): Result =
-        check(callerPackage, certMatches, json).also { if (!it.ok) onReject(it.reason ?: "") }
+        check(callerPackage, certMatches, json, link = false).also { if (!it.ok) onReject(it.reason ?: "") }
 
-    private fun check(callerPackage: String?, certMatches: (String) -> Boolean, json: String?): Result {
-        if (callerPackage != LIVEFIT_PACKAGE) return no("bad_caller")
-        val pin = pinnedSha256()
-        if (pin == null || !certMatches(pin)) return no("bad_cert")
+    /** The Data Layer path: the platform pairs same-applicationId, same-signature apps, so there is no caller or certificate gate; the message must carry `source == "pca_watch"`. */
+    @Synchronized
+    fun acceptLink(json: String?): Result =
+        check(null, { false }, json, link = true).also { if (!it.ok) onReject(it.reason ?: "") }
+
+    private fun check(callerPackage: String?, certMatches: (String) -> Boolean, json: String?, link: Boolean): Result {
+        if (!link) {
+            if (callerPackage != LIVEFIT_PACKAGE) return no("bad_caller")
+            val pin = pinnedSha256()
+            if (pin == null || !certMatches(pin)) return no("bad_cert")
+        }
         if (closed || !enabled()) return no("not_enabled")
         if (json == null) return no("malformed")
         if (json.toByteArray(Charsets.UTF_8).size > MAX_BYTES) return no("too_big")
         val v = versionOf(json) ?: return no("malformed")
         if (v != WatchMotionCodec.VERSION) return no("version")
         val m = WatchMotionCodec.decode(json) ?: return no("malformed")
+        if (link && m.source != LINK_SOURCE) return no("bad_source")
         if (m.epoch == lastEpoch && m.seq <= lastSeq) return no("stale_seq")
         val pend = pending
         if (pend != null && m.epoch == pend.epoch && m.seq < pend.seq) return no("stale_seq")
@@ -100,6 +109,7 @@ class WatchMotionIntake(
 
     companion object {
         const val LIVEFIT_PACKAGE = "com.livear.fit"
+        const val LINK_SOURCE = "pca_watch"
         const val MAX_BYTES = 2048
         const val MIN_GAP_MS = 1000L
 

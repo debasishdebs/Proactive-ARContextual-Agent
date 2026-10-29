@@ -41,18 +41,19 @@ class WatchSourceTest {
         WatchSource(settings, { installed }, { EvidenceSink { sink(it) } }, rejected)
 
     @Test fun idAndAvailability() {
-        assertEquals("watch_livefit", src().id)
+        assertEquals("watch_app", src().id)
         assertTrue(src().available()); assertFalse(src(installed = false).available())
     }
 
-    @Test fun startWithoutPinnedDigestFails() {
+    @Test fun startNeedsNoPinnedDigestAnyMore() {
         val s = src()
-        assertFalse(s.start())
-        assertNull(WatchMotionIntake.current)
+        assertTrue(s.start())
+        assertNotNull(WatchMotionIntake.current)
+        s.stop()
     }
 
     @Test fun startPublishesIntakeAndStopClearsIt() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_livefit", true)
+        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
         val got = ArrayList<Evidence>(); val s = src(sink = { got += it })
         assertTrue(s.start())
         val i = WatchMotionIntake.current!!
@@ -64,7 +65,7 @@ class WatchSourceTest {
     }
 
     @Test fun rejectsAreCountedAndEpochSeqPersisted() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_livefit", true)
+        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
         var rej = 0; val s = src(rejected = { rej++ }); s.start()
         val i = WatchMotionIntake.current!!
         i.accept("com.evil", { true }, "{}")
@@ -77,30 +78,23 @@ class WatchSourceTest {
     }
 
     @Test fun switchedOffSourceIsNotEnabled() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_livefit", false)
+        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", false)
         val s = src(); s.start()
         assertEquals("not_enabled", WatchMotionIntake.current!!.accept("com.livear.fit", { true }, FakeLiveFit(WatchMotionIntake.current!!).json()).reason)
         s.stop()
     }
 
     @Test fun watchRegisteredInTheRegistryIsStartedByTheHub() = runTest {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_livefit", true)
+        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
         val reg = ContextSourceRegistry(); val hub = ContextHub(backgroundScope, settings, reg, clock = { 1L })
         reg.register(WatchSource(settings, { true }, hub::sinkFor))
         hub.start(); runCurrent()
-        assertEquals(SourceStatus.ON, hub.status.value["watch_livefit"])
+        assertEquals(SourceStatus.ON, hub.status.value["watch_app"])
         assertNotNull(WatchMotionIntake.current)
     }
 
-    @Test fun hubShowsFailedWithoutPinnedDigest() = runTest {
-        settings.setEnabled("watch_livefit", true)
-        val hub = ContextHub(backgroundScope, settings, ContextSourceRegistry().also { it.register(WatchSource(settings, { true }, { EvidenceSink { } })) }, clock = { 1L })
-        hub.start(); runCurrent()
-        assertEquals(SourceStatus.FAILED, hub.status.value["watch_livefit"])
-    }
-
     @Test fun refreshEveryTenMinutesKeepsTheStateCurrentFor40Minutes() = runTest {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_livefit", true)
+        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
         val t0 = 1_793_000_000_000L
         val clock: () -> Long = { t0 + testScheduler.currentTime }
         val reg = ContextSourceRegistry()
@@ -154,7 +148,7 @@ class WatchSourceTest {
     }
 
     @Test fun epochResetIsCountedThroughTheSource() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_livefit", true)
+        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
         var resets = 0; var t = 0L
         val s = WatchSource(settings, { true }, { EvidenceSink { } }, onEpochReset = { resets++ }, mono = { t }); s.start()
         val i = WatchMotionIntake.current!!; val f = FakeLiveFit(i)

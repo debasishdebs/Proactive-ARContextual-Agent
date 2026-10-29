@@ -109,6 +109,8 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     // Wave B context sources: activity-transition + (Task 4) fused location speed; Android Auto CarConnection (Task 5).
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.google.android.gms:play-services-wearable:19.0.0") // Data Layer: the PCA watch app's /pca/motion messages (same applicationId and signing key)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
     implementation("androidx.car.app:app:1.4.0")
 
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

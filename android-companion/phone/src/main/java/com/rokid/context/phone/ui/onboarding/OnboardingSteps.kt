@@ -44,6 +44,7 @@ class StepCallbacks(
     val test: () -> Unit = {},
     val setLanguage: (ReplyLanguage) -> Unit = {},
     val setStyle: (PersonaStyle) -> Unit = {},
+    val enableWatch: () -> Unit = {},
 )
 
 data class StepCopy(val title: String, val body: String)
@@ -52,6 +53,7 @@ fun stepCopy(step: Step): StepCopy = when (step) {
     Step.WELCOME -> StepCopy("Proactive Context", "Your glasses notice. Your phone remembers. Ask anything about your day.")
     Step.PERMISSIONS -> StepCopy("A few permissions", "Nothing here is required. You can change any of it later.")
     Step.GLASSES -> StepCopy("Connect your glasses", "Authorize your Rokid glasses so they can send moments to your phone.")
+    Step.WATCH -> StepCopy("Watch link", "Optional. If you use the Proactive Context watch app, this checks that your watch and phone are talking. You can skip it.")
     Step.AI -> StepCopy("Choose your AI", "Pick the model that answers your questions.")
     Step.PERSONA -> StepCopy("Persona & language", "How answers should sound.")
     Step.GESTURES -> StepCopy("Glasses gestures", "Everything you need is one tap away.")
@@ -69,6 +71,7 @@ fun OnboardingUiState.primaryEnabled(): Boolean = step != Step.AI || ai.canConti
 
 fun OnboardingUiState.secondaryLabel(): String? = when (step) {
     Step.GLASSES -> if (glasses == LinkState.CONNECTED) null else "Set up later"
+    Step.WATCH -> if (watchLinked) null else "Skip"
     Step.AI -> "Set up later"
     else -> null
 }
@@ -78,6 +81,7 @@ internal fun StepBody(state: OnboardingUiState, cb: WizardCallbacks) {
     when (state.step) {
         Step.PERMISSIONS -> PermissionsBody(state, cb)
         Step.GLASSES -> GlassesBody(state)
+        Step.WATCH -> WatchBody(state, cb.steps)
         Step.AI -> AiBody(state.ai, cb.steps)
         Step.PERSONA -> PersonaBody(state.persona, cb.steps)
         Step.GESTURES -> GesturesBody()
@@ -104,6 +108,17 @@ private fun PermRow(title: String, why: String, state: PermState, tag: String, o
             PermState.GRANTED -> Text("Allowed \u2713", color = PcColors.MintDeep)
             PermState.DENIED_FOREVER -> TextButton(onSettings) { Text("Open settings") }
             PermState.NOT_ASKED, PermState.DENIED -> TextButton(onAllow) { Text("Allow") }
+        }
+    }
+}
+
+@Composable
+private fun WatchBody(state: OnboardingUiState, cb: StepCallbacks) {
+    Card(Modifier.testTag("watch_card")) {
+        Text(state.watchLine, Modifier.semantics { liveRegion = LiveRegionMode.Polite }.testTag("watch_line"), style = MaterialTheme.typography.titleMedium, color = PcColors.Ink)
+        if (!state.watchLinked && !state.watchOn) {
+            Text("Turn on the watch source so the first message is accepted.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+            TextButton(cb.enableWatch, Modifier.testTag("watch_enable")) { Text("Turn on watch source") }
         }
     }
 }

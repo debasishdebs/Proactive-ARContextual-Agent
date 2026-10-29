@@ -306,7 +306,7 @@ class CaptureSettingsTest {
         compose.onNodeWithTag("motion_sources").assertExists()
         compose.onNodeWithTag("source_glasses_imu").assertIsNotEnabled()
         compose.onNodeWithTag("source_phone_motion").assertDoesNotExist()
-        compose.onNodeWithTag("source_watch_livefit").assertDoesNotExist()
+        compose.onNodeWithTag("source_watch_app").assertDoesNotExist()
         compose.onNodeWithTag("context_sources_link").assertExists()
         compose.onNodeWithTag("motion_label_note").assertDoesNotExist()
         pick("motion_label", 4)
