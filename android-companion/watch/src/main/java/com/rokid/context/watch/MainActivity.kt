@@ -84,6 +84,9 @@ private fun StatusScreen() {
         }
         item { Text(WatchStatus.stateLabel(memory.reported), style = MaterialTheme.typography.display2, textAlign = TextAlign.Center) }
         item { Text(WatchStatus.sentAgo(memory.lastSentMs, now), style = MaterialTheme.typography.caption2) }
+        WatchStatus.lastSent(memory) { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(it)) }?.let {
+            item { Text(it, style = MaterialTheme.typography.caption2, textAlign = TextAlign.Center) }
+        }
         item {
             ToggleChip(
                 checked = enabled,

@@ -1,8 +1,6 @@
 package com.rokid.context.phone.context
 
 import android.app.Application
-import android.content.pm.PackageManager
-import android.os.Bundle
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.context.ContextState
@@ -14,7 +12,6 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -22,7 +19,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.robolectric.Robolectric
 import org.robolectric.annotation.Config
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -53,39 +49,39 @@ class WatchSourceTest {
     }
 
     @Test fun startPublishesIntakeAndStopClearsIt() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
+        settings.setEnabled("watch_app", true)
         val got = ArrayList<Evidence>(); val s = src(sink = { got += it })
         assertTrue(s.start())
         val i = WatchMotionIntake.current!!
-        assertTrue(i.accept("com.livear.fit", { true }, FakeLiveFit(i).json()).ok)
+        assertTrue(i.accept(FakeWatch(i).json()).ok)
         assertEquals(1, got.size); assertEquals(1, s.events)
         s.stop()
         assertNull(WatchMotionIntake.current)
-        assertEquals("not_enabled", i.accept("com.livear.fit", { true }, FakeLiveFit(i).json(seq = 9)).reason)
+        assertEquals("not_enabled", i.accept(FakeWatch(i).json(seq = 9)).reason)
     }
 
     @Test fun rejectsAreCountedAndEpochSeqPersisted() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
+        settings.setEnabled("watch_app", true)
         var rej = 0; val s = src(rejected = { rej++ }); s.start()
         val i = WatchMotionIntake.current!!
-        i.accept("com.evil", { true }, "{}")
+        i.accept("{}")
         assertEquals(1, rej)
-        i.accept("com.livear.fit", { true }, FakeLiveFit(i).json(seq = 5))
+        i.accept(FakeWatch(i).json(seq = 5))
         assertEquals(7193856231L, settings.watchEpoch); assertEquals(5L, settings.watchLastSeq)
         s.stop(); s.start() // phone-side restart of the source: a replay is stale
-        assertEquals("stale_seq", WatchMotionIntake.current!!.accept("com.livear.fit", { true }, FakeLiveFit(i).json(seq = 5)).reason)
+        assertEquals("stale_seq", WatchMotionIntake.current!!.accept(FakeWatch(i).json(seq = 5)).reason)
         s.stop()
     }
 
     @Test fun switchedOffSourceIsNotEnabled() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", false)
+        settings.setEnabled("watch_app", false)
         val s = src(); s.start()
-        assertEquals("not_enabled", WatchMotionIntake.current!!.accept("com.livear.fit", { true }, FakeLiveFit(WatchMotionIntake.current!!).json()).reason)
+        assertEquals("not_enabled", WatchMotionIntake.current!!.accept(FakeWatch(WatchMotionIntake.current!!).json()).reason)
         s.stop()
     }
 
     @Test fun watchRegisteredInTheRegistryIsStartedByTheHub() = runTest {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
+        settings.setEnabled("watch_app", true)
         val reg = ContextSourceRegistry(); val hub = ContextHub(backgroundScope, settings, reg, clock = { 1L })
         reg.register(WatchSource(settings, { true }, hub::sinkFor))
         hub.start(); runCurrent()
@@ -94,14 +90,14 @@ class WatchSourceTest {
     }
 
     @Test fun refreshEveryTenMinutesKeepsTheStateCurrentFor40Minutes() = runTest {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
+        settings.setEnabled("watch_app", true)
         val t0 = 1_793_000_000_000L
         val clock: () -> Long = { t0 + testScheduler.currentTime }
         val reg = ContextSourceRegistry()
         val hub = ContextHub(backgroundScope, settings, reg, clock = clock)
         reg.register(WatchSource(settings, { true }, hub::sinkFor, clock = clock, mono = clock))
         hub.start(); runCurrent()
-        val i = WatchMotionIntake.current!!; val f = FakeLiveFit(i)
+        val i = WatchMotionIntake.current!!; val f = FakeWatch(i)
         assertTrue(f.send("WALKING").ok)
         repeat(4) {
             testScheduler.advanceTimeBy(10 * 60_000L); runCurrent()
@@ -110,65 +106,14 @@ class WatchSourceTest {
         }
     }
 
-    @Test fun manifestResolvesTheProviderAuthority() {
-        val info = ctx.packageManager.resolveContentProvider("com.rokid.context.motionsource", 0)!!
-        assertEquals("com.rokid.context.phone.context.WatchMotionProvider", info.name)
-        assertTrue(info.exported)
-        val q = ctx.packageManager.getPackageInfo(ctx.packageName, PackageManager.GET_PROVIDERS)
-        assertTrue(q.providers!!.any { it.name == "com.rokid.context.phone.context.WatchMotionProvider" })
-    }
-
-    @Test fun providerAnswersBadCallerFirstEvenWithoutIntake() {
-        WatchMotionIntake.current = null
-        val p = Robolectric.buildContentProvider(WatchMotionProvider::class.java).create("com.rokid.context.motionsource").get()
-        assertNull(p.call("other", null, null))
-        val r = p.call("motion_state", null, Bundle().apply { putString("json", "{}") })!!
-        assertFalse(r.getBoolean("ok")); assertEquals("bad_caller", r.getString("reason"))
-        assertNull(p.query(android.net.Uri.parse("content://com.rokid.context.motionsource"), null, null, null, null))
-        assertEquals(0, p.delete(android.net.Uri.parse("content://com.rokid.context.motionsource"), null, null))
-    }
-
-    @Test fun decideChecksCallerBeforeIntakeAndExtras() {
-        WatchMotionIntake.current = null
-        assertEquals("bad_caller", WatchMotionProvider.decide("com.evil", null) { _, _ -> true }.getString("reason"))
-        assertEquals("bad_caller", WatchMotionProvider.decide(null, "{}") { _, _ -> true }.getString("reason"))
-        assertEquals("not_enabled", WatchMotionProvider.decide("com.livear.fit", "{}") { _, _ -> true }.getString("reason"))
-    }
-
-    @Test fun decideCertPinSeamPassesDigestBytesAndHonoursTheAnswer() {
-        val i = WatchMotionIntake({ true }, { "AB:01" }, { 1L }, { }); WatchMotionIntake.current = i
-        var seenPkg: String? = null; var seenDigest: ByteArray? = null
-        val no = WatchMotionProvider.decide("com.livear.fit", FakeLiveFit(i).json()) { p, d -> seenPkg = p; seenDigest = d; false }
-        assertEquals("bad_cert", no.getString("reason")); assertEquals("com.livear.fit", seenPkg)
-        assertArrayEquals(byteArrayOf(0xAB.toByte(), 0x01), seenDigest)
-        val yes = WatchMotionProvider.decide("com.livear.fit", FakeLiveFit(i).json()) { _, _ -> true }
-        assertTrue(yes.getBoolean("ok"))
-        val badHex = WatchMotionIntake({ true }, { "zz" }, { 1L }, { }); WatchMotionIntake.current = badHex
-        assertEquals("bad_cert", WatchMotionProvider.decide("com.livear.fit", "{}") { _, _ -> true }.getString("reason"))
-    }
-
     @Test fun epochResetIsCountedThroughTheSource() {
-        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_app", true)
+        settings.setEnabled("watch_app", true)
         var resets = 0; var t = 0L
         val s = WatchSource(settings, { true }, { EvidenceSink { } }, onEpochReset = { resets++ }, mono = { t }); s.start()
-        val i = WatchMotionIntake.current!!; val f = FakeLiveFit(i)
+        val i = WatchMotionIntake.current!!; val f = FakeWatch(i)
         f.send(seq = 1); assertEquals(0, resets)
-        t += 2000; assertTrue(i.accept("com.livear.fit", { true }, f.json(seq = 1, epoch = 9L)).ok)
+        t += 2000; assertTrue(i.accept(f.json(seq = 1, epoch = 9L)).ok)
         assertEquals(1, resets)
         s.stop()
-    }
-
-    @Test fun providerWithIntakeButNoCallerIsBadCaller() {
-        val i = WatchMotionIntake({ true }, { "ab" }, { 1L }, { })
-        WatchMotionIntake.current = i
-        val p = Robolectric.buildContentProvider(WatchMotionProvider::class.java).create("com.rokid.context.motionsource").get()
-        val r = p.call("motion_state", null, Bundle().apply { putString("json", FakeLiveFit(i).json()) })!!
-        assertEquals("bad_caller", r.getString("reason"))
-    }
-
-    @Test fun hexToBytes() {
-        assertArrayEquals(byteArrayOf(0xAB.toByte(), 0x01), WatchMotionProvider.hexToBytes("AB:01"))
-        assertArrayEquals(byteArrayOf(0xAB.toByte(), 0x01), WatchMotionProvider.hexToBytes("ab01"))
-        assertNull(WatchMotionProvider.hexToBytes("abc")); assertNull(WatchMotionProvider.hexToBytes("zz")); assertNull(WatchMotionProvider.hexToBytes(""))
     }
 }

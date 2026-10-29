@@ -31,6 +31,7 @@ data class MotionMemory(
     val reportedChangedAtMs: Long = 0,
     val reportedConfidence: Float = 0f,
     val lastSentMs: Long = 0,
+    val lastSentState: WatchState = WatchState.UNKNOWN, // the state of the last successful send, for the status screen
     val unsent: Boolean = false,
     val pendingCount: Long = 0, // short step points (< MIN_SPAN_MS) summed until they span MIN_SPAN_MS
     val pendingStartMs: Long = 0,
@@ -126,7 +127,7 @@ object MotionStateDetector {
     fun holdDueAtMs(m: MotionMemory): Long? =
         m.candidate?.takeIf { it != m.reported }?.let { m.candidateSinceMs + HOLD_MS }
 
-    fun markSent(m: MotionMemory, nowMs: Long): MotionMemory = m.copy(lastSentMs = nowMs, unsent = false)
+    fun markSent(m: MotionMemory, nowMs: Long): MotionMemory = m.copy(lastSentMs = nowMs, lastSentState = m.reported, unsent = false)
 
     private fun classify(m: MotionMemory, t: Long): Pair<WatchState, Float> = when {
         m.activity == UserActivity.ASLEEP -> WatchState.ASLEEP to 0.9f

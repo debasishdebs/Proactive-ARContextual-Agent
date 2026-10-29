@@ -1,7 +1,6 @@
 package com.rokid.context.phone.context
 
 import android.app.Application
-import android.os.Bundle
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.context.Evidence
@@ -34,7 +33,7 @@ class WatchLinkTest {
     init { link.offSink = { offCounted++ } }
 
     private fun intake() = WatchMotionIntake(
-        enabled = { on }, pinnedSha256 = { null }, clock = { now }, sink = { got += it; link.onAccepted((it as Evidence.WatchMotion).state, it.atMs) },
+        enabled = { on }, clock = { now }, sink = { got += it; link.onAccepted((it as Evidence.WatchMotion).state, it.atMs) },
         onReject = { link.onDrop(it); rejCounted++ },
     )
 
@@ -75,7 +74,7 @@ class WatchLinkTest {
 
     @Test fun newEpochResetsSeq() {
         var resets = 0
-        val i = WatchMotionIntake(enabled = { true }, pinnedSha256 = { null }, clock = { now }, sink = { got += it }, onEpochReset = { resets++ })
+        val i = WatchMotionIntake(enabled = { true }, clock = { now }, sink = { got += it }, onEpochReset = { resets++ })
         assertTrue(handle(i, msg(9, epoch = 1)).ok); now += 2_000
         assertTrue(handle(i, msg(1, epoch = 2)).ok)
         assertEquals(1, resets)
@@ -105,17 +104,6 @@ class WatchLinkTest {
         on = false
         assertEquals("not_enabled", handle(intake(), msg(1), sourceOn = true).reason)
         assertEquals(1, rejCounted); assertTrue(got.isEmpty())
-    }
-
-    @Test fun providerWithSourceOffIsDroppedAndCounted() {
-        WatchLinkState.shared.offSink = { offCounted++ }
-        WatchMotionIntake.current = null
-        val before = WatchLinkState.shared.snapshot.value.drops["source_off"] ?: 0
-        val b: Bundle = WatchMotionProvider.decide("com.livear.fit", "{}") { _, _ -> true }
-        assertEquals("not_enabled", b.getString("reason"))
-        assertEquals(before + 1, WatchLinkState.shared.snapshot.value.drops["source_off"])
-        assertEquals(1, offCounted)
-        WatchLinkState.shared.offSink = {}
     }
 
     @Test fun watchSourceRecordsAcceptsAndDrops() {
@@ -148,7 +136,7 @@ class WatchLinkTest {
         p.edit().putBoolean("src_watch_livefit", true).putString("livefit_cert_sha256", "ab".repeat(32)).putBoolean("src_phone_car", true).commit()
         val s = ContextSourceSettings(p)
         assertEquals("none", s.activeWatchSource); assertFalse(s.enabled("watch_app"))
-        assertFalse(p.contains("src_watch_livefit")); assertNull(s.liveFitCertSha256)
+        assertFalse(p.contains("src_watch_livefit")); assertFalse(p.contains("livefit_cert_sha256"))
         assertTrue(s.enabled("phone_car")) // other sources untouched
     }
 

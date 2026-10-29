@@ -9,8 +9,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 
 /**
- * The LiveFit watch message gate (spec §8). Pure: the provider passes the caller and a certificate check.
- * Checks, in order: caller, pinned certificate, source on, payload size, decode (malformed / version), `(epoch, seq)`, rate.
+ * The PCA watch message gate (spec 2026-10-29). Pure: [PcaWatchLink] passes the Data Layer payload; the platform already pairs only
+ * same-applicationId, same-signature apps, so there is no caller or certificate check.
+ * Checks, in order: source on, payload size, decode (malformed / version), source tag, `(epoch, seq)`, rate.
  * Documented choice: seq is checked BEFORE rate (spec §8 lists rate first), so a stale message never becomes the pending state
  * and gets a terminal `stale_seq`. A JSON without `"v"` is `malformed` (stricter than the codec; the sender always sends `v`).
  * [accept] is one critical section (check and advance of epoch, seq and the rate window together), so concurrent Binder
@@ -22,7 +23,6 @@ import kotlinx.serialization.json.intOrNull
  */
 class WatchMotionIntake(
     private val enabled: () -> Boolean,
-    private val pinnedSha256: () -> String?,
     private val clock: () -> Long,
     private val sink: (Evidence) -> Unit,
     initialEpoch: Long = 0L,
@@ -42,29 +42,18 @@ class WatchMotionIntake(
     private var timerArmed = false
     private var closed = false
 
-    /** The LiveFit provider path (caller and certificate gate; removed in slice C). */
+    /** The Data Layer path; the message must carry `source == "pca_watch"`. */
     @Synchronized
-    fun accept(callerPackage: String?, certMatches: (String) -> Boolean, json: String?): Result =
-        check(callerPackage, certMatches, json, link = false).also { if (!it.ok) onReject(it.reason ?: "") }
+    fun accept(json: String?): Result = check(json).also { if (!it.ok) onReject(it.reason ?: "") }
 
-    /** The Data Layer path: the platform pairs same-applicationId, same-signature apps, so there is no caller or certificate gate; the message must carry `source == "pca_watch"`. */
-    @Synchronized
-    fun acceptLink(json: String?): Result =
-        check(null, { false }, json, link = true).also { if (!it.ok) onReject(it.reason ?: "") }
-
-    private fun check(callerPackage: String?, certMatches: (String) -> Boolean, json: String?, link: Boolean): Result {
-        if (!link) {
-            if (callerPackage != LIVEFIT_PACKAGE) return no("bad_caller")
-            val pin = pinnedSha256()
-            if (pin == null || !certMatches(pin)) return no("bad_cert")
-        }
+    private fun check(json: String?): Result {
         if (closed || !enabled()) return no("not_enabled")
         if (json == null) return no("malformed")
         if (json.toByteArray(Charsets.UTF_8).size > MAX_BYTES) return no("too_big")
         val v = versionOf(json) ?: return no("malformed")
         if (v != WatchMotionCodec.VERSION) return no("version")
         val m = WatchMotionCodec.decode(json) ?: return no("malformed")
-        if (link && m.source != LINK_SOURCE) return no("bad_source")
+        if (m.source != LINK_SOURCE) return no("bad_source")
         if (m.epoch == lastEpoch && m.seq <= lastSeq) return no("stale_seq")
         val pend = pending
         if (pend != null && m.epoch == pend.epoch && m.seq < pend.seq) return no("stale_seq")
@@ -108,7 +97,6 @@ class WatchMotionIntake(
     } catch (e: Exception) { null }
 
     companion object {
-        const val LIVEFIT_PACKAGE = "com.livear.fit"
         const val LINK_SOURCE = "pca_watch"
         const val MAX_BYTES = 2048
         const val MIN_GAP_MS = 1000L

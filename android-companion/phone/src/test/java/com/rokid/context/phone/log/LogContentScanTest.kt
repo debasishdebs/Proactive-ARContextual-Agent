@@ -33,6 +33,7 @@ class LogContentScanTest {
         "VoiceGraph.kt" to setOf("it"), "GlassesRelauncher.kt" to setOf("it"), "HubGraph.kt" to setOf("it"), "Hub.kt" to setOf("m"),
         "GlassesWatchdog.kt" to setOf("it"), "StateBroadcaster.kt" to setOf("it"), "CxrGlassesLink.kt" to setOf("it"), "SessionSlot.kt" to setOf("it"),
         "AndroidSpeaker.kt" to setOf("it.wire"), "GlassesRuntime.kt" to setOf("\"ptt: \$it\""),
+        "WatchLinkState.kt" to setOf("it"), // WatchDropLog: only "watch drop reason=<fixed token> n=<count>"
     )
 
     /** Reviewed variable messages of injected `log(` sinks (file name to the one expression): fixed-format counters and states, or call-site constants. */
