@@ -48,6 +48,8 @@ import com.rokid.context.core.ui.components.FrameThumb
 import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.memory.MemoryDetailModel
+import com.rokid.context.phone.ui.preview.PreviewRef
+import com.rokid.context.phone.ui.preview.RefKind
 
 /**
  * Find a photo (wave 3 Task 4; spec §3.2). Stateless. Searches on IME Search or the button only. Photos are shown through [FrameThumb], which decrypts
@@ -58,8 +60,8 @@ import com.rokid.context.phone.ui.memory.MemoryDetailModel
 fun PhotoSearchScreen(
     state: PhotoSearchUiState, onBack: () -> Unit, onQueryChange: (String) -> Unit, onSubmit: () -> Unit,
     onDescribe: (String) -> Unit, onDescribeScene: (String) -> Unit,
-    /** (date yyyy-MM-dd, frame id): the frame viewer, for a stored photo. */
-    onOpenFrame: (String, String) -> Unit, onOpenMemory: (String) -> Unit,
+    /** Opens a result through previewMoment: its photo, or (the photo being gone) its caption's memory. */
+    onPreview: (List<String>) -> Unit,
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     val selected = state.tiles.firstOrNull { it.frameId == selectedId }
@@ -96,7 +98,7 @@ fun PhotoSearchScreen(
                     TextButton(
                         onClick = {
                             selectedId = null
-                            if (!selected.expired) onOpenFrame(selected.date, selected.frameId) else selected.captionMemoryId?.let(onOpenMemory)
+                            if (!selected.expired) onPreview(listOf(PreviewRef.of(RefKind.FRAME, selected.frameId))) else selected.captionMemoryId?.let { onPreview(listOf(PreviewRef.of(RefKind.MEMORY, it))) }
                         },
                         modifier = Modifier.fillMaxWidth().testTag("open_photo"),
                     ) { Text(if (selected.expired) "Open caption" else "Open") }

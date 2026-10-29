@@ -67,20 +67,21 @@ class DayTest {
         assertEquals("/old.jpg", s.sections.flatMap { it.rows }.single().framePath)
     }
 
-    @Test fun dayScreenListsRowsAndOpensFrames() {
-        val opened = mutableListOf<LocalDate>()
+    @Test fun dayScreenListsRowsAndEveryTapGoesThroughPreview() {
+        val opened = mutableListOf<List<String>>()
         val state = DayUiState(
-            loading = false, found = true, date = TODAY, title = "Today", frameCount = 3,
+            loading = false, found = true, date = TODAY, title = "Today", frameIds = listOf("f1", "f2", "f3"),
             sections = listOf(TimelineSection("Morning", listOf(TimelineRow("m1", "07:40", "Breakfast", 0.9, null, null)))),
         )
-        compose.setContent { PcTheme { DayScreen(state, onBack = {}, onOpenMemory = {}, onOpenFrames = { opened += it }) } }
+        compose.setContent { PcTheme { DayScreen(state, onBack = {}, onPreview = { opened += it }) } }
         compose.onNodeWithText("Breakfast").assertIsDisplayed()
         compose.onNodeWithText("View 3 photos").performClick()
-        assertEquals(listOf(TODAY), opened)
+        compose.onNodeWithText("Breakfast").performClick()
+        assertEquals("the photos page by swipe from the first; a row previews its memory", listOf(listOf("frame:f1"), listOf("memory:m1")), opened)
     }
 
     @Test fun dayScreenNotFound() {
-        compose.setContent { PcTheme { DayScreen(DayUiState(loading = false, found = false), onBack = {}, onOpenMemory = {}, onOpenFrames = {}) } }
+        compose.setContent { PcTheme { DayScreen(DayUiState(loading = false, found = false), onBack = {}, onPreview = {}) } }
         compose.onNodeWithText("Day not found").assertIsDisplayed()
     }
 }

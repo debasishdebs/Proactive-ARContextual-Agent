@@ -8,14 +8,11 @@ import java.time.LocalDate
 object Routes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
-    const val ASK = "ask/{id}"
     const val ACTIVITY = "activity?period={period}"
     const val DAY = "day/{date}"
-    const val MEMORY = "memory/{id}"
     /** Find a photo (wave 3): `q` is optional; a non-blank one searches once on open. */
     const val PHOTOS = "photos?q={q}"
-    const val FRAMES = "frames/{date}?start={start}"
-    /** The composite previewer (`ref` is a [com.rokid.context.phone.ui.preview.PreviewRef.raw]) and the common list of an Activity kind (`ids` comma-joined). */
+    /** The composite previewer of ANY item (`ref` is a [com.rokid.context.phone.ui.preview.PreviewRef.raw]) and the common list of a kind (`ids` comma-joined). */
     const val PREVIEW = "preview/{ref}"
     const val LIST = "list/{kind}?ids={ids}"
     const val SETTINGS = "settings"
@@ -59,8 +56,6 @@ object Routes {
     const val SETTINGS_ACTIONS = "settings/actions"
     const val SETTINGS_SHOPPING = "settings/shopping"
     const val SETTINGS_NOTES = "settings/notes"
-    /** Nudge detail (Phase 7 ruling: the spec names a "nudge detail" without a route). */
-    const val NUDGE = "nudge/{id}"
     /** id "new" opens an empty editor. */
     const val NEW_ENDPOINT = "new"
 
@@ -83,26 +78,23 @@ object Routes {
 
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
-    fun ask(id: String) = "ask/${enc(id)}"
     fun activity(period: Period? = null) = if (period == null) "activity" else "activity?period=${period.name.lowercase()}"
     fun day(date: LocalDate) = "day/$date"
-    fun memory(id: String) = "memory/${enc(id)}"
     /** Encoded with `android.net.Uri.encode` (a platform API, not hand-written escaping). */
     fun photos(q: String = "") = if (q.isBlank()) "photos" else "photos?q=${android.net.Uri.encode(q)}"
     fun preview(ref: String) = "preview/${enc(ref)}"
     fun list(kind: com.rokid.context.phone.ui.list.ListKind, ids: List<String>) = "list/${kind.name}?ids=${enc(ids.joinToString(","))}"
-    fun nudge(id: String) = "nudge/${enc(id)}"
-    fun frames(date: LocalDate, start: String? = null) = "frames/$date" + (start?.let { "?start=${enc(it)}" } ?: "")
     fun startRoute(onboardingComplete: Boolean) = if (onboardingComplete) HOME else ONBOARDING
 
     /** [route] is the destination's pattern (`NavDestination.route`). */
-    fun tabFor(route: String?): Tab? = when {
+    fun tabFor(route: String?, previewRef: String? = null): Tab? = when {
         route == null || route == ONBOARDING -> null
-        route == HOME || route.startsWith("ask/") || route.startsWith("nudge/") -> Tab.HOME
-        route.startsWith("activity") || route.startsWith("day/") || route.startsWith("memory/") || route.startsWith("frames/") || route.startsWith("photos") || route.startsWith("preview/") || route.startsWith("list/") -> Tab.ACTIVITY
+        // An answer or a nudge is opened from Home; every other item is Activity's.
+        route == HOME || (route.startsWith("preview/") && previewRef?.let { it.startsWith("ask:") || it.startsWith("nudge:") } == true) -> Tab.HOME
+        route.startsWith("activity") || route.startsWith("day/") || route.startsWith("photos") || route.startsWith("preview/") || route.startsWith("list/") -> Tab.ACTIVITY
         route.startsWith("settings") -> Tab.SETTINGS
         else -> null
     }
 
-    fun showsNav(route: String?): Boolean = route != null && route != ONBOARDING && !route.startsWith("frames/")
+    fun showsNav(route: String?): Boolean = route != null && route != ONBOARDING
 }

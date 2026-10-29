@@ -109,8 +109,8 @@ class AllRoutesSmokeTest {
     private fun roots() = compose.onAllNodes(isRoot(), useUnmergedTree = true).fetchSemanticsNodes()
 
     /** Opens [pattern] alone on the back stack and returns what is wrong with it, or null. */
-    private fun check(pattern: String): String? {
-        val route = fill(pattern) ?: return "no fixture for a placeholder"
+    private fun check(pattern: String, route: String? = fill(pattern)): String? {
+        route ?: return "no fixture for a placeholder"
         compose.runOnIdle { nav.navigate(route) { popUpTo(nav.graph.id) { inclusive = false } } }
         compose.waitUntil(5_000) { nav.currentDestination?.route == pattern }
         // Room emits off Main: poll until the visible text has been stable for three polls (or 3 s), checking every snapshot.
@@ -131,6 +131,15 @@ class AllRoutesSmokeTest {
     @Test fun everyRoutePlaceholderHasAFixture() {
         val missing = unresolved(routes())
         assertTrue("routes with a placeholder that has no fixture:\n" + missing.joinToString("\n"), missing.isEmpty())
+    }
+
+    /** The previewer is one route for every kind: each kind's seeded item renders through it (the memory is the generic route's fixture). */
+    @Test fun everyKindOfItemRendersInThePreviewer() {
+        seed()
+        compose.setContent { nav = rememberNavController(); PcTheme { AppShell(deps, Routes.HOME, nav, MutableStateFlow(false)) } }
+        compose.waitForIdle()
+        val failures = listOf("frame:$FRAME_ID", "ask:$ASK_ID", "nudge:$NUDGE_ID", "ask:missing", "nudge:missing", "frame:missing").mapNotNull { ref -> check(Routes.PREVIEW, Routes.preview(ref))?.let { "$ref: $it" } }
+        assertTrue("previews failed the smoke check:\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
     @Test fun everyRouteRendersWithoutCrashOrRawErrorText() {
@@ -174,7 +183,7 @@ class AllRoutesSmokeTest {
 
         /** The seeded row each `{id}` route opens. */
         val ID_FOR_ROUTE: Map<String, String> = mapOf(
-            Routes.ASK to ASK_ID, Routes.MEMORY to MEMORY_ID, Routes.NUDGE to NUDGE_ID, Routes.SETTINGS_ENDPOINT to ENDPOINT_ID,
+            Routes.SETTINGS_ENDPOINT to ENDPOINT_ID,
             Routes.SETTINGS_PROMPT to PROMPT_ID, Routes.SETTINGS_PROMPT_HISTORY to PROMPT_ID, Routes.SETTINGS_CANVAS_PIPELINE to "live-extract",
         )
 
@@ -188,7 +197,6 @@ class AllRoutesSmokeTest {
             "id" -> ID_FOR_ROUTE[pattern]
             "date" -> java.time.LocalDate.now(Fixtures.ZONE).toString() // PhoneDeps.today()
             "period" -> "week"
-            "start" -> FRAME_ID
             "ref" -> "memory:$MEMORY_ID" // the previewer
             "kind" -> "frames" // the common list of an Activity kind
             "ids" -> "capture,ask,nudge"

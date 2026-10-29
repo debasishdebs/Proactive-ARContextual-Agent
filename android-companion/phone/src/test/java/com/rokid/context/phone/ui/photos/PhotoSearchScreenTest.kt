@@ -28,8 +28,7 @@ class PhotoSearchScreenTest {
     private var submits = 0
     private val describes = mutableListOf<String>()
     private val scenes = mutableListOf<String>()
-    private val frames = mutableListOf<Pair<String, String>>()
-    private val memories = mutableListOf<String>()
+    private val opened = mutableListOf<List<String>>()
 
     /** The sheet is a separate window; Robolectric's touch injection lands on its scrim, so its buttons are clicked through their semantics action. */
     private fun SemanticsNodeInteraction.tap() = performSemanticsAction(SemanticsActions.OnClick)
@@ -43,7 +42,7 @@ class PhotoSearchScreenTest {
         PcTheme {
             PhotoSearchScreen(
                 state, onBack = {}, onQueryChange = { queries += it }, onSubmit = { submits++ }, onDescribe = { describes += it }, onDescribeScene = { scenes += it },
-                onOpenFrame = { date, id -> frames += date to id }, onOpenMemory = { memories += it },
+                onPreview = { opened += it },
             )
         }
     }
@@ -101,14 +100,14 @@ class PhotoSearchScreenTest {
         assertEquals(listOf("c1"), scenes)
     }
 
-    @Test fun openGoesToFrameViewerOrMemory() {
+    @Test fun openPreviewsTheFrameOrItsCaptionMemory() {
         show(PhotoSearchUiState(tiles = listOf(tile("a"), tile("e", expired = true, captionId = "cap1", caption = "Keys"))))
         compose.onNodeWithTag("photo_tile_a").performClick()
         compose.onNodeWithTag("open_photo").tap()
-        assertEquals(listOf("2026-10-12" to "a"), frames)
+        assertEquals(listOf(listOf("frame:a")), opened)
         compose.onNodeWithTag("photo_tile_e").performClick()
         compose.onNodeWithTag("open_photo").tap()
-        assertEquals(listOf("cap1"), memories); assertEquals(1, frames.size)
+        assertEquals(listOf(listOf("frame:a"), listOf("memory:cap1")), opened)
     }
 
     @Test fun openDisabledWithoutPhotoOrCaption() {

@@ -13,6 +13,9 @@ import com.rokid.context.phone.ui.list.RecordListSource
 import com.rokid.context.phone.ui.preview.PreviewSection.AudioSection
 import com.rokid.context.phone.ui.preview.PreviewSection.ConfigSection
 import com.rokid.context.phone.ui.preview.PreviewSection.ImageSection
+import com.rokid.context.phone.ui.preview.PreviewSection.ProposalSection
+import com.rokid.context.phone.ui.preview.PreviewSection.RatingSection
+import com.rokid.context.phone.ui.preview.PreviewSection.SourcesSection
 import com.rokid.context.phone.ui.preview.PreviewSection.StatusSection
 import com.rokid.context.phone.ui.preview.PreviewSection.TextSection
 import com.rokid.context.phone.ui.shell.Routes
@@ -25,21 +28,9 @@ import java.time.LocalDate
 
 /** previewMoment's routing, each kind's presenter (which sections, in what order, what Forget), the registry and the list rows that share them. Model level: no screen. */
 class PreviewMomentTest {
-    private class Fake(
-        val mems: List<MemoryEntity> = emptyList(), val frames: List<FrameEntity> = emptyList(), val marks: List<MarkRowUi> = emptyList(),
-        val asks: List<AskEntity> = emptyList(), val nudges: List<NudgeEntity> = emptyList(),
-    ) : ActivityData {
-        override suspend fun memories(ids: List<String>) = mems.filter { it.id in ids }
-        override suspend fun frames(ids: List<String>) = frames.filter { it.id in ids }
-        override suspend fun marks(ids: List<String>) = marks.filter { it.labelId in ids }
-        override suspend fun asks(ids: List<String>) = asks.filter { it.id in ids }
-        override suspend fun nudges(ids: List<String>) = nudges.filter { it.id in ids }
-        override suspend fun dayFrameIds(date: LocalDate) = frames.map { it.id }
-    }
-
     private val t = Fixtures.at(TODAY, 9)
     private val frame = Fixtures.frame("f1", t)
-    private val data = Fake(
+    private val data = FakeActivityData(
         mems = listOf(Fixtures.memory("m1", "Keys on the shelf", t, frameId = "f1", tags = "keys, home"), Fixtures.memory("m2", "Typed note", t + 1)),
         frames = listOf(frame, Fixtures.frame("f2", t + 60_000)),
         marks = listOf(
@@ -47,7 +38,16 @@ class PreviewMomentTest {
             MarkRowUi("k2", t, "09:00", "", "x", null, frameId = "f2", date = TODAY),
             MarkRowUi("k3", t, "09:00", "", "Moment with no photo", "No photo: the camera was busy", date = TODAY, reasonCode = "camera_busy"),
         ),
-        asks = listOf(Fixtures.ask("a1", t)), nudges = listOf(Fixtures.nudge("n1", t)),
+        asks = listOf(
+            Fixtures.ask("a1", t),
+            Fixtures.ask("a2", t, sources = """["m1","m2","gone","frame:f1","frame:f9"]""", rating = 1),
+            Fixtures.ask("a3", t, sources = """["m1"]""", redacted = true, answer = "Removed \u2014 a source was forgotten"),
+        ),
+        nudges = listOf(
+            Fixtures.nudge("n1", t),
+            Fixtures.nudge("n2", t).copy(sourceIdsJson = """["m1","gone"]"""),
+            Fixtures.nudge("n3", t, why = "secret why").copy(sourceIdsJson = """["m1"]""", redacted = true),
+        ),
     )
     private fun ctx(withDay: Boolean = true) = PreviewCtx(data, Fixtures.ZONE, TODAY, withDay)
     private fun one(kind: RefKind, id: String): Previewable = runBlocking { Previewables.forRef(kind).load(listOf(id), ctx()).single() }
@@ -55,12 +55,12 @@ class PreviewMomentTest {
 
     // previewMoment routing ---------------------------------------------------------------------------------------------------------------------------------
 
-    @Test fun oneItemOpensItsPreviewerAnAnswerOrNudgeItsOwnDetail() {
+    @Test fun oneItemOpensItsPreviewerOfAnyKind() {
         assertEquals(PreviewDestination.Screen(PreviewRef(RefKind.MEMORY, "m1")), previewMoment(listOf("memory:m1"), PreviewMode.OPEN))
         assertEquals(PreviewDestination.Screen(PreviewRef(RefKind.FRAME, "f1")), previewMoment(listOf("frame:f1")))
         assertEquals(PreviewDestination.Screen(PreviewRef(RefKind.MARK, "k1")), previewMoment(listOf("mark:k1")))
-        assertEquals(PreviewDestination.Detail(Routes.ask("a1")), previewMoment(listOf("ask:a1")))
-        assertEquals(PreviewDestination.Detail(Routes.nudge("n1")), previewMoment(listOf("nudge:n1")))
+        assertEquals(PreviewDestination.Screen(PreviewRef(RefKind.ASK, "a1")), previewMoment(listOf("ask:a1")))
+        assertEquals(PreviewDestination.Screen(PreviewRef(RefKind.NUDGE, "n1")), previewMoment(listOf("nudge:n1")))
         assertEquals(Routes.preview("memory:m1"), previewMoment(listOf("memory:m1")).route)
     }
 
@@ -83,7 +83,7 @@ class PreviewMomentTest {
     @Test fun aCaptionedMomentHasPhotoCaptionConfigAndAudioAndForgetsTheFact() {
         val p = one(RefKind.MEMORY, "m1")
         assertEquals(listOf("ImageSection", "TextSection", "ConfigSection", "AudioSection"), kinds(p))
-        assertEquals(ImageSection(listOf("f1"), "f1", canForgetPhoto = true), p.sections()[0])
+        assertEquals(ImageSection(listOf("f1"), "f1", canForgetPhoto = true, openDay = true), p.sections()[0])
         assertEquals("keys · home", ((p.sections()[2] as ConfigSection).entries).toMap()["Tags"])
         assertEquals(ForgetTarget.Fact("m1"), p.forgetTarget())
     }
@@ -94,14 +94,15 @@ class PreviewMomentTest {
 
     @Test fun aPhotoWithNoCaptionIsTheDaysPhotosOpenedAtItAndForgetsThePhoto() {
         val p = one(RefKind.FRAME, "f2")
-        assertEquals(listOf(ImageSection(listOf("f1", "f2"), "f2"), AudioSection), p.sections())
+        assertEquals(ImageSection(listOf("f1", "f2"), "f2", labels = listOf("09:00", "09:01")), p.sections().first())
+        assertEquals(AudioSection, p.sections().last())
         assertEquals(ForgetTarget.Photo("f2"), p.forgetTarget())
     }
 
     @Test fun aMarkShowsItsMomentsCaptionOrItsPhotoOrOnlyWhyThereIsNone() {
         assertEquals(kinds(one(RefKind.MEMORY, "m1")), kinds(one(RefKind.MARK, "k1")))
         assertEquals(ForgetTarget.Fact("m1"), one(RefKind.MARK, "k1").forgetTarget())
-        assertEquals(listOf(ImageSection(listOf("f1", "f2"), "f2"), AudioSection), one(RefKind.MARK, "k2").sections())
+        assertEquals(listOf("f1", "f2"), (one(RefKind.MARK, "k2").sections().first() as ImageSection).frameIds)
         val none = one(RefKind.MARK, "k3")
         assertEquals(
             listOf(TextSection("Time", "09:00"), StatusSection("camera_busy", "No photo: the camera was busy", Severity.WARNING, showTimeOn = TODAY), AudioSection),
@@ -110,14 +111,44 @@ class PreviewMomentTest {
         assertNull("a mark with no photo has nothing to forget here", none.forgetTarget())
     }
 
-    @Test fun anAnswerAndANudgeHaveTextAndNothingToForget() {
-        assertEquals(listOf("TextSection", "TextSection", "AudioSection"), kinds(one(RefKind.ASK, "a1")))
-        assertEquals(listOf("TextSection", "TextSection", "AudioSection"), kinds(one(RefKind.NUDGE, "n1")))
-        assertNull(one(RefKind.ASK, "a1").forgetTarget()); assertNull(one(RefKind.NUDGE, "n1").forgetTarget())
+    @Test fun anAnswerHasQuestionAnswerRatingActionCardSourcesAndNothingToForget() {
+        val p = one(RefKind.ASK, "a2")
+        assertEquals(listOf("TextSection", "TextSection", "RatingSection", "ProposalSection", "SourcesSection", "AudioSection"), kinds(p))
+        assertEquals(RatingSection(1), p.sections()[2]); assertEquals(ProposalSection("a2"), p.sections()[3])
+        assertEquals("You asked \u00b7 Mon 12 Oct \u00b7 09:00", (p.sections()[0] as TextSection).label)
+        assertNull(p.forgetTarget())
+        assertNull(one(RefKind.NUDGE, "n1").forgetTarget())
+    }
+
+    @Test fun anAnswersSourcesAreItsLiveCitesAndAPhotoCiteIsNeverMissing() {
+        val src = one(RefKind.ASK, "a2").sections().filterIsInstance<SourcesSection>().single()
+        // m1 (with its photo), m2 (plain), the photo f1 (opens the day pager), the expired photo f9 (inert, kept); "gone" is the one missing source.
+        assertEquals(listOf("memory:m1", "memory:m2", "frame:f1", null), src.items.map { it.ref })
+        assertEquals(1, src.missing)
+        assertEquals("f1", src.items[0].frameId); assertEquals(true, src.items[3].expired); assertEquals("f9", src.items[3].photoId)
+        assertEquals("More photos searches the question", "Where are my keys?", src.moreQuery)
+        assertEquals(0.8, src.items[0].confidence!!, 0.0)
+    }
+
+    @Test fun aRedactedAnswerShowsItsWordsOnlyNoRatingNoSources() {
+        val p = one(RefKind.ASK, "a3")
+        assertEquals(listOf("TextSection", "TextSection", "ProposalSection", "AudioSection"), kinds(p))
+        assertEquals("Removed \u2014 a source was forgotten", (p.sections()[1] as TextSection).body)
+    }
+
+    @Test fun aNudgeHasTextWhyLiveSourcesAndTheActionCardAndARedactedOneOnlyItsNotice() {
+        val p = one(RefKind.NUDGE, "n2")
+        assertEquals(listOf("TextSection", "TextSection", "SourcesSection", "ProposalSection", "AudioSection"), kinds(p))
+        assertEquals("Why", (p.sections()[1] as TextSection).label)
+        assertEquals(listOf("memory:m1"), (p.sections()[2] as SourcesSection).items.map { it.ref })
+        assertEquals(listOf("TextSection", "TextSection", "ProposalSection", "AudioSection"), kinds(one(RefKind.NUDGE, "n1")))
+        val red = one(RefKind.NUDGE, "n3")
+        assertEquals(listOf("TextSection", "AudioSection"), kinds(red))
+        assertEquals("Removed \u2014 a source was forgotten", (red.sections()[0] as TextSection).body)
     }
 
     @Test fun everyPreviewAlwaysEndsWithTheAudioPlaceholderAndSectionsHoldOnlyIdsAndText() {
-        listOf(RefKind.MEMORY to "m1", RefKind.MEMORY to "m2", RefKind.FRAME to "f1", RefKind.MARK to "k1", RefKind.MARK to "k3", RefKind.ASK to "a1", RefKind.NUDGE to "n1").forEach { (k, id) ->
+        listOf(RefKind.MEMORY to "m1", RefKind.MEMORY to "m2", RefKind.FRAME to "f1", RefKind.MARK to "k1", RefKind.MARK to "k3", RefKind.ASK to "a1", RefKind.ASK to "a2", RefKind.NUDGE to "n1", RefKind.NUDGE to "n3").forEach { (k, id) ->
             assertEquals("$k $id", AudioSection, one(k, id).sections().last())
         }
         assertEquals("a photo section carries ids, not paths or bytes", listOf("f1"), (one(RefKind.MEMORY, "m1").sections().first() as ImageSection).frameIds)
@@ -141,7 +172,7 @@ class PreviewMomentTest {
         val opened = mutableListOf<String>()
         val rows = mapOf(
             ListKind.FRAMES to listOf("f1", "f2"), ListKind.MEMORIES to listOf("m1", "m2"), ListKind.MOMENTS to listOf("m1"), ListKind.MARKS to listOf("k1", "k3"),
-            ListKind.ANSWERS to listOf("a1"), ListKind.NUDGES to listOf("n1"),
+            ListKind.ANSWERS to listOf("a1", "a2"), ListKind.NUDGES to listOf("n1"),
         )
         rows.forEach { (kind, ids) ->
             val src = RecordListSource(kind, ids, data, { Fixtures.ZONE }, { TODAY }, onPreview = { opened += it })

@@ -25,7 +25,7 @@ class RepoActivityData(
     override suspend fun asks(ids: List<String>): List<AskEntity> = asks.recent(RECENT).first().filter { it.id in ids }
     override suspend fun nudges(ids: List<String>): List<NudgeEntity> = nudges.recent(RECENT).first().filter { it.id in ids }
 
-    override suspend fun dayFrameIds(date: LocalDate): List<String> = timeline.framesIn(DayBucket.bounds(date, zone())).first().map { it.id }
+    override suspend fun dayFrames(date: LocalDate): List<FrameEntity> = timeline.framesIn(DayBucket.bounds(date, zone())).first()
 
     companion object { const val RECENT = 1000 }
 }

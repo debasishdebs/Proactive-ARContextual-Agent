@@ -153,19 +153,10 @@ class AppShellTest {
         compose.onNodeWithText("Ask about your day").assertIsDisplayed()
     }
 
-    @Test fun frameViewerHidesThePillNavAndBackRestoresIt() {
-        launch(Routes.HOME)
-        compose.runOnIdle { nav.navigate(Routes.frames(Fixtures.TODAY)) }
-        waitForText("No photos for this day")
-        compose.onNodeWithText("Home").assertDoesNotExist()
-        compose.runOnIdle { nav.popBackStack() }
-        compose.onNodeWithText("Home").assertIsDisplayed()
-    }
-
     @Test fun staleAskLinkShowsNotFound() {
         launch(Routes.HOME)
-        compose.runOnIdle { nav.navigate(Routes.ask("ask_missing")) }
-        waitForText("This answer is no longer available")
+        compose.runOnIdle { nav.navigate(Routes.preview("ask:ask_missing")) }
+        waitForText("This item is no longer available")
     }
 
     @Test fun homeShowsTheDisconnectedBannerAndDiagnosticsReachesTheTracker() {
@@ -184,8 +175,8 @@ class AppShellTest {
         val today = deps.today()
         compose.runOnIdle { nav.navigate(Routes.day(today)) }
         waitForText(ActivityModel.dayLabel(today, today))
-        compose.runOnIdle { nav.navigate(Routes.memory("mem_missing")) }
-        waitForText("This memory is no longer available")
+        compose.runOnIdle { nav.navigate(Routes.preview("memory:mem_missing")) }
+        waitForText("This item is no longer available")
         compose.runOnIdle { nav.navigate(Routes.SETTINGS_ENDPOINTS) }
         waitForText("Model endpoints")
         compose.runOnIdle { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }
@@ -234,8 +225,8 @@ class AppShellTest {
     /** Two quick Back taps on a detail screen (the exiting screen is still composed) must never pop the root entry. */
     @Test fun doubleBackOnADetailScreenKeepsHome() {
         launch(Routes.HOME)
-        compose.runOnIdle { nav.navigate(Routes.ask("ask_missing")) }
-        waitForText("This answer is no longer available")
+        compose.runOnIdle { nav.navigate(Routes.preview("ask:ask_missing")) }
+        waitForText("This item is no longer available")
         compose.mainClock.autoAdvance = false
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithContentDescription("Back").performClick()

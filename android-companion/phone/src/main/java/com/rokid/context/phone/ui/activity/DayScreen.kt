@@ -17,24 +17,26 @@ import com.rokid.context.core.ui.components.ChipRow
 import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.activity.ActivityModel.plural
-import java.time.LocalDate
+import com.rokid.context.phone.ui.preview.PreviewRef
+import com.rokid.context.phone.ui.preview.RefKind
 
 @Composable
-fun DayScreen(state: DayUiState, onBack: () -> Unit, onOpenMemory: (String) -> Unit, onOpenFrames: (LocalDate) -> Unit) {
+/** The day's rows; a tap goes through previewMoment (the caller's [onPreview]), memory or photo alike. */
+fun DayScreen(state: DayUiState, onBack: () -> Unit, onPreview: (List<String>) -> Unit) {
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface)) {
         item { ScreenHeader(if (state.found) state.title else "Day", onBack) }
         when {
             state.loading -> Unit
             !state.found -> item { Text("Day not found", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(20.dp)) }
             else -> {
-                val date = state.date
-                if (state.frameCount > 0 && date != null) {
-                    item { ChipRow(Icons.Outlined.PhotoLibrary, PcColors.ChipMint, "View ${plural(state.frameCount, "photo")}", onClick = { onOpenFrames(date) }) }
+                // The photos page by swipe from the day's first one.
+                state.frameIds.firstOrNull()?.let { first ->
+                    item { ChipRow(Icons.Outlined.PhotoLibrary, PcColors.ChipMint, "View ${plural(state.frameCount, "photo")}", onClick = { onPreview(listOf(PreviewRef.of(RefKind.FRAME, first))) }) }
                 }
                 if (state.sections.isEmpty()) {
                     item { Text("No memories saved this day", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(20.dp)) }
                 } else {
-                    timelineItems(state.sections, onOpenMemory)
+                    timelineItems(state.sections) { onPreview(listOf(PreviewRef.of(RefKind.MEMORY, it))) }
                 }
             }
         }

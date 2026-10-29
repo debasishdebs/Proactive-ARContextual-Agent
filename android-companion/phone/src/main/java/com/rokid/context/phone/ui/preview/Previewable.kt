@@ -2,15 +2,11 @@ package com.rokid.context.phone.ui.preview
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bookmark
-import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Psychology
 import com.rokid.context.memory.DayBucket
-import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
-import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.forget.ForgetTarget
 import com.rokid.context.phone.ui.activity.ActivityModel
 import com.rokid.context.phone.ui.activity.MarkRowUi
@@ -42,10 +38,15 @@ interface Previewable {
 /** What a presenter needs to read and say. [withDay] asks for a day's photo ids (the previewer pages through them); a list leaves it off and reads no extra rows. */
 class PreviewCtx(val data: ActivityData, val zone: ZoneId, val today: LocalDate, val withDay: Boolean = false) {
     private val hhmm = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
+    private val full = DateTimeFormatter.ofPattern("EEE d MMM \u00b7 HH:mm", Locale.ENGLISH)
     /** "Today 09:30": the day word and the time. */
     fun at(ms: Long): String = Instant.ofEpochMilli(ms).atZone(zone).let { z -> "${ActivityModel.dayLabel(z.toLocalDate(), today)} ${hhmm.format(z)}" }
     fun dayOf(ms: Long): LocalDate = DayBucket.dayOf(ms, zone)
-    suspend fun dayIds(ms: Long): List<String> = if (withDay) data.dayFrameIds(dayOf(ms)) else emptyList()
+    /** The day's photos (oldest first) when [withDay]. */
+    suspend fun dayFrames(ms: Long): List<FrameEntity> = if (withDay) data.dayFrames(dayOf(ms)) else emptyList()
+    fun clock(ms: Long): String = hhmm.format(Instant.ofEpochMilli(ms).atZone(zone))
+    /** "Mon 12 Oct · 09:41" (the long form detail views head with). */
+    fun full(ms: Long): String = full.format(Instant.ofEpochMilli(ms).atZone(zone))
 }
 
 /** Reads the items of one kind by id. A missing id is simply missing from the result. */
@@ -69,9 +70,9 @@ object Previewables {
 }
 
 /** A photo with no caption: its day's photos (swipe), and Forget photo. */
-class FramePreview(override val id: String, private val frame: FrameEntity?, private val ctx: PreviewCtx, private val dayIds: List<String>) : Previewable {
+class FramePreview(override val id: String, private val frame: FrameEntity?, private val ctx: PreviewCtx, private val day: List<FrameEntity>) : Previewable {
     override fun summary() = ListItem(id, frame?.let { ctx.at(it.ts) } ?: "Photo", subtitle = frame?.placeLabel ?: if (frame == null) PHOTO_GONE else "Photo", icon = Icons.Outlined.Image)
-    override fun sections() = listOf(ImageSection(dayIds.ifEmpty { listOf(id) }, startId = id), AudioSection)
+    override fun sections() = listOf(ImageSection(day.map { it.id }.ifEmpty { listOf(id) }, startId = id, labels = day.map { ctx.clock(it.ts) }), AudioSection)
     override fun forgetTarget(): ForgetTarget? = ForgetTarget.Photo(id)
 
     companion object : PreviewableFactory {
@@ -79,7 +80,7 @@ class FramePreview(override val id: String, private val frame: FrameEntity?, pri
         override suspend fun load(ids: List<String>, ctx: PreviewCtx): List<Previewable> {
             val byId = ctx.data.frames(ids).associateBy { it.id }
             // A frame retention deleted still opens (it says "Photo expired") when it was asked for by id.
-            return ids.distinct().map { id -> FramePreview(id, byId[id], ctx, byId[id]?.let { ctx.dayIds(it.ts) }.orEmpty()) }.sortedByDescending { byId[it.id]?.ts ?: 0L }
+            return ids.distinct().map { id -> FramePreview(id, byId[id], ctx, byId[id]?.let { ctx.dayFrames(it.ts) }.orEmpty()) }.sortedByDescending { byId[it.id]?.ts ?: 0L }
         }
     }
 }
@@ -97,7 +98,7 @@ class MemoryPreview(private val m: MemoryEntity, private val frame: FrameEntity?
 
     /** Photo (its own: Forget photo is its action), the caption with Trust and Edit, its review state and tags, audio. */
     override fun sections() = listOfNotNull(
-        m.frameId?.let { ImageSection(listOf(it), startId = it, canForgetPhoto = true) },
+        m.frameId?.let { ImageSection(listOf(it), startId = it, canForgetPhoto = true, openDay = true) },
         TextSection(null, m.text, memoryId = m.id),
         ConfigSection(listOfNotNull(
             "Level" to "${d.tierLabel} · ${d.reviewLabel}${if (d.trusted) " · Trusted" else ""}",
@@ -149,29 +150,5 @@ class MarkPreview(private val row: MarkRowUi, private val inner: Previewable?) :
             val memory = row.memoryId?.let { MemoryPreview.captions.load(listOf(it), ctx).firstOrNull() }
             MarkPreview(row, memory ?: row.frameId?.takeIf { row.reason == null }?.let { FramePreview.load(listOf(it), ctx).firstOrNull() })
         }
-    }
-}
-
-/** An answer. It opens its own detail screen from [previewMoment]; its rows and sections are here for the list and for a later previewer. */
-class AnswerPreview(private val a: AskEntity, private val ctx: PreviewCtx) : Previewable {
-    override val id get() = a.id
-    override fun summary() = ListItem(a.id, a.question, subtitle = ctx.at(a.ts), icon = Icons.Outlined.ChatBubbleOutline)
-    override fun sections() = listOf(TextSection("Question", a.question), TextSection("Answer", a.answer), AudioSection)
-    override fun forgetTarget(): ForgetTarget? = null
-
-    companion object : PreviewableFactory {
-        override suspend fun load(ids: List<String>, ctx: PreviewCtx): List<Previewable> = ctx.data.asks(ids).sortedByDescending { it.ts }.map { AnswerPreview(it, ctx) }
-    }
-}
-
-/** A nudge: same as [AnswerPreview]. */
-class NudgePreview(private val n: NudgeEntity, private val ctx: PreviewCtx) : Previewable {
-    override val id get() = n.id
-    override fun summary() = ListItem(n.id, n.text, subtitle = ctx.at(n.ts), icon = Icons.Outlined.Lightbulb)
-    override fun sections() = listOf(TextSection(null, n.text), TextSection("Why", n.why), AudioSection)
-    override fun forgetTarget(): ForgetTarget? = null
-
-    companion object : PreviewableFactory {
-        override suspend fun load(ids: List<String>, ctx: PreviewCtx): List<Previewable> = ctx.data.nudges(ids).sortedByDescending { it.ts }.map { NudgePreview(it, ctx) }
     }
 }

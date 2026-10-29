@@ -13,10 +13,7 @@ import com.rokid.context.phone.ui.activity.ActivityViewModel
 import com.rokid.context.phone.ui.activity.DayScreen
 import com.rokid.context.phone.ui.activity.DayViewModel
 import com.rokid.context.phone.ui.activity.Period
-import com.rokid.context.phone.ui.ask.AskDetailRoute
 import com.rokid.context.phone.ui.banner.BannerAction
-import com.rokid.context.phone.ui.frames.FrameViewerScreen
-import com.rokid.context.phone.ui.frames.FrameViewerViewModel
 import com.rokid.context.phone.ui.home.HomeRoute
 import com.rokid.context.phone.ui.list.ListKind
 import com.rokid.context.phone.ui.list.ListViewRoute
@@ -24,8 +21,6 @@ import com.rokid.context.phone.ui.list.listView
 import com.rokid.context.phone.ui.preview.PreviewMode
 import com.rokid.context.phone.ui.preview.PreviewRoute
 import com.rokid.context.phone.ui.preview.previewMoment
-import com.rokid.context.phone.ui.memory.MemoryDetailRoute
-import com.rokid.context.phone.ui.nudge.NudgeDetailRoute
 import com.rokid.context.phone.ui.onboarding.OnboardingRoute
 import com.rokid.context.phone.ui.photos.PhotoSearchRoute
 import com.rokid.context.phone.ui.settings.QueuesScreen
@@ -61,10 +56,6 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
 
     composable(Routes.HOME) { HomeRoute(deps, nav, bannerNav) }
 
-    composable(Routes.ASK, arguments = idArg) { entry -> AskDetailRoute(entry.arguments?.getString("id").orEmpty(), deps, nav) }
-
-    composable(Routes.NUDGE, arguments = idArg) { entry -> NudgeDetailRoute(entry.arguments?.getString("id").orEmpty(), deps, nav) }
-
     composable(Routes.ACTIVITY, arguments = listOf(navArgument("period") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val period = Period.parse(entry.arguments?.getString("period"))
         val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.clock, deps.storagePct, deps.zone, index = deps.index, sort = deps.activitySort) }
@@ -89,36 +80,11 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         // Same clock as Activity, so the day regroups when the zone changes (Task 7 carry).
         val vm = viewModel { DayViewModel(date, deps.memory.timeline, deps.zone, deps::today, deps.clock, deps.activitySort.order) }
         val state by vm.state.collectAsStateWithLifecycle()
-        DayScreen(state, onBack = back, onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) })
+        DayScreen(state, onBack = back, onPreview = { ids -> nav.navigate(previewMoment(ids).route) })
     }
 
     composable(Routes.PHOTOS, arguments = listOf(navArgument("q") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         PhotoSearchRoute(entry.arguments?.getString("q"), deps, nav)
-    }
-
-    composable(Routes.MEMORY, arguments = idArg) { entry -> MemoryDetailRoute(entry.arguments?.getString("id").orEmpty(), deps, nav) }
-
-    composable(Routes.FRAMES, arguments = listOf(dateArg, navArgument("start") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
-        val date = entry.arguments?.getString("date")
-        val start = entry.arguments?.getString("start")
-        val vm = viewModel { FrameViewerViewModel(date, start, deps.memory.timeline, deps.zone, deps::today) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        val app = androidx.compose.ui.platform.LocalContext.current.applicationContext
-        val devOn by com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle()
-        // Debug builds with Developer mode on only: the labelling action for the photo 256-vs-768 test.
-        val labels = if (com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) {
-            androidx.compose.runtime.remember { com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalFactory.labels(app) }
-        } else null
-        // Forget goes through the memory detail's view model, dialog and port (no new delete logic).
-        val fvm = viewModel(key = "frames_forget") { com.rokid.context.phone.ui.memory.MemoryDetailViewModel("", deps.memory.timeline, deps.memory.memoryEdits, deps.zone, forget = com.rokid.context.phone.ui.memory.productionMemoryForget(app)) }
-        val fstate by fvm.state.collectAsStateWithLifecycle()
-        androidx.compose.runtime.LaunchedEffect(fstate.forgotten) {
-            if (fstate.forgotten) { android.widget.Toast.makeText(app, fstate.message ?: com.rokid.context.phone.ui.memory.ForgetCopy.DONE, android.widget.Toast.LENGTH_SHORT).show(); fvm.forgetShown() }
-        }
-        FrameViewerScreen(
-            state, onBack = back, onAddToPhotoTest = labels?.let { l -> { q, id, small -> l.add(q, id, small) } },
-            forget = com.rokid.context.phone.ui.frames.ViewerForget(fstate, fvm::askForgetPhoto, fvm::confirmForget, fvm::dismissForget, fvm::acknowledgeForget),
-        )
     }
 
     composable(Routes.DIAGNOSTICS_QUEUES) {

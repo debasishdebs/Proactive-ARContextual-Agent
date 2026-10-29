@@ -27,7 +27,7 @@ class MemoryDetailViewModel(
     private data class Local(
         val draft: String? = null, val message: String? = null, val confirm: ForgetKind? = null,
         val forgetting: Boolean = false, val forgotten: Boolean = false,
-        /** The frame viewer's photo being forgotten (no memory): Forget moment on that frame. */
+        /** The photo being forgotten (no memory): Forget moment on that frame. */
         val photo: String? = null,
         val preview: ForgetPreview? = null, val acked: Boolean = false, val previewing: Boolean = false, val previewFailed: Boolean = false, val blockedByCount: Boolean = false,
     )
@@ -63,15 +63,12 @@ class MemoryDetailViewModel(
         }
     }
 
-    /** The frame viewer's Forget: this photo (and what the Forget scope setting adds), through the same dialog and port as Forget moment. */
+    /** The previewer's Forget photo: this photo (and what the Forget scope setting adds), through the same dialog and port as Forget moment. */
     fun askForgetPhoto(frameId: String) {
         if (state.value.forgetting) return
         local.update { it.copy(photo = frameId, forgotten = false) }
         openDialog(ForgetKind.MOMENT, frameId, keepMessage = false)
     }
-
-    /** The viewer showed "Forgotten": clear it so the next photo can be forgotten. */
-    fun forgetShown() = local.update { it.copy(forgotten = false, photo = null, message = null) }
 
     /** Opens the dialog. Forget fact needs a visible memory; Forget moment needs a frame. */
     fun askForget(kind: ForgetKind) {

@@ -2,14 +2,8 @@ package com.rokid.context.phone.ui.memory
 
 import android.app.Application
 import android.content.Context
-import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
@@ -26,7 +20,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
-import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -34,10 +27,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], application = Application::class)
 class MemoryDetailTest {
-    private val main = MainDispatcherRule()
-    private val compose = createComposeRule()
-    /** Explicit order: Main is installed before, and reset after, the Compose rule (unordered @Rules raced on Dispatchers.setMain). */
-    @get:Rule val rules: RuleChain = RuleChain.outerRule(main).around(compose)
+    @get:Rule val main = MainDispatcherRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var graph: MemoryGraph
     private val vms = mutableListOf<MemoryDetailViewModel>()
@@ -47,7 +37,7 @@ class MemoryDetailTest {
 
     private fun vm(id: String) = MemoryDetailViewModel(id, graph.timeline, graph.memoryEdits, zone = { Fixtures.ZONE }).also { vms += it }
 
-    @Test fun modelLabelsAndFrameDate() {
+    @Test fun modelLabels() {
         val m = Fixtures.memory("m1", "Keys on shelf", Fixtures.at(TODAY, 8, 5), frameId = "f1", tags = "keys, hallway", review = ReviewState.NEEDS_REVIEW)
             .copy(tier = MemoryTier.LONG)
         val s = MemoryDetailModel.build(m, Fixtures.frame("f1", Fixtures.at(TODAY, 8), path = "/f1.jpg"), Fixtures.ZONE)
@@ -55,7 +45,6 @@ class MemoryDetailTest {
         assertEquals("Long-term", s.tierLabel)
         assertEquals("Needs review", s.reviewLabel)
         assertEquals("Mon 12 Oct · 08:05", s.createdLabel)
-        assertEquals(TODAY, s.frameDate)
         assertEquals("/f1.jpg", s.framePath)
         assertEquals(1f, Zoom.clamp(0.2f)); assertEquals(5f, Zoom.clamp(9f)); assertEquals(1f, Zoom.clamp(Float.NaN)); assertEquals(2.5f, Zoom.clamp(2.5f))
     }
@@ -99,29 +88,6 @@ class MemoryDetailTest {
 
     @Test fun deletedMemoryShowsNotFound(): Unit = runBlocking {
         assertFalse(withTimeout(5_000) { vm("gone").state.first { !it.loading } }.found)
-        compose.setContent { PcTheme { MemoryDetailScreen(MemoryDetailModel.NOT_FOUND, {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
-        compose.onNodeWithText("This memory is no longer available").assertIsDisplayed()
-    }
-
-    @Test fun screenActions() {
-        var trusts = 0; var edits = 0
-        val state = MemoryDetailUiState(loading = false, found = true, text = "Keys on shelf", tierLabel = "Short-term", confidence = 0.71, reviewLabel = "Reviewed", createdLabel = "Mon 12 Oct · 08:05")
-        compose.setContent { PcTheme { MemoryDetailScreen(state, {}, { trusts++ }, { edits++ }, {}, {}, {}, { _, _ -> }) } }
-        compose.onNodeWithText("Keys on shelf").assertIsDisplayed()
-        compose.onNodeWithText("71%").assertIsDisplayed()
-        compose.onNodeWithText("Trust").performClick()
-        compose.onNodeWithText("Edit").performClick()
-        assertEquals(1, trusts); assertEquals(1, edits)
-    }
-
-    @Test fun editingShowsSaveAndCancel() {
-        var saved = 0
-        val state = MemoryDetailUiState(loading = false, found = true, text = "Keys", draft = "Keys on hallway shelf")
-        compose.setContent { PcTheme { MemoryDetailScreen(state, {}, {}, {}, {}, { saved++ }, {}, { _, _ -> }) } }
-        compose.onNodeWithText("Keys on hallway shelf").assertIsDisplayed()
-        compose.onNodeWithText("Save").performClick()
-        assertEquals(1, saved)
-        compose.onNodeWithText("Cancel").assertIsDisplayed()
     }
 
     @Test fun panIsBoundedAndResetsAtUnitScale() {
@@ -130,16 +96,6 @@ class MemoryDetailTest {
         assertEquals(-600f, Zoom.clampPan(-999f, 4f, 400f))
         assertEquals(30f, Zoom.clampPan(30f, 2f, 400f))
         assertEquals(0f, Zoom.clampPan(Float.NaN, 2f, 400f))
-    }
-
-    @Test fun hiddenMemoryIsReadOnly() {
-        val m = Fixtures.memory("m1", "Keys", 1, review = ReviewState.INVALIDATED)
-        val state = MemoryDetailModel.build(m, null, Fixtures.ZONE)
-        assertFalse(state.editable)
-        compose.setContent { PcTheme { MemoryDetailScreen(state, {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
-        compose.onNodeWithText("Trust").assertIsNotEnabled()
-        compose.onNodeWithText("Edit").assertIsNotEnabled()
-        compose.onNodeWithText("Forget fact").assertIsNotEnabled()
     }
 
     @Test fun saveRejectedBecauseMemoryBecameHidden() = runBlocking {

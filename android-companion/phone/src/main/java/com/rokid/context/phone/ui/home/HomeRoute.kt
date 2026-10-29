@@ -20,7 +20,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.shell.PhoneDeps
-import com.rokid.context.phone.ui.shell.Routes
+import com.rokid.context.phone.ui.preview.PreviewRef
+import com.rokid.context.phone.ui.preview.RefKind
+import com.rokid.context.phone.ui.preview.previewMoment
 
 /** Home's wiring (moved from Destinations.kt in Phase 7 Stream 0; Stream C owns it from here). Phase 7 C4: a nudge card opens its detail. */
 @Composable
@@ -38,14 +40,14 @@ fun HomeRoute(deps: PhoneDeps, nav: NavController, onBanner: (BannerAction, (Ban
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) deps.onMicGranted()
     }
     HomeScreen(
-        state, onQuestionChange = vm::onQuestionChange, onAsk = { vm.ask(it) }, onOpenAsk = { nav.navigate(Routes.ask(it)) },
+        state, onQuestionChange = vm::onQuestionChange, onAsk = { vm.ask(it) }, onOpenAsk = { nav.navigate(previewMoment(listOf(PreviewRef.of(RefKind.ASK, it))).route) },
         onTogglePause = vm::togglePause, onBannerAction = { a -> onBanner(a, vm::onBannerAction) },
         onMic = vm::onMic, onRequestMic = { mic.launch(Manifest.permission.RECORD_AUDIO) },
         onOpenAppSettings = { // the activity resume on return re-checks the gate (HubActivityHook)
             runCatching { activity?.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", activity.packageName, null))) }
         },
         onLeave = vm::onLeave,
-        onOpenNudge = { nav.navigate(Routes.nudge(it)) },
+        onOpenNudge = { nav.navigate(previewMoment(listOf(PreviewRef.of(RefKind.NUDGE, it))).route) },
         onDismissLimited = vm::dismissLimited,
     )
 }

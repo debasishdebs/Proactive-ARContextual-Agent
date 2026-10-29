@@ -76,7 +76,7 @@ fun AppShell(
     var bottomBarPx by remember { mutableIntStateOf(0) }
     val bottomInset = if (bottomBarPx > 0) with(LocalDensity.current) { bottomBarPx.toDp() } else 84.dp
     Box(Modifier.fillMaxSize().background(PcColors.Surface)) {
-        // Proposal cards without their own onEnable (Home and nudge detail) open Settings > Actions.
+        // Proposal cards without their own onEnable (Home and the previewer, which passes its own) open Settings > Actions.
         val openActions = remember(nav) { { nav.navigate(Routes.SETTINGS_ACTIONS) { launchSingleTop = true } } }
         CompositionLocalProvider(LocalOpenActionsSettings provides openActions) {
             NavHost(nav, startDestination = startRoute, modifier = if (showNav) Modifier.padding(bottom = bottomInset) else Modifier) {
@@ -105,7 +105,7 @@ fun AppShell(
                 }
                 PillNav(
                     items = TABS,
-                    selectedRoute = Routes.tabFor(route)?.route.orEmpty(),
+                    selectedRoute = Routes.tabFor(route, entry?.arguments?.getString("ref"))?.route.orEmpty(),
                     onSelect = { tab ->
                         nav.navigate(tab) {
                             popUpTo(Routes.HOME) { saveState = false }
