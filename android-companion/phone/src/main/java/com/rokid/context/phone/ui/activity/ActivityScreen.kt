@@ -65,6 +65,8 @@ fun ActivityScreen(
     onSelectSort: (ActivitySort) -> Unit = {},
     /** Opens "Find a photo" (wave 3). */
     onSearchPhotos: () -> Unit = {},
+    /** Opens the viewer on one photo (its Forget is there). */
+    onOpenPhoto: (LocalDate, String) -> Unit = { d, _ -> onOpenFrames(d) },
 ) {
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("activity_list")) {
         item { GradientHeader("Activity", "What your glasses noticed") {
@@ -102,7 +104,7 @@ fun ActivityScreen(
         }
         item { SectionLabel("Marks") }
         if (state.marks.isEmpty()) item { Hint(MarkRows.EMPTY) }
-        items(state.marks, key = { "mark_${it.labelId}" }) { MarkCard(it, onOpenMemory, onOpenFrames, onOpenDay) }
+        items(state.marks, key = { "mark_${it.labelId}" }) { MarkCard(it, onOpenMemory, onOpenPhoto, onOpenDay) }
         if (state.period == Period.TODAY) {
             if (state.sections.isNotEmpty()) timelineItems(state.sections, onOpenMemory)
             else if (state.today != null) item { Hint("Nothing captured yet today") }
@@ -151,12 +153,12 @@ private fun SortMenu(current: ActivitySort, onSelect: (ActivitySort) -> Unit) {
 
 /** One mark: when, how it was made, whether a Moment holds it and why there is no photo. A tap opens its photo (the memory detail screen, which carries Forget) or, with no photo, says why and offers its day. */
 @Composable
-private fun MarkCard(row: MarkRowUi, onOpenMemory: (String) -> Unit, onOpenFrames: (LocalDate) -> Unit, onOpenDay: (LocalDate) -> Unit) {
+private fun MarkCard(row: MarkRowUi, onOpenMemory: (String) -> Unit, onOpenPhoto: (LocalDate, String) -> Unit, onOpenDay: (LocalDate) -> Unit) {
     var noPhoto by remember { mutableStateOf<MarkTarget.NoPhoto?>(null) }
     val target = MarkRows.target(row)
     val open: (() -> Unit)? = when (target) {
         is MarkTarget.Memory -> ({ onOpenMemory(target.memoryId) })
-        is MarkTarget.Photo -> ({ onOpenFrames(target.date) })
+        is MarkTarget.Photo -> ({ onOpenPhoto(target.date, target.frameId) })
         is MarkTarget.NoPhoto -> ({ noPhoto = target })
         null -> null
     }

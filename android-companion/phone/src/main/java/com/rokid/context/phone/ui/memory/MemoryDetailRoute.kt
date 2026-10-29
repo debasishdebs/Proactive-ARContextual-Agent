@@ -23,7 +23,25 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
     val back: () -> Unit = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
     val app = LocalContext.current.applicationContext
     val vm = viewModel {
-        MemoryDetailViewModel(id, deps.memory.timeline, deps.memory.memoryEdits, deps.zone, forget = object : MemoryForget {
+        MemoryDetailViewModel(id, deps.memory.timeline, deps.memory.memoryEdits, deps.zone, forget = productionMemoryForget(app), onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })
+    }
+    val state by vm.state.collectAsStateWithLifecycle()
+    LaunchedEffect(state.forgotten) {
+        if (state.forgotten) {
+            // No snackbar host on the screens behind (owned by other streams): a Toast carries "Forgotten" across the pop.
+            Toast.makeText(app, state.message ?: ForgetCopy.DONE, Toast.LENGTH_SHORT).show()
+            back()
+        }
+    }
+    MemoryDetailScreen(
+        state, onBack = back, onTrust = vm::trust, onStartEdit = vm::startEdit, onDraftChange = vm::updateDraft, onSaveEdit = vm::saveEdit,
+        onCancelEdit = vm::cancelEdit, onOpenFrames = { date, frameId -> nav.navigate(Routes.frames(date, frameId)) },
+        onForget = vm::askForget, onConfirmForget = vm::confirmForget, onDismissForget = vm::dismissForget, onAckForget = vm::acknowledgeForget,
+    )
+}
+
+/** The production Forget port (the memory detail and the frame viewer share it): everything goes through [ForgetActions] at the Forget scope setting. */
+fun productionMemoryForget(app: android.content.Context): MemoryForget = object : MemoryForget {
             // The hub refresh makes the next StateFrame drop the memory from `today`.
             private val onForgotten = { HubGraph.get(app).refresh() }
             // v0.9.7 slice C: both go through the Forget scope (Settings > Capture > Forget scope); the dialog passes the scope it showed.
@@ -51,19 +69,4 @@ fun MemoryDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
                 ForgetActions.Outcome.TOO_LARGE -> throw TooLarge()
                 ForgetActions.Outcome.FAILED -> false
             }
-        }, onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })
-    }
-    val state by vm.state.collectAsStateWithLifecycle()
-    LaunchedEffect(state.forgotten) {
-        if (state.forgotten) {
-            // No snackbar host on the screens behind (owned by other streams): a Toast carries "Forgotten" across the pop.
-            Toast.makeText(app, state.message ?: ForgetCopy.DONE, Toast.LENGTH_SHORT).show()
-            back()
         }
-    }
-    MemoryDetailScreen(
-        state, onBack = back, onTrust = vm::trust, onStartEdit = vm::startEdit, onDraftChange = vm::updateDraft, onSaveEdit = vm::saveEdit,
-        onCancelEdit = vm::cancelEdit, onOpenFrames = { date, frameId -> nav.navigate(Routes.frames(date, frameId)) },
-        onForget = vm::askForget, onConfirmForget = vm::confirmForget, onDismissForget = vm::dismissForget, onAckForget = vm::acknowledgeForget,
-    )
-}

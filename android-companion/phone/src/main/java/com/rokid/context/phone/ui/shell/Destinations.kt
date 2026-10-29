@@ -66,6 +66,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         ActivityScreen(
             state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
             onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) }, onOpenDay = { nav.navigate(Routes.day(it)) },
+            onOpenPhoto = { d, id -> nav.navigate(Routes.frames(d, id)) },
             onSearchPhotos = { nav.navigate(Routes.photos()) },
         )
     }
@@ -95,7 +96,16 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val labels = if (com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) {
             androidx.compose.runtime.remember { com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalFactory.labels(app) }
         } else null
-        FrameViewerScreen(state, onBack = back, onAddToPhotoTest = labels?.let { l -> { q, id, small -> l.add(q, id, small) } })
+        // Forget goes through the memory detail's view model, dialog and port (no new delete logic).
+        val fvm = viewModel(key = "frames_forget") { com.rokid.context.phone.ui.memory.MemoryDetailViewModel("", deps.memory.timeline, deps.memory.memoryEdits, deps.zone, forget = com.rokid.context.phone.ui.memory.productionMemoryForget(app)) }
+        val fstate by fvm.state.collectAsStateWithLifecycle()
+        androidx.compose.runtime.LaunchedEffect(fstate.forgotten) {
+            if (fstate.forgotten) { android.widget.Toast.makeText(app, fstate.message ?: com.rokid.context.phone.ui.memory.ForgetCopy.DONE, android.widget.Toast.LENGTH_SHORT).show(); fvm.forgetShown() }
+        }
+        FrameViewerScreen(
+            state, onBack = back, onAddToPhotoTest = labels?.let { l -> { q, id, small -> l.add(q, id, small) } },
+            forget = com.rokid.context.phone.ui.frames.ViewerForget(fstate, fvm::askForgetPhoto, fvm::confirmForget, fvm::dismissForget, fvm::acknowledgeForget),
+        )
     }
 
     composable(Routes.DIAGNOSTICS_QUEUES) {
