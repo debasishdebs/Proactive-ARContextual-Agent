@@ -150,7 +150,8 @@ abstract class MomentDao : DerivedStaleDao() {
      * Moment holds it yet). Only MOMENT rows: an INTENT row is the word that goes with a mark, not a mark.
      */
     @Query(
-        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance " +
+        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance, l.frameId AS frameId, " +
+            "(SELECT q.refId FROM moment_part q JOIN memory y ON y.id = q.refId WHERE q.momentId = p.momentId AND q.kind = 'MEMORY' AND y.reviewState != 'INVALIDATED' ORDER BY q.partTimeMs, q.refId LIMIT 1) AS memoryId " +
             "FROM canvas_label l LEFT JOIN moment_part p ON p.kind = 'MARK' AND p.refId = l.labelId LEFT JOIN moment m ON m.momentId = p.momentId " +
             "WHERE l.kind = 'MOMENT' AND l.atMs >= :fromMs AND l.atMs <= :toMs ORDER BY l.atMs DESC, l.labelId",
     )
@@ -165,6 +166,10 @@ abstract class MomentDao : DerivedStaleDao() {
         val photo: String? = null,
         /** The mark's provenance token (`clock:...`, with `;call` when a phone call was active as it was made); empty from a row without one. */
         val provenance: String = "",
+        /** The mark's linked photo (`canvas_label.frameId`); null when it has none. */
+        val frameId: String? = null,
+        /** A memory (caption) of the Moment that holds the mark, for the memory detail screen; null when the Moment holds none. */
+        val memoryId: String? = null,
     )
 
     @Query("SELECT m.id FROM memory m WHERE m.derived = 1 AND m.id IN (:ids)") abstract suspend fun derivedAmong(ids: List<String>): List<String>

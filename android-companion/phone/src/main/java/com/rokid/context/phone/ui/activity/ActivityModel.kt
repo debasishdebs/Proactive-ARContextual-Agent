@@ -100,10 +100,24 @@ object Timeline {
 }
 
 /** One mark as the Activity tab shows it (read-only): when, how it was made, whether a Moment holds it and, for a Moment with no photo, why. Fixed words only; a mark carries no text. */
-data class MarkRowUi(val labelId: String, val atMs: Long, val time: String, val code: String, val joined: String, val reason: String?)
+data class MarkRowUi(val labelId: String, val atMs: Long, val time: String, val code: String, val joined: String, val reason: String?,
+    /** What a tap opens: see [MarkRows.target]. */
+    val frameId: String? = null, val memoryId: String? = null, val date: LocalDate? = null,
+)
+
+/** Where a tapped mark goes. A mark never deletes anything: Forget lives on the memory detail screen. */
+sealed interface MarkTarget {
+    /** The memory/photo detail screen of the Moment's caption (it carries Forget). */
+    data class Memory(val memoryId: String) : MarkTarget
+    /** A linked photo with no caption yet: that photo in the day's frames. */
+    data class Photo(val date: LocalDate, val frameId: String) : MarkTarget
+    /** No photo: say why and offer "Show that time" (the day). */
+    data class NoPhoto(val date: LocalDate, val reason: String) : MarkTarget
+}
 
 object MarkRows {
     private val DAY_HHMM = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH)
+    const val TAP_HINT = "Tap to open the photo"
     const val EMPTY = "No marks yet. A tap or a voice mark on your glasses will show up here."
 
     /**
@@ -152,10 +166,20 @@ object MarkRows {
         else -> token
     }
 
+    /** Where a tap on [row] goes; null for a row with no date. */
+    fun target(row: MarkRowUi): MarkTarget? {
+        val date = row.date ?: return null
+        return when {
+            row.memoryId != null -> MarkTarget.Memory(row.memoryId)
+            row.frameId != null && row.reason == null -> MarkTarget.Photo(date, row.frameId)
+            else -> MarkTarget.NoPhoto(date, row.reason ?: "No photo")
+        }
+    }
+
     /** [withDay] adds the weekday and date (Week and Month). Order is the one the rows come in (newest first). */
     fun rows(rows: List<MomentDao.MarkRow>, zone: ZoneId, withDay: Boolean): List<MarkRowUi> = rows.map { r ->
         val at = Instant.ofEpochMilli(r.atMs).atZone(zone)
-        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), callLabel(r.provenance), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason, r.errorReason, r.photo))
+        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), callLabel(r.provenance), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason, r.errorReason, r.photo), r.frameId, r.memoryId, at.toLocalDate())
     }
 }
 
