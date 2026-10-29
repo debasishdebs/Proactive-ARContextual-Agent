@@ -27,6 +27,8 @@ class MemoryDetailViewModel(
     private data class Local(
         val draft: String? = null, val message: String? = null, val confirm: ForgetKind? = null,
         val forgetting: Boolean = false, val forgotten: Boolean = false,
+        /** The frame viewer's photo being forgotten (no memory): Forget moment on that frame. */
+        val photo: String? = null,
         val preview: ForgetPreview? = null, val acked: Boolean = false, val previewing: Boolean = false, val previewFailed: Boolean = false, val blockedByCount: Boolean = false,
     )
     private var previewJob: kotlinx.coroutines.Job? = null
@@ -35,7 +37,8 @@ class MemoryDetailViewModel(
     val state: StateFlow<MemoryDetailUiState> = combine(
         timeline.memory(memoryId).map { m -> m?.let { MemoryDetailModel.build(it, it.frameId?.let { id -> timeline.frame(id) }, zone()) } ?: MemoryDetailModel.NOT_FOUND },
         local,
-    ) { base, l ->
+    ) { base0, l ->
+        val base = if (!base0.found && l.photo != null) base0.copy(loading = false, found = true, frameId = l.photo) else base0
         // `forgotten` survives the row disappearing (the Forget itself deletes it).
         if (base.found) base.copy(draft = l.draft, message = l.message, confirm = l.confirm, forgetting = l.forgetting, forgotten = l.forgotten,
             forgetPreview = l.preview, forgetPreviewing = l.previewing, forgetPreviewFailed = l.previewFailed, forgetConfirmable = !l.previewing && !l.blockedByCount && (l.preview?.needsAck != true || l.acked), forgetAcked = l.acked)
@@ -59,6 +62,16 @@ class MemoryDetailViewModel(
             else local.update { it.copy(message = "This memory can't be edited") }
         }
     }
+
+    /** The frame viewer's Forget: this photo (and what the Forget scope setting adds), through the same dialog and port as Forget moment. */
+    fun askForgetPhoto(frameId: String) {
+        if (state.value.forgetting) return
+        local.update { it.copy(photo = frameId, forgotten = false) }
+        openDialog(ForgetKind.MOMENT, frameId, keepMessage = false)
+    }
+
+    /** The viewer showed "Forgotten": clear it so the next photo can be forgotten. */
+    fun forgetShown() = local.update { it.copy(forgotten = false, photo = null, message = null) }
 
     /** Opens the dialog. Forget fact needs a visible memory; Forget moment needs a frame. */
     fun askForget(kind: ForgetKind) {

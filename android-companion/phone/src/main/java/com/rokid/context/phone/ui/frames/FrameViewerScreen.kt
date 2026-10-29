@@ -34,6 +34,12 @@ import androidx.compose.ui.unit.dp
 import com.rokid.context.core.ui.components.FrameImage
 import kotlinx.coroutines.delay
 
+/** The viewer's Forget wiring: the shared dialog state and the actions of [com.rokid.context.phone.ui.memory.MemoryDetailViewModel.askForgetPhoto]. */
+class ViewerForget(
+    val state: com.rokid.context.phone.ui.memory.MemoryDetailUiState, val onAsk: (String) -> Unit,
+    val onConfirm: () -> Unit, val onDismiss: () -> Unit, val onAck: (Boolean) -> Unit,
+)
+
 private const val PLAY_STEP_MS = 1_500L
 
 /** Full-screen day viewer (spec §2.4 Frame viewer). PillNav is hidden on this route (Routes.showsNav). */
@@ -42,7 +48,10 @@ fun FrameViewerScreen(
     state: FrameViewerUiState, onBack: () -> Unit,
     /** Debug builds with Developer mode on only (null otherwise): label this photo for the photo 256-vs-768 test (query text, small-object flag, frame id). */
     onAddToPhotoTest: ((query: String, frameId: String, small: Boolean) -> Unit)? = null,
+    /** Forget this photo through the memory detail's dialog and port (null: the viewer offers no Forget). */
+    forget: ViewerForget? = null,
 ) {
+    forget?.let { f -> if (f.state.confirm != null) com.rokid.context.phone.ui.memory.ForgetDialog(f.state, f.onConfirm, f.onDismiss, f.onAck) }
     Column(Modifier.fillMaxSize().background(Color.Black).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Outlined.Close, contentDescription = "Close", tint = Color.White) }
@@ -70,6 +79,9 @@ fun FrameViewerScreen(
                 val current = state.frames[pager.currentPage.coerceIn(0, state.frames.lastIndex)]
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("${pager.currentPage + 1} / ${state.frames.size} · ${current.time}", color = Color.White, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    if (forget != null) {
+                        androidx.compose.material3.TextButton(onClick = { forget.onAsk(current.id) }, enabled = !forget.state.forgetting, modifier = Modifier.testTag("forget_photo")) { Text("Forget photo", color = Color.White) }
+                    }
                     if (onAddToPhotoTest != null) {
                         var asking by rememberSaveable { mutableStateOf(false) }
                         androidx.compose.material3.TextButton(onClick = { asking = true }, modifier = Modifier.testTag("add_to_photo_test")) { Text("Add to photo test", color = Color.White) }

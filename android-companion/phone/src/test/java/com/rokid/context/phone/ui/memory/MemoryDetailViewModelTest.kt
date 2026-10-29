@@ -55,6 +55,19 @@ class MemoryDetailViewModelTest {
         assertEquals(1, calls.get())
     }
 
+    @Test fun aPhotoWithNoMemoryCanBeForgottenFromTheViewerThroughTheSamePort() = runBlocking {
+        val forgotten = mutableListOf<String>()
+        val model = vm(object : MemoryForget {
+            override suspend fun forgetFact(memoryId: String) = false
+            override suspend fun forgetMoment(frameId: String): Boolean { forgotten += frameId; return true }
+        })
+        model.askForgetPhoto("fr1")
+        withTimeout(5_000) { model.state.first { it.found && it.confirm == ForgetKind.MOMENT && !it.forgetPreviewing } }
+        model.confirmForget()
+        withTimeout(5_000) { model.state.first { it.forgotten } }
+        assertEquals(listOf("fr1"), forgotten)
+    }
+
     @Test fun failureShowsFixedCopy() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
         val model = vm(object : MemoryForget {
