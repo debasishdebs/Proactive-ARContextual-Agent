@@ -45,6 +45,8 @@ fun PreviewScreen(
     ForgetDialog(host.detail, onConfirmForget, onDismissForget, onAckForget)
     Column(Modifier.fillMaxSize().background(PcColors.Surface).verticalScroll(rememberScrollState()).testTag("preview_screen")) {
         ScreenHeader(title, onBack)
+        // Forget and edit outcomes, for every kind (a blocked export or save, changed content, too large, failed): the retry hint is never lost with the dialog.
+        host.detail.message?.let { Text(it, style = MaterialTheme.typography.labelLarge, color = PcColors.MintDeep, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp).testTag("preview_message")) }
         val item = state.item
         when {
             state.loading -> Unit

@@ -7,6 +7,8 @@ import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.phone.ui.activity.MarkRowUi
 import com.rokid.context.phone.ui.list.ListKind
 import com.rokid.context.phone.ui.shell.Routes
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import java.time.LocalDate
 
 /** What an id string names. The id handed to [previewMoment] is `<prefix>:<id>`, so one entry point can open any kind of item. */
@@ -33,6 +35,13 @@ enum class PreviewMode { OPEN, LIST }
 
 /** [listKind] is the list a several-item preview falls back to when the items are not all one kind. */
 data class PreviewConfig(val listKind: ListKind = ListKind.MOMENTS)
+
+/** The photo to show after [forgotten] was forgotten from a previewer paging [frameIds]: the one now at its place (or the last), null when none remain (then the previewer closes). */
+fun photoAfterForget(frameIds: List<String>, forgotten: String): String? {
+    val at = frameIds.indexOf(forgotten)
+    val rest = frameIds - forgotten
+    return if (at < 0) rest.firstOrNull() else rest.getOrNull(at.coerceAtMost(rest.lastIndex))
+}
 
 /** Where [previewMoment] sends the user; [route] is the navigation route. */
 sealed interface PreviewDestination {
@@ -70,4 +79,6 @@ interface ActivityData {
     suspend fun nudges(ids: List<String>): List<NudgeEntity>
     /** The photos of [date], oldest first. */
     suspend fun dayFrames(date: LocalDate): List<FrameEntity>
+    /** Emits when the item [ref] names, or something it cites, changes (a Forget, a redaction, a Trust): the previewer then reads it again. The first emission is the current state. Nothing by default. */
+    fun changes(ref: PreviewRef): Flow<Unit> = emptyFlow()
 }

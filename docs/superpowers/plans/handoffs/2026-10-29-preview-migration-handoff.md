@@ -18,12 +18,22 @@ Moved (not rewritten): `ForgetDialog` (memory/ForgetDialog.kt), `productionMemor
 ## Not preserved exactly (user-visible differences)
 
 - The photo viewer was full-screen black without the bottom nav; a photo now opens in the normal previewer page (nav bar visible, light theme).
-- After "Forget photo" on a day pager the previewer goes back (the old viewer stayed on the remaining photos).
 - A memory's previewer offers "Forget fact" and "Forget photo" (as in the baseline previewer); the old "Forget moment" button is the photo Forget with the Forget scope setting.
 - The old read-only proposal line (when no ProposalCard) is gone; the card is always shown. A nudge's card now also offers "Enable" when actions are off (as on Answers).
 - Rating shows the tapped choice at once from local state; it is re-read from the database on resume.
 - A cited memory removed while the Answer stays open updates on resume, not live.
 - `PhotoTile.date` is now unused by the screen (kept for its tests).
+
+## Review round (Codex, NOT READY) fixes
+
+- P1 Forget photo targets the photo on screen: frame previews and photo-only marks have no opening-frame `forgetTarget()`; their `ImageSection` carries Forget photo for the current pager page (test: swipe, then Forget).
+- P1 A forgotten or missing memory shows "This memory is no longer available", never its cached text.
+- P1 The previewer observes its item: `ActivityData.changes(ref)` (memory, answer or nudge row plus the memories they cite) re-reads on every change, so redactions and Forgets disappear at once.
+- P1 Forget and edit outcomes (export or save running, content changed, too large, failed, cache left) show in a previewer-level message slot for every kind.
+- P2 Resume refresh flag lives in the view model (survives the composition being disposed). Answer and nudge lookup is by id (`asks.observe`, `nudgeGateDao().observe`), no longer `recent(1000)`. Level, Trust and Confidence in the Config section follow the live memory state.
+- P2 After Forget photo with more than one photo in the pager the previewer stays on the neighbour (`photoAfterForget`); it closes only when none remain (this reverses the earlier "goes back" note above).
+
+Deferred (not cheap or no old behaviour): Forget for Answers, Nudges and photo-less marks (the old screens had none); passing a list key instead of the id list in `list/{kind}?ids=` and paging `ListKind` loads (the lists still read all ids and render lazily).
 
 ## Measured since baseline 68c84585 (git diff --shortstat 68c84585..HEAD)
 
