@@ -249,8 +249,8 @@ class GlassesRelauncher(
 }
 
 /**
- * The real guards. A call is TelephonyManager.callState != IDLE or an AudioManager mode other than NORMAL. READ_PHONE_STATE is deliberately not
- * requested (2026-10-21 ruling R12); callState is read only if a merged library declared it and it was granted. Without it the audio mode is all
+ * The real guards. A call is TelephonyManager.callState != IDLE or an AudioManager mode other than NORMAL. READ_PHONE_STATE is declared and optional
+ * (asked in Settings > Phone camera & mic; supersedes ruling R12); callState is read only when it was granted. Without it the audio mode is all
  * we have, so the call state is treated as unknown, and unknown counts as "in a call" for [UNKNOWN_CALL_HOLD_MS] after a scene event ([callIdle] with a
  * null call state). User ruling 2026-10-28: only a REAL call blocks: audio mode IN_CALL, RINGTONE (a ringing call) or CALL_SCREENING, or a readable call state that is not IDLE; the other
  * non-NORMAL modes (IN_COMMUNICATION of VoIP and meeting apps, ...) do not (risk: a VoIP call no longer defers the reopen; the diagnostics line still logs the mode).

@@ -13,6 +13,8 @@
     <!-- Voice (Phase 6): on-device recognition only; the hub keeps the mic while the phone is locked. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Relaunch guard: reads only whether a call is in progress (never numbers or contacts); optional, the audio-mode fallback stays when denied. Asked in Settings > Phone camera & mic. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
     <!-- P7-C sources -->
     <!-- Settings › Data sources (R-64): asked for only when a source is turned on; context only, never sent to the glasses. -->

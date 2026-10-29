@@ -26,6 +26,8 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import kotlinx.coroutines.CompletableDeferred
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -132,6 +134,48 @@ class PhoneInputsTest {
             vm.onResume() // back from app settings: permission and capabilities are read again
             assertEquals(4, voice.rechecks)
         } finally { vm.cancelScope() }
+    }
+
+    @Test fun callStatePermissionStatusModel() = runBlocking {
+        var granted = false
+        val voice = FakeVoiceControls(VoiceCapabilities(VoiceStatus.SUPPORTED, VoiceStatus.SUPPORTED, canDownloadPack = false))
+        val vm = PhoneInputsViewModel(voice, callStateGranted = { granted })
+        try {
+            assertEquals(false, withTimeout(5_000) { vm.state.first() }.callStateGranted)
+            vm.onCallStateResult(granted = false, canAskAgain = true)
+            assertEquals(false, vm.state.first { !it.callStateGranted }.callStateBlocked)
+            vm.onCallStateResult(granted = false, canAskAgain = false)
+            assertEquals(true, withTimeout(5_000) { vm.state.first { it.callStateBlocked } }.callStateBlocked)
+            granted = true
+            vm.onResume() // back from app settings: granted, no longer blocked
+            val s = withTimeout(5_000) { vm.state.first { it.callStateGranted } }
+            assertEquals(false, s.callStateBlocked)
+        } finally { vm.cancelScope() }
+    }
+
+    @Test fun callStateRowShowsStatusAndTheRightButton() {
+        var allow = 0
+        var app = 0
+        var st by androidx.compose.runtime.mutableStateOf(PhoneInputsUiState())
+        compose.setContent {
+            PcTheme {
+                PhoneInputsScreen(st, onBack = {}, onAllowMic = {}, onDownload = {}, onOpenSettings = {}, onRecheck = {}, onLanguage = {}, onPhoneMic = {},
+                    onOpenAppSettings = { app++ }, onAllowCallState = { allow++ })
+            }
+        }
+        compose.onNodeWithTag("phone_inputs").performScrollToNode(hasTestTag("call_state_allow"))
+        compose.onNodeWithText("Not granted").assertIsDisplayed()
+        compose.onNodeWithTag("call_state_allow").performClick()
+        assertEquals(1, allow)
+        compose.runOnIdle { st = PhoneInputsUiState(callStateBlocked = true) }
+        compose.onNodeWithTag("call_state_allow").assertDoesNotExist()
+        compose.onNodeWithTag("phone_inputs").performScrollToNode(hasTestTag("call_state_open_settings"))
+        compose.onNodeWithTag("call_state_open_settings").performClick()
+        assertEquals(1, app)
+        compose.runOnIdle { st = PhoneInputsUiState(callStateGranted = true) }
+        compose.onNodeWithTag("call_state_allow").assertDoesNotExist()
+        compose.onNodeWithTag("call_state_open_settings").assertDoesNotExist()
+        compose.onNodeWithText("Granted").assertIsDisplayed()
     }
 
     @Test fun aBlockedMicShowsOpenAppSettingsInsteadOfAllow() {
@@ -249,6 +293,7 @@ class PhoneInputsTest {
         }
         compose.onNodeWithTag("phone_inputs").performScrollToNode(hasTestTag("capture_now"))
         compose.onNodeWithTag("capture_now").assertIsNotEnabled()
+        compose.onNodeWithTag("phone_inputs").performScrollToNode(hasTestTag("capture_paused"))
         compose.onNodeWithText("Paused \u2014 resume to capture").assertIsDisplayed()
     }
 
