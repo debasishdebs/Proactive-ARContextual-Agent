@@ -16,6 +16,7 @@ import com.rokid.context.phone.ui.activity.Period
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.home.HomeRoute
 import com.rokid.context.phone.ui.list.ListKind
+import com.rokid.context.phone.ui.list.ListScope
 import com.rokid.context.phone.ui.list.ListViewRoute
 import com.rokid.context.phone.ui.list.listView
 import com.rokid.context.phone.ui.preview.PreviewMode
@@ -62,7 +63,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val state by vm.state.collectAsStateWithLifecycle()
         ActivityScreen(
             state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
-            onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) }, onOpenList = { kind, ids -> nav.navigate(listView(kind, ids)) },
+            onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) }, onOpenList = { kind, period -> nav.navigate(listView(kind, period, deps.today())) },
             onOpenDay = { nav.navigate(Routes.day(it)) },
             onSearchPhotos = { nav.navigate(Routes.photos()) },
         )
@@ -70,9 +71,9 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
 
     composable(Routes.PREVIEW, arguments = listOf(navArgument("ref") { type = NavType.StringType })) { entry -> PreviewRoute(entry.arguments?.getString("ref").orEmpty(), deps, nav) }
 
-    composable(Routes.LIST, arguments = listOf(navArgument("kind") { type = NavType.StringType }, navArgument("ids") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
+    composable(Routes.LIST, arguments = listOf(navArgument("kind") { type = NavType.StringType }, navArgument("ids") { type = NavType.StringType; nullable = true; defaultValue = null }, navArgument("scope") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val kind = ListKind.parse(entry.arguments?.getString("kind")) ?: ListKind.MOMENTS
-        ListViewRoute(kind, entry.arguments?.getString("ids").orEmpty().split(',').filter { it.isNotBlank() }, deps, nav)
+        ListViewRoute(kind, entry.arguments?.getString("ids").orEmpty().split(',').filter { it.isNotBlank() }, ListScope.parse(entry.arguments?.getString("scope")), deps, nav)
     }
 
     composable(Routes.DAY, arguments = listOf(dateArg)) { entry ->

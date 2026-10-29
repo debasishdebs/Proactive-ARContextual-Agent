@@ -156,17 +156,17 @@ class ActivityMarksTest {
     }
 
     @Test fun everyMarkRowPreviewsItsMarkAndTheSectionOpensTheMarksList() {
-        val previews = mutableListOf<List<String>>(); val lists = mutableListOf<Pair<ListKind, List<String>>>()
+        val previews = mutableListOf<List<String>>(); val lists = mutableListOf<Pair<ListKind, Period>>()
         val rows = listOf(
             MarkRowUi("a", 2, "09:00", "", "In a Moment with a photo", null, frameId = "f", memoryId = "m1", date = TODAY),
             MarkRowUi("b", 1, "08:00", "", "Moment with no photo", "No photo: the camera was busy", date = TODAY),
         )
-        compose.setContent { PcTheme { ActivityScreen(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, today = TODAY, marks = rows), onSelectPeriod = {}, onTogglePause = {}, onBannerAction = {}, onPreview = { previews += it }, onOpenList = { k, ids -> lists += k to ids }, onOpenDay = {}) } }
+        compose.setContent { PcTheme { ActivityScreen(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, today = TODAY, marks = rows), onSelectPeriod = {}, onTogglePause = {}, onBannerAction = {}, onPreview = { previews += it }, onOpenList = { k, p -> lists += k to p }, onOpenDay = {}) } }
         compose.onNodeWithTag("activity_list").performScrollToNode(hasText("No photo: the camera was busy"))
         compose.onAllNodesWithTag("mark_row")[0].performClick()
         compose.onAllNodesWithTag("mark_row")[1].performClick()
         assertEquals(listOf(listOf("mark:a"), listOf("mark:b")), previews)
         compose.onNodeWithTag("marks_all").performClick()
-        assertEquals(listOf(ListKind.MARKS to listOf("a", "b")), lists)
+        assertEquals(listOf(ListKind.MARKS to Period.TODAY), lists)
     }
 }

@@ -196,4 +196,32 @@ class PreviewMomentTest {
         assertEquals(emptyList<Any>(), RecordListSource(ListKind.NUDGES, emptyList(), data, { Fixtures.ZONE }, { TODAY }, {}).load())
         assertEquals("a moment row says whether a photo goes with it", true, RecordListSource(ListKind.MOMENTS, listOf("m1"), data, { Fixtures.ZONE }, { TODAY }, {}).load().single().subtitle!!.endsWith("with photo"))
     }
+
+    /** A Month-sized list: the route carries a short key, not 20,000 ids, and the rows are read 200 at a time. */
+    @Test fun aMonthSizedListOpensByKeyAndPages() = runBlocking<Unit> {
+        val big = (1..20_000).map { "f$it" }
+        val readIds = mutableListOf<Int>()
+        val data = object : ActivityData {
+            override suspend fun memories(ids: List<String>) = emptyList<MemoryEntity>()
+            override suspend fun frames(ids: List<String>) = ids.also { readIds += it.size }.map { Fixtures.frame(it, t) }
+            override suspend fun marks(ids: List<String>) = emptyList<MarkRowUi>()
+            override suspend fun asks(ids: List<String>) = emptyList<AskEntity>()
+            override suspend fun nudges(ids: List<String>) = emptyList<NudgeEntity>()
+            override suspend fun dayFrames(date: LocalDate) = emptyList<FrameEntity>()
+            override suspend fun idsIn(kind: ListKind, range: LongRange) = big
+        }
+        val route = com.rokid.context.phone.ui.list.listView(ListKind.FRAMES, com.rokid.context.phone.ui.activity.Period.MONTH, TODAY)
+        assertEquals("list/FRAMES?scope=MONTH%3A2026-10-12", route)
+        assertTrue(route.length < 60)
+        val scope = com.rokid.context.phone.ui.list.ListScope.parse("MONTH:2026-10-12")!!
+        val src = RecordListSource(ListKind.FRAMES, emptyList(), data, { Fixtures.ZONE }, { TODAY }, {}, scope = scope)
+        assertEquals(200, src.load().size); assertTrue(src.hasMore)
+        src.showMore()
+        assertEquals(400, src.load().size)
+        assertEquals("only the shown page is ever read", listOf(200, 400), readIds)
+        repeat(100) { src.showMore() }
+        src.load()
+        assertEquals(false, src.hasMore)
+        assertEquals(null, com.rokid.context.phone.ui.list.ListScope.parse("junk")); assertEquals(null, com.rokid.context.phone.ui.list.ListScope.parse("WEEK:nope"))
+    }
 }

@@ -68,6 +68,10 @@ interface ListSource {
     val selectLabel: (Int) -> String get() = { "Show selected ($it)" }
     /** Each emission reloads the rows (e.g. download progress). */
     val changes: Flow<Unit> get() = emptyFlow()
+    /** More rows exist than [load] returned (a long list is read a page at a time). */
+    val hasMore: Boolean get() = false
+    /** Asks for the next page; the screen then calls [load] again. */
+    fun showMore() {}
     suspend fun load(): List<ListItem>
     fun actionFor(item: ListItem): ItemAction?
     /** Extra actions in the row's overflow menu; empty shows no menu. */

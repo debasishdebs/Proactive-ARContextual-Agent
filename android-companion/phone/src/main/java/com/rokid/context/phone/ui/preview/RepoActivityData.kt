@@ -9,6 +9,7 @@ import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.phone.ui.activity.MarkRowUi
+import com.rokid.context.phone.ui.list.ListKind
 import com.rokid.context.phone.ui.activity.MarkRows
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 import com.rokid.context.orchestration.AskSources
@@ -38,6 +39,14 @@ class RepoActivityData(
     override suspend fun nudges(ids: List<String>): List<NudgeEntity> = ids.distinct().mapNotNull { nudgeById(it).first() }
 
     override suspend fun dayFrames(date: LocalDate): List<FrameEntity> = timeline.framesIn(DayBucket.bounds(date, zone())).first()
+
+    override suspend fun idsIn(kind: ListKind, range: LongRange): List<String> = when (kind) {
+        ListKind.FRAMES -> timeline.framesIn(range).first().sortedByDescending { it.ts }.map { it.id }
+        ListKind.MEMORIES, ListKind.MOMENTS -> timeline.visibleMemoriesIn(range).first().sortedByDescending { it.createdAt }.map { it.id }
+        ListKind.ANSWERS -> asks.recent(RECENT).first().filter { it.ts in range }.map { it.id }
+        ListKind.NUDGES -> nudges.recent(RECENT).first().filter { it.ts in range }.map { it.id }
+        ListKind.MARKS -> MarkRows.rows(marks.marksIn(range).first(), zone(), withDay = true).sortedByDescending { it.atMs }.map { it.labelId }
+    }
 
     /** The row itself and the memories it cites: a Forget or a redaction of either re-emits (the deleted detail screens observed the same). */
     @OptIn(ExperimentalCoroutinesApi::class)

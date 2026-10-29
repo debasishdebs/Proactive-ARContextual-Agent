@@ -30,7 +30,7 @@ class ActivityScreenTest {
     @get:Rule val compose = createComposeRule()
     private val periods = mutableListOf<Period>()
     private val memories = mutableListOf<String>()
-    private val lists = mutableListOf<Pair<ListKind, List<String>>>()
+    private val lists = mutableListOf<Pair<ListKind, Period>>()
     private val days = mutableListOf<LocalDate>()
     private var pauses = 0
     private var photoSearches = 0
@@ -41,7 +41,7 @@ class ActivityScreenTest {
         PcTheme {
             ActivityScreen(
                 state, onSelectPeriod = { periods += it }, onTogglePause = { pauses++ }, onBannerAction = {},
-                onPreview = { memories += it }, onOpenList = { k, ids -> lists += k to ids }, onOpenDay = { days += it },
+                onPreview = { memories += it }, onOpenList = { k, p -> lists += k to p }, onOpenDay = { days += it },
                 onSelectSort = { sorts += it }, onSearchPhotos = { photoSearches++ },
             )
         }
@@ -63,7 +63,6 @@ class ActivityScreenTest {
         show(
             ActivityUiState(
                 period = Period.TODAY, header = "Mon 12 Oct", status = status, tiles = Tiles(14, 2, 3, 1), today = TODAY,
-                tileIds = TileIds(frames = listOf("f1", "f2")),
                 sections = listOf(TimelineSection("Morning", listOf(TimelineRow("m1", "07:40", "Oatmeal and coffee at the counter", 0.92, null, null)))),
             ),
         )
@@ -73,7 +72,7 @@ class ActivityScreenTest {
         assertEquals(1, pauses)
         compose.onNodeWithText("14").assertIsDisplayed()
         compose.onNodeWithText("Frames").performClick()
-        assertEquals(listOf(ListKind.FRAMES to listOf("f1", "f2")), lists)
+        assertEquals(listOf(ListKind.FRAMES to Period.TODAY), lists)
         compose.onNodeWithTag("activity_list").performScrollToNode(hasText("Oatmeal and coffee at the counter"))
         compose.onNodeWithText("MORNING").assertIsDisplayed()
         compose.onNodeWithText("92%").assertIsDisplayed()
@@ -128,19 +127,10 @@ class ActivityScreenTest {
         assertEquals(1, photoSearches)
     }
 
-    /** Every top card opens the list of its kind over that period's ids (an empty kind too: its list shows the empty state). */
-    @Test fun eachTopCardOpensItsKindWithTheIdsOfThePeriod() {
-        show(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, tiles = Tiles(2, 1, 1, 0), today = TODAY,
-            tileIds = TileIds(frames = listOf("f1", "f2"), memories = listOf("m1"), answers = listOf("a1"), nudges = emptyList())))
+    /** Every top card opens the list of its kind over the period shown (a key, never ids; an empty kind too: its list shows the empty state). */
+    @Test fun eachTopCardOpensItsKindOverThePeriodShown() {
+        show(ActivityUiState(period = Period.MONTH, header = "October", status = status, tiles = Tiles(2, 1, 1, 0), today = TODAY))
         listOf("Frames", "Memories", "Answers", "Nudges").forEach { compose.onNodeWithText(it).performClick() }
-        assertEquals(
-            listOf(ListKind.FRAMES to listOf("f1", "f2"), ListKind.MEMORIES to listOf("m1"), ListKind.ANSWERS to listOf("a1"), ListKind.NUDGES to emptyList()),
-            lists,
-        )
-    }
-
-    @Test fun theTilesPassTheSameKindsFromTheModel() {
-        val ids = TileIds(listOf("f"), listOf("m"), listOf("a"), listOf("n"))
-        assertEquals(listOf(listOf("f"), listOf("m"), listOf("a"), listOf("n")), listOf(ListKind.FRAMES, ListKind.MEMORIES, ListKind.ANSWERS, ListKind.NUDGES).map(ids::of))
+        assertEquals(listOf(ListKind.FRAMES, ListKind.MEMORIES, ListKind.ANSWERS, ListKind.NUDGES).map { it to Period.MONTH }, lists)
     }
 }

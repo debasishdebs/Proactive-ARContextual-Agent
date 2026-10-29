@@ -5,6 +5,8 @@ import com.rokid.context.phone.ui.preview.PreviewCtx
 import com.rokid.context.phone.ui.preview.PreviewRef
 import com.rokid.context.phone.ui.preview.Previewables
 import com.rokid.context.phone.ui.preview.RefKind
+import com.rokid.context.phone.ui.activity.Period
+import com.rokid.context.phone.ui.activity.PeriodWindow
 import com.rokid.context.phone.ui.shell.Routes
 import java.time.LocalDate
 import java.time.ZoneId
@@ -28,10 +30,32 @@ enum class ListKind(val title: String, val searchHint: String, val empty: String
     }
 }
 
-/** THE one list entry point: the route of the common list of [kind] over [ids] (raw ids of that kind). Rows call previewMoment on tap. An empty [ids] shows the kind's empty state. */
+/** Which items a period's list holds, as a small key for the route: the period and the day it was opened on (so the window is the one the Activity page showed). */
+data class ListScope(val period: Period, val anchor: LocalDate) {
+    val key: String get() = "${period.name}:$anchor"
+    fun millis(zone: ZoneId): LongRange = PeriodWindow.of(period, anchor).millis(zone)
+
+    companion object {
+        fun parse(raw: String?): ListScope? {
+            val at = raw?.indexOf(':') ?: return null
+            if (at <= 0) return null
+            val period = Period.entries.firstOrNull { it.name == raw.substring(0, at) } ?: return null
+            val day = runCatching { LocalDate.parse(raw.substring(at + 1)) }.getOrNull() ?: return null
+            return ListScope(period, day)
+        }
+    }
+}
+
+/** The route of the list of [kind] over a period: the Activity cards and "See all" use it, so a Month of any size opens with a key, not its ids. */
+fun listView(kind: ListKind, period: Period, anchor: LocalDate): String = Routes.listIn(kind, ListScope(period, anchor).key)
+
+/** THE entry point for a small set: the route of the common list of [kind] over [ids] (raw ids of that kind). Rows call previewMoment on tap. An empty [ids] shows the kind's empty state. */
 fun listView(kind: ListKind, ids: List<String>): String = Routes.list(kind, ids)
 
-/** The common list's rows for a kind. One source for every kind: its rows are the kind's [com.rokid.context.phone.ui.preview.Previewable] summaries, newest first; a tap calls [onPreview] with the item's [PreviewRef] string. */
+/**
+ * The common list's rows for a kind. One source for every kind: its rows are the kind's [com.rokid.context.phone.ui.preview.Previewable] summaries, newest first; a tap calls [onPreview] with the item's [PreviewRef] string.
+ * Its items are [ids] (a small set) or, with a [scope], every item of the kind in that period, resolved here newest first and read [PAGE] at a time ("Show more").
+ */
 class RecordListSource(
     private val kind: ListKind,
     private val ids: List<String>,
@@ -39,13 +63,25 @@ class RecordListSource(
     private val zone: () -> ZoneId,
     private val today: () -> LocalDate,
     private val onPreview: (String) -> Unit,
+    private val scope: ListScope? = null,
+    private val pageSize: Int = PAGE,
 ) : ListSource {
     override val title = kind.title
     override val searchHint = kind.searchHint
     override val emptyText = kind.empty
     override val sortable = false
 
-    override suspend fun load(): List<ListItem> =
-        if (ids.isEmpty()) emptyList() else Previewables.factory(kind).load(ids, PreviewCtx(data, zone(), today())).map { it.summary() }
+    private var shown = pageSize
+    private var total = 0
+    override val hasMore get() = total > shown
+    override fun showMore() { shown += pageSize }
+
+    override suspend fun load(): List<ListItem> {
+        val every = if (scope != null) data.idsIn(kind, scope.millis(zone())) else ids
+        total = every.size
+        return if (every.isEmpty()) emptyList() else Previewables.factory(kind).load(every.take(shown), PreviewCtx(data, zone(), today())).map { it.summary() }
+    }
     override fun actionFor(item: ListItem) = ItemAction { onPreview(PreviewRef.of(kind.ref, item.id)); ActionResult.Silent }
+
+    companion object { const val PAGE = 200 }
 }
