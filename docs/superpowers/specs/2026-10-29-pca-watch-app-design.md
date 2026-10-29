@@ -74,11 +74,11 @@ Title "Context". Row 1: status chip "Sending" / "Phone not reachable" / "Permiss
 
 Total about 13-17 runs, $20-37. Honest caveat: A is the riskiest (Health Services behaviour on Samsung hardware, Gradle/Wear plumbing); expect one extra debug run. Given the budget, do A first and test on a watch before spending B.
 
-## 9. Open questions (real forks)
+## 9. Decisions (user, 2026-10-29; supersede the former open questions)
 
-1. Source id and migration: rename to `watch_app` and force a one-time re-opt-in (recommended), or keep `watch_livefit` as the stored id to keep the toggle's state?
-2. LiveFit watch side: remove its motion sender too (recommended: no duplicate passive listeners, less battery) or leave it dormant in case LiveFit is used alone?
-3. Which watch is the primary: Galaxy Watch 4 (older, Wear OS 5) or 6 Classic? Drives which one slice A is proven on first.
-4. Release signing: debug-signed sideload only (recommended now), or a release key shared by phone and watch from the start?
-5. Phone -> watch ack/heartbeat (so the watch can show "phone received") would add a second path and ~1 run; skip in v1 (recommended) or include?
-6. Staleness N in the status row: 15 min (1.5x refresh) or a user-visible setting?
+1. Source id renamed to `watch_app`, with a one-time re-opt-in (the old `watch_livefit` flag and pin are deleted).
+2. LiveFit's watch motion sender is removed later, in slice C, and only after the user's OK. Until then `/Users/debasishkanhar/Desktop/rokid/live-fitness-tracker` is not touched.
+3. Primary test watch: Galaxy Watch 6 Classic.
+4. Debug-signed sideload only; no release key.
+5. No runtime phone -> watch ack or heartbeat. Instead, the phone app's first-run setup (slice B) gets a one-time "watch link confirmed" step.
+6. Staleness line in the status row: fixed 15 min, UI only, no setting.

@@ -16,7 +16,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "proactive-context-agent-companion"
-include(":phone", ":glasses")
+include(":phone", ":glasses", ":watch")
 include(":core:model")
 include(":core:capture")
 include(":core:hud")
