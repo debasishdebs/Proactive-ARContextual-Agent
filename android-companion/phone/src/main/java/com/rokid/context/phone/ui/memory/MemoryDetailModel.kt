@@ -1,12 +1,10 @@
 package com.rokid.context.phone.ui.memory
 
-import com.rokid.context.memory.DayBucket
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -27,7 +25,6 @@ data class MemoryDetailUiState(
     /** Retention deleted the photo but kept the memory (Ruling 11): [MemoryDetailModel.PHOTO_EXPIRED] is shown in its place. */
     val photoExpired: Boolean = false,
     val frameId: String? = null,
-    val frameDate: LocalDate? = null,
     /** Non-null while editing. */
     val draft: String? = null,
     val message: String? = null,
@@ -67,7 +64,6 @@ object MemoryDetailModel {
         framePath = frame?.path,
         photoExpired = m.frameId != null && frame == null,
         frameId = m.frameId,
-        frameDate = frame?.let { DayBucket.dayOf(it.ts, zone) },
     )
 }
 

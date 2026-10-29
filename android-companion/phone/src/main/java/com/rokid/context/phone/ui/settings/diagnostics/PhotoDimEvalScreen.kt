@@ -160,14 +160,14 @@ fun PhotoDimEvalScreen(state: PhotoDimEvalUiState, onBack: () -> Unit, onRun: ()
         SoftCard(Modifier.padding(horizontal = 16.dp)) {
             Column(Modifier.padding(16.dp)) {
                 Text(
-                    "Debug only. Label photos in the frame viewer (Add to photo test), then run. Your labelled photos are embedded at 768 and at 256 dimensions in memory, " +
+                    "Debug only. Label photos in the photo previewer (Add to photo test), then run. Your labelled photos are embedded at 768 and at 256 dimensions in memory, " +
                         "hidden among up to ${PhotoDimEval.MAX_DISTRACTORS} of your other photos, and recall@3 is compared. Nothing is written to your search index. " +
                         "Cutting the image vector to 256 is not a documented Nomic property, so this is evidence from your own photos only.",
                     color = PcColors.InkSoft,
                 )
                 NoticeText("Queries ${l.queries} / ${PhotoDimEval.MIN_QUERIES} \u00b7 small ${l.small} / ${PhotoDimEval.MIN_SMALL} \u00b7 labelled photos ${l.photos} / ${PhotoDimEval.MIN_PHOTOS} \u00b7 other photos ${state.distractors} / $need", tag = "photo_dim_counts")
                 val short = l.queries < PhotoDimEval.MIN_QUERIES || l.small < PhotoDimEval.MIN_SMALL || l.photos < PhotoDimEval.MIN_PHOTOS
-                if (short) NoticeText("Add more: open a photo in the frame viewer and tap Add to photo test.", tag = "photo_dim_hint")
+                if (short) NoticeText("Add more: open a photo in the previewer and tap Add to photo test.", tag = "photo_dim_hint")
                 if (state.running) PrimaryAction("Cancel", onCancel, tag = "photo_dim_cancel") else PrimaryAction("Run test", onRun, tag = "photo_dim_run")
                 if (!state.running) TextButton(onClick = { confirmClear = true }, modifier = Modifier.testTag("photo_dim_clear")) { Text("Clear labels") }
                 state.progress?.takeIf { state.running }?.let { NoticeText(it, tag = "photo_dim_progress") }

@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * The user's labels for the photo test: `files/photo-eval/queries.json` (app-private), appended to from the frame viewer.
+ * The user's labels for the photo test: `files/photo-eval/queries.json` (app-private), appended to from the photo previewer.
  * Query text lives only in that file; nothing here logs it. The same query text merges, so one query can name several photos.
  */
 class PhotoLabels(private val dir: File) {

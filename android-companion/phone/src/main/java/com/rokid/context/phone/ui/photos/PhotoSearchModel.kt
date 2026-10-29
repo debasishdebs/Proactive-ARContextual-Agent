@@ -14,7 +14,7 @@ import java.util.Locale
 /**
  * One grid tile. [path] is null when the photo is not stored ([expired]: metadata only). [timeLabel] is the capture time (the stored `frame.ts`, or
  * `frame_meta.capturedAtMs` once expired); an expired photo without a capture time says "received HH:mm" (user ruling 2026-10-22 over S9).
- * [date] (yyyy-MM-dd) opens the frame viewer; [captionMemoryId] is the memory "Open" goes to when the photo is gone (S19).
+ * [date] is the photo's day (yyyy-MM-dd); [captionMemoryId] is the memory "Open" goes to when the photo is gone (S19).
  */
 data class PhotoTile(
     val frameId: String, val path: String?, val timeLabel: String, val score: String, val badge: String /* "Image" | "Caption" */,

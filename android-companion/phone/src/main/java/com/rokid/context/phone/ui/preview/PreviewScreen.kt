@@ -35,6 +35,7 @@ fun forgetLabel(target: ForgetTarget): String = when (target) {
 fun PreviewScreen(
     state: PreviewUiState,
     host: PreviewHost,
+    title: String = "Preview",
     onBack: () -> Unit,
     onForget: (ForgetTarget) -> Unit,
     onConfirmForget: () -> Unit = {},
@@ -43,7 +44,7 @@ fun PreviewScreen(
 ) {
     ForgetDialog(host.detail, onConfirmForget, onDismissForget, onAckForget)
     Column(Modifier.fillMaxSize().background(PcColors.Surface).verticalScroll(rememberScrollState()).testTag("preview_screen")) {
-        ScreenHeader("Preview", onBack)
+        ScreenHeader(title, onBack)
         val item = state.item
         when {
             state.loading -> Unit

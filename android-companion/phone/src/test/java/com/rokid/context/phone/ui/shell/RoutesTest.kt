@@ -26,30 +26,30 @@ class RoutesTest {
 
     @Test fun tabsFollowTheRoutePattern() {
         assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.HOME))
-        assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.ASK))
+        assertEquals("an answer or a nudge is opened from Home", Routes.Tab.HOME, Routes.tabFor(Routes.PREVIEW, "ask:a1"))
+        assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.PREVIEW, "nudge:n1"))
+        assertEquals(Routes.Tab.ACTIVITY, Routes.tabFor(Routes.PREVIEW, "memory:m1"))
+        assertEquals(Routes.Tab.ACTIVITY, Routes.tabFor(Routes.PREVIEW))
         assertEquals(Routes.Tab.ACTIVITY, Routes.tabFor(Routes.ACTIVITY))
         assertEquals(Routes.Tab.ACTIVITY, Routes.tabFor(Routes.DAY))
-        assertEquals(Routes.Tab.ACTIVITY, Routes.tabFor(Routes.MEMORY))
+        assertEquals(Routes.Tab.ACTIVITY, Routes.tabFor(Routes.LIST))
         assertEquals(Routes.Tab.SETTINGS, Routes.tabFor(Routes.DIAGNOSTICS_TRACKER))
         assertNull(Routes.tabFor(Routes.ONBOARDING))
         assertNull(Routes.tabFor(null))
     }
 
-    @Test fun pillNavIsHiddenOnOnboardingAndTheViewer() {
+    @Test fun pillNavIsHiddenOnOnboardingOnly() {
         assertFalse(Routes.showsNav(Routes.ONBOARDING))
-        assertFalse(Routes.showsNav(Routes.FRAMES))
         assertFalse(Routes.showsNav(null))
         assertTrue(Routes.showsNav(Routes.HOME))
         assertTrue(Routes.showsNav(Routes.SETTINGS_ENDPOINTS))
     }
 
     @Test fun buildersEncodeArguments() {
-        assertEquals("ask/a%20b%2Fc", Routes.ask("a b/c"))
+        assertEquals("preview/ask%3Aa%20b%2Fc", Routes.preview("ask:a b/c"))
         assertEquals("activity", Routes.activity())
         assertEquals("activity?period=week", Routes.activity(Period.WEEK))
         assertEquals("day/2026-10-12", Routes.day(TODAY))
-        assertEquals("frames/2026-10-12", Routes.frames(TODAY))
-        assertEquals("frames/2026-10-12?start=f%201", Routes.frames(TODAY, "f 1"))
         assertEquals(Routes.ONBOARDING, Routes.startRoute(onboardingComplete = false))
         assertEquals(Routes.HOME, Routes.startRoute(onboardingComplete = true))
     }
@@ -66,14 +66,11 @@ class RoutesTest {
         assertFalse(BluetoothPermission.isMissing(sdkInt = 34, granted = true))
     }
 
-    @Test fun phase7RoutesLiveAndNudgeTabIsHome() {
+    @Test fun phase7RoutesLive() {
         val p7 = setOf(Routes.SETTINGS_PRIVACY, Routes.SETTINGS_SOURCES, Routes.SETTINGS_ACTIONS, Routes.SETTINGS_SHOPPING)
         assertEquals(setOf("settings/privacy", "settings/sources", "settings/actions", "settings/shopping"), p7)
         assertTrue(Routes.LIVE_SETTINGS.containsAll(p7))
         p7.forEach { assertEquals(it, Routes.Tab.SETTINGS, Routes.tabFor(it)) }
-        assertEquals("nudge/{id}", Routes.NUDGE)
-        assertEquals("nudge/n%201", Routes.nudge("n 1"))
-        assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.NUDGE))
-        assertTrue(Routes.showsNav(Routes.NUDGE))
+        assertTrue(Routes.showsNav(Routes.PREVIEW))
     }
 }

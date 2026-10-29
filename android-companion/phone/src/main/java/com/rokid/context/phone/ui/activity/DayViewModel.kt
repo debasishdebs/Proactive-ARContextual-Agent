@@ -23,8 +23,11 @@ data class DayUiState(
     val date: LocalDate? = null,
     val title: String = "",
     val sections: List<TimelineSection> = emptyList(),
-    val frameCount: Int = 0,
-)
+    /** The day's photos, oldest first. */
+    val frameIds: List<String> = emptyList(),
+) {
+    val frameCount: Int get() = frameIds.size
+}
 
 /**
  * `day/{date}` (ISO yyyy-MM-dd). A malformed or out-of-range argument is "not found", never a crash.
@@ -50,7 +53,7 @@ class DayViewModel(
                     flowOf(notFound)
                 } else {
                     combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), sort) { m, f, o ->
-                        DayUiState(false, true, d, ActivityModel.dayLabel(d, today()), Timeline.sections(m, Timeline.framesFor(m, f, timeline::framesByIds), z, d, o), f.size)
+                        DayUiState(false, true, d, ActivityModel.dayLabel(d, today()), Timeline.sections(m, Timeline.framesFor(m, f, timeline::framesByIds), z, d, o), f.map { it.id })
                     }
                 }
             }

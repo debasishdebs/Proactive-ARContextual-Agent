@@ -4,7 +4,20 @@ import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.rokid.context.BuildConfig
+import com.rokid.context.phone.canvas.DeveloperModeStore
+import com.rokid.context.phone.ui.actions.ProposalCard
+import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEval
+import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalFactory
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -26,12 +39,15 @@ import java.time.ZoneId
 
 data class PreviewUiState(val loading: Boolean = true, val item: Previewable? = null)
 
-/** Loads one item by its ref, once, through the kind's presenter. */
+/** Loads one item by its ref through the kind's presenter. */
 class PreviewViewModel(private val ref: PreviewRef?, private val data: ActivityData, private val zone: () -> ZoneId, private val today: () -> LocalDate) : ViewModel() {
     private val _state = MutableStateFlow(PreviewUiState())
     val state: StateFlow<PreviewUiState> = _state
 
-    init {
+    init { reload() }
+
+    /** Reads the item again (back from a Forget of something it cites, or a new rating): the sections show what is stored now. */
+    fun reload() {
         viewModelScope.launch {
             val item = ref?.let { Previewables.forRef(it.kind).load(listOf(it.id), PreviewCtx(data, zone(), today(), withDay = true)).firstOrNull() }
             _state.value = PreviewUiState(loading = false, item = item)
@@ -47,6 +63,9 @@ fun PreviewRoute(raw: String, deps: PhoneDeps, nav: NavController) {
     val data = remember { RepoActivityData(deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.zone) }
     val vm = viewModel(key = "preview_$raw") { PreviewViewModel(ref, data, deps.zone, deps::today) }
     val state by vm.state.collectAsStateWithLifecycle()
+    // Back from a previewer opened on top (a cited memory, its Forget): re-read, so the card and its sources are current. The first resume is the load itself.
+    var resumed by remember { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { if (resumed) vm.reload() else resumed = true }
     // The memory behind the item (if any) runs Trust, Edit and Forget through the memory detail's view model: the existing ones.
     val memoryId = state.item?.sections()?.filterIsInstance<PreviewSection.TextSection>()?.firstNotNullOfOrNull { it.memoryId }.orEmpty()
     val dvm = viewModel(key = "preview_detail_$raw:$memoryId") {
@@ -56,13 +75,20 @@ fun PreviewRoute(raw: String, deps: PhoneDeps, nav: NavController) {
     LaunchedEffect(detail.forgotten) {
         if (detail.forgotten) { Toast.makeText(app, detail.message ?: ForgetCopy.DONE, Toast.LENGTH_SHORT).show(); back() }
     }
+    val scope = rememberCoroutineScope()
+    val devOn by DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle()
+    // Debug builds with Developer mode on only: the labelling action for the photo 256-vs-768 test.
+    val labels = if (PhotoDimEval.rowVisible(BuildConfig.DEBUG, devOn)) remember { PhotoDimEvalFactory.labels(app) } else null
     val host = PreviewHost(
         detail, framePath = { id -> data.frames(listOf(id)).firstOrNull()?.path },
+        open = { nav.navigate(previewMoment(listOf(it)).route) }, rate = { up -> ref?.let { r -> scope.launch { deps.rateAsk(r.id, up) } } },
+        morePhotos = { q -> nav.navigate(Routes.photos(q)) }, proposal = { id -> ProposalCard(id, Modifier.padding(16.dp), onEnable = { nav.navigate(Routes.SETTINGS_ACTIONS) }) },
+        addToPhotoTest = labels?.let { l -> { q, id, small -> l.add(q, id, small) } },
         showTime = { nav.navigate(Routes.day(it)) }, forgetPhoto = dvm::askForgetPhoto,
         trust = dvm::trust, edit = dvm::startEdit, onDraftChange = dvm::updateDraft, saveEdit = dvm::saveEdit, cancelEdit = dvm::cancelEdit,
     )
     PreviewScreen(
-        state, host, onBack = back,
+        state, host, title = ref?.kind?.title ?: "Preview", onBack = back,
         onForget = { t -> when (t) { is ForgetTarget.Fact -> dvm.askForget(ForgetKind.FACT); is ForgetTarget.Photo -> dvm.askForgetPhoto(t.frameId); else -> Unit } },
         onConfirmForget = dvm::confirmForget, onDismissForget = dvm::dismissForget, onAckForget = dvm::acknowledgeForget,
     )
