@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.SwapVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -100,7 +102,7 @@ fun ActivityScreen(
         }
         item { SectionLabel("Marks") }
         if (state.marks.isEmpty()) item { Hint(MarkRows.EMPTY) }
-        items(state.marks, key = { "mark_${it.labelId}" }) { MarkCard(it) }
+        items(state.marks, key = { "mark_${it.labelId}" }) { MarkCard(it, onOpenMemory, onOpenFrames, onOpenDay) }
         if (state.period == Period.TODAY) {
             if (state.sections.isNotEmpty()) timelineItems(state.sections, onOpenMemory)
             else if (state.today != null) item { Hint("Nothing captured yet today") }
@@ -147,15 +149,33 @@ private fun SortMenu(current: ActivitySort, onSelect: (ActivitySort) -> Unit) {
     }
 }
 
-/** One mark, read-only: when, how it was made, whether a Moment holds it and why there is no photo. */
+/** One mark: when, how it was made, whether a Moment holds it and why there is no photo. A tap opens its photo (the memory detail screen, which carries Forget) or, with no photo, says why and offers its day. */
 @Composable
-private fun MarkCard(row: MarkRowUi) {
-    SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth().testTag("mark_row")) {
+private fun MarkCard(row: MarkRowUi, onOpenMemory: (String) -> Unit, onOpenFrames: (LocalDate) -> Unit, onOpenDay: (LocalDate) -> Unit) {
+    var noPhoto by remember { mutableStateOf<MarkTarget.NoPhoto?>(null) }
+    val target = MarkRows.target(row)
+    val open: (() -> Unit)? = when (target) {
+        is MarkTarget.Memory -> ({ onOpenMemory(target.memoryId) })
+        is MarkTarget.Photo -> ({ onOpenFrames(target.date) })
+        is MarkTarget.NoPhoto -> ({ noPhoto = target })
+        null -> null
+    }
+    SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth().testTag("mark_row"), onClick = open) {
         Column(Modifier.padding(12.dp)) {
             Text(if (row.code.isEmpty()) row.time else "${row.time}  \u00b7  ${row.code}", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
             Text(row.joined, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink)
             row.reason?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft) }
+            if (target is MarkTarget.Memory || target is MarkTarget.Photo) Text(MarkRows.TAP_HINT, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
         }
+    }
+    noPhoto?.let { t ->
+        AlertDialog(
+            onDismissRequest = { noPhoto = null },
+            title = { Text("No photo for this mark") },
+            text = { Text(t.reason) },
+            confirmButton = { TextButton(onClick = { noPhoto = null; onOpenDay(t.date) }, modifier = Modifier.testTag("mark_show_time")) { Text("Show that time") } },
+            dismissButton = { TextButton(onClick = { noPhoto = null }) { Text("Close") } },
+        )
     }
 }
 
