@@ -175,7 +175,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             val app = LocalContext.current.applicationContext
             val vm = viewModel {
                 ContextSourcesViewModel(
-                    settings, c.certLookup, c.decision, c.status, c.stats,
+                    settings, c.decision, c.status, c.stats,
                     granted = { androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED },
                     bonded = { com.rokid.context.phone.context.CarSource.bondedDevicesForPicker(app) },
                     tick = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(5_000) } },

@@ -1,6 +1,5 @@
 package com.rokid.context.phone.ui.settings.capture
 
-import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Row
@@ -34,7 +33,6 @@ import com.rokid.context.phone.context.SourceStatus
 import com.rokid.context.phone.context.WatchLinkSnapshot
 import com.rokid.context.phone.context.WatchLinkState
 import com.rokid.context.phone.context.WatchLinkStep
-import com.rokid.context.phone.context.WatchMotionIntake
 import com.rokid.context.phone.context.WatchNodeProbe
 import com.rokid.context.phone.context.WatchNodes
 import com.rokid.context.phone.context.WatchStatusKind
@@ -55,29 +53,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import android.Manifest
-import java.security.MessageDigest
-
-/** The LiveFit signing certificate as lowercase hex SHA-256, or null when LiveFit is not installed (or has no readable certificate). */
-fun interface LiveFitCertLookup { fun sha256(): String?; fun cannotPin(): Boolean = false }
-
-/** The real lookup: the current signing certificate of `com.livear.fit` (spec §8). Never logged. */
-class PackageLiveFitCertLookup(private val pm: PackageManager) : LiveFitCertLookup {
-    override fun sha256(): String? = try {
-        val info = pm.getPackageInfo(WatchMotionIntake.LIVEFIT_PACKAGE, PackageManager.GET_SIGNING_CERTIFICATES)
-        val si = info.signingInfo
-        val sig = when {
-            si == null -> null
-            si.hasMultipleSigners() -> null
-            else -> si.signingCertificateHistory?.lastOrNull() ?: si.apkContentsSigners.firstOrNull()
-        }
-        sig?.let { MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) } }
-    } catch (e: Exception) { null }
-
-    /** A multi-signer package can never match a single-certificate pin, so it cannot be pinned. */
-    override fun cannotPin(): Boolean = try {
-        pm.getPackageInfo(WatchMotionIntake.LIVEFIT_PACKAGE, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo?.hasMultipleSigners() == true
-    } catch (e: Exception) { false }
-}
 
 /** One phone or intent switch: [on] is the stored opt-in, [status] what the hub made of it, [denied] a permission answer of "no". */
 data class SourceRow(val on: Boolean = false, val status: SourceStatus = SourceStatus.OFF, val denied: Boolean = false, val permissionMissing: Boolean = false)
@@ -90,9 +65,6 @@ data class CarRow(val address: String, val name: String, val checked: Boolean) {
 data class ContextSourcesUiState(
     val applyToCapture: Boolean = true,
     val watchOn: Boolean = false,
-    val watchMissing: Boolean = false,
-    val cannotPin: Boolean = false,
-    val reToggleHint: Boolean = false,
     val watchStatus: WatchStatusRow = WatchStatusRow(WatchStatusKind.OFF, ""),
     val watchLinkConfirmed: Boolean = false,
     val stateLine: String = "",
@@ -123,7 +95,6 @@ data class ContextSourcesUiState(
  */
 class ContextSourcesViewModel(
     private val settings: ContextSourceSettings,
-    private val cert: LiveFitCertLookup,
     decision: StateFlow<ContextDecision>,
     status: StateFlow<Map<String, SourceStatus>>,
     private val stats: ContextHubStats? = null,
@@ -142,7 +113,7 @@ class ContextSourcesViewModel(
     private val now: () -> Long = System::currentTimeMillis,
     private val timeText: (Long) -> String = { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(it)) },
 ) : ViewModel() {
-    private data class Local(val missing: Boolean = false, val multiSigner: Boolean = false, val denied: Set<String> = emptySet(), val bonded: List<Pair<String, String>> = emptyList(), val nodes: WatchNodes? = null)
+    private data class Local(val denied: Set<String> = emptySet(), val bonded: List<Pair<String, String>> = emptyList(), val nodes: WatchNodes? = null)
     private val local = MutableStateFlow(Local())
     private var pending: String? = null
 
@@ -157,7 +128,7 @@ class ContextSourcesViewModel(
         val cars = l.bonded.map { (addr, name) -> CarRow(addr, if (name == addr || name.isBlank()) "Unnamed device" else name, mine.any { it.equals(addr, ignoreCase = true) }) }
         val btOff = settings.enabled(CAR) && PermissionPlan.accepted(CAR, granted = granted) && !bluetoothOn()
         return ContextSourcesUiState(
-            settings.applyToCapture, on, l.missing, l.multiSigner, false, WatchStatusModel.of(on, l.nodes, lk, now(), timeText), WatchLinkStep.confirmed(lk),
+            settings.applyToCapture, on, WatchStatusModel.of(on, l.nodes, lk, now(), timeText), WatchLinkStep.confirmed(lk),
             line, rows, approximate, cars, mine.isNotEmpty(), btOff,
         )
     }
@@ -181,7 +152,7 @@ class ContextSourcesViewModel(
 
     /**
      * On: the permission flow first. Already granted (or, for speed, approximate granted) enables at once; otherwise `ask` launches the
-     * system dialog and [onPermissionResult] decides. Off: disable. The watch pins its certificate instead of asking for a permission.
+     * system dialog and [onPermissionResult] decides. Off: disable. The watch needs no permission here.
      */
     fun setSource(id: String, on: Boolean, ask: (Array<String>) -> Unit) {
         if (id == WATCH) { setWatch(on); return }

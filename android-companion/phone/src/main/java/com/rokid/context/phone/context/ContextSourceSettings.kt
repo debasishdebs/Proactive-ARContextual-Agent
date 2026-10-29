@@ -27,8 +27,8 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
     /** One-time: the old `watch_livefit` switch and its certificate pin are deleted, so the watch source starts as [NONE] and the user opts in again. */
     private fun migrateLegacyWatch() {
         val old = SRC + LEGACY_WATCH
-        if (!prefs.contains(old) && !prefs.contains(LIVEFIT_CERT)) return
-        prefs.edit().remove(old).remove(LIVEFIT_CERT).putBoolean(SRC + WATCH_APP, false).apply()
+        if (!prefs.contains(old) && !prefs.contains(LEGACY_CERT)) return
+        prefs.edit().remove(old).remove(LEGACY_CERT).putBoolean(SRC + WATCH_APP, false).apply()
     }
 
     fun enabled(id: String): Boolean = prefs.getBoolean(SRC + id, false)
@@ -44,10 +44,6 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
     fun addMyCar(address: String) { prefs.edit().putStringSet(MY_CARS, myCars + address).apply() }
     fun removeMyCar(address: String) { prefs.edit().putStringSet(MY_CARS, myCars - address).apply() }
 
-    var liveFitCertSha256: String?
-        get() = prefs.getString(LIVEFIT_CERT, null)
-        set(v) { prefs.edit().apply { if (v == null) remove(LIVEFIT_CERT) else putString(LIVEFIT_CERT, v) }.apply() }
-
     /** The last accepted watch (epoch, seq), persisted so a phone restart does not accept a replay. */
     val watchEpoch: Long get() = prefs.getLong(WATCH_EPOCH, 0L)
     val watchLastSeq: Long get() = prefs.getLong(WATCH_SEQ, 0L)
@@ -55,7 +51,7 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
 
     /** Delete all: personal data goes, the watch source turns off (its pin is gone) and image intent turns off (the hub then drops its in-memory votes); the apply switch stays. */
     fun clearPersonal() {
-        prefs.edit().putBoolean(SRC + WATCH_APP, false).putBoolean(SRC + "image_intent", false).remove(MY_CARS).remove(LIVEFIT_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
+        prefs.edit().putBoolean(SRC + WATCH_APP, false).putBoolean(SRC + "image_intent", false).remove(MY_CARS).remove(LEGACY_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
     }
 
     /** Delete all: run the wipe, then clear personal state. */
@@ -69,7 +65,7 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
         private const val SRC = "src_"
         private const val APPLY = "apply_to_capture"
         private const val MY_CARS = "my_cars"
-        private const val LIVEFIT_CERT = "livefit_cert_sha256"
+        private const val LEGACY_CERT = "livefit_cert_sha256" // deleted by the one-time migration; kept only to remove it
         private const val WATCH_EPOCH = "watch_epoch"
         private const val WATCH_SEQ = "watch_last_seq"
 

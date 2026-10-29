@@ -7,7 +7,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * `watch_app`: the PCA watch app (Galaxy Watch), spec 2026-10-29. It owns no sensor: `start()` publishes a [WatchMotionIntake]
- * in [WatchMotionIntake.current] for [PcaWatchListener] (Data Layer) and, until slice C, [WatchMotionProvider] to feed, `stop()` clears it. [sinkFor] is taken inside `start()` (per-run generation, see [ContextSource.start]).
+ * in [WatchMotionIntake.current] for [PcaWatchListener] (Data Layer) to feed, `stop()` clears it. [sinkFor] is taken inside `start()` (per-run generation, see [ContextSource.start]).
  * The 1 s coalescing timer runs on a private single daemon thread that only calls the intake (which only enqueues).
  */
 class WatchSource(
@@ -37,7 +37,7 @@ class WatchSource(
         val ses = if (schedule == null) Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "PcCtxWatch").apply { isDaemon = true } } else null
         val sched: (Long, () -> Unit) -> Unit = schedule ?: { d, f -> try { ses!!.schedule({ try { f() } catch (_: Exception) { } }, d, TimeUnit.MILLISECONDS) } catch (_: Exception) { } }
         val i = WatchMotionIntake(
-            enabled = { settings.enabled(ID) }, pinnedSha256 = { settings.liveFitCertSha256 }, clock = clock,
+            enabled = { settings.enabled(ID) }, clock = clock,
             sink = { e -> count.incrementAndGet(); (e as? Evidence.WatchMotion)?.let { link.onAccepted(it.state, it.atMs) }; sink.accept(e) },
             initialEpoch = settings.watchEpoch, initialSeq = settings.watchLastSeq,
             persist = settings::setWatchSeq, schedule = sched, mono = mono,

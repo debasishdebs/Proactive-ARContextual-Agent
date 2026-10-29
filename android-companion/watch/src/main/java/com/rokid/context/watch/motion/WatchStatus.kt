@@ -9,8 +9,8 @@ object WatchStatus {
     fun link(enabled: Boolean, permissionGranted: Boolean, m: MotionMemory): LinkStatus = when {
         !enabled -> LinkStatus.OFF
         !permissionGranted -> LinkStatus.PERMISSION_NEEDED
-        m.reported == WatchState.UNKNOWN -> LinkStatus.WAITING
         m.unsent -> LinkStatus.PHONE_NOT_REACHABLE
+        m.reported == WatchState.UNKNOWN && m.lastSentMs <= 0L -> LinkStatus.WAITING
         else -> LinkStatus.SENDING
     }
 
@@ -24,6 +24,10 @@ object WatchStatus {
         WatchState.ASLEEP -> "Asleep"
         WatchState.UNKNOWN -> "Unknown"
     }
+
+    /** "Last sent: WALKING 14:05" after a successful send, or null before the first one. [timeText] formats the send time as HH:mm. */
+    fun lastSent(m: MotionMemory, timeText: (Long) -> String): String? =
+        if (m.lastSentMs <= 0L) null else "Last sent: ${m.lastSentState.name} ${timeText(m.lastSentMs)}"
 
     /** "sent 2 min ago", or "not sent yet" when [lastSentMs] is 0. */
     fun sentAgo(lastSentMs: Long, nowMs: Long): String {

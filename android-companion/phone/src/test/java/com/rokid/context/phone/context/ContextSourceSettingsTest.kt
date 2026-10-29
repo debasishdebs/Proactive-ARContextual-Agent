@@ -27,7 +27,6 @@ class ContextSourceSettingsTest {
         six.forEach { assertFalse(it, s.enabled(it)) }
         assertTrue(s.applyToCapture)
         assertTrue(s.myCars.isEmpty())
-        assertNull(s.liveFitCertSha256)
     }
 
     @Test fun switchesAndApplyRoundTrip() {
@@ -47,10 +46,10 @@ class ContextSourceSettingsTest {
     @Test fun clearPersonalKeepsApplySwitchButTurnsWatchOff() {
         val s = settings()
         s.setEnabled("watch_app", true); s.applyToCapture = false
-        s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"; s.setWatchSeq(epoch = 7, seq = 42)
+        s.addMyCar("AA:BB"); s.setWatchSeq(epoch = 7, seq = 42)
         s.clearPersonal()
         assertFalse(s.enabled("watch_app")); assertFalse(s.applyToCapture)
-        assertTrue(s.myCars.isEmpty()); assertNull(s.liveFitCertSha256)
+        assertTrue(s.myCars.isEmpty())
         assertEquals(0L, s.watchEpoch); assertEquals(0L, s.watchLastSeq)
     }
 
@@ -62,10 +61,10 @@ class ContextSourceSettingsTest {
 
     @Test fun wipeThenClearStillClearsPersonalWhenTheWipeThrows() {
         val s = settings()
-        s.setEnabled("watch_app", true); s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"
+        s.setEnabled("watch_app", true); s.addMyCar("AA:BB");
         val r = runCatching { kotlinx.coroutines.runBlocking { s.wipeThenClear { error("boom") } } }
         assertTrue(r.isFailure)
-        assertTrue(s.myCars.isEmpty()); assertNull(s.liveFitCertSha256); assertFalse(s.enabled("watch_app"))
+        assertTrue(s.myCars.isEmpty()); assertFalse(s.enabled("watch_app"))
     }
 
     @Test fun watchEpochAndSeqPersist() {

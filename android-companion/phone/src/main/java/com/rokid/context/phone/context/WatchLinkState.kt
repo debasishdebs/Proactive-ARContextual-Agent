@@ -22,7 +22,7 @@ data class WatchLinkSnapshot(
  * aggregation and its `watch` / `watchRej` counters are untouched). [offSink] counts a drop that never reached an intake
  * (source off, hub not running) in the hub's `watchRej` counter; HubGraph wires it.
  */
-class WatchLinkState {
+class WatchLinkState(private val dropLog: WatchDropLog = WatchDropLog { com.rokid.context.core.log.PcLog.i("PcCtx", it) }) {
     private val _snapshot = MutableStateFlow(WatchLinkSnapshot())
     val snapshot: StateFlow<WatchLinkSnapshot> = _snapshot
 
@@ -34,6 +34,7 @@ class WatchLinkState {
 
     /** A refusal the intake already counted (its own `watchRej`). */
     fun onDrop(reason: String) {
+        dropLog.drop(reason)
         _snapshot.update { it.copy(drops = it.drops + (reason to ((it.drops[reason] ?: 0) + 1)), lastDropReason = reason) }
     }
 
@@ -41,6 +42,42 @@ class WatchLinkState {
     fun dropOff(reason: String) { onDrop(reason); try { offSink() } catch (_: Exception) { } }
 
     companion object { val shared = WatchLinkState() }
+}
+
+/**
+ * One log line per rejected watch message, rate-limited: for each fixed reason token at most one line per [windowMs], carrying
+ * the count of drops since that reason's last line. Only a token and a count are logged, never a payload, state or node name.
+ * Internal reasons map to the fixed set `source_off, hub_down, bad_path, bad_version, stale_seq, rate, malformed, wrong_source`.
+ */
+class WatchDropLog(private val windowMs: Long = 60_000L, private val clock: () -> Long = System::currentTimeMillis, private val sink: (String) -> Unit) {
+    private class Slot { var lastAt = Long.MIN_VALUE; var pending = 0 }
+    private val slots = HashMap<String, Slot>()
+
+    fun drop(reason: String) {
+        val token = token(reason)
+        val line = synchronized(slots) {
+            val s = slots.getOrPut(token) { Slot() }
+            s.pending++
+            val now = clock()
+            if (s.lastAt != Long.MIN_VALUE && now - s.lastAt < windowMs) null
+            else { val n = s.pending; s.pending = 0; s.lastAt = now; "watch drop reason=$token n=$n" }
+        }
+        if (line != null) try { sink(line) } catch (_: Exception) { }
+    }
+
+    companion object {
+        val TOKENS = setOf("source_off", "hub_down", "bad_path", "bad_version", "stale_seq", "rate", "malformed", "wrong_source")
+
+        fun token(reason: String): String = when (reason) {
+            "not_enabled", "source_off" -> "source_off"
+            "hub_off", "hub_down" -> "hub_down"
+            "version", "bad_version" -> "bad_version"
+            "bad_source", "wrong_source" -> "wrong_source"
+            "too_big", "malformed" -> "malformed"
+            "bad_path", "stale_seq", "rate" -> reason
+            else -> "malformed"
+        }
+    }
 }
 
 /**
@@ -59,7 +96,7 @@ object PcaWatchLink {
         if (!sourceOn) return refuse(link, "source_off")
         val i = intake ?: return refuse(link, "hub_off")
         val json = data?.let { runCatching { String(it, Charsets.UTF_8) }.getOrNull() }
-        return i.acceptLink(json)
+        return i.accept(json)
     }
 
     private fun refuse(link: WatchLinkState, reason: String): WatchMotionIntake.Result { link.dropOff(reason); return WatchMotionIntake.Result(false, reason) }

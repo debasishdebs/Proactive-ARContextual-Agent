@@ -51,7 +51,6 @@ class ContextSourcesSettingsTest {
     private val decision = MutableStateFlow(ContextDecision(ContextState.UNKNOWN, 0f, 0L, emptySet(), null, ContextState.UNKNOWN, false))
     private val status = MutableStateFlow(mapOf("watch_app" to SourceStatus.OFF))
     private val stats = ContextHubStats { 0L }
-    private val digest = "ab".repeat(32)
 
     private val grantedPerms = mutableSetOf<String>()
     private var bonded = listOf("AA:BB:CC:00:00:01" to "Civic", "AA:BB:CC:00:00:02" to "Van")
@@ -64,7 +63,7 @@ class ContextSourcesSettingsTest {
     private val coarsePerm = "android.permission.ACCESS_COARSE_LOCATION"
 
     private val link = MutableStateFlow(WatchLinkSnapshot())
-    private fun vm(cert: String? = digest) = ContextSourcesViewModel(settings, LiveFitCertLookup { cert }, decision, status, stats, granted = { it in grantedPerms }, bonded = { bonded }, bluetoothOn = { btOn }, link = link, now = { 1_000L }, timeText = { "t" })
+    private fun vm() = ContextSourcesViewModel(settings, decision, status, stats, granted = { it in grantedPerms }, bonded = { bonded }, bluetoothOn = { btOn }, link = link, now = { 1_000L }, timeText = { "t" })
 
     private fun show(vm: ContextSourcesViewModel) {
         compose.setContent {
@@ -88,7 +87,7 @@ class ContextSourcesSettingsTest {
         val v = vm(); show(v)
         compose.onNodeWithTag("ctx_watch_app").performClick(); compose.waitForIdle()
         compose.onNodeWithTag("ctx_watch_app").assertIsOn()
-        assertTrue(settings.enabled("watch_app")); assertEquals("watch_app", settings.activeWatchSource); assertNull(settings.liveFitCertSha256)
+        assertTrue(settings.enabled("watch_app")); assertEquals("watch_app", settings.activeWatchSource)
         v.cancelScope()
     }
 
