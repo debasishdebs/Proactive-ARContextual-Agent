@@ -177,7 +177,7 @@ class ActivityMarksTest {
         compose.onAllNodesWithTag("mark_row")[0].performClick()
         assertEquals("m1", memory)
         compose.onAllNodesWithTag("mark_row")[1].performClick()
-        compose.onNodeWithText("No photo: the camera was busy", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithText("No photo for this mark").assertIsDisplayed()
         compose.onNodeWithTag("mark_show_time").performClick()
         assertEquals(TODAY, day)
     }
