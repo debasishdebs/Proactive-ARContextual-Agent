@@ -59,6 +59,22 @@ class ActivityViewModelTest {
         assertEquals("Week of 12 Oct", week.header)
     }
 
+    /** The four top cards each carry the ids of their kind for the period, so the list they open holds exactly what the count says. */
+    @Test fun eachTopCardCarriesTheIdsOfItsKindForThePeriod() = runBlocking {
+        graph.frames.add(Fixtures.frame("f1", Fixtures.at(TODAY, 8)))
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", Fixtures.at(TODAY, 9)))
+        graph.asks.upsert(Fixtures.ask("a1", Fixtures.at(TODAY, 9)))
+        graph.asks.upsert(Fixtures.ask("a0", Fixtures.at(TODAY.minusDays(1), 9)))
+        graph.nudges.addIgnore(Fixtures.nudge("n1", Fixtures.at(TODAY, 9)))
+        val model = vm(flowOf(Fixtures.at(TODAY, 10)))
+        val s = withTimeout(5_000) { model.state.first { it.today == TODAY && it.tileIds.nudges.isNotEmpty() && it.tileIds.answers.isNotEmpty() } }
+        assertEquals(listOf("f1"), s.tileIds.frames); assertEquals(listOf("m1"), s.tileIds.memories)
+        assertEquals(listOf("a1"), s.tileIds.answers); assertEquals(listOf("n1"), s.tileIds.nudges)
+        model.selectPeriod(Period.WEEK)
+        val week = withTimeout(5_000) { model.state.first { it.period == Period.WEEK && it.tileIds.answers.isNotEmpty() } }
+        assertEquals(listOf(1, 1, 1, 1), listOf(week.tileIds.frames, week.tileIds.memories, week.tileIds.answers, week.tileIds.nudges).map { it.size })
+    }
+
     @Test fun backlogMemoryFromAnEarlierDayPhotoKeepsItsPhoto() = runBlocking {
         // BUG-1 (device run 2026-10-14): photo captured yesterday, extracted today -> row showed "No photo".
         graph.frames.add(Fixtures.frame("old", Fixtures.at(TODAY.minusDays(1), 23, 10), path = "/old.jpg"))

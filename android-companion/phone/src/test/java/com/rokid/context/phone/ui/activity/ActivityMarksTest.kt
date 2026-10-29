@@ -10,7 +10,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performClick
-import java.time.LocalDate
+import com.rokid.context.phone.ui.list.ListKind
 import androidx.compose.ui.test.hasText
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -127,7 +127,7 @@ class ActivityMarksTest {
 
     private val status = StatusUi("Capturing", live = true, paused = false, batteryPct = 82, banner = null)
     private fun show(state: ActivityUiState) = compose.setContent {
-        PcTheme { ActivityScreen(state, onSelectPeriod = {}, onTogglePause = {}, onBannerAction = {}, onOpenMemory = {}, onOpenFrames = {}, onOpenDay = {}) }
+        PcTheme { ActivityScreen(state, onSelectPeriod = {}, onTogglePause = {}, onBannerAction = {}, onPreview = {}, onOpenList = { _, _ -> }, onOpenDay = {}) }
     }
 
     @Test fun theScreenShowsTheEmptyStateAndTheRows() {
@@ -148,17 +148,6 @@ class ActivityMarksTest {
         compose.onNodeWithText("Moment with no photo").assertIsDisplayed()
     }
 
-    @Test fun aTapGoesToTheCaptionThePhotoOrWhyThereIsNone() {
-        val d = TODAY
-        val cap = MarkRowUi("a", 1, "09:00", "", "x", null, frameId = "f", memoryId = "m1", date = d)
-        val photo = MarkRowUi("b", 1, "09:00", "", "x", null, frameId = "f", date = d)
-        val none = MarkRowUi("c", 1, "09:00", "", "x", "No photo: the camera was busy", date = d)
-        assertEquals(MarkTarget.Memory("m1"), MarkRows.target(cap))
-        assertEquals(MarkTarget.Photo(d, "f"), MarkRows.target(photo))
-        assertEquals(MarkTarget.NoPhoto(d, "No photo: the camera was busy"), MarkRows.target(none))
-        assertNull(MarkRows.target(MarkRowUi("d", 1, "09:00", "", "x", null)))
-    }
-
     @Test fun theRowCarriesThePhotoAndTheCaptionOfItsMoment() = runBlocking<Unit> {
         val e = DeletionEpoch("i", 1, 0)
         graph.db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity("a", "MOMENT", "tap", "MOMENT", Fixtures.at(TODAY, 8), createdAt = 1, photo = "ok", frameId = "fr"), DaoFence(0, e, { 0 }, { e }))
@@ -166,19 +155,18 @@ class ActivityMarksTest {
         assertEquals("fr", st.marks.single().frameId); assertNull(st.marks.single().memoryId); assertEquals(TODAY, st.marks.single().date)
     }
 
-    @Test fun tappingACaptionedMarkOpensItsMemoryAndANoPhotoMarkOffersThatTime() {
-        var memory: String? = null; var day: LocalDate? = null
+    @Test fun everyMarkRowPreviewsItsMarkAndTheSectionOpensTheMarksList() {
+        val previews = mutableListOf<List<String>>(); val lists = mutableListOf<Pair<ListKind, List<String>>>()
         val rows = listOf(
             MarkRowUi("a", 2, "09:00", "", "In a Moment with a photo", null, frameId = "f", memoryId = "m1", date = TODAY),
             MarkRowUi("b", 1, "08:00", "", "Moment with no photo", "No photo: the camera was busy", date = TODAY),
         )
-        compose.setContent { PcTheme { ActivityScreen(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, today = TODAY, marks = rows), onSelectPeriod = {}, onTogglePause = {}, onBannerAction = {}, onOpenMemory = { memory = it }, onOpenFrames = {}, onOpenDay = { day = it }) } }
-        compose.onNodeWithTag("activity_list").performScrollToNode(hasText(MarkRows.TAP_HINT))
+        compose.setContent { PcTheme { ActivityScreen(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, today = TODAY, marks = rows), onSelectPeriod = {}, onTogglePause = {}, onBannerAction = {}, onPreview = { previews += it }, onOpenList = { k, ids -> lists += k to ids }, onOpenDay = {}) } }
+        compose.onNodeWithTag("activity_list").performScrollToNode(hasText("No photo: the camera was busy"))
         compose.onAllNodesWithTag("mark_row")[0].performClick()
-        assertEquals("m1", memory)
         compose.onAllNodesWithTag("mark_row")[1].performClick()
-        compose.onNodeWithText("No photo for this mark").assertIsDisplayed()
-        compose.onNodeWithTag("mark_show_time").performClick()
-        assertEquals(TODAY, day)
+        assertEquals(listOf(listOf("mark:a"), listOf("mark:b")), previews)
+        compose.onNodeWithTag("marks_all").performClick()
+        assertEquals(listOf(ListKind.MARKS to listOf("a", "b")), lists)
     }
 }

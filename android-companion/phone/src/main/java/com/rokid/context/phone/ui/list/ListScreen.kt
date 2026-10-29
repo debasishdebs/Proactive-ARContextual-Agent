@@ -172,7 +172,7 @@ fun ListScreen(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
                     items == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PcColors.Mint) }
-                    visible.isEmpty() -> EmptyState(if (items!!.isEmpty()) "Nothing here yet" else "No matches")
+                    visible.isEmpty() -> EmptyState(if (items!!.isEmpty()) source.emptyText else "No matches")
                     else -> LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
                         if (installed.isNotEmpty()) {
                             item { GroupLabel(source.doneSection, installed.size) }
@@ -314,6 +314,21 @@ private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?
         }
         val more = source.moreActionsFor(item)
         if (more.isNotEmpty()) MoreMenu(item, more, actions)
+    }
+}
+
+/** One row as a card, drawn like a list row: used where a list's rows sit inside another screen (Activity's Marks) so they look the same as in the list. */
+@Composable
+fun ListItemCard(item: ListItem, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    SoftCard(modifier.fillMaxWidth(), onClick = onClick) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            item.icon?.let { IconChip(it, PcColors.ChipSlate) }
+            Column(Modifier.weight(1f).padding(horizontal = if (item.icon != null) 14.dp else 0.dp)) {
+                Text(item.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                item.subtitle?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft) }
+            }
+            item.trailingText?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(start = 8.dp).widthIn(max = 140.dp)) }
+        }
     }
 }
 

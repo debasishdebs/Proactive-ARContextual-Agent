@@ -18,6 +18,12 @@ import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.frames.FrameViewerScreen
 import com.rokid.context.phone.ui.frames.FrameViewerViewModel
 import com.rokid.context.phone.ui.home.HomeRoute
+import com.rokid.context.phone.ui.list.ListKind
+import com.rokid.context.phone.ui.list.ListViewRoute
+import com.rokid.context.phone.ui.list.listView
+import com.rokid.context.phone.ui.preview.PreviewMode
+import com.rokid.context.phone.ui.preview.PreviewRoute
+import com.rokid.context.phone.ui.preview.previewMoment
 import com.rokid.context.phone.ui.memory.MemoryDetailRoute
 import com.rokid.context.phone.ui.nudge.NudgeDetailRoute
 import com.rokid.context.phone.ui.onboarding.OnboardingRoute
@@ -65,10 +71,17 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val state by vm.state.collectAsStateWithLifecycle()
         ActivityScreen(
             state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
-            onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) }, onOpenDay = { nav.navigate(Routes.day(it)) },
-            onOpenPhoto = { d, id -> nav.navigate(Routes.frames(d, id)) },
+            onPreview = { ids -> nav.navigate(previewMoment(ids, PreviewMode.OPEN).route) }, onOpenList = { kind, ids -> nav.navigate(listView(kind, ids)) },
+            onOpenDay = { nav.navigate(Routes.day(it)) },
             onSearchPhotos = { nav.navigate(Routes.photos()) },
         )
+    }
+
+    composable(Routes.PREVIEW, arguments = listOf(navArgument("ref") { type = NavType.StringType })) { entry -> PreviewRoute(entry.arguments?.getString("ref").orEmpty(), deps, nav) }
+
+    composable(Routes.LIST, arguments = listOf(navArgument("kind") { type = NavType.StringType }, navArgument("ids") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
+        val kind = ListKind.parse(entry.arguments?.getString("kind")) ?: ListKind.MOMENTS
+        ListViewRoute(kind, entry.arguments?.getString("ids").orEmpty().split(',').filter { it.isNotBlank() }, deps, nav)
     }
 
     composable(Routes.DAY, arguments = listOf(dateArg)) { entry ->

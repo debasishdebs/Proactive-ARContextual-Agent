@@ -7,6 +7,7 @@ import com.rokid.context.memory.db.MomentDao
 import com.rokid.context.memory.moment.MomentType
 import com.rokid.context.core.model.MarkPhotoReason
 import com.rokid.context.memory.moment.NoPhotoReason
+import com.rokid.context.phone.ui.list.ListKind
 import com.rokid.context.phone.ui.status.StatusUi
 import java.time.DayOfWeek
 import java.time.Instant
@@ -42,6 +43,16 @@ data class PeriodWindow(val period: Period, val start: LocalDate, val endExclusi
 }
 
 data class Tiles(val frames: Int, val memories: Int, val answers: Int, val nudges: Int)
+/** The ids behind each top card in the period: a card opens the list of its kind over these. Raw ids (no [com.rokid.context.phone.ui.preview.PreviewRef] prefix). */
+data class TileIds(val frames: List<String> = emptyList(), val memories: List<String> = emptyList(), val answers: List<String> = emptyList(), val nudges: List<String> = emptyList()) {
+    fun of(kind: ListKind): List<String> = when (kind) {
+        ListKind.FRAMES -> frames
+        ListKind.MEMORIES -> memories
+        ListKind.ANSWERS -> answers
+        ListKind.NUDGES -> nudges
+        ListKind.MARKS, ListKind.MOMENTS -> emptyList() // not a card: the Marks and Moments sections list their own rows
+    }
+}
 data class TimelineRow(val memoryId: String, val time: String, val text: String, val confidence: Double, val framePath: String?, val frameId: String?)
 data class TimelineSection(val label: String, val rows: List<TimelineRow>)
 data class DayBar(val date: LocalDate, val label: String, val count: Int)
@@ -101,23 +112,14 @@ object Timeline {
 
 /** One mark as the Activity tab shows it (read-only): when, how it was made, whether a Moment holds it and, for a Moment with no photo, why. Fixed words only; a mark carries no text. */
 data class MarkRowUi(val labelId: String, val atMs: Long, val time: String, val code: String, val joined: String, val reason: String?,
-    /** What a tap opens: see [MarkRows.target]. */
+    /** What a tap previews: the linked photo, the caption of its Moment, and the day. */
     val frameId: String? = null, val memoryId: String? = null, val date: LocalDate? = null,
+    /** The fixed token behind [reason] (`camera_busy`, `pending`, `unknown`...); null when the mark has no reason. */
+    val reasonCode: String? = null,
 )
-
-/** Where a tapped mark goes. A mark never deletes anything: Forget lives on the memory detail screen. */
-sealed interface MarkTarget {
-    /** The memory/photo detail screen of the Moment's caption (it carries Forget). */
-    data class Memory(val memoryId: String) : MarkTarget
-    /** A linked photo with no caption yet: that photo in the day's frames. */
-    data class Photo(val date: LocalDate, val frameId: String) : MarkTarget
-    /** No photo: say why and offer "Show that time" (the day). */
-    data class NoPhoto(val date: LocalDate, val reason: String) : MarkTarget
-}
 
 object MarkRows {
     private val DAY_HHMM = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH)
-    const val TAP_HINT = "Tap to open the photo"
     const val EMPTY = "No marks yet. A tap or a voice mark on your glasses will show up here."
 
     /**
@@ -147,6 +149,13 @@ object MarkRows {
         }
     }
 
+    /** The token [reasonLabel] words, for the previewer's status line. */
+    fun reasonCode(type: MomentType?, errorReason: String? = null, photo: String? = null): String? = when (type) {
+        MomentType.FRAME -> null
+        MomentType.MARK -> errorReason ?: "unknown"
+        null -> when (photo) { null, MarkPhotoReason.OK -> null; else -> photo }
+    }
+
     /** The reason tokens as plain words (a token this build does not know is shown as it is: it is a short code, never text a user wrote). */
     fun reasonWords(token: String): String = when (token) {
         MarkPhotoReason.NO_PHOTO_SUPPORT -> "these glasses cannot take a photo for a mark"
@@ -166,20 +175,10 @@ object MarkRows {
         else -> token
     }
 
-    /** Where a tap on [row] goes; null for a row with no date. */
-    fun target(row: MarkRowUi): MarkTarget? {
-        val date = row.date ?: return null
-        return when {
-            row.memoryId != null -> MarkTarget.Memory(row.memoryId)
-            row.frameId != null && row.reason == null -> MarkTarget.Photo(date, row.frameId)
-            else -> MarkTarget.NoPhoto(date, row.reason ?: "No photo")
-        }
-    }
-
     /** [withDay] adds the weekday and date (Week and Month). Order is the one the rows come in (newest first). */
     fun rows(rows: List<MomentDao.MarkRow>, zone: ZoneId, withDay: Boolean): List<MarkRowUi> = rows.map { r ->
         val at = Instant.ofEpochMilli(r.atMs).atZone(zone)
-        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), callLabel(r.provenance), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason, r.errorReason, r.photo), r.frameId, r.memoryId, at.toLocalDate())
+        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), callLabel(r.provenance), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason, r.errorReason, r.photo), r.frameId, r.memoryId, at.toLocalDate(), reasonCode(r.momentType, r.errorReason, r.photo))
     }
 }
 
@@ -233,6 +232,7 @@ data class ActivityUiState(
     val header: String = "",
     val status: StatusUi = StatusUi.Initial,
     val tiles: Tiles = Tiles(0, 0, 0, 0),
+    val tileIds: TileIds = TileIds(),
     /** Today only. */
     val sections: List<TimelineSection> = emptyList(),
     /** Week / Month only. */
