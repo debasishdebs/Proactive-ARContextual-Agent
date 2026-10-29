@@ -21,6 +21,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.core.model.context.ContextDecision
@@ -28,7 +31,15 @@ import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.phone.context.ContextHubStats
 import com.rokid.context.phone.context.ContextSourceSettings
 import com.rokid.context.phone.context.SourceStatus
+import com.rokid.context.phone.context.WatchLinkSnapshot
+import com.rokid.context.phone.context.WatchLinkState
+import com.rokid.context.phone.context.WatchLinkStep
 import com.rokid.context.phone.context.WatchMotionIntake
+import com.rokid.context.phone.context.WatchNodeProbe
+import com.rokid.context.phone.context.WatchNodes
+import com.rokid.context.phone.context.WatchStatusKind
+import com.rokid.context.phone.context.WatchStatusModel
+import com.rokid.context.phone.context.WatchStatusRow
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
@@ -38,6 +49,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -81,6 +93,8 @@ data class ContextSourcesUiState(
     val watchMissing: Boolean = false,
     val cannotPin: Boolean = false,
     val reToggleHint: Boolean = false,
+    val watchStatus: WatchStatusRow = WatchStatusRow(WatchStatusKind.OFF, ""),
+    val watchLinkConfirmed: Boolean = false,
     val stateLine: String = "",
     val rows: Map<String, SourceRow> = emptyMap(),
     val speedApproximate: Boolean = false,
@@ -121,28 +135,41 @@ class ContextSourcesViewModel(
     tick: Flow<Unit> = emptyFlow(),
     /** Bluetooth adapter on. Default true (unknown). */
     private val bluetoothOn: () -> Boolean = { true },
+    /** The watch link ledger (process-wide by default). */
+    private val link: StateFlow<WatchLinkSnapshot> = WatchLinkState.shared.snapshot,
+    /** Data Layer nodes with the watch app; asked only while the screen is shown and the watch source is on. */
+    private val probe: WatchNodeProbe = WatchNodeProbe { null },
+    private val now: () -> Long = System::currentTimeMillis,
+    private val timeText: (Long) -> String = { java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(it)) },
 ) : ViewModel() {
-    private data class Local(val missing: Boolean = false, val multiSigner: Boolean = false, val denied: Set<String> = emptySet(), val bonded: List<Pair<String, String>> = emptyList())
+    private data class Local(val missing: Boolean = false, val multiSigner: Boolean = false, val denied: Set<String> = emptySet(), val bonded: List<Pair<String, String>> = emptyList(), val nodes: WatchNodes? = null)
     private val local = MutableStateFlow(Local())
     private var pending: String? = null
 
     private fun of(d: ContextDecision, st: Map<String, SourceStatus>, l: Local): ContextSourcesUiState {
         val snap = stats?.snapshot().orEmpty()
         val line = "Now: ${ContextSourcesUiState.word(d.state)} · watch ${st[WATCH] ?: SourceStatus.OFF} · watch msgs ${snap["watch"] ?: 0} · rejected ${snap["watchRej"] ?: 0}"
-        val on = settings.enabled(WATCH)
-        val hint = on && (snap["watchRej"] ?: 0L) > 0L && (snap["watch"] ?: 0L) == 0L
+        val on = settings.activeWatchSource == ContextSourceSettings.WATCH_APP
+        val lk = link.value
         val rows = PHONE_IDS.associateWith { id -> SourceRow(settings.enabled(id), st[id] ?: SourceStatus.OFF, id in l.denied, settings.enabled(id) && !PermissionPlan.accepted(id, granted = granted)) }
         val approximate = settings.enabled(SPEED) && !granted(Manifest.permission.ACCESS_FINE_LOCATION)
         val mine = settings.myCars
         val cars = l.bonded.map { (addr, name) -> CarRow(addr, if (name == addr || name.isBlank()) "Unnamed device" else name, mine.any { it.equals(addr, ignoreCase = true) }) }
         val btOff = settings.enabled(CAR) && PermissionPlan.accepted(CAR, granted = granted) && !bluetoothOn()
-        return ContextSourcesUiState(settings.applyToCapture, on, l.missing, l.multiSigner, hint, line, rows, approximate, cars, mine.isNotEmpty(), btOff)
+        return ContextSourcesUiState(
+            settings.applyToCapture, on, l.missing, l.multiSigner, false, WatchStatusModel.of(on, l.nodes, lk, now(), timeText), WatchLinkStep.confirmed(lk),
+            line, rows, approximate, cars, mine.isNotEmpty(), btOff,
+        )
     }
 
-    val state: StateFlow<ContextSourcesUiState> = combine(decision, status, local, settings.changes, tick.onStart { emit(Unit) }) { d, s, l, _, _ -> of(d, s, l) }
+    val state: StateFlow<ContextSourcesUiState> = combine(decision, status, local, combine(settings.changes, link) { c, _ -> c }, tick.onStart { emit(Unit) }) { d, s, l, _, _ -> of(d, s, l) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(decision.value, status.value, local.value))
 
-    init { if (settings.enabled(CAR)) refreshCars() }
+    init {
+        if (settings.enabled(CAR)) refreshCars()
+        // Poll the Data Layer only while the screen is shown (tick) and the watch source is on: source off means no GMS call at all.
+        viewModelScope.launch { tick.collect { if (settings.activeWatchSource == ContextSourceSettings.WATCH_APP) { val n = probe.nodes(); local.update { it.copy(nodes = n) } } else local.update { it.copy(nodes = null) } } }
+    }
 
     fun setApply(on: Boolean) { settings.applyToCapture = on }
 
@@ -175,23 +202,14 @@ class ContextSourcesViewModel(
     private fun enable(id: String) { settings.setEnabled(id, true); if (id == CAR) refreshCars() }
     private fun disable(id: String) { settings.setEnabled(id, false); if (id == CAR) refreshCars() }
 
-    /** On: pin the certificate, then enable (the source refuses to start without a pinned digest). Off: disable, then clear the pin. */
+    /** The active watch source: `watch_app` or `none` (default). No certificate is pinned any more; the Data Layer pairs the apps. */
     fun setWatch(on: Boolean) {
-        if (on) {
-            val sha = cert.sha256()
-            if (sha == null) { local.update { it.copy(multiSigner = cert.cannotPin(), missing = true) }; settings.setEnabled(WATCH, false); return }
-            local.update { it.copy(multiSigner = false, missing = false) }
-            settings.liveFitCertSha256 = sha
-            settings.setEnabled(WATCH, true)
-        } else {
-            local.update { it.copy(multiSigner = false, missing = false) }
-            settings.setEnabled(WATCH, false)
-            settings.liveFitCertSha256 = null
-        }
+        settings.activeWatchSource = if (on) ContextSourceSettings.WATCH_APP else ContextSourceSettings.NONE
+        if (!on) local.update { it.copy(nodes = null) }
     }
 
     private companion object {
-        const val WATCH = "watch_livefit"
+        const val WATCH = ContextSourceSettings.WATCH_APP
         const val SPEED = "phone_speed"
         const val CAR = "phone_car"
         val PHONE_IDS = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "image_intent")
@@ -292,12 +310,13 @@ fun ContextSourcesScreen(
         item {
             SettingsCard {
                 Text("Watch and photos", style = MaterialTheme.typography.titleMedium)
-                SwitchRow("Galaxy Watch (LiveFit app)", null, state.watchOn, { onSource("watch_livefit", it) }, tag = "ctx_watch_livefit")
-                if (state.watchMissing) NoticeText(
-                    if (state.cannotPin) "LiveFit has more than one signing certificate, so it cannot be pinned." else "Install LiveFit on this phone first.",
-                    tag = "ctx_watch_missing",
-                )
-                if (state.reToggleHint) NoticeText("Messages are being rejected: if LiveFit was reinstalled or re-signed, turn this off and on again.", tag = "ctx_watch_hint")
+                SwitchRow("Watch app (Galaxy Watch)", "Motion from the Proactive Context watch app. Off until you turn it on.", state.watchOn, { onSource("watch_app", it) }, tag = "ctx_watch_app")
+                if (state.watchOn && state.watchStatus.text.isNotEmpty()) NoticeText(state.watchStatus.text, tag = "ctx_watch_status")
+                if (state.watchOn) {
+                    var checking by remember { mutableStateOf(false) }
+                    TextButton(onClick = { checking = !checking }, modifier = Modifier.testTag("ctx_watch_check")) { Text("Check the watch link") }
+                    if (checking) NoticeText(WatchLinkStep.line(state.watchLinkConfirmed), tag = "ctx_watch_link_line")
+                }
                 val img = state.row("image_intent")
                 SwitchRow("Activity from photos", "Tells driving from riding along.", img.on, { onSource("image_intent", it) }, tag = "ctx_image_intent")
                 NoticeText(

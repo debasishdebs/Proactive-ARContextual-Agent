@@ -244,7 +244,7 @@ class ContextHub(
     /** Marks the source revoked (late callbacks are dropped) and forgets its evidence; the caller rebuilds the fusion. */
     private fun stopSource(id: String, s: ContextSource?) {
         running.remove(id); live.remove(id)
-        if (id == "watch_livefit") { watchRing.clear(); safe(Unit) { onWatchOff() } } // a source switched off forgets what it gave
+        if (id == "watch_app") { watchRing.clear(); safe(Unit) { onWatchOff() } } // a source switched off forgets what it gave
         safe(Unit) { s?.stop() }
         retained.keys.removeAll { retained[it]?.let { e -> sourceOf(e) } == id }
     }
@@ -332,7 +332,7 @@ class ContextHub(
 
     companion object {
         const val AIRPLANE = "phone_airplane"
-        val SIX_IDS = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_livefit", "image_intent")
+        val SIX_IDS = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_app", "image_intent")
         private val ALL_IDS = SIX_IDS + AIRPLANE
         const val TICK_MS = 10_000L
         const val RESEND_MS = 60_000L
@@ -350,7 +350,7 @@ class ContextHub(
             is Evidence.Speed -> "phone_speed"
             is Evidence.CarLink -> "phone_car"
             is Evidence.Airplane -> AIRPLANE
-            is Evidence.WatchMotion -> "watch_livefit"
+            is Evidence.WatchMotion -> "watch_app"
             is Evidence.Intent -> "image_intent"
         }
     }

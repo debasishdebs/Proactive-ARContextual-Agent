@@ -43,7 +43,8 @@ class WatchMotionProvider : ContentProvider() {
         /** The whole decision, with the platform certificate check behind [hasCert] (package, digest bytes) so it can be faked. */
         internal fun decide(pkg: String?, json: String?, hasCert: (String, ByteArray) -> Boolean): Bundle {
             if (pkg != WatchMotionIntake.LIVEFIT_PACKAGE) return reply(false, "bad_caller")
-            val intake = WatchMotionIntake.current ?: return reply(false, "not_enabled")
+            // Gated by the active watch source: with it off (or no hub) the message is dropped, counted, never stored.
+            val intake = WatchMotionIntake.current ?: run { WatchLinkState.shared.dropOff("source_off"); return reply(false, "not_enabled") }
             val r = intake.accept(pkg, { sha -> hexToBytes(sha)?.let { hasCert(pkg, it) } ?: false }, json)
             return reply(r.ok, r.reason)
         }

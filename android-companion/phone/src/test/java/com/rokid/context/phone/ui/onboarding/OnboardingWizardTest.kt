@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -42,11 +43,11 @@ class OnboardingWizardTest {
 
     private fun goTo(step: Step) { while (vm.state.value.step != step) vm.next() }
 
-    private fun filled(): Int = (0 until 7).count { i ->
+    private fun filled(): Int = (0 until 8).count { i ->
         compose.onNodeWithTag("seg_$i").fetchSemanticsNode().config[SemanticsProperties.StateDescription] == "filled"
     }
 
-    @Test fun progressHasSevenSegmentsAndAdvances() {
+    @Test fun progressHasEightSegmentsAndAdvances() {
         show()
         assertEquals(1, filled())
         compose.onNodeWithText("Get started").performClick()
@@ -95,6 +96,16 @@ class OnboardingWizardTest {
         goTo(Step.GLASSES); show()
         compose.onNodeWithText("Authorize glasses").assertIsDisplayed()
         compose.onNodeWithText("Set up later").performClick()
+        assertEquals(Step.WATCH, vm.state.value.step)
+    }
+
+    @Test fun watchStepShowsWaitingThenConfirmedAndSkips() {
+        goTo(Step.WATCH); show()
+        compose.onNodeWithTag("watch_line").assertTextContains("Waiting for the watch", substring = true)
+        compose.onNodeWithText("Skip").assertIsDisplayed()
+        env.watchConfirmed.value = true; compose.waitForIdle()
+        compose.onNodeWithTag("watch_line").assertTextContains("Watch link confirmed", substring = true)
+        compose.onNodeWithText("Continue").performClick()
         assertEquals(Step.AI, vm.state.value.step)
     }
 
@@ -103,7 +114,7 @@ class OnboardingWizardTest {
         goTo(Step.GLASSES); show()
         compose.onNodeWithText("Connected \u2713").assertIsDisplayed()
         compose.onNodeWithText("Continue").performClick()
-        assertEquals(Step.AI, vm.state.value.step)
+        assertEquals(Step.WATCH, vm.state.value.step)
     }
 
     @Test fun aiContinueIsDisabledUntilSomethingIsUsable() {

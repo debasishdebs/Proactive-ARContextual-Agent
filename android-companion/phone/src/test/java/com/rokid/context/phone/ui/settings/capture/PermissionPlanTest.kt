@@ -16,7 +16,7 @@ class PermissionPlanTest {
         assertEquals(listOf(activity), PermissionPlan.forSource("phone_steps", 34))
         assertEquals(listOf(fine, coarse), PermissionPlan.forSource("phone_speed", 34))
         assertEquals(listOf(bt), PermissionPlan.forSource("phone_car", 34))
-        assertEquals(emptyList<String>(), PermissionPlan.forSource("watch_livefit", 34))
+        assertEquals(emptyList<String>(), PermissionPlan.forSource("watch_app", 34))
         assertEquals(emptyList<String>(), PermissionPlan.forSource("image_intent", 34))
         assertEquals(emptyList<String>(), PermissionPlan.forSource("phone_airplane", 34))
         assertEquals(emptyList<String>(), PermissionPlan.forSource("nonsense", 34))

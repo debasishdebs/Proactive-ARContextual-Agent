@@ -17,9 +17,9 @@ class OnboardingViewModelTest {
     private fun vm(env: Env = Env(), saved: SavedStateHandle = SavedStateHandle()) =
         OnboardingViewModel(env.deps, work = UnconfinedTestDispatcher(), saved = saved)
 
-    @Test fun progressHasSevenSegmentsAndAdvances() {
+    @Test fun progressHasEightSegmentsAndAdvances() {
         val v = vm()
-        assertEquals(7, Step.entries.size)
+        assertEquals(8, Step.entries.size)
         assertEquals(1, v.state.value.filledSegments)
         v.next(); v.next()
         assertEquals(3, v.state.value.filledSegments)
@@ -85,7 +85,27 @@ class OnboardingViewModelTest {
     @Test fun glassesStepSkippable() {
         val v = vm(); v.next(); v.next()
         v.skipGlasses()
+        assertEquals(Step.WATCH, v.state.value.step)
+    }
+
+    @Test fun watchStepIsOptionalAndNeverBlocks() {
+        val e = Env(); val v = vm(e); v.next(); v.next(); v.next()
+        assertEquals(Step.WATCH, v.state.value.step)
+        assertEquals("Waiting for the watch\u2026", v.state.value.watchLine)
+        assertEquals(false, v.state.value.watchLinked)
+        v.secondary() // Skip
         assertEquals(Step.AI, v.state.value.step)
+        v.back(); v.primary {} // Continue also works while still waiting
+        assertEquals(Step.AI, v.state.value.step)
+    }
+
+    @Test fun watchStepTurnsConfirmedOnTheFirstAcceptedMessageAndStaysSo() {
+        val e = Env(); val v = vm(e); v.next(); v.next(); v.next()
+        v.enableWatch(); assertTrue(e.watchOn); assertTrue(v.state.value.watchOn)
+        e.watchConfirmed.value = true
+        assertEquals("Watch link confirmed", v.state.value.watchLine)
+        e.watchConfirmed.value = false
+        assertEquals("Watch link confirmed", v.state.value.watchLine)
     }
 
     @Test fun authorizeGlassesCallsDeps() {

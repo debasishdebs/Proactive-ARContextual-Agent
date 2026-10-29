@@ -17,7 +17,19 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
 
     // Held strongly: SharedPreferences keeps listeners weakly.
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> _changes.update { it + 1 } }
-    init { prefs.registerOnSharedPreferenceChangeListener(listener) }
+    init { migrateLegacyWatch(); prefs.registerOnSharedPreferenceChangeListener(listener) }
+
+    /** The active watch source: [WATCH_APP] or [NONE] (default, off until the user opts in). Stored as the `watch_app` source switch. */
+    var activeWatchSource: String
+        get() = if (enabled(WATCH_APP)) WATCH_APP else NONE
+        set(v) { setEnabled(WATCH_APP, v == WATCH_APP) }
+
+    /** One-time: the old `watch_livefit` switch and its certificate pin are deleted, so the watch source starts as [NONE] and the user opts in again. */
+    private fun migrateLegacyWatch() {
+        val old = SRC + LEGACY_WATCH
+        if (!prefs.contains(old) && !prefs.contains(LIVEFIT_CERT)) return
+        prefs.edit().remove(old).remove(LIVEFIT_CERT).putBoolean(SRC + WATCH_APP, false).apply()
+    }
 
     fun enabled(id: String): Boolean = prefs.getBoolean(SRC + id, false)
     fun setEnabled(id: String, on: Boolean) { prefs.edit().putBoolean(SRC + id, on).apply() }
@@ -43,7 +55,7 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
 
     /** Delete all: personal data goes, the watch source turns off (its pin is gone) and image intent turns off (the hub then drops its in-memory votes); the apply switch stays. */
     fun clearPersonal() {
-        prefs.edit().putBoolean(SRC + "watch_livefit", false).putBoolean(SRC + "image_intent", false).remove(MY_CARS).remove(LIVEFIT_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
+        prefs.edit().putBoolean(SRC + WATCH_APP, false).putBoolean(SRC + "image_intent", false).remove(MY_CARS).remove(LIVEFIT_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
     }
 
     /** Delete all: run the wipe, then clear personal state. */
@@ -51,6 +63,9 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
 
     companion object {
         const val PREFS = "ctx_hub_state"
+        const val WATCH_APP = "watch_app"
+        const val NONE = "none"
+        private const val LEGACY_WATCH = "watch_livefit"
         private const val SRC = "src_"
         private const val APPLY = "apply_to_capture"
         private const val MY_CARS = "my_cars"

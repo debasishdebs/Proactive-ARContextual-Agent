@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.phone.context.WatchLinkStep
 import com.rokid.context.phone.voice.PackDownload
 import com.rokid.context.ai.UrlNormalizer
 import com.rokid.context.prompt.Persona
@@ -21,7 +22,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class Step { WELCOME, PERMISSIONS, GLASSES, AI, PERSONA, GESTURES, DONE }
+enum class Step { WELCOME, PERMISSIONS, GLASSES, WATCH, AI, PERSONA, GESTURES, DONE }
 enum class PermState { NOT_ASKED, GRANTED, DENIED, DENIED_FOREVER }
 enum class VoiceAction { NONE, DOWNLOAD, OPEN_SETTINGS }
 enum class PersonaStyle(val label: String, val text: String) {
@@ -42,7 +43,14 @@ data class OnboardingUiState(
     val glasses: LinkState,
     val ai: AiStepState,
     val persona: PersonaState,
+    /** The Watch link step: the first `/pca/motion` message was accepted (sticky for the wizard run). */
+    val watchLinked: Boolean = false,
+    /** The Watch link step: the watch source was turned on here, so messages are accepted. */
+    val watchOn: Boolean = false,
 ) {
+    /** The line the Watch link step shows. */
+    val watchLine: String get() = WatchLinkStep.line(watchLinked)
+
     /** The progress bar fills one segment per step reached. */
     val filledSegments: Int get() = step.ordinal + 1
 }
@@ -55,7 +63,7 @@ class OnboardingViewModel(
 ) : ViewModel() {
     private data class Local(
         val step: Step, val mic: PermState, val notifications: PermState, val micDecided: Boolean,
-        val ai: AiStepState, val persona: PersonaState,
+        val ai: AiStepState, val persona: PersonaState, val watchLinked: Boolean = false,
     )
 
     private val local = MutableStateFlow(
@@ -72,10 +80,14 @@ class OnboardingViewModel(
             val seed = deps.ai.seeded()
             local.update { it.copy(ai = it.ai.copy(seed = seed)) }
         }
+        // Optional Watch link step: stays "confirmed" once the first message was accepted. Never gates anything.
+        viewModelScope.launch { deps.watch.confirmed.collect { ok -> if (ok) local.update { it.copy(watchLinked = true) } } }
     }
 
-    val state: StateFlow<OnboardingUiState> = combine(local, deps.link, deps.voice.capabilities) { l, link, caps ->
-        OnboardingUiState(l.step, l.mic, l.notifications, if (l.micDecided) voiceLine(caps) else null, link, l.ai, l.persona)
+    private val watchOn = MutableStateFlow(deps.watch.isOn())
+
+    val state: StateFlow<OnboardingUiState> = combine(local, deps.link, deps.voice.capabilities, watchOn) { l, link, caps, wOn ->
+        OnboardingUiState(l.step, l.mic, l.notifications, if (l.micDecided) voiceLine(caps) else null, link, l.ai, l.persona, l.watchLinked, wOn)
     }.stateIn(
         viewModelScope, SharingStarted.Eagerly,
         OnboardingUiState(local.value.step, local.value.mic, local.value.notifications, null, LinkState.NOT_AUTHORIZED, local.value.ai, local.value.persona),
@@ -113,6 +125,7 @@ class OnboardingViewModel(
     fun secondary() {
         when (local.value.step) {
             Step.GLASSES -> skipGlasses()
+            Step.WATCH -> go(Step.AI)
             Step.AI -> go(Step.PERSONA)
             else -> Unit
         }
@@ -167,7 +180,12 @@ class OnboardingViewModel(
     // --- Glasses -----------------------------------------------------------------------------------------------
 
     fun authorizeGlasses() = deps.authorize()
-    fun skipGlasses() = go(Step.AI)
+    fun skipGlasses() = go(Step.WATCH)
+
+    // --- Watch link (optional) ---------------------------------------------------------------------------------
+
+    /** Turns the watch source on so the first message from the watch app is accepted (default is off until the user opts in). */
+    fun enableWatch() { deps.watch.enable(); watchOn.value = true }
 
     // --- AI endpoint -------------------------------------------------------------------------------------------
 
@@ -268,7 +286,7 @@ class OnboardingViewModel(
         requestMic = requestMic, requestNotifications = requestNotifications, openAppSettings = ::openAppSettings,
         downloadPack = ::downloadPack, openSpeechSettings = ::openSpeechSettings, steps = StepCallbacks(
             selectSeed = ::selectSeed, selectPreset = ::selectPreset, onUrl = ::onUrl, onApiVersion = ::onApiVersion,
-            onModel = ::onModel, onKey = ::onKey, test = ::testAi, setLanguage = ::setLanguage, setStyle = ::setStyle,
+            onModel = ::onModel, onKey = ::onKey, test = ::testAi, enableWatch = ::enableWatch, setLanguage = ::setLanguage, setStyle = ::setStyle,
         ),
     )
 

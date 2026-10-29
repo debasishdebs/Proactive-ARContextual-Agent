@@ -18,7 +18,7 @@ class ContextSourceSettingsTest {
     private val ctx = ApplicationProvider.getApplicationContext<Application>()
     private val prefs = ctx.getSharedPreferences("ctx_settings_test", 0).also { it.edit().clear().commit() }
     private fun settings() = ContextSourceSettings(prefs)
-    private val six = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_livefit", "image_intent")
+    private val six = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_app", "image_intent")
 
     @Test fun prefsFileNameIsCtxHubState() = assertEquals("ctx_hub_state", ContextSourceSettings.PREFS)
 
@@ -46,10 +46,10 @@ class ContextSourceSettingsTest {
 
     @Test fun clearPersonalKeepsApplySwitchButTurnsWatchOff() {
         val s = settings()
-        s.setEnabled("watch_livefit", true); s.applyToCapture = false
+        s.setEnabled("watch_app", true); s.applyToCapture = false
         s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"; s.setWatchSeq(epoch = 7, seq = 42)
         s.clearPersonal()
-        assertFalse(s.enabled("watch_livefit")); assertFalse(s.applyToCapture)
+        assertFalse(s.enabled("watch_app")); assertFalse(s.applyToCapture)
         assertTrue(s.myCars.isEmpty()); assertNull(s.liveFitCertSha256)
         assertEquals(0L, s.watchEpoch); assertEquals(0L, s.watchLastSeq)
     }
@@ -62,10 +62,10 @@ class ContextSourceSettingsTest {
 
     @Test fun wipeThenClearStillClearsPersonalWhenTheWipeThrows() {
         val s = settings()
-        s.setEnabled("watch_livefit", true); s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"
+        s.setEnabled("watch_app", true); s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"
         val r = runCatching { kotlinx.coroutines.runBlocking { s.wipeThenClear { error("boom") } } }
         assertTrue(r.isFailure)
-        assertTrue(s.myCars.isEmpty()); assertNull(s.liveFitCertSha256); assertFalse(s.enabled("watch_livefit"))
+        assertTrue(s.myCars.isEmpty()); assertNull(s.liveFitCertSha256); assertFalse(s.enabled("watch_app"))
     }
 
     @Test fun watchEpochAndSeqPersist() {

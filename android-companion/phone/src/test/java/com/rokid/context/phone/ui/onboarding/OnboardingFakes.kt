@@ -52,11 +52,14 @@ class Env(
     sdk: Int = 34,
     presets: (AiPreset) -> PresetDefaults = { PresetDefaults.from(it, "", "") },
 ) {
+    val watchConfirmed = MutableStateFlow(false)
+    var watchOn = false
     var authorized = 0
     var appSettings = 0
     var completed = 0
     val deps = OnboardingDeps(
         link = link, voice = voice, authorize = { authorized++ }, openAppSettings = { appSettings++ },
         ai = ai, persona = { persona }, markComplete = { completed++ }, sdk = sdk, presetDefaults = presets,
+        watch = OnboardingWatch(watchConfirmed, { watchOn }, { watchOn = true }),
     )
 }
