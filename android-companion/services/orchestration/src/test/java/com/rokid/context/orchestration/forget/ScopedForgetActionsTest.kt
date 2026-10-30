@@ -84,17 +84,6 @@ class ScopedForgetActionsTest {
     }
     private suspend fun frames() = graph.db.frameDao().all().map { it.id }.sorted()
 
-    @Test fun forgettingAnAnswerOrANudgeRedactsItThroughTheGateAndTheScopeDoesNotApply() = runBlocking<Unit> {
-        graph.asks.add(com.rokid.context.memory.db.AskEntity("ask1", 1, "q", "a", "[]", null, "phone", false))
-        graph.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("n1", 1, "t", "w", "[]", 1, "h", "phone", false))
-        var refreshed = 0
-        // the scope argument (SCENE) is ignored: nothing but the one row is touched
-        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Answer("ask1"), ForgetScope.SCENE, onForgotten = { refreshed++ }))
-        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Nudge("n1"), ForgetScope.SCENE))
-        assertTrue(graph.db.askDao().byId("ask1")!!.redacted); assertEquals(1, refreshed)
-        graph.db.query("SELECT redacted FROM nudge", null).use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
-    }
-
     @Test fun forgettingAMarkRunsTheRecordersUndoAndMapsTheGateOutcomes() = runBlocking<Unit> {
         val undone = mutableListOf<String>()
         assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Mark("mk:1:2"), undoMark = { undone += it }))

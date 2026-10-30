@@ -45,7 +45,7 @@ class Cited(private val ids: List<String>, private val memories: Map<String, Mem
     }
 }
 
-/** An answer: the question, the answer with its rating, the action card, and what it was based on (each source opens its own previewer). A redacted answer shows its words only. Forget removes the answer only. */
+/** An answer: the question, the answer with its rating, the action card, and what it was based on (each source opens its own previewer). A redacted answer shows its words only. Nothing here forgets. */
 class AnswerPreview(private val a: AskEntity, private val cited: Cited, private val ctx: PreviewCtx) : Previewable {
     override val id get() = a.id
     override fun summary() = ListItem(a.id, a.question, subtitle = ctx.at(a.ts), icon = Icons.Outlined.ChatBubbleOutline)
@@ -57,8 +57,8 @@ class AnswerPreview(private val a: AskEntity, private val cited: Cited, private 
         SourcesSection("Based on", cited.items, cited.missing, moreQuery = a.question).takeIf { !a.redacted },
         AudioSection,
     )
-    /** The answer itself (a single-object Forget: its row and what hangs on it, never the memories it cited). A redacted answer has nothing left to forget. */
-    override fun forgetTarget(): ForgetTarget? = if (a.redacted) null else ForgetTarget.Answer(a.id)
+    /** No Forget of its own (v1.1 backlog: Forget single answer/nudge): an answer is redacted when a source it cites is forgotten. */
+    override fun forgetTarget(): ForgetTarget? = null
 
     companion object : PreviewableFactory {
         override suspend fun load(ids: List<String>, ctx: PreviewCtx): List<Previewable> =
@@ -77,7 +77,7 @@ class NudgePreview(private val n: NudgeEntity, private val cited: Cited, private
         ProposalSection(n.id),
         AudioSection,
     )
-    override fun forgetTarget(): ForgetTarget? = if (n.redacted) null else ForgetTarget.Nudge(n.id)
+    override fun forgetTarget(): ForgetTarget? = null
 
     companion object : PreviewableFactory {
         override suspend fun load(ids: List<String>, ctx: PreviewCtx): List<Previewable> =

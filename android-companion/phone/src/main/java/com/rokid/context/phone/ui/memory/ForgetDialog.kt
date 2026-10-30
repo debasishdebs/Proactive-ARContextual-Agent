@@ -13,10 +13,10 @@ fun ForgetDialog(state: MemoryDetailUiState, onConfirm: () -> Unit, onDismiss: (
     state.confirm?.let { kind ->
         AlertDialog(
             onDismissRequest = onDismiss,
-            title = { Text(when (kind) { ForgetKind.FACT -> ForgetCopy.FACT_TITLE; ForgetKind.MOMENT -> ForgetCopy.MOMENT_TITLE; ForgetKind.ANSWER -> ForgetCopy.ANSWER_TITLE; ForgetKind.NUDGE -> ForgetCopy.NUDGE_TITLE; ForgetKind.MARK -> ForgetCopy.MARK_TITLE }) },
+            title = { Text(when (kind) { ForgetKind.FACT -> ForgetCopy.FACT_TITLE; ForgetKind.MOMENT -> ForgetCopy.MOMENT_TITLE; ForgetKind.MARK -> ForgetCopy.MARK_TITLE }) },
             text = {
                 Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
-                    Text(when (kind) { ForgetKind.FACT -> ForgetCopy.FACT_BODY; ForgetKind.MOMENT -> ForgetCopy.MOMENT_BODY; ForgetKind.ANSWER -> ForgetCopy.ANSWER_BODY; ForgetKind.NUDGE -> ForgetCopy.NUDGE_BODY; ForgetKind.MARK -> ForgetCopy.MARK_BODY })
+                    Text(when (kind) { ForgetKind.FACT -> ForgetCopy.FACT_BODY; ForgetKind.MOMENT -> ForgetCopy.MOMENT_BODY; ForgetKind.MARK -> ForgetCopy.MARK_BODY })
                     if (kind.single) Text(ForgetCopy.SINGLE_SCOPE, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                     // v0.9.7 slice C: the scope that will really run, in plain words, then the counts (a Scene Forget never runs without them)
                     state.forgetPreview?.let { p ->

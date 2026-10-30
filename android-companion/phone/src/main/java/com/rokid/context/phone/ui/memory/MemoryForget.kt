@@ -1,8 +1,8 @@
 package com.rokid.context.phone.ui.memory
 
-/** FACT and MOMENT run at the Forget scope; ANSWER, NUDGE and MARK are single-object Forgets (the scope does not apply) and take their object id. */
-enum class ForgetKind { FACT, MOMENT, ANSWER, NUDGE, MARK;
-    val single: Boolean get() = this == ANSWER || this == NUDGE || this == MARK
+/** FACT and MOMENT run at the Forget scope; MARK is a single-object Forget (the scope does not apply) and takes its id. */
+enum class ForgetKind { FACT, MOMENT, MARK;
+    val single: Boolean get() = this == MARK
 }
 
 /** Memory detail's Forget port (production: `ForgetActions`, which runs on IO). False or a throw = failed; [com.rokid.context.orchestration.DataOpGate.ExportInProgress] = a running export blocked it. */
@@ -18,7 +18,7 @@ interface MemoryForget {
     suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String? = null): Boolean =
         when (kind) { ForgetKind.FACT -> forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forgetMoment(frameId); else -> forgetObject(kind, memoryId) }
 
-    /** The Forget of one answer, nudge or photo-less mark by [id] (kind ANSWER, NUDGE or MARK): same typed throws as the others. */
+    /** The Forget of one photo-less mark by [id] (kind MARK): same typed throws as the others. */
     suspend fun forgetObject(kind: ForgetKind, id: String): Boolean = false
 
     companion object {
@@ -60,10 +60,6 @@ object ForgetCopy {
     const val FACT_BODY = "It's removed everywhere, and Proactive Context won't learn it from this photo again. Answers that used it will show as removed."
     const val MOMENT_TITLE = "Forget this moment?"
     const val MOMENT_BODY = "The photo and every fact from it are deleted. Answers that used them will show as removed."
-    const val ANSWER_TITLE = "Forget this answer?"
-    const val ANSWER_BODY = "The question and its answer are removed, and the actions it suggested are cleared. The memories and photos it was based on stay."
-    const val NUDGE_TITLE = "Forget this heads up?"
-    const val NUDGE_BODY = "Its text and reason are removed, and the actions it suggested are cleared. The memories and photos it was based on stay."
     const val MARK_TITLE = "Forget this mark?"
     const val MARK_BODY = "The mark is deleted, and the Moment made from it goes with it. It has no photo."
     /** Said in the dialog of every single-object Forget: the Forget scope setting (Photo, Moment, Scene) does not apply. */
