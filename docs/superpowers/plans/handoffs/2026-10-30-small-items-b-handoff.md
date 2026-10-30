@@ -49,6 +49,7 @@ What the hub service is required by: `ContextHub` and its sources (watch_app, ac
 
 ## Codex final review fixes
 - Watchdog: hub recovery is now separate from the glasses gate. With `hubNeeded()` true (watch_app or another phone source) a stopped hub is restarted even with no pair, the setting off, or capture paused; reconnect, relaunch and probe stay gated. Test `aNeededHubIsRestartedWhateverTheGlassesGate`.
+- Hub restarts have their own back-off (5/15/30/60 min, `hubBackoff`): a start refused by Android 12+ no longer repeats every tick. Reset when the hub runs, on any positive signal (app foreground, tapped Reconnect), and when a context source is switched on (`onHubWanted`, from `HubGraph`). Tests: refused-start cadence, reset signals, `hubNeeded()==false` never starts.
 - Known item (pre-existing, v1.1): after a reboot or app update the hub service restarts only when the hub graph is built (an app open, or something that builds it). No new boot receiver was added. The WorkManager jobs (FrameIngest, QueueDrain, MomentCadence) live in `services/orchestration` and cannot reach the phone's `ensureRunning` without a new seam there plus a `ContextApp` registration; also a connectedDevice FGS start from a background worker is refused on Android 12+. Not small, so documented only.
 
 ## Not done / risks

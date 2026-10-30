@@ -269,7 +269,24 @@ class GlassesWatchdogTest {
 
     @Test fun theLinkBeingThereRestartsADeadHubAtOnce() {
         val r = Rig().apply { running = false; link = LinkState.CLOSED_ON_GLASSES }
-        r.w.tick(); r.nowMs += 150_000L; r.w.tick(); assertEquals(2, r.starts)
+        r.w.tick(); r.nowMs += 150_000L; r.w.tick(); assertEquals("a start is attempted, then backs off (it may be refused)", 1, r.starts)
+    }
+
+    @Test fun aRefusedHubStartRepeatsAtTheBackoffCadenceAndResetsOnSignals() {
+        val r = Rig().apply { running = false; link = LinkState.OFFLINE } // startHub never brings the hub up
+        val times = ArrayList<Long>(); var last = r.starts; val t0 = r.nowMs
+        while (times.size < 5) { r.w.tick(); if (r.starts != last) { last = r.starts; times += r.nowMs - t0 }; r.nowMs += 60_000L }
+        assertEquals(listOf(0L, 5L, 20L, 50L, 110L).map { it * 60_000L }, times)
+        val n = r.starts
+        r.w.onPositiveSignal(); r.w.tick(); assertEquals("app foreground / Reconnect", n + 1, r.starts)
+        r.w.onHubWanted(); r.w.tick(); assertEquals("a context source switched on", n + 2, r.starts)
+        r.w.tick(); assertEquals(n + 2, r.starts)
+        r.running = true; r.w.tick(); r.running = false; r.w.tick(); assertEquals("the hub running resets it", n + 3, r.starts)
+    }
+
+    @Test fun anUnneededHubIsNeverStarted() {
+        val r = Rig().apply { running = false; hubNeeded = false }
+        repeat(5) { r.w.tick(); r.nowMs += 3_600_000L }; assertEquals(0, r.starts)
     }
 
     @Test fun theLoopSleepsLongWithNoPairAndAPositiveSignalWakesIt() = runTest {
