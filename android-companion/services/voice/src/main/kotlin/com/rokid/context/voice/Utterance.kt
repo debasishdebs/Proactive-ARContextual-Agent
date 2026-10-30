@@ -1,5 +1,7 @@
 package com.rokid.context.voice
 
+import com.rokid.context.voice.commands.CaptureCommand
+import com.rokid.context.voice.commands.CaptureCommandParser
 import com.rokid.context.voice.commands.MarkCommand
 import com.rokid.context.voice.commands.MarkCommandParser
 
@@ -44,11 +46,27 @@ interface UtteranceCommands {
     fun onAsk(source: UtteranceSource)
 }
 
+/** What a pause/resume request did. Only [Done] says capture changed; the reply is built from this, never assumed. */
+sealed interface CaptureResult {
+    data object Done : CaptureResult
+    /** Nothing to do: already paused (for a pause) or nothing paused (for a resume). */
+    data object AlreadyInState : CaptureResult
+    data object Failed : CaptureResult
+}
+
+/** The one pause/resume entry behind voice (implemented in `:phone` over the hub's pausePhone/resume). Awaited: the reply must be true. Works while paused. */
+interface CaptureControl {
+    suspend fun pause(source: UtteranceSource): CaptureResult
+    suspend fun resume(source: UtteranceSource): CaptureResult
+}
+
 class Utterance(
     private val commands: UtteranceCommands,
     private val clock: () -> Long = System::currentTimeMillis,
     /** The user's device capabilities (v0.9.8 slice D); default = everything on. */
     private val caps: () -> com.rokid.context.core.model.DeviceCapabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL },
+    /** Pause/resume entry; null = the commands are not recognised (the words go to Ask). */
+    private val capture: CaptureControl? = null,
 ) {
     /**
      * [genuineFinal] false (a timeout or error partial) is never a command. No command clause: [UtteranceResult.PassThrough] and the ask continues unchanged. Commands only: [UtteranceResult.Handled].
@@ -58,6 +76,13 @@ class Utterance(
         // a voice surface whose mic was switched off in Settings (mid-listen): nothing is recorded and nothing is asked; the reply says why. Typed text has no mic.
         if (source.usesMic && !caps().micOn(source.fromGlasses)) return UtteranceResult.Handled(if (source.fromGlasses) VoiceCopy.GLASSES_MIC_OFF else VoiceCopy.PHONE_MIC_OFF)
         if (!genuineFinal) return UtteranceResult.PassThrough
+        capture?.let { c ->
+            when (CaptureCommandParser.parse(text)) {
+                CaptureCommand.PAUSE -> return UtteranceResult.Handled(captureReply(true, runCapture { c.pause(source) }))
+                CaptureCommand.RESUME -> return UtteranceResult.Handled(captureReply(false, runCapture { c.resume(source) }))
+                null -> Unit
+            }
+        }
         val parsed = MarkCommandParser.parseUtterance(text)
         if (parsed.commands.isEmpty()) { commands.onAsk(source); return UtteranceResult.PassThrough }
         val out = commands.apply(parsed.commands, source, clock())
@@ -73,6 +98,15 @@ class Utterance(
             is UtteranceResult.Handled -> InterceptResult.Handled(r.replyText)
             is UtteranceResult.Ask -> InterceptResult.Ask(r.question)
         }
+    }
+
+    private suspend fun runCapture(block: suspend () -> CaptureResult): CaptureResult =
+        try { block() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { CaptureResult.Failed }
+
+    private fun captureReply(pause: Boolean, r: CaptureResult): String = when (r) {
+        CaptureResult.Done -> if (pause) CAPTURE_PAUSED else CAPTURE_RESUMED
+        CaptureResult.AlreadyInState -> if (pause) ALREADY_PAUSED else ALREADY_CAPTURING
+        CaptureResult.Failed -> if (pause) COULDNT_PAUSE else COULDNT_RESUME
     }
 
     private fun failureReply(cmds: List<MarkCommand>, f: CommandFailure): String =
@@ -101,5 +135,9 @@ class Utterance(
         else -> token.replace('_', ' ')
     }
 
-    companion object { const val MARKED = "✓ marked"; const val UNDONE = "mark undone"; const val COULDNT_UNDO = "Couldn't undo the mark. Try again."; const val COULDNT_MARK = "Couldn't mark this moment. Try again." }
+    companion object {
+        const val CAPTURE_PAUSED = "Capture paused"; const val CAPTURE_RESUMED = "Capture resumed"
+        const val ALREADY_PAUSED = "Already paused"; const val ALREADY_CAPTURING = "Capture isn't paused"
+        const val COULDNT_PAUSE = "Couldn't pause capture. Try again."; const val COULDNT_RESUME = "Couldn't resume capture. Try again."
+        const val MARKED = "✓ marked"; const val UNDONE = "mark undone"; const val COULDNT_UNDO = "Couldn't undo the mark. Try again."; const val COULDNT_MARK = "Couldn't mark this moment. Try again." }
 }
