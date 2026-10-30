@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import com.rokid.context.phone.ui.status.asPauseHub
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withContext
 
@@ -41,7 +42,8 @@ class VoiceGraph private constructor(private val app: Context) {
     )
     /** v0.9.7 slice D: the ONE text backend of every surface (voice pipeline below, the Home chat through PhoneDeps). */
     private val deviceCaps = com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(app).capabilities
-    val utterance = com.rokid.context.voice.Utterance(MarkUtteranceCommands({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { PcLog.i(TAG, it) }), caps = { deviceCaps.value })
+    val utterance = com.rokid.context.voice.Utterance(MarkUtteranceCommands({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { PcLog.i(TAG, it) }), caps = { deviceCaps.value },
+        capture = HubCaptureControl({ com.rokid.context.phone.hub.HubGraph.get(app).asPauseHub { com.rokid.context.phone.hub.HubPauses(MemoryGraph.get(app).db.pauseDao()).stored() } }, log = { PcLog.i(TAG, it) }))
     val pipeline = VoicePipeline(
         scope, AndroidOnDeviceStt(app), capabilities.capabilities, { settings.settings.value.language },
         AppAnswerer(
