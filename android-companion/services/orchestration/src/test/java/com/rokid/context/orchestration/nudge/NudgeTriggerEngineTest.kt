@@ -209,6 +209,25 @@ class NudgeTriggerEngineTest {
         assertEquals(listOf(DeliveryRoute.GLASSES_NOT_CONNECTED), traces("NUDGE_DELIVERY_FALLBACK").map { it.note })
     }
 
+    @Test fun anExplicitGlassesTargetNeverRaisesSilentAndTheReasonIsRecorded() = runBlocking {
+        reach = GlassesReach.UP
+        hud = NudgeHud(null, Verbosity.SILENT, zone)
+        plan = planOf(NodeTypes.TRIGGER_MOMENT, target = "glasses", perHour = 12)
+        assertTrue(engine().runOnce(NodeTypes.TRIGGER_MOMENT) is NudgeRun.Shown)
+        assertEquals("phone", rows().first().shownOn)
+        assertEquals(listOf(NudgeEngine.VERBOSITY_SILENT), traces("NUDGE_DELIVERY_FALLBACK").map { it.note })
+    }
+
+    @Test fun aQueuedOccurrenceOfAReplacedPublicationIsDroppedAndCounted() = runBlocking {
+        plan = planOf(NodeTypes.TRIGGER_SCHEDULE).copy(scope = "pub2")
+        assertEquals(NudgeRun.StalePublication, engine().runOnce(NodeTypes.TRIGGER_SCHEDULE, scope = "pub1"))
+        assertEquals(0, calls)
+        assertEquals(listOf("STALE_PUBLICATION"), traces("NUDGE_DROPPED").map { it.note })
+        assertTrue(engine().runOnce(NodeTypes.TRIGGER_SCHEDULE, scope = "pub2") is NudgeRun.Shown)
+        assertEquals("pub1", NudgeTrigger.scopeOf(NodeTypes.TRIGGER_SCHEDULE, "pub1_1700000000000"))
+        assertNull(NudgeTrigger.scopeOf(NodeTypes.TRIGGER_MOMENT, null))
+    }
+
     @Test fun aSwitchedOffDisplayIsNotASurfaceAndTheFallbackIsRecorded() = runBlocking {
         fun shownOn(target: String): String { plan = planOf(NodeTypes.TRIGGER_MOMENT, target = target, perHour = 12); now += 1_900_000L; runBlocking { engine().runOnce(NodeTypes.TRIGGER_MOMENT) }; return runBlocking { rows().first().shownOn } }
         reach = GlassesReach.UP; cap = 20

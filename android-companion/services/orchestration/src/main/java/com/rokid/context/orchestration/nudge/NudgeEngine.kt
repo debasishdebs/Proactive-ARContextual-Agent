@@ -43,6 +43,8 @@ sealed interface NudgeRun {
     data object NoSignal : NudgeRun
     /** The trigger started more runs this hour than its `maxPerHour`; no model call. */
     data object RateLimited : NudgeRun
+    /** A queued schedule occurrence of a publication that is no longer the live plan: dropped (counted as NUDGE_DROPPED / STALE_PUBLICATION), nothing read or called. */
+    data object StalePublication : NudgeRun
     data class Dropped(val gate: Gate) : NudgeRun
     data class Shown(val nudgeId: String) : NudgeRun
 }
@@ -69,14 +71,19 @@ class NudgeEngine(
      * Serialized with every other run through [NudgeRunLock] (the daily cap is read-then-write). [trigger] is the node type that started the run: a published Nudge flow runs
      * only on its own root, so any other trigger returns [NudgeRun.NotThisTrigger]; the built-in flow's root is the summarizer pass.
      */
-    suspend fun runOnce(trigger: String = NodeTypes.TRIGGER_SUMMARIZER, builtInOnly: Boolean = false): NudgeRun = NudgeRunLock.mutex.withLock { runLocked(trigger, builtInOnly) }
+    suspend fun runOnce(trigger: String = NodeTypes.TRIGGER_SUMMARIZER, builtInOnly: Boolean = false, scope: String? = null): NudgeRun = NudgeRunLock.mutex.withLock { runLocked(trigger, builtInOnly, scope) }
 
-    private suspend fun runLocked(trigger: String, builtInOnly: Boolean): NudgeRun {
+    private suspend fun runLocked(trigger: String, builtInOnly: Boolean, scope: String?): NudgeRun {
         val now = clock()
         val lookup = if (builtInOnly) Lookup(null, failed = true) else lookupPlan() // builtInOnly: a lookup failed when the run was queued; no later recovery may change what it runs
         val plan = lookup.plan
         // a plan lookup that failed runs the built-in flow, whatever started the run (the fallback must not depend on the trigger)
         if (!lookup.failed && trigger != (plan?.trigger ?: NodeTypes.TRIGGER_SUMMARIZER)) return NudgeRun.NotThisTrigger
+        // a queued occurrence carries the publication it was queued for: a replacement publication's plan must not run it
+        if (scope != null && !lookup.failed && (plan?.scope ?: "") != scope) {
+            memory.traces.upsert(SummaryTraceEntity("nudge_drop_$now", "NUDGE_DROPPED", now, STALE_PUBLICATION))
+            return NudgeRun.StalePublication
+        }
         val h = hud() ?: return NudgeRun.NoHud
         if (triggers.paused()) return NudgeRun.Paused // every trigger, the summarizer pass included: a pause (or Battery Saver) stops the model call, before anything is read
         // the edge state is updated even when a gate below drops the run
@@ -155,6 +162,7 @@ class NudgeEngine(
             }
             "glasses" -> when {
                 !gd -> NudgeRoute("phone", none)
+                up && base == "phone" -> NudgeRoute("phone", VERBOSITY_SILENT) // the verbosity ceiling holds: SILENT is never raised to the HUD
                 up -> NudgeRoute("toast")
                 else -> NudgeRoute("phone", DeliveryRoute.GLASSES_NOT_CONNECTED)
             }
@@ -186,6 +194,9 @@ class NudgeEngine(
         /** The triggers that come with a photo: a Moment landing, a Scene closing. */
         private val PHOTO_TRIGGERS = setOf(NodeTypes.TRIGGER_MOMENT, NodeTypes.TRIGGER_SCENE)
         private const val MAX_WHY = 300
+        const val STALE_PUBLICATION = "STALE_PUBLICATION"
+        /** The recorded reason when an explicit `glasses` delivery stays on the phone because verbosity is SILENT. */
+        const val VERBOSITY_SILENT = "verbosity_silent"
 
         /** A "nudge" decision the notify throttle held back: recorded with its reason (Diagnostics), no row, no text. */
         suspend fun recordDropped(memory: MemoryGraph, gate: Gate, now: Long) {
