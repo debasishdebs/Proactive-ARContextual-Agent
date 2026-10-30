@@ -18,8 +18,8 @@ Every reply says only what was confirmed. "and the glasses" is said only when th
 | Pause, push accepted | `Paused on the phone and the glasses` |
 | Pause, push not accepted | `Paused on the phone; the glasses will follow when they reconnect` |
 | Pause, already an indefinite phone pause | `Already paused by you` |
-| Resume, push accepted | `Resumed on the phone and the glasses` |
-| Resume, push not accepted | `Resumed on the phone; the glasses will follow when they reconnect` |
+| Resume, push accepted | `Your phone pause was cleared on the phone and the glasses` |
+| Resume, push not accepted | `Your phone pause was cleared; the glasses will follow when they reconnect` |
 | Resume, a synchronised glasses pause remains | the resume reply above + `. The glasses are still paused` |
 | Resume, quiet hours remain | the resume reply above + `. Quiet hours are still on` |
 | Resume, no phone pause, nothing else known | `No pause is set on the phone` |

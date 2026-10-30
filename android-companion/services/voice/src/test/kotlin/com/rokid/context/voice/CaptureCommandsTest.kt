@@ -58,7 +58,7 @@ class CaptureCommandsTest {
 
     @Test fun aSaidReplyIsPassedThroughVerbatim() = kotlinx.coroutines.runBlocking<Unit> {
         val f = Fake(CaptureResult.Said(Utterance.RESUMED_PHONE_ONLY))
-        assertEquals(UtteranceResult.Handled("Resumed on the phone; the glasses will follow when they reconnect"), u(f).handle("resume capture", UtteranceSource.PHONE_CHAT, true))
+        assertEquals(UtteranceResult.Handled("Your phone pause was cleared; the glasses will follow when they reconnect"), u(f).handle("resume capture", UtteranceSource.PHONE_CHAT, true))
         assertEquals("Paused on the phone; the glasses will follow when they reconnect", Utterance.PAUSED_PHONE_ONLY)
     }
 

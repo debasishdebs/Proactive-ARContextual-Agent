@@ -66,7 +66,7 @@ class HubCaptureControlTest {
         val hub = hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L), PauseRecord("g", PauseOrigin.GLASSES, 1L), PauseRecord("q", PauseOrigin.QUIET_HOURS, 1L))
         val r = HubCaptureControl({ hub }).resume(UtteranceSource.GLASSES_VOICE)
         assertEquals(listOf(setOf("p")), hub.resumed)
-        assertEquals(CaptureResult.Said("Resumed on the phone and the glasses. The glasses are still paused. Quiet hours are still on"), r)
+        assertEquals(CaptureResult.Said("Your phone pause was cleared on the phone and the glasses. The glasses are still paused. Quiet hours are still on"), r)
         assertEquals(setOf("g", "q"), hub.active.value.map { it.pauseId }.toSet())
         // nothing of mine: nothing cleared, and the reply says who holds it
         val only = hubWith(PauseRecord("g", PauseOrigin.GLASSES, 1L))
@@ -76,9 +76,9 @@ class HubCaptureControlTest {
 
     @Test fun theGlassesAreClaimedOnlyWhenTheSettingsPushWasAccepted() = runBlocking {
         val ok = hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L))
-        assertEquals(CaptureResult.Said("Resumed on the phone and the glasses"), HubCaptureControl({ ok }).resume(UtteranceSource.PHONE_CHAT))
+        assertEquals(CaptureResult.Said("Your phone pause was cleared on the phone and the glasses"), HubCaptureControl({ ok }).resume(UtteranceSource.PHONE_CHAT))
         val no = hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L)).also { it.pushOk = false }
-        assertEquals(CaptureResult.Said("Resumed on the phone; the glasses will follow when they reconnect"), HubCaptureControl({ no }).resume(UtteranceSource.PHONE_CHAT))
+        assertEquals(CaptureResult.Said("Your phone pause was cleared; the glasses will follow when they reconnect"), HubCaptureControl({ no }).resume(UtteranceSource.PHONE_CHAT))
         assertEquals(CaptureResult.Said("Paused on the phone and the glasses"), HubCaptureControl({ FakeHub() }).pause(UtteranceSource.PHONE_CHAT))
         val h2 = FakeHub(pushOk = false)
         assertEquals(CaptureResult.Said("Paused on the phone; the glasses will follow when they reconnect"), HubCaptureControl({ h2 }).pause(UtteranceSource.PHONE_CHAT))
