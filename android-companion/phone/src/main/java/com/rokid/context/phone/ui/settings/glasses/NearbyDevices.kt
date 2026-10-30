@@ -37,6 +37,8 @@ class NearbyDevicesSource(
     private val openGlassesSettings: () -> Unit,
     /** The wearer exited the glasses app on purpose (`pc_user_exit`): the phone stands down until they reopen it. */
     private val closedByUser: () -> Boolean = { false },
+    /** The switch was turned on: a positive signal for the background back-off, and the glasses link may connect again. */
+    private val onEnabled: () -> Unit = {},
 ) : ListSource {
     override val title = "Nearby devices"
     override val searchHint = "Search devices"
@@ -55,7 +57,7 @@ class NearbyDevicesSource(
 
     override fun actionFor(item: ListItem): ItemAction {
         val on = item.toggle ?: return ItemAction { openGlassesSettings(); ActionResult.Silent }
-        return ItemAction { keepRunning.set(!on); ActionResult.Silent }
+        return ItemAction { keepRunning.set(!on); if (!on) onEnabled(); ActionResult.Silent }
     }
 
     companion object {

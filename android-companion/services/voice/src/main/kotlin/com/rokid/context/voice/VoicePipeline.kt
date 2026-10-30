@@ -359,8 +359,9 @@ class VoicePipeline(
 
     private fun overlayFor(s: VoiceState): Overlay? = when (s) {
         VoiceState.Idle -> null
-        is VoiceState.Listening -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.partial, HUD_TEXT)) else null
-        is VoiceState.Thinking -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.question, HUD_TEXT)) else null
+        // v0.9.9: the transient Listening and Thinking frames are HUD frames: not sent while the user switched the glasses display off (the answer still routes by DeliveryRoute).
+        is VoiceState.Listening -> if (s.source == VoiceSource.GLASSES && deviceCaps().glassesDisplay) Overlay.Listening(VoiceText.clip(s.partial, HUD_TEXT)) else null
+        is VoiceState.Thinking -> if (s.source == VoiceSource.GLASSES && deviceCaps().glassesDisplay) Overlay.Listening(VoiceText.clip(s.question, HUD_TEXT)) else null
         is VoiceState.Answer -> if (s.hud) Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), hudAnswer(s), s.speaking) else null
         is VoiceState.Problem -> if (s.source == VoiceSource.GLASSES) Overlay.Toast(VoiceText.clip(s.hudText, HUD_TEXT)) else null
     }

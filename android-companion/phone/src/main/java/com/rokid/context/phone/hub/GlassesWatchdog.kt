@@ -4,7 +4,8 @@ import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 
 /**
@@ -43,6 +44,11 @@ class GlassesWatchdog(
     private val warn: (String) -> Unit = { PcLog.w(TAG, it) },
     /** The tick period, read before EVERY sleep (Settings > Capture; default [TICK_MS]). */
     private val periodMs: () -> Long = { TICK_MS },
+    /** A pair exists ([com.rokid.context.link.CxrGlassesLink.isPaired]); without one nothing here runs ([BackgroundPolicy]). */
+    private val paired: () -> Boolean = { true },
+    /** The hub foreground service is wanted ([BackgroundPolicy.hubNeeded]); when it is not and the service runs, [stopHub] ends it. */
+    private val hubNeeded: () -> Boolean = { true },
+    private val stopHub: () -> Unit = {},
 ) {
     sealed interface Verdict {
         object Off : Verdict
@@ -60,12 +66,23 @@ class GlassesWatchdog(
     private var lastTickAt: Long? = null
     private var lastLogged: String? = null
     private var quietTicks = 0
+    /** Back-off of the automatic attempts while the glasses are away; reset by [onPositiveSignal]. */
+    private var backoff = BackgroundPolicy.reset()
+    private var gate = BackgroundPolicy.Gate.ACTIVE
+    private val wake = Channel<Unit>(Channel.CONFLATED)
 
-    /** [periodMs] null = the configured one, re-read before every sleep; a number fixes it (tests). */
+    /**
+     * A positive signal (link up, wear event, app in front, a tapped Reconnect, the setting switched on): the back-off starts again and the loop
+     * ticks now instead of finishing its sleep. Thread-safe.
+     */
+    fun onPositiveSignal() { backoff = BackgroundPolicy.reset(); wake.trySend(Unit) }
+
+    /** [periodMs] null = the configured one, re-read before every sleep, and the policy's sleep (long with no pair or the setting off, the back-off while away); a number fixes it (tests). */
     fun start(scope: CoroutineScope, periodMs: Long? = null): Job = scope.launch {
         while (true) {
             try { tick() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* never end the loop */ }
-            delay(periodMs ?: this@GlassesWatchdog.periodMs())
+            val sleep = periodMs ?: BackgroundPolicy.sleepMs(gate, this@GlassesWatchdog.periodMs(), backoff, now())
+            withTimeoutOrNull(sleep) { wake.receive() }
         }
     }
 
@@ -74,9 +91,25 @@ class GlassesWatchdog(
         val period = periodMs()
         lastTickAt?.let { prev -> if (t - prev > 2 * period) warn("watchdog late tick gap_s=${(t - prev) / 1000} period_s=${period / 1000}") }
         lastTickAt = t
-        if (!enabled()) { baselineMs = null; return finish(Verdict.Off, "why=setting_off") }
+        val on = enabled(); val pair = paired()
+        gate = BackgroundPolicy.gate(on, pair, link())
+        // The hub service stays only while something needs it; the watchdog never restarts one that is not needed.
+        if (!hubNeeded()) { baselineMs = null; if (hubRunning()) { log("watchdog hub not needed, stopping it"); stopHub() }; return finish(Verdict.Off, if (!pair) "why=no_pair" else "why=setting_off") }
+        if (!pair) { baselineMs = null; return finish(Verdict.Off, "why=no_pair") }
+        if (!on) { baselineMs = null; return finish(Verdict.Off, "why=setting_off") }
         if (!captureActive()) { baselineMs = null; return finish(Verdict.Off, "why=capture_inactive") }
-        if (!hubRunning()) { baselineMs = null; warn("watchdog hub down, starting it"); startHub(); return finish(Verdict.HubDown, "why=hub_down") }
+        if (gate == BackgroundPolicy.Gate.ACTIVE) backoff = BackgroundPolicy.reset()
+        if (!hubRunning()) {
+            // Away: the restart waits for its back-off; the status line still says what is going on (silence counts from the last message, or from this window's first tick).
+            if (gate == BackgroundPolicy.Gate.AWAY && !backoff.due(t)) {
+                val first = baselineMs ?: t.also { baselineMs = it }
+                return finish(Verdict.LinkDown((t - (lastHeardAtMs() ?: first)).coerceAtLeast(0L)), "why=hub_down action=backoff")
+            }
+            baselineMs = null
+            warn("watchdog hub down, starting it"); startHub()
+            if (gate == BackgroundPolicy.Gate.AWAY) backoff = BackgroundPolicy.attempted(backoff, t)
+            return finish(Verdict.HubDown, "why=hub_down")
+        }
         val base = baselineMs ?: t.also { baselineMs = it }
         val age = (t - (lastHeardAtMs() ?: base)).coerceAtLeast(0L)
         val silentS = "silent_s=${age / 1000}"
@@ -86,7 +119,9 @@ class GlassesWatchdog(
         var detail = "link=$l $silentS"
         return finish(
             when (l) {
-                LinkState.OFFLINE, LinkState.PAUSED_BT -> { reconnect(); detail += " action=reconnect"; Verdict.LinkDown(age) }
+                LinkState.OFFLINE, LinkState.PAUSED_BT ->
+                    if (backoff.due(t)) { reconnect(); backoff = BackgroundPolicy.attempted(backoff, t); detail += " action=reconnect"; Verdict.LinkDown(age) }
+                    else { detail += " action=backoff"; Verdict.LinkDown(age) }
                 LinkState.NOT_AUTHORIZED -> Verdict.LinkDown(age)
                 LinkState.CONNECTING -> Verdict.Ok
                 LinkState.MINIMISED -> { probeAlive(); detail += " action=probe"; Verdict.Probing(age) }

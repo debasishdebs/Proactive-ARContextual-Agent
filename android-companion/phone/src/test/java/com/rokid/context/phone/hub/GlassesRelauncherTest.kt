@@ -113,7 +113,7 @@ class GlassesRelauncherTest {
     @Test fun settingOffNeverReopensAndTurningItOnDoes() = runTest {
         val r = rig(on = false)
         r.close(); runCurrent(); advanceTimeBy(60_000); assertEquals(0, r.reopens)
-        r.on = true; advanceTimeBy(10_100); assertEquals(1, r.reopens)
+        r.on = true; r.r.onPositiveSignal(); advanceTimeBy(8_100); assertEquals("switching it on is a positive signal", 1, r.reopens)
     }
 
     @Test fun backoffGrowsForQuickRepeatsAndResetsAfterAStableSession() = runTest {
@@ -179,18 +179,60 @@ class GlassesRelauncherTest {
         again.close(); runCurrent(); advanceTimeBy(8_100); assertEquals(1, again.reopens)
     }
 
-    /** Fix wave I4: our own reopen that fails (the link is OFFLINE again) is retried by the relauncher with backoff and the cap, nothing else. */
-    @Test fun aFailedReopenIsRetriedByTheRelauncherWithBackoffAndTheCap() = runTest {
+    /** Fix wave I4, v0.9.9: our own reopen that fails (the glasses are away) is retried on [BackgroundPolicy]'s ladder (5, 15, 30, 60 min) and the cap, nothing else. */
+    @Test fun aFailedReopenIsRetriedOnTheBackgroundLadderAndTheCap() = runTest {
         val r = rig()
         r.close(); runCurrent(); advanceTimeBy(8_100); assertEquals(1, r.reopens)
         r.state.value = LinkState.OFFLINE; runCurrent()
-        advanceTimeBy(29_000); assertEquals(1, r.reopens)
-        advanceTimeBy(1_500); assertEquals("second step", 2, r.reopens)
+        advanceTimeBy(299_000); assertEquals(1, r.reopens)
+        advanceTimeBy(2_000); assertEquals("first retry after 5 min", 2, r.reopens)
         r.state.value = LinkState.OFFLINE; runCurrent()
-        advanceTimeBy(121_000); assertEquals("third step 2 min", 3, r.reopens)
-        repeat(3) { r.state.value = LinkState.OFFLINE; runCurrent(); advanceTimeBy(600_100) } // 5 min then 10 min steps
-        assertTrue("never more than 6 per hour", r.reopens <= 6)
+        advanceTimeBy(14 * 60_000L); assertEquals(2, r.reopens)
+        advanceTimeBy(61_000); assertEquals("second retry after 15 min", 3, r.reopens)
+        r.state.value = LinkState.OFFLINE; runCurrent()
+        advanceTimeBy(29 * 60_000L); assertEquals(3, r.reopens)
+        advanceTimeBy(61_000); assertEquals("third retry after 30 min", 4, r.reopens)
         assertTrue(r.logs.any { it.contains("trying again later") })
+        assertTrue("never more than 6 per hour", r.reopens <= 6)
+    }
+
+    @Test fun theLadderStartsAgainOnceTheGlassesAreConnected() = runTest {
+        val r = rig()
+        r.close(); runCurrent(); advanceTimeBy(8_100)
+        r.state.value = LinkState.OFFLINE; runCurrent(); advanceTimeBy(301_000); assertEquals(2, r.reopens)
+        r.state.value = LinkState.CONNECTED; runCurrent(); advanceTimeBy(70_000) // a stable session
+        r.close(); runCurrent(); advanceTimeBy(8_100); assertEquals(3, r.reopens)
+        r.state.value = LinkState.OFFLINE; runCurrent()
+        advanceTimeBy(299_000); assertEquals(3, r.reopens); advanceTimeBy(2_000); assertEquals("5 min again, not 15", 4, r.reopens)
+    }
+
+    @Test fun aPositiveSignalStartsTheFailedReopenLadderAgain() = runTest {
+        val r = rig()
+        r.close(); runCurrent(); advanceTimeBy(8_100)
+        r.state.value = LinkState.OFFLINE; runCurrent(); advanceTimeBy(301_000); assertEquals(2, r.reopens)
+        r.r.onPositiveSignal()
+        r.state.value = LinkState.OFFLINE; runCurrent()
+        advanceTimeBy(299_000); assertEquals(2, r.reopens); advanceTimeBy(2_000); assertEquals(3, r.reopens)
+    }
+
+    /** v0.9.9: with the setting off the attempt loop ends at once, no 10 s poll for as long as the glasses app stays closed. */
+    @Test fun withTheSettingOffNothingPollsAndNothingReopens() = runTest {
+        val r = rig(on = false)
+        r.close(); runCurrent(); advanceTimeBy(8_100)
+        val logged = r.logs.size
+        advanceTimeBy(3_600_000L); assertEquals(0, r.reopens); assertEquals("no poll, no heartbeat", logged, r.logs.size)
+        assertTrue(r.logs.any { it.contains("waiting (setting off)") })
+    }
+
+    @Test fun theHourlyCapSleepsUntilItsOldestAttemptAgesOutInsteadOfPollingEveryTenSeconds() = runTest {
+        val state = MutableStateFlow(LinkState.CONNECTED); var reopens = 0; val logs = ArrayList<String>()
+        GlassesRelauncher(backgroundScope, state, { true }, Guards(), { reopens++; state.value = LinkState.CONNECTING }, { currentTime }, { logs += it }, stepsMs = listOf(1_000L), maxPerHour = 1).start()
+        runCurrent()
+        state.value = LinkState.CLOSED_ON_GLASSES; runCurrent(); advanceTimeBy(1_100); assertEquals(1, reopens)
+        state.value = LinkState.MINIMISED; state.value = LinkState.CLOSED_ON_GLASSES; runCurrent(); advanceTimeBy(1_100)
+        val logged = logs.size
+        advanceTimeBy(3_000_000L); assertEquals(1, reopens); assertTrue("no 10 s polling: ${logs.size - logged} lines", logs.size - logged <= 2)
+        advanceTimeBy(700_000L); assertEquals("goes ahead when the hour is over", 2, reopens)
     }
 
     @Test fun anOfflineLinkThatIsNotOurFailedReopenIsLeftAlone() = runTest {

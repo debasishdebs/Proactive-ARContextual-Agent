@@ -17,6 +17,7 @@ import org.junit.Test
 class GlassesWatchdogTest {
     private class Rig(var nowMs: Long = 10 * 60_000L) {
         var enabled = true; var capture = true; var running = true
+        var paired = true; var hubNeeded = true; var stops = 0
         var link = LinkState.CONNECTED
         var heard: Long? = null
         var standing = false
@@ -30,6 +31,7 @@ class GlassesWatchdogTest {
             startHub = { starts++ }, reconnect = { reconnects++ }, probeAlive = { probes++ }, relaunch = { relaunches++; relaunchResult },
             publish = { notes += it },
             log = { logs += it }, warn = { warns += it },
+            paired = { paired }, hubNeeded = { hubNeeded }, stopHub = { stops++; running = false },
         )
         fun silentFor(min: Long) { heard = nowMs - min * 60_000L }
     }
@@ -191,5 +193,102 @@ class GlassesWatchdogTest {
         val paused = GlassesWatchdog(now = { c.now }, enabled = { true }, captureActive = { false }, hubRunning = { true }, link = { LinkState.CONNECTED }, lastHeardAtMs = { c.heard },
             standingDown = { false }, startHub = {}, reconnect = {}, probeAlive = {}, relaunch = { c.relaunches++; null }, publish = {}, log = {}, warn = {}, silentMs = { 60_000L })
         assertEquals(GlassesWatchdog.Verdict.Off, paused.tick()); assertEquals(0, c.relaunches)
+    }
+
+    // ---- v0.9.9 battery: nothing without a pair or with the setting off; away it backs off 5/15/30/60 min; a positive signal resets it ----
+
+    @Test fun noPairDoesNothingNotEvenAHubStart() {
+        val r = Rig().apply { paired = false; hubNeeded = false; running = false; link = LinkState.OFFLINE; silentFor(60) }
+        assertEquals(GlassesWatchdog.Verdict.Off, r.w.tick())
+        assertEquals(0, r.starts + r.reconnects + r.relaunches + r.probes + r.stops); assertNull(r.notes.last())
+        assertTrue(r.logs.last(), r.logs.last().contains("why=no_pair"))
+    }
+
+    @Test fun settingOffNeverReconnectsOrRestartsTheHubEvenWhenItIsDown() {
+        val r = Rig().apply { enabled = false; hubNeeded = false; running = false; link = LinkState.OFFLINE; silentFor(60) }
+        r.w.tick(); r.nowMs += 3_600_000; r.silentFor(120); r.w.tick()
+        assertEquals(0, r.starts + r.reconnects + r.relaunches)
+    }
+
+    @Test fun aHubNothingNeedsIsStoppedNotRestarted() {
+        val r = Rig().apply { enabled = false; hubNeeded = false; running = true }
+        assertEquals(GlassesWatchdog.Verdict.Off, r.w.tick()); assertEquals(1, r.stops); assertEquals(0, r.starts)
+        r.w.tick(); assertEquals("already stopped: nothing more", 1, r.stops); assertEquals(0, r.starts)
+    }
+
+    @Test fun aContextSourceKeepsTheHubButTheGlassesMachineryStaysOff() {
+        val r = Rig().apply { enabled = false; hubNeeded = true; running = true; link = LinkState.OFFLINE; silentFor(60) }
+        r.w.tick(); assertEquals(0, r.stops + r.reconnects + r.relaunches)
+    }
+
+    @Test fun awayReconnectsOnceThenBacksOffFiveFifteenThirtySixtyAndTheNoteStays() {
+        val r = Rig().apply { link = LinkState.OFFLINE; silentFor(5) }
+        r.w.tick(); assertEquals(1, r.reconnects)
+        val waits = ArrayList<Long>()
+        var last = r.nowMs
+        repeat(4) {
+            // ticks every 150 s until the next reconnect
+            val before = r.reconnects
+            while (r.reconnects == before) {
+                r.nowMs += 150_000L; r.heard = r.nowMs - 10 * 60_000L; r.w.tick()
+                assertTrue("never silent", r.notes.last()!!.startsWith("Glasses not connected \u00b7 last heard"))
+            }
+            waits += r.nowMs - last; last = r.nowMs
+        }
+        assertEquals(listOf(5L, 15L, 30L, 60L).map { it * 60_000L }, waits)
+        // capped at 60 min
+        val before = r.reconnects
+        r.nowMs += 59 * 60_000L; r.heard = r.nowMs - 10 * 60_000L; r.w.tick(); assertEquals(before, r.reconnects)
+        r.nowMs += 60_000L; r.heard = r.nowMs - 10 * 60_000L; r.w.tick(); assertEquals(before + 1, r.reconnects)
+        assertTrue(r.logs.any { it.contains("action=backoff") }); assertTrue(r.logs.any { it.contains("action=reconnect") })
+    }
+
+    @Test fun aPositiveSignalResetsTheBackoff() {
+        val r = Rig().apply { link = LinkState.OFFLINE; silentFor(5) }
+        r.w.tick(); r.nowMs += 150_000L; r.heard = r.nowMs - 10 * 60_000L; r.w.tick()
+        assertEquals("backed off", 1, r.reconnects)
+        r.w.onPositiveSignal(); r.w.tick(); assertEquals("due again at once", 2, r.reconnects)
+        r.nowMs += 150_000L; r.heard = r.nowMs - 10 * 60_000L; r.w.tick(); assertEquals("and the ladder starts at 5 min again", 2, r.reconnects)
+    }
+
+    @Test fun theGlassesComingBackResetsTheLadder() {
+        val r = Rig().apply { link = LinkState.OFFLINE; silentFor(5) }
+        r.w.tick(); r.link = LinkState.CONNECTED; r.heard = r.nowMs; r.w.tick()
+        r.link = LinkState.OFFLINE; r.nowMs += 150_000L; r.heard = r.nowMs - 10 * 60_000L; r.w.tick()
+        assertEquals("a fresh loss reconnects at once", 2, r.reconnects)
+    }
+
+    @Test fun awayAHubDownRestartFollowsTheBackoffToo() {
+        val r = Rig().apply { link = LinkState.OFFLINE; running = false }
+        r.w.tick(); assertEquals(1, r.starts)
+        r.nowMs += 150_000L; r.w.tick(); assertEquals("backed off", 1, r.starts)
+        assertTrue("the status line is not silent", r.notes.last()!!.startsWith("Glasses not connected"))
+        r.nowMs += 120_000L; r.w.tick(); assertEquals("270 s in: still backed off", 1, r.starts)
+        r.nowMs += 60_000L; r.w.tick(); assertEquals("5 min passed", 2, r.starts)
+    }
+
+    @Test fun theLinkBeingThereRestartsADeadHubAtOnce() {
+        val r = Rig().apply { running = false; link = LinkState.CLOSED_ON_GLASSES }
+        r.w.tick(); r.nowMs += 150_000L; r.w.tick(); assertEquals(2, r.starts)
+    }
+
+    @Test fun theLoopSleepsLongWithNoPairAndAPositiveSignalWakesIt() = runTest {
+        val r = Rig().apply { paired = false; hubNeeded = false; running = false }
+        val job = r.w.start(backgroundScope)
+        runCurrent(); val ticks = r.notes.size; assertEquals(1, ticks)
+        advanceTimeBy(20 * 60_000L); assertEquals("no ticks for 20 min", ticks, r.notes.size)
+        r.paired = true; r.hubNeeded = true; r.running = true; r.silentFor(10); r.w.onPositiveSignal(); runCurrent()
+        assertEquals("woken at once", 1, r.relaunches)
+        job.cancel()
+    }
+
+    @Test fun awayTheLoopDoesNotTickBetweenBackoffAttempts() = runTest {
+        val r = Rig().apply { link = LinkState.OFFLINE; silentFor(10) }
+        val job = r.w.start(backgroundScope)
+        runCurrent(); assertEquals(1, r.reconnects)
+        assertEquals(1, r.notes.size)
+        advanceTimeBy(4 * 60_000L); assertEquals("no tick inside the 5 min back-off", 1, r.notes.size)
+        advanceTimeBy(61_000L); assertEquals("then one", 2, r.notes.size)
+        job.cancel()
     }
 }

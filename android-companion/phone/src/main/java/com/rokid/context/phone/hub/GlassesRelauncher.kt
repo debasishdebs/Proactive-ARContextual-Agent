@@ -105,6 +105,8 @@ class GlassesRelauncher(
     private var lastReopenAt: Long? = null
     /** The pending attempt follows a failed reopen, so it may run while the link is OFFLINE. */
     private var afterFailure = false
+    /** Reopens in a row that failed (the glasses are away): the retry then follows [BackgroundPolicy.BACKOFF_MS] (5, 15, 30, 60 min) instead of the close-time steps; reset by a data link or a positive signal. */
+    private var failures = 0
     /** Diagnostics for a long block (2026-10-28: 29 silent minutes of "call active"): what was last logged, when, and since when the guard has been blocking. */
     private var blockSig: String? = null
     private var blockLoggedAt = 0L
@@ -117,12 +119,13 @@ class GlassesRelauncher(
         state.collect { s ->
             if (prev != null && prev != s) log("relaunch: link $prev->$s")
             if (s == LinkState.CONNECTED) { if (connectedSince == null) connectedSince = now(); standDown.connected() }
+            if (s == LinkState.CONNECTED || s == LinkState.MINIMISED) failures = 0
             if (s == LinkState.CONNECTED || s == LinkState.MINIMISED || s == LinkState.PAUSED_BT) awaitingSince = null
             if (s == LinkState.CLOSED_ON_GLASSES && prev != LinkState.CLOSED_ON_GLASSES) onClosed()
             // Fix wave I4: our own reopen failed (the link is OFFLINE again soon after it): the next try follows the backoff and the cap.
             else if (s == LinkState.OFFLINE && awaitingSince?.let { now() - it < RESULT_WINDOW_MS } == true) {
                 awaitingSince = null
-                if (standDown.active) log("relaunch: reopen failed, standing down") else { log("relaunch: reopen failed, trying again later"); scheduleNext(afterFailure = true) }
+                if (standDown.active) log("relaunch: reopen failed, standing down") else { failures++; log("relaunch: reopen failed, trying again later"); scheduleNext(afterFailure = true) }
             }
             if (s != LinkState.CLOSED_ON_GLASSES && !(s == LinkState.OFFLINE && afterFailure)) { job?.cancel(); job = null }
             prev = s
@@ -139,7 +142,16 @@ class GlassesRelauncher(
     fun onUserExit() { standDown.enter(now()); job?.cancel(); job = null; log("relaunch: user exit, standing down") }
 
     /** The user asked to open the glasses app (phone "Open on glasses"): the stand-down is over. */
-    fun onExplicitOpen() { if (standDown.active) log("relaunch: explicit open, stand-down cleared"); standDown.clear(now()) }
+    fun onExplicitOpen() { if (standDown.active) log("relaunch: explicit open, stand-down cleared"); standDown.clear(now()); failures = 0 }
+
+    /**
+     * A positive signal (a wear event, the app in front, the setting switched on): the failed-reopen back-off starts again, and a close that
+     * is still open with no attempt pending (the loop ended because the setting was off) is attempted again through the guards.
+     */
+    fun onPositiveSignal() {
+        failures = 0
+        if (state.value == LinkState.CLOSED_ON_GLASSES && job?.isActive != true && !standDown.active) scheduleNext()
+    }
 
     /** True while an automatic reopen is stood down because the wearer exited on purpose. */
     val standingDown: Boolean get() = standDown.active
@@ -159,7 +171,8 @@ class GlassesRelauncher(
     private fun scheduleNext(afterFailure: Boolean = false) {
         job?.cancel()
         this.afterFailure = afterFailure
-        val wait = stepsMs[step.coerceAtMost(stepsMs.lastIndex)]
+        // After a failed reopen the glasses are away: BackgroundPolicy's ladder; a fresh close (the glasses are there) keeps its own steps.
+        val wait = if (afterFailure && failures > 0) BackgroundPolicy.delayMs(failures - 1) else stepsMs[step.coerceAtMost(stepsMs.lastIndex)]
         log("relaunch: attempt in ${wait / 1000} s (step $step${if (afterFailure) ", after a failed reopen" else ""})")
         job = scope.launch { attemptLoop(wait) }
     }
@@ -173,7 +186,9 @@ class GlassesRelauncher(
             if (why == null) { noteCleared(); doReopen(); return }
             if (why != lastWhy) { log("relaunch: waiting ($why)"); lastWhy = why }
             noteBlocked(why)
-            delay(pollMs)
+            // No polling for what only a person changes (the setting) and no 10 s poll for the hourly cap: sleep until its oldest attempt ages out.
+            if (why == SETTING_OFF) return
+            delay(if (why == HOURLY_LIMIT) (attempts.firstOrNull()?.let { it + HOUR_MS - now() }?.coerceAtLeast(pollMs) ?: pollMs) else pollMs)
         }
     }
 
@@ -221,10 +236,10 @@ class GlassesRelauncher(
 
     /** The first reason not to reopen now, or null. */
     private fun blocker(): String? {
-        if (!enabled()) return "setting off"
+        if (!enabled()) return SETTING_OFF
         val cutoff = now() - HOUR_MS
         while (attempts.isNotEmpty() && attempts.first() <= cutoff) attempts.removeFirst()
-        if (attempts.size >= maxPerHour) return "hourly limit"
+        if (attempts.size >= maxPerHour) return HOURLY_LIMIT
         if (!guards.callIdle()) return CALL_ACTIVE
         if (reopenIsFullScreen() && !guards.mediaIdle()) return "media active"
         if (guards.worn() == false) return "glasses not worn"
@@ -237,6 +252,8 @@ class GlassesRelauncher(
         const val MAX_PER_HOUR = 6
         const val POLL_MS = 10_000L
         private const val CALL_ACTIVE = "call active"
+        private const val SETTING_OFF = "setting off"
+        private const val HOURLY_LIMIT = "hourly limit"
         /** Diagnostics: a changed blocker or input is logged at most this often; an unchanged block repeats this often. */
         const val BLOCK_CHANGE_MIN_MS = 30_000L
         const val BLOCK_HEARTBEAT_MS = 300_000L

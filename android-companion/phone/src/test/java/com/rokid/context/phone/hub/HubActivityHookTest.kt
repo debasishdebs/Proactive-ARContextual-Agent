@@ -78,8 +78,46 @@ class HubActivityHookTest {
         hook.onActivityStarted(a); hook.onActivityStopped(a)
         assertEquals("switch on: keeps running in the background", 1, stops)
 
-        assertTrue(ContextHubService.stopsOnBackgroundStart(inFront = false, keepRunning = false))
-        assertFalse(ContextHubService.stopsOnBackgroundStart(inFront = true, keepRunning = false))
-        assertFalse(ContextHubService.stopsOnBackgroundStart(inFront = false, keepRunning = true))
+        assertTrue(ContextHubService.stopsOnBackgroundStart(inFront = false, needed = false))
+        assertFalse(ContextHubService.stopsOnBackgroundStart(inFront = true, needed = false))
+        assertFalse(ContextHubService.stopsOnBackgroundStart(inFront = false, needed = true))
+    }
+
+    /** v0.9.9: the watchdog's (background) start happens only while something needs the hub; a tapped Reconnect (force) and a resumed activity always start it. */
+    @Test fun aBackgroundStartNeedsAReasonButForceAndTheFrontDoNot() {
+        HubGraph.resetForTests(null)
+        shadowOf(app).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT)
+        val before = ContextHubService.hubNeededNow
+        try {
+            ContextHubService.hubNeededNow = { false }
+            ContextHubService.ensureRunning(app)
+            assertNull("nothing needs the hub: no start", shadowOf(app).nextStartedService)
+            ContextHubService.ensureRunning(app, force = true)
+            val forced = shadowOf(app).nextStartedService
+            assertEquals(ContextHubService::class.java.name, forced?.component?.className)
+            assertTrue(forced!!.getBooleanExtra(ContextHubService.EXTRA_FORCE, false))
+            val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+            hook.onActivityResumed(activity)
+            assertEquals("a resumed activity starts it as before", ContextHubService::class.java.name, shadowOf(app).nextStartedService?.component?.className)
+            ContextHubService.hubNeededNow = { true }
+            ContextHubService.ensureRunning(app)
+            assertEquals(ContextHubService::class.java.name, shadowOf(app).nextStartedService?.component?.className)
+        } finally { ContextHubService.hubNeededNow = before }
+    }
+
+    /** v0.9.9: leaving the front stops the hub unless something needs it (the hook's keepRunning is now "hub needed"). */
+    @Test fun leavingTheFrontStopsTheHubOnlyWhenNothingNeedsIt() {
+        var needed = false; var stops = 0
+        val h = HubResumeHook(voiceForeground = { _, _ -> }, keepRunning = { needed }, stopHub = { stops++ })
+        val a = Robolectric.buildActivity(Activity::class.java).setup().get()
+        h.onActivityStarted(a); h.onActivityStopped(a); assertEquals(1, stops)
+        needed = true; h.onActivityStarted(a); h.onActivityStopped(a); assertEquals("a context source or the glasses link keeps it", 1, stops)
+    }
+
+    @Test fun theAppInFrontIsAPositiveSignalEvenWithNoHubService() {
+        var positives = 0
+        val h = HubResumeHook(voiceForeground = { _, _ -> }, positive = { positives++ })
+        h.onActivityResumed(Robolectric.buildActivity(Activity::class.java).setup().get())
+        assertEquals(1, positives)
     }
 }

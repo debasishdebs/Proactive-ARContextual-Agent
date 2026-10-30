@@ -31,6 +31,9 @@ object HubGraph {
 
     internal val isBuilt: Boolean get() = hub != null
 
+    /** An ask in progress on the glasses, or a Reconnect the user just tapped: keeps the hub service wanted ([BackgroundPolicy.Needs.activeWork]). False before the hub is built. */
+    internal fun busy(): Boolean = hub?.busy() == true
+
     /** Wave B: the one process-wide context hub and its registry; later tasks call `contextRegistry?.register(…)`. Built with the hub, started with it. */
     @Volatile var contextHub: com.rokid.context.phone.context.ContextHub? = null
         private set
@@ -195,6 +198,7 @@ object HubGraph {
         planSender = sender; collectSession = collect; traceControl = ctl
         // Task 33: the publish groups sit behind the same transport; their graph is built on first use (it needs the AI graph) and warmed here so recover() runs at startup.
         val hubRef = java.util.concurrent.atomic.AtomicReference<Hub>()
+        val watchdogRef = java.util.concurrent.atomic.AtomicReference<GlassesWatchdog>()
         com.rokid.context.phone.canvas.PlanGraph.install(
             app, scope, sender, install,
             glasses = { hubRef.get()?.let { com.rokid.context.phone.canvas.PlanGraph.glassesState(it.state.value.link, it.planPeer()) } ?: com.rokid.context.canvas.plan.GlassesState.UNKNOWN },
@@ -216,9 +220,10 @@ object HubGraph {
         )
         return Hub(
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
-            startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
+            startService = { ContextHubService.ensureRunning(app, force = true) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
             actions = PhoneActions.hubPort(app) { settings.read() }, nudges = PhoneNudges.hubPort(app) { settings.read() },
-            reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }).also { callGuards = it }, reopenEnabled = { KeepRunningNearby.of(app).enabled() },
+            reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }).also { callGuards = it }, reopenEnabled = { KeepRunningNearby.of(app).enabled() }, paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) },
+            onPositiveSignal = { watchdogRef.get()?.onPositiveSignal() }, inFront = ContextHubService::appInForeground,
             standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
             phoneUse = phoneUse.inUse,
             motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,
@@ -233,6 +238,7 @@ object HubGraph {
             // v0.9.8 slice C: a flow's glasses delivery target asks this (not connected = the phone, with the reason recorded)
             com.rokid.context.orchestration.DeliveryEnvironment.glassesConnected = { hub.link.state.value == com.rokid.context.core.model.LinkState.CONNECTED }
             // Process-lifetime watchdog: it outlives the hub service, so it can also bring a dead service back (ensureRunning is refused harmlessly where Android forbids it).
+            // v0.9.9: with no pair or the setting off it does nothing (and stops a hub nothing needs); away it backs off 5/15/30/60 min ([BackgroundPolicy]).
             GlassesWatchdog(
                 now = System::currentTimeMillis, enabled = { KeepRunningNearby.of(app).enabled() },
                 captureActive = { hub.activePauses.value.isEmpty() }, hubRunning = { hub.started }, link = { hub.link.state.value },
@@ -242,7 +248,9 @@ object HubGraph {
                 // Settings > Capture: the silence threshold and the tick, read at every tick (defaults 3 min and 150 s, as before)
                 silentMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::silentMs,
                 periodMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::tickMs,
-            ).start(scope)
+                paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) },
+                hubNeeded = { ContextHubService.appInForeground() || BackgroundInputs.hubNeeded(app) }, stopHub = { ContextHubService.stop(app) },
+            ).also { watchdogRef.set(it) }.start(scope)
         }
     }
 }

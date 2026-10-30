@@ -1,0 +1,51 @@
+# Small items B: standby battery, background gate (2026-10-30, branch feat/v099-watch)
+
+No migration, PROTOCOL_VERSION 1, TRACE_SCHEMA 1, plan hash f5782e0d8610, Room v15 unchanged. Glasses app untouched.
+
+Evidence (device, 2026-10-30): standby drain about 2x; our apps ~1.3% of accounted drain, but PCA started itself with nothing connected: `PcWatchdog LinkDown link=OFFLINE silent_s=300 action=reconnect` about every 5 min, `watchdog hub down, starting it`, BT UART/HAL wake locks, 770 BT wakeups.
+
+## 1. Inventory: what wakes or starts PCA with the glasses absent
+
+| # | Where | What it does with the glasses off/absent (before) | Cost | Now |
+|---|---|---|---|---|
+| 1 | `GlassesWatchdog` loop (HubGraph.build, process lifetime, `delay`) | Tick every 150 s (Settings > Capture `tickMs`); after `silentMs` (3 min, setting) of silence with link OFFLINE/PAUSED_BT calls `link.connectOnResume()` EVERY tick (the 5 min log); hub service dead -> `ContextHubService.ensureRunning` every tick | No wake lock, but each reconnect is a CXR/BT connect (radio, BT HAL/UART wake locks, wakeups); the start attempt is a service start | Gated by `BackgroundPolicy`: nothing with no pair or setting off (sleeps 30 min, re-reads inputs only, no radio); away: reconnect and hub restart on the 5/15/30/60 min ladder, loop sleeps to the next due time |
+| 2 | `GlassesRelauncher` timed attempt (after `CLOSED_ON_GLASSES`) | Reopen at 8 s, 30 s, 2, 5, 10 min; max 6/h. A blocked guard (call, media, worn, setting off, hourly cap) POLLED every 10 s for as long as the app stayed closed | Poll = coroutine wake every 10 s while the process is awake; each reopen = BT connect | Setting off: the loop ends (no poll), a positive signal restarts it; hourly cap: sleeps until the oldest attempt ages out; after a FAILED reopen (glasses away) retries on the 5/15/30/60 ladder |
+| 3 | `Hub.start` -> `link.connectOnce()`; `Hub.onAppResumed` -> `connectOnResume()` | One connect attempt at hub start and at every app resume, whatever the setting or pair | One BT connect | Not done unless in front, or enabled AND paired; a tapped Reconnect is unchanged |
+| 4 | `CxrGlassesLink` retry policy (`GlassesSessionPolicy`) | Transient failure: 2, 5, 10, 30 s then max 5 more 30 s retries, then waits for the user; auth retry 2, 5, 10 s | Bounded burst per attempt | Unchanged (bounded; only started by 1 to 3) |
+| 5 | Minimised background link (`MinimisedLink`, `GlassAppWatcher`) | Liveness probe `pc_hello_request` while bound | Only while a link exists | Unchanged (no link, no probe) |
+| 6 | `ContextHubService` (FGS connectedDevice, +microphone, +location) | Started from the front on every resume; START_STICKY; restarted by the watchdog. Holds the hub, `ContextHub` (context sources), `KeyframeGraph.start`, `ensureBackgroundWork` | Notification, process kept alive; no radio of its own | Started in the background only if `hubNeeded`; stopped by the watchdog when not needed; a sticky restart in the background stops itself when not needed; front start unchanged |
+| 7 | `HubResumeHook.onActivityStopped` | Stopped the hub on leaving the front only when "Keep running when nearby" off | none | Stops unless `hubNeeded` (glasses link active, a context source on, an ask, a tapped Reconnect in the last 10 min) |
+| 8 | WorkManager periodic: FrameIngest 15 min, QueueDrain 15 min, MomentCadence 15 min, Critic 3 h, Retention 24 h, NightIndex 24 h (charging+idle), Embedding daily canary | Wake the process, then return fast when queues are empty. Independent of the glasses and of the hub service | Job wakeups (JobScheduler, batched by the OS) | Unchanged, see question Q2 |
+| 9 | AlarmManager | None in the phone app (the glasses app's CaptureScheduler is on the glasses). Reminder alarms: `ReminderReceiver`, re-armed by `BootReceiver` (BOOT_COMPLETED, MY_PACKAGE_REPLACED) | only user reminders | Unchanged |
+| 10 | Receivers | `ClosedNoticeReceiver` (user action), `ProposalActionReceiver`, `ActivityTransitionReceiver` (registered only while `phone_activity` on), WorkManager's own proxies, `BootReceiver` | event-driven | Unchanged |
+| 11 | BLE / Bluetooth scanning | None: no `startScan`, no `startDiscovery` in the code. Bluetooth is the Rokid CXR SDK session (rows 1 to 5) and `CarSource` (bonded-device broadcasts, only with `phone_car` on) | radio only via CXR connects | Rows 1 to 3 are the only automatic connect sources |
+| 12 | Data Layer: `PcaWatchListener` (WearableListenerService, `/pca/motion`) | Woken by the platform only when the watch app sends; drops when `watch_app` is off | none unless the watch sends | Unchanged |
+| 13 | Canvas server (`CanvasService`, FGS dataSync) | Separate service, Developer mode only; calls `HubGraph.get` only to reach the plan sender (builds the hub object, does NOT start the hub service) | none when off | Unchanged: it does not need the hub service |
+
+What the hub service is required by: `ContextHub` and its sources (watch_app, activity, steps, airplane, car, speed, image intent), the glasses link, the frame ingest from glasses. NOT required by: canvas server, WorkManager pipeline workers, `KeyframeGraph` (also started by `ContextApp`), the voice pipeline on the phone mic.
+
+## 2. The gate: `BackgroundPolicy` (hub package, pure)
+
+- `gate(enabled, paired, link)`: `NO_PAIR` (no `CxrGlassesLink.isPaired`), `DISABLED` (paired, "Keep running when nearby" off), `ACTIVE` (CONNECTED, MINIMISED, CLOSED_ON_GLASSES, VERSION_MISMATCH), `AWAY` (OFFLINE, PAUSED_BT, NOT_AUTHORIZED, CONNECTING).
+- `Backoff(step, nextAtMs)`, `attempted`, `reset`: 5, 15, 30, 60 min, capped at 60. Reset by any positive signal: the link carries data, a wear event, the app in front (`HubResumeHook`, even with no service), a tapped Reconnect, the setting switched on (`NearbyDevicesSource.onEnabled`). `GlassesWatchdog.onPositiveSignal()` also wakes the loop; `GlassesRelauncher.onPositiveSignal()` resets its failed-reopen ladder and re-queues a pending close.
+- Watchdog: `paired`, `hubNeeded`, `stopHub` params (defaults keep old behaviour). Order: hub not needed -> stop it, Off; no pair; setting off; capture paused; then hub down (away: backed off), then the old verdicts, the link-down reconnect backed off. Diagnostics lines stay (`verdict=..`, `action=reconnect`; new `action=backoff`, `why=no_pair`). The note ("Glasses not connected · last heard X min ago") is published on every tick, also when backed off or hub down.
+- Hub: `paired`, `inFront`, `onPositiveSignal` params. Automatic connects (`start`, `onAppResumed`) need `inFront || (enabled && paired)`. `requestReconnect` (Reconnect, notification "Open on glasses") always works, forces the service (`EXTRA_FORCE`) and keeps the hub wanted 10 min (`USER_ASK_HOLD_MS`, `busy()`).
+- Hub service: `BackgroundPolicy.hubNeeded(Needs(enabled, paired, contextSourceOn, activeWork))`; `BackgroundInputs` reads the real inputs (`KeepRunningNearby`, `isPaired`, the 7 `ContextSourceSettings` ids, `HubGraph.busy()` = tapped Reconnect or a glasses ask overlay). `ensureRunning(force=false)` (watchdog) obeys it; the resumed-activity path forces (front keeps today's behaviour). The watchdog never stops a hub while the app is in front.
+- Relauncher: `enabled` is still the setting, wired as enabled AND paired by the Hub's `linkAllowed` for connects; the 'only a real call blocks relaunch' rule (`callBusy`) is untouched.
+
+## 3. HUD frames
+
+`VoicePipeline.overlayFor`: the glasses Listening and Thinking overlays (`Overlay.Listening`) are `null` while `deviceCaps().glassesDisplay` is off. The ask still runs and answers through `DeliveryRoute` (fallback to the phone) as before. Problem toasts and the mic-off toast are NOT gated (Q4). The overlay is recomputed at the next voice state change, not when the switch is flipped mid-ask.
+
+## Tests
+`BackgroundPolicyTest` (gate matrix 2x2x8, ladder, cap, reset, sleep, hubNeeded matrix, source list); `GlassesWatchdogTest` (migrated Rig with `paired/hubNeeded/stopHub`; no pair, setting off, hub not needed stopped, context source keeps hub, away ladder 5/15/30/60 and the 60 cap with the note never silent, positive signal reset, link-back reset, hub-down backoff, long loop sleep and wake, no tick between attempts); `GlassesRelauncherTest` (failed reopen ladder replaces the old 30 s/2 min steps, ladder reset on connect and positive signal, setting off does not poll, hourly cap does not poll, switching on is a positive signal); `HubTest` (no automatic connect with setting off or no pair, front connects, resume signal, tapped Reconnect works and keeps hub wanted, wear and link-up signals); `HubActivityHookTest` (background start needs a reason, force and front start, leaving the front, resume signal); `VoicePipelineTest.listeningAndThinkingFramesFollowTheGlassesDisplaySwitch`. `FakeGlassesLink.resumeCalls` added.
+
+## Questions for the user (safe default taken)
+- Q1. Enabled and paired but away for hours: the hub service (notification, no radio) stays, only the attempts back off. Should it stop after N hours away and wait for the next app open or wear event? Default: stays.
+- Q2. The WorkManager jobs (15 min FrameIngest, QueueDrain, MomentCadence) run with no glasses. They are cheap when empty but wake the process 12 times an hour; MomentCadence could pause when no mark exists. Not changed (pipeline behaviour).
+- Q3. Disabled (paired, switch off) with a context source on: the hub runs for the source, the glasses link is not started, but a link already up is not closed. Close it when the switch is turned off? Default: left up.
+- Q4. Problem toasts and the mic-off toast on the HUD are not gated by the glasses display switch (only Listening and Thinking, as asked).
+- Q5. The `PcWatchdog` first tick after a process start still attempts one reconnect when enabled, paired and away (then 5 min).
+
+## Not done / risks
+No device check, no Codex review. Expected effect: away, reconnect/start attempts per hour fall from about 12 to 1 (at the 60 min cap, after 50 min of ramp); with no pair or the setting off, zero.

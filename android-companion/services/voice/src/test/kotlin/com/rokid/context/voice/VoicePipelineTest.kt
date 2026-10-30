@@ -48,6 +48,26 @@ class VoicePipelineTest {
         assertTrue(logs.any { it == "outcome=BLOCKED source=GLASSES" })
     }
 
+    /** v0.9.9: Listening and Thinking are HUD frames; the glasses display switched off sends neither, the ask itself still runs and answers. */
+    @Test fun listeningAndThinkingFramesFollowTheGlassesDisplaySwitch() = runTest {
+        for (displayOn in listOf(true, false)) {
+            deviceCaps = com.rokid.context.core.model.DeviceCapabilities.ALL.with("glasses", "display", displayOn)
+            asked.clear()
+            val gate = CompletableDeferred<AnswerResult>(); answer = { gate.await() }
+            val p = pipeline()
+            p.glassesListenStart(); runCurrent()
+            assertTrue(p.state.value is VoiceState.Listening)
+            assertEquals(displayOn, p.overlay.value is Overlay.Listening, "listening frame, display on=$displayOn")
+            engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+            assertTrue(p.state.value is VoiceState.Thinking)
+            assertEquals(displayOn, p.overlay.value is Overlay.Listening, "thinking frame, display on=$displayOn")
+            if (!displayOn) assertNull(p.overlay.value)
+            assertEquals(listOf("milk?" to VoiceSource.GLASSES), asked)
+            gate.complete(AnswerResult.Answered("ask_1", "Milk and eggs.")); runCurrent()
+            assertTrue(p.state.value is VoiceState.Answer)
+        }
+    }
+
     @Test fun aSwitchedOffPhoneMicStartsNoListenAndTheGlassesStillWork() = runTest {
         deviceCaps = deviceCaps.with("phone", "mic", false)
         val p = pipeline()
