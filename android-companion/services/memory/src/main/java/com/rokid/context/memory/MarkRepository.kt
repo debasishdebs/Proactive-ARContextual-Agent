@@ -17,5 +17,8 @@ class MarkRepository(private val dao: MomentDao) {
     suspend fun byIds(ids: Collection<String>): List<MomentDao.MarkRow> =
         if (ids.isEmpty()) emptyList() else dao.marksIn(0L, Long.MAX_VALUE).first().filter { it.labelId in ids }
 
+    /** The mark [id] observed (null while unknown): re-emits when its label, photo link or the Moment holding it changes. */
+    fun observeById(id: String): Flow<MomentDao.MarkRow?> = dao.marksIn(0L, Long.MAX_VALUE).map { rows -> rows.firstOrNull { it.labelId == id } }
+
     companion object { const val MAX_ROWS = 200 }
 }

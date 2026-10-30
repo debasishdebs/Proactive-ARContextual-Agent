@@ -92,6 +92,12 @@ class FlowPlanTest {
         assertEquals(listOf("node retrieve: choose at least one source"), refused(with(query, "retrieve", buildJsonObject { put("memories", false); put("photos", false) })))
     }
 
+    @Test fun aHistoryOnlyNudgeIsRefusedBecauseItWouldNeverRun() {
+        val historyOnly = buildJsonObject { put("recent", false); put("history", true); put("imageQuery", false) }
+        assertTrue(refused(with(nudge, "retrieve", historyOnly)).single().contains("nudge history alone"))
+        assertEquals(true, plan(with(nudge, "retrieve", buildJsonObject { put("recent", true); put("history", true) })).history)
+    }
+
     @Test fun theShapeIsFixed() {
         // a draft prompt, the wrong role, a missing gate, an extra node, and a photo node in a flow are all refused
         assertTrue(PipelineValidator.validate(with(query, "answer", buildJsonObject { put("role", "ANSWER"); putJsonObject("prompt") { put("source", "draft"); put("template", "x") } })).contains("node answer: a flow uses the live prompt"))

@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.MomentEntity
 import com.rokid.context.memory.db.MomentPartEntity
 import com.rokid.context.memory.db.MomentPartKind
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -71,5 +72,19 @@ class MomentTypeStoreTest {
         val rows = md.marksIn(0, 10_000).first()
         assertEquals(listOf("camera_busy", "pending"), rows.map { it.photo })
         assertEquals(listOf("camera_busy", null), rows.map { it.errorReason })
+    }
+
+    @Test fun anObservedMarkReEmitsWhenItsMomentArrives() = runBlocking<Unit> {
+        val s3 = db.canvasSlice3Dao()
+        val e = DeletionEpoch("i", 0, 0); val f = DaoFence(0, e, { 0 }, { e })
+        s3.insertLabelFenced(label("a", "tap", 1_000).copy(photo = "pending"), f)
+        val repo = com.rokid.context.memory.MarkRepository(md)
+        val seen = mutableListOf<String?>()
+        val job = kotlinx.coroutines.GlobalScope.launch { repo.observeById("a").collect { seen += it?.momentId } }
+        kotlinx.coroutines.withTimeout(5_000) { while (seen.isEmpty()) kotlinx.coroutines.delay(20) }
+        md.replace(MomentEntity("00000001", 1, 1, "h", 1, MomentType.FRAME), listOf(MomentPartEntity("00000001", MomentPartKind.MARK, "a", "r", 1_000, "tap")))
+        kotlinx.coroutines.withTimeout(5_000) { while (seen.last() == null) kotlinx.coroutines.delay(20) }
+        job.cancel()
+        assertEquals(null, seen.first()); assertEquals("00000001", seen.last())
     }
 }

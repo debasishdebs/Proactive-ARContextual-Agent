@@ -181,6 +181,8 @@ data class FlowPlan(
             if (if (kind == Kind.QUERY) !out.memories && !out.photos else !out.recent && !out.history) reasons += "node ${retrieve.id}: choose at least one source"
             // what the flow's own code does not read is refused, never silently ignored
             if (kind == Kind.NUDGE && (out.memories || out.photos)) reasons += "node ${retrieve.id}: a Nudge reads recent memories and nudge history; memory and photo stores are for a Query"
+            // nudge history has no ids to cite, so with no recent memories and no image search the run would have nothing to read and never fire
+            if (kind == Kind.NUDGE && !out.recent && out.history && !out.imageQuery) reasons += "node ${retrieve.id}: nudge history alone gives a Nudge nothing to read; also choose recent memories or an image query"
             if (kind == Kind.QUERY && out.imageQuery) reasons += "node ${retrieve.id}: a Query has no image to search with"
             if (reasons.isNotEmpty()) return Compiled.Refused(reasons)
             return Compiled.Ok(withTrigger)

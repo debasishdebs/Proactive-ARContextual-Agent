@@ -46,6 +46,8 @@ class PreviewViewModel(private var ref: PreviewRef?, private val data: ActivityD
     var resumedOnce = false
 
     private var watch: kotlinx.coroutines.Job? = null
+    private var loadJob: kotlinx.coroutines.Job? = null
+    private var generation = 0
 
     init { observe() }
 
@@ -58,9 +60,12 @@ class PreviewViewModel(private var ref: PreviewRef?, private val data: ActivityD
 
     /** Reads the item again (back from a Forget of something it cites): the sections show what is stored now. */
     fun reload() {
-        viewModelScope.launch {
+        // A newer read supersedes an older one: the older is cancelled and, if it still finishes, its generation no longer matches, so it never overwrites a newer (redacted) result.
+        loadJob?.cancel()
+        val gen = ++generation
+        loadJob = viewModelScope.launch {
             val item = ref?.let { Previewables.forRef(it.kind).load(listOf(it.id), PreviewCtx(data, zone(), today(), withDay = true)).firstOrNull() }
-            _state.value = PreviewUiState(loading = false, item = item)
+            if (gen == generation) _state.value = PreviewUiState(loading = false, item = item)
         }
     }
 

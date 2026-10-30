@@ -40,6 +40,21 @@ class PreviewViewModelTest {
         assertNull(vm.state.value.item)
     }
 
+    @Test fun aSlowOlderLoadNeverOverwritesTheNewerRedactedOne() = runBlocking<Unit> {
+        val data = FakeActivityData(asks = listOf(Fixtures.ask("a1", t, sources = """["m1"]""", rating = 1)), mems = listOf(Fixtures.memory("m1", "Keys", t)))
+        val vm = vm(data, PreviewRef(RefKind.ASK, "a1"))
+        withTimeout(5_000) { vm.state.first { !it.loading && it.item != null } }
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        data.asksGate = gate
+        vm.reload() // the old read: snapshot still holds the unredacted answer, held open
+        data.asks = listOf(Fixtures.ask("a1", t, sources = """["m1"]""", redacted = true, answer = "Removed — a source was forgotten"))
+        data.asksGate = null
+        vm.reload() // the Forget's redacted read, completes at once
+        withTimeout(5_000) { vm.state.first { it.item?.sections()?.none { s -> s is PreviewSection.SourcesSection } == true } }
+        gate.complete(Unit); kotlinx.coroutines.delay(200)
+        assertTrue("SourcesSection" !in kinds(vm).orEmpty())
+    }
+
     @Test fun anOldAnswerBeyondTheRecentOnesStillOpensById() = runBlocking<Unit> {
         val data = FakeActivityData(asks = listOf(Fixtures.ask("old", 1)))
         assertEquals("old", withTimeout(5_000) { vm(data, PreviewRef(RefKind.ASK, "old")).state.first { !it.loading } }.item?.id)

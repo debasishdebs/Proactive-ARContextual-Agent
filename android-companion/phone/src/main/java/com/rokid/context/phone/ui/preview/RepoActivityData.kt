@@ -18,6 +18,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -54,6 +55,8 @@ class RepoActivityData(
         RefKind.MEMORY -> timeline.memory(ref.id).map { }
         RefKind.ASK -> asks.observe(ref.id).flatMapLatest { a -> cited(a?.takeUnless { it.redacted }?.sourcesJson) }
         RefKind.NUDGE -> nudgeById(ref.id).flatMapLatest { n -> cited(n?.takeUnless { it.redacted }?.sourceIdsJson) }
+        // A pending mark ("Photo on its way") changes when its photo link, photo state or Moment caption arrives.
+        RefKind.MARK -> marks.observeById(ref.id).distinctUntilChanged().map { }
         else -> emptyFlow()
     }
 

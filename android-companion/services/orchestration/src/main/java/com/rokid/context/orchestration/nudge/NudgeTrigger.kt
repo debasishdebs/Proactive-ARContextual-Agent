@@ -30,6 +30,7 @@ object NudgeTrigger {
     }
 
     const val KEY_TRIGGER = "trigger"
+    const val KEY_SCOPE = "publication_scope"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var events: FlowTriggers? = null
 
@@ -55,10 +56,13 @@ object NudgeTrigger {
         return ScheduleTick(DaoFlowPlans(db.canvasDao()), DaoTriggerMeta(db.canvasSlice3Dao()), { t, key -> enqueue(app, t, key) }).tick()
     }
 
+    /** A schedule occurrence's key is `<scope>_<occurrence ms>` (see [ScheduleTick]): the publication it was queued for. Other triggers carry none. */
+    fun scopeOf(trigger: String, key: String?): String? = if (trigger == NodeTypes.TRIGGER_SCHEDULE && key != null) key.substringBeforeLast('_') else null
+
     /** One unique run per trigger type (KEEP): a burst is one queued run. Not while the battery is low; no wake lock, no expedited work. */
     suspend fun enqueue(context: Context, trigger: String, key: String? = null): Boolean = withContext(Dispatchers.IO) {
         try {
-            val request = OneTimeWorkRequestBuilder<NudgeWorker>().setInputData(workDataOf(KEY_TRIGGER to trigger))
+            val request = OneTimeWorkRequestBuilder<NudgeWorker>().setInputData(workDataOf(*listOfNotNull(KEY_TRIGGER to trigger, scopeOf(trigger, key)?.let { KEY_SCOPE to it }).toTypedArray()))
                 .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build()).build()
             // durable only once WorkManager has the work: wait for its result (a unique KEEP enqueue is idempotent)
             WorkManager.getInstance(context).enqueueUniqueWork(if (trigger == NodeTypes.TRIGGER_SUMMARIZER) WORK else "${WORK}_$trigger" + (key?.let { "_$it" } ?: ""), ExistingWorkPolicy.KEEP, request).result.get(10, java.util.concurrent.TimeUnit.SECONDS)

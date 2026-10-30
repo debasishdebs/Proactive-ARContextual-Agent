@@ -62,7 +62,7 @@ class NudgeWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
         }
         if (trigger != null && trigger != com.rokid.context.ai.canvas.NodeTypes.TRIGGER_SUMMARIZER) {
             // a slice C trigger: its own rate limit and the engine's gates replace the backstop's 30 minute gap
-            try { NudgeEngineFactory.engine(app).runOnce(trigger) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i("NudgeWorker", "trigger run failed: ${SafeLog.describe(e)}") }
+            try { NudgeEngineFactory.engine(app).runOnce(trigger, scope = inputData.getString(NudgeTrigger.KEY_SCOPE)) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i("NudgeWorker", "trigger run failed: ${SafeLog.describe(e)}") }
             return Result.success()
         }
         val prefs = app.getSharedPreferences(NudgeRunGate.PREFS, Context.MODE_PRIVATE)
