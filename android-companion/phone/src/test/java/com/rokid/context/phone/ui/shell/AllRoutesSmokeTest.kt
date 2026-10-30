@@ -196,6 +196,7 @@ class AllRoutesSmokeTest {
         fun value(pattern: String, token: String): String? = when (token) {
             "id" -> ID_FOR_ROUTE[pattern]
             "date" -> java.time.LocalDate.now(Fixtures.ZONE).toString() // PhoneDeps.today()
+            "at" -> "-1" // the day view's optional scroll time (none)
             "period" -> "week"
             "ref" -> "memory:$MEMORY_ID" // the previewer
             "kind" -> "frames" // the common list of an Activity kind

@@ -45,7 +45,7 @@ class Cited(private val ids: List<String>, private val memories: Map<String, Mem
     }
 }
 
-/** An answer: the question, the answer with its rating, the action card, and what it was based on (each source opens its own previewer). A redacted answer shows its words only. Nothing here forgets. */
+/** An answer: the question, the answer with its rating, the action card, and what it was based on (each source opens its own previewer). A redacted answer shows its words only. Forget removes the answer only. */
 class AnswerPreview(private val a: AskEntity, private val cited: Cited, private val ctx: PreviewCtx) : Previewable {
     override val id get() = a.id
     override fun summary() = ListItem(a.id, a.question, subtitle = ctx.at(a.ts), icon = Icons.Outlined.ChatBubbleOutline)
@@ -57,7 +57,8 @@ class AnswerPreview(private val a: AskEntity, private val cited: Cited, private 
         SourcesSection("Based on", cited.items, cited.missing, moreQuery = a.question).takeIf { !a.redacted },
         AudioSection,
     )
-    override fun forgetTarget(): ForgetTarget? = null
+    /** The answer itself (a single-object Forget: its row and what hangs on it, never the memories it cited). A redacted answer has nothing left to forget. */
+    override fun forgetTarget(): ForgetTarget? = if (a.redacted) null else ForgetTarget.Answer(a.id)
 
     companion object : PreviewableFactory {
         override suspend fun load(ids: List<String>, ctx: PreviewCtx): List<Previewable> =
@@ -76,7 +77,7 @@ class NudgePreview(private val n: NudgeEntity, private val cited: Cited, private
         ProposalSection(n.id),
         AudioSection,
     )
-    override fun forgetTarget(): ForgetTarget? = null
+    override fun forgetTarget(): ForgetTarget? = if (n.redacted) null else ForgetTarget.Nudge(n.id)
 
     companion object : PreviewableFactory {
         override suspend fun load(ids: List<String>, ctx: PreviewCtx): List<Previewable> =

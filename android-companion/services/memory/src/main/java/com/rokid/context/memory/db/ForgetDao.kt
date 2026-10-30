@@ -196,6 +196,8 @@ abstract class ForgetDao {
     /** [likePattern] escapes `\`, `%` and `_` with `\`. It is only a prefilter: the caller parses the JSON exactly. */
     @Query("SELECT * FROM ask WHERE redacted = 0 AND sourcesJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCiting(likePattern: String): List<AskEntity>
     @Query("SELECT * FROM nudge WHERE redacted = 0 AND sourceIdsJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun nudgesCiting(likePattern: String): List<NudgeEntity>
+    @Query("SELECT * FROM ask WHERE id = :id AND redacted = 0") abstract suspend fun unredactedAsk(id: String): AskEntity?
+    @Query("SELECT * FROM nudge WHERE id = :id AND redacted = 0") abstract suspend fun unredactedNudge(id: String): NudgeEntity?
     @Query("UPDATE ask SET answer = :text, sourcesJson = '[]', redacted = 1 WHERE id = :id") abstract suspend fun redactAsk(id: String, text: String): Int
     @Query("UPDATE nudge SET text = :text, why = '', sourceIdsJson = '[]', redacted = 1 WHERE id = :id") abstract suspend fun redactNudge(id: String, text: String): Int
 

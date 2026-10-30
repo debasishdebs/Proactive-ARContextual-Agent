@@ -124,7 +124,7 @@ class MemoryPreview(private val m: MemoryEntity, private val frame: FrameEntity?
     }
 }
 
-/** A mark: its Moment's caption if it has one; else its photo; else only why there is none and "Show that time". A mark itself is never deleted from here. */
+/** A mark: its Moment's caption if it has one; else its photo; else only why there is none and "Show that time". A photo-less mark is forgotten as the mark itself (its fallback Moment goes with it). */
 class MarkPreview(private val row: MarkRowUi, private val inner: Previewable?) : Previewable {
     override val id get() = row.labelId
     override fun summary() = item(row)
@@ -133,12 +133,13 @@ class MarkPreview(private val row: MarkRowUi, private val inner: Previewable?) :
         row.frameId != null && row.reason == null -> listOf(ImageSection(listOf(row.frameId), startId = row.frameId, canForgetPhoto = true), AudioSection)
         else -> listOf(
             TextSection("Time", row.time),
-            StatusSection(row.reasonCode ?: "unknown", row.reason ?: "No photo", if (row.reasonCode == "pending") Severity.INFO else Severity.WARNING, showTimeOn = row.date),
+            StatusSection(row.reasonCode ?: "unknown", row.reason ?: "No photo", if (row.reasonCode == "pending") Severity.INFO else Severity.WARNING, showTimeOn = row.date, showTimeAtMs = row.atMs),
             AudioSection,
         )
     }
 
-    override fun forgetTarget(): ForgetTarget? = inner?.forgetTarget()
+    /** The caption's or the photo's own Forget when there is one; a mark with neither (the status layout) is forgotten as the mark. */
+    override fun forgetTarget(): ForgetTarget? = inner?.forgetTarget() ?: ForgetTarget.Mark(row.labelId).takeIf { inner == null && !(row.frameId != null && row.reason == null) }
 
     companion object : PreviewableFactory {
         /** A mark as a row (the Activity page's Marks section draws the same row). */

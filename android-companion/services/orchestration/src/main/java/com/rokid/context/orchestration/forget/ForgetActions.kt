@@ -56,11 +56,36 @@ object ForgetActions {
      * outcomes, same post-commit cleanup as every Forget (cached export, reminders, notifications, outbox, queue scrub, listeners); MOMENT and SCENE run the range-Forget code ([com.rokid.context.memory.forget.ScopedForget]).
      * The scope is read ONCE here ([scope] defaults to the setting) so the dialog's counts and the delete name the same scope.
      */
-    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten) { svc ->
+    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, undoMark: (suspend (String) -> Unit)? = null, onForgotten: () -> Unit = {}): Outcome =
+        if (target is ForgetTarget.Mark) markOutcome(target.labelId, onForgotten, undoMark)
+        else run(context, onForgotten) { svc ->
+            if (target is ForgetTarget.Answer) return@run svc.forgetAnswer(target.askId)
+            if (target is ForgetTarget.Nudge) return@run svc.forgetNudge(target.nudgeId)
             val engine = ScopedForget(MemoryGraph.get(context).db, svc)
             engine.forget(engine.plan(target, scope), expectedHash).cascade
         }
+
+    /**
+     * A mark is undone through the recorder's own undo ([undoMark]: the fence, the gated delete, the Moment of its second rebuilt): the same typed outcomes as every Forget. No delete logic here.
+     * With no recorder given nothing is removed.
+     */
+    private suspend fun markOutcome(labelId: String, onForgotten: () -> Unit, undoMark: (suspend (String) -> Unit)?): Outcome {
+        if (undoMark == null) return Outcome.FAILED
+        return withContext(Dispatchers.IO + NonCancellable) {
+            try {
+                undoMark(labelId)
+                runCatching(onForgotten)
+                Outcome.DONE
+            } catch (e: DataOpGate.WriteInProgress) {
+                Outcome.SAVE_IN_PROGRESS
+            } catch (e: DataOpGate.ExportInProgress) {
+                Outcome.EXPORT_IN_PROGRESS
+            } catch (e: Exception) {
+                PcLog.w(TAG, "mark forget failed: ${SafeLog.describe(e)}")
+                Outcome.FAILED
+            }
+        }
+    }
 
     /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
     data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0, val tooLarge: Boolean = false, val peerResults: Int = 0, val needsAck: Boolean = false, val ackHash: String = "")

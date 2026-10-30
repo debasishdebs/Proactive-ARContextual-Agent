@@ -76,12 +76,13 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         ListViewRoute(kind, entry.arguments?.getString("ids").orEmpty().split(',').filter { it.isNotBlank() }, ListScope.parse(entry.arguments?.getString("scope")), deps, nav)
     }
 
-    composable(Routes.DAY, arguments = listOf(dateArg)) { entry ->
+    composable(Routes.DAY, arguments = listOf(dateArg, navArgument("at") { type = NavType.LongType; defaultValue = -1L })) { entry ->
         val date = entry.arguments?.getString("date")
         // Same clock as Activity, so the day regroups when the zone changes (Task 7 carry).
+        val at = entry.arguments?.getLong("at")?.takeIf { it >= 0 }
         val vm = viewModel { DayViewModel(date, deps.memory.timeline, deps.zone, deps::today, deps.clock, deps.activitySort.order) }
         val state by vm.state.collectAsStateWithLifecycle()
-        DayScreen(state, onBack = back, onPreview = { ids -> nav.navigate(previewMoment(ids).route) })
+        DayScreen(state, onBack = back, onPreview = { ids -> nav.navigate(previewMoment(ids).route) }, scrollToMs = at)
     }
 
     composable(Routes.PHOTOS, arguments = listOf(navArgument("q") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->

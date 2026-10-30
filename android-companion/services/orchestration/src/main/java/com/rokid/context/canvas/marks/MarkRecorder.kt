@@ -96,11 +96,7 @@ class MarkRecorder(
         val id = labelId(m)
         val f = fence()
         if (m.undo != null) {
-            val target = "mk:${m.epoch}:${m.undo}"
-            removeMark(target)
-            unjoined.removeAll { it.id == target }
-            if (listen?.bound == target) listen?.bound = null
-            log("mark undone")
+            undoLocked("mk:${m.epoch}:${m.undo}")
             return@withLock true
         }
         if (m.deletionCounter >= 0 && m.deletionCounter < f.now().counter) { log("mark dropped: older deletion epoch"); return@withLock true }
@@ -123,6 +119,19 @@ class MarkRecorder(
         if (photo == MarkPhotoReason.PENDING) dao.linkMarkPhoto(id)?.let { photoAt -> log("mark photo linked"); onRecorded(photoAt) }
         true
     }
+
+    private suspend fun undoLocked(target: String) {
+        removeMark(target)
+        unjoined.removeAll { it.id == target }
+        if (listen?.bound == target) listen?.bound = null
+        log("mark undone")
+    }
+
+    /**
+     * The app's "Forget this mark" (the previewer of a photo-less mark): the same undo as a glasses `undo`, through [removeMark] (the fence, the gated delete, the Moment of its second rebuilt). Throws
+     * [DataOpGate.ExportInProgress] / [DataOpGate.WriteInProgress] when the gate refuses; nothing is removed then and a retry repeats the steps.
+     */
+    suspend fun undoMark(labelId: String) = lock.withLock { undoLocked(labelId) }
 
     /** Test seams of the undo race (a test commits a photo right after the mark was read / after the fence was written). Null in production. */
     @Volatile internal var testAfterUndoRead: (suspend () -> Unit)? = null
