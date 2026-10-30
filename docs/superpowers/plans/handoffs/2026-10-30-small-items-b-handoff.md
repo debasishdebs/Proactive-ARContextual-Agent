@@ -47,5 +47,9 @@ What the hub service is required by: `ContextHub` and its sources (watch_app, ac
 - Q4. Problem toasts and the mic-off toast on the HUD are not gated by the glasses display switch (only Listening and Thinking, as asked).
 - Q5. The `PcWatchdog` first tick after a process start still attempts one reconnect when enabled, paired and away (then 5 min).
 
+## Codex final review fixes
+- Watchdog: hub recovery is now separate from the glasses gate. With `hubNeeded()` true (watch_app or another phone source) a stopped hub is restarted even with no pair, the setting off, or capture paused; reconnect, relaunch and probe stay gated. Test `aNeededHubIsRestartedWhateverTheGlassesGate`.
+- Known item (pre-existing, v1.1): after a reboot or app update the hub service restarts only when the hub graph is built (an app open, or something that builds it). No new boot receiver was added. The WorkManager jobs (FrameIngest, QueueDrain, MomentCadence) live in `services/orchestration` and cannot reach the phone's `ensureRunning` without a new seam there plus a `ContextApp` registration; also a connectedDevice FGS start from a background worker is refused on Android 12+. Not small, so documented only.
+
 ## Not done / risks
 No device check, no Codex review. Expected effect: away, reconnect/start attempts per hour fall from about 12 to 1 (at the 60 min cap, after 50 min of ramp); with no pair or the setting off, zero.

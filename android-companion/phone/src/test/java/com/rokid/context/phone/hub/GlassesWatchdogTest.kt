@@ -291,4 +291,16 @@ class GlassesWatchdogTest {
         advanceTimeBy(61_000L); assertEquals("then one", 2, r.notes.size)
         job.cancel()
     }
+
+    /** Review fix: a needed hub (watch_app or another phone source) is restarted whatever the glasses gate says; the glasses reconnect stays gated. */
+    @Test fun aNeededHubIsRestartedWhateverTheGlassesGate() {
+        data class Case(val paired: Boolean, val enabled: Boolean, val capture: Boolean)
+        for (c in listOf(Case(false, true, true), Case(true, false, true), Case(true, true, false), Case(false, false, true))) {
+            val r = Rig().apply { paired = c.paired; enabled = c.enabled; capture = c.capture; hubNeeded = true; running = false; link = LinkState.OFFLINE; silentFor(60) }
+            r.w.tick()
+            assertEquals("$c restarts the hub", 1, r.starts); assertEquals("$c: glasses machinery stays off", 0, r.reconnects + r.relaunches + r.probes)
+        }
+        val unneeded = Rig().apply { paired = false; hubNeeded = false; running = false }
+        unneeded.w.tick(); assertEquals(0, unneeded.starts)
+    }
 }
