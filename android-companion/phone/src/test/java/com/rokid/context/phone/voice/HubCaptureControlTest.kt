@@ -48,4 +48,37 @@ class HubCaptureControlTest {
         hub.active.value = listOf(PauseRecord("x", PauseOrigin.PHONE, 1L))
         assertEquals(CaptureResult.Failed, c.resume(UtteranceSource.GLASSES_VOICE))
     }
+
+    private fun hubWith(vararg r: PauseRecord) = FakeHub().also { it.active.value = r.toList() }
+
+    @Test fun pauseAddsAnIndefinitePhoneRecordEvenWhileAnotherPauseIsActive() = runBlocking {
+        for (other in listOf(PauseRecord("t", PauseOrigin.PHONE, 1L, 9_999L), PauseRecord("q", PauseOrigin.QUIET_HOURS, 1L, 9_999L), PauseRecord("g", PauseOrigin.GLASSES, 1L))) {
+            val hub = hubWith(other)
+            assertEquals(CaptureResult.Done, HubCaptureControl({ hub }).pause(UtteranceSource.PHONE_VOICE))
+            assertEquals(1, hub.pauses); assertEquals(1, hub.active.value.count { it.origin == PauseOrigin.PHONE && it.untilMs == null })
+            assertEquals(CaptureResult.AlreadyInState, HubCaptureControl({ hub }).pause(UtteranceSource.PHONE_VOICE))
+        }
+    }
+
+    @Test fun resumeClearsOnlyPhoneRecordsAndNamesWhatStillHoldsCapture() = runBlocking {
+        val hub = hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L), PauseRecord("g", PauseOrigin.GLASSES, 1L), PauseRecord("q", PauseOrigin.QUIET_HOURS, 1L))
+        val r = HubCaptureControl({ hub }).resume(UtteranceSource.GLASSES_VOICE)
+        assertEquals(listOf(setOf("p")), hub.resumed)
+        assertEquals(CaptureResult.Said("Your pause is cleared. Capture is still paused from the glasses and paused by quiet hours"), r)
+        assertEquals(setOf("g", "q"), hub.active.value.map { it.pauseId }.toSet())
+        // nothing of mine: nothing cleared, and the reply says who holds it
+        val only = hubWith(PauseRecord("g", PauseOrigin.GLASSES, 1L))
+        assertEquals(CaptureResult.Said("Nothing paused by you. Capture is still paused from the glasses"), HubCaptureControl({ only }).resume(UtteranceSource.PHONE_CHAT))
+        assertEquals(emptyList<Set<String>>(), only.resumed)
+        // battery
+        val b = hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L))
+        assertEquals(CaptureResult.Said("Your pause is cleared. Capture is still held by low battery"), HubCaptureControl({ b }, batteryHold = { true }).resume(UtteranceSource.PHONE_CHAT))
+    }
+
+    @Test fun resumedIsClaimedOnlyWhenTheGlassesAreSynchronised() = runBlocking {
+        val up = hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L))
+        assertEquals(CaptureResult.Done, HubCaptureControl({ up }, glassesLinked = { true }).resume(UtteranceSource.PHONE_CHAT))
+        val down = hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L))
+        assertEquals(CaptureResult.Said("Phone resumed; glasses will follow when connected"), HubCaptureControl({ down }, glassesLinked = { false }).resume(UtteranceSource.PHONE_CHAT))
+    }
 }

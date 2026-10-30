@@ -174,7 +174,7 @@ class FlowPublishTest {
             DeliveryEnvironment.capabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL.with("glasses", "display", false) }
             assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("glasses", "phone_voice"))
             assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("caller", "glasses_voice"))
-            assertNull("a phone-voice caller is untouched", route("caller", "phone_voice"))
+            assertEquals("a phone-voice caller gets an explicit phone-only route, never the HUD", DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("caller", "phone_voice"))
             assertTrue(MemoryGraph.get(app).traces.recent(10).any { it.note == com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF })
             DeliveryEnvironment.capabilities = null
             // a queue or other ask has no path to the glasses even when they are connected
@@ -191,6 +191,7 @@ class FlowPublishTest {
             DeliveryEnvironment.glassesConnected = { true }
             DeliveryEnvironment.capabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL.with("glasses", "display", false) }
             assertEquals(DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("both", chat))
+            assertEquals("chat caller, glasses display off: explicit, no HUD mirror", DeliveryRoute(phone = true, glasses = false, fallback = com.rokid.context.core.model.DeviceCapabilities.GLASSES_DISPLAY_OFF), route("caller", chat))
         } finally { DeliveryEnvironment.glassesConnected = null; DeliveryEnvironment.capabilities = null }
     }
 

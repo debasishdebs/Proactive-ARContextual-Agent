@@ -15,7 +15,7 @@ import org.junit.Test
 /** The phone-side watchdog: the periodic trigger the glasses cannot supply once Rokid force-stops the app. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class GlassesWatchdogTest {
-    private class Rig(var nowMs: Long = 10 * 60_000L) {
+    private class Rig(var nowMs: Long = 10 * 60_000L, store: HubRestartStore = InMemoryHubRestartStore()) {
         var enabled = true; var capture = true; var running = true
         var paired = true; var hubNeeded = true; var stops = 0
         var link = LinkState.CONNECTED
@@ -31,7 +31,7 @@ class GlassesWatchdogTest {
             startHub = { starts++ }, reconnect = { reconnects++ }, probeAlive = { probes++ }, relaunch = { relaunches++; relaunchResult },
             publish = { notes += it },
             log = { logs += it }, warn = { warns += it },
-            paired = { paired }, hubNeeded = { hubNeeded }, stopHub = { stops++; running = false },
+            paired = { paired }, hubNeeded = { hubNeeded }, stopHub = { stops++; running = false }, hubStore = store,
         )
         fun silentFor(min: Long) { heard = nowMs - min * 60_000L }
     }
@@ -279,9 +279,28 @@ class GlassesWatchdogTest {
         assertEquals(listOf(0L, 5L, 20L, 50L, 110L).map { it * 60_000L }, times)
         val n = r.starts
         r.w.onPositiveSignal(); r.w.tick(); assertEquals("app foreground / Reconnect", n + 1, r.starts)
+        r.nowMs += 60_000L
         r.w.onHubWanted(); r.w.tick(); assertEquals("a context source switched on", n + 2, r.starts)
         r.w.tick(); assertEquals(n + 2, r.starts)
+        r.nowMs += 60_000L
         r.running = true; r.w.tick(); r.running = false; r.w.tick(); assertEquals("the hub running resets it", n + 3, r.starts)
+    }
+
+    @Test fun resetSignalsNeverBypassTheMinimumIntervalBetweenHubStarts() {
+        val r = Rig().apply { running = false; link = LinkState.OFFLINE }
+        r.w.tick(); assertEquals(1, r.starts)
+        r.w.onPositiveSignal(); r.w.tick(); r.w.onHubWanted(); r.w.tick(); assertEquals("reset signals within 60 s", 1, r.starts)
+        r.nowMs += 59_000L; r.w.onPositiveSignal(); r.w.tick(); assertEquals(1, r.starts)
+        r.nowMs += 1_000L; r.w.onPositiveSignal(); r.w.tick(); assertEquals("60 s passed and the step was reset", 2, r.starts)
+    }
+
+    @Test fun theHubRestartLadderSurvivesProcessDeath() {
+        val store = InMemoryHubRestartStore()
+        fun rig() = Rig(store = store).apply { running = false; link = LinkState.OFFLINE }
+        val a = rig(); a.w.tick(); assertEquals(1, a.starts)
+        // the process dies and a new watchdog starts with the same persisted state, 2 min later: still inside the 5 min step
+        val b = rig(); b.nowMs = a.nowMs + 120_000L; b.w.tick(); assertEquals("not reset by a restart", 0, b.starts)
+        b.nowMs = a.nowMs + 5 * 60_000L; b.w.tick(); assertEquals(1, b.starts)
     }
 
     @Test fun anUnneededHubIsNeverStarted() {

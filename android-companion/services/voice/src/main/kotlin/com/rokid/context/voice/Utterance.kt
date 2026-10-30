@@ -52,6 +52,8 @@ sealed interface CaptureResult {
     /** Nothing to do: already paused (for a pause) or nothing paused (for a resume). */
     data object AlreadyInState : CaptureResult
     data object Failed : CaptureResult
+    /** A truthful reply the control composed itself (what still holds capture, an unsynchronised glasses side): fixed words, never user text. */
+    data class Said(val reply: String) : CaptureResult
 }
 
 /** The one pause/resume entry behind voice (implemented in `:phone` over the hub's pausePhone/resume). Awaited: the reply must be true. Works while paused. */
@@ -107,6 +109,7 @@ class Utterance(
         CaptureResult.Done -> if (pause) CAPTURE_PAUSED else CAPTURE_RESUMED
         CaptureResult.AlreadyInState -> if (pause) ALREADY_PAUSED else ALREADY_CAPTURING
         CaptureResult.Failed -> if (pause) COULDNT_PAUSE else COULDNT_RESUME
+        is CaptureResult.Said -> r.reply
     }
 
     private fun failureReply(cmds: List<MarkCommand>, f: CommandFailure): String =
@@ -136,8 +139,8 @@ class Utterance(
     }
 
     companion object {
-        const val CAPTURE_PAUSED = "Capture paused"; const val CAPTURE_RESUMED = "Capture resumed"
-        const val ALREADY_PAUSED = "Already paused"; const val ALREADY_CAPTURING = "Capture isn't paused"
+        const val CAPTURE_PAUSED = "Paused until you resume"; const val CAPTURE_RESUMED = "Capture resumed"
+        const val ALREADY_PAUSED = "Already paused by you"; const val ALREADY_CAPTURING = "Capture isn't paused"
         const val COULDNT_PAUSE = "Couldn't pause capture. Try again."; const val COULDNT_RESUME = "Couldn't resume capture. Try again."
         const val MARKED = "✓ marked"; const val UNDONE = "mark undone"; const val COULDNT_UNDO = "Couldn't undo the mark. Try again."; const val COULDNT_MARK = "Couldn't mark this moment. Try again." }
 }

@@ -27,6 +27,8 @@ class MotionSender(
     private val clock: () -> Long,
     private val sleep: suspend (Long) -> Unit,
     val epoch: Long,
+    /** The sharing switch, read before EVERY attempt (first send and every retry): off means no further attempt. */
+    private val enabled: () -> Boolean = { true },
 ) {
     private var seq = 0L
     private var lastAttemptMs: Long? = null
@@ -35,10 +37,12 @@ class MotionSender(
     suspend fun send(report: MotionReport): Int? {
         var backoff = MIN_GAP_MS
         for (attempt in 1..MAX_TRIES) {
+            if (!enabled()) return null
             lastAttemptMs?.let { last ->
                 val wait = MIN_GAP_MS - (clock() - last)
                 if (wait > 0) sleep(wait)
             }
+            if (!enabled()) return null // switched off while waiting: no attempt
             val now = clock()
             lastAttemptMs = now
             seq += 1
@@ -49,6 +53,7 @@ class MotionSender(
             if (link.send(WatchWire.PATH, WatchWire.encode(msg))) return attempt
             if (attempt < MAX_TRIES) {
                 sleep(backoff)
+                if (!enabled()) return null
                 backoff = minOf(backoff * 2, MAX_BACKOFF_MS)
             }
         }

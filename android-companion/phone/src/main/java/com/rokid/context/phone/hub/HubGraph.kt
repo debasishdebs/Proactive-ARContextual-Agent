@@ -256,6 +256,7 @@ object HubGraph {
                 periodMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::tickMs,
                 paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) },
                 hubNeeded = { ContextHubService.appInForeground() || BackgroundInputs.hubNeeded(app) }, stopHub = { ContextHubService.stop(app) },
+                hubStore = PrefsHubRestartStore { app.getSharedPreferences("hub_restart", android.content.Context.MODE_PRIVATE) },
             ).also { watchdogRef.set(it) }.start(scope)
         }
     }
