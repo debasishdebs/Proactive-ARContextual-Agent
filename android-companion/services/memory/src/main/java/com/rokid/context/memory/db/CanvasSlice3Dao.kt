@@ -126,7 +126,8 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         if (!fence.holds()) return false
         if (label.atMs < fence.now().wipedAtMs) return false
         if (isForgotten(label.atMs)) return false // a mark of a forgotten range: neither a late delivery nor a delayed voice command brings it back
-        if (meta(com.rokid.context.memory.FrameIntake.MARK_UNDONE_PREFIX + label.labelId) != null) return false // an undone (forgotten) mark: a delayed duplicate of its message must not bring it back, checked in THIS transaction
+        // an intent row `<id>:i` is fenced by its parent `<id>` too (undo writes the marker of the parent only)
+        if (listOf(label.labelId, label.labelId.removeSuffix(":i")).distinct().any { meta(com.rokid.context.memory.FrameIntake.MARK_UNDONE_PREFIX + it) != null }) return false // an undone (forgotten) mark: a delayed duplicate of its message must not bring it back, checked in THIS transaction
         if (label(label.labelId) != null) return true // a re-sent mark: already recorded, and labelRev must not move (it would refuse every in-flight replay commit)
         insertLabel(label)
         bumpLabelRev()
