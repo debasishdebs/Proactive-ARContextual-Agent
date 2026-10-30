@@ -95,9 +95,11 @@ class GlassesWatchdog(
         gate = BackgroundPolicy.gate(on, pair, link())
         // The hub service stays only while something needs it; the watchdog never restarts one that is not needed.
         if (!hubNeeded()) { baselineMs = null; if (hubRunning()) { log("watchdog hub not needed, stopping it"); stopHub() }; return finish(Verdict.Off, if (!pair) "why=no_pair" else "why=setting_off") }
-        if (!pair) { baselineMs = null; return finish(Verdict.Off, "why=no_pair") }
-        if (!on) { baselineMs = null; return finish(Verdict.Off, "why=setting_off") }
-        if (!captureActive()) { baselineMs = null; return finish(Verdict.Off, "why=capture_inactive") }
+        // Hub recovery is separate from permission to run glasses machinery: a needed hub (a context source, an ask) is restarted whatever the glasses gate says; no reconnect, no relaunch.
+        fun recoverHub() { if (!hubRunning()) { warn("watchdog hub down, starting it"); startHub() } }
+        if (!pair) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=no_pair") }
+        if (!on) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=setting_off") }
+        if (!captureActive()) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=capture_inactive") }
         if (gate == BackgroundPolicy.Gate.ACTIVE) backoff = BackgroundPolicy.reset()
         if (!hubRunning()) {
             // Away: the restart waits for its back-off; the status line still says what is going on (silence counts from the last message, or from this window's first tick).
