@@ -162,9 +162,16 @@ object HubGraph {
         ))
         // phone_speed: the service takes the `location` type at any open/resume from the front while the switch is on and a location
         // permission is granted (spec §5); fix REQUESTS still follow ctxHub.speedWanted (vehicle suspected) and valid access.
+        val watchdogRef = java.util.concurrent.atomic.AtomicReference<GlassesWatchdog>()
         val ctxSettings = com.rokid.context.phone.context.ContextSourceSettings.of(app)
         com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxSettings.enabled(com.rokid.context.phone.context.SpeedSource.ID) }
-        ctxScope.launch { ctxSettings.changes.collect { ContextHubService.refreshLocationType(app) } }
+        var sourcesOn = BackgroundPolicy.CONTEXT_SOURCE_IDS.count(ctxSettings::enabled)
+        ctxScope.launch { ctxSettings.changes.collect {
+            ContextHubService.refreshLocationType(app)
+            val n = BackgroundPolicy.CONTEXT_SOURCE_IDS.count(ctxSettings::enabled)
+            if (n > sourcesOn) watchdogRef.get()?.onHubWanted() // a source switched on: the hub restart ladder starts again
+            sourcesOn = n
+        } }
         val speed = com.rokid.context.phone.context.SpeedSource.create(
             app, ctxHub::sinkFor, foreground = ContextHubService::appInForeground,
             locationHeld = { ContextHubService.locationHeld.value }, onChange = { ContextHubService.refreshLocationType(app) },
@@ -198,7 +205,6 @@ object HubGraph {
         planSender = sender; collectSession = collect; traceControl = ctl
         // Task 33: the publish groups sit behind the same transport; their graph is built on first use (it needs the AI graph) and warmed here so recover() runs at startup.
         val hubRef = java.util.concurrent.atomic.AtomicReference<Hub>()
-        val watchdogRef = java.util.concurrent.atomic.AtomicReference<GlassesWatchdog>()
         com.rokid.context.phone.canvas.PlanGraph.install(
             app, scope, sender, install,
             glasses = { hubRef.get()?.let { com.rokid.context.phone.canvas.PlanGraph.glassesState(it.state.value.link, it.planPeer()) } ?: com.rokid.context.canvas.plan.GlassesState.UNKNOWN },

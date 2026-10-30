@@ -68,6 +68,8 @@ class GlassesWatchdog(
     private var quietTicks = 0
     /** Back-off of the automatic attempts while the glasses are away; reset by [onPositiveSignal]. */
     private var backoff = BackgroundPolicy.reset()
+    /** Own back-off for HUB restarts (a start refused by Android 12+ must not repeat every tick); reset when the hub runs and by every positive signal. */
+    private var hubBackoff = BackgroundPolicy.reset()
     private var gate = BackgroundPolicy.Gate.ACTIVE
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
@@ -75,7 +77,10 @@ class GlassesWatchdog(
      * A positive signal (link up, wear event, app in front, a tapped Reconnect, the setting switched on): the back-off starts again and the loop
      * ticks now instead of finishing its sleep. Thread-safe.
      */
-    fun onPositiveSignal() { backoff = BackgroundPolicy.reset(); wake.trySend(Unit) }
+    fun onPositiveSignal() { backoff = BackgroundPolicy.reset(); hubBackoff = BackgroundPolicy.reset(); wake.trySend(Unit) }
+
+    /** A phone context source was switched on (the hub is wanted now): the hub restart ladder starts again and the loop ticks now. */
+    fun onHubWanted() { hubBackoff = BackgroundPolicy.reset(); wake.trySend(Unit) }
 
     /** [periodMs] null = the configured one, re-read before every sleep, and the policy's sleep (long with no pair or the setting off, the back-off while away); a number fixes it (tests). */
     fun start(scope: CoroutineScope, periodMs: Long? = null): Job = scope.launch {
@@ -96,20 +101,20 @@ class GlassesWatchdog(
         // The hub service stays only while something needs it; the watchdog never restarts one that is not needed.
         if (!hubNeeded()) { baselineMs = null; if (hubRunning()) { log("watchdog hub not needed, stopping it"); stopHub() }; return finish(Verdict.Off, if (!pair) "why=no_pair" else "why=setting_off") }
         // Hub recovery is separate from permission to run glasses machinery: a needed hub (a context source, an ask) is restarted whatever the glasses gate says; no reconnect, no relaunch.
-        fun recoverHub() { if (!hubRunning()) { warn("watchdog hub down, starting it"); startHub() } }
+        fun recoverHub() { if (!hubRunning() && hubBackoff.due(t)) { warn("watchdog hub down, starting it"); startHub(); hubBackoff = BackgroundPolicy.attempted(hubBackoff, t) } }
+        if (hubRunning()) hubBackoff = BackgroundPolicy.reset()
         if (!pair) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=no_pair") }
         if (!on) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=setting_off") }
         if (!captureActive()) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=capture_inactive") }
         if (gate == BackgroundPolicy.Gate.ACTIVE) backoff = BackgroundPolicy.reset()
         if (!hubRunning()) {
             // Away: the restart waits for its back-off; the status line still says what is going on (silence counts from the last message, or from this window's first tick).
-            if (gate == BackgroundPolicy.Gate.AWAY && !backoff.due(t)) {
+            if (!hubBackoff.due(t)) {
                 val first = baselineMs ?: t.also { baselineMs = it }
                 return finish(Verdict.LinkDown((t - (lastHeardAtMs() ?: first)).coerceAtLeast(0L)), "why=hub_down action=backoff")
             }
             baselineMs = null
-            warn("watchdog hub down, starting it"); startHub()
-            if (gate == BackgroundPolicy.Gate.AWAY) backoff = BackgroundPolicy.attempted(backoff, t)
+            warn("watchdog hub down, starting it"); startHub(); hubBackoff = BackgroundPolicy.attempted(hubBackoff, t)
             return finish(Verdict.HubDown, "why=hub_down")
         }
         val base = baselineMs ?: t.also { baselineMs = it }
