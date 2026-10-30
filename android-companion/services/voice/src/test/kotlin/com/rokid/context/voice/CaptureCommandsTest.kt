@@ -56,6 +56,12 @@ class CaptureCommandsTest {
         assertEquals(UtteranceResult.Handled(Utterance.COULDNT_PAUSE), u(f).handle("pause capture", UtteranceSource.PHONE_VOICE, true))
     }
 
+    @Test fun aSaidReplyIsPassedThroughVerbatim() = kotlinx.coroutines.runBlocking<Unit> {
+        val f = Fake(CaptureResult.Said(Utterance.RESUMED_PHONE_ONLY))
+        assertEquals(UtteranceResult.Handled("Resumed on the phone; the glasses will follow when they reconnect"), u(f).handle("resume capture", UtteranceSource.PHONE_CHAT, true))
+        assertEquals("Paused on the phone; the glasses will follow when they reconnect", Utterance.PAUSED_PHONE_ONLY)
+    }
+
     @Test fun questionsAndPartialsNeverReachTheEntry() = kotlinx.coroutines.runBlocking<Unit> {
         val f = Fake()
         assertEquals(UtteranceResult.PassThrough, u(f).handle("why did you pause", UtteranceSource.PHONE_CHAT, true))

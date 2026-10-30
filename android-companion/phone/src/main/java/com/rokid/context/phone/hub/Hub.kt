@@ -242,21 +242,28 @@ class Hub(
     }
 
     /** A phone pause (capture only): a new PHONE record from now until [untilMs] (null = until resumed), pushed now (on [scope]). */
-    suspend fun pausePhone(untilMs: Long?): PauseRecord {
+    suspend fun pausePhone(untilMs: Long?): PauseRecord = pausePhoneAcked(untilMs).first
+
+    /** [pausePhone] plus whether the settings push was accepted by the link (true only then; false = the glasses follow on reconnect). */
+    suspend fun pausePhoneAcked(untilMs: Long?): Pair<PauseRecord, Boolean> {
         val r = PauseRecord(UUID.randomUUID().toString(), PauseOrigin.PHONE, createdAtMs = clock(), untilMs = untilMs)
         withContext(io) { pauses.add(r) }
         PcLog.i(TAG, "phone pause added")
-        onHubScope { pushSettings(); broadcaster.markDirty() }
+        val pushed = onHubScope { pushSettings().also { broadcaster.markDirty() } }
         refreshPauses()
-        return r
+        return r to pushed
     }
 
     /** Ends only the named records (spec §5.5), then pushes the settings and a frame. */
-    suspend fun resume(ids: Set<String>) {
+    suspend fun resume(ids: Set<String>) { resumeAcked(ids) }
+
+    /** [resume] plus whether the settings push was accepted by the link (true only then). */
+    suspend fun resumeAcked(ids: Set<String>): Boolean {
         withContext(io) { pauses.resume(ids) }
         PcLog.i(TAG, "phone resume for ${ids.size} pause(s)")
-        onHubScope { pushSettings(); broadcaster.markDirty() }
+        val pushed = onHubScope { pushSettings().also { broadcaster.markDirty() } }
         refreshPauses()
+        return pushed
     }
 
     /** Something a frame shows changed outside the hub's own flows: send a fresh frame (≤ 4 Hz). */
@@ -269,7 +276,7 @@ class Hub(
      * Runs [block] on [scope]'s dispatcher, keeping the caller's job: [pausePhone]/[resume] are called from IO
      * (PausePipelineControl), and [GlassesLink.send] must stay on the link's thread (final review I3).
      */
-    private suspend fun onHubScope(block: suspend () -> Unit) = withContext(scope.coroutineContext.minusKey(Job)) { block() }
+    private suspend fun <T> onHubScope(block: suspend () -> T): T = withContext(scope.coroutineContext.minusKey(Job)) { block() }
 
     /** [activePauses] without waiting for a broadcast (works before [start] too). */
     private suspend fun refreshPauses() { _activePauses.value = withContext(io) { pauses.active() } }
@@ -408,7 +415,8 @@ class Hub(
         broadcaster.markDirty()
     }
 
-    private suspend fun pushSettings() {
+    /** True only when the link accepted the `pc_settings` send. */
+    private suspend fun pushSettings(): Boolean {
         val (active, resumed) = withContext(io) { pauses.active() to pauses.recentlyResumedIds() }
         val pushed = StateFrameBuilder.settingsFor(
             settings.read(), active, _state.value.offset, voice.askBlockedReason.value, resumed = resumed, zoneId = ZoneId.systemDefault().id,
@@ -418,7 +426,7 @@ class Hub(
             // v0.9.7 B: the developer sensor recording is a diagnostics feature: its rate goes on the wire only while Developer mode is on (and only a preset); the stored value alone never decides
             sensorRecHz = if (devMode.value) it.sensorRecHz.takeIf { hz -> hz in com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ } ?: 0 else 0,
         ) }
-        link.send(Channels.SETTINGS, Wire.encode(pushed))
+        return link.send(Channels.SETTINGS, Wire.encode(pushed))
     }
 
     private suspend fun onEvent(e: GlassesEvent) {

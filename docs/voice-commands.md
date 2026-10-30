@@ -11,7 +11,20 @@ A "please", "ok", "okay", "hey", "um", "uh" or "so" in front, or "please" at the
 
 ## Replies
 
-The reply says what really happened: "Capture paused", "Capture resumed", "Already paused", "Capture isn't paused" (a resume with nothing paused) or "Couldn't pause capture. Try again." / "Couldn't resume capture. Try again." if the change was not saved.
+Every reply says only what was confirmed. "and the glasses" is said only when the settings push was accepted by the link; a connected link alone never counts. The phone has no signal for the glasses' low-battery capture hold, so no reply claims or denies one.
+
+| Situation | Reply |
+| --- | --- |
+| Pause, push accepted | `Paused on the phone and the glasses` |
+| Pause, push not accepted | `Paused on the phone; the glasses will follow when they reconnect` |
+| Pause, already an indefinite phone pause | `Already paused by you` |
+| Resume, push accepted | `Resumed on the phone and the glasses` |
+| Resume, push not accepted | `Resumed on the phone; the glasses will follow when they reconnect` |
+| Resume, a synchronised glasses pause remains | the resume reply above + `. The glasses are still paused` |
+| Resume, quiet hours remain | the resume reply above + `. Quiet hours are still on` |
+| Resume, no phone pause, nothing else known | `No pause is set on the phone` |
+| Resume, no phone pause, glasses pause known | `No pause is set on the phone. The glasses are still paused` |
+| Not saved | `Couldn't pause capture. Try again.` / `Couldn't resume capture. Try again.` |
 
 ## Notes
 

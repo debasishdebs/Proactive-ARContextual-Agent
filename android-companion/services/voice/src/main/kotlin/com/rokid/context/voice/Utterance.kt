@@ -139,8 +139,9 @@ class Utterance(
     }
 
     companion object {
-        const val CAPTURE_PAUSED = "Paused until you resume"; const val CAPTURE_RESUMED = "Capture resumed"
-        const val ALREADY_PAUSED = "Already paused by you"; const val ALREADY_CAPTURING = "Capture isn't paused"
+        const val CAPTURE_PAUSED = "Paused on the phone and the glasses"; const val CAPTURE_RESUMED = "Resumed on the phone and the glasses"
+        const val PAUSED_PHONE_ONLY = "Paused on the phone; the glasses will follow when they reconnect"; const val RESUMED_PHONE_ONLY = "Resumed on the phone; the glasses will follow when they reconnect"
+        const val ALREADY_PAUSED = "Already paused by you"; const val ALREADY_CAPTURING = "No pause is set on the phone"
         const val COULDNT_PAUSE = "Couldn't pause capture. Try again."; const val COULDNT_RESUME = "Couldn't resume capture. Try again."
         const val MARKED = "✓ marked"; const val UNDONE = "mark undone"; const val COULDNT_UNDO = "Couldn't undo the mark. Try again."; const val COULDNT_MARK = "Couldn't mark this moment. Try again." }
 }
