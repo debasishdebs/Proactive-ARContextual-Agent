@@ -219,6 +219,17 @@ class MarkRecorderTest {
         assertTrue("no row comes back", labels().isEmpty()); assertEquals("and no Moment is rebuilt", rev, dao.labelRev())
     }
 
+    @Test fun anUndoneVoiceMarkWithAnIntentIsNotResurrectedByAReplayEitherRow() = runBlocking {
+        rec.onListenStart(t0)
+        rec.applyVoice(listOf(VoiceMark.Mark("driving")), true, t0 + 1_000)
+        assertEquals(2, labels().size)
+        rec.applyVoice(listOf(VoiceMark.Undo), true, t0 + 2_000)
+        assertTrue(labels().isEmpty())
+        val rev = dao.labelRev()
+        rec.applyVoice(listOf(VoiceMark.Mark("driving")), true, t0 + 3_000) // the same listen start: the same ids
+        assertTrue("neither the mark nor its intent row comes back", labels().isEmpty()); assertEquals("no Moment rebuilt", rev, dao.labelRev())
+    }
+
     @Test fun anUndoneTapMarkNeverJoinsALaterListen() = runBlocking {
         rec.onMark(mark(1), at(t0)); rec.onMark(mark(2, listen = false, undo = 1), at(t0))
         rec.onListenStart(t0 + 100)

@@ -176,46 +176,25 @@ class ForgetService(
         // 6. Proposals of redacted asks/nudges: PENDING expires (nested in this transaction); every proposal of those
         //    origins loses its params (titles, items) and its action_log details (fix round 1 I2). Retention
         //    ([scrubAccepted] false) skips the accepted ones: EXECUTING/EXECUTED keep params, log and alarm.
-        val redactedProposals = expireAndScrubOrigins(asks.map { it.id } + nudges.map { it.id }, now, scrubAccepted)
+        val origins = asks.map { it.id } + nudges.map { it.id }
+        var redactedProposals = emptyList<String>()
+        if (origins.isNotEmpty()) {
+            proposals.expireForOrigins(origins, now)
+            val actions = db.actionDao()
+            if (scrubAccepted) {
+                redactedProposals = origins.chunked(CHUNK).flatMap { actions.allIdsForOrigins(it) }
+                origins.chunked(CHUNK).forEach { c -> actions.scrubLogsForOrigins(c); actions.scrubParamsForOrigins(c, REDACTED_PARAMS) }
+            } else {
+                redactedProposals = origins.chunked(CHUNK).flatMap { actions.idsForOriginsExcept(it, ACCEPTED) }
+                redactedProposals.chunked(CHUNK).forEach { c -> actions.scrubLogs(c); actions.scrubParams(c, REDACTED_PARAMS) }
+            }
+        }
         // The photo goes only when no surviving memory cites it (memory.frameId or frame_source); its image vector goes with it.
         val uncited = inside.filter { dao.remainingRefs(it) == 0 }
         uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         if (queueOutbox) queueCleanup(files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans, phoneFilesOnly) // same transaction as the delete
         return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
-    }
-
-    /**
-     * A single saved answer: redacted exactly as the cascade redacts one (text replaced, sources cleared, `redacted` set), its PENDING proposals expired and every proposal of it scrubbed and disarmed
-     * (the same [expireAndScrubOrigins] the cascade runs). Nothing it cited is touched. An answer already redacted or missing is [Result.EMPTY].
-     */
-    suspend fun forgetAnswer(askId: String): Result = notifying { db.withTransaction {
-        val a = dao.unredactedAsk(askId) ?: return@withTransaction Result.EMPTY
-        dao.redactAsk(a.id, REDACTED)
-        Result(emptySet(), emptySet(), 1, 0, emptyList(), expireAndScrubOrigins(listOf(a.id), clock(), true))
-    } }
-
-    /** A single nudge: the same as [forgetAnswer] (redaction of one nudge row, its proposals expired and scrubbed). */
-    suspend fun forgetNudge(nudgeId: String): Result = notifying { db.withTransaction {
-        val n = dao.unredactedNudge(nudgeId) ?: return@withTransaction Result.EMPTY
-        dao.redactNudge(n.id, REDACTED)
-        Result(emptySet(), emptySet(), 0, 1, emptyList(), expireAndScrubOrigins(listOf(n.id), clock(), true))
-    } }
-
-    /** Step 6 of the cascade: PENDING proposals of the redacted [origins] expire; their params and action logs are scrubbed (accepted ones too unless [scrubAccepted] is false). Returns the proposals whose notifications must go. */
-    private suspend fun expireAndScrubOrigins(origins: List<String>, now: Long, scrubAccepted: Boolean): List<String> {
-        if (origins.isEmpty()) return emptyList()
-        proposals.expireForOrigins(origins, now)
-        val actions = db.actionDao()
-        return if (scrubAccepted) {
-            origins.chunked(CHUNK).flatMap { actions.allIdsForOrigins(it) }.also {
-                origins.chunked(CHUNK).forEach { c -> actions.scrubLogsForOrigins(c); actions.scrubParamsForOrigins(c, REDACTED_PARAMS) }
-            }
-        } else {
-            origins.chunked(CHUNK).flatMap { actions.idsForOriginsExcept(it, ACCEPTED) }.also { ids ->
-                ids.chunked(CHUNK).forEach { c -> actions.scrubLogs(c); actions.scrubParams(c, REDACTED_PARAMS) }
-            }
-        }
     }
 
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
