@@ -114,6 +114,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
                 paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) }, link = { deps.glasses.status.value.link },
                 keepRunning = com.rokid.context.phone.hub.KeepRunningNearby.of(app), openGlassesSettings = back,
                 closedByUser = { com.rokid.context.phone.hub.HubGraph.get(app).state.value.closedByUser },
+                onEnabled = { com.rokid.context.phone.hub.HubGraph.get(app).positiveSignal() },
             )
         }
         com.rokid.context.phone.ui.settings.glasses.NearbyDevicesRoute(source, onBack = back)

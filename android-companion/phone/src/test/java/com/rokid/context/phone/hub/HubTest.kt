@@ -99,6 +99,10 @@ class HubTest {
         onMark: suspend (com.rokid.context.core.model.MarkMessage, com.rokid.context.canvas.marks.MarkArrival) -> Boolean = { _, _ -> true },
         onGlassesListenStart: suspend (Long) -> Unit = {},
         onMarkPhoto: suspend (com.rokid.context.core.model.MarkPhotoResult) -> Unit = {},
+        reopenEnabled: () -> Boolean = { true },
+        paired: () -> Boolean = { true },
+        onPositiveSignal: () -> Unit = {},
+        inFront: () -> Boolean = { false },
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -109,6 +113,7 @@ class HubTest {
             startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
+            reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
         )
             .also { if (start) { it.start(); runCurrent() } }
     }
@@ -949,5 +954,48 @@ class HubTest {
         link.emit(GlassesEvent.PlanAckReceived(com.rokid.context.core.model.CapturePlanAck(gen = 0, phoneInstall = "other", caps = listOf("plan1")))); runCurrent()
         assertEquals(com.rokid.context.link.PlanPeer.CAPABLE, h.planPeer())
         assertEquals(1, h.planAckStale)
+    }
+
+    // ---- v0.9.9 battery: the glasses link machinery runs only when enabled in settings AND paired ([BackgroundPolicy]); a tapped Reconnect always works ----
+
+    @Test fun noAutomaticConnectWithTheSettingOffOrWithoutAPair() = runTest {
+        val off = FakeGlassesLink(LinkState.OFFLINE); hub(off, reopenEnabled = { false })
+        assertEquals("setting off: hub start does not connect", 0, off.connectOnceCalls)
+        val unpaired = FakeGlassesLink(LinkState.OFFLINE); hub(unpaired, paired = { false })
+        assertEquals("no pair: hub start does not connect", 0, unpaired.connectOnceCalls)
+        val on = FakeGlassesLink(LinkState.OFFLINE); hub(on)
+        assertEquals("enabled and paired connects as before", 1, on.connectOnceCalls)
+    }
+
+    @Test fun inFrontTheLinkConnectsAsBeforeEvenWithTheSettingOff() = runTest {
+        val l = FakeGlassesLink(LinkState.OFFLINE); val h = hub(l, reopenEnabled = { false }, inFront = { true })
+        assertEquals(1, l.connectOnceCalls)
+        h.onAppResumed(); assertEquals(1, l.resumeCalls)
+    }
+
+    @Test fun resumeReconnectsOnlyWhenAllowedAndAlwaysSignalsPositive() = runTest {
+        var positives = 0
+        val l = FakeGlassesLink(LinkState.OFFLINE); val h = hub(l, paired = { false }, onPositiveSignal = { positives++ })
+        h.onAppResumed(); assertEquals(0, l.resumeCalls); assertEquals("a resume is a positive signal", 1, positives)
+    }
+
+    @Test fun aTappedReconnectAlwaysWorksAndIsAPositiveSignalAndKeepsTheHubWanted() = runTest {
+        var positives = 0; var t = now; var service = 0
+        val l = FakeGlassesLink(LinkState.OFFLINE)
+        val h = hub(l, clock = { t }, reopenEnabled = { false }, paired = { false }, onPositiveSignal = { positives++ }, startService = { service++ })
+        assertFalse(h.busy())
+        h.requestReconnect(); runCurrent()
+        assertEquals("the link's own connect, whatever the setting", 1, l.connectCalls)
+        assertEquals(1, positives); assertTrue("wanted for a while", h.busy())
+        t += BackgroundPolicy.USER_ASK_HOLD_MS + 1; assertFalse("then it is not", h.busy())
+    }
+
+    @Test fun aWearEventAndALinkUpArePositiveSignals() = runTest {
+        var positives = 0
+        val l = FakeGlassesLink(LinkState.OFFLINE); hub(l, onPositiveSignal = { positives++ })
+        val before = positives
+        l.wearingFlow.value = true; runCurrent(); assertTrue("wear", positives > before)
+        val mid = positives
+        l.setState(LinkState.CONNECTED); runCurrent(); assertTrue("link up", positives > mid)
     }
 }

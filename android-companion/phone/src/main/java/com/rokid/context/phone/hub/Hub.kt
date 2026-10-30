@@ -104,7 +104,21 @@ class Hub(
     private val diagControl: com.rokid.context.phone.hub.plan.DiagControlRetry? = null,
     /** LGC6-min: where every `Hello`'s `diagFlagState` / `traceBlocker` goes (the retry reads it); null = nobody listens (tests, no trace services). */
     private val diagStatus: com.rokid.context.phone.hub.plan.MutableGlassesDiagStatus? = null,
+    /** v0.9.9: a pair exists (Hi Rokid authorized this app). With [reopenEnabled] it gates every AUTOMATIC connect ([BackgroundPolicy.linkMachineryAllowed]); a tapped Reconnect never asks. */
+    private val paired: () -> Boolean = { true },
+    /** v0.9.9: a positive signal for the watchdog's back-off (link up, wear event, app in front, a tapped Reconnect). */
+    private val onPositiveSignal: () -> Unit = {},
+    /** v0.9.9: our app is in front: the glasses link connects as before even with the setting off (only the BACKGROUND stops, see [BackgroundPolicy]). */
+    private val inFront: () -> Boolean = { false },
 ) : GlassesStatusSource {
+    private fun linkAllowed(): Boolean = inFront() || BackgroundPolicy.linkMachineryAllowed(reopenEnabled(), paired())
+    /** Phone clock of the last tapped Reconnect (0 = none): keeps the hub service wanted for [BackgroundPolicy.USER_ASK_HOLD_MS]. */
+    @Volatile private var userAskedAtMs = 0L
+    fun busy(): Boolean = userAskedRecently() || voice.overlay.value != null
+    fun userAskedRecently(): Boolean = userAskedAtMs != 0L && clock() - userAskedAtMs < BackgroundPolicy.USER_ASK_HOLD_MS
+    /** A positive signal: the watchdog's and the relauncher's back-off start again. */
+    fun positiveSignal() { relauncher?.onPositiveSignal(); onPositiveSignal() }
+
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
         GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> com.rokid.context.core.log.PcLog.i(GlassesRelauncher.TAG, m) }, standDown = standDown)
@@ -145,7 +159,7 @@ class Hub(
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
             // null = unknown again (session closed, offline, BT lost): the stale value is dropped, never re-sent (fix wave I1).
-            scope.launch { link.wearing.collect { w -> lastWorn = w; _wearUnknownSince.value = if (w != null) null else (_wearUnknownSince.value ?: clock()); if (w != null) { lastWornAtMs = clock(); PcLog.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else PcLog.i(TAG, "wear unknown") } },
+            scope.launch { link.wearing.collect { w -> if (w != null) positiveSignal(); lastWorn = w; _wearUnknownSince.value = if (w != null) null else (_wearUnknownSince.value ?: clock()); if (w != null) { lastWornAtMs = clock(); PcLog.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else PcLog.i(TAG, "wear unknown") } },
             scope.launch { phoneUse.collect { guarded("phone_ctx") { sendPhoneContext() } } },
             scope.launch { motionContext.collect { m -> guarded("motion_ctx") { onMotionContext(m) } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
@@ -165,7 +179,8 @@ class Hub(
             set { it.copy(closedByUser = true) }
             link.watchForReopen() // N4: the wearer's own reopen must still be noticed
         }
-        else link.connectOnce()
+        else if (linkAllowed()) link.connectOnce()
+        else PcLog.i(TAG, "glasses link off (setting off or not paired): not connecting")
     }
 
     fun stop() {
@@ -187,6 +202,8 @@ class Hub(
     override fun requestReconnect() {
         // Review I2: a CUSTOM_APP connect runs appStart, which would pull the HUD over Maps while minimised. The wearer
         // gets a pop-up there instead (a Confirm is the only thing that may open the app, glasses side, spec 1.7).
+        userAskedAtMs = clock()
+        positiveSignal()
         relauncher?.onExplicitOpen()
         standDown.clear(clock())
         set { it.copy(closedByUser = false) }
@@ -206,7 +223,7 @@ class Hub(
         hintJob = scope.launch { delay(MINIMISED_HINT_MS); minimisedHint = null; broadcaster.markDirty() }
     }
 
-    fun onAppResumed() { if (!standDown.active) link.connectOnResume() }
+    fun onAppResumed() { positiveSignal(); if (!standDown.active && linkAllowed()) link.connectOnResume() }
 
     /** A settings change from the phone: persisted, pushed now (when linked) and reflected in the next frame. */
     fun updateSettings(transform: (HudSettings) -> HudSettings) {
@@ -277,6 +294,7 @@ class Hub(
         if (s != LinkState.CONNECTED) voice.onLinkLost()
         if (!s.carriesData) { newSession(); diagControl?.cancel() }
         if (s == LinkState.CONNECTED) standDown.connected()
+        if (s.carriesData) positiveSignal()
         if (!s.carriesData) set(markDirty = false) { it.copy(iconBlocked = false) } // a stale "no icon" row must not outlive the link
         set { it.copy(link = s, offset = offset, closedByUser = if (s == LinkState.CONNECTED) false else it.closedByUser) }
     }

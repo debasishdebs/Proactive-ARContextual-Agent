@@ -12,7 +12,9 @@ import com.rokid.context.phone.voice.VoiceGraph
  */
 object HubActivityHook : Application.ActivityLifecycleCallbacks by HubResumeHook(
     voiceForeground = { activity, resume -> VoiceGraph.get(activity).onForeground(resume) },
-    keepRunning = { activity -> KeepRunningNearby.of(activity).enabled() },
+    // Leaving the front stops the hub unless something needs it ([BackgroundPolicy.hubNeeded]): the glasses link on and paired, a context source, an ask in progress.
+    keepRunning = { activity -> BackgroundInputs.hubNeeded(activity.applicationContext) },
+    positive = { activity -> if (HubGraph.isBuilt) HubGraph.get(activity).positiveSignal() },
     stopHub = { activity -> ContextHubService.stop(activity.applicationContext) },
 )
 
@@ -30,13 +32,16 @@ class HubResumeHook(
     private val voiceForeground: (Activity, Long) -> Unit,
     private val keepRunning: (Activity) -> Boolean = { true },
     private val stopHub: (Activity) -> Unit = {},
+    /** The app came to the front: a positive signal for the back-off, even when no hub service runs. */
+    private val positive: (Activity) -> Unit = {},
 ) : Application.ActivityLifecycleCallbacks {
     private var resumes = 0L
     private var started = 0
 
     override fun onActivityResumed(activity: Activity) {
         val resume = ++resumes
-        ContextHubService.ensureRunning(activity, resume)
+        positive(activity)
+        ContextHubService.ensureRunning(activity, resume, force = true) // in front the hub runs as before; leaving the front stops it unless something needs it
         if (ContextHubService.isRunning()) HubGraph.get(activity).onAppResumed()
         voiceForeground(activity, resume)
     }

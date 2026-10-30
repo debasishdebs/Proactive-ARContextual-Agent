@@ -75,8 +75,9 @@ class ContextHubService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resume = intent?.takeIf { it.hasExtra(EXTRA_RESUME) }?.getLongExtra(EXTRA_RESUME, 0)
         if (!running) {
-            // Nearby devices switch off: a sticky restart in the background does not bring the hub back.
-            if (stopsOnBackgroundStart(startedInFront(intent), KeepRunningNearby.of(this).enabled())) { stopSelf(); return START_NOT_STICKY }
+            // Nothing needs the hub (glasses link off or unpaired, no context source, no ask): a sticky restart in the background does not bring it back. A tapped Reconnect forces a start.
+            val needed = intent?.getBooleanExtra(EXTRA_FORCE, false) == true || hubNeededNow(this)
+            if (stopsOnBackgroundStart(startedInFront(intent), needed)) { stopSelf(); return START_NOT_STICKY }
             if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
             running = true
             val nm = getSystemService(NotificationManager::class.java)
@@ -160,6 +161,8 @@ class ContextHubService : Service() {
         private const val ACTION_REFRESH_TYPES = "com.rokid.context.hub.REFRESH_FOREGROUND_TYPES"
         private const val ACTION_REFRESH_LOCATION = "com.rokid.context.hub.REFRESH_LOCATION_TYPE"
         const val EXTRA_IN_FRONT = "com.rokid.context.hub.IN_FRONT"
+        /** A tapped Reconnect starts the hub whatever [hubNeededNow] says ([BackgroundPolicy.USER_ASK_HOLD_MS] then keeps it). */
+        const val EXTRA_FORCE = "com.rokid.context.hub.FORCE"
         private const val EXTRA_RESUME = "com.rokid.context.hub.RESUME"
         @Volatile private var running = false
         @Volatile private var lastText = READY
@@ -282,12 +285,19 @@ class ContextHubService : Service() {
         /** One line for the legacy Live screen (Task 12 shows it in place of the RFCOMM bridge message). */
         fun statusLine(): String = lastText
 
-        /** Idempotent: called on every activity resume ([resume] numbers it) and on Reconnect, so always from the front. */
-        fun ensureRunning(context: Context, resume: Long? = null) {
+        /** Whether anything needs the hub foreground service now ([BackgroundPolicy.hubNeeded]); a seam for tests. */
+        @Volatile internal var hubNeededNow: (Context) -> Boolean = { BackgroundInputs.hubNeeded(it) }
+
+        /**
+         * Idempotent: called on every activity resume ([resume] numbers it) and on Reconnect, so always from the front. Nothing starts when nothing needs
+         * the hub (see [BackgroundPolicy]) unless [force] (a tapped Reconnect).
+         */
+        fun ensureRunning(context: Context, resume: Long? = null, force: Boolean = false) {
+            if (!force && !hubNeededNow(context)) return
             val granted = Build.VERSION.SDK_INT < 31 ||
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
             if (!shouldStart(running, canStart(Build.VERSION.SDK_INT, granted))) return
-            val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true)
+            val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true).putExtra(EXTRA_FORCE, force)
             resume?.let { start.putExtra(EXTRA_RESUME, it) }
             runCatching { context.startForegroundService(start) }
                 .onFailure { PcLog.w(TAG, "start refused: ${it.javaClass.simpleName}") }
@@ -335,8 +345,8 @@ class ContextHubService : Service() {
 
         fun stop(context: Context) { context.stopService(Intent(context, ContextHubService::class.java)) }
 
-        /** "Keep running when nearby" off: only a start from the front runs the hub. */
-        internal fun stopsOnBackgroundStart(inFront: Boolean, keepRunning: Boolean) = !inFront && !keepRunning
+        /** Nothing needs the hub ([needed] false): only a start from the front runs it. */
+        internal fun stopsOnBackgroundStart(inFront: Boolean, needed: Boolean) = !inFront && !needed
 
         internal fun canStart(sdk: Int, bluetoothGranted: Boolean) = sdk < 31 || bluetoothGranted
         internal fun shouldStart(running: Boolean, canStart: Boolean) = !running && canStart
