@@ -210,6 +210,15 @@ class MarkRecorderTest {
         assertTrue(rec.onMark(mark(9, listen = false, undo = 77), at(t0)))
     }
 
+    @Test fun anUndoneMarkIsNotResurrectedByADelayedDuplicateOfItsMessage() = runBlocking {
+        rec.onMark(mark(1), at(t0))
+        rec.undoMark("mk:e:1")
+        assertTrue(labels().isEmpty())
+        val rev = dao.labelRev()
+        assertTrue("still acknowledged", rec.onMark(mark(1), at(t0)))
+        assertTrue("no row comes back", labels().isEmpty()); assertEquals("and no Moment is rebuilt", rev, dao.labelRev())
+    }
+
     @Test fun anUndoneTapMarkNeverJoinsALaterListen() = runBlocking {
         rec.onMark(mark(1), at(t0)); rec.onMark(mark(2, listen = false, undo = 1), at(t0))
         rec.onListenStart(t0 + 100)

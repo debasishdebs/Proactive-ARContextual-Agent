@@ -108,8 +108,8 @@ class MemoryDetailViewModelTest {
         override suspend fun forgetObject(kind: ForgetKind, id: String) = onObject(kind, id)
     }
 
-    @Test fun anAnswerNudgeOrMarkForgetOpensTheDialogWithoutCountsAndRunsTheObjectForget() = runBlocking {
-        for (kind in listOf(ForgetKind.ANSWER, ForgetKind.NUDGE, ForgetKind.MARK)) {
+    @Test fun aMarkForgetOpensTheDialogWithoutCountsAndRunsTheObjectForget() = runBlocking {
+        for (kind in listOf(ForgetKind.MARK)) {
             val ran = mutableListOf<Pair<ForgetKind, String>>()
             val model = MemoryDetailViewModel("", graph.timeline, graph.memoryEdits, zone = { Fixtures.ZONE }, forget = objectPort { k, id -> ran += k to id; true }).also { vms += it }
             model.askForgetObject(kind, "obj1")
@@ -130,7 +130,7 @@ class MemoryDetailViewModelTest {
         )
         for ((fail, message) in cases) {
             val model = MemoryDetailViewModel("", graph.timeline, graph.memoryEdits, zone = { Fixtures.ZONE }, forget = objectPort { _, _ -> fail() }).also { vms += it }
-            model.askForgetObject(ForgetKind.ANSWER, "a1"); model.confirmForget()
+            model.askForgetObject(ForgetKind.MARK, "mk1"); model.confirmForget()
             val s = withTimeout(5_000) { model.state.first { !it.forgetting && it.confirm == null && it.message != null || it.forgotten } }
             assertEquals(message, s.message)
         }

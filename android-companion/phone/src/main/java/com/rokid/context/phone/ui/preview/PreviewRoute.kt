@@ -107,7 +107,7 @@ fun PreviewRoute(raw: String, deps: PhoneDeps, nav: NavController) {
     )
     PreviewScreen(
         state, host, title = ref?.kind?.title ?: "Preview", onBack = back,
-        onForget = { t -> when (t) { is ForgetTarget.Fact -> dvm.askForget(ForgetKind.FACT); is ForgetTarget.Photo -> dvm.askForgetPhoto(t.frameId); is ForgetTarget.Answer -> dvm.askForgetObject(ForgetKind.ANSWER, t.askId); is ForgetTarget.Nudge -> dvm.askForgetObject(ForgetKind.NUDGE, t.nudgeId); is ForgetTarget.Mark -> dvm.askForgetObject(ForgetKind.MARK, t.labelId); else -> Unit } },
+        onForget = { t -> when (t) { is ForgetTarget.Fact -> dvm.askForget(ForgetKind.FACT); is ForgetTarget.Photo -> dvm.askForgetPhoto(t.frameId); is ForgetTarget.Mark -> dvm.askForgetObject(ForgetKind.MARK, t.labelId); else -> Unit } },
         onConfirmForget = dvm::confirmForget, onDismissForget = dvm::dismissForget, onAckForget = dvm::acknowledgeForget,
     )
 }

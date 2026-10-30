@@ -14,7 +14,7 @@ fun productionMemoryForget(app: android.content.Context): MemoryForget = object 
             override suspend fun forgetFact(memoryId: String) = done(ForgetActions.forgetScopedOutcome(app, ForgetTarget.Fact(memoryId), onForgotten = onForgotten))
             override suspend fun forgetMoment(frameId: String) = done(ForgetActions.forgetScopedOutcome(app, ForgetTarget.Photo(frameId), onForgotten = onForgotten))
             override suspend fun forgetObject(kind: ForgetKind, id: String): Boolean {
-                val target = when (kind) { ForgetKind.ANSWER -> ForgetTarget.Answer(id); ForgetKind.NUDGE -> ForgetTarget.Nudge(id); ForgetKind.MARK -> ForgetTarget.Mark(id); else -> return false }
+                val target = when (kind) { ForgetKind.MARK -> ForgetTarget.Mark(id); else -> return false }
                 return done(ForgetActions.forgetScopedOutcome(app, target, onForgotten = onForgotten, undoMark = com.rokid.context.phone.canvas.MarkGraph.recorder(app)::undoMark))
             }
             override fun activeScope() = ForgetScopeSetting.get()

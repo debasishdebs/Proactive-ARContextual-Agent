@@ -132,27 +132,6 @@ class ForgetServiceTest {
         db.query("SELECT text, why, sourceIdsJson, redacted FROM nudge", null).use { c -> c.moveToFirst(); assertEquals(ForgetService.REDACTED, c.getString(0)); assertEquals("", c.getString(1)); assertEquals("[]", c.getString(2)); assertEquals(1, c.getInt(3)) }
     }
 
-    @Test fun forgetAnswerRedactsOnlyThatAnswerAndExpiresItsProposalsAndKeepsWhatItCited() = runBlocking {
-        mem("A")
-        db.askDao().upsert(AskEntity("q1", 1, "q", "answer", """["A"]""", null, "phone_typed", false))
-        db.askDao().upsert(AskEntity("q2", 1, "q", "other", """["A"]""", null, "phone_typed", false))
-        proposals.create(ProposalEntity("p1", ProposalOrigin.ASK.name, "q1", "REMINDER", "{}", ProposalState.PENDING.name, 99_999, null, null, 1), 1)
-        val r = service.forgetAnswer("q1")
-        assertEquals(1, r.redactedAsks); assertEquals(listOf("p1"), r.redactedProposals)
-        assertTrue(db.askDao().byId("q1")!!.redacted); assertFalse(db.askDao().byId("q2")!!.redacted)
-        assertEquals(ProposalState.EXPIRED.name, proposals.byId("p1")!!.state)
-        assertEquals("the cited memory stays", ReviewState.OK, state("A"))
-        assertEquals("a second Forget finds nothing", 0, service.forgetAnswer("q1").redactedAsks)
-        assertEquals("an unknown id finds nothing", ForgetService.Result.EMPTY, service.forgetAnswer("nope"))
-    }
-
-    @Test fun forgetNudgeRedactsOnlyThatNudge() = runBlocking {
-        db.nudgeDao().insertIgnore(NudgeEntity("n1", 1, "nudge", "why", """["A"]""", 1, "h", "phone", false))
-        db.nudgeDao().insertIgnore(NudgeEntity("n2", 1, "nudge2", "why", "[]", 1, "h2", "phone", false))
-        assertEquals(1, service.forgetNudge("n1").redactedNudges)
-        db.query("SELECT id, redacted FROM nudge ORDER BY id", null).use { c -> c.moveToFirst(); assertEquals(1, c.getInt(1)); c.moveToNext(); assertEquals(0, c.getInt(1)) }
-    }
-
     @Test fun pendingProposalOfRedactedAskExpires() = runBlocking {
         mem("A")
         db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["A"]""", null, "phone_typed", false))

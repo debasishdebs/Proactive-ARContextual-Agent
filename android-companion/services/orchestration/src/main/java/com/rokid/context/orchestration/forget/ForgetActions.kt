@@ -59,8 +59,6 @@ object ForgetActions {
     suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, undoMark: (suspend (String) -> Unit)? = null, onForgotten: () -> Unit = {}): Outcome =
         if (target is ForgetTarget.Mark) markOutcome(target.labelId, onForgotten, undoMark)
         else run(context, onForgotten) { svc ->
-            if (target is ForgetTarget.Answer) return@run svc.forgetAnswer(target.askId)
-            if (target is ForgetTarget.Nudge) return@run svc.forgetNudge(target.nudgeId)
             val engine = ScopedForget(MemoryGraph.get(context).db, svc)
             engine.forget(engine.plan(target, scope), expectedHash).cascade
         }

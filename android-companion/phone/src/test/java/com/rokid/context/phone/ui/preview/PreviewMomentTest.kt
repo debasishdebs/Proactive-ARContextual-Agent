@@ -120,15 +120,13 @@ class PreviewMomentTest {
         assertEquals("a mark with no photo is forgotten as the mark (its fallback Moment goes with it)", ForgetTarget.Mark("k3"), none.forgetTarget())
     }
 
-    @Test fun anAnswerHasQuestionAnswerRatingActionCardSourcesAndForgetsItself() {
+    @Test fun anAnswerHasQuestionAnswerRatingActionCardSourcesAndNothingToForget() {
         val p = one(RefKind.ASK, "a2")
         assertEquals(listOf("TextSection", "TextSection", "RatingSection", "ProposalSection", "SourcesSection", "AudioSection"), kinds(p))
         assertEquals(RatingSection(1), p.sections()[2]); assertEquals(ProposalSection("a2"), p.sections()[3])
         assertEquals("You asked \u00b7 Mon 12 Oct \u00b7 09:00", (p.sections()[0] as TextSection).label)
-        assertEquals(ForgetTarget.Answer("a2"), p.forgetTarget())
-        assertEquals(ForgetTarget.Nudge("n1"), one(RefKind.NUDGE, "n1").forgetTarget())
-        assertNull("an answer already removed has nothing left to forget", one(RefKind.ASK, "a3").forgetTarget())
-        assertNull(one(RefKind.NUDGE, "n3").forgetTarget())
+        assertNull("no Forget of its own (v1.1 backlog)", p.forgetTarget())
+        assertNull(one(RefKind.NUDGE, "n1").forgetTarget())
     }
 
     @Test fun anAnswersSourcesAreItsLiveCitesAndAPhotoCiteIsNeverMissing() {

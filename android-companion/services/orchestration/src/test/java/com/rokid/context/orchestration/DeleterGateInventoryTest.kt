@@ -51,9 +51,10 @@ class DeleterGateInventoryTest {
         val phone = File("../../phone/src/main").also { assertTrue("the phone sources exist", it.exists()) }
         val code = { f: File -> f.readLines().filter { l -> l.trimStart().let { !it.startsWith("*") && !it.startsWith("//") && !it.startsWith("/*") } }.joinToString("\n") }
         val files = phone.walkTopDown().filter { it.isFile && it.name.endsWith(".kt") }.toList()
-        assertTrue("the scan sees the memory detail route and the mark graph", files.any { it.name == "MemoryDetailRoute.kt" } && files.any { it.name == "MarkGraph.kt" })
+        assertTrue("the scan sees the production Forget port and the mark graph", files.any { it.name == "ProductionForget.kt" } && files.any { it.name == "MarkGraph.kt" })
         val offenders = files.filter { f -> unscoped.any { it in code(f) } && f.name !in unscopedByRuling }.map { it.name }
         assertEquals("a granular Forget that ignores the Forget scope", emptyList<String>(), offenders)
-        assertTrue("the memory detail Forget is scoped", files.single { it.name == "MemoryDetailRoute.kt" }.readText().contains("forgetScopedOutcome("))
+        // the previewer's Forget fact / Forget photo (ProductionForget, moved here from MemoryDetailRoute by the preview migration) run at the Forget scope; Forget mark is a single-object undo through the same entry, and the scope does not apply to it
+        assertTrue("the previewer Forget is scoped", files.single { it.name == "ProductionForget.kt" }.readText().contains("forgetScopedOutcome("))
     }
 }
