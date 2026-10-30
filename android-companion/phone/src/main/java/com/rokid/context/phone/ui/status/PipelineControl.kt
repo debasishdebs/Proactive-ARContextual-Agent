@@ -62,6 +62,10 @@ interface PauseHub {
     val activePauses: StateFlow<List<PauseRecord>>
     suspend fun pausePhone(untilMs: Long?): PauseRecord
     suspend fun resume(ids: Set<String>)
+    /** [pausePhone] plus whether the settings push reached the link (true only when it was accepted). Default: unknown = false. */
+    suspend fun pausePhoneAcked(untilMs: Long?): Pair<PauseRecord, Boolean> = pausePhone(untilMs) to false
+    /** [resume] plus whether the settings push reached the link (true only when it was accepted). */
+    suspend fun resumeAcked(ids: Set<String>): Boolean { resume(ids); return false }
     /** The active pauses as stored (on IO), for a Resume made before [activePauses] has loaded. */
     suspend fun loadActive(): List<PauseRecord> = activePauses.value
 }
@@ -71,6 +75,8 @@ fun Hub.asPauseHub(loadActive: suspend () -> List<PauseRecord>): PauseHub = obje
     override val activePauses: StateFlow<List<PauseRecord>> get() = this@asPauseHub.activePauses
     override suspend fun pausePhone(untilMs: Long?): PauseRecord = this@asPauseHub.pausePhone(untilMs)
     override suspend fun resume(ids: Set<String>) = this@asPauseHub.resume(ids)
+    override suspend fun pausePhoneAcked(untilMs: Long?) = this@asPauseHub.pausePhoneAcked(untilMs)
+    override suspend fun resumeAcked(ids: Set<String>) = this@asPauseHub.resumeAcked(ids)
 }
 
 /** The legacy "pipeline enabled" flag, for the one-time Phase 7 migration (each call does prefs I/O: off Main only). */
