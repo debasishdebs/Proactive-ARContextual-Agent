@@ -81,4 +81,16 @@ class DeliveryRouteTest {
             assertEquals(DeviceCapabilities.NO_DISPLAY, DeliveryRoute.resolve("caller", false, reach, none).fallback)
         }
     }
+
+    @Test fun callerByDisplayMatrixNeverReachesADisabledHud() {
+        val ph = DeviceCapabilities.ALL.with("glasses", "display", false)
+        for (g in listOf(true, false)) for (reach in GlassesReach.values()) {
+            val r = DeliveryRoute.resolve("caller", g, reach, ph)
+            assertTrue(r.explicit && r.phone && !r.glasses && !r.mirrorsChatToHud, "voice=$g reach=$reach")
+            assertEquals(DeviceCapabilities.GLASSES_DISPLAY_OFF, r.fallback)
+        }
+        // glasses display on: today's behaviour, unchanged
+        assertTrue(DeliveryRoute.resolve("caller", false, GlassesReach.UP).mirrorsChatToHud)
+        assertTrue(DeliveryRoute.resolve("caller", true, GlassesReach.UP).glasses)
+    }
 }

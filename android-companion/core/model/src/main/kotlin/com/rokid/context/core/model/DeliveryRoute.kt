@@ -12,7 +12,7 @@ enum class GlassesReach { UP, DOWN, NO_PATH }
 data class DeliveryRoute(val phone: Boolean, val glasses: Boolean, val fallback: String? = null, val explicit: Boolean = true) {
     /**
      * The Home chat has no HUD pipeline of its own: its answer is mirrored to the glasses by the phone. The mirror runs exactly when this route puts the answer on the glasses (once, never on top of a phone-only target);
-     * `caller` without a fallback is today's behaviour (mirrored), and a `caller` that fell back (a display switched off) is not.
+     * `caller` without a fallback is today's behaviour (mirrored), and a `caller` that fell back (a display switched off) is not: with the glasses display off it is an explicit phone-only route, never a null route that defaults to the HUD.
      */
     val mirrorsChatToHud: Boolean get() = if (explicit) glasses else fallback == null
 
@@ -47,7 +47,7 @@ data class DeliveryRoute(val phone: Boolean, val glasses: Boolean, val fallback:
                 }
                 else -> when {
                     !pd && !gd -> phoneOnly(DeviceCapabilities.NO_DISPLAY)
-                    callerOnGlasses && !gd -> phoneOnly(DeviceCapabilities.GLASSES_DISPLAY_OFF) // whatever the link does meanwhile
+                    !gd -> phoneOnly(DeviceCapabilities.GLASSES_DISPLAY_OFF) // whatever the link does meanwhile; explicit, so no surface (HUD mirror, voice overlay) defaults to the disabled display
                     callerOnGlasses && reach == GlassesReach.UP -> DeliveryRoute(phone = false, glasses = true, explicit = false)
                     else -> DeliveryRoute(phone = true, glasses = false, explicit = false)
                 }

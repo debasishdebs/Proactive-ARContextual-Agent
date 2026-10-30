@@ -22,6 +22,7 @@ import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 
 // Provenance: ported from live-fitness-tracker watch/.../motion/PassiveMotion.kt (send path replaced by MotionSender; on/off switch added).
@@ -35,8 +36,7 @@ object PassiveMotion {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
 
-    @Volatile private var registered = false
-    @Volatile private var registering = false
+    private val sendJobs: MutableSet<Job> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val mutex = Mutex()
 
     /** Random per process start, never 0 (0 means "no epoch" on the phone). */
@@ -53,33 +53,33 @@ object PassiveMotion {
     fun hasPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context.applicationContext, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
 
-    /** The toggle. Off unregisters the passive listener and stops the alarm; on registers again. */
+    /** The toggle. Off cancels every in-flight or queued send, unregisters the passive listener and stops the alarm; on registers again. Serialised: the last call wins. */
     fun setEnabled(context: Context, on: Boolean): Job? {
         val app = context.applicationContext
         prefs(app).edit().putBoolean(KEY_ENABLED, on).commit()
         Log.i(TAG, "enabled=$on")
-        if (on) return register(app)
-        cancelAlarms(app)
-        return scope.launch {
-            runCatching { HealthServices.getClient(app).passiveMonitoringClient.clearPassiveListenerServiceAsync().await() }
-                .onFailure { if (it is kotlin.coroutines.cancellation.CancellationException) throw it }
-            registered = false
-        }
+        if (!on) cancelSends()
+        return scope.launch { switchFor(app).reconcile() }
     }
 
     /** Idempotent: safe to call from init, the permission callback, onResume and boot. Returns the work in flight, if any. */
-    @Synchronized
     fun register(context: Context): Job? {
-        if (registered || registering) return null
         val app = context.applicationContext
         if (!isEnabled(app)) return null
         if (!hasPermission(app)) {
             Log.i(TAG, "ACTIVITY_RECOGNITION not granted")
             return null
         }
-        registering = true
-        return scope.launch {
-            runCatching {
+        return scope.launch { switchFor(app).reconcile() }
+    }
+
+    private fun cancelSends() { sendJobs.toList().forEach { it.cancel() } }
+
+    @Volatile private var switch: MonitoringSwitch? = null
+
+    @Synchronized private fun switchFor(app: Context): MonitoringSwitch = switch ?: MonitoringSwitch(
+        client = object : MonitoringClient {
+            override suspend fun register() {
                 val client = HealthServices.getClient(app).passiveMonitoringClient
                 val caps = client.getCapabilitiesAsync().await()
                 val types = setOf(DataType.STEPS).filter { it in caps.supportedDataTypesPassiveMonitoring }.toSet()
@@ -88,16 +88,13 @@ object PassiveMotion {
                     .setShouldUserActivityInfoBeRequested(caps.supportedUserActivityStates.isNotEmpty())
                     .build()
                 client.setPassiveListenerServiceAsync(MotionPassiveService::class.java, config).await()
-                registered = true
-                scheduleTick(app)
                 Log.i(TAG, "registered dataTypes=${types.size}")
-            }.onFailure {
-                if (it is kotlin.coroutines.cancellation.CancellationException) throw it
-                Log.i(TAG, "register failed ${it.javaClass.simpleName}")
             }
-            registering = false
-        }
-    }
+            override suspend fun unregister() { HealthServices.getClient(app).passiveMonitoringClient.clearPassiveListenerServiceAsync().await() }
+        },
+        scheduleTick = { scheduleTick(app) }, cancelTick = { cancelAlarms(app) },
+        want = { isEnabled(app) && hasPermission(app) }, log = { Log.i(TAG, it) },
+    ).also { switch = it }
 
     private fun tickIntent(app: Context, code: Int): PendingIntent = PendingIntent.getBroadcast(
         app, code, Intent(app, MotionReceiver::class.java).setAction(MotionReceiver.ACTION_TICK),
@@ -124,13 +121,20 @@ object PassiveMotion {
     }
 
     private fun senderFor(app: Context): MotionSender =
-        sender ?: MotionSender(WearPhoneLink(app), System::currentTimeMillis, { delay(it) }, epoch).also { sender = it }
+        sender ?: MotionSender(WearPhoneLink(app), System::currentTimeMillis, { delay(it) }, epoch, enabled = { isEnabled(app) }).also { sender = it }
 
     fun onEvents(context: Context, events: List<MotionEvent>): Job = scope.launch {
+        val self = coroutineContext[Job]!!
+        sendJobs += self
+        try { handle(context, events) } finally { sendJobs -= self }
+    }
+
+    private suspend fun handle(context: Context, events: List<MotionEvent>) {
         val app = context.applicationContext
-        if (!isEnabled(app)) return@launch
+        if (!isEnabled(app)) return
         // One batch at a time across the suspending send: load, fold, send and save are a single critical section.
         mutex.withLock {
+            if (!isEnabled(app)) return
             val prefs = prefs(app)
             var m = load(app)
             val now = System.currentTimeMillis()
@@ -152,7 +156,7 @@ object PassiveMotion {
             } finally {
                 // Even a cancelled send must not lose the fold result.
                 prefs.edit().putString(KEY, Wire.encode(m)).commit()
-                scheduleHold(app, m, now)
+                if (isEnabled(app)) scheduleHold(app, m, now)
             }
         }
     }

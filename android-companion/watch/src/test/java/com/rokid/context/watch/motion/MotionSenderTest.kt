@@ -78,4 +78,21 @@ class MotionSenderTest {
         val keys = Regex("\"(\\w+)\":").findAll(link.sent.single().second.decodeToString()).map { it.groupValues[1] }.toSet()
         assertEquals(setOf("v", "seq", "state", "confidence", "changedAtMs", "sentAtMs", "source", "epoch"), keys)
     }
+
+    @Test fun switchingOffStopsEveryRetryAndSendsNothingMore() = runTest {
+        val link = Fake(failFirst = 100)
+        var on = true
+        link.now = { t }
+        val sender = MotionSender(link, { t }, { t += it; if (t > 1_000_000L + 5_000L) on = false }, 1L, enabled = { on })
+        assertNull(sender.send(report))
+        assertTrue(link.sent.size < MotionSender.MAX_TRIES, "stopped after the switch went off, not after all tries: ${link.sent.size}")
+        val n = link.sent.size
+        assertNull(sender.send(report)); assertEquals(n, link.sent.size, "off: not even a first attempt")
+    }
+
+    @Test fun anAlreadyOffSwitchSendsNothing() = runTest {
+        val link = Fake()
+        assertNull(MotionSender(link, { t }, { t += it }, 1L, enabled = { false }).send(report))
+        assertEquals(0, link.sent.size)
+    }
 }
