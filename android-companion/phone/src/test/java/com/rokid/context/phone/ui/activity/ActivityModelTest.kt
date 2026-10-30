@@ -80,7 +80,7 @@ class ActivityModelTest {
         )
         val s = Timeline.sections(mems, frames, ZONE, TODAY, ActivitySort.OLDEST_FIRST)
         assertEquals(listOf(Timeline.EARLIER, "Morning", "Afternoon"), s.map { it.label })
-        assertEquals(TimelineRow("backlog", "Sun 11 Oct 23:10", "Cable by the cushion", 0.8, "/old.jpg", "f-old"), s[0].rows.single())
+        assertEquals(TimelineRow("backlog", "Sun 11 Oct 23:10", "Cable by the cushion", 0.8, "/old.jpg", "f-old", Fixtures.at(TODAY.minusDays(1), 23, 10)), s[0].rows.single())
         assertEquals("08:15", s[1].rows.single().time)
         assertEquals("/today.jpg", s[1].rows.single().framePath)
         assertEquals("14:05", s[2].rows.single().time)

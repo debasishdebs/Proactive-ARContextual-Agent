@@ -42,7 +42,7 @@ data class PeriodWindow(val period: Period, val start: LocalDate, val endExclusi
 }
 
 data class Tiles(val frames: Int, val memories: Int, val answers: Int, val nudges: Int)
-data class TimelineRow(val memoryId: String, val time: String, val text: String, val confidence: Double, val framePath: String?, val frameId: String?)
+data class TimelineRow(val memoryId: String, val time: String, val text: String, val confidence: Double, val framePath: String?, val frameId: String?, val atMs: Long = 0L)
 data class TimelineSection(val label: String, val rows: List<TimelineRow>)
 data class DayBar(val date: LocalDate, val label: String, val count: Int)
 data class DayRow(val date: LocalDate, val title: String, val subtitle: String)
@@ -80,7 +80,7 @@ object Timeline {
             val otherDay = at.toLocalDate() != day
             val label = if (otherDay) EARLIER else partOfDay(at.hour)
             val time = (if (otherDay) DAY_HHMM else HHMM).format(at)
-            Triple(label, at.toInstant().toEpochMilli(), TimelineRow(m.id, time, m.text, m.confidence, frame?.path, m.frameId))
+            Triple(label, at.toInstant().toEpochMilli(), TimelineRow(m.id, time, m.text, m.confidence, frame?.path, m.frameId, at.toInstant().toEpochMilli()))
         }.sortedBy { it.second }
         order.titleOrder<TimelineRow> { it.text }?.let { cmp ->
             return if (rows.isEmpty()) emptyList() else listOf(TimelineSection(ALL, rows.map { it.third }.sortedWith(cmp)))

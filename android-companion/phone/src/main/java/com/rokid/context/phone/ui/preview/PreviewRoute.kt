@@ -102,12 +102,12 @@ fun PreviewRoute(raw: String, deps: PhoneDeps, nav: NavController) {
         open = { nav.navigate(previewMoment(listOf(it)).route) }, rate = { up -> ref?.let { r -> scope.launch { deps.rateAsk(r.id, up) } } },
         morePhotos = { q -> nav.navigate(Routes.photos(q)) }, proposal = { id -> ProposalCard(id, Modifier.padding(16.dp), onEnable = { nav.navigate(Routes.SETTINGS_ACTIONS) }) },
         addToPhotoTest = labels?.let { l -> { q, id, small -> l.add(q, id, small) } },
-        showTime = { nav.navigate(Routes.day(it)) }, forgetPhoto = dvm::askForgetPhoto,
+        showTime = { day, at -> nav.navigate(Routes.day(day, at)) }, forgetPhoto = dvm::askForgetPhoto,
         trust = dvm::trust, edit = dvm::startEdit, onDraftChange = dvm::updateDraft, saveEdit = dvm::saveEdit, cancelEdit = dvm::cancelEdit,
     )
     PreviewScreen(
         state, host, title = ref?.kind?.title ?: "Preview", onBack = back,
-        onForget = { t -> when (t) { is ForgetTarget.Fact -> dvm.askForget(ForgetKind.FACT); is ForgetTarget.Photo -> dvm.askForgetPhoto(t.frameId); else -> Unit } },
+        onForget = { t -> when (t) { is ForgetTarget.Fact -> dvm.askForget(ForgetKind.FACT); is ForgetTarget.Photo -> dvm.askForgetPhoto(t.frameId); is ForgetTarget.Answer -> dvm.askForgetObject(ForgetKind.ANSWER, t.askId); is ForgetTarget.Nudge -> dvm.askForgetObject(ForgetKind.NUDGE, t.nudgeId); is ForgetTarget.Mark -> dvm.askForgetObject(ForgetKind.MARK, t.labelId); else -> Unit } },
         onConfirmForget = dvm::confirmForget, onDismissForget = dvm::dismissForget, onAckForget = dvm::acknowledgeForget,
     )
 }

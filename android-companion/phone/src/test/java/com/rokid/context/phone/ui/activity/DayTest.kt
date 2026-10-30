@@ -84,4 +84,18 @@ class DayTest {
         compose.setContent { PcTheme { DayScreen(DayUiState(loading = false, found = false), onBack = {}, onPreview = {}) } }
         compose.onNodeWithText("Day not found").assertIsDisplayed()
     }
+
+    @Test fun showThatTimePicksTheNearestRowsListIndex() {
+        fun row(id: String, at: Long) = TimelineRow(id, "", id, 0.8, null, null, at)
+        val sections = listOf(TimelineSection("Morning", listOf(row("a", 1_000), row("b", 5_000))), TimelineSection("Afternoon", listOf(row("c", 9_000))))
+        // items: 0 header, 1 photos chip, 2 "Morning", 3 a, 4 b, 5 "Afternoon", 6 c
+        assertEquals(3, DayScroll.indexFor(sections, 0, hasPhotosChip = true))
+        assertEquals(4, DayScroll.indexFor(sections, 4_000, hasPhotosChip = true))
+        assertEquals(6, DayScroll.indexFor(sections, 99_000, hasPhotosChip = true))
+        assertEquals("no chip: one item less", 3, DayScroll.indexFor(sections, 4_000, hasPhotosChip = false))
+        assertEquals("a tie takes the first in list order", 3, DayScroll.indexFor(sections, 3_000, hasPhotosChip = true))
+        assertEquals(null, DayScroll.indexFor(emptyList(), 1, hasPhotosChip = true))
+        // latest-first lists run the other way: the index follows the list, not the clock
+        assertEquals(2, DayScroll.indexFor(listOf(TimelineSection("Evening", listOf(row("z", 9_000), row("y", 1_000)))), 9_000, hasPhotosChip = false))
+    }
 }

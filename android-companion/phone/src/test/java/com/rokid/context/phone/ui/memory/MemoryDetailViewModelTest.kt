@@ -102,6 +102,40 @@ class MemoryDetailViewModelTest {
         assertEquals(1, edited.get())
     }
 
+    private fun objectPort(onObject: (ForgetKind, String) -> Boolean) = object : MemoryForget {
+        override suspend fun forgetFact(memoryId: String) = false
+        override suspend fun forgetMoment(frameId: String) = false
+        override suspend fun forgetObject(kind: ForgetKind, id: String) = onObject(kind, id)
+    }
+
+    @Test fun anAnswerNudgeOrMarkForgetOpensTheDialogWithoutCountsAndRunsTheObjectForget() = runBlocking {
+        for (kind in listOf(ForgetKind.ANSWER, ForgetKind.NUDGE, ForgetKind.MARK)) {
+            val ran = mutableListOf<Pair<ForgetKind, String>>()
+            val model = MemoryDetailViewModel("", graph.timeline, graph.memoryEdits, zone = { Fixtures.ZONE }, forget = objectPort { k, id -> ran += k to id; true }).also { vms += it }
+            model.askForgetObject(kind, "obj1")
+            val s = withTimeout(5_000) { model.state.first { it.confirm == kind } }
+            assertEquals(null, s.forgetPreview); assertTrue(!s.forgetPreviewing && s.forgetConfirmable)
+            model.confirmForget()
+            withTimeout(5_000) { model.state.first { it.forgotten } }
+            assertEquals(listOf(kind to "obj1"), ran)
+        }
+    }
+
+    @Test fun anObjectForgetNamesAnExportASaveOrAFailure() = runBlocking {
+        val cases = listOf<Pair<() -> Boolean, String>>(
+            { throw com.rokid.context.orchestration.DataOpGate.ExportInProgress() } to ForgetCopy.EXPORT_RUNNING,
+            { throw com.rokid.context.orchestration.DataOpGate.WriteInProgress() } to ForgetCopy.SAVE_RUNNING,
+            { throw CacheCleanupFailed() } to ForgetCopy.CACHE_LEFT,
+            { false } to ForgetCopy.FAILED,
+        )
+        for ((fail, message) in cases) {
+            val model = MemoryDetailViewModel("", graph.timeline, graph.memoryEdits, zone = { Fixtures.ZONE }, forget = objectPort { _, _ -> fail() }).also { vms += it }
+            model.askForgetObject(ForgetKind.ANSWER, "a1"); model.confirmForget()
+            val s = withTimeout(5_000) { model.state.first { !it.forgetting && it.confirm == null && it.message != null || it.forgotten } }
+            assertEquals(message, s.message)
+        }
+    }
+
     @Test fun aForgetBlockedByACanvasSaveNamesTheSaveNotAnExport() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
         val model = vm(object : MemoryForget {

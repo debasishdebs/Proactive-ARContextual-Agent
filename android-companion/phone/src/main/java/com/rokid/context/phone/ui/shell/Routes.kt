@@ -9,7 +9,7 @@ object Routes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
     const val ACTIVITY = "activity?period={period}"
-    const val DAY = "day/{date}"
+    const val DAY = "day/{date}?at={at}"
     /** Find a photo (wave 3): `q` is optional; a non-blank one searches once on open. */
     const val PHOTOS = "photos?q={q}"
     /** The composite previewer of ANY item (`ref` is a [com.rokid.context.phone.ui.preview.PreviewRef.raw]) and the common list of a kind (`ids` comma-joined). */
@@ -79,7 +79,8 @@ object Routes {
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
     fun activity(period: Period? = null) = if (period == null) "activity" else "activity?period=${period.name.lowercase()}"
-    fun day(date: LocalDate) = "day/$date"
+    /** The day view; [atMs] scrolls it to the row nearest that time (a photo-less mark's "Show that time"). */
+    fun day(date: LocalDate, atMs: Long? = null) = "day/$date" + (atMs?.let { "?at=$it" } ?: "")
     /** Encoded with `android.net.Uri.encode` (a platform API, not hand-written escaping). */
     fun photos(q: String = "") = if (q.isBlank()) "photos" else "photos?q=${android.net.Uri.encode(q)}"
     fun preview(ref: String) = "preview/${enc(ref)}"

@@ -11,6 +11,10 @@ sealed interface ForgetTarget {
     data class Photo(val frameId: String) : ForgetTarget { override val level get() = ForgetScope.PHOTO }
     data class Moment(val momentId: String) : ForgetTarget { override val level get() = ForgetScope.MOMENT }
     data class Scene(val sceneId: String) : ForgetTarget { override val level get() = ForgetScope.SCENE }
+    /** One saved answer, one nudge, one photo-less mark: single-object Forgets. The Forget scope does not apply (they never reach neighbours); `ForgetActions` runs them, never [ScopedForget]. */
+    data class Answer(val askId: String) : ForgetTarget { override val level get() = ForgetScope.PHOTO }
+    data class Nudge(val nudgeId: String) : ForgetTarget { override val level get() = ForgetScope.PHOTO }
+    data class Mark(val labelId: String) : ForgetTarget { override val level get() = ForgetScope.PHOTO }
 }
 
 /**
@@ -40,6 +44,7 @@ class ScopedForget(
     data class Done(val plan: Plan, val cascade: ForgetService.Result, val spans: List<LongRange>, val tombstonedTraceIds: List<String>, val peerResultsDeleted: Int = 0)
 
     suspend fun plan(target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): Plan {
+        require(target !is ForgetTarget.Answer && target !is ForgetTarget.Nudge && target !is ForgetTarget.Mark) { "single-object targets run through ForgetActions" }
         val eff = scope.atLeast(target.level)
         if (eff != ForgetScope.PHOTO) requireExperimental() // the engine's own gate: whatever the caller (route, voice, API) passed
         val dao = db.forgetDao(); val radius = ForgetRadius.ms()
@@ -56,7 +61,7 @@ class ScopedForget(
                 secondsOfFrames(listOf(target.frameId))
             }
             is ForgetTarget.Moment -> listOfNotNull(MomentId.parse(target.momentId))
-            is ForgetTarget.Scene -> emptyList()
+            is ForgetTarget.Scene, is ForgetTarget.Answer, is ForgetTarget.Nudge, is ForgetTarget.Mark -> emptyList()
         }
         if (target is ForgetTarget.Fact && seconds.isEmpty()) return only(factId = target.memoryId) // no photo, no Moment: only the fact
         if (target is ForgetTarget.Photo && seconds.isEmpty()) return only(frameId = target.frameId)

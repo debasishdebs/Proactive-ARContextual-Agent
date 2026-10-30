@@ -64,7 +64,8 @@ data class PreviewHost(
     val detail: MemoryDetailUiState,
     /** The stored path of a photo (null: retention deleted it). Called lazily, once per photo shown. */
     val framePath: suspend (String) -> String?,
-    val showTime: (LocalDate) -> Unit = {},
+    /** "Show that time": the day view, scrolled to [atMs] (null: the top). */
+    val showTime: (LocalDate, Long?) -> Unit = { _, _ -> },
     val forgetPhoto: (String) -> Unit = {},
     val trust: () -> Unit = {},
     val edit: () -> Unit = {},
@@ -111,7 +112,7 @@ sealed interface PreviewSection {
     }
 
     /** A fixed [code] (`camera_busy`, `pending`...) with its words. [showTimeOn] adds "Show that time". */
-    data class StatusSection(val code: String, val message: String, val severity: Severity, val showTimeOn: LocalDate? = null) : PreviewSection {
+    data class StatusSection(val code: String, val message: String, val severity: Severity, val showTimeOn: LocalDate? = null, val showTimeAtMs: Long? = null) : PreviewSection {
         @Composable override fun Content(host: PreviewHost) = StatusContent(this, host)
     }
 
@@ -292,7 +293,7 @@ private fun StatusContent(s: PreviewSection.StatusSection, host: PreviewHost) {
     SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().testTag("preview_status")) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(s.message, style = MaterialTheme.typography.bodyMedium, color = if (s.severity == Severity.ERROR) PcColors.Ink else PcColors.InkSoft)
-            s.showTimeOn?.let { day -> OutlinedButton(onClick = { host.showTime(day) }, modifier = Modifier.testTag("mark_show_time")) { Text("Show that time") } }
+            s.showTimeOn?.let { day -> OutlinedButton(onClick = { host.showTime(day, s.showTimeAtMs) }, modifier = Modifier.testTag("mark_show_time")) { Text("Show that time") } }
         }
     }
 }

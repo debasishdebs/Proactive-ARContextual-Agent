@@ -24,6 +24,9 @@ import com.rokid.context.phone.ui.memory.ForgetDialog
 fun forgetLabel(target: ForgetTarget): String = when (target) {
     is ForgetTarget.Fact -> "Forget fact"
     is ForgetTarget.Photo -> "Forget photo"
+    is ForgetTarget.Answer -> "Forget answer"
+    is ForgetTarget.Nudge -> "Forget heads up"
+    is ForgetTarget.Mark -> "Forget mark"
     is ForgetTarget.Moment, is ForgetTarget.Scene -> "Forget"
 }
 

@@ -114,19 +114,21 @@ class PreviewMomentTest {
         assertNull("a photo-only mark forgets the photo on screen, through its section", one(RefKind.MARK, "k2").forgetTarget())
         val none = one(RefKind.MARK, "k3")
         assertEquals(
-            listOf(TextSection("Time", "09:00"), StatusSection("camera_busy", "No photo: the camera was busy", Severity.WARNING, showTimeOn = TODAY), AudioSection),
+            listOf(TextSection("Time", "09:00"), StatusSection("camera_busy", "No photo: the camera was busy", Severity.WARNING, showTimeOn = TODAY, showTimeAtMs = t), AudioSection),
             none.sections(),
         )
-        assertNull("a mark with no photo has nothing to forget here", none.forgetTarget())
+        assertEquals("a mark with no photo is forgotten as the mark (its fallback Moment goes with it)", ForgetTarget.Mark("k3"), none.forgetTarget())
     }
 
-    @Test fun anAnswerHasQuestionAnswerRatingActionCardSourcesAndNothingToForget() {
+    @Test fun anAnswerHasQuestionAnswerRatingActionCardSourcesAndForgetsItself() {
         val p = one(RefKind.ASK, "a2")
         assertEquals(listOf("TextSection", "TextSection", "RatingSection", "ProposalSection", "SourcesSection", "AudioSection"), kinds(p))
         assertEquals(RatingSection(1), p.sections()[2]); assertEquals(ProposalSection("a2"), p.sections()[3])
         assertEquals("You asked \u00b7 Mon 12 Oct \u00b7 09:00", (p.sections()[0] as TextSection).label)
-        assertNull(p.forgetTarget())
-        assertNull(one(RefKind.NUDGE, "n1").forgetTarget())
+        assertEquals(ForgetTarget.Answer("a2"), p.forgetTarget())
+        assertEquals(ForgetTarget.Nudge("n1"), one(RefKind.NUDGE, "n1").forgetTarget())
+        assertNull("an answer already removed has nothing left to forget", one(RefKind.ASK, "a3").forgetTarget())
+        assertNull(one(RefKind.NUDGE, "n3").forgetTarget())
     }
 
     @Test fun anAnswersSourcesAreItsLiveCitesAndAPhotoCiteIsNeverMissing() {

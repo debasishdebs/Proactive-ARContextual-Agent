@@ -156,6 +156,35 @@ class PreviewScreenTest {
         assertEquals(1, confirmed)
     }
 
+    private fun singleDialog(kind: com.rokid.context.phone.ui.memory.ForgetKind, title: String) {
+        dialog(base.copy(confirm = kind, forgetConfirmable = true))
+        compose.onNodeWithText(title).assertExists()
+        compose.onNodeWithText(ForgetCopy.SINGLE_SCOPE).assertExists()
+        compose.onAllNodesWithText("This deletes", substring = true).assertCountEquals(0)
+        compose.onNodeWithText("Forget").assertIsEnabled().performClick()
+        assertEquals(1, confirmed)
+    }
+    @Test fun theAnswerDialogSaysItIsOneItemAndHasNoScopeOrCounts() = singleDialog(com.rokid.context.phone.ui.memory.ForgetKind.ANSWER, "Forget this answer?")
+    @Test fun theNudgeDialogSaysItIsOneItemAndHasNoScopeOrCounts() = singleDialog(com.rokid.context.phone.ui.memory.ForgetKind.NUDGE, "Forget this heads up?")
+    @Test fun theMarkDialogSaysItIsOneItemAndHasNoScopeOrCounts() = singleDialog(com.rokid.context.phone.ui.memory.ForgetKind.MARK, "Forget this mark?")
+
+    @Test fun anAnswerOffersItsOwnForget() {
+        show(load(RefKind.ASK, "a1"))
+        compose.onNodeWithText("Forget answer").performScrollTo().performClick()
+        assertEquals(listOf<ForgetTarget>(ForgetTarget.Answer("a1")), forgetAsked)
+    }
+
+    @Test fun aNudgeOffersItsOwnForget() {
+        show(load(RefKind.NUDGE, "n1"))
+        compose.onNodeWithText("Forget heads up").performScrollTo().performClick()
+        assertEquals(listOf<ForgetTarget>(ForgetTarget.Nudge("n1")), forgetAsked)
+    }
+
+    @Test fun aRemovedAnswerOffersNoForget() {
+        show(load(RefKind.ASK, "a2"))
+        compose.onAllNodesWithText("Forget answer").assertCountEquals(0)
+    }
+
     @Test fun theMomentDialogCopy() {
         dialog(momentDialog)
         compose.onNodeWithText("Forget this moment?").assertExists()
