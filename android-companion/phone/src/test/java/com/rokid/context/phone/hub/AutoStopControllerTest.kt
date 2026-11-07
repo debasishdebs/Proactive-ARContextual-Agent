@@ -13,12 +13,12 @@ class AutoStopControllerTest {
     private class Rig {
         var t = 1_000_000L; var minutes = 20; var running = true; var link = LinkState.CONNECTED; var worn: Boolean? = true
         var front = false; var lastFront = 0L; var busy = false; var run = false; var exempt = false; var allowed = true; var wakeIssued = true
-        var stops = 0; var wakes = 0; var note: String? = null; val logs = mutableListOf<String>()
+        var stops = 0; var wakes = 0; var note: String? = null; val logs = mutableListOf<String>(); val scheduled = mutableListOf<Long>()
         val store = InMemoryAutoStopStore()
         val c = AutoStopController(
             now = { t }, minutes = { minutes }, store = store, hubRunning = { running }, link = { link }, worn = { worn }, inFront = { front }, lastFrontMs = { lastFront },
             busy = { busy }, runActive = { run }, stopHub = { stops++; running = false }, wakeHub = { wakes++; if (wakeIssued) running = true; wakeIssued }, exempt = { exempt }, linkAllowed = { allowed },
-            publishNote = { note = it }, timeText = { "14:05" }, log = { logs += it },
+            publishNote = { note = it }, timeText = { "14:05" }, log = { logs += it }, scheduleWake = { scheduled += it },
         )
         fun advance(ms: Long) { t += ms }
     }
@@ -30,7 +30,7 @@ class AutoStopControllerTest {
     @Test fun offHeadStopsAfterNMinutesWithTheReasonAndTheNote() {
         val r = Rig().apply { worn = false }
         assertEquals("sleeps to the due time", 20 * min, r.c.evaluate()); r.advance(19 * min); assertEquals(1 * min, r.c.evaluate()); assertEquals(0, r.stops)
-        r.advance(1 * min); assertNull(r.c.evaluate())
+        r.advance(1 * min); assertEquals("after the stop it sleeps to the first rung, not until a poke", 60 * min, r.c.evaluate())
         assertEquals(1, r.stops); assertTrue("auto_stop_not_worn" in r.logs); assertEquals("Stopped: glasses not worn since 14:05. Tap to start", r.note)
         assertTrue(r.store.autoStoppedAtMs() != 0L)
     }
@@ -110,5 +110,47 @@ class AutoStopControllerTest {
     @Test fun aUserStartEndsTheManualAndAutoStopAndTheLadder() {
         val s = InMemoryAutoStopStore().apply { setManualStop(true); markAutoStopped(5L, BackgroundPolicy.Away.NOT_WORN, 1L, 9L); wakeAttempted(7L) }
         s.userStarted(); assertFalse(s.manualStop()); assertEquals(0L, s.autoStoppedAtMs()); assertEquals(0, s.wakeStep()); assertNull(s.reason())
+    }
+
+    // ---- Review fixes 2026-11-07 ----
+
+    @Test fun aStopWithTheLinkAlreadyOfflineArmsTheWakeWithoutAnyPoke() = kotlinx.coroutines.test.runTest {
+        val base = 1_000_000L
+        var running = true; var wakes = 0; val scheduled = mutableListOf<Long>()
+        val store = InMemoryAutoStopStore()
+        val c = AutoStopController(
+            now = { base + testScheduler.currentTime }, minutes = { 20 }, store = store, hubRunning = { running }, link = { LinkState.OFFLINE }, worn = { null },
+            inFront = { false }, lastFrontMs = { 0L }, busy = { false }, runActive = { false }, stopHub = { running = false },
+            wakeHub = { wakes++; running = true; true }, exempt = { true }, linkAllowed = { true }, publishNote = {}, timeText = { "x" }, log = {}, scheduleWake = { scheduled += it },
+        )
+        val job = c.start(backgroundScope) // the link never changes again: no poke ever comes
+        testScheduler.advanceTimeBy(20 * min + 1); testScheduler.runCurrent()
+        assertFalse("stopped after N min", running); assertEquals(listOf(60 * min), scheduled)
+        testScheduler.advanceTimeBy(60 * min); testScheduler.runCurrent()
+        assertEquals("woken on the first rung with no poke", 1, wakes); assertTrue(running)
+        job.cancel()
+    }
+
+    @Test fun aRefusedWakeIsReArmedOnTheLadder60Then120Then240() {
+        val r = Rig().apply { worn = false; exempt = true; wakeIssued = false }; r.c.evaluate(); r.advance(20 * min)
+        assertEquals(60 * min, r.c.evaluate()); assertEquals(1, r.stops)
+        r.advance(60 * min); assertEquals("refused: re-armed for the second rung", 120 * min, r.c.evaluate()); assertEquals(1, r.wakes)
+        r.advance(120 * min); assertEquals(240 * min, r.c.evaluate()); assertEquals(2, r.wakes)
+        r.advance(240 * min); assertEquals("the ladder caps at 240", 240 * min, r.c.evaluate()); assertEquals(3, r.wakes)
+        assertEquals(listOf(60 * min, 120 * min, 240 * min, 240 * min), r.scheduled)
+        assertFalse("a refused wake leaves no probe behind", r.store.wakeProbe())
+    }
+
+    @Test fun aClockSetBackDoesNotBlockTheWakeForEver() {
+        val r = Rig().apply { worn = false; exempt = true }; r.c.evaluate(); r.advance(20 * min); r.c.evaluate()
+        r.t -= 10 * 24 * 60 * min // the wall clock is set back ten days: wake_next_at now lies far beyond any rung
+        r.c.evaluate(); assertEquals("due at once, not in ten days", 1, r.wakes)
+        assertTrue("and the next rung is measured from the new clock", r.store.nextWakeAtMs() - r.t <= BackgroundPolicy.WAKE_LADDER_MS.last())
+    }
+
+    @Test fun theProbeFlagInTheStoreGivesAColdWokenHubTheShortProbe() {
+        val r = Rig().apply { worn = false }
+        r.store.setWakeProbe(true) // a cold-process wake (AutoStopWake) set it before this controller existed
+        assertEquals(5 * min, r.c.evaluate()); r.advance(5 * min); r.c.evaluate(); assertEquals(1, r.stops); assertFalse(r.store.wakeProbe())
     }
 }

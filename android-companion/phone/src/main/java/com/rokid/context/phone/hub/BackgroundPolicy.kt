@@ -40,8 +40,18 @@ object BackgroundPolicy {
 
     /** Immutable back-off state: [step] attempts made since the last reset; none is due before [nextAtMs]. */
     data class Backoff(val step: Int = 0, val nextAtMs: Long = 0L) {
-        fun due(nowMs: Long): Boolean = nowMs >= nextAtMs
+        /** Persisted wall-clock deadline: a clock set back (the deadline lies further ahead than the longest step) must not block for ever. */
+        fun due(nowMs: Long): Boolean = deadlinePassed(nowMs, nextAtMs, BACKOFF_MS.last())
     }
+
+    /**
+     * A persisted wall-clock deadline is reached at [deadlineMs], or at once when it lies more than [maxDelayMs] ahead: no deadline is ever set further
+     * than that, so the clock was set back (as for the hub's last start, a set-back clock must not block for ever).
+     */
+    fun deadlinePassed(nowMs: Long, deadlineMs: Long, maxDelayMs: Long): Boolean = nowMs >= deadlineMs || deadlineMs - nowMs > maxDelayMs
+
+    /** How long until [deadlineMs] ([deadlinePassed] = 0), never more than [maxDelayMs]. */
+    fun remainingMs(nowMs: Long, deadlineMs: Long, maxDelayMs: Long): Long = if (deadlinePassed(nowMs, deadlineMs, maxDelayMs)) 0L else deadlineMs - nowMs
 
     fun delayMs(step: Int): Long = BACKOFF_MS[step.coerceIn(0, BACKOFF_MS.lastIndex)]
 
@@ -68,7 +78,7 @@ object BackgroundPolicy {
     fun sleepMs(gate: Gate, periodMs: Long, backoff: Backoff, nowMs: Long): Long = when (gate) {
         Gate.NO_PAIR, Gate.DISABLED -> IDLE_RECHECK_MS
         Gate.ACTIVE -> periodMs
-        Gate.AWAY -> maxOf(periodMs, backoff.nextAtMs - nowMs)
+        Gate.AWAY -> maxOf(periodMs, remainingMs(nowMs, backoff.nextAtMs, BACKOFF_MS.last()))
     }
 
     // ---- AutoStop (user ruling 2026-11-07): the hub stops by itself while the glasses are away ----
@@ -135,9 +145,13 @@ object BackgroundPolicy {
     /** A woken hub looks for the glasses this long (instead of the full N min) before it stops again. */
     const val WAKE_PROBE_MS = 5 * 60_000L
 
-    /** [exempt]: the app is on the battery-optimization allowlist. A wake needs it, a hub that stopped itself, no manual stop, the setting not Never, and its ladder due. */
+    /** [exempt]: the app is on the battery-optimization allowlist. A wake needs it, a hub that stopped itself, no manual stop, the setting not Never, and its ladder due ([deadlinePassed]: a clock set back does not block it for ever). */
     fun wakeDue(exempt: Boolean, autoStopped: Boolean, manualStop: Boolean, minutes: Int, hubRunning: Boolean, linkAllowed: Boolean, nowMs: Long, nextWakeAtMs: Long): Boolean =
-        exempt && autoStopped && !manualStop && minutes != AUTO_STOP_NEVER && !hubRunning && linkAllowed && nowMs >= nextWakeAtMs
+        wakeAllowed(exempt, autoStopped, manualStop, minutes, hubRunning, linkAllowed) && deadlinePassed(nowMs, nextWakeAtMs, WAKE_LADDER_MS.last())
+
+    /** [wakeDue] without its time: a wake may come at all (so it is worth waiting or scheduling for). */
+    fun wakeAllowed(exempt: Boolean, autoStopped: Boolean, manualStop: Boolean, minutes: Int, hubRunning: Boolean, linkAllowed: Boolean): Boolean =
+        exempt && autoStopped && !manualStop && minutes != AUTO_STOP_NEVER && !hubRunning && linkAllowed
 
     /** The status line after the hub stopped itself; null when it did not. [time] is a local HH:mm. */
     fun stoppedNote(reason: Away, sinceText: String): String = "Stopped: glasses ${reason.word} since $sinceText. Tap to start"

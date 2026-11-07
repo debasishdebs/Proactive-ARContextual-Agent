@@ -339,4 +339,35 @@ class GlassesWatchdogTest {
         val unneeded = Rig().apply { paired = false; hubNeeded = false; running = false }
         unneeded.w.tick(); assertEquals(0, unneeded.starts)
     }
+
+    // ---- Review fixes 2026-11-07 ----
+
+    @Test fun theHubStartAttemptIsSavedBeforeTheStartSoACrashCannotBypassTheBackoff() {
+        val order = mutableListOf<String>()
+        val store = object : HubRestartStore {
+            val inner = InMemoryHubRestartStore()
+            override fun loadBackoff() = inner.loadBackoff()
+            override fun lastStartAtMs() = inner.lastStartAtMs()
+            override fun saveBackoff(b: BackgroundPolicy.Backoff) = inner.saveBackoff(b)
+            override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { order += "save"; inner.saveStart(b, atMs) }
+        }
+        val t0 = 10 * 60_000L
+        fun dog(now: Long, start: () -> Unit) = GlassesWatchdog(
+            now = { now }, enabled = { true }, captureActive = { true }, hubRunning = { false }, link = { LinkState.OFFLINE }, lastHeardAtMs = { null },
+            standingDown = { false }, startHub = start, reconnect = {}, probeAlive = {}, relaunch = { null }, publish = {}, log = {}, warn = {}, hubStore = store,
+        )
+        // the start crashes the process (the throw stands for it)
+        runCatching { dog(t0) { order += "start"; throw IllegalStateException("process died") }.tick() }
+        assertEquals(listOf("save", "start"), order)
+        var starts = 0
+        dog(t0 + 30_000L) { starts++ }.tick(); assertEquals("the next process is still inside the back-off", 0, starts)
+        dog(t0 + 5 * 60_000L) { starts++ }.tick(); assertEquals(1, starts)
+    }
+
+    @Test fun aClockSetBackDoesNotBlockTheHubRestartLadder() {
+        val store = InMemoryHubRestartStore()
+        val a = Rig(store = store).apply { running = false; link = LinkState.OFFLINE }; a.w.tick(); assertEquals(1, a.starts)
+        val b = Rig(nowMs = a.nowMs - 10 * 24 * 3_600_000L, store = store).apply { running = false; link = LinkState.OFFLINE }
+        b.w.tick(); assertEquals("next_at lies beyond the longest step: the clock went back", 1, b.starts)
+    }
 }
