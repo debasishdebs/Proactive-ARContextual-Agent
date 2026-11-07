@@ -33,5 +33,5 @@ Frozen values untouched: PROTOCOL_VERSION 1, TRACE_SCHEMA 1, plan hash f5782e0d8
 
 ## Verification
 
-- `./gradlew --no-daemon -Dorg.gradle.workers.max=2 --offline :phone:testDebugUnitTest :services:orchestration:test`: see the commit message / report for the result.
+- `:phone:testDebugUnitTest :services:orchestration:test`: 2146 phone tests, 1 failure (PromptEditorTest, known flaky; passes alone); orchestration suite green. quality-eval fixture test ALL OK.
 - No device test (no adb). Not done: LiveFit findings 7-8 (other repo).
