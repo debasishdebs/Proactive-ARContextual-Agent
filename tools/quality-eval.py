@@ -9,7 +9,7 @@ Sub-commands: capture | retrieval | canvas | output | all   (see tools/QUALITY-E
 Safety: GET only, plus POSTs on an explicit read-only allowlist (empty by default); every other verb or path is refused before a byte is sent.
 The GETs that run the phone's trace retention (MAINTENANCE_READS: it may DELETE old trace rows) are skipped unless --include-maintenance-reads.
 """
-import argparse, collections, json, math, os, random, re, ssl, sys, time, http.client, urllib.parse
+import argparse, bisect, collections, json, math, os, random, re, ssl, sys, time, http.client, urllib.parse
 
 # ---------------------------------------------------------------- safety + transport
 
@@ -93,7 +93,7 @@ class Client:
             raise SystemExit("CERTIFICATE MISMATCH: the server is not the paired phone; nothing was sent")
         return c
 
-    def call(self, method, path, body=None, tag=None):
+    def call(self, method, path, body=None, tag=None, ok=(200,)):
         """Returns (status, parsed JSON or None). Status 0 = transport error. Never raises for HTTP errors."""
         guard(method, path)
         wait = self.min_gap - (time.monotonic() - self.last)
@@ -122,7 +122,7 @@ class Client:
             st = 0
             obj = {"error": type(e).__name__}
         self.log.append((method.upper(), path.split("?", 1)[0], st))
-        if st != 200:
+        if st not in ok:
             key = tag or path.split("?", 1)[0]
             err = obj.get("error") if isinstance(obj, dict) else None
             self.unavailable.setdefault(key, "http=%s%s" % (st, " error=%s" % err if err else ""))
@@ -214,15 +214,28 @@ def fetch_frames(cl, max_frames):
     return frames[:max_frames]
 
 
+ROUTE_ID = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")   # CanvasApi.ID: the only ids any /api/<x>/:id route accepts (no '.', no '/', no %-decoding)
+
+SEED_WORDS = ("table person screen kitchen street building hand light door car text window food book phone computer wall floor room desk paper "
+              "tree sign water people white black blue red green yellow wooden metal glass shelf bottle cup bag chair sofa bed monitor keyboard "
+              "laptop plant sky road shop store menu box picture lamp coffee bread hallway office cabinet").split()
+
+
 def fetch_memories(cl, frames, max_detail):
-    """GET /api/frames/:id for frames with live memories, evenly spread over time; returns (memories, details-by-frame)."""
+    """GET /api/frames/:id for frames with live memories, evenly spread over time. The route accepts only ids matching ROUTE_ID (sent literally: the phone
+    does not percent-decode); a frame id outside it is counted, never sent (the route would answer 400 for it).
+    Returns (memories, details-by-frame, number of sampled frames whose id the route cannot take)."""
     withm = [f for f in frames if f.get("hasLiveMemories")]
     if len(withm) > max_detail:
         step = len(withm) / float(max_detail)
         withm = [withm[int(i * step)] for i in range(max_detail)]
-    mems, det = [], {}
+    mems, det, rejected = [], {}, 0
     for f in withm:
-        d = cl.get("/api/frames/%s" % urllib.parse.quote(str(f.get("id")), safe=""), tag="/api/frames/:id")
+        fid = str(f.get("id"))
+        if not ROUTE_ID.match(fid):
+            rejected += 1
+            continue
+        d = cl.get("/api/frames/%s" % fid, tag="/api/frames/:id")
         if not isinstance(d, dict):
             continue
         det[f["id"]] = d
@@ -230,13 +243,55 @@ def fetch_memories(cl, frames, max_detail):
             if isinstance(m, dict) and m.get("id"):
                 mems.append({"id": m["id"], "text": m.get("text") or "", "type": m.get("type"), "frameId": f["id"], "ts": f.get("ts") or 0,
                              "state": f.get("state")})
-    return mems, det
+    if rejected:
+        cl.unavailable.setdefault("/api/frames/:id", "frame ids rejected by the route's id pattern %s (e.g. '.' in '...v2'): %d of %d sampled ids never sent" % (
+            ROUTE_ID.pattern, rejected, len(withm)))
+    return mems, det, rejected
+
+
+def harvest_memories(cl, route, max_queries, known):
+    """Fallback corpus when GET /api/frames/:id cannot be used: snowball the retrieval route with snippets=true (read-only; <= 80 chars per memory).
+    Queries start from generic words, then the rarest words seen in the snippets so far. The corpus is therefore the memories the phone's LEXICAL
+    retriever can reach, which makes recall optimistic; the report says so."""
+    found, used, df, seen = {}, set(), collections.Counter(), set()
+    queue = list(SEED_WORDS)
+    asked = idle = nseen = 0
+    while queue and asked < max_queries and idle < 100:
+        q = queue.pop(0)
+        if q in used:
+            continue
+        used.add(q); asked += 1
+        st, obj = cl.call("POST", route, {"query": q, "mode": "LEXICAL", "topK": 30, "snippets": True}, tag=route)
+        if st != 200 or not isinstance(obj, dict):
+            break
+        new = 0
+        for h in obj.get("hits") or []:
+            mid, sn = h.get("memoryId"), h.get("snippet")
+            if not mid or not isinstance(sn, str) or mid in seen:
+                continue
+            seen.add(mid)
+            sn = sn.strip()
+            if len(sn) >= 80 and " " in sn:
+                sn = sn.rsplit(" ", 1)[0]          # the last word is cut by the 80-char limit
+            for w in set(content(sn)):
+                df[w] += 1                          # words of memories already read still seed new queries
+            if mid in known:
+                continue
+            found[mid] = {"id": mid, "text": sn, "type": None, "frameId": None, "ts": h.get("createdAt") or 0, "state": h.get("reviewState"), "snip": True}
+            new += 1
+        idle = 0 if (new or len(seen) > nseen) else idle + 1
+        nseen = len(seen)
+        if not queue or len(queue) < 5:
+            cand = sorted((w for w in df if w not in used and len(w) > 3), key=lambda w: (df[w], w))
+            queue.extend(cand[:25])
+    return list(found.values()), asked
 
 
 class Ctx:
     def __init__(self, cl, a):
         self.cl, self.a = cl, a
         self._frames = self._mems = None
+        self.mem_info = {"rejected": 0, "harvested": 0, "queries": 0}
 
     def frames(self):
         if self._frames is None:
@@ -245,7 +300,12 @@ class Ctx:
 
     def mems(self):
         if self._mems is None:
-            self._mems, _ = fetch_memories(self.cl, self.frames(), self.a.max_detail)
+            self._mems, _, rej = fetch_memories(self.cl, self.frames(), self.a.max_detail)
+            self.mem_info["rejected"] = rej
+            if rej and self.a.retrieve_route and self.a.max_harvest > 0:
+                hv, nq = harvest_memories(self.cl, self.a.retrieve_route, self.a.max_harvest, {x["id"] for x in self._mems})
+                self._mems = self._mems + hv
+                self.mem_info.update(harvested=len(hv), queries=nq)
         return self._mems
 
 # ---------------------------------------------------------------- 1. capture
@@ -279,6 +339,11 @@ def eval_capture(ctx, out):
             pct(sum(1 for x in iv if lo <= x < hi), len(iv)) for lo, hi in ((0, 2), (2, 30), (30, 600), (600, 1e18))))
     blur = [f.get("blur") for f in fr if isinstance(f.get("blur"), (int, float))]
     L.append("- blur (frame meta): %s" % (fq(quartiles(blur), "%.3f") if blur else "unavailable (no blur values)"))
+    if blur:
+        m["blur_lt300"] = share(sum(1 for x in blur if x < 300), len(blur)); m["blur_lt1000"] = share(sum(1 for x in blur if x < 1000), len(blur))
+        L.append("  - blur below 300: %d (%s); below 1000: %d (%s) of %d frames with a blur value" % (
+            sum(1 for x in blur if x < 300), pct(sum(1 for x in blur if x < 300), len(blur)),
+            sum(1 for x in blur if x < 1000), pct(sum(1 for x in blur if x < 1000), len(blur)), len(blur)))
     L.append("- photo byte size: unavailable (no metadata route exposes it; photos are never downloaded by this tool)")
     dwell = sum(1 for f in fr if f.get("dwell"))
     L.append("- dwell frames: %d (%s)" % (dwell, pct(dwell, len(fr))))
@@ -290,6 +355,17 @@ def eval_capture(ctx, out):
     L.append("- extraction outcome (frame state): " + ", ".join("%s %d (%s)" % (k, v, pct(v, len(fr))) for k, v in oc.most_common()))
     L.append("  - raw states: " + ", ".join("%s=%d" % kv for kv in sc.most_common()))
     L.append("  - needs-review: unavailable on frames (counted per run in the Canvas section); confidence: unavailable (not exposed)")
+    now0 = time.time() * 1000
+    pend = [f for f in fr if STATE_MAP.get(str(f.get("state"))) == "pending"]
+    ages = [max(0.0, (now0 - (f.get("ts") or 0)) / 3600e3) for f in pend]
+    m["pending"] = len(pend)
+    if pend:
+        L.append("- pending frames (CAPTION_QUEUED / PENDING / EXTRACTING): %d (%s); age in hours since capture %s" % (len(pend), pct(len(pend), len(fr)), fq(quartiles(ages))))
+        L.append("  - age: < 1 h %d; 1-6 h %d; 6-24 h %d; 1-3 days %d; > 3 days %d; oldest %.1f h" % (
+            sum(1 for x in ages if x < 1), sum(1 for x in ages if 1 <= x < 6), sum(1 for x in ages if 6 <= x < 24),
+            sum(1 for x in ages if 24 <= x < 72), sum(1 for x in ages if x >= 72), max(ages)))
+    else:
+        L.append("- pending frames (CAPTION_QUEUED / PENDING / EXTRACTING): 0")
     m["failed_share"] = share(oc.get("failed", 0), len(fr))
     m["rejected_share"] = share(oc.get("rejected (near-dup)", 0), len(fr))
     now = time.time() * 1000
@@ -302,17 +378,28 @@ def eval_capture(ctx, out):
         L.append("- sources: " + ", ".join("%s=%d" % kv for kv in src.most_common()))
     # memories
     ms = ctx.mems()
-    L.append("- memories read: %d from %d frames (cap --max-detail %d)" % (len(ms), len({x['frameId'] for x in ms}), a.max_detail))
+    full = [x for x in ms if not x.get("snip")]
+    L.append("- memories read: %d from %d frames (cap --max-detail %d)" % (len(full), len({x['frameId'] for x in full}), a.max_detail))
+    mi = ctx.mem_info
+    if mi["rejected"]:
+        L.append("  - GET /api/frames/:id cannot take %d of the sampled frame ids (the phone's id pattern %s rejects them; they are not sent); "
+                 "memories were then harvested from POST %s with snippets=true: %d memories (<= 80 chars each) in %d queries" % (
+                 mi["rejected"], ROUTE_ID.pattern, a.retrieve_route or "(route disabled)", mi["harvested"], mi["queries"]))
     m["memories"] = len(ms)
     if ms:
-        lens = [len(x["text"]) for x in ms]
-        L.append("- memory length chars: %s" % fq(quartiles(lens), "%.0f"))
-        empty = [x for x in ms if not x["text"].strip()]
-        short = [x for x in ms if 0 < len(x["text"].strip()) < 20]
-        long_ = [x for x in ms if len(x["text"]) > 600]
-        L.append("- empty %d (%s), very short < 20 chars %d (%s), very long > 600 chars %d (%s)" % (
-            len(empty), pct(len(empty), len(ms)), len(short), pct(len(short), len(ms)), len(long_), pct(len(long_), len(ms))))
-        m["empty_short_share"] = share(len(empty) + len(short), len(ms))
+        base = full or ms
+        if full:
+            lens = [len(x["text"]) for x in full]
+            L.append("- memory length chars: %s" % fq(quartiles(lens), "%.0f"))
+        else:
+            L.append("- memory length chars: unavailable (only 80-char snippets could be read; length, empty and short stats below are over snippets)")
+        empty = [x for x in base if not x["text"].strip()]
+        short = [x for x in base if 0 < len(x["text"].strip()) < 20]
+        long_ = [x for x in full if len(x["text"]) > 600]
+        L.append("- empty %d (%s), very short < 20 chars %d (%s), very long > 600 chars %s" % (
+            len(empty), pct(len(empty), len(base)), len(short), pct(len(short), len(base)),
+            ("%d (%s)" % (len(long_), pct(len(long_), len(full)))) if full else "unavailable"))
+        m["empty_short_share"] = share(len(empty) + len(short), len(base))
         types = collections.Counter(str(x["type"]) for x in ms)
         L.append("- memory types: " + ", ".join("%s=%d" % kv for kv in types.most_common()))
         norm = collections.Counter(" ".join(toks(x["text"])) for x in ms if x["text"].strip())
@@ -353,6 +440,20 @@ def eval_capture(ctx, out):
         L.append("- Moments (last %d days, <= 120 per day): %d; types %s; photo-less %d (%s); with errorReason %d; without memory %d (%s)" % (
             min(len(days), a.max_days), len(mo), dict(typ), photoless, pct(photoless, len(mo)), err, nomem, pct(nomem, len(mo))))
         m["moments"] = len(mo)
+        # Moments do not list their frame ids: a pending frame is attributed to the Moment that started last before it (and within 1 h, before the next one)
+        starts = sorted((x for x in mo if isinstance(x.get("startMs"), (int, float))), key=lambda x: x["startMs"])
+        keys = [x["startMs"] for x in starts]
+        hit = {}
+        for f in pend:
+            i = bisect.bisect_right(keys, f.get("ts") or 0) - 1
+            if i >= 0 and (f.get("ts") or 0) - keys[i] <= 3600e3 and (i + 1 >= len(keys) or (f.get("ts") or 0) < keys[i + 1]):
+                hit[starts[i]["id"]] = starts[i]
+        nomem_pend = [x for x in hit.values() if not x.get("memories")]
+        L.append("  - Moments holding pending frames (matched by time; Moments expose no frame ids): %d; of them without memory: %d; "
+                 "all Moments without memory: %d, of which photo-bearing %d; pending frames outside the %d-day Moment window: %d" % (
+                 len(hit), len(nomem_pend), nomem, sum(1 for x in mo if not x.get("memories") and x.get("photos")), min(len(days), a.max_days),
+                 sum(1 for f in pend if day_of(f.get("ts") or 0) not in {day_of(x["startMs"]) for x in starts})))
+        m["moments_nomem_pending"] = len(nomem_pend)
     else:
         L.append("- Moments: **unavailable** (%s)" % cl.unavailable.get("/api/moments"))
     scn = cl.get("/api/scenes?limit=120", tag="/api/scenes")
@@ -403,7 +504,11 @@ class PhoneRetriever:
         self.fallback = 0
 
     def search(self, q, k=10):
-        st, obj = self.cl.call("POST", self.route, {"query": q, "mode": self.mode, "topK": min(30, max(1, k))}, tag=self.route)
+        for attempt in range(8):    # 409 busy = an export or delete is running on the phone: wait it out (up to ~2 min), then give up
+            st, obj = self.cl.call("POST", self.route, {"query": q, "mode": self.mode, "topK": min(30, max(1, k))}, tag=self.route, ok=(200, 409) if attempt < 7 else (200,))
+            if st != 409:
+                break
+            time.sleep(15)
         if st != 200:
             self.ok = False
             return None
@@ -469,7 +574,12 @@ def eval_retrieval(ctx, out):
              a.retrieve_route or "(disabled)", "" if a.retrieve_route else "Phone recall is not measured; only the local BM25 reference runs."))
     ms = [x for x in ctx.mems() if x["text"].strip()]
     if not ms:
-        L.append("- **unavailable**: no memory text could be read (GET /api/frames/:id)"); return R
+        L.append("- **unavailable**: no memory text could be read (GET /api/frames/:id: %s; snippet harvest: %d memories)" % (
+            cl.unavailable.get("/api/frames/:id", "no frame had live memories"), ctx.mem_info["harvested"])); return R
+    if any(x.get("snip") for x in ms):
+        L.append("- corpus note: %d of %d memories are 80-char snippets harvested through the retrieval route (the frame route cannot take the real ids), so the corpus is "
+                 "limited to what the phone's LEXICAL retriever surfaced for %d seed/rare-word queries: recall figures are optimistic, and queries derive from the snippet only" % (
+                 sum(1 for x in ms if x.get("snip")), len(ms), ctx.mem_info["queries"]))
     bm = LocalBM25(ms)
     qs = derive_queries(ms, bm)
     sample = stratified_sample([x for x in ms if x["id"] in qs], a.n, a.seed)
@@ -553,8 +663,8 @@ def eval_retrieval(ctx, out):
         views = [v for v in av["views"] if v]
         modes = collections.Counter(str(v.get("mode")) for v in views)
         fb = sum(1 for v in views if v.get("fallback"))
-        L.append("- real asks re-retrieved: %d views (%d redacted/refused); retrieval modes %s; fallback %d (%s)" % (
-            len(views), av["refused"], dict(modes), fb, pct(fb, len(views))))
+        L.append("- real asks re-retrieved: %d views; %d refused by the forget gate (redacted, or 409 refused)%s; retrieval modes %s; fallback %d (%s)" % (
+            len(views), av["refused"], "; %d failed (route error)" % av["failed"] if av["failed"] else "", dict(modes), fb, pct(fb, len(views))))
         for key in ("lexical", "semantic", "fused", "score"):
             vals = [h.get(key) for v in views for h in v.get("hits") or [] if isinstance(h.get(key), (int, float))]
             L.append("  - hit %s score: %s" % (key, fq(quartiles(vals), "%.3f")))
@@ -572,16 +682,21 @@ def ask_views(ctx):
     if not isinstance(lst, list):
         ctx._asks = None; return None
     rows = [r for r in lst if isinstance(r, dict)][:ctx.a.max_asks]
-    views, refused = [], 0
+    views, refused, failed = [], 0, 0
     for r in rows:
         if r.get("redacted"):
             refused += 1; views.append(None); continue
-        st, v = cl.call("GET", "/api/asks/%s" % urllib.parse.quote(str(r.get("id")), safe=""), tag="/api/asks/:id")
+        aid = str(r.get("id"))
+        if not ROUTE_ID.match(aid):
+            failed += 1; views.append(None); continue
+        st, v = cl.call("GET", "/api/asks/%s" % aid, tag="/api/asks/:id", ok=(200, 409))
         if st == 200 and isinstance(v, dict):
             views.append(v)
-        else:
+        elif st == 409:            # error=refused: the forget gate (an ask whose hits include a forgotten memory is redacted); an answer, not an outage
             refused += 1; views.append(None)
-    ctx._asks = {"rows": rows, "views": views, "refused": refused}
+        else:
+            failed += 1; views.append(None)
+    ctx._asks = {"rows": rows, "views": views, "refused": refused, "failed": failed}
     return ctx._asks
 
 # ---------------------------------------------------------------- 3. canvas
@@ -723,8 +838,8 @@ def eval_output(ctx, out):
         L.append("- asks: **unavailable** (%s)" % cl.unavailable.get("/api/asks")); return R
     rows, views = av["rows"], av["views"]
     m["asks"] = len(rows)
-    L.append("- asks read: %d (newest, cap --max-asks %d); redacted %d; views refused/failed %d" % (
-        len(rows), a.max_asks, sum(1 for r in rows if r.get("redacted")), av["refused"]))
+    L.append("- asks read: %d (newest, cap --max-asks %d); redacted %d; views refused by the forget gate %d (incl. redacted), failed %d" % (
+        len(rows), a.max_asks, sum(1 for r in rows if r.get("redacted")), av["refused"], av["failed"]))
     if not rows:
         return R
     live_rows = [r for r in rows if not r.get("redacted")]
@@ -876,6 +991,8 @@ def main(argv=None):
     p.add_argument("--rate", type=float, default=5.0, help="requests per second (max 5)")
     p.add_argument("--max-frames", type=int, default=3000)
     p.add_argument("--max-detail", type=int, default=400, help="frames whose memories are read (GET /api/frames/:id)")
+    p.add_argument("--max-harvest", type=int, default=300,
+                   help="retrieval queries spent harvesting memory snippets when frame ids cannot be read (0 = none)")
     p.add_argument("--max-days", type=int, default=14, help="days of Moments read")
     p.add_argument("--max-asks", type=int, default=50)
     p.add_argument("--max-pipelines", type=int, default=30)
