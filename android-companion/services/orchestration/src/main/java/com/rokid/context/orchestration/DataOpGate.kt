@@ -90,6 +90,9 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
         }
     }
 
+    /** True while an export, delete or write runs or a delete waits: a read that must not overlap them (the retrieve-debug route) fails closed. */
+    fun busy(): Boolean = synchronized(lock) { exporters > 0 || deleters > 0 || waiting > 0 || writers > 0 }
+
     /** Test seam: runs right after a write took its slot, inside the admission step (a test cancels there). Null in production. */
     @Volatile internal var testInReserve: (() -> Unit)? = null
 

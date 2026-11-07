@@ -117,6 +117,11 @@ interface CanvasBackend {
     suspend fun ask(id: String): JsonObject?
     /** One ANSWER call with [template] as the EXPERIMENT class; saves nothing. */
     suspend fun replayAsk(id: String, template: String): AskDebug.Replay
+    /**
+     * The phone's real memory retrieval for [query] (text only: no photo hits, no model call, no write). [mode] null = the user's setting. Throws
+     * [IllegalStateException] ("busy") during an export, delete or save. Never logs the query.
+     */
+    suspend fun retrieveDebug(query: String, mode: String?, topK: Int?, notAfterMs: Long?, snippets: Boolean): JsonObject = throw IllegalArgumentException("retrieve debug is not available")
 }
 
 /** A pipeline of an A/B pair: the draft when [version] is null. */

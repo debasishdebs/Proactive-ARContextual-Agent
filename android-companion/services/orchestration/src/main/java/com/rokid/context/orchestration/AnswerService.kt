@@ -154,13 +154,19 @@ class AnswerService(
      * limits (S34). Used by the Ask debug view only; [retrieve] and [answer] are unchanged. It sends no photos itself: the debug flow takes its photos
      * through [com.rokid.context.canvas.AskDebugPhotos] ([askDebugPhotos], the live Ask's gate; Refuse until bound).
      */
-    suspend fun retrieveScored(question: String, nowMs: Long, notAfterMs: Long? = null): ScoredRetrieved {
+    suspend fun retrieveScored(
+        question: String, nowMs: Long, notAfterMs: Long? = null,
+        /** The retrieve-debug route's knobs (mode, topK); the default is the user's setting, as for a live Ask. */
+        params: RagParams = RagParams(),
+        /** False: the other context sources (calendar and the like) are not read; the retrieve-debug route wants the memory store only. */
+        withSources: Boolean = true,
+    ): ScoredRetrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val c = rag.retrieve(RagQuery(q), listOf(RagSource.MemoryStore(notAfterMs)), RagParams(), nowMs)
+        val c = rag.retrieve(RagQuery(q), listOf(RagSource.MemoryStore(notAfterMs)), params, nowMs)
         val vars = PromptVars(
             question = PromptComposer.dataBlock("question", listOf(q)),
             retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines),
-            contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
+            contextSources = PromptComposer.dataBlock("sources", if (withSources) sources.lines(q, nowMs) else emptyList()),
         )
         return ScoredRetrieved(Retrieved(vars, c.memories), c.hits, c.mode!!, c.semanticUnavailable, c.fallback, c.memoryLines)
     }

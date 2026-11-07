@@ -32,7 +32,10 @@ chk "photo byte size: unavailable"
 chk "Moments (last 4 days"; chk "photo-less 4 (50.0 %)"
 chk "Scenes: **unavailable** (http=404 error=not_found)"
 chk "LOCAL-BM25 (reference baseline"; chk "| tfidf | 14 |"; chk "MRR@10"; chk "negative control: "
-chk "failure rate by length"; chk "Pass --retrieve-route"
+chk "failure rate by length"; chk "POST /api/retrieve/debug runs the phone's real retriever"
+chk "**phone /api/retrieve/debug LEXICAL**"; chk "**phone /api/retrieve/debug SEMANTIC**"; chk "**phone /api/retrieve/debug HYBRID**"
+chk "per-mode comparison"; chk "R@5 vs BM25"; chk "semantic unavailable on"
+chk "| retrieval (phone) |"
 chk "real asks re-retrieved: 3 views (1 redacted/refused)"; chk "fallback 1"
 chk "pipelines: 2 (built-in 1, with a live version 1, draft with validation problems 1)"
 chk "| p1 | 2 | DONE | 4/4 | 0 | 1/3 | 1 |"
@@ -42,7 +45,7 @@ chk "answer empty 1 (33.3 %); 'I don't know'-style 1 (33.3 %)"
 chk "not resolving to a memory/photo read by this tool or a retrieved hit 1 (50.0 %)"
 chk "Nudges (count, dedupe, text length, sourceIds, shown-on): **unavailable**"
 chk "run proposals (Run-and-Save): 2 saveable/saved, 1 saved (50.0 %)"
-chk "## 5. Scores"; chk "| retrieval (reference only (no phone retrieval route)) |"; chk "### Prioritised issues"; chk "runs failed/cancelled: 1 of 2 runs (50.0 %)"
+chk "## 5. Scores"; chk "### Prioritised issues"; chk "runs failed/cancelled: 1 of 2 runs (50.0 %)"
 chk "## Unavailable routes"
 no "Kitchen counter"; no "PROMPT-SHOULDNOTAPPEAR"; no "where did I park"
 
@@ -52,9 +55,10 @@ chk "samples, near-duplicate pairs"; chk "Kitchen counter"
 long=$(grep -o '`[^`]*`' "$W/s.md" | awk '{ if (length($0) > 82) print }' | head -1)
 [ -z "$long" ] || { echo "FAIL: snippet over 80 chars: $long"; fail=1; }
 
-# a phone retrieval route (allowlisted read-only POST) in each mode
-all=""; run retrieval --out "$W/p.md" -n 10 --retrieve-route /api/asks/debug-retrieve --modes LEXICAL,HYBRID; add "$W/p.md"
-chk "**phone /api/asks/debug-retrieve LEXICAL**"; chk "**phone /api/asks/debug-retrieve HYBRID**"
+# --retrieve-route none: BM25 only, no POST at all
+all=""; n0=$(grep -c '^POST ' "$REQ"); run retrieval --out "$W/p.md" -n 10 --retrieve-route none --modes LEXICAL; add "$W/p.md"
+chk "Phone recall is not measured"; no "**phone /api"
+[ "$(grep -c '^POST ' "$REQ")" = "$n0" ] || { echo "FAIL: POST sent with the route disabled"; fail=1; }
 "$Q" retrieval --retrieve-route /api/runs/r1/cancel >/dev/null 2>&1 && { echo "FAIL: a non-retrieval POST route was accepted"; fail=1; }
 
 # the guard refuses every mutation before sending
@@ -76,7 +80,7 @@ assert len(qe.snip("x" * 200)) == 80
 PY
 
 # only GETs (and the allowlisted retrieval POST) ever reached the server
-grep -vE '^(GET /api/|POST /api/asks/debug-retrieve$)' "$REQ" | head -3 | grep . && { echo "FAIL: a non-read-only request reached the server"; fail=1; }
+grep -vE '^(GET /api/|POST /api/retrieve/debug$)' "$REQ" | head -3 | grep . && { echo "FAIL: a non-read-only request reached the server"; fail=1; }
 grep -qE '^(DELETE|PUT|PATCH) ' "$REQ" && { echo "FAIL: destructive verb sent"; fail=1; }
 
 # rate limit: <= 5 requests/s

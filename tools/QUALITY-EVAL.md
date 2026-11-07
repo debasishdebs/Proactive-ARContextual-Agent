@@ -15,11 +15,11 @@ tools/test-quality-eval.sh                         # harness self-test against a
 Options: `--samples N` adds up to N text snippets (80 chars) per list (default none: no memory, question or answer text in the report);
 `-n 100` retrieval sample size; `--seed 7`; `--rate 5` requests/s (capped at 5); `--max-frames 3000`; `--max-detail 400` (frames whose memories are read);
 `--max-days 14` (Moments); `--max-asks 50`; `--max-pipelines 30`; `--runs-per-pipeline 3`; `--jaccard 0.8` (near-duplicate threshold);
-`--retrieve-route /api/...retriev...` and `--modes LEXICAL,SEMANTIC,HYBRID` (see Retrieval).
+`--retrieve-route` (default `/api/retrieve/debug`; `none` = local BM25 only; any other path must name a retrieval route) and `--modes LEXICAL,SEMANTIC,HYBRID` (see Retrieval).
 
 ## Safety
 
-- Only `GET`, plus a `POST` on an explicit read-only allowlist, which is empty unless `--retrieve-route` is given. `guard()` refuses any other verb or path
+- Only `GET`, plus a `POST` on an explicit read-only allowlist: the one retrieval route (`/api/retrieve/debug` by default, none with `--retrieve-route none`). `guard()` refuses any other verb or path
   before the socket is opened, and a final check confirms that no other request was sent. The test asserts that the mock saw no `PUT`, `DELETE` or `PATCH`.
 - TLS: the peer certificate must be byte-identical to the `cert.der` that `m1-run.sh pair` pinned after the fingerprint check. On a mismatch nothing is sent.
 - The token is read from `auth.hdr` and is never printed. Errors show only the HTTP status and the fixed `error` code.
@@ -30,11 +30,20 @@ Options: `--samples N` adds up to N text snippets (80 chars) per list (default n
 | section | routes | unavailable |
 |---|---|---|
 | 1 Capture | `GET /api/frames` (paged by `before`), `/api/frames/:id` (memory text, spread evenly over time), `/api/moments?day=`, `/api/scenes` | photo byte size, extraction confidence, per-frame needs-review, glasses-to-phone clock offset |
-| 2 Retrieval | local BM25 reference over the memories read; real-ask diagnostics from `GET /api/asks/:id` (re-runs retrieval as of the ask: mode, fallback, lexical/semantic/fused scores) | **No shipped route scores an arbitrary query.** `POST /api/asks/:id/replay` calls the Answer model and is never sent. Phone recall per mode needs `--retrieve-route`, which takes `{query,mode,limit}` and returns `{hits:[{memoryId,score}]}` |
+| 2 Retrieval | `POST /api/retrieve/debug` (the phone's real retriever per mode); local BM25 reference over the memories read (comparison column); real-ask diagnostics from `GET /api/asks/:id` (re-runs retrieval as of the ask: mode, fallback, lexical/semantic/fused scores) | `POST /api/asks/:id/replay` calls the Answer model and is never sent. An older phone build without the route answers 404: the section then shows BM25 only |
 | 3 Canvas | `GET /api/pipelines(/:id)`, `/api/runs(/:id, /:id/proposal)`, `/api/publish`, `/api/publish/history`, `/api/live`, `/api/plans/status`, `/api/signals`, `/api/traces`, `/api/replays`, `/api/sweeps`, `/api/devices` | guard configs, flow (Query/Nudge) execution history; traces and replays need Developer mode (403 otherwise) |
 | 4 Output | `GET /api/asks`, `/api/asks/:id` | ask latency, Nudges (no route), proposal undo |
 
 A route that answers anything other than 200 is recorded under "Unavailable routes" with its status code, and that section continues without it.
+
+## The retrieval route
+
+`POST /api/retrieve/debug`, body `{"query": "...", "mode": "LEXICAL|SEMANTIC|HYBRID" (optional, default the user's setting), "topK": 1..30 (optional), "notAfterMs": n (optional), "snippets": true (optional)}`.
+Reply `{mode, semanticUnavailable, fallback, hits:[{memoryId, score, rank, reviewState, createdAt, snippet?}]}`. It runs `AnswerService.retrieveScored` (the Ask retriever)
+and nothing else: no model or role call, no write, no photo hits, no other context source. Memory text is returned only as an 80-char `snippet` when `snippets` is true
+(this tool never sets it). The query is never logged or echoed. It is authenticated and same-origin like every `/api` route (and so needs Developer mode, which
+runs the server), has the router's body limit, and answers `409 busy` while an export, delete or save runs or if a wipe finished during the call. `fallback: true` means
+nothing matched and the hits are the newest memories (score 0). A SEMANTIC request on a phone without the embedder reports `semanticUnavailable` and the mode actually run.
 
 ## Retrieval self-test method
 
@@ -47,14 +56,15 @@ Two queries are derived for each memory without an LLM:
 The harness reports recall@1/3/5/10 and MRR@10 per query kind and per mode, the failing memory ids (missed, or ranked below 5), and the failure rate by
 length band, day, memory type and frame state. The negative control is 12 queries about things never captured. Any query whose words occur in the corpus
 vocabulary is dropped. The false-positive rate is the share of negative-control queries whose top score is at or above the median score of true top-1 hits.
-`LOCAL-BM25` is the harness's own reference retriever. It shows whether the summaries can be retrieved at all. It does not measure the phone's retriever.
+Each phone mode's row also reports the mode the phone actually ran, how often semantic was unavailable and how often it fell back. A per-mode table compares R@5 and MRR@10
+with `LOCAL-BM25`, the harness's own reference retriever (a baseline column: it shows whether the summaries can be retrieved at all; it is not the phone's retriever).
 
 ## Scoring
 
 Each area starts at 100. The penalties are applied to shares between 0 and 1, and the result is clamped to the range 0..100. An area with no data is not scored. The formulas appear in the report:
 
 - Capture = 100 - 40 failed - 20 no-memory - 20 duplicate - 10 refusal - 5 empty/short - 5 bad-timestamp
-- Retrieval = 80 R@5 + 20 MRR - 20 negative-false-positive (mean over phone modes; the reference baseline is used only when no phone route exists, and is labelled as such)
+- Retrieval = 80 R@5 + 20 MRR - 20 negative-false-positive (mean over phone modes; the reference baseline is used only when the route is unavailable, and is labelled as such)
 - Canvas = 100 - 25 runs-failed - 20 node-errors - 15 pipelines-with-problems - 15 needs-review - 10 rolled-back - 10 live-batch-errors - 5 trace/replay-bad
 - Output = 100 - 30 empty-answer - 25 unresolved-citation - 25 citation-outside-hits - 20 idk
 

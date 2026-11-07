@@ -16,8 +16,9 @@ class Refused(Exception):
     pass
 
 ALLOWED_METHODS = ("GET", "POST")
-# POST routes that only compute. Empty by default: no shipped route scores an arbitrary query without a model call.
-# --retrieve-route adds exactly one path (it must look like a retrieval debug route).
+# POST routes that only compute. Empty until main() adds the one retrieval route: --retrieve-route, default /api/retrieve/debug
+# (the phone's real retriever, no model call, no write). It must look like a retrieval route; "none" disables it.
+DEFAULT_RETRIEVE_ROUTE = "/api/retrieve/debug"
 READ_ONLY_POSTS = set()
 DESTRUCTIVE_HINTS = ("delete", "rollback", "publish", "freeze", "save", "cancel", "start", "stop", "import", "replay", "rebuild",
                      "scores", "enabled", "capability", "debug-shadow", "restore", "use-settings", "logout", "pair", "derived")
@@ -386,12 +387,19 @@ class PhoneRetriever:
         self.cl, self.route, self.mode = cl, route, mode
         self.name = "phone %s %s" % (route, mode)
         self.ok = True
+        self.used = collections.Counter()   # mode actually run, per query
+        self.sem_unavail = 0
+        self.fallback = 0
 
     def search(self, q, k=10):
-        st, obj = self.cl.call("POST", self.route, {"query": q, "mode": self.mode, "limit": k}, tag=self.route)
+        st, obj = self.cl.call("POST", self.route, {"query": q, "mode": self.mode, "topK": min(30, max(1, k))}, tag=self.route)
         if st != 200:
             self.ok = False
             return None
+        if isinstance(obj, dict):
+            self.used[str(obj.get("mode"))] += 1
+            self.sem_unavail += 1 if obj.get("semanticUnavailable") else 0
+            self.fallback += 1 if obj.get("fallback") else 0
         hits = obj.get("hits") if isinstance(obj, dict) else obj
         out = []
         for h in hits or []:
@@ -444,9 +452,10 @@ def eval_retrieval(ctx, out):
     a, cl = ctx.a, ctx.cl
     R = {"area": "retrieval", "lines": [], "m": {}}
     L = R["lines"]
-    L.append("Phone route: none shipped scores an arbitrary query without the Answer model. GET /api/asks/:id re-runs retrieval only for a stored ask "
-             "(used below as real-ask diagnostics); POST /api/asks/:id/replay calls the Answer model and is never sent. "
-             "Pass --retrieve-route <path> once a read-only retrieval debug route exists (body {query,mode,limit}; reply {hits:[{memoryId,score}]}).")
+    L.append("Phone route: POST %s runs the phone's real retriever for each query per mode (no Answer model call, no write; body {query,mode,topK}; "
+             "reply {mode,semanticUnavailable,fallback,hits:[{memoryId,score,rank}]}). %s GET /api/asks/:id re-runs retrieval for a stored ask "
+             "(real-ask diagnostics below); POST /api/asks/:id/replay calls the Answer model and is never sent." % (
+             a.retrieve_route or "(disabled)", "" if a.retrieve_route else "Phone recall is not measured; only the local BM25 reference runs."))
     ms = [x for x in ctx.mems() if x["text"].strip()]
     if not ms:
         L.append("- **unavailable**: no memory text could be read (GET /api/frames/:id)"); return R
@@ -480,6 +489,9 @@ def eval_retrieval(ctx, out):
         if dead:
             L.append("- %s: **unavailable** (%s)" % (r.name, cl.unavailable.get(r.route))); continue
         L.append("- **%s**" % r.name)
+        if r is not bm:
+            L.append("  - phone reported: mode used %s; semantic unavailable on %d of %d queries; fallback (no match, newest memories) on %d" % (
+                dict(r.used), r.sem_unavail, sum(r.used.values()), r.fallback))
         L.append("  | query | n | R@1 | R@3 | R@5 | R@10 | MRR@10 |")
         L.append("  |---|---|---|---|---|---|---|")
         allr = []
@@ -512,6 +524,15 @@ def eval_retrieval(ctx, out):
             L.append("  - sample queries:")
             for x in sample[:a.samples]:
                 L.append("    - %s: `%s` / `%s`" % (x["id"], snip(qs[x["id"]]["tfidf"]), snip(qs[x["id"]]["paraphrase"])))
+    md = R["m"].get("modes", {})
+    base = md.get(bm.name)
+    if base and len(md) > 1:
+        L.append("- **per-mode comparison (all sampled queries; BM25 baseline = the tool's own reference, not the phone)**")
+        L.append("  | retriever | R@5 | MRR@10 | neg. false positives | R@5 vs BM25 | MRR vs BM25 |")
+        L.append("  |---|---|---|---|---|---|")
+        for name, v in md.items():
+            L.append("  | %s | %.3f | %.3f | %.3f | %+.3f | %+.3f |" % (
+                name.split(" (")[0], v["r5"], v["mrr"], v.get("neg_fp", 0.0), v["r5"] - base["r5"], v["mrr"] - base["mrr"]))
     # real-ask diagnostics
     R["m"]["asks"] = ask_views(ctx)
     av = R["m"]["asks"]
@@ -771,7 +792,7 @@ def score(out):
         if fp > 0:
             iss(2 * fp, "retrieval", "negative-control queries score like true hits", "%.1f %%" % (100 * fp))
         if not phone:
-            iss(1.5, "retrieval", "no read-only retrieval debug route: phone recall cannot be measured", "route missing")
+            iss(1.5, "retrieval", "retrieval debug route unavailable (pass --retrieve-route, phone build needs POST /api/retrieve/debug): phone recall cannot be measured", "route missing")
     o = out.get("output")
     if o and o["m"].get("asks"):
         m = o["m"]
@@ -845,9 +866,12 @@ def main(argv=None):
     p.add_argument("--max-pipelines", type=int, default=30)
     p.add_argument("--runs-per-pipeline", type=int, default=3)
     p.add_argument("--jaccard", type=float, default=0.8)
-    p.add_argument("--retrieve-route", help="a read-only retrieval debug POST route, if the phone build has one")
+    p.add_argument("--retrieve-route", default=DEFAULT_RETRIEVE_ROUTE,
+                   help="the read-only retrieval POST route (default %s; 'none' = local BM25 only)" % DEFAULT_RETRIEVE_ROUTE)
     p.add_argument("--modes", default="LEXICAL,SEMANTIC,HYBRID")
     a = p.parse_args(argv)
+    if a.retrieve_route.lower() in ("none", "off", ""):
+        a.retrieve_route = None
     if a.retrieve_route:
         if not re.match(r"^/api/[a-z0-9/_-]*retriev[a-z0-9/_-]*$", a.retrieve_route):
             raise SystemExit("--retrieve-route must be an /api path naming a retrieval route")
