@@ -63,6 +63,8 @@ class GlassesWatchdog(
     private val hubStore: HubRestartStore = InMemoryHubRestartStore(),
     /** Where the ladder actor's steps and commits run (Dispatchers.IO; the loop's scope is Main.immediate); tests pass [SerialStateMachine.DIRECT]. */
     executor: Executor = Dispatchers.IO.asExecutor(),
+    /** Runs the ladder record's write retry (null = the engine's timer thread; tests pass their own). */
+    persistRetry: ((Long, Runnable) -> Unit)? = null,
 ) {
     sealed interface Verdict {
         object Off : Verdict
@@ -85,7 +87,7 @@ class GlassesWatchdog(
         load = { WatchdogLadder.State(saved = hubStore.load()) }, reduce = WatchdogLadder::reduce, persisted = { it.saved }, save = { hubStore.save(it.saved) },
         now = now, executor = executor, onError = { warn("watchdog ladder step failed: ${it.javaClass.simpleName}") },
         run = { warn("persist_failed"); null }, // the one effect: WatchdogLadder.Effect.PersistFailedLog (at most once a minute)
-        persistFailed = { e, attempt -> WatchdogLadder.Event.PersistFailed(e, attempt) }, persistRecovered = WatchdogLadder.Event.PersistRecovered,
+        persistFailed = { n -> WatchdogLadder.Event.PersistFailed(n) }, persistRecovered = WatchdogLadder.Event.PersistRecovered, schedule = persistRetry,
     )
     /** One tick at a time (the tick's own log/baseline fields); the ladder itself is serialised by its actor. */
     private val ticking = Mutex()
@@ -102,8 +104,8 @@ class GlassesWatchdog(
     fun onHubWanted() { ladder.submit(WatchdogLadder.Event.HubWanted); wake.trySend(Unit) }
 
     /**
-     * A hub start attempt at [t]: true = allowed, and the attempt is committed (durable) when this returns, BEFORE the caller's start: a start that crashes the
-     * process cannot bypass the back-off on the next process. The commit runs on the actor's executor (IO), never on the tick's thread.
+     * A hub start attempt at [t]: true = allowed. The attempt is recorded in memory at once and its record written (write-behind, on the actor's IO executor)
+     * before this returns, so normally it is durable BEFORE the caller's start; if the write fails the start still goes ahead (keep running) and the write is retried.
      */
     private suspend fun tryHubStart(t: Long): Boolean = ladder.submit(WatchdogLadder.Event.TryHubStart(t)).await() == true
 
@@ -215,13 +217,10 @@ class GlassesWatchdog(
  * ([HubRestartStore]); [State.reconnect] lives in memory only.
  */
 object WatchdogLadder {
-    /**
-     * [unsavedStartAt]: a hub start allowed while its record could not be saved (the safe "keep running" fallback); it still holds the next start
-     * [GlassesWatchdog.MIN_HUB_START_MS] away, in memory only.
-     */
+    /** [saved] mirrors the persisted record (write-behind: the in-memory state is authoritative); [reconnect] lives in memory only. */
     data class State(
         val saved: HubRestartSnapshot = HubRestartSnapshot(), val reconnect: BackgroundPolicy.Backoff = BackgroundPolicy.reset(),
-        val unsavedStartAt: Long? = null, val persistFailing: Boolean = false, val persistLoggedAtMs: Long? = null,
+        val persistFailing: Boolean = false, val persistLoggedAtMs: Long? = null,
     )
 
     sealed interface Event {
@@ -233,12 +232,12 @@ object WatchdogLadder {
         object HubRunning : Event
         /** The glasses are reachable (gate ACTIVE): the reconnect ladder starts again. */
         object GlassesPresent : Event
-        /** A hub start attempt at [atMs]; reply true = allowed and recorded. */
+        /** A hub start attempt at [atMs]; reply true = allowed and recorded (in memory at once; the record is written behind). */
         data class TryHubStart(val atMs: Long) : Event
         /** A reconnect attempt at [atMs]; reply true = due and recorded. */
         data class TryReconnect(val atMs: Long) : Event
-        /** The save of [event]'s transition failed: nothing of it happened. */
-        data class PersistFailed(val event: Event, val attempt: Int) : Event
+        /** Write-behind bookkeeping: writing the latest record failed ([failures] in a row); nothing is undone, the hub keeps running. */
+        data class PersistFailed(val failures: Int) : Event
         object PersistRecovered : Event
     }
 
@@ -246,9 +245,7 @@ object WatchdogLadder {
 
     private fun startAllowed(s: State, t: Long): Boolean {
         val d = t - s.saved.lastStartAtMs
-        val u = s.unsavedStartAt?.let { t - it }
-        // a clock set back must not block for ever
-        return s.saved.backoff.due(t) && (d < 0 || d >= GlassesWatchdog.MIN_HUB_START_MS) && (u == null || u < 0 || u >= GlassesWatchdog.MIN_HUB_START_MS)
+        return s.saved.backoff.due(t) && (d < 0 || d >= GlassesWatchdog.MIN_HUB_START_MS) // a clock set back must not block for ever
     }
 
     fun reduce(s: State, e: Event, now: Long): Transition<State, Event, Effect> = when (e) {
@@ -256,27 +253,16 @@ object WatchdogLadder {
         // Resets the ladder step only: the minimum interval between hub start attempts ([GlassesWatchdog.MIN_HUB_START_MS]) survives every reset signal.
         Event.HubWanted, Event.HubRunning -> Transition(s.copy(saved = s.saved.copy(backoff = BackgroundPolicy.reset())))
         Event.GlassesPresent -> Transition(s.copy(reconnect = BackgroundPolicy.reset()))
+        // Saved or not, the in-memory last start holds the minimum interval (so a recovery can never bypass it).
         is Event.TryHubStart ->
-            // durably recorded: the new last start (>= any unsaved one) now holds the minimum interval
-            if (startAllowed(s, e.atMs)) Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs), unsavedStartAt = null), reply = true)
+            if (startAllowed(s, e.atMs)) Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs)), reply = true)
             else Transition(s, reply = false)
         is Event.TryReconnect ->
             if (s.reconnect.due(e.atMs)) Transition(s.copy(reconnect = BackgroundPolicy.attempted(s.reconnect, e.atMs)), reply = true) else Transition(s, reply = false)
-        // The unsaved start is kept (Codex review 6): the minimum interval counts from max(persisted, unsaved) until a start is durably recorded.
         Event.PersistRecovered -> Transition(s.copy(persistFailing = false))
         is Event.PersistFailed -> {
             val logNow = s.persistLoggedAtMs.let { it == null || now - it >= AutoStopMachine.PERSIST_LOG_EVERY_MS || now < it }
-            val s1 = s.copy(persistFailing = true, persistLoggedAtMs = if (logNow) now else s.persistLoggedAtMs)
-            val fx = if (logNow) listOf<Effect>(Effect.PersistFailedLog) else emptyList()
-            when (val ev = e.event) {
-                // Safe fallback: keep the hub running. The start goes ahead unsaved, still at most one per MIN_HUB_START_MS (in memory).
-                is Event.TryHubStart ->
-                    if (startAllowed(s, ev.atMs)) Transition(s1.copy(unsavedStartAt = ev.atMs), fx, reply = true) else Transition(s1, fx, reply = false)
-                // a reset is retried on a short bounded back-off (a stale, longer back-off meanwhile only delays an attempt)
-                Event.PositiveSignal, Event.HubWanted ->
-                    if (e.attempt < AutoStopMachine.PERSIST_RETRY_MS.size) Transition(s1, fx, retry = ev, retryAfterMs = AutoStopMachine.PERSIST_RETRY_MS[e.attempt]) else Transition(s1, fx)
-                else -> Transition(s1, fx) // HubRunning: the next tick submits it again
-            }
+            Transition(s.copy(persistFailing = true, persistLoggedAtMs = if (logNow) now else s.persistLoggedAtMs), if (logNow) listOf<Effect>(Effect.PersistFailedLog) else emptyList())
         }
     }
 }

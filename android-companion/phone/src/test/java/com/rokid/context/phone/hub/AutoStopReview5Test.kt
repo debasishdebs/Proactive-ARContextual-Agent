@@ -95,7 +95,7 @@ class AutoStopReview5Test {
         r.c.evaluate(); r.t.addAndGet(20 * min)
         assertEquals("retry soon", BackgroundPolicy.BUSY_RECHECK_MS, r.c.evaluate())
         assertEquals("never stopped on an unsaved decision", 0, r.stops); assertEquals(0L, r.state().saved.autoStoppedAtMs); assertEquals(store.load(), r.state().saved)
-        assertTrue(r.state().persistFailing); assertEquals(0L, r.engine.visible()!!.autoStoppedAtMs)
+        assertFalse("the stop was cancelled in memory: the latest state equals the saved one again", r.state().persistFailing); assertEquals(0L, r.engine.visible()!!.autoStoppedAtMs)
         r.t.addAndGet(30_000); r.c.evaluate(); r.t.addAndGet(20_000); r.c.evaluate()
         assertEquals("once within the minute", 1, r.logs.count { it == "persist_failed" })
         r.t.addAndGet(15_000); r.c.evaluate(); assertEquals(2, r.logs.count { it == "persist_failed" })
@@ -103,19 +103,18 @@ class AutoStopReview5Test {
         store.ok = true; r.c.evaluate(); assertEquals("persistence back: the stop proceeds", 1, r.stops); assertFalse(r.state().persistFailing)
     }
 
-    @Test fun aFailedUserStartIsRetriedOnABoundedBackoffAndAppliedOnceTheStoreRecovers() {
+    @Test fun aFailedUserStartIsAppliedInMemoryAtOnceAndItsSnapshotWrittenBehindOnACappedBackoff() {
         val store = FlakyStore(AutoStopSnapshot(manualStop = true, autoStoppedAtMs = 5L, reason = BackgroundPolicy.Away.NOT_WORN)).apply { ok = false }
         val r = Rig(store)
         r.engine.submit(AutoStopEvent.UserStarted)
-        assertEquals("not published", true, r.state().saved.manualStop)
-        assertEquals("the safe view: keep running", false, r.engine.visible()!!.manualStop)
-        // keep failing: at most PERSIST_RETRY_MS.size retries, on the listed delays
+        assertFalse("the in-memory state is authoritative: applied at once", r.state().saved.manualStop); assertTrue("the record is unchanged", store.load().manualStop)
+        assertFalse(r.engine.visible()!!.manualStop)
+        // keep failing: one coalesced retry at a time, on the capped back-off; nothing is replayed
         val delays = mutableListOf<Long>()
-        while (r.scheduler.isNotEmpty()) { val (ms, run) = r.scheduler.removeAt(0); delays += ms; run.run() }
-        assertEquals(AutoStopMachine.PERSIST_RETRY_MS, delays)
-        store.ok = true
-        r.engine.submit(AutoStopEvent.UserStarted)
-        assertFalse(store.load().manualStop); assertEquals(0L, store.load().autoStoppedAtMs); assertFalse(r.state().persistFailing)
+        repeat(7) { val (ms, run) = r.scheduler.removeAt(0); delays += ms; run.run(); assertEquals("one retry armed at a time", 1, r.scheduler.size) }
+        assertEquals(SerialStateMachine.RETRY_MS + listOf(60_000L, 60_000L), delays)
+        store.ok = true; r.scheduler.removeAt(0).second.run()
+        assertEquals("the latest snapshot is written", r.state().saved, store.load()); assertFalse(r.state().persistFailing); assertTrue("no more retries", r.scheduler.isEmpty())
     }
 
     @Test fun theWatchdogKeepsTheHubRunningWhenItsLadderCannotBeSavedAtMostOnceAMinute() {
@@ -125,13 +124,14 @@ class AutoStopReview5Test {
         val w = GlassesWatchdog(
             now = { now }, enabled = { true }, captureActive = { true }, hubRunning = { false }, link = { LinkState.OFFLINE }, lastHeardAtMs = { null },
             standingDown = { false }, startHub = { starts++ }, reconnect = {}, probeAlive = {}, relaunch = { null }, publish = {}, log = {}, warn = { warns += it },
-            hubStore = store, executor = SerialStateMachine.DIRECT,
+            hubStore = store, executor = SerialStateMachine.DIRECT, persistRetry = { _, _ -> },
         )
-        w.tick(); assertEquals("the safe fallback starts the hub", 1, starts); assertEquals("nothing saved", HubRestartSnapshot(), inner.load())
-        now += 30_000; w.tick(); assertEquals("still at most one start per minute", 1, starts)
-        now += 31_000; w.tick(); assertEquals(2, starts)
+        w.tick(); assertEquals("the hub is started though its record cannot be saved", 1, starts); assertEquals("nothing saved", HubRestartSnapshot(), inner.load())
+        now += 30_000; w.tick(); assertEquals("the in-memory ladder holds (authoritative)", 1, starts); assertEquals(1, warns.count { it == "persist_failed" })
+        now += 31_000; w.tick(); assertEquals("still inside the 5 min step", 1, starts)
         assertEquals("persist_failed at most once a minute", 2, warns.count { it == "persist_failed" })
-        ok.set(true); now += 61_000; w.tick(); assertEquals(3, starts); assertEquals(now, inner.load().lastStartAtMs)
+        now = 10 * min + 5 * min; w.tick(); assertEquals("the next step", 2, starts)
+        ok.set(true); now += 15 * min; w.tick(); assertEquals(3, starts); assertEquals("the latest record is written", now, inner.load().lastStartAtMs)
     }
 
     // ---- 4. an issued start is not a started hub: the wake stays in progress until the foreground report or the timeout ----

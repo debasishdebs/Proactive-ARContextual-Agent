@@ -75,7 +75,7 @@ class AutoStopReview6Test {
         val w = GlassesWatchdog(
             now = { now }, enabled = { true }, captureActive = { true }, hubRunning = { false }, link = { LinkState.OFFLINE }, lastHeardAtMs = { null },
             standingDown = { false }, startHub = { starts++ }, reconnect = {}, probeAlive = {}, relaunch = { null }, publish = {}, log = {}, warn = {},
-            hubStore = store, executor = SerialStateMachine.DIRECT,
+            hubStore = store, executor = SerialStateMachine.DIRECT, persistRetry = { _, _ -> },
         )
         w.tick(); assertEquals("the unsaved fallback start", 1, starts)
         ok.set(true); w.onPositiveSignal() // a successful reset: persistence recovered
