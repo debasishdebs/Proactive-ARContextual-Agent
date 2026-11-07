@@ -254,6 +254,26 @@ class NightIndexWorkerTest {
         assertTrue(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(NightIndexWorker.NAME).get().any { !it.state.isFinished })
     }
 
+    /** 2026-11-08: the night job ran on 2 of 8 nights on the real phone; the catch-up fills in on a charger, without the idle constraint. */
+    @Test fun catchUpRunsOnAChargerWithoutIdleAndPausesWithThePipeline() {
+        OrchestrationScheduler(ctx).ensureNightIndex(); OrchestrationScheduler(ctx).ensureNightIndex()
+        val infos = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(NightIndexWorker.CATCH_UP_NAME).get()
+        assertEquals(1, infos.size)
+        val c = infos.single().constraints
+        assertTrue(c.requiresCharging()); assertTrue(c.requiresBatteryNotLow()); assertTrue(!c.requiresDeviceIdle())
+        assertEquals(6 * hour, infos.single().periodicityInfo!!.repeatIntervalMillis)
+        OrchestrationScheduler(ctx).pausePipeline()
+        assertTrue(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(NightIndexWorker.CATCH_UP_NAME).get().all { it.state.isFinished })
+    }
+
+    @Test fun catchUpIsDueOnlyWhenPhotosWaitAndTheNightRunIsOverdue() {
+        assertTrue("never ran, photos wait", NightCatchUp.due(null, 262, now))
+        assertTrue(!NightCatchUp.due(null, 0, now)) // nothing waits: no AI call
+        assertTrue(!NightCatchUp.due(now - 2 * hour, 262, now)) // the night job just ran
+        assertTrue(NightCatchUp.due(now - NightCatchUp.OVERDUE_MS, 262, now))
+        assertTrue("a clock set back never blocks it", NightCatchUp.due(now + day, 262, now))
+    }
+
     @Test fun diagnosticsCountersAreRecorded() {
         val before = com.rokid.context.data.runtime.PipelineStatsStore.describedBeforeDelete(ctx)
         com.rokid.context.data.runtime.PipelineStatsStore.addDescribedBeforeDelete(ctx, 3)

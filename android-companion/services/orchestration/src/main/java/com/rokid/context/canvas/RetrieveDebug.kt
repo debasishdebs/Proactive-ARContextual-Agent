@@ -25,7 +25,8 @@ class RetrieveDebug(
     data class Hit(val memoryId: String, val score: Double, val rank: Int, val reviewState: String, val createdAt: Long, val snippet: String?)
 
     sealed interface Result {
-        data class Ok(val mode: String, val semanticUnavailable: Boolean, val fallback: Boolean, val hits: List<Hit>) : Result
+        /** [semanticOff]: the reason token (`SemanticOff` name) when [semanticUnavailable], else null. */
+        data class Ok(val mode: String, val semanticUnavailable: Boolean, val fallback: Boolean, val hits: List<Hit>, val semanticOff: String? = null) : Result
         data object Busy : Result
     }
 
@@ -43,7 +44,7 @@ class RetrieveDebug(
         val alive = live(hits.map { it.memoryId })
         val fenced = hits.filter { it.memoryId in alive }.mapIndexed { i, h -> h.copy(rank = i + 1) }
         if (gate().busy() || generation() != gen) return Result.Busy
-        return Result.Ok(sr.mode.name, sr.semanticUnavailable, sr.fallback, fenced)
+        return Result.Ok(sr.mode.name, sr.semanticUnavailable, sr.fallback, fenced, sr.semanticOff?.name)
     }
 
     private fun snip(text: String, on: Boolean): String? = if (on) AskText.collapse(text).take(SNIPPET) else null

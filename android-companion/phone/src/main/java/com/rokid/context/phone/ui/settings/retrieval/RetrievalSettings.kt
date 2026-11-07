@@ -128,12 +128,12 @@ class RetrievalViewModel(
                             "score ${f(h.score)}", h.lexical?.let { v -> "lexical ${f(v)}" }, h.semantic?.let { v -> "semantic ${f(v)}" },
                             "confidence ${f(h.memory.confidence)}",
                         ).joinToString(" · "))
-                    } to r.semanticUnavailable
+                    } to (r.semanticOff ?: com.rokid.context.memory.retrieval.SemanticOff.QUERY_FAILED).takeIf { r.semanticUnavailable }
                 }
                 _state.update {
                     it.copy(
                         results = hits,
-                        fallbackNotice = if (semanticUnavailable) "Semantic search unavailable — showing lexical results" else null,
+                        fallbackNotice = semanticUnavailable?.let { off -> "Semantic search is off: ${off.text} — showing lexical results" },
                         tryError = if (hits.isEmpty()) "No matches" else null,
                     )
                 }

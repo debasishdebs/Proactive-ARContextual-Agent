@@ -11,6 +11,7 @@ object SafeLog {
             add("kind=${ProviderErrors.kindOf(t)}")
             if (t is ModelCallException) add("retryable=${t.retryable}")
             httpCode(t)?.let { add("http=$it") }
+            generateSequence(t) { it.cause }.take(8).filterIsInstance<ProviderHttpException>().firstOrNull()?.reason?.let { add("reason=$it") }
         }
         return "${t.javaClass.simpleName}(${parts.joinToString(", ")})"
     }

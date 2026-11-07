@@ -77,6 +77,9 @@ class AnswerServiceTest {
         assertEquals("p-note", r.proposalId)
         assertEquals(listOf<ProposedAction>(ProposedAction.NoteAdd("the car is on level 3")), actions)
         assertEquals("Noted.", mem.asks.byId(r.askId)!!.answer)
+        // 2026-11-08: no embedding index, so the ask says semantic search is off and why; the stored answer stays the model's own text
+        assertEquals(AskActions.semanticNotice(com.rokid.context.memory.retrieval.SemanticOff.NO_INDEX), r.notice)
+        assertTrue(r.notice!!, r.notice!!.startsWith(AskActions.SEMANTIC_OFF_PREFIX))
         assertEquals("an action command is not a no-match", 0, reprocess)
     }
 

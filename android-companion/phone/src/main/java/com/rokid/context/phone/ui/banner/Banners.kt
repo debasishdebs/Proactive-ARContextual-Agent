@@ -10,7 +10,9 @@ enum class IndexState {
     /** Auto-rebuild stopped after repeated canary drift (Task 11); only the user's Rebuild resumes it. */
     UNSTABLE,
     /** Gaps G6: on-device index work waits for a charger (battery 70 % or less, not charging). */
-    BATTERY_PAUSED;
+    BATTERY_PAUSED,
+    /** 2026-11-08: no Embeddings model is bound, so Ask and search use keyword matches only (it used to degrade silently). */
+    EMBED_NOT_SET;
 
     companion object {
         fun of(h: com.rokid.context.memory.IndexHealth): IndexState = when (h) {
@@ -26,10 +28,14 @@ enum class IndexState {
         fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean, embedBound: Boolean): IndexState =
             if (unstable && embedBound) UNSTABLE else of(h)
 
-        /** [batteryPaused] = `PrefsIndexClock.observeBatteryPaused()` (Gaps G6): after unstable, before needed/running. */
-        fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean, embedBound: Boolean, batteryPaused: Boolean): IndexState = when {
+        /**
+         * [batteryPaused] = `PrefsIndexClock.observeBatteryPaused()` (Gaps G6): after unstable, before needed/running. [semanticWanted] = the
+         * retrieval mode is not Lexical: only then is a missing Embeddings model worth a banner ([EMBED_NOT_SET]).
+         */
+        fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean, embedBound: Boolean, batteryPaused: Boolean, semanticWanted: Boolean = true): IndexState = when {
             unstable && embedBound -> UNSTABLE
             batteryPaused && embedBound -> BATTERY_PAUSED
+            !embedBound && semanticWanted -> EMBED_NOT_SET
             else -> of(h)
         }
     }
@@ -66,6 +72,7 @@ data class BannerSpec(
 /** spec §2.2: one banner at a time, highest severity first. */
 object BannerResolver {
     private const val MAX_TEXT = 60
+    const val EMBED_NOT_SET_TITLE = "Semantic search is off \u00b7 no Embeddings model"
     /** "Still paused on glasses - Resume?" shows for 10 minutes after a Resume. */
     const val STILL_PAUSED_MS = 10 * 60_000L
 
@@ -99,6 +106,7 @@ object BannerResolver {
             IndexState.RUNNING -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "Rebuilding memory index…")
             IndexState.UNSTABLE -> BannerSpec(BannerKind.INDEX, BannerTone.AMBER, "Memory index unstable", "Rebuild", BannerAction.REBUILD_INDEX)
             IndexState.BATTERY_PAUSED -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "On-device search paused to save battery")
+            IndexState.EMBED_NOT_SET -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, EMBED_NOT_SET_TITLE, "Set up", BannerAction.FIX_AI)
             IndexState.NONE -> null
         },
         i.storagePct?.let { p ->

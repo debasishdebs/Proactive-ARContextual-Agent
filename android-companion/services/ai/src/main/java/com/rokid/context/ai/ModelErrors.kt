@@ -20,7 +20,10 @@ class ModelCallException(
 
 /** A non-2xx reply. Never user-facing (UI maps by [code]); the message keeps "<provider> request failed: <code> <body>" for Diagnostics logs only (the router redacts it). */
 class ProviderHttpException(val code: Int, provider: String, body: String) :
-    IllegalStateException("$provider request failed: $code ${body.take(200)}")
+    IllegalStateException("$provider request failed: $code ${body.take(200)}") {
+    /** 2026-11-08: a fixed token for why the provider refused ([ProviderErrors.reasonOf]); never provider text, so a device log may show it. */
+    val reason: String? = ProviderErrors.reasonOf(body)
+}
 
 /** Missing address, model, key, model file or native runtime: only fixing the settings helps. */
 class ProviderConfigException(message: String) : IllegalArgumentException(message)
@@ -29,6 +32,22 @@ class ProviderConfigException(message: String) : IllegalArgumentException(messag
 class ProviderResponseException(message: String) : IllegalStateException(message)
 
 object ProviderErrors {
+    /**
+     * The refusal class of an error body, as one of a fixed set of tokens (null = none recognised). Only these tokens leave this function:
+     * the body itself can echo the prompt or the user's memories and is never logged.
+     */
+    fun reasonOf(body: String): String? {
+        val b = body.take(8_192).lowercase()
+        return when {
+            "content_filter" in b || "responsibleaipolicyviolation" in b || "content management policy" in b || "content_policy" in b -> "content_filter"
+            "image" in b && listOf("invalid", "unsupported", "could not", "too large", "decode", "format").any { it in b } -> "image_rejected"
+            "context_length" in b || "maximum context" in b || "too many tokens" in b -> "too_long"
+            "response_format" in b || "json_schema" in b -> "format_unsupported"
+            "deploymentnotfound" in b || "model_not_found" in b || "does not exist" in b -> "model_not_found"
+            else -> null
+        }
+    }
+
     private val AUTH_CODES = setOf(401, 403)
     private val REJECTED_CODES = setOf(400, 404, 405, 409, 410, 413, 415, 422)
 

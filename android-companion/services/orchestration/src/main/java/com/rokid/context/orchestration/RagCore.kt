@@ -123,6 +123,8 @@ data class RagContext(
     val photoLines: List<String> = emptyList(), val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(),
     val imageEndpointId: String? = null, val fallback: Boolean = false, val historyIds: Set<String> = emptySet(),
     val hits: List<ScoredMemory> = emptyList(), val mode: RetrievalMode? = null, val semanticUnavailable: Boolean = false,
+    /** Why semantic search did not run (set when [semanticUnavailable]); shown, never a silent degrade (2026-11-08). */
+    val semanticOff: com.rokid.context.memory.retrieval.SemanticOff? = null,
 ) {
     /** Everything the prompt rests on, including the sources of the historical nudges in [history]: a caller's commit fence covers all of it. */
     val ids: Set<String> get() = (memories + recent).map { it.id }.toSet() + photos.map { it.citeId } + historyIds
@@ -185,7 +187,7 @@ class RagCore(
         store?.let { m ->
             val lines = AskText.bounded(m.pool.map(::line), left)
             left -= lines.sumOf { it.length + 1 }
-            ctx = ctx.copy(memories = m.pool.take(lines.size), memoryLines = lines, fallback = m.fallback, hits = m.result?.hits.orEmpty(), mode = m.result?.modeUsed, semanticUnavailable = m.result?.semanticUnavailable ?: false)
+            ctx = ctx.copy(memories = m.pool.take(lines.size), memoryLines = lines, fallback = m.fallback, hits = m.result?.hits.orEmpty(), mode = m.result?.modeUsed, semanticUnavailable = m.result?.semanticUnavailable ?: false, semanticOff = m.result?.semanticOff)
         }
         if (recentFound.isNotEmpty()) {
             val fresh = recentFound.distinctBy { it.id }.take(params.recentCap)

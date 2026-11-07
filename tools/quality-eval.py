@@ -502,6 +502,7 @@ class PhoneRetriever:
         self.ok = True
         self.used = collections.Counter()   # mode actually run, per query
         self.sem_unavail = 0
+        self.sem_off = collections.Counter()  # the phone's reason token (semanticOff, 2026-11-08 builds on)
         self.fallback = 0
 
     def search(self, q, k=10):
@@ -516,6 +517,8 @@ class PhoneRetriever:
         if isinstance(obj, dict):
             self.used[str(obj.get("mode"))] += 1
             self.sem_unavail += 1 if obj.get("semanticUnavailable") else 0
+            if obj.get("semanticUnavailable"):
+                self.sem_off[str(obj.get("semanticOff") or "not reported")] += 1
             self.fallback += 1 if obj.get("fallback") else 0
         hits = obj.get("hits") if isinstance(obj, dict) else obj
         out = []
@@ -612,8 +615,8 @@ def eval_retrieval(ctx, out):
             L.append("- %s: **unavailable** (%s)" % (r.name, cl.unavailable.get(r.route))); continue
         L.append("- **%s**" % r.name)
         if r is not bm:
-            L.append("  - phone reported: mode used %s; semantic unavailable on %d of %d queries; fallback (no match, newest memories) on %d" % (
-                dict(r.used), r.sem_unavail, sum(r.used.values()), r.fallback))
+            L.append("  - phone reported: mode used %s; semantic unavailable on %d of %d queries%s; fallback (no match, newest memories) on %d" % (
+                dict(r.used), r.sem_unavail, sum(r.used.values()), (" (reasons %s)" % dict(r.sem_off)) if r.sem_off else "", r.fallback))
         L.append("  | query | n | R@1 | R@3 | R@5 | R@10 | MRR@10 |")
         L.append("  |---|---|---|---|---|---|---|")
         allr = []

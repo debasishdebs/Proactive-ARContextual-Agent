@@ -364,6 +364,8 @@ object KeyframeLines {
             Line("kf_latency", "Capture to memory: p50 ${ms(st.latencyP50Ms)} \u00b7 p95 ${ms(st.latencyP95Ms)}"),
             Line("kf_dropped", "Dropped nudges: $dropped"),
             Line("kf_sidecar", "Lost sidecars: ${k.sidecarLost}"),
+            // 2026-11-08: the night queue's progress in plain words (it drains only on a charger, at most 60 calls of <= 3 photos a run).
+            Line("kf_describe_waiting", "Photos waiting to be described: ${k.retention.describeWaiting}" + if (k.retention.describeWaiting > 0) " \u00b7 described while charging, up to 180 a run" else ""),
             Line("kf_retention", "Photos deleted: skipped ${k.retention.skippedDeleted} \u00b7 described first ${k.retention.describedBeforeDelete} \u00b7 undescribed ${k.retention.deletedUndescribed} \u00b7 waiting ${k.retention.describeWaiting} \u00b7 describeFailed ${k.retention.describeFailed}"),
         )
     }

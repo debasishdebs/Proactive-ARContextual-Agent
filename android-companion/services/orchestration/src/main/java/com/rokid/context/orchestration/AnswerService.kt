@@ -118,6 +118,8 @@ class AnswerService(
         val fenceIds: Set<String> = emptySet(),
         /** The plan's delivery target (`caller` for the built-in flow). */
         val target: String = "caller",
+        /** Why semantic search did not run for this ask (null = it ran, or lexical was chosen). */
+        val semanticOff: com.rokid.context.memory.retrieval.SemanticOff? = null,
     ) {
         val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
     }
@@ -136,7 +138,7 @@ class AnswerService(
                 retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines + c.photoLines + c.recentLines + c.history),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
-            c.memories + c.recent, c.photos, c.images, c.imageEndpointId, c.historyIds,
+            c.memories + c.recent, c.photos, c.images, c.imageEndpointId, c.historyIds, semanticOff = c.semanticOff,
         )
     }
 
@@ -147,6 +149,7 @@ class AnswerService(
     data class ScoredRetrieved(
         val retrieved: Retrieved, val hits: List<ScoredMemory>, val mode: RetrievalMode, val semanticUnavailable: Boolean, val fallback: Boolean,
         val lines: List<String> = emptyList(),
+        val semanticOff: com.rokid.context.memory.retrieval.SemanticOff? = null,
     )
 
     /**
@@ -168,7 +171,7 @@ class AnswerService(
             retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines),
             contextSources = PromptComposer.dataBlock("sources", if (withSources) sources.lines(q, nowMs) else emptyList()),
         )
-        return ScoredRetrieved(Retrieved(vars, c.memories), c.hits, c.mode!!, c.semanticUnavailable, c.fallback, c.memoryLines)
+        return ScoredRetrieved(Retrieved(vars, c.memories), c.hits, c.mode!!, c.semanticUnavailable, c.fallback, c.memoryLines, c.semanticOff)
     }
 
     /**
@@ -270,7 +273,7 @@ class AnswerService(
                 null
             }
         }
-        return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = routeOf(r.target, source, id, nowMs))
+        return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = routeOf(r.target, source, id, nowMs), notice = AskActions.semanticNotice(r.semanticOff))
     }
 
     /**

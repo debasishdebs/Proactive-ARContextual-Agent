@@ -115,7 +115,7 @@ class HomeViewModel(
                     is UtteranceResult.Ask -> u.question
                 }
                 when (val r = askService.ask(toAsk)) {
-                    is AskOutcome.Answered -> local.update { it.copy(question = "", asking = false, lastAskId = r.askId) }
+                    is AskOutcome.Answered -> local.update { it.copy(question = "", asking = false, lastAskId = r.askId, reply = r.notice) } // the semantic-off status, if any
                     is AskOutcome.Failed -> local.update { it.copy(asking = false, error = r.message) }
                 }
             } catch (c: CancellationException) {

@@ -53,7 +53,7 @@ class BackupRulesTest {
         // Fix wave I2: the wearer's "I exited the glasses app" (device state of this pairing): never restored onto another phone.
         com.rokid.context.phone.hub.PrefsStandDown.PREFS,
         // Derived state: restored, they would say adoption / retirement already happened on an install that never did it.
-        "frame_adoption", "space_retired_at", "image_read_attempts",
+        "frame_adoption", "space_retired_at", "image_read_attempts", "night_index",
         // v0.9.9 final fixes: the hub restart ladder is device state (when this phone last tried to start its hub): never restored.
         "hub_restart",
         // v0.9.9 AutoStop: the manual stop, the auto stop and the wake ladder are device state: never restored onto another phone.
