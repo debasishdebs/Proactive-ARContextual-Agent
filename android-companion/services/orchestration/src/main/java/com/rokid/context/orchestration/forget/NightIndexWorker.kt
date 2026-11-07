@@ -34,6 +34,14 @@ import kotlin.coroutines.cancellation.CancellationException
 class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         if (!AppConfigStore.isPipelineEnabled(applicationContext)) return Result.success()
+        val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        if (inputData.getBoolean(KEY_CATCH_UP, false)) {
+            val last = if (prefs.contains(K_LAST_RUN)) prefs.getLong(K_LAST_RUN, 0L) else null
+            val left = try { MemoryGraph.get(applicationContext).db.frameStateDao().describeWaiting() } catch (c: CancellationException) { throw c } catch (e: Exception) { 0 }
+            if (!NightCatchUp.due(last, left, now)) return Result.success()
+            PcLog.i(TAG, "PcNight catchUp left=$left")
+        }
         return try {
             val keyframes = KeyframeGraph.get(applicationContext)
             val ai = AiGraph.get(applicationContext)
@@ -48,7 +56,8 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
                 maintenance = { maintenance.run() },
                 onDescribed = { PipelineStatsStore.addDescribedBeforeDelete(applicationContext, it) },
             )
-            night.run()
+            // A run whose gate was open counts as a night run: the catch-up only fills in for nights the idle-mode job missed.
+            if (night.run().backfill != "gate") prefs.edit().putLong(K_LAST_RUN, now).apply()
             Result.success()
         } catch (c: CancellationException) {
             throw c
@@ -65,7 +74,24 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
     companion object {
         private const val TAG = "NightIndexWorker"
         const val NAME = "night_index"
+        /** The daytime catch-up (2026-11-08): the same job on a charger without the device-idle constraint, only when the night run is overdue. */
+        const val CATCH_UP_NAME = "night_index_catch_up"
+        const val KEY_CATCH_UP = "catch_up"
+        private const val PREFS = "night_index"
+        private const val K_LAST_RUN = "last_run_at"
     }
+}
+
+/**
+ * 2026-11-08 quality fix: the night job needs a charger AND an idle device, and on the real phone it ran on 2 of 8 nights, so photos queued
+ * for describe-before-delete (the night job's alone) waited for weeks. The catch-up runs the same bounded [NightIndex] (bulk gate, capture-burst
+ * stop, 9 min, 60 calls) on a charger whenever photos wait and no run completed for [OVERDUE_MS].
+ */
+internal object NightCatchUp {
+    const val OVERDUE_MS = 30 * 3_600_000L
+
+    fun due(lastRunAt: Long?, waiting: Int, nowMs: Long): Boolean =
+        waiting > 0 && (lastRunAt == null || nowMs - lastRunAt >= OVERDUE_MS || lastRunAt > nowMs)
 }
 
 /** The night job's logic, without WorkManager or the app graphs so that tests drive it with fakes. */

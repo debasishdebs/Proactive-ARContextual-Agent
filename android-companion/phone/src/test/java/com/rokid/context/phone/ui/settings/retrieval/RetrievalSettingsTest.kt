@@ -69,7 +69,7 @@ class RetrievalSettingsTest {
         val s = withTimeout(5_000) { vm.state.first { it.results.isNotEmpty() && !it.searching } }
         assertEquals(listOf("Milk carton and more milk in the fridge", "Milk spilled on the floor"), s.results.map { it.text }) // BM25: two hits beat one
         assertTrue(s.results.first().scores, s.results.first().scores.contains("lexical"))
-        assertEquals("Semantic search unavailable — showing lexical results", s.fallbackNotice) // default mode is Hybrid, no index yet
+        assertEquals("Semantic search is off: " + com.rokid.context.memory.retrieval.SemanticOff.NO_INDEX.text + " — showing lexical results", s.fallbackNotice) // default mode is Hybrid, no index yet
         vm.setMinConfidence(0.5f); vm.tryIt()
         assertEquals(1, withTimeout(5_000) { vm.state.first { it.results.size == 1 && !it.searching } }.results.size)
     }

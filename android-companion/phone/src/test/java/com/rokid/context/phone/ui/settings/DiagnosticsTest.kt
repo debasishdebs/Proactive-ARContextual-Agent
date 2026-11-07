@@ -132,6 +132,7 @@ class DiagnosticsTest {
     @Test fun showsRetentionCounters() {
         show(KeyframeRows(stats, retention = RetentionCounters(skippedDeleted = 12, describedBeforeDelete = 5, deletedUndescribed = 0, describeWaiting = 7, describeFailed = 2)))
         compose.onNodeWithTag("kf_retention").assertTextContains("skipped 12", substring = true).assertTextContains("described first 5", substring = true).assertTextContains("undescribed 0", substring = true).assertTextContains("waiting 7", substring = true).assertTextContains("describeFailed 2", substring = true)
+        compose.onNodeWithTag("kf_describe_waiting").assertTextContains("Photos waiting to be described: 7", substring = true)
     }
 
     @Test fun showsRokidClosedLineOnlyWhenReported() {

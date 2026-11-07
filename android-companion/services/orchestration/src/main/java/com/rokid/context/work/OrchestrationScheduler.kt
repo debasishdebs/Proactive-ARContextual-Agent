@@ -257,6 +257,12 @@ class OrchestrationScheduler(
             .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresDeviceIdle(true).build()) // WorkManager forbids a backoff on an idle-mode job
             .build()
         workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.NightIndexWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+        // 2026-11-08: the catch-up for missed nights (charger + battery not low, no idle constraint); it no-ops unless photos wait and the night run is overdue.
+        val catchUp = PeriodicWorkRequestBuilder<com.rokid.context.orchestration.forget.NightIndexWorker>(6, TimeUnit.HOURS)
+            .setInputData(androidx.work.workDataOf(com.rokid.context.orchestration.forget.NightIndexWorker.KEY_CATCH_UP to true))
+            .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresBatteryNotLow(true).build())
+            .build()
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.NightIndexWorker.CATCH_UP_NAME, ExistingPeriodicWorkPolicy.KEEP, catchUp)
     }
 
     /**
@@ -292,6 +298,7 @@ class OrchestrationScheduler(
         // Paused: no embedding calls either. A requested Rebuild is already persisted as pending (EmbeddingWorker.enqueue).
         workManager.cancelUniqueWork(com.rokid.context.orchestration.EmbeddingWorker.NAME)
         workManager.cancelUniqueWork(com.rokid.context.orchestration.forget.NightIndexWorker.NAME) // it makes AI calls; resume re-ensures it
+        workManager.cancelUniqueWork(com.rokid.context.orchestration.forget.NightIndexWorker.CATCH_UP_NAME)
         workManager.cancelAllWorkByTag(TAG_SUMMARIZER)
         workManager.cancelAllWorkByTag(TAG_FRAME_INGEST)
         workManager.cancelAllWorkByTag(TAG_CRITIC)

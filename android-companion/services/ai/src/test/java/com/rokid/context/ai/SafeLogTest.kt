@@ -19,6 +19,15 @@ class SafeLogTest {
         listOf(raw, wrapped, IllegalStateException("BODY-MARKER"), RuntimeException(raw)).forEach { assertFalse(SafeLog.describe(it), "BODY-MARKER" in SafeLog.describe(it)) }
     }
 
+    /** 2026-11-08: a 400 says which refusal it was (26 vision 400s on the real phone were otherwise indistinguishable), in fixed words only. */
+    @Test fun aRefusalClassIsLoggedAsAFixedToken() {
+        val filtered = ProviderHttpException(400, "Azure OpenAI", "{\"error\":{\"code\":\"content_filter\",\"message\":\"BODY-MARKER milk\"}}")
+        assertEquals("ProviderHttpException(kind=REJECTED, http=400, reason=content_filter)", SafeLog.describe(filtered))
+        val image = ModelCallException("x", retryable = false, cause = ProviderHttpException(400, "Azure OpenAI", "{\"error\":{\"message\":\"Invalid image data BODY-MARKER\"}}"))
+        assertEquals("ModelCallException(kind=REJECTED, retryable=false, http=400, reason=image_rejected)", SafeLog.describe(image))
+        assertFalse("BODY-MARKER" in SafeLog.describe(filtered))
+    }
+
     /** ModelRouter.safe builds exception messages (which SafeLog no longer prints anyway): a provider body never enters them. */
     @Test fun routerSafeKeepsOnlyOurOwnFixedTexts() {
         val text = ModelRouter.safe(ProviderHttpException(401, "Azure OpenAI", "Incorrect API key provided: sk-1 $body"), "sk-1")

@@ -77,6 +77,27 @@ class MemoryRetrieverTest {
         assertEquals(RetrievalMode.LEXICAL, r.modeUsed); assertTrue(r.semanticUnavailable)
     }
 
+    /** 2026-11-08: semantic was off on 200 of 200 live queries with no reason anywhere; every degrade now names its cause. */
+    @Test fun everyDegradeSaysWhy() = runBlocking {
+        mem("milk", "milk carton")
+        val none = retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.HYBRID), now)
+        assertTrue(none.semanticUnavailable); assertEquals(SemanticOff.NO_INDEX, none.semanticOff)
+        assertTrue(none.semanticOff!!.text, none.semanticOff!!.text.contains("Embeddings"))
+        val building = spaces.startBuilding("fp", "{}", 2, "[]", 1)
+        assertEquals(SemanticOff.INDEX_BUILDING, retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.SEMANTIC), now).semanticOff)
+        spaces.put("milk", building.id, floatArrayOf(1f, 0f)); assertTrue(spaces.swapIfComplete(building.id))
+        queryVector = null
+        assertEquals(SemanticOff.QUERY_FAILED, retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.HYBRID), now).semanticOff)
+        queryVector = floatArrayOf(1f, 0f)
+        val ok = retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.HYBRID), now)
+        assertFalse(ok.semanticUnavailable); assertEquals(null, ok.semanticOff)
+        assertEquals("lexical is a choice, not a degrade", null, retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.LEXICAL), now).semanticOff)
+        val moved = MemoryRetriever(LexicalRetriever(db.retrievalDao()), SemanticRetriever(spaces, BruteForceVectorIndex(db.embeddingDao())) { null }, db.memoryViewDao())
+        assertEquals(SemanticOff.MODEL_CHANGED, moved.retrieve("milk", RetrievalSettings(mode = RetrievalMode.HYBRID), now).semanticOff)
+        spaces.markStale(spaces.current()!!.id)
+        assertEquals(SemanticOff.INDEX_STALE, retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.HYBRID), now).semanticOff)
+    }
+
     @Test fun tuningTopKMinConfidenceAndRecency() = runBlocking {
         mem("old", "milk", at = now - 30 * day); mem("new", "milk", at = now); mem("weak", "milk", conf = 0.2)
         val r = retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.LEXICAL, minConfidence = 0.5), now)

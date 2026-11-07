@@ -705,6 +705,7 @@ class CanvasBackendImpl(
             com.rokid.context.canvas.RetrieveDebug.Result.Busy -> throw IllegalStateException("busy")
             is com.rokid.context.canvas.RetrieveDebug.Result.Ok -> buildJsonObject {
                 put("mode", r.mode); put("semanticUnavailable", r.semanticUnavailable); put("fallback", r.fallback)
+                r.semanticOff?.let { put("semanticOff", it) } // the reason token (2026-11-08); absent when semantic ran
                 put("hits", JsonArray(r.hits.map { h ->
                     buildJsonObject {
                         put("memoryId", h.memoryId); put("score", h.score); put("rank", h.rank); put("reviewState", h.reviewState); put("createdAt", h.createdAt)

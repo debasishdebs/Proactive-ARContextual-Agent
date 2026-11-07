@@ -9,8 +9,11 @@ import kotlin.math.pow
 
 data class ScoredMemory(val memory: MemoryEntity, val lexical: Double?, val semantic: Double?, val fused: Double, val score: Double)
 
-/** [modeUsed] is what actually ran; [semanticUnavailable] = semantic was asked for but could not run (shown in Try it). */
-data class RetrievalResult(val hits: List<ScoredMemory>, val modeUsed: RetrievalMode, val semanticUnavailable: Boolean)
+/**
+ * [modeUsed] is what actually ran; [semanticUnavailable] = semantic was asked for but could not run (shown in Try it); [semanticOff] = why
+ * (set exactly when [semanticUnavailable]).
+ */
+data class RetrievalResult(val hits: List<ScoredMemory>, val modeUsed: RetrievalMode, val semanticUnavailable: Boolean, val semanticOff: SemanticOff? = null)
 
 /** spec §4.6: the current mode → candidates (min confidence applied in SQL, before the pool cut) → fusion (Hybrid) → recency → top-k. */
 class MemoryRetriever(
@@ -32,15 +35,17 @@ class MemoryRetriever(
         val pool = maxOf(s.topK * 5, 40)
         val lex = if (s.mode == RetrievalMode.SEMANTIC) emptyList() else lexical.search(query, pool, s.minConfidence, notAfterMs)
         // Semantic cosine is in [-1, 1]; shift to [0, 1] so recency and fusion only ever see non-negative scores.
-        val sem = if (s.mode == RetrievalMode.LEXICAL) null else semantic.search(query, pool, s.minConfidence, notAfterMs)?.map { Hit(it.id, (it.score + 1) / 2) }
+        val semSearch = if (s.mode == RetrievalMode.LEXICAL) null else semantic.searchOrOff(query, pool, s.minConfidence, notAfterMs)
+        val sem = semSearch?.hits?.map { Hit(it.id, (it.score + 1) / 2) }
         val unavailable = s.mode != RetrievalMode.LEXICAL && sem == null
+        val off = if (unavailable) semSearch?.off ?: SemanticOff.QUERY_FAILED else null
         val (scores, used) = when {
             s.mode == RetrievalMode.LEXICAL -> lex.associate { it.id to it.score } to RetrievalMode.LEXICAL
             sem == null -> (if (s.mode == RetrievalMode.SEMANTIC) lexical.search(query, pool, s.minConfidence, notAfterMs) else lex).associate { it.id to it.score } to RetrievalMode.LEXICAL
             s.mode == RetrievalMode.SEMANTIC -> sem.associate { it.id to it.score } to RetrievalMode.SEMANTIC
             else -> s.fusion.fuse(lex, sem) to RetrievalMode.HYBRID
         }
-        if (scores.isEmpty()) return RetrievalResult(emptyList(), used, unavailable)
+        if (scores.isEmpty()) return RetrievalResult(emptyList(), used, unavailable, off)
         val lexById = lex.associate { it.id to it.score }
         val semById = sem?.associate { it.id to it.score }.orEmpty()
         val rows = scores.keys.toList().chunked(CHUNK).flatMap { memories.byIds(it) }
@@ -51,7 +56,7 @@ class MemoryRetriever(
             }
             .sortedWith(compareByDescending<ScoredMemory> { it.score }.thenByDescending { it.memory.createdAt })
             .take(s.topK)
-        return RetrievalResult(hits, used, unavailable)
+        return RetrievalResult(hits, used, unavailable, off)
     }
 
     companion object {
