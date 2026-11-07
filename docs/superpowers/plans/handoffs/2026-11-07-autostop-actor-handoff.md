@@ -118,6 +118,17 @@ Tests: `AutoStopReview5Test`. With the fixes temporarily reverted, 9 of its 12 t
 
 In `ContextApp`, the timing and Developer-mode stores are local `by lazy` delegates, so `ForgetScopeWiringTest`'s source scan still finds its bindings. Final full `:phone:testDebugUnitTest`: 2172/2172 passed.
 
+## 7. Codex review 6 (2026-11-08): 1 P1 and 1 P2 in the retry path, both reproduced first
+
+Tests: `AutoStopReview6Test`. Against `e6fee700` 4 of its 5 tests failed: both P1 orderings, the folded-start case, and the 1 s second start. The two-failed-intents case already passed there.
+
+- **P1: a delayed retry no longer overrides a newer action.**
+  - Engine: every step that changes the persisted part takes the next `changeSeq`. A retry job carries the sequence of the change it retries. It is dropped, unapplied, when a newer change has been attempted.
+  - Reducer: a user intent (`UserStarted` / `ManualStopped`) whose save failed becomes `pendingIntent`, and a newer intent replaces it. It is folded into the next snapshot written by any event, or by a `RetryPersist` (a no-op event). Retries never replay an intent event.
+  - So only the latest snapshot is ever retried or written, and it carries the newest intent.
+  - `visible()` shows the folded state. While saves fail, no auto stop is reported, but the manual stop follows the newest intent (the earlier "keep running" manual default is gone).
+- **P2: `PersistRecovered` keeps the watchdog's `unsavedStartAt`.** The 60 s minimum counts from max(persisted, unsaved). The unsaved time is cleared only when a start is recorded durably.
+
 ## 7. Open points
 
 - The watchdog's reconnect, probe and relaunch hooks still run on the tick's thread (Main), by design: the hub hooks expect it. Only the ladder moved into the actor.

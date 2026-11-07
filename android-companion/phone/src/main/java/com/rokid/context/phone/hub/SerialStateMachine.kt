@@ -28,6 +28,8 @@ data class Transition<S, E, F>(
  * A failed save (false or a throw, Codex review 5) is NOT treated as durable: the new state is not published, its effects never run, and the failure is
  * itself an event ([persistFailed], reduced against the unchanged state, which must leave the persisted part alone) whose reducer decides the safe reply,
  * the log and a bounded delayed retry ([Transition.retry]). The first successful save after a failure is followed by [persistRecovered].
+ * Every step that changes the persisted part takes the next sequence number; a retry carries the sequence of the change it retries and is dropped, unapplied,
+ * once a newer change was attempted (Codex review 6), so a delayed retry can never override a newer event.
  *
  * Steps run on [executor] (Dispatchers.IO in production, so no commit ever runs on the main thread; a direct executor in tests). [submit] never blocks: it queues
  * the event and kicks a drain; one drainer at a time (an atomic flag), so the executor may be multi-threaded. The state is loaded by [load] on the first step,
@@ -52,7 +54,8 @@ class SerialStateMachine<S : Any, E : Any, F : Any>(
     /** Runs a delayed retry (null = one shared daemon timer thread; tests pass their own). */
     schedule: ((Long, Runnable) -> Unit)? = null,
 ) {
-    private class Job<E>(val event: E, val done: CompletableDeferred<Any?>, val attempt: Int = 0)
+    /** [basis]: a persistence retry's sequence (the attempted change it retries); -1 = an ordinary event. */
+    private class Job<E>(val event: E, val done: CompletableDeferred<Any?>, val attempt: Int = 0, val basis: Long = -1L)
 
     private val queue = ConcurrentLinkedQueue<Job<E>>()
     private val draining = AtomicBoolean(false)
@@ -60,6 +63,8 @@ class SerialStateMachine<S : Any, E : Any, F : Any>(
     /** The persisted part last committed; touched only by the drainer. */
     private var saved: Any? = null
     private var failing = false
+    /** Monotonic sequence of the steps that changed the persisted part (attempted, saved or not); touched only by the drainer. */
+    private var changeSeq = 0L
     private val schedule: (Long, Runnable) -> Unit = schedule ?: { ms, r -> TIMER.schedule(r, ms, java.util.concurrent.TimeUnit.MILLISECONDS) }
 
     /** The latest committed state; null before the first step loaded it. */
@@ -88,6 +93,8 @@ class SerialStateMachine<S : Any, E : Any, F : Any>(
     private fun process(j: Job<E>) {
         try {
             if (current == null) loadNow()
+            // A persistence retry superseded by a newer attempted change is DROPPED (Codex review 6): only the latest snapshot is ever retried or written.
+            if (j.basis >= 0 && j.basis < changeSeq) { j.done.complete(null); return }
             val (reply, recheck) = step(j)
             if (recheck != null) queue.add(Job(recheck, j.done)) else j.done.complete(reply)
         } catch (t: Throwable) { onError(t); j.done.completeExceptionally(t) }
@@ -106,6 +113,7 @@ class SerialStateMachine<S : Any, E : Any, F : Any>(
             var applied = e
             val p = persisted(tr.state)
             if (p != saved) {
+                changeSeq++
                 val ok = try { save(tr.state) } catch (x: Exception) { onError(x); false }
                 if (ok) {
                     saved = p
@@ -122,7 +130,7 @@ class SerialStateMachine<S : Any, E : Any, F : Any>(
             onStep(applied, t, tr.state)
             if (tr.reply != null) reply = tr.reply
             if (tr.recheck != null) recheck = tr.recheck
-            tr.retry?.let { r -> val attempt = j.attempt + 1; schedule(tr.retryAfterMs, Runnable { queue.add(Job(r, CompletableDeferred(), attempt)); kick() }) }
+            tr.retry?.let { r -> val attempt = j.attempt + 1; val basis = changeSeq; schedule(tr.retryAfterMs, Runnable { queue.add(Job(r, CompletableDeferred(), attempt, basis)); kick() }) }
             for (f in tr.effects) {
                 val feedback = try { run(f) } catch (x: Exception) { onError(x); null }
                 if (feedback != null) pending.add(feedback)
