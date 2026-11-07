@@ -3,6 +3,7 @@ package com.rokid.context.phone.hub
 import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -33,7 +34,7 @@ class GlassesWatchdogTest {
             startHub = { starts++ }, reconnect = { reconnects++ }, probeAlive = { probes++ }, relaunch = { relaunches++; relaunchResult },
             publish = { notes += it },
             log = { logs += it }, warn = { warns += it },
-            paired = { paired }, hubNeeded = { hubNeeded }, stopHub = { stops++; running = false }, hubStore = store,
+            paired = { paired }, hubNeeded = { hubNeeded }, stopHub = { stops++; running = false }, hubStore = store, executor = SerialStateMachine.DIRECT,
         )
         fun silentFor(min: Long) { heard = nowMs - min * 60_000L }
     }
@@ -165,7 +166,7 @@ class GlassesWatchdogTest {
         val w = GlassesWatchdog(
             now = { now }, enabled = { true }, captureActive = { true }, hubRunning = { true }, link = { LinkState.CONNECTED }, lastHeardAtMs = { heard }, standingDown = { false },
             startHub = {}, reconnect = {}, probeAlive = {}, relaunch = { relaunches++; null }, publish = {}, log = {}, warn = {},
-            silentMs = { silent }, periodMs = { period },
+            silentMs = { silent }, periodMs = { period }, executor = SerialStateMachine.DIRECT,
         )
     }
 
@@ -193,7 +194,7 @@ class GlassesWatchdogTest {
     @Test fun offWhileAnExplicitPauseIsActiveWhateverTheSettings() {
         val c = Cfg(silent = 60_000L); c.heard = c.now - 60 * 60_000L
         val paused = GlassesWatchdog(now = { c.now }, enabled = { true }, captureActive = { false }, hubRunning = { true }, link = { LinkState.CONNECTED }, lastHeardAtMs = { c.heard },
-            standingDown = { false }, startHub = {}, reconnect = {}, probeAlive = {}, relaunch = { c.relaunches++; null }, publish = {}, log = {}, warn = {}, silentMs = { 60_000L })
+            standingDown = { false }, startHub = {}, reconnect = {}, probeAlive = {}, relaunch = { c.relaunches++; null }, publish = {}, log = {}, warn = {}, silentMs = { 60_000L }, executor = SerialStateMachine.DIRECT)
         assertEquals(GlassesWatchdog.Verdict.Off, paused.tick()); assertEquals(0, c.relaunches)
     }
 
@@ -348,15 +349,14 @@ class GlassesWatchdogTest {
         val order = mutableListOf<String>()
         val store = object : HubRestartStore {
             val inner = InMemoryHubRestartStore()
-            override fun loadBackoff() = inner.loadBackoff()
-            override fun lastStartAtMs() = inner.lastStartAtMs()
-            override fun saveBackoff(b: BackgroundPolicy.Backoff) = inner.saveBackoff(b)
-            override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { order += "save"; inner.saveStart(b, atMs) }
+            override fun load() = inner.load()
+            override fun save(s: HubRestartSnapshot) { order += "save"; inner.save(s) }
         }
         val t0 = 10 * 60_000L
         fun dog(now: Long, start: () -> Unit) = GlassesWatchdog(
             now = { now }, enabled = { true }, captureActive = { true }, hubRunning = { false }, link = { LinkState.OFFLINE }, lastHeardAtMs = { null },
             standingDown = { false }, startHub = start, reconnect = {}, probeAlive = {}, relaunch = { null }, publish = {}, log = {}, warn = {}, hubStore = store,
+            executor = SerialStateMachine.DIRECT,
         )
         // the start crashes the process (the throw stands for it)
         runCatching { dog(t0) { order += "start"; throw IllegalStateException("process died") }.tick() }
@@ -381,15 +381,13 @@ class GlassesWatchdogTest {
         val gate = java.util.concurrent.CountDownLatch(1)
         val store = object : HubRestartStore {
             val inner = InMemoryHubRestartStore()
-            override fun loadBackoff() = inner.loadBackoff()
-            override fun lastStartAtMs() = inner.lastStartAtMs()
-            override fun saveBackoff(b: BackgroundPolicy.Backoff) = inner.saveBackoff(b)
-            override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { rec("save"); gate.await(); inner.saveStart(b, atMs) }
+            override fun load() = inner.load()
+            override fun save(s: HubRestartSnapshot) { rec("save"); gate.await(); inner.save(s) }
         }
         val w = GlassesWatchdog(
             now = { 10 * 60_000L }, enabled = { true }, captureActive = { true }, hubRunning = { false }, link = { LinkState.OFFLINE }, lastHeardAtMs = { null },
             standingDown = { false }, startHub = { rec("start") }, reconnect = {}, probeAlive = {}, relaunch = { null }, publish = {}, log = {}, warn = {},
-            hubStore = store, io = kotlinx.coroutines.Dispatchers.IO,
+            hubStore = store, executor = kotlinx.coroutines.Dispatchers.IO.asExecutor(),
         )
         val ex = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "fake-main") }
         try {

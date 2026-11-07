@@ -142,7 +142,7 @@ class ContextHubService : Service() {
         if (running) {
             running = false
             // Not our own stop (the watchdog, leaving the front, the AutoStop policy all go through [stop]): the user stopped it by hand (the system's running-apps list). It stays stopped until the user starts it again.
-            if (!expectedStop) { PrefsAutoStopStore.of(this).setManualStop(true); PcLog.i(TAG, "manual_stop") }
+            if (!expectedStop) { AutoStopWake.engine(this).submit(AutoStopEvent.ManualStopped); PcLog.i(TAG, "manual_stop") }
             expectedStop = false
             watcher?.cancel(); closedWatcher?.cancel()
             ClosedNoticeReceiver.notice = null
@@ -301,7 +301,7 @@ class ContextHubService : Service() {
          * (the AutoStop wake path: only with the battery exemption, never a user start). True = a start was issued (Android 12+ may still refuse a background one).
          */
         fun ensureRunning(context: Context, resume: Long? = null, force: Boolean = false, wake: Boolean = false): Boolean {
-            if (force) PrefsAutoStopStore.of(context).userStarted()
+            if (force) AutoStopWake.engine(context).submit(AutoStopEvent.UserStarted) // an event: committed on the AutoStop actor's IO context
             if (!force && !wake && !hubNeededNow(context)) return false
             val granted = Build.VERSION.SDK_INT < 31 ||
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED

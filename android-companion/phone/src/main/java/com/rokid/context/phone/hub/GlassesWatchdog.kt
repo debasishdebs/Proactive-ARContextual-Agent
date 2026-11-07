@@ -5,14 +5,14 @@ import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
-import kotlin.coroutines.CoroutineContext
+import java.util.concurrent.Executor
 
 /**
  * Phone-side watchdog (2026-10-22): Rokid force-stops the glasses app on calls and glasses removal, which kills its own alarms and
@@ -27,6 +27,10 @@ import kotlin.coroutines.CoroutineContext
  *
  * Logging (2026-10-25, a 21 min dead gap had no phone line): one counts-only line per verdict CHANGE and every [LOG_EVERY]th tick otherwise (`verdict`, `why` or the
  * relaunch result, the link state, seconds silent), a warning for a late tick (the phone process was suspended: the proof for Doze) and for a dead hub.
+ *
+ * Actor rewrite (Codex review 4): the back-offs (the reconnect ladder and the persisted hub restart ladder + last start) live in ONE [SerialStateMachine] reduced by
+ * [WatchdogLadder]; positive signals, "hub wanted", "hub running" and the tick's attempts are events in one order, and every save writes the latest snapshot, so a
+ * delayed save can never overwrite a newer reset (the persisted and in-memory ladders cannot diverge). An attempt's start runs only after its commit returned.
  */
 class GlassesWatchdog(
     private val now: () -> Long,
@@ -57,8 +61,8 @@ class GlassesWatchdog(
     private val stopHub: () -> Unit = {},
     /** The hub restart ladder and last start time; persisted in production so process death does not reset them ([PrefsHubRestartStore]). */
     private val hubStore: HubRestartStore = InMemoryHubRestartStore(),
-    /** Where the blocking [HubRestartStore.saveStart] commit runs (Dispatchers.IO; the loop's scope is Main.immediate). Tests may pass their own. */
-    private val io: CoroutineContext = Dispatchers.IO,
+    /** Where the ladder actor's steps and commits run (Dispatchers.IO; the loop's scope is Main.immediate); tests pass [SerialStateMachine.DIRECT]. */
+    executor: Executor = Dispatchers.IO.asExecutor(),
 ) {
     sealed interface Verdict {
         object Off : Verdict
@@ -76,13 +80,12 @@ class GlassesWatchdog(
     private var lastTickAt: Long? = null
     private var lastLogged: String? = null
     private var quietTicks = 0
-    /** Back-off of the automatic attempts while the glasses are away; reset by [onPositiveSignal]. */
-    @Volatile private var backoff = BackgroundPolicy.reset()
-    /** Own back-off for HUB restarts (a start refused by Android 12+ must not repeat every tick); reset when the hub runs and by every positive signal. */
-    @Volatile private var hubBackoff = hubStore.loadBackoff()
-    /** In-memory copy of [HubRestartStore.lastStartAtMs], set before the IO commit so the next tick never reads a stale store. */
-    @Volatile private var lastStartAt = hubStore.lastStartAtMs()
-    /** One tick at a time: consecutive start attempts never overlap across the IO hop. */
+    /** The back-offs (reconnect, hub restart, last start): the one actor; see [WatchdogLadder]. Loaded from [hubStore] on its first step (on [executor]). */
+    private val ladder = SerialStateMachine<WatchdogLadder.State, WatchdogLadder.Event, Nothing>(
+        load = { WatchdogLadder.State(saved = hubStore.load()) }, reduce = WatchdogLadder::reduce, persisted = { it.saved }, save = { hubStore.save(it.saved) },
+        now = now, executor = executor, onError = { warn("watchdog ladder step failed: ${it.javaClass.simpleName}") },
+    )
+    /** One tick at a time (the tick's own log/baseline fields); the ladder itself is serialised by its actor. */
     private val ticking = Mutex()
     private var gate = BackgroundPolicy.Gate.ACTIVE
     private val wake = Channel<Unit>(Channel.CONFLATED)
@@ -91,34 +94,26 @@ class GlassesWatchdog(
      * A positive signal (link up, wear event, app in front, a tapped Reconnect, the setting switched on): the back-off starts again and the loop
      * ticks now instead of finishing its sleep. Thread-safe.
      */
-    fun onPositiveSignal() { backoff = BackgroundPolicy.reset(); resetHubBackoff(); wake.trySend(Unit) }
+    fun onPositiveSignal() { ladder.submit(WatchdogLadder.Event.PositiveSignal); wake.trySend(Unit) }
 
     /** A phone context source was switched on (the hub is wanted now): the hub restart ladder starts again and the loop ticks now. */
-    fun onHubWanted() { resetHubBackoff(); wake.trySend(Unit) }
-
-    /** Resets the ladder step only: the minimum interval between hub start attempts ([MIN_HUB_START_MS]) is independent and survives every reset signal. */
-    private fun resetHubBackoff() { hubBackoff = BackgroundPolicy.reset(); hubStore.saveBackoff(hubBackoff) }
-
-    private fun hubStartAllowed(t: Long): Boolean {
-        val d = t - lastStartAt
-        return hubBackoff.due(t) && (d < 0 || d >= MIN_HUB_START_MS) // a clock set back must not block for ever
-    }
+    fun onHubWanted() { ladder.submit(WatchdogLadder.Event.HubWanted); wake.trySend(Unit) }
 
     /**
-     * The attempt is saved (committed) BEFORE the start: a start that crashes the process cannot bypass the back-off on the next process.
-     * Review fix 2 (2026-11-07, Codex): the commit runs on [io] (it was a disk wait on the main thread); the start follows once it is durable.
+     * A hub start attempt at [t]: true = allowed, and the attempt is committed (durable) when this returns, BEFORE the caller's start: a start that crashes the
+     * process cannot bypass the back-off on the next process. The commit runs on the actor's executor (IO), never on the tick's thread.
      */
-    private suspend fun hubStarted(t: Long) {
-        val b = BackgroundPolicy.attempted(hubBackoff, t); hubBackoff = b; lastStartAt = t
-        withContext(io) { hubStore.saveStart(b, t) }
-        startHub()
-    }
+    private suspend fun tryHubStart(t: Long): Boolean = ladder.submit(WatchdogLadder.Event.TryHubStart(t)).await() == true
+
+    private suspend fun tryReconnect(t: Long): Boolean = ladder.submit(WatchdogLadder.Event.TryReconnect(t)).await() == true
+
+    private fun reconnectBackoff(): BackgroundPolicy.Backoff = ladder.state()?.reconnect ?: BackgroundPolicy.reset()
 
     /** [periodMs] null = the configured one, re-read before every sleep, and the policy's sleep (long with no pair or the setting off, the back-off while away); a number fixes it (tests). */
     fun start(scope: CoroutineScope, periodMs: Long? = null): Job = scope.launch {
         while (true) {
             try { tickNow() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* never end the loop */ }
-            val sleep = periodMs ?: BackgroundPolicy.sleepMs(gate, this@GlassesWatchdog.periodMs(), backoff, now())
+            val sleep = periodMs ?: BackgroundPolicy.sleepMs(gate, this@GlassesWatchdog.periodMs(), reconnectBackoff(), now())
             withTimeoutOrNull(sleep) { wake.receive() }
         }
     }
@@ -138,20 +133,20 @@ class GlassesWatchdog(
         // The hub service stays only while something needs it; the watchdog never restarts one that is not needed.
         if (!hubNeeded()) { baselineMs = null; if (hubRunning()) { log("watchdog hub not needed, stopping it"); stopHub() }; return finish(Verdict.Off, if (!pair) "why=no_pair" else if (!on) "why=setting_off" else "why=not_needed") }
         // Hub recovery is separate from permission to run glasses machinery: a needed hub (a context source, an ask) is restarted whatever the glasses gate says; no reconnect, no relaunch.
-        suspend fun recoverHub() { if (!hubRunning() && hubStartAllowed(t)) { warn("watchdog hub down, starting it"); hubStarted(t) } }
-        if (hubRunning() && hubBackoff != BackgroundPolicy.reset()) resetHubBackoff()
+        suspend fun recoverHub() { if (!hubRunning() && tryHubStart(t)) { warn("watchdog hub down, starting it"); startHub() } }
+        if (hubRunning()) ladder.submit(WatchdogLadder.Event.HubRunning) // resets the hub restart ladder (a no-op, no save, when it is already reset)
         if (!pair) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=no_pair") }
         if (!on) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=setting_off") }
         if (!captureActive()) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=capture_inactive") }
-        if (gate == BackgroundPolicy.Gate.ACTIVE) backoff = BackgroundPolicy.reset()
+        if (gate == BackgroundPolicy.Gate.ACTIVE) ladder.submit(WatchdogLadder.Event.GlassesPresent)
         if (!hubRunning()) {
             // Away: the restart waits for its back-off; the status line still says what is going on (silence counts from the last message, or from this window's first tick).
-            if (!hubStartAllowed(t)) {
+            if (!tryHubStart(t)) {
                 val first = baselineMs ?: t.also { baselineMs = it }
                 return finish(Verdict.LinkDown((t - (lastHeardAtMs() ?: first)).coerceAtLeast(0L)), "why=hub_down action=backoff")
             }
             baselineMs = null
-            warn("watchdog hub down, starting it"); hubStarted(t)
+            warn("watchdog hub down, starting it"); startHub()
             return finish(Verdict.HubDown, "why=hub_down")
         }
         val base = baselineMs ?: t.also { baselineMs = it }
@@ -164,7 +159,7 @@ class GlassesWatchdog(
         return finish(
             when (l) {
                 LinkState.OFFLINE, LinkState.PAUSED_BT ->
-                    if (backoff.due(t)) { reconnect(); backoff = BackgroundPolicy.attempted(backoff, t); detail += " action=reconnect"; Verdict.LinkDown(age) }
+                    if (tryReconnect(t)) { reconnect(); detail += " action=reconnect"; Verdict.LinkDown(age) }
                     else { detail += " action=backoff"; Verdict.LinkDown(age) }
                 LinkState.NOT_AUTHORIZED -> Verdict.LinkDown(age)
                 LinkState.CONNECTING -> Verdict.Ok
@@ -213,27 +208,60 @@ class GlassesWatchdog(
     }
 }
 
-/** Persisted state of the hub restart attempts: the ladder (step, next allowed time) and the time of the last start attempt. */
-interface HubRestartStore {
-    fun loadBackoff(): BackgroundPolicy.Backoff
-    fun lastStartAtMs(): Long
-    /** A reset of the ladder; the last start time is untouched. */
-    fun saveBackoff(b: BackgroundPolicy.Backoff)
-    /** A start attempt at [atMs] and the ladder after it; durable when it returns (it is saved before the start it guards). */
-    fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long)
+/**
+ * The watchdog's back-off reducer (PURE; run by [SerialStateMachine], the same engine as [AutoStopMachine]). [State.saved] is the persisted part
+ * ([HubRestartStore]); [State.reconnect] lives in memory only.
+ */
+object WatchdogLadder {
+    data class State(val saved: HubRestartSnapshot = HubRestartSnapshot(), val reconnect: BackgroundPolicy.Backoff = BackgroundPolicy.reset())
+
+    sealed interface Event {
+        /** Link up, a wear event, the app in front, a tapped Reconnect, the setting switched on: both ladders start again (the last start time stays). */
+        object PositiveSignal : Event
+        /** A phone context source was switched on: the hub restart ladder starts again. */
+        object HubWanted : Event
+        /** The hub runs: its restart ladder starts again. */
+        object HubRunning : Event
+        /** The glasses are reachable (gate ACTIVE): the reconnect ladder starts again. */
+        object GlassesPresent : Event
+        /** A hub start attempt at [atMs]; reply true = allowed and recorded. */
+        data class TryHubStart(val atMs: Long) : Event
+        /** A reconnect attempt at [atMs]; reply true = due and recorded. */
+        data class TryReconnect(val atMs: Long) : Event
+    }
+
+    fun reduce(s: State, e: Event, @Suppress("UNUSED_PARAMETER") now: Long): Transition<State, Event, Nothing> = when (e) {
+        Event.PositiveSignal -> Transition(s.copy(reconnect = BackgroundPolicy.reset(), saved = s.saved.copy(backoff = BackgroundPolicy.reset())))
+        // Resets the ladder step only: the minimum interval between hub start attempts ([GlassesWatchdog.MIN_HUB_START_MS]) survives every reset signal.
+        Event.HubWanted, Event.HubRunning -> Transition(s.copy(saved = s.saved.copy(backoff = BackgroundPolicy.reset())))
+        Event.GlassesPresent -> Transition(s.copy(reconnect = BackgroundPolicy.reset()))
+        is Event.TryHubStart -> {
+            val d = e.atMs - s.saved.lastStartAtMs
+            if (s.saved.backoff.due(e.atMs) && (d < 0 || d >= GlassesWatchdog.MIN_HUB_START_MS)) // a clock set back must not block for ever
+                Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs)), reply = true)
+            else Transition(s, reply = false)
+        }
+        is Event.TryReconnect ->
+            if (s.reconnect.due(e.atMs)) Transition(s.copy(reconnect = BackgroundPolicy.attempted(s.reconnect, e.atMs)), reply = true) else Transition(s, reply = false)
+    }
 }
 
-class InMemoryHubRestartStore : HubRestartStore {
-    private var b = BackgroundPolicy.reset(); private var last = 0L
-    override fun loadBackoff() = b
-    override fun lastStartAtMs() = last
-    override fun saveBackoff(b: BackgroundPolicy.Backoff) { this.b = b }
-    override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { this.b = b; last = atMs }
+/** Persisted state of the hub restart attempts: the ladder (step, next allowed time) and the time of the last start attempt. One record. */
+data class HubRestartSnapshot(val backoff: BackgroundPolicy.Backoff = BackgroundPolicy.reset(), val lastStartAtMs: Long = 0L)
+
+interface HubRestartStore {
+    fun load(): HubRestartSnapshot
+    /** The whole snapshot; durable when it returns (it is saved before the start it guards). */
+    fun save(s: HubRestartSnapshot)
+}
+
+class InMemoryHubRestartStore(initial: HubRestartSnapshot = HubRestartSnapshot()) : HubRestartStore {
+    @Volatile private var s = initial
+    override fun load() = s
+    override fun save(s: HubRestartSnapshot) { this.s = s }
 }
 
 class PrefsHubRestartStore(private val prefs: () -> android.content.SharedPreferences) : HubRestartStore {
-    override fun loadBackoff() = BackgroundPolicy.Backoff(prefs().getInt("step", 0), prefs().getLong("next_at", 0L))
-    override fun lastStartAtMs() = prefs().getLong("last_start", 0L)
-    override fun saveBackoff(b: BackgroundPolicy.Backoff) { prefs().edit().putInt("step", b.step).putLong("next_at", b.nextAtMs).apply() }
-    override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { prefs().edit().putInt("step", b.step).putLong("next_at", b.nextAtMs).putLong("last_start", atMs).commit() }
+    override fun load() = prefs().let { HubRestartSnapshot(BackgroundPolicy.Backoff(it.getInt("step", 0), it.getLong("next_at", 0L)), it.getLong("last_start", 0L)) }
+    override fun save(s: HubRestartSnapshot) { prefs().edit().putInt("step", s.backoff.step).putLong("next_at", s.backoff.nextAtMs).putLong("last_start", s.lastStartAtMs).commit() }
 }

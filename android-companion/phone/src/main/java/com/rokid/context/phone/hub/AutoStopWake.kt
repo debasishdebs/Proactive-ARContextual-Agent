@@ -9,6 +9,10 @@ import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.phone.ui.settings.capture.CaptureTimingStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asExecutor
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 /**
@@ -16,6 +20,7 @@ import java.util.concurrent.TimeUnit
  * is exempt from battery optimization; with that exemption (the user granted it from Settings > Capture > Run in the background) a process start by the platform
  * (the 15 minute WorkManager jobs, a Data Layer message, the one-shot [AutoStopWakeWorker] scheduled for the next rung) may start the hub again, at most once per
  * [BackgroundPolicy.WAKE_LADDER_MS] step and never after a manual stop. A process that is already alive does the same from [AutoStopController].
+ * Every entry point only SUBMITS an event to the one [engine] (Codex review 4): the claim is a reducer step, never a lock shared by threads.
  * There is NO event that wakes a stopped hub when the glasses are put on: the wear signal exists only inside an open Rokid session, which the stopped hub does not hold.
  */
 object AutoStopWake {
@@ -32,32 +37,54 @@ object AutoStopWake {
         }.onFailure { PcLog.w(AutoStopController.TAG, "auto_stop wake schedule failed: ${it.javaClass.simpleName}") }
     }
 
+    /** The process-wide AutoStop actor (lazy; it reads nothing until its first step, which runs on Dispatchers.IO). */
+    @Volatile private var shared: AutoStopEngine? = null
+    fun engine(context: Context): AutoStopEngine = shared ?: synchronized(this) {
+        shared ?: context.applicationContext.let { app ->
+            AutoStopEngine(
+                PrefsAutoStopStore.of(app), System::currentTimeMillis, Dispatchers.IO.asExecutor(),
+                wakeInputs = {
+                    WakeInputs(
+                        exempt(app), CaptureTimingStore.get(app).autoStopMinNow(),
+                        BackgroundPolicy.linkMachineryAllowed(KeepRunningNearby.of(app).enabled(), com.rokid.context.link.CxrGlassesLink.isPaired(app)), ContextHubService.isRunning(),
+                    )
+                },
+                startWake = { ContextHubService.ensureRunning(app, wake = true) }, scheduleWake = { schedule(app, it) },
+            )
+        }.also { shared = it }
+    }
+
+    private const val VIA_PROCESS = "process start"
+    private const val WORKER_WAIT_MS = 60_000L
+
     /**
-     * Application.onCreate (and [AutoStopWakeWorker]): true = a start was issued. Cheap exits first (one prefs file) so an ordinary start costs nothing.
-     * Early (the rung not yet due) it schedules a wake for the remaining time; a refused start schedules the next rung. The start saves the probe flag first, so the
-     * woken hub's controller (built later in this process) looks for the glasses for [BackgroundPolicy.WAKE_PROBE_MS], not the full N minutes.
+     * Application.onCreate: submits [AutoStopEvent.ProcessStarted] and returns at once. No disk read or write on the caller (main) thread (Codex review 4):
+     * the claim, its commits and the start all run on the engine's IO context.
+     */
+    fun processStarted(app: Context) { engine(app).submit(AutoStopEvent.ProcessStarted(VIA_PROCESS)) }
+
+    /** [AutoStopWakeWorker] (a background thread): the same event, waiting for its outcome. True = a start was issued. */
+    fun onProcessStart(app: Context): Boolean =
+        (runBlocking { withTimeoutOrNull(WORKER_WAIT_MS) { engine(app).submit(AutoStopEvent.ProcessStarted(VIA_PROCESS)).await() } } as? AutoStopClaimed)?.claim == Claim.STARTED
+
+    /**
+     * The same process-start event on a private, synchronous engine over [store] (tests): true = a start was issued. Early (the rung not yet due) it schedules a
+     * wake for the remaining time; a refused start schedules the next rung. The start saves the probe flag first, so the woken hub's controller (built later in
+     * this process) looks for the glasses for [BackgroundPolicy.WAKE_PROBE_MS], not the full N minutes.
      */
     fun onProcessStart(
         app: Context,
-        now: Long = System.currentTimeMillis(),
-        store: AutoStopStore = PrefsAutoStopStore.of(app),
+        now: Long,
+        store: AutoStopStore,
         exempt: () -> Boolean = { exempt(app) },
         minutes: () -> Int = { CaptureTimingStore.get(app).autoStopMinNow() },
         allowed: () -> Boolean = { BackgroundPolicy.linkMachineryAllowed(KeepRunningNearby.of(app).enabled(), com.rokid.context.link.CxrGlassesLink.isPaired(app)) },
         running: () -> Boolean = { ContextHubService.isRunning() },
         schedule: (Long) -> Unit = { schedule(app, it) },
         start: () -> Boolean = { ContextHubService.ensureRunning(app, wake = true) },
-    ): Boolean {
-        if (store.autoStoppedAtMs() == 0L || store.manualStop()) return false // the common case, without the lock (re-checked under it)
-        val max = BackgroundPolicy.WAKE_LADDER_MS.last()
-        return when (claim(now, store, exempt, minutes, allowed, running, start, via = "process start")) {
-            Claim.STARTED -> true
-            Claim.NOT_DUE, Claim.REFUSED -> { schedule(BackgroundPolicy.remainingMs(now, store.nextWakeAtMs(), max)); false }
-            Claim.NONE, Claim.ALREADY_RUNNING -> false
-        }
-    }
+    ): Boolean = claimOn(now, store, exempt, minutes, allowed, running, start, schedule, VIA_PROCESS, { PcLog.i(AutoStopController.TAG, it) }, { PcLog.w(AutoStopController.TAG, it) }) == Claim.STARTED
 
-    /** What [claim] did. Only [STARTED] issued a start; [NONE] and [NOT_DUE] touched nothing. */
+    /** What a claim did. Only [STARTED] issued a start; [NONE] and [NOT_DUE] touched nothing. */
     enum class Claim {
         /** No wake applies (not auto-stopped, a manual stop, no exemption, Never, the hub runs, no link machinery). */
         NONE,
@@ -71,30 +98,21 @@ object AutoStopWake {
         REFUSED,
     }
 
-    private val claimLock = Any()
-
     /**
-     * Review fix 2026-11-07 (Codex): the one owner of "claim a wake", shared by the WorkManager/process-start path ([onProcessStart], off the main thread) and the
-     * live [AutoStopController] (its IO hop). Check / consume the rung / save the probe / start / settle run under ONE process-wide lock, so two entry points can
-     * never both pass the deadline: the loser finds the auto stop cleared (the winner started) or the deadline moved (the winner was refused) and returns [NONE] or
-     * [NOT_DUE] without touching the probe flag. It blocks on disk commits: never call it on the main thread.
+     * One claim on a private synchronous engine over [store] (tests and diagnostics). Production never calls it: the worker, the process start and the live
+     * controller all submit events to the ONE [engine], whose reducer ([AutoStopMachine]) owns the claim, so two entry points can never both pass the deadline.
      */
     fun claim(
         now: Long, store: AutoStopStore, exempt: () -> Boolean, minutes: () -> Int, allowed: () -> Boolean, running: () -> Boolean, start: () -> Boolean,
         via: String, log: (String) -> Unit = { PcLog.i(AutoStopController.TAG, it) }, warn: (String) -> Unit = { PcLog.w(AutoStopController.TAG, it) },
-    ): Claim = synchronized(claimLock) {
-        if (store.autoStoppedAtMs() == 0L || store.manualStop()) return Claim.NONE
-        if (!BackgroundPolicy.wakeAllowed(exempt(), true, false, minutes(), running(), allowed())) return Claim.NONE
-        if (!BackgroundPolicy.deadlinePassed(now, store.nextWakeAtMs(), BackgroundPolicy.WAKE_LADDER_MS.last())) return Claim.NOT_DUE
-        store.wakeAttempted(now + BackgroundPolicy.wakeDelayMs(store.wakeStep() + 1)) // committed before the start it guards
-        store.setWakeProbe(true) // saved before the start: the woken hub's first away window is the short probe
-        log("auto_stop wake attempt ($via)")
-        val issued = runCatching(start).getOrDefault(false)
-        when {
-            issued -> { store.clearAutoStopped(); Claim.STARTED }
-            running() -> { store.clearAutoStopped(); log("auto_stop wake: hub already running ($via)"); Claim.ALREADY_RUNNING }
-            else -> { warn("auto_stop wake refused ($via)"); store.setWakeProbe(false); Claim.REFUSED }
-        }
+    ): Claim = claimOn(now, store, exempt, minutes, allowed, running, start, {}, via, log, warn)
+
+    private fun claimOn(
+        now: Long, store: AutoStopStore, exempt: () -> Boolean, minutes: () -> Int, allowed: () -> Boolean, running: () -> Boolean, start: () -> Boolean,
+        schedule: (Long) -> Unit, via: String, log: (String) -> Unit, warn: (String) -> Unit,
+    ): Claim {
+        val e = AutoStopEngine(store, { now }, SerialStateMachine.DIRECT, { WakeInputs(exempt(), minutes(), allowed(), running()) }, start, schedule, log, warn)
+        return (runBlocking { e.submit(AutoStopEvent.ProcessStarted(via)).await() } as? AutoStopClaimed)?.claim ?: Claim.NONE
     }
 }
 

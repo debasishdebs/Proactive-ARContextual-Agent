@@ -5,14 +5,12 @@ import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.coroutines.CoroutineContext
+import java.util.concurrent.Executor
 
 /**
  * Drives [BackgroundPolicy.autoStop] (user ruling 2026-11-07): while the hub runs and the glasses are off-head or disconnected, it counts the time away and, once
@@ -22,16 +20,15 @@ import kotlin.coroutines.CoroutineContext
  *
  * It sleeps until the exact due time (no polling): [poke] re-evaluates at once (link or wear change, app in front, a setting change). While the hub is stopped
  * it waits for the next [BackgroundPolicy.wakeDue] time, which needs the battery-optimization exemption ([exempt]); without it nothing here ever starts the hub.
- * Review fix 2026-11-07: a stop or a refused wake never waits for a poke (a link that was already OFFLINE emits nothing more): it sleeps to the next rung and
- * also hands that time to [scheduleWake] (a WorkManager wake in production) so a process that dies meanwhile is started again for it.
- * Review fix 2 (2026-11-07, Codex): the wake itself is [AutoStopWake.claim], the one locked owner shared with the WorkManager path, so the two can never both consume
- * a rung or start twice; the blocking commits (the stop record, the claim) run on [io], never on the main thread, and still finish BEFORE the stop / start they guard.
- * One [evaluateNow] at a time ([Mutex]): consecutive decisions never overlap across the IO hop.
+ * A stop or a refused wake never waits for a poke: it sleeps to the next rung and also hands that time to [scheduleWake] (a WorkManager wake in production).
+ *
+ * Actor rewrite (Codex review 4): the controller holds NO state. Each look is an [AutoStopEvent.Evaluate] submitted to the process-wide [AutoStopEngine] (the one
+ * serialised state machine the WorkManager worker, the process start and the service's user start / manual stop also feed); the inputs are sampled when the
+ * event is reduced, a stop is committed and then RE-VALIDATED behind every input that arrived during the commit, and every effect runs after the commit.
  */
 class AutoStopController(
     private val now: () -> Long,
     private val minutes: () -> Int,
-    private val store: AutoStopStore,
     private val hubRunning: () -> Boolean,
     private val link: () -> LinkState,
     private val worn: () -> Boolean?,
@@ -50,74 +47,36 @@ class AutoStopController(
     private val log: (String) -> Unit = { PcLog.i(TAG, it) },
     /** The next wake rung is in this many ms (a WorkManager wake in production, see [AutoStopWake.schedule]); called after a stop and after a refused wake. */
     private val scheduleWake: (Long) -> Unit = {},
-    /** The hub service is up ([ContextHubService.isRunning] in production): tells "already running" from a refused start inside [AutoStopWake.claim]. */
+    /** The hub service is up ([ContextHubService.isRunning] in production): tells "already running" from a refused start. */
     private val serviceRunning: () -> Boolean = hubRunning,
-    /** Where the blocking commits run (Dispatchers.IO; tests may pass their own). */
-    private val io: CoroutineContext = Dispatchers.IO,
+    /** A private engine over this store (tests); production passes the shared [engine] instead. */
+    store: AutoStopStore? = null,
+    /** Where a private engine's steps (and their commits) run: Dispatchers.IO; tests pass [SerialStateMachine.DIRECT]. */
+    executor: Executor = Dispatchers.IO.asExecutor(),
+    /** The process-wide engine ([AutoStopWake.engine]); null = a private one over [store]. */
+    engine: AutoStopEngine? = null,
 ) {
-    private var awaySince: Long? = null
+    val engine: AutoStopEngine = engine ?: AutoStopEngine(
+        requireNotNull(store) { "a store or an engine" }, now, executor, wakeInputs = ::wakeInputs, startWake = wakeHub, scheduleWake = scheduleWake, log = log, warn = log,
+    )
     private val wake = Channel<Unit>(Channel.CONFLATED)
-    private val decide = Mutex()
+
+    init {
+        this.engine.attach(AutoStopEngine.HubPort(
+            sample = { HubSignals(hubRunning(), link(), worn(), inFront(), lastFrontMs(), busy(), runActive()) }, wake = ::wakeInputs,
+            stopHub = stopHub, wakeHub = wakeHub, scheduleWake = scheduleWake, publishNote = publishNote, timeText = timeText, log = log,
+        ))
+    }
+
+    private fun wakeInputs() = WakeInputs(exempt(), minutes(), linkAllowed(), serviceRunning())
 
     fun poke() { wake.trySend(Unit) }
 
-    /** [evaluateNow] from a plain thread (tests). Never on the main thread: it blocks for the IO hop. */
+    /** [evaluateNow] from a plain thread (tests). */
     internal fun evaluate(): Long? = runBlocking { evaluateNow() }
 
-    /** One decision; returns how long to sleep (null = until the next [poke]). */
-    suspend fun evaluateNow(): Long? = decide.withLock { decideOnce() }
-
-    private suspend fun decideOnce(): Long? {
-        val t = now()
-        publishNote(note())
-        if (!hubRunning()) {
-            awaySince = null
-            if (store.autoStoppedAtMs() == 0L) return null
-            val due = store.nextWakeAtMs()
-            if (BackgroundPolicy.wakeDue(exempt(), true, store.manualStop(), minutes(), false, linkAllowed(), t, due)) {
-                // Re-checked under the shared lock: a WorkManager wake that won the race leaves NONE / NOT_DUE here, and the probe flag untouched.
-                when (withContext(io) { AutoStopWake.claim(t, store, exempt, minutes, linkAllowed, serviceRunning, wakeHub, via = "controller", log = log, warn = log) }) {
-                    AutoStopWake.Claim.STARTED, AutoStopWake.Claim.ALREADY_RUNNING -> { publishNote(null); return BackgroundPolicy.BUSY_RECHECK_MS } // look again once the hub runs
-                    // re-armed: the next rung (the claim moved it), never a poke that may not come
-                    AutoStopWake.Claim.REFUSED -> { val next = untilNextWake(t); scheduleWake(next); return next }
-                    AutoStopWake.Claim.NOT_DUE -> return untilNextWake(t)
-                    AutoStopWake.Claim.NONE -> { publishNote(note()); return BackgroundPolicy.BUSY_RECHECK_MS } // lost the race (or a manual stop came): decide again soon
-                }
-            }
-            // Waiting for the ladder: only with the exemption and the setting on is there anything to wait for.
-            return if (BackgroundPolicy.wakeAllowed(exempt(), true, store.manualStop(), minutes(), false, linkAllowed())) untilNextWake(t) else null
-        }
-        val away = BackgroundPolicy.away(link(), worn())
-        if (away == null) {
-            awaySince = null; if (store.wakeProbe()) store.setWakeProbe(false)
-            if (store.wakeStep() != 0 || store.nextWakeAtMs() != 0L) store.resetWake() // the glasses were seen present: the wake ladder starts again
-            return null
-        }
-        val n = BackgroundPolicy.cleanAutoStopMin(minutes())
-        val since = awaySince ?: (if (store.wakeProbe() && n != BackgroundPolicy.AUTO_STOP_NEVER) t - maxOf(0L, n * 60_000L - BackgroundPolicy.WAKE_PROBE_MS) else t).also { awaySince = it }
-        val d = BackgroundPolicy.autoStop(BackgroundPolicy.AutoStopInput(t, minutes(), since, away, lastFrontMs(), inFront(), busy(), runActive()))
-        if (d.stop && d.reason != null) {
-            when (d.reason) { BackgroundPolicy.Away.NOT_WORN -> log("auto_stop_not_worn"); BackgroundPolicy.Away.DISCONNECTED -> log("auto_stop_disconnected") }
-            val reason = d.reason; val nextAt = t + BackgroundPolicy.wakeDelayMs(store.wakeStep())
-            withContext(io) { store.markAutoStopped(t, reason, since, nextAt) } // committed off the main thread, before the stop
-            awaySince = null; if (store.wakeProbe()) store.setWakeProbe(false)
-            publishNote(note())
-            stopHub()
-            // The link may already be OFFLINE (no further state change, no poke): sleep to the first rung and schedule it, never wait for a poke.
-            val next = BackgroundPolicy.wakeDelayMs(store.wakeStep()); scheduleWake(next); return next
-        }
-        return d.recheckInMs
-    }
-
-    /** Until the stored next rung, at least [BackgroundPolicy.BUSY_RECHECK_MS]; a clock set back counts as due ([BackgroundPolicy.deadlinePassed]). */
-    private fun untilNextWake(t: Long): Long =
-        BackgroundPolicy.remainingMs(t, store.nextWakeAtMs(), BackgroundPolicy.WAKE_LADDER_MS.last()).coerceAtLeast(BackgroundPolicy.BUSY_RECHECK_MS)
-
-    private fun note(): String? {
-        if (store.autoStoppedAtMs() == 0L) return null
-        val why = store.reason() ?: return null
-        return BackgroundPolicy.stoppedNote(why, timeText(store.awaySinceMs().takeIf { it > 0 } ?: store.autoStoppedAtMs()))
-    }
+    /** One decision (its stop re-validated); returns how long to sleep (null = until the next [poke]). Suspends, never blocks the caller on IO. */
+    suspend fun evaluateNow(): Long? = (engine.submit(AutoStopEvent.Evaluate()).await() as? AutoStopSleep)?.ms
 
     fun start(scope: CoroutineScope): Job = scope.launch {
         while (true) {
@@ -127,4 +86,75 @@ class AutoStopController(
     }
 
     companion object { const val TAG = "PcAutoStop" }
+}
+
+/**
+ * The AutoStop actor: [AutoStopMachine] (the pure reducer) on a [SerialStateMachine] over the persisted [AutoStopStore], plus the effect runner. One per process
+ * in production ([AutoStopWake.engine]); the live controller [attach]es its inputs and effects (the hub port), the cold path (no hub yet) uses [wakeInputs],
+ * [startWake] and [scheduleWake]. Effects run on the engine's serial context after the commit.
+ */
+class AutoStopEngine(
+    private val store: AutoStopStore,
+    now: () -> Long,
+    executor: Executor,
+    private val wakeInputs: () -> WakeInputs?,
+    private val startWake: () -> Boolean,
+    private val scheduleWake: (Long) -> Unit,
+    private val log: (String) -> Unit = { PcLog.i(AutoStopController.TAG, it) },
+    private val warn: (String) -> Unit = { PcLog.w(AutoStopController.TAG, it) },
+    onStep: (AutoStopEvent, Long, AutoStopState) -> Unit = { _, _, _ -> },
+) {
+    /** The live hub's side: its inputs, its effects. */
+    class HubPort(
+        val sample: () -> HubSignals?, val wake: () -> WakeInputs?, val stopHub: () -> Unit, val wakeHub: () -> Boolean, val scheduleWake: (Long) -> Unit,
+        val publishNote: (String?) -> Unit, val timeText: (Long) -> String, val log: (String) -> Unit,
+    )
+
+    @Volatile private var port: HubPort? = null
+    fun attach(p: HubPort) { port = p }
+
+    val machine = SerialStateMachine<AutoStopState, AutoStopEvent, AutoStopEffect>(
+        load = { AutoStopState(saved = store.load()) }, reduce = AutoStopMachine::reduce, persisted = { it.saved }, save = { store.save(it.saved) },
+        now = now, executor = executor, prepare = ::prepare, run = ::run, onStep = onStep,
+        onError = { warn("auto_stop step failed: ${it.javaClass.simpleName}") },
+    )
+
+    fun submit(e: AutoStopEvent) = machine.submit(e)
+
+    /** What the rest of the app sees (the [BackgroundPolicy.Needs] inputs): a stop still being committed is not a stop yet. Null before the first step. */
+    fun visible(): AutoStopSnapshot? = machine.state()?.let { s -> if (s.pendingStop != null) s.saved.copy(autoStoppedAtMs = 0L, reason = null) else s.saved }
+
+    private fun wakeNow(): WakeInputs? = port?.wake?.invoke() ?: wakeInputs()
+
+    /** Fills an event's missing inputs from the live sources (on the serial context, just before it is reduced). */
+    private fun prepare(@Suppress("UNUSED_PARAMETER") s: AutoStopState, e: AutoStopEvent): AutoStopEvent = when (e) {
+        is AutoStopEvent.Evaluate -> if (e.wake != null && e.hub != null) e else AutoStopEvent.Evaluate(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
+        is AutoStopEvent.ConfirmStop -> if (e.wake != null && e.hub != null) e else AutoStopEvent.ConfirmStop(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
+        is AutoStopEvent.ProcessStarted -> if (e.wake != null) e else e.copy(wake = wakeNow())
+        else -> e
+    }
+
+    private fun run(f: AutoStopEffect): AutoStopEvent? {
+        val p = port
+        val log = p?.log ?: this.log
+        val warn = p?.log ?: this.warn
+        when (f) {
+            is AutoStopEffect.Note -> p?.let { it.publishNote(f.reason?.let { r -> BackgroundPolicy.stoppedNote(r, it.timeText(f.sinceMs)) }) }
+            is AutoStopEffect.StopHub -> {
+                when (f.reason) { BackgroundPolicy.Away.NOT_WORN -> log("auto_stop_not_worn"); BackgroundPolicy.Away.DISCONNECTED -> log("auto_stop_disconnected") }
+                p?.stopHub?.invoke()
+            }
+            is AutoStopEffect.StartWake -> {
+                val issued = runCatching { if (f.controller && p != null) p.wakeHub() else startWake() }.getOrDefault(false)
+                return AutoStopEvent.WakeResult(issued, runCatching { wakeNow()?.serviceRunning }.getOrNull() == true)
+            }
+            is AutoStopEffect.ScheduleWake -> if (f.controller && p != null) p.scheduleWake(f.delayMs) else scheduleWake(f.delayMs)
+            is AutoStopEffect.Log -> when (f.line) {
+                AutoStopEffect.Line.WAKE_ATTEMPT -> log("auto_stop wake attempt (${f.via})")
+                AutoStopEffect.Line.WAKE_ALREADY_RUNNING -> log("auto_stop wake: hub already running (${f.via})")
+                AutoStopEffect.Line.WAKE_REFUSED -> warn("auto_stop wake refused (${f.via})")
+            }
+        }
+        return null
+    }
 }
