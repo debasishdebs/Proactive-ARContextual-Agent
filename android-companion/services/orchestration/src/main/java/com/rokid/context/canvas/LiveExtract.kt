@@ -90,7 +90,14 @@ object LiveExtract {
         return when (outcome) {
             is PipelineInterpreter.Outcome.Extracted -> LiveBatch(outcome.batch, LiveEffects(pub.id, outcome.traces, outcome.labels, false))
             // memories are never lost to an experiment: the whole batch goes through the live extraction; its own failure propagates as live does today
-            is PipelineInterpreter.Outcome.Failed -> LiveBatch(ExtractSave.extract(deps.runner, photos, callClass, liveness), LiveEffects(pub.id, outcome.traces, emptyMap(), true))
+            is PipelineInterpreter.Outcome.Failed -> {
+                // codex r11: a forgotten photo ends the work item: no fallback extraction (it would only take another permit to be dropped again)
+                if (outcome.reason == PipelineInterpreter.FRAME_FORGOTTEN) {
+                    val gone = liveness.gone(photos.map { it.frameId }.toSet())
+                    throw com.rokid.context.ai.PhotoForgottenException(gone.ids, gone.wiped)
+                }
+                LiveBatch(ExtractSave.extract(deps.runner, photos, callClass, liveness), LiveEffects(pub.id, outcome.traces, emptyMap(), true))
+            }
         }
     }
 
@@ -175,7 +182,7 @@ object LiveExtract {
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            if (PipelineInterpreter.isTransient(e)) throw e
+            if (PipelineInterpreter.isTransient(e) || e is com.rokid.context.ai.PhotoForgottenException) throw e
             PcLog.w(TAG, "interpreter failed: ${e.javaClass.simpleName}")
             failed("internal")
         }

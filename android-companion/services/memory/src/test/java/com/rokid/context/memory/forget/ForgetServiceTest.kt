@@ -38,8 +38,8 @@ class ForgetServiceTest {
 
     @After fun close() = db.close()
 
-    private suspend fun mem(id: String, frameId: String? = null, derived: Boolean = false, text: String = "text of $id") =
-        db.memoryDao().insert(MemoryEntity(id, frameId, text, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, derived, text))
+    private suspend fun mem(id: String, frameId: String? = null, derived: Boolean = false, text: String = "text of $id", review: ReviewState = ReviewState.OK) =
+        db.memoryDao().insert(MemoryEntity(id, frameId, text, "note", "", MemoryTier.SHORT, 0.8, review, false, 1, derived, text))
 
     private suspend fun edge(child: String, parent: String) = db.forgetDao().insertEdges(listOf(MemorySourceEntity(child, parent)))
     private suspend fun state(id: String) = db.memoryViewDao().byId(id)?.reviewState
@@ -321,8 +321,22 @@ class ForgetServiceTest {
     private suspend fun skippedDue() = db.forgetDao().skippedPhotosDue(0, 0, 1_000, 0, 10)
     private suspend fun linkedDue() = db.forgetDao().linkedPhotosDue(0, 0, 1_000, 0, 0, 0, 10)
     private suspend fun described(frameId: String) {
-        mem("d_$frameId", frameId = frameId)
-        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("d_$frameId", frameId, null, "FACT")))
+        mem("rokid_desc_d_$frameId", frameId = frameId)
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("rokid_desc_d_$frameId", frameId, null, "FACT")))
+    }
+
+    // codex r11: only an OK, non-derived, non-canvas description makes a photo deletable; a canvas save or a fact awaiting review never does
+    @Test fun retentionCountsOnlyOkExtractionDescriptions() = runBlocking {
+        keyframe("c"); keyframe("r"); keyframe("e"); keyframe("d")
+        mem("rokid_cv_run1_0", frameId = "c")                                                   // a canvas save, even OK
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("rokid_cv_run1_0", "c", null, "FACT")))
+        mem("rokid_kf_k1_0", frameId = "r", review = ReviewState.NEEDS_REVIEW)                    // an extraction fact still awaiting review
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("rokid_kf_k1_0", "r", null, "FACT")))
+        mem("rokid_kf_k2_c0", frameId = "e")                                                    // an OK extraction caption
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("rokid_kf_k2_c0", "e", null, "FACT")))
+        mem("rokid_mem_rs_1", frameId = "d", derived = true)                                     // a re-summary of other memories
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("rokid_mem_rs_1", "d", null, "FACT")))
+        assertEquals(listOf("e"), linkedDue())
     }
 
     @Test fun describedFactRowTakesAPhotoOutOfTheSkippedRule() = runBlocking {

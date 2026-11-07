@@ -45,6 +45,31 @@ class PromptKeyImageUseTest {
         }
     }
 
+    /**
+     * Codex r11: a call whose TEXT is derived from a photo (the photo's facts, caption or frame metadata) must name those photos
+     * (`derivedFromFrames =`, or attach the images) and a `liveness =`, so the router's guard re-checks them before the text leaves.
+     * Photo-derived = the call or its enclosing function (up to 30 lines before it) builds frame lines (`frameLine`, `photo.description`, `frame_id:`, `framesByIds`, photo cites).
+     */
+    @Test fun everyCallWithPhotoDerivedTextNamesItsPhotos() {
+        val marker = Regex("frameLine|photo\\.description|frame_id:|framesByIds|\\.photos\\b|photoLines")
+        val offenders = mutableListOf<String>()
+        var seen = 0
+        roots.flatMap { r -> r.walkTopDown().filter { it.extension == "kt" }.toList() }.forEach { f ->
+            val text = f.readText()
+            Regex("RoleCall\\(\\s*PromptKey\\.([A-Z_]+)").findAll(text).forEach { m ->
+                val call = callText(text, m.range.first + "RoleCall".length)
+                val head = text.substring(0, m.range.first)
+                val before = head.substring(maxOf(0, head.lastIndexOf(" fun "))).lines().takeLast(30).joinToString("\n") // the enclosing function only
+                if (!marker.containsMatchIn(before + call)) return@forEach
+                seen++
+                val names = Regex("\\bimages\\s*=").containsMatchIn(call) || Regex("\\bderivedFromFrames\\s*=").containsMatchIn(call)
+                if (!names || !Regex("\\bliveness\\s*=").containsMatchIn(call)) offenders += "${f.name}: ${m.groupValues[1]}"
+            }
+        }
+        assertTrue("the scan sees the photo-derived calls (critics, ask)", seen >= 4)
+        assertEquals("photo-derived calls without derivedFromFrames/images + liveness", emptyList<String>(), offenders)
+    }
+
     @Test fun everyKeyOfAVisionRoleRequiresItsPhoto() {
         // a key on a VISION role (VISION_EXTRACT, CLUSTER_SUMMARY, INTENT_CLASSIFY, and any new one) has the photo as its input
         for (key in PromptKey.entries.filter { it.role?.requiredCapability == Capability.VISION }) {

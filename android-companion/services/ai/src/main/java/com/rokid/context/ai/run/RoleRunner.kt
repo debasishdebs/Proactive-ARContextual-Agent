@@ -39,6 +39,11 @@ data class RoleCall(
     val imagesOnlyOnEndpoint: String? = null,
     /** Codex r10: required with [images] (every image carries its photo ref); the router re-checks the photos with it inside each call's permit. */
     val liveness: com.rokid.context.model.PhotoLiveness? = null,
+    /**
+     * Codex r11: the stored photos this call's TEXT is derived from (their facts, captions or frame metadata), with no image attached. The router
+     * re-checks them with [liveness] inside the permit and under the upload slot exactly like an attached photo; a forgotten one drops the call unsent.
+     */
+    val derivedFromFrames: Set<String> = emptySet(),
 ) {
     val effectiveClass: CallClass
         get() = callClass ?: when (key) {
@@ -76,7 +81,7 @@ class RoleRunner(
         // Codex r10: photos only where the key declares them, and a photo-requiring key never runs without its photos.
         if (call.images.isNotEmpty() && call.key.imageUse == ImageUse.NONE) throw ImagesUnguardedException()
         if (call.key.requiresImage && call.images.isEmpty()) throw ImagesUnsupportedException()
-        val photoIds = call.images.mapNotNull { it.ref }.toSet()
+        val photoIds = call.images.mapNotNull { it.ref }.toSet() + call.derivedFromFrames
         val draft = call.override
         val active = if (draft == null) prompts.active(call.key) else null
         val template = draft?.template ?: active!!.template

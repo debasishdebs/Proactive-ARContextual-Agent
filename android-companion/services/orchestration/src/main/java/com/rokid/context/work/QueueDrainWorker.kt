@@ -258,7 +258,7 @@ class QueueDrainWorker(
         }
         // No facts but captions (a photo with nothing durable in it): the captions are saved, with nothing to critique.
         val confidence = ExtractFollowUp.confidence(facts)
-        val trusted = ExtractFollowUp.trusted(ai, criticWorker, job.id, facts, frameLines, callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT)
+        val trusted = ExtractFollowUp.trusted(ai, criticWorker, job.id, facts, frameLines, seen.map { it.first.id }.toSet(), liveness, callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT)
         // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
         // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
         val saved = ExtractSave.saveExtraction(
@@ -325,7 +325,13 @@ class QueueDrainWorker(
         val frameLines = frames.map(ExtractFollowUp::frameLine)
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", reviews.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
             "\n" + PromptComposer.dataBlock("source", frameLines))
-        val pass = (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT)).output as CriticOutput).pass
+        // codex r11: the facts and frame lines are derived from these photos: re-checked live by the router inside the permit; forgotten meanwhile = stale
+        val pass = try {
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT, derivedFromFrames = frames.map { it.id }.toSet(),
+                liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext))).output as CriticOutput).pass
+        } catch (f: com.rokid.context.ai.PhotoForgottenException) {
+            throw StalePayloadException()
+        }
         if (pass) {
             val view = com.rokid.context.memory.MemoryGraph.get(applicationContext).db.memoryViewDao()
             reviews.forEach { view.moveReviewState(it.id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }

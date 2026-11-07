@@ -84,7 +84,7 @@ internal object KeyframeExtract {
                 var trusted = localTrusted
                 try {
                     if (!localTrusted) {
-                        trusted = ExtractFollowUp.modelCriticPasses(ai, facts, sentFrames.map(ExtractFollowUp::frameLine), callClass)
+                        trusted = ExtractFollowUp.modelCriticPasses(ai, facts, sentFrames.map(ExtractFollowUp::frameLine), sent.toSet(), liveness, callClass)
                         if (trusted) {
                             val view = MemoryGraph.get(app).db.memoryViewDao()
                             saved.memories.filter { it.index != null }.forEach { view.moveReviewState(it.memoryId, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
