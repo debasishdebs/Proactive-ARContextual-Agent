@@ -17,6 +17,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -264,18 +265,20 @@ object HubGraph {
                 paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) },
                 hubNeeded = { ContextHubService.appInForeground() || BackgroundInputs.hubNeeded(app) }, stopHub = { ContextHubService.stop(app) },
                 hubStore = PrefsHubRestartStore { app.getSharedPreferences("hub_restart", android.content.Context.MODE_PRIVATE) },
+                executor = Dispatchers.IO.asExecutor(), // the ladder actor commits on IO, never on the loop's main thread
             ).also { watchdogRef.set(it) }.start(scope)
             // AutoStop (user ruling 2026-11-07): the hub stops by itself after the glasses were off-head or disconnected for N minutes; a woken hub (battery exemption) looks for them first.
-            val autoStopStore = PrefsAutoStopStore.of(app)
             val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)
             AutoStopController(
-                now = System::currentTimeMillis, minutes = timing::autoStopMinNow, store = autoStopStore, hubRunning = { hub.started },
+                now = System::currentTimeMillis, minutes = timing::autoStopMinNow, hubRunning = { hub.started },
                 link = { hub.link.state.value }, worn = hub::wornNow, inFront = ContextHubService::appInForeground, lastFrontMs = { lastFrontMs },
                 busy = hub::busy, runActive = { collectSession?.active() == true },
                 stopHub = { ContextHubService.stop(app) }, wakeHub = { ContextHubService.ensureRunning(app, wake = true) },
                 exempt = { AutoStopWake.exempt(app) },
                 linkAllowed = { BackgroundPolicy.linkMachineryAllowed(KeepRunningNearby.of(app).enabled(), com.rokid.context.link.CxrGlassesLink.isPaired(app)) },
-                publishNote = hub::setAutoStopNote, scheduleWake = { AutoStopWake.schedule(app, it) }, serviceRunning = ContextHubService::isRunning,
+                // effects run on the AutoStop actor's IO context: the note goes back to the hub's own thread
+                publishNote = { n -> scope.launch { hub.setAutoStopNote(n) } }, scheduleWake = { AutoStopWake.schedule(app, it) }, serviceRunning = ContextHubService::isRunning,
+                engine = AutoStopWake.engine(app), // the ONE actor the worker, the process start and the service's user start / manual stop also feed
             ).also { ctl ->
                 autoStopRef.set(ctl)
                 scope.launch { kotlinx.coroutines.flow.combine(hub.link.state, hub.link.wearing) { l, w -> l to w }.collect { ctl.poke() } }

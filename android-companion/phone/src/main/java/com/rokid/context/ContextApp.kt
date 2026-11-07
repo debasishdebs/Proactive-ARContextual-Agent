@@ -91,6 +91,7 @@ class ContextApp : Application() {
         com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)
         // A hub that stopped itself (glasses away) may start again when the platform starts this process (a 15 min job) AND the app is exempt from battery optimization; never otherwise, never after a manual stop.
-        runCatching { com.rokid.context.phone.hub.AutoStopWake.onProcessStart(this) }
+        // Codex review 4: only an event is submitted here; the claim, its commits and the start run on the AutoStop actor's IO context, never on the main thread.
+        runCatching { com.rokid.context.phone.hub.AutoStopWake.processStarted(this) }
     }
 }

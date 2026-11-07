@@ -23,7 +23,7 @@ class AutoStopWakeTest {
     }
 
     @Test fun withoutTheExemptionAProcessStartNeverStartsTheHub() {
-        val s = InMemoryAutoStopStore().apply { markAutoStopped(1L, BackgroundPolicy.Away.NOT_WORN, 0L, 0L) }
+        val s = InMemoryAutoStopStore(AutoStopSnapshot(autoStoppedAtMs = 1L, reason = BackgroundPolicy.Away.NOT_WORN))
         var starts = 0
         assertFalse("Robolectric: not on the allowlist", AutoStopWake.exempt(app))
         assertFalse(AutoStopWake.onProcessStart(app, now = 10_000 * min, store = s) { starts++; true }); assertEquals(0, starts); assertEquals("still stopped, nothing consumed", 0, s.wakeStep())
@@ -32,11 +32,12 @@ class AutoStopWakeTest {
     @Test fun thePrefsStorePersistsEverythingAndALaterInstanceSeesIt() {
         val prefs = app.getSharedPreferences("hub_auto_stop_test", Context.MODE_PRIVATE); prefs.edit().clear().commit()
         val a = PrefsAutoStopStore { prefs }
-        a.setManualStop(true); a.markAutoStopped(100L, BackgroundPolicy.Away.DISCONNECTED, 40L, 900L); a.wakeAttempted(1_000L)
+        val snap = AutoStopSnapshot(manualStop = true, autoStoppedAtMs = 100L, reason = BackgroundPolicy.Away.DISCONNECTED, awaySinceMs = 40L, wakeStep = 1, nextWakeAtMs = 1_000L, wakeProbe = true)
+        a.save(snap)
         val b = PrefsAutoStopStore { prefs }
-        assertTrue(b.manualStop()); assertEquals(100L, b.autoStoppedAtMs()); assertEquals(BackgroundPolicy.Away.DISCONNECTED, b.reason()); assertEquals(40L, b.awaySinceMs())
-        assertEquals(1, b.wakeStep()); assertEquals(1_000L, b.nextWakeAtMs())
-        b.userStarted(); assertFalse(a.manualStop()); assertEquals(0L, a.autoStoppedAtMs()); assertEquals(0, a.wakeStep())
+        assertEquals("one record, read back whole by a later instance", snap, b.load())
+        b.save(AutoStopMachine.reduce(AutoStopState(saved = b.load()), AutoStopEvent.UserStarted, 0L).state.saved)
+        assertFalse(a.manualStop()); assertEquals(0L, a.autoStoppedAtMs()); assertEquals(0, a.wakeStep()); assertEquals(null, a.reason()); assertFalse(a.wakeProbe())
         assertEquals("hub_auto_stop", PrefsAutoStopStore.PREFS)
     }
 
@@ -52,7 +53,7 @@ class AutoStopWakeTest {
     }
 
     // ---- Review fixes 2026-11-07 ----
-    private fun stopped(nextAt: Long) = InMemoryAutoStopStore().apply { markAutoStopped(1L, BackgroundPolicy.Away.DISCONNECTED, 0L, nextAt) }
+    private fun stopped(nextAt: Long) = InMemoryAutoStopStore(AutoStopSnapshot(autoStoppedAtMs = 1L, reason = BackgroundPolicy.Away.DISCONNECTED, nextWakeAtMs = nextAt))
     private fun wake(s: AutoStopStore, now: Long, scheduled: MutableList<Long>, issued: Boolean = true, starts: IntArray = IntArray(1)) =
         AutoStopWake.onProcessStart(app, now = now, store = s, exempt = { true }, minutes = { 20 }, allowed = { true }, running = { false },
             schedule = { scheduled += it }) { starts[0]++; issued }
@@ -70,7 +71,7 @@ class AutoStopWakeTest {
         val c = AutoStopController(
             now = { 1_000 * min }, minutes = { 20 }, store = s, hubRunning = { true }, link = { com.rokid.context.core.model.LinkState.OFFLINE }, worn = { null },
             inFront = { false }, lastFrontMs = { 0L }, busy = { false }, runActive = { false }, stopHub = { stops++ }, wakeHub = { true }, exempt = { true },
-            linkAllowed = { true }, publishNote = {}, timeText = { "x" }, log = {},
+            linkAllowed = { true }, publishNote = {}, timeText = { "x" }, log = {}, executor = SerialStateMachine.DIRECT,
         )
         assertEquals("the 5 min probe, not the full 20", BackgroundPolicy.WAKE_PROBE_MS, c.evaluate())
     }
@@ -92,62 +93,62 @@ class AutoStopWakeTest {
         val infos = androidx.work.WorkManager.getInstance(app).getWorkInfosForUniqueWork(AutoStopWake.WORK_NAME).get()
         assertEquals("replaced, not stacked", 1, infos.count { !it.state.isFinished })
         val prefs = app.getSharedPreferences("hub_auto_stop_probe_test", Context.MODE_PRIVATE); prefs.edit().clear().commit()
-        PrefsAutoStopStore { prefs }.setWakeProbe(true); assertTrue(PrefsAutoStopStore { prefs }.wakeProbe())
-        PrefsAutoStopStore { prefs }.userStarted(); assertFalse(PrefsAutoStopStore { prefs }.wakeProbe())
+        PrefsAutoStopStore { prefs }.save(AutoStopSnapshot(wakeProbe = true)); assertTrue(PrefsAutoStopStore { prefs }.wakeProbe())
+        PrefsAutoStopStore { prefs }.save(AutoStopSnapshot()); assertFalse(PrefsAutoStopStore { prefs }.wakeProbe())
     }
 
-    // ---- Review fixes 2 (2026-11-07, Codex): the WorkManager wake and the live controller race for one rung ----
-    // Deterministic interleaving: the winner parks inside its start (latch), the loser is let in only once it is BLOCKED on the claim lock, the clock is fixed.
+    // ---- Codex review 4: the WorkManager wake and the live controller race for one rung. Both only SUBMIT events to the one actor ----
+    // Deterministic interleaving: the winner parks inside its start (latch); the loser submits only once that start is running, and is seen parked on its reply.
 
-    private fun awaitBlocked(t: Thread) {
+    private fun awaitParked(t: Thread) {
         val end = System.nanoTime() + 5_000_000_000L
-        while (t.state != Thread.State.BLOCKED) { check(t.isAlive && System.nanoTime() < end) { "loser never reached the claim lock (${t.state})" }; Thread.sleep(1) }
+        while (t.state != Thread.State.WAITING && t.state != Thread.State.TIMED_WAITING) { check(t.isAlive && System.nanoTime() < end) { "loser never queued (${t.state})" }; Thread.sleep(1) }
     }
     private class Race {
         @Volatile var serviceUp = false; val starts = java.util.concurrent.atomic.AtomicInteger()
         val inStart = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
-        // the controller loser parks at its first linkAllowed() read, i.e. after it read the old deadline outside the lock
-        val ctlReady = java.util.concurrent.CountDownLatch(1); val ctlGo = java.util.concurrent.CountDownLatch(1); val parked = java.util.concurrent.atomic.AtomicBoolean()
         fun parkStart(issued: Boolean, up: Boolean): () -> Boolean = { inStart.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS); starts.incrementAndGet(); if (up) serviceUp = true; issued }
     }
-    private fun controller(s: AutoStopStore, race: Race, scheduled: MutableList<Long>, park: Boolean = false, start: () -> Boolean) = AutoStopController(
-        now = { 1_000 * min }, minutes = { 20 }, store = s, hubRunning = { race.serviceUp }, link = { com.rokid.context.core.model.LinkState.OFFLINE }, worn = { null },
-        inFront = { false }, lastFrontMs = { 0L }, busy = { false }, runActive = { false }, stopHub = {}, wakeHub = start, exempt = { true },
-        linkAllowed = { if (park && race.parked.compareAndSet(false, true)) { race.ctlReady.countDown(); race.ctlGo.await(5, java.util.concurrent.TimeUnit.SECONDS) }; true },
-        publishNote = {}, timeText = { "x" }, log = {}, scheduleWake = { synchronized(scheduled) { scheduled += it } },
-        io = kotlin.coroutines.EmptyCoroutineContext, // the claim runs on the calling thread, so that thread is the one seen BLOCKED
+    /** The shared actor (direct executor: whichever thread submits first drains; the other's event waits in the queue). */
+    private fun engine(s: AutoStopStore, race: Race, scheduled: MutableList<Long>, start: () -> Boolean) = AutoStopEngine(
+        s, { 1_000 * min }, SerialStateMachine.DIRECT, { WakeInputs(true, 20, true, race.serviceUp) }, start, { synchronized(scheduled) { scheduled += it } }, {}, {},
     )
-    private fun worker(s: AutoStopStore, race: Race, scheduled: MutableList<Long>, start: () -> Boolean) =
-        AutoStopWake.onProcessStart(app, now = 1_000 * min, store = s, exempt = { true }, minutes = { 20 }, allowed = { true }, running = { race.serviceUp },
-            schedule = { synchronized(scheduled) { scheduled += it } }, start = start)
+    private fun controller(e: AutoStopEngine, race: Race, scheduled: MutableList<Long>, start: () -> Boolean) = AutoStopController(
+        now = { 1_000 * min }, minutes = { 20 }, hubRunning = { race.serviceUp }, link = { com.rokid.context.core.model.LinkState.OFFLINE }, worn = { null },
+        inFront = { false }, lastFrontMs = { 0L }, busy = { false }, runActive = { false }, stopHub = {}, wakeHub = start, exempt = { true },
+        linkAllowed = { true }, publishNote = {}, timeText = { "x" }, log = {}, scheduleWake = { synchronized(scheduled) { scheduled += it } }, engine = e,
+    )
+    private fun worker(e: AutoStopEngine): Boolean =
+        (kotlinx.coroutines.runBlocking { e.submit(AutoStopEvent.ProcessStarted("process start")).await() } as AutoStopClaimed).claim == AutoStopWake.Claim.STARTED
     private fun sec(l: java.util.concurrent.CountDownLatch) = assertTrue(l.await(5, java.util.concurrent.TimeUnit.SECONDS))
 
     @Test fun aControllerWakeThatWinsLeavesTheRacingWorkerANoOpThatKeepsTheProbe() {
         val s = stopped(nextAt = 1_000 * min); val race = Race(); val scheduled = mutableListOf<Long>()
-        val c = controller(s, race, scheduled, start = race.parkStart(issued = true, up = true))
+        val e = engine(s, race, scheduled) { race.starts.incrementAndGet(); race.serviceUp = true; true }
+        val c = controller(e, race, scheduled, start = race.parkStart(issued = true, up = true))
         var ctl: Long? = -1L; var wk: Boolean? = null
         val a = Thread { ctl = c.evaluate() }.apply { start() }
         try {
             sec(race.inStart)
-            val b = Thread { wk = worker(s, race, scheduled) { race.starts.incrementAndGet(); race.serviceUp = true; true } }.apply { start() }
-            awaitBlocked(b); race.release.countDown(); b.join(5_000)
+            val b = Thread { wk = worker(e) }.apply { start() }
+            awaitParked(b); race.release.countDown(); b.join(5_000)
         } finally { race.release.countDown(); a.join(5_000) }
         assertEquals("one start, never two", 1, race.starts.get()); assertEquals("one rung consumed", 1, s.wakeStep())
         assertEquals(BackgroundPolicy.BUSY_RECHECK_MS, ctl); assertEquals(false, wk); assertEquals(emptyList<Long>(), scheduled)
         assertTrue("the loser did not clear the winner's probe", s.wakeProbe()); assertEquals(0L, s.autoStoppedAtMs())
     }
 
-    /** The controller reads the deadline, the worker claims the rung and parks in its start, then the controller reaches the lock. */
+    /** The worker claims the rung and parks in its start; the controller's look is queued behind it and reduced after the claim settled. */
     private fun workerWinsControllerRaces(issued: Boolean, up: Boolean): Triple<AutoStopStore, Race, Pair<Long?, List<Long>>> {
         val s = stopped(nextAt = 1_000 * min); val race = Race(); val scheduled = mutableListOf<Long>()
-        val c = controller(s, race, scheduled, park = true) { race.starts.incrementAndGet(); race.serviceUp = true; true }
+        val e = engine(s, race, scheduled, race.parkStart(issued, up))
+        val c = controller(e, race, scheduled) { race.starts.incrementAndGet(); race.serviceUp = true; true }
         var ctl: Long? = -1L
-        val b = Thread { ctl = c.evaluate() }.apply { start() }
-        val a = Thread { worker(s, race, scheduled, race.parkStart(issued, up)) }
+        val a = Thread { worker(e) }.apply { start() }
+        val b = Thread { ctl = c.evaluate() }
         try {
-            sec(race.ctlReady); a.start(); sec(race.inStart)
-            race.ctlGo.countDown(); awaitBlocked(b)
-        } finally { race.ctlGo.countDown(); race.release.countDown(); a.join(5_000); b.join(5_000) }
+            sec(race.inStart); b.start(); awaitParked(b)
+        } finally { race.release.countDown(); a.join(5_000); b.join(5_000) }
         return Triple(s, race, ctl to scheduled.toList())
     }
 
@@ -155,7 +156,7 @@ class AutoStopWakeTest {
         val (s, race, r) = workerWinsControllerRaces(issued = true, up = true)
         assertEquals("one start, never two", 1, race.starts.get()); assertEquals(1, s.wakeStep())
         assertTrue("the loser did not treat the running hub as a refusal", s.wakeProbe()); assertEquals(emptyList<Long>(), r.second)
-        assertEquals("the loser just looks again soon", BackgroundPolicy.BUSY_RECHECK_MS, r.first)
+        assertEquals("the loser sees the woken hub and looks for the glasses for the short probe", BackgroundPolicy.WAKE_PROBE_MS, r.first)
     }
 
     @Test fun aRefusedWinnerMovesTheDeadlineSoTheLoserConsumesNothing() {
@@ -168,7 +169,8 @@ class AutoStopWakeTest {
     @Test fun aStartThatFindsTheServiceAlreadyRunningIsNotARefusal() {
         val s = stopped(nextAt = 1_000 * min); val race = Race(); val scheduled = mutableListOf<Long>()
         // ensureRunning returns false because the service came up meanwhile (it only starts a stopped one)
-        assertFalse(worker(s, race, scheduled) { race.serviceUp = true; false })
+        assertFalse(AutoStopWake.onProcessStart(app, now = 1_000 * min, store = s, exempt = { true }, minutes = { 20 }, allowed = { true }, running = { race.serviceUp },
+            schedule = { scheduled += it }) { race.serviceUp = true; false })
         assertTrue("probe kept", s.wakeProbe()); assertEquals(emptyList<Long>(), scheduled); assertEquals(0L, s.autoStoppedAtMs())
         assertEquals(AutoStopWake.Claim.NONE, AutoStopWake.claim(1_000 * min, s, { true }, { 20 }, { true }, { race.serviceUp }, { true }, via = "t", log = {}, warn = {}))
     }
