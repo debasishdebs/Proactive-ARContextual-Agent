@@ -16,6 +16,7 @@ object HubActivityHook : Application.ActivityLifecycleCallbacks by HubResumeHook
     keepRunning = { activity -> BackgroundInputs.hubNeeded(activity.applicationContext) },
     positive = { activity -> if (HubGraph.isBuilt) HubGraph.get(activity).positiveSignal() },
     stopHub = { activity -> ContextHubService.stop(activity.applicationContext) },
+    front = { HubGraph.noteFront() },
 )
 
 /**
@@ -34,6 +35,8 @@ class HubResumeHook(
     private val stopHub: (Activity) -> Unit = {},
     /** The app came to the front: a positive signal for the back-off, even when no hub service runs. */
     private val positive: (Activity) -> Unit = {},
+    /** AutoStop: the app came to the front (resume) or finally left it (stopped): the front hold of [BackgroundPolicy.FRONT_HOLD_MS] counts from the last of these. */
+    private val front: () -> Unit = {},
 ) : Application.ActivityLifecycleCallbacks {
     private var resumes = 0L
     private var started = 0
@@ -41,6 +44,7 @@ class HubResumeHook(
     override fun onActivityResumed(activity: Activity) {
         val resume = ++resumes
         positive(activity)
+        front()
         ContextHubService.ensureRunning(activity, resume, force = true) // in front the hub runs as before; leaving the front stops it unless something needs it
         if (ContextHubService.isRunning()) HubGraph.get(activity).onAppResumed()
         voiceForeground(activity, resume)
@@ -51,6 +55,7 @@ class HubResumeHook(
     override fun onActivityStopped(activity: Activity) {
         started = (started - 1).coerceAtLeast(0)
         // A configuration change stops and restarts the activity: it is not the app leaving the front.
+        if (started == 0 && !activity.isChangingConfigurations) front()
         if (started == 0 && !activity.isChangingConfigurations && !keepRunning(activity)) stopHub(activity)
     }
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit

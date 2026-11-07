@@ -56,6 +56,13 @@ object HubGraph {
         private set
     fun callActive(): Boolean = callGuards?.callIdle() == false
 
+    /** AutoStop: when our app was last in front (phone clock, 0 = never since this process started); the hub is kept [BackgroundPolicy.FRONT_HOLD_MS] after it. */
+    @Volatile internal var lastFrontMs = 0L
+    private val autoStopRef = java.util.concurrent.atomic.AtomicReference<AutoStopController>()
+
+    /** The app came to the front or left it: stamps the time and re-checks the AutoStop decision. Safe before the graph is built (it just stamps). */
+    internal fun noteFront() { lastFrontMs = System.currentTimeMillis(); autoStopRef.get()?.poke() }
+
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
     /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
@@ -258,6 +265,22 @@ object HubGraph {
                 hubNeeded = { ContextHubService.appInForeground() || BackgroundInputs.hubNeeded(app) }, stopHub = { ContextHubService.stop(app) },
                 hubStore = PrefsHubRestartStore { app.getSharedPreferences("hub_restart", android.content.Context.MODE_PRIVATE) },
             ).also { watchdogRef.set(it) }.start(scope)
+            // AutoStop (user ruling 2026-11-07): the hub stops by itself after the glasses were off-head or disconnected for N minutes; a woken hub (battery exemption) looks for them first.
+            val autoStopStore = PrefsAutoStopStore.of(app)
+            val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)
+            AutoStopController(
+                now = System::currentTimeMillis, minutes = timing::autoStopMinNow, store = autoStopStore, hubRunning = { hub.started },
+                link = { hub.link.state.value }, worn = hub::wornNow, inFront = ContextHubService::appInForeground, lastFrontMs = { lastFrontMs },
+                busy = hub::busy, runActive = { collectSession?.active() == true },
+                stopHub = { ContextHubService.stop(app) }, wakeHub = { ContextHubService.ensureRunning(app, wake = true) },
+                exempt = { AutoStopWake.exempt(app) },
+                linkAllowed = { BackgroundPolicy.linkMachineryAllowed(KeepRunningNearby.of(app).enabled(), com.rokid.context.link.CxrGlassesLink.isPaired(app)) },
+                publishNote = hub::setAutoStopNote,
+            ).also { ctl ->
+                autoStopRef.set(ctl)
+                scope.launch { kotlinx.coroutines.flow.combine(hub.link.state, hub.link.wearing) { l, w -> l to w }.collect { ctl.poke() } }
+                scope.launch { timing.autoStopMin.collect { ctl.poke() } }
+            }.start(scope)
         }
     }
 }
