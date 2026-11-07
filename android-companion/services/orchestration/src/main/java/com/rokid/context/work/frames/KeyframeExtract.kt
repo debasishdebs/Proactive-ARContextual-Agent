@@ -48,11 +48,18 @@ internal object KeyframeExtract {
         val photos = loaded.photos
         if (photos.isEmpty()) return ExtractOutcome.Failed("unreadable", unreadable = loaded.gone, unseen = loaded.unseen)
         val ai = AiGraph.get(app)
+        // Codex r9 P1-1: every photo upload of this extraction re-checks, inside its call permit and under the DataOpGate, that the photos are still live
+        // (a Forget can complete while the call waits for its permit); a forgotten batch is dropped unsent and nothing is written.
+        val guard = FrameDispatchGuard.forApp(app, photos.map { it.frameId }, generation)
         val liveBatch = try {
-            if (live == null) LiveBatch(ExtractSave.extract(ai.runner, photos, callClass), LiveEffects.None) else LiveExtract.batch(live, photos, callClass)
+            withContext(guard) {
+                if (live == null) LiveBatch(ExtractSave.extract(ai.runner, photos, callClass), LiveEffects.None) else LiveExtract.batch(live, photos, callClass)
+            }
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
+            if (guard.wiped) return ExtractOutcome.Wiped(loaded.gone, loaded.unseen)
+            if (guard.dropped.isNotEmpty()) return ExtractOutcome.Stale(loaded.gone + guard.dropped, loaded.unseen)
             return ExtractOutcome.classify(e, online = online()).copy(unreadable = loaded.gone, unseen = loaded.unseen)
         }
         val batch = liveBatch.batch
@@ -74,7 +81,7 @@ internal object KeyframeExtract {
                 if (live != null) {
                     // the extraction is saved: now (and only now) the canvas effects of this batch are committed, fenced; never throws, no-op without a publish
                     withContext(NonCancellable) { LiveExtract.commit(live, liveBatch.effects, generation, sent.toSet()) }
-                    if (liveBatch.effects.shadow) LiveExtract.shadowAsync(live, photos, generation)
+                    if (liveBatch.effects.shadow) LiveExtract.shadowAsync(live, photos, generation, guard)
                 }
                 var trusted = localTrusted
                 try {

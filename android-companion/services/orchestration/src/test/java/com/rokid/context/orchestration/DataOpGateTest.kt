@@ -240,4 +240,38 @@ class DataOpGateTest {
         assertFree(gate)
         var d = false; gate.delete { d = true }; assertTrue(d)
     }
+
+    // ---- codex r9 P1-1: a photo upload holds the dispatch side for its whole call
+    @Test fun aDeleteWaitsForARunningPhotoUploadAndAnUploadWaitsForARunningDelete() = runBlocking<Unit> {
+        val gate = DataOpGate(); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val order = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val up = async { gate.dispatch { inside.complete(Unit); release.await(); order += "upload end" } }
+        inside.await()
+        gate.export { order += "export" } // exports are not blocked by uploads
+        val del = async { gate.delete { order += "delete" } }
+        kotlinx.coroutines.delay(50)
+        assertEquals(listOf("export"), order)
+        release.complete(Unit); up.await(); del.await()
+        assertEquals(listOf("export", "upload end", "delete"), order)
+
+        val dIn = CompletableDeferred<Unit>(); val dRelease = CompletableDeferred<Unit>()
+        val del2 = async { gate.delete { dIn.complete(Unit); dRelease.await(); order += "delete2 end" } }
+        dIn.await()
+        val up2 = async { gate.dispatch { order += "upload2" } }
+        kotlinx.coroutines.delay(50)
+        assertFalse("no upload starts while a delete runs", "upload2" in order)
+        dRelease.complete(Unit); del2.await(); up2.await()
+        assertEquals(listOf("delete2 end", "upload2"), order.takeLast(2))
+    }
+
+    @Test fun aDeleteThatWaitedTooLongForAnUploadFailsTypedAsBusy() = runBlocking<Unit> {
+        val gate = DataOpGate(waitMs = 150); val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val up = async { gate.dispatch { inside.complete(Unit); release.await() } }
+        inside.await()
+        var ran = false
+        val err = runCatching { gate.delete { ran = true } }.exceptionOrNull()
+        assertTrue(err is DataOpGate.UploadInProgress && err is DataOpGate.WriteInProgress); assertFalse(ran)
+        release.complete(Unit); up.await()
+        gate.delete { ran = true }; assertTrue(ran)
+    }
 }

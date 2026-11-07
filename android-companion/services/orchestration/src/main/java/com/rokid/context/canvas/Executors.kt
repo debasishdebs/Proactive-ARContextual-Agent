@@ -183,7 +183,7 @@ object PromptExecutor : NodeExecutor {
             try {
                 val reply = ctx.model.complete(role, ctx.callClass) { e ->
                     val plan = StructuredOutput.plan(e, schemaObj, name)
-                    ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image) else emptyList(), format = plan.format)
+                    ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image) else emptyList(), format = plan.format, requireImages = images) // a photo prompt never falls back to text (codex r9 P1-2)
                 }
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@mapIndexed NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)

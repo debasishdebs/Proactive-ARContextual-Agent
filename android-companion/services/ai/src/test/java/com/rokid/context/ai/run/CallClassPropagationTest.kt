@@ -73,7 +73,7 @@ class CallClassPropagationTest {
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
-    private fun extract(callClass: CallClass? = null) = RoleCall(PromptKey.VISION_EXTRACT, PromptVars(), fromFrames = true, callClass = callClass)
+    private fun extract(callClass: CallClass? = null) = RoleCall(PromptKey.VISION_EXTRACT, PromptVars(), images = listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA")), fromFrames = true, callClass = callClass) // codex r9 P1-2: VISION_EXTRACT always carries its photo
 
     @Test fun askTriggeredExtractionIsUser() = runBlocking {
         ai.runner.run(extract(CallClass.USER))

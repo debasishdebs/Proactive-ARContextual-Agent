@@ -26,3 +26,14 @@ interface CallGate {
 object PassThroughGate : CallGate {
     override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T = block()
 }
+
+/**
+ * Codex r9 P1-1: a coroutine-context element the caller installs around work that sends photos. The router runs every provider call that carries images
+ * through [send], INSIDE that call's permit and right before the bytes leave: the guard re-checks that the photos are still live and holds whatever keeps
+ * them live (the DataOpGate's dispatch side) for the whole call, or throws without calling [call] (nothing is uploaded). Absent = no check.
+ */
+interface DispatchGuard : kotlin.coroutines.CoroutineContext.Element {
+    suspend fun <T> send(call: suspend () -> T): T
+    override val key: kotlin.coroutines.CoroutineContext.Key<*> get() = Key
+    companion object Key : kotlin.coroutines.CoroutineContext.Key<DispatchGuard>
+}

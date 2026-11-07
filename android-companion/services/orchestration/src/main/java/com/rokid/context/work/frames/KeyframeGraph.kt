@@ -266,7 +266,14 @@ class KeyframeHandle internal constructor(private val app: Context) {
         val gone = reps.filter { (cid, ids) -> cid !in withPhotos && ids.all { it in loaded.gone } }.keys
         val unseen = reps.keys - withPhotos - gone
         if (photos.isEmpty()) return ClusterOutcome.Saved(emptyList(), leftOut = unseen, gone = gone)
-        val out = ClusterContract.call(AiGraph.get(app).runner, photos, callClass)
+        // Codex r9 P1-1: the photos are re-checked live inside each call's permit, under the DataOpGate; a Forget meanwhile drops the call unsent.
+        val guard = FrameDispatchGuard.forApp(app, photos.map { it.frameId }, generation)
+        val out = try {
+            withContext(guard) { ClusterContract.call(AiGraph.get(app).runner, photos, callClass) }
+        } catch (e: Exception) {
+            if (e !is kotlin.coroutines.cancellation.CancellationException && (guard.wiped || guard.dropped.isNotEmpty())) return ClusterOutcome.Stale
+            throw e
+        }
         val sent = out.clusters.associate { c -> c.clusterId to photos.filter { it.clusterId == c.clusterId }.map { it.frameId } }
         val leftOut = unseen + (withPhotos - sent.keys)
         // Wave 1's free local critic (no AI call) decides the facts' review state; no model critic per cluster (cost). An unsure
