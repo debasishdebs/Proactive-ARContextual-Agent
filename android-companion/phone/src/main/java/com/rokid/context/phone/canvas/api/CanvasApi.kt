@@ -23,7 +23,9 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 /** A group of routes added to [CanvasApi]: null = the path is not this group's. */
@@ -50,7 +52,7 @@ class CanvasApi(
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
         private val FROM = Regex("^[A-Za-z0-9:_-]{1,64}(@[0-9]{1,6})?$")
         private val VERSION = Regex("^[0-9]{1,6}$")
-        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile", "/api/plans/check", "/api/expr/try")
+        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile", "/api/plans/check", "/api/expr/try", "/api/retrieve/debug")
         private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
         private val MOMENT_ID = Regex("^[0-9a-f]{8}$")
         private val SCENE_ID = Regex("^S[0-9a-f]{8}$")
@@ -66,6 +68,8 @@ class CanvasApi(
         const val MAX_FREEZE_NOTE = 80
         const val MAX_NAME = 80
         const val MAX_TEXT = 64 * 1024
+        const val MAX_QUERY = 2_000
+        const val MAX_TOP_K = 30
         private val OK = buildJsonObject { put("ok", true) }
     }
 
@@ -143,6 +147,7 @@ class CanvasApi(
             "GET asks" -> json(backend.asks())
             "GET asks/:id" -> askView(id(s[1]))
             "POST asks/:id/replay" -> withTimeout(mutationDeadlineMs) { replay(id(s[1]), req) }
+            "POST retrieve/debug" -> retrieveDebug(req)
             "POST runs" -> startRun(req)
             "GET runs" -> json(backend.runs())
             "GET runs/:id" -> json(backend.run(id(s[1])) ?: throw NoSuchElementException())
@@ -169,6 +174,7 @@ class CanvasApi(
         s.size == 1 && s[0] == "asks" -> "asks"
         s.size == 2 && s[0] == "asks" -> "asks/:id"
         s.size == 3 && s[0] == "asks" && s[2] == "replay" -> "asks/:id/replay"
+        s.size == 2 && s[0] == "retrieve" && s[1] == "debug" -> "retrieve/debug"
         s.size == 2 && s[0] == "runs" -> "runs/:id"
         s.size == 3 && s[0] == "runs" && s[2] in setOf("cancel", "scores", "proposal", "save") -> "runs/:id/${s[2]}"
         else -> null
@@ -451,6 +457,25 @@ class CanvasApi(
                 "NOT_SET" -> throw ApiError(502, "model_failed", "No model is set for Answer.")
                 else -> throw ApiError(502, "model_failed", "The replay failed.") // an exception class name or an unknown word: never echoed
             }
+        }
+    }
+
+    /** Read-only text retrieval for the quality-eval tool: no model call, no write, the query is never logged or echoed. */
+    private suspend fun retrieveDebug(req: HttpRequest): HttpResponse {
+        val b = body(req)
+        val query = b.str("query", MAX_QUERY).also { if (it.isBlank()) throw bad("Missing or bad \"query\".") }
+        val mode = b.optString("mode", 16)?.also { if (it !in setOf("LEXICAL", "SEMANTIC", "HYBRID")) throw bad("Bad \"mode\".") }
+        val topK = if (b["topK"].let { it == null || it is JsonNull }) null else b.int("topK").also { if (it !in 1..MAX_TOP_K) throw bad("\"topK\" must be 1 to $MAX_TOP_K.") }
+        val notAfter = if (b["notAfterMs"].let { it == null || it is JsonNull }) null
+        else ((b["notAfterMs"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.takeIf { it >= 0 } ?: throw bad("Bad \"notAfterMs\"."))
+        val snippets = when (val e = b["snippets"]) {
+            null, is JsonNull -> false
+            else -> (e as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: throw bad("Bad \"snippets\".")
+        }
+        return try {
+            json(backend.retrieveDebug(query, mode, topK, notAfter, snippets))
+        } catch (e: IllegalStateException) {
+            if (e.message == "busy") throw ApiError(409, "busy", "An export or delete is running. Try again.") else throw e
         }
     }
 

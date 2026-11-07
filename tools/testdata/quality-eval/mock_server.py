@@ -115,10 +115,16 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"token": TOKEN}) if b.get("code") == "123456" else self.send(401, {"error": "unauthorized"})
         self.rec()
         if not self.authed(): return self.send(401, {"error": "unauthorized"})
-        if self.path == "/api/asks/debug-retrieve":
+        if self.path == "/api/retrieve/debug":
+            mode = b.get("mode") or "HYBRID"
+            if mode not in ("LEXICAL", "SEMANTIC", "HYBRID") or not isinstance(b.get("topK", 10), int) or not 1 <= b.get("topK", 10) <= 30 or "limit" in b:
+                return self.send(400, {"error": "bad_request"})
             qw = words(b.get("query", ""))
             hits = sorted(({"memoryId": m[0]["id"], "score": len(qw & words(m[0]["text"])) / (len(qw) or 1)} for m in MEM.values()), key=lambda h: -h["score"])
-            return self.send(200, {"hits": [h for h in hits if h["score"] > 0][:b.get("limit", 10)]})
+            hits = [h for h in hits if h["score"] > 0][:b.get("topK", 10)]
+            for i, h in enumerate(hits): h["rank"] = i + 1; h["reviewState"] = "OK"; h["createdAt"] = NOW
+            # the mock has no embedder: SEMANTIC runs lexically and says so, like a phone without one
+            return self.send(200, {"mode": "LEXICAL" if mode == "SEMANTIC" else mode, "semanticUnavailable": mode == "SEMANTIC", "fallback": not hits, "hits": hits})
         return self.send(404, {"error": "not_found"})
 
     def do_DELETE(self):

@@ -212,6 +212,18 @@ class CanvasRouterTest {
         assertEquals(413, router.handle(HttpRequest("POST", "/api/pair", emptyMap(), mapOf("host" to "127.0.0.1:8765"), over)).status)
     }
 
+    @Test fun retrieveDebugNeedsTokenAndSameOriginAndLogsNoQuery() {
+        val body = """{"query":"my-secret-query"}"""
+        assertEquals(401, router.handle(req("POST", "/api/retrieve/debug", body = body)).status)
+        assertEquals(0, apiCalls.size)
+        val t = auth.newWebViewToken()
+        assertEquals(403, router.handle(req("POST", "/api/retrieve/debug", headers = bearer(t) + ("origin" to "http://evil.example"), body = body)).status)
+        assertEquals(0, apiCalls.size)
+        assertEquals(200, router.handle(req("POST", "/api/retrieve/debug", headers = bearer(t), body = body)).status)
+        assertEquals(1, apiCalls.size)
+        assertTrue(logs.joinToString("\n"), logs.none { it.contains("secret") })
+    }
+
     @Test fun logLineHasNoIdsOrQuery() {
         val t = auth.newWebViewToken()
         router.handle(req("GET", "/api/frames/1234567/thumb", headers = bearer(t), query = mapOf("before" to "99", "secret" to "hunter2")))

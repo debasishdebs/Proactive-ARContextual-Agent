@@ -88,6 +88,8 @@ class CanvasBackendImpl(
     private val lan: () -> Boolean,
     private val clock: () -> Long = System::currentTimeMillis,
     private val askDebug: Lazy<AskDebug>,
+    /** The read-only retrieval of `POST /api/retrieve/debug` (same Ask retriever, no model). */
+    private val retrieveDebug: Lazy<com.rokid.context.canvas.RetrieveDebug>,
     private val thumbnailer: (ByteArray) -> ByteArray? = { FrameImagesHttp.thumbnail(it) },
     /** Slice 3a (Task 28): the capture-plan publisher, read at call time (null until it is composed): Undo latest is group-aware through it. */
     private val plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
@@ -176,7 +178,7 @@ class CanvasBackendImpl(
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
             }
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer, plans, helperJobs, momentResolver)
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, lazy { com.rokid.context.canvas.RetrieveDebug(answers()) }, thumbnailer, plans, helperJobs, momentResolver)
         }
 
         /** The built-in executors plus [extra]; an extra executor never replaces a built-in node type. */
@@ -694,6 +696,23 @@ class CanvasBackendImpl(
     override suspend fun replayAsk(id: String, template: String): AskDebug.Replay {
         start()
         return askDebug.value.replay(id, template)
+    }
+
+    override suspend fun retrieveDebug(query: String, mode: String?, topK: Int?, notAfterMs: Long?, snippets: Boolean): JsonObject {
+        start()
+        val m = mode?.let { com.rokid.context.memory.retrieval.RetrievalMode.valueOf(it) }
+        return when (val r = retrieveDebug.value.run(query, m, topK, notAfterMs, snippets)) {
+            com.rokid.context.canvas.RetrieveDebug.Result.Busy -> throw IllegalStateException("busy")
+            is com.rokid.context.canvas.RetrieveDebug.Result.Ok -> buildJsonObject {
+                put("mode", r.mode); put("semanticUnavailable", r.semanticUnavailable); put("fallback", r.fallback)
+                put("hits", JsonArray(r.hits.map { h ->
+                    buildJsonObject {
+                        put("memoryId", h.memoryId); put("score", h.score); put("rank", h.rank); put("reviewState", h.reviewState); put("createdAt", h.createdAt)
+                        h.snippet?.let { put("snippet", it) }
+                    }
+                }))
+            }
+        }
     }
 
     private fun parse(text: String?): JsonElement = text?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() } ?: JsonNull

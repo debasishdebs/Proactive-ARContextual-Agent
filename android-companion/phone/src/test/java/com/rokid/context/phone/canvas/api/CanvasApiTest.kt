@@ -82,6 +82,13 @@ private class FakeBackend : CanvasBackend {
     override suspend fun asks(): JsonArray { enter("asks"); return JsonArray(listOf(buildJsonObject { put("id", "a1") })) }
     override suspend fun ask(id: String): JsonObject? { enter("ask"); if (askRedacted) throw AskRedacted(); return if (known) buildJsonObject { put("askId", id); put("composedPrompt", "SECRET PROMPT") } else null }
     override suspend fun replayAsk(id: String, template: String): AskDebug.Replay { enter("replay"); if (replayDelayMs > 0) delay(replayDelayMs); lastReplay = id to template; return replayResult }
+    var retrieveBusy = false
+    var lastRetrieve: List<Any?>? = null
+    override suspend fun retrieveDebug(query: String, mode: String?, topK: Int?, notAfterMs: Long?, snippets: Boolean): JsonObject {
+        enter("retrieveDebug"); lastRetrieve = listOf(query, mode, topK, notAfterMs, snippets)
+        if (retrieveBusy) throw IllegalStateException("busy")
+        return buildJsonObject { put("mode", mode ?: "HYBRID"); put("semanticUnavailable", false); put("fallback", false); put("hits", JsonArray(emptyList())) }
+    }
     var lastHistoryLimit = -1
     override suspend fun publishHistory(limit: Int): JsonArray { enter("history"); lastHistoryLimit = limit; return JsonArray(listOf(buildJsonObject { put("id", 1); put("kind", "interpreter") })) }
     var lastLiveLimit = -1
@@ -709,6 +716,39 @@ class CanvasApiTest {
         assertEquals(400, call("POST", "/api/runs/ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"},"frameIds":["f1"],"confirmToken":"t"}""").status)
         be.abThrows = null
         assertEquals(400, call("POST", "/api/runs/ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"},"frameIds":["f1"]}""").status) // no token
+    }
+
+    @Test fun retrieveDebugPassesTheValidatedFields() {
+        val r = call("POST", "/api/retrieve/debug", """{"query":"where are my keys","mode":"LEXICAL","topK":30,"notAfterMs":5,"snippets":true}""")
+        assertEquals(200, r.status)
+        assertEquals(listOf<Any?>("where are my keys", "LEXICAL", 30, 5L, true), be.lastRetrieve)
+        assertEquals("LEXICAL", r.obj()["mode"]!!.jsonPrimitive.content)
+        call("POST", "/api/retrieve/debug", """{"query":"q"}""")
+        assertEquals(listOf<Any?>("q", null, null, null, false), be.lastRetrieve)
+        assertFalse(String(r.body).contains("where are my keys")) // the query is never echoed
+    }
+
+    @Test fun retrieveDebugValidation() {
+        for (b in listOf("""{}""", """{"query":""}""", """{"query":"  "}""", """{"query":5}""", """{"query":"q","mode":"lexical"}""", """{"query":"q","mode":"FUZZY"}""",
+            """{"query":"q","topK":0}""", """{"query":"q","topK":31}""", """{"query":"q","topK":"3"}""", """{"query":"q","notAfterMs":-1}""",
+            """{"query":"q","snippets":"yes"}""", """{"query":"${"x".repeat(2_001)}"}""", "[]", "nope")) {
+            assertEquals(b.take(60), 400, call("POST", "/api/retrieve/debug", b).status)
+        }
+        assertFalse(be.calls.any { it == "retrieveDebug" })
+    }
+
+    @Test fun retrieveDebugIsPostOnly() {
+        for (m in listOf("GET", "PUT", "DELETE", "PATCH")) assertEquals(m, 405, call(m, "/api/retrieve/debug", """{"query":"q"}""").status)
+        assertEquals(404, call("POST", "/api/retrieve/other", """{"query":"q"}""").status)
+        assertFalse(be.calls.any { it == "retrieveDebug" })
+    }
+
+    @Test fun retrieveDebugDuringAnExportOrDeleteIs409() {
+        be.retrieveBusy = true
+        val r = call("POST", "/api/retrieve/debug", """{"query":"secret words"}""")
+        assertEquals(409, r.status)
+        assertEquals("busy", r.err())
+        assertFalse(String(r.body).contains("secret words"))
     }
 
     @Test fun asksList() {
