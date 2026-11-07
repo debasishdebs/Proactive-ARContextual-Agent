@@ -214,7 +214,8 @@ def fetch_frames(cl, max_frames):
     return frames[:max_frames]
 
 
-ROUTE_ID = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")   # CanvasApi.ID: the only ids any /api/<x>/:id route accepts (no '.', no '/', no %-decoding)
+ROUTE_ID = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")   # CanvasApi.ID: pipelines, runs, asks (no '.', no '/', no %-decoding)
+FRAME_ROUTE_ID = re.compile(r"^(?!\.)(?!.*\.\.)(?!.*\.$)[A-Za-z0-9:_.-]{1,64}$")   # CanvasApi.FRAME_ID: real frame ids end in '.v2'
 
 SEED_WORDS = ("table person screen kitchen street building hand light door car text window food book phone computer wall floor room desk paper "
               "tree sign water people white black blue red green yellow wooden metal glass shelf bottle cup bag chair sofa bed monitor keyboard "
@@ -222,8 +223,8 @@ SEED_WORDS = ("table person screen kitchen street building hand light door car t
 
 
 def fetch_memories(cl, frames, max_detail):
-    """GET /api/frames/:id for frames with live memories, evenly spread over time. The route accepts only ids matching ROUTE_ID (sent literally: the phone
-    does not percent-decode); a frame id outside it is counted, never sent (the route would answer 400 for it).
+    """GET /api/frames/:id for frames with live memories, evenly spread over time. The route accepts ids matching FRAME_ROUTE_ID (sent literally: the phone
+    does not percent-decode, '.v2' included); an id outside it is counted, never sent (tolerance for an odd id or an older phone build).
     Returns (memories, details-by-frame, number of sampled frames whose id the route cannot take)."""
     withm = [f for f in frames if f.get("hasLiveMemories")]
     if len(withm) > max_detail:
@@ -232,7 +233,7 @@ def fetch_memories(cl, frames, max_detail):
     mems, det, rejected = [], {}, 0
     for f in withm:
         fid = str(f.get("id"))
-        if not ROUTE_ID.match(fid):
+        if not FRAME_ROUTE_ID.match(fid):
             rejected += 1
             continue
         d = cl.get("/api/frames/%s" % fid, tag="/api/frames/:id")
@@ -244,8 +245,8 @@ def fetch_memories(cl, frames, max_detail):
                 mems.append({"id": m["id"], "text": m.get("text") or "", "type": m.get("type"), "frameId": f["id"], "ts": f.get("ts") or 0,
                              "state": f.get("state")})
     if rejected:
-        cl.unavailable.setdefault("/api/frames/:id", "frame ids rejected by the route's id pattern %s (e.g. '.' in '...v2'): %d of %d sampled ids never sent" % (
-            ROUTE_ID.pattern, rejected, len(withm)))
+        cl.unavailable.setdefault("/api/frames/:id", "frame ids rejected by the route's id pattern %s: %d of %d sampled ids never sent" % (
+            FRAME_ROUTE_ID.pattern, rejected, len(withm)))
     return mems, det, rejected
 
 
@@ -384,7 +385,7 @@ def eval_capture(ctx, out):
     if mi["rejected"]:
         L.append("  - GET /api/frames/:id cannot take %d of the sampled frame ids (the phone's id pattern %s rejects them; they are not sent); "
                  "memories were then harvested from POST %s with snippets=true: %d memories (<= 80 chars each) in %d queries" % (
-                 mi["rejected"], ROUTE_ID.pattern, a.retrieve_route or "(route disabled)", mi["harvested"], mi["queries"]))
+                 mi["rejected"], FRAME_ROUTE_ID.pattern, a.retrieve_route or "(route disabled)", mi["harvested"], mi["queries"]))
     m["memories"] = len(ms)
     if ms:
         base = full or ms

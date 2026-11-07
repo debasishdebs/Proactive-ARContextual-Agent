@@ -378,6 +378,36 @@ class CanvasApiTest {
         assertEquals(404, call("GET", "/api/compare", query = mapOf("a" to "r1", "b" to "r2")).status)
     }
 
+    private val realId = "1793891036623_rokid_1793891036384_g1793891036083_d4bce0.v2"
+
+    @Test fun realShapedFrameIdsWithDotV2AreAcceptedOnEveryFrameRoute() {
+        for (id in listOf(realId, "f_1.v2", "a:b.c-d_E.v2", "x".repeat(61) + ".v2")) {
+            assertEquals(id, 200, call("GET", "/api/frames/$id").status)
+            assertEquals(id, 200, call("GET", "/api/frames/$id/thumb").status)
+            assertEquals(id, 200, call("GET", "/api/frames/$id/image").status)
+        }
+        assertEquals(200, call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","version":2,"frameIds":["$realId","a"]}""").status)
+        assertEquals(403, api.handle(HttpRequest("GET", "/api/frames/$realId/image", emptyMap(),
+            mapOf("authorization" to "Bearer abc", "host" to "h:1", "origin" to "http://evil"), ByteArray(0))).status)
+        assertEquals(200, api.handle(HttpRequest("GET", "/api/frames/$realId/image", emptyMap(),
+            mapOf("authorization" to "Bearer abc", "host" to "h:1", "origin" to "http://h:1"), ByteArray(0))).status)
+    }
+
+    @Test fun unsafeFrameIdsAre400OnEveryFrameRoute() {
+        val paths = listOf("../x", "..", ".", "a/../b", "%2e%2e", "%2e%2e/x", ".hidden", "a..b", "a.", "a%2Fb", "a\\b", "a\u0000b", "a\nb", "a b", "a\tb",
+            "y".repeat(65), "y".repeat(62) + ".v2", "a/./b")
+        for (bad in paths) for (suffix in listOf("", "/thumb", "/image")) {
+            val r = call("GET", "/api/frames/$bad$suffix")
+            assertEquals("path [$bad$suffix]", 400, r.status)
+            assertEquals("bad_request", r.err())
+        }
+        assertEquals(400, call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","version":2,"frameIds":["../x"]}""").status)
+        assertEquals(400, call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","version":2,"frameIds":["a..b"]}""").status)
+        assertFalse(be.calls.any { it.startsWith("image") })
+        // non-frame routes keep the strict pattern
+        assertEquals(400, call("GET", "/api/pipelines/a.v2").status)
+    }
+
     @Test fun idValidation() {
         for (bad in listOf("a%20b", "a.b", "x".repeat(65), "a b", "a;b", "a'b")) {
             val r = call("GET", "/api/pipelines/$bad")

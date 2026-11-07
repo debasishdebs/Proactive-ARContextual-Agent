@@ -50,6 +50,9 @@ class CanvasApi(
 
     companion object {
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
+        /** Real frame ids end in ".v2" (e.g. 1793891036623_rokid_1793891036384_g1793891036083_d4bce0.v2, 58 chars). '.' is allowed, but never a leading one,
+         *  a trailing one or a ".." run, so no id can be a dot segment. The id only keys DB lookups; the photo path comes from the DB row, never from the id. */
+        private val FRAME_ID = Regex("^(?!\\.)(?!.*\\.\\.)(?!.*\\.$)[A-Za-z0-9:_.-]{1,64}$")
         private val FROM = Regex("^[A-Za-z0-9:_-]{1,64}(@[0-9]{1,6})?$")
         private val VERSION = Regex("^[0-9]{1,6}$")
         private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile", "/api/plans/check", "/api/expr/try", "/api/retrieve/debug")
@@ -112,6 +115,9 @@ class CanvasApi(
     private suspend fun dispatch(req: HttpRequest): HttpResponse {
         val s = req.path.removePrefix("/api").split('/').filter { it.isNotEmpty() }
         val m = req.method.uppercase()
+        // a dot segment is never a route (never percent-decoded, never normalised): 400, not a 404 that depends on the shape of the rest
+        if (s.any { it == "." || it == ".." }) throw bad("Bad path.")
+        if (s.size >= 2 && s[0] == "frames") frameId(s[1])
         for (x in extras) x.handle(req)?.let { return it }
         val key = templateOf(s) ?: throw ApiError(404, "not_found", "Not found.")
         return when ("$m $key") {
@@ -136,9 +142,9 @@ class CanvasApi(
             "POST publish/rollback" -> rollback(req)
             "POST check-prompt" -> checkPrompt(req)
             "GET frames" -> frames(req)
-            "GET frames/:id" -> json(backend.frame(id(s[1])) ?: throw NoSuchElementException())
-            "GET frames/:id/thumb" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = true)) }
-            "GET frames/:id/image" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = false)) }
+            "GET frames/:id" -> json(backend.frame(frameId(s[1])) ?: throw NoSuchElementException())
+            "GET frames/:id/thumb" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(frameId(s[1]), thumb = true)) }
+            "GET frames/:id/image" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(frameId(s[1]), thumb = false)) }
             "GET moments" -> moments(req)
             "GET scenes" -> scenes(req)
             "POST runs/estimate" -> estimate(req)
@@ -192,6 +198,7 @@ class CanvasApi(
         if (site != null && site != "same-origin" && site != "none") throw ApiError(403, "forbidden", "Not allowed.")
     }
 
+    private fun frameId(v: String): String = if (FRAME_ID.matches(v)) v else throw bad("Bad id.")
     private fun id(v: String): String = if (ID.matches(v)) v else throw bad("Bad id.")
 
     private fun token(req: HttpRequest): String {
@@ -229,7 +236,7 @@ class CanvasApi(
         if (arr.size > MAX_FRAME_IDS) throw bad("At most $MAX_FRAME_IDS photos")
         return arr.map { e ->
             val v = (e as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw bad("Bad frame id.")
-            id(v)
+            frameId(v)
         }
     }
 

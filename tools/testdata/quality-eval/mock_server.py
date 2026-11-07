@@ -28,10 +28,10 @@ TEXTS = [
     "The image shows a blurry hallway with a carpet",
 ]
 import re
-ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")  # CanvasApi.ID: every /api/<x>/:id route answers 400 bad_request for any other id, and the path is never percent-decoded
+ID_RE = re.compile(r"^(?!\.)(?!.*\.\.)(?!.*\.$)[A-Za-z0-9:_.-]{1,64}$")  # CanvasApi.FRAME_ID: '.v2' ids are accepted; any other id is 400 bad_request, never percent-decoded
 
 
-def fid(i):  # real frame ids look like 1793891036623_rokid_1793891036384_g1793891036083_d4bce0.v2 ('.' is outside the pattern); even ones here are valid, with ':'
+def fid(i):  # real frame ids look like 1793891036623_rokid_1793891036384_g1793891036083_d4bce0.v2 (valid since the frame-id fix); even ones here use ':'
     return "f%02d:a" % i if i % 2 == 0 else "1793%02d_rokid_g%02d_d4bce0.v2" % (i, i)
 
 
