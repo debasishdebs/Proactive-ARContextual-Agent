@@ -16,6 +16,7 @@ Options: `--samples N` adds up to N text snippets (80 chars) per list (default n
 `-n 100` retrieval sample size; `--seed 7`; `--rate 5` requests/s (capped at 5); `--max-frames 3000`; `--max-detail 400` (frames whose memories are read);
 `--max-days 14` (Moments); `--max-asks 50`; `--max-pipelines 30`; `--runs-per-pipeline 3`; `--jaccard 0.8` (near-duplicate threshold);
 `--retrieve-route` (default `/api/retrieve/debug`; `none` = local BM25 only; any other path must name a retrieval route) and `--modes LEXICAL,SEMANTIC,HYBRID` (see Retrieval);
+`--max-harvest 300` (retrieval queries spent harvesting memory snippets when frame ids cannot be read; 0 = none);
 `--include-maintenance-reads` (off by default; see Safety: with it the run is NOT read-only).
 
 ## Safety
@@ -28,6 +29,15 @@ Options: `--samples N` adds up to N text snippets (80 chars) per list (default n
 - TLS: the peer certificate must be byte-identical to the `cert.der` that `m1-run.sh pair` pinned after the fingerprint check. On a mismatch nothing is sent.
 - The token is read from `auth.hdr` and is never printed. Errors show only the HTTP status and the fixed `error` code.
 - `GET /api/asks/:id` returns the composed prompt. The harness reads only its scores and ids and never writes the prompt to the report.
+
+## Frame ids and the memory corpus
+
+Every `/api/<x>/:id` route accepts only ids matching `^[A-Za-z0-9:_-]{1,64}$`, sent literally (the phone does not percent-decode). Real frame ids end in `.v2`
+(`<ts>_rokid_..._<hash>.v2`), and `.` is outside that pattern, so `GET /api/frames/:id` answers `400 bad_request` for every real frame (a phone-side bug: the
+id pattern or the frame id format has to change). The harness never sends an id the route would reject; it counts them and, so the retrieval self-test still runs,
+harvests memories through `POST /api/retrieve/debug` with `snippets: true` (read-only, <= 80 chars per memory, `--max-harvest` queries, seeded with generic words and
+then the rarest words seen). That corpus is only what the LEXICAL retriever can surface, so recall is optimistic; the report says so. Frame-route memories (full text) win when both exist.
+Ask views answering `409 refused` count as refused by the forget gate, not as an unavailable route.
 
 ## Routes per section
 

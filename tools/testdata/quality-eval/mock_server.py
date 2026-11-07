@@ -5,6 +5,7 @@ import json, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
+ROT = 0
 TOKEN = "mock-token-xyz"
 NOW = int(time.time() * 1000)
 DAY = 86400000
@@ -26,18 +27,29 @@ TEXTS = [
     "Grocery list on the fridge: eggs, oat milk, spinach, rice",
     "The image shows a blurry hallway with a carpet",
 ]
+import re
+ID_RE = re.compile(r"^[A-Za-z0-9:_-]{1,64}$")  # CanvasApi.ID: every /api/<x>/:id route answers 400 bad_request for any other id, and the path is never percent-decoded
+
+
+def fid(i):  # real frame ids look like 1793891036623_rokid_1793891036384_g1793891036083_d4bce0.v2 ('.' is outside the pattern); even ones here are valid, with ':'
+    return "f%02d:a" % i if i % 2 == 0 else "1793%02d_rokid_g%02d_d4bce0.v2" % (i, i)
+
+
 FRAMES = []
 for i, t in enumerate(TEXTS):
     ts = NOW - (i % 3) * DAY - i * 47000
-    FRAMES.append({"id": "f%02d" % i, "ts": ts, "motion": 0.1, "dwell": i % 2 == 0, "blur": 0.05 * i, "state": "EXTRACTED", "hasLiveMemories": True})
-FRAMES.append({"id": "f90", "ts": NOW - 5000, "motion": 0.3, "dwell": False, "blur": 0.9, "state": "FAILED_FINAL", "hasLiveMemories": False})
-FRAMES.append({"id": "f91", "ts": NOW + 3 * DAY, "motion": 0.3, "dwell": False, "blur": 0.2, "state": "NEAR_DUP", "hasLiveMemories": False})
+    FRAMES.append({"id": fid(i), "ts": ts, "motion": 0.1, "dwell": i % 2 == 0, "blur": 150.0 * i, "state": "EXTRACTED", "hasLiveMemories": True})
+FRAMES.append({"id": "f90", "ts": NOW - 5000, "motion": 0.3, "dwell": False, "blur": 900.0, "state": "FAILED_FINAL", "hasLiveMemories": False})
+FRAMES.append({"id": "f91", "ts": NOW + 3 * DAY, "motion": 0.3, "dwell": False, "blur": 200.0, "state": "NEAR_DUP", "hasLiveMemories": False})
+FRAMES.append({"id": "f92", "ts": NOW - 5 * 3600000, "motion": 0.3, "dwell": False, "blur": 1500.0, "state": "CAPTION_QUEUED", "hasLiveMemories": False})
+FRAMES.append({"id": "f93", "ts": NOW - 30 * 3600000, "motion": 0.3, "dwell": False, "blur": 50.0, "state": "CAPTION_QUEUED", "hasLiveMemories": False})
 FRAMES.sort(key=lambda f: -f["ts"])
-MEM = {"f%02d" % i: [{"id": "m%02d" % i, "text": t, "type": "CAPTION"}] for i, t in enumerate(TEXTS)}
+MEM = {fid(i): [{"id": "m%02d" % i, "text": t, "type": "CAPTION"}] for i, t in enumerate(TEXTS)}
 ASKS = [{"id": "a1", "ts": NOW - 1000, "question": "where did I park the car", "answer": "Level 3 near the elevator, spot 42.", "rating": 1, "redacted": False},
         {"id": "a2", "ts": NOW - 2000, "question": "secret", "answer": "", "rating": None, "redacted": True},
         {"id": "a3", "ts": NOW - 3000, "question": "what is on my grocery list", "answer": "I don't know.", "rating": None, "redacted": False},
-        {"id": "a4", "ts": NOW - 4000, "question": "train", "answer": "", "rating": -1, "redacted": False}]
+        {"id": "a4", "ts": NOW - 4000, "question": "train", "answer": "", "rating": -1, "redacted": False},
+        {"id": "a5", "ts": NOW - 5000, "question": "forgotten thing", "answer": "Fine.", "rating": None, "redacted": False}]
 VIEWS = {
     "a1": {"askId": "a1", "cited": ["m07"], "mode": "HYBRID", "fallback": False, "composedPrompt": "PROMPT-SHOULDNOTAPPEAR",
            "hits": [{"memoryId": "m07", "frameId": "f07", "lexical": 0.8, "semantic": 0.7, "fused": 0.75, "score": 0.75, "cited": True, "inPrompt": True}]},
@@ -77,16 +89,18 @@ class H(BaseHTTPRequestHandler):
             before = int(q.get("before", [str(2 ** 62)])[0]); lim = int(q.get("limit", ["60"])[0])
             return self.send(200, [f for f in FRAMES if f["ts"] < before][:min(lim, 5)])  # pages of 5 to exercise paging
         if p.startswith("/api/frames/"):
-            fid = p.rsplit("/", 1)[1]
-            f = next((x for x in FRAMES if x["id"] == fid), None)
-            return self.send(404, {"error": "not_found"}) if f is None else self.send(200, dict(f, live=MEM.get(fid, [])))
+            i = p.rsplit("/", 1)[1]
+            if not ID_RE.match(i): return self.send(400, {"error": "bad_request", "message": "Bad id."})
+            f = next((x for x in FRAMES if x["id"] == i), None)
+            return self.send(404, {"error": "not_found"}) if f is None else self.send(200, dict(f, live=MEM.get(i, [])))
         if p == "/api/moments":
-            return self.send(200, [{"id": "abcd0001", "startMs": NOW, "type": "FRAME", "photos": 2, "memories": 2, "marks": 0},
+            return self.send(200, [{"id": "abcd0003", "startMs": NOW - 5 * 3600000 - 60000, "type": "FRAME", "photos": 1, "memories": 0, "marks": 0},
+                                   {"id": "abcd0001", "startMs": NOW, "type": "FRAME", "photos": 2, "memories": 2, "marks": 0},
                                    {"id": "abcd0002", "startMs": NOW, "type": "MARK", "photos": 0, "memories": 0, "marks": 1, "errorReason": None}])
         if p == "/api/asks": return self.send(200, ASKS)
         if p.startswith("/api/asks/"):
             i = p.rsplit("/", 1)[1]
-            if i == "a2": return self.send(409, {"error": "refused"})
+            if i in ("a2", "a5"): return self.send(409, {"error": "refused"})
             return self.send(200, VIEWS[i]) if i in VIEWS else self.send(404, {"error": "not_found"})
         if p == "/api/pipelines": return self.send(200, [{"id": "p1", "name": "Live", "builtIn": True, "live": {"version": 1}}, {"id": "p2", "name": "Draft", "builtIn": False, "live": None}])
         if p == "/api/pipelines/p1": return self.send(200, {"problems": []})
@@ -123,9 +137,17 @@ class H(BaseHTTPRequestHandler):
             qw = words(b.get("query", ""))
             hits = sorted(({"memoryId": m[0]["id"], "score": len(qw & words(m[0]["text"])) / (len(qw) or 1)} for m in MEM.values()), key=lambda h: -h["score"])
             hits = [h for h in hits if h["score"] > 0][:b.get("topK", 10)]
-            for i, h in enumerate(hits): h["rank"] = i + 1; h["reviewState"] = "OK"; h["createdAt"] = NOW
+            fb = not hits
+            if fb:  # like the phone: no match -> newest memories, score 0, fallback=true (rotating here so a harvest can see them all)
+                global ROT
+                ids = [m[0]["id"] for m in MEM.values()]; ROT = (ROT + 5) % len(ids)
+                hits = [{"memoryId": ids[(ROT + k) % len(ids)], "score": 0.0} for k in range(5)]
+            tx = {m[0]["id"]: m[0]["text"] for m in MEM.values()}
+            for i, h in enumerate(hits):
+                h["rank"] = i + 1; h["reviewState"] = "OK"; h["createdAt"] = NOW
+                if b.get("snippets") is True: h["snippet"] = tx[h["memoryId"]][:80]
             # the mock has no embedder: SEMANTIC runs lexically and says so, like a phone without one
-            return self.send(200, {"mode": "LEXICAL" if mode == "SEMANTIC" else mode, "semanticUnavailable": mode == "SEMANTIC", "fallback": not hits, "hits": hits})
+            return self.send(200, {"mode": "LEXICAL" if mode == "SEMANTIC" else mode, "semanticUnavailable": mode == "SEMANTIC", "fallback": fb, "hits": hits})
         return self.send(404, {"error": "not_found"})
 
     def do_DELETE(self):
