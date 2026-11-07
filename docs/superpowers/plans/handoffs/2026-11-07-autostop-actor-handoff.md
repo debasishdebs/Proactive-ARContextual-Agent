@@ -118,7 +118,7 @@ Tests: `AutoStopReview5Test`. With the fixes temporarily reverted, 9 of its 12 t
 
 In `ContextApp`, the timing and Developer-mode stores are local `by lazy` delegates, so `ForgetScopeWiringTest`'s source scan still finds its bindings. Final full `:phone:testDebugUnitTest`: 2172/2172 passed.
 
-## 7. Codex review 6 (2026-11-08): 1 P1 and 1 P2 in the retry path, both reproduced first
+## 7. Codex review 6 (2026-11-08; superseded by section 8, which deletes the sequence-tag and intent-fold machinery): 1 P1 and 1 P2 in the retry path, both reproduced first
 
 Tests: `AutoStopReview6Test`. Against `e6fee700` 4 of its 5 tests failed: both P1 orderings, the folded-start case, and the 1 s second start. The two-failed-intents case already passed there.
 
@@ -129,7 +129,36 @@ Tests: `AutoStopReview6Test`. Against `e6fee700` 4 of its 5 tests failed: both P
   - `visible()` shows the folded state. While saves fail, no auto stop is reported, but the manual stop follows the newest intent (the earlier "keep running" manual default is gone).
 - **P2: `PersistRecovered` keeps the watchdog's `unsavedStartAt`.** The 60 s minimum counts from max(persisted, unsaved). The unsaved time is cleared only when a start is recorded durably.
 
-## 7. Open points
+## 8. Codex review 7 (2026-11-08): write-behind persistence (the current model)
+
+Root cause: persistence retries were modelled as replaying events. A failed `WakeResult` save, then a ladder-reset commit, made the sequence gate discard the retry. The hub stayed auto-stopped, so `hubNeeded=false` and the watchdog stopped capture. Redesign:
+
+1. **The in-memory state is authoritative.**
+   - Every event is reduced and applied at once, whatever any save did.
+   - Effects (stop, start, wake completion, notes) are driven by it, never by a save result.
+2. **Persistence is write-behind of the latest full snapshot only.**
+   - After each step whose state differs from the last saved snapshot, `SerialStateMachine.persistLatest()` writes the whole current snapshot. It runs on the serial context, before that step's effects, so in the normal case a stop or start is already durable when it runs.
+   - A failed `commit()` (false or a throw) arms ONE coalescing retry (`RETRY_MS`: 250 ms, 1 s, 4 s, 15 s, then 60 s repeated until it succeeds). The retry writes whatever is latest then.
+   - Nothing is re-applied or re-ordered, so a stale retry cannot override anything.
+   - The sequence tags, `pendingIntent`/fold, `RetryPersist`, `Transition.retry` and the watchdog's `unsavedStartAt` are deleted.
+3. **Bookkeeping events (in memory only):** `PersistFailed(failures)` and `PersistRecovered`, reported to the trace after the step that caused them.
+4. **The conservative fallback while the latest snapshot is unsaved:**
+   - no stop is decided or confirmed (a pending stop is cancelled);
+   - `visible()` reports no auto stop, while the manual stop is the in-memory one;
+   - wakes complete from the in-memory state;
+   - the watchdog's in-memory ladder and 60 s minimum still apply;
+   - `persist_failed` is logged at most once a minute.
+5. **Crash or restart** loads the last saved snapshot, as before.
+
+Tests:
+- New `AutoStopReview7Test`:
+  - the P1 reproduction: a `WakeResult` save failure plus a ladder reset; the wake completes, `hubNeeded` stays true, and the disk catches up;
+  - a property run of 120 seeds × 3 threads with 35 % random `commit()` failures. The trace replays to every state. Every identifiable event is reduced exactly once and in per-thread order; singleton counts match. No stop happens while unsaved. Persisted equals in-memory once commits succeed.
+- All earlier reproductions are kept (`AutoStopReview5Test`, `AutoStopReview6Test` with both orderings and the 1 s restart). Two expectations changed with the model:
+  - a failed `UserStarted` is applied in memory at once and written behind on the capped back-off;
+  - the watchdog's unsaved start keeps the in-memory 5 min step.
+
+## 9. Open points
 
 - The watchdog's reconnect, probe and relaunch hooks still run on the tick's thread (Main), by design: the hub hooks expect it. Only the ladder moved into the actor.
 - `ensureRunning(force)` submits `UserStarted` asynchronously. A non-force `hubNeeded` read in the few ms before that step can still see the old stop flags, as it could before with `apply()`.

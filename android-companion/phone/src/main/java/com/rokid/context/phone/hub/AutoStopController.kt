@@ -119,7 +119,7 @@ class AutoStopEngine(
         load = { AutoStopState(saved = store.load()) }, reduce = AutoStopMachine::reduce, persisted = { it.saved }, save = { store.save(it.saved) },
         now = now, executor = executor, prepare = ::prepare, run = ::run, onStep = onStep,
         onError = { warn("auto_stop step failed: ${it.javaClass.simpleName}") },
-        persistFailed = { e, attempt -> AutoStopEvent.PersistFailed(e, attempt) }, persistRecovered = AutoStopEvent.PersistRecovered, schedule = schedule,
+        persistFailed = { n -> AutoStopEvent.PersistFailed(n) }, persistRecovered = AutoStopEvent.PersistRecovered, schedule = schedule,
     )
 
 
@@ -127,11 +127,11 @@ class AutoStopEngine(
 
     /**
      * What the rest of the app sees (the [BackgroundPolicy.Needs] inputs). Safe "keep running" values: a stop still being committed or a wake in progress is not a
-     * stop, and while persistence is failing no auto stop is reported; the manual stop follows the user's newest intent, saved or pending (Codex review 6). Null before the state is loaded (the caller then also assumes "keep running").
+     * stop, and while the latest snapshot is unsaved no auto stop is reported; the manual stop is the authoritative in-memory one (Codex review 7). Null before the state is loaded (the caller then also assumes "keep running").
      */
-    fun visible(): AutoStopSnapshot? = machine.state()?.let { AutoStopMachine.fold(it) }?.let { s ->
+    fun visible(): AutoStopSnapshot? = machine.state()?.let { s ->
         when {
-            // never an auto stop on an unsaved state; the user's newest intent (folded) still holds
+            // never an auto stop on an unsaved state; the manual stop is the in-memory (authoritative) one
             s.persistFailing -> s.saved.copy(autoStoppedAtMs = 0L, reason = null)
             s.pendingStop != null || s.saved.wakeStartedAtMs != 0L -> s.saved.copy(autoStoppedAtMs = 0L, reason = null)
             else -> s.saved
