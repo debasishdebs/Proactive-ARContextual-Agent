@@ -32,7 +32,9 @@ interface AutoStopStore {
 }
 
 class InMemoryAutoStopStore : AutoStopStore {
-    private var manual = false; private var at = 0L; private var why: BackgroundPolicy.Away? = null; private var since = 0L; private var step = 0; private var next = 0L; private var probe = false
+    // volatile: the controller (IO hop) and the wake worker read it from different threads; writes that matter happen under AutoStopWake.claim's lock
+    @Volatile private var manual = false; @Volatile private var at = 0L; @Volatile private var why: BackgroundPolicy.Away? = null; @Volatile private var since = 0L
+    @Volatile private var step = 0; @Volatile private var next = 0L; @Volatile private var probe = false
     override fun manualStop() = manual
     override fun setManualStop(on: Boolean) { manual = on }
     override fun autoStoppedAtMs() = at

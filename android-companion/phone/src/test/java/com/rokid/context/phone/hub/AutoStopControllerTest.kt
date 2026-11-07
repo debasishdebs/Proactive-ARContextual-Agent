@@ -1,6 +1,7 @@
 package com.rokid.context.phone.hub
 
 import com.rokid.context.core.model.LinkState
+import kotlinx.coroutines.asCoroutineDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -122,6 +123,7 @@ class AutoStopControllerTest {
             now = { base + testScheduler.currentTime }, minutes = { 20 }, store = store, hubRunning = { running }, link = { LinkState.OFFLINE }, worn = { null },
             inFront = { false }, lastFrontMs = { 0L }, busy = { false }, runActive = { false }, stopHub = { running = false },
             wakeHub = { wakes++; running = true; true }, exempt = { true }, linkAllowed = { true }, publishNote = {}, timeText = { "x" }, log = {}, scheduleWake = { scheduled += it },
+            io = kotlin.coroutines.EmptyCoroutineContext, // virtual time: no real IO thread hop
         )
         val job = c.start(backgroundScope) // the link never changes again: no poke ever comes
         testScheduler.advanceTimeBy(20 * min + 1); testScheduler.runCurrent()
@@ -152,5 +154,41 @@ class AutoStopControllerTest {
         val r = Rig().apply { worn = false }
         r.store.setWakeProbe(true) // a cold-process wake (AutoStopWake) set it before this controller existed
         assertEquals(5 * min, r.c.evaluate()); r.advance(5 * min); r.c.evaluate(); assertEquals(1, r.stops); assertFalse(r.store.wakeProbe())
+    }
+
+    // ---- Review fixes 2 (2026-11-07, Codex): the blocking commits leave the main thread, still before the stop / start they guard ----
+
+    /** Records every store write and hub action with the thread it ran on. */
+    private class Recording(val log: MutableList<String>) : AutoStopStore {
+        private val inner = InMemoryAutoStopStore()
+        private fun rec(e: String) { synchronized(log) { log += "$e@${Thread.currentThread().name}" } }
+        override fun manualStop() = inner.manualStop(); override fun setManualStop(on: Boolean) = inner.setManualStop(on)
+        override fun autoStoppedAtMs() = inner.autoStoppedAtMs(); override fun reason() = inner.reason(); override fun awaySinceMs() = inner.awaySinceMs()
+        override fun markAutoStopped(nowMs: Long, reason: BackgroundPolicy.Away, awaySinceMs: Long, nextWakeAtMs: Long) { rec("mark"); inner.markAutoStopped(nowMs, reason, awaySinceMs, nextWakeAtMs) }
+        override fun clearAutoStopped() = inner.clearAutoStopped(); override fun wakeStep() = inner.wakeStep(); override fun nextWakeAtMs() = inner.nextWakeAtMs()
+        override fun wakeAttempted(nextAtMs: Long) { rec("attempt"); inner.wakeAttempted(nextAtMs) }
+        override fun resetWake() = inner.resetWake(); override fun wakeProbe() = inner.wakeProbe()
+        override fun setWakeProbe(on: Boolean) { if (on) rec("probe"); inner.setWakeProbe(on) }
+    }
+
+    @Test fun theStopAndTheWakeCommitOnIoBeforeTheStopAndStartWhichStayOnTheCallerThread() {
+        val events = mutableListOf<String>(); val store = Recording(events)
+        val ex = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "fake-main") }; val main = ex.asCoroutineDispatcher()
+        var t = 1_000_000L; var running = true
+        fun rec(e: String) { synchronized(events) { events += "$e@${Thread.currentThread().name}" } }
+        val c = AutoStopController(
+            now = { t }, minutes = { 20 }, store = store, hubRunning = { running }, link = { LinkState.OFFLINE }, worn = { null }, inFront = { false }, lastFrontMs = { 0L },
+            busy = { false }, runActive = { false }, stopHub = { rec("stop"); running = false }, wakeHub = { rec("start"); running = true; true }, exempt = { true },
+            linkAllowed = { true }, publishNote = {}, timeText = { "x" }, log = {}, io = kotlinx.coroutines.Dispatchers.IO,
+        )
+        try {
+            kotlinx.coroutines.runBlocking(main) { c.evaluateNow(); t += 20 * min; c.evaluateNow() }
+            assertEquals(listOf("mark", "stop"), events.map { it.substringBefore('@') })
+            assertTrue("commit off the caller thread: $events", !events[0].contains("@fake-main")); assertTrue("stop on the caller thread: $events", events[1].contains("@fake-main"))
+            events.clear(); t += 60 * min
+            kotlinx.coroutines.runBlocking(main) { c.evaluateNow() }
+            assertEquals("persist BEFORE start", listOf("attempt", "probe", "start"), events.map { it.substringBefore('@') })
+            assertTrue("no commit on the caller thread: $events", events.none { it.contains("@fake-main") })
+        } finally { ex.shutdownNow() }
     }
 }

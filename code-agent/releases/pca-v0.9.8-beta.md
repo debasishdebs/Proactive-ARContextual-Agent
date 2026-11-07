@@ -19,7 +19,7 @@ Debug-signed; no APKs are attached. Phone database is Room v15 (additive migrati
 - A closure bound with an acknowledgement above 200 and a ceiling of 5000, in-transaction Developer gate, and a v1.1 lifecycle backlog.
 
 **Reviews**
-- Codex: RagCore four rounds, canvas flows two, triggers two, capabilities one, slice E two, the preview migration once (4 P1 and 5 P2 fixed).
+- Codex: RagCore four rounds, canvas flows two, triggers two, capabilities one, slice E two, the preview migration once (4 P1 and 2 P2 findings fixed).
 
 **Known limitations**
 - The Listening and Thinking HUD frames are not gated by the display switch; the Home chat has no glasses path; no canvas editor for capabilities; the new flows and previewer screens were not device-tested at this tag.

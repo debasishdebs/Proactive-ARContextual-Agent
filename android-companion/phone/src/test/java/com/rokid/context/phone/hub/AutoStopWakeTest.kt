@@ -95,4 +95,81 @@ class AutoStopWakeTest {
         PrefsAutoStopStore { prefs }.setWakeProbe(true); assertTrue(PrefsAutoStopStore { prefs }.wakeProbe())
         PrefsAutoStopStore { prefs }.userStarted(); assertFalse(PrefsAutoStopStore { prefs }.wakeProbe())
     }
+
+    // ---- Review fixes 2 (2026-11-07, Codex): the WorkManager wake and the live controller race for one rung ----
+    // Deterministic interleaving: the winner parks inside its start (latch), the loser is let in only once it is BLOCKED on the claim lock, the clock is fixed.
+
+    private fun awaitBlocked(t: Thread) {
+        val end = System.nanoTime() + 5_000_000_000L
+        while (t.state != Thread.State.BLOCKED) { check(t.isAlive && System.nanoTime() < end) { "loser never reached the claim lock (${t.state})" }; Thread.sleep(1) }
+    }
+    private class Race {
+        @Volatile var serviceUp = false; val starts = java.util.concurrent.atomic.AtomicInteger()
+        val inStart = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        // the controller loser parks at its first linkAllowed() read, i.e. after it read the old deadline outside the lock
+        val ctlReady = java.util.concurrent.CountDownLatch(1); val ctlGo = java.util.concurrent.CountDownLatch(1); val parked = java.util.concurrent.atomic.AtomicBoolean()
+        fun parkStart(issued: Boolean, up: Boolean): () -> Boolean = { inStart.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS); starts.incrementAndGet(); if (up) serviceUp = true; issued }
+    }
+    private fun controller(s: AutoStopStore, race: Race, scheduled: MutableList<Long>, park: Boolean = false, start: () -> Boolean) = AutoStopController(
+        now = { 1_000 * min }, minutes = { 20 }, store = s, hubRunning = { race.serviceUp }, link = { com.rokid.context.core.model.LinkState.OFFLINE }, worn = { null },
+        inFront = { false }, lastFrontMs = { 0L }, busy = { false }, runActive = { false }, stopHub = {}, wakeHub = start, exempt = { true },
+        linkAllowed = { if (park && race.parked.compareAndSet(false, true)) { race.ctlReady.countDown(); race.ctlGo.await(5, java.util.concurrent.TimeUnit.SECONDS) }; true },
+        publishNote = {}, timeText = { "x" }, log = {}, scheduleWake = { synchronized(scheduled) { scheduled += it } },
+        io = kotlin.coroutines.EmptyCoroutineContext, // the claim runs on the calling thread, so that thread is the one seen BLOCKED
+    )
+    private fun worker(s: AutoStopStore, race: Race, scheduled: MutableList<Long>, start: () -> Boolean) =
+        AutoStopWake.onProcessStart(app, now = 1_000 * min, store = s, exempt = { true }, minutes = { 20 }, allowed = { true }, running = { race.serviceUp },
+            schedule = { synchronized(scheduled) { scheduled += it } }, start = start)
+    private fun sec(l: java.util.concurrent.CountDownLatch) = assertTrue(l.await(5, java.util.concurrent.TimeUnit.SECONDS))
+
+    @Test fun aControllerWakeThatWinsLeavesTheRacingWorkerANoOpThatKeepsTheProbe() {
+        val s = stopped(nextAt = 1_000 * min); val race = Race(); val scheduled = mutableListOf<Long>()
+        val c = controller(s, race, scheduled, start = race.parkStart(issued = true, up = true))
+        var ctl: Long? = -1L; var wk: Boolean? = null
+        val a = Thread { ctl = c.evaluate() }.apply { start() }
+        try {
+            sec(race.inStart)
+            val b = Thread { wk = worker(s, race, scheduled) { race.starts.incrementAndGet(); race.serviceUp = true; true } }.apply { start() }
+            awaitBlocked(b); race.release.countDown(); b.join(5_000)
+        } finally { race.release.countDown(); a.join(5_000) }
+        assertEquals("one start, never two", 1, race.starts.get()); assertEquals("one rung consumed", 1, s.wakeStep())
+        assertEquals(BackgroundPolicy.BUSY_RECHECK_MS, ctl); assertEquals(false, wk); assertEquals(emptyList<Long>(), scheduled)
+        assertTrue("the loser did not clear the winner's probe", s.wakeProbe()); assertEquals(0L, s.autoStoppedAtMs())
+    }
+
+    /** The controller reads the deadline, the worker claims the rung and parks in its start, then the controller reaches the lock. */
+    private fun workerWinsControllerRaces(issued: Boolean, up: Boolean): Triple<AutoStopStore, Race, Pair<Long?, List<Long>>> {
+        val s = stopped(nextAt = 1_000 * min); val race = Race(); val scheduled = mutableListOf<Long>()
+        val c = controller(s, race, scheduled, park = true) { race.starts.incrementAndGet(); race.serviceUp = true; true }
+        var ctl: Long? = -1L
+        val b = Thread { ctl = c.evaluate() }.apply { start() }
+        val a = Thread { worker(s, race, scheduled, race.parkStart(issued, up)) }
+        try {
+            sec(race.ctlReady); a.start(); sec(race.inStart)
+            race.ctlGo.countDown(); awaitBlocked(b)
+        } finally { race.ctlGo.countDown(); race.release.countDown(); a.join(5_000); b.join(5_000) }
+        return Triple(s, race, ctl to scheduled.toList())
+    }
+
+    @Test fun aWorkerWakeThatWinsLeavesTheRacingControllerANoOpThatKeepsTheProbe() {
+        val (s, race, r) = workerWinsControllerRaces(issued = true, up = true)
+        assertEquals("one start, never two", 1, race.starts.get()); assertEquals(1, s.wakeStep())
+        assertTrue("the loser did not treat the running hub as a refusal", s.wakeProbe()); assertEquals(emptyList<Long>(), r.second)
+        assertEquals("the loser just looks again soon", BackgroundPolicy.BUSY_RECHECK_MS, r.first)
+    }
+
+    @Test fun aRefusedWinnerMovesTheDeadlineSoTheLoserConsumesNothing() {
+        val (s, race, r) = workerWinsControllerRaces(issued = false, up = false)
+        assertEquals(1, race.starts.get()); assertEquals("one rung consumed", 1, s.wakeStep()); assertFalse(s.wakeProbe())
+        assertEquals("the loser waits for the second rung", 120 * min, r.first); assertEquals("only the refused winner scheduled", listOf(120 * min), r.second)
+        assertTrue("still stopped", s.autoStoppedAtMs() != 0L)
+    }
+
+    @Test fun aStartThatFindsTheServiceAlreadyRunningIsNotARefusal() {
+        val s = stopped(nextAt = 1_000 * min); val race = Race(); val scheduled = mutableListOf<Long>()
+        // ensureRunning returns false because the service came up meanwhile (it only starts a stopped one)
+        assertFalse(worker(s, race, scheduled) { race.serviceUp = true; false })
+        assertTrue("probe kept", s.wakeProbe()); assertEquals(emptyList<Long>(), scheduled); assertEquals(0L, s.autoStoppedAtMs())
+        assertEquals(AutoStopWake.Claim.NONE, AutoStopWake.claim(1_000 * min, s, { true }, { 20 }, { true }, { race.serviceUp }, { true }, via = "t", log = {}, warn = {}))
+    }
 }
