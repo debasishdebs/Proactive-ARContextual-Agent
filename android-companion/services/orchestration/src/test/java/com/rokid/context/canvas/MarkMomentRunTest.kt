@@ -68,7 +68,7 @@ class MarkMomentRunTest {
     private fun resolver() = MomentResolver(DaoMomentSource(h.dao, h.dao3))
     private fun runner() = CanvasRunner(
         h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to recorder),
-        { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
+        { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
         h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(),
     )
     private fun pipeline() = Pipeline(2, "mp", "P", listOf(
@@ -171,7 +171,7 @@ class MarkMomentRunTest {
         val sp = Pipeline(2, "sp", "P", listOf(PipelineNode("scenes", NodeTypes.INPUT_SCENES, "scenes", JsonObject(emptyMap())), PipelineNode("ask", NodeTypes.PROMPT, "ask", buildJsonObject { put("schema", "{\"type\":\"object\"}") })), listOf(PipelineEdge("scenes", "ask")))
         val r = CanvasRunner(
             h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to recorder),
-            { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
+            { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
             h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), scenes = com.rokid.context.canvas.moment.DaoSceneRunSource(h.db, resolver()),
         )
         val e = r.estimateScenes(sp, listOf(sid), label) as Estimate.Ok
@@ -243,7 +243,7 @@ class MarkMomentRunTest {
         val sp = Pipeline(2, "sp", "P", listOf(PipelineNode("scenes", NodeTypes.INPUT_SCENES, "scenes", JsonObject(emptyMap())), PipelineNode("ask", NodeTypes.PROMPT, "ask", buildJsonObject { put("schema", "{\"type\":\"object\"}") })), listOf(PipelineEdge("scenes", "ask")))
         val r = CanvasRunner(
             h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to recorder),
-            { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
+            { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
             h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), scenes = com.rokid.context.canvas.moment.DaoSceneRunSource(h.db, resolver()),
         )
         val e = r.estimateScenes(sp, listOf(sid), label) as Estimate.Ok

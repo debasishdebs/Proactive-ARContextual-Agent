@@ -2,10 +2,15 @@ package com.rokid.context.model
 
 import kotlinx.serialization.json.JsonObject
 
+/**
+ * [ref]: the id of the stored photo (frame) these bytes were read from. The router refuses to send an image without one (it re-checks every ref is still
+ * live right before the upload, [PhotoLiveness]); in memory only.
+ */
 data class ModelImageInput(
     val mimeType: String,
     val base64Data: String,
     val detail: String = "low",
+    val ref: String? = null,
 )
 
 /** How a provider should constrain decoding (spec §4.4). [None] = free text (the instructions fallback is in the prompt). */
@@ -28,6 +33,13 @@ data class ModelRequest(
     val format: WireFormat = WireFormat.None,
     /** The answer is meaningless without the images (image intent): never drop them for a text-only endpoint or retry as text. */
     val requireImages: Boolean = false,
+    /**
+     * The stored photos this request is about, beyond the [images] refs (a photo whose bytes were dropped for this endpoint but whose metadata is still in
+     * the prompt). The router re-checks the union of these and the image refs with [liveness] inside every provider call's permit.
+     */
+    val photoIds: Set<String> = emptySet(),
+    /** Who says whether the photos are still live (and holds the upload slot a delete waits for). Required whenever a photo is attached: absent = refused. */
+    val liveness: PhotoLiveness? = null,
 ) {
     companion object {
         /**
@@ -46,6 +58,13 @@ data class ModelReply(val text: String, val promptTokens: Int? = null, val compl
 
 interface ModelProvider {
     suspend fun generate(prompt: String): String
+
+    /**
+     * False for a provider that cannot put images on the wire (the on-device llama.cpp runtime): the router then fails a photo-requiring call closed
+     * ([com.rokid.context.ai.ImagesUnsupportedException]) and never marks a reply as having delivered photos. A new provider that cannot send images MUST
+     * override this.
+     */
+    val acceptsImages: Boolean get() = true
 
     suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String {
         return generate(prompt)

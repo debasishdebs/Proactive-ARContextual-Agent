@@ -20,6 +20,8 @@ sealed interface ClusterSaveResult {
     data object Stale : ClusterSaveResult
     /** Delete all ran since the work began: nothing was written. */
     data object Wiped : ClusterSaveResult
+    /** Codex r10: the output carries no proof its photos reached the model ([ClusterOutput.imagesDelivered]): nothing was written. */
+    data object Undelivered : ClusterSaveResult
 }
 
 /** The atomic commit of a CLUSTER_SUMMARY call (wave 2 §P4.1, spec §P2.5): one transaction that starts with the CAS on every cluster row. */
@@ -39,6 +41,8 @@ object ClusterSave {
         context: Context, claimId: String, out: ClusterOutput, sent: Map<String, List<String>>, generation: Long, nowMs: Long, factReview: ReviewState,
     ): ClusterSaveResult {
         require(sent.keys.all { id -> out.clusters.any { it.clusterId == id } }) { "output misses a sent cluster" }
+        // Codex r10: a scene summary or caption is never persisted unless the router proved the photos reached the model.
+        if (!out.imagesDelivered) { PcLog.w(TAG, "cluster save refused: no image delivery proof"); return ClusterSaveResult.Undelivered }
         val db = MemoryGraph.get(context).db
         val results = out.clusters.filter { it.clusterId in sent }
         return try {

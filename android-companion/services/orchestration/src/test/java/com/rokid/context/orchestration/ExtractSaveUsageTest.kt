@@ -60,7 +60,7 @@ class ExtractSaveUsageTest {
 
     @Test fun attemptsFromReplies() = runBlocking<Unit> {
         val r = runner { p, _ -> good(*sentIds(p).toTypedArray()) }
-        val b = ExtractSave.extract(r, listOf("ex1", "ex2", "ex3").map(::photo), CallClass.EXPERIMENT)
+        val b = ExtractSave.extract(r, listOf("ex1", "ex2", "ex3").map(::photo), CallClass.EXPERIMENT, com.rokid.context.orchestration.AllLive)
         assertEquals(1, calls)
         val a = b.attempts.single()
         assertEquals(101, a.promptTokens); assertEquals(11, a.completionTokens)
@@ -70,7 +70,7 @@ class ExtractSaveUsageTest {
 
     @Test fun rejectedRetryAttemptCounted() = runBlocking<Unit> {
         val r = runner { p, n -> if (n == 1) "not json" else good(*sentIds(p).toTypedArray()) }
-        val b = ExtractSave.extract(r, listOf(photo("ex1")), CallClass.EXPERIMENT)
+        val b = ExtractSave.extract(r, listOf(photo("ex1")), CallClass.EXPERIMENT, com.rokid.context.orchestration.AllLive)
         assertEquals(2, calls)
         assertEquals(listOf(101, 102), b.attempts.map { it.promptTokens })
     }
@@ -78,7 +78,7 @@ class ExtractSaveUsageTest {
     @Test fun fallbackAttemptsListed() = runBlocking<Unit> {
         // The three-photo call is rejected twice (the runner's own retry), then each photo is its own call.
         val r = runner { p, _ -> if (sentIds(p).size > 1) bad else good(*sentIds(p).toTypedArray()) }
-        val b = ExtractSave.extract(r, listOf("ex1", "ex2", "ex3").map(::photo), CallClass.EXPERIMENT)
+        val b = ExtractSave.extract(r, listOf("ex1", "ex2", "ex3").map(::photo), CallClass.EXPERIMENT, com.rokid.context.orchestration.AllLive)
         assertEquals(5, calls)
         assertEquals(5, b.attempts.size)
         assertEquals(listOf(101, 102, 103, 104, 105), b.attempts.map { it.promptTokens })
@@ -88,7 +88,7 @@ class ExtractSaveUsageTest {
     @Test fun defaultsNullWhenUnknown() = runBlocking<Unit> {
         tokens = false
         val r = runner { p, _ -> good(*sentIds(p).toTypedArray()) }
-        val a = ExtractSave.extract(r, listOf(photo("ex1")), CallClass.EXPERIMENT).attempts.single()
+        val a = ExtractSave.extract(r, listOf(photo("ex1")), CallClass.EXPERIMENT, com.rokid.context.orchestration.AllLive).attempts.single()
         assertNull(a.promptTokens); assertNull(a.completionTokens)
         assertEquals("gpt", a.model)
         assertEquals(emptyList<CallUsage>(), ExtractedBatch(com.rokid.context.ai.contract.ExtractOutput(emptyList()), 0).attempts)

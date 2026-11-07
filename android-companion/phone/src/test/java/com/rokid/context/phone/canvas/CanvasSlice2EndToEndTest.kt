@@ -232,7 +232,7 @@ class CanvasSlice2EndToEndTest {
         val liveId = live["publishId"]!!.jsonPrimitive.content.toLong()
         val deps = LiveDeps(
             dao = dao, runner = ai.runner,
-            context = { runId, cc -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = cc) },
+            context = { runId, cc, lv -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = cc, liveness = lv) },
             interpreter = PipelineInterpreter(),
             publisher = { pid, reason -> CanvasPublisher.autoRollbackOn(dao, System::currentTimeMillis, pid, reason) },
             shadowAllowed = { false },
@@ -240,7 +240,7 @@ class CanvasSlice2EndToEndTest {
         val photo = { fid: String -> ExtractPhoto(fid, "ts=1", ModelImageInput("image/jpeg", "AAAA")) }
         val generation = MemoryWipe.generation.get()
         val out = runBlocking {
-            LiveExtract.batch(deps, listOf("f1", "f2", "f3").map(photo), CallClass.EXTRACT).also { LiveExtract.commit(deps, it.effects, generation, setOf("f1", "f2", "f3")) }
+            LiveExtract.batch(deps, listOf("f1", "f2", "f3").map(photo), CallClass.EXTRACT, com.rokid.context.phone.canvas.AllLive).also { LiveExtract.commit(deps, it.effects, generation, setOf("f1", "f2", "f3")) }
         }
         assertFalse("the interpreter, not the fallback, extracted", out.effects.fellBack)
         val view = ok(call("GET", "/api/live?limit=10", token))

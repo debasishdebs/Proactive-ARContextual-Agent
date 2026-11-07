@@ -62,7 +62,8 @@ class ClusterSaveTest {
         c1: ClusterResult = ClusterResult("c1", "A kitchen", listOf(fact("Red mug", "f1", "f3"), fact("Kettle", "f3"))),
         c2: ClusterResult = ClusterResult("c2", "A hallway", listOf(fact("Coat", "g1"))),
         captions: List<String> = listOf("f1", "f3", "g1"),
-    ) = ClusterOutput(listOf(c1, c2), captions.map { FrameCaption(it, "Caption $it") })
+        delivered: Boolean = true,
+    ) = ClusterOutput(listOf(c1, c2), captions.map { FrameCaption(it, "Caption $it") }, imagesDelivered = delivered)
 
     private suspend fun save(out: ClusterOutput = output(), generation: Long = MemoryWipe.generation.get(), sentMap: Map<String, List<String>> = sent, claimId: String = claim) =
         ClusterSave.save(ctx, claimId, out, sentMap, generation, 1_000, ReviewState.OK)
@@ -73,6 +74,14 @@ class ClusterSaveTest {
     }
 
     private suspend fun memoryIds() = MemoryGraph.get(ctx).memories.all().map { it.id }.toSet()
+
+    // codex r10: a scene summary or caption whose photos were never proven delivered to the model is never a memory
+    @Test fun anOutputWithoutDeliveryProofIsNeverSaved() = runBlocking<Unit> {
+        assertEquals(ClusterSaveResult.Undelivered, save(output(delivered = false)))
+        assertTrue(memoryIds().isEmpty())
+        assertTrue(db.frameSourceDao().let { d -> listOf("f1", "f3", "g1").all { d.memoriesForFrame(it).isEmpty() } })
+        assertEquals("SUMMARIZING", db.frameClusterDao().get("c1")?.state) // untouched: the pipeline retries it with backoff
+    }
 
     @Test fun saveWritesSummaryFactsCaptionsAndProvenance() = runBlocking<Unit> {
         val r = save() as ClusterSaveResult.Saved

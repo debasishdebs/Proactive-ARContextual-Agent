@@ -50,7 +50,15 @@ object Executors {
 
 private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSource.Draft)?.let { PromptDraft(it.template, it.schema) }
 
-private fun failure(e: Exception): String = if (e is ModelCallException) e.kind.name else e.javaClass.simpleName
+/** The helper executor's FRAME_FORGET token (this file must not name that executor): the runner stops a run whose photo was forgotten. */
+private const val FRAME_FORGET = "frame_forget"
+
+/** A photo forgotten before its upload (codex r10) stops the run like a Forget that voided a helper job. */
+private fun failure(e: Exception): String = when (e) {
+    is com.rokid.context.ai.PhotoForgottenException -> FRAME_FORGET
+    is ModelCallException -> e.kind.name
+    else -> e.javaClass.simpleName
+}
 
 /** Summed tokens of a call's attempts: null when no attempt reported any (the provider may not say). */
 private fun sumOrNull(values: List<Int?>): Int? = values.filterNotNull().takeIf { it.isNotEmpty() }?.sum()
@@ -86,7 +94,7 @@ object VisionExtractExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, ctx.callClass, override, sources)
+                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, ctx.callClass, ctx.liveness, override, sources)
                 // One provider call (or a few attempts) behind the whole chunk: only its first item owns the usage, counted once (S32).
                 val owner = ownerMeta(ms(), b.attempts, b.promptVersion, batchId)
                 val mate = CallMeta(owner.latencyMs, null, null, null, b.promptVersion, batchId)
@@ -183,7 +191,9 @@ object PromptExecutor : NodeExecutor {
             try {
                 val reply = ctx.model.complete(role, ctx.callClass) { e ->
                     val plan = StructuredOutput.plan(e, schemaObj, name)
-                    ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image) else emptyList(), format = plan.format, requireImages = images) // a photo prompt never falls back to text (codex r9 P1-2)
+                    // a photo prompt never falls back to text (codex r9 P1-2); its photo carries its ref and the run's liveness (codex r10)
+                    ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image.copy(ref = it.photo.frameId)) else emptyList(), format = plan.format,
+                        requireImages = images, liveness = ctx.liveness)
                 }
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@mapIndexed NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)

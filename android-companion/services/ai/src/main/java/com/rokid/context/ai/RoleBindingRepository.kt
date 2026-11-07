@@ -25,16 +25,25 @@ class RoleBindingRepository(private val dao: RoleBindingDao, private val endpoin
     private fun RoleBindingEntity.toDomain(): RoleBinding? = runCatching { Role.valueOf(role) }.getOrNull()
         ?.let { RoleBinding(it, endpointId, model, temperature, maxTokens, fallbackEndpointId, fallbackModel) }
 
-    suspend fun eligibleEndpoints(role: Role): List<Endpoint> = endpoints.all().filter { role.requiredCapability in it.capabilities }
+    /** Codex r10: a VISION role (its prompts receive photos) is bound only where a photo reaches the model ([EndpointRules.deliversImages]). */
+    suspend fun eligibleEndpoints(role: Role): List<Endpoint> = endpoints.all().filter {
+        role.requiredCapability in it.capabilities && (role.requiredCapability != Capability.VISION || EndpointRules.deliversImages(it))
+    }
 
     suspend fun clear(role: Role) = dao.delete(role.name)
 
     suspend fun set(binding: RoleBinding): Result<Unit> = writes.withLock { runCatching {
         val eligible = eligibleEndpoints(binding.role).map { it.id }.toSet()
-        require(binding.endpointId in eligible) { "That endpoint can't do ${binding.role.requiredCapability.name.lowercase()}" }
-        binding.fallbackEndpointId?.let { require(it in eligible) { "Fallback endpoint can't do ${binding.role.requiredCapability.name.lowercase()}" } }
+        require(binding.endpointId in eligible) { cannot(binding.endpointId, binding.role) }
+        binding.fallbackEndpointId?.let { require(it in eligible) { "Fallback: " + cannot(it, binding.role) } }
         dao.upsert(RoleBindingEntity(binding.role.name, binding.endpointId, binding.model, binding.temperature, binding.maxTokens, binding.fallbackEndpointId, binding.fallbackModel))
     } }
+
+    private suspend fun cannot(endpointId: String, role: Role): String {
+        val e = endpoints.byId(endpointId)
+        return if (e != null && role.requiredCapability == Capability.VISION && Capability.VISION in e.capabilities && !EndpointRules.deliversImages(e))
+            EndpointRules.NO_IMAGES_MESSAGE else "That endpoint can't do ${role.requiredCapability.name.lowercase()}"
+    }
 
     /** Endpoint save + the in-use capability check under the bindings' write lock (Phase 5 T17 carry). */
     suspend fun saveEndpoint(endpoint: Endpoint, apiKey: String?): Result<Endpoint> = writes.withLock {

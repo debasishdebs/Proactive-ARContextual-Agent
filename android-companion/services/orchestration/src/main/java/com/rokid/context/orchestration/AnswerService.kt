@@ -194,9 +194,10 @@ class AnswerService(
         val withImage = d.withImage
         return com.rokid.context.canvas.AskPhotoRecall(
             d.lines, recalled.map { it.second }.toSet(), recalled.map { it.first.frameId }.toSet(), recalled.mapNotNull { it.first.captionMemoryId }.toSet(),
-            images = { withImage.mapNotNull { (hit, _) -> photoImages(listOf(hit.frameId))[hit.frameId] } },
+            images = { withImage.mapNotNull { (hit, _) -> photoImages(listOf(hit.frameId))[hit.frameId]?.copy(ref = hit.frameId) } },
             imageEndpointId = endpoint.takeIf { withImage.isNotEmpty() },
             imageCount = withImage.size,
+            liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory),
         )
     }
 
@@ -242,7 +243,10 @@ class AnswerService(
             runCatching(onNoMatch).onFailure { PcLog.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
             throw NoMemoriesException()
         }
-        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER)).output as AnswerOutput
+        // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
+        // unsent, PhotoForgottenException; it is never re-asked as text).
+        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
+            liveness = if (r.images.isEmpty()) null else com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"

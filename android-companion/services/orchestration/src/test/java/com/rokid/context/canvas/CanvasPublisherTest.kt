@@ -141,7 +141,7 @@ class CanvasPublisherTest {
         val (id, v) = frozen("PUBLISHED-TEXT {{recent_context}}")
         publisher().publish(id, v)
         sent.clear()
-        runCatching { ai.runner.run(RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = "ctx"), images = listOf(ModelImageInput("image/jpeg", "AAAA")))) }
+        runCatching { ai.runner.run(RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = "ctx"), images = listOf(ModelImageInput("image/jpeg", "AAAA", ref = "f1")), liveness = com.rokid.context.orchestration.AllLive)) }
         assertTrue(sent.isNotEmpty() && sent.all { it.contains("PUBLISHED-TEXT") })
     }
 

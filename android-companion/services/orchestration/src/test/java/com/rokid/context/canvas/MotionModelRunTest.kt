@@ -45,7 +45,7 @@ class MotionModelRunTest {
         mapOf(NodeTypes.AGG_WINDOW to WindowAggregateExecutor, NodeTypes.PROC_MOTION_MODEL to MotionModelExecutor, NodeTypes.COMPARE to CompareExecutor, NodeTypes.SWITCH to SwitchExecutor, NodeTypes.OUT_SET_FREQUENCY_PREVIEW to SetFrequencyPreviewExecutor),
         { id ->
             val ai = com.rokid.context.orchestration.TestAi.graph(app) { modelCalls.incrementAndGet(); "" }
-            RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) })
+            RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
         },
         h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, watch = WatchRunSource { f, t -> ring.recent(f, t) },
     )

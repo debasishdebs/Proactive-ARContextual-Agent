@@ -34,6 +34,8 @@ data class TestBedRequest(
     val vars: PromptVars,
     val images: List<ModelImageInput> = emptyList(),
     val inputIds: Set<String> = emptySet(),
+    /** Codex r10: required with [images]; the router re-checks the photos before upload. */
+    val liveness: com.rokid.context.model.PhotoLiveness? = null,
 )
 
 data class TestBedResult(
@@ -84,7 +86,7 @@ class TestBed(
             router.completeOn(request.endpointId, request.model, CallClass.USER) { e ->
                 val plan = StructuredOutput.plan(e, schema, request.key.name)
                 wire = plan.wireSchema
-                ModelRequest(prompt + plan.promptSuffix, request.images, format = plan.format)
+                ModelRequest(prompt + plan.promptSuffix, request.images, format = plan.format, requireImages = request.key.requiresImage, liveness = request.liveness)
             }
         } catch (c: CancellationException) {
             throw c

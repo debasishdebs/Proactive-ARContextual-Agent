@@ -15,6 +15,7 @@ import com.rokid.context.memory.db.FrameState
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.model.CallClass
+import com.rokid.context.model.PhotoLiveness
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.ai.contract.DefaultSchemas
 import com.rokid.context.prompt.PromptComposer
@@ -44,6 +45,8 @@ sealed interface ExtractSaveResult {
     data object StaleClaim : ExtractSaveResult
     /** Delete all ran since the work began: nothing was written. */
     data object Wiped : ExtractSaveResult
+    /** Codex r10: the output carries no proof its photos reached the model ([ExtractOutput.imagesDelivered]): nothing was written, the caller retries later. */
+    data object Undelivered : ExtractSaveResult
 }
 
 /** The VISION_EXTRACT call and save path of the provenance contract (spec P2.1, section C). Used by the drain worker and the keyframe pipeline. */
@@ -75,8 +78,12 @@ object ExtractSave {
      * photo per call; any other failure is thrown as is. When the stored prompt schema is not current
      * ([promptIsCurrent]) every photo is a single call and its facts are attributed to that one photo (captions optional).
      */
+    /**
+     * [liveness]: the photos' liveness (codex r10; `FrameLiveness`), attached to every call so the router re-checks the photos inside each call's permit.
+     * A forgotten photo aborts the whole extraction with `PhotoForgottenException` (no single-photo fallback, no text retry). Null = every call is refused.
+     */
     suspend fun extract(
-        runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, override: PromptDraft? = null, contextSources: String = "",
+        runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, liveness: PhotoLiveness?, override: PromptDraft? = null, contextSources: String = "",
     ): ExtractedBatch {
         require(photos.isNotEmpty()) { "no photos" }
         val current = promptIsCurrent(
@@ -87,7 +94,7 @@ object ExtractSave {
         for (chunk in if (current) photos.chunked(MAX_BATCH) else photos.map { listOf(it) }) {
             if (chunk.size > 1) {
                 try {
-                    parts += call(runner, chunk, callClass, override, contextSources).also { attempts += it.attempts }; continue
+                    parts += call(runner, chunk, callClass, liveness, override, contextSources).also { attempts += it.attempts }; continue
                 } catch (e: ModelCallException) {
                     if (e.kind != FailureKind.INVALID_OUTPUT) throw e
                     attempts += usageOf(e.replies)
@@ -95,7 +102,7 @@ object ExtractSave {
                 }
             }
             chunk.forEach { p ->
-                val r = call(runner, listOf(p), callClass, override, contextSources).also { attempts += it.attempts }
+                val r = call(runner, listOf(p), callClass, liveness, override, contextSources).also { attempts += it.attempts }
                 // Legacy reply (no source_frame_ids): the one photo sent is trivially the provenance.
                 parts += if (r.output.provenance) r else r.copy(output = r.output.copy(facts = r.output.facts.map {
                     if (it.sourceFrameIds.isEmpty()) it.copy(sourceFrameIds = listOf(p.frameId)) else it
@@ -103,7 +110,7 @@ object ExtractSave {
             }
         }
         return ExtractedBatch(
-            ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = current),
+            ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = current, imagesDelivered = parts.all { it.output.imagesDelivered }),
             parts.last().promptVersion,
             attempts.toList(),
         )
@@ -111,13 +118,14 @@ object ExtractSave {
 
     private fun usageOf(replies: List<com.rokid.context.ai.RoutedReply>) = replies.map { CallUsage(it.promptTokens, it.completionTokens, it.model, it.latencyMs) }
 
-    private suspend fun call(runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, override: PromptDraft?, contextSources: String): ExtractedBatch {
+    private suspend fun call(runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, liveness: PhotoLiveness?, override: PromptDraft?, contextSources: String): ExtractedBatch {
         val lines = photos.map { "frame_id: ${it.frameId} - ${it.description}" }
         val r = runner.run(
             RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = PromptComposer.dataBlock("frames", lines), contextSources = contextSources),
-                images = photos.map { it.image }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass, override = override),
+                images = photos.map { it.image.copy(ref = it.frameId) }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass,
+                override = override, liveness = liveness),
         )
-        return ExtractedBatch(r.output as ExtractOutput, r.promptVersion, usageOf(r.replies))
+        return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered), r.promptVersion, usageOf(r.replies))
     }
 
     /**
@@ -135,6 +143,12 @@ object ExtractSave {
         inTransaction: (suspend (saved: List<SavedMemory>) -> Unit)? = null,
     ): ExtractSaveResult {
         val db = com.rokid.context.memory.MemoryGraph.get(context).db
+        // Codex r10: a description (a caption, or anything saved trusted) is never persisted unless the router proved the photos reached the model on the
+        // call that produced it. The one proof-less save is a canvas run's facts (no captions), saved NEEDS_REVIEW at the user's request (CanvasRunSave).
+        if (!output.imagesDelivered && (output.captions.isNotEmpty() || reviewState != ReviewState.NEEDS_REVIEW)) {
+            PcLog.w(TAG, "extraction refused: no image delivery proof")
+            return ExtractSaveResult.Undelivered
+        }
         val facts = output.facts.filter { it.text.isNotBlank() }
         return try {
             db.withTransaction {

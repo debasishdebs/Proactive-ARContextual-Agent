@@ -72,7 +72,7 @@ class ClusterContractTest {
     @Test fun validRoundTrip() = runBlocking<Unit> {
         reply = { """{"clusters":[${cl("c1", "a", "b")},${cl("c2", "d")}],"captions":[${cap("a")},${cap("b")},${cap("d")}]}""" }
         val photos = listOf(photo("c1", "a"), photo("c1", "b"), photo("c2", "d"))
-        val o = ClusterContract.call(ai.runner, photos, CallClass.EXTRACT)
+        val o = ClusterContract.call(ai.runner, photos, CallClass.EXTRACT, com.rokid.context.ai.AllLive)
         assertEquals(listOf("c1", "c2"), o.clusters.map { it.clusterId })
         assertEquals(listOf("a", "b"), o.clusters[0].facts.single().sourceFrameIds)
         assertEquals(listOf("a", "b", "d"), o.captions.map { it.frameId })
@@ -110,7 +110,7 @@ class ClusterContractTest {
                 else -> """{"clusters":[${cl("c2", "d")}],"captions":[${cap("d")}]}"""
             }
         }
-        val o = ClusterContract.call(ai.runner, listOf(photo("c1", "a"), photo("c1", "b"), photo("c2", "d")), CallClass.EXTRACT)
+        val o = ClusterContract.call(ai.runner, listOf(photo("c1", "a"), photo("c1", "b"), photo("c2", "d")), CallClass.EXTRACT, com.rokid.context.ai.AllLive)
         assertEquals(listOf("c1", "c2"), o.clusters.map { it.clusterId })
         assertEquals(3, prompts.size) // the batch, then each cluster alone
         assertTrue(ClusterContract.validate(o, sent))
@@ -121,10 +121,10 @@ class ClusterContractTest {
             if ("frame_id: a" in p) """{"clusters":[${cl("c1", "d")}],"captions":[${cap("a")},${cap("b")}]}"""
             else """{"clusters":[${cl("c2", "d")}],"captions":[${cap("d")}]}"""
         }
-        val o = ClusterContract.call(ai.runner, listOf(photo("c1", "a"), photo("c1", "b"), photo("c2", "d")), CallClass.EXTRACT)
+        val o = ClusterContract.call(ai.runner, listOf(photo("c1", "a"), photo("c1", "b"), photo("c2", "d")), CallClass.EXTRACT, com.rokid.context.ai.AllLive)
         assertEquals(listOf("c2"), o.clusters.map { it.clusterId }) // c1 is the caller's to fail
         reply = { """{"clusters":[${cl("c1", "d")}],"captions":[${cap("a")}]}""" }
-        val e = runCatching { ClusterContract.call(ai.runner, listOf(photo("c1", "a")), CallClass.EXTRACT) }.exceptionOrNull() as ModelCallException
+        val e = runCatching { ClusterContract.call(ai.runner, listOf(photo("c1", "a")), CallClass.EXTRACT, com.rokid.context.ai.AllLive) }.exceptionOrNull() as ModelCallException
         assertEquals(FailureKind.INVALID_OUTPUT, e.kind)
     }
 
@@ -137,7 +137,7 @@ class ClusterContractTest {
         assertFalse(ClusterContract.promptIsCurrent(old))
         assertFalse(ClusterContract.promptIsCurrent(null))
         reply = { """{"clusters":[{"summary":"A scene","facts":[{"text":"Red mug","type":"object","confidence":0.9,"tags":[]}]}]}""" }
-        val o = ClusterContract.call(ai.runner, listOf(photo("c1", "a"), photo("c1", "b"), photo("c2", "d")), CallClass.EXTRACT, PromptDraft("T {{recent_context}}", old))
+        val o = ClusterContract.call(ai.runner, listOf(photo("c1", "a"), photo("c1", "b"), photo("c2", "d")), CallClass.EXTRACT, com.rokid.context.ai.AllLive, PromptDraft("T {{recent_context}}", old))
         assertEquals(2, prompts.size) // one call per cluster
         assertEquals(listOf("c1", "c2"), o.clusters.map { it.clusterId })
         // Facts without source ids are attributed to that cluster's representatives; captions are optional.

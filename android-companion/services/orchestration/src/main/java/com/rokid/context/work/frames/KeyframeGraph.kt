@@ -237,7 +237,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
         val dao = db.canvasDao()
         LiveDeps(
             dao = dao, runner = ai.runner,
-            context = { runId, callClass -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = callClass) },
+            context = { runId, callClass, liveness -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = callClass, liveness = liveness) },
             sink = FrameIntentSink { frameId, label, confidence, atMs -> (KeyframeGraph.intentSink.takeIf { it !== FrameIntentSink.None } ?: intentWriter).record(frameId, label, confidence, atMs) },
             publisher = { id, reason -> CanvasPublisher.autoRollbackOn(dao, clock, id, reason) },
             shadowAllowed = { app.getSharedPreferences("pc_dev", Context.MODE_PRIVATE).getBoolean("developer_mode", false) },
@@ -266,13 +266,11 @@ class KeyframeHandle internal constructor(private val app: Context) {
         val gone = reps.filter { (cid, ids) -> cid !in withPhotos && ids.all { it in loaded.gone } }.keys
         val unseen = reps.keys - withPhotos - gone
         if (photos.isEmpty()) return ClusterOutcome.Saved(emptyList(), leftOut = unseen, gone = gone)
-        // Codex r9 P1-1: the photos are re-checked live inside each call's permit, under the DataOpGate; a Forget meanwhile drops the call unsent.
-        val guard = FrameDispatchGuard.forApp(app, photos.map { it.frameId }, generation)
+        // Codex r10: the photos carry their refs and this liveness; the router re-checks them inside every call's permit, under the upload slot.
         val out = try {
-            withContext(guard) { ClusterContract.call(AiGraph.get(app).runner, photos, callClass) }
-        } catch (e: Exception) {
-            if (e !is kotlin.coroutines.cancellation.CancellationException && (guard.wiped || guard.dropped.isNotEmpty())) return ClusterOutcome.Stale
-            throw e
+            ClusterContract.call(AiGraph.get(app).runner, photos, callClass, FrameLiveness.forApp(app, generation))
+        } catch (f: com.rokid.context.ai.PhotoForgottenException) {
+            return ClusterOutcome.Stale // dropped unsent; nothing written, never retried as text
         }
         val sent = out.clusters.associate { c -> c.clusterId to photos.filter { it.clusterId == c.clusterId }.map { it.frameId } }
         val leftOut = unseen + (withPhotos - sent.keys)
@@ -287,6 +285,8 @@ class KeyframeHandle internal constructor(private val app: Context) {
                 ClusterOutcome.Saved(saved.memories, saved.failedClusters.toSet(), leftOut, gone)
             }
             ClusterSaveResult.Stale, ClusterSaveResult.Wiped -> ClusterOutcome.Stale
+            // no delivery proof: nothing written; thrown as a retryable failure so the clusters stay queued with backoff
+            ClusterSaveResult.Undelivered -> throw com.rokid.context.ai.ModelCallException("photos not delivered", retryable = true)
         }
     }
 

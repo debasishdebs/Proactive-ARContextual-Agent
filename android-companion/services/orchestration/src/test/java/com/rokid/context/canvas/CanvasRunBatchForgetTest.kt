@@ -51,7 +51,7 @@ class CanvasRunBatchForgetTest {
         val dao = MemoryGraph.get(app).db.canvasDao()
         val runner = CanvasRunner(
             dao, { f -> PhotoLoad(f.map(::photo), emptySet()) }, Executors.all(),
-            { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) }) }, tokens, { false }, { 1L }, { "run1" },
+            { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) }, liveness = com.rokid.context.orchestration.AllLive) }, tokens, { false }, { 1L }, { "run1" },
         )
         val p = DefaultPipelines.intentDraft("EXTRACT {{recent_context}} {{context_sources}}")
         val est = runner.estimate(p, frames) { null } as Estimate.Ok

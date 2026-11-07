@@ -3,12 +3,11 @@ package com.rokid.context.ai
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.CallGate
-import com.rokid.context.model.DispatchGuard
 import com.rokid.context.model.LanguageModel
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.model.PassThroughGate
-import kotlinx.coroutines.currentCoroutineContext
+import com.rokid.context.model.PhotoLiveness
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -18,11 +17,18 @@ import kotlin.coroutines.cancellation.CancellationException
 data class RoutedReply(
     val text: String, val endpoint: Endpoint, val model: String, val latencyMs: Long, val promptTokens: Int?, val completionTokens: Int?,
     val truncated: Boolean = false, val maxTokens: Int? = null,
+    /**
+     * Codex r10 delivery proof: true only when this reply came from the provider call that carried the request's photos (the endpoint has VISION, the
+     * provider [com.rokid.context.model.ModelProvider.acceptsImages], the liveness re-check passed). A text-only reply is false. In memory only; a save
+     * that persists a photo description requires it.
+     */
+    val imagesDelivered: Boolean = false,
 )
 
 /**
- * Routes a role's call to its bound endpoint. Vision is used only when the endpoint has VISION and images are given;
- * a vision failure retries as text on the same endpoint; a primary failure retries on the fallback binding. [build] is
+ * Routes a role's call to its bound endpoint. Vision is used only when the endpoint can deliver images and images are given;
+ * a vision failure retries as text on the same endpoint unless the request requires its images; every photo upload passes the image-dispatch
+ * guard in [call]; a primary failure retries on the fallback binding. [build] is
  * called once per endpoint tried, so each kind gets its own wire format. The binding's temperature/maxTokens fill
  * whatever the request leaves null. Failures surface as [ModelCallException] with a [FailureKind]; cancellation is
  * rethrown untouched.
@@ -34,19 +40,20 @@ class ModelRouter(
     /** Every individual provider call (fallbacks and retries too) runs inside this, with the caller's [CallClass]. */
     private val gate: CallGate = PassThroughGate,
 ) : LanguageModel {
+    /** [liveness]: required with [images] (codex r10; the router refuses a photo without it). */
     @Deprecated("Pass a CallClass", ReplaceWith("generate(role, CallClass.OTHER, prompt, images)"))
-    suspend fun generate(role: Role, prompt: String, images: List<ModelImageInput> = emptyList()): String =
-        generate(role, CallClass.OTHER, prompt, images)
+    suspend fun generate(role: Role, prompt: String, images: List<ModelImageInput> = emptyList(), liveness: PhotoLiveness? = null): String =
+        generate(role, CallClass.OTHER, prompt, images, liveness)
 
-    suspend fun generate(role: Role, callClass: CallClass, prompt: String, images: List<ModelImageInput> = emptyList()): String =
-        complete(role, callClass) { ModelRequest(prompt, images) }.text
+    suspend fun generate(role: Role, callClass: CallClass, prompt: String, images: List<ModelImageInput> = emptyList(), liveness: PhotoLiveness? = null): String =
+        complete(role, callClass) { ModelRequest(prompt, images, liveness = liveness) }.text
 
     @Deprecated("Pass a CallClass", ReplaceWith("generateFromFrames(CallClass.OTHER, prompt, images)"))
-    suspend fun generateFromFrames(prompt: String, images: List<ModelImageInput>): String =
-        generateFromFrames(CallClass.OTHER, prompt, images)
+    suspend fun generateFromFrames(prompt: String, images: List<ModelImageInput>, liveness: PhotoLiveness? = null): String =
+        generateFromFrames(CallClass.OTHER, prompt, images, liveness)
 
-    suspend fun generateFromFrames(callClass: CallClass, prompt: String, images: List<ModelImageInput>): String =
-        completeFromFrames(callClass) { ModelRequest(prompt, images) }.text
+    suspend fun generateFromFrames(callClass: CallClass, prompt: String, images: List<ModelImageInput>, liveness: PhotoLiveness? = null): String =
+        completeFromFrames(callClass) { ModelRequest(prompt, images, liveness = liveness) }.text
 
     @Deprecated("Pass a CallClass", ReplaceWith("complete(role, CallClass.OTHER, build)"))
     suspend fun complete(role: Role, build: (Endpoint) -> ModelRequest): RoutedReply = complete(role, CallClass.OTHER, build)
@@ -68,12 +75,14 @@ class ModelRouter(
         return try {
             route(vision, build, skipPrimary = false, callClass)
         } catch (first: ModelCallException) {
+            if (first is PhotoForgottenException) throw first   // codex r10: a forgotten photo is never retried, not on SUMMARIZE's chain either
             val summarize = bindings.get(Role.SUMMARIZE) ?: throw first
             val samePrimary = summarize.endpointId == vision.endpointId && summarize.model == vision.model
             if (samePrimary && summarize.fallbackEndpointId == null) throw first
             try {
                 route(summarize, build, skipPrimary = samePrimary, callClass)
             } catch (second: ModelCallException) {
+                if (second is PhotoForgottenException) throw second
                 // A photo-only call whose SUMMARIZE endpoint cannot take the photo: the vision failure is the real one (a 400 stays a 400, keeps its attempts and parking).
                 if (needsVision(second)) throw first
                 throw ModelCallException("Frame summary failed: ${first.message}; ${second.message}", first.retryable || second.retryable, second, ProviderErrors.worst(first.kind, second.kind))
@@ -112,7 +121,7 @@ class ModelRouter(
             try {
                 primaryKey = endpoints.keyFor(primary)
                 return call(primary, b.model, b, build, primaryKey, callClass)
-            } catch (c: CancellationException) { throw c } catch (t: Throwable) { t }
+            } catch (c: CancellationException) { throw c } catch (f: PhotoForgottenException) { throw f } catch (u: ImagesUnguardedException) { throw u } catch (t: Throwable) { t }
         }
         val fallback = b.fallbackEndpointId?.let { endpoints.byId(it) }
             ?: throw ModelCallException(
@@ -126,6 +135,8 @@ class ModelRouter(
             call(fallback, b.fallbackModel ?: b.model, b, build, fallbackKey, callClass)
         } catch (c: CancellationException) {
             throw c
+        } catch (f: PhotoForgottenException) {
+            throw f
         } catch (t: Throwable) {
             if (first != null && needsVision(t)) {
                 // A photo-only call whose fallback cannot take the photo: report the primary's own failure, not "not set".
@@ -150,23 +161,47 @@ class ModelRouter(
         if (problem != null) throw ModelCallException(problem, retryable = false, kind = FailureKind.NOT_SET)
     }
 
+    /**
+     * THE image-dispatch choke point (codex r10). Every provider call of every model call runs here. For a request that is about stored photos (image refs
+     * or [ModelRequest.photoIds]):
+     *  1. every image must carry a ref and the request a [com.rokid.context.model.PhotoLiveness], else [ImagesUnguardedException] (nothing sent);
+     *  2. a [ModelRequest.requireImages] call whose endpoint or provider cannot deliver images fails closed: [ImagesUnsupportedException], no output;
+     *  3. inside the call permit: the liveness' upload slot is taken, every photo id re-checked, and the slot held until the provider call returns;
+     *     a photo gone meanwhile drops the call unsent: [PhotoForgottenException], which no path below or above retries;
+     *  4. a failed image call is retried as text only when the request does not require its images (and the retry re-checks liveness too).
+     * [RoutedReply.imagesDelivered] is set only for a reply whose call carried the photos.
+     */
     private suspend fun call(e: Endpoint, model: String, b: RoleBinding?, build: (Endpoint) -> ModelRequest, key: String?, callClass: CallClass): RoutedReply {
         requireConfigured(e, model, key)
         val p = providers.create(e, model, key)
         val request = build(e).let { r -> r.copy(temperature = r.temperature ?: b?.temperature, maxTokens = r.maxTokens ?: b?.maxTokens) }
-        // Each provider call (the vision attempt and its text retry are two) takes its own permit.
+        val photoIds = request.photoIds + request.images.mapNotNull { it.ref }
+        val liveness = request.liveness
+        if (request.images.any { it.ref.isNullOrBlank() } || (photoIds.isNotEmpty() && liveness == null)) {
+            PcLog.w(TAG, "image_dispatch_refused reason=unguarded")
+            throw ImagesUnguardedException()
+        }
+        val canSend = request.images.isNotEmpty() && EndpointRules.deliversImages(e) && p.acceptsImages
+        if (request.requireImages && !canSend) {
+            PcLog.i(TAG, "vision_refused_no_text_retry images_unsupported")
+            throw ImagesUnsupportedException()
+        }
+        // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
-        // Codex r9 P1-1: a call carrying photos passes the caller's DispatchGuard inside its permit (a Forget during the permit wait drops it unsent).
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
-            val guard = if (r.images.isNotEmpty()) currentCoroutineContext()[DispatchGuard] else null
-            if (guard == null) p.complete(r) else guard.send { p.complete(r) }
+            if (liveness == null || photoIds.isEmpty()) p.complete(r) else liveness.holdUploadSlot {
+                val gone = liveness.gone(photoIds)
+                if (!gone.none) {
+                    if (gone.wiped) PcLog.i(TAG, "image_dispatch_dropped reason=wiped photos=${gone.ids.size}")
+                    else PcLog.i(TAG, "image_dispatch_dropped reason=forgotten photos=${gone.ids.size}")
+                    throw PhotoForgottenException(gone.ids, gone.wiped)
+                }
+                p.complete(r)
+            }
         }
-        if (request.requireImages && (request.images.isEmpty() || Capability.VISION !in e.capabilities)) {
-            PcLog.i(TAG, "vision_refused_no_text_retry endpoint_without_vision")
-            throw ModelCallException(NEEDS_VISION, retryable = false, kind = FailureKind.NOT_SET)
-        }
-        val reply = if (request.images.isNotEmpty() && Capability.VISION in e.capabilities) {
-            try { gated(request) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
+        var delivered = false
+        val reply = if (canSend) {
+            try { gated(request).also { delivered = true } } catch (c: CancellationException) { throw c } catch (f: PhotoForgottenException) { throw f } catch (t: Throwable) {
                 if (request.requireImages) {   // a text-only retry would guess without the photo (codex r9 P1-2)
                     PcLog.w(TAG, "vision_refused_no_text_retry ${SafeLog.describe(t)}")
                     throw t
@@ -177,16 +212,16 @@ class ModelRouter(
         } else {
             gated(request.copy(images = emptyList()))
         }
-        return RoutedReply(reply.text, e, model, (System.nanoTime() - start) / 1_000_000, reply.promptTokens, reply.completionTokens, reply.truncated, request.maxTokens)
+        return RoutedReply(reply.text, e, model, (System.nanoTime() - start) / 1_000_000, reply.promptTokens, reply.completionTokens, reply.truncated, request.maxTokens, imagesDelivered = delivered)
     }
 
     internal companion object {
         const val TAG = "ModelRouter"
         const val MAX_PROVIDER_TEXT = 200
         const val NEEDS_VISION = "This call needs a vision endpoint and its photo"
-        /** True when [t] failed only because a photo-only request met an endpoint without vision (also when [route] wrapped that one failure). */
+        /** True when [t] failed only because a photo-only request met an endpoint that cannot deliver images (also when [route] wrapped that one failure). */
         fun needsVision(t: Throwable?): Boolean = t is ModelCallException && t.kind == FailureKind.NOT_SET &&
-            generateSequence<Throwable>(t) { it.cause?.takeIf { c -> c !== it } }.take(3).any { it is ModelCallException && it.message == NEEDS_VISION }
+            generateSequence<Throwable>(t) { it.cause?.takeIf { c -> c !== it } }.take(3).any { it is ImagesUnsupportedException }
         /** Fixed log token: a photo call failed (or had no vision endpoint) and was NOT retried as text. */
         const val VISION_REFUSED_NO_TEXT_RETRY = "vision_refused_no_text_retry"
 

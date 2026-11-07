@@ -47,7 +47,7 @@ class WindowExecutorsTest {
     }))
     private fun ctx(): RunContext {
         val ai = TestAi.graph(app) { modelCalls++; "" }.also { TestAi.bindAll(it) }
-        return RunContext("run1", ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) })
+        return RunContext("run1", ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) }, liveness = com.rokid.context.orchestration.AllLive)
     }
     private fun agg(vararg kv: Pair<String, Any>) = PipelineNode("agg", NodeTypes.AGG_WINDOW, "Window", buildJsonObject { kv.forEach { (k, v) -> if (v is Int) put(k, v) else put(k, v as String) } })
     private fun cmp(op: String? = null, cut: Double? = null) = PipelineNode("cmp", NodeTypes.COMPARE, "Compare", buildJsonObject { op?.let { put("operator", it) }; cut?.let { put("cutoff", it) } })

@@ -21,9 +21,14 @@ sealed interface ContractOutput { val extras: JsonObject }
 data class Fact(val text: String, val type: String, val confidence: Double, val tags: List<String>, val sourceFrameIds: List<String> = emptyList())
 data class FrameCaption(val frameId: String, val caption: String)
 /** [provenance]: a VISION_EXTRACT output, whose ids and captions the validator checks against the photos sent. */
+/**
+ * [imagesDelivered]: codex r10 delivery proof, in memory only (never decoded from the reply; [RoleContracts] leaves it false and the caller copies it
+ * from [com.rokid.context.ai.run.RoleResult.imagesDelivered]). `ExtractSave.saveExtraction` persists nothing without it.
+ */
 data class ExtractOutput(
     val facts: List<Fact>, override val extras: JsonObject = JsonObject(emptyMap()),
     val captions: List<FrameCaption> = emptyList(), val provenance: Boolean = false,
+    val imagesDelivered: Boolean = false,
 ) : ContractOutput
 /** An INTENT_CLASSIFY result: [label] (unknown names are OTHER) and [confidence] clamped to 0..1. */
 data class IntentOutput(val label: com.rokid.context.core.model.context.IntentLabel, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput

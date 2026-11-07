@@ -165,7 +165,7 @@ class AnswerServiceTest {
         moment("f1"); moment("f2")
         val r = service(listOf(hit("f1", caption = "A desk with keys"), hit("f2")), mapOf("f1" to img("A"), "f2" to img("B"))).answerOrThrow("where are my keys", "phone_typed", nowMs = 5)
         assertEquals("f1", r.photoFrameId)
-        assertEquals(listOf(img("A"), img("B")), seen.images)
+        assertEquals(listOf(img("A").copy(ref = "f1"), img("B").copy(ref = "f2")), seen.images)
         assertTrue(seen.prompt, "id=frame:f1 · 2025-10-09 08:53 · photo · image=1 · A desk with keys" in seen.prompt)
         assertTrue(seen.prompt, "id=frame:f2 · 2025-10-09 08:53 · photo · image=2 · no caption yet" in seen.prompt)
     }
@@ -176,7 +176,7 @@ class AnswerServiceTest {
         val calls = mutableListOf<List<String>>()
         // The map is built in reverse: only the cite order may decide the image order.
         service(listOf(hit("f1"), hit("f2")), linkedMapOf("f2" to img("B"), "f1" to img("A")), calls).answerOrThrow("q", "phone_typed", nowMs = 5)
-        assertEquals(listOf(img("A"), img("B")), seen.images)
+        assertEquals(listOf(img("A").copy(ref = "f1"), img("B").copy(ref = "f2")), seen.images)
         assertTrue(seen.prompt, "frame:f1 · 2025-10-09 08:53 · photo · image=1" in seen.prompt && "frame:f2 · 2025-10-09 08:53 · photo · image=2" in seen.prompt)
         assertEquals(listOf(listOf("f1"), listOf("f2")), calls)
     }
@@ -185,7 +185,7 @@ class AnswerServiceTest {
         val seen = Seen(); recording(seen) { """{"answer":"x","sources":["frame:f2"]}""" }
         moment("f1"); moment("f2")
         service(listOf(hit("f1"), hit("f2")), mapOf("f2" to img("B"))).answerOrThrow("q", "phone_typed", nowMs = 5)
-        assertEquals(listOf(img("B")), seen.images)
+        assertEquals(listOf(img("B").copy(ref = "f2")), seen.images)
         assertTrue(seen.prompt, "frame:f1 · 2025-10-09 08:53 · photo · no caption yet" in seen.prompt)
         assertTrue(seen.prompt, "frame:f2 · 2025-10-09 08:53 · photo · image=1" in seen.prompt)
     }

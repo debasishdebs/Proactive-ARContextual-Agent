@@ -105,7 +105,16 @@ class LlamaCppNativeProvider internal constructor(private val modelPath: String,
 
     override suspend fun generate(prompt: String): String = complete(ModelRequest(prompt)).text
 
-    override suspend fun complete(request: ModelRequest): ModelReply = withContext(Dispatchers.Default) {
+    /** Codex r10: the native runtime takes text only. The router never sends it a photo; if one arrives anyway it fails closed below. */
+    override val acceptsImages: Boolean get() = false
+
+    override suspend fun complete(request: ModelRequest): ModelReply {
+        // Fail closed: a photo is never silently dropped (a photo-requiring role would get a caption guessed from the metadata).
+        if (request.images.isNotEmpty() || request.requireImages) throw com.rokid.context.ai.ImagesUnsupportedException()
+        return completeText(request)
+    }
+
+    private suspend fun completeText(request: ModelRequest): ModelReply = withContext(Dispatchers.Default) {
         withModel(native, modelPath, forEmbedding = false) { handle ->
             val grammar = (request.format as? WireFormat.Grammar)?.gbnf
             val text = if (grammar == null) native.generate(handle, request.prompt) else native.generateWithGrammar(handle, request.prompt, grammar)

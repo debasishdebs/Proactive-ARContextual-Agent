@@ -44,7 +44,7 @@ class ExtractSaveOverrideTest {
     @Test fun overrideWithProvenanceSchemaBatchesThree() = runBlocking<Unit> {
         val ai = graph { reply(*sentIds(it).toTypedArray()) }
         val draft = PromptDraft("OVERRIDE {{recent_context}}", DefaultSchemas.text(PromptKey.VISION_EXTRACT))
-        val b = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT, override = draft)
+        val b = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive, override = draft)
         assertEquals(1, prompts.size)
         assertTrue(prompts.single().contains("OVERRIDE"))
         assertEquals(0, b.promptVersion)
@@ -54,7 +54,7 @@ class ExtractSaveOverrideTest {
     @Test fun overrideWithLegacySchemaGoesSinglePhoto() = runBlocking<Unit> {
         val legacy = """{"type":"object","properties":{"facts":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"confidence":{"type":"number"},"tags":{"type":"array","items":{"type":"string"}}},"required":["text","type","confidence","tags"]}}},"required":["facts"]}"""
         val ai = graph { legacyReply }
-        val b = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT, override = PromptDraft("OVERRIDE {{recent_context}}", legacy))
+        val b = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive, override = PromptDraft("OVERRIDE {{recent_context}}", legacy))
         assertEquals(3, prompts.size)
         assertFalse(b.output.provenance)
         assertEquals(listOf("ex1", "ex2", "ex3"), b.output.facts.map { it.sourceFrameIds.single() })
@@ -63,15 +63,15 @@ class ExtractSaveOverrideTest {
     @Test fun contextSourcesReachPrompt() = runBlocking<Unit> {
         val ai = graph { reply("ex1") }
         val draft = PromptDraft("SRC[{{context_sources}}] {{recent_context}}", DefaultSchemas.text(PromptKey.VISION_EXTRACT))
-        ExtractSave.extract(ai.runner, listOf(photo("ex1")), CallClass.EXTRACT, override = draft, contextSources = "CTXSRC-XYZ")
+        ExtractSave.extract(ai.runner, listOf(photo("ex1")), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive, override = draft, contextSources = "CTXSRC-XYZ")
         assertTrue(prompts.single().contains("SRC[CTXSRC-XYZ]"))
     }
 
     @Test fun defaultsMatchTodayBehaviour() = runBlocking<Unit> {
         val ai = graph { reply(*sentIds(it).toTypedArray()) }
-        val a = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT)
+        val a = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         val withDefaults = prompts.toList(); prompts.clear()
-        val b = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT, override = null, contextSources = "")
+        val b = ExtractSave.extract(ai.runner, three.map(::photo), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive, override = null, contextSources = "")
         assertEquals(withDefaults.size, prompts.size)
         assertEquals(withDefaults.map { it.lines().filter { l -> !l.startsWith("Now") } }, prompts.map { it.lines().filter { l -> !l.startsWith("Now") } })
         assertEquals(a.output, b.output)

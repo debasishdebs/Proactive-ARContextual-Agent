@@ -53,7 +53,7 @@ class ExtractSaveTest {
             if (ids.size > 1) """{"facts":[],"captions":[]}""" else reply(ids.single())
         }
         TestAi.bindAll(ai)
-        val batch = ExtractSave.extract(ai.runner, listOf(photo("ex1"), photo("ex2"), photo("ex3")), CallClass.EXTRACT)
+        val batch = ExtractSave.extract(ai.runner, listOf(photo("ex1"), photo("ex2"), photo("ex3")), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(listOf(listOf("ex1", "ex2", "ex3"), listOf("ex1", "ex2", "ex3"), listOf("ex1"), listOf("ex2"), listOf("ex3")), prompts.map(::sentIds).map { it.distinct() })
         assertEquals(listOf("Mug in ex1", "Mug in ex2", "Mug in ex3"), batch.output.facts.map { it.text })
         assertEquals(listOf("ex1", "ex2", "ex3"), batch.output.captions.map { it.frameId })
@@ -66,14 +66,33 @@ class ExtractSaveTest {
     }
 
     private fun output(vararg ids: String) = ExtractOutput(
-        ids.map { Fact("Mug in $it", "object", 0.9, emptyList(), listOf(it)) }, captions = ids.map { FrameCaption(it, "Counter $it") }, provenance = true,
+        ids.map { Fact("Mug in $it", "object", 0.9, emptyList(), listOf(it)) }, captions = ids.map { FrameCaption(it, "Counter $it") }, provenance = true, imagesDelivered = true,
     )
+
+    // codex r10: a caption (or a trusted fact) whose photo was never proven delivered to the model is never saved as a memory
+    @Test fun aResultWithoutDeliveryProofIsNeverSavedAsAMemory() = runBlocking<Unit> {
+        claim(listOf("ex1"), "c1", abandonBeforeMs = 0)
+        val r = ExtractSave.saveExtraction(ctx, "p_", output("ex1").copy(imagesDelivered = false), setOf("ex1"), mapOf("ex1" to "c1"), MemoryTier.SHORT, ReviewState.OK)
+        assertEquals(ExtractSaveResult.Undelivered, r)
+        assertTrue(db.memoryDao().all().isEmpty())
+        assertEquals("EXTRACTING", db.frameStateDao().get("ex1")?.state) // the claim is untouched: the pipeline retries with backoff
+        // captions without proof are refused even when the facts would go to review
+        assertEquals(ExtractSaveResult.Undelivered, ExtractSave.saveExtraction(ctx, "p_", output("ex1").copy(imagesDelivered = false), setOf("ex1"), null, MemoryTier.SHORT, ReviewState.NEEDS_REVIEW))
+        assertTrue(db.memoryDao().all().isEmpty())
+    }
+
+    @Test fun theExtractionCarriesTheRoutersDeliveryProof() = runBlocking<Unit> {
+        val ai = TestAi.graph(ctx) { p -> reply(sentIds(p).single()) }
+        TestAi.bindAll(ai)
+        assertTrue(ExtractSave.extract(ai.runner, listOf(photo("ex1")), CallClass.EXTRACT, AllLive).output.imagesDelivered)
+        assertEquals(setOf("ex1"), AllLive.checked.last())
+    }
 
     @Test fun frameSourceWritten() = runBlocking<Unit> {
         claim(listOf("ex1", "ex2"), "c1", abandonBeforeMs = 0)
         val out = ExtractOutput(
             listOf(Fact("Mug on the counter", "object", 0.9, emptyList(), listOf("ex1", "ex2"))),
-            captions = listOf(FrameCaption("ex1", "Counter one"), FrameCaption("ex2", "Counter two")), provenance = true,
+            captions = listOf(FrameCaption("ex1", "Counter one"), FrameCaption("ex2", "Counter two")), provenance = true,imagesDelivered = true
         )
         val r = ExtractSave.saveExtraction(ctx, "p_", out, setOf("ex1", "ex2"), mapOf("ex1" to "c1", "ex2" to "c1"), MemoryTier.SHORT, ReviewState.OK)
         assertEquals(3, (r as ExtractSaveResult.Saved).memories.size)
@@ -123,7 +142,7 @@ class ExtractSaveTest {
         TestAi.bindAll(ai)
         useOldFactsSchema(ai)
         assertFalse(ExtractSave.promptIsCurrent(ai.runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT)))
-        val batch = ExtractSave.extract(ai.runner, listOf(photo("ex1"), photo("ex2")), CallClass.EXTRACT)
+        val batch = ExtractSave.extract(ai.runner, listOf(photo("ex1"), photo("ex2")), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(2, prompts.size) // never a batch call
         assertTrue(prompts.all { sentIds(it).distinct().size == 1 })
         assertEquals(listOf(listOf("ex1"), listOf("ex2")), batch.output.facts.map { it.sourceFrameIds })
@@ -150,7 +169,7 @@ class ExtractSaveTest {
             """{"facts":[$facts],"captions":[$caps]}"""
         }
         TestAi.bindAll(ai)
-        val batch = ExtractSave.extract(ai.runner, (1..5).map { photo("ex$it") }, CallClass.EXTRACT)
+        val batch = ExtractSave.extract(ai.runner, (1..5).map { photo("ex$it") }, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(listOf(listOf("ex1", "ex2", "ex3"), listOf("ex4", "ex5")), prompts.map { sentIds(it).distinct() })
         assertEquals(5, batch.output.captions.size)
         assertTrue(batch.output.provenance)

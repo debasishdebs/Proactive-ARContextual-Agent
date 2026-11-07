@@ -58,7 +58,7 @@ class UserBypassRealBudgetTest {
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
-    private fun extract(c: CallClass) = RoleCall(PromptKey.VISION_EXTRACT, PromptVars(), images = listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA")), fromFrames = true, callClass = c) // codex r9 P1-2: always with its photo
+    private fun extract(c: CallClass) = RoleCall(PromptKey.VISION_EXTRACT, PromptVars(), images = listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA", ref = "f1")), fromFrames = true, callClass = c, liveness = com.rokid.context.orchestration.AllLive) // codex r9 P1-2: always with its photo
 
     @Test fun userBypassesWhenBackgroundTokensExhausted() = runBlocking {
         repeat(2) { budget.withPermit(CallClass.EXTRACT) {} } // the burst of 2 is spent
