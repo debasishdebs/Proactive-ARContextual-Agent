@@ -71,13 +71,33 @@ A failure writes nothing. KeyframeExtract, KeyframeGraph and QueueDrainWorker tu
 6. A new provider that cannot send images must override `ModelProvider.acceptsImages = false`. Add its kind to `EndpointRules.NO_IMAGES`, so the editor
    refuses Vision on it (save error `NO_IMAGES_MESSAGE`) and the binding check refuses VISION roles on it.
 
-## Not done here: retention and pre-fix captions (codex r10 item 4, waits for a user ruling)
+## Codex r11 follow-up
 
-`ForgetDao.linkedPhotosDue` (services/memory/.../ForgetDao.kt, the `@Query` at ~line 130) treats any citing memory (`memory.frameId` or `frame_source`)
-as the description that lets retention delete the photo. Captions saved before this fix may have been guessed from metadata.
-The hook would be that query's `EXISTS (…)` clause, which would also need a "delivery-proven" marker on the citing row. That is a Room migration
-(version 15 → 16) and needs the ruling. An alternative without a migration is a one-off quarantine of pre-fix `caption`/`cluster_summary` rows,
-for example re-marking them NEEDS_REVIEW and excluding NEEDS_REVIEW citers in that clause. Nothing in this change touches retention.
+- **Photo-derived text is guarded like a photo.** `RoleCall.derivedFromFrames` feeds `ModelRequest.photoIds`. The router already re-checks every
+  `photoIds` entry with the liveness, inside the permit and under the upload slot, even when no image is attached. These callers now declare it:
+  CRITIC in `ExtractFollowUp.modelCriticPasses`/`trusted` (from KeyframeExtract, DescribeOnDemand and QueueDrainWorker), QueueDrainWorker's
+  critic review, the canvas CriticExecutor, the PromptExecutor frame line (also for text-only prompts), and the Ask and Ask-debug photo lines.
+  `PromptKeyImageUseTest.everyCallWithPhotoDerivedTextNamesItsPhotos` fails for any RoleCall whose enclosing function builds frame lines without
+  `derivedFromFrames`/`images` and a `liveness`.
+- **The live seam ends on a forgotten photo.** The interpreter reports a dropped call as `frame_forgotten`. `LiveExtract.batch` then re-reads which
+  photos are gone and throws `PhotoForgottenException`. It no longer runs a fallback extraction.
+- **Retention counts only real descriptions.** `ForgetDao.DESCRIBES`/`DESCRIBED_BY_EXTRACTION`, used by `linkedPhotosDue`, needs no migration.
+  A citing memory counts only if all three hold: it is `reviewState = 'OK'`, it is not `derived`, and it is not a canvas save. Canvas saves are told
+  apart by the origin prefix `rokid_cv_`, which `CanvasRunSave` stamps on every row it writes. The photo paths (`rokid_kf_`, `rokid_desc_`,
+  `rokid_cl_`, `rokid_mem_`) write OK facts and captions under their own prefixes. An allowlist of those prefixes would be stricter, but fixtures
+  across the retention tests use arbitrary ids, so the canvas origin is excluded instead. Canvas facts stay searchable memories.
+  Test: `ForgetServiceTest.retentionCountsOnlyOkExtractionDescriptions` runs the real SQL on four photos. The canvas-saved one, the one with a
+  NEEDS_REVIEW fact and the one with a derived re-summary are not due; the one with an OK extraction caption is due.
+  Side effect: a photo whose only citers are excluded is now neither deleted nor picked by the night describe job, because `describeDue` still means
+  "no memory cites it". It is kept past its window, which fails safe. Aligning `describeDue` with the new rule changes night-job behaviour, so it is
+  left for a ruling.
+
+## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
+
+The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the
+same id prefix, `reviewState = OK`, confidence 1.0 and `frame_source` rows, and no column records image delivery. Only a schema change can separate
+them: a delivery-proof column, which means a Room migration from version 15 to 16. The other option is a policy decision to quarantine or re-describe
+every pre-fix caption, for example by `createdAt` before this commit. The hook for either is `DESCRIBES` in `ForgetDao`. No migration was made.
 
 ## Tests
 
@@ -86,5 +106,7 @@ for example re-marking them NEEDS_REVIEW and excluding NEEDS_REVIEW citers in th
   refused at run time, a local endpoint refused Vision at save and bind, the native provider refusing a photo, RoleRunner requiring images for every
   REQUIRED key (CLUSTER_SUMMARY included), refusing images on a NONE key and refusing a REQUIRED key without a photo.
 - services/ai `PromptKeyImageUseTest`: scans every PromptKey and every image call site.
+- r11: `PhotoDerivedDispatchTest` (CRITIC over a forgotten photo never sent; live photo re-checked; no liveness refused),
+  `LiveExtractTest.aForgottenPhotoEndsTheLiveBatchWithoutAFallback`, `ForgetServiceTest.retentionCountsOnlyOkExtractionDescriptions`.
 - orchestration `ExtractSaveTest.aResultWithoutDeliveryProofIsNeverSavedAsAMemory`, `theExtractionCarriesTheRoutersDeliveryProof`,
   `ClusterSaveTest.anOutputWithoutDeliveryProofIsNeverSaved`. The existing `PhotoDispatchSafetyTest` (end to end through KeyframeExtract) still passes.

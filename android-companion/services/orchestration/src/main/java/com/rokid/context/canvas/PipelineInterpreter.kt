@@ -165,7 +165,11 @@ class PipelineInterpreter(
 
     private fun reasonOf(r: NodeResult): String = r.cause?.let(::nameOf) ?: r.error ?: "no_result"
 
-    private fun nameOf(e: Throwable): String = if (e is ModelCallException) e.kind.name else e.javaClass.simpleName
+    private fun nameOf(e: Throwable): String = when (e) {
+        is com.rokid.context.ai.PhotoForgottenException -> FRAME_FORGOTTEN // codex r11: the live seam ends the work item, never falls back
+        is ModelCallException -> e.kind.name
+        else -> e.javaClass.simpleName
+    }
 
     /** Cut on a code point boundary (never between the halves of a surrogate pair); the trailing marker says the text is cut. */
     private fun cap(s: String): String {
@@ -181,6 +185,8 @@ class PipelineInterpreter(
         const val OUTPUT_CAP = 8_000
         const val TRUNCATED = "...[truncated]"
         const val BATCH = "_batch"
+        /** Codex r11: the failure reason when a model call of the batch was dropped because a photo was forgotten (or everything deleted) before it left. */
+        const val FRAME_FORGOTTEN = "frame_forgotten"
         const val MAX_LABEL = 64
         private const val CHAIN_DEPTH = 8
 

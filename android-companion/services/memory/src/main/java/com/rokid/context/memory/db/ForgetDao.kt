@@ -123,14 +123,15 @@ abstract class ForgetDao {
     abstract suspend fun stillSkippedPhoto(frameId: String): Int
 
     /**
-     * Per-kind photo retention: keyframes past `max(frame.ts, [since]) + [windowMs]` that a memory cites (`memory.frameId` or `frame_source`).
+     * Per-kind photo retention: keyframes past `max(frame.ts, [since]) + [windowMs]` that a memory DESCRIBES ([DESCRIBED_BY_EXTRACTION], codex r11:
+     * an OK, non-derived memory that is not a canvas save, cited through `memory.frameId` or `frame_source`).
      * A photo the night job described for describe-before-delete (`lastError = describe_before_delete`) waits [graceMs] more, and only when
      * [describeReady] is 1. A photo no memory cites is never returned: an undescribed photo is never deleted (the night job describes it first).
      */
     @Query(
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
             "WHERE " + PHOTO_ELIGIBLE +
-            "AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id)) " +
+            "AND " + DESCRIBED_BY_EXTRACTION +
             "AND (COALESCE(s.lastError, '') != 'describe_before_delete' OR (:describeReady = 1 AND MAX(MAX(f.ts, :since) + :windowMs, " +
             // the grace counts from the later of the deadline and the describe (the earliest citing memory's creation), so a photo described
             // after offline nights is kept 3 days from its caption, not deleted within hours of it
@@ -228,6 +229,18 @@ abstract class ForgetDao {
          * representatives). That durable mark takes it out of the skipped-photo rule for good, so a cluster settling later cannot put it back under 1 day.
          */
         const val NOT_DESCRIBED = "AND NOT EXISTS (SELECT 1 FROM frame_source d WHERE d.frameId = f.id AND d.role = 'FACT') "
+        /**
+         * Codex r11: a memory counts as a photo's description (what lets retention delete the photo) only when it is review state OK and not derived
+         * (no summary of other memories: re-summaries, reprocess summaries), and it is not a canvas save: `CanvasRunSave` stamps every row it writes
+         * `rokid_cv_` (its origin; canvas facts stay searchable memories but never authorise a delete). A NEEDS_REVIEW fact never does either.
+         * The photo paths (keyframe extraction, describe on demand, scene clusters, the queued photo extraction) write OK facts and captions under
+         * their own prefixes. GLOB: `_` is literal.
+         */
+        const val DESCRIBES = "a.reviewState = 'OK' AND a.derived = 0 AND a.id NOT GLOB 'rokid_cv_*'"
+        const val DESCRIBED_BY_EXTRACTION =
+            "(EXISTS (SELECT 1 FROM memory a WHERE a.frameId = f.id AND $DESCRIBES) " +
+                "OR EXISTS (SELECT 1 FROM frame_source fs JOIN memory a ON a.id = fs.memoryId WHERE fs.frameId = f.id AND $DESCRIBES)) "
+
         /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
         const val SKIPPED_PHOTO =
             "AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +

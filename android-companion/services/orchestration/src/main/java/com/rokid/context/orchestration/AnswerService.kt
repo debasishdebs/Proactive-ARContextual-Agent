@@ -198,6 +198,7 @@ class AnswerService(
             imageEndpointId = endpoint.takeIf { withImage.isNotEmpty() },
             imageCount = withImage.size,
             liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory),
+            storedFrameIds = recalled.filter { it.first.photoStored }.map { it.first.frameId }.toSet(),
         )
     }
 
@@ -246,7 +247,10 @@ class AnswerService(
         // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
         // unsent, PhotoForgottenException; it is never re-asked as text).
         val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
-            liveness = if (r.images.isEmpty()) null else com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
+            // codex r11: a stored photo's line is frame metadata even when no image goes with it: re-checked like the images (an expired photo's
+            // line comes from its caption memory, fenced by ForgetFence below)
+            derivedFromFrames = r.photos.filter { it.stored }.map { it.frameId }.toSet(),
+            liveness = if (r.images.isEmpty() && r.photos.none { it.stored }) null else com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"

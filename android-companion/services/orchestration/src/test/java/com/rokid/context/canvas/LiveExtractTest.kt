@@ -206,6 +206,22 @@ class LiveExtractTest {
 
     // ---- (c) failure, timeout, transient ----
 
+    // codex r11 P2-3: a photo forgotten before the interpreter's call left ends the work item: no fallback extraction, no second permit
+    @Test fun aForgottenPhotoEndsTheLiveBatchWithoutAFallback() = runBlocking<Unit> {
+        intentGraph()
+        publish(intentPipeline(), LiveMode.LIVE)
+        val forgotten = object : com.rokid.context.model.PhotoLiveness {
+            override suspend fun <T> holdUploadSlot(block: suspend () -> T): T = block()
+            override suspend fun gone(ids: Set<String>) = com.rokid.context.model.GonePhotos(ids intersect setOf("ex2"))
+        }
+        val e = runCatching { LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, forgotten) }.exceptionOrNull()
+        assertTrue(e.toString(), e is com.rokid.context.ai.PhotoForgottenException)
+        assertEquals(setOf("ex2"), (e as com.rokid.context.ai.PhotoForgottenException).frameIds)
+        assertTrue("the forgotten photo was never sent: $prompts", prompts.none { "ex2" in it })
+        assertEquals("no fallback extraction", 0, extractCalls)
+        assertTrue("at most one permit per interpreter call, none for a fallback: ${permits.get()}", permits.get() <= 3)
+    }
+
     @Test fun failedFallsBackToLive() = runBlocking<Unit> {
         graph { p -> if (isIntent(p)) "not json at all" else extractReply(p) }
         val pid = publish(intentPipeline(), LiveMode.LIVE)

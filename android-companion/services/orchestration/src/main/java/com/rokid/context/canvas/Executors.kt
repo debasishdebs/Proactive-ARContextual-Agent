@@ -50,6 +50,9 @@ object Executors {
 
 private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSource.Draft)?.let { PromptDraft(it.template, it.schema) }
 
+/** Codex r11: the stored photo an item's prompt text is derived from (its frame line, facts or caption); none for an item without a photo. */
+internal fun photoIdsOf(item: CanvasItem): Set<String> = setOfNotNull(item.photo.frameId.takeIf { it.isNotBlank() })
+
 /** The helper executor's FRAME_FORGET token (this file must not name that executor): the runner stops a run whose photo was forgotten. */
 private const val FRAME_FORGET = "frame_forget"
 
@@ -143,7 +146,8 @@ object CriticExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = ctx.callClass, override = override))
+                val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = ctx.callClass, override = override,
+                    derivedFromFrames = photoIdsOf(it), liveness = ctx.liveness)) // codex r11: photo-derived text is re-checked like a photo
                 val pass = (r.output as CriticOutput).pass
                 val meta = ownerMeta(r.reply.latencyMs, r.replies.asUsage(), r.promptVersion, "${ctx.runId}:${node.id}:${it.frameId}")
                 NodeResult(it.frameId, v.copy(trusted = pass), branch = if (pass) "pass" else "fail", meta = meta, calls = meta.calls!!)
@@ -193,7 +197,7 @@ object PromptExecutor : NodeExecutor {
                     val plan = StructuredOutput.plan(e, schemaObj, name)
                     // a photo prompt never falls back to text (codex r9 P1-2); its photo carries its ref and the run's liveness (codex r10)
                     ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image.copy(ref = it.photo.frameId)) else emptyList(), format = plan.format,
-                        requireImages = images, liveness = ctx.liveness)
+                        requireImages = images, photoIds = photoIdsOf(it), liveness = ctx.liveness) // the frame line is photo metadata even without the image (codex r11)
                 }
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@mapIndexed NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)

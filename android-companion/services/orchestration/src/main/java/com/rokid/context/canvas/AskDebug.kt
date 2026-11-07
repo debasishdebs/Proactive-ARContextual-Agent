@@ -42,6 +42,8 @@ data class AskPhotoRecall(
     val imageCount: Int? = null,
     /** Codex r10: the recalled photos' liveness; a replay attaches it so the router re-checks them before upload (null with images = refused). */
     val liveness: com.rokid.context.model.PhotoLiveness? = null,
+    /** Codex r11: the recalled photos still stored (their lines are frame metadata, re-checked before a replay is sent); an expired one is not here. */
+    val storedFrameIds: Set<String> = emptySet(),
 )
 
 /**
@@ -150,7 +152,8 @@ class AskDebug(
         val images = if (endpoint == null) emptyList() else l.photos?.let { p -> try { p.images() } catch (c: CancellationException) { throw c } catch (e: Exception) { return Replay.Failed(e.javaClass.simpleName) } } ?: emptyList()
         if (l.photos?.imageCount != null && images.size != l.photos.imageCount) return Replay.Failed("attachments_changed")
         val result = try {
-            runner.run(RoleCall(PromptKey.ANSWER, l.vars, images = images, imagesOnlyOnEndpoint = if (images.isEmpty()) null else endpoint, inputIds = memoryIds + (l.photos?.citeIds ?: emptySet()), callClass = CallClass.EXPERIMENT, override = draft, liveness = l.photos?.liveness))
+            runner.run(RoleCall(PromptKey.ANSWER, l.vars, images = images, imagesOnlyOnEndpoint = if (images.isEmpty()) null else endpoint, inputIds = memoryIds + (l.photos?.citeIds ?: emptySet()), callClass = CallClass.EXPERIMENT, override = draft, liveness = l.photos?.liveness,
+                derivedFromFrames = l.photos?.storedFrameIds.orEmpty()))
         } catch (c: CancellationException) {
             throw c
         } catch (e: ModelCallException) {

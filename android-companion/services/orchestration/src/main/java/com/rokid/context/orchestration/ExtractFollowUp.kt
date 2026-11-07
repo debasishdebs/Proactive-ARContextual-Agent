@@ -16,6 +16,7 @@ import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.model.CallClass
+import com.rokid.context.model.PhotoLiveness
 import com.rokid.context.orchestration.nudge.NudgeTrigger
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptDraft
@@ -40,8 +41,9 @@ object ExtractFollowUp {
 
     /** True when nothing needs review: no facts, a local TRUSTED verdict, or the model critic passing. [id] only seeds the local critic. */
     suspend fun trusted(
-        ai: AiGraph, critic: CriticWorker, id: String, facts: List<Fact>, frameLines: List<String>, callClass: CallClass = CallClass.EXTRACT,
-    ): Boolean = locallyTrusted(critic, id, facts) || modelCriticPasses(ai, facts, frameLines, callClass)
+        ai: AiGraph, critic: CriticWorker, id: String, facts: List<Fact>, frameLines: List<String>, frameIds: Set<String>, liveness: PhotoLiveness?,
+        callClass: CallClass = CallClass.EXTRACT,
+    ): Boolean = locallyTrusted(critic, id, facts) || modelCriticPasses(ai, facts, frameLines, frameIds, liveness, callClass)
 
     /** No facts, or the local critic's TRUSTED verdict: needs no model call. */
     fun locallyTrusted(critic: CriticWorker, id: String, facts: List<Fact>): Boolean =
@@ -56,14 +58,17 @@ object ExtractFollowUp {
      * spec §4.2 CRITIC as a second opinion on low-confidence facts. Unbound or failing → keep the local verdict. It runs under the
      * CALLER's [callClass]: an ask's extraction (USER) must not queue its critic behind the EXTRACT backlog, where the ask's cap
      * would strand it (final review I2).
+     * Codex r11: the facts and [frameLines] are derived from the photos [frameIds]: the call carries them and [liveness], so the router re-checks the
+     * photos inside the permit and a photo forgotten meanwhile drops the call unsent (the local verdict stands, nothing is upgraded).
      */
     suspend fun modelCriticPasses(
-        ai: AiGraph, facts: List<Fact>, frameLines: List<String>, callClass: CallClass = CallClass.EXTRACT, override: PromptDraft? = null,
+        ai: AiGraph, facts: List<Fact>, frameLines: List<String>, frameIds: Set<String>, liveness: PhotoLiveness?,
+        callClass: CallClass = CallClass.EXTRACT, override: PromptDraft? = null,
     ): Boolean {
         if (ai.bindings.get(Role.CRITIC) == null) return false
         val vars = criticVars(facts, frameLines)
         return try {
-            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = callClass, override = override)).output as CriticOutput).pass
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = callClass, override = override, derivedFromFrames = frameIds, liveness = liveness)).output as CriticOutput).pass
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
