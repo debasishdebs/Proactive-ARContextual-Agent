@@ -40,7 +40,7 @@ class ModelRouterTest {
 
     private suspend fun ep(id: String, vararg caps: Capability) =
         endpoints.save(Endpoint(id, id, EndpointKind.OLLAMA, "http://localhost:1", null, listOf("m"), caps.toSet(), 1), apiKey = null).getOrThrow()
-    private val img = listOf(ModelImageInput("image/jpeg", "AAAA"))
+    private val img = listOf(ModelImageInput("image/jpeg", "AAAA", ref = "f1"))
     private fun http(code: Int) = ProviderHttpException(code, "Azure OpenAI", "{\"error\":\"x\"}")
     private suspend fun err(block: suspend () -> Unit) = runCatching { block() }.exceptionOrNull()!!
 
@@ -72,16 +72,16 @@ class ModelRouterTest {
     @Test fun visionWhenCapableElseTextAndVisionFailureFallsBackToText() = runTest {
         ep("v", Capability.CHAT, Capability.VISION); ep("t", Capability.CHAT)
         bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
-        assertEquals("t/m", router.generate(Role.SUMMARIZE, "q", img))
+        assertEquals("t/m", router.generate(Role.SUMMARIZE, "q", img, liveness = AllLive))
         bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
-        assertEquals("v/vision", router.generate(Role.VISION_EXTRACT, "q", img))
+        assertEquals("v/vision", router.generate(Role.VISION_EXTRACT, "q", img, liveness = AllLive))
         failures["v:vision"] = http(400)
-        assertEquals("v/m", router.generate(Role.VISION_EXTRACT, "q", img))
+        assertEquals("v/m", router.generate(Role.VISION_EXTRACT, "q", img, liveness = AllLive))
     }
 
     @Test fun framesUseSummarizeWhenNoVisionBinding() = runTest {
         ep("t", Capability.CHAT); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
-        assertEquals("t/m", router.generateFromFrames("q", img))
+        assertEquals("t/m", router.generateFromFrames("q", img, liveness = AllLive))
     }
 
     @Test fun frameOutageReachesSummarizeLocalFallbackOnce() = runTest {
@@ -89,7 +89,7 @@ class ModelRouterTest {
         bindings.set(RoleBinding(Role.VISION_EXTRACT, "az", "gpt")).getOrThrow()
         bindings.set(RoleBinding(Role.SUMMARIZE, "az", "gpt", fallbackEndpointId = "loc", fallbackModel = "local")).getOrThrow()
         failures["az:vision"] = http(503); failures["az:text"] = http(503)
-        assertEquals("loc/local", router.generateFromFrames("q", img))
+        assertEquals("loc/local", router.generateFromFrames("q", img, liveness = AllLive))
         assertEquals(listOf("az:vision", "az:text", "loc:text"), calls) // Azure text is not retried a second time
     }
 
@@ -144,7 +144,7 @@ class ModelRouterTest {
         bindings.set(RoleBinding(Role.ANSWER, "az", "gpt")).getOrThrow()
         failures["az:vision"] = ProviderHttpException(401, "Azure OpenAI", "Incorrect API key provided: $key. " + "x".repeat(500))
         failures["az:text"] = ProviderHttpException(401, "Azure OpenAI", "Incorrect API key provided: $key. " + "x".repeat(500))
-        val e = err { router.generate(Role.ANSWER, "q", img) } as ModelCallException
+        val e = err { router.generate(Role.ANSWER, "q", img, liveness = AllLive) } as ModelCallException
         assertFalse(e.message!!.contains(key)); assertTrue(e.message, e.message!!.contains("http=401")); assertFalse(e.message!!.contains("Incorrect API key"))
         assertTrue("length ${e.message!!.length}", e.message!!.length <= 260)
         assertFalse(e.retryable) // classified on the original throwable
@@ -263,14 +263,14 @@ class ModelRouterTest {
     // ---- Task 9 re-review: a photo-less reply to an image-only question is a failure, never a guessed label
     @Test fun requireImagesFailsOnAnEndpointWithoutVision() = runTest {
         ep("t", Capability.CHAT); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
-        val e = err { router.complete(Role.SUMMARIZE) { ModelRequest("q", img, requireImages = true) } }
+        val e = err { router.complete(Role.SUMMARIZE) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
         assertTrue(e is ModelCallException); assertTrue("no text call was made", calls.isEmpty())
     }
 
     @Test fun requireImagesDoesNotRetryAsTextAfterAVisionFailure() = runTest {
         ep("v", Capability.CHAT, Capability.VISION); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
         failures["v:vision"] = http(500)
-        err { router.complete(Role.VISION_EXTRACT) { ModelRequest("q", img, requireImages = true) } }
+        err { router.complete(Role.VISION_EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
         assertEquals(listOf("v:vision"), calls.filter { it.endsWith("vision") || it.endsWith("text") }.take(1))
         assertFalse("never a text retry", calls.contains("v:text"))
     }
@@ -278,7 +278,7 @@ class ModelRouterTest {
     @Test fun otherRequestsStillRetryAsText() = runTest {
         ep("v", Capability.CHAT, Capability.VISION); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
         failures["v:vision"] = http(500)
-        assertEquals("v/m", router.complete(Role.VISION_EXTRACT) { ModelRequest("q", img) }.text)
+        assertEquals("v/m", router.complete(Role.VISION_EXTRACT) { ModelRequest("q", img, liveness = AllLive) }.text)
     }
 
     // ---- codex r9 P1-2: a refused photo call is never answered from text, on the SUMMARIZE chain or a fallback either, and keeps its own failure kind
@@ -287,7 +287,7 @@ class ModelRouterTest {
         bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow() // (a VISION_EXTRACT fallback must itself have vision: the binding rules refuse "t")
         bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
         failures["v:vision"] = http(400)
-        val e = err { router.completeFromFrames(CallClass.EXTRACT) { ModelRequest("q", img, requireImages = true) } }
+        val e = err { router.completeFromFrames(CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
         assertTrue(e is ModelCallException)
         assertTrue("the 400 is the reported failure, not 'not set': ${(e as ModelCallException).kind}", e.kind != FailureKind.NOT_SET)
         assertEquals(listOf("v:vision"), calls)

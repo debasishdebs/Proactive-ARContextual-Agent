@@ -98,7 +98,7 @@ internal class PyFnRunHarness(private val app: Context) {
 
     private fun context(runId: String): RunContext {
         val ai = TestAi.graph(app) { "" }
-        return RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) })
+        return RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
     }
 
     fun close() { scope.cancel(); AiGraph.resetForTests(null); db.close(); MemoryGraph.resetForTests(null) }

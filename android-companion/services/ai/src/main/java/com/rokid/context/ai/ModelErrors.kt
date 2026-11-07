@@ -9,7 +9,7 @@ import java.io.IOException
 enum class FailureKind { NOT_SET, AUTH, REJECTED, INVALID_OUTPUT, TRANSIENT }
 
 /** Every failure leaving [ModelRouter] (except cancellation) is one of these, with an explicit retry decision. */
-class ModelCallException(
+open class ModelCallException(
     message: String,
     val retryable: Boolean,
     cause: Throwable? = null,
@@ -17,6 +17,19 @@ class ModelCallException(
     /** The provider replies the failed call consumed (every rejected attempt), for usage accounting. Empty when unknown. Never read for text. */
     val replies: List<RoutedReply> = emptyList(),
 ) : RuntimeException(message, cause)
+
+/**
+ * Codex r10: a photo attached to the request was forgotten (or everything was deleted) before it left: the call was dropped unsent. Never retried (not as
+ * text, not on a fallback endpoint, not by the frame chain); the caller treats [frameIds] as gone and writes nothing for them.
+ */
+class PhotoForgottenException(val frameIds: Set<String>, val wiped: Boolean) :
+    ModelCallException("photo forgotten before send", retryable = false, kind = FailureKind.NOT_SET)
+
+/** Codex r10: the call needs its photo but the endpoint or provider cannot deliver images (no VISION, or the on-device runtime): nothing was sent, no output. */
+class ImagesUnsupportedException : ModelCallException(ModelRouter.NEEDS_VISION, retryable = false, kind = FailureKind.NOT_SET)
+
+/** Codex r10: a request carried a photo without a ref or without a [com.rokid.context.model.PhotoLiveness]: refused unsent (fail closed). */
+class ImagesUnguardedException : ModelCallException("photo call without a liveness check", retryable = false, kind = FailureKind.NOT_SET)
 
 /** A non-2xx reply. Never user-facing (UI maps by [code]); the message keeps "<provider> request failed: <code> <body>" for Diagnostics logs only (the router redacts it). */
 class ProviderHttpException(val code: Int, provider: String, body: String) :

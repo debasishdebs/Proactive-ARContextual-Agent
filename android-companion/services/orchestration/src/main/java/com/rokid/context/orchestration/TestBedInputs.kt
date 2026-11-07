@@ -24,11 +24,18 @@ class TestBedInputs(
     private val nudges: NudgeInputs = NudgeInputs(memory, ContextSourceProvider.None),
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    data class Prepared(val vars: PromptVars, val images: List<ModelImageInput>, val inputIds: Set<String>)
+    /** [liveness]: codex r10, present whenever [images] are (the router refuses a photo without it). */
+    data class Prepared(val vars: PromptVars, val images: List<ModelImageInput>, val inputIds: Set<String>) {
+        var liveness: com.rokid.context.model.PhotoLiveness? = null
+            internal set
+    }
 
     suspend fun recentFrames(limit: Int = 12): List<FrameEntity> = memory.frames.recent(limit)
 
-    suspend fun prepare(key: PromptKey, input: TestInput): Prepared {
+    suspend fun prepare(key: PromptKey, input: TestInput): Prepared =
+        prepareVars(key, input).also { if (it.images.isNotEmpty()) it.liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory) }
+
+    private suspend fun prepareVars(key: PromptKey, input: TestInput): Prepared {
         val text = when (input) { is TestInput.Text -> input.text; is TestInput.Question -> input.text; is TestInput.Frame -> "" }
         return when (key) {
             PromptKey.SYSTEM -> Prepared(PromptVars(), emptyList(), emptySet())

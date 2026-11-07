@@ -58,13 +58,12 @@ object IntentSamplers {
     /** One photo, one INTENT_CLASSIFY call (CallClass.EXTRACT, so the AI call pace applies). Null = the photo is gone or unreadable. */
     internal suspend fun classify(app: Context, frameId: String): IntentOutput? {
         val photo = FramePhotos.load(app, listOf(frameId)).photos.singleOrNull() ?: return null
-        // Codex r9 P1-1: the photo is re-checked live inside the call's permit, under the DataOpGate; forgotten meanwhile = gone (null), nothing sent.
-        val guard = com.rokid.context.work.frames.FrameDispatchGuard.forApp(app, listOf(frameId), MemoryWipe.generation.get())
+        // Codex r10: the photo carries its ref and a liveness; the router re-checks it inside the call's permit. Forgotten meanwhile = gone (null), nothing sent.
         val r = try {
-            kotlinx.coroutines.withContext(guard) { AiGraph.get(app).runner.run(RoleCall(PromptKey.INTENT_CLASSIFY, PromptVars(), images = listOf(photo.image), callClass = CallClass.EXTRACT)) }
-        } catch (e: Exception) {
-            if (e !is kotlin.coroutines.cancellation.CancellationException && (guard.wiped || guard.dropped.isNotEmpty())) return null
-            throw e
+            AiGraph.get(app).runner.run(RoleCall(PromptKey.INTENT_CLASSIFY, PromptVars(), images = listOf(photo.image.copy(ref = frameId)), callClass = CallClass.EXTRACT,
+                liveness = com.rokid.context.work.frames.FrameLiveness.forApp(app, MemoryWipe.generation.get())))
+        } catch (f: com.rokid.context.ai.PhotoForgottenException) {
+            return null
         }
         return r.output as? IntentOutput
     }

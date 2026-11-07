@@ -249,7 +249,8 @@ class RagCore(
         for ((i, p) in recalled.withIndex()) {
             val (hit, _) = p
             if (endpoint == null || loaded.size >= MAX_PHOTO_IMAGES || !hit.photoStored) continue
-            val image = try { photoImages(listOf(hit.frameId))[hit.frameId] } catch (c: CancellationException) { throw c } catch (e: Exception) { null }
+            // codex r10: the image is the photo of this hit: its ref is the hit's frame id, so the router re-checks exactly that photo before upload
+            val image = try { photoImages(listOf(hit.frameId))[hit.frameId]?.copy(ref = hit.frameId) } catch (c: CancellationException) { throw c } catch (e: Exception) { null }
             if (image != null) loaded += i to image
         }
         for (keep in recalled.size downTo 1) {

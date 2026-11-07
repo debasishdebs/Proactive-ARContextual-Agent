@@ -48,18 +48,16 @@ internal object KeyframeExtract {
         val photos = loaded.photos
         if (photos.isEmpty()) return ExtractOutcome.Failed("unreadable", unreadable = loaded.gone, unseen = loaded.unseen)
         val ai = AiGraph.get(app)
-        // Codex r9 P1-1: every photo upload of this extraction re-checks, inside its call permit and under the DataOpGate, that the photos are still live
-        // (a Forget can complete while the call waits for its permit); a forgotten batch is dropped unsent and nothing is written.
-        val guard = FrameDispatchGuard.forApp(app, photos.map { it.frameId }, generation)
+        // Codex r10: the photos travel with their refs and this liveness; the router re-checks them inside every call's permit, under the upload slot.
+        val liveness = FrameLiveness.forApp(app, generation)
         val liveBatch = try {
-            withContext(guard) {
-                if (live == null) LiveBatch(ExtractSave.extract(ai.runner, photos, callClass), LiveEffects.None) else LiveExtract.batch(live, photos, callClass)
-            }
+            if (live == null) LiveBatch(ExtractSave.extract(ai.runner, photos, callClass, liveness), LiveEffects.None) else LiveExtract.batch(live, photos, callClass, liveness)
         } catch (c: CancellationException) {
             throw c
+        } catch (f: com.rokid.context.ai.PhotoForgottenException) {
+            // dropped unsent: the forgotten photos are gone, the rest stay queued; nothing is written and nothing is retried as text
+            return if (f.wiped) ExtractOutcome.Wiped(loaded.gone, loaded.unseen) else ExtractOutcome.Stale(loaded.gone + f.frameIds, loaded.unseen)
         } catch (e: Exception) {
-            if (guard.wiped) return ExtractOutcome.Wiped(loaded.gone, loaded.unseen)
-            if (guard.dropped.isNotEmpty()) return ExtractOutcome.Stale(loaded.gone + guard.dropped, loaded.unseen)
             return ExtractOutcome.classify(e, online = online()).copy(unreadable = loaded.gone, unseen = loaded.unseen)
         }
         val batch = liveBatch.batch
@@ -72,7 +70,7 @@ internal object KeyframeExtract {
         val critic = CriticWorker()
         val localTrusted = ExtractFollowUp.locallyTrusted(critic, claimId ?: idPrefix, facts)
         val saved = ExtractSave.saveExtraction(
-            app, idPrefix, ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance), sent.toSet(),
+            app, idPrefix, ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance, imagesDelivered = batch.output.imagesDelivered), sent.toSet(),
             claims = claimId?.let { id -> sent.associateWith { id } }, tier = MemoryTier.SHORT, reviewState = if (localTrusted) ReviewState.OK else ReviewState.NEEDS_REVIEW,
             generation = generation, inTransaction = afterSave?.let { hook -> { memories -> hook(sent.toSet(), memories) } },
         )
@@ -81,7 +79,7 @@ internal object KeyframeExtract {
                 if (live != null) {
                     // the extraction is saved: now (and only now) the canvas effects of this batch are committed, fenced; never throws, no-op without a publish
                     withContext(NonCancellable) { LiveExtract.commit(live, liveBatch.effects, generation, sent.toSet()) }
-                    if (liveBatch.effects.shadow) LiveExtract.shadowAsync(live, photos, generation, guard)
+                    if (liveBatch.effects.shadow) LiveExtract.shadowAsync(live, photos, generation, liveness)
                 }
                 var trusted = localTrusted
                 try {
@@ -103,6 +101,9 @@ internal object KeyframeExtract {
             }
             ExtractSaveResult.Wiped -> ExtractOutcome.Wiped(loaded.gone, loaded.unseen)
             ExtractSaveResult.StaleClaim -> ExtractOutcome.Stale(loaded.gone, loaded.unseen)
+            // no delivery proof: nothing written; a retryable failure keeps the frames queued with backoff
+            ExtractSaveResult.Undelivered -> ExtractOutcome.classify(com.rokid.context.ai.ModelCallException("photos not delivered", retryable = true), online = online())
+                .copy(unreadable = loaded.gone, unseen = loaded.unseen)
         }
     }
 }

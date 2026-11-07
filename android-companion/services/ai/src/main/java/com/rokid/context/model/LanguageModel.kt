@@ -27,13 +27,19 @@ object PassThroughGate : CallGate {
     override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T = block()
 }
 
+/** Of the ids asked about, those no longer live; [wiped] = Delete all ran since the caller loaded them (then every id counts as gone). */
+data class GonePhotos(val ids: Set<String>, val wiped: Boolean = false) {
+    val none: Boolean get() = ids.isEmpty() && !wiped
+}
+
 /**
- * Codex r9 P1-1: a coroutine-context element the caller installs around work that sends photos. The router runs every provider call that carries images
- * through [send], INSIDE that call's permit and right before the bytes leave: the guard re-checks that the photos are still live and holds whatever keeps
- * them live (the DataOpGate's dispatch side) for the whole call, or throws without calling [call] (nothing is uploaded). Absent = no check.
+ * The image-dispatch guard's caller half (codex r10). Every request that carries a photo carries one of these, and [com.rokid.context.ai.ModelRouter] (the
+ * one choke point every model call goes through) runs each provider call as: call permit, then [holdUploadSlot] (the slot a Forget, Delete all or
+ * retention delete waits for), then [gone] over every attached photo id, then the network write, then release. A photo found gone drops the call unsent
+ * with [com.rokid.context.ai.PhotoForgottenException], never retried as text or on another endpoint. The one production implementation is
+ * `com.rokid.context.work.frames.FrameLiveness`.
  */
-interface DispatchGuard : kotlin.coroutines.CoroutineContext.Element {
-    suspend fun <T> send(call: suspend () -> T): T
-    override val key: kotlin.coroutines.CoroutineContext.Key<*> get() = Key
-    companion object Key : kotlin.coroutines.CoroutineContext.Key<DispatchGuard>
+interface PhotoLiveness {
+    suspend fun <T> holdUploadSlot(block: suspend () -> T): T
+    suspend fun gone(ids: Set<String>): GonePhotos
 }

@@ -21,7 +21,7 @@ object FrameInputs {
             if (!file.canRead() || file.length() <= 0L) return@mapNotNull null
             val raw = FrameImages.readBytes(file.path) ?: return@mapNotNull null
             val mime = when (file.extension.lowercase(Locale.US)) { "png" -> "image/png"; "webp" -> "image/webp"; else -> "image/jpeg" }
-            ModelImageInput(mime, Base64.encodeToString(raw, Base64.NO_WRAP), detail = "low")
+            ModelImageInput(mime, Base64.encodeToString(raw, Base64.NO_WRAP), detail = "low", ref = frame.id) // codex r10: the router re-checks this ref before upload
         }.take(maxImages).toList()
     }
 }

@@ -115,7 +115,7 @@ class CanvasRunnerTest {
     /** For fake executors, which never touch the context. */
     private fun idleContext(id: String): RunContext {
         val ai = TestAi.graph(app) { "" }
-        return RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) })
+        return RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
     }
 
     private val noLabel: suspend (PipelineNode) -> ModelLabel? = { n -> ModelLabel(n.id, "az", "gpt") }
@@ -413,7 +413,7 @@ class CanvasRunnerTest {
                 """{"facts":[${ids.joinToString(",") { """{"text":"Mug in $it","type":"object","confidence":0.5,"tags":[],"source_frame_ids":["$it"]}""" }}],"captions":[${ids.joinToString(",") { """{"frame_id":"$it","caption":"Counter $it"}""" }}]}"""
             }
         }.also { TestAi.bindAll(it) }
-        val ctx = { id: String -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) }
+        val ctx = { id: String -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) }
         val run = runAll(runner(Executors.all(), ctx), DefaultPipelines.liveExtract(), frames(4))
         assertEquals("DONE", run.status)
         val items = dao.items(run.runId)
@@ -688,7 +688,7 @@ class CanvasRunnerTest {
                 override suspend fun complete(request: ModelRequest): ModelReply { val n = ++providerCalls; return ModelReply(script(request.prompt, n), 100 + n, 10 + n) }
             }
         }).also { AiGraph.resetForTests(it); TestAi.bindAll(it) }
-        return { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) }
+        return { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) }
     }
     private fun sent(p: String) = Regex("frame_id: (f\\d)").findAll(p).map { it.groupValues[1] }.toList().distinct()
     private fun good(p: String) = sent(p).let { ids ->

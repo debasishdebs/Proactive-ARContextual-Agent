@@ -166,7 +166,7 @@ class PipelineRecordsTest {
             ctx, prefix,
             com.rokid.context.ai.contract.ExtractOutput(
                 listOf(com.rokid.context.ai.contract.Fact("A mug on the desk", "object", 0.9, emptyList(), listOf("f1"))),
-                captions = listOf(com.rokid.context.ai.contract.FrameCaption("f1", "A desk with a mug")),
+                captions = listOf(com.rokid.context.ai.contract.FrameCaption("f1", "A desk with a mug")),imagesDelivered = true
             ),
             setOf("f1"), claims = null, tier = MemoryTier.SHORT, reviewState = ReviewState.OK,
         )

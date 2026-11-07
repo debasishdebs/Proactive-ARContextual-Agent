@@ -89,7 +89,7 @@ class PipelineInterpreterTest {
     }
 
     private fun ctx(callClass: CallClass = CallClass.EXPERIMENT, model: LanguageModel? = null) =
-        RunContext("live:7", ai.runner, model ?: ai.router, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) }, callClass = callClass)
+        RunContext("live:7", ai.runner, model ?: ai.router, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) }, callClass = callClass, liveness = com.rokid.context.orchestration.AllLive)
 
     private fun interpreter(executors: Map<String, NodeExecutor> = Executors.all()) = PipelineInterpreter(executors, { now })
 
@@ -195,7 +195,7 @@ class PipelineInterpreterTest {
     @Test fun liveExtractShapeEqualsDirectExtract() = runBlocking<Unit> {
         graph { p -> extractReply(*sentIds(p).toTypedArray()) }
         val three = photos("ex1", "ex2", "ex3")
-        val direct = ExtractSave.extract(ai.runner, three, CallClass.EXTRACT)
+        val direct = ExtractSave.extract(ai.runner, three, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         val viaInterpreter = extracted(run(DefaultPipelines.liveExtract(), three, ctx(CallClass.EXTRACT)))
         assertEquals(direct.output.facts, viaInterpreter.batch.output.facts)
         assertEquals(direct.output.captions, viaInterpreter.batch.output.captions)
@@ -207,7 +207,7 @@ class PipelineInterpreterTest {
         val v = ai.prompts.active(PromptKey.VISION_EXTRACT)
         ai.prompts.save(PromptKey.VISION_EXTRACT, PromptDraft(v.template, DefaultSchemas.text(PromptKey.EXPLICIT_REMEMBER)), "old", false)
         val two = photos("ex1", "ex2")
-        val direct = ExtractSave.extract(ai.runner, two, CallClass.EXTRACT)
+        val direct = ExtractSave.extract(ai.runner, two, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertFalse(direct.output.provenance)
         prompts.clear()
         val o = extracted(run(DefaultPipelines.liveExtract(), two, ctx(CallClass.EXTRACT)))

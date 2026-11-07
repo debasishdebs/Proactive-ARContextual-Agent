@@ -73,7 +73,7 @@ class CallClassPropagationTest {
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
-    private fun extract(callClass: CallClass? = null) = RoleCall(PromptKey.VISION_EXTRACT, PromptVars(), images = listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA")), fromFrames = true, callClass = callClass) // codex r9 P1-2: VISION_EXTRACT always carries its photo
+    private fun extract(callClass: CallClass? = null) = RoleCall(PromptKey.VISION_EXTRACT, PromptVars(), images = listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA", ref = "f1")), fromFrames = true, callClass = callClass, liveness = com.rokid.context.ai.AllLive) // codex r9 P1-2: VISION_EXTRACT always carries its photo
 
     @Test fun askTriggeredExtractionIsUser() = runBlocking {
         ai.runner.run(extract(CallClass.USER))
@@ -84,7 +84,7 @@ class CallClassPropagationTest {
     }
 
     @Test fun testBedIsUser() = runBlocking {
-        ai.testBed.run(TestBedRequest(PromptKey.VISION_EXTRACT, PromptDraft("{{recent_context}}", DefaultSchemas.text(PromptKey.VISION_EXTRACT)), "a", "m", PromptVars()))
+        ai.testBed.run(TestBedRequest(PromptKey.VISION_EXTRACT, PromptDraft("{{recent_context}}", DefaultSchemas.text(PromptKey.VISION_EXTRACT)), "a", "m", PromptVars(), images = listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA", ref = "f1")), liveness = com.rokid.context.ai.AllLive))
         assertEquals(listOf(CallClass.USER), permits)
     }
 

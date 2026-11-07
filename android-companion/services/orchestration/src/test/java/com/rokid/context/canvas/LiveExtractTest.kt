@@ -94,7 +94,7 @@ class LiveExtractTest {
 
     private fun deps(sink: FrameIntentSink = FrameIntentSink { f, l, c, _ -> recorded += Triple(f, l, c) }, deadlineMs: Long = 20_000L) = LiveDeps(
         dao = dao, runner = ai.runner,
-        context = { runId, cc -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) }, callClass = cc) },
+        context = { runId, cc, lv -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) }, callClass = cc, liveness = lv) },
         interpreter = PipelineInterpreter(clock = { now }), sink = sink,
         publisher = { id, reason -> CanvasPublisher.autoRollbackOn(dao, { now }, id, reason) },
         shadowAllowed = { devMode }, clock = { now }, deadlineMs = deadlineMs,
@@ -142,9 +142,9 @@ class LiveExtractTest {
     @Test fun noPublishIsExactlyExtractSave() = runBlocking<Unit> {
         graph { extractReply(it) }
         val three = photos("ex1", "ex2", "ex3")
-        val direct = ExtractSave.extract(ai.runner, three, CallClass.EXTRACT)
+        val direct = ExtractSave.extract(ai.runner, three, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         val directPrompts = prompts.toList(); prompts.clear(); classes.clear()
-        val viaSeam = LiveExtract.batch(deps(), three, CallClass.EXTRACT)
+        val viaSeam = LiveExtract.batch(deps(), three, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(directPrompts, prompts.toList())
         assertEquals(listOf(CallClass.EXTRACT), classes.toList())
         assertEquals(direct, viaSeam.batch)
@@ -158,7 +158,7 @@ class LiveExtractTest {
         intentGraph()
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         assertEquals(1, dao.markRolledBack(pid, 5))
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(0, intentCalls); assertEquals(1, extractCalls)
         assertSame(LiveEffects.None, out.effects)
     }
@@ -169,7 +169,7 @@ class LiveExtractTest {
         intentGraph()
         publish(intentPipeline(), LiveMode.SHADOW)
         val three = photos("ex1", "ex2", "ex3")
-        val out = LiveExtract.batch(deps(), three, CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), three, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(0, intentCalls); assertEquals(1, extractCalls)
         assertTrue(out.effects.shadow); assertTrue(out.effects.traces.isEmpty()); assertTrue(out.effects.labels.isEmpty()); assertFalse(out.effects.fellBack)
         assertEquals(listOf("Mug in ex1", "Mug in ex2", "Mug in ex3"), out.batch.output.facts.map { it.text })
@@ -178,7 +178,7 @@ class LiveExtractTest {
     @Test fun liveModeUsesInterpreter() = runBlocking<Unit> {
         intentGraph()
         val pid = publish(intentPipeline(), LiveMode.LIVE)
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(3, intentCalls)
         assertTrue(prompts.any { "DRIVING_X" in it } && prompts.any { "DESK_X" in it })
         assertEquals(listOf("Mug in ex1", "Mug in ex2", "Mug in ex3"), out.batch.output.facts.map { it.text })
@@ -194,10 +194,10 @@ class LiveExtractTest {
     @Test fun liveModeWithTheIdentityPipelineEqualsDirectExtraction() = runBlocking<Unit> {
         graph { extractReply(it) }
         val three = photos("ex1", "ex2", "ex3")
-        val direct = ExtractSave.extract(ai.runner, three, CallClass.EXTRACT)
+        val direct = ExtractSave.extract(ai.runner, three, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         prompts.clear()
         publish(DefaultPipelines.liveExtract(), LiveMode.LIVE)
-        val out = LiveExtract.batch(deps(), three, CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), three, CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(1, prompts.size)
         assertEquals(direct.output.facts, out.batch.output.facts)
         assertEquals(direct.output.captions, out.batch.output.captions)
@@ -209,7 +209,7 @@ class LiveExtractTest {
     @Test fun failedFallsBackToLive() = runBlocking<Unit> {
         graph { p -> if (isIntent(p)) "not json at all" else extractReply(p) }
         val pid = publish(intentPipeline(), LiveMode.LIVE)
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(listOf("Mug in ex1", "Mug in ex2", "Mug in ex3"), out.batch.output.facts.map { it.text })
         assertEquals("exactly one live extraction call", 1, extractCalls)
         assertTrue(out.effects.fellBack); assertTrue("labels are discarded", out.effects.labels.isEmpty())
@@ -224,7 +224,7 @@ class LiveExtractTest {
         graph { p -> if (isIntent(p)) throw IOException("offline") else extractReply(p) }
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         try {
-            LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT)
+            LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
             fail("expected the transient failure to propagate")
         } catch (e: Exception) {
             assertTrue(generateSequence<Throwable>(e) { it.cause }.any { it is IOException })
@@ -236,14 +236,14 @@ class LiveExtractTest {
     @Test fun fallbackThatFailsPropagatesLikeLive() = runBlocking<Unit> {
         graph { p -> if (isIntent(p)) "garbage" else throw IOException("offline") }
         publish(intentPipeline(), LiveMode.LIVE)
-        try { LiveExtract.batch(deps(), photos("ex1"), CallClass.EXTRACT); fail("expected the live failure") }
+        try { LiveExtract.batch(deps(), photos("ex1"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive); fail("expected the live failure") }
         catch (e: Exception) { assertTrue(generateSequence<Throwable>(e) { it.cause }.any { it is IOException }) }
     }
 
     @Test fun versionDecodeFailureFallsBack() = runBlocking<Unit> {
         graph { extractReply(it) }
         val pid = publish(intentPipeline(), LiveMode.LIVE, json = "{ definitely not a pipeline")
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(1, extractCalls)
         assertTrue(out.effects.fellBack)
         LiveExtract.commit(deps(), out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2"))
@@ -253,7 +253,7 @@ class LiveExtractTest {
     @Test fun missingVersionFallsBack() = runBlocking<Unit> {
         graph { extractReply(it) }
         dao.insertPublish(CanvasPublishEntity(pipelineId = "gone", version = 9, hash = "h", publishedAt = 1, rolledBackAt = null, snapshotJson = "{}", kind = "interpreter", mode = "LIVE"))
-        val out = LiveExtract.batch(deps(), photos("ex1"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertTrue(out.effects.fellBack); assertEquals(1, extractCalls)
     }
 
@@ -261,11 +261,11 @@ class LiveExtractTest {
         graph { p -> if (isIntent(p)) { delay(30_000); intentReply(p)!! } else extractReply(p) }
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         val started = System.nanoTime()
-        val out = LiveExtract.batch(deps(deadlineMs = 300), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(deadlineMs = 300), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertTrue("took the deadline, not the provider", (System.nanoTime() - started) / 1_000_000 < 10_000)
         assertEquals(1, extractCalls)
         assertTrue(out.effects.fellBack)
-        val direct = ExtractSave.extract(ai.runner, photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        val direct = ExtractSave.extract(ai.runner, photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(direct.output.facts, out.batch.output.facts); assertEquals(direct.output.captions, out.batch.output.captions)
         LiveExtract.commit(deps(), out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2", "ex3"))
         assertEquals(listOf("deadline", "deadline", "deadline"), allTraces(pid).filter { it.nodeId == "_batch" }.map { it.error })
@@ -276,7 +276,7 @@ class LiveExtractTest {
         gateHook = { n -> if (n == 1) delay(30_000) } // the first permit (the first intent call) waits for budget
         intentGraph()
         publish(intentPipeline(), LiveMode.LIVE)
-        val out = LiveExtract.batch(deps(deadlineMs = 300), photos("ex1", "ex2"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(deadlineMs = 300), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertTrue(out.effects.fellBack)
         assertEquals(1, extractCalls)
         assertEquals("only the live extraction was ever sent", 0, intentCalls)
@@ -287,7 +287,7 @@ class LiveExtractTest {
         val reached = CompletableDeferred<Unit>()
         graph { p -> if (isIntent(p)) { reached.complete(Unit); delay(60_000); intentReply(p)!! } else extractReply(p) }
         publish(intentPipeline(), LiveMode.LIVE)
-        val job = async { LiveExtract.batch(deps(deadlineMs = 50_000), photos("ex1"), CallClass.EXTRACT) }
+        val job = async { LiveExtract.batch(deps(deadlineMs = 50_000), photos("ex1"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive) }
         withTimeout(20_000) { reached.await() }
         job.cancel()
         try { job.await(); fail("expected cancellation") } catch (c: CancellationException) { /* expected */ }
@@ -302,7 +302,7 @@ class LiveExtractTest {
         for (b in 1..10) {
             assertEquals("still live before batch $b", pid, dao.activeInterpreter()?.id)
             val ids = listOf("ex${b}1", "ex${b}2", "ex${b}3")
-            val out = LiveExtract.batch(deps(), photos(*ids.toTypedArray()), CallClass.EXTRACT)
+            val out = LiveExtract.batch(deps(), photos(*ids.toTypedArray()), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
             LiveExtract.commit(deps(), out.effects, MemoryWipe.generation.get(), ids.toSet())
         }
         // evaluated inside commit, before it returned: no further batch can reach the interpreter
@@ -311,14 +311,14 @@ class LiveExtractTest {
         assertEquals("auto: 10 of 30 fell back", row.rollbackReason)
         assertTrue(row.rolledBackAt != null)
         val before = intentCalls
-        LiveExtract.batch(deps(), photos("ex991"), CallClass.EXTRACT)
+        LiveExtract.batch(deps(), photos("ex991"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(before, intentCalls)
     }
 
     @Test fun tenFailuresThenTwentySuccessesRollBackAtTheThirtiethPhoto() = runBlocking<Unit> {
         graph { p -> if (isIntent(p) && "ex10" in p) "garbage" else intentReply(p) ?: extractReply(p) }
         val pid = publish(intentPipeline(), LiveMode.LIVE)
-        suspend fun one(id: String) { LiveExtract.commit(deps(), LiveExtract.batch(deps(), photos(id), CallClass.EXTRACT).effects, MemoryWipe.generation.get(), setOf(id)) }
+        suspend fun one(id: String) { LiveExtract.commit(deps(), LiveExtract.batch(deps(), photos(id), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive).effects, MemoryWipe.generation.get(), setOf(id)) }
         for (i in 1..10) one("ex10${"%02d".format(i)}")
         for (i in 1..19) { one("ex20${"%02d".format(i)}"); assertEquals("window not full yet at $i", pid, dao.activeInterpreter()?.id) }
         one("ex2020") // the 30th interpreted photo succeeded, yet its window holds exactly 10 failures
@@ -331,7 +331,7 @@ class LiveExtractTest {
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         for (b in 1..9) {
             val ids = listOf("ex${b}1", "ex${b}2", "ex${b}3")
-            LiveExtract.commit(deps(), LiveExtract.batch(deps(), photos(*ids.toTypedArray()), CallClass.EXTRACT).effects, MemoryWipe.generation.get(), ids.toSet())
+            LiveExtract.commit(deps(), LiveExtract.batch(deps(), photos(*ids.toTypedArray()), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive).effects, MemoryWipe.generation.get(), ids.toSet())
         }
         assertEquals(pid, dao.activeInterpreter()?.id)
     }
@@ -341,7 +341,7 @@ class LiveExtractTest {
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         for (b in 1..12) {
             val ids = listOf("ex${b}1", "ex${b}2", "ex${b}3")
-            LiveExtract.commit(deps(), LiveExtract.batch(deps(), photos(*ids.toTypedArray()), CallClass.EXTRACT).effects, MemoryWipe.generation.get(), ids.toSet())
+            LiveExtract.commit(deps(), LiveExtract.batch(deps(), photos(*ids.toTypedArray()), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive).effects, MemoryWipe.generation.get(), ids.toSet())
         }
         assertEquals(pid, dao.activeInterpreter()?.id)
         assertEquals(36, dao.interpretedCount(pid))
@@ -359,7 +359,7 @@ class LiveExtractTest {
         }
         val writer = com.rokid.context.work.frames.intent.FrameIntentWriter(com.rokid.context.work.frames.intent.RoomIntentFrameStore { db })
         val d = deps(sink = writer)
-        val out = LiveExtract.batch(d, photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(d, photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         LiveExtract.commit(d, out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2", "ex3"))
         fun label(id: String) = db.openHelper.readableDatabase.query("SELECT intentLabel FROM frame_meta WHERE frameId='$id'").use { it.moveToFirst(); it.getString(0) }
         assertEquals("DRIVING", label("ex1")); assertEquals("COMPUTER_WORK", label("ex2")); assertEquals("OTHER", label("ex3"))
@@ -369,7 +369,7 @@ class LiveExtractTest {
         intentGraph()
         publish(intentPipeline(), LiveMode.LIVE)
         val ids = setOf("ex1", "ex2", "ex3")
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         LiveExtract.commit(deps(), out.effects, MemoryWipe.generation.get(), ids)
         assertEquals(setOf(Triple("ex1", "driving", 0.8f), Triple("ex2", "computer_work", null), Triple("ex3", "other", 0.4f)), recorded.toSet())
     }
@@ -377,7 +377,7 @@ class LiveExtractTest {
     @Test fun sinkOnlyForSavedFrames() = runBlocking<Unit> {
         intentGraph()
         publish(intentPipeline(), LiveMode.LIVE)
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         LiveExtract.commit(deps(), out.effects, MemoryWipe.generation.get(), setOf("ex1"))
         assertEquals(listOf("ex1"), recorded.map { it.first })
     }
@@ -386,7 +386,7 @@ class LiveExtractTest {
         intentGraph()
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         val seen = AtomicInteger()
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         LiveExtract.commit(deps(sink = FrameIntentSink { _, _, _, _ -> seen.incrementAndGet(); throw IllegalStateException("boom") }), out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2"))
         assertEquals("the other label still gets its call", 2, seen.get())
         assertTrue(allTraces(pid).isNotEmpty())
@@ -396,7 +396,7 @@ class LiveExtractTest {
     @Test fun traceDaoFailureKeepsExtraction() = runBlocking<Unit> {
         intentGraph()
         publish(intentPipeline(), LiveMode.LIVE)
-        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         MemoryGraph.get(app).db.openHelper.writableDatabase.execSQL("DROP TABLE canvas_live_trace") // the trace commit throws from here on
         LiveExtract.commit(deps(), out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2")) // must not throw
         assertEquals(listOf("Mug in ex1", "Mug in ex2"), out.batch.output.facts.map { it.text })
@@ -410,7 +410,7 @@ class LiveExtractTest {
         graph { p -> if (isIntent(p)) intentReply(p)!! else { reached.complete(Unit); release.await(); extractReply(p) } }
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         val gen = MemoryWipe.generation.get()
-        val out = async { LiveExtract.batch(deps(), photos("ex1"), CallClass.EXTRACT) }
+        val out = async { LiveExtract.batch(deps(), photos("ex1"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive) }
         withTimeout(20_000) { reached.await() }
         // what Forget leaves behind for a stored photo: its tombstone (a frame row is not needed to model the fence)
         MemoryGraph.get(app).db.forgetDao().insertTombstone(ForgetTombstoneEntity("ex1", 1_000))
@@ -425,7 +425,7 @@ class LiveExtractTest {
         intentGraph()
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         val gen = MemoryWipe.generation.get()
-        val live = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT)
+        val live = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         MemoryWipe.generation.incrementAndGet()
         LiveExtract.commit(deps(), live.effects, gen, setOf("ex1", "ex2"))
         assertTrue(allTraces(pid).isEmpty()); assertTrue(recorded.isEmpty())
@@ -436,8 +436,8 @@ class LiveExtractTest {
         graph { p -> reached.complete(Unit); release.await(); extractReply(p) }
         val pid = publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
         val d = deps(); val gen = MemoryWipe.generation.get()
-        repeat(LiveExtract.SHADOW_EVERY - 1) { LiveExtract.shadow(d, photos("ex1"), gen) }
-        val job = async { LiveExtract.shadow(d, photos("ex1"), gen) }
+        repeat(LiveExtract.SHADOW_EVERY - 1) { LiveExtract.shadow(d, photos("ex1"), gen, com.rokid.context.orchestration.AllLive) }
+        val job = async { LiveExtract.shadow(d, photos("ex1"), gen, com.rokid.context.orchestration.AllLive) }
         withTimeout(20_000) { reached.await() }
         MemoryWipe.generation.incrementAndGet()
         release.complete(Unit)
@@ -451,7 +451,7 @@ class LiveExtractTest {
         graph { extractReply(it) }
         val pid = publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
         val d = deps(); val gen = MemoryWipe.generation.get()
-        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), gen) }
+        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), gen, com.rokid.context.orchestration.AllLive) }
         assertEquals(2, prompts.size)
         assertTrue(classes.all { it == CallClass.EXPERIMENT })
         val rows = allTraces(pid)
@@ -464,7 +464,7 @@ class LiveExtractTest {
         val pid = publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
         devMode = false
         val d = deps()
-        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), MemoryWipe.generation.get()) }
+        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), MemoryWipe.generation.get(), com.rokid.context.orchestration.AllLive) }
         assertTrue(prompts.isEmpty()); assertTrue(allTraces(pid).isEmpty())
     }
 
@@ -472,14 +472,14 @@ class LiveExtractTest {
         graph { throw IOException("offline") }
         publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
         val d = deps()
-        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), MemoryWipe.generation.get()) }
+        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), MemoryWipe.generation.get(), com.rokid.context.orchestration.AllLive) }
     }
 
     @Test fun shadowOnlyForAShadowPublish() = runBlocking<Unit> {
         graph { extractReply(it) }
         publish(DefaultPipelines.liveExtract(), LiveMode.LIVE)
         val d = deps()
-        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), MemoryWipe.generation.get()) }
+        repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), MemoryWipe.generation.get(), com.rokid.context.orchestration.AllLive) }
         assertTrue(prompts.isEmpty())
     }
 
@@ -490,7 +490,7 @@ class LiveExtractTest {
         val pid = publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
         val d = deps(); val gen = MemoryWipe.generation.get()
         MemoryWipe.generation.incrementAndGet() // Delete all landed between the live save and the shadow run
-        repeat(LiveExtract.SHADOW_EVERY) { LiveExtract.shadow(d, photos("ex1"), gen) }
+        repeat(LiveExtract.SHADOW_EVERY) { LiveExtract.shadow(d, photos("ex1"), gen, com.rokid.context.orchestration.AllLive) }
         assertTrue(prompts.isEmpty()); assertTrue(allTraces(pid).isEmpty())
     }
 
@@ -499,7 +499,7 @@ class LiveExtractTest {
         val pid = publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
         MemoryGraph.get(app).db.forgetDao().insertTombstone(ForgetTombstoneEntity("ex2", 1))
         val d = deps(); val gen = MemoryWipe.generation.get()
-        repeat(LiveExtract.SHADOW_EVERY) { LiveExtract.shadow(d, photos("ex1", "ex2"), gen) }
+        repeat(LiveExtract.SHADOW_EVERY) { LiveExtract.shadow(d, photos("ex1", "ex2"), gen, com.rokid.context.orchestration.AllLive) }
         assertTrue(prompts.isEmpty()); assertTrue(allTraces(pid).isEmpty())
     }
 
@@ -507,8 +507,8 @@ class LiveExtractTest {
         graph { extractReply(it) }
         val pid = publish(intentPipeline(), LiveMode.LIVE)
         val base = deps()
-        val d = LiveDeps(dao, ai.runner, { _, _ -> throw IllegalStateException("no context") }, base.interpreter, base.sink, base.publisher, base.shadowAllowed, base.clock, base.deadlineMs)
-        val out = LiveExtract.batch(d, photos("ex1", "ex2"), CallClass.EXTRACT)
+        val d = LiveDeps(dao, ai.runner, { _, _, _ -> throw IllegalStateException("no context") }, base.interpreter, base.sink, base.publisher, base.shadowAllowed, base.clock, base.deadlineMs)
+        val out = LiveExtract.batch(d, photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
         assertEquals(1, extractCalls); assertTrue(out.effects.fellBack)
         LiveExtract.commit(d, out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2"))
         assertEquals(listOf("internal", "internal"), allTraces(pid).map { it.error })

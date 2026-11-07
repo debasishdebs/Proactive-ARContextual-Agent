@@ -14,4 +14,4 @@ sources=BEGIN_DATA sources
 - event · Dentist · milk?
 END_DATA sources
 ---
-[rokid_mem_1]|[PhotoCite(citeId=rokid_mem_2, frameId=f1, ts=1799999999000, stored=true, receivedAt=1799999999500)]|[ModelImageInput(mimeType=image/jpeg, base64Data=AAAA, detail=low)]|az|[rokid_mem_1, rokid_mem_2]
+[rokid_mem_1]|[PhotoCite(citeId=rokid_mem_2, frameId=f1, ts=1799999999000, stored=true, receivedAt=1799999999500)]|[ModelImageInput(mimeType=image/jpeg, base64Data=AAAA, detail=low, ref=f1)]|az|[rokid_mem_1, rokid_mem_2]

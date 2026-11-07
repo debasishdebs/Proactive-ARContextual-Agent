@@ -152,7 +152,7 @@ class ResidueOracleTest {
     private fun resolver() = MomentResolver(DaoMomentSource(h.dao, h.dao3))
     private fun runner() = CanvasRunner(
         h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to recorder),
-        { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
+        { id -> val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }; RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
         h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), scenes = DaoSceneRunSource(h.db, resolver()),
     )
     private fun pipeline(input: String) = Pipeline(2, "p-$input", "P", listOf(
@@ -234,7 +234,7 @@ class ResidueOracleTest {
         h.dao.upsertItem(CanvasRunItemEntity("runcv", frame, "ext", "OK", null, com.rokid.context.canvas.CanvasValueJson.encode(ex), null, null, null, null, null, null, "runcv:ext:$frame"))
         h.dao.upsertItem(CanvasRunItemEntity("runcv", frame, "save", "OK", null, com.rokid.context.canvas.CanvasValueJson.encode(CanvasValue.Preview(listOf(com.rokid.context.canvas.PreviewRow("fact", savedText, "object", "SHORT", "OK")))), null, null, null, null, null, null, "runcv:ext:$frame"))
         val r = com.rokid.context.canvas.CanvasRunSave(app, h.db, afterSave = { _, _ -> }).save("runcv")
-        assertEquals(com.rokid.context.canvas.CanvasRunSave.Result.Saved(2, 0), r)
+        assertEquals("codex r10: the caption is not saved from a stored run", com.rokid.context.canvas.CanvasRunSave.Result.Saved(1, 0), r)
         assertTrue("the oracle sees the saved memory", residue(listOf(savedId, savedText)).size >= 2)
     }
 

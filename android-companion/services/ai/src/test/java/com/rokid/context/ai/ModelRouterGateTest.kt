@@ -38,7 +38,7 @@ class ModelRouterGateTest {
 
     private suspend fun ep(id: String, vararg caps: Capability) =
         endpoints.save(Endpoint(id, id, EndpointKind.OLLAMA, "http://localhost:1", null, listOf("m"), caps.toSet(), 1), apiKey = null).getOrThrow()
-    private val img = listOf(ModelImageInput("image/jpeg", "AAAA"))
+    private val img = listOf(ModelImageInput("image/jpeg", "AAAA", ref = "f1"))
 
     @Test fun everyProviderCallPassesThroughTheGate() = runTest {
         ep("a", Capability.CHAT); bindings.set(RoleBinding(Role.ANSWER, "a", "m1")).getOrThrow()
@@ -51,7 +51,7 @@ class ModelRouterGateTest {
     @Test fun fallbackRetryWithoutImagesIsAlsoGated() = runTest {
         ep("v", Capability.CHAT, Capability.VISION); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
         failures += "v:vision"
-        router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img) }
+        router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) }
         assertEquals(listOf("v:vision", "v:text"), providerCalls)
         assertEquals(listOf(CallClass.EXTRACT, CallClass.EXTRACT), permits)
     }

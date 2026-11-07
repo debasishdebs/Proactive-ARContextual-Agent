@@ -79,7 +79,7 @@ class ExecutorsTest {
             override suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply =
                 ai.router.completeOn(endpointId, model, callClass, build)
         }
-        return RunContext("run1", ai.runner, recording, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) }, callClass = callClass)
+        return RunContext("run1", ai.runner, recording, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) }, callClass = callClass, liveness = com.rokid.context.orchestration.AllLive)
     }
 
     private fun exec(type: String) = checkNotNull(Executors.all()[type])
@@ -153,7 +153,7 @@ class ExecutorsTest {
             override suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply = throw io
         }
         val base = ctx { "" }
-        val withBoom = RunContext(base.runId, base.runner, boom, base.prompts, base.persona, base.bindings)
+        val withBoom = RunContext(base.runId, base.runner, boom, base.prompts, base.persona, base.bindings, liveness = com.rokid.context.orchestration.AllLive)
         val res = exec(NodeTypes.PROMPT).run(promptNode(), listOf(item("ex1")), withBoom).single()
         assertTrue(res.cause === io)
         assertEquals("IOException", res.error)
@@ -364,7 +364,7 @@ class ExecutorsTest {
                 override suspend fun complete(request: ModelRequest): ModelReply { val n = ++providerCalls; return ModelReply(reply(request.prompt), 100 + n, 10 + n) }
             }
         }).also { AiGraph.resetForTests(it); TestAi.bindAll(it) }
-        return RunContext("run1", ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) })
+        return RunContext("run1", ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) }, liveness = com.rokid.context.orchestration.AllLive)
     }
 
     @Test fun extractRecordsTokensAndModel() = runBlocking<Unit> {

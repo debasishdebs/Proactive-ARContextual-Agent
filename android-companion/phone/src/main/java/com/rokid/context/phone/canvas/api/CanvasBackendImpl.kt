@@ -170,7 +170,8 @@ class CanvasBackendImpl(
             val momentResolver = com.rokid.context.canvas.moment.MomentResolver(com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao(), MemoryGraph.get(app).db.momentDao()))
             val runner = CanvasRunner(
                 dao, photos, composeExecutors(extraExecutors),
-                { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
+                // codex r10: every photo upload of a run is re-checked live by the router (liveness read at the run's start: a Delete all since then drops it)
+                { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.work.frames.FrameLiveness.forApp(app)) },
                 ConfirmTokens(clock), hot, clock, log = log, moments = momentResolver, scenes = com.rokid.context.canvas.moment.DaoSceneRunSource(MemoryGraph.get(app).db, momentResolver),
                 // the hub's recent watch values, read at the time of a watch run (null hub = none); no route or page starts a watch run yet
                 watch = com.rokid.context.canvas.WatchRunSource { from, to -> com.rokid.context.phone.hub.HubGraph.contextHub?.watchRing?.recent(from, to).orEmpty() },

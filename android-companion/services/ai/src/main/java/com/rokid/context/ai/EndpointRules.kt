@@ -9,8 +9,16 @@ object EndpointRules {
     private val CONTROL = Regex("[\\p{Cntrl}\\u2028\\u2029]")
     private val SPACES = Regex("\\s+")
 
+    /** Kinds whose provider cannot put a photo on the wire (the on-device llama.cpp runtime takes text only). */
+    val NO_IMAGES = setOf(EndpointKind.LLAMACPP_LOCAL)
+    const val NO_IMAGES_MESSAGE = "On-device models can't read photos: turn off Vision"
+
+    /** Codex r10: true when a photo sent to [e] reaches the model (VISION declared AND a kind that can send images). */
+    fun deliversImages(e: Endpoint): Boolean = Capability.VISION in e.capabilities && e.kind !in NO_IMAGES
+
     fun clean(endpoint: Endpoint, hasKey: Boolean): Result<Endpoint> = runCatching {
         require(ID.matches(endpoint.id)) { "Invalid endpoint id" }
+        require(!(endpoint.kind in NO_IMAGES && Capability.VISION in endpoint.capabilities)) { NO_IMAGES_MESSAGE }
         require(!(hasKey && endpoint.kind in KEYLESS)) { "This endpoint type doesn't use a key" }
         require(endpoint.capabilities.isNotEmpty()) { "Pick at least one capability" }
         val models = endpoint.models.map { it.trim() }.filter { it.isNotEmpty() }.distinct()

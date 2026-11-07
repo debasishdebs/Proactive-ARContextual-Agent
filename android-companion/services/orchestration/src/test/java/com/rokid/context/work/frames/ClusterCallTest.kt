@@ -181,7 +181,7 @@ class ClusterCallTest {
             if (calls.size == 1) throw Crash() // the process died between the claim and the commit
             val out = ClusterOutput(
                 cs.map { ClusterResult(it.clusterId, "A summary", listOf(Fact("A fact", "object", 0.8, listOf("t"), listOf(reps.getValue(it.clusterId).first())))) },
-                reps.values.flatten().map { FrameCaption(it, "caption") },
+                reps.values.flatten().map { FrameCaption(it, "caption") }, imagesDelivered = true,
             )
             val r = ClusterSave.save(ctx, claim, out, reps, MemoryWipe.generation.get(), now, ReviewState.OK) as ClusterSaveResult.Saved
             ClusterOutcome.Saved(r.memories)

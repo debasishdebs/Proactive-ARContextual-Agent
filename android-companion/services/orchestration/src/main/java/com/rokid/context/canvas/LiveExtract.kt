@@ -8,6 +8,7 @@ import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasLiveTraceEntity
 import com.rokid.context.memory.db.CanvasPublishEntity
 import com.rokid.context.model.CallClass
+import com.rokid.context.model.PhotoLiveness
 import com.rokid.context.orchestration.ExtractPhoto
 import com.rokid.context.orchestration.ExtractSave
 import com.rokid.context.orchestration.ExtractedBatch
@@ -44,7 +45,8 @@ class LiveBatch(val batch: ExtractedBatch, val effects: LiveEffects)
 class LiveDeps(
     val dao: CanvasDao,
     val runner: RoleRunner,
-    val context: (runId: String, callClass: CallClass) -> RunContext,
+    /** [liveness] (codex r10): the batch's photo liveness, to put on the [RunContext] so every executor's model call carries it. */
+    val context: (runId: String, callClass: CallClass, liveness: PhotoLiveness?) -> RunContext,
     val interpreter: PipelineInterpreter = PipelineInterpreter(),
     val sink: FrameIntentSink = FrameIntentSink.None,
     /** Auto-rollback: (publish id, fixed reason) -> whether this call rolled it back. */
@@ -76,18 +78,19 @@ object LiveExtract {
     private const val TAG = "LiveExtract"
 
     /** The extraction step of the keyframe extractor. Only an active LIVE interpreter publish changes the result. */
-    suspend fun batch(deps: LiveDeps, photos: List<ExtractPhoto>, callClass: CallClass): LiveBatch {
+    /** [liveness]: the photos' liveness (codex r10), attached to every model call of the batch, the interpreter's included. */
+    suspend fun batch(deps: LiveDeps, photos: List<ExtractPhoto>, callClass: CallClass, liveness: PhotoLiveness): LiveBatch {
         val pub = try { deps.dao.activeInterpreter() } catch (c: CancellationException) { throw c } catch (e: Exception) {
             PcLog.w(TAG, "publish lookup failed: ${e.javaClass.simpleName}"); null
         }
-        if (pub == null) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass), LiveEffects.None)
-        if (pub.mode != LiveMode.LIVE.name) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass), LiveEffects(pub.id, emptyList(), emptyMap(), false, shadow = true))
+        if (pub == null) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass, liveness), LiveEffects.None)
+        if (pub.mode != LiveMode.LIVE.name) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass, liveness), LiveEffects(pub.id, emptyList(), emptyMap(), false, shadow = true))
 
-        val outcome = interpret(deps, pub, "LIVE", photos) { deps.context("live:${pub.id}", callClass) }
+        val outcome = interpret(deps, pub, "LIVE", photos) { deps.context("live:${pub.id}", callClass, liveness) }
         return when (outcome) {
             is PipelineInterpreter.Outcome.Extracted -> LiveBatch(outcome.batch, LiveEffects(pub.id, outcome.traces, outcome.labels, false))
             // memories are never lost to an experiment: the whole batch goes through the live extraction; its own failure propagates as live does today
-            is PipelineInterpreter.Outcome.Failed -> LiveBatch(ExtractSave.extract(deps.runner, photos, callClass), LiveEffects(pub.id, outcome.traces, emptyMap(), true))
+            is PipelineInterpreter.Outcome.Failed -> LiveBatch(ExtractSave.extract(deps.runner, photos, callClass, liveness), LiveEffects(pub.id, outcome.traces, emptyMap(), true))
         }
     }
 
@@ -95,7 +98,7 @@ object LiveExtract {
      * After a successful live save in SHADOW mode, every [SHADOW_EVERY]-th call runs the interpreter as EXPERIMENT (when [LiveDeps.shadowAllowed])
      * and commits its traces (fenced, no sink). At most one runs at a time. Never throws except cancellation.
      */
-    suspend fun shadow(deps: LiveDeps, photos: List<ExtractPhoto>, generation: Long) {
+    suspend fun shadow(deps: LiveDeps, photos: List<ExtractPhoto>, generation: Long, liveness: PhotoLiveness) {
         try {
             if (photos.isEmpty() || !deps.shadowAllowed()) return
             if (deps.shadowCalls.incrementAndGet() % SHADOW_EVERY != 0) return
@@ -105,7 +108,7 @@ object LiveExtract {
                 // privacy: the photos were loaded before the live save; a Delete all or a Forget since then must stop the run BEFORE any model call
                 val ids = photos.map { it.frameId }
                 if (MemoryWipe.generation.get() != generation || deps.dao.tombstonedAmong(ids) > 0) return
-                val outcome = interpret(deps, pub, "SHADOW", photos) { deps.context("shadow:${pub.id}", CallClass.EXPERIMENT) }
+                val outcome = interpret(deps, pub, "SHADOW", photos) { deps.context("shadow:${pub.id}", CallClass.EXPERIMENT, liveness) }
                 val traces = when (outcome) {
                     is PipelineInterpreter.Outcome.Extracted -> outcome.traces
                     is PipelineInterpreter.Outcome.Failed -> outcome.traces
@@ -120,10 +123,9 @@ object LiveExtract {
         }
     }
 
-    /** [shadow] in the deps' scope, without awaiting. */
-    /** [guard]: the extraction's photo dispatch guard (codex r9 P1-1), carried into the launched shadow run so its uploads re-check liveness too. */
-    fun shadowAsync(deps: LiveDeps, photos: List<ExtractPhoto>, generation: Long, guard: kotlin.coroutines.CoroutineContext = kotlin.coroutines.EmptyCoroutineContext) {
-        deps.scope.launch(guard) { shadow(deps, photos, generation) }
+    /** [shadow] in the deps' scope, without awaiting. [liveness]: the extraction's (codex r10), so the shadow run's uploads are re-checked too. */
+    fun shadowAsync(deps: LiveDeps, photos: List<ExtractPhoto>, generation: Long, liveness: PhotoLiveness) {
+        deps.scope.launch { shadow(deps, photos, generation, liveness) }
     }
 
     /**

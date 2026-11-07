@@ -65,7 +65,7 @@ class PythonExecutorTest {
     private fun items(n: Int) = (0 until n).map { CanvasItem("frame-$it", photo("frame-$it"), json(it)) }
     private fun ctx(callClass: CallClass = CallClass.EXPERIMENT): RunContext {
         val ai = TestAi.graph(app) { "" }
-        return RunContext("r1", ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = callClass)
+        return RunContext("r1", ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = callClass, liveness = com.rokid.context.orchestration.AllLive)
     }
     private fun exec(port: HelperJobPort?) = PythonExecutor(port) { fenceNow }
     private suspend fun run(e: PythonExecutor, items: List<CanvasItem>, n: PipelineNode = node(), c: RunContext = ctx(), withFence: Boolean = true) =

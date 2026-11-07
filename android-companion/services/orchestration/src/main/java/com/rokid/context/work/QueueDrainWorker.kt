@@ -232,10 +232,18 @@ class QueueDrainWorker(
         var promptVersion = 0
         var provenance = true
         val captions = mutableListOf<com.rokid.context.ai.contract.FrameCaption>()
+        // Codex r10: every upload is re-checked live by the router (a photo forgotten meanwhile drops the call unsent: the job is stale, nothing written)
+        val liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation)
+        var delivered = true
         val facts = seen.flatMap { (frame, image) ->
-            val r = ExtractSave.extract(ai.runner, listOf(ExtractPhoto(frame.id, "ts=${frame.ts} \u00b7 source=${frame.source} \u00b7 ${frame.payload}", image)),
-                callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT)
+            val r = try {
+                ExtractSave.extract(ai.runner, listOf(ExtractPhoto(frame.id, "ts=${frame.ts} \u00b7 source=${frame.source} \u00b7 ${frame.payload}", image)),
+                    callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT, liveness)
+            } catch (f: com.rokid.context.ai.PhotoForgottenException) {
+                throw StalePayloadException()
+            }
             promptVersion = r.promptVersion
+            delivered = delivered && r.output.imagesDelivered
             provenance = provenance && r.output.provenance
             captions += r.output.captions
             r.output.facts.filter { it.text.isNotBlank() }
@@ -254,9 +262,11 @@ class QueueDrainWorker(
         // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
         // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
         val saved = ExtractSave.saveExtraction(
-            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = provenance), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
+            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = provenance, imagesDelivered = delivered), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
             tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
         )
+        // no delivery proof: nothing was written; a retryable failure keeps the job (and its photos) queued with backoff
+        if (saved == ExtractSaveResult.Undelivered) throw com.rokid.context.ai.ModelCallException("photos not delivered", retryable = true)
         val savedAll = (saved as? ExtractSaveResult.Saved)?.memories.orEmpty()
         when (ExtractFollowUp.afterSave(applicationContext, generation, savedAll, trusted, confidence, job.personaSnapshot)) {
             ExtractFollowUp.Result.SKIPPED, ExtractFollowUp.Result.REVIEW_ONLY -> Unit
@@ -286,7 +296,13 @@ class QueueDrainWorker(
         val frames = PipelineRecords.framesByIds(applicationContext, QueuePayloads.ids(payload, "frame_ids_csv"))
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("memories", sources.map { it.text }) +
             "\n" + PromptComposer.dataBlock("critic_notes", listOf(reason)))
-        val out = ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true, callClass = com.rokid.context.model.CallClass.EXTRACT)).output as SummaryOutput
+        // Codex r10: the photos (and the frame ids in the prompt) are re-checked live by the router inside the call's permit; forgotten meanwhile = stale, unsent.
+        val out = try {
+            ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true, callClass = com.rokid.context.model.CallClass.EXTRACT,
+                liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation))).output as SummaryOutput
+        } catch (f: com.rokid.context.ai.PhotoForgottenException) {
+            throw StalePayloadException()
+        }
         // Final review I1: fenced on every frame whose photo was sent (any one forgotten during the call → nothing written).
         val written = PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}", null, out.summary, "summary", out.entities,
             out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,

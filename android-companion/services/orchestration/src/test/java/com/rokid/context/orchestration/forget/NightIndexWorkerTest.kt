@@ -95,7 +95,7 @@ class NightIndexWorkerTest {
     private fun describing(): suspend (List<String>, String, CallClass) -> ExtractOutcome = { ids, claim, cls ->
         calls += ids to cls
         when (val r = ExtractSave.saveExtraction(
-            ctx, "rokid_kf_${claim}_", ExtractOutput(emptyList(), captions = ids.map { FrameCaption(it, "caption of $it") }, provenance = true),
+            ctx, "rokid_kf_${claim}_", ExtractOutput(emptyList(), captions = ids.map { FrameCaption(it, "caption of $it") }, provenance = true, imagesDelivered = true),
             ids.toSet(), ids.associateWith { claim }, MemoryTier.SHORT, ReviewState.OK, nowMs = clockMs,
         )) {
             is ExtractSaveResult.Saved -> ExtractOutcome.Saved(r.memories)
@@ -385,7 +385,7 @@ class NightIndexWorkerTest {
             val generation = MemoryWipe.generation.get()
             MemoryWipe.deleteAll(ctx) // the wipe lands after the model answered, before the save
             when (ExtractSave.saveExtraction(
-                ctx, "rokid_kf_${claim}_", ExtractOutput(emptyList(), captions = ids.map { FrameCaption(it, "c") }, provenance = true),
+                ctx, "rokid_kf_${claim}_", ExtractOutput(emptyList(), captions = ids.map { FrameCaption(it, "c") }, provenance = true, imagesDelivered = true),
                 ids.toSet(), ids.associateWith { claim }, MemoryTier.SHORT, ReviewState.OK, generation = generation,
             )) {
                 is ExtractSaveResult.Saved -> ExtractOutcome.Saved(emptyList())

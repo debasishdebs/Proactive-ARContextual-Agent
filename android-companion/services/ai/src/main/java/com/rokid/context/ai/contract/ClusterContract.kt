@@ -8,6 +8,7 @@ import com.rokid.context.ai.run.RoleCall
 import com.rokid.context.ai.run.RoleRunner
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.model.PhotoLiveness
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptVars
@@ -21,9 +22,13 @@ class ClusterPhoto(val clusterId: String, val frameId: String, val jpeg: ByteArr
 /** [facts] reuse the VISION_EXTRACT [Fact]; a fact's [Fact.sourceFrameIds] are photos of THIS cluster. */
 data class ClusterResult(val clusterId: String, val summary: String, val facts: List<Fact>)
 
-/** A CLUSTER_SUMMARY output (wave 2 §P4.1): one result per cluster sent, one caption per photo sent. */
+/**
+ * A CLUSTER_SUMMARY output (wave 2 §P4.1): one result per cluster sent, one caption per photo sent. [imagesDelivered]: codex r10 delivery proof (in
+ * memory only, set by [ClusterContract.call] from every accepted reply); `ClusterSave` persists nothing without it.
+ */
 data class ClusterOutput(
     val clusters: List<ClusterResult>, val captions: List<FrameCaption>, override val extras: JsonObject = JsonObject(emptyMap()),
+    val imagesDelivered: Boolean = false,
 ) : ContractOutput
 
 /** The cluster-batch call (spec wave 2 §P4.1): ≤ 3 clusters and ≤ 6 photos per call, ids checked per cluster. */
@@ -68,7 +73,7 @@ object ClusterContract {
      * and captions are optional.
      */
     suspend fun call(
-        runner: RoleRunner, photos: List<ClusterPhoto>, callClass: CallClass, override: PromptDraft? = null,
+        runner: RoleRunner, photos: List<ClusterPhoto>, callClass: CallClass, liveness: PhotoLiveness, override: PromptDraft? = null,
     ): ClusterOutput {
         require(photos.isNotEmpty()) { "no photos" }
         val current = promptIsCurrent(if (override != null) (override.outputSchema ?: DefaultSchemas.text(PromptKey.CLUSTER_SUMMARY)) else runner.activeSchema(PromptKey.CLUSTER_SUMMARY))
@@ -77,20 +82,21 @@ object ClusterContract {
         val results = mutableListOf<ClusterResult>()
         val captions = mutableListOf<FrameCaption>()
         var invalid: ModelCallException? = null
-        fun keep(o: ClusterOutput) { results += o.clusters; captions += o.captions }
+        var delivered = true
+        fun keep(o: ClusterOutput) { results += o.clusters; captions += o.captions; delivered = delivered && o.imagesDelivered }
         for (batch in batches) {
-            val first = attempt(runner, batch, callClass, override, current)
+            val first = attempt(runner, batch, callClass, override, current, liveness)
             if (first.out != null) { keep(first.out); continue }
             invalid = first.error
             if (batch.size == 1) continue
             PcLog.i(TAG, "batch of ${batch.size} clusters rejected as INVALID_OUTPUT; retrying one cluster per call")
             for (g in batch) {
-                val solo = attempt(runner, listOf(g), callClass, override, current)
+                val solo = attempt(runner, listOf(g), callClass, override, current, liveness)
                 if (solo.out != null) keep(solo.out) else invalid = solo.error
             }
         }
         if (results.isEmpty()) throw invalid ?: ModelCallException("CLUSTER_SUMMARY reply was invalid", retryable = true, kind = FailureKind.INVALID_OUTPUT)
-        return ClusterOutput(results, captions)
+        return ClusterOutput(results, captions, imagesDelivered = delivered)
     }
 
     private class Attempt(val out: ClusterOutput?, val error: ModelCallException?)
@@ -105,23 +111,25 @@ object ClusterContract {
     }
 
     /** One call over [batch]; INVALID_OUTPUT (from the runner or from [validate]) comes back as an [Attempt], other failures throw. */
-    private suspend fun attempt(runner: RoleRunner, batch: List<List<ClusterPhoto>>, callClass: CallClass, override: PromptDraft?, current: Boolean): Attempt {
+    private suspend fun attempt(runner: RoleRunner, batch: List<List<ClusterPhoto>>, callClass: CallClass, override: PromptDraft?, current: Boolean, liveness: PhotoLiveness): Attempt {
         val sent = batch.associate { g -> g.first().clusterId to g.map { it.frameId } }
         val flat = batch.flatten()
+        var delivered = false
         val raw = try {
             val r = runner.run(
                 RoleCall(
                     PromptKey.CLUSTER_SUMMARY, PromptVars(recentContext = PromptComposer.dataBlock("photos", flat.map { it.line })),
-                    images = flat.map { ModelImageInput("image/jpeg", Base64.encodeToString(it.jpeg, Base64.NO_WRAP), detail = "low") },
-                    inputIds = sent.keys + sent.values.flatten(), fromFrames = true, callClass = callClass, override = override,
+                    images = flat.map { ModelImageInput("image/jpeg", Base64.encodeToString(it.jpeg, Base64.NO_WRAP), detail = "low", ref = it.frameId) },
+                    inputIds = sent.keys + sent.values.flatten(), fromFrames = true, callClass = callClass, override = override, liveness = liveness,
                 ),
             )
+            delivered = r.imagesDelivered
             r.output as ClusterOutput
         } catch (e: ModelCallException) {
             if (e.kind != FailureKind.INVALID_OUTPUT) throw e
             return Attempt(null, e)
         }
-        val out = if (current) raw else legacy(raw, sent.entries.single())
+        val out = (if (current) raw else legacy(raw, sent.entries.single()))?.copy(imagesDelivered = delivered)
         if (out == null || !validate(out, sent, captionsRequired = current)) {
             return Attempt(null, ModelCallException("CLUSTER_SUMMARY reply failed the provenance check", retryable = true, kind = FailureKind.INVALID_OUTPUT))
         }

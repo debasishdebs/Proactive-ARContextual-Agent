@@ -295,7 +295,8 @@ class AskDebugTest {
         override suspend fun recall(question: String, nowMs: Long): AskPhotoRecall {
             recalls++
             return AskPhotoRecall(listOf("id=frame:f9 \u00b7 1970-01-01 00:00 \u00b7 photo \u00b7 image=1 \u00b7 a blue mug"), setOf("frame:f9"), frames.toSet(),
-                images = { imageLoads++; listOf(ModelImageInput("image/jpeg", "AAAA")) }, imageEndpointId = endpoint, imageCount = imageCount)
+                images = { imageLoads++; listOf(ModelImageInput("image/jpeg", "AAAA", ref = "f9")) }, imageEndpointId = endpoint, imageCount = imageCount,
+                liveness = com.rokid.context.orchestration.AllLive)
         }
     }
 

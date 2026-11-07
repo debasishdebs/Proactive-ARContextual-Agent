@@ -63,7 +63,7 @@ class SummaryExecutorTest {
             override suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply =
                 ai.router.completeOn(endpointId, model, callClass, build)
         }
-        return RunContext("run1", ai.runner, recording, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) }, callClass = callClass)
+        return RunContext("run1", ai.runner, recording, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) }, callClass = callClass, liveness = com.rokid.context.orchestration.AllLive)
     }
 
     private fun exec() = checkNotNull(Executors.all()[NodeTypes.SUMMARY])
@@ -136,7 +136,7 @@ class SummaryExecutorTest {
             override suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply = throw io
         }
         val base = ctx { "" }
-        val r = exec().run(node, listOf(item("a", scene("S1", "x"))), RunContext(base.runId, base.runner, boom, base.prompts, base.persona, base.bindings)).single()
+        val r = exec().run(node, listOf(item("a", scene("S1", "x"))), RunContext(base.runId, base.runner, boom, base.prompts, base.persona, base.bindings, liveness = com.rokid.context.orchestration.AllLive)).single()
         assertTrue(r.cause === io); assertEquals("IOException", r.error); assertNull(r.value); assertEquals(1, r.calls)
     }
 

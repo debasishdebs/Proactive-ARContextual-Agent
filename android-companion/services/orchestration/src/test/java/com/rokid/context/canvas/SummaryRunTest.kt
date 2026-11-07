@@ -68,7 +68,7 @@ class SummaryRunTest {
         mapOf(NodeTypes.SUMMARY to SummaryExecutor, NodeTypes.LOCAL_CRITIC to LocalCriticExecutor, NodeTypes.MEMORY_WRITE to MemoryWritePreviewExecutor),
         { id ->
             val ai = com.rokid.context.orchestration.TestAi.graph(app) { p -> prompts += p; """{"summary":"Walk then desk.","confidence":0.9}""" }.also { com.rokid.context.orchestration.TestAi.bindAll(it) }
-            RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) })
+            RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
         },
         h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(), scenes = DaoSceneRunSource(h.db, resolver()),
     )

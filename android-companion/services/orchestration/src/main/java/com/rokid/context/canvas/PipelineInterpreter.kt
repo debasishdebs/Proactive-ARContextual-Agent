@@ -134,7 +134,9 @@ class PipelineInterpreter(
             v.facts.forEach { facts.putIfAbsent(Triple(it.text, it.type, it.sourceFrameIds.toSet()), it) }
             v.captions.forEach { captions.putIfAbsent(it.frameId, it) }
         }
-        val batch = ExtractedBatch(ExtractOutput(facts.values.toList(), captions = captions.values.toList(), provenance = provenance), 0)
+        // codex r10: delivered only when every call behind the batch proved it (a loose value carries no proof)
+        val delivered = loose.isEmpty() && callOrder.isNotEmpty() && callOrder.all { it.output.imagesDelivered }
+        val batch = ExtractedBatch(ExtractOutput(facts.values.toList(), captions = captions.values.toList(), provenance = provenance, imagesDelivered = delivered), 0)
         return Outcome.Extracted(batch, traces + batchRows(null), labels)
     }
 

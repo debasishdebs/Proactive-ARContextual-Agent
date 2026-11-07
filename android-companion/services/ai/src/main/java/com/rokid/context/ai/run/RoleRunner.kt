@@ -2,6 +2,9 @@ package com.rokid.context.ai.run
 
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.ai.FailureKind
+import com.rokid.context.ai.ImagesUnguardedException
+import com.rokid.context.ai.ImagesUnsupportedException
+import com.rokid.context.ai.contract.ImageUse
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.RoutedReply
 import com.rokid.context.ai.contract.ContractOutput
@@ -34,6 +37,8 @@ data class RoleCall(
     val override: PromptDraft? = null,
     /** When set, [images] go only to this endpoint: a fallback endpoint gets the text without them (the user's consent names one endpoint). */
     val imagesOnlyOnEndpoint: String? = null,
+    /** Codex r10: required with [images] (every image carries its photo ref); the router re-checks the photos with it inside each call's permit. */
+    val liveness: com.rokid.context.model.PhotoLiveness? = null,
 ) {
     val effectiveClass: CallClass
         get() = callClass ?: when (key) {
@@ -45,7 +50,10 @@ data class RoleCall(
 }
 
 /** [replies]: every provider reply the call consumed, the rejected attempts included ([reply] is the last one), for token accounting. */
-data class RoleResult(val output: ContractOutput, val raw: String, val reply: RoutedReply, val promptVersion: Int, val replies: List<RoutedReply> = listOf(reply))
+data class RoleResult(val output: ContractOutput, val raw: String, val reply: RoutedReply, val promptVersion: Int, val replies: List<RoutedReply> = listOf(reply)) {
+    /** Codex r10 delivery proof: the accepted reply came from the provider call that carried the photos ([RoutedReply.imagesDelivered]). */
+    val imagesDelivered: Boolean get() = reply.imagesDelivered
+}
 
 /**
  * Every production model call with an output contract (spec §4.4, §4.4.1): the active prompt version + SYSTEM
@@ -65,6 +73,10 @@ class RoleRunner(
 
     suspend fun run(call: RoleCall): RoleResult {
         val role = requireNotNull(call.key.role) { "SYSTEM has no model call" }
+        // Codex r10: photos only where the key declares them, and a photo-requiring key never runs without its photos.
+        if (call.images.isNotEmpty() && call.key.imageUse == ImageUse.NONE) throw ImagesUnguardedException()
+        if (call.key.requiresImage && call.images.isEmpty()) throw ImagesUnsupportedException()
+        val photoIds = call.images.mapNotNull { it.ref }.toSet()
         val draft = call.override
         val active = if (draft == null) prompts.active(call.key) else null
         val template = draft?.template ?: active!!.template
@@ -83,7 +95,8 @@ class RoleRunner(
             val cap = cutCap
             val build: (com.rokid.context.ai.Endpoint) -> ModelRequest = { e ->
                 val plan = StructuredOutput.plan(e, schema, call.key.name)
-                ModelRequest(text + plan.promptSuffix, call.images.takeIf { call.imagesOnlyOnEndpoint == null || call.imagesOnlyOnEndpoint == e.id }.orEmpty(), maxTokens = cap, format = plan.format, requireImages = call.key in PHOTO_INPUT_KEYS)
+                ModelRequest(text + plan.promptSuffix, call.images.takeIf { call.imagesOnlyOnEndpoint == null || call.imagesOnlyOnEndpoint == e.id }.orEmpty(), maxTokens = cap, format = plan.format,
+                    requireImages = call.key.requiresImage, photoIds = photoIds, liveness = call.liveness)
             }
             val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
             attempts += reply
@@ -106,11 +119,6 @@ class RoleRunner(
     private companion object {
         const val TAG = "RoleRunner"
         const val MAX_ECHO = 400
-        /**
-         * Roles whose input IS the photo: every attempt must carry it, and a refused or failed image call is never retried as text (codex r9 P1-2: a
-         * VISION_EXTRACT retried without its photo returned captions guessed from the frame metadata, saved as confidence-1.0 OK memories).
-         */
-        val PHOTO_INPUT_KEYS = setOf(PromptKey.INTENT_CLASSIFY, PromptKey.VISION_EXTRACT)
         private val SAFE_PATH = Regex("^\\$[A-Za-z0-9_.\\[\\]]*$")
 
         /** No JSON, or JSON the decoder couldn't read: the problem line is fixed text. */

@@ -62,7 +62,7 @@ class MomentRunTest {
     private fun runner(py: NodeExecutor = h.py) = CanvasRunner(
         h.dao, { f -> PhotoLoad(f.map(h::photo), emptySet()) }, mapOf(NodeTypes.PROMPT to h.prompt, py.type to py), { id ->
             val ai = com.rokid.context.orchestration.TestAi.graph(app) { "" }
-            RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) })
+            RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
         },
         h.tokens, { false }, { h.now }, { "run${++h.ids}" }, { h.gen }, { _, _, m -> h.log += m }, moments = resolver(),
     )

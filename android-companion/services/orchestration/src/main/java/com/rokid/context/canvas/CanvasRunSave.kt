@@ -96,8 +96,9 @@ class CanvasRunSave(
         val saved = db.canvasSlice3Dao().meta(CanvasSaveMarker.key(runId))?.toIntOrNull()
         val l = load(runId)
         val b = l.built
-        val rows = if (b == null) emptyList() else b.facts.mapIndexed { i, f -> Proposed(f.sourceFrameIds.first(), "fact", f.text, f.type, if (b.ok[i]) "OK" else "NEEDS_REVIEW") } +
-            b.captions.map { Proposed(it.frameId, "caption", it.caption, "caption", "OK") }
+        // Codex r10: captions are never proposed or saved from a stored run: the run table keeps no proof the photo reached the model (ExtractSave refuses
+        // a caption without it), and a caption is the row that lets retention delete the photo.
+        val rows = if (b == null) emptyList() else b.facts.mapIndexed { i, f -> Proposed(f.sourceFrameIds.first(), "fact", f.text, f.type, if (b.ok[i]) "OK" else "NEEDS_REVIEW") }
         return Proposal(l.refusal, saved, rows)
     }
 
@@ -112,13 +113,13 @@ class CanvasRunSave(
         testAfterLoad?.invoke()
         l.refusal?.let { PcLog.i(TAG, "canvas save refused"); return Result.NotSaveable(it) }
         val b = l.built ?: return Result.NothingToSave
-        if (b.facts.isEmpty() && b.captions.isEmpty()) return Result.NothingToSave
+        if (b.facts.isEmpty()) return Result.NothingToSave
         val prefix = PREFIX + runId + "_"
         var needReview = 0
         val res = try {
             gate().write {
                 ExtractSave.saveExtraction(
-                    app, prefix, ExtractOutput(b.facts, captions = b.captions, provenance = true), b.frames, claims = null,
+                    app, prefix, ExtractOutput(b.facts, captions = emptyList(), provenance = true), b.frames, claims = null,
                     tier = MemoryTier.SHORT, reviewState = ReviewState.NEEDS_REVIEW, generation = gen, nowMs = clock(),
                     inTransaction = { saved ->
                         if (db.canvasSlice3Dao().meta(key) != null) throw Marked() // a concurrent save won: roll this one back
@@ -159,7 +160,7 @@ class CanvasRunSave(
                 Result.Saved(res.memories.size, needReview)
             }
             ExtractSaveResult.Wiped -> Result.Wiped
-            ExtractSaveResult.StaleClaim -> Result.NothingToSave
+            ExtractSaveResult.StaleClaim, ExtractSaveResult.Undelivered -> Result.NothingToSave
         }
     }
 

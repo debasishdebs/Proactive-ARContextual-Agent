@@ -46,6 +46,8 @@ class RunContext(
     val now: () -> LocalDateTime = LocalDateTime::now,
     /** The class of every model call the executors make: EXPERIMENT for runs and Shadow, the live class when the interpreter replaces extraction. */
     val callClass: CallClass = CallClass.EXPERIMENT,
+    /** Codex r10: the run's photo liveness, attached to every model call that carries a photo (null = such a call is refused by the router). */
+    val liveness: com.rokid.context.model.PhotoLiveness? = null,
 )
 
 interface NodeExecutor {
