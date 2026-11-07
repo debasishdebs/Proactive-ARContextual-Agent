@@ -39,7 +39,7 @@ class AiGraph(
     val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, power = power)
     val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
         com.rokid.context.memory.retrieval.LexicalRetriever(memory.db.retrievalDao()),
-        com.rokid.context.memory.retrieval.SemanticRetriever(memory.spaces, memory.vectorIndex, embedders),
+        com.rokid.context.memory.retrieval.SemanticRetriever(memory.spaces, memory.vectorIndex, embedders).apply { embedBound = { bindings.get(Role.EMBED) != null } },
         memory.db.memoryViewDao(),
     )
     val seeder = EndpointSeeder(endpoints, bindings, seedState)

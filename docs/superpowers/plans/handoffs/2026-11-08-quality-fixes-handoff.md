@@ -32,9 +32,9 @@ ran and did nothing because nothing was bound. It is not (3) either: there is no
 Either way `EmbeddingWorker` is enqueued on the binding change, builds a BUILDING space, then swaps it to ACTIVE once every memory has a vector.
 
 ### Fixes (code)
-- `SemanticRetriever.searchOrOff` returns the reason: `SemanticOff` = NO_INDEX, INDEX_BUILDING, INDEX_STALE, MODEL_CHANGED (the endpoint moved, so
+- `SemanticRetriever.searchOrOff` returns the reason: `SemanticOff` = NO_MODEL (no EMBED binding; codex r9 P2-6), NO_INDEX (bound, index not built yet), INDEX_BUILDING, INDEX_STALE, MODEL_CHANGED (the endpoint moved, so
   `forSpace` is null), QUERY_FAILED. `RetrievalResult.semanticOff` carries it, and it is set exactly when `semanticUnavailable` is.
-- Ask: `AskOutcome.Answered.notice` = "Semantic search is off: <reason>. This answer used keyword matches only." Home shows it under the answer
+- Ask: `AskOutcome.Answered.notice` = "Search used keyword matching: <reason>" (codex r9 P2-5: describes the search fallback only, never the answer's provenance) Home shows it under the answer
   (`reply`). It is never sent to the model, never stored and never mirrored to the HUD.
 - Home banner: new `IndexState.EMBED_NOT_SET` = "Semantic search is off · no Embeddings model", with **Set up** linking to Model endpoints. It does
   not show when the user chose Lexical mode.
@@ -77,9 +77,9 @@ Either way `EmbeddingWorker` is enqueued on the binding change, builds a BUILDIN
 
 ## Verification (the controller installs and reruns)
 1. Rebuild and install. On Home, the banner "Semantic search is off · no Embeddings model" should show (mode Hybrid). Ask something: the
-   "Semantic search is off: no Embeddings model is set..." line should appear under the answer.
+   "Search used keyword matching: no Embeddings model is set..." line should appear under the answer.
 2. `tools/quality-eval.sh retrieval --out <file> -n 100 --seed 7` **before** binding a model: SEMANTIC and HYBRID should still show `semantic unavailable on 200 of 200`, now
-   with `(reasons {'NO_INDEX': 200})`. That proves the diagnosis.
+   with `(reasons {'NO_MODEL': 200}; NO_INDEX before codex r9 P2-6)`. That proves the diagnosis.
 3. Bind Embeddings (step A.1 or A.2), keep the phone on a charger until Settings > Retrieval shows the index ACTIVE, then rerun the same command.
    Expected: SEMANTIC and HYBRID `mode used {'SEMANTIC': 200}` / `{'HYBRID': 200}`, `semantic unavailable on 0 of 200`, and HYBRID paraphrase
    R@5 / MRR@10 above LEXICAL's 0.900 / 0.785 (the tfidf rows can stay about the same). On the real asks: `fallback` falls from 5 of 5, and the

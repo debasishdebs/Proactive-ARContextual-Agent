@@ -168,4 +168,17 @@ class MemoryRetrieverTest {
         assertEquals(setOf("old0", "old1", "old2", "old3", "old4"), bound.map { it.id }.toSet())
         assertEquals(memories.recent(30).map { it.id }, memories.recent(30, null).map { it.id })
     }
+
+    // codex r9 P2-6: no index with no EMBED binding says "set up a model"; no index with a binding says "not built yet", never "no model is set"
+    @Test fun noModelAndNoIndexAreToldApart() = runBlocking {
+        mem("milk", "milk carton")
+        val unbound = SemanticRetriever(spaces, BruteForceVectorIndex(db.embeddingDao())) { null }.apply { embedBound = { false } }
+        val r1 = MemoryRetriever(LexicalRetriever(db.retrievalDao()), unbound, db.memoryViewDao()).retrieve("milk", RetrievalSettings(mode = RetrievalMode.HYBRID), now)
+        assertEquals(SemanticOff.NO_MODEL, r1.semanticOff); assertTrue(r1.semanticOff!!.text.contains("no Embeddings model is set"))
+        val bound = SemanticRetriever(spaces, BruteForceVectorIndex(db.embeddingDao())) { null }.apply { embedBound = { true } }
+        val r2 = MemoryRetriever(LexicalRetriever(db.retrievalDao()), bound, db.memoryViewDao()).retrieve("milk", RetrievalSettings(mode = RetrievalMode.HYBRID), now)
+        assertEquals(SemanticOff.NO_INDEX, r2.semanticOff)
+        assertFalse("a bound model is never told it is missing", r2.semanticOff!!.text.contains("no Embeddings model is set"))
+        assertTrue(r2.semanticOff!!.text.contains("not built yet")); assertTrue("names the next step", r2.semanticOff!!.text.contains("test the Embeddings endpoint"))
+    }
 }

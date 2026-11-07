@@ -27,6 +27,7 @@ import com.rokid.context.memory.retrieval.RetrievalSettings
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -77,9 +78,11 @@ class AnswerServiceTest {
         assertEquals("p-note", r.proposalId)
         assertEquals(listOf<ProposedAction>(ProposedAction.NoteAdd("the car is on level 3")), actions)
         assertEquals("Noted.", mem.asks.byId(r.askId)!!.answer)
-        // 2026-11-08: no embedding index, so the ask says semantic search is off and why; the stored answer stays the model's own text
-        assertEquals(AskActions.semanticNotice(com.rokid.context.memory.retrieval.SemanticOff.NO_INDEX), r.notice)
-        assertTrue(r.notice!!, r.notice!!.startsWith(AskActions.SEMANTIC_OFF_PREFIX))
+        // 2026-11-08: no Embeddings binding (so no index): the ask says its SEARCH used keyword matching and why; the stored answer stays the model's own text.
+        // Codex r9 P2-5/P2-6: it names the search fallback only (never "this answer used ..."), and a missing binding is NO_MODEL, not NO_INDEX.
+        assertEquals(AskActions.semanticNotice(com.rokid.context.memory.retrieval.SemanticOff.NO_MODEL), r.notice)
+        assertTrue(r.notice!!, r.notice!!.startsWith(AskActions.SEARCH_FALLBACK_PREFIX))
+        assertFalse("never claims the answer's provenance", r.notice!!.contains("answer"))
         assertEquals("an action command is not a no-match", 0, reprocess)
     }
 

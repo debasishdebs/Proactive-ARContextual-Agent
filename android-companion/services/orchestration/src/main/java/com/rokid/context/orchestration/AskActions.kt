@@ -30,7 +30,7 @@ sealed interface AskOutcome {
         val photoFrameId: String? = null, val photoAtMs: Long? = null,
         /** v0.9.8 slice C: where the published Query flow sends the answer; null = the surface that asked (the built-in flow). */
         val route: com.rokid.context.core.model.DeliveryRoute? = null,
-        /** 2026-11-08: a status line shown with the answer on the phone (never sent to the model, never stored): "Semantic search is off: <reason>". */
+        /** 2026-11-08: a status line shown with the answer on the phone (never sent to the model, never stored): "Search used keyword matching: <reason>" (codex r9 P2-5: the search, never the answer's provenance). */
         val notice: String? = null,
     ) : AskOutcome
     data class Failed(val message: String) : AskOutcome
@@ -76,11 +76,15 @@ object AskActions {
     const val REVIEW_REASON = "User marked an answer unhelpful"
     /** G7 ruling (2026-10-15): Battery Saver pauses user asks too. Home shows it, and so does the HUD toast. */
     const val BATTERY_SAVER = "Battery Saver is on \u2014 asks are paused"
-    const val SEMANTIC_OFF_PREFIX = "Semantic search is off: "
+    const val SEARCH_FALLBACK_PREFIX = "Search used keyword matching: "
 
-    /** The visible status of an ask whose retrieval fell back to keywords only; null when semantic search ran (or lexical was the user's choice). */
+    /**
+     * The visible status of an ask whose memory SEARCH fell back to keyword matching; null when semantic search ran (or lexical was the user's choice).
+     * Codex r9 P2-5: it describes the search only. The answer can also draw on the newest memories, recent context or photos (or need no memory), so it
+     * never claims where the answer came from.
+     */
     fun semanticNotice(off: com.rokid.context.memory.retrieval.SemanticOff?): String? =
-        off?.let { SEMANTIC_OFF_PREFIX + it.text + ". This answer used keyword matches only." }
+        off?.let { SEARCH_FALLBACK_PREFIX + it.text }
 
     /** Built on IO: the first ask reads SharedPreferences (RetrievalSettingsStore) and the key store, never on Main. */
     suspend fun ask(context: Context, question: String, nowMs: Long = System.currentTimeMillis()): AskOutcome =

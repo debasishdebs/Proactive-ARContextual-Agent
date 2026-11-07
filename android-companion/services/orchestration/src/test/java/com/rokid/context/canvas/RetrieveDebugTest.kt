@@ -66,7 +66,7 @@ class RetrieveDebugTest {
         assertEquals(setOf("m1", "m2"), old.hits.map { it.memoryId }.toSet())
         val sem = rd().run("milk", RetrievalMode.SEMANTIC, null, null, false) as RetrieveDebug.Result.Ok
         assertTrue(sem.mode == "SEMANTIC" || sem.mode == "LEXICAL") // no embedder in a test: it says so
-        if (sem.mode != "SEMANTIC") { assertTrue(sem.semanticUnavailable); assertEquals("NO_INDEX", sem.semanticOff) } // 2026-11-08: the reason token
+        if (sem.mode != "SEMANTIC") { assertTrue(sem.semanticUnavailable); assertEquals("NO_MODEL", sem.semanticOff) } // 2026-11-08: the reason token (codex r9 P2-6: no EMBED binding = NO_MODEL)
         assertEquals(0, modelCalls.get())
     }
 

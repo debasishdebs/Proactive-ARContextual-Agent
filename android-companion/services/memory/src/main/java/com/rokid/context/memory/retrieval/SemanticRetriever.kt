@@ -15,6 +15,12 @@ class SemanticRetriever(
     private val embedders: SpaceEmbedderProvider,
 ) {
     /**
+     * Codex r9 P2-6: whether an EMBED binding exists (no index + no binding = [SemanticOff.NO_MODEL]; no index + a binding = [SemanticOff.NO_INDEX]).
+     * A property, not a constructor parameter, so callers that pass [embedders] as a trailing lambda keep compiling. Default: bound.
+     */
+    var embedBound: suspend () -> Boolean = { true }
+
+    /**
      * null = unavailable, so callers use lexical (R-51): no ACTIVE space, no embedder, a vault/Keystore failure, a
      * failed or wrong-size or unusable (zero / non-finite) query vector, or an index failure. Cancellation propagates.
      */
@@ -28,7 +34,7 @@ class SemanticRetriever(
         if (space == null) {
             SemanticSearch(null, when {
                 current?.state == SpaceState.BUILDING || spaces.building() != null -> SemanticOff.INDEX_BUILDING // a first build or a rebuild
-                current == null -> SemanticOff.NO_INDEX
+                current == null -> if (embedBound()) SemanticOff.NO_INDEX else SemanticOff.NO_MODEL
                 else -> SemanticOff.INDEX_STALE
             })
         } else {
@@ -59,8 +65,10 @@ data class SemanticSearch(val hits: List<Hit>?, val off: SemanticOff?)
  * "Semantic search is off: ".
  */
 enum class SemanticOff(val text: String) {
-    /** No embedding space was ever built: in practice no Embeddings model is set (the index job is idle without one). */
-    NO_INDEX("no Embeddings model is set. Download Nomic Embed in Settings > AI > On-device models and use it for Embeddings, or bind an embeddings endpoint in Settings > Model endpoints > Embeddings"),
+    /** No Embeddings model is bound (and so no index was ever built): the next step is to set one up. */
+    NO_MODEL("no Embeddings model is set. Download Nomic Embed in Settings > AI > On-device models and use it for Embeddings, or bind an embeddings endpoint in Settings > Model endpoints > Embeddings"),
+    /** An Embeddings model is bound but no index exists yet: the first build has not run, or its first probe of the model failed (codex r9 P2-6). */
+    NO_INDEX("the search index is not built yet. It builds in the background (on-device: only while charging or above 70 % battery); if it never appears, test the Embeddings endpoint in Settings > Model endpoints > Embeddings"),
     INDEX_BUILDING("the search index is still being built (on-device: only while charging or above 70 % battery)"),
     INDEX_STALE("the search index needs a rebuild (Settings > Retrieval > Rebuild)"),
     MODEL_CHANGED("the Embeddings endpoint changed since the index was built; it rebuilds in the background"),
