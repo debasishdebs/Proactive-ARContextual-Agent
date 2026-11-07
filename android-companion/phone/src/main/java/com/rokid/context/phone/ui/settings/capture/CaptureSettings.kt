@@ -94,6 +94,8 @@ data class CaptureSettingsUiState(
     /** Settings > Capture > Glasses watchdog (minutes of silence before it acts; seconds between its checks). */
     val watchdogSilentMin: Int = CaptureTimingStore.DEFAULT_SILENT_MIN,
     val watchdogTickSec: Int = CaptureTimingStore.DEFAULT_TICK_SEC,
+    /** Settings > Capture > Stop when the glasses are away: minutes (5..120), 0 = Never. */
+    val autoStopMin: Int = com.rokid.context.phone.hub.BackgroundPolicy.AUTO_STOP_DEFAULT_MIN,
     /** Settings > Capture > Forget: seconds around a forgotten photo whose marks and Moments go with it. */
     val forgetRadiusSec: Int = CaptureTimingStore.DEFAULT_FORGET_RADIUS_SEC,
     /** Settings > Capture > Forget: how much a Forget photo / fact / Moment removes (default Photo). */
@@ -136,8 +138,8 @@ class CaptureSettingsViewModel(
 ) : ViewModel() {
     private val sceneState = MutableStateFlow(com.rokid.context.canvas.moment.SceneCadence.DEFAULT_PER_DAY)
     init { viewModelScope.launch { runCatching { sceneState.value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { sceneRebuilds.perDay() } } } }
-    private class Timings(val silent: Int, val tick: Int, val radius: Int, val scenes: Int, val scope: com.rokid.context.memory.forget.ForgetScope, val dev: Boolean)
-    private val timings = combine(timing.silentMin, timing.tickSec, timing.forgetRadiusSec, sceneState, combine(timing.forgetScope, timing.developerMode) { s, dev -> s to dev }) { a, b, c, d, e -> Timings(a, b, c, d, e.first, e.second) }
+    private class Timings(val autoStop: Int, val silent: Int, val tick: Int, val radius: Int, val scenes: Int, val scope: com.rokid.context.memory.forget.ForgetScope, val dev: Boolean)
+    private val timings = combine(combine(timing.silentMin, timing.autoStopMin) { a, b -> a to b }, timing.tickSec, timing.forgetRadiusSec, sceneState, combine(timing.forgetScope, timing.developerMode) { s, dev -> s to dev }) { a, b, c, d, e -> Timings(a.second, a.first, b, c, d, e.first, e.second) }
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?, tol: Int = tolerance.pct.value): CaptureSettingsUiState {
         val n = h.normalized()
         return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active, windowMinValidPct = tol, markPhotoHoldMs = n.markPhotoHoldMs)
@@ -145,7 +147,7 @@ class CaptureSettingsViewModel(
     private val wear = combine(wearUnknownSince, ticker) { since, _ -> since }
     val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear, tolerance.pct, timings) { ui, since, tol, t ->
         ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()), windowMinValidPct = tol,
-            watchdogSilentMin = t.silent, watchdogTickSec = t.tick, forgetRadiusSec = t.radius, sceneRebuildsPerDay = t.scenes, forgetScope = t.scope, developerMode = t.dev)
+            watchdogSilentMin = t.silent, autoStopMin = t.autoStop, watchdogTickSec = t.tick, forgetRadiusSec = t.radius, sceneRebuildsPerDay = t.scenes, forgetScope = t.scope, developerMode = t.dev)
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN, null))
 
@@ -184,6 +186,7 @@ class CaptureSettingsViewModel(
     fun setWindowTolerance(pct: Int) = tolerance.set(pct)
     fun setWatchdogSilentMin(min: Int) = timing.setSilentMin(min)
     fun setWatchdogTickSec(sec: Int) = timing.setTickSec(sec)
+    fun setAutoStopMin(min: Int) = timing.setAutoStopMin(min)
     fun setForgetRadiusSec(sec: Int) = timing.setForgetRadiusSec(sec)
     fun setForgetScope(scope: com.rokid.context.memory.forget.ForgetScope) = timing.setForgetScope(scope)
     fun setSceneRebuilds(perDay: Int) {
@@ -200,9 +203,11 @@ fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {}, onMarkPhotoHold: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {}, onWindowTolerance: (Int) -> Unit = {},
-    onWatchdogSilent: (Int) -> Unit = {}, onWatchdogTick: (Int) -> Unit = {}, onForgetRadius: (Int) -> Unit = {}, onForgetScope: (com.rokid.context.memory.forget.ForgetScope) -> Unit = {}, onSceneRebuilds: (Int) -> Unit = {},
+    onWatchdogSilent: (Int) -> Unit = {}, onWatchdogTick: (Int) -> Unit = {}, onAutoStop: (Int) -> Unit = {}, onForgetRadius: (Int) -> Unit = {}, onForgetScope: (com.rokid.context.memory.forget.ForgetScope) -> Unit = {}, onSceneRebuilds: (Int) -> Unit = {},
     onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {}, onUseSettings: () -> Unit = {}, onOpenSignals: () -> Unit = {},
     onWearParkEnabled: (Boolean) -> Unit = {}, onWearParkUnknown: (Int) -> Unit = {}, onWearParkWorn: (Int) -> Unit = {}, onOpenHiRokid: (() -> Unit)? = null,
+    /** Run in the background card: already exempt from battery optimization, and the user's tap on the button (the destination starts the system dialog). */
+    batteryExempt: Boolean = false, onRequestBattery: () -> Unit = {},
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
     val longWork = state.workMinutes > 45
@@ -314,6 +319,8 @@ fun CaptureSettingsScreen(
                 NoticeText("More often = more compute.", tag = "scene_rebuilds_note")
             }
         }
+        item { AutoStopCard(state.autoStopMin, onAutoStop) }
+        item { BackgroundRunCard(batteryExempt, onRequestBattery) }
         item {
             SettingsCard {
                 androidx.compose.foundation.layout.Box(Modifier.testTag("signals_link")) {

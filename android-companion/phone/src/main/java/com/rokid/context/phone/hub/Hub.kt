@@ -369,6 +369,8 @@ class Hub(
     fun standingDown(): Boolean = standDown.active
     /** The Home banner's watchdog line ("Glasses not connected · last heard 7 min ago"), null = nothing to say. */
     fun setWatchdogNote(note: String?) { if (_state.value.watchdogNote != note) set { it.copy(watchdogNote = note) } }
+    /** AutoStop's line ("Stopped: glasses not worn since 14:05. Tap to start"); the banner's tap is a Reconnect, which starts the hub. Null = none. */
+    fun setAutoStopNote(note: String?) { if (_state.value.autoStopNote != note) set { it.copy(autoStopNote = note) } }
 
     /** Phone clock when the current glasses session began (a `pc_wear` stamped before it is stale; the glasses ignore it). */
     private var sessionStartMs = 0L

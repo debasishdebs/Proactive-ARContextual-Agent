@@ -153,12 +153,20 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         val ctx = androidx.compose.ui.platform.LocalContext.current
         val hiRokid = remember(ctx) { com.rokid.context.phone.ui.settings.capture.WearGuide.launchIntent(ctx) }
+        var batteryExempt by remember { mutableStateOf(com.rokid.context.phone.hub.AutoStopWake.exempt(ctx)) }
+        val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+        androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+            val o = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) batteryExempt = com.rokid.context.phone.hub.AutoStopWake.exempt(ctx) }
+            lifecycleOwner.lifecycle.addObserver(o); onDispose { lifecycleOwner.lifecycle.removeObserver(o) }
+        }
         CaptureSettingsScreen(state, onBack = back, onModeChoice = vm::setModeChoice, onBatteryTarget = vm::setBatteryTarget, onPauseWhenPhoneInUse = vm::setPauseWhenPhoneInUse, onInterval = vm::setInterval, onQuickLook = vm::setQuickLook, onMarkPhotoHold = vm::setMarkPhotoHold,
             onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onCaptureCue = vm::setCaptureCue, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace, onWindowTolerance = vm::setWindowTolerance,
-            onWatchdogSilent = vm::setWatchdogSilentMin, onWatchdogTick = vm::setWatchdogTickSec, onForgetRadius = vm::setForgetRadiusSec, onForgetScope = vm::setForgetScope, onSceneRebuilds = vm::setSceneRebuilds,
+            onWatchdogSilent = vm::setWatchdogSilentMin, onWatchdogTick = vm::setWatchdogTickSec, onAutoStop = vm::setAutoStopMin, onForgetRadius = vm::setForgetRadiusSec, onForgetScope = vm::setForgetScope, onSceneRebuilds = vm::setSceneRebuilds,
             onWorkRestEnabled = vm::setWorkRestEnabled, onMotionLabel = vm::setMotionLabel, onOpenContext = { nav.navigate(Routes.SETTINGS_CONTEXT) }, onUseSettings = vm::useSettings, onOpenSignals = { nav.navigate(Routes.SETTINGS_SIGNALS) },
             onWearParkEnabled = vm::setWearParkEnabled, onWearParkUnknown = vm::setWearParkUnknownSec, onWearParkWorn = vm::setWearParkWornSec,
-            onOpenHiRokid = hiRokid?.let { i -> { runCatching { ctx.startActivity(i) } } })
+            onOpenHiRokid = hiRokid?.let { i -> { runCatching { ctx.startActivity(i) } } },
+            batteryExempt = batteryExempt,
+            onRequestBattery = { runCatching { ctx.startActivity(com.rokid.context.phone.ui.settings.capture.BackgroundRunModel.requestIntent(ctx.packageName).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) } })
     }
 
     composable(Routes.SETTINGS_SIGNALS) {

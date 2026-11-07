@@ -31,6 +31,8 @@ data class HubState(
     val iconBlocked: Boolean = false,
     /** The watchdog's user-visible line (link down / app not running / stopped by you, with the last-heard age); null = none. */
     val watchdogNote: String? = null,
+    /** AutoStop: "Stopped: glasses not worn since HH:mm. Tap to start" while the hub has stopped itself; wins over [watchdogNote]. */
+    val autoStopNote: String? = null,
 ) {
     /**
      * Diagnostics line "Rokid closed the app N times (last gap Xs; M unverified; K other force-stops)"; null until the glasses
@@ -52,7 +54,7 @@ data class HubState(
         bufferedFrames = bufferedFrames,
         lastFrameAtMs = lastFrameAtMs,
         frame = lastFrame,
-        note = watchdogNote,
+        note = autoStopNote ?: watchdogNote,
     )
 }
 

@@ -76,7 +76,7 @@ class ContextHubService : Service() {
         val resume = intent?.takeIf { it.hasExtra(EXTRA_RESUME) }?.getLongExtra(EXTRA_RESUME, 0)
         if (!running) {
             // Nothing needs the hub (glasses link off or unpaired, no context source, no ask): a sticky restart in the background does not bring it back. A tapped Reconnect forces a start.
-            val needed = intent?.getBooleanExtra(EXTRA_FORCE, false) == true || hubNeededNow(this)
+            val needed = intent?.getBooleanExtra(EXTRA_FORCE, false) == true || intent?.getBooleanExtra(EXTRA_WAKE, false) == true || hubNeededNow(this)
             if (stopsOnBackgroundStart(startedInFront(intent), needed)) { stopSelf(); return START_NOT_STICKY }
             if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
             running = true
@@ -141,6 +141,9 @@ class ContextHubService : Service() {
         _micHeld.value = false; _locationHeld.value = false
         if (running) {
             running = false
+            // Not our own stop (the watchdog, leaving the front, the AutoStop policy all go through [stop]): the user stopped it by hand (the system's running-apps list). It stays stopped until the user starts it again.
+            if (!expectedStop) { PrefsAutoStopStore.of(this).setManualStop(true); PcLog.i(TAG, "manual_stop") }
+            expectedStop = false
             watcher?.cancel(); closedWatcher?.cancel()
             ClosedNoticeReceiver.notice = null
             cancelClosedNotice(this)
@@ -165,6 +168,10 @@ class ContextHubService : Service() {
         const val EXTRA_FORCE = "com.rokid.context.hub.FORCE"
         private const val EXTRA_RESUME = "com.rokid.context.hub.RESUME"
         @Volatile private var running = false
+        /** [stop] was asked by the app itself: the next onDestroy is not a manual stop. */
+        @Volatile private var expectedStop = false
+        /** A background start by the wake path ([BackgroundPolicy.wakeDue], needs the battery exemption): starts although [hubNeededNow] says no, but is not a user start. */
+        private const val EXTRA_WAKE = "com.rokid.context.hub.WAKE"
         @Volatile private var lastText = READY
         @Volatile private var lastPaused = false
         /** Notification action intents (handled in [onStartCommand], on the pause control's IO). */
@@ -290,17 +297,19 @@ class ContextHubService : Service() {
 
         /**
          * Idempotent: called on every activity resume ([resume] numbers it) and on Reconnect, so always from the front. Nothing starts when nothing needs
-         * the hub (see [BackgroundPolicy]) unless [force] (a tapped Reconnect).
+         * the hub (see [BackgroundPolicy]) unless [force] (a user start: a tapped Reconnect or the app opened; it ends a manual stop and an auto stop) or [wake]
+         * (the AutoStop wake path: only with the battery exemption, never a user start). True = a start was issued (Android 12+ may still refuse a background one).
          */
-        fun ensureRunning(context: Context, resume: Long? = null, force: Boolean = false) {
-            if (!force && !hubNeededNow(context)) return
+        fun ensureRunning(context: Context, resume: Long? = null, force: Boolean = false, wake: Boolean = false): Boolean {
+            if (force) PrefsAutoStopStore.of(context).userStarted()
+            if (!force && !wake && !hubNeededNow(context)) return false
             val granted = Build.VERSION.SDK_INT < 31 ||
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-            if (!shouldStart(running, canStart(Build.VERSION.SDK_INT, granted))) return
-            val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true).putExtra(EXTRA_FORCE, force)
+            if (!shouldStart(running, canStart(Build.VERSION.SDK_INT, granted))) return false
+            val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true).putExtra(EXTRA_FORCE, force).putExtra(EXTRA_WAKE, wake)
             resume?.let { start.putExtra(EXTRA_RESUME, it) }
-            runCatching { context.startForegroundService(start) }
-                .onFailure { PcLog.w(TAG, "start refused: ${it.javaClass.simpleName}") }
+            return runCatching { context.startForegroundService(start) }
+                .onFailure { PcLog.w(TAG, "start refused: ${it.javaClass.simpleName}") }.isSuccess
         }
 
         /** A start is in front only when its intent says so; a sticky restart's null intent is the background. */
@@ -343,7 +352,7 @@ class ContextHubService : Service() {
                 .onFailure { PcLog.w(TAG, "refresh refused: ${it.javaClass.simpleName}") }
         }
 
-        fun stop(context: Context) { context.stopService(Intent(context, ContextHubService::class.java)) }
+        fun stop(context: Context) { if (running) expectedStop = true; context.stopService(Intent(context, ContextHubService::class.java)) }
 
         /** Nothing needs the hub ([needed] false): only a start from the front runs it. */
         internal fun stopsOnBackgroundStart(inFront: Boolean, needed: Boolean) = !inFront && !needed

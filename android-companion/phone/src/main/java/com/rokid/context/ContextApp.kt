@@ -90,5 +90,7 @@ class ContextApp : Application() {
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
         com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)
+        // A hub that stopped itself (glasses away) may start again when the platform starts this process (a 15 min job) AND the app is exempt from battery optimization; never otherwise, never after a manual stop.
+        runCatching { com.rokid.context.phone.hub.AutoStopWake.onProcessStart(this) }
     }
 }

@@ -54,6 +54,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import android.Manifest
 
+/** A context source no longer keeps the background hub alive by itself ([com.rokid.context.phone.hub.BackgroundPolicy.hubNeeded]). */
+const val WATCH_PAUSE_NOTE = "Watch signals pause while the glasses are off."
+
 /** One phone or intent switch: [on] is the stored opt-in, [status] what the hub made of it, [denied] a permission answer of "no". */
 data class SourceRow(val on: Boolean = false, val status: SourceStatus = SourceStatus.OFF, val denied: Boolean = false, val permissionMissing: Boolean = false)
 
@@ -283,6 +286,7 @@ fun ContextSourcesScreen(
                 Text("Watch and photos", style = MaterialTheme.typography.titleMedium)
                 SwitchRow("Watch app (Galaxy Watch)", "Motion from the Proactive Context watch app. Off until you turn it on.", state.watchOn, { onSource("watch_app", it) }, tag = "ctx_watch_app")
                 if (state.watchOn && state.watchStatus.text.isNotEmpty()) NoticeText(state.watchStatus.text, tag = "ctx_watch_status")
+                NoticeText(WATCH_PAUSE_NOTE, tag = "ctx_watch_pause_note")
                 if (state.watchOn) {
                     var checking by remember { mutableStateOf(false) }
                     TextButton(onClick = { checking = !checking }, modifier = Modifier.testTag("ctx_watch_check")) { Text("Check the watch link") }

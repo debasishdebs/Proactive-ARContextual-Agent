@@ -22,16 +22,21 @@ class CaptureTimingStore(private val prefs: SharedPreferences? = null, val devel
     private val silent = MutableStateFlow(clean(prefs?.getInt(KEY_SILENT_MIN, DEFAULT_SILENT_MIN) ?: DEFAULT_SILENT_MIN, SILENT_MIN_PRESETS, DEFAULT_SILENT_MIN))
     private val tick = MutableStateFlow(clean(prefs?.getInt(KEY_TICK_SEC, DEFAULT_TICK_SEC) ?: DEFAULT_TICK_SEC, TICK_SEC_PRESETS, DEFAULT_TICK_SEC))
     private val radius = MutableStateFlow(clean(prefs?.getInt(KEY_FORGET_RADIUS_SEC, DEFAULT_FORGET_RADIUS_SEC) ?: DEFAULT_FORGET_RADIUS_SEC, FORGET_RADIUS_SEC_PRESETS, DEFAULT_FORGET_RADIUS_SEC))
+    private val autoStop = MutableStateFlow(readAutoStop(prefs))
     private val scope = MutableStateFlow(readScope(prefs))
     /** What is STORED (kept while Developer mode is off, so switching it on again restores the choice). */
     val storedForgetScope: StateFlow<ForgetScope> = scope.asStateFlow()
     /** What the app does and Settings shows: Moment and Scene are EXPERIMENTAL until a worn pass, so only with Developer mode on; otherwise Photo, whatever is stored. */
     val forgetScope: kotlinx.coroutines.flow.Flow<ForgetScope> = kotlinx.coroutines.flow.combine(scope, developerMode) { s, dev -> effective(s, dev) }
+    /** Minutes the glasses may be off-head or disconnected before the hub stops itself (5..120, 0 = Never; [com.rokid.context.phone.hub.BackgroundPolicy.autoStop]). */
+    val autoStopMin: StateFlow<Int> = autoStop.asStateFlow()
     val silentMin: StateFlow<Int> = silent.asStateFlow()
     val tickSec: StateFlow<Int> = tick.asStateFlow()
     val forgetRadiusSec: StateFlow<Int> = radius.asStateFlow()
 
     fun setSilentMin(v: Int) { val c = clean(v, SILENT_MIN_PRESETS, DEFAULT_SILENT_MIN); prefs?.edit()?.putInt(KEY_SILENT_MIN, c)?.apply(); silent.value = c }
+    fun setAutoStopMin(v: Int) { val c = com.rokid.context.phone.hub.BackgroundPolicy.cleanAutoStopMin(v); prefs?.edit()?.putInt(KEY_AUTO_STOP_MIN, c)?.apply(); autoStop.value = c }
+    fun autoStopMinNow(): Int = autoStop.value
     fun setTickSec(v: Int) { val c = clean(v, TICK_SEC_PRESETS, DEFAULT_TICK_SEC); prefs?.edit()?.putInt(KEY_TICK_SEC, c)?.apply(); tick.value = c }
     fun setForgetRadiusSec(v: Int) { val c = clean(v, FORGET_RADIUS_SEC_PRESETS, DEFAULT_FORGET_RADIUS_SEC); prefs?.edit()?.putInt(KEY_FORGET_RADIUS_SEC, c)?.apply(); radius.value = c }
 
@@ -56,6 +61,7 @@ class CaptureTimingStore(private val prefs: SharedPreferences? = null, val devel
         const val KEY_SILENT_MIN = "watchdog_silent_min"
         const val KEY_TICK_SEC = "watchdog_tick_sec"
         const val KEY_FORGET_RADIUS_SEC = "forget_radius_sec"
+        const val KEY_AUTO_STOP_MIN = "auto_stop_min"
         const val KEY_FORGET_SCOPE = "forget_scope"
         const val DEFAULT_SILENT_MIN = 3
         const val DEFAULT_TICK_SEC = 150
@@ -63,6 +69,10 @@ class CaptureTimingStore(private val prefs: SharedPreferences? = null, val devel
         val SILENT_MIN_PRESETS = listOf(2, 3, 5, 10)
         val TICK_SEC_PRESETS = listOf(60, 150, 300)
         val FORGET_RADIUS_SEC_PRESETS = listOf(5, 10, 15, 30)
+
+        private fun readAutoStop(prefs: SharedPreferences?): Int = try {
+            com.rokid.context.phone.hub.BackgroundPolicy.cleanAutoStopMin(prefs?.getInt(KEY_AUTO_STOP_MIN, com.rokid.context.phone.hub.BackgroundPolicy.AUTO_STOP_DEFAULT_MIN) ?: com.rokid.context.phone.hub.BackgroundPolicy.AUTO_STOP_DEFAULT_MIN)
+        } catch (e: ClassCastException) { com.rokid.context.phone.hub.BackgroundPolicy.AUTO_STOP_DEFAULT_MIN }
 
         private fun readScope(prefs: SharedPreferences?): ForgetScope = try { ForgetScope.parse(prefs?.getString(KEY_FORGET_SCOPE, null)) } catch (e: ClassCastException) { ForgetScope.PHOTO }
 
