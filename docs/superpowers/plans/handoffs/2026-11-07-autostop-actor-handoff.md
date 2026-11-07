@@ -84,7 +84,41 @@ Branch `feat/v099-watch`, worktree `pca-v098`. This answers Codex review 4 (five
   - 100 seeds of watchdog-ladder interleavings with replay and persisted == in-memory.
 - **Full `:phone:testDebugUnitTest` run twice:** see the commit message.
 
-## 6. Open points
+## 6. Codex review 5 (2026-11-08): five P2s, each first reproduced by a test, then fixed in the same design
+
+Tests: `AutoStopReview5Test`. With the fixes temporarily reverted, 9 of its 12 tests failed:
+- the cold-resume test passed, because that reverted build did not revert the resume path;
+- the engine-load test passed, because it tests the engine only;
+- the `ContextApp` scan passed, because it reads source the reverts did not touch. Run against HEAD's `ContextApp` it finds 6 eager store loads.
+
+1. **The confirm commits nothing.**
+   - The mark now carries the whole persisted outcome of the stop: the reason, the since time, the next rung, and the probe used up. `PendingStop` remembers the previous `nextWakeAt` and probe, so a cancel can revert them.
+   - `ConfirmStop` emits `StopHub` only when the pure decision, over inputs sampled for that very event (after everything queued during the mark's commit), still says stop with the marked reason, and nothing persisted changes. So no commit can separate the decision from the stop.
+   - A changed reason is re-marked and confirmed again.
+   - A `UserStarted` or a foreground return queued during the commit cancels the stop.
+2. **`UserStarted` resets `awaySince`** (to unknown, so the next look starts the away window). The full N applies after the front hold.
+3. **A failed `commit()` is not durable.**
+   - `save` returns Boolean for both stores. In the engine, a failed save drops the transition: its state is not published and its effects never run. The failure becomes an event, `PersistFailed(event, attempt)`, reduced against the unchanged state, which may not change the persisted part.
+   - Some events are retried on 250 ms, 1 s, 4 s, 15 s and 60 s (bounded): UserStarted, ManualStopped, HubForeground, WakeResult, ProcessStarted, and ConfirmStop (re-sampled). An evaluation is not retried; the controller's 60 s recheck covers it.
+   - `PersistRecovered` follows the next successful save.
+   - Safe behaviour while saves fail:
+     - a stop needs a durable mark, so the hub is never stopped;
+     - `visible()` reports neither stop flag;
+     - the watchdog still starts a down hub, unsaved, at most once per `MIN_HUB_START_MS` (tracked in memory);
+     - `persist_failed` is logged at most once a minute.
+4. **An issued wake is not a started hub.**
+   - `AutoStopSnapshot.wakeStartedAtMs` (prefs key `wake_started_at`) keeps the wake in progress. The hub still counts as auto-stopped, but `visible()` says keep running.
+   - It ends on `HubForeground`, which `ContextHubService` submits after it enters the foreground, or when the controller sees the hub running.
+   - It otherwise ends after `WAKE_START_TIMEOUT_MS` (2 min): no probe, still stopped, and the next rung (already set by the claim) is scheduled.
+   - The issued start schedules a recovery wake at the timeout. A cold `ProcessStarted` with a wake in progress schedules recovery for the time left, or times it out at once.
+   - Changed test expectations: an issued cold wake now also schedules the 2 min recovery (3 `AutoStopWakeTest` cases).
+5. **No main-thread preference loads at startup.**
+   - `ContextApp`'s providers read their stores lazily, and a `settings-warm` thread loads them.
+   - `BackgroundInputs` uses `engine.visible()`. Before the actor has loaded, it uses the safe defaults (not stopped) and calls `engine.warm()`, which loads on IO. Otherwise there is no behaviour change.
+
+In `ContextApp`, the timing and Developer-mode stores are local `by lazy` delegates, so `ForgetScopeWiringTest`'s source scan still finds its bindings. Final full `:phone:testDebugUnitTest`: 2172/2172 passed.
+
+## 7. Open points
 
 - The watchdog's reconnect, probe and relaunch hooks still run on the tick's thread (Main), by design: the hub hooks expect it. Only the ladder moved into the actor.
 - `ensureRunning(force)` submits `UserStarted` asynchronously. A non-force `hubNeeded` read in the few ms before that step can still see the old stop flags, as it could before with `apply()`.

@@ -81,9 +81,11 @@ class GlassesWatchdog(
     private var lastLogged: String? = null
     private var quietTicks = 0
     /** The back-offs (reconnect, hub restart, last start): the one actor; see [WatchdogLadder]. Loaded from [hubStore] on its first step (on [executor]). */
-    private val ladder = SerialStateMachine<WatchdogLadder.State, WatchdogLadder.Event, Nothing>(
+    private val ladder = SerialStateMachine<WatchdogLadder.State, WatchdogLadder.Event, WatchdogLadder.Effect>(
         load = { WatchdogLadder.State(saved = hubStore.load()) }, reduce = WatchdogLadder::reduce, persisted = { it.saved }, save = { hubStore.save(it.saved) },
         now = now, executor = executor, onError = { warn("watchdog ladder step failed: ${it.javaClass.simpleName}") },
+        run = { warn("persist_failed"); null }, // the one effect: WatchdogLadder.Effect.PersistFailedLog (at most once a minute)
+        persistFailed = { e, attempt -> WatchdogLadder.Event.PersistFailed(e, attempt) }, persistRecovered = WatchdogLadder.Event.PersistRecovered,
     )
     /** One tick at a time (the tick's own log/baseline fields); the ladder itself is serialised by its actor. */
     private val ticking = Mutex()
@@ -213,7 +215,14 @@ class GlassesWatchdog(
  * ([HubRestartStore]); [State.reconnect] lives in memory only.
  */
 object WatchdogLadder {
-    data class State(val saved: HubRestartSnapshot = HubRestartSnapshot(), val reconnect: BackgroundPolicy.Backoff = BackgroundPolicy.reset())
+    /**
+     * [unsavedStartAt]: a hub start allowed while its record could not be saved (the safe "keep running" fallback); it still holds the next start
+     * [GlassesWatchdog.MIN_HUB_START_MS] away, in memory only.
+     */
+    data class State(
+        val saved: HubRestartSnapshot = HubRestartSnapshot(), val reconnect: BackgroundPolicy.Backoff = BackgroundPolicy.reset(),
+        val unsavedStartAt: Long? = null, val persistFailing: Boolean = false, val persistLoggedAtMs: Long? = null,
+    )
 
     sealed interface Event {
         /** Link up, a wear event, the app in front, a tapped Reconnect, the setting switched on: both ladders start again (the last start time stays). */
@@ -228,21 +237,45 @@ object WatchdogLadder {
         data class TryHubStart(val atMs: Long) : Event
         /** A reconnect attempt at [atMs]; reply true = due and recorded. */
         data class TryReconnect(val atMs: Long) : Event
+        /** The save of [event]'s transition failed: nothing of it happened. */
+        data class PersistFailed(val event: Event, val attempt: Int) : Event
+        object PersistRecovered : Event
     }
 
-    fun reduce(s: State, e: Event, @Suppress("UNUSED_PARAMETER") now: Long): Transition<State, Event, Nothing> = when (e) {
+    sealed interface Effect { object PersistFailedLog : Effect }
+
+    private fun startAllowed(s: State, t: Long): Boolean {
+        val d = t - s.saved.lastStartAtMs
+        val u = s.unsavedStartAt?.let { t - it }
+        // a clock set back must not block for ever
+        return s.saved.backoff.due(t) && (d < 0 || d >= GlassesWatchdog.MIN_HUB_START_MS) && (u == null || u < 0 || u >= GlassesWatchdog.MIN_HUB_START_MS)
+    }
+
+    fun reduce(s: State, e: Event, now: Long): Transition<State, Event, Effect> = when (e) {
         Event.PositiveSignal -> Transition(s.copy(reconnect = BackgroundPolicy.reset(), saved = s.saved.copy(backoff = BackgroundPolicy.reset())))
         // Resets the ladder step only: the minimum interval between hub start attempts ([GlassesWatchdog.MIN_HUB_START_MS]) survives every reset signal.
         Event.HubWanted, Event.HubRunning -> Transition(s.copy(saved = s.saved.copy(backoff = BackgroundPolicy.reset())))
         Event.GlassesPresent -> Transition(s.copy(reconnect = BackgroundPolicy.reset()))
-        is Event.TryHubStart -> {
-            val d = e.atMs - s.saved.lastStartAtMs
-            if (s.saved.backoff.due(e.atMs) && (d < 0 || d >= GlassesWatchdog.MIN_HUB_START_MS)) // a clock set back must not block for ever
-                Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs)), reply = true)
+        is Event.TryHubStart ->
+            if (startAllowed(s, e.atMs)) Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs)), reply = true)
             else Transition(s, reply = false)
-        }
         is Event.TryReconnect ->
             if (s.reconnect.due(e.atMs)) Transition(s.copy(reconnect = BackgroundPolicy.attempted(s.reconnect, e.atMs)), reply = true) else Transition(s, reply = false)
+        Event.PersistRecovered -> Transition(s.copy(persistFailing = false, unsavedStartAt = null))
+        is Event.PersistFailed -> {
+            val logNow = s.persistLoggedAtMs.let { it == null || now - it >= AutoStopMachine.PERSIST_LOG_EVERY_MS || now < it }
+            val s1 = s.copy(persistFailing = true, persistLoggedAtMs = if (logNow) now else s.persistLoggedAtMs)
+            val fx = if (logNow) listOf<Effect>(Effect.PersistFailedLog) else emptyList()
+            when (val ev = e.event) {
+                // Safe fallback: keep the hub running. The start goes ahead unsaved, still at most one per MIN_HUB_START_MS (in memory).
+                is Event.TryHubStart ->
+                    if (startAllowed(s, ev.atMs)) Transition(s1.copy(unsavedStartAt = ev.atMs), fx, reply = true) else Transition(s1, fx, reply = false)
+                // a reset is retried on a short bounded back-off (a stale, longer back-off meanwhile only delays an attempt)
+                Event.PositiveSignal, Event.HubWanted ->
+                    if (e.attempt < AutoStopMachine.PERSIST_RETRY_MS.size) Transition(s1, fx, retry = ev, retryAfterMs = AutoStopMachine.PERSIST_RETRY_MS[e.attempt]) else Transition(s1, fx)
+                else -> Transition(s1, fx) // HubRunning: the next tick submits it again
+            }
+        }
     }
 }
 
@@ -251,17 +284,17 @@ data class HubRestartSnapshot(val backoff: BackgroundPolicy.Backoff = Background
 
 interface HubRestartStore {
     fun load(): HubRestartSnapshot
-    /** The whole snapshot; durable when it returns (it is saved before the start it guards). */
-    fun save(s: HubRestartSnapshot)
+    /** The whole snapshot (saved before the start it guards); true = durable, false = the commit failed. */
+    fun save(s: HubRestartSnapshot): Boolean
 }
 
 class InMemoryHubRestartStore(initial: HubRestartSnapshot = HubRestartSnapshot()) : HubRestartStore {
     @Volatile private var s = initial
     override fun load() = s
-    override fun save(s: HubRestartSnapshot) { this.s = s }
+    override fun save(s: HubRestartSnapshot): Boolean { this.s = s; return true }
 }
 
 class PrefsHubRestartStore(private val prefs: () -> android.content.SharedPreferences) : HubRestartStore {
     override fun load() = prefs().let { HubRestartSnapshot(BackgroundPolicy.Backoff(it.getInt("step", 0), it.getLong("next_at", 0L)), it.getLong("last_start", 0L)) }
-    override fun save(s: HubRestartSnapshot) { prefs().edit().putInt("step", s.backoff.step).putLong("next_at", s.backoff.nextAtMs).putLong("last_start", s.lastStartAtMs).commit() }
+    override fun save(s: HubRestartSnapshot): Boolean = prefs().edit().putInt("step", s.backoff.step).putLong("next_at", s.backoff.nextAtMs).putLong("last_start", s.lastStartAtMs).commit()
 }

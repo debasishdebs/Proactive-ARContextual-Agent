@@ -80,6 +80,7 @@ class ContextHubService : Service() {
             if (stopsOnBackgroundStart(startedInFront(intent), needed)) { stopSelf(); return START_NOT_STICKY }
             if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
             running = true
+            AutoStopWake.engine(this).submit(AutoStopEvent.HubForeground) // a wake in progress is complete only now (Codex review 5)
             val nm = getSystemService(NotificationManager::class.java)
             val hub = HubGraph.get(this)
             hub.start()

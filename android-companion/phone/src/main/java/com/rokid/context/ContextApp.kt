@@ -26,25 +26,29 @@ class ContextApp : Application() {
             localNativeModelPath = BuildConfig.LOCAL_NATIVE_MODEL_PATH,
         )
         // One call budget for every provider call (P2); its period follows Settings > Capture > AI call pace (10 / 12 / 15 s).
-        val pace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(this).paceMs
-        com.rokid.context.ai.AiGraph.gate = com.rokid.context.work.budget.CallBudget(clock = System::currentTimeMillis, periodMs = { pace.value })
+        // Codex review 5: the preference-backed stores below are read lazily (first use, normally on a worker) and warmed on a background thread, never loaded here.
+        com.rokid.context.ai.AiGraph.gate = com.rokid.context.work.budget.CallBudget(clock = System::currentTimeMillis, periodMs = { com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(this).paceMs.value })
         // 3d: the canvas compiler's default window tolerance follows Settings > Capture > Window tolerance (new compiles only; a published plan holds its own number).
-        val windowTolerance = com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this).pct
-        com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { windowTolerance.value }
+        com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this).pct.value }
         // v0.9.7 A: the canvas compiler and try-it read the disabled signals and derived definitions from Settings (new compiles only; a published plan is already expanded).
         com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.ui.settings.capture.SignalConfigStore.wipeListener(this)) // Delete all removes the user's signal configuration
-        val signalConfig = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).config
-        com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { signalConfig.value }
+        com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).config.value }
         com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).history }
         // v0.9.8 D: delivery and the voice surfaces read the user's device capabilities (mic and display) from Settings; unset = everything on.
-        val deviceCaps = com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(this).capabilities
-        com.rokid.context.orchestration.DeliveryEnvironment.capabilities = { deviceCaps.value }
+        com.rokid.context.orchestration.DeliveryEnvironment.capabilities = { com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(this).capabilities.value }
         // The photo Forget radius follows Settings > Capture > Forget (default 10 s); the Forget path reads it once per Forget through ForgetRadius.ms().
-        val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this)
+        val timing by lazy { com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this) } // lazy: loaded at the first Forget (or by the warm-up thread)
         com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }
         com.rokid.context.memory.forget.ForgetScopeSetting.provider = { timing.forgetScopeNow() } // the Forget scope (Photo | Moment | Scene), read when a Forget starts
-        val devMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled
+        val devMode by lazy { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled }
         com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { devMode.value } // the engine re-checks Developer mode at every Moment/Scene Forget
+        kotlin.concurrent.thread(name = "settings-warm") {
+            runCatching {
+                com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(this); com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this)
+                com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this); com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(this)
+                com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this); com.rokid.context.phone.canvas.DeveloperModeStore.get(this)
+            }.onFailure { PcLog.w("ContextApp", "settings warm-up failed: ${it.javaClass.simpleName}") }
+        }
         // Phone power policy inputs (spec P2.5): the real thermal status and whether the app is in the foreground.
         com.rokid.context.work.frames.KeyframeGraph.thermal = com.rokid.context.work.frames.KeyframeGraph.systemThermal(this)
         com.rokid.context.work.frames.KeyframeGraph.foreground = {
