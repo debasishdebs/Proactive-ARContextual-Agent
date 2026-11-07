@@ -86,6 +86,8 @@ class BackupRulesTest {
      */
     private val slice3aPrefs: Set<String> get() = setOf(
         com.rokid.context.memory.db.DeletionEpochStore.PREFS, "canvas_plan_state", "canvas_collect", "mark_settings",
+        // Export cleanup bookkeeping (MemoryExport.CLEANUP_PREFS): per-install pending-delete state, never restored.
+        com.rokid.context.orchestration.MemoryExport.CLEANUP_PREFS,
         // 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore never turns a grant on.
         com.rokid.context.phone.canvas.helper.HelperGrants.PREFS,
     )
@@ -192,7 +194,7 @@ class BackupRulesTest {
         val roots = listOf("src/main", "../services").map(::File)
         val sources = roots.flatMap { it.walkTopDown().filter { f -> f.isFile && f.name.endsWith(".kt") && f.absoluteFile.invariantSeparatorsPath.let { p -> "/src/main/" in p && "/build/" !in p } } }
         val literal = Regex("""getSharedPreferences\(\s*"([^"]+)"""")
-        val constant = Regex("""const val (?:PREFS|PREF|SECRET_PREF) = "([^"]+)"""")
+        val constant = Regex("""const val (?:[A-Z_]*PREFS|PREF|SECRET_PREF) = "([^"]+)"""")
         val created = Regex("""EncryptedSharedPreferences\.create\(\s*\w+,\s*"([^"]+)"""")
         val names = sources.flatMap { f -> val src = f.readText(); (literal.findAll(src) + constant.findAll(src) + created.findAll(src)).map { it.groupValues[1] } }.toSet()
         val keysAndMarkers = setOf("endpoint_keys", "db_key", "app_config_secret", "ai_seed", "legacy_import")
