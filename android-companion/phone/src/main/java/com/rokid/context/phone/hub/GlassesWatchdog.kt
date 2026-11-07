@@ -69,9 +69,9 @@ class GlassesWatchdog(
     private var lastLogged: String? = null
     private var quietTicks = 0
     /** Back-off of the automatic attempts while the glasses are away; reset by [onPositiveSignal]. */
-    private var backoff = BackgroundPolicy.reset()
+    @Volatile private var backoff = BackgroundPolicy.reset()
     /** Own back-off for HUB restarts (a start refused by Android 12+ must not repeat every tick); reset when the hub runs and by every positive signal. */
-    private var hubBackoff = hubStore.loadBackoff()
+    @Volatile private var hubBackoff = hubStore.loadBackoff()
     private var gate = BackgroundPolicy.Gate.ACTIVE
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
@@ -92,7 +92,8 @@ class GlassesWatchdog(
         return hubBackoff.due(t) && (d < 0 || d >= MIN_HUB_START_MS) // a clock set back must not block for ever
     }
 
-    private fun hubStarted(t: Long) { startHub(); hubBackoff = BackgroundPolicy.attempted(hubBackoff, t); hubStore.saveStart(hubBackoff, t) }
+    /** The attempt is saved (committed) BEFORE the start: a start that crashes the process cannot bypass the back-off on the next process. */
+    private fun hubStarted(t: Long) { hubBackoff = BackgroundPolicy.attempted(hubBackoff, t); hubStore.saveStart(hubBackoff, t); startHub() }
 
     /** [periodMs] null = the configured one, re-read before every sleep, and the policy's sleep (long with no pair or the setting off, the back-off while away); a number fixes it (tests). */
     fun start(scope: CoroutineScope, periodMs: Long? = null): Job = scope.launch {
@@ -194,7 +195,7 @@ interface HubRestartStore {
     fun lastStartAtMs(): Long
     /** A reset of the ladder; the last start time is untouched. */
     fun saveBackoff(b: BackgroundPolicy.Backoff)
-    /** A start attempt at [atMs] and the ladder after it. */
+    /** A start attempt at [atMs] and the ladder after it; durable when it returns (it is saved before the start it guards). */
     fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long)
 }
 
@@ -210,5 +211,5 @@ class PrefsHubRestartStore(private val prefs: () -> android.content.SharedPrefer
     override fun loadBackoff() = BackgroundPolicy.Backoff(prefs().getInt("step", 0), prefs().getLong("next_at", 0L))
     override fun lastStartAtMs() = prefs().getLong("last_start", 0L)
     override fun saveBackoff(b: BackgroundPolicy.Backoff) { prefs().edit().putInt("step", b.step).putLong("next_at", b.nextAtMs).apply() }
-    override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { prefs().edit().putInt("step", b.step).putLong("next_at", b.nextAtMs).putLong("last_start", atMs).apply() }
+    override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { prefs().edit().putInt("step", b.step).putLong("next_at", b.nextAtMs).putLong("last_start", atMs).commit() }
 }
