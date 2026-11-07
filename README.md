@@ -42,9 +42,18 @@ Full test gate: `tools/gate.sh`. Model endpoints and keys are entered in the app
 
 The v0.9.5 to v0.9.9 train, and the v1.0.0-rc1 draft, are described in `code-agent/releases/` (one note per version). `code-agent/` also holds the working rules, handoffs and review history for AI coding agents; start at [code-agent/README.md](code-agent/README.md).
 
+## Voice marks
+Say a short command after push-to-talk (glasses or phone) to save a mark for the last 10 seconds. No hotword, English only. Voice marks are always on in this build (no switch yet).
+<!-- voice-marks-readme:begin -->
+- **Mark a moment**: "mark that", "mark this", "mark it"
+- **I missed that**: "i missed that"
+- **Undo a mark**: "undo mark", "cancel mark"
+<!-- voice-marks-readme:end -->
+Add what you were doing ("mark that, I'm driving"); unknown words in the same sentence as "mark that" save a plain mark, while "note that the meeting is at five" stays a normal note. Notification, tile and home-button marks are not available yet. Audio is never stored or uploaded and recognition is on-device. Full guide: [docs/voice-marks.md](docs/voice-marks.md).
+
 ## Privacy
 
-Everything stays on the device. The database is encrypted with SQLCipher and its key never leaves the Android Keystore. Voice recognition is on-device and audio is never stored. Forget removes a fact, photo, Moment or time range together with the copies derived from it (exports, run outputs, lineage). Prefs files holding keys, set-up or per-device state are excluded from backup and device transfer (checked by `BackupRulesTest`); the watch and glasses exclude everything.
+Memories, photos and the database are stored on your phone: the database is encrypted with SQLCipher and its key never leaves the Android Keystore. The glasses and the watch stream only to your own phone. When you configure a remote model provider, your prompts are sent to that provider, and so are images when you enable photos for Ask; with local models everything stays on the device. Voice recognition is on-device and audio is never stored. Forget removes a fact, photo, Moment or time range together with the copies derived from it (exports, run outputs, lineage). Prefs files holding keys, set-up or per-device state are excluded from backup and device transfer (checked by `BackupRulesTest`); the watch and glasses exclude everything.
 
 ## Docs
 

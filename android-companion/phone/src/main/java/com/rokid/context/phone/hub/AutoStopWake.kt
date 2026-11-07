@@ -48,20 +48,53 @@ object AutoStopWake {
         schedule: (Long) -> Unit = { schedule(app, it) },
         start: () -> Boolean = { ContextHubService.ensureRunning(app, wake = true) },
     ): Boolean {
-        if (store.autoStoppedAtMs() == 0L || store.manualStop()) return false
-        if (!BackgroundPolicy.wakeAllowed(exempt(), true, false, minutes(), running(), allowed())) return false
+        if (store.autoStoppedAtMs() == 0L || store.manualStop()) return false // the common case, without the lock (re-checked under it)
         val max = BackgroundPolicy.WAKE_LADDER_MS.last()
-        if (!BackgroundPolicy.deadlinePassed(now, store.nextWakeAtMs(), max)) { schedule(BackgroundPolicy.remainingMs(now, store.nextWakeAtMs(), max)); return false }
-        store.wakeAttempted(now + BackgroundPolicy.wakeDelayMs(store.wakeStep() + 1))
-        store.setWakeProbe(true)
-        PcLog.i(AutoStopController.TAG, "auto_stop wake attempt (process start)")
-        val issued = start()
-        if (issued) store.clearAutoStopped() else {
-            PcLog.w(AutoStopController.TAG, "auto_stop wake refused")
-            store.setWakeProbe(false)
-            schedule(BackgroundPolicy.remainingMs(now, store.nextWakeAtMs(), max))
+        return when (claim(now, store, exempt, minutes, allowed, running, start, via = "process start")) {
+            Claim.STARTED -> true
+            Claim.NOT_DUE, Claim.REFUSED -> { schedule(BackgroundPolicy.remainingMs(now, store.nextWakeAtMs(), max)); false }
+            Claim.NONE, Claim.ALREADY_RUNNING -> false
         }
-        return issued
+    }
+
+    /** What [claim] did. Only [STARTED] issued a start; [NONE] and [NOT_DUE] touched nothing. */
+    enum class Claim {
+        /** No wake applies (not auto-stopped, a manual stop, no exemption, Never, the hub runs, no link machinery). */
+        NONE,
+        /** The rung is not due yet: the caller waits or schedules the remaining time. */
+        NOT_DUE,
+        /** The rung was consumed, the probe saved and the start issued; the auto stop is over. */
+        STARTED,
+        /** The rung was consumed but the start returned false because the service is already up: not a refusal, the probe flag is kept. */
+        ALREADY_RUNNING,
+        /** Android refused the start: the probe flag is cleared, the next rung stands. */
+        REFUSED,
+    }
+
+    private val claimLock = Any()
+
+    /**
+     * Review fix 2026-11-07 (Codex): the one owner of "claim a wake", shared by the WorkManager/process-start path ([onProcessStart], off the main thread) and the
+     * live [AutoStopController] (its IO hop). Check / consume the rung / save the probe / start / settle run under ONE process-wide lock, so two entry points can
+     * never both pass the deadline: the loser finds the auto stop cleared (the winner started) or the deadline moved (the winner was refused) and returns [NONE] or
+     * [NOT_DUE] without touching the probe flag. It blocks on disk commits: never call it on the main thread.
+     */
+    fun claim(
+        now: Long, store: AutoStopStore, exempt: () -> Boolean, minutes: () -> Int, allowed: () -> Boolean, running: () -> Boolean, start: () -> Boolean,
+        via: String, log: (String) -> Unit = { PcLog.i(AutoStopController.TAG, it) }, warn: (String) -> Unit = { PcLog.w(AutoStopController.TAG, it) },
+    ): Claim = synchronized(claimLock) {
+        if (store.autoStoppedAtMs() == 0L || store.manualStop()) return Claim.NONE
+        if (!BackgroundPolicy.wakeAllowed(exempt(), true, false, minutes(), running(), allowed())) return Claim.NONE
+        if (!BackgroundPolicy.deadlinePassed(now, store.nextWakeAtMs(), BackgroundPolicy.WAKE_LADDER_MS.last())) return Claim.NOT_DUE
+        store.wakeAttempted(now + BackgroundPolicy.wakeDelayMs(store.wakeStep() + 1)) // committed before the start it guards
+        store.setWakeProbe(true) // saved before the start: the woken hub's first away window is the short probe
+        log("auto_stop wake attempt ($via)")
+        val issued = runCatching(start).getOrDefault(false)
+        when {
+            issued -> { store.clearAutoStopped(); Claim.STARTED }
+            running() -> { store.clearAutoStopped(); log("auto_stop wake: hub already running ($via)"); Claim.ALREADY_RUNNING }
+            else -> { warn("auto_stop wake refused ($via)"); store.setWakeProbe(false); Claim.REFUSED }
+        }
     }
 }
 

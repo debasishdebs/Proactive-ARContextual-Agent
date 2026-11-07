@@ -3,10 +3,16 @@ package com.rokid.context.phone.hub
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Phone-side watchdog (2026-10-22): Rokid force-stops the glasses app on calls and glasses removal, which kills its own alarms and
@@ -51,6 +57,8 @@ class GlassesWatchdog(
     private val stopHub: () -> Unit = {},
     /** The hub restart ladder and last start time; persisted in production so process death does not reset them ([PrefsHubRestartStore]). */
     private val hubStore: HubRestartStore = InMemoryHubRestartStore(),
+    /** Where the blocking [HubRestartStore.saveStart] commit runs (Dispatchers.IO; the loop's scope is Main.immediate). Tests may pass their own. */
+    private val io: CoroutineContext = Dispatchers.IO,
 ) {
     sealed interface Verdict {
         object Off : Verdict
@@ -72,6 +80,10 @@ class GlassesWatchdog(
     @Volatile private var backoff = BackgroundPolicy.reset()
     /** Own back-off for HUB restarts (a start refused by Android 12+ must not repeat every tick); reset when the hub runs and by every positive signal. */
     @Volatile private var hubBackoff = hubStore.loadBackoff()
+    /** In-memory copy of [HubRestartStore.lastStartAtMs], set before the IO commit so the next tick never reads a stale store. */
+    @Volatile private var lastStartAt = hubStore.lastStartAtMs()
+    /** One tick at a time: consecutive start attempts never overlap across the IO hop. */
+    private val ticking = Mutex()
     private var gate = BackgroundPolicy.Gate.ACTIVE
     private val wake = Channel<Unit>(Channel.CONFLATED)
 
@@ -88,23 +100,35 @@ class GlassesWatchdog(
     private fun resetHubBackoff() { hubBackoff = BackgroundPolicy.reset(); hubStore.saveBackoff(hubBackoff) }
 
     private fun hubStartAllowed(t: Long): Boolean {
-        val d = t - hubStore.lastStartAtMs()
+        val d = t - lastStartAt
         return hubBackoff.due(t) && (d < 0 || d >= MIN_HUB_START_MS) // a clock set back must not block for ever
     }
 
-    /** The attempt is saved (committed) BEFORE the start: a start that crashes the process cannot bypass the back-off on the next process. */
-    private fun hubStarted(t: Long) { hubBackoff = BackgroundPolicy.attempted(hubBackoff, t); hubStore.saveStart(hubBackoff, t); startHub() }
+    /**
+     * The attempt is saved (committed) BEFORE the start: a start that crashes the process cannot bypass the back-off on the next process.
+     * Review fix 2 (2026-11-07, Codex): the commit runs on [io] (it was a disk wait on the main thread); the start follows once it is durable.
+     */
+    private suspend fun hubStarted(t: Long) {
+        val b = BackgroundPolicy.attempted(hubBackoff, t); hubBackoff = b; lastStartAt = t
+        withContext(io) { hubStore.saveStart(b, t) }
+        startHub()
+    }
 
     /** [periodMs] null = the configured one, re-read before every sleep, and the policy's sleep (long with no pair or the setting off, the back-off while away); a number fixes it (tests). */
     fun start(scope: CoroutineScope, periodMs: Long? = null): Job = scope.launch {
         while (true) {
-            try { tick() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* never end the loop */ }
+            try { tickNow() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* never end the loop */ }
             val sleep = periodMs ?: BackgroundPolicy.sleepMs(gate, this@GlassesWatchdog.periodMs(), backoff, now())
             withTimeoutOrNull(sleep) { wake.receive() }
         }
     }
 
-    fun tick(): Verdict {
+    /** [tickNow] from a plain thread (tests). Never on the main thread: it blocks for the IO hop. */
+    internal fun tick(): Verdict = runBlocking { tickNow() }
+
+    suspend fun tickNow(): Verdict = ticking.withLock { tickOnce() }
+
+    private suspend fun tickOnce(): Verdict {
         val t = now()
         val period = periodMs()
         lastTickAt?.let { prev -> if (t - prev > 2 * period) warn("watchdog late tick gap_s=${(t - prev) / 1000} period_s=${period / 1000}") }
@@ -114,7 +138,7 @@ class GlassesWatchdog(
         // The hub service stays only while something needs it; the watchdog never restarts one that is not needed.
         if (!hubNeeded()) { baselineMs = null; if (hubRunning()) { log("watchdog hub not needed, stopping it"); stopHub() }; return finish(Verdict.Off, if (!pair) "why=no_pair" else if (!on) "why=setting_off" else "why=not_needed") }
         // Hub recovery is separate from permission to run glasses machinery: a needed hub (a context source, an ask) is restarted whatever the glasses gate says; no reconnect, no relaunch.
-        fun recoverHub() { if (!hubRunning() && hubStartAllowed(t)) { warn("watchdog hub down, starting it"); hubStarted(t) } }
+        suspend fun recoverHub() { if (!hubRunning() && hubStartAllowed(t)) { warn("watchdog hub down, starting it"); hubStarted(t) } }
         if (hubRunning() && hubBackoff != BackgroundPolicy.reset()) resetHubBackoff()
         if (!pair) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=no_pair") }
         if (!on) { baselineMs = null; recoverHub(); return finish(Verdict.Off, "why=setting_off") }

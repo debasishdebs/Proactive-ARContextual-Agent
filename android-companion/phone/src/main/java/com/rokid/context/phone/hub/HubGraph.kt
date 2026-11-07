@@ -275,7 +275,7 @@ object HubGraph {
                 stopHub = { ContextHubService.stop(app) }, wakeHub = { ContextHubService.ensureRunning(app, wake = true) },
                 exempt = { AutoStopWake.exempt(app) },
                 linkAllowed = { BackgroundPolicy.linkMachineryAllowed(KeepRunningNearby.of(app).enabled(), com.rokid.context.link.CxrGlassesLink.isPaired(app)) },
-                publishNote = hub::setAutoStopNote, scheduleWake = { AutoStopWake.schedule(app, it) },
+                publishNote = hub::setAutoStopNote, scheduleWake = { AutoStopWake.schedule(app, it) }, serviceRunning = ContextHubService::isRunning,
             ).also { ctl ->
                 autoStopRef.set(ctl)
                 scope.launch { kotlinx.coroutines.flow.combine(hub.link.state, hub.link.wearing) { l, w -> l to w }.collect { ctl.poke() } }

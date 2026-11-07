@@ -9,7 +9,7 @@ Draft; not tagged. Debug-signed; no APKs are attached. Phone database is Room v1
 - Codex reviewed each slice (several rounds on RAG core, Forget scope and the utterance backend), then a final pass of three parallel area reviews plus a verify review, all P1 fixed; an Opus review produced the release hygiene work (ignore rules, README, backup rules, release notes).
 
 **Known limitations**
-- Voice pause and resume replies can claim state that is not confirmed (battery hook unwired, glasses state unconfirmed).
+- Voice pause and resume replies never claim or deny the glasses' low-battery capture hold (the phone has no signal for it); a resume says "Your phone pause was cleared ..." and names the glasses only when the settings push was accepted by the link.
 - Moment and Scene Forget scope has an in-flight writer race (v1.1 backlog) and is Developer mode only; no single answer or nudge Forget.
 - The hub is not restarted after a reboot until the app is opened.
 - List caps: 1,000 answers and nudges and 200 marks.

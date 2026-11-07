@@ -2,6 +2,8 @@ package com.rokid.context.phone.hub
 
 import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
@@ -369,5 +371,35 @@ class GlassesWatchdogTest {
         val a = Rig(store = store).apply { running = false; link = LinkState.OFFLINE }; a.w.tick(); assertEquals(1, a.starts)
         val b = Rig(nowMs = a.nowMs - 10 * 24 * 3_600_000L, store = store).apply { running = false; link = LinkState.OFFLINE }
         b.w.tick(); assertEquals("next_at lies beyond the longest step: the clock went back", 1, b.starts)
+    }
+
+    // ---- Review fixes 2 (2026-11-07, Codex): saveStart commits on IO, still before the start, and consecutive attempts never overlap ----
+
+    @Test fun theHubStartCommitRunsOnIoBeforeTheStartOnTheCallerThreadAndAttemptsAreSerialised() {
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        fun rec(e: String) { events += "$e@${Thread.currentThread().name}" }
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val store = object : HubRestartStore {
+            val inner = InMemoryHubRestartStore()
+            override fun loadBackoff() = inner.loadBackoff()
+            override fun lastStartAtMs() = inner.lastStartAtMs()
+            override fun saveBackoff(b: BackgroundPolicy.Backoff) = inner.saveBackoff(b)
+            override fun saveStart(b: BackgroundPolicy.Backoff, atMs: Long) { rec("save"); gate.await(); inner.saveStart(b, atMs) }
+        }
+        val w = GlassesWatchdog(
+            now = { 10 * 60_000L }, enabled = { true }, captureActive = { true }, hubRunning = { false }, link = { LinkState.OFFLINE }, lastHeardAtMs = { null },
+            standingDown = { false }, startHub = { rec("start") }, reconnect = {}, probeAlive = {}, relaunch = { null }, publish = {}, log = {}, warn = {},
+            hubStore = store, io = kotlinx.coroutines.Dispatchers.IO,
+        )
+        val ex = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "fake-main") }
+        try {
+            kotlinx.coroutines.runBlocking(ex.asCoroutineDispatcher()) {
+                val first = launch { w.tickNow() }; val second = launch { w.tickNow() } // two ticks back to back, the first parked in its commit
+                while (events.isEmpty()) kotlinx.coroutines.delay(1)
+                kotlinx.coroutines.yield(); gate.countDown(); first.join(); second.join()
+            }
+            assertEquals("one attempt, saved before its start", listOf("save", "start"), events.map { it.substringBefore('@') })
+            assertTrue("commit off the caller thread: $events", !events[0].contains("@fake-main")); assertTrue("start on the caller thread", events[1].contains("@fake-main"))
+        } finally { ex.shutdownNow() }
     }
 }

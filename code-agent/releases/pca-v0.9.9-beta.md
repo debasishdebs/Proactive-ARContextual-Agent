@@ -20,4 +20,4 @@ Debug-signed; no APKs are attached. Phone database is Room v15 (additive migrati
 - Final Codex pass: three parallel area reviews plus a verify review; all P1 findings fixed.
 
 **Known limitations**
-- Voice pause and resume replies cannot confirm glasses state; no event restarts a stopped hub when the glasses are put on (app open, Reconnect or the wake ladder do); watch messages are dropped while the hub is down; no single answer or nudge Forget; list caps of 1,000 answers and nudges and 200 marks.
+- Voice pause and resume replies name the glasses only when the settings push was accepted and never report the glasses' low-battery hold; no event restarts a stopped hub when the glasses are put on (app open, Reconnect or the wake ladder do); watch messages are dropped while the hub is down; no single answer or nudge Forget; list caps of 1,000 answers and nudges and 200 marks.
