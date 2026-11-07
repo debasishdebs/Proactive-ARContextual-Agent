@@ -32,6 +32,11 @@ data class AutoStopState(
     val persistFailing: Boolean = false,
     /** When `persist_failed` was last logged (at most once a minute). */
     val persistLoggedAtMs: Long? = null,
+    /**
+     * The newest user intent ([AutoStopEvent.UserStarted] / [AutoStopEvent.ManualStopped]) whose save failed: folded into the NEXT snapshot written (by any event,
+     * or a [AutoStopEvent.RetryPersist]); a newer intent replaces it, so an older intent can never be resurrected.
+     */
+    val pendingIntent: AutoStopEvent? = null,
 )
 
 sealed interface AutoStopEvent {
@@ -53,6 +58,8 @@ sealed interface AutoStopEvent {
     data class PersistFailed(val event: AutoStopEvent, val attempt: Int) : AutoStopEvent
     /** A save succeeded again after a failure. */
     object PersistRecovered : AutoStopEvent
+    /** A persistence retry: changes nothing itself; the pending intent is folded into the snapshot it writes. */
+    object RetryPersist : AutoStopEvent
 }
 
 sealed interface AutoStopEffect {
@@ -87,23 +94,33 @@ object AutoStopMachine {
     val PERSIST_RETRY_MS: List<Long> = listOf(250L, 1_000L, 4_000L, 15_000L, 60_000L)
     const val PERSIST_LOG_EVERY_MS = 60_000L
 
-    fun reduce(s: AutoStopState, e: AutoStopEvent, now: Long): T = when (e) {
+    fun reduce(s: AutoStopState, e: AutoStopEvent, now: Long): T =
+        if (e is AutoStopEvent.PersistFailed) persistFailed(s, e, now) else reduceOn(fold(s), e, now)
+
+    /** [s] with its pending intent applied: what the next snapshot must carry (and what [AutoStopEngine.visible] shows). */
+    fun fold(s: AutoStopState): AutoStopState = when (s.pendingIntent) {
+        AutoStopEvent.UserStarted -> userStarted(s).copy(pendingIntent = null)
+        AutoStopEvent.ManualStopped -> s.copy(saved = s.saved.copy(manualStop = true), pendingIntent = null)
+        else -> s
+    }
+
+    private fun userStarted(s: AutoStopState) = s.copy(
+        saved = s.saved.copy(manualStop = false, autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, wakeStep = 0, nextWakeAtMs = 0L, wakeProbe = false, wakeStartedAtMs = 0L),
+        pendingStop = null, awaySince = null,
+    )
+
+    private fun reduceOn(s: AutoStopState, e: AutoStopEvent, now: Long): T = when (e) {
         is AutoStopEvent.Evaluate -> evaluate(s.copy(wake = e.wake ?: s.wake, hub = e.hub ?: s.hub), now)
         is AutoStopEvent.ConfirmStop -> confirm(s.copy(wake = e.wake ?: s.wake, hub = e.hub ?: s.hub), now)
         is AutoStopEvent.ProcessStarted -> processStart(s.copy(wake = e.wake ?: s.wake), e.via, now)
         is AutoStopEvent.WakeResult -> wakeResult(s, e, now)
         AutoStopEvent.HubForeground -> if (s.saved.wakeStartedAtMs == 0L) T(s) else T(cleared(s), listOf(AutoStopEffect.Note(null)))
         // A user start: the full configured N applies again (the probe's synthetic away start goes with the probe).
-        AutoStopEvent.UserStarted -> T(
-            s.copy(
-                saved = s.saved.copy(manualStop = false, autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, wakeStep = 0, nextWakeAtMs = 0L, wakeProbe = false, wakeStartedAtMs = 0L),
-                pendingStop = null, awaySince = null,
-            ),
-            listOf(AutoStopEffect.Note(null)),
-        )
+        AutoStopEvent.UserStarted -> T(userStarted(s), listOf(AutoStopEffect.Note(null)))
         AutoStopEvent.ManualStopped -> T(s.copy(saved = s.saved.copy(manualStop = true)))
         is AutoStopEvent.PersistFailed -> persistFailed(s, e, now)
         AutoStopEvent.PersistRecovered -> T(s.copy(persistFailing = false))
+        AutoStopEvent.RetryPersist -> T(s)
     }
 
     /** The status line for [s]: only a stop that really happened (not one being committed, not one a wake is ending). */
@@ -253,15 +270,18 @@ object AutoStopMachine {
      */
     private fun persistFailed(s: AutoStopState, e: AutoStopEvent.PersistFailed, t: Long): T {
         val logNow = s.persistLoggedAtMs.let { it == null || t - it >= PERSIST_LOG_EVERY_MS || t < it }
-        val s1 = s.copy(persistFailing = true, persistLoggedAtMs = if (logNow) t else s.persistLoggedAtMs)
+        val intent = e.event.takeIf { it == AutoStopEvent.UserStarted || it == AutoStopEvent.ManualStopped } ?: s.pendingIntent // the newest intent wins
+        val s1 = s.copy(persistFailing = true, persistLoggedAtMs = if (logNow) t else s.persistLoggedAtMs, pendingIntent = intent)
         val fx = if (logNow) listOf(AutoStopEffect.Log(AutoStopEffect.Line.PERSIST_FAILED)) else emptyList()
-        val retryable = when (e.event) {
-            AutoStopEvent.UserStarted, AutoStopEvent.ManualStopped, AutoStopEvent.HubForeground, is AutoStopEvent.WakeResult, is AutoStopEvent.ProcessStarted, is AutoStopEvent.ConfirmStop -> true
-            else -> false
+        // A retry looks at the inputs again (never at the ones the failed step was prepared with) and never replays an intent: an intent is folded from
+        // [AutoStopState.pendingIntent], the newest one. The engine drops a retry once a newer change was attempted.
+        val fresh: AutoStopEvent? = when (val ev = e.event) {
+            is AutoStopEvent.ConfirmStop -> AutoStopEvent.ConfirmStop()
+            is AutoStopEvent.ProcessStarted -> ev.copy(wake = null)
+            AutoStopEvent.HubForeground, is AutoStopEvent.WakeResult -> ev
+            else -> if (intent != null) AutoStopEvent.RetryPersist else null
         }
-        // a retry looks at the inputs again (never at the ones the failed step was prepared with)
-        val fresh = when (val ev = e.event) { is AutoStopEvent.ConfirmStop -> AutoStopEvent.ConfirmStop(); is AutoStopEvent.ProcessStarted -> ev.copy(wake = null); else -> ev }
-        val retry = if (retryable && e.attempt < PERSIST_RETRY_MS.size) fresh else null
+        val retry = if (e.attempt < PERSIST_RETRY_MS.size) fresh else null
         val reply: Any? = when (e.event) {
             is AutoStopEvent.Evaluate, is AutoStopEvent.ConfirmStop -> AutoStopSleep(BackgroundPolicy.BUSY_RECHECK_MS)
             is AutoStopEvent.ProcessStarted -> AutoStopClaimed(AutoStopWake.Claim.NONE)

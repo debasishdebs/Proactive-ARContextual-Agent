@@ -257,11 +257,13 @@ object WatchdogLadder {
         Event.HubWanted, Event.HubRunning -> Transition(s.copy(saved = s.saved.copy(backoff = BackgroundPolicy.reset())))
         Event.GlassesPresent -> Transition(s.copy(reconnect = BackgroundPolicy.reset()))
         is Event.TryHubStart ->
-            if (startAllowed(s, e.atMs)) Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs)), reply = true)
+            // durably recorded: the new last start (>= any unsaved one) now holds the minimum interval
+            if (startAllowed(s, e.atMs)) Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs), unsavedStartAt = null), reply = true)
             else Transition(s, reply = false)
         is Event.TryReconnect ->
             if (s.reconnect.due(e.atMs)) Transition(s.copy(reconnect = BackgroundPolicy.attempted(s.reconnect, e.atMs)), reply = true) else Transition(s, reply = false)
-        Event.PersistRecovered -> Transition(s.copy(persistFailing = false, unsavedStartAt = null))
+        // The unsaved start is kept (Codex review 6): the minimum interval counts from max(persisted, unsaved) until a start is durably recorded.
+        Event.PersistRecovered -> Transition(s.copy(persistFailing = false))
         is Event.PersistFailed -> {
             val logNow = s.persistLoggedAtMs.let { it == null || now - it >= AutoStopMachine.PERSIST_LOG_EVERY_MS || now < it }
             val s1 = s.copy(persistFailing = true, persistLoggedAtMs = if (logNow) now else s.persistLoggedAtMs)
