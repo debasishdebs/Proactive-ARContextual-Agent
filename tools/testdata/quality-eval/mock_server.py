@@ -93,7 +93,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/pipelines/p2": return self.send(200, {"problems": ["dangling edge"]})
         if p == "/api/runs": return self.send(200, RUNS)
         if p.startswith("/api/runs/") and p.endswith("/proposal"):
-            return self.send(200, {"saveable": True, "saved": p.split("/")[3] == "r1", "memories": []})
+            r1 = p.split("/")[3] == "r1"  # production: review is the STRING 'OK' or 'NEEDS_REVIEW' (both truthy)
+            return self.send(200, {"saveable": True, "saved": r1, "memories": [{"review": "OK"}, {"review": "NEEDS_REVIEW"}] if r1 else []})
         if p.startswith("/api/runs/"):
             i = p.rsplit("/", 1)[1]
             return self.send(200, RUN_DETAIL[i]) if i in RUN_DETAIL else self.send(404, {"error": "not_found"})

@@ -18,7 +18,7 @@ chk "not paired"
 "$HERE/m1-run.sh" pair "$HP" 123456 >/dev/null 2>&1 || { echo "FAIL: pair"; fail=1; }
 
 # all, no samples: no memory text in the report
-run all --out "$W/r.md" -n 20 || { echo "FAIL: all rc"; fail=1; }
+run all --out "$W/r.md" -n 20 --include-maintenance-reads || { echo "FAIL: all rc"; fail=1; }
 chk "report written: $W/r.md"; chk "scores: capture="
 add "$W/r.md"; [ -n "${QE_DUMP:-}" ] && cat "$W/r.md"
 chk "frames fetched: 18"                       # paging over 5-row pages
@@ -38,7 +38,7 @@ chk "per-mode comparison"; chk "R@5 vs BM25"; chk "semantic unavailable on"
 chk "| retrieval (phone) |"
 chk "real asks re-retrieved: 3 views (1 redacted/refused)"; chk "fallback 1"
 chk "pipelines: 2 (built-in 1, with a live version 1, draft with validation problems 1)"
-chk "| p1 | 2 | DONE | 4/4 | 0 | 1/3 | 1 |"
+chk "| p1 | 2 | DONE | 4/4 | 0 | 1/3 | 2 |"          # 1 NEEDS_REVIEW item + 1 NEEDS_REVIEW proposal memory ('OK' is not counted)
 chk "rolled back 1 (50.0 %)"; chk "flow plans (Query/Nudge) published: 1; still active 1"
 chk "batch ERROR 1 (50.0 %)"; chk "replays: **unavailable** (http=403 error=developer_mode_off)"; chk "traces: 2"
 chk "answer empty 1 (33.3 %); 'I don't know'-style 1 (33.3 %)"
@@ -48,6 +48,11 @@ chk "run proposals (Run-and-Save): 2 saveable/saved, 1 saved (50.0 %)"
 chk "## 5. Scores"; chk "### Prioritised issues"; chk "runs failed/cancelled: 1 of 2 runs (50.0 %)"
 chk "## Unavailable routes"
 no "Kitchen counter"; no "PROMPT-SHOULDNOTAPPEAR"; no "where did I park"
+
+# default: the maintenance reads (publish, publish history, live: the phone runs trace retention on them) are never sent
+all=""; n0=$(grep -cE '^GET /api/(publish|publish/history|live)$' "$REQ"); run canvas --out "$W/m.md"; add "$W/m.md"
+chk "publish, publish history, live interpreter: skipped"; no "rolled back 1"
+[ "$(grep -cE '^GET /api/(publish|publish/history|live)$' "$REQ")" = "$n0" ] || { echo "FAIL: a maintenance read was sent by default"; fail=1; }
 
 # samples: snippets appear, at most 80 chars
 all=""; run capture --out "$W/s.md" --samples 2; add "$W/s.md"
@@ -77,6 +82,8 @@ qe.guard("GET", "/api/frames?limit=1")
 assert qe.quartiles([1, 2, 3, 4, 5])["median"] == 3 and qe.quartiles([1, 2, 3, 4])["q1"] == 1.75
 assert qe.jaccard({"a", "b"}, {"a", "c"}) == 1 / 3.0
 assert len(qe.snip("x" * 200)) == 80
+assert qe.is_needs_review("NEEDS_REVIEW") and qe.is_needs_review("needs_review") and qe.is_needs_review(True)
+assert not qe.is_needs_review("OK") and not qe.is_needs_review("") and not qe.is_needs_review(None) and not qe.is_needs_review(False)
 PY
 
 # only GETs (and the allowlisted retrieval POST) ever reached the server

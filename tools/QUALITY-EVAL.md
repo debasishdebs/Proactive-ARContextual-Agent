@@ -15,12 +15,16 @@ tools/test-quality-eval.sh                         # harness self-test against a
 Options: `--samples N` adds up to N text snippets (80 chars) per list (default none: no memory, question or answer text in the report);
 `-n 100` retrieval sample size; `--seed 7`; `--rate 5` requests/s (capped at 5); `--max-frames 3000`; `--max-detail 400` (frames whose memories are read);
 `--max-days 14` (Moments); `--max-asks 50`; `--max-pipelines 30`; `--runs-per-pipeline 3`; `--jaccard 0.8` (near-duplicate threshold);
-`--retrieve-route` (default `/api/retrieve/debug`; `none` = local BM25 only; any other path must name a retrieval route) and `--modes LEXICAL,SEMANTIC,HYBRID` (see Retrieval).
+`--retrieve-route` (default `/api/retrieve/debug`; `none` = local BM25 only; any other path must name a retrieval route) and `--modes LEXICAL,SEMANTIC,HYBRID` (see Retrieval);
+`--include-maintenance-reads` (off by default; see Safety: with it the run is NOT read-only).
 
 ## Safety
 
 - Only `GET`, plus a `POST` on an explicit read-only allowlist: the one retrieval route (`/api/retrieve/debug` by default, none with `--retrieve-route none`). `guard()` refuses any other verb or path
   before the socket is opened, and a final check confirms that no other request was sent. The test asserts that the mock saw no `PUT`, `DELETE` or `PATCH`.
+- Maintenance reads: the phone runs its trace retention (at most hourly, it DELETEs old trace rows) inside `GET /api/publish`, `/api/publish/history` and `/api/live`.
+  By default the harness never sends these three (Canvas says "skipped"; the rollback and live-interpreter scores are then not measured) and a final check asserts it.
+  `--include-maintenance-reads` sends them: the run is then **not read-only** (the phone may delete old traces, debug data only). The verb guard and the single allowed POST are unchanged.
 - TLS: the peer certificate must be byte-identical to the `cert.der` that `m1-run.sh pair` pinned after the fingerprint check. On a mismatch nothing is sent.
 - The token is read from `auth.hdr` and is never printed. Errors show only the HTTP status and the fixed `error` code.
 - `GET /api/asks/:id` returns the composed prompt. The harness reads only its scores and ids and never writes the prompt to the report.
@@ -31,7 +35,7 @@ Options: `--samples N` adds up to N text snippets (80 chars) per list (default n
 |---|---|---|
 | 1 Capture | `GET /api/frames` (paged by `before`), `/api/frames/:id` (memory text, spread evenly over time), `/api/moments?day=`, `/api/scenes` | photo byte size, extraction confidence, per-frame needs-review, glasses-to-phone clock offset |
 | 2 Retrieval | `POST /api/retrieve/debug` (the phone's real retriever per mode); local BM25 reference over the memories read (comparison column); real-ask diagnostics from `GET /api/asks/:id` (re-runs retrieval as of the ask: mode, fallback, lexical/semantic/fused scores) | `POST /api/asks/:id/replay` calls the Answer model and is never sent. An older phone build without the route answers 404: the section then shows BM25 only |
-| 3 Canvas | `GET /api/pipelines(/:id)`, `/api/runs(/:id, /:id/proposal)`, `/api/publish`, `/api/publish/history`, `/api/live`, `/api/plans/status`, `/api/signals`, `/api/traces`, `/api/replays`, `/api/sweeps`, `/api/devices` | guard configs, flow (Query/Nudge) execution history; traces and replays need Developer mode (403 otherwise) |
+| 3 Canvas | `GET /api/pipelines(/:id)`, `/api/runs(/:id, /:id/proposal)`, `/api/publish`, `/api/publish/history`, `/api/live` (these three only with `--include-maintenance-reads`), `/api/plans/status`, `/api/signals`, `/api/traces`, `/api/replays`, `/api/sweeps`, `/api/devices` | guard configs, flow (Query/Nudge) execution history; traces and replays need Developer mode (403 otherwise) |
 | 4 Output | `GET /api/asks`, `/api/asks/:id` | ask latency, Nudges (no route), proposal undo |
 
 A route that answers anything other than 200 is recorded under "Unavailable routes" with its status code, and that section continues without it.
