@@ -30,7 +30,7 @@ class AutoStopActorTest {
     private fun randomEvent(r: Random): AutoStopEvent = when (r.nextInt(10)) {
         in 0..5 -> AutoStopEvent.Evaluate(randomWake(r), randomHub(r))
         6, 7 -> AutoStopEvent.ProcessStarted("process start", randomWake(r))
-        8 -> AutoStopEvent.UserStarted
+        8 -> if (r.nextBoolean()) AutoStopEvent.UserStarted else AutoStopEvent.HubForeground
         else -> AutoStopEvent.ManualStopped
     }
 
@@ -96,7 +96,7 @@ class AutoStopActorTest {
         val store = object : AutoStopStore {
             private val inner = InMemoryAutoStopStore()
             override fun load() = inner.load()
-            override fun save(s: AutoStopSnapshot) { if (gate && s.autoStoppedAtMs != 0L) { gate = false; inSave.countDown(); release.await(5, TimeUnit.SECONDS) }; inner.save(s) }
+            override fun save(s: AutoStopSnapshot): Boolean { if (gate && s.autoStoppedAtMs != 0L) { gate = false; inSave.countDown(); release.await(5, TimeUnit.SECONDS) }; return inner.save(s) }
         }
     }
 
@@ -166,7 +166,7 @@ class AutoStopActorTest {
         val store = object : AutoStopStore {
             private val inner = InMemoryAutoStopStore(AutoStopSnapshot(autoStoppedAtMs = 1L, reason = BackgroundPolicy.Away.NOT_WORN, nextWakeAtMs = 0L))
             override fun load() = inner.load().also { threads += "load@" + Thread.currentThread().name }
-            override fun save(s: AutoStopSnapshot) { threads += "save@" + Thread.currentThread().name; inner.save(s) }
+            override fun save(s: AutoStopSnapshot): Boolean { threads += "save@" + Thread.currentThread().name; return inner.save(s) }
         }
         val io = Executors.newSingleThreadExecutor { Thread(it, "actor-io") }
         val e = AutoStopEngine(store, { 1_000 * min }, io, { WakeInputs(true, 20, true, false) }, { true }, {}, {}, {})
@@ -184,7 +184,7 @@ class AutoStopActorTest {
         val inner = InMemoryHubRestartStore()
         val store = object : HubRestartStore {
             override fun load() = inner.load()
-            override fun save(s: HubRestartSnapshot) { if (gate.compareAndSet(true, false)) { inSave.countDown(); release.await(5, TimeUnit.SECONDS) }; inner.save(s) }
+            override fun save(s: HubRestartSnapshot): Boolean { if (gate.compareAndSet(true, false)) { inSave.countDown(); release.await(5, TimeUnit.SECONDS) }; return inner.save(s) }
         }
         val pool = Executors.newFixedThreadPool(2)
         var starts = 0
@@ -211,7 +211,7 @@ class AutoStopActorTest {
             val trace = Collections.synchronizedList(mutableListOf<Triple<WatchdogLadder.Event, Long, WatchdogLadder.State>>())
             val bad = Collections.synchronizedList(mutableListOf<String>())
             val pool = Executors.newFixedThreadPool(4)
-            val m = SerialStateMachine<WatchdogLadder.State, WatchdogLadder.Event, Nothing>(
+            val m = SerialStateMachine<WatchdogLadder.State, WatchdogLadder.Event, WatchdogLadder.Effect>(
                 load = { WatchdogLadder.State(saved = store.load()) }, reduce = WatchdogLadder::reduce, persisted = { it.saved }, save = { store.save(it.saved) },
                 now = { clock.get() }, executor = pool,
                 onStep = { e, t, s -> trace += Triple(e, t, s); if (store.load() != s.saved) bad += "diverged after $e" },

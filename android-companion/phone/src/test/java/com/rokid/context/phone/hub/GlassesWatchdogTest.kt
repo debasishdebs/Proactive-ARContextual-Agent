@@ -350,7 +350,7 @@ class GlassesWatchdogTest {
         val store = object : HubRestartStore {
             val inner = InMemoryHubRestartStore()
             override fun load() = inner.load()
-            override fun save(s: HubRestartSnapshot) { order += "save"; inner.save(s) }
+            override fun save(s: HubRestartSnapshot): Boolean { order += "save"; return inner.save(s) }
         }
         val t0 = 10 * 60_000L
         fun dog(now: Long, start: () -> Unit) = GlassesWatchdog(
@@ -382,7 +382,7 @@ class GlassesWatchdogTest {
         val store = object : HubRestartStore {
             val inner = InMemoryHubRestartStore()
             override fun load() = inner.load()
-            override fun save(s: HubRestartSnapshot) { rec("save"); gate.await(); inner.save(s) }
+            override fun save(s: HubRestartSnapshot): Boolean { rec("save"); gate.await(); return inner.save(s) }
         }
         val w = GlassesWatchdog(
             now = { 10 * 60_000L }, enabled = { true }, captureActive = { true }, hubRunning = { false }, link = { LinkState.OFFLINE }, lastHeardAtMs = { null },

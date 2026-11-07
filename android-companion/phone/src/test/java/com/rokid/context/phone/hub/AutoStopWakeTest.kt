@@ -66,7 +66,9 @@ class AutoStopWakeTest {
 
     @Test fun aColdWakeSavesTheProbeSoTheNewControllerLooksForFiveMinutes() {
         val s = stopped(nextAt = 1_000 * min); val scheduled = mutableListOf<Long>()
-        assertTrue(wake(s, 1_000 * min, scheduled)); assertTrue(s.wakeProbe()); assertEquals(0L, s.autoStoppedAtMs())
+        assertTrue(wake(s, 1_000 * min, scheduled)); assertTrue(s.wakeProbe())
+        assertTrue("issued is not started: the wake is in progress until the foreground report", s.autoStoppedAtMs() != 0L && s.load().wakeStartedAtMs != 0L)
+        assertEquals("a recovery wake at the start timeout", listOf(AutoStopMachine.WAKE_START_TIMEOUT_MS), scheduled)
         var stops = 0
         val c = AutoStopController(
             now = { 1_000 * min }, minutes = { 20 }, store = s, hubRunning = { true }, link = { com.rokid.context.core.model.LinkState.OFFLINE }, worn = { null },
@@ -74,6 +76,7 @@ class AutoStopWakeTest {
             linkAllowed = { true }, publishNote = {}, timeText = { "x" }, log = {}, executor = SerialStateMachine.DIRECT,
         )
         assertEquals("the 5 min probe, not the full 20", BackgroundPolicy.WAKE_PROBE_MS, c.evaluate())
+        assertEquals("the running hub ends the wake", 0L, s.autoStoppedAtMs()); assertEquals(0L, s.load().wakeStartedAtMs)
     }
 
     @Test fun aRefusedColdWakeSchedulesTheNextRung() {
@@ -84,7 +87,8 @@ class AutoStopWakeTest {
 
     @Test fun aClockSetBackDoesNotKeepTheColdWakeWaiting() {
         val s = stopped(nextAt = 20_000 * min); val scheduled = mutableListOf<Long>()
-        assertTrue("the deadline lies beyond any rung: the clock went back", wake(s, 1_000 * min, scheduled)); assertEquals(emptyList<Long>(), scheduled)
+        assertTrue("the deadline lies beyond any rung: the clock went back", wake(s, 1_000 * min, scheduled))
+        assertEquals("only the in-progress wake's recovery, no waiting for the far deadline", listOf(AutoStopMachine.WAKE_START_TIMEOUT_MS), scheduled)
     }
 
     @Test fun theWakeIsScheduledAsOneUniqueWorkManagerJobAndTheProbePersists() {
@@ -134,8 +138,9 @@ class AutoStopWakeTest {
             awaitParked(b); race.release.countDown(); b.join(5_000)
         } finally { race.release.countDown(); a.join(5_000) }
         assertEquals("one start, never two", 1, race.starts.get()); assertEquals("one rung consumed", 1, s.wakeStep())
-        assertEquals(BackgroundPolicy.BUSY_RECHECK_MS, ctl); assertEquals(false, wk); assertEquals(emptyList<Long>(), scheduled)
-        assertTrue("the loser did not clear the winner's probe", s.wakeProbe()); assertEquals(0L, s.autoStoppedAtMs())
+        assertEquals(BackgroundPolicy.BUSY_RECHECK_MS, ctl); assertEquals(false, wk)
+        assertEquals("only the in-progress wake's recovery (winner) and its resume (loser)", listOf(AutoStopMachine.WAKE_START_TIMEOUT_MS, AutoStopMachine.WAKE_START_TIMEOUT_MS), scheduled)
+        assertTrue("the loser did not clear the winner's probe", s.wakeProbe()); assertTrue("still in progress", s.load().wakeStartedAtMs != 0L)
     }
 
     /** The worker claims the rung and parks in its start; the controller's look is queued behind it and reduced after the claim settled. */
@@ -155,7 +160,8 @@ class AutoStopWakeTest {
     @Test fun aWorkerWakeThatWinsLeavesTheRacingControllerANoOpThatKeepsTheProbe() {
         val (s, race, r) = workerWinsControllerRaces(issued = true, up = true)
         assertEquals("one start, never two", 1, race.starts.get()); assertEquals(1, s.wakeStep())
-        assertTrue("the loser did not treat the running hub as a refusal", s.wakeProbe()); assertEquals(emptyList<Long>(), r.second)
+        assertTrue("the loser did not treat the running hub as a refusal", s.wakeProbe()); assertEquals(listOf(AutoStopMachine.WAKE_START_TIMEOUT_MS), r.second)
+        assertEquals("the controller saw the hub running: the wake is over", 0L, s.autoStoppedAtMs())
         assertEquals("the loser sees the woken hub and looks for the glasses for the short probe", BackgroundPolicy.WAKE_PROBE_MS, r.first)
     }
 

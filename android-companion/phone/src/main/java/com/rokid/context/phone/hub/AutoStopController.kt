@@ -103,6 +103,8 @@ class AutoStopEngine(
     private val log: (String) -> Unit = { PcLog.i(AutoStopController.TAG, it) },
     private val warn: (String) -> Unit = { PcLog.w(AutoStopController.TAG, it) },
     onStep: (AutoStopEvent, Long, AutoStopState) -> Unit = { _, _, _ -> },
+    /** Delayed persistence retries (null = the engine's own timer thread). */
+    schedule: ((Long, Runnable) -> Unit)? = null,
 ) {
     /** The live hub's side: its inputs, its effects. */
     class HubPort(
@@ -117,12 +119,26 @@ class AutoStopEngine(
         load = { AutoStopState(saved = store.load()) }, reduce = AutoStopMachine::reduce, persisted = { it.saved }, save = { store.save(it.saved) },
         now = now, executor = executor, prepare = ::prepare, run = ::run, onStep = onStep,
         onError = { warn("auto_stop step failed: ${it.javaClass.simpleName}") },
+        persistFailed = { e, attempt -> AutoStopEvent.PersistFailed(e, attempt) }, persistRecovered = AutoStopEvent.PersistRecovered, schedule = schedule,
     )
+
 
     fun submit(e: AutoStopEvent) = machine.submit(e)
 
-    /** What the rest of the app sees (the [BackgroundPolicy.Needs] inputs): a stop still being committed is not a stop yet. Null before the first step. */
-    fun visible(): AutoStopSnapshot? = machine.state()?.let { s -> if (s.pendingStop != null) s.saved.copy(autoStoppedAtMs = 0L, reason = null) else s.saved }
+    /**
+     * What the rest of the app sees (the [BackgroundPolicy.Needs] inputs). Safe "keep running" values: a stop still being committed or a wake in progress is not a
+     * stop, and while persistence is failing neither stop flag is reported. Null before the state is loaded (the caller then also assumes "keep running").
+     */
+    fun visible(): AutoStopSnapshot? = machine.state()?.let { s ->
+        when {
+            s.persistFailing -> s.saved.copy(autoStoppedAtMs = 0L, reason = null, manualStop = false)
+            s.pendingStop != null || s.saved.wakeStartedAtMs != 0L -> s.saved.copy(autoStoppedAtMs = 0L, reason = null)
+            else -> s.saved
+        }
+    }
+
+    /** Loads the state on the engine's IO context now (no event). */
+    fun warm() = machine.warm()
 
     private fun wakeNow(): WakeInputs? = port?.wake?.invoke() ?: wakeInputs()
 
@@ -153,6 +169,8 @@ class AutoStopEngine(
                 AutoStopEffect.Line.WAKE_ATTEMPT -> log("auto_stop wake attempt (${f.via})")
                 AutoStopEffect.Line.WAKE_ALREADY_RUNNING -> log("auto_stop wake: hub already running (${f.via})")
                 AutoStopEffect.Line.WAKE_REFUSED -> warn("auto_stop wake refused (${f.via})")
+                AutoStopEffect.Line.WAKE_TIMED_OUT -> warn("auto_stop wake timed out")
+                AutoStopEffect.Line.PERSIST_FAILED -> warn("persist_failed")
             }
         }
         return null

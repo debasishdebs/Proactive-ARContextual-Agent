@@ -17,12 +17,13 @@ class AutoStopControllerTest {
         var front = false; var lastFront = 0L; var busy = false; var run = false; var exempt = false; var allowed = true; var wakeIssued = true
         var stops = 0; var wakes = 0; var note: String? = null; val logs = mutableListOf<String>(); val scheduled = mutableListOf<Long>()
         val store = InMemoryAutoStopStore()
+        private var self: AutoStopController? = null
         val c = AutoStopController(
             now = { t }, minutes = { minutes }, store = store, hubRunning = { running }, link = { link }, worn = { worn }, inFront = { front }, lastFrontMs = { lastFront },
-            busy = { busy }, runActive = { run }, stopHub = { stops++; running = false }, wakeHub = { wakes++; if (wakeIssued) running = true; wakeIssued }, exempt = { exempt }, linkAllowed = { allowed },
+            busy = { busy }, runActive = { run }, stopHub = { stops++; running = false }, wakeHub = { wakes++; if (wakeIssued) { running = true; self?.engine?.submit(AutoStopEvent.HubForeground) }; wakeIssued }, exempt = { exempt }, linkAllowed = { allowed },
             publishNote = { note = it }, timeText = { "14:05" }, log = { logs += it }, scheduleWake = { scheduled += it },
             executor = SerialStateMachine.DIRECT,
-        )
+        ).also { self = it } // the service reports the foreground after an issued start
         fun advance(ms: Long) { t += ms }
     }
 
@@ -165,7 +166,7 @@ class AutoStopControllerTest {
     private class Recording(val log: MutableList<String>) : AutoStopStore {
         private val inner = InMemoryAutoStopStore()
         override fun load() = inner.load()
-        override fun save(s: AutoStopSnapshot) { synchronized(log) { log += "save(at=${s.autoStoppedAtMs != 0L},step=${s.wakeStep},probe=${s.wakeProbe})@${Thread.currentThread().name}" }; inner.save(s) }
+        override fun save(s: AutoStopSnapshot): Boolean { synchronized(log) { log += "save(at=${s.autoStoppedAtMs != 0L},step=${s.wakeStep},probe=${s.wakeProbe},waking=${s.wakeStartedAtMs != 0L})@${Thread.currentThread().name}" }; return inner.save(s) }
     }
 
     @Test fun theStopAndTheWakeCommitOnIoBeforeTheStopAndStartAndNothingRunsOnTheCallerThread() {
@@ -180,11 +181,12 @@ class AutoStopControllerTest {
         )
         try {
             kotlinx.coroutines.runBlocking(main) { c.evaluateNow(); t += 20 * min; c.evaluateNow() }
-            assertEquals("the mark is durable before the stop", listOf("save(at=true,step=0,probe=false)", "stop"), events.map { it.substringBefore('@') })
+            assertEquals("the mark is durable before the stop", listOf("save(at=true,step=0,probe=false,waking=false)", "stop"), events.map { it.substringBefore('@') })
             assertTrue("nothing on the caller thread: $events", events.none { it.contains("@fake-main") })
             events.clear(); t += 60 * min
             kotlinx.coroutines.runBlocking(main) { c.evaluateNow() }
-            assertEquals("rung + probe durable BEFORE the start, then the clear", listOf("save(at=true,step=1,probe=true)", "start", "save(at=false,step=1,probe=true)"), events.map { it.substringBefore('@') })
+            assertEquals("rung + probe durable BEFORE the start, then the wake in progress (cleared only by the foreground report)",
+                listOf("save(at=true,step=1,probe=true,waking=false)", "start", "save(at=true,step=1,probe=true,waking=true)"), events.map { it.substringBefore('@') })
             assertTrue("nothing on the caller thread: $events", events.none { it.contains("@fake-main") })
         } finally { ex.shutdownNow() }
     }

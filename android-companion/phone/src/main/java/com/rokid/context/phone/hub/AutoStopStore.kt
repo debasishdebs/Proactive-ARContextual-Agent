@@ -21,12 +21,14 @@ data class AutoStopSnapshot(
     val wakeStep: Int = 0,
     val nextWakeAtMs: Long = 0L,
     val wakeProbe: Boolean = false,
+    /** A wake's start was issued at this time and the service has not reported the foreground yet (0 = none); see [AutoStopEvent.HubForeground]. */
+    val wakeStartedAtMs: Long = 0L,
 )
 
-/** Where the [AutoStopSnapshot] lives. [save] is durable when it returns (it runs on the state machine's IO context, before the effects it guards). */
+/** Where the [AutoStopSnapshot] lives. [save] runs on the state machine's IO context, before the effects it guards; true = durable (false = the commit failed). */
 interface AutoStopStore {
     fun load(): AutoStopSnapshot
-    fun save(s: AutoStopSnapshot)
+    fun save(s: AutoStopSnapshot): Boolean
 
     // Read-only conveniences (tests, diagnostics): what is persisted now.
     fun manualStop() = load().manualStop
@@ -41,7 +43,7 @@ interface AutoStopStore {
 class InMemoryAutoStopStore(initial: AutoStopSnapshot = AutoStopSnapshot()) : AutoStopStore {
     @Volatile private var s = initial
     override fun load() = s
-    override fun save(s: AutoStopSnapshot) { this.s = s }
+    override fun save(s: AutoStopSnapshot): Boolean { this.s = s; return true }
 }
 
 /** One prefs file, one commit per snapshot (the keys are the ones the earlier per-field store wrote, so an upgrade keeps the state). */
@@ -51,13 +53,14 @@ class PrefsAutoStopStore(private val prefs: () -> SharedPreferences) : AutoStopS
             manualStop = p.getBoolean("manual_stop", false), autoStoppedAtMs = p.getLong("auto_stopped_at", 0L),
             reason = BackgroundPolicy.Away.values().firstOrNull { it.token == p.getString("reason", null) }, awaySinceMs = p.getLong("away_since", 0L),
             wakeStep = p.getInt("wake_step", 0), nextWakeAtMs = p.getLong("wake_next_at", 0L), wakeProbe = p.getBoolean("wake_probe", false),
+            wakeStartedAtMs = p.getLong("wake_started_at", 0L),
         )
     }
 
-    override fun save(s: AutoStopSnapshot) {
+    override fun save(s: AutoStopSnapshot): Boolean =
         prefs().edit().putBoolean("manual_stop", s.manualStop).putLong("auto_stopped_at", s.autoStoppedAtMs).putString("reason", s.reason?.token)
-            .putLong("away_since", s.awaySinceMs).putInt("wake_step", s.wakeStep).putLong("wake_next_at", s.nextWakeAtMs).putBoolean("wake_probe", s.wakeProbe).commit()
-    }
+            .putLong("away_since", s.awaySinceMs).putInt("wake_step", s.wakeStep).putLong("wake_next_at", s.nextWakeAtMs).putBoolean("wake_probe", s.wakeProbe)
+            .putLong("wake_started_at", s.wakeStartedAtMs).commit()
 
     companion object {
         const val PREFS = "hub_auto_stop"
