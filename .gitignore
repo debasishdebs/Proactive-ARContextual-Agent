@@ -38,3 +38,14 @@ android-companion/.kotlin/
 # local tooling and stray files
 .claude/
 window.xml
+
+# Signing material and release artefacts (never commit)
+*.jks
+*.keystore
+*.p12
+*.pem
+*.aab
+*.idsig
+keystore.properties
+signing/
+.env*

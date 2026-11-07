@@ -1,146 +1,55 @@
-# Proactive Context Agent
+# Proactive Context
 
-Battery-aware memory and context agent for Rokid glasses + Android companion.
+Proactive Context (PCA) is a private, on-device memory and context agent for Rokid glasses. It captures sparse, battery-aware moments on the glasses, builds searchable memory on the phone, and answers voice questions and nudges from that memory.
 
-## Goal
-Build a separate app stack that:
-- Captures sparse/burst visual context on glasses.
-- Processes and summarizes frames on phone.
-- Maintains `memory.md` + structured context stores.
-- Answers voice-triggered queries using recent and long-term memory.
+Three apps, one repo (`android-companion/`):
 
-## Repository Layout
-- `docs/ARCHITECTURE.md`: system design and state flow.
-- `docs/PHONE_PROCESSING_POLICY.md`: battery + charging processing rules.
-- `android-companion/glasses/`: glasses-side camera frame relay app (CameraX + SPP).
-- `src/model_gateway.py`: uniform provider interface (API/local interchangeable).
-- `src/phone_request_policy.py`: scheduling policy for uploads + local inference.
-- `reference/language_models.py`: copied reference abstraction source.
+- **Glasses app** (`:glasses`): camera capture, HUD, voice and marks on the Rokid glasses. The glasses link is the Rokid CXR link.
+- **Phone app** (`:phone`): the hub. Memory, retrieval, the canvas web UI, settings, Forget and exports.
+- **Watch app** (`:watch`): a Wear OS app that sends passive motion signals to the phone over the Data Layer. LiveFit's motion push to PCA was removed.
 
-## Locked Decisions (Current)
-- Glasses capture policy uses activity-driven intervals + battery guardrails.
-- Phone processing:
-  - If battery `> 30%`: send/process every `15 min`.
-  - If battery `<= 30%`: send/process only while charging.
-- Local model processing:
-  - Run only when charging, or when battery `> 70%`.
+## Architecture
 
-## Next Build Steps
-1. Implement Android WorkManager jobs from `phone_request_policy.py` logic.
-2. Add mobile settings screen for intervals/thresholds/provider endpoints.
-3. Add memory store (`short_term`, `medium_term`, `long_term`) + weekly compaction.
-4. Add retrieval path (keyword + vector index) for voice query answering.
+- **Hub**: a phone foreground service that owns the glasses link, the watchdog and relauncher (with back-off), and the background policy including AutoStop when the glasses are away.
+- **Capture**: activity-driven photo capture with battery guardrails, signals and classifier thresholds, marks (a mark takes a photo), Moments and Scenes built from them.
+- **Memory**: an encrypted Room database (SQLCipher) with facts, photos, Moments, marks and a cleanup outbox; one RAG core (`RagCore`) under Ask and Nudge; Forget with scoped deletion and a residue oracle in tests.
+- **Canvas**: a node-based pipeline editor served by the phone (Query and Nudge flows, triggers, delivery routes, device capabilities).
+- **Previewer**: one `previewMoment` entry and one list view for every item kind.
 
-## Voice marks
-Say a short command after push-to-talk (glasses or phone) to save a mark for the last 10 seconds. No hotword, English only. Voice marks are always on in this build (no switch yet).
-<!-- voice-marks-readme:begin -->
-- **Mark a moment**: "mark that", "mark this", "mark it"
-- **I missed that**: "i missed that"
-- **Undo a mark**: "undo mark", "cancel mark"
-<!-- voice-marks-readme:end -->
-Add what you were doing ("mark that, I'm driving"); unknown words in the same sentence as "mark that" save a plain mark, while "note that the meeting is at five" stays a normal note. Notification, tile and home-button marks are not available yet. Audio is never stored or uploaded and recognition is on-device. Full guide: [docs/voice-marks.md](docs/voice-marks.md).
+## Modules
 
-## Project Tracking Files
-- `MEMORY.md`: durable facts and locked decisions.
-- `CONTEXT.md`: active problem framing and constraints.
-- `HANDOFF.md`: current session status and next steps.
-- `DECISIONS.md`: timestamped decision log.
+`:phone`, `:glasses`, `:watch`, `:core:model`, `:core:capture`, `:core:hud`, `:core:ui`, `:services:ai` (includes the llama.cpp submodule), `:services:memory`, `:services:orchestration`, `:services:glasses-link`, `:services:voice`, `:services:connectors`.
 
-## Android Companion Progress
-Implemented baseline modules:
-- policy engine and provider-block orchestration
-- queue/idempotency core
-- room schema entities
-- summarizer/critic worker contracts
-- model gateway lifecycle skeleton
-- onboarding/config/diagnostics ui contracts
-- security migration/export safeguards
-- multilingual retrieval routing
-- telemetry event reporter
+## Build
 
-## Real Client Wiring (Android)
-- Azure KG GPT client now reads build-time values from `.env`:
-  - `AZURE_KG_ENDPOINT`
-  - `AZURE_KG_54_API_KEY`
-  - optional `AZURE_KG_DEPLOYMENT` (defaults to `gpt-5.4`)
-- Ollama client uses `OLLAMA_BASE_URL` + `OLLAMA_MODEL` (default model `llama3.1:8b`).
-- Local runtime selection is now configurable:
-  - `LOCAL_RUNTIME_MODE=native_first|native_only|ollama_only`
-  - `LOCAL_NATIVE_MODEL_PATH=/absolute/path/to/model.gguf`
-  - Default is `native_first` (try on-device llama.cpp, fallback to Ollama only if unavailable).
+Needs JDK 17, the Android SDK (platform 36, NDK 28.2.13676358, CMake 3.22.1), git-lfs (`git lfs install && git lfs pull`) and the llama.cpp submodule (`git submodule update --init`). Set `ANDROID_HOME` or `sdk.dir` in the untracked `android-companion/local.properties`. The first build compiles llama.cpp and takes 10+ minutes.
 
-### True on-device model (Android)
-- Yes, native on-device inference is supported via llama.cpp JNI path in app (`LlamaCppNativeProvider`).
-- No server hosting is required in `native_first` / `native_only` modes once:
-  - native library is bundled in APK (`libllama_jni.so`), and
-  - GGUF model is present at `LOCAL_NATIVE_MODEL_PATH`.
-- If native runtime is unavailable and mode is:
-  - `native_first`: app falls back to Ollama provider.
-  - `native_only`: app raises configuration/runtime error (expected, by design).
-
-### Ollama runtime note
-- Docker is not run inside Android app runtime.
-- Recommended setup is running Ollama on host/laptop or local server and connecting from Android over network:
-  - Emulator default: `http://10.0.2.2:11434`
-  - Physical device: use your machine LAN IP, e.g. `http://192.168.x.x:11434`
-
-### Local Ollama quick start (host)
-```bash
-docker run -d --name ollama -p 11434:11434 ollama/ollama:latest
-docker exec -it ollama ollama pull llama3.1:8b
-```
-
-### Android orchestration
-- WorkManager scheduler added:
-  - periodic frame ingest (15 min)
-  - periodic critic job (3h)
-  - one-shot summarizer enqueue
-
-## Glasses Frame Relay (Real Camera Path)
-- `glasses` captures camera frames with CameraX (not display `screencap`).
-- Guardrails enforced on glasses before send:
-  - reject dark/black frames by luminance threshold
-  - reject near-duplicate frames via perceptual hash distance
-  - reject under low battery policy (`<=10%` and not charging)
-  - send-rate throttle and single in-flight send
-- Compression strategy:
-  - compress on glasses to JPEG before transfer (default quality ~62, width capped to 360 px)
-  - send over Bluetooth SPP to phone bridge (`RokidBridgeService`) payload type `rokid_frame`
-- Phone bridge adds second-layer guardrail to reject blank/dark payloads before ingest.
-
-### Build
 ```bash
 cd android-companion
-./gradlew :phone:assembleDebug :glasses:assembleDebug
+./gradlew --no-daemon --offline test :phone:assembleDebug :glasses:assembleDebug :watch:assembleDebug
 ```
 
-## Prompt Templates (Editable)
-- Location: `android-companion/phone/src/main/assets/prompts/`
-- Files:
-  - `system_global.txt`: shared system behavior for all tasks.
-  - `write_context_explicit.txt`: explicit remember/writeContext requests.
-  - `write_context_batched.txt`: scheduled/batched frame-to-memory summarization.
-  - `read_context_answer.txt`: readContext / answer generation.
-  - `critic_validation.txt`: critic validation pass for summaries.
-  - `re_summarize.txt`: recovery prompt for low-confidence re-summarization.
-- Runtime usage:
-  - `SummarizerWorkerJob` composes `system_global + write_context_batched`.
-  - `CriticWorkerJob` composes `system_global + critic_validation`.
-  - Prompt hash is logged for audit/debug without exposing full prompt text.
+Full test gate: `tools/gate.sh`. Model endpoints and keys are entered in the app, never in the repo.
 
-## Build from a fresh clone (dependencies)
+## Install rules
 
-Everything needed to build is in git except the items below; no key, token or `local.properties` was needed on the maintainer's machine.
+- Use `adb install -r` only. **Never uninstall the phone app**: the SQLCipher key lives in the Android Keystore, so an uninstall deletes the database, and Room migrations are one-way. Back up with [docs/runbook.md](docs/runbook.md) before every install.
+- The phone and watch apps share the applicationId `com.rokid.context` and must be signed with the **same key**, or the Data Layer will not pair them.
+- Builds are debug-signed and sideloaded for now. No APKs are published on GitHub.
+- The glasses install over USB adb.
 
-- **JDK 17** (`JAVA_HOME`). The Gradle wrapper (8.13) downloads itself.
-- **Android SDK** with platform 36, build-tools, **NDK 28.2.13676358** and **CMake 3.22.1** (SDK Manager). Point `ANDROID_HOME` at it, or set `sdk.dir` in `android-companion/local.properties` (untracked).
-- **git-lfs**: run `git lfs install` once, then `git lfs pull` (one test fixture, `nomic/reference.json`, is an LFS file).
-- **The llama.cpp submodule**: clone with `--recurse-submodules`, or run `git submodule update --init` (do not use `--reference`).
-- **Build:** `cd android-companion && ./gradlew :phone:assembleDebug :glasses:assembleDebug`. The first build compiles llama.cpp natively and takes 10+ minutes; allow about 6 GB of free RAM. Full test gate: `tools/gate.sh`.
-- **Install on devices:** phone with `adb install -r` after a backup (never uninstall: the app holds the database key, and Room migrations are one-way); glasses over USB adb; the watch app is the Live AR Fit repo. Model endpoints and keys are entered in the app, never in the repo.
-- **Optional tools:** `gh` (releases), `gitleaks` (run before any push), the Codex CLI (reviews), an Android emulator AVD (the encrypted-migration device test runs only there), Podman (slice 3b, later).
-- **Intentionally not in git:** APKs and build outputs, `local.properties`, phone database backups, local worktree snapshots. `code-agent/` has the working rules and the handoff.
+## Versions
 
-## AI-agent context
+The v0.9.5 to v0.9.9 train, and the v1.0.0-rc1 draft, are described in `code-agent/releases/` (one note per version). `code-agent/` also holds the working rules, handoffs and review history for AI coding agents; start at [code-agent/README.md](code-agent/README.md).
 
-`code-agent/` holds the project's working memory for AI coding agents and new contributors: the current handoff, working rules, Claude memory snapshot, Codex reviews and the per-task briefs and reports. Start at [`code-agent/README.md`](code-agent/README.md).
+## Privacy
+
+Everything stays on the device. The database is encrypted with SQLCipher and its key never leaves the Android Keystore. Voice recognition is on-device and audio is never stored. Forget removes a fact, photo, Moment or time range together with the copies derived from it (exports, run outputs, lineage). Prefs files holding keys, set-up or per-device state are excluded from backup and device transfer (checked by `BackupRulesTest`); the watch and glasses exclude everything.
+
+## Docs
+
+- [docs/voice-commands.md](docs/voice-commands.md): what you can say.
+- [docs/voice-marks.md](docs/voice-marks.md): voice marks.
+- [docs/runbook.md](docs/runbook.md): install, backup and recovery.
+- [tools/QUALITY-EVAL.md](tools/QUALITY-EVAL.md): the read-only quality evaluation harness.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/PHONE_PROCESSING_POLICY.md](docs/PHONE_PROCESSING_POLICY.md): design notes (older; the code is the source of truth).

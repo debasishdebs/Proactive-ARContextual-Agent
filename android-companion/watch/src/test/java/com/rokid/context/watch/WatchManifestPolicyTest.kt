@@ -39,4 +39,19 @@ class WatchManifestPolicyTest {
         val items = Regex("<item>([^<]+)</item>").findAll(wear).map { it.groupValues[1] }.toList()
         assertEquals(listOf("pca_watch"), items)
     }
+
+    @Test fun everyDomainIsExcludedFromEveryBackupSection() {
+        assertTrue("android:dataExtractionRules=\"@xml/data_extraction_rules\"" in manifest)
+        assertTrue("android:fullBackupContent=\"@xml/backup_rules\"" in manifest)
+        val domains = listOf("root", "file", "database", "sharedpref", "external")
+        val extraction = File("src/main/res/xml/data_extraction_rules.xml").readText()
+        for (section in listOf("cloud-backup", "device-transfer")) {
+            val body = Regex("<$section>(.*?)</$section>", RegexOption.DOT_MATCHES_ALL).find(extraction)?.groupValues?.get(1) ?: error(section)
+            for (d in domains) assertTrue(Regex("""<exclude domain="$d" path="\."\s*/>""").containsMatchIn(body), "$section $d")
+            assertTrue("<include" !in body, "$section has an include")
+        }
+        val legacy = File("src/main/res/xml/backup_rules.xml").readText()
+        for (d in domains) assertTrue(Regex("""<exclude domain="$d" path="\."\s*/>""").containsMatchIn(legacy), "backup_rules $d")
+        assertTrue("<include" !in legacy)
+    }
 }
