@@ -32,11 +32,12 @@ Options: `--samples N` adds up to N text snippets (80 chars) per list (default n
 
 ## Frame ids and the memory corpus
 
-Every `/api/<x>/:id` route accepts only ids matching `^[A-Za-z0-9:_-]{1,64}$`, sent literally (the phone does not percent-decode). Real frame ids end in `.v2`
-(`<ts>_rokid_..._<hash>.v2`), and `.` is outside that pattern, so `GET /api/frames/:id` answers `400 bad_request` for every real frame (a phone-side bug: the
-id pattern or the frame id format has to change). The harness never sends an id the route would reject; it counts them and, so the retrieval self-test still runs,
-harvests memories through `POST /api/retrieve/debug` with `snippets: true` (read-only, <= 80 chars per memory, `--max-harvest` queries, seeded with generic words and
-then the rarest words seen). That corpus is only what the LEXICAL retriever can surface, so recall is optimistic; the report says so. Frame-route memories (full text) win when both exist.
+Pipeline, run and Ask routes accept only ids matching `^[A-Za-z0-9:_-]{1,64}$`. The frame routes (`/api/frames/:id`, `/thumb`, `/image`, and `frameIds` in run bodies) accept
+`^(?!\.)(?!.*\.\.)(?!.*\.$)[A-Za-z0-9:_.-]{1,64}$`, so real frame ids (`<ts>_rokid_..._<hash>.v2`, about 58 characters) work; ids are sent literally (no percent-decoding), and `..`, a leading or
+trailing `.`, `/`, `\\`, control characters, spaces and over-long ids answer `400 bad_request`. The harness reads memory text (full, not snippets) through `GET /api/frames/:id`.
+It still never sends an id the pattern would reject (tolerance for an odd id or an older phone build): it counts them and falls back to harvesting memories through
+`POST /api/retrieve/debug` with `snippets: true` (read-only, <= 80 chars per memory, `--max-harvest` queries, seeded with generic words and then the rarest words seen).
+That corpus is only what the LEXICAL retriever can surface, so recall is optimistic; the report says so. Frame-route memories (full text) win when both exist.
 Ask views answering `409 refused` count as refused by the forget gate, not as an unavailable route.
 
 ## Routes per section
