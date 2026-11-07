@@ -21,4 +21,17 @@ object ForgetFence {
         val frameIds = cites.map { it.removePrefix(PHOTO_CITE_PREFIX) }
         return frameIds.chunked(500).flatMap { db.forgetDao().keyframeIds(it) }.toSet().size == frameIds.toSet().size
     }
+
+    /**
+     * Read-time fence (review fix 2026-11-07): those of [ids] that are live now, by the same rule as [allLive] (a memory that exists and is not INVALIDATED,
+     * a `frame:<id>` cite whose `frame_meta` row exists). A read result that must not show forgotten ids or text keeps only these.
+     */
+    suspend fun liveIds(db: ContextDatabase, ids: Collection<String>): Set<String> {
+        val wanted = ids.toSet()
+        if (wanted.isEmpty()) return emptySet()
+        val (cites, memoryIds) = wanted.partition { it.startsWith(PHOTO_CITE_PREFIX) }
+        val liveMemories = memoryIds.chunked(500).flatMap { db.forgetDao().memories(it) }.filter { it.reviewState != ReviewState.INVALIDATED }.map { it.id }
+        val liveFrames = cites.map { it.removePrefix(PHOTO_CITE_PREFIX) }.chunked(500).flatMap { db.forgetDao().keyframeIds(it) }.map { PHOTO_CITE_PREFIX + it }
+        return (liveMemories + liveFrames).toSet()
+    }
 }

@@ -7,6 +7,7 @@ It never prints the session token, the pairing code or any secret; memory text a
 
 Sub-commands: capture | retrieval | canvas | output | all   (see tools/QUALITY-EVAL.md)
 Safety: GET only, plus POSTs on an explicit read-only allowlist (empty by default); every other verb or path is refused before a byte is sent.
+The GETs that run the phone's trace retention (MAINTENANCE_READS: it may DELETE old trace rows) are skipped unless --include-maintenance-reads.
 """
 import argparse, collections, json, math, os, random, re, ssl, sys, time, http.client, urllib.parse
 
@@ -20,6 +21,16 @@ ALLOWED_METHODS = ("GET", "POST")
 # (the phone's real retriever, no model call, no write). It must look like a retrieval route; "none" disables it.
 DEFAULT_RETRIEVE_ROUTE = "/api/retrieve/debug"
 READ_ONLY_POSTS = set()
+# GET routes whose phone handler also runs trace retention (CanvasBackendImpl.prune(): at most hourly, it DELETEs old trace rows), so reading them is not
+# purely read-only. Skipped unless --include-maintenance-reads.
+MAINTENANCE_READS = ("/api/publish", "/api/publish/history", "/api/live")
+
+
+def is_needs_review(v):
+    """A proposal memory's `review` is the string 'OK' or 'NEEDS_REVIEW' (both truthy); a legacy boolean True also counts."""
+    return v is True or (isinstance(v, str) and v.strip().upper() == "NEEDS_REVIEW")
+
+
 DESTRUCTIVE_HINTS = ("delete", "rollback", "publish", "freeze", "save", "cancel", "start", "stop", "import", "replay", "rebuild",
                      "scores", "enabled", "capability", "debug-shadow", "restore", "use-settings", "logout", "pair", "derived")
 
@@ -627,7 +638,7 @@ def eval_canvas(ctx, out):
             pr = cl.get("/api/runs/%s/proposal" % urllib.parse.quote(str(r.get("runId")), safe=""), tag="/api/runs/:id/proposal")
             if isinstance(pr, dict) and pr.get("saveable") is not None:
                 mm = pr.get("memories") or []
-                nr += sum(1 for x in mm if x.get("review"))
+                nr += sum(1 for x in mm if is_needs_review(x.get("review")))
                 if pr.get("saveable") or pr.get("saved"):
                     prop_tot += 1; prop_saved += 1 if pr.get("saved") else 0
         items_tot += ni; items_err += ne; items_rev += nr
@@ -641,36 +652,40 @@ def eval_canvas(ctx, out):
     m["proposals"] = (prop_tot, prop_saved)
     if items_tot:
         L.append("- node results read (last %d runs per pipeline): %d; errors %s; needs-review %s" % (a.runs_per_pipeline, items_tot, pct(items_err, items_tot), pct(items_rev, items_tot)))
-    pub = cl.get("/api/publish", tag="/api/publish")
-    hist = cl.get("/api/publish/history?limit=50", tag="/api/publish/history")
-    if isinstance(pub, dict):
-        stack = pub.get("stack") or []
-        L.append("- active publishes: %d (%s)" % (len(stack), ", ".join("%s/%s %s@%s" % (s.get("kind"), s.get("mode"), s.get("pipelineId"), s.get("version")) for s in stack)))
+    if not getattr(a, "include_maintenance_reads", False):
+        L.append("- publish, publish history, live interpreter: skipped (their GET runs the phone's trace retention, which may delete old traces; "
+                 "pass --include-maintenance-reads to read them)")
     else:
-        L.append("- active publish: **unavailable** (%s)" % cl.unavailable.get("/api/publish"))
-    if isinstance(hist, list):
-        kinds = collections.Counter(str(h.get("kind")) for h in hist)
-        rb = [h for h in hist if h.get("rolledBackAt")]
-        flows = [h for h in hist if "flow" in str(h.get("kind")).lower()]
-        m["rollback_share"] = share(len(rb), len(hist)); m["publishes"] = len(hist)
-        L.append("- publish history: %d rows, kinds %s; rolled back %d (%s), reasons %s" % (
-            len(hist), dict(kinds), len(rb), pct(len(rb), len(hist)), dict(collections.Counter(str(h.get("rollbackReason")) for h in rb))))
-        L.append("- flow plans (Query/Nudge) published: %d; still active %d; last executions: unavailable (no flow-execution route)" % (
-            len(flows), sum(1 for h in flows if not h.get("rolledBackAt"))))
-    else:
-        L.append("- publish history: **unavailable** (%s)" % cl.unavailable.get("/api/publish/history"))
-    live = cl.get("/api/live?limit=100", tag="/api/live")
-    if isinstance(live, dict) and live.get("active"):
-        fr = live.get("frames") or []
-        be = sum(1 for f in fr if f.get("batch") == "ERROR")
-        ne = sum(1 for f in fr for n in f.get("nodes") or [] if n.get("error"))
-        m["live_batch_error_share"] = share(be, len(fr)); m["live_frames"] = len(fr)
-        L.append("- live interpreter (%s %s@%s): interpreted %s, fallbacks %s; recent frames %d, batch ERROR %d (%s), node errors %d" % (
-            live.get("mode"), live.get("pipelineId"), live.get("version"), live.get("interpreted"), live.get("fallbacks"), len(fr), be, pct(be, len(fr)), ne))
-    elif isinstance(live, dict):
-        L.append("- live interpreter: none active")
-    else:
-        L.append("- live interpreter: **unavailable** (%s)" % cl.unavailable.get("/api/live"))
+        pub = cl.get("/api/publish", tag="/api/publish")
+        hist = cl.get("/api/publish/history?limit=50", tag="/api/publish/history")
+        if isinstance(pub, dict):
+            stack = pub.get("stack") or []
+            L.append("- active publishes: %d (%s)" % (len(stack), ", ".join("%s/%s %s@%s" % (s.get("kind"), s.get("mode"), s.get("pipelineId"), s.get("version")) for s in stack)))
+        else:
+            L.append("- active publish: **unavailable** (%s)" % cl.unavailable.get("/api/publish"))
+        if isinstance(hist, list):
+            kinds = collections.Counter(str(h.get("kind")) for h in hist)
+            rb = [h for h in hist if h.get("rolledBackAt")]
+            flows = [h for h in hist if "flow" in str(h.get("kind")).lower()]
+            m["rollback_share"] = share(len(rb), len(hist)); m["publishes"] = len(hist)
+            L.append("- publish history: %d rows, kinds %s; rolled back %d (%s), reasons %s" % (
+                len(hist), dict(kinds), len(rb), pct(len(rb), len(hist)), dict(collections.Counter(str(h.get("rollbackReason")) for h in rb))))
+            L.append("- flow plans (Query/Nudge) published: %d; still active %d; last executions: unavailable (no flow-execution route)" % (
+                len(flows), sum(1 for h in flows if not h.get("rolledBackAt"))))
+        else:
+            L.append("- publish history: **unavailable** (%s)" % cl.unavailable.get("/api/publish/history"))
+        live = cl.get("/api/live?limit=100", tag="/api/live")
+        if isinstance(live, dict) and live.get("active"):
+            fr = live.get("frames") or []
+            be = sum(1 for f in fr if f.get("batch") == "ERROR")
+            ne = sum(1 for f in fr for n in f.get("nodes") or [] if n.get("error"))
+            m["live_batch_error_share"] = share(be, len(fr)); m["live_frames"] = len(fr)
+            L.append("- live interpreter (%s %s@%s): interpreted %s, fallbacks %s; recent frames %d, batch ERROR %d (%s), node errors %d" % (
+                live.get("mode"), live.get("pipelineId"), live.get("version"), live.get("interpreted"), live.get("fallbacks"), len(fr), be, pct(be, len(fr)), ne))
+        elif isinstance(live, dict):
+            L.append("- live interpreter: none active")
+        else:
+            L.append("- live interpreter: **unavailable** (%s)" % cl.unavailable.get("/api/live"))
     ps = cl.get("/api/plans/status", tag="/api/plans/status")
     L.append("- capture plan status: %s" % (("keys " + ", ".join(sorted(ps.keys())[:12])) if isinstance(ps, dict) else "**unavailable** (%s)" % cl.unavailable.get("/api/plans/status")))
     sg = cl.get("/api/signals", tag="/api/signals")
@@ -869,6 +884,8 @@ def main(argv=None):
     p.add_argument("--retrieve-route", default=DEFAULT_RETRIEVE_ROUTE,
                    help="the read-only retrieval POST route (default %s; 'none' = local BM25 only)" % DEFAULT_RETRIEVE_ROUTE)
     p.add_argument("--modes", default="LEXICAL,SEMANTIC,HYBRID")
+    p.add_argument("--include-maintenance-reads", action="store_true",
+                   help="also GET %s; the phone runs its trace retention on them (may DELETE old traces), so the run is then NOT read-only" % ", ".join(MAINTENANCE_READS))
     a = p.parse_args(argv)
     if a.retrieve_route.lower() in ("none", "off", ""):
         a.retrieve_route = None
@@ -886,6 +903,8 @@ def main(argv=None):
     md = render(out, cl, a, S, issues)
     bad = [x for x in cl.log if x[0] not in ALLOWED_METHODS or (x[0] == "POST" and x[1] not in READ_ONLY_POSTS)]
     assert not bad, "a non-read-only request was sent"
+    if not a.include_maintenance_reads:
+        assert not [x for x in cl.log if x[1] in MAINTENANCE_READS], "a maintenance read was sent without --include-maintenance-reads"
     if a.out:
         with open(a.out, "w") as f:
             f.write(md)

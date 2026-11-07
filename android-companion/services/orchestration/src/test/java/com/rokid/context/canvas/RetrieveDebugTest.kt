@@ -36,7 +36,8 @@ class RetrieveDebugTest {
     private lateinit var ai: AiGraph
     private fun service(mode: RetrievalMode = RetrievalMode.LEXICAL) = AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings(mode = mode) })
     private suspend fun add(id: String, text: String, at: Long) = mem.memories.add(LegacyImporter.toMemory(id, "short_term", 0.9, at, text))
-    private fun rd(gate: DataOpGate = DataOpGate(), gen: () -> Long = { 1L }, mode: RetrievalMode = RetrievalMode.LEXICAL) = RetrieveDebug(service(mode), { gate }, gen, { 1_000L })
+    private fun rd(gate: DataOpGate = DataOpGate(), gen: () -> Long = { 1L }, mode: RetrievalMode = RetrievalMode.LEXICAL, answers: AnswerService = service(mode)) =
+        RetrieveDebug(answers, { gate }, gen, { 1_000L }, live = { com.rokid.context.memory.forget.ForgetFence.liveIds(mem.db, it) })
 
     @Before fun setUp() {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
@@ -88,5 +89,21 @@ class RetrieveDebugTest {
         assertTrue(rd(gate).run("milk", null, null, null, false) is RetrieveDebug.Result.Ok)
         val gens = ArrayDeque(listOf(1L, 2L))
         assertEquals(RetrieveDebug.Result.Busy, rd(gen = { gens.removeFirst() }).run("milk", null, null, null, false))
+    }
+
+    /** Review fix 2026-11-07: a fact Forget that completes after the retrieval read (no gate, no wipe generation change) must not leak its id or snippet. */
+    @Test fun aForgetCompletingMidRetrievalIsFencedOut() = runBlocking<Unit> {
+        add("m1", "milk carton in the fridge", 10); add("m2", "milk bottle on the shelf", 20)
+        val forget = com.rokid.context.memory.forget.ForgetService(mem.db, com.rokid.context.memory.ProposalRepository(mem.db.proposalDao(), mem.db.actionDao(), mem.db)) { 1_000L }
+        val seen = mutableListOf<String>()
+        val rd = RetrieveDebug(service(), { DataOpGate() }, { 1L }, { 1_000L }, live = { ids ->
+            seen += ids
+            forget.forgetFact("m1") // completes after the retriever read m1, before the result leaves
+            com.rokid.context.memory.forget.ForgetFence.liveIds(mem.db, ids)
+        })
+        val r = rd.run("milk", null, null, null, snippets = true) as RetrieveDebug.Result.Ok
+        assertTrue("the retriever did return m1", "m1" in seen)
+        assertEquals(listOf("m2"), r.hits.map { it.memoryId }); assertEquals(listOf(1), r.hits.map { it.rank })
+        assertTrue(r.hits.none { it.snippet!!.contains("carton") })
     }
 }

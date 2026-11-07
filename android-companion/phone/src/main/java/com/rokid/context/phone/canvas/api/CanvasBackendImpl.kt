@@ -178,7 +178,7 @@ class CanvasBackendImpl(
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
             }
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, lazy { com.rokid.context.canvas.RetrieveDebug(answers()) }, thumbnailer, plans, helperJobs, momentResolver)
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, lazy { com.rokid.context.canvas.RetrieveDebug(answers(), live = { ids -> com.rokid.context.memory.forget.ForgetFence.liveIds(MemoryGraph.get(app).db, ids) }) }, thumbnailer, plans, helperJobs, momentResolver)
         }
 
         /** The built-in executors plus [extra]; an extra executor never replaces a built-in node type. */
