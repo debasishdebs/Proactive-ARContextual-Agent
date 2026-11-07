@@ -68,7 +68,8 @@ class PromptEditorTest {
         MemoryGraph.get(ctx).memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 10, "Milk carton in the fridge"))
         val mem = MemoryGraph.get(ctx)
         vm = PromptEditorViewModel("ANSWER", ai, TestBedInputs(mem, AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() })), work = main.dispatcher)
-        withTimeout(5_000) { vm.state.first { !it.loading && it.endpointId == "az" } }
+        // compatFor != null: the initial schema check (real Default thread) has landed; save() is a silent no-op until gate (1) holds.
+        withTimeout(5_000) { vm.state.first { !it.loading && it.endpointId == "az" && it.compatFor != null } }
         vm.onInputText("where is the milk")
     }
 

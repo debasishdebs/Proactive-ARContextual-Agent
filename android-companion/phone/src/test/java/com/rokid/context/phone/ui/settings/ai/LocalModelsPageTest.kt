@@ -5,6 +5,7 @@ import com.rokid.context.ai.local.LocalModels
 import com.rokid.context.data.models.LocalModelState
 import android.app.Application
 import android.content.Context
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -88,9 +89,16 @@ class LocalModelsPageTest {
         gateway = FakeGateway(File(ctx.filesDir, "models_test").apply { deleteRecursively() })
     }
 
-    /** Dispose the composition first so no flow collector in it still reads Room when the DB is closed (a flaky closed-pool failure). */
+    /**
+     * Flipped off in [tearDown] so the composition really leaves the tree (a second compose.setContent throws, so it cannot be used to
+     * dispose): the page's LaunchedEffects (a reload per gateway state emission, each reading Room via swap.impact()) are cancelled
+     * before the DB closes, instead of racing it ("connection pool has been closed").
+     */
+    private val shown = mutableStateOf(true)
+
     @After fun tearDown() {
-        runCatching { compose.runOnIdle { }; compose.setContent { }; compose.waitForIdle() }
+        shown.value = false
+        compose.waitForIdle()
         TestGraph.close(ctx)
     }
 
@@ -100,7 +108,7 @@ class LocalModelsPageTest {
     private fun row(s: LocalModelsSource) = runBlocking { s.load() }.single()
 
     private fun show(s: LocalModelsSource) {
-        compose.setContent { PcTheme { LocalModelsRoute(s, onBack = {}) } }
+        compose.setContent { if (shown.value) PcTheme { LocalModelsRoute(s, onBack = {}) } }
         compose.waitUntil(5_000) { compose.onAllNodes(hasText(bge.title)).fetchSemanticsNodes().isNotEmpty() }
     }
 
