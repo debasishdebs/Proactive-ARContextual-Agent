@@ -6,6 +6,11 @@ import com.rokid.context.data.models.LocalModelState
 import android.app.Application
 import android.content.Context
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.room.Room
+import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.MemoryMaintenance
+import com.rokid.context.memory.db.ContextDatabase
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -48,6 +53,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Records every store call; [onDelete] runs inside delete(), so a test can look at the world at that moment. */
 private class FakeGateway(private val dir: File) : LocalModelGateway {
@@ -80,25 +88,43 @@ class LocalModelsPageTest {
     private val bge = LocalModels.byId("bge-small-en-v1.5-q8")!!
     private val endpointId = LocalModelsSource.endpointIdFor(bge)
     private lateinit var ai: AiGraph
+    private lateinit var graph: MemoryGraph
     private lateinit var gateway: FakeGateway
     private val mobile = FakeMobileData()
     private var reindexes = 0
 
+    /**
+     * This test's own Room executor, so [tearDown] can wait out a query already running when the page is disposed. The default
+     * (the process-wide arch_disk_io pool) cannot be drained, and a query that started before the dispose could still reach the
+     * connection pool after [TestGraph.close]: "connection pool has been closed", surfacing in this or a later test.
+     */
+    private val roomExecutor: ExecutorService = Executors.newFixedThreadPool(4)
+
     @Before fun setUp() {
-        TestGraph.fresh(ctx); ai = TestSettings.ai(ctx)
+        val db = Room.inMemoryDatabaseBuilder(ctx, ContextDatabase::class.java).allowMainThreadQueries().addCallback(MemoryMaintenance.openCheck)
+            .setQueryExecutor(roomExecutor).setTransactionExecutor(roomExecutor).build()
+        MemoryGraph.resetForTests(db); graph = MemoryGraph.get(ctx); ai = TestSettings.ai(ctx)
         gateway = FakeGateway(File(ctx.filesDir, "models_test").apply { deleteRecursively() })
     }
 
-    /**
-     * Flipped off in [tearDown] so the composition really leaves the tree (a second compose.setContent throws, so it cannot be used to
-     * dispose): the page's LaunchedEffects (a reload per gateway state emission, each reading Room via swap.impact()) are cancelled
-     * before the DB closes, instead of racing it ("connection pool has been closed").
-     */
+    /** Flipped off in [tearDown] so the composition really leaves the tree (a second compose.setContent throws, so it cannot dispose). */
     private val shown = mutableStateOf(true)
+    private var pageShown = false
 
+    /**
+     * 1. Dispose the page, so its LaunchedEffects (a reload per gateway state emission, each reading Room) are cancelled: no new query
+     *    starts after this. Only when a page was shown: with no compose view yet in the sandbox, GlobalSnapshotManager is not running,
+     *    nobody applies a global-snapshot write, and waitForIdle spun 60 s on the pending change (AppNotIdleException; e2a8b265).
+     *    The write goes through its own applied snapshot, so it never leaves a pending global change behind.
+     * 2. Wait out any query that was already running, then close the DB.
+     */
     @After fun tearDown() {
-        shown.value = false
-        compose.waitForIdle()
+        if (pageShown) {
+            Snapshot.withMutableSnapshot { shown.value = false }
+            compose.waitForIdle()
+        }
+        roomExecutor.shutdown()
+        assertTrue("a Room query still running 10 s after the page was disposed", roomExecutor.awaitTermination(10, TimeUnit.SECONDS))
         TestGraph.close(ctx)
     }
 
@@ -108,6 +134,7 @@ class LocalModelsPageTest {
     private fun row(s: LocalModelsSource) = runBlocking { s.load() }.single()
 
     private fun show(s: LocalModelsSource) {
+        pageShown = true
         compose.setContent { if (shown.value) PcTheme { LocalModelsRoute(s, onBack = {}) } }
         compose.waitUntil(5_000) { compose.onAllNodes(hasText(bge.title)).fetchSemanticsNodes().isNotEmpty() }
     }
@@ -224,7 +251,6 @@ class LocalModelsPageTest {
 
     /** Roll back after a Nomic swap: bge is rebound and reactivated, the Nomic space is retired (its vectors kept for the grace). */
     @Test fun rollbackAfterNomicSwapRebindsBge() = runBlocking {
-        val graph = TestGraph.fresh(ctx); ai = TestSettings.ai(ctx)
         val s = nomicSource()
         gateway.set(bge, LocalModelState.Ready); gateway.set(nomic, LocalModelState.Ready)
         File(gateway.fileFor(nomic).parentFile, nomic.files[1].file).writeBytes(byteArrayOf(1))
@@ -325,7 +351,6 @@ class LocalModelsPageTest {
 
     /** Spec §F.2: Roll back appears only while a retired index is inside its 7-day grace. */
     @Test fun rollBackShownOnlyInGrace() {
-        val graph = TestGraph.fresh(ctx)
         var t = 1_000L
         val day = 24 * 60 * 60 * 1000L
         val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { t })
@@ -345,7 +370,6 @@ class LocalModelsPageTest {
 
     /** Review B I-1: EMBED is rebound to the target space's model BEFORE the reindex callback; unavailable model = no Roll back. */
     @Test fun rollBackRebindsBeforeTheReindexAndNeedsTheModel() {
-        val graph = TestGraph.fresh(ctx)
         val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { 1_000L })
         runBlocking {
             graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
@@ -369,7 +393,6 @@ class LocalModelsPageTest {
     }
 
     @Test fun rollBackHiddenAfterGraceAndDialogCarriesTheCounts() {
-        val graph = TestGraph.fresh(ctx)
         var t = 1_000L
         val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { t })
         runBlocking {
