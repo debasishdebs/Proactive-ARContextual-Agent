@@ -121,8 +121,9 @@ object LiveExtract {
     }
 
     /** [shadow] in the deps' scope, without awaiting. */
-    fun shadowAsync(deps: LiveDeps, photos: List<ExtractPhoto>, generation: Long) {
-        deps.scope.launch { shadow(deps, photos, generation) }
+    /** [guard]: the extraction's photo dispatch guard (codex r9 P1-1), carried into the launched shadow run so its uploads re-check liveness too. */
+    fun shadowAsync(deps: LiveDeps, photos: List<ExtractPhoto>, generation: Long, guard: kotlin.coroutines.CoroutineContext = kotlin.coroutines.EmptyCoroutineContext) {
+        deps.scope.launch(guard) { shadow(deps, photos, generation) }
     }
 
     /**

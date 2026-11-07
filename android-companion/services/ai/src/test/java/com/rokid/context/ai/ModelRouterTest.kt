@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.model.CallClass
 import com.rokid.context.model.ModelProvider
 import com.rokid.context.model.ModelReply
 import com.rokid.context.model.ModelRequest
@@ -278,5 +279,17 @@ class ModelRouterTest {
         ep("v", Capability.CHAT, Capability.VISION); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
         failures["v:vision"] = http(500)
         assertEquals("v/m", router.complete(Role.VISION_EXTRACT) { ModelRequest("q", img) }.text)
+    }
+
+    // ---- codex r9 P1-2: a refused photo call is never answered from text, on the SUMMARIZE chain or a fallback either, and keeps its own failure kind
+    @Test fun aRefusedPhotoCallNeverFallsToATextOnlySummarize() = runTest {
+        ep("v", Capability.CHAT, Capability.VISION); ep("t", Capability.CHAT)
+        bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow() // (a VISION_EXTRACT fallback must itself have vision: the binding rules refuse "t")
+        bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
+        failures["v:vision"] = http(400)
+        val e = err { router.completeFromFrames(CallClass.EXTRACT) { ModelRequest("q", img, requireImages = true) } }
+        assertTrue(e is ModelCallException)
+        assertTrue("the 400 is the reported failure, not 'not set': ${(e as ModelCallException).kind}", e.kind != FailureKind.NOT_SET)
+        assertEquals(listOf("v:vision"), calls)
     }
 }

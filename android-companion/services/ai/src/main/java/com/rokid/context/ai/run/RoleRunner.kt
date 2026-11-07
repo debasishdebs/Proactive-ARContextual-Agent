@@ -83,7 +83,7 @@ class RoleRunner(
             val cap = cutCap
             val build: (com.rokid.context.ai.Endpoint) -> ModelRequest = { e ->
                 val plan = StructuredOutput.plan(e, schema, call.key.name)
-                ModelRequest(text + plan.promptSuffix, call.images.takeIf { call.imagesOnlyOnEndpoint == null || call.imagesOnlyOnEndpoint == e.id }.orEmpty(), maxTokens = cap, format = plan.format, requireImages = call.key == PromptKey.INTENT_CLASSIFY)
+                ModelRequest(text + plan.promptSuffix, call.images.takeIf { call.imagesOnlyOnEndpoint == null || call.imagesOnlyOnEndpoint == e.id }.orEmpty(), maxTokens = cap, format = plan.format, requireImages = call.key in PHOTO_INPUT_KEYS)
             }
             val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
             attempts += reply
@@ -106,6 +106,11 @@ class RoleRunner(
     private companion object {
         const val TAG = "RoleRunner"
         const val MAX_ECHO = 400
+        /**
+         * Roles whose input IS the photo: every attempt must carry it, and a refused or failed image call is never retried as text (codex r9 P1-2: a
+         * VISION_EXTRACT retried without its photo returned captions guessed from the frame metadata, saved as confidence-1.0 OK memories).
+         */
+        val PHOTO_INPUT_KEYS = setOf(PromptKey.INTENT_CLASSIFY, PromptKey.VISION_EXTRACT)
         private val SAFE_PATH = Regex("^\\$[A-Za-z0-9_.\\[\\]]*$")
 
         /** No JSON, or JSON the decoder couldn't read: the problem line is fixed text. */

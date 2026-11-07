@@ -18,7 +18,13 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     open class ExportInProgress(message: String = "export in progress, try again") : IOException(message)
 
     /** A delete gave up waiting for a running write (a canvas Save): nothing was deleted, try again (a save is short). */
-    class WriteInProgress : ExportInProgress("save in progress, try again")
+    open class WriteInProgress(message: String = "save in progress, try again") : ExportInProgress(message)
+
+    /** A delete gave up waiting for a photo upload (a model call holding [dispatch]): nothing was deleted, try again. Shown like a running save (both are short and retryable). */
+    class UploadInProgress : WriteInProgress("photo upload in progress, try again")
+
+    /** A photo upload ([dispatch]) gave up waiting for a running delete: nothing was sent, the caller retries later. */
+    class DispatchBlocked : IOException("delete in progress, photo not sent")
 
     /** An export was refused because a delete is running: nothing was exported. */
     open class DeleteRunning(message: String = "busy: a delete is running") : IOException(message)
@@ -35,6 +41,8 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
     private var waiting = 0
     /** Writes that RESERVED the shared side (a Save holds it for its whole run); they do not exclude each other. */
     private var writers = 0
+    /** Photo uploads holding [dispatch] (codex r9 P1-1): a delete waits for them; exports and writes ignore them. */
+    private var dispatchers = 0
     /** Bumped on every change so a waiting delete re-checks. */
     private val changed = MutableStateFlow(0)
     private fun bump() { changed.value = changed.value + 1 }
@@ -90,6 +98,27 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
         }
     }
 
+    /**
+     * Codex r9 P1-1: runs [block] (one provider call that uploads photos, with its liveness re-check first) while no delete runs or waits, and keeps a
+     * dispatcher slot for its whole run, so a Forget, Delete all or retention pass either finished before the re-check (which then sees the photo gone and
+     * drops the call) or waits for the upload to end (bounded; then [UploadInProgress]). Waits at most [waitMs] for a running delete, then [DispatchBlocked]
+     * and [block] never runs. Does not exclude exports or writes. A waiting delete stops NEW uploads, so uploads cannot starve a delete.
+     */
+    suspend fun <T> dispatch(block: suspend () -> T): T {
+        var reserved = false
+        fun tryReserve() = synchronized(lock) { (deleters == 0 && waiting == 0).also { if (it) { dispatchers++; reserved = true } } }
+        try {
+            if (!tryReserve()) {
+                val ok = withTimeoutOrNull(waitMs) { changed.first { tryReserve() }; true } == true
+                if (!ok && !synchronized(lock) { reserved }) throw DispatchBlocked()
+            }
+            return block()
+        } finally {
+            synchronized(lock) { if (reserved) { dispatchers--; reserved = false } }
+            bump()
+        }
+    }
+
     /** True while an export, delete or write runs or a delete waits: a read that must not overlap them (the retrieve-debug route) fails closed. */
     fun busy(): Boolean = synchronized(lock) { exporters > 0 || deleters > 0 || waiting > 0 || writers > 0 }
 
@@ -106,26 +135,28 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
      */
     private suspend fun enterDelete() {
         synchronized(lock) {
-            if (exporters == 0 && writers == 0) { deleters++; return }
+            if (exporters == 0 && writers == 0 && dispatchers == 0) { deleters++; return }
             waiting++
         }
         var done = false
         var got = false
         var byWrite = false
+        var byUpload = false
         try {
             done = withTimeoutOrNull(waitMs) {
-                changed.first { synchronized(lock) { (exporters == 0 && writers == 0).also { if (it) testInPredicate?.invoke() } } }
+                changed.first { synchronized(lock) { (exporters == 0 && writers == 0 && dispatchers == 0).also { if (it) testInPredicate?.invoke() } } }
                 true
             } == true
         } finally {
             synchronized(lock) {
                 waiting--
-                if (done && exporters == 0 && writers == 0) { deleters++; got = true }
+                if (done && exporters == 0 && writers == 0 && dispatchers == 0) { deleters++; got = true }
                 byWrite = exporters == 0 && writers > 0
+                byUpload = exporters == 0 && writers == 0 && dispatchers > 0
             }
             bump()
         }
-        if (!got) throw if (byWrite) WriteInProgress() else ExportInProgress()
+        if (!got) throw if (byUpload) UploadInProgress() else if (byWrite) WriteInProgress() else ExportInProgress()
     }
 
     companion object {

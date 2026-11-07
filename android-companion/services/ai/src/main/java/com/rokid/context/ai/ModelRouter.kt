@@ -3,10 +3,12 @@ package com.rokid.context.ai
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.CallGate
+import com.rokid.context.model.DispatchGuard
 import com.rokid.context.model.LanguageModel
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.model.PassThroughGate
+import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -72,6 +74,8 @@ class ModelRouter(
             try {
                 route(summarize, build, skipPrimary = samePrimary, callClass)
             } catch (second: ModelCallException) {
+                // A photo-only call whose SUMMARIZE endpoint cannot take the photo: the vision failure is the real one (a 400 stays a 400, keeps its attempts and parking).
+                if (needsVision(second)) throw first
                 throw ModelCallException("Frame summary failed: ${first.message}; ${second.message}", first.retryable || second.retryable, second, ProviderErrors.worst(first.kind, second.kind))
             }
         }
@@ -123,6 +127,10 @@ class ModelRouter(
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {
+            if (first != null && needsVision(t)) {
+                // A photo-only call whose fallback cannot take the photo: report the primary's own failure, not "not set".
+                throw ModelCallException("Primary provider failed: ${safe(first, primaryKey, fallbackKey)}", !ProviderErrors.isPermanent(first), first, ProviderErrors.kindOf(first))
+            }
             val retryable = !ProviderErrors.isPermanent(t) || (first != null && !ProviderErrors.isPermanent(first))
             throw ModelCallException(
                 "Primary+fallback generation failed: ${safe(first, primaryKey, fallbackKey)}; ${safe(t, primaryKey, fallbackKey)}",
@@ -148,13 +156,21 @@ class ModelRouter(
         val request = build(e).let { r -> r.copy(temperature = r.temperature ?: b?.temperature, maxTokens = r.maxTokens ?: b?.maxTokens) }
         // Each provider call (the vision attempt and its text retry are two) takes its own permit.
         val start = System.nanoTime()
-        suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) { p.complete(r) }
+        // Codex r9 P1-1: a call carrying photos passes the caller's DispatchGuard inside its permit (a Forget during the permit wait drops it unsent).
+        suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
+            val guard = if (r.images.isNotEmpty()) currentCoroutineContext()[DispatchGuard] else null
+            if (guard == null) p.complete(r) else guard.send { p.complete(r) }
+        }
         if (request.requireImages && (request.images.isEmpty() || Capability.VISION !in e.capabilities)) {
-            throw ModelCallException("This call needs a vision endpoint and its photo", retryable = false, kind = FailureKind.NOT_SET)
+            PcLog.i(TAG, "vision_refused_no_text_retry endpoint_without_vision")
+            throw ModelCallException(NEEDS_VISION, retryable = false, kind = FailureKind.NOT_SET)
         }
         val reply = if (request.images.isNotEmpty() && Capability.VISION in e.capabilities) {
             try { gated(request) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
-                if (request.requireImages) throw t   // a text-only retry would guess without the photo
+                if (request.requireImages) {   // a text-only retry would guess without the photo (codex r9 P1-2)
+                    PcLog.w(TAG, "vision_refused_no_text_retry ${SafeLog.describe(t)}")
+                    throw t
+                }
                 PcLog.w(TAG, "vision failed, retrying as text: ${SafeLog.describe(t)}")
                 gated(request.copy(images = emptyList()))
             }
@@ -167,6 +183,12 @@ class ModelRouter(
     internal companion object {
         const val TAG = "ModelRouter"
         const val MAX_PROVIDER_TEXT = 200
+        const val NEEDS_VISION = "This call needs a vision endpoint and its photo"
+        /** True when [t] failed only because a photo-only request met an endpoint without vision (also when [route] wrapped that one failure). */
+        fun needsVision(t: Throwable?): Boolean = t is ModelCallException && t.kind == FailureKind.NOT_SET &&
+            generateSequence<Throwable>(t) { it.cause?.takeIf { c -> c !== it } }.take(3).any { it is ModelCallException && it.message == NEEDS_VISION }
+        /** Fixed log token: a photo call failed (or had no vision endpoint) and was NOT retried as text. */
+        const val VISION_REFUSED_NO_TEXT_RETRY = "vision_refused_no_text_retry"
 
         /**
          * Failure text for exception messages. Only our own fixed texts are kept ([ModelCallException], whose message is
