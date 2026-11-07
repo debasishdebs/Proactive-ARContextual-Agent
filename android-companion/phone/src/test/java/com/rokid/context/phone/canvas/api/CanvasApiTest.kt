@@ -393,6 +393,19 @@ class CanvasApiTest {
             mapOf("authorization" to "Bearer abc", "host" to "h:1", "origin" to "http://h:1"), ByteArray(0))).status)
     }
 
+    // codex r9 P2-4: run scoring (thumbs up/down, score notes) takes the same real frame ids; unsafe ones and a strict-only nodeId stay 400
+    @Test fun scoringAcceptsDotV2FrameIdsAndRejectsUnsafeOnes() {
+        for (id in listOf(realId, "f_1.v2")) {
+            assertEquals(id, 200, call("PUT", "/api/runs/run1/scores", """{"frameId":"$id","nodeId":"extract","score":1,"note":"good"}""").status)
+            assertEquals(listOf("run1", id, "extract", 1, "good"), be.lastScore)
+            assertEquals(id, 200, call("PUT", "/api/runs/run1/scores", """{"frameId":"$id","nodeId":"extract","score":-1}""").status)
+        }
+        for (bad in listOf("../x", "a..b", ".hidden", "a.", "a/b", "y".repeat(65))) {
+            assertEquals(bad, 400, call("PUT", "/api/runs/run1/scores", """{"frameId":"$bad","nodeId":"extract","score":1}""").status)
+        }
+        assertEquals(400, call("PUT", "/api/runs/run1/scores", """{"frameId":"$realId","nodeId":"a.v2","score":1}""").status)
+    }
+
     @Test fun unsafeFrameIdsAre400OnEveryFrameRoute() {
         val paths = listOf("../x", "..", ".", "a/../b", "%2e%2e", "%2e%2e/x", ".hidden", "a..b", "a.", "a%2Fb", "a\\b", "a\u0000b", "a\nb", "a b", "a\tb",
             "y".repeat(65), "y".repeat(62) + ".v2", "a/./b")

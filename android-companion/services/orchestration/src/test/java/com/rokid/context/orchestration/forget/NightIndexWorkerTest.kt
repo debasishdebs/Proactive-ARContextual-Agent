@@ -28,6 +28,7 @@ import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.work.OrchestrationScheduler
 import com.rokid.context.work.frames.ExtractOutcome
 import com.rokid.context.work.frames.KeyframePipeline
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -599,5 +600,24 @@ class NightIndexWorkerTest {
         assertFalse("scored low salience goes at the skipped window", scored.exists()); assertTrue("unscored is kept", unscored.exists())
         night(s = s).run()
         assertEquals(listOf("unscored"), calls.flatMap { it.first })
+    }
+
+    // ---- codex r9 P2-3: the night job and its catch-up share ONE run lock; a run that finds it held does nothing and writes no last_run_at
+    @Test fun nightAndCatchUpNeverRunConcurrently() = runBlocking<Unit> {
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        val prefs = ctx.getSharedPreferences("night_index", Context.MODE_PRIVATE); prefs.edit().clear().commit()
+        val inside = kotlinx.coroutines.CompletableDeferred<Unit>(); val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val first = async { NightRunLock.tryRun { inside.complete(Unit); release.await(); "ran" } }
+        inside.await()
+        assertTrue(NightRunLock.held)
+        assertNull("a second run while one holds the lock never starts", NightRunLock.tryRun { "second" })
+        for (catchUp in listOf(false, true)) {
+            val w = androidx.work.testing.TestListenableWorkerBuilder<NightIndexWorker>(ctx)
+                .setInputData(androidx.work.workDataOf(NightIndexWorker.KEY_CATCH_UP to catchUp)).build()
+            assertEquals(androidx.work.ListenableWorker.Result.success(), w.doWork())
+        }
+        assertFalse("no last_run_at was written by the skipped runs", prefs.contains("last_run_at"))
+        release.complete(Unit); assertEquals("ran", first.await())
+        assertFalse(NightRunLock.held); assertEquals("free again", NightRunLock.tryRun { "free again" })
     }
 }

@@ -34,6 +34,12 @@ import kotlin.coroutines.cancellation.CancellationException
 class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         if (!AppConfigStore.isPipelineEnabled(applicationContext)) return Result.success()
+        // Codex r9 P2-3: the night job and the catch-up are two unique works; ONE process-wide run lock keeps their drains and index backfills from
+        // overlapping, and the overdue check and the last_run_at write happen under it. A run that finds it held does nothing (the other one is working).
+        return NightRunLock.tryRun { locked() } ?: run { PcLog.i(TAG, "PcNight skipped: a run is in progress"); Result.success() }
+    }
+
+    private suspend fun locked(): Result {
         val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         if (inputData.getBoolean(KEY_CATCH_UP, false)) {
@@ -57,7 +63,7 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
                 onDescribed = { PipelineStatsStore.addDescribedBeforeDelete(applicationContext, it) },
             )
             // A run whose gate was open counts as a night run: the catch-up only fills in for nights the idle-mode job missed.
-            if (night.run().backfill != "gate") prefs.edit().putLong(K_LAST_RUN, now).apply()
+            if (night.run().backfill != "gate") prefs.edit().putLong(K_LAST_RUN, now).commit() // under the run lock: the next run reads it
             Result.success()
         } catch (c: CancellationException) {
             throw c
@@ -79,6 +85,20 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         const val KEY_CATCH_UP = "catch_up"
         private const val PREFS = "night_index"
         private const val K_LAST_RUN = "last_run_at"
+    }
+}
+
+/**
+ * Codex r9 P2-3: the one run lock shared by the night job and its catch-up (both run in the app process, WorkManager's only one). Try-lock only: a
+ * second run while one holds it returns null at once. A Mutex rather than a persisted lease: it cannot outlive a killed process, so no timeout is needed.
+ */
+internal object NightRunLock {
+    private val mutex = kotlinx.coroutines.sync.Mutex()
+    val held: Boolean get() = mutex.isLocked
+
+    suspend fun <T> tryRun(block: suspend () -> T): T? {
+        if (!mutex.tryLock()) return null
+        try { return block() } finally { mutex.unlock() }
     }
 }
 

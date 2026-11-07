@@ -231,6 +231,9 @@ class CanvasApi(
 
     private fun JsonObject.idField(key: String): String = id(str(key, 64))
 
+    /** A frame id in a request body: the FRAME_ID rule (real ids carry `.v2`), never the strict route [id] rule (codex r9 P2-4). */
+    private fun JsonObject.frameIdField(key: String): String = frameId(str(key, 64))
+
     private fun JsonObject.frameIds(): List<String> {
         val arr = this["frameIds"] as? JsonArray ?: throw bad("Missing \"frameIds\".")
         if (arr.size > MAX_FRAME_IDS) throw bad("At most $MAX_FRAME_IDS photos")
@@ -499,7 +502,7 @@ class CanvasApi(
     private suspend fun score(runId: String, req: HttpRequest): HttpResponse {
         val b = body(req)
         val s = b.int("score").also { if (it !in -1..1) throw bad("Score must be -1, 0 or 1.") }
-        backend.score(runId, b.idField("frameId"), b.idField("nodeId"), s, b.optString("note", MAX_NOTE) ?: "")
+        backend.score(runId, b.frameIdField("frameId"), b.idField("nodeId"), s, b.optString("note", MAX_NOTE) ?: "")
         return json(OK)
     }
 
