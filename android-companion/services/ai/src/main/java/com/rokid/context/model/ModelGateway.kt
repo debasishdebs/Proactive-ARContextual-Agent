@@ -61,7 +61,7 @@ data class ModelRequest(
  * [stored] (codex r14 RULE C): the prompt carries stored user content (memory text, mark labels, captions, facts, frame metadata). Every value but
  * [NONE] is stored, even with empty id sets (a mark-only Moment): the router then still takes the upload slot and checks the liveness' captured wipe
  * generation, so a Delete all after the text was read drops the call. Only [NONE], declared at a site whose prompt holds no stored content, skips it.
- * [frames]/[memories] are "these ids or nothing" helpers: empty input gives [NONE].
+ * [frames]/[memories] always declare stored content (codex r16: empty input is "stored content with no ids", never [NONE]); only an explicit [NONE] is source-free.
  */
 @ConsistentCopyVisibility
 data class PayloadSources private constructor(
@@ -78,8 +78,8 @@ data class PayloadSources private constructor(
             PayloadSources(frameIds.filter { it.isNotBlank() }.toSet(), memoryIds.filter { it.isNotBlank() }.toSet(), stored = true, markIds = markIds.filter { it.isNotBlank() }.toSet())
         /** Declared: no stored user content (photos, facts, captions, memories, labels, history) is in the prompt. The only value that skips the guard. */
         val NONE = PayloadSources(emptySet(), emptySet(), stored = false)
-        fun frames(ids: Collection<String>) = ids.filter { it.isNotBlank() }.toSet().let { if (it.isEmpty()) NONE else PayloadSources(frameIds = it) }
-        fun memories(ids: Collection<String>) = ids.filter { it.isNotBlank() }.toSet().let { if (it.isEmpty()) NONE else PayloadSources(memoryIds = it) }
+        fun frames(ids: Collection<String>) = PayloadSources(frameIds = ids.filter { it.isNotBlank() }.toSet())
+        fun memories(ids: Collection<String>) = PayloadSources(memoryIds = ids.filter { it.isNotBlank() }.toSet())
     }
 }
 

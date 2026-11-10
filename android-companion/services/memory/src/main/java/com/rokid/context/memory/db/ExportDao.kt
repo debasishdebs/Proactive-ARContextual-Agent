@@ -43,7 +43,8 @@ interface ExportDao {
 
 /** The ONE definition of an orphan memory (alias `m` = `memory`): a photo provenance (its `frameId` or a `frame_source` row) and, for every source frame, neither a `frame` row nor a `frame_meta` row. Used by the export and the one-time purge. */
 object MemoryOrphan {
-    const val SQL = "((m.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = m.id)) " +
-        "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = m.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)) " +
-        "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = m.frameId OR fm.frameId IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id)))"
+    // codex r16: a CARRIED row is not the memory's photo provenance (only what it may be derived from), so it never makes a memory non-orphan
+    const val SQL = "((m.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = m.id AND fs.role != 'CARRIED')) " +
+        "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = m.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id AND fs.role != 'CARRIED')) " +
+        "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = m.frameId OR fm.frameId IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = m.id AND fs.role != 'CARRIED')))"
 }

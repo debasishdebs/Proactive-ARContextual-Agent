@@ -86,7 +86,8 @@ class CanvasRunSave(
     /** Test seam: runs right after the load, before the save starts (a test wipes or deletes there). Null in production. */
     @Volatile internal var testAfterLoad: (suspend () -> Unit)? = null
 
-    private class Built(val facts: List<Fact>, val ok: List<Boolean>, val captions: List<FrameCaption>, val frames: Set<String>)
+    /** [carried]: per fact (same index), the photos the output item that produced it was derived from (codex r16: per saved memory, never the run's union). */
+    private class Built(val facts: List<Fact>, val ok: List<Boolean>, val captions: List<FrameCaption>, val frames: Set<String>, val carried: List<Set<String>> = emptyList())
 
     private class Loaded(val refusal: Reason?, val built: Built?)
 
@@ -121,6 +122,7 @@ class CanvasRunSave(
                 ExtractSave.saveExtraction(
                     app, prefix, ExtractOutput(b.facts, captions = emptyList(), provenance = true), b.frames, claims = null,
                     tier = MemoryTier.SHORT, reviewState = ReviewState.NEEDS_REVIEW, generation = gen, nowMs = clock(),
+                    carriedOf = { ids, index -> index?.let { b.carried.getOrNull(it) } ?: ids.toSet() }, // codex r16: only the item that produced this memory
                     inTransaction = { saved ->
                         if (db.canvasSlice3Dao().meta(key) != null) throw Marked() // a concurrent save won: roll this one back
                         // re-read inside the transaction what the load saw: the run must still be DONE and every source photo must still be a live row (a forgotten one is fenced by the tombstone check)
@@ -209,7 +211,8 @@ class CanvasRunSave(
         }
         val caps = captions.filterKeys { it in live }.map { FrameCaption(it.key, it.value) }
         val frames = (kept.flatMap { it.fact.sourceFrameIds + carriedOf[it.frameId].orEmpty() } + caps.map { it.frameId }).toSet()
-        return Loaded(null, Built(kept.map { it.fact.copy(tags = (it.fact.tags + TAG_CANVAS).distinct()) }, kept.map { it.ok }, caps, frames))
+        return Loaded(null, Built(kept.map { it.fact.copy(tags = (it.fact.tags + TAG_CANVAS).distinct()) }, kept.map { it.ok }, caps, frames,
+            kept.map { carriedOf[it.frameId].orEmpty() + it.fact.sourceFrameIds }))
     }
 
     companion object {

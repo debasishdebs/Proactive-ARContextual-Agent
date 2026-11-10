@@ -100,6 +100,35 @@ class QueueDrainReprocessTest {
         assertFalse(p.contains("secret diary"))
     }
 
+    private fun sourceCarrying(memoryId: String, cites: String, carries: String) = runBlocking {
+        fact(memoryId, "A note with a detail of $carries", frameId = cites)
+        MemoryGraph.get(ctx).db.frameSourceDao().insertAll(listOf(
+            com.rokid.context.memory.db.FrameSourceEntity(memoryId, cites, null, "FACT"), com.rokid.context.memory.db.FrameSourceEntity(memoryId, carries, null, "CARRIED"),
+        ))
+    }
+    private fun summaries() = runBlocking { MemoryGraph.get(ctx).memories.all().filter { it.type == "summary" } }
+
+    // codex r16 P1-2: the summary inherits its source memories' carried photos, so a later Forget of B reaches it
+    @Test fun aReprocessSummaryInheritsItsSourcesCarriedPhotos() {
+        sourceCarrying("rokid_mem_ma_0", cites = "A", carries = "B")
+        enqueue(QueuePayloads.reprocess("low", listOf("rokid_mem_ma_0")))
+        drain()
+        val s = summaries().single()
+        val rows = runBlocking { MemoryGraph.get(ctx).db.frameSourceDao().forMemory(s.id) }
+        assertTrue("A and B are carried: $rows", rows.filter { it.role == "CARRIED" }.map { it.frameId }.toSet().containsAll(setOf("A", "B")))
+        runBlocking { com.rokid.context.memory.forget.ForgetService(MemoryGraph.get(ctx).db, MemoryGraph.get(ctx).proposals) { 1_000 }.forgetMoment("B") }
+        assertTrue("Forget B removes the summary derived from it", summaries().isEmpty())
+    }
+
+    // codex r16 P1-3: the summary and its provenance commit together, re-fenced: a carried photo forgotten during the call drops the write
+    @Test fun aCarriedPhotoForgottenDuringTheCallDropsTheWholeSummary() {
+        sourceCarrying("rokid_mem_ma_0", cites = "A", carries = "B")
+        summarizeHook = { runBlocking { MemoryGraph.get(ctx).db.forgetDao().insertTombstone(ForgetTombstoneEntity("B", 1)) } }
+        enqueue(QueuePayloads.reprocess("low", listOf("rokid_mem_ma_0")))
+        drain()
+        assertTrue(summaries().isEmpty())
+    }
+
     /** Fix round 2: `nudge` is additive: absent (a job queued by an older build) means true, today's behaviour; only a describe / night save writes false. */
     @Test fun reprocessPayloadNudgeFlagIsAdditive() {
         val old = QueuePayloads.parse(QueuePayloads.reprocess("low", listOf("a")))

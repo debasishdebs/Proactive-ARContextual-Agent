@@ -26,9 +26,13 @@ abstract class ForgetDao {
     @Query("SELECT DISTINCT memoryId FROM memory_source WHERE sourceMemoryId IN (:ids)") abstract suspend fun childrenOf(ids: List<String>): List<String>
 
     @Query("SELECT * FROM memory WHERE id IN (:ids)") abstract suspend fun memories(ids: List<String>): List<MemoryEntity>
-    /** Memories citing [frameId], through `memory.frameId` or `frame_source`. */
-    @Query("SELECT id FROM memory WHERE frameId = :frameId UNION SELECT memoryId FROM frame_source WHERE frameId = :frameId")
+    /** Memories citing [frameId], through `memory.frameId` or a citation `frame_source` row (never CARRIED: that is [carriedMemoryIdsOfFrame]). */
+    @Query("SELECT id FROM memory WHERE frameId = :frameId UNION SELECT memoryId FROM frame_source WHERE frameId = :frameId AND role != 'CARRIED'")
     abstract suspend fun memoryIdsOfFrame(frameId: String): List<String>
+    /** Codex r16: memories only DERIVED from [frameId] (a CARRIED row, no citation): a Forget of the photo invalidates them, never their own photos. */
+    @Query("SELECT memoryId FROM frame_source WHERE frameId = :frameId AND role = 'CARRIED' AND memoryId NOT IN (SELECT id FROM memory WHERE frameId = :frameId) " +
+        "AND memoryId NOT IN (SELECT memoryId FROM frame_source WHERE frameId = :frameId AND role != 'CARRIED')")
+    abstract suspend fun carriedMemoryIdsOfFrame(frameId: String): List<String>
     /** Frames cited by [memoryIds] through `frame_source` (their `memory.frameId` comes from the memory rows). */
     /** The photos [memoryIds] cite. A `CARRIED` row (codex r15: a photo the memory may be derived from, e.g. a batch mate) is not a citation: Forget of the memory never locks or deletes that photo. */
     @Query("SELECT DISTINCT frameId FROM frame_source WHERE memoryId IN (:memoryIds) AND role != 'CARRIED'") abstract suspend fun sourceFramesOf(memoryIds: List<String>): List<String>
@@ -62,7 +66,7 @@ abstract class ForgetDao {
     @Query(
         "SELECT f.path FROM forget_tombstone t JOIN frame f ON f.id = t.frameId " +
             "WHERE f.path != '' AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = t.frameId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = t.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = t.frameId AND fs.role != 'CARRIED') " +
             "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = t.frameId)",
     )
     abstract suspend fun orphanTombstonedFramePaths(): List<String>
@@ -80,7 +84,7 @@ abstract class ForgetDao {
         "DELETE FROM forget_tombstone WHERE createdAt < :beforeMs AND frameId NOT IN (:keep) " +
             "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = forget_tombstone.frameId) " +
             "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = forget_tombstone.frameId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = forget_tombstone.frameId)",
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = forget_tombstone.frameId AND fs.role != 'CARRIED')",
     )
     abstract suspend fun pruneTombstones(beforeMs: Long, keep: List<String>): Int
 
@@ -104,7 +108,7 @@ abstract class ForgetDao {
      * does any frame whose cluster is not yet SUMMARIZED or FAILED_FINAL.
      */
     @Query("SELECT id FROM frame WHERE ts < :beforeMs AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame.id) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame.id AND fs.role != 'CARRIED') " +
             "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = frame.id) " +
             "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = frame.id AND s.state IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED')) " +
             "ORDER BY ts LIMIT :limit")
@@ -170,7 +174,7 @@ abstract class ForgetDao {
     /** How many of [frameIds] some memory cites now (`memory.frameId` or `frame_source`); not the description rule (that is [describedRefs]). */
     @Query(
         "SELECT COUNT(*) FROM frame f WHERE f.id IN (:frameIds) AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) " +
-            "OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id))",
+            "OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id AND fs.role != 'CARRIED'))",
     )
     abstract suspend fun citedCount(frameIds: List<String>): Int
 
@@ -254,7 +258,7 @@ abstract class ForgetDao {
         const val NOT_DESCRIBED = "AND NOT $DESCRIBED_BY_EXTRACTION"
         /** Codex r12: cited by some memory (`memory.frameId` or any `frame_source` row) yet not described: the photos only canvas/derived/review/member rows cite. */
         const val CITED_NOT_DESCRIBED =
-            "(EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source x WHERE x.frameId = f.id)) AND NOT $DESCRIBED_BY_EXTRACTION"
+            "(EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source x WHERE x.frameId = f.id AND x.role != 'CARRIED')) AND NOT $DESCRIBED_BY_EXTRACTION"
         /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
         const val SKIPPED_PHOTO =
             "AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +

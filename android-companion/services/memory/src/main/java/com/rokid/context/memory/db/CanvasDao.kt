@@ -157,7 +157,7 @@ abstract class CanvasDao {
     // --- frames for the picker (read-only joins over existing tables) ---
     @Query(
         "SELECT f.id AS id, f.ts AS ts, m.motion AS motion, m.dwell AS dwell, m.blur AS blur, s.state AS state, " +
-            "(SELECT COUNT(*) FROM frame_source fs WHERE fs.frameId = f.id) + (SELECT COUNT(*) FROM memory mm WHERE mm.frameId = f.id) AS liveCount " +
+            "(SELECT COUNT(*) FROM frame_source fs WHERE fs.frameId = f.id AND fs.role != 'CARRIED') + (SELECT COUNT(*) FROM memory mm WHERE mm.frameId = f.id) AS liveCount " +
             "FROM frame f LEFT JOIN frame_meta m ON m.frameId = f.id LEFT JOIN frame_state s ON s.frameId = f.id " +
             "WHERE f.ts < :beforeMs AND (:dwellOnly = 0 OR m.dwell = 1) AND f.id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY f.ts DESC LIMIT :limit",
     )
@@ -166,7 +166,7 @@ abstract class CanvasDao {
     /** [recentFrames] with a lower time bound (the day filter): `afterMs <= ts < beforeMs`. */
     @Query(
         "SELECT f.id AS id, f.ts AS ts, m.motion AS motion, m.dwell AS dwell, m.blur AS blur, s.state AS state, " +
-            "(SELECT COUNT(*) FROM frame_source fs WHERE fs.frameId = f.id) + (SELECT COUNT(*) FROM memory mm WHERE mm.frameId = f.id) AS liveCount " +
+            "(SELECT COUNT(*) FROM frame_source fs WHERE fs.frameId = f.id AND fs.role != 'CARRIED') + (SELECT COUNT(*) FROM memory mm WHERE mm.frameId = f.id) AS liveCount " +
             "FROM frame f LEFT JOIN frame_meta m ON m.frameId = f.id LEFT JOIN frame_state s ON s.frameId = f.id " +
             "WHERE f.ts >= :afterMs AND f.ts < :beforeMs AND (:dwellOnly = 0 OR m.dwell = 1) AND f.id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY f.ts DESC LIMIT :limit",
     )
@@ -190,7 +190,7 @@ abstract class CanvasDao {
     @Query(
         "SELECT m.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.type || ':' || m.tier || ':' || m.confidence || ':' || m.trusted || ':' || m.derived || ':' || m.createdAt || ':' || m.tags || ':' || m.text) AS rev FROM memory m WHERE m.frameId IN (:frameIds) AND m.reviewState != 'INVALIDATED' " +
             "UNION SELECT fs.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.type || ':' || m.tier || ':' || m.confidence || ':' || m.trusted || ':' || m.derived || ':' || m.createdAt || ':' || m.tags || ':' || m.text) AS rev FROM frame_source fs JOIN memory m ON m.id = fs.memoryId " +
-            "WHERE fs.frameId IN (:frameIds) AND m.reviewState != 'INVALIDATED'",
+            "WHERE fs.frameId IN (:frameIds) AND fs.role != 'CARRIED' AND m.reviewState != 'INVALIDATED'",
     )
     abstract suspend fun momentMemories(frameIds: List<String>): List<MomentMemoryRow>
 
@@ -200,13 +200,13 @@ abstract class CanvasDao {
      */
     @Query(
         "SELECT x.frameId AS frameId, m.id AS id, m.createdAt AS createdAt, m.text AS text FROM (SELECT id AS mid, frameId AS frameId FROM memory WHERE frameId IN (:frameIds) " +
-            "UNION SELECT memoryId AS mid, frameId AS frameId FROM frame_source WHERE frameId IN (:frameIds)) x JOIN memory m ON m.id = x.mid " +
+            "UNION SELECT memoryId AS mid, frameId AS frameId FROM frame_source WHERE frameId IN (:frameIds) AND role != 'CARRIED') x JOIN memory m ON m.id = x.mid " +
             "WHERE m.reviewState = 'OK' AND (m.derived = 0 OR NOT EXISTS (SELECT 1 FROM memory_source s WHERE s.memoryId = m.id) OR EXISTS (SELECT 1 FROM memory_source s JOIN memory m2 ON m2.id = s.sourceMemoryId " +
             "WHERE s.memoryId = m.id AND m2.reviewState != 'INVALIDATED'))",
     )
     abstract suspend fun momentVisibleTexts(frameIds: List<String>): List<MomentTextRow>
 
-    @Query("SELECT id, text, type FROM memory WHERE frameId = :frameId OR id IN (SELECT memoryId FROM frame_source WHERE frameId = :frameId) ORDER BY createdAt")
+    @Query("SELECT id, text, type FROM memory WHERE frameId = :frameId OR id IN (SELECT memoryId FROM frame_source WHERE frameId = :frameId AND role != 'CARRIED') ORDER BY createdAt")
     abstract suspend fun liveMemories(frameId: String): List<LiveMemoryRow>
 
     // --- helpers and the Forget cascade ---

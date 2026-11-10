@@ -242,6 +242,46 @@ Not done: `ForgetDao.citedCount` (used only by tests) still counts any citation.
    - The NodeProvenance/valueSources accumulators: start values, not declarations.
    - **Converted:** the QueueDrainWorker explicit write (item 2).
 
+## Codex r16: CARRIED fixed and kept simple
+
+- **Per saved memory.** `saveExtraction(carriedOf = { frameIds, index -> ... })` decides what each memory carries. By default a memory carries
+  the photos of the model calls that saw its photos. `ExtractOutput.callGroups` and `ClusterOutput.callGroups` hold those photos, in memory only.
+  `CanvasRunSave` passes the carried set of the output item that produced the memory, from the row lineage. The run's union is no longer used.
+- **Invalidation, never photo deletion.** `ForgetDao.memoryIdsOfFrame` lists citing memories only. A Forget of photo B also handles
+  `carriedMemoryIdsOfFrame(B)`: those memories go through `cascade(provenanceOnly = true)`. That removes their text, vectors, edges and
+  `frame_source` rows, invalidates descendants and redacts asks and nudges. It never locks, tombstones, deletes or Moment-drops the photos they cite.
+- **Queued reprocess.** The summary and all its provenance are written in one transaction. The transaction re-checks the wipe generation, the
+  source memories and tombstones over the union: reloaded frames plus every photo the source memories cite or carry. The summary links all of
+  them as CARRIED.
+- **Helpers.** `PayloadSources.frames()` and `memories()` never collapse to `NONE`; only an explicit `NONE` is source-free. RoleRunner adds image
+  refs only when there are some. TestBed assigns a liveness to any input whose sources are not `NONE`, so a NUDGE test with no ids is guarded.
+- **`frame_source` query audit.** CARRIED is included only where a query cascades or invalidates. It is excluded from content, citations,
+  description, retention, describe queue, clusters, statistics and UI. Per query:
+  - **Included (cascade or invalidation):**
+    - `WipeDao` delete-all.
+    - `FrameSourceDao.deleteForMemory`, `deleteForMemories`, `deleteForFrames`.
+    - `ForgetDao.deleteFrameSourcesFor`, `deleteFrameSourcesOfFrames`.
+    - `ForgetDao.carriedMemoryIdsOfFrame`: CARRIED only.
+    - `FrameSourceDao.forMemory`: provenance reads (the reprocess union, tests).
+  - **Excluded:**
+    - Forget citation set: `ForgetDao.memoryIdsOfFrame`, `MomentDao.memoryIdsOfFrames`, `ForgetDao.sourceFramesOf`, `remainingRefs`.
+    - Photo file and tombstone cleanup: `orphanTombstonedFramePaths`, `pruneTombstones`, legacy uncited-frame retention.
+    - Counts: `citedCount`, `CITED_NOT_DESCRIBED` / `strandedPhotos`, `EmbeddingDao.deletedPhotoCount` ("findable by text").
+    - Night job and frame state: `FrameStateDao.describedCount`, `resetForReprocess`, `FrameAdoptionDao.awaiting` and `extracted`.
+    - Moment content: `CanvasDao.momentMemories`, `momentVisibleTexts`.
+    - UI and API: `CanvasDao.liveMemories` (frame API), `recentFrames` and `recentFramesBetween` (picker live count), `FrameSourceDao.memoriesForFrame`.
+    - Export and purge: `MemoryOrphan.SQL`.
+  - **Already role-filtered:** `describedAmong`, `DESCRIBES` / `DESCRIBED_BY_EXTRACTION` / `STATE_DESCRIBED` and the grace subquery
+    (FACT/CLUSTER_REP), `NOT_A_REP` (CLUSTER_REP).
+  - **No role filter needed:** `PhotoSearchDeps` (table-change signal only).
+- **Tests (each confirmed failing under its own mutation):**
+  - `ForgetServiceTest.forgettingACarriedPhotoNeverDeletesThePhotoTheMemoryCites`.
+  - `ForgetServiceTest.contentReadersNeverShowACarriedMemoryAsThePhotosContent`.
+  - `CanvasProvenanceTest.anUnrelatedPhotosForgetLeavesTheOtherSavedMemoryAndItsPhoto`.
+  - `QueueDrainReprocessTest.aReprocessSummaryInheritsItsSourcesCarriedPhotos`.
+  - `QueueDrainReprocessTest.aCarriedPhotoForgottenDuringTheCallDropsTheWholeSummary`.
+  - `ImageDispatchChokePointTest.theIdHelpersNeverCollapseToNone` (no separate failing-first run; it asserts the new helper semantics directly).
+
 ## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
 
 The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the

@@ -100,7 +100,9 @@ object ClusterSave {
                 }
                 db.frameSourceDao().deleteForMemories(saved.map { it.memoryId }) // a re-run replaces a memory by id: its earlier provenance goes first
                 db.frameSourceDao().insertAll(rows)
-                db.frameSourceDao().insertAll(saved.flatMap { m -> (carried - m.frameIds.toSet()).map { FrameSourceEntity(m.memoryId, it, null, com.rokid.context.orchestration.ExtractSave.CARRIED) } })
+                // codex r16: per memory, the representatives of the call(s) that saw its photos (not every call of the output)
+                fun carriedOf(ids: List<String>): Set<String> = if (out.callGroups.isEmpty()) carried else out.callGroups.filter { g -> ids.any { it in g } }.flatten().toSet()
+                db.frameSourceDao().insertAll(saved.flatMap { m -> (carriedOf(m.frameIds) - m.frameIds.toSet()).map { FrameSourceEntity(m.memoryId, it, null, com.rokid.context.orchestration.ExtractSave.CARRIED) } })
                 // Members still IN_CLUSTER only: a member an ask claimed meanwhile stays EXTRACTING.
                 results.forEach { c ->
                     if (c.clusterId in failed) db.frameStateDao().settleCluster(c.clusterId, FrameState.NEAR_DUP.name, "cluster_failed", nowMs)
