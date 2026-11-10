@@ -35,6 +35,11 @@ data class CallMeta(
 data class NodeResult(
     val frameId: String, val value: CanvasValue?, val branch: String? = null, val error: String? = null, val meta: CallMeta? = null, val calls: Int = 0,
     val cause: Throwable? = null, val extracted: ExtractedBatch? = null,
+    /**
+     * Codex r17: set only by an executor that knows EXACTLY what the model request(s) behind this output contained (Vision: the attempts that carried
+     * this photo, with the sources of the context text they included). Null = the boundary's conservative chunk union ([NodeProvenance]).
+     */
+    val exactSources: com.rokid.context.model.PayloadSources? = null,
 ) {
     /** Never prints [cause] or [value]: a cause message can carry provider-derived text. */
     override fun toString() = "NodeResult(frameId=$frameId, branch=$branch, error=$error, calls=$calls)"

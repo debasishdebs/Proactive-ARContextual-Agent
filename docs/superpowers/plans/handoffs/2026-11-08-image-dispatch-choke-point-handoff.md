@@ -282,6 +282,28 @@ Not done: `ForgetDao.citedCount` (used only by tests) still counts any citation.
   - `QueueDrainReprocessTest.aCarriedPhotoForgottenDuringTheCallDropsTheWholeSummary`.
   - `ImageDispatchChokePointTest.theIdHelpersNeverCollapseToNone` (no separate failing-first run; it asserts the new helper semantics directly).
 
+## Codex r17: provenance follows the actual requests and edges
+
+The rule: a memory's CARRIED set is exactly the frames whose image or derived text was inside the model request(s) that produced its text. It is
+traced along the graph edges that feed memory.write, never by frame id, batch or run membership.
+
+- **Per attempt.** `ExtractSave.call` records one `callGroups` entry per ATTEMPT: that attempt's own images, plus the sources of the context text
+  only when context text was in its prompt. A batch that failed into singleton retries leaves only the singletons' groups. The Vision executor's
+  context provenance is taken from the items whose upstream JSON is actually in the prompt (none without JSON). Each Vision output reports
+  `NodeResult.exactSources`: the attempts that carried its photo. `NodeProvenance.of(value, exact)` uses that instead of the chunk union; every other
+  executor keeps the conservative union.
+- **Per edge.** `ItemFlow.Out` carries the value's sources and `ItemFlow.gather` returns, per input, the sources of the one edge that delivered it.
+  CanvasRunner and PipelineInterpreter build each node's items from that, not from a per-frame map shared across branches. Each row's lineage
+  gets its OWN provenance as `mf:` tokens, no longer accumulated per frame. `CanvasRunSave` rebuilds the outputs with each row's own sources and
+  gathers along the save node's incoming edges, so a side branch never feeds the save.
+- **One inheritance rule.** `ExtractSave.inheritedFrames(db, memoryIds)` returns every photo the memories cite or carry. The queued reprocess and
+  the Forget resummarizer both use it inside their writing transaction, link the result as CARRIED and drop the write if any photo is
+  forgotten. The resummarizer also removes a dropped summary's own `frame_source` rows.
+- **Tests (each confirmed failing under its own mutation):**
+  - `LiveExtractTest.singletonRetriesRecordOnlyTheirOwnPhoto`.
+  - `CanvasProvenanceTest.aSideBranchNeverAddsItsSourcesToTheSave`.
+  - `ResummarizeWorkerTest.aRebuiltSummaryInheritsItsSourcesPhotosAndGoesWithThem` (the Codex repro).
+
 ## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
 
 The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the

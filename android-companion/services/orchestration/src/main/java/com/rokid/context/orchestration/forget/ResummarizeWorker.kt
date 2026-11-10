@@ -149,6 +149,9 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
             // Forget fence: a source forgotten during the model call means the output may hold forgotten text.
             val now = liveSources(old.id).map { it.id }.toSet()
             if (now != sources.map { it.id }.toSet() || dao.memories(listOf(old.id)).isEmpty()) return@withTransaction false
+            // codex r17: the rebuilt summary inherits every photo its sources cite or carry (the shared rule), fenced here with the write
+            val inherited = com.rokid.context.orchestration.ExtractSave.inheritedFrames(db, sources.map { it.id })
+            if (inherited.toList().chunked(CHUNK).any { dao.tombstoned(it).isNotEmpty() }) return@withTransaction false
             val tags = out.entities.map { it.replace(TextHygiene.SEPARATORS, " ").trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.take(5).joinToString(" ")
             val confidence = minOf(out.confidence, sources.maxOf { it.confidence }).coerceIn(0.0, 1.0)
             db.memoryDao().insert(
@@ -159,6 +162,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
                 ),
             )
             dao.insertEdges(sources.map { MemorySourceEntity(newId, it.id) })
+            db.frameSourceDao().insertAll(inherited.map { com.rokid.context.memory.db.FrameSourceEntity(newId, it, null, com.rokid.context.orchestration.ExtractSave.CARRIED) })
             dao.insertEdges(dao.edgesTo(listOf(old.id)).map { MemorySourceEntity(it.memoryId, newId) })
             drop(old.id)
             true
@@ -172,7 +176,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
 
     private suspend fun drop(id: String) {
         val one = listOf(id)
-        dao.deleteEdgesFrom(one); dao.deleteEdgesTo(one); dao.deleteVectorsFor(one); dao.deleteMemories(one)
+        dao.deleteEdgesFrom(one); dao.deleteEdgesTo(one); dao.deleteVectorsFor(one); dao.deleteFrameSourcesFor(one); dao.deleteMemories(one)
     }
 
     companion object {

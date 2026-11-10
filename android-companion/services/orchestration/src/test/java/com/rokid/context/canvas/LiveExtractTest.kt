@@ -206,6 +206,23 @@ class LiveExtractTest {
 
     // ---- (c) failure, timeout, transient ----
 
+    // codex r17 P1-1: LIVE Photo -> Vision(batch=2) whose batch output is invalid: the successful singleton retries each saw one photo, so A's saved
+    // memory carries nothing of B and survives Forget B
+    @Test fun singletonRetriesRecordOnlyTheirOwnPhoto() = runBlocking<Unit> {
+        graph { p -> if (sentIds(p).size > 1) """{"facts":[],"captions":[]}""" else extractReply(p) }
+        val p = Pipeline(PipelineJson.SCHEMA, "fb", "Fallback", listOf(node(NodeTypes.INPUT_PHOTOS, "photos"), node(NodeTypes.VISION_EXTRACT, "ext", buildJsonObject {
+            put("batch", 2); putJsonObject("prompt") { put("source", "live") }
+        })), listOf(PipelineEdge("photos", "ext")))
+        publish(p, LiveMode.LIVE)
+        val out = LiveExtract.batch(deps(), photos("ex1", "ex2"), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive)
+        assertEquals("one group per successful attempt", setOf(setOf("ex1"), setOf("ex2")), out.batch.output.callGroups.toSet())
+        val saved = com.rokid.context.orchestration.ExtractSave.saveExtraction(app, "fb_", out.batch.output, setOf("ex1", "ex2"), null,
+            com.rokid.context.memory.db.MemoryTier.SHORT, com.rokid.context.memory.db.ReviewState.OK) as com.rokid.context.orchestration.ExtractSaveResult.Saved
+        val src = MemoryGraph.get(app).db.frameSourceDao()
+        for (m in saved.memories.filter { "ex1" in it.frameIds }) assertTrue("${m.memoryId} carries nothing of ex2", src.forMemory(m.memoryId).none { it.frameId == "ex2" })
+        assertTrue(saved.memories.any { "ex1" in it.frameIds })
+    }
+
     // codex r11 P2-3: a photo forgotten before the interpreter's call left ends the work item: no fallback extraction, no second permit
     @Test fun aForgottenPhotoEndsTheLiveBatchWithoutAFallback() = runBlocking<Unit> {
         intentGraph()

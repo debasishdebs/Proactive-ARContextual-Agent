@@ -177,15 +177,15 @@ class CanvasRunSave(
         if (p.nodes.any { it.type == NodeTypes.INPUT_MOMENTS || it.type == NodeTypes.INPUT_SCENES || it.type == NodeTypes.SRC_WATCH_MOTION }) return Loaded(Reason.NOT_PHOTO_RUN, null)
         // what each node produced per photo, as the runner held it while the run went
         val outputs = HashMap<String, MutableMap<String, ItemFlow.Out>>()
-        // codex r15: the photos each item's value was derived from, as the runner recorded them in the rows' lineage ("mf:<frameId>", RULE A union)
-        val carriedOf = HashMap<String, MutableSet<String>>()
+        // codex r15/r17: each row records the photos ITS value was derived from ("mf:<frameId>", the runner's per-row provenance); they travel with the
+        // value along the edges into the save, so a side branch that also read the photo never adds its sources
         for (row in db.canvasDao().items(runId)) {
-            row.batchId?.split('|')?.filter { it.startsWith(CanvasRunner.MEMBER_TOKEN) }?.forEach { carriedOf.getOrPut(row.frameId) { HashSet() } += it.removePrefix(CanvasRunner.MEMBER_TOKEN) }
             if (row.status != "OK") continue
             val v = CanvasValueJson.decodeExtraction(row.outputJson) ?: continue
-            outputs.getOrPut(row.nodeId) { LinkedHashMap() }[row.frameId] = ItemFlow.Out(v, row.branch)
+            val derivedFrom = row.batchId?.split('|')?.filter { it.startsWith(CanvasRunner.MEMBER_TOKEN) }?.map { it.removePrefix(CanvasRunner.MEMBER_TOKEN) }.orEmpty()
+            outputs.getOrPut(row.nodeId) { LinkedHashMap() }[row.frameId] = ItemFlow.Out(v, row.branch, com.rokid.context.model.PayloadSources.frames(derivedFrom))
         }
-        class Cand(val frameId: String, val fact: Fact, var ok: Boolean)
+        class Cand(val frameId: String, val fact: Fact, var ok: Boolean) { val carried = HashSet<String>() }
         val facts = LinkedHashMap<Triple<String, String, List<String>>, Cand>()
         val captions = LinkedHashMap<String, String>()
         for (sink in sinks) {
@@ -197,22 +197,23 @@ class CanvasRunSave(
                     val src = f.sourceFrameIds.ifEmpty { listOf(frameId) }.distinct().sorted()
                     val c = facts.getOrPut(Triple(f.text.trim(), f.type, src)) { Cand(frameId, f.copy(text = f.text.trim(), sourceFrameIds = src), true) }
                     if (!trusted) c.ok = false // a fact only counts as checked when every photo that carried it was
+                    c.carried += gathered.sources[frameId]?.frameIds.orEmpty()
                 }
                 x.captions.filter { it.caption.isNotBlank() && it.frameId == frameId }.forEach { captions.putIfAbsent(it.frameId, it.caption.trim()) }
             }
         }
         // valid memories only: the photo they came from must still be live (not forgotten, not tombstoned, not expired)
-        val candidates = (facts.values.flatMap { it.fact.sourceFrameIds + carriedOf[it.frameId].orEmpty() } + captions.keys).distinct()
+        val candidates = (facts.values.flatMap { it.fact.sourceFrameIds + it.carried } + captions.keys).distinct()
         val live = if (candidates.isEmpty()) emptySet() else PipelineRecords.framesByIds(app, candidates).map { it.id }.toSet()
         val kept = facts.values.mapNotNull { c ->
             val src = c.fact.sourceFrameIds.filter { it in live }
             // codex r15: a fact derived from a photo that is gone (forgotten) is not saved, even when its own cited photo is live
-            if (src.isEmpty() || carriedOf[c.frameId].orEmpty().any { it !in live }) null else Cand(c.frameId, c.fact.copy(sourceFrameIds = src), c.ok)
+            if (src.isEmpty() || c.carried.any { it !in live }) null else Cand(c.frameId, c.fact.copy(sourceFrameIds = src), c.ok).also { k -> k.carried += c.carried }
         }
         val caps = captions.filterKeys { it in live }.map { FrameCaption(it.key, it.value) }
-        val frames = (kept.flatMap { it.fact.sourceFrameIds + carriedOf[it.frameId].orEmpty() } + caps.map { it.frameId }).toSet()
+        val frames = (kept.flatMap { it.fact.sourceFrameIds + it.carried } + caps.map { it.frameId }).toSet()
         return Loaded(null, Built(kept.map { it.fact.copy(tags = (it.fact.tags + TAG_CANVAS).distinct()) }, kept.map { it.ok }, caps, frames,
-            kept.map { carriedOf[it.frameId].orEmpty() + it.fact.sourceFrameIds }))
+            kept.map { it.carried + it.fact.sourceFrameIds }))
     }
 
     companion object {

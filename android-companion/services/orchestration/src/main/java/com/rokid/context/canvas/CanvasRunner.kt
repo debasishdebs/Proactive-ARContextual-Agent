@@ -654,8 +654,6 @@ class CanvasRunner(
             val allMembers: Set<String> = members.values.flatten().toSet()
             val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null && wsel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
             val order = ids.withIndex().associate { it.value to it.index }
-            /** Codex r13/r14: per item id, the sources its current value carries ([NodeProvenance], set at the execution boundary below). */
-            val carried = HashMap<String, com.rokid.context.model.PayloadSources>()
             val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
             val pending = ArrayList<CanvasRunItemEntity>()
 
@@ -670,9 +668,10 @@ class CanvasRunner(
             markLineageOf.forEach { (k, ids) -> if (ids.isNotEmpty()) lineage.getOrPut(k) { LinkedHashSet() }.addAll(ids.map { MEMBER_TOKEN + it }) }
             val allMarks: Set<String> = markLineageOf.values.flatten().toSet()
 
-            fun write(nodeId: String, frameId: String, r: NodeResult) {
+            fun write(nodeId: String, frameId: String, r: NodeResult, derivedFrom: Set<String> = emptySet()) {
                 val m = r.meta
                 val batch = CanvasLineage.compose(lineage.getOrPut(frameId) { LinkedHashSet() }, m?.batchId)
+                    .let { b -> if (derivedFrom.isEmpty()) b else listOfNotNull(b).plus(derivedFrom.map { MEMBER_TOKEN + it }).joinToString(CanvasLineage.SEP.toString()) }
                 pending += CanvasRunItemEntity(
                     runId, frameId, nodeId, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { CanvasValueJson.encode(it) }, r.error,
                     m?.latencyMs, m?.promptTokens, m?.completionTokens, m?.model, m?.promptVersion, batch, m?.calls,
@@ -753,7 +752,10 @@ class CanvasRunner(
                 for (id in conflicts.sortedBy { order[it] }) write(node.id, id, NodeResult(id, null, error = "merge_conflict"))
                 if (!flush()) { status = "CANCELLED"; break@stop }
                 val ex = executors[node.type]
-                val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value, carried[it.key] ?: itemSources[it.key] ?: com.rokid.context.model.PayloadSources.NONE) }
+                // codex r17: an item's sources come with the value along the edge that delivered it (ItemFlow), never from another branch
+                val queue = inputs.entries.sortedBy { order[it.key] }.map {
+                    CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value, (gathered.sources[it.key] ?: com.rokid.context.model.PayloadSources.NONE) + (itemSources[it.key] ?: com.rokid.context.model.PayloadSources.NONE))
+                }
                 val produced = LinkedHashMap<String, ItemFlow.Out>()
                 val provenance = NodeProvenance(ex)
                 for (chunk in queue.chunked(ex?.chunkSize(node)?.coerceAtLeast(1) ?: Int.MAX_VALUE)) {
@@ -769,10 +771,9 @@ class CanvasRunner(
                         val r = results[item.frameId] ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
                         // codex r14 RULE A: the union of the whole execution's inputs; r15: its photos also become the row's lineage ("mf:<frameId>"),
                         // so a Forget of any of them deletes the row and a later Save links the saved memory to all of them
-                        val c = provenance.of(r.value)
-                        lineage.getOrPut(item.frameId) { LinkedHashSet() }.addAll(c.frameIds.map { MEMBER_TOKEN + it })
-                        write(node.id, item.frameId, r)
-                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch); carried[item.frameId] = c }
+                        val c = provenance.of(r.value, r.exactSources)
+                        write(node.id, item.frameId, r, c.frameIds) // the row's own provenance (not accumulated across branches)
+                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch, c) }
                     }
                     if (!flush()) { line(Level.I, "write dropped by the wipe/forget fence"); status = "CANCELLED"; break@stop }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)
