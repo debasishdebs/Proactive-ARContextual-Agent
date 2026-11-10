@@ -86,6 +86,8 @@ object KeyframeGraph {
 
     @Volatile private var handle: KeyframeHandle? = null
 
+    init { MemoryGraph.onTestReset { resetForTests() } } // the handle's pipeline captures the graph's database (tests only)
+
     fun get(context: Context): KeyframeHandle = handle ?: synchronized(this) { handle ?: KeyframeHandle(context.applicationContext).also { handle = it } }
 
     /**
@@ -95,7 +97,7 @@ object KeyframeGraph {
      */
     suspend fun sceneActive(context: Context): Boolean = try { get(context).sceneActive() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
 
-    fun resetForTests() { synchronized(this) { handle?.pipeline?.stop(); handle = null } }
+    fun resetForTests() { synchronized(this) { handle?.stopIfBuilt(); handle = null } } // never BUILDS a pipeline just to stop it
 
     /** [PowerManager.currentThermalStatus] as a [ThermalStatusProvider] (API 29+; NONE below). */
     fun systemThermal(context: Context): ThermalStatusProvider = ThermalStatusProvider {
@@ -138,12 +140,15 @@ class KeyframeHandle internal constructor(private val app: Context) {
         SceneIndexer(db, { imageSpaces.targets() }, MlKitTextPresence(), WatchVectors(WatchListStore.get(app)), power, ::photoBytes, clock, foreground = { KeyframeGraph.foreground() })
     }
 
-    val pipeline: KeyframePipeline by lazy {
+    private val pipelineLazy = lazy {
         KeyframePipeline(
             db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated,
             onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
         )
     }
+
+    val pipeline: KeyframePipeline by pipelineLazy
+    internal fun stopIfBuilt() { if (pipelineLazy.isInitialized()) pipeline.stop() }
 
     /** Describe on demand (wave 3): the user's own VISION_EXTRACT over chosen photos or a scene; the claim path is [KeyframePipeline.extractNow]. */
     val describe: com.rokid.context.work.frames.recall.DescribeOnDemand by lazy {

@@ -34,6 +34,12 @@ class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredC
         fun get(context: Context, encryptionRequested: () -> Boolean = { false }): MemoryGraph =
             instance ?: synchronized(this) {
                 instance ?: run {
+                    // Test guard (inert on a device): a JVM unit test must never build the production (SQLCipher) database. Reaching here means the test set no
+                    // MemoryGraph, or a job of an EARLIER test outlived its tearDown; fail at the caller, not later in an unrelated test with UnsatisfiedLinkError.
+                    check(android.os.Build.FINGERPRINT != "robolectric") {
+                        "MemoryGraph.get() would build the production SQLCipher database inside a unit test: call MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)) " +
+                            "first, and stop or await every job that can outlive the test"
+                    }
                     val app = context.applicationContext
                     val migrator = com.rokid.context.memory.db.EncryptionMigrator(
                         app.getDatabasePath(DatabaseFactory.NAME), com.rokid.context.memory.db.PrefsModeStore(app),
@@ -98,6 +104,16 @@ class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredC
             }
         }
 
-        fun resetForTests(db: ContextDatabase?) { synchronized(this) { instance = db?.let { MemoryGraph(it) }; facadeImportFailed = false } }
+        fun resetForTests(db: ContextDatabase?) {
+            synchronized(this) { instance = db?.let { MemoryGraph(it) }; facadeImportFailed = false }
+            testResetHooks.forEach { it() } // process singletons that captured the previous graph's database start again with this one
+        }
+
+        private val testResetHooks = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+        /**
+         * A process singleton that captures [get]'s database (KeyframeGraph, the derive and moment triggers) registers its own reset here, so a test that
+         * swaps the graph can never hand the next test a singleton built over an earlier (closed, or production) database. Only [resetForTests] runs them.
+         */
+        fun onTestReset(hook: () -> Unit) { testResetHooks += hook }
     }
 }
