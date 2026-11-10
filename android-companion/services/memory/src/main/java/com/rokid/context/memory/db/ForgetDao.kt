@@ -266,7 +266,9 @@ abstract class ForgetDao {
         const val TEXT_RETRY_FIXED_MS = 1_794_085_517_000L
         /** [suspectDescriptions]: a pre-fix, delivery-unknown, unmarked memory that [DESCRIBES] a photo through memory.frameId or a FACT/CLUSTER_REP row. */
         const val SUSPECT = "a.imageDelivered IS NULL AND a.createdAt < 1794085517000 AND a.reviewFlaggedAt IS NULL AND a.reviewState = 'OK' AND a.derived = 0 " +
-            "AND a.id NOT GLOB 'rokid_cv_*' AND (a.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = a.id AND fs.role IN ('FACT','CLUSTER_REP')))"
+            "AND a.id NOT GLOB 'rokid_cv_*' " +
+            // opus r19: only while the described photo still exists (marking an expired photo's memory would change nothing)
+            "AND EXISTS (SELECT 1 FROM frame f WHERE f.id = a.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = a.id AND fs.role IN ('FACT','CLUSTER_REP'))) "
         // Room v16 (user ruling 2026-11-10): a memory marked for review, or written without delivery proof (imageDelivered = 0), never describes;
         // unknown (null, every pre-v16 row) keeps the old behaviour so good old captions do not strand their photos
         const val DESCRIBES = "a.reviewState = 'OK' AND a.derived = 0 AND a.id NOT GLOB 'rokid_cv_*' AND a.reviewFlaggedAt IS NULL AND COALESCE(a.imageDelivered, 1) = 1"

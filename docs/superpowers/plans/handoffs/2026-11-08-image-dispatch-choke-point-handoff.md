@@ -356,6 +356,13 @@ additive only, and every upgrade path from 1 to 15 reaches 16. The SQLCipher bui
   successful attempts whose reply carried the router's proof). The proof travels along the producing edge through a pass-through node only while
   the captions are unchanged. `CanvasRunSave` proposes and saves a caption only with that proof; the caption is saved with `imageDelivered=true` and
   each fact with its item's proof. A run stored before v16 has no proof and keeps the refusal. TRACE_SCHEMA is unchanged.
+- **Opus r19.**
+  - A Run-and-Save caption now carries its producing item's sources (batch mates, rendered context), like facts, and is dropped when one of
+    them is gone.
+  - SUSPECT requires the described photo's frame row to still exist.
+  - The "Mark for review" dialog says that the night job describes the photo again (a paid call per photo, up to 60 a night).
+  - Tests: `CanvasProvenanceTest.aRealVisionRunStoresDeliveryProofAndSavesTheProvedCaption` (now also covers Forget B) and
+    `aCaptionOfARequestThatRenderedContextCarriesItsSources`.
 - **Accepted for rc1 (user ruling):** over-linking. A derived memory can be removed on Forget of a batch-mate photo; a photo is never removed this way.
 
 ## Tests
