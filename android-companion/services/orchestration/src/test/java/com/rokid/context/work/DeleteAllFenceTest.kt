@@ -76,8 +76,12 @@ class DeleteAllFenceTest {
     @Test fun aReprocessJobAndAnExplicitWriteInFlightAcrossTheWipeWriteNothing() = runBlocking<Unit> {
         PipelineRecords.appendFact(ctx, "rokid_mem_m_0", null, "Milk carton", "object", emptyList(), 0.4, MemoryTier.SHORT, ReviewState.NEEDS_REVIEW)
         QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess(reason = "low", sourceIds = listOf("rokid_mem_m_0")), personaSnapshot = "p")
-        reply = { MemoryWipe.deleteAll(ctx); """{"summary":"Milk in the fridge","entities":[],"confidence":0.9,"candidateMemoryType":"short_term"}""" }
+        // codex r12: this call carries its source memory, so it holds the upload slot and a real Delete all waits for it to end; the wipe that lands
+        // while the reply is in flight is simulated by moving the generation (what Delete all commits), and the summary must still not be written
+        reply = { MemoryWipe.generation.incrementAndGet(); """{"summary":"Milk in the fridge","entities":[],"confidence":0.9,"candidateMemoryType":"short_term"}""" }
         drain()
+        assertEquals("no summary written across the wipe", listOf("rokid_mem_m_0"), memories().map { it.id })
+        MemoryWipe.deleteAll(ctx)
         assertTrue(memories().isEmpty())
 
         QueueRuntimeStore.enqueue(ctx, QueuePriority.EXPLICIT_WRITE, QueuePayloads.explicitWrite("remember my keys are on the shelf", "en", manual = true), personaSnapshot = "p")

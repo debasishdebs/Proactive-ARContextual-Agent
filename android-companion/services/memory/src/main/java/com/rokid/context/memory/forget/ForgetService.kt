@@ -119,7 +119,7 @@ class ForgetService(
         val now = clock()
         for (id in frameIds.distinct()) {
             val frame = dao.frame(id) ?: continue
-            if (requireLinked && dao.remainingRefs(id) == 0) continue
+            if (requireLinked && dao.describedRefs(id) == 0) continue // codex r12: the same description rule the selection used, not any citation
             if (recheckSkipped && dao.stillSkippedPhoto(id) == 0) continue
             expired++
             expiredIds += id; expiredTimes += frame.ts

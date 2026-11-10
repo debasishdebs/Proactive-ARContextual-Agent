@@ -46,28 +46,31 @@ class PromptKeyImageUseTest {
     }
 
     /**
-     * Codex r11: a call whose TEXT is derived from a photo (the photo's facts, caption or frame metadata) must name those photos
-     * (`derivedFromFrames =`, or attach the images) and a `liveness =`, so the router's guard re-checks them before the text leaves.
-     * Photo-derived = the call or its enclosing function (up to 30 lines before it) builds frame lines (`frameLine`, `photo.description`, `frame_id:`, `framesByIds`, photo cites).
+     * Codex r12: EVERY model call site (each `RoleCall(` and each `ModelRequest(` above the providers) declares its [com.rokid.context.model.PayloadSources]:
+     * the photos and memories its prompt is built from, or `PayloadSources.NONE` when it carries no stored user content. A site that declares sources
+     * (anything but NONE) also passes a `liveness =`, so the router re-checks them inside the permit. A new call site that forgets fails here.
      */
-    @Test fun everyCallWithPhotoDerivedTextNamesItsPhotos() {
-        val marker = Regex("frameLine|photo\\.description|frame_id:|framesByIds|\\.photos\\b|photoLines")
-        val offenders = mutableListOf<String>()
+    @Test fun everyModelCallSiteDeclaresItsPayloadSources() {
+        val missing = mutableListOf<String>()
+        val unguarded = mutableListOf<String>()
         var seen = 0
-        roots.flatMap { r -> r.walkTopDown().filter { it.extension == "kt" }.toList() }.forEach { f ->
+        roots.flatMap { r -> r.walkTopDown().filter { it.extension == "kt" && "/model/provider/" !in it.path.replace('\\', '/') }.toList() }.forEach { f ->
             val text = f.readText()
-            Regex("RoleCall\\(\\s*PromptKey\\.([A-Z_]+)").findAll(text).forEach { m ->
-                val call = callText(text, m.range.first + "RoleCall".length)
-                val head = text.substring(0, m.range.first)
-                val before = head.substring(maxOf(0, head.lastIndexOf(" fun "))).lines().takeLast(30).joinToString("\n") // the enclosing function only
-                if (!marker.containsMatchIn(before + call)) return@forEach
+            Regex("\\b(RoleCall|ModelRequest)\\(").findAll(text).forEach { m ->
+                val before = text.substring(maxOf(0, m.range.first - 12), m.range.first)
+                if (before.endsWith("class ") || before.endsWith("fun ")) return@forEach // the declarations themselves
+                val call = callText(text, m.range.last)
                 seen++
-                val names = Regex("\\bimages\\s*=").containsMatchIn(call) || Regex("\\bderivedFromFrames\\s*=").containsMatchIn(call)
-                if (!names || !Regex("\\bliveness\\s*=").containsMatchIn(call)) offenders += "${f.name}: ${m.groupValues[1]}"
+                val where = "${f.name}:${text.substring(0, m.range.first).count { it == '\n' } + 1}"
+                val decl = Regex("\\bsources\\s*=\\s*([^,)\\n]*)").find(call)
+                if (decl == null) { missing += where; return@forEach }
+                if (!decl.groupValues[1].trim().startsWith("com.rokid.context.model.PayloadSources.NONE") && !decl.groupValues[1].trim().startsWith("PayloadSources.NONE") &&
+                    !Regex("\\bliveness\\s*=").containsMatchIn(call)) unguarded += where
             }
         }
-        assertTrue("the scan sees the photo-derived calls (critics, ask)", seen >= 4)
-        assertEquals("photo-derived calls without derivedFromFrames/images + liveness", emptyList<String>(), offenders)
+        assertTrue("the scan sees the model call sites: $seen", seen >= 15)
+        assertEquals("model call sites without a PayloadSources declaration", emptyList<String>(), missing)
+        assertEquals("call sites declaring sources without a liveness", emptyList<String>(), unguarded)
     }
 
     @Test fun everyKeyOfAVisionRoleRequiresItsPhoto() {

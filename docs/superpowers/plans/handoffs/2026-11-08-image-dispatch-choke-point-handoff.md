@@ -92,6 +92,69 @@ A failure writes nothing. KeyframeExtract, KeyframeGraph and QueueDrainWorker tu
   "no memory cites it". It is kept past its window, which fails safe. Aligning `describeDue` with the new rule changes night-job behaviour, so it is
   left for a ruling.
 
+## Codex r12: PayloadSources and one description rule
+
+### PayloadSources: every model call declares what stored content it carries
+
+`com.rokid.context.model.PayloadSources(frameIds, memoryIds)` is ONE field on every request: `ModelRequest.sources`, `RoleCall.sources` and
+`TestBedRequest.sources`. It replaces r11's `photoIds`/`derivedFromFrames`.
+
+- **frameIds:** photos whose bytes, frame metadata, facts or captions are in the prompt.
+- **memoryIds:** memories whose text is in the prompt. This includes photo cite ids (`frame:<id>`) and history dependencies.
+- **`PayloadSources.NONE`:** declared at a site whose prompt holds no stored user content, for example explicit remember (the user's own words).
+
+What `ModelRouter.call` does with them:
+
+- Image refs are added to `frameIds`.
+- After the permit and under the upload slot, `liveness.gone(frameIds)` checks that each frame row is present, not tombstoned, and that the wipe
+  generation is unchanged.
+- `liveness.goneMemories(memoryIds)` (new on `PhotoLiveness`) uses `ForgetFence.goneAmong`. A memory id counts as gone when its row is missing or
+  `INVALIDATED`; a `frame:` cite counts as gone when its keyframe metadata is gone. A memory whose photo merely expired stays live, so no JPEG is
+  required.
+- Anything gone throws `PhotoForgottenException(frameIds, wiped, memoryIds)` without sending. Nothing retries it.
+- Sources without a liveness are refused unsent (`ImagesUnguardedException`).
+
+Sites covered (`PromptKeyImageUseTest.everyModelCallSiteDeclaresItsPayloadSources` fails for any `RoleCall(`/`ModelRequest(` above the providers that
+omits `sources =`, or that declares sources without `liveness =`):
+
+- **Ask** (`Retrieved.sources`: memories, photo cites, `fenceIds` history, stored photo lines).
+- **Ask-debug replay**, which takes the new `liveness(gen)` constructor parameter.
+- **Nudge** (`inputIds + fenceIds`).
+- **Resummarizer** (its source memories).
+- **DerivePass**: `DeriveText.complete(prompt, sources)`; `DeriveInputs.sources` reads the Moment's FRAME/MEMORY/CITE parts and each Scene member
+  Moment's parts.
+- **QueueDrainWorker**: the reprocess SUMMARIZE (source memories and frames), the critic review (reviewed memories and frames), explicit remember (NONE).
+- **ExtractFollowUp critic.**
+- **Canvas executors**: Prompt, Summary and Critic use `sourcesOf(item)`, which combines the item's photo, the photos its facts and captions cite,
+  and `CanvasItem.sources`. That last field holds a Moment or Scene item's member frames and memories, set by CanvasRunner.
+- **TestBed** (`TestBedInputs.Prepared.sources`).
+- **Images**: ExtractSave, ClusterContract and IntentSamplers.
+- **The legacy router `generate`** (NONE, and its images carry their refs).
+
+### One qualifying-description rule (P1-1, P2-3)
+
+`ForgetDao.DESCRIBED_BY_EXTRACTION` (and `STATE_DESCRIBED` for queries over `frame_state`) is the single "this photo is described" rule.
+A memory describes a photo only when all of these hold:
+
+- it is `OK`;
+- it is not `derived`;
+- it is not a canvas save (`rokid_cv_`);
+- it cites that photo as delivered: `memory.frameId`, or a `frame_source` row with role FACT or CLUSTER_REP.
+
+A CLUSTER_MEMBER link never describes a member photo, because the scene summary never saw it. The same rule is used by:
+
+- `linkedPhotosDue` (retention);
+- `NOT_DESCRIBED` (the skipped-photo exemption: a canvas citation no longer takes a photo out of the skipped rule);
+- `describeDue` and `FrameStateDao.queueForDescribe` (night describe: a photo only excluded rows cite is now describable, so it is not stranded);
+- `ForgetDao.describedRefs` (the `expirePhotos(requireLinked)` recheck in ForgetService, which replaces `remainingRefs`);
+- `ForgetDao.strandedPhotos` (the new Diagnostics line `kf_stranded`, "N photos kept: only canvas/derived memories cite them").
+
+Tests: ForgetServiceTest `aClusterMemberLinkNeverDescribesTheMember`, `aPhotoOnlyExcludedRowsCiteIsDescribableAndCounted` and
+`retentionCountsOnlyOkExtractionDescriptions` (all on the real SQL). DiagnosticsTest `showsStrandedPhotos`.
+ImageDispatchChokePointTest `aForgottenSourceMemoryDropsATextCallUnsent`. PhotoDerivedDispatchTest `frameLivenessOfSourceMemories`.
+
+Not done: `ForgetDao.citedCount` (used only by tests) still counts any citation. Room stays at version 15.
+
 ## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
 
 The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the

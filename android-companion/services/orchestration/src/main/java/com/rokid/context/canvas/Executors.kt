@@ -50,8 +50,15 @@ object Executors {
 
 private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSource.Draft)?.let { PromptDraft(it.template, it.schema) }
 
-/** Codex r11: the stored photo an item's prompt text is derived from (its frame line, facts or caption); none for an item without a photo. */
-internal fun photoIdsOf(item: CanvasItem): Set<String> = setOfNotNull(item.photo.frameId.takeIf { it.isNotBlank() })
+/**
+ * Codex r12: the stored content an item's prompt text is built from: its own photo, the photos its facts and captions cite, and (Moment/Scene items)
+ * their member photos and memories ([CanvasItem.sources]). Every executor model call declares it.
+ */
+internal fun sourcesOf(item: CanvasItem): com.rokid.context.model.PayloadSources {
+    val v = item.value
+    val cited = if (v is CanvasValue.Extraction) v.facts.flatMap { it.sourceFrameIds } + v.captions.map { it.frameId } else emptyList()
+    return item.sources + com.rokid.context.model.PayloadSources.frames(listOf(item.photo.frameId) + cited)
+}
 
 /** The helper executor's FRAME_FORGET token (this file must not name that executor): the runner stops a run whose photo was forgotten. */
 private const val FRAME_FORGET = "frame_forget"
@@ -147,7 +154,7 @@ object CriticExecutor : NodeExecutor {
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
                 val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = ctx.callClass, override = override,
-                    derivedFromFrames = photoIdsOf(it), liveness = ctx.liveness)) // codex r11: photo-derived text is re-checked like a photo
+                    sources = sourcesOf(it), liveness = ctx.liveness)) // codex r11/r12: photo-derived text is re-checked like a photo
                 val pass = (r.output as CriticOutput).pass
                 val meta = ownerMeta(r.reply.latencyMs, r.replies.asUsage(), r.promptVersion, "${ctx.runId}:${node.id}:${it.frameId}")
                 NodeResult(it.frameId, v.copy(trusted = pass), branch = if (pass) "pass" else "fail", meta = meta, calls = meta.calls!!)
@@ -197,7 +204,7 @@ object PromptExecutor : NodeExecutor {
                     val plan = StructuredOutput.plan(e, schemaObj, name)
                     // a photo prompt never falls back to text (codex r9 P1-2); its photo carries its ref and the run's liveness (codex r10)
                     ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image.copy(ref = it.photo.frameId)) else emptyList(), format = plan.format,
-                        requireImages = images, photoIds = photoIdsOf(it), liveness = ctx.liveness) // the frame line is photo metadata even without the image (codex r11)
+                        requireImages = images, sources = sourcesOf(it), liveness = ctx.liveness) // the frame line is photo metadata even without the image (codex r11)
                 }
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@mapIndexed NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)
@@ -261,7 +268,7 @@ object SummaryExecutor : NodeExecutor {
             try {
                 val reply = ctx.model.complete(Role.SUMMARIZE, ctx.callClass) { e ->
                     val plan = StructuredOutput.plan(e, SummaryNode.schema, "summary")
-                    ModelRequest(prompt + plan.promptSuffix, emptyList(), format = plan.format)
+                    ModelRequest(prompt + plan.promptSuffix, emptyList(), format = plan.format, sources = sourcesOf(it), liveness = ctx.liveness) // codex r12: upstream facts/captions/text
                 }
                 val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@map NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)

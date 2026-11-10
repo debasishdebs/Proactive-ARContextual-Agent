@@ -211,7 +211,8 @@ private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnos
     override suspend fun sidecarLost() = com.rokid.context.data.runtime.PipelineStatsStore.sidecarLost(app)
     override suspend fun retentionCounters() = com.rokid.context.data.runtime.PipelineStatsStore.let {
         val dao = MemoryGraph.get(app).db.frameStateDao()
-        com.rokid.context.phone.ui.settings.RetentionCounters(it.skippedPhotosDeleted(app), it.describedBeforeDelete(app), it.deletedUndescribed(app), dao.describeWaiting(), dao.describeFailed())
+        com.rokid.context.phone.ui.settings.RetentionCounters(it.skippedPhotosDeleted(app), it.describedBeforeDelete(app), it.deletedUndescribed(app), dao.describeWaiting(), dao.describeFailed(),
+            MemoryGraph.get(app).db.forgetDao().strandedPhotos())
     }
     override suspend fun promptIsCurrent() =
         com.rokid.context.orchestration.ExtractSave.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT))

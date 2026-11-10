@@ -94,7 +94,7 @@ class AskDebugTest {
         return RoleRunner(rec, ai.prompts, ai.persona)
     }
     private fun debug(photos: AskDebugPhotos = AskDebugPhotos.Refuse) =
-        AskDebug(dao, answers(), recordingRunner(), ai.prompts, { ai.persona }, { _, _ -> problems }, { ZoneOffset.UTC }, photos)
+        AskDebug(dao, answers(), recordingRunner(), ai.prompts, { ai.persona }, { _, _ -> problems }, { ZoneOffset.UTC }, photos, liveness = { com.rokid.context.orchestration.AllLive })
     private fun count(t: String) = mem.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }
 
     // ---- view ----

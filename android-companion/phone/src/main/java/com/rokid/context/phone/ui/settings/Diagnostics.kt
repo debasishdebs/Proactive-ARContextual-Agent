@@ -111,6 +111,8 @@ data class RetentionCounters(
     val skippedDeleted: Int = 0, val describedBeforeDelete: Int = 0, val deletedUndescribed: Int = 0,
     /** Photos waiting in the night queue, and photos parked after five failed describes (never deleted). */
     val describeWaiting: Int = 0, val describeFailed: Int = 0,
+    /** Codex r12: photos some memory cites but none describes (only canvas/derived memories, facts awaiting review or scene-member links): kept for now. */
+    val strandedPhotos: Int = 0,
 )
 
 /** The active interpreter publish for the "Live pipeline" line: [live] false is Shadow. */
@@ -366,6 +368,7 @@ object KeyframeLines {
             Line("kf_sidecar", "Lost sidecars: ${k.sidecarLost}"),
             // 2026-11-08: the night queue's progress in plain words (it drains only on a charger, at most 60 calls of <= 3 photos a run).
             Line("kf_describe_waiting", "Photos waiting to be described: ${k.retention.describeWaiting}" + if (k.retention.describeWaiting > 0) " \u00b7 described while charging, up to 180 a run" else ""),
+            Line("kf_stranded", "${k.retention.strandedPhotos} photos kept: only canvas/derived memories cite them"),
             Line("kf_retention", "Photos deleted: skipped ${k.retention.skippedDeleted} \u00b7 described first ${k.retention.describedBeforeDelete} \u00b7 undescribed ${k.retention.deletedUndescribed} \u00b7 waiting ${k.retention.describeWaiting} \u00b7 describeFailed ${k.retention.describeFailed}"),
         )
     }

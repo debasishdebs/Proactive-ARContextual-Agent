@@ -7,6 +7,7 @@ import com.rokid.context.model.LanguageModel
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.model.PassThroughGate
+import com.rokid.context.model.PayloadSources
 import com.rokid.context.model.PhotoLiveness
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -46,14 +47,14 @@ class ModelRouter(
         generate(role, CallClass.OTHER, prompt, images, liveness)
 
     suspend fun generate(role: Role, callClass: CallClass, prompt: String, images: List<ModelImageInput> = emptyList(), liveness: PhotoLiveness? = null): String =
-        complete(role, callClass) { ModelRequest(prompt, images, liveness = liveness) }.text
+        complete(role, callClass) { ModelRequest(prompt, images, liveness = liveness, sources = PayloadSources.NONE) }.text // legacy: images carry their refs
 
     @Deprecated("Pass a CallClass", ReplaceWith("generateFromFrames(CallClass.OTHER, prompt, images)"))
     suspend fun generateFromFrames(prompt: String, images: List<ModelImageInput>, liveness: PhotoLiveness? = null): String =
         generateFromFrames(CallClass.OTHER, prompt, images, liveness)
 
     suspend fun generateFromFrames(callClass: CallClass, prompt: String, images: List<ModelImageInput>, liveness: PhotoLiveness? = null): String =
-        completeFromFrames(callClass) { ModelRequest(prompt, images, liveness = liveness) }.text
+        completeFromFrames(callClass) { ModelRequest(prompt, images, liveness = liveness, sources = PayloadSources.NONE) }.text // legacy: images carry their refs
 
     @Deprecated("Pass a CallClass", ReplaceWith("complete(role, CallClass.OTHER, build)"))
     suspend fun complete(role: Role, build: (Endpoint) -> ModelRequest): RoutedReply = complete(role, CallClass.OTHER, build)
@@ -163,7 +164,7 @@ class ModelRouter(
 
     /**
      * THE image-dispatch choke point (codex r10). Every provider call of every model call runs here. For a request that is about stored photos (image refs
-     * or [ModelRequest.photoIds]):
+     * or [ModelRequest.sources]: photos and source memories):
      *  1. every image must carry a ref and the request a [com.rokid.context.model.PhotoLiveness], else [ImagesUnguardedException] (nothing sent);
      *  2. a [ModelRequest.requireImages] call whose endpoint or provider cannot deliver images fails closed: [ImagesUnsupportedException], no output;
      *  3. inside the call permit: the liveness' upload slot is taken, every photo id re-checked, and the slot held until the provider call returns;
@@ -175,9 +176,10 @@ class ModelRouter(
         requireConfigured(e, model, key)
         val p = providers.create(e, model, key)
         val request = build(e).let { r -> r.copy(temperature = r.temperature ?: b?.temperature, maxTokens = r.maxTokens ?: b?.maxTokens) }
-        val photoIds = request.photoIds + request.images.mapNotNull { it.ref }
+        val photoIds = request.sources.frameIds + request.images.mapNotNull { it.ref }
+        val memoryIds = request.sources.memoryIds
         val liveness = request.liveness
-        if (request.images.any { it.ref.isNullOrBlank() } || (photoIds.isNotEmpty() && liveness == null)) {
+        if (request.images.any { it.ref.isNullOrBlank() } || ((photoIds.isNotEmpty() || memoryIds.isNotEmpty()) && liveness == null)) {
             PcLog.w(TAG, "image_dispatch_refused reason=unguarded")
             throw ImagesUnguardedException()
         }
@@ -189,12 +191,13 @@ class ModelRouter(
         // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
-            if (liveness == null || photoIds.isEmpty()) p.complete(r) else liveness.holdUploadSlot {
+            if (liveness == null || (photoIds.isEmpty() && memoryIds.isEmpty())) p.complete(r) else liveness.holdUploadSlot {
                 val gone = liveness.gone(photoIds)
-                if (!gone.none) {
+                val goneMemories = if (memoryIds.isEmpty()) emptySet() else liveness.goneMemories(memoryIds)
+                if (!gone.none || goneMemories.isNotEmpty()) {
                     if (gone.wiped) PcLog.i(TAG, "image_dispatch_dropped reason=wiped photos=${gone.ids.size}")
-                    else PcLog.i(TAG, "image_dispatch_dropped reason=forgotten photos=${gone.ids.size}")
-                    throw PhotoForgottenException(gone.ids, gone.wiped)
+                    else PcLog.i(TAG, "image_dispatch_dropped reason=forgotten photos=${gone.ids.size} memories=${goneMemories.size}")
+                    throw PhotoForgottenException(gone.ids, gone.wiped, goneMemories)
                 }
                 p.complete(r)
             }

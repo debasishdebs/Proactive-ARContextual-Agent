@@ -34,6 +34,7 @@ class PhotoDerivedDispatchTest {
     private fun liveness(gone: Set<String>, checks: MutableList<String>) = object : PhotoLiveness {
         override suspend fun <T> holdUploadSlot(block: suspend () -> T): T { checks += "slot"; return block() }
         override suspend fun gone(ids: Set<String>): GonePhotos { checks += "check:${ids.sorted()}"; return GonePhotos(ids intersect gone) }
+        override suspend fun goneMemories(ids: Set<String>): Set<String> { checks += "mem:${ids.sorted()}"; return ids intersect gone }
     }
 
     @Test fun theCriticOverAForgottenPhotosFactsIsNeverSent() = runBlocking<Unit> {
@@ -52,6 +53,19 @@ class PhotoDerivedDispatchTest {
         val checks = mutableListOf<String>()
         assertTrue(ExtractFollowUp.modelCriticPasses(ai, facts, listOf("id=f1"), setOf("f1"), liveness(emptySet(), checks), CallClass.EXTRACT))
         assertEquals(1, sent.size); assertEquals(listOf("slot", "check:[f1]"), checks)
+    }
+
+    // codex r12: memory liveness is the Forget rule, not "has a JPEG": an expired photo's memory stays live, an INVALIDATED one or a forgotten photo's cite does not
+    @Test fun frameLivenessOfSourceMemories() = runBlocking<Unit> {
+        val db = MemoryGraph.get(ctx).db
+        db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("fx", 1, "/fx.jpg", "rokid_glasses"))
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("fx", null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1))
+        fun mem(id: String, review: com.rokid.context.memory.db.ReviewState) = com.rokid.context.memory.db.MemoryEntity(id, "fx", "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, review, false, 1, false, "t")
+        db.memoryDao().insert(mem("ok", com.rokid.context.memory.db.ReviewState.OK)); db.memoryDao().insert(mem("inv", com.rokid.context.memory.db.ReviewState.INVALIDATED))
+        db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("fx", 1)); db.frameDao().deleteByIds(listOf("fx")) // the photo expired: row gone, metadata kept
+        val l = com.rokid.context.work.frames.FrameLiveness.forGraph(MemoryGraph.get(ctx))
+        assertEquals(setOf("inv", "missing", "frame:gone"), l.goneMemories(setOf("ok", "inv", "missing", "frame:fx", "frame:gone")))
+        assertEquals("an expired photo itself is not live for an upload", setOf("fx"), l.gone(setOf("fx")).ids)
     }
 
     @Test fun photoDerivedTextWithoutALivenessIsRefused() = runBlocking<Unit> {

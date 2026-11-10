@@ -29,12 +29,13 @@ import com.rokid.context.orchestration.MemoryWipe
 import kotlin.coroutines.cancellation.CancellationException
 
 /** The one place the derive step asks a model for text: a prompt in, a reply out (null = no answer). Production adapts the app's SUMMARIZE role; tests pass a fake. */
-fun interface DeriveText { suspend fun complete(prompt: String): String? }
+/** [sources] (codex r12): the memories and photos the prompt's notes come from; the router re-checks them before the call leaves. */
+fun interface DeriveText { suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources): String? }
 
 /** Production [DeriveText]: the app's existing router and the user's SUMMARIZE binding (no new client). Background priority; a short, cool, capped request. */
-class RouterDeriveText(private val model: com.rokid.context.model.LanguageModel) : DeriveText {
-    override suspend fun complete(prompt: String): String? =
-        model.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest(prompt, temperature = 0.2, maxTokens = 160) }.text
+class RouterDeriveText(private val model: com.rokid.context.model.LanguageModel, private val liveness: () -> com.rokid.context.model.PhotoLiveness) : DeriveText {
+    override suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources): String? =
+        model.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest(prompt, temperature = 0.2, maxTokens = 160, sources = sources, liveness = liveness()) }.text
 }
 
 /**
@@ -93,6 +94,21 @@ class DeriveInputs(private val db: ContextDatabase) {
         else -> emptyList()
     }.map { it.replace(WS, " ").trim().take(MAX_LINE) }.filter { it.isNotEmpty() }.take(MAX_LINES)
 
+    /** Codex r12: the memories and photos [lines] reads for [obj] (a Scene: its member Moments'), declared on the model call. */
+    suspend fun sources(obj: MomentObject): com.rokid.context.model.PayloadSources = when (obj.kind) {
+        ObjectKind.MOMENT -> momentSources(obj.id)
+        ObjectKind.SCENE -> db.sceneDao().parts(obj.id).filter { it.kind == ScenePartKind.MOMENT }
+            .fold(com.rokid.context.model.PayloadSources.NONE) { acc, p -> acc + momentSources(p.refId) }
+        else -> com.rokid.context.model.PayloadSources.NONE
+    }
+
+    private suspend fun momentSources(id: String): com.rokid.context.model.PayloadSources {
+        val parts = db.momentDao().parts(id)
+        return com.rokid.context.model.PayloadSources(
+            parts.filter { it.kind == MomentPartKind.FRAME }.map { it.refId }.toSet(), parts.filter { it.kind == MomentPartKind.MEMORY || it.kind == MomentPartKind.CITE }.map { it.refId }.toSet(),
+        )
+    }
+
     private suspend fun momentLines(id: String): List<String> {
         val parts = db.momentDao().parts(id)
         val memories = db.memoryViewDao().byIds(parts.filter { it.kind == MomentPartKind.MEMORY }.map { it.refId }).filter { it.reviewState == ReviewState.OK }.sortedBy { it.id }.map { it.text }
@@ -116,7 +132,7 @@ class TextDerivePorts(private val inputs: DeriveInputs, private val text: Derive
         // immediately before the call: the same inputs at the same revision, and no Delete all since
         if (!req.fence.holds() || inputs.snapshot(req.obj, req.inputSeq) != lines) return null
         val what = if (req.obj.kind == ObjectKind.SCENE) "this scene" else "this moment"
-        val reply = text.complete(prompt(task, what, lines)) ?: return null
+        val reply = text.complete(prompt(task, what, lines), inputs.sources(req.obj)) ?: return null
         if (!gate.stillOn()) return null // switched off while the model ran: nothing is written
         val clean = reply.replace(Regex("\\s+"), " ").trim().take(max)
         return if (clean.isEmpty()) null else DerivedWrite(field, value = clean, builtRev = req.inputSeq)
@@ -193,7 +209,7 @@ object DeriveTriggers {
             val inputs = DeriveInputs(db)
             val cadence = DeriveCadence(db)
             val gate = DeriveGate(enabled = cadence::enabled, admit = { ai.bindings.get(Role.SUMMARIZE) != null && com.rokid.context.work.frames.KeyframeGraph.get(app).admitBackgroundCall() })
-            val registry = DeriveRegistry().also { TextDerivePorts(inputs, RouterDeriveText(ai.router), gate).registerIn(it) }
+            val registry = DeriveRegistry().also { TextDerivePorts(inputs, RouterDeriveText(ai.router) { com.rokid.context.work.frames.FrameLiveness.forApp(app) }, gate).registerIn(it) }
             DerivePass(db, registry, cadence, { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) }, inputs, gate)
         }.also { instance = it }
     }

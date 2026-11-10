@@ -12,7 +12,8 @@ import kotlinx.serialization.json.put
  * One Scene as a run takes it. [json] is the item a later node receives (no photo id, no path, no image: the Scene's window, rule, activity and its VISIBLE text);
  * [frameIds] are the member photos of its Moments and [markIds] the marks of all its Moments (photo or mark) (the Forget cascade and the fence need them, a node never sees them); [binding] fingerprints everything a run would read.
  */
-data class SceneRunItem(val id: String, val binding: String, val frameIds: List<String>, val json: JsonObject, val markIds: List<String>)
+/** [memoryIds] (codex r12): the memories whose text the Scene's words come from (its member Moments' visible memories). */
+data class SceneRunItem(val id: String, val binding: String, val frameIds: List<String>, val json: JsonObject, val markIds: List<String>, val memoryIds: List<String> = emptyList())
 
 /** Resolves Scenes for a run, as they are NOW; a Scene that is gone is absent. */
 fun interface SceneRunSource { suspend fun resolve(ids: List<String>): List<SceneRunItem> }
@@ -31,7 +32,8 @@ class DaoSceneRunSource(db: ContextDatabase, private val moments: MomentResolver
             put("text", v.text)
             v.sensor?.let { put("sensor", it.toJson()) }
         }
-        SceneRunItem(v.id, "${v.id}:${v.membershipRev}:" + sha256(json.toString() + "|" + frames.sorted().joinToString(",")), frames, json, markIds)
+        SceneRunItem(v.id, "${v.id}:${v.membershipRev}:" + sha256(json.toString() + "|" + frames.sorted().joinToString(",")), frames, json, markIds,
+            resolved.flatMap { m -> m.memories.map { it.id } })
     }
 
     private fun sha256(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }

@@ -12,7 +12,11 @@ import com.rokid.context.prompt.PersonaSettings
 import com.rokid.context.prompt.PromptRepository
 import java.time.LocalDateTime
 
-data class CanvasItem(val frameId: String, val photo: ExtractPhoto, val value: CanvasValue)
+/**
+ * [sources] (codex r12): the stored content behind a Moment or Scene item beyond its [photo] (its member photos and the memories whose text it carries);
+ * every executor model call declares it with the item's own photo and value sources ([com.rokid.context.canvas.sourcesOf]).
+ */
+data class CanvasItem(val frameId: String, val photo: ExtractPhoto, val value: CanvasValue, val sources: com.rokid.context.model.PayloadSources = com.rokid.context.model.PayloadSources.NONE)
 
 /**
  * [calls] (S32): the provider calls this row OWNS, set only on the one row per provider call (null on its batch-mates and on rows that made no call).

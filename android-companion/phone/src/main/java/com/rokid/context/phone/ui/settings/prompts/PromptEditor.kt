@@ -186,7 +186,7 @@ class PromptEditorViewModel(
                     InputKind.QUESTION -> TestInput.Question(s.inputText)
                 }
                 val p = inputs.prepare(key, input)
-                val result = ai.testBed.run(TestBedRequest(key, draft, endpoint, s.model, p.vars, p.images, p.inputIds, p.liveness))
+                val result = ai.testBed.run(TestBedRequest(key, draft, endpoint, s.model, p.vars, p.images, p.inputIds, p.liveness, p.sources))
                 // Edited or discarded meanwhile: this run belongs to a draft that no longer exists, so it writes nothing.
                 // lastRun is set outside the update: its lambda may run more than once (Phase 5 T18 carry).
                 var current = false
