@@ -61,7 +61,7 @@ object IntentSamplers {
         // Codex r10: the photo carries its ref and a liveness; the router re-checks it inside the call's permit. Forgotten meanwhile = gone (null), nothing sent.
         val r = try {
             AiGraph.get(app).runner.run(RoleCall(PromptKey.INTENT_CLASSIFY, PromptVars(), images = listOf(photo.image.copy(ref = frameId)), callClass = CallClass.EXTRACT,
-                liveness = com.rokid.context.work.frames.FrameLiveness.forApp(app, MemoryWipe.generation.get())))
+                liveness = com.rokid.context.work.frames.FrameLiveness.forApp(app, MemoryWipe.generation.get()), sources = com.rokid.context.model.PayloadSources.frames(listOf(frameId))))
         } catch (f: com.rokid.context.ai.PhotoForgottenException) {
             return null
         }

@@ -16,10 +16,14 @@ import com.rokid.context.orchestration.MemoryWipe
 class FrameLiveness(
     private val generation: Long,
     private val live: suspend (Set<String>) -> Set<String>,
+    /** Codex r12: of the source memory ids, those forgotten ([com.rokid.context.memory.forget.ForgetFence.goneAmong]). */
+    private val goneMemoryIds: suspend (Set<String>) -> Set<String> = { emptySet() },
     private val gate: () -> DataOpGate = { DataOpGate.shared },
     private val currentGeneration: () -> Long = { MemoryWipe.generation.get() },
 ) : PhotoLiveness {
     override suspend fun <T> holdUploadSlot(block: suspend () -> T): T = gate().dispatch(block)
+
+    override suspend fun goneMemories(ids: Set<String>): Set<String> = if (currentGeneration() != generation) ids else goneMemoryIds(ids)
 
     override suspend fun gone(ids: Set<String>): GonePhotos =
         if (currentGeneration() != generation) GonePhotos(ids, wiped = true) else GonePhotos(ids - live(ids))
@@ -33,7 +37,7 @@ class FrameLiveness(
             val present = list.chunked(MAX_IN).flatMap { g.frames.byIds(it) }.map { it.id }.toSet()
             val locked = list.chunked(MAX_IN).flatMap { g.db.forgetDao().tombstoned(it) }.toSet()
             present - locked
-        })
+        }, { ids -> com.rokid.context.memory.forget.ForgetFence.goneAmong(g.db, ids) })
 
         fun forApp(app: Context, generation: Long = MemoryWipe.generation.get()) = forGraph(MemoryGraph.get(app), generation)
     }

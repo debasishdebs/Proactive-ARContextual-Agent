@@ -121,6 +121,7 @@ object ClusterContract {
                     PromptKey.CLUSTER_SUMMARY, PromptVars(recentContext = PromptComposer.dataBlock("photos", flat.map { it.line })),
                     images = flat.map { ModelImageInput("image/jpeg", Base64.encodeToString(it.jpeg, Base64.NO_WRAP), detail = "low", ref = it.frameId) },
                     inputIds = sent.keys + sent.values.flatten(), fromFrames = true, callClass = callClass, override = override, liveness = liveness,
+                    sources = com.rokid.context.model.PayloadSources.frames(flat.map { it.frameId }),
                 ),
             )
             delivered = r.imagesDelivered

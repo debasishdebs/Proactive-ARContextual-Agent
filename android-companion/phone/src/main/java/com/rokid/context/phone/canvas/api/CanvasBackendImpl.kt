@@ -177,7 +177,8 @@ class CanvasBackendImpl(
                 watch = com.rokid.context.canvas.WatchRunSource { from, to -> com.rokid.context.phone.hub.HubGraph.contextHub?.watchRing?.recent(from, to).orEmpty() },
             )
             val askDebug = lazy {
-                AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
+                AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos),
+                    liveness = { gen -> com.rokid.context.work.frames.FrameLiveness.forApp(app, gen) })
             }
             return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, lazy { com.rokid.context.canvas.RetrieveDebug(answers(), live = { ids -> com.rokid.context.memory.forget.ForgetFence.liveIds(MemoryGraph.get(app).db, ids) }) }, thumbnailer, plans, helperJobs, momentResolver)
         }

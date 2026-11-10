@@ -84,6 +84,8 @@ class AskDebug(
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val photos: AskDebugPhotos = AskDebugPhotos.Refuse,
     private val generation: () -> Long = MemoryWipe.generation::get,
+    /** Codex r12: the replay's liveness for the wipe generation it captured (the router re-checks every memory and photo of the prompt with it). */
+    private val liveness: (Long) -> com.rokid.context.model.PhotoLiveness? = { null },
 ) {
     data class Hit(
         val memoryId: String, val text: String, val frameId: String?, val lexical: Double?, val semantic: Double?, val fused: Double, val score: Double,
@@ -152,8 +154,9 @@ class AskDebug(
         val images = if (endpoint == null) emptyList() else l.photos?.let { p -> try { p.images() } catch (c: CancellationException) { throw c } catch (e: Exception) { return Replay.Failed(e.javaClass.simpleName) } } ?: emptyList()
         if (l.photos?.imageCount != null && images.size != l.photos.imageCount) return Replay.Failed("attachments_changed")
         val result = try {
-            runner.run(RoleCall(PromptKey.ANSWER, l.vars, images = images, imagesOnlyOnEndpoint = if (images.isEmpty()) null else endpoint, inputIds = memoryIds + (l.photos?.citeIds ?: emptySet()), callClass = CallClass.EXPERIMENT, override = draft, liveness = l.photos?.liveness,
-                derivedFromFrames = l.photos?.storedFrameIds.orEmpty()))
+            runner.run(RoleCall(PromptKey.ANSWER, l.vars, images = images, imagesOnlyOnEndpoint = if (images.isEmpty()) null else endpoint, inputIds = memoryIds + (l.photos?.citeIds ?: emptySet()), callClass = CallClass.EXPERIMENT, override = draft, liveness = liveness(gen) ?: l.photos?.liveness,
+                // codex r12: the memories, photo cites, history dependencies and stored photo lines of the prompt
+                sources = l.sr.retrieved.sources + com.rokid.context.model.PayloadSources(l.photos?.storedFrameIds.orEmpty(), memoryIds + (l.photos?.citeIds ?: emptySet()))))
         } catch (c: CancellationException) {
             throw c
         } catch (e: ModelCallException) {

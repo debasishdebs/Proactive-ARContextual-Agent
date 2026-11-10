@@ -123,7 +123,7 @@ object ExtractSave {
         val r = runner.run(
             RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = PromptComposer.dataBlock("frames", lines), contextSources = contextSources),
                 images = photos.map { it.image.copy(ref = it.frameId) }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass,
-                override = override, liveness = liveness),
+                override = override, liveness = liveness, sources = com.rokid.context.model.PayloadSources.frames(photos.map { it.frameId })),
         )
         return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered), r.promptVersion, usageOf(r.replies))
     }

@@ -57,7 +57,7 @@ class DerivePassTest {
     private fun mid(sec: Long) = MomentId.ofMs(t(sec))
     private fun sid(sec: Long) = "S" + mid(sec)
 
-    private val model = DeriveText { p -> prompts += p; onModel(); if (fail) throw IllegalStateException("model down"); "REPLY-${prompts.size}" }
+    private val model = DeriveText { p, _ -> prompts += p; onModel(); if (fail) throw IllegalStateException("model down"); "REPLY-${prompts.size}" }
     private fun pass(max: Int = 10, text: DeriveText = model): DerivePass {
         val gate = DeriveGate(enabled = { cadence.enabled() }, admit = { admitCalls++; admitted && (refuseAdmitOnCall == 0 || admitCalls != refuseAdmitOnCall) })
         val reg = DeriveRegistry().also { r -> TextDerivePorts(inputs, text, gate).registerIn(r) }

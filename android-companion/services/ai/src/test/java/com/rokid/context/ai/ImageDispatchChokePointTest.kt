@@ -58,7 +58,8 @@ class ImageDispatchChokePointTest {
     private val router = ModelRouter(bindings, endpoints, providers, gate)
     @After fun close() = db.close()
 
-    private inner class Live(var gone: Set<String> = emptySet(), var wiped: Boolean = false) : PhotoLiveness {
+    private inner class Live(var gone: Set<String> = emptySet(), var wiped: Boolean = false, var goneMemories: Set<String> = emptySet()) : PhotoLiveness {
+        override suspend fun goneMemories(ids: Set<String>): Set<String> { events += "mem:${ids.sorted().joinToString(",")}"; return ids intersect goneMemories }
         override suspend fun <T> holdUploadSlot(block: suspend () -> T): T { events += "slot"; try { return block() } finally { events += "release" } }
         override suspend fun gone(ids: Set<String>): GonePhotos { events += "check:${ids.sorted().joinToString(",")}"; return GonePhotos(ids intersect gone, wiped) }
     }
@@ -91,6 +92,17 @@ class ImageDispatchChokePointTest {
         ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.ANSWER, "v", "m")).getOrThrow()
         val e = err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q", img, liveness = Live(wiped = true)) } }
         assertTrue(e is PhotoForgottenException && e.wiped)
+        assertTrue(events.none { it.startsWith("send") })
+    }
+
+    // codex r12: a text-only prompt built from stored memories is guarded like a photo upload
+    @Test fun aForgottenSourceMemoryDropsATextCallUnsent() = runTest {
+        ep("t", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "t", "m")).getOrThrow()
+        val src = com.rokid.context.model.PayloadSources(frameIds = setOf("f9"), memoryIds = setOf("m1", "m2"))
+        val e = err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q", sources = src, liveness = Live(goneMemories = setOf("m2"))) } }
+        assertTrue(e.toString(), e is PhotoForgottenException && e.memoryIds == setOf("m2"))
+        assertEquals(listOf("permit", "slot", "check:f9", "mem:m1,m2", "release"), events)
+        assertTrue(err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q", sources = src) } } is ImagesUnguardedException)
         assertTrue(events.none { it.startsWith("send") })
     }
 
@@ -158,7 +170,7 @@ class ImageDispatchChokePointTest {
             val sent = mutableListOf<ModelRequest>()
             runCatching { runner(sent).run(RoleCall(key, PromptVars(), images = img, liveness = AllLive, fromFrames = true)) }
             assertTrue("$key made a call", sent.isNotEmpty())
-            assertTrue("$key: every attempt requires its photo and carries the liveness", sent.all { it.requireImages && it.images.isNotEmpty() && it.liveness === AllLive && it.photoIds == setOf("f1") })
+            assertTrue("$key: every attempt requires its photo and carries the liveness", sent.all { it.requireImages && it.images.isNotEmpty() && it.liveness === AllLive && it.sources.frameIds == setOf("f1") })
         }
         assertTrue(PromptKey.CLUSTER_SUMMARY.requiresImage)
     }

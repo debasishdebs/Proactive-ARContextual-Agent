@@ -122,6 +122,14 @@ class AnswerService(
         val semanticOff: com.rokid.context.memory.retrieval.SemanticOff? = null,
     ) {
         val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
+
+        /**
+         * Codex r12: the stored content this prompt carries. Frames: the recalled photos still stored (their lines are frame metadata; an expired photo's
+         * line comes from its caption memory). Memories: the retrieved memories, the photo cite ids and the history dependencies ([fenceIds]).
+         */
+        val sources: com.rokid.context.model.PayloadSources get() = com.rokid.context.model.PayloadSources(
+            frameIds = photos.filter { it.stored }.map { it.frameId }.toSet(), memoryIds = ids + fenceIds,
+        )
     }
 
     /** The shared retrieval core (v0.9.8): memories and photos with every gate; the prompt vars of the ask are built here. */
@@ -247,10 +255,8 @@ class AnswerService(
         // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
         // unsent, PhotoForgottenException; it is never re-asked as text).
         val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
-            // codex r11: a stored photo's line is frame metadata even when no image goes with it: re-checked like the images (an expired photo's
-            // line comes from its caption memory, fenced by ForgetFence below)
-            derivedFromFrames = r.photos.filter { it.stored }.map { it.frameId }.toSet(),
-            liveness = if (r.images.isEmpty() && r.photos.none { it.stored }) null else com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
+            // codex r12: everything stored the prompt carries (memories, photo lines, history dependencies) is re-checked live by the router inside the permit
+            sources = r.sources, liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"

@@ -68,7 +68,7 @@ object ExtractFollowUp {
         if (ai.bindings.get(Role.CRITIC) == null) return false
         val vars = criticVars(facts, frameLines)
         return try {
-            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = callClass, override = override, derivedFromFrames = frameIds, liveness = liveness)).output as CriticOutput).pass
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = callClass, override = override, sources = com.rokid.context.model.PayloadSources.frames(frameIds), liveness = liveness)).output as CriticOutput).pass
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {

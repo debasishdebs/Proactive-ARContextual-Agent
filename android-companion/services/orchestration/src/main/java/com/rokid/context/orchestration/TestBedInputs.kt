@@ -6,6 +6,7 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.nudge.NudgeInputs
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.model.PayloadSources
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
 
@@ -25,7 +26,8 @@ class TestBedInputs(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     /** [liveness]: codex r10, present whenever [images] are (the router refuses a photo without it). */
-    data class Prepared(val vars: PromptVars, val images: List<ModelImageInput>, val inputIds: Set<String>) {
+    /** [sources]: the stored photos and memories in the input (codex r12); [liveness]: present whenever [images] or [sources] are (the router refuses either without it). */
+    data class Prepared(val vars: PromptVars, val images: List<ModelImageInput>, val inputIds: Set<String>, val sources: PayloadSources = PayloadSources.NONE) {
         var liveness: com.rokid.context.model.PhotoLiveness? = null
             internal set
     }
@@ -33,7 +35,7 @@ class TestBedInputs(
     suspend fun recentFrames(limit: Int = 12): List<FrameEntity> = memory.frames.recent(limit)
 
     suspend fun prepare(key: PromptKey, input: TestInput): Prepared =
-        prepareVars(key, input).also { if (it.images.isNotEmpty()) it.liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory) }
+        prepareVars(key, input).also { if (it.images.isNotEmpty() || !it.sources.isEmpty) it.liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory) }
 
     private suspend fun prepareVars(key: PromptKey, input: TestInput): Prepared {
         val text = when (input) { is TestInput.Text -> input.text; is TestInput.Question -> input.text; is TestInput.Frame -> "" }
@@ -42,12 +44,12 @@ class TestBedInputs(
             PromptKey.ANSWER -> {
                 val r = answers.retrieve(text.ifBlank { "What did I see today?" }, System.currentTimeMillis())
                 // The same photo gate and floor as production (the AnswerService decides): the images the photo lines point at travel with them.
-                Prepared(r.vars, r.images, r.ids)
+                Prepared(r.vars, r.images, r.ids, r.sources)
             }
             PromptKey.NUDGE -> {
                 // The same memories, recent_nudges and sources blocks as NudgeEngine, plus the typed line.
                 val p = nudges.build(clock(), extraText = text)
-                Prepared(p.vars, emptyList(), p.inputIds)
+                Prepared(p.vars, emptyList(), p.inputIds, PayloadSources.memories(p.inputIds + p.fenceIds))
             }
             PromptKey.VISION_EXTRACT -> {
                 val frame = frameFor(input)
@@ -74,7 +76,8 @@ class TestBedInputs(
                 // Same two blocks as QueueDrainWorker: the facts, then the frame they came from (none for typed facts).
                 val frame = frameFor(input)
                 val facts = PromptComposer.dataBlock("facts", text.lines().filter { it.isNotBlank() })
-                Prepared(PromptVars(recentContext = facts + "\n" + PromptComposer.dataBlock("source", listOfNotNull(frame?.let(::frameLine)))), emptyList(), emptySet())
+                Prepared(PromptVars(recentContext = facts + "\n" + PromptComposer.dataBlock("source", listOfNotNull(frame?.let(::frameLine)))), emptyList(), emptySet(),
+                    PayloadSources.frames(listOfNotNull(frame?.id)))
             }
         }
     }

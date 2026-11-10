@@ -34,11 +34,11 @@ data class ModelRequest(
     /** The answer is meaningless without the images (image intent): never drop them for a text-only endpoint or retry as text. */
     val requireImages: Boolean = false,
     /**
-     * The stored photos this request is about, beyond the [images] refs (a photo whose bytes were dropped for this endpoint but whose metadata is still in
-     * the prompt). The router re-checks the union of these and the image refs with [liveness] inside every provider call's permit.
+     * Codex r12: the stored user content this request's prompt carries ([PayloadSources]: photos beyond the [images] refs, and the memories whose text
+     * is in it). The router re-checks every one of them with [liveness] inside every provider call's permit, under the upload slot.
      */
-    val photoIds: Set<String> = emptySet(),
-    /** Who says whether the photos are still live (and holds the upload slot a delete waits for). Required whenever a photo is attached: absent = refused. */
+    val sources: PayloadSources = PayloadSources.NONE,
+    /** Who says whether the photos and memories are still live (and holds the upload slot a delete waits for). Required whenever [sources] or an image is present: absent = refused. */
     val liveness: PhotoLiveness? = null,
 ) {
     companion object {
@@ -50,6 +50,22 @@ data class ModelRequest(
         const val DEFAULT_MAX_TOKENS = 4_096
         /** The largest cap Settings accepts for a binding (and the most a cut-reply retry asks for). */
         const val MAX_TOKENS_LIMIT = 8_192
+    }
+}
+
+/**
+ * Codex r12: the stored user content a prompt is built from. [frameIds]: photos whose bytes, metadata, facts or captions are in it (row present, not
+ * tombstoned). [memoryIds]: memories whose text is in it (present, not INVALIDATED; a memory whose photo legitimately expired is still live; a
+ * `photo:` cite id is live while its keyframe metadata stays). Every model call site declares one, [NONE] when the prompt holds no stored user content.
+ */
+data class PayloadSources(val frameIds: Set<String> = emptySet(), val memoryIds: Set<String> = emptySet()) {
+    val isEmpty: Boolean get() = frameIds.isEmpty() && memoryIds.isEmpty()
+    operator fun plus(o: PayloadSources) = PayloadSources(frameIds + o.frameIds, memoryIds + o.memoryIds)
+    companion object {
+        /** Declared: no stored user content (photos, facts, captions, memories, history) is in the prompt. */
+        val NONE = PayloadSources()
+        fun frames(ids: Collection<String>) = PayloadSources(frameIds = ids.filter { it.isNotBlank() }.toSet())
+        fun memories(ids: Collection<String>) = PayloadSources(memoryIds = ids.filter { it.isNotBlank() }.toSet())
     }
 }
 

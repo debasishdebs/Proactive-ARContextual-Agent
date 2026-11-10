@@ -299,6 +299,8 @@ class QueueDrainWorker(
         // Codex r10: the photos (and the frame ids in the prompt) are re-checked live by the router inside the call's permit; forgotten meanwhile = stale, unsent.
         val out = try {
             ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true, callClass = com.rokid.context.model.CallClass.EXTRACT,
+                // codex r12: the source memories (also those of expired photos) and the reloaded frames are re-checked, not only the attached images
+                sources = com.rokid.context.model.PayloadSources(frames.map { it.id }.toSet(), sources.map { it.id }.toSet()),
                 liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation))).output as SummaryOutput
         } catch (f: com.rokid.context.ai.PhotoForgottenException) {
             throw StalePayloadException()
@@ -327,7 +329,7 @@ class QueueDrainWorker(
             "\n" + PromptComposer.dataBlock("source", frameLines))
         // codex r11: the facts and frame lines are derived from these photos: re-checked live by the router inside the permit; forgotten meanwhile = stale
         val pass = try {
-            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT, derivedFromFrames = frames.map { it.id }.toSet(),
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT, sources = com.rokid.context.model.PayloadSources(frames.map { it.id }.toSet(), reviews.map { it.id }.toSet()),
                 liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext))).output as CriticOutput).pass
         } catch (f: com.rokid.context.ai.PhotoForgottenException) {
             throw StalePayloadException()
@@ -345,7 +347,8 @@ class QueueDrainWorker(
         val payload = QueuePayloads.parse(job.payload)
         val rawInput = QueuePayloads.string(payload, "raw_input")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
-        val extracted = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))), callClass = com.rokid.context.model.CallClass.USER)).output as ExtractOutput)
+        val extracted = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))), callClass = com.rokid.context.model.CallClass.USER,
+            sources = com.rokid.context.model.PayloadSources.NONE /* the user's own words from the queue payload, not stored content */)).output as ExtractOutput)
             .facts.filter { it.text.isNotBlank() }
         // Fix I1: the user asked to remember this, so an empty reply keeps their own words as one note (no retry: it can
         // come back empty again).

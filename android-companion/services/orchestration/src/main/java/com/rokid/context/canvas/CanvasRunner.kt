@@ -647,6 +647,10 @@ class CanvasRunner(
                 res.associateBy { it.key }
             }
             val members: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> m.frames.map { it.id } } + sceneByKey.mapValues { (_, s) -> s.frameIds }
+            // codex r12: what a Moment or Scene item's words come from: its member photos and memories, declared on every model call over it
+            val itemSources: Map<String, com.rokid.context.model.PayloadSources> =
+                momentByKey.mapValues { (_, m) -> com.rokid.context.model.PayloadSources(m.frames.map { it.id }.toSet(), m.memories.map { it.id }.toSet()) } +
+                    sceneByKey.mapValues { (_, s) -> com.rokid.context.model.PayloadSources(s.frameIds.toSet(), s.memoryIds.toSet()) }
             val allMembers: Set<String> = members.values.flatten().toSet()
             val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null && wsel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
             val order = ids.withIndex().associate { it.value to it.index }
@@ -747,7 +751,7 @@ class CanvasRunner(
                 for (id in conflicts.sortedBy { order[it] }) write(node.id, id, NodeResult(id, null, error = "merge_conflict"))
                 if (!flush()) { status = "CANCELLED"; break@stop }
                 val ex = executors[node.type]
-                val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value) }
+                val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value, itemSources[it.key] ?: com.rokid.context.model.PayloadSources.NONE) }
                 val produced = LinkedHashMap<String, ItemFlow.Out>()
                 for (chunk in queue.chunked(ex?.chunkSize(node)?.coerceAtLeast(1) ?: Int.MAX_VALUE)) {
                     if (isCancelled(runId)) { status = "CANCELLED"; break@stop }

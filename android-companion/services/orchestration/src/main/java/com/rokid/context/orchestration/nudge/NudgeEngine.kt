@@ -99,7 +99,10 @@ class NudgeEngine(
             return NudgeRun.RateLimited
         }
         val out = try {
-            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds, callClass = com.rokid.context.model.CallClass.NUDGE)).output as NudgeOutput
+            // codex r12: the recent memories, photo cites and nudge-history sources of the prompt are re-checked live by the router inside the permit
+            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds, callClass = com.rokid.context.model.CallClass.NUDGE,
+                sources = com.rokid.context.model.PayloadSources.memories(prepared.inputIds + prepared.fenceIds),
+                liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory))).output as NudgeOutput
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {

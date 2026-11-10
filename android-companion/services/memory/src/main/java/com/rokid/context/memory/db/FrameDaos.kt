@@ -285,15 +285,14 @@ abstract class FrameStateDao {
     /**
      * Night job (Task 9): [frameId] (a settled, undescribed, non-skipped keyframe that is due soon) → CAPTION_QUEUED with attempts 0 and
      * lastError `describe_before_delete`; [orderMs] sets the queue order (deadline order). Guarded: still in one of the settled states,
-     * not forgotten, and still cited by no memory (`memory.frameId` or `frame_source`). Returns 1 when it moved.
+     * not forgotten, and still described by no memory (`ForgetDao.STATE_DESCRIBED`). Returns 1 when it moved.
      */
     @Query(
         "UPDATE frame_state SET state = 'CAPTION_QUEUED', attempts = CASE WHEN lastError = 'describe_before_delete' THEN attempts ELSE 0 END, lastError = 'describe_before_delete', claimedAt = NULL, claimId = NULL, updatedAt = :orderMs " +
             "WHERE frameId = :frameId AND state IN ('FAILED_FINAL','EXTRACTED','NEAR_DUP','CLUSTERED') AND COALESCE(lastError, '') != 'describe_failed' " +
             "AND (COALESCE(lastError, '') != 'describe_before_delete' OR claimedAt IS NULL OR claimedAt <= :orderMs) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
-            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId)",
+            "AND NOT " + ForgetDao.STATE_DESCRIBED, // codex r12: the shared description rule; a photo only canvas/derived/member rows cite is still queued
     )
     abstract suspend fun queueForDescribe(frameId: String, orderMs: Long): Int
 

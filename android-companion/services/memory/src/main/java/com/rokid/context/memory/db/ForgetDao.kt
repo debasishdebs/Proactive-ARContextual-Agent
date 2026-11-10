@@ -85,6 +85,14 @@ abstract class ForgetDao {
 
     /** Memories (any review state) that still cite [frameId], via `memory.frameId` or `frame_source`. */
     @Query("SELECT (SELECT COUNT(*) FROM memory WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_source WHERE frameId = :frameId)") abstract suspend fun remainingRefs(frameId: String): Int
+    /** Codex r12: 1 when a memory still DESCRIBES [frameId] ([DESCRIBED_BY_EXTRACTION]), else 0: the expiry recheck of every deadline-based delete. */
+    @Query("SELECT COUNT(*) FROM frame f WHERE f.id = :frameId AND " + DESCRIBED_BY_EXTRACTION) abstract suspend fun describedRefs(frameId: String): Int
+    /**
+     * Codex r12 Diagnostics: keyframes (not forgotten) that some memory cites but none describes: only canvas, derived, NEEDS_REVIEW or cluster-member
+     * rows cite them. The night job describes them before their deadline; until then they are kept.
+     */
+    @Query("SELECT COUNT(*) FROM frame f JOIN frame_meta m ON m.frameId = f.id WHERE NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) AND " + CITED_NOT_DESCRIBED)
+    abstract suspend fun strandedPhotos(): Int
     @Query("SELECT * FROM frame WHERE id = :id") abstract suspend fun frame(id: String): FrameEntity?
     @Query("DELETE FROM frame WHERE id = :id") abstract suspend fun deleteFrame(id: String): Int
 
@@ -151,13 +159,13 @@ abstract class ForgetDao {
             "WHERE s.state IN ('FAILED_FINAL','EXTRACTED','NEAR_DUP','CLUSTERED') AND " + PHOTO_ELIGIBLE +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " +
             "AND COALESCE(s.lastError, '') != 'describe_failed' AND NOT (s.lastError = 'describe_before_delete' AND COALESCE(s.claimedAt, 0) > :nowMs) " + // parked, or in its cooldown
-            "AND NOT EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id) " +
+            "AND NOT " + DESCRIBED_BY_EXTRACTION + // codex r12: a photo only canvas/derived/review/member rows cite is still describable
             "AND MAX(f.ts, :since) + :windowMs <= :nowMs + :aheadMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs + :aheadMs) " +
             "ORDER BY MAX(f.ts, :since), f.id LIMIT :limit",
     )
     abstract suspend fun describeDue(since: Long, windowMs: Long, nowMs: Long, aheadMs: Long, protectMs: Long, limit: Int): List<String>
 
-    /** How many of [frameIds] some memory cites now (`memory.frameId` or `frame_source`). */
+    /** How many of [frameIds] some memory cites now (`memory.frameId` or `frame_source`); not the description rule (that is [describedRefs]). */
     @Query(
         "SELECT COUNT(*) FROM frame f WHERE f.id IN (:frameIds) AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) " +
             "OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id))",
@@ -225,22 +233,26 @@ abstract class ForgetDao {
          */
         const val SCORED_LOW = "(m.salience IS NOT NULL AND m.salience < 0.5)"
         /**
-         * S3: a photo the user described on demand carries `frame_source` FACT rows (a skipped photo was never extracted, and cluster facts cite only
-         * representatives). That durable mark takes it out of the skipped-photo rule for good, so a cluster settling later cannot put it back under 1 day.
-         */
-        const val NOT_DESCRIBED = "AND NOT EXISTS (SELECT 1 FROM frame_source d WHERE d.frameId = f.id AND d.role = 'FACT') "
-        /**
-         * Codex r11: a memory counts as a photo's description (what lets retention delete the photo) only when it is review state OK and not derived
-         * (no summary of other memories: re-summaries, reprocess summaries), and it is not a canvas save: `CanvasRunSave` stamps every row it writes
-         * `rokid_cv_` (its origin; canvas facts stay searchable memories but never authorise a delete). A NEEDS_REVIEW fact never does either.
-         * The photo paths (keyframe extraction, describe on demand, scene clusters, the queued photo extraction) write OK facts and captions under
-         * their own prefixes. GLOB: `_` is literal.
+         * Codex r11/r12: THE qualifying-description predicate, the one rule for "this photo is described" used by photo retention ([linkedPhotosDue]),
+         * the skipped-photo exemption ([NOT_DESCRIBED], S3), the night describe queue ([describeDue], `FrameStateDao.queueForDescribe`), the
+         * expiry recheck ([describedRefs]) and the stranded count ([strandedPhotos]). A memory describes a photo only when it is review state OK, not
+         * derived (no summary of other memories) and not a canvas save (`CanvasRunSave` stamps its rows `rokid_cv_`; they stay searchable but never
+         * authorise a delete), AND it cites that photo as delivered: `memory.frameId`, or a `frame_source` row of role FACT or CLUSTER_REP (the photos a
+         * call actually sent). A CLUSTER_MEMBER link never describes a member photo: the scene summary never saw it. GLOB: `_` is literal.
          */
         const val DESCRIBES = "a.reviewState = 'OK' AND a.derived = 0 AND a.id NOT GLOB 'rokid_cv_*'"
         const val DESCRIBED_BY_EXTRACTION =
             "(EXISTS (SELECT 1 FROM memory a WHERE a.frameId = f.id AND $DESCRIBES) " +
-                "OR EXISTS (SELECT 1 FROM frame_source fs JOIN memory a ON a.id = fs.memoryId WHERE fs.frameId = f.id AND $DESCRIBES)) "
-
+                "OR EXISTS (SELECT 1 FROM frame_source fs JOIN memory a ON a.id = fs.memoryId WHERE fs.frameId = f.id AND fs.role IN ('FACT','CLUSTER_REP') AND $DESCRIBES)) "
+        /** [DESCRIBED_BY_EXTRACTION] for a query over `frame_state` (no `f` alias). */
+        const val STATE_DESCRIBED =
+            "(EXISTS (SELECT 1 FROM memory a WHERE a.frameId = frame_state.frameId AND $DESCRIBES) " +
+                "OR EXISTS (SELECT 1 FROM frame_source fs JOIN memory a ON a.id = fs.memoryId WHERE fs.frameId = frame_state.frameId AND fs.role IN ('FACT','CLUSTER_REP') AND $DESCRIBES)) "
+        /** S3, codex r12: a photo DESCRIBED ([DESCRIBED_BY_EXTRACTION]) leaves the skipped-photo rule for good; a canvas or member citation does not. */
+        const val NOT_DESCRIBED = "AND NOT $DESCRIBED_BY_EXTRACTION"
+        /** Codex r12: cited by some memory (`memory.frameId` or any `frame_source` row) yet not described: the photos only canvas/derived/review/member rows cite. */
+        const val CITED_NOT_DESCRIBED =
+            "(EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source x WHERE x.frameId = f.id)) AND NOT $DESCRIBED_BY_EXTRACTION"
         /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
         const val SKIPPED_PHOTO =
             "AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +

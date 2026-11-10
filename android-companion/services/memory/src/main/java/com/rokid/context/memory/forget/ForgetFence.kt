@@ -12,6 +12,20 @@ import com.rokid.context.memory.db.ReviewState
  * Forget deletes it), so an answer that commits after a Forget of its photo is fenced like one that cites a forgotten memory.
  */
 object ForgetFence {
+    /**
+     * Codex r12: those of [ids] that are no longer live by the [allLive] rules: a memory id whose row is gone or INVALIDATED; a `frame:` cite whose
+     * keyframe metadata is gone (Forget). A photo that merely expired keeps its metadata, so its memories and cites stay live.
+     */
+    suspend fun goneAmong(db: ContextDatabase, ids: Collection<String>): Set<String> {
+        val wanted = ids.toSet()
+        if (wanted.isEmpty()) return emptySet()
+        val (cites, memoryIds) = wanted.partition { it.startsWith(PHOTO_CITE_PREFIX) }
+        val live = memoryIds.chunked(500).flatMap { db.forgetDao().memories(it) }.filter { it.reviewState != ReviewState.INVALIDATED }.map { it.id }.toSet()
+        val frames = cites.map { it.removePrefix(PHOTO_CITE_PREFIX) }
+        val liveFrames = frames.chunked(500).flatMap { db.forgetDao().keyframeIds(it) }.toSet()
+        return memoryIds.filter { it !in live }.toSet() + cites.filter { it.removePrefix(PHOTO_CITE_PREFIX) !in liveFrames }
+    }
+
     suspend fun allLive(db: ContextDatabase, ids: Collection<String>): Boolean {
         val wanted = ids.toSet()
         if (wanted.isEmpty()) return true

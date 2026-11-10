@@ -135,6 +135,12 @@ class DiagnosticsTest {
         compose.onNodeWithTag("kf_describe_waiting").assertTextContains("Photos waiting to be described: 7", substring = true)
     }
 
+    // codex r12: the user can see photos only canvas/derived memories cite
+    @Test fun showsStrandedPhotos() {
+        show(KeyframeRows(stats, retention = RetentionCounters(strandedPhotos = 3)))
+        compose.onNodeWithTag("kf_stranded").assertTextContains("3 photos kept: only canvas/derived memories cite them")
+    }
+
     @Test fun showsRokidClosedLineOnlyWhenReported() {
         compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, glassesRestarts = "Rokid closed the app 2 times (last gap 38s)") } }
         compose.onNodeWithTag("glasses_restarts").assertTextContains("Rokid closed the app 2 times (last gap 38s)")

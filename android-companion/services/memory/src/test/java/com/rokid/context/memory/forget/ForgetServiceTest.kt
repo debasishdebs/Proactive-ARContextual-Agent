@@ -223,10 +223,10 @@ class ForgetServiceTest {
 
     // --- wave 3 Task 11 (S1, S2): photo cites and metadata-only moments -----------------------------------------------
 
-    private suspend fun keyframe(id: String, withFrame: Boolean = true, vector: Boolean = true) {
+    private suspend fun keyframe(id: String, withFrame: Boolean = true, vector: Boolean = true, state: String = "NEAR_DUP") {
         if (withFrame) db.frameDao().insertIgnore(FrameEntity(id, 1, "/$id.jpg", "rokid_glasses"))
         db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(id, null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1))
-        db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity(id, "NEAR_DUP", 0, null, null, null, 1)))
+        db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity(id, state, 0, null, null, null, 1)))
         if (vector) db.frameVectorDao().upsert(listOf(com.rokid.context.memory.db.FrameVectorEntity(id, "s1", byteArrayOf(1, 2, 3, 4))))
     }
 
@@ -326,6 +326,33 @@ class ForgetServiceTest {
     }
 
     // codex r11: only an OK, non-derived, non-canvas description makes a photo deletable; a canvas save or a fact awaiting review never does
+    private suspend fun cite(memoryId: String, frameId: String, role: String = "FACT") =
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity(memoryId, frameId, null, role)))
+
+    // codex r12 P1-1: a scene summary describes only the representatives it was sent; a member link never authorises deleting a member photo
+    @Test fun aClusterMemberLinkNeverDescribesTheMember() = runBlocking {
+        keyframe("member"); keyframe("rep")
+        mem("rokid_cl_k1_0", frameId = "rep")                       // OK, non-derived scene summary (memory.frameId = the medoid)
+        cite("rokid_cl_k1_0", "rep", "CLUSTER_REP"); cite("rokid_cl_k1_0", "member", "CLUSTER_MEMBER")
+        mem("rokid_cv_r1_0", frameId = "member"); cite("rokid_cv_r1_0", "member")   // an excluded canvas citation of the member
+        assertEquals("only the delivered representative is described", listOf("rep"), linkedDue())
+        assertTrue("the member stays an ordinary skipped photo: the canvas row does not exempt it", "member" in skippedDue())
+        assertEquals("the expiry recheck uses the same rule", 0, service.expirePhotos(listOf("member"), requireLinked = true).expiredFrames)
+        assertEquals(1, service.expirePhotos(listOf("rep"), requireLinked = true).expiredFrames)
+    }
+
+    // codex r12 P2-3: a photo only excluded rows cite is still describable (night queue) and counted as stranded until then
+    @Test fun aPhotoOnlyExcludedRowsCiteIsDescribableAndCounted() = runBlocking {
+        keyframe("cv", state = "EXTRACTED"); keyframe("der", state = "EXTRACTED"); keyframe("ok", state = "EXTRACTED")
+        mem("rokid_cv_r1_0", frameId = "cv"); cite("rokid_cv_r1_0", "cv")
+        mem("rokid_mem_rs_1", frameId = "der", derived = true); cite("rokid_mem_rs_1", "der")
+        mem("rokid_kf_k1_c0", frameId = "ok"); cite("rokid_kf_k1_c0", "ok")
+        assertEquals(listOf("cv", "der"), db.forgetDao().describeDue(0, 0, 1_000, 0, 0, 10).sorted())
+        assertEquals(2, db.forgetDao().strandedPhotos())
+        assertEquals(1, db.frameStateDao().queueForDescribe("cv", 5))
+        assertEquals("a described photo is never queued again", 0, db.frameStateDao().queueForDescribe("ok", 5))
+    }
+
     @Test fun retentionCountsOnlyOkExtractionDescriptions() = runBlocking {
         keyframe("c"); keyframe("r"); keyframe("e"); keyframe("d")
         mem("rokid_cv_run1_0", frameId = "c")                                                   // a canvas save, even OK

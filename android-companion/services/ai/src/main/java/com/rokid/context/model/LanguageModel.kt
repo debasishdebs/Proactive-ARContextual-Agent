@@ -42,4 +42,6 @@ data class GonePhotos(val ids: Set<String>, val wiped: Boolean = false) {
 interface PhotoLiveness {
     suspend fun <T> holdUploadSlot(block: suspend () -> T): T
     suspend fun gone(ids: Set<String>): GonePhotos
+    /** Codex r12: of these source memory ids ([PayloadSources.memoryIds]), those forgotten (gone or INVALIDATED). Empty = all live. */
+    suspend fun goneMemories(ids: Set<String>): Set<String>
 }
