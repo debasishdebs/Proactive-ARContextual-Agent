@@ -178,6 +178,29 @@ Not done: `ForgetDao.citedCount` (used only by tests) still counts any citation.
    to complete (generation moved, memories gone). Both the summary-job and the queued-Ask cases now use it.
    Residual: the Ask case cannot prove that the fence, rather than the completed wipe, removed the Ask row, because the save races the released wipe.
 
+## Codex r14: three rules instead of point fixes
+
+- **RULE A (outputs), at the execution boundary only.** `NodeProvenance` (Executors.kt) is created per node in CanvasRunner and PipelineInterpreter.
+  It `consume`s every chunk before the run. Every output of that execution carries the union of the sources of ALL the chunk's inputs (the whole
+  Vision batch, the whole window) plus what the value cites. An executor is `chunkLocal` (no state across chunks) only when it says so. Today that is
+  Vision, LocalCritic, Critic, Prompt, Summary, Switch and MemoryWritePreview. Every other executor, and any new one, also carries everything the node
+  consumed before (Window, Motion, Compare, SetFrequency, py.fn). The per-item `carriedSources` is gone; no executor sets provenance itself.
+- **RULE B (requests).** `ExtractSave.extract(..., contextSources, contextProvenance)` declares the upstream text's sources on every attempt,
+  including the single-photo fallback. Context text without provenance is refused (`require`). VisionExtractExecutor passes the union of its chunk's
+  `sourcesOf`. Prompt, Summary and Critic already build their request sources from the same item (`sourcesOf(item)`), whose `sources` are the
+  RULE A carried union.
+- **RULE C (generation).** `PayloadSources.stored` is true for every value except `NONE`, including the primary constructor with empty id sets.
+  `frames()` and `memories()` give `NONE` when empty. The router guards every stored request: liveness required, upload slot, `gone(frameIds)`
+  (which also checks the wipe generation the liveness captured, even with no ids), then `goneMemories`. Only `NONE` skips the guard. A mark-only
+  Derive (label text, no ids) is therefore dropped after a Delete all. This replaces r13's "required + empty = refused".
+- **Tests (each confirmed failing before its fix):**
+  - `CanvasProvenanceTest.aBatchMatesProvenanceTravelsWithEveryOutputOfTheBatch`: cross-photo caption, Vision(2) → Prompt → Summary.
+  - `aVisionRequestDeclaresTheSourcesOfItsUpstreamJson`: Vision(2) → Prompt → Vision(1).
+  - `ImageDispatchChokePointTest.storedTextWithNoIdsIsStillGuardedByTheGeneration`.
+  - `DerivePassTest.aMarkOnlyMomentsLabelIsGuardedByTheCapturedGeneration`.
+  - Property test: `everyBuiltInExecutorsOutputsCarryEveryInputsSources` runs every `Executors.all()` executor over a batch of 2+ inputs at the
+    boundary.
+
 ## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
 
 The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the

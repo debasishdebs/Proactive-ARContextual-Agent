@@ -84,9 +84,21 @@ class DerivePassTest {
         pass(text = capture).runIfDue(MS)
         val (prompt, src, gen) = calls.first { "SECRET" in it.first }
         assertTrue(prompt.contains("SECRET"))
-        assertTrue("the loaded text keeps its provenance", src.required && "m0" in src.memoryIds)
+        assertTrue("the loaded text keeps its provenance", src.stored && "m0" in src.memoryIds)
         assertTrue("the router's re-check sees the memory gone", com.rokid.context.memory.forget.ForgetFence.goneAmong(db, src.memoryIds).contains("m0"))
         assertEquals(com.rokid.context.orchestration.MemoryWipe.generation.get(), gen)
+    }
+
+    // codex r14 P1-3 / RULE C: a mark-only Moment ("sleeping") has no frame or memory ids, yet its label is stored content: the call it makes is guarded
+    // (not NONE), so the router takes the slot and checks the captured generation; a Delete all held at admission drops it
+    @Test fun aMarkOnlyMomentsLabelIsGuardedByTheCapturedGeneration() = runBlocking<Unit> {
+        fx.mark("mk:1:1", t(0) + 100, "voice"); fx.mark("mk:1:1:i", t(0) + 100, "voice", "INTENT", "sleeping"); moments.build(listOf(mid(0))); on()
+        var captured: Pair<com.rokid.context.model.PayloadSources, Long>? = null
+        pass(text = DeriveText { p, src, gen -> if ("sleeping" in p && captured == null) captured = src to gen; "REPLY" }).runIfDue(MS)
+        val (src, gen) = checkNotNull(captured) { "the mark-only Moment made a call" }
+        assertTrue("its label is stored content, never NONE", src.stored && src != com.rokid.context.model.PayloadSources.NONE)
+        com.rokid.context.orchestration.MemoryWipe.generation.incrementAndGet() // Delete all lands while the call waits at admission
+        assertTrue(com.rokid.context.work.frames.FrameLiveness(gen, { it }, { emptySet() }).gone(src.frameIds).wiped)
     }
 
     @Test fun aDeleteAllAfterTheSnapshotIsSeenThroughTheCapturedGeneration() = runBlocking<Unit> {

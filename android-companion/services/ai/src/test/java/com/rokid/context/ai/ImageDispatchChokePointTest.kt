@@ -107,11 +107,18 @@ class ImageDispatchChokePointTest {
     }
 
     // codex r13: text read from stored content whose provenance came back empty is refused, never sent unchecked
-    @Test fun storedTextWithLostProvenanceIsRefused() = runTest {
+    // codex r14 RULE C: stored content with EMPTY id sets (a mark-only Moment) still takes the slot and the generation check; only NONE skips them
+    @Test fun storedTextWithNoIdsIsStillGuardedByTheGeneration() = runTest {
         ep("t", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
-        val lost = com.rokid.context.model.PayloadSources.stored(emptyList(), emptyList())
-        assertTrue(err { router.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest("notes", sources = lost, liveness = Live()) } } is ImagesUnguardedException)
+        val labelsOnly = com.rokid.context.model.PayloadSources.stored(emptyList(), emptyList())
+        assertTrue(err { router.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest("sleeping", sources = labelsOnly) } } is ImagesUnguardedException)
+        val e = err { router.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest("sleeping", sources = labelsOnly, liveness = Live(wiped = true)) } }
+        assertTrue("Delete all since the read drops it", e is PhotoForgottenException && e.wiped)
+        assertEquals(listOf("permit", "slot", "check:", "release"), events)
         assertTrue(events.none { it.startsWith("send") })
+        router.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest("sleeping", sources = labelsOnly, liveness = Live()) }
+        assertEquals(listOf("permit", "slot", "check:", "send:t:0", "release"), events.drop(4))
+        events.clear()
         // a genuinely source-free call is unaffected
         router.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest("hello", sources = com.rokid.context.model.PayloadSources.NONE) }
         assertEquals("send:t:0", events.last())
