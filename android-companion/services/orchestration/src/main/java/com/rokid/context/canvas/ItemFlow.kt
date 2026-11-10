@@ -8,12 +8,13 @@ import com.rokid.context.ai.canvas.PipelineNode
 internal object ItemFlow {
     /** [sources] (codex r17): what this value was derived from, along the edges that actually produced it (never another branch's rows). */
     /** [callLineage] (codex r18): the model calls this value derives from (S25 tokens), along its producing edges only, like [sources]. */
+    /** [imageDelivered] (Room v16): the photo of this value's captions was proved delivered (null = no proof recorded). */
     class Out(val value: CanvasValue, val branch: String?, val sources: com.rokid.context.model.PayloadSources = com.rokid.context.model.PayloadSources.NONE,
-              val callLineage: Set<String> = emptySet())
+              val callLineage: Set<String> = emptySet(), val imageDelivered: Boolean? = null)
 
     /** [sources]: per input, the [Out.sources] of the one edge that delivered it. */
     class Gathered(val inputs: LinkedHashMap<String, CanvasValue>, val conflicts: Set<String>, val sources: Map<String, com.rokid.context.model.PayloadSources> = emptyMap(),
-                   val callLineage: Map<String, Set<String>> = emptyMap())
+                   val callLineage: Map<String, Set<String>> = emptyMap(), val imageDelivered: Map<String, Boolean?> = emptyMap())
 
     /**
      * What a node receives: for each incoming edge, the items its source produced, except those whose branch differs from the edge's `when`.
@@ -23,14 +24,15 @@ internal object ItemFlow {
         val inputs = LinkedHashMap<String, CanvasValue>()
         val sources = HashMap<String, com.rokid.context.model.PayloadSources>()
         val callLineage = HashMap<String, Set<String>>()
+        val delivered = HashMap<String, Boolean?>()
         val conflicts = LinkedHashSet<String>()
         for (e in incoming) {
             for ((id, o) in outputs[e.from].orEmpty()) {
                 if (e.`when` != null && e.`when` != o.branch) continue
-                if (inputs.containsKey(id) || id in conflicts) { inputs.remove(id); sources.remove(id); callLineage.remove(id); conflicts += id } else { inputs[id] = o.value; sources[id] = o.sources; callLineage[id] = o.callLineage }
+                if (inputs.containsKey(id) || id in conflicts) { inputs.remove(id); sources.remove(id); callLineage.remove(id); delivered.remove(id); conflicts += id } else { inputs[id] = o.value; sources[id] = o.sources; callLineage[id] = o.callLineage; delivered[id] = o.imageDelivered }
             }
         }
-        return Gathered(inputs, conflicts, sources, callLineage)
+        return Gathered(inputs, conflicts, sources, callLineage, delivered)
     }
 
     /** Kahn's algorithm; ties go to the node that comes first in the JSON. */
