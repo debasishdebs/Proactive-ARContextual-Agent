@@ -140,7 +140,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
         )
         // codex r12: the surviving source memories' text is re-checked live by the router inside the permit (a Forget meanwhile drops the call unsent)
         val out = runner.run(RoleCall(PromptKey.SUMMARIZE, vars, callClass = com.rokid.context.model.CallClass.BACKFILL,
-            sources = com.rokid.context.model.PayloadSources.memories(sources.map { it.id }), liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(graph, generation))).output as SummaryOutput
+            sources = com.rokid.context.model.PayloadSources.stored(emptyList(), sources.map { it.id }), liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(graph, generation))).output as SummaryOutput
         val text = out.summary.replace(TextHygiene.SEPARATORS, " ").trim().take(260)
         if (text.isEmpty()) throw IllegalStateException("empty summary")
         val newId = "$PREFIX${UUID.randomUUID()}"

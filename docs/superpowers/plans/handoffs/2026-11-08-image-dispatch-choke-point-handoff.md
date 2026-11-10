@@ -155,6 +155,29 @@ ImageDispatchChokePointTest `aForgottenSourceMemoryDropsATextCallUnsent`. PhotoD
 
 Not done: `ForgetDao.citedCount` (used only by tests) still counts any citation. Room stays at version 15.
 
+## Codex r13 follow-up
+
+1. **Canvas provenance travels with outputs.** `carriedSources(input, output)` (Executors.kt) is the union of `sourcesOf(input)` and what the new
+   value cites. CanvasRunner and PipelineInterpreter each keep a per-item-id `carried` map, and every next node's `CanvasItem.sources` comes from it.
+   So Vision(A+B) → Prompt (JSON) → Summary still declares B. Test: `CanvasProvenanceTest` holds Forget B at router admission; I confirmed it fails
+   without the fix.
+2. **Derive captures text, provenance and generation in one snapshot.** `DeriveInputs.snapshot` returns `Snapshot(lines, sources, generation)`
+   from one transaction. The pre-call check compares the whole snapshot, and the call sends exactly those sources with a liveness bound to that
+   generation (`DeriveText.complete(prompt, sources, generation)`).
+   `PayloadSources.stored(...)` sets `required = true`. The router refuses a `required` request with empty provenance (`ImagesUnguardedException`)
+   instead of bypassing the guard. Genuinely source-free calls keep using `PayloadSources.NONE`.
+   `stored` is used by DerivePass (Moments with memory text), Nudge and Resummarizer.
+   Tests: `DerivePassTest` (Forget and Delete all after the last check, via the `testBeforeSend` seam);
+   `ImageDispatchChokePointTest.storedTextWithLostProvenanceIsRefused`.
+3. **The grace timestamp uses only qualifying descriptions.** `linkedPhotosDue` takes the earliest createdAt over `DESCRIBES` memories, through
+   memory.frameId or FACT/CLUSTER_REP rows only. Test (real SQL): `ForgetServiceTest.graceCountsFromTheFirstQualifyingDescription`. The case is
+   deadline day 10, canvas citation day 1, qualifying description day 20: the photo is kept on days 20 and 22 and is due on day 23.
+4. **Empty night describes count attempts by the shared rule.** `FrameStateDao.noteUncitedDescribed` uses `NOT ForgetDao.STATE_DESCRIBED`.
+   Test (real SQL): `anEmptyNightDescribeCountsAnAttemptDespiteAnExcludedCitation`.
+5. **DeleteAllFenceTest runs Delete all in its own coroutine.** The wipe starts while the upload is in flight, waits for the slot and is asserted
+   to complete (generation moved, memories gone). Both the summary-job and the queued-Ask cases now use it.
+   Residual: the Ask case cannot prove that the fence, rather than the completed wipe, removed the Ask row, because the save races the released wipe.
+
 ## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
 
 The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the

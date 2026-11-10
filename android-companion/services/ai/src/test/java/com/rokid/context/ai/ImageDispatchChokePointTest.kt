@@ -106,6 +106,17 @@ class ImageDispatchChokePointTest {
         assertTrue(events.none { it.startsWith("send") })
     }
 
+    // codex r13: text read from stored content whose provenance came back empty is refused, never sent unchecked
+    @Test fun storedTextWithLostProvenanceIsRefused() = runTest {
+        ep("t", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
+        val lost = com.rokid.context.model.PayloadSources.stored(emptyList(), emptyList())
+        assertTrue(err { router.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest("notes", sources = lost, liveness = Live()) } } is ImagesUnguardedException)
+        assertTrue(events.none { it.startsWith("send") })
+        // a genuinely source-free call is unaffected
+        router.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest("hello", sources = com.rokid.context.model.PayloadSources.NONE) }
+        assertEquals("send:t:0", events.last())
+    }
+
     @Test fun aPhotoWithoutRefOrLivenessIsRefusedUnsent() = runTest {
         ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.ANSWER, "v", "m")).getOrThrow()
         assertTrue(err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q", img) } } is ImagesUnguardedException)

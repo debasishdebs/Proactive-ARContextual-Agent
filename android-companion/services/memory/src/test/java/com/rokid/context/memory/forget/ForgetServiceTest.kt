@@ -329,6 +329,35 @@ class ForgetServiceTest {
     private suspend fun cite(memoryId: String, frameId: String, role: String = "FACT") =
         db.frameSourceDao().insertAll(listOf(FrameSourceEntity(memoryId, frameId, null, role)))
 
+    // codex r13 P1-3: the describe-before-delete grace counts from the first DESCRIBING memory, never from an older excluded citation
+    @Test fun graceCountsFromTheFirstQualifyingDescription() = runBlocking {
+        val day = 86_400_000L
+        keyframe("g", state = "EXTRACTED")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'describe_before_delete' WHERE frameId = 'g'")
+        fun m(id: String, at: Long) = MemoryEntity(id, "g", "t", "note", "", MemoryTier.LONG, 0.8, ReviewState.OK, false, at, false, "t")
+        db.memoryDao().insert(m("rokid_cv_r1_0", day)); cite("rokid_cv_r1_0", "g")           // excluded canvas citation, day 1
+        db.memoryDao().insert(m("rokid_kf_k1_c0", 20 * day)); cite("rokid_kf_k1_c0", "g")     // first qualifying description, day 20
+        fun due(now: Long) = runBlocking { db.forgetDao().linkedPhotosDue(0, 10 * day, now, 0, 1, 3 * day, 10) }
+        assertTrue("kept on day 20 (deadline day 10, described day 20, grace 3 days)", "g" !in due(20 * day))
+        assertTrue("kept on day 22", "g" !in due(22 * day))
+        assertEquals(listOf("g"), due(23 * day))
+    }
+
+    // codex r13 P2-4: an empty night describe of a photo only an excluded row cites still counts an attempt (and parks after five)
+    @Test fun anEmptyNightDescribeCountsAnAttemptDespiteAnExcludedCitation() = runBlocking {
+        keyframe("n", state = "EXTRACTED")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'describe_before_delete', claimedAt = NULL WHERE frameId = 'n'")
+        mem("rokid_cv_r1_0", frameId = "n"); cite("rokid_cv_r1_0", "n")
+        assertEquals(1, db.frameStateDao().noteUncitedDescribed(1_000))
+        assertEquals(1, db.frameStateDao().get("n")!!.attempts)
+        keyframe("d", state = "EXTRACTED")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'describe_before_delete', claimedAt = NULL WHERE frameId = 'd'")
+        mem("rokid_kf_k2_c0", frameId = "d"); cite("rokid_kf_k2_c0", "d")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET claimedAt = NULL WHERE frameId = 'n'")
+        assertEquals("a described photo is never noted as failed", 1, db.frameStateDao().noteUncitedDescribed(2_000))
+        assertEquals(0, db.frameStateDao().get("d")!!.attempts)
+    }
+
     // codex r12 P1-1: a scene summary describes only the representatives it was sent; a member link never authorises deleting a member photo
     @Test fun aClusterMemberLinkNeverDescribesTheMember() = runBlocking {
         keyframe("member"); keyframe("rep")

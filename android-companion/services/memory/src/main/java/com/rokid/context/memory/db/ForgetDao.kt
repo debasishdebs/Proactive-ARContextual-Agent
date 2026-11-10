@@ -141,10 +141,11 @@ abstract class ForgetDao {
             "WHERE " + PHOTO_ELIGIBLE +
             "AND " + DESCRIBED_BY_EXTRACTION +
             "AND (COALESCE(s.lastError, '') != 'describe_before_delete' OR (:describeReady = 1 AND MAX(MAX(f.ts, :since) + :windowMs, " +
-            // the grace counts from the later of the deadline and the describe (the earliest citing memory's creation), so a photo described
-            // after offline nights is kept 3 days from its caption, not deleted within hours of it
-            "(SELECT MIN(c) FROM (SELECT x.createdAt AS c FROM memory x WHERE x.frameId = f.id UNION ALL " +
-            "SELECT y.createdAt FROM frame_source fs2 JOIN memory y ON y.id = fs2.memoryId WHERE fs2.frameId = f.id))) + :graceMs <= :nowMs)) " +
+            // the grace counts from the later of the deadline and the describe (the earliest DESCRIBING memory's creation, codex r13: the shared rule, so an
+            // older canvas or derived citation cannot shorten it), so a photo described after offline nights is kept 3 days from its caption
+            "(SELECT MIN(c) FROM (SELECT a.createdAt AS c FROM memory a WHERE a.frameId = f.id AND " + DESCRIBES + " UNION ALL " +
+            "SELECT a.createdAt FROM frame_source fs2 JOIN memory a ON a.id = fs2.memoryId WHERE fs2.frameId = f.id AND fs2.role IN ('FACT','CLUSTER_REP') AND " + DESCRIBES +
+            "))) + :graceMs <= :nowMs)) " +
             "AND MAX(f.ts, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY f.ts, f.id LIMIT :limit",
     )
     abstract suspend fun linkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, describeReady: Int, graceMs: Long, limit: Int): List<String>

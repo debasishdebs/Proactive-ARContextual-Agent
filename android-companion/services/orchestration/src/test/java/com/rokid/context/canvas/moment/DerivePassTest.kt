@@ -57,7 +57,7 @@ class DerivePassTest {
     private fun mid(sec: Long) = MomentId.ofMs(t(sec))
     private fun sid(sec: Long) = "S" + mid(sec)
 
-    private val model = DeriveText { p, _ -> prompts += p; onModel(); if (fail) throw IllegalStateException("model down"); "REPLY-${prompts.size}" }
+    private val model = DeriveText { p, _, _ -> prompts += p; onModel(); if (fail) throw IllegalStateException("model down"); "REPLY-${prompts.size}" }
     private fun pass(max: Int = 10, text: DeriveText = model): DerivePass {
         val gate = DeriveGate(enabled = { cadence.enabled() }, admit = { admitCalls++; admitted && (refuseAdmitOnCall == 0 || admitCalls != refuseAdmitOnCall) })
         val reg = DeriveRegistry().also { r -> TextDerivePorts(inputs, text, gate).registerIn(r) }
@@ -73,6 +73,31 @@ class DerivePassTest {
     private suspend fun scenes() = builder.rebuildWindow(t(0), t(3599))
     private suspend fun on() { cadence.setEnabled(true) }
     private suspend fun sceneText() = exec.run(t(0), t(3599)).first().text
+
+    // codex r13 P1-2: the text, its provenance and the wipe generation are captured in ONE snapshot; a Forget or Delete all after the last check cannot
+    // empty the provenance the call carries, and the router's re-check (ForgetFence / generation) then refuses the send
+    @Test fun aForgetAfterTheLastCheckCannotEmptyTheProvenanceOfLoadedText() = runBlocking<Unit> {
+        photo(0, "cat on sofa SECRET"); on()
+        val calls = ArrayList<Triple<String, com.rokid.context.model.PayloadSources, Long>>()
+        val capture = DeriveText { p, src, gen -> calls += Triple(p, src, gen); "REPLY" }
+        inputs.testBeforeSend = { inputs.testBeforeSend = null; forget.forgetMoments(listOf(mid(0))) } // the cascade removes the Moment's parts
+        pass(text = capture).runIfDue(MS)
+        val (prompt, src, gen) = calls.first { "SECRET" in it.first }
+        assertTrue(prompt.contains("SECRET"))
+        assertTrue("the loaded text keeps its provenance", src.required && "m0" in src.memoryIds)
+        assertTrue("the router's re-check sees the memory gone", com.rokid.context.memory.forget.ForgetFence.goneAmong(db, src.memoryIds).contains("m0"))
+        assertEquals(com.rokid.context.orchestration.MemoryWipe.generation.get(), gen)
+    }
+
+    @Test fun aDeleteAllAfterTheSnapshotIsSeenThroughTheCapturedGeneration() = runBlocking<Unit> {
+        photo(0); on()
+        var captured: Pair<com.rokid.context.model.PayloadSources, Long>? = null
+        inputs.testBeforeSend = { inputs.testBeforeSend = null; com.rokid.context.orchestration.MemoryWipe.generation.incrementAndGet() } // Delete all commits
+        pass(text = DeriveText { _, src, gen -> if (captured == null) captured = src to gen; "REPLY" }).runIfDue(MS)
+        val (src, gen) = checkNotNull(captured)
+        val l = com.rokid.context.work.frames.FrameLiveness(gen, { it }, { emptySet() })
+        assertTrue("wiped since the snapshot: the router drops the call", l.gone(src.frameIds).wiped)
+    }
 
     @Test fun sceneTextBecomesNonEmptyAfterADeriveWithAFakeModel() = runBlocking<Unit> {
         photo(0); photo(30); scenes(); on()

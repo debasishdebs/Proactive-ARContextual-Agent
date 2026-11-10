@@ -654,6 +654,8 @@ class CanvasRunner(
             val allMembers: Set<String> = members.values.flatten().toSet()
             val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null && wsel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
             val order = ids.withIndex().associate { it.value to it.index }
+            /** Codex r13: per item id, the union of the sources of every input that produced its current value (see [carriedSources]). */
+            val carried = HashMap<String, com.rokid.context.model.PayloadSources>()
             val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
             val pending = ArrayList<CanvasRunItemEntity>()
 
@@ -751,7 +753,7 @@ class CanvasRunner(
                 for (id in conflicts.sortedBy { order[it] }) write(node.id, id, NodeResult(id, null, error = "merge_conflict"))
                 if (!flush()) { status = "CANCELLED"; break@stop }
                 val ex = executors[node.type]
-                val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value, itemSources[it.key] ?: com.rokid.context.model.PayloadSources.NONE) }
+                val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById[it.key] ?: NO_PHOTO, it.value, carried[it.key] ?: itemSources[it.key] ?: com.rokid.context.model.PayloadSources.NONE) }
                 val produced = LinkedHashMap<String, ItemFlow.Out>()
                 for (chunk in queue.chunked(ex?.chunkSize(node)?.coerceAtLeast(1) ?: Int.MAX_VALUE)) {
                     if (isCancelled(runId)) { status = "CANCELLED"; break@stop }
@@ -764,7 +766,7 @@ class CanvasRunner(
                     for (item in chunk) {
                         val r = results[item.frameId] ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
                         write(node.id, item.frameId, r)
-                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch) }
+                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch); carried[item.frameId] = carriedSources(item, it) } // codex r13: provenance travels with the output
                     }
                     if (!flush()) { line(Level.I, "write dropped by the wipe/forget fence"); status = "CANCELLED"; break@stop }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)

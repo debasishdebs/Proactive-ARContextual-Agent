@@ -29,13 +29,16 @@ import com.rokid.context.orchestration.MemoryWipe
 import kotlin.coroutines.cancellation.CancellationException
 
 /** The one place the derive step asks a model for text: a prompt in, a reply out (null = no answer). Production adapts the app's SUMMARIZE role; tests pass a fake. */
-/** [sources] (codex r12): the memories and photos the prompt's notes come from; the router re-checks them before the call leaves. */
-fun interface DeriveText { suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources): String? }
+/**
+ * [sources] (codex r12/r13): the memories and photos the prompt's notes were read from, and [generation] the wipe generation read in the SAME snapshot;
+ * the router re-checks both before the call leaves (a Forget or Delete all after the snapshot drops it unsent).
+ */
+fun interface DeriveText { suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): String? }
 
 /** Production [DeriveText]: the app's existing router and the user's SUMMARIZE binding (no new client). Background priority; a short, cool, capped request. */
-class RouterDeriveText(private val model: com.rokid.context.model.LanguageModel, private val liveness: () -> com.rokid.context.model.PhotoLiveness) : DeriveText {
-    override suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources): String? =
-        model.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest(prompt, temperature = 0.2, maxTokens = 160, sources = sources, liveness = liveness()) }.text
+class RouterDeriveText(private val model: com.rokid.context.model.LanguageModel, private val liveness: (Long) -> com.rokid.context.model.PhotoLiveness) : DeriveText {
+    override suspend fun complete(prompt: String, sources: com.rokid.context.model.PayloadSources, generation: Long): String? =
+        model.complete(Role.SUMMARIZE, CallClass.BACKFILL) { ModelRequest(prompt, temperature = 0.2, maxTokens = 160, sources = sources, liveness = liveness(generation)) }.text
 }
 
 /**
@@ -82,8 +85,19 @@ class DeriveInputs(private val db: ContextDatabase) {
     /** Test seam: runs after the inputs of one object were read and before the model call. Always null in production. */
     @Volatile internal var testAfterRead: (suspend () -> Unit)? = null
 
-    /** The lines AND the input revision they belong to, read in ONE transaction (a Forget or review change cannot commit between two reads); null when the revision is not [seq] any more. */
-    suspend fun snapshot(obj: MomentObject, seq: Int): List<String>? = db.withTransaction { if (audit.inputSeq(obj) != seq) null else lines(obj) }
+    /** Codex r13: what one derive call reads, captured together: the lines, the stored content they come from, and the wipe generation. */
+    data class Snapshot(val lines: List<String>, val sources: com.rokid.context.model.PayloadSources, val generation: Long)
+
+    /**
+     * The lines, their provenance ([sources]) and the wipe generation of the input revision [seq], read in ONE transaction (a Forget or review change
+     * cannot commit between the reads); null when the revision is not [seq] any more. The call sends exactly these: provenance is never re-read later.
+     */
+    suspend fun snapshot(obj: MomentObject, seq: Int): Snapshot? = db.withTransaction {
+        if (audit.inputSeq(obj) != seq) null else Snapshot(lines(obj), sources(obj), MemoryWipe.generation.get())
+    }
+
+    /** Test seam: runs after the last pre-call check and before the model call. Always null in production. */
+    @Volatile internal var testBeforeSend: (suspend () -> Unit)? = null
 
     suspend fun lines(obj: MomentObject): List<String> = when (obj.kind) {
         ObjectKind.MOMENT -> momentLines(obj.id)
@@ -95,7 +109,7 @@ class DeriveInputs(private val db: ContextDatabase) {
     }.map { it.replace(WS, " ").trim().take(MAX_LINE) }.filter { it.isNotEmpty() }.take(MAX_LINES)
 
     /** Codex r12: the memories and photos [lines] reads for [obj] (a Scene: its member Moments'), declared on the model call. */
-    suspend fun sources(obj: MomentObject): com.rokid.context.model.PayloadSources = when (obj.kind) {
+    private suspend fun sources(obj: MomentObject): com.rokid.context.model.PayloadSources = when (obj.kind) {
         ObjectKind.MOMENT -> momentSources(obj.id)
         ObjectKind.SCENE -> db.sceneDao().parts(obj.id).filter { it.kind == ScenePartKind.MOMENT }
             .fold(com.rokid.context.model.PayloadSources.NONE) { acc, p -> acc + momentSources(p.refId) }
@@ -104,9 +118,11 @@ class DeriveInputs(private val db: ContextDatabase) {
 
     private suspend fun momentSources(id: String): com.rokid.context.model.PayloadSources {
         val parts = db.momentDao().parts(id)
-        return com.rokid.context.model.PayloadSources(
-            parts.filter { it.kind == MomentPartKind.FRAME }.map { it.refId }.toSet(), parts.filter { it.kind == MomentPartKind.MEMORY || it.kind == MomentPartKind.CITE }.map { it.refId }.toSet(),
-        )
+        val memories = parts.filter { it.kind == MomentPartKind.MEMORY || it.kind == MomentPartKind.CITE }.map { it.refId }
+        val frames = parts.filter { it.kind == MomentPartKind.FRAME }.map { it.refId }
+        // text read from memories must carry them (stored: an empty set is refused by the router); a MARK Moment's intent words carry no memory
+        return if (parts.any { it.kind == MomentPartKind.MEMORY }) com.rokid.context.model.PayloadSources.stored(frames, memories)
+        else com.rokid.context.model.PayloadSources(frames.toSet(), memories.toSet())
     }
 
     private suspend fun momentLines(id: String): List<String> {
@@ -126,13 +142,16 @@ class TextDerivePorts(private val inputs: DeriveInputs, private val text: Derive
     override suspend fun caption(req: DeriveRequest): DerivedWrite? = derive(req, DerivedField.CAPTION, "Write a caption of at most 8 words for", MAX_CAPTION)
 
     private suspend fun derive(req: DeriveRequest, field: String, task: String, max: Int): DerivedWrite? {
-        val lines = inputs.snapshot(req.obj, req.inputSeq)?.ifEmpty { null } ?: return null // the inputs moved since the derive started: no call
+        val snap = inputs.snapshot(req.obj, req.inputSeq)?.takeIf { it.lines.isNotEmpty() } ?: return null // the inputs moved since the derive started: no call
+        val lines = snap.lines
         inputs.testAfterRead?.invoke()
         if (!gate.allow()) return null // the switch and the app's admission are asked before EVERY call
         // immediately before the call: the same inputs at the same revision, and no Delete all since
-        if (!req.fence.holds() || inputs.snapshot(req.obj, req.inputSeq) != lines) return null
+        if (!req.fence.holds() || inputs.snapshot(req.obj, req.inputSeq) != snap) return null
         val what = if (req.obj.kind == ObjectKind.SCENE) "this scene" else "this moment"
-        val reply = text.complete(prompt(task, what, lines), inputs.sources(req.obj)) ?: return null
+        inputs.testBeforeSend?.invoke()
+        // codex r13: the provenance and generation of THIS snapshot travel with the text; the router re-checks them inside the permit
+        val reply = text.complete(prompt(task, what, lines), snap.sources, snap.generation) ?: return null
         if (!gate.stillOn()) return null // switched off while the model ran: nothing is written
         val clean = reply.replace(Regex("\\s+"), " ").trim().take(max)
         return if (clean.isEmpty()) null else DerivedWrite(field, value = clean, builtRev = req.inputSeq)
@@ -209,7 +228,7 @@ object DeriveTriggers {
             val inputs = DeriveInputs(db)
             val cadence = DeriveCadence(db)
             val gate = DeriveGate(enabled = cadence::enabled, admit = { ai.bindings.get(Role.SUMMARIZE) != null && com.rokid.context.work.frames.KeyframeGraph.get(app).admitBackgroundCall() })
-            val registry = DeriveRegistry().also { TextDerivePorts(inputs, RouterDeriveText(ai.router) { com.rokid.context.work.frames.FrameLiveness.forApp(app) }, gate).registerIn(it) }
+            val registry = DeriveRegistry().also { TextDerivePorts(inputs, RouterDeriveText(ai.router) { gen -> com.rokid.context.work.frames.FrameLiveness.forApp(app, gen) }, gate).registerIn(it) }
             DerivePass(db, registry, cadence, { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) }, inputs, gate)
         }.also { instance = it }
     }
