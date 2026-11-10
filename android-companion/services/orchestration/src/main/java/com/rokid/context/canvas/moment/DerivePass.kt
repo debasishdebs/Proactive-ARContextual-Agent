@@ -220,6 +220,8 @@ class DerivePass(
 object DeriveTriggers {
     @Volatile private var instance: DerivePass? = null
 
+    init { MemoryGraph.onTestReset { resetForTests() } } // captures the graph's database (tests only)
+
     fun get(context: Context): DerivePass = instance ?: synchronized(this) {
         instance ?: run {
             val app = context.applicationContext
