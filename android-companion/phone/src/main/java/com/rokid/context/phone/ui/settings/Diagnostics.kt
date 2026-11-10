@@ -312,7 +312,7 @@ fun DiagnosticsScreen(
         AlertDialog(
             onDismissRequest = { confirmMark = null },
             title = { Text(if (target == ALL) "Mark all ${keyframes.suspects.total} for review?" else "Mark this memory for review?") },
-            text = { Text("A marked memory no longer counts as its photo's description, so retention keeps the photo until it is described again. No text or photo is deleted, and you can undo.") },
+            text = { Text("A marked memory no longer counts as its photo's description: retention keeps the photo until it is described again, and the night job describes it again (a paid model call per photo, up to 60 a night). No text or photo is deleted, and you can undo.") },
             confirmButton = { TextButton(onClick = { confirmMark = null; if (target == ALL) onMarkAllSuspects() else onMarkSuspect(target) }, modifier = Modifier.testTag("suspect_confirm")) { Text("Mark for review") } },
             dismissButton = { TextButton(onClick = { confirmMark = null }, modifier = Modifier.testTag("suspect_cancel")) { Text("Cancel") } },
         )
