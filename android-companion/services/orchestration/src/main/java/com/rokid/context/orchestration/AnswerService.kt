@@ -268,7 +268,7 @@ class AnswerService(
             redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + r.fenceIds + out.sources)
             memory.asks.add(
                 if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
-                else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds), null, source, false),
+                else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds + r.ids) /* codex r15: every input, cited or not, is a dependency */, null, source, false),
             )
             true
         }

@@ -10,4 +10,5 @@ object AllLive : PhotoLiveness {
     override suspend fun gone(ids: Set<String>): GonePhotos { checked += ids; return GonePhotos(emptySet()) }
     val checkedMemories = java.util.Collections.synchronizedList(mutableListOf<Set<String>>())
     override suspend fun goneMemories(ids: Set<String>): Set<String> { checkedMemories += ids; return emptySet() }
+    override suspend fun goneMarks(ids: Set<String>): Set<String> = emptySet()
 }

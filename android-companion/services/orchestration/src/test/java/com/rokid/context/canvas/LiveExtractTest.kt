@@ -214,6 +214,7 @@ class LiveExtractTest {
             override suspend fun <T> holdUploadSlot(block: suspend () -> T): T = block()
             override suspend fun gone(ids: Set<String>) = com.rokid.context.model.GonePhotos(ids intersect setOf("ex2"))
             override suspend fun goneMemories(ids: Set<String>) = emptySet<String>()
+            override suspend fun goneMarks(ids: Set<String>) = emptySet<String>()
         }
         val e = runCatching { LiveExtract.batch(deps(), photos("ex1", "ex2", "ex3"), CallClass.EXTRACT, forgotten) }.exceptionOrNull()
         assertTrue(e.toString(), e is com.rokid.context.ai.PhotoForgottenException)

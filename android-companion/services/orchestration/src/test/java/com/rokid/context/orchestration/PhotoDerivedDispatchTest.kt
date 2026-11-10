@@ -35,6 +35,7 @@ class PhotoDerivedDispatchTest {
         override suspend fun <T> holdUploadSlot(block: suspend () -> T): T { checks += "slot"; return block() }
         override suspend fun gone(ids: Set<String>): GonePhotos { checks += "check:${ids.sorted()}"; return GonePhotos(ids intersect gone) }
         override suspend fun goneMemories(ids: Set<String>): Set<String> { checks += "mem:${ids.sorted()}"; return ids intersect gone }
+        override suspend fun goneMarks(ids: Set<String>): Set<String> = emptySet()
     }
 
     @Test fun theCriticOverAForgottenPhotosFactsIsNeverSent() = runBlocking<Unit> {

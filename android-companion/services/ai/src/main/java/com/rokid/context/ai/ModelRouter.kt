@@ -178,9 +178,10 @@ class ModelRouter(
         val request = build(e).let { r -> r.copy(temperature = r.temperature ?: b?.temperature, maxTokens = r.maxTokens ?: b?.maxTokens) }
         val photoIds = request.sources.frameIds + request.images.mapNotNull { it.ref }
         val memoryIds = request.sources.memoryIds
+        val markIds = request.sources.markIds
         val liveness = request.liveness
         // codex r14 RULE C: every request carrying stored content (any sources but NONE, or a photo) is guarded, even with empty id sets
-        val guarded = request.sources.stored || photoIds.isNotEmpty() || memoryIds.isNotEmpty()
+        val guarded = request.sources.stored || photoIds.isNotEmpty() || memoryIds.isNotEmpty() || markIds.isNotEmpty()
         if (request.images.any { it.ref.isNullOrBlank() } || (guarded && liveness == null)) {
             PcLog.w(TAG, "image_dispatch_refused reason=unguarded")
             throw ImagesUnguardedException()
@@ -196,10 +197,11 @@ class ModelRouter(
             if (liveness == null || !guarded) p.complete(r) else liveness.holdUploadSlot {
                 val gone = liveness.gone(photoIds) // also the wipe generation the liveness captured: checked even when no id is attached
                 val goneMemories = if (memoryIds.isEmpty()) emptySet() else liveness.goneMemories(memoryIds)
-                if (!gone.none || goneMemories.isNotEmpty()) {
+                val goneMarks = if (markIds.isEmpty()) emptySet() else liveness.goneMarks(markIds)
+                if (!gone.none || goneMemories.isNotEmpty() || goneMarks.isNotEmpty()) {
                     if (gone.wiped) PcLog.i(TAG, "image_dispatch_dropped reason=wiped photos=${gone.ids.size}")
-                    else PcLog.i(TAG, "image_dispatch_dropped reason=forgotten photos=${gone.ids.size} memories=${goneMemories.size}")
-                    throw PhotoForgottenException(gone.ids, gone.wiped, goneMemories)
+                    else PcLog.i(TAG, "image_dispatch_dropped reason=forgotten photos=${gone.ids.size} memories=${goneMemories.size} marks=${goneMarks.size}")
+                    throw PhotoForgottenException(gone.ids, gone.wiped, goneMemories, goneMarks)
                 }
                 p.complete(r)
             }

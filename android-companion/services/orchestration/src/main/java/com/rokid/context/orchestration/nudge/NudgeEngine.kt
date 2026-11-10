@@ -122,7 +122,7 @@ class NudgeEngine(
             if (!ForgetFence.allLive(memory.db, prepared.inputIds + prepared.fenceIds + out.sourceIds)) return@withTransaction false
             memory.nudges.addIgnore(
                 NudgeEntity(
-                    id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encodeWithDeps(out.sourceIds, prepared.fenceIds),
+                    id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encodeWithDeps(out.sourceIds, prepared.fenceIds + prepared.inputIds), // codex r15: every input is a dependency
                     priority = out.priority, hash = NudgeGates.hash(text), shownOn = route.shownOn, redacted = false,
                 ),
             )
