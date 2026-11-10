@@ -179,7 +179,9 @@ class ModelRouter(
         val photoIds = request.sources.frameIds + request.images.mapNotNull { it.ref }
         val memoryIds = request.sources.memoryIds
         val liveness = request.liveness
-        if (request.images.any { it.ref.isNullOrBlank() } || ((photoIds.isNotEmpty() || memoryIds.isNotEmpty()) && liveness == null)) {
+        // codex r13: text read from stored content with EMPTY provenance is refused too (lost provenance is never a bypass)
+        if (request.images.any { it.ref.isNullOrBlank() } || ((photoIds.isNotEmpty() || memoryIds.isNotEmpty()) && liveness == null) ||
+            (request.sources.required && photoIds.isEmpty() && memoryIds.isEmpty())) {
             PcLog.w(TAG, "image_dispatch_refused reason=unguarded")
             throw ImagesUnguardedException()
         }

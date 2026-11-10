@@ -298,14 +298,14 @@ abstract class FrameStateDao {
 
     /**
      * A night describe that saved no memory (a legacy prompt, an empty caption) counts as a failed attempt: the marker photo that is EXTRACTED,
-     * cited by nothing and not yet noted (claimedAt NULL) gets attempts + 1 and its cooldown (1, 2, 4, 8 days), or `describe_failed` at five.
+     * described by no memory (`ForgetDao.STATE_DESCRIBED`) and not yet noted (claimedAt NULL) gets attempts + 1 and its cooldown (1, 2, 4, 8 days), or `describe_failed` at five.
      */
     @Query(
         "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= 5 THEN 'FAILED_FINAL' ELSE state END, " +
             "lastError = CASE WHEN attempts + 1 >= 5 THEN 'describe_failed' ELSE lastError END, " +
             "claimedAt = CASE WHEN attempts + 1 < 5 THEN :nowMs + (86400000 << attempts) ELSE NULL END, updatedAt = :nowMs " +
             "WHERE state = 'EXTRACTED' AND lastError = 'describe_before_delete' AND claimedAt IS NULL " +
-            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId) AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId)",
+            "AND NOT " + ForgetDao.STATE_DESCRIBED, // codex r13: "saved no description" by the shared rule; an excluded citation does not count
     )
     abstract suspend fun noteUncitedDescribed(nowMs: Long): Int
 

@@ -27,6 +27,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.async
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,6 +36,7 @@ import org.robolectric.annotation.Config
 import java.io.File
 
 /** Review I1: Delete all stops the pipeline: in-flight writes are fenced, the queue is emptied, the pipeline restarts. */
+@OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class DeleteAllFenceTest {
@@ -57,17 +59,39 @@ class DeleteAllFenceTest {
     }
 
     @After fun tearDown() {
+        runBlocking { wipes.forEach { runCatching { kotlinx.coroutines.withTimeout(40_000) { it.await() } } } }
         QueueRuntimeStore.clearAll(ctx); AppConfigStore.setPipelineEnabled(ctx, true)
         AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null)
     }
 
     private fun drain() = runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() }
+
+    /**
+     * Codex r13 P2-5: a photo/memory call holds the upload slot, so a Delete all started from inside the provider would wait on that same call. The wipe
+     * runs in its OWN coroutine: started while the reply is in flight, it waits until the upload ends, then really completes ([awaitWipe]).
+     */
+    private var wipe: kotlinx.coroutines.Deferred<Int>? = null
+    /** Every wipe this test started: tearDown waits for them all, so none outlives the test's database. */
+    private val wipes = java.util.Collections.synchronizedList(mutableListOf<kotlinx.coroutines.Deferred<Int>>())
+    private suspend fun wipeWhileInFlight() {
+        if (wipe != null) return // one wipe per test (a later call in the same job must not start a second one)
+        val w = kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.IO) { MemoryWipe.deleteAll(ctx) }
+        wipe = w; wipes += w
+        // the delete now waits for this upload (or, for a call that holds no upload slot, it already ran)
+        kotlinx.coroutines.withTimeout(10_000) { while (!com.rokid.context.orchestration.DataOpGate.shared.busy() && !w.isCompleted) kotlinx.coroutines.delay(5) }
+    }
+    private fun awaitWipe(before: Long) = runBlocking {
+        kotlinx.coroutines.withTimeout(20_000) { checkNotNull(wipe).await() }
+        assertTrue("the wipe completed", MemoryWipe.generation.get() > before)
+    }
     private fun memories() = runBlocking { MemoryGraph.get(ctx).memories.all() }
 
     @Test fun aSummaryJobClaimedBeforeTheWipeWritesNothingWhenItsReplyLandsAfter() {
         QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite(source = "test", importedFrames = 1, manual = true), personaSnapshot = "p")
-        reply = { MemoryWipe.deleteAll(ctx); """{"facts":[{"text":"Maybe a cat","type":"object","confidence":0.3,"tags":[],"source_frame_ids":["f1"]}],"captions":[{"frame_id":"f1","caption":"A cat"}]}""" }
+        val before = MemoryWipe.generation.get()
+        reply = { wipeWhileInFlight(); """{"facts":[{"text":"Maybe a cat","type":"object","confidence":0.3,"tags":[],"source_frame_ids":["f1"]}],"captions":[{"frame_id":"f1","caption":"A cat"}]}""" }
         drain()
+        awaitWipe(before)
         assertTrue(memories().isEmpty())
         // The low-confidence path would queue a reprocess carrying the fact text: not after a wipe.
         assertTrue(QueueRuntimeStore.recent(ctx, 10).none { it.queue == QueuePriority.PRIORITY_REPROCESS })
@@ -93,9 +117,12 @@ class DeleteAllFenceTest {
     @Test fun aQueuedAskAnsweredAcrossTheWipeSavesNoAsk() = runBlocking<Unit> {
         PipelineRecords.appendFact(ctx, "rokid_mem_k_0", "f1", "Keys on the shelf", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK)
         QueueRuntimeStore.enqueue(ctx, QueuePriority.READ, QueuePayloads.readContext("keys?", "en", manual = true), personaSnapshot = "p")
-        reply = { MemoryWipe.deleteAll(ctx); """{"answer":"On the shelf.","sources":["rokid_mem_k_0"]}""" }
+        val before = MemoryWipe.generation.get()
+        reply = { wipeWhileInFlight(); """{"answer":"On the shelf.","sources":["rokid_mem_k_0"]}""" }
         drain()
-        assertTrue(MemoryGraph.get(ctx).asks.recent(10).first().isEmpty())
+        awaitWipe(before)
+        assertTrue("no Ask row: the fence drops it, or the completed wipe removed it", MemoryGraph.get(ctx).asks.recent(10).first().isEmpty())
+        assertTrue("the wipe really ran", memories().isEmpty())
     }
 
     @Test fun appendFactWithAStaleGenerationWritesNothing() = runBlocking<Unit> {

@@ -70,6 +70,7 @@ class PipelineInterpreter(
         val photoById = photos.associateBy { it.frameId }
         val order = photos.withIndex().associate { it.value.frameId to it.index }
         val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
+        val carried = HashMap<String, com.rokid.context.model.PayloadSources>()
         val labels = LinkedHashMap<String, Pair<String, Float?>>()
         val extractedFrames = HashSet<String>()
         val calls = IdentityHashMap<ExtractedBatch, Boolean>() // the distinct extract calls (every item of a chunk shares one instance)
@@ -93,7 +94,7 @@ class PipelineInterpreter(
                 if (isExtract && id in extractedFrames) { // a second extraction for one photo: refuse before paying for it
                     traces += row(id, node.id, NodeResult(id, null, error = "routing"))
                     failure = failure ?: "routing"
-                } else queue += CanvasItem(id, photoById.getValue(id), v)
+                } else queue += CanvasItem(id, photoById.getValue(id), v, carried[id] ?: com.rokid.context.model.PayloadSources.NONE)
             }
             val ex = executors[node.type]
             val produced = LinkedHashMap<String, ItemFlow.Out>()
@@ -106,6 +107,7 @@ class PipelineInterpreter(
                     if (r.error != null) { failure = failure ?: reasonOf(r); continue }
                     val v = r.value ?: continue
                     produced[item.frameId] = ItemFlow.Out(v, r.branch)
+                    carried[item.frameId] = carriedSources(item, v) // codex r13: provenance travels with the output
                     if (node.type == NodeTypes.SWITCH) labelOf(node, v)?.let { labels.putIfAbsent(item.frameId, it) }
                     if (isExtract) {
                         extractedFrames += item.frameId

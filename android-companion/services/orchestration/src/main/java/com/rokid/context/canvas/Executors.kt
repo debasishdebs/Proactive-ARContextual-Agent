@@ -54,11 +54,19 @@ private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSourc
  * Codex r12: the stored content an item's prompt text is built from: its own photo, the photos its facts and captions cite, and (Moment/Scene items)
  * their member photos and memories ([CanvasItem.sources]). Every executor model call declares it.
  */
-internal fun sourcesOf(item: CanvasItem): com.rokid.context.model.PayloadSources {
-    val v = item.value
-    val cited = if (v is CanvasValue.Extraction) v.facts.flatMap { it.sourceFrameIds } + v.captions.map { it.frameId } else emptyList()
-    return item.sources + com.rokid.context.model.PayloadSources.frames(listOf(item.photo.frameId) + cited)
-}
+internal fun sourcesOf(item: CanvasItem): com.rokid.context.model.PayloadSources = item.sources + valueSources(item.value) +
+    com.rokid.context.model.PayloadSources.frames(listOf(item.photo.frameId))
+
+/** The photos a value itself cites (an extraction's fact sources and caption photos); none for other values. */
+internal fun valueSources(v: CanvasValue?): com.rokid.context.model.PayloadSources =
+    if (v is CanvasValue.Extraction) com.rokid.context.model.PayloadSources.frames(v.facts.flatMap { it.sourceFrameIds } + v.captions.map { it.frameId })
+    else com.rokid.context.model.PayloadSources.NONE
+
+/**
+ * Codex r13: the provenance an item carries INTO the next node: everything its input was built from ([sourcesOf]) plus what the new value cites. A node
+ * that turns a fact citing A+B into JSON loses the citation in the value, so the sources travel beside it (runner and interpreter keep one per item id).
+ */
+fun carriedSources(input: CanvasItem, output: CanvasValue?): com.rokid.context.model.PayloadSources = sourcesOf(input) + valueSources(output)
 
 /** The helper executor's FRAME_FORGET token (this file must not name that executor): the runner stops a run whose photo was forgotten. */
 private const val FRAME_FORGET = "frame_forget"

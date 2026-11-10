@@ -58,10 +58,20 @@ data class ModelRequest(
  * tombstoned). [memoryIds]: memories whose text is in it (present, not INVALIDATED; a memory whose photo legitimately expired is still live; a
  * `photo:` cite id is live while its keyframe metadata stays). Every model call site declares one, [NONE] when the prompt holds no stored user content.
  */
-data class PayloadSources(val frameIds: Set<String> = emptySet(), val memoryIds: Set<String> = emptySet()) {
+data class PayloadSources(
+    val frameIds: Set<String> = emptySet(), val memoryIds: Set<String> = emptySet(),
+    /**
+     * Codex r13: the prompt's text was READ from stored content, so these sources cannot be empty: an empty set here means the provenance was lost (e.g.
+     * reloaded after a Forget cascade removed it) and the router refuses the call instead of sending unchecked text. Set by [stored].
+     */
+    val required: Boolean = false,
+) {
     val isEmpty: Boolean get() = frameIds.isEmpty() && memoryIds.isEmpty()
-    operator fun plus(o: PayloadSources) = PayloadSources(frameIds + o.frameIds, memoryIds + o.memoryIds)
+    operator fun plus(o: PayloadSources) = PayloadSources(frameIds + o.frameIds, memoryIds + o.memoryIds, required || o.required)
     companion object {
+        /** Sources of a prompt whose text was read from stored content ([required]): empty = refused by the router. */
+        fun stored(frameIds: Collection<String>, memoryIds: Collection<String>) =
+            PayloadSources(frameIds.filter { it.isNotBlank() }.toSet(), memoryIds.filter { it.isNotBlank() }.toSet(), required = true)
         /** Declared: no stored user content (photos, facts, captions, memories, history) is in the prompt. */
         val NONE = PayloadSources()
         fun frames(ids: Collection<String>) = PayloadSources(frameIds = ids.filter { it.isNotBlank() }.toSet())
