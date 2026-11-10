@@ -54,9 +54,8 @@ class PipelineInterpreter(
     suspend fun run(p: Pipeline, publishId: Long, mode: String, photos: List<ExtractPhoto>, ctx: RunContext): Outcome {
         val token = newId()
         val traces = ArrayList<CanvasLiveTraceEntity>()
-        val lineage = HashMap<String, LinkedHashSet<String>>() // S25: every call whose output a frame's rows derive from
-        fun row(frameId: String, nodeId: String, r: NodeResult, derivedFrom: Set<String> = emptySet()): CanvasLiveTraceEntity {
-            val batch = CanvasLineage.compose(lineage.getOrPut(frameId) { LinkedHashSet() }, r.meta?.batchId)
+        fun row(frameId: String, nodeId: String, r: NodeResult, derivedFrom: Set<String> = emptySet(), seen: LinkedHashSet<String> = LinkedHashSet()): CanvasLiveTraceEntity {
+            val batch = CanvasLineage.compose(seen, r.meta?.batchId) // codex r18: the producing edge's calls only (the caller passes them)
                 .let { b -> if (derivedFrom.isEmpty()) b else listOfNotNull(b).plus(derivedFrom.map { CanvasRunner.MEMBER_TOKEN + it }).joinToString(CanvasLineage.SEP.toString()) }
             return CanvasLiveTraceEntity(
                 publishId, frameId, nodeId, mode, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { cap(CanvasValueJson.encode(it)) }, r.error,
@@ -107,10 +106,11 @@ class PipelineInterpreter(
                     val r = results.firstOrNull { it.frameId == item.frameId } ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
                     // r15/r17: the execution's provenance is this row's own lineage ("mf:<frameId>"), so a Forget of any of those photos reaches it, as in the runner
                     val c = provenance.of(r.value, r.exactSources)
-                    traces += row(item.frameId, node.id, r, c.frameIds)
+                    val seen = LinkedHashSet(gathered.callLineage[item.frameId].orEmpty())
+                    traces += row(item.frameId, node.id, r, c.frameIds, seen)
                     if (r.error != null) { failure = failure ?: reasonOf(r); continue }
                     val v = r.value ?: continue
-                    produced[item.frameId] = ItemFlow.Out(v, r.branch, c) // codex r14 RULE A / r17: travels along this edge only
+                    produced[item.frameId] = ItemFlow.Out(v, r.branch, c, seen) // codex r14 RULE A / r17 / r18: sources and calls travel along this edge only
                     if (node.type == NodeTypes.SWITCH) labelOf(node, v)?.let { labels.putIfAbsent(item.frameId, it) }
                     if (isExtract) {
                         extractedFrames += item.frameId
