@@ -51,6 +51,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
@@ -102,8 +103,11 @@ interface KeyframeDiagnostics {
     suspend fun capturePlan(): com.rokid.context.canvas.plan.PlanStatus? = null
     /** Puts every FAILED_FINAL frame back to PENDING; returns how many. */
     suspend fun retryAllFinal(): Int
-    /** Room v16: the pre-fix memories that may describe a photo the model never saw (read-only). */
-    suspend fun suspectDescriptions(): SuspectDescriptions = SuspectDescriptions()
+    /**
+     * Room v16: the pre-fix memories that may describe a photo the model never saw (read-only). Codex r20: OBSERVED, never a snapshot, so a memory that
+     * RetentionWorker, Forget or Delete all removes leaves the screen at once; its text lives only in this flow's latest emission.
+     */
+    val suspects: kotlinx.coroutines.flow.Flow<SuspectDescriptions> get() = kotlinx.coroutines.flow.flowOf(SuspectDescriptions())
     /** Marks [ids] (null = every current suspect) for review; returns the mark time for [undoMark], or 0 when nothing was marked. Only the flag changes. */
     suspend fun markForReview(ids: List<String>?): Long = 0
     /** Clears exactly the marks made at [at]; returns how many. */
@@ -131,6 +135,12 @@ data class RetentionCounters(
 data class SuspectItem(val id: String, val type: String, val createdAt: Long, val text: String)
 /** [total] suspects; [items] the newest of them (the list shows at most [SHOWN]). */
 data class SuspectDescriptions(val total: Int = 0, val items: List<SuspectItem> = emptyList()) { companion object { const val SHOWN = 20 } }
+
+/** The suspect list over [dao], re-read by Room whenever memory, frame or frame_source change (Codex r20). */
+fun suspectDescriptionsOf(dao: com.rokid.context.memory.db.ForgetDao): kotlinx.coroutines.flow.Flow<SuspectDescriptions> =
+    combine(dao.observeSuspectDescriptionCount(), dao.observeSuspectDescriptions(SuspectDescriptions.SHOWN)) { n, rows ->
+        SuspectDescriptions(n, rows.map { SuspectItem(it.id, it.type, it.createdAt, it.text) })
+    }
 
 /** The active interpreter publish for the "Live pipeline" line: [live] false is Shadow. */
 data class LivePipelineInfo(val name: String, val version: Int, val live: Boolean, val fallbacks: Int, val interpreted: Int)
@@ -166,7 +176,9 @@ class DiagnosticsViewModel(
     /** Live stats combined with the extras loaded at open and after each Retry all. */
     // Lazy: the constructor must not touch viewModelScope (it would bind to Main before a test installs its dispatcher).
     val keyframeRows: StateFlow<KeyframeRows> by lazy {
-        combine(keyframes.stats, extras) { st, ex -> ex.copy(stats = st) }
+        // the suspects are observed, never cached in [extras] (Codex r20); a failing read shows none rather than a stale list
+        val suspects = keyframes.suspects.catch { e -> if (e is CancellationException) throw e; PcLog.i(TAG, "suspects failed (${e.javaClass.simpleName})"); emit(SuspectDescriptions()) }
+        combine(keyframes.stats, extras, suspects) { st, ex, su -> ex.copy(stats = st, suspects = su) }
             .onStart { refreshKeyframes() }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), KeyframeRows(keyframes.stats.value))
     }
@@ -174,7 +186,7 @@ class DiagnosticsViewModel(
     private fun refreshKeyframes() {
         viewModelScope.launch {
             val loaded = try {
-                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline(), capturePlan = keyframes.capturePlan(), suspects = keyframes.suspectDescriptions()) }
+                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline(), capturePlan = keyframes.capturePlan()) }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
             extras.value = loaded
         }
