@@ -167,13 +167,18 @@ class CanvasRunSave(
     private suspend fun load(runId: String): Loaded {
         val run = db.canvasDao().run(runId) ?: return Loaded(Reason.NOT_DONE, null)
         if (run.status != "DONE") return Loaded(Reason.NOT_DONE, null)
-        val p: Pipeline = PipelineJson.decode(run.pipelineJson).getOrNull() ?: return Loaded(Reason.NO_MEMORY_NODE, null)
+        // the runner stores the canonical (hash) form, whose schema-2 types carry their version (`memory.write@1`): compare on the bare type
+        val p: Pipeline = PipelineJson.decode(run.pipelineJson).getOrNull()?.let { d -> d.copy(nodes = d.nodes.map { it.copy(type = it.type.substringBefore('@')) }) }
+            ?: return Loaded(Reason.NO_MEMORY_NODE, null)
         val sinks = p.nodes.filter { it.type == NodeTypes.MEMORY_WRITE }
         if (sinks.isEmpty()) return Loaded(Reason.NO_MEMORY_NODE, null)
         if (p.nodes.any { it.type == NodeTypes.INPUT_MOMENTS || it.type == NodeTypes.INPUT_SCENES || it.type == NodeTypes.SRC_WATCH_MOTION }) return Loaded(Reason.NOT_PHOTO_RUN, null)
         // what each node produced per photo, as the runner held it while the run went
         val outputs = HashMap<String, MutableMap<String, ItemFlow.Out>>()
+        // codex r15: the photos each item's value was derived from, as the runner recorded them in the rows' lineage ("mf:<frameId>", RULE A union)
+        val carriedOf = HashMap<String, MutableSet<String>>()
         for (row in db.canvasDao().items(runId)) {
+            row.batchId?.split('|')?.filter { it.startsWith(CanvasRunner.MEMBER_TOKEN) }?.forEach { carriedOf.getOrPut(row.frameId) { HashSet() } += it.removePrefix(CanvasRunner.MEMBER_TOKEN) }
             if (row.status != "OK") continue
             val v = CanvasValueJson.decodeExtraction(row.outputJson) ?: continue
             outputs.getOrPut(row.nodeId) { LinkedHashMap() }[row.frameId] = ItemFlow.Out(v, row.branch)
@@ -195,14 +200,15 @@ class CanvasRunSave(
             }
         }
         // valid memories only: the photo they came from must still be live (not forgotten, not tombstoned, not expired)
-        val candidates = (facts.values.flatMap { it.fact.sourceFrameIds } + captions.keys).distinct()
+        val candidates = (facts.values.flatMap { it.fact.sourceFrameIds + carriedOf[it.frameId].orEmpty() } + captions.keys).distinct()
         val live = if (candidates.isEmpty()) emptySet() else PipelineRecords.framesByIds(app, candidates).map { it.id }.toSet()
         val kept = facts.values.mapNotNull { c ->
             val src = c.fact.sourceFrameIds.filter { it in live }
-            if (src.isEmpty()) null else Cand(c.frameId, c.fact.copy(sourceFrameIds = src), c.ok)
+            // codex r15: a fact derived from a photo that is gone (forgotten) is not saved, even when its own cited photo is live
+            if (src.isEmpty() || carriedOf[c.frameId].orEmpty().any { it !in live }) null else Cand(c.frameId, c.fact.copy(sourceFrameIds = src), c.ok)
         }
         val caps = captions.filterKeys { it in live }.map { FrameCaption(it.key, it.value) }
-        val frames = (kept.flatMap { it.fact.sourceFrameIds } + caps.map { it.frameId }).toSet()
+        val frames = (kept.flatMap { it.fact.sourceFrameIds + carriedOf[it.frameId].orEmpty() } + caps.map { it.frameId }).toSet()
         return Loaded(null, Built(kept.map { it.fact.copy(tags = (it.fact.tags + TAG_CANVAS).distinct()) }, kept.map { it.ok }, caps, frames))
     }
 

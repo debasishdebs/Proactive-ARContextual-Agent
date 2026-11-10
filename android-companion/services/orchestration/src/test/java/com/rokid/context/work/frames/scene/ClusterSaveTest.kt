@@ -97,13 +97,13 @@ class ClusterSaveTest {
         assertEquals("rokid_cl_k1_0", db.frameClusterDao().get("c1")!!.memoryId); assertEquals("SUMMARIZED", db.frameClusterDao().get("c1")!!.state)
         assertEquals("rokid_cl_k1_1", db.frameClusterDao().get("c2")!!.memoryId)
         val src = db.frameSourceDao()
-        val sum = src.forMemory("rokid_cl_k1_0").associate { it.frameId to it.role }
+        val sum = src.forMemory("rokid_cl_k1_0").filter { it.role != "CARRIED" }.associate { it.frameId to it.role }
         assertEquals(mapOf("f1" to "CLUSTER_REP", "f3" to "CLUSTER_REP", "f2" to "CLUSTER_MEMBER", "f4" to "CLUSTER_MEMBER"), sum)
-        assertTrue(src.forMemory("rokid_cl_k1_0").all { it.clusterId == "c1" })
-        assertEquals(setOf("f1", "f3"), src.forMemory("rokid_cl_k1_0f0").map { it.frameId }.toSet())
-        assertTrue(src.forMemory("rokid_cl_k1_0f0").all { it.role == "FACT" && it.clusterId == "c1" })
-        assertEquals(listOf("f1"), src.forMemory("rokid_cl_k1_c0").map { it.frameId }); assertEquals("FACT", src.forMemory("rokid_cl_k1_c0").single().role)
-        assertEquals(mapOf("g1" to "CLUSTER_REP", "g2" to "CLUSTER_MEMBER"), src.forMemory("rokid_cl_k1_1").associate { it.frameId to it.role })
+        assertTrue(src.forMemory("rokid_cl_k1_0").filter { it.role != "CARRIED" }.all { it.clusterId == "c1" })
+        assertEquals(setOf("f1", "f3"), src.forMemory("rokid_cl_k1_0f0").filter { it.role != "CARRIED" }.map { it.frameId }.toSet())
+        assertTrue(src.forMemory("rokid_cl_k1_0f0").filter { it.role != "CARRIED" }.all { it.role == "FACT" && it.clusterId == "c1" })
+        assertEquals(listOf("f1"), src.forMemory("rokid_cl_k1_c0").filter { it.role != "CARRIED" }.map { it.frameId }); assertEquals("FACT", src.forMemory("rokid_cl_k1_c0").filter { it.role != "CARRIED" }.single().role)
+        assertEquals(mapOf("g1" to "CLUSTER_REP", "g2" to "CLUSTER_MEMBER"), src.forMemory("rokid_cl_k1_1").filter { it.role != "CARRIED" }.associate { it.frameId to it.role })
     }
 
     @Test fun casFailureWritesNothing() = runBlocking<Unit> {
@@ -113,7 +113,7 @@ class ClusterSaveTest {
         assertTrue(memoryIds().isEmpty())
         assertEquals("SUMMARIZING", db.frameClusterDao().get("c1")!!.state); assertNull(db.frameClusterDao().get("c1")!!.memoryId)
         assertEquals("IN_CLUSTER", db.frameStateDao().get("f2")!!.state)
-        assertTrue(db.frameSourceDao().forMemory("rokid_cl_k1_0").isEmpty())
+        assertTrue(db.frameSourceDao().forMemory("rokid_cl_k1_0").filter { it.role != "CARRIED" }.isEmpty())
     }
 
     @Test fun wipeDuringCallWritesNothing() = runBlocking<Unit> {
@@ -126,36 +126,32 @@ class ClusterSaveTest {
         } finally { MemoryWipe.generation.set(before) }
     }
 
+    // codex r15: one call saw every representative it was sent, so any output (c2's too) may carry a detail of a forgotten one: the whole output is
+    // dropped (Stale), nothing is written, and the clusters stay claimed for the pipeline's retry, which no longer sends the forgotten photos
     @Test fun forgottenRepDropsSave() = runBlocking<Unit> {
-        // Every representative of c1 was forgotten meanwhile: c1 fails cleanly and no memory points at a deleted frame; c2 still saves.
         forget("f1"); forget("f3")
-        val r = save() as ClusterSaveResult.Saved
-        assertEquals(listOf("c1"), r.failedClusters)
-        assertTrue(memoryIds().none { it.startsWith("rokid_cl_k1_0") })
-        assertTrue(memoryIds().containsAll(setOf("rokid_cl_k1_1", "rokid_cl_k1_1f0")))
-        assertEquals("FAILED_FINAL", db.frameClusterDao().get("c1")!!.state); assertNull(db.frameClusterDao().get("c1")!!.memoryId)
-        assertEquals("SUMMARIZED", db.frameClusterDao().get("c2")!!.state)
-        assertTrue(db.frameSourceDao().forMemory("rokid_cl_k1_0").isEmpty())
-        // Its surviving members are skipped photos, never described one by one.
-        assertEquals("NEAR_DUP", db.frameStateDao().get("f2")!!.state)
-        assertEquals("cluster_failed", db.frameStateDao().get("f2")!!.lastError)
+        assertEquals(ClusterSaveResult.Stale, save())
+        assertTrue(memoryIds().isEmpty())
+        assertEquals("SUMMARIZING", db.frameClusterDao().get("c1")!!.state); assertEquals("SUMMARIZING", db.frameClusterDao().get("c2")!!.state)
     }
 
-    @Test fun oneForgottenRepIsDroppedAndTheSaveKeepsTheRest() = runBlocking<Unit> {
-        // Only f1 forgotten: the medoid becomes f3 and the fact citing f1 loses that source only.
+    @Test fun oneForgottenRepDropsTheWholeOutputItWasSentWith() = runBlocking<Unit> {
         forget("f1")
-        val r = save(output(captions = listOf("f3", "g1"))) as ClusterSaveResult.Saved
-        assertTrue(r.failedClusters.isEmpty())
-        assertEquals("f3", MemoryGraph.get(ctx).memories.all().first { it.id == "rokid_cl_k1_0" }.frameId)
-        assertEquals(listOf("f3"), db.frameSourceDao().forMemory("rokid_cl_k1_0f0").map { it.frameId })
-        assertTrue(db.frameSourceDao().forMemory("rokid_cl_k1_0").none { it.frameId == "f1" })
+        assertEquals(ClusterSaveResult.Stale, save(output(captions = listOf("f3", "g1"))))
+        assertTrue(memoryIds().isEmpty())
+    }
+
+    @Test fun everySavedMemoryCarriesEveryRepresentativeOfItsCall() = runBlocking<Unit> {
+        save()
+        for (id in memoryIds()) assertTrue("$id carries f1, f3 and g1", db.frameSourceDao().forMemory(id).map { it.frameId }.containsAll(setOf("f1", "f3", "g1")))
+        assertEquals(setOf("g1"), db.frameSourceDao().forMemory("rokid_cl_k1_0").filter { it.role == "CARRIED" }.map { it.frameId }.toSet())
     }
 
     @Test fun forgottenMemberSkippedInProvenance() = runBlocking<Unit> {
         forget("f2")
         assertTrue(save() is ClusterSaveResult.Saved)
-        assertEquals(setOf("f1", "f3", "f4"), db.frameSourceDao().forMemory("rokid_cl_k1_0").map { it.frameId }.toSet())
-        assertTrue(db.frameSourceDao().forMemory("rokid_cl_k1_0").none { it.frameId == "f2" })
+        assertEquals(setOf("f1", "f3", "f4"), db.frameSourceDao().forMemory("rokid_cl_k1_0").filter { it.role != "CARRIED" }.map { it.frameId }.toSet())
+        assertTrue(db.frameSourceDao().forMemory("rokid_cl_k1_0").filter { it.role != "CARRIED" }.none { it.frameId == "f2" })
     }
 
     @Test fun membersBecomeClustered() = runBlocking<Unit> {

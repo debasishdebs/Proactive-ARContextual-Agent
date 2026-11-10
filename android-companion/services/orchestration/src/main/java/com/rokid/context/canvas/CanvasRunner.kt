@@ -649,8 +649,8 @@ class CanvasRunner(
             val members: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> m.frames.map { it.id } } + sceneByKey.mapValues { (_, s) -> s.frameIds }
             // codex r12: what a Moment or Scene item's words come from: its member photos and memories, declared on every model call over it
             val itemSources: Map<String, com.rokid.context.model.PayloadSources> =
-                momentByKey.mapValues { (_, m) -> com.rokid.context.model.PayloadSources(m.frames.map { it.id }.toSet(), m.memories.map { it.id }.toSet()) } +
-                    sceneByKey.mapValues { (_, s) -> com.rokid.context.model.PayloadSources(s.frameIds.toSet(), s.memoryIds.toSet()) }
+                momentByKey.mapValues { (_, m) -> com.rokid.context.model.PayloadSources(m.frames.map { it.id }.toSet(), m.memories.map { it.id }.toSet(), markLineage(m).toSet()) } +
+                    sceneByKey.mapValues { (_, s) -> com.rokid.context.model.PayloadSources(s.frameIds.toSet(), s.memoryIds.toSet(), s.markIds.toSet()) }
             val allMembers: Set<String> = members.values.flatten().toSet()
             val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null && wsel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
             val order = ids.withIndex().associate { it.value to it.index }
@@ -767,8 +767,12 @@ class CanvasRunner(
                     val results = ran.associateBy { it.frameId }
                     for (item in chunk) {
                         val r = results[item.frameId] ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
+                        // codex r14 RULE A: the union of the whole execution's inputs; r15: its photos also become the row's lineage ("mf:<frameId>"),
+                        // so a Forget of any of them deletes the row and a later Save links the saved memory to all of them
+                        val c = provenance.of(r.value)
+                        lineage.getOrPut(item.frameId) { LinkedHashSet() }.addAll(c.frameIds.map { MEMBER_TOKEN + it })
                         write(node.id, item.frameId, r)
-                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch); carried[item.frameId] = provenance.of(it) } // codex r14 RULE A: the union of the whole execution's inputs
+                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch); carried[item.frameId] = c }
                     }
                     if (!flush()) { line(Level.I, "write dropped by the wipe/forget fence"); status = "CANCELLED"; break@stop }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)

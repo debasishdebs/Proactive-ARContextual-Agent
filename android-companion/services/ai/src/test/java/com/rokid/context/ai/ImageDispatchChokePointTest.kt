@@ -60,6 +60,8 @@ class ImageDispatchChokePointTest {
 
     private inner class Live(var gone: Set<String> = emptySet(), var wiped: Boolean = false, var goneMemories: Set<String> = emptySet()) : PhotoLiveness {
         override suspend fun goneMemories(ids: Set<String>): Set<String> { events += "mem:${ids.sorted().joinToString(",")}"; return ids intersect goneMemories }
+        var goneMarks: Set<String> = emptySet()
+        override suspend fun goneMarks(ids: Set<String>): Set<String> { events += "mark:${ids.sorted().joinToString(",")}"; return ids intersect goneMarks }
         override suspend fun <T> holdUploadSlot(block: suspend () -> T): T { events += "slot"; try { return block() } finally { events += "release" } }
         override suspend fun gone(ids: Set<String>): GonePhotos { events += "check:${ids.sorted().joinToString(",")}"; return GonePhotos(ids intersect gone, wiped) }
     }

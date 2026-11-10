@@ -30,7 +30,8 @@ abstract class ForgetDao {
     @Query("SELECT id FROM memory WHERE frameId = :frameId UNION SELECT memoryId FROM frame_source WHERE frameId = :frameId")
     abstract suspend fun memoryIdsOfFrame(frameId: String): List<String>
     /** Frames cited by [memoryIds] through `frame_source` (their `memory.frameId` comes from the memory rows). */
-    @Query("SELECT DISTINCT frameId FROM frame_source WHERE memoryId IN (:memoryIds)") abstract suspend fun sourceFramesOf(memoryIds: List<String>): List<String>
+    /** The photos [memoryIds] cite. A `CARRIED` row (codex r15: a photo the memory may be derived from, e.g. a batch mate) is not a citation: Forget of the memory never locks or deletes that photo. */
+    @Query("SELECT DISTINCT frameId FROM frame_source WHERE memoryId IN (:memoryIds) AND role != 'CARRIED'") abstract suspend fun sourceFramesOf(memoryIds: List<String>): List<String>
     @Query("DELETE FROM frame_source WHERE memoryId IN (:memoryIds)") abstract suspend fun deleteFrameSourcesFor(memoryIds: List<String>): Int
     @Query("DELETE FROM frame_vector WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameVectorsFor(frameIds: List<String>): Int
     @Query("DELETE FROM frame_meta WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameMetaFor(frameIds: List<String>): Int
@@ -84,7 +85,7 @@ abstract class ForgetDao {
     abstract suspend fun pruneTombstones(beforeMs: Long, keep: List<String>): Int
 
     /** Memories (any review state) that still cite [frameId], via `memory.frameId` or `frame_source`. */
-    @Query("SELECT (SELECT COUNT(*) FROM memory WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_source WHERE frameId = :frameId)") abstract suspend fun remainingRefs(frameId: String): Int
+    @Query("SELECT (SELECT COUNT(*) FROM memory WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_source WHERE frameId = :frameId AND role != 'CARRIED')") abstract suspend fun remainingRefs(frameId: String): Int
     /** Codex r12: 1 when a memory still DESCRIBES [frameId] ([DESCRIBED_BY_EXTRACTION]), else 0: the expiry recheck of every deadline-based delete. */
     @Query("SELECT COUNT(*) FROM frame f WHERE f.id = :frameId AND " + DESCRIBED_BY_EXTRACTION) abstract suspend fun describedRefs(frameId: String): Int
     /**

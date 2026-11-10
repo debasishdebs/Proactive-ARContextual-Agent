@@ -97,10 +97,10 @@ class ExtractSaveTest {
         val r = ExtractSave.saveExtraction(ctx, "p_", out, setOf("ex1", "ex2"), mapOf("ex1" to "c1", "ex2" to "c1"), MemoryTier.SHORT, ReviewState.OK)
         assertEquals(3, (r as ExtractSaveResult.Saved).memories.size)
         val src = db.frameSourceDao()
-        assertEquals(setOf("ex1", "ex2"), src.forMemory("p_0").map { it.frameId }.toSet())
-        assertEquals(listOf("ex1"), src.forMemory("p_c0").map { it.frameId })
-        assertEquals(listOf("ex2"), src.forMemory("p_c1").map { it.frameId })
-        assertTrue((src.forMemory("p_0") + src.forMemory("p_c0")).all { it.role == "FACT" })
+        assertEquals(setOf("ex1", "ex2"), src.forMemory("p_0").filter { it.role != "CARRIED" }.map { it.frameId }.toSet())
+        assertEquals(listOf("ex1"), src.forMemory("p_c0").filter { it.role != "CARRIED" }.map { it.frameId })
+        assertEquals(listOf("ex2"), src.forMemory("p_c1").filter { it.role != "CARRIED" }.map { it.frameId })
+        assertTrue((src.forMemory("p_0").filter { it.role != "CARRIED" } + src.forMemory("p_c0").filter { it.role != "CARRIED" }).all { it.role == "FACT" })
         assertEquals(listOf("EXTRACTED", "EXTRACTED"), db.frameStateDao().byIds(listOf("ex1", "ex2")).map { it.state })
         assertEquals(setOf("p_0", "p_c0", "p_c1"), MemoryGraph.get(ctx).memories.all().map { it.id }.toSet())
     }
@@ -115,7 +115,7 @@ class ExtractSaveTest {
         val older = ExtractSave.saveExtraction(ctx, "old_", output("ex1"), setOf("ex1"), mapOf("ex1" to "old"), MemoryTier.SHORT, ReviewState.OK)
         assertEquals(ExtractSaveResult.StaleClaim, older)
         assertEquals(setOf("new_0", "new_c0"), MemoryGraph.get(ctx).memories.all().map { it.id }.toSet())
-        assertTrue(db.frameSourceDao().forMemory("old_0").isEmpty() && db.frameSourceDao().forMemory("old_c0").isEmpty())
+        assertTrue(db.frameSourceDao().forMemory("old_0").filter { it.role != "CARRIED" }.isEmpty() && db.frameSourceDao().forMemory("old_c0").filter { it.role != "CARRIED" }.isEmpty())
         assertEquals("EXTRACTED", db.frameStateDao().get("ex1")!!.state)
 
         // And the other way round: a two-frame batch whose second claim is stale rolls back the first frame's CAS too.
@@ -149,7 +149,7 @@ class ExtractSaveTest {
         assertTrue(batch.output.captions.isEmpty())
         val r = ExtractSave.saveExtraction(ctx, "old_", batch.output, setOf("ex1", "ex2"), null, MemoryTier.SHORT, ReviewState.OK)
         assertEquals(2, (r as ExtractSaveResult.Saved).memories.size)
-        assertEquals(listOf("ex2"), db.frameSourceDao().forMemory("old_1").map { it.frameId })
+        assertEquals(listOf("ex2"), db.frameSourceDao().forMemory("old_1").filter { it.role != "CARRIED" }.map { it.frameId })
     }
 
     @Test fun promptIsCurrentOnlyForTheProvenanceSchema() {

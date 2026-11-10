@@ -244,8 +244,12 @@ abstract class CanvasDao {
     }
 
     // Moment runs list every member photo as an "mf:<frameId>" lineage token on all their rows, so a Forget of any member photo finds the Moment's rows (no schema change).
+    // Codex r15: rows also list the photos their value was derived from ("mf:<frameId>", the RULE A union). Only the forgotten photos' own "mf:" tokens
+    // are followed: a token naming another photo found on a forgotten photo's row must not take that other photo's own rows with it.
     private suspend fun lineageTokensOf(frameIds: List<String>): List<String> =
-        (frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.flatMap { it.split('|') } + frameIds.map { "mf:$it" }).filter { it.isNotEmpty() }.distinct()
+        (frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.flatMap { it.split('|') }
+            .filter { t -> !(t.startsWith("mf:") || t.contains(":mf:")) || t.substringAfterLast("mf:") in frameIds } +
+            frameIds.map { "mf:$it" }).filter { it.isNotEmpty() }.distinct()
 
     /**
      * The row keys (photo ids, `moment:`/`scene:` keys) OTHER than [frameIds] whose results [deleteCanvasOutputsForFrames] would also delete through a shared lineage token: the batch peers. Read only, the same discovery the delete uses,

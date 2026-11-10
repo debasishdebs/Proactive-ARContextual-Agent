@@ -131,7 +131,7 @@ class CanvasRunSaveTest {
         assertEquals("a cup", m["rokid_cv_r1_1"]!![1]); assertEquals("NEEDS_REVIEW", m["rokid_cv_r1_1"]!![2])
         assertTrue("tagged as a canvas run", m["rokid_cv_r1_0"]!![4]!!.split(" ").contains("canvas"))
         // frame_source provenance (what makes the memory forgettable with its photo)
-        assertEquals(listOf(listOf("rokid_cv_r1_0", "f1"), listOf("rokid_cv_r1_1", "f2")), rows("SELECT memoryId, frameId FROM frame_source ORDER BY memoryId"))
+        assertEquals(listOf(listOf("rokid_cv_r1_0", "f1"), listOf("rokid_cv_r1_1", "f2")), rows("SELECT memoryId, frameId FROM frame_source WHERE role != 'CARRIED' ORDER BY memoryId"))
         assertEquals("2", h.dao3.meta(CanvasSaveMarker.key("r1")))
         assertEquals("the follow-up (embeddings) got the saved memories", listOf(2), followUps.map { it.size })
         assertEquals(CanvasRunSave.Result.Saved(3, 1).message, "Saved 3 memories (1 need review in Memory).")

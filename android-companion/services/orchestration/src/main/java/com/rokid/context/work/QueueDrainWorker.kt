@@ -264,6 +264,8 @@ class QueueDrainWorker(
         val saved = ExtractSave.saveExtraction(
             applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = provenance, imagesDelivered = delivered), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
             tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
+            // codex r15: one call per photo here, so each memory derives from the one photo its FACT row already cites: nothing else is carried
+            carriedFrames = emptySet(),
         )
         // no delivery proof: nothing was written; a retryable failure keeps the job (and its photos) queued with backoff
         if (saved == ExtractSaveResult.Undelivered) throw com.rokid.context.ai.ModelCallException("photos not delivered", retryable = true)
@@ -310,6 +312,10 @@ class QueueDrainWorker(
             out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
             generation = generation, derived = true, sourceIds = sources.map { it.id }, fenceFrameIds = frames.map { it.id })
         if (!written) return
+        // codex r15: the photos the summary saw are its carried provenance (not a description): a later Forget of any of them removes it
+        MemoryGraph.get(applicationContext).db.frameSourceDao().insertAll(frames.map {
+            com.rokid.context.memory.db.FrameSourceEntity("rokid_mem_${job.id.takeLast(12)}", it.id, null, ExtractSave.CARRIED)
+        })
         EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
         if (QueuePayloads.bool(payload, "nudge", true)) com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
@@ -348,7 +354,10 @@ class QueueDrainWorker(
         val rawInput = QueuePayloads.string(payload, "raw_input")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
         val extracted = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))), callClass = com.rokid.context.model.CallClass.USER,
-            sources = com.rokid.context.model.PayloadSources.NONE /* the user's own words from the queue payload, not stored content */)).output as ExtractOutput)
+            // codex r15: the persisted queue payload IS stored user content: the call takes the upload slot and checks the job's captured wipe generation
+            // (a Delete all at admission drops it unsent)
+            sources = com.rokid.context.model.PayloadSources.stored(emptyList(), emptyList()),
+            liveness = com.rokid.context.work.frames.FrameLiveness.forApp(applicationContext, generation))).output as ExtractOutput)
             .facts.filter { it.text.isNotBlank() }
         // Fix I1: the user asked to remember this, so an empty reply keeps their own words as one note (no retry: it can
         // come back empty again).

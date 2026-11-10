@@ -44,4 +44,6 @@ interface PhotoLiveness {
     suspend fun gone(ids: Set<String>): GonePhotos
     /** Codex r12: of these source memory ids ([PayloadSources.memoryIds]), those forgotten (gone or INVALIDATED). Empty = all live. */
     suspend fun goneMemories(ids: Set<String>): Set<String>
+    /** Codex r15: of these mark label ids ([PayloadSources.markIds]), those gone (forgotten, undone or wiped). Empty = all live. */
+    suspend fun goneMarks(ids: Set<String>): Set<String>
 }

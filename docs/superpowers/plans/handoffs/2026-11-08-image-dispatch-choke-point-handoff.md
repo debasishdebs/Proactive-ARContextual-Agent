@@ -201,6 +201,47 @@ Not done: `ForgetDao.citedCount` (used only by tests) still counts any citation.
   - Property test: `everyBuiltInExecutorsOutputsCarryEveryInputsSources` runs every `Executors.all()` executor over a batch of 2+ inputs at the
     boundary.
 
+## Codex r15: marks, the explicit-write payload, persisted provenance, audit
+
+1. **Marks are dispatch sources.** `PayloadSources.markIds` carries `canvas_label` ids. `PhotoLiveness.goneMarks` re-checks them under the upload
+   slot; `FrameLiveness` reports a mark gone when its label row is missing or the wipe generation moved.
+   DerivePass declares every MARK part, and Moment and Scene canvas items declare their marks. A range Forget, which deletes the label without
+   moving the generation, therefore drops "sleeping".
+   Test: `DerivePassTest.aRangeForgetOfAMarkOnlyMomentDropsItsLabelAtAdmission` (failed without the fix).
+2. **The explicit-write payload is stored content.** QueueDrainWorker declares `PayloadSources.stored(...)` and a liveness bound to the job's
+   captured generation, so a Delete all at admission drops the call.
+   Test: `ExplicitWriteFenceTest` (failed without the fix).
+3. **Persisted provenance (no schema change).**
+   - **Runtime rows:** CanvasRunner and PipelineInterpreter write every output's RULE A union into the row lineage as `mf:<frameId>` tokens (the
+     existing S25 column), so a Forget of any carried photo deletes the row.
+   - **Canvas saves:** `CanvasRunSave` reads those tokens. A fact derived from a gone photo is not saved, and every saved memory is linked to all
+     carried photos.
+   - **The link itself:** `ExtractSave.saveExtraction(carriedFrames = sentFrameIds by default)` adds `frame_source` rows with the new role value
+     `CARRIED` (data, not schema). The same applies to ClusterSave (every representative of the call) and the queued reprocess summary (its frames).
+   - **How Forget treats CARRIED:** a Forget of the photo removes the memory (`memoryIdsOfFrame` reads every role). A Forget of the memory never
+     locks or deletes a CARRIED photo, because `sourceFramesOf` and `remainingRefs` skip that role. CARRIED never counts as a description.
+   - **Save-time rollback:** a carried photo already forgotten at save time rolls the whole save back. ExtractSave returns StaleClaim, so the
+     frames are retried; ClusterSave returns Stale.
+   - **Dependencies:** Ask and Nudge rows now store every input (cited or not) as dependencies, so their Forget redaction covers them.
+   - Test: `CanvasProvenanceTest.aSavedCanvasMemoryGoesWithAnyPhotoItWasDerivedFrom` (failed without the fix).
+   - **Pre-existing bug fixed:** Save of a runner-made run always answered NO_MEMORY_NODE. The run stores the canonical pipeline, whose types are
+     versioned (`memory.write@1`); CanvasRunSave now compares bare types.
+4. **Property test through the real paths.**
+   - `everyBuiltInExecutorThroughTheRealRunnerCarriesEveryInputOfItsExecution` runs every `Executors.all()` executor through CanvasRunner.
+     It uses photo runs, and Scene runs for the number-port executors, with 3 inputs. It requires every output row to be OK with a value, and its
+     lineage to contain every input photo of its execution (cumulative for non-chunkLocal executors).
+   - `theLiveInterpreterCarriesEveryInputOfAVisionBatch` covers PipelineInterpreter: Prompt → Switch → Vision(batch 2).
+   - Neither test swallows exceptions or applies provenance by hand.
+5. **Audit of `PayloadSources.NONE` in production:**
+   - The legacy `ModelRouter.generate`/`generateFromFrames`: test-only API, no production caller; images still carry refs and liveness.
+   - Defaults of `RoleCall.sources`, `TestBedRequest.sources`, `TestBedInputs.Prepared.sources`, `CanvasItem.sources` and
+     `ExtractSave.contextProvenance`: every production RoleCall/ModelRequest site declares `sources =` (scan test). Context text without
+     provenance is refused.
+   - TestBed inputs for SYSTEM, SUMMARIZE and EXPLICIT_REMEMBER: text the user types in the editor, not stored.
+   - `frames()`/`memories()` over empty id lists: watch items (hub values in memory), a typed CRITIC test input.
+   - The NodeProvenance/valueSources accumulators: start values, not declarations.
+   - **Converted:** the QueueDrainWorker explicit write (item 2).
+
 ## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
 
 The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the

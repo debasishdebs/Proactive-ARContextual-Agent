@@ -52,6 +52,8 @@ sealed interface ExtractSaveResult {
 /** The VISION_EXTRACT call and save path of the provenance contract (spec P2.1, section C). Used by the drain worker and the keyframe pipeline. */
 object ExtractSave {
     private const val TAG = "ExtractSave"
+    /** Codex r15: `frame_source.role` of a photo a memory may be DERIVED from but does not describe (a batch mate, an upstream canvas source). Forget-only. */
+    const val CARRIED = "CARRIED"
 
     private class Rollback(val result: ExtractSaveResult) : RuntimeException(null, null, false, false)
 
@@ -148,6 +150,12 @@ object ExtractSave {
         tier: MemoryTier, reviewState: ReviewState, generation: Long = MemoryWipe.generation.get(), nowMs: Long = System.currentTimeMillis(),
         /** Runs inside the save transaction after the memories and their provenance are written (describe-on-demand moves the photo's state here, S4); a throw rolls everything back. */
         inTransaction: (suspend (saved: List<SavedMemory>) -> Unit)? = null,
+        /**
+         * Codex r15: every photo the output may be derived from (default: all [sentFrameIds], i.e. every photo of the calls that produced it: a caption
+         * of A in a batch with B may carry a B detail). Each saved memory is linked to all of them (`frame_source` role [CARRIED], never a description),
+         * so a later Forget of any of them removes it; one already forgotten at save time rolls the whole save back ([ExtractSaveResult.StaleClaim]).
+         */
+        carriedFrames: Set<String> = sentFrameIds,
     ): ExtractSaveResult {
         val db = com.rokid.context.memory.MemoryGraph.get(context).db
         // Codex r10: a description (a caption, or anything saved trusted) is never persisted unless the router proved the photos reached the model on the
@@ -160,6 +168,10 @@ object ExtractSave {
         return try {
             db.withTransaction {
                 if (MemoryWipe.generation.get() != generation) throw Rollback(ExtractSaveResult.Wiped)
+                if (carriedFrames.isNotEmpty() && carriedFrames.toList().chunked(500).any { db.forgetDao().tombstoned(it).isNotEmpty() }) {
+                    PcLog.i(TAG, "extraction dropped: a source photo was forgotten")
+                    throw Rollback(ExtractSaveResult.StaleClaim)
+                }
                 // The CAS comes first: a stale attempt must not write a single row.
                 claims?.forEach { (frameId, claimId) ->
                     if (db.frameStateDao().completeIfClaimed(frameId, claimId, FrameState.EXTRACTED.name, nowMs) == 0) {
@@ -186,6 +198,8 @@ object ExtractSave {
                 // A re-run replaces the memory by id, so its earlier provenance goes first.
                 saved.forEach { db.frameSourceDao().deleteForMemory(it.memoryId) }
                 db.frameSourceDao().insertAll(saved.flatMap { m -> m.frameIds.map { FrameSourceEntity(m.memoryId, it, null, "FACT") } })
+                // codex r15: the full carried union, persisted on the existing provenance table (no schema change)
+                db.frameSourceDao().insertAll(saved.flatMap { m -> (carriedFrames - m.frameIds.toSet()).map { FrameSourceEntity(m.memoryId, it, null, CARRIED) } })
                 inTransaction?.invoke(saved)
                 ExtractSaveResult.Saved(saved)
             }

@@ -22,7 +22,7 @@ open class ModelCallException(
  * Codex r10: a photo attached to the request was forgotten (or everything was deleted) before it left: the call was dropped unsent. Never retried (not as
  * text, not on a fallback endpoint, not by the frame chain); the caller treats [frameIds] as gone and writes nothing for them.
  */
-class PhotoForgottenException(val frameIds: Set<String>, val wiped: Boolean, val memoryIds: Set<String> = emptySet()) :
+class PhotoForgottenException(val frameIds: Set<String>, val wiped: Boolean, val memoryIds: Set<String> = emptySet(), val markIds: Set<String> = emptySet()) :
     ModelCallException("photo forgotten before send", retryable = false, kind = FailureKind.NOT_SET)
 
 /** Codex r10: the call needs its photo but the endpoint or provider cannot deliver images (no VISION, or the on-device runtime): nothing was sent, no output. */

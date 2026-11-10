@@ -50,6 +50,10 @@ object ClusterSave {
                 if (MemoryWipe.generation.get() != generation) throw Rollback(ClusterSaveResult.Wiped)
                 val members = results.associate { it.clusterId to db.frameMetaDao().members(it.clusterId).map { m -> m.frameId } }
                 val live = liveFrames(context, (members.values.flatten() + sent.values.flatten()).distinct())
+                // codex r15: one call (up to 3 clusters) saw every representative it was sent, so any output may carry any of them; a representative
+                // forgotten since the call rolls the whole output back (the clusters are retried), and every saved memory is linked to all of them
+                val carried = sent.values.flatten().toSet()
+                if (carried.any { it !in live }) throw Rollback(ClusterSaveResult.Stale)
                 // The CAS comes first for every cluster: a stale attempt must not write a single row. A cluster with no live representative
                 // is failed (also a CAS on its claim) instead of completed.
                 val repsOf = results.associate { c -> c.clusterId to sent.getValue(c.clusterId).filter { it in live }.distinct() }
@@ -96,6 +100,7 @@ object ClusterSave {
                 }
                 db.frameSourceDao().deleteForMemories(saved.map { it.memoryId }) // a re-run replaces a memory by id: its earlier provenance goes first
                 db.frameSourceDao().insertAll(rows)
+                db.frameSourceDao().insertAll(saved.flatMap { m -> (carried - m.frameIds.toSet()).map { FrameSourceEntity(m.memoryId, it, null, com.rokid.context.orchestration.ExtractSave.CARRIED) } })
                 // Members still IN_CLUSTER only: a member an ask claimed meanwhile stays EXTRACTING.
                 results.forEach { c ->
                     if (c.clusterId in failed) db.frameStateDao().settleCluster(c.clusterId, FrameState.NEAR_DUP.name, "cluster_failed", nowMs)

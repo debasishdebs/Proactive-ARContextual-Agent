@@ -105,6 +105,8 @@ class PipelineInterpreter(
                 results.firstNotNullOfOrNull { r -> r.cause?.takeIf(::isTransient) }?.let { throw it }
                 for (item in chunk) {
                     val r = results.firstOrNull { it.frameId == item.frameId } ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
+                    // r15: the execution's union is also this row's lineage ("mf:<frameId>"), so a Forget of any of those photos reaches it, as in the runner
+                    lineage.getOrPut(item.frameId) { LinkedHashSet() }.addAll(provenance.of(r.value).frameIds.map { CanvasRunner.MEMBER_TOKEN + it })
                     traces += row(item.frameId, node.id, r)
                     if (r.error != null) { failure = failure ?: reasonOf(r); continue }
                     val v = r.value ?: continue

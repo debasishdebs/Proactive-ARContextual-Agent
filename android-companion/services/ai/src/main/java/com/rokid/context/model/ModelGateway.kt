@@ -64,14 +64,18 @@ data class ModelRequest(
  * [frames]/[memories] are "these ids or nothing" helpers: empty input gives [NONE].
  */
 @ConsistentCopyVisibility
-data class PayloadSources private constructor(val frameIds: Set<String>, val memoryIds: Set<String>, val stored: Boolean) {
-    constructor(frameIds: Set<String> = emptySet(), memoryIds: Set<String> = emptySet()) : this(frameIds, memoryIds, stored = true)
-    val isEmpty: Boolean get() = frameIds.isEmpty() && memoryIds.isEmpty()
-    operator fun plus(o: PayloadSources) = PayloadSources(frameIds + o.frameIds, memoryIds + o.memoryIds, stored || o.stored)
+data class PayloadSources private constructor(
+    val frameIds: Set<String>, val memoryIds: Set<String>, val stored: Boolean,
+    /** Codex r15: mark labels (`canvas_label` ids) whose words are in the prompt; re-checked like frames and memories (a range Forget deletes them). */
+    val markIds: Set<String> = emptySet(),
+) {
+    constructor(frameIds: Set<String> = emptySet(), memoryIds: Set<String> = emptySet(), markIds: Set<String> = emptySet()) : this(frameIds, memoryIds, stored = true, markIds = markIds)
+    val isEmpty: Boolean get() = frameIds.isEmpty() && memoryIds.isEmpty() && markIds.isEmpty()
+    operator fun plus(o: PayloadSources) = PayloadSources(frameIds + o.frameIds, memoryIds + o.memoryIds, stored || o.stored, markIds + o.markIds)
     companion object {
         /** Sources of a prompt whose text was read from stored content: always [stored], whatever the id sets. */
-        fun stored(frameIds: Collection<String>, memoryIds: Collection<String>) =
-            PayloadSources(frameIds.filter { it.isNotBlank() }.toSet(), memoryIds.filter { it.isNotBlank() }.toSet(), stored = true)
+        fun stored(frameIds: Collection<String>, memoryIds: Collection<String>, markIds: Collection<String> = emptyList()) =
+            PayloadSources(frameIds.filter { it.isNotBlank() }.toSet(), memoryIds.filter { it.isNotBlank() }.toSet(), stored = true, markIds = markIds.filter { it.isNotBlank() }.toSet())
         /** Declared: no stored user content (photos, facts, captions, memories, labels, history) is in the prompt. The only value that skips the guard. */
         val NONE = PayloadSources(emptySet(), emptySet(), stored = false)
         fun frames(ids: Collection<String>) = ids.filter { it.isNotBlank() }.toSet().let { if (it.isEmpty()) NONE else PayloadSources(frameIds = it) }

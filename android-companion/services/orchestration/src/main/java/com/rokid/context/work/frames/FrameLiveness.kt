@@ -18,12 +18,16 @@ class FrameLiveness(
     private val live: suspend (Set<String>) -> Set<String>,
     /** Codex r12: of the source memory ids, those forgotten ([com.rokid.context.memory.forget.ForgetFence.goneAmong]). */
     private val goneMemoryIds: suspend (Set<String>) -> Set<String> = { emptySet() },
+    /** Codex r15: of the mark label ids, those whose `canvas_label` row is gone. */
+    private val goneMarkIds: suspend (Set<String>) -> Set<String> = { emptySet() },
     private val gate: () -> DataOpGate = { DataOpGate.shared },
     private val currentGeneration: () -> Long = { MemoryWipe.generation.get() },
 ) : PhotoLiveness {
     override suspend fun <T> holdUploadSlot(block: suspend () -> T): T = gate().dispatch(block)
 
     override suspend fun goneMemories(ids: Set<String>): Set<String> = if (currentGeneration() != generation) ids else goneMemoryIds(ids)
+
+    override suspend fun goneMarks(ids: Set<String>): Set<String> = if (currentGeneration() != generation) ids else goneMarkIds(ids)
 
     override suspend fun gone(ids: Set<String>): GonePhotos =
         if (currentGeneration() != generation) GonePhotos(ids, wiped = true) else GonePhotos(ids - live(ids))
@@ -37,7 +41,8 @@ class FrameLiveness(
             val present = list.chunked(MAX_IN).flatMap { g.frames.byIds(it) }.map { it.id }.toSet()
             val locked = list.chunked(MAX_IN).flatMap { g.db.forgetDao().tombstoned(it) }.toSet()
             present - locked
-        }, { ids -> com.rokid.context.memory.forget.ForgetFence.goneAmong(g.db, ids) })
+        }, { ids -> com.rokid.context.memory.forget.ForgetFence.goneAmong(g.db, ids) },
+            { ids -> ids.filter { g.db.canvasSlice3Dao().label(it) == null }.toSet() })
 
         fun forApp(app: Context, generation: Long = MemoryWipe.generation.get()) = forGraph(MemoryGraph.get(app), generation)
     }

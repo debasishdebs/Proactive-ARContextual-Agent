@@ -183,34 +183,182 @@ class CanvasProvenanceTest {
             listOf("frame_forget"), dao.items(runId).filter { it.nodeId == "last" && it.frameId == "A" }.map { it.error })
     }
 
-    // codex r14 RULE A, property: every built-in executor run over a batch of 2+ inputs; every output carries every input's sources
-    @Test fun everyBuiltInExecutorsOutputsCarryEveryInputsSources() = runBlocking<Unit> {
-        val ai = TestAi.graph(app) { """{"verdict":"pass","reasons":[],"summary":"s","confidence":0.9,"text":"t","facts":[],"captions":[]}""" }.also { TestAi.bindAll(it) }
-        val ctx = RunContext("r", ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive)
-        val inputs = listOf("A", "B", "C").map { id ->
-            CanvasItem(id, photo(id), CanvasValue.Extraction(listOf(Fact("f $id", "object", 0.9, emptyList(), listOf(id))), listOf(FrameCaption(id, "c $id"))),
-                com.rokid.context.model.PayloadSources(setOf("src-$id"), setOf("mem-$id")))
+    // codex r15 P1-3: the carried union reaches persistence. Vision(2) -> Prompt -> Summary -> LocalCritic -> memory.write; A's summary carries a B detail
+    // but cites only A. Saved, then Forget B: the saved A summary goes too.
+    @Test fun aSavedCanvasMemoryGoesWithAnyPhotoItWasDerivedFrom() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        for ((id, ts) in listOf("A" to 1L, "B" to 2L)) {
+            val f = java.io.File(app.filesDir, "rokid_archive/$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            com.rokid.context.orchestration.PipelineRecords.appendFrame(app, FrameEntity(id, ts, f.absolutePath, "rokid_glasses", "frame"))
         }
-        val everyInput = inputs.fold(com.rokid.context.model.PayloadSources.NONE) { acc, it -> acc + sourcesOf(it) }
-        var checked = 0
-        for ((type, ex) in Executors.all()) {
-            val node = PipelineNode("n", type, "n", JsonObject(emptyMap()))
-            val provenance = NodeProvenance(ex)
-            var soFar = com.rokid.context.model.PayloadSources.NONE
-            for (chunk in inputs.chunked(maxOf(2, ex.chunkSize(node)))) { // at least a batch of 2
-                provenance.consume(chunk)
-                soFar = chunk.fold(soFar) { acc, it -> acc + sourcesOf(it) }
-                val results = runCatching { ex.run(node, chunk, ctx) }.getOrDefault(emptyList())
-                for (r in results) {
-                    val out = provenance.of(r.value)
-                    val consumed = chunk.fold(com.rokid.context.model.PayloadSources.NONE) { acc, it -> acc + sourcesOf(it) }
-                    assertTrue("$type output ${r.frameId} carries every input of its execution", out.frameIds.containsAll(consumed.frameIds) && out.memoryIds.containsAll(consumed.memoryIds))
-                    if (!ex.chunkLocal) assertTrue("$type (stateful) carries everything consumed so far", out.frameIds.containsAll(soFar.frameIds) && out.memoryIds.containsAll(soFar.memoryIds))
-                    checked++
-                }
+        val ai = TestAi.graph(app) { "{}" }.also { TestAi.bindAll(it) }
+        val vision = exec(NodeTypes.VISION_EXTRACT, 2) { items -> items.map { NodeResult(it.frameId, CanvasValue.Extraction(listOf(Fact("Mug in ${it.frameId}", "object", 0.9, emptyList(), listOf(it.frameId))), emptyList())) } }
+        val prompt = exec(NodeTypes.PROMPT, 1) { items -> items.map { NodeResult(it.frameId, CanvasValue.Json(buildJsonObject { put("text", "the same mug as in the other photo") })) } }
+        // only A's summary reaches the save (B's fails), so nothing but the carried lineage links the saved A summary to B
+        val summary = exec(NodeTypes.SUMMARY, 1) { items -> items.map {
+            if (it.frameId == "B") NodeResult("B", null, error = "NO_INPUT")
+            else NodeResult(it.frameId, CanvasValue.Extraction(listOf(Fact("SUMMARY-${it.frameId} shares a mug with B", com.rokid.context.ai.canvas.SummaryNode.FACT_TYPE, 0.9, emptyList(), listOf(it.frameId))), emptyList()))
+        } }
+        val runner = CanvasRunner(
+            db.canvasDao(), { f -> PhotoLoad(f.map(::photo), emptySet()) },
+            mapOf(NodeTypes.VISION_EXTRACT to vision, NodeTypes.PROMPT to prompt, NodeTypes.SUMMARY to summary, NodeTypes.LOCAL_CRITIC to LocalCriticExecutor, NodeTypes.MEMORY_WRITE to MemoryWritePreviewExecutor),
+            { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
+            ConfirmTokens({ now }), { false }, { now }, { "run${++ids}" }, { 0L },
+        )
+        val p = Pipeline(2, "ps", "P", listOf(
+            PipelineNode("photos", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap())),
+            PipelineNode("ext", NodeTypes.VISION_EXTRACT, "ext", buildJsonObject { put("batch", 2); put("prompt", buildJsonObject { put("source", "live") }) }),
+            PipelineNode("prompt", NodeTypes.PROMPT, "prompt", buildJsonObject {
+                put("name", "p"); put("template", "T {{context_sources}}")
+                put("schema", """{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}""")
+            }),
+            PipelineNode("sum", NodeTypes.SUMMARY, "Summary", JsonObject(emptyMap())),
+            PipelineNode("trust", NodeTypes.LOCAL_CRITIC, "Confidence check", JsonObject(emptyMap())),
+            PipelineNode("write", NodeTypes.MEMORY_WRITE, "Save memory", JsonObject(emptyMap())),
+        ), listOf(PipelineEdge("photos", "ext"), PipelineEdge("ext", "prompt"), PipelineEdge("prompt", "sum"), PipelineEdge("sum", "trust"),
+            PipelineEdge("trust", "write", "trusted"), PipelineEdge("trust", "write", "unsure")))
+        val est = runner.estimate(p, listOf("A", "B"), { n -> ModelLabel(n.id, "az", "gpt") })
+        assertTrue("estimate: $est", est is Estimate.Ok)
+        val runId = runner.start(p, p.id, null, listOf("A", "B"), (est as Estimate.Ok).confirmToken, scope)
+        withTimeout(20_000) { runner.active.first { it == null } }
+        val saved = CanvasRunSave(app, db, afterSave = { _, _ -> }).save(runId)
+        assertTrue("saved: $saved ${db.canvasDao().run(runId)?.pipelineJson?.let { com.rokid.context.ai.canvas.PipelineJson.decode(it) }}", saved is CanvasRunSave.Result.Saved)
+        fun texts() = runBlocking { MemoryGraph.get(app).memories.all().map { it.text } }
+        assertTrue(texts().toString(), texts().any { "SUMMARY-A" in it })
+        assertTrue(com.rokid.context.orchestration.forget.ForgetActions.forgetMoment(app, "B"))
+        assertTrue("the A summary derived from B is gone after Forget B: ${texts()}", texts().none { "SUMMARY-A" in it })
+    }
+
+    // ---- codex r14/r15 RULE A property, through the REAL CanvasRunner and PipelineInterpreter: every built-in executor over 3 photos (batches of 2+ where
+    // the executor batches), every output OK with a value, and every output row's lineage lists every input photo of its execution (and, for an
+    // executor that is not chunkLocal, every input the node consumed before)
+
+    private val seedJson = buildJsonObject {
+        put("value", 1.0); put("label", "moving"); put("text", "words")
+        put("sensor", buildJsonObject { com.rokid.context.ai.canvas.WindowAggregate.FEATURES.forEach { f -> put(f, 1.0) } })
+    }
+    private fun seedExtraction(id: String) = CanvasValue.Extraction(listOf(Fact("Mug in $id", "object", 0.95, emptyList(), listOf(id))), listOf(FrameCaption(id, "c $id")))
+
+    /** A per-item seed (chunk 1, chunkLocal): each input of the node under test carries exactly its own photo. */
+    private fun seed(type: String, json: Boolean) = object : NodeExecutor {
+        override val type = type
+        override val chunkLocal = true
+        override fun nominalCalls(node: PipelineNode, items: Int) = 0
+        override fun maxCalls(node: PipelineNode, items: Int) = 0
+        override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext) =
+            items.map { NodeResult(it.frameId, if (json) CanvasValue.Json(seedJson) else seedExtraction(it.frameId)) }
+    }
+
+    /** Both nodes may share a type: "seed" runs the seed, "e" the real executor. */
+    private fun dispatch(type: String, seed: NodeExecutor, real: NodeExecutor) = object : NodeExecutor {
+        override val type = type
+        private fun of(n: PipelineNode) = if (n.id == "e") real else seed
+        override val chunkLocal get() = real.chunkLocal
+        override fun chunkSize(node: PipelineNode) = of(node).chunkSize(node)
+        override fun nominalCalls(node: PipelineNode, items: Int) = of(node).nominalCalls(node, items)
+        override fun maxCalls(node: PipelineNode, items: Int) = of(node).maxCalls(node, items)
+        override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext) = of(node).run(node, items, ctx)
+    }
+
+    private val promptParams = buildJsonObject {
+        put("name", "p"); put("template", "T {{recent_context}} {{context_sources}}")
+        put("schema", """{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}""")
+    }
+    private fun paramsOf(type: String): JsonObject = when (type) {
+        NodeTypes.VISION_EXTRACT -> buildJsonObject { put("batch", 2); put("prompt", buildJsonObject { put("source", "live") }) }
+        NodeTypes.PROMPT -> promptParams
+        NodeTypes.SWITCH -> buildJsonObject { put("field", "label"); put("cases", kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive("moving")))) }
+        else -> JsonObject(emptyMap())
+    }
+    /** What the fake model answers, by the contract the prompt asks for. */
+    private fun reply(prompt: String): String {
+        val ids = Regex("frame_id: ([A-C])").findAll(prompt).map { it.groupValues[1] }.toList().distinct()
+        return when {
+            "verdict" in prompt -> """{"verdict":"pass","reasons":[]}"""
+            "captions" in prompt -> """{"facts":[${ids.joinToString(",") { """{"text":"Mug in $it","type":"object","confidence":0.9,"tags":[],"source_frame_ids":["$it"]}""" }}],"captions":[${ids.joinToString(",") { """{"frame_id":"$it","caption":"c $it"}""" }}]}"""
+            "summary" in prompt.lowercase() && "confidence" in prompt -> """{"summary":"s","confidence":0.9}"""
+            else -> """{"text":"t"}"""
+        }
+    }
+
+    private fun lineagePhotos(batchId: String?): Set<String> =
+        batchId.orEmpty().split(CanvasLineage.SEP).mapNotNull { t -> t.substringAfterLast(CanvasRunner.MEMBER_TOKEN, "").takeIf { t.contains(CanvasRunner.MEMBER_TOKEN) && it.isNotEmpty() } }.toSet()
+
+    /** The photos every input of the execution that produced item [i] (of [order]) consumed, by the executor's own chunking. */
+    private fun expected(ex: NodeExecutor, node: PipelineNode, order: List<String>, i: Int): Set<String> {
+        val size = ex.chunkSize(node).coerceAtLeast(1).coerceAtMost(order.size)
+        val chunk = i / size
+        return if (ex.chunkLocal) order.chunked(size)[chunk].toSet() else order.chunked(size).take(chunk + 1).flatten().toSet()
+    }
+
+    @Test fun everyBuiltInExecutorThroughTheRealRunnerCarriesEveryInputOfItsExecution() = runBlocking<Unit> {
+        val photos = listOf("A", "B", "C")
+        val extractionInput = setOf(NodeTypes.LOCAL_CRITIC, NodeTypes.CRITIC, NodeTypes.MEMORY_WRITE)
+        // the number-port executors take Scenes (agg.window) or a number: they run over a Scene run whose items carry member photos f-<scene>
+        val numberPort = setOf(NodeTypes.AGG_WINDOW, NodeTypes.COMPARE, NodeTypes.PROC_MOTION_MODEL, NodeTypes.OUT_SET_FREQUENCY_PREVIEW)
+        val sceneIds = (0..2).map { "S" + com.rokid.context.memory.moment.MomentId.ofMs(com.rokid.context.canvas.moment.MomentFixture.MS + it * 60_000L) }.sorted()
+        val tested = HashSet<String>()
+        for ((type, real) in Executors.all()) {
+            MemoryGraph.get(app).db.clearAllTables()
+            val ai = TestAi.graph(app) { reply(it) }.also { TestAi.bindAll(it) }
+            val scenesRun = type in numberPort
+            val seedType = when {
+                scenesRun -> if (type == NodeTypes.AGG_WINDOW) null else NodeTypes.AGG_WINDOW
+                type in extractionInput -> NodeTypes.VISION_EXTRACT
+                else -> NodeTypes.PROMPT
             }
+            val seedEx = seedType?.let { seed(it, json = type !in extractionInput) }
+            val executors = when {
+                seedEx == null -> mapOf(type to real)
+                seedType == type -> mapOf(type to dispatch(type, seedEx, real))
+                else -> mapOf(seedType!! to seedEx, type to real)
+            }
+            val runner = CanvasRunner(
+                MemoryGraph.get(app).db.canvasDao(), { f -> PhotoLoad(f.map(::photo), emptySet()) }, executors,
+                { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
+                ConfirmTokens({ now }), { false }, { now }, { "run${++ids}" }, { 0L },
+                scenes = com.rokid.context.canvas.moment.SceneRunSource { ids -> ids.map { com.rokid.context.canvas.moment.SceneRunItem(it, "b-$it", listOf("f-$it"), seedJson, emptyList(), listOf("m-$it")) } },
+            )
+            val node = PipelineNode("e", type, "e", paramsOf(type))
+            val source = if (scenesRun) PipelineNode("src", NodeTypes.INPUT_SCENES, "scenes", JsonObject(emptyMap())) else PipelineNode("src", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap()))
+            val nodes = listOfNotNull(source, seedType?.let { PipelineNode("seed", it, "seed", paramsOf(it)) }, node)
+            val edges = if (seedType == null) listOf(PipelineEdge("src", "e")) else listOf(PipelineEdge("src", "seed"), PipelineEdge("seed", "e"))
+            val p = Pipeline(2, "pp", "P", nodes, edges)
+            val items = if (scenesRun) sceneIds else photos
+            val est = if (scenesRun) runner.estimateScenes(p, items, { n -> ModelLabel(n.id, "az", "gpt") }) else runner.estimate(p, items, { n -> ModelLabel(n.id, "az", "gpt") })
+            assertTrue("$type estimate: $est ${com.rokid.context.ai.canvas.PipelineValidator.validate(p)}", est is Estimate.Ok)
+            val token = (est as Estimate.Ok).confirmToken
+            val runId = if (scenesRun) runner.startScenes(p, p.id, null, items, token, scope) else runner.start(p, p.id, null, items, token, scope)
+            withTimeout(20_000) { runner.active.first { it == null } }
+            val keys = if (scenesRun) sceneIds.map { CanvasRunner.SCENE_KEY_PREFIX + it } else photos
+            val sourcePhotos = if (scenesRun) sceneIds.map { "f-$it" } else photos
+            val rows = MemoryGraph.get(app).db.canvasDao().items(runId).filter { it.nodeId == "e" }.associateBy { it.frameId }
+            keys.forEachIndexed { i, id ->
+                val r = rows[id]
+                assertTrue("$type $id produced an OK output with a value: ${r?.status} ${r?.error} ${rows.keys}", r != null && r.status == "OK" && r.error == null && r.outputJson != null)
+                val want = expected(real, node, sourcePhotos, i)
+                assertTrue("$type $id carries $want, has ${lineagePhotos(r!!.batchId)}", lineagePhotos(r.batchId).containsAll(want))
+            }
+            tested += type
         }
-        assertTrue("outputs were checked: $checked", checked > 0)
-        assertTrue(everyInput.frameIds.containsAll(setOf("A", "B", "C", "src-A", "src-B", "src-C")))
+        assertEquals("every built-in executor was exercised", Executors.all().keys, tested)
+    }
+
+    @Test fun theLiveInterpreterCarriesEveryInputOfAVisionBatch() = runBlocking<Unit> {
+        val ai = TestAi.graph(app) { reply(it) }.also { TestAi.bindAll(it) }
+        val ctx = RunContext("live", ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = CallClass.EXTRACT, liveness = com.rokid.context.orchestration.AllLive)
+        val p = Pipeline(2, "lp", "L", listOf(
+            PipelineNode("photos", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap())),
+            PipelineNode("prompt", NodeTypes.PROMPT, "prompt", promptParams),
+            PipelineNode("switch", NodeTypes.SWITCH, "switch", buildJsonObject { put("field", "text"); put("cases", kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive("t")))) }),
+            PipelineNode("ext", NodeTypes.VISION_EXTRACT, "ext", paramsOf(NodeTypes.VISION_EXTRACT)),
+        ), listOf(PipelineEdge("photos", "prompt"), PipelineEdge("prompt", "switch"), PipelineEdge("switch", "ext", "t")))
+        val out = PipelineInterpreter(clock = { now }).run(p, 1, "LIVE", listOf("A", "B", "C").map(::photo), ctx)
+        assertTrue("$out", out is PipelineInterpreter.Outcome.Extracted)
+        val traces = (out as PipelineInterpreter.Outcome.Extracted).traces.filter { it.nodeId == "ext" }.associateBy { it.frameId }
+        assertEquals(setOf("A", "B", "C"), traces.keys)
+        assertTrue(traces.values.all { it.status == "OK" })
+        assertTrue("batch A+B: ${traces.mapValues { lineagePhotos(it.value.batchId) }}", lineagePhotos(traces.getValue("A").batchId).containsAll(setOf("A", "B")) && lineagePhotos(traces.getValue("B").batchId).containsAll(setOf("A", "B")))
+        assertTrue(lineagePhotos(traces.getValue("C").batchId).contains("C"))
     }
 }

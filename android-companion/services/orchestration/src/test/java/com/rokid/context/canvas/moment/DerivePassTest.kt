@@ -101,6 +101,23 @@ class DerivePassTest {
         assertTrue(com.rokid.context.work.frames.FrameLiveness(gen, { it }, { emptySet() }).gone(src.frameIds).wiped)
     }
 
+    // codex r15 P1-1: the intent label a mark-only Moment's text reads is a dispatch source; a range Forget (which leaves the wipe generation alone)
+    // held at admission is seen through the label's own liveness, so "sleeping" is never uploaded after it
+    @Test fun aRangeForgetOfAMarkOnlyMomentDropsItsLabelAtAdmission() = runBlocking<Unit> {
+        fx.mark("mk:1:1", t(0) + 100, "voice"); fx.mark("mk:1:1:i", t(0) + 100, "voice", "INTENT", "sleeping"); moments.build(listOf(mid(0))); on()
+        var captured: Pair<com.rokid.context.model.PayloadSources, Long>? = null
+        pass(text = DeriveText { p, src, gen -> if ("sleeping" in p && captured == null) captured = src to gen; "REPLY" }).runIfDue(MS)
+        val (src, gen) = checkNotNull(captured)
+        assertTrue("the label is a declared source: ${src.markIds}", "mk:1:1:i" in src.markIds)
+        forget.forgetRange(t(0), t(1)) // range Forget at admission: removes the label, generation unchanged
+        assertEquals(gen, com.rokid.context.orchestration.MemoryWipe.generation.get())
+        com.rokid.context.memory.MemoryGraph.resetForTests(db)
+        try {
+            val l = com.rokid.context.work.frames.FrameLiveness.forGraph(com.rokid.context.memory.MemoryGraph.get(ApplicationProvider.getApplicationContext()), gen)
+            assertTrue("the router's re-check sees the label gone", "mk:1:1:i" in l.goneMarks(src.markIds))
+        } finally { com.rokid.context.memory.MemoryGraph.resetForTests(null) }
+    }
+
     @Test fun aDeleteAllAfterTheSnapshotIsSeenThroughTheCapturedGeneration() = runBlocking<Unit> {
         photo(0); on()
         var captured: Pair<com.rokid.context.model.PayloadSources, Long>? = null

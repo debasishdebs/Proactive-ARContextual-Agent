@@ -120,9 +120,9 @@ class DeriveInputs(private val db: ContextDatabase) {
         val parts = db.momentDao().parts(id)
         val memories = parts.filter { it.kind == MomentPartKind.MEMORY || it.kind == MomentPartKind.CITE }.map { it.refId }
         val frames = parts.filter { it.kind == MomentPartKind.FRAME }.map { it.refId }
-        // text read from memories must carry them (stored: an empty set is refused by the router); a MARK Moment's intent words carry no memory
-        return if (parts.any { it.kind == MomentPartKind.MEMORY }) com.rokid.context.model.PayloadSources.stored(frames, memories)
-        else com.rokid.context.model.PayloadSources(frames.toSet(), memories.toSet())
+        // codex r15: the marks whose intent words [lines] read are sources too (a range Forget deletes the label without moving the wipe generation)
+        val marks = parts.filter { it.kind == MomentPartKind.MARK }.map { it.refId }
+        return com.rokid.context.model.PayloadSources.stored(frames, memories, marks)
     }
 
     private suspend fun momentLines(id: String): List<String> {

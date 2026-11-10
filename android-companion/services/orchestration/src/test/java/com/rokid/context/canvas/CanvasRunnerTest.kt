@@ -720,7 +720,7 @@ class CanvasRunnerTest {
         val run = runAll(runner(ex), DefaultPipelines.liveExtract(), listOf("f1", "f2"))
         val before = dao.items(run.runId)
         val downstream = before.filter { it.frameId == "f2" && it.nodeId != "photos" && it.outputJson != null }
-        assertTrue(downstream.isNotEmpty()); assertTrue("downstream rows keep the batch lineage", downstream.all { it.batchId == "B1" })
+        assertTrue(downstream.isNotEmpty()); assertTrue("downstream rows keep the batch lineage", downstream.all { it.batchId!!.split('|').first() == "B1" || "B1" in it.batchId!!.split('|') })
         dao.deleteCanvasOutputsForFrames(listOf("f1"))
         assertTrue("nothing derived from the batch survives", dao.items(run.runId).none { it.frameId == "f2" && it.batchId == "B1" })
     }
