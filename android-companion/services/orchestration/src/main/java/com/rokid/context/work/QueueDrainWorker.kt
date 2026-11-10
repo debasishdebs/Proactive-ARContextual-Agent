@@ -321,7 +321,8 @@ class QueueDrainWorker(
             val ok = PipelineRecords.appendFact(applicationContext, summaryId, null, out.summary, "summary", out.entities,
                 out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
                 generation = generation, derived = true, sourceIds = srcIds, fenceFrameIds = union.toList())
-            if (ok) mdb.frameSourceDao().insertAll(union.map { com.rokid.context.memory.db.FrameSourceEntity(summaryId, it, null, ExtractSave.CARRIED) })
+            // codex r18: a retry upserts the same summary id, so its provenance is REPLACED with the content, never accumulated
+            if (ok) { mdb.frameSourceDao().deleteForMemory(summaryId); mdb.frameSourceDao().insertAll(union.map { com.rokid.context.memory.db.FrameSourceEntity(summaryId, it, null, ExtractSave.CARRIED) }) }
             ok
         }
         if (!written) return
