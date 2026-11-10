@@ -1,0 +1,11 @@
+**NOT READY — 2 P1 findings, 1 P2.**
+
+1. **P1: New Canvas saves bypass delivery proof.** [CanvasRunSave.kt:122](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/orchestration/src/main/java/com/rokid/context/canvas/CanvasRunSave.kt:122) saves facts without proof, then promotes trusted pipeline output to `OK` at line 131. A text-only Prompt → Summary → Save can therefore persist an invented photo description. [ForgetDao.kt:133](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/memory/src/main/java/com/rokid/context/memory/db/ForgetDao.kt:133) accepts that new fact as sufficient for photo deletion—even while `NEEDS_REVIEW`. Reproduced with the actual retention SQL in memory.
+
+2. **P1: Follow-up CRITIC can send forgotten photo content.** [ExtractFollowUp.kt:66](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/ExtractFollowUp.kt:66) sends extracted facts and frame metadata without photo IDs or liveness. If Forget/Delete all completes while this call waits for its permit, [ModelRouter.kt:192](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/ai/src/main/java/com/rokid/context/ai/ModelRouter.kt:192) sends the stale text without a re-check or upload slot. Both KeyframeExtract/DescribeOnDemand and QueueDrainWorker reach this path.
+
+3. **P2: LIVE interpreter retries forgotten-photo work.** Executors convert `PhotoForgottenException` into a failed result; [LiveExtract.kt:93](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/orchestration/src/main/java/com/rokid/context/canvas/LiveExtract.kt:93) then retries through ordinary extraction. The second guard prevents upload, but another permit is consumed.
+
+No direct image-provider bypass, dispatch-slot leak/deadlock, REQUIRED-role text fallback, delivery-proof decoding forgery, or reviewed log-content leakage found. llama.cpp validation fails closed on routed calls.
+
+Static review plus SQL reproduction; Android tests were not run because the workspace is read-only.

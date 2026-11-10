@@ -1,0 +1,13 @@
+**NOT READY — 4 remaining P1 findings.**
+
+1. **Forgotten photos can still upload through unguarded callers.** [AnswerService.kt:245](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/AnswerService.kt:245), [QueueDrainWorker.kt:236](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/orchestration/src/main/java/com/rokid/context/work/QueueDrainWorker.kt:236), and [CanvasRunner.kt:756](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/orchestration/src/main/java/com/rokid/context/canvas/CanvasRunner.kt:756) install no dispatch guard. Forget can complete after loading/checking but before dispatch. Their save fences cannot prevent that upload.
+
+2. **CLUSTER_SUMMARY still permits fabricated descriptions.** [RoleRunner.kt:113](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/ai/src/main/java/com/rokid/context/ai/run/RoleRunner.kt:113) omits this photo-requiring key. A photo failure therefore retries as text; [ClusterSave.kt:87](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/orchestration/src/main/java/com/rokid/context/work/frames/scene/ClusterSave.kt:87) can save guessed captions as confidence-1.0, OK memories, authorizing retention. A guard’s `Forgotten` exception can also trigger this unguarded text retry, leaking forgotten metadata.
+
+3. **A local endpoint marked Vision silently discards photos.** The editor permits this configuration, but [LlamaCppNativeProvider.kt:108](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/ai/src/main/java/com/rokid/context/model/provider/LlamaCppNativeProvider.kt:108) ignores both images and `requireImages`. VISION_EXTRACT can consequently save descriptions without delivering photos to the model.
+
+4. **Previously fabricated captions still authorize deletion.** [ForgetDao.kt:133](/Users/<user>/Desktop/rokid/pca-v098/android-companion/services/memory/src/main/java/com/rokid/context/memory/db/ForgetDao.kt:133) accepts any citing memory as a description. These commits neither quarantine nor revalidate pre-fix captions; affected photos remain deletable without a real description. The handoff’s audit identifies this unresolved population.
+
+For guarded VISION_EXTRACT calls, the upload slot closes the check-to-write race. No gate-order deadlock, slot leak, or new retry storm found; waiting deletes block new uploads. Night/catch-up mutex cleanup, FRAME_ID scoring, search notices, NO_MODEL/NO_INDEX distinction, and new logging look correct.
+
+Static review only; Android tests were not run because filesystem access is read-only.

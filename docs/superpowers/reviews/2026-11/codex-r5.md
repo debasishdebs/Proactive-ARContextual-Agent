@@ -1,0 +1,13 @@
+**NOT READY** at `6d3e3244`. Five P2 findings; no P1.
+
+1. **P2 — Stale stop survives confirmation commit.** [AutoStopMachine.kt:122](/Users/<user>/Desktop/rokid/pca-v098/android-companion/phone/src/main/java/com/rokid/context/phone/hub/AutoStopMachine.kt:122): confirmation clears `wakeProbe`, requiring another commit, then stops without re-validation. Reproduced `StopHub` after foreground return and `UserStarted` queued during that commit.
+
+2. **P2 — User start retains the shortened probe timer.** [AutoStopMachine.kt:76](/Users/<user>/Desktop/rokid/pca-v098/android-companion/phone/src/main/java/com/rokid/context/phone/hub/AutoStopMachine.kt:76): `UserStarted` clears the probe flag but preserves synthetic `awaySince`. Reproduced an early stop after the foreground hold expires with a 20-minute setting.
+
+3. **P2 — Failed commits are treated as durable.** [AutoStopStore.kt:59](/Users/<user>/Desktop/rokid/pca-v098/android-companion/phone/src/main/java/com/rokid/context/phone/hub/AutoStopStore.kt:59), [GlassesWatchdog.kt:266](/Users/<user>/Desktop/rokid/pca-v098/android-companion/phone/src/main/java/com/rokid/context/phone/hub/GlassesWatchdog.kt:266): both ignore `commit()` returning false. The actor publishes the snapshot and runs effects despite failed persistence; restart can recover older state.
+
+4. **P2 — Accepted start request prematurely completes the wake.** [AutoStopMachine.kt:166](/Users/<user>/Desktop/rokid/pca-v098/android-companion/phone/src/main/java/com/rokid/context/phone/hub/AutoStopMachine.kt:166): issuing the service request clears auto-stop before service startup succeeds. If foreground entry subsequently fails, cold startup constructs no controller; reloading this snapshot returns `NONE` without scheduling recovery.
+
+5. **P2 — Main-thread disk waits remain.** [ContextApp.kt:29](/Users/<user>/Desktop/rokid/pca-v098/android-companion/phone/src/main/java/com/rokid/context/ContextApp.kt:29) synchronously initializes preference-backed stores. [BackgroundInputs.kt:10](/Users/<user>/Desktop/rokid/pca-v098/android-companion/phone/src/main/java/com/rokid/context/phone/hub/BackgroundInputs.kt:10) also loads preferences synchronously before actor initialization.
+
+**Verified:** exhaustive reducer handling; shared event-based wake claiming; unique-work replacement; release-note line 25 corrected. No additional deadlock or increased-cadence finding. **91/91 targeted tests passed using existing compiled classes**; no fresh build in the read-only environment.
