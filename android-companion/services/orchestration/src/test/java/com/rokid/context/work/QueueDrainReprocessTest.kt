@@ -120,6 +120,19 @@ class QueueDrainReprocessTest {
         assertTrue("Forget B removes the summary derived from it", summaries().isEmpty())
     }
 
+    // codex r18 P1-2: a retry that re-writes the same summary id REPLACES its provenance: a source photo no longer behind it is not kept
+    @Test fun aRetriedSummaryReplacesItsProvenance() {
+        sourceCarrying("rokid_mem_mb_0", cites = "B", carries = "B")
+        val job = enqueue(QueuePayloads.reprocess("low", listOf("rokid_mem_mb_0")))
+        val summaryId = "rokid_mem_${job.id.takeLast(12)}"
+        // what an earlier attempt of this job left: the same summary id, carrying A (its source has expired since)
+        runBlocking { MemoryGraph.get(ctx).db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity(summaryId, "A", null, "CARRIED"))) }
+        drain()
+        val rows = runBlocking { MemoryGraph.get(ctx).db.frameSourceDao().forMemory(summaryId) }
+        assertTrue("written: $rows", rows.isNotEmpty())
+        assertTrue("the stale CARRIED A is gone: $rows", rows.none { it.frameId == "A" })
+    }
+
     // codex r16 P1-3: the summary and its provenance commit together, re-fenced: a carried photo forgotten during the call drops the write
     @Test fun aCarriedPhotoForgottenDuringTheCallDropsTheWholeSummary() {
         sourceCarrying("rokid_mem_ma_0", cites = "A", carries = "B")
