@@ -126,6 +126,9 @@ object MemoryExport {
                         w.name("tier").value(m.tier.name).name("confidence").value(m.confidence).name("review").value(m.reviewState.name)
                         w.name("createdAt").value(m.createdAt).name("frameId")
                         if (m.frameId == null) w.nullValue() else w.value(m.frameId)
+                        // Room v16, additive optional fields: written only when known
+                        m.imageDelivered?.let { w.name("imageDelivered").value(it) }
+                        m.reviewFlaggedAt?.let { w.name("reviewFlaggedAt").value(it) }
                         w.endObject()
                     }
                     if (rows.size < page) break

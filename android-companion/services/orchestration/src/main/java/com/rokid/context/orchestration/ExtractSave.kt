@@ -172,6 +172,8 @@ object ExtractSave {
          * one already forgotten at save time rolls the whole save back ([ExtractSaveResult.StaleClaim]).
          */
         carriedOf: (frameIds: List<String>, index: Int?) -> Set<String> = { ids, _ -> output.callGroups.filter { g -> ids.any { it in g } }.flatten().toSet() },
+        /** Room v16: per saved memory (as [carriedOf]), the delivery proof stored as `memory.imageDelivered`. Default: the output's own proof. */
+        deliveredOf: (frameIds: List<String>, index: Int?) -> Boolean = { _, _ -> output.imagesDelivered },
     ): ExtractSaveResult {
         val db = com.rokid.context.memory.MemoryGraph.get(context).db
         // Codex r10: a description (a caption, or anything saved trusted) is never persisted unless the router proved the photos reached the model on the
@@ -202,14 +204,14 @@ object ExtractSave {
                     val ids = f.sourceFrameIds.filter { it in sentFrameIds }.distinct().ifEmpty { sentFrameIds.take(1) }
                     val id = "$idPrefix$i"
                     if (PipelineRecords.appendFact(context, id, ids.firstOrNull(), f.text, f.type, f.tags, f.confidence, tier, reviewState,
-                            generation = generation, fenceFrameIds = ids, createdAt = nowMs)) {
+                            generation = generation, fenceFrameIds = ids, createdAt = nowMs, imageDelivered = deliveredOf(ids, i))) {
                         saved += SavedMemory(id, ids, i)
                     }
                 }
                 output.captions.filter { it.caption.isNotBlank() && it.frameId in sentFrameIds }.distinctBy(FrameCaption::frameId).forEachIndexed { i, c ->
                     val id = "${idPrefix}c$i"
                     if (PipelineRecords.appendFact(context, id, c.frameId, c.caption, "caption", listOf("caption"), 1.0, MemoryTier.LONG, ReviewState.OK,
-                            generation = generation, fenceFrameIds = listOf(c.frameId), createdAt = nowMs)) {
+                            generation = generation, fenceFrameIds = listOf(c.frameId), createdAt = nowMs, imageDelivered = deliveredOf(listOf(c.frameId), null))) {
                         saved += SavedMemory(id, listOf(c.frameId), null)
                     }
                 }

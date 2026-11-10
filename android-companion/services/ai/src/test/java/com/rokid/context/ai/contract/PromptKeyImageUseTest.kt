@@ -73,6 +73,24 @@ class PromptKeyImageUseTest {
         assertEquals("call sites declaring sources without a liveness", emptyList<String>(), unguarded)
     }
 
+    /** Room v16 (user ruling 2026-11-10): every production memory write states its delivery proof (`imageDelivered =`), so no new writer leaves it unknown. */
+    @Test fun everyMemoryWriteDeclaresItsDeliveryProof() {
+        val all = roots + File("../memory/src/main")
+        val missing = mutableListOf<String>()
+        var seen = 0
+        all.filter { it.isDirectory }.flatMap { r -> r.walkTopDown().filter { it.extension == "kt" }.toList() }.forEach { f ->
+            val text = f.readText()
+            Regex("\\b(appendFact|MemoryEntity)\\(").findAll(text).forEach { m ->
+                val before = text.substring(maxOf(0, m.range.first - 12), m.range.first)
+                if (before.endsWith("fun ") || before.endsWith("class ")) return@forEach
+                seen++
+                if (!Regex("\\bimageDelivered\\s*=").containsMatchIn(callText(text, m.range.last))) missing += "${f.name}:${text.substring(0, m.range.first).count { it == '\n' } + 1}"
+            }
+        }
+        assertTrue("the scan sees the memory writers: $seen", seen >= 8)
+        assertEquals("memory writes without imageDelivered", emptyList<String>(), missing)
+    }
+
     @Test fun everyKeyOfAVisionRoleRequiresItsPhoto() {
         // a key on a VISION role (VISION_EXTRACT, CLUSTER_SUMMARY, INTENT_CLASSIFY, and any new one) has the photo as its input
         for (key in PromptKey.entries.filter { it.role?.requiredCapability == Capability.VISION }) {

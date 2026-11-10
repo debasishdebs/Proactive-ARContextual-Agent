@@ -130,6 +130,8 @@ object PipelineRecords {
         sourceIds: List<String> = emptyList(),
         /** Every frame the fact came from (a batch); any one tombstoned → nothing written. */
         fenceFrameIds: List<String> = listOfNotNull(frameId),
+        /** Room v16: the router's delivery proof for this memory's photo(s): true proved, false text-only/unproved. Every production writer passes it (scan test); null = unknown. */
+        imageDelivered: Boolean? = null,
     ): Boolean {
         val g = graph(context)
         // Review I1: the Delete-all check and the insert share one transaction, and Delete all bumps the generation
@@ -155,7 +157,7 @@ object PipelineRecords {
                 id = id, frameId = frameId, text = oneLine(text).take(260), type = oneLine(type).take(20).ifEmpty { "note" },
                 tags = tags.map { oneLine(it).lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.take(5).joinToString(" "),
                 tier = tier, confidence = confidence.coerceIn(0.0, 1.0), reviewState = reviewState, trusted = false,
-                createdAt = createdAt, derived = derived, searchText = "",
+                createdAt = createdAt, derived = derived, searchText = "", imageDelivered = imageDelivered,
             ),
         )
             if (sources.isNotEmpty()) g.db.forgetDao().insertEdges(sources.map { MemorySourceEntity(id, it) })

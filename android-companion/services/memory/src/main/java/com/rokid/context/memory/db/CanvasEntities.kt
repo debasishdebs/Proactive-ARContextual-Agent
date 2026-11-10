@@ -64,6 +64,8 @@ data class CanvasRunItemEntity(
     val batchId: String?,
     /** Room v6: provider calls made for this item (null = not recorded). */
     val calls: Int? = null,
+    /** Room v16: this item's photo provably reached the model on the call that produced this value (null = not recorded: an older run, or no image call). */
+    val imageDelivered: Boolean? = null,
 )
 
 @Entity(tableName = "canvas_score", primaryKeys = ["runId", "frameId", "nodeId"], indices = [Index("frameId")])

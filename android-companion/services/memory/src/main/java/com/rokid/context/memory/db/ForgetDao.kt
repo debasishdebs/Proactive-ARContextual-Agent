@@ -98,6 +98,22 @@ abstract class ForgetDao {
      */
     @Query("SELECT COUNT(*) FROM frame f JOIN frame_meta m ON m.frameId = f.id WHERE NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) AND " + CITED_NOT_DESCRIBED)
     abstract suspend fun strandedPhotos(): Int
+    // --- Room v16 (user ruling 2026-11-10): suspect descriptions of the old text-only retry, and the user's "Mark for review" -------------------------
+    /**
+     * Pre-fix memories that may describe a photo they never saw: delivery unknown (written before v16), created before the build that ended the text-only
+     * retry ([TEXT_RETRY_FIXED_MS]), not yet marked, and today counted as a photo's description ([SUSPECT]). The database keeps no trace of which calls
+     * fell back to text, so this is every such row, not only the fabricated ones. Newest first.
+     */
+    @Query("SELECT a.id AS id, a.frameId AS frameId, a.type AS type, a.createdAt AS createdAt, a.text AS text FROM memory a WHERE " + SUSPECT + " ORDER BY a.createdAt DESC, a.id LIMIT :limit")
+    abstract suspend fun suspectDescriptions(limit: Int): List<SuspectDescriptionRow>
+    @Query("SELECT COUNT(*) FROM memory a WHERE " + SUSPECT) abstract suspend fun suspectDescriptionCount(): Int
+    /** Marks [ids] (still suspects) for review at [at]; returns how many. Only the flag: no text, photo or provenance changes. */
+    @Query("UPDATE memory SET reviewFlaggedAt = :at WHERE id IN (:ids) AND reviewFlaggedAt IS NULL") abstract suspend fun flagForReview(ids: List<String>, at: Long): Int
+    /** Marks every current suspect at [at]; returns how many. */
+    @Query("UPDATE memory SET reviewFlaggedAt = :at WHERE id IN (SELECT a.id FROM memory a WHERE " + SUSPECT + ")") abstract suspend fun flagAllSuspects(at: Long): Int
+    /** Undo: clears exactly the marks made at [at]. */
+    @Query("UPDATE memory SET reviewFlaggedAt = NULL WHERE reviewFlaggedAt = :at") abstract suspend fun unflag(at: Long): Int
+
     @Query("SELECT * FROM frame WHERE id = :id") abstract suspend fun frame(id: String): FrameEntity?
     @Query("DELETE FROM frame WHERE id = :id") abstract suspend fun deleteFrame(id: String): Int
 
@@ -246,7 +262,14 @@ abstract class ForgetDao {
          * authorise a delete), AND it cites that photo as delivered: `memory.frameId`, or a `frame_source` row of role FACT or CLUSTER_REP (the photos a
          * call actually sent). A CLUSTER_MEMBER link never describes a member photo: the scene summary never saw it. GLOB: `_` is literal.
          */
-        const val DESCRIBES = "a.reviewState = 'OK' AND a.derived = 0 AND a.id NOT GLOB 'rokid_cv_*'"
+        /** The build that ended the text-only retry (commit 4eb149c2, 2026-11-07 21:05:17 UTC): nothing written after it can be a text-retry caption. */
+        const val TEXT_RETRY_FIXED_MS = 1_794_085_517_000L
+        /** [suspectDescriptions]: a pre-fix, delivery-unknown, unmarked memory that [DESCRIBES] a photo through memory.frameId or a FACT/CLUSTER_REP row. */
+        const val SUSPECT = "a.imageDelivered IS NULL AND a.createdAt < 1794085517000 AND a.reviewFlaggedAt IS NULL AND a.reviewState = 'OK' AND a.derived = 0 " +
+            "AND a.id NOT GLOB 'rokid_cv_*' AND (a.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = a.id AND fs.role IN ('FACT','CLUSTER_REP')))"
+        // Room v16 (user ruling 2026-11-10): a memory marked for review, or written without delivery proof (imageDelivered = 0), never describes;
+        // unknown (null, every pre-v16 row) keeps the old behaviour so good old captions do not strand their photos
+        const val DESCRIBES = "a.reviewState = 'OK' AND a.derived = 0 AND a.id NOT GLOB 'rokid_cv_*' AND a.reviewFlaggedAt IS NULL AND COALESCE(a.imageDelivered, 1) = 1"
         const val DESCRIBED_BY_EXTRACTION =
             "(EXISTS (SELECT 1 FROM memory a WHERE a.frameId = f.id AND $DESCRIBES) " +
                 "OR EXISTS (SELECT 1 FROM frame_source fs JOIN memory a ON a.id = fs.memoryId WHERE fs.frameId = f.id AND fs.role IN ('FACT','CLUSTER_REP') AND $DESCRIBES)) "
@@ -269,3 +292,6 @@ abstract class ForgetDao {
                 "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " + NOT_A_REP + NOT_DESCRIBED + ") "
     }
 }
+
+/** One row of the v16 suspect-description list (Diagnostics). */
+data class SuspectDescriptionRow(val id: String, val frameId: String?, val type: String, val createdAt: Long, val text: String)

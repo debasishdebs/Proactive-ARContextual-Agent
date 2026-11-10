@@ -158,7 +158,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
                 MemoryEntity(
                     id = newId, frameId = null, text = text, type = "summary", tags = tags, tier = old.tier, confidence = confidence,
                     reviewState = ReviewState.OK, trusted = false, createdAt = old.createdAt, derived = true, // fix round 1 C1: keeps its retention window
-                    searchText = SearchNormalizer.normalize("$text $tags"),
+                    searchText = SearchNormalizer.normalize("$text $tags"), imageDelivered = false, // a text summary of memories: describes no photo
                 ),
             )
             dao.insertEdges(sources.map { MemorySourceEntity(newId, it.id) })

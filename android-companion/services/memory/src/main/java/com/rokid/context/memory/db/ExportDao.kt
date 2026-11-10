@@ -15,6 +15,9 @@ data class MemoryExportRow(
     val reviewState: ReviewState,
     val createdAt: Long,
     val frameId: String?,
+    /** Room v16, exported as optional fields: delivery proof (null = unknown) and the user's review mark. */
+    val imageDelivered: Boolean? = null,
+    val reviewFlaggedAt: Long? = null,
 )
 
 /** One exported ask row; [rowid] is the keyset cursor for the next page. */
@@ -27,7 +30,7 @@ data class AskExportRow(val rowid: Long, val id: String, val ts: Long, val quest
 @Dao
 interface ExportDao {
     @Query(
-        "SELECT m.rowid AS rowid, m.id, m.text, m.type, m.tags, m.tier, m.confidence, m.reviewState, m.createdAt, m.frameId FROM memory m " +
+        "SELECT m.rowid AS rowid, m.id, m.text, m.type, m.tags, m.tier, m.confidence, m.reviewState, m.createdAt, m.frameId, m.imageDelivered, m.reviewFlaggedAt FROM memory m " +
             "WHERE m.rowid > :after AND m.reviewState = 'OK' " +
             // not an orphan: photo retention deletes the `frame` row but keeps `frame_meta` (its memories are still exported); a Forget-removed frame has neither (one definition, shared with the one-time purge)
             "AND NOT (${MemoryOrphan.SQL}) " +

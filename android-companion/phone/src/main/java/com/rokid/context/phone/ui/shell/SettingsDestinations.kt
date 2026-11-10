@@ -331,6 +331,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
             onOpenLogs = { nav.navigate(Routes.DIAGNOSTICS_LOGS) }, onExport = vm::exportDiagnostics, onPushSettings = vm::pushSettings,
             onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
+            onMarkSuspect = vm::markSuspect, onMarkAllSuspects = vm::markAllSuspects, onUndoMark = vm::undoMark,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
             developerMode = devOn,
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,

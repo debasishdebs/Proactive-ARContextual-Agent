@@ -109,9 +109,10 @@ class LegacyImporter(
 
         fun legacyReviewState(type: String): ReviewState = if (type.equals("review", true)) ReviewState.NEEDS_REVIEW else ReviewState.OK
 
+        // imageDelivered stays unknown (null): a legacy import has no delivery record
         fun toMemory(id: String, type: String, confidence: Double, createdAt: Long, content: String) = MemoryEntity(
             id = id, frameId = null, text = content, type = type, tags = "", tier = legacyTier(type), confidence = confidence,
-            reviewState = legacyReviewState(type), trusted = false, createdAt = createdAt, derived = false, searchText = "",
+            reviewState = legacyReviewState(type), trusted = false, createdAt = createdAt, derived = false, searchText = "", imageDelivered = null,
         )
     }
 }
