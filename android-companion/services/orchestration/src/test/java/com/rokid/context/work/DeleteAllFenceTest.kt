@@ -60,11 +60,23 @@ class DeleteAllFenceTest {
 
     @After fun tearDown() {
         runBlocking { wipes.forEach { runCatching { kotlinx.coroutines.withTimeout(40_000) { it.await() } } } }
+        quiesce()
         QueueRuntimeStore.clearAll(ctx); AppConfigStore.setPipelineEnabled(ctx, true)
         AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null)
     }
 
     private fun drain() = runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() }
+
+    /**
+     * A wipe resumes the pipeline, and the workers it starts (frame ingest of f1, queue drain) run on their own coroutines: one can still be inside a model call,
+     * holding the upload slot, when the test goes on or the next test asks for a Delete all. If its reply is a wiping lambda, that Delete all waits on the slot
+     * the worker itself holds, for the whole 30 s, and the next test's Delete all times out with UploadInProgress. Cancel the workers, then wait until the
+     * process gate is idle (a Delete all on it gets in only when no upload runs), so none outlives the step.
+     */
+    private fun quiesce() {
+        WorkManager.getInstance(ctx).cancelAllWork().result.get()
+        runBlocking { repeat(3) { if (runCatching { com.rokid.context.orchestration.DataOpGate.shared.delete { } }.isSuccess) return@runBlocking } }
+    }
 
     /**
      * Codex r13 P2-5: a photo/memory call holds the upload slot, so a Delete all started from inside the provider would wait on that same call. The wipe
@@ -107,10 +119,15 @@ class DeleteAllFenceTest {
         assertEquals("no summary written across the wipe", listOf("rokid_mem_m_0"), memories().map { it.id })
         MemoryWipe.deleteAll(ctx)
         assertTrue(memories().isEmpty())
+        quiesce() // the wipe resumed the pipeline: no background worker may call the wiping reply below from inside its own upload slot
 
         QueueRuntimeStore.enqueue(ctx, QueuePriority.EXPLICIT_WRITE, QueuePayloads.explicitWrite("remember my keys are on the shelf", "en", manual = true), personaSnapshot = "p")
-        reply = { MemoryWipe.deleteAll(ctx); """{"facts":[{"text":"Keys on the shelf","type":"note","confidence":0.9,"tags":[]}]}""" }
+        // this call holds the upload slot too: the wipe runs in its own coroutine (a Delete all called inside the reply would wait 30 s on the very slot it
+        // is called from, then give up with UploadInProgress, and the test would pass without any wipe)
+        val beforeWrite = MemoryWipe.generation.get()
+        reply = { wipeWhileInFlight(); """{"facts":[{"text":"Keys on the shelf","type":"note","confidence":0.9,"tags":[]}]}""" }
         drain()
+        awaitWipe(beforeWrite)
         assertTrue(memories().isEmpty())
     }
 
