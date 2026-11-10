@@ -22,6 +22,8 @@ import com.rokid.context.phone.ui.banner.BannerResolver
 import com.rokid.context.phone.ui.status.StatusUi
 import org.junit.Assert.assertEquals
 import org.junit.Rule
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -30,6 +32,9 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], application = Application::class)
 class HomeScreenTest {
     @get:Rule val compose = createComposeRule()
+    private val graphCtx = ApplicationProvider.getApplicationContext<Context>()
+    @org.junit.Before fun freshGraph() { com.rokid.context.phone.ui.TestGraph.fresh(graphCtx) }
+    @org.junit.After fun closeGraph() { com.rokid.context.phone.ui.TestGraph.close(graphCtx) }
     private val asked = mutableListOf<String>()
     private val opened = mutableListOf<String>()
     private var pauses = 0

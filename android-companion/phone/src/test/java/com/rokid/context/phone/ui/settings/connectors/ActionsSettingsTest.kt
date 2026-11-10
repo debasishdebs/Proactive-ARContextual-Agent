@@ -30,6 +30,9 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], application = Application::class)
 class ActionsSettingsTest {
     @get:Rule val compose = createComposeRule()
+    private val graphCtx = ApplicationProvider.getApplicationContext<Context>()
+    @org.junit.Before fun freshGraph() { com.rokid.context.phone.ui.TestGraph.fresh(graphCtx) }
+    @org.junit.After fun closeGraph() { com.rokid.context.phone.ui.TestGraph.close(graphCtx) }
     private val store = ActionSettingsStore(
         ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("t_actions_ui", Context.MODE_PRIVATE).also { it.edit().clear().commit() },
     )
