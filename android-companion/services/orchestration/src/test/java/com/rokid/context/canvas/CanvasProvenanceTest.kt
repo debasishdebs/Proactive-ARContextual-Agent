@@ -35,6 +35,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -227,6 +228,39 @@ class CanvasProvenanceTest {
         assertTrue(texts().toString(), texts().any { "SUMMARY-A" in it })
         assertTrue(com.rokid.context.orchestration.forget.ForgetActions.forgetMoment(app, "B"))
         assertTrue("the A summary derived from B is gone after Forget B: ${texts()}", texts().none { "SUMMARY-A" in it })
+    }
+
+    // codex r16 P1-1: carried provenance is per saved memory. Vision(batch=1) over unrelated A and B, save, Forget B: A's memory and A's photo survive
+    @Test fun anUnrelatedPhotosForgetLeavesTheOtherSavedMemoryAndItsPhoto() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        for ((id, ts) in listOf("A" to 1L, "B" to 2L)) {
+            val f = java.io.File(app.filesDir, "rokid_archive/u$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            com.rokid.context.orchestration.PipelineRecords.appendFrame(app, FrameEntity(id, ts, f.absolutePath, "rokid_glasses", "frame"))
+        }
+        val ai = TestAi.graph(app) { "{}" }.also { TestAi.bindAll(it) }
+        val vision = exec(NodeTypes.VISION_EXTRACT, 1) { items -> items.map { NodeResult(it.frameId, CanvasValue.Extraction(listOf(Fact("ONLY-${it.frameId}", "object", 0.95, emptyList(), listOf(it.frameId))), emptyList())) } }
+        val runner = CanvasRunner(
+            db.canvasDao(), { f -> PhotoLoad(f.map(::photo), emptySet()) },
+            mapOf(NodeTypes.VISION_EXTRACT to vision, NodeTypes.LOCAL_CRITIC to LocalCriticExecutor, NodeTypes.MEMORY_WRITE to MemoryWritePreviewExecutor),
+            { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
+            ConfirmTokens({ now }), { false }, { now }, { "run${++ids}" }, { 0L },
+        )
+        val p = Pipeline(2, "pu", "P", listOf(
+            PipelineNode("photos", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap())),
+            PipelineNode("ext", NodeTypes.VISION_EXTRACT, "ext", buildJsonObject { put("batch", 1); put("prompt", buildJsonObject { put("source", "live") }) }),
+            PipelineNode("trust", NodeTypes.LOCAL_CRITIC, "Confidence check", JsonObject(emptyMap())),
+            PipelineNode("write", NodeTypes.MEMORY_WRITE, "Save memory", JsonObject(emptyMap())),
+        ), listOf(PipelineEdge("photos", "ext"), PipelineEdge("ext", "trust"), PipelineEdge("trust", "write", "trusted"), PipelineEdge("trust", "write", "unsure")))
+        val est = runner.estimate(p, listOf("A", "B"), { n -> ModelLabel(n.id, "az", "gpt") }) as Estimate.Ok
+        val runId = runner.start(p, p.id, null, listOf("A", "B"), est.confirmToken, scope)
+        withTimeout(20_000) { runner.active.first { it == null } }
+        assertTrue(CanvasRunSave(app, db, afterSave = { _, _ -> }).save(runId) is CanvasRunSave.Result.Saved)
+        val r = com.rokid.context.orchestration.forget.ForgetActions.forgetMomentOutcome(app, "B")
+        assertTrue(r.committed)
+        val texts = MemoryGraph.get(app).memories.all().map { it.text }
+        assertTrue("A's own memory survives Forget B: $texts", texts.any { "ONLY-A" in it } && texts.none { "ONLY-B" in it })
+        assertNotNull("A's photo survives", db.forgetDao().frame("A"))
+        assertTrue("A is never tombstoned", db.forgetDao().tombstoned(listOf("A")).isEmpty())
     }
 
     // ---- codex r14/r15 RULE A property, through the REAL CanvasRunner and PipelineInterpreter: every built-in executor over 3 photos (batches of 2+ where

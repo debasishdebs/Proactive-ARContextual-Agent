@@ -118,7 +118,8 @@ object ExtractSave {
             }
         }
         return ExtractedBatch(
-            ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = current, imagesDelivered = parts.all { it.output.imagesDelivered }),
+            ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = current, imagesDelivered = parts.all { it.output.imagesDelivered },
+                callGroups = parts.flatMap { it.output.callGroups }),
             parts.last().promptVersion,
             attempts.toList(),
         )
@@ -134,7 +135,8 @@ object ExtractSave {
                 images = photos.map { it.image.copy(ref = it.frameId) }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass,
                 override = override, liveness = liveness, sources = com.rokid.context.model.PayloadSources.frames(photos.map { it.frameId }) + contextProvenance),
         )
-        return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered), r.promptVersion, usageOf(r.replies))
+        return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered, callGroups = listOf(photos.map { it.frameId }.toSet() + contextProvenance.frameIds)),
+            r.promptVersion, usageOf(r.replies))
     }
 
     /**
@@ -151,11 +153,12 @@ object ExtractSave {
         /** Runs inside the save transaction after the memories and their provenance are written (describe-on-demand moves the photo's state here, S4); a throw rolls everything back. */
         inTransaction: (suspend (saved: List<SavedMemory>) -> Unit)? = null,
         /**
-         * Codex r15: every photo the output may be derived from (default: all [sentFrameIds], i.e. every photo of the calls that produced it: a caption
-         * of A in a batch with B may carry a B detail). Each saved memory is linked to all of them (`frame_source` role [CARRIED], never a description),
-         * so a later Forget of any of them removes it; one already forgotten at save time rolls the whole save back ([ExtractSaveResult.StaleClaim]).
+         * Codex r15/r16: PER SAVED MEMORY (its cited photos, its fact index or null for a caption), the photos it may be DERIVED from. Default: every photo
+         * of each model call ([ExtractOutput.callGroups]) that saw one of its photos (a caption of A in a batch with B may carry a B detail). Each memory
+         * is linked to its own set (`frame_source` role [CARRIED], never a description), so a later Forget of one of them invalidates that memory only;
+         * one already forgotten at save time rolls the whole save back ([ExtractSaveResult.StaleClaim]).
          */
-        carriedFrames: Set<String> = sentFrameIds,
+        carriedOf: (frameIds: List<String>, index: Int?) -> Set<String> = { ids, _ -> output.callGroups.filter { g -> ids.any { it in g } }.flatten().toSet() },
     ): ExtractSaveResult {
         val db = com.rokid.context.memory.MemoryGraph.get(context).db
         // Codex r10: a description (a caption, or anything saved trusted) is never persisted unless the router proved the photos reached the model on the
@@ -168,7 +171,9 @@ object ExtractSave {
         return try {
             db.withTransaction {
                 if (MemoryWipe.generation.get() != generation) throw Rollback(ExtractSaveResult.Wiped)
-                if (carriedFrames.isNotEmpty() && carriedFrames.toList().chunked(500).any { db.forgetDao().tombstoned(it).isNotEmpty() }) {
+                val allCarried = (facts.mapIndexed { i, f -> carriedOf(f.sourceFrameIds.filter { it in sentFrameIds }.ifEmpty { sentFrameIds.take(1) }, i) } +
+                    output.captions.map { carriedOf(listOf(it.frameId), null) }).flatten().toSet()
+                if (allCarried.isNotEmpty() && allCarried.toList().chunked(500).any { db.forgetDao().tombstoned(it).isNotEmpty() }) {
                     PcLog.i(TAG, "extraction dropped: a source photo was forgotten")
                     throw Rollback(ExtractSaveResult.StaleClaim)
                 }
@@ -199,7 +204,7 @@ object ExtractSave {
                 saved.forEach { db.frameSourceDao().deleteForMemory(it.memoryId) }
                 db.frameSourceDao().insertAll(saved.flatMap { m -> m.frameIds.map { FrameSourceEntity(m.memoryId, it, null, "FACT") } })
                 // codex r15: the full carried union, persisted on the existing provenance table (no schema change)
-                db.frameSourceDao().insertAll(saved.flatMap { m -> (carriedFrames - m.frameIds.toSet()).map { FrameSourceEntity(m.memoryId, it, null, CARRIED) } })
+                db.frameSourceDao().insertAll(saved.flatMap { m -> (carriedOf(m.frameIds, m.index) - m.frameIds.toSet()).map { FrameSourceEntity(m.memoryId, it, null, CARRIED) } })
                 inTransaction?.invoke(saved)
                 ExtractSaveResult.Saved(saved)
             }

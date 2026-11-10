@@ -199,7 +199,7 @@ abstract class FrameStateDao {
     /** Photos described by the night job so far that a memory still cites (the night job logs the difference before and after its drain). */
     @Query(
         "SELECT COUNT(*) FROM frame_state s WHERE s.state = 'EXTRACTED' AND s.lastError = 'describe_before_delete' AND " +
-            "(EXISTS (SELECT 1 FROM memory m WHERE m.frameId = s.frameId) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = s.frameId))",
+            "(EXISTS (SELECT 1 FROM memory m WHERE m.frameId = s.frameId) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = s.frameId AND fs.role != 'CARRIED'))",
     )
     abstract suspend fun describedCount(): Int
 
@@ -212,7 +212,7 @@ abstract class FrameStateDao {
         "UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
             "WHERE frameId IN (:frameIds) AND state IN ('EXTRACTED','FAILED','FAILED_FINAL') " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId AND fs.role != 'CARRIED') " +
             "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId)",
     )
     abstract suspend fun resetForReprocess(frameIds: List<String>, nowMs: Long): Int
@@ -386,7 +386,8 @@ interface FrameMetaDao {
 interface FrameSourceDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertAll(rows: List<FrameSourceEntity>)
     @Query("SELECT * FROM frame_source WHERE memoryId = :memoryId") suspend fun forMemory(memoryId: String): List<FrameSourceEntity>
-    @Query("SELECT memoryId FROM frame_source WHERE frameId = :frameId") suspend fun memoriesForFrame(frameId: String): List<String>
+    /** Citing memories of [frameId] (CARRIED excluded, codex r16: a batch mate is not this photo's content). */
+    @Query("SELECT memoryId FROM frame_source WHERE frameId = :frameId AND role != 'CARRIED'") suspend fun memoriesForFrame(frameId: String): List<String>
     @Query("DELETE FROM frame_source WHERE memoryId = :memoryId") suspend fun deleteForMemory(memoryId: String): Int
     @Query("DELETE FROM frame_source WHERE memoryId IN (:memoryIds)") suspend fun deleteForMemories(memoryIds: List<String>): Int
     @Query("DELETE FROM frame_source WHERE frameId IN (:frameIds)") suspend fun deleteForFrames(frameIds: List<String>): Int
@@ -582,7 +583,7 @@ interface FrameAdoptionDao {
             "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = f.id) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " +
             "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = f.id) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id) ORDER BY f.id LIMIT :limit",
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id AND fs.role != 'CARRIED') ORDER BY f.id LIMIT :limit",
     )
     suspend fun awaiting(after: String, limit: Int): List<AwaitingFrame>
 
@@ -591,7 +592,7 @@ interface FrameAdoptionDao {
         "SELECT f.id FROM frame f WHERE f.source LIKE 'rokid%' AND f.id > :after " +
             "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = f.id) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " +
-            "AND (EXISTS (SELECT 1 FROM memory m WHERE m.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id)) " +
+            "AND (EXISTS (SELECT 1 FROM memory m WHERE m.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id AND fs.role != 'CARRIED')) " +
             "ORDER BY f.id LIMIT :limit",
     )
     suspend fun extracted(after: String, limit: Int): List<String>

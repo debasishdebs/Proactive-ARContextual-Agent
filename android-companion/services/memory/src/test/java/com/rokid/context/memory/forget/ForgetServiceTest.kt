@@ -23,6 +23,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -328,6 +329,33 @@ class ForgetServiceTest {
     // codex r11: only an OK, non-derived, non-canvas description makes a photo deletable; a canvas save or a fact awaiting review never does
     private suspend fun cite(memoryId: String, frameId: String, role: String = "FACT") =
         db.frameSourceDao().insertAll(listOf(FrameSourceEntity(memoryId, frameId, null, role)))
+
+    // codex r16 P1-1: a memory removed because a CARRIED photo was forgotten is a provenance invalidation: the memory goes, the photo it cites stays
+    @Test fun forgettingACarriedPhotoNeverDeletesThePhotoTheMemoryCites() = runBlocking {
+        keyframe("A", state = "EXTRACTED"); keyframe("B", state = "EXTRACTED")
+        mem("rokid_kf_k1_c0", frameId = "A"); cite("rokid_kf_k1_c0", "A"); cite("rokid_kf_k1_c0", "B", "CARRIED")
+        mem("rokid_kf_k2_c0", frameId = "B"); cite("rokid_kf_k2_c0", "B")
+        val r = service.forgetMoment("B")
+        assertTrue("A's memory derived from B is invalidated", db.memoryDao().all().none { it.id == "rokid_kf_k1_c0" })
+        assertTrue("A is never in the deletion set: ${r.framesToDelete}", r.framesToDelete.none { "/A." in it })
+        assertNotNull("A's photo survives", db.forgetDao().frame("A"))
+        assertTrue("A is never tombstoned", db.forgetDao().tombstoned(listOf("A")).isEmpty())
+        assertNull(db.forgetDao().frame("B"))
+    }
+
+    // codex r16 P1-4: a CARRIED row is never content of the carried photo (no fabricated B Moment, no B live memory)
+    @Test fun contentReadersNeverShowACarriedMemoryAsThePhotosContent() = runBlocking {
+        keyframe("A", state = "EXTRACTED"); keyframe("B", state = "EXTRACTED")
+        mem("rokid_kf_k1_0", frameId = "A", text = "Visited the bank"); cite("rokid_kf_k1_0", "A"); cite("rokid_kf_k1_0", "B", "CARRIED")
+        val canvas = db.canvasDao()
+        assertTrue(canvas.momentMemories(listOf("B")).isEmpty())
+        assertTrue(canvas.momentVisibleTexts(listOf("B")).isEmpty())
+        assertTrue(canvas.liveMemories("B").isEmpty())
+        assertTrue(db.forgetDao().memoryIdsOfFrame("B").isEmpty())
+        assertEquals(listOf("rokid_kf_k1_0"), db.forgetDao().carriedMemoryIdsOfFrame("B"))
+        assertEquals(listOf("Visited the bank"), canvas.momentVisibleTexts(listOf("A")).map { it.text })
+        assertTrue(db.frameSourceDao().memoriesForFrame("B").isEmpty())
+    }
 
     // codex r13 P1-3: the describe-before-delete grace counts from the first DESCRIBING memory, never from an older excluded citation
     @Test fun graceCountsFromTheFirstQualifyingDescription() = runBlocking {

@@ -142,7 +142,8 @@ class PipelineInterpreter(
         }
         // codex r10: delivered only when every call behind the batch proved it (a loose value carries no proof)
         val delivered = loose.isEmpty() && callOrder.isNotEmpty() && callOrder.all { it.output.imagesDelivered }
-        val batch = ExtractedBatch(ExtractOutput(facts.values.toList(), captions = captions.values.toList(), provenance = provenance, imagesDelivered = delivered), 0)
+        val batch = ExtractedBatch(ExtractOutput(facts.values.toList(), captions = captions.values.toList(), provenance = provenance, imagesDelivered = delivered,
+            callGroups = callOrder.flatMap { it.output.callGroups } + listOf(photos.map { it.frameId }.toSet()).takeIf { loose.isNotEmpty() }.orEmpty()), 0)
         return Outcome.Extracted(batch, traces + batchRows(null), labels)
     }
 

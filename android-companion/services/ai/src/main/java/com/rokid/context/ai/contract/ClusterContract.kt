@@ -29,6 +29,8 @@ data class ClusterResult(val clusterId: String, val summary: String, val facts: 
 data class ClusterOutput(
     val clusters: List<ClusterResult>, val captions: List<FrameCaption>, override val extras: JsonObject = JsonObject(emptyMap()),
     val imagesDelivered: Boolean = false,
+    /** Codex r16, in memory only: the representatives of each model call behind this output (one set per call). */
+    val callGroups: List<Set<String>> = emptyList(),
 ) : ContractOutput
 
 /** The cluster-batch call (spec wave 2 §P4.1): ≤ 3 clusters and ≤ 6 photos per call, ids checked per cluster. */
@@ -83,7 +85,8 @@ object ClusterContract {
         val captions = mutableListOf<FrameCaption>()
         var invalid: ModelCallException? = null
         var delivered = true
-        fun keep(o: ClusterOutput) { results += o.clusters; captions += o.captions; delivered = delivered && o.imagesDelivered }
+        val callGroups = mutableListOf<Set<String>>()
+        fun keep(o: ClusterOutput) { results += o.clusters; captions += o.captions; delivered = delivered && o.imagesDelivered; callGroups += o.callGroups }
         for (batch in batches) {
             val first = attempt(runner, batch, callClass, override, current, liveness)
             if (first.out != null) { keep(first.out); continue }
@@ -96,7 +99,7 @@ object ClusterContract {
             }
         }
         if (results.isEmpty()) throw invalid ?: ModelCallException("CLUSTER_SUMMARY reply was invalid", retryable = true, kind = FailureKind.INVALID_OUTPUT)
-        return ClusterOutput(results, captions, imagesDelivered = delivered)
+        return ClusterOutput(results, captions, imagesDelivered = delivered, callGroups = callGroups)
     }
 
     private class Attempt(val out: ClusterOutput?, val error: ModelCallException?)
@@ -130,7 +133,7 @@ object ClusterContract {
             if (e.kind != FailureKind.INVALID_OUTPUT) throw e
             return Attempt(null, e)
         }
-        val out = (if (current) raw else legacy(raw, sent.entries.single()))?.copy(imagesDelivered = delivered)
+        val out = (if (current) raw else legacy(raw, sent.entries.single()))?.copy(imagesDelivered = delivered, callGroups = listOf(flat.map { it.frameId }.toSet()))
         if (out == null || !validate(out, sent, captionsRequired = current)) {
             return Attempt(null, ModelCallException("CLUSTER_SUMMARY reply failed the provenance check", retryable = true, kind = FailureKind.INVALID_OUTPUT))
         }

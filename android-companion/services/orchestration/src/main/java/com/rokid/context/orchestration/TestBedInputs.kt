@@ -35,7 +35,7 @@ class TestBedInputs(
     suspend fun recentFrames(limit: Int = 12): List<FrameEntity> = memory.frames.recent(limit)
 
     suspend fun prepare(key: PromptKey, input: TestInput): Prepared =
-        prepareVars(key, input).also { if (it.images.isNotEmpty() || !it.sources.isEmpty) it.liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory) }
+        prepareVars(key, input).also { if (it.images.isNotEmpty() || it.sources != PayloadSources.NONE) it.liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory) }
 
     private suspend fun prepareVars(key: PromptKey, input: TestInput): Prepared {
         val text = when (input) { is TestInput.Text -> input.text; is TestInput.Question -> input.text; is TestInput.Frame -> "" }
@@ -77,7 +77,7 @@ class TestBedInputs(
                 val frame = frameFor(input)
                 val facts = PromptComposer.dataBlock("facts", text.lines().filter { it.isNotBlank() })
                 Prepared(PromptVars(recentContext = facts + "\n" + PromptComposer.dataBlock("source", listOfNotNull(frame?.let(::frameLine)))), emptyList(), emptySet(),
-                    PayloadSources.frames(listOfNotNull(frame?.id)))
+                    frame?.let { PayloadSources.frames(listOf(it.id)) } ?: PayloadSources.NONE) // typed facts with no frame: the editor's own text, not stored
             }
         }
     }

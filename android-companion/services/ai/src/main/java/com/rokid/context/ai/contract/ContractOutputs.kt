@@ -29,6 +29,8 @@ data class ExtractOutput(
     val facts: List<Fact>, override val extras: JsonObject = JsonObject(emptyMap()),
     val captions: List<FrameCaption> = emptyList(), val provenance: Boolean = false,
     val imagesDelivered: Boolean = false,
+    /** Codex r16, in memory only: the photos of each model call behind this output (one set per call); a memory is derived from the calls that saw its photos. */
+    val callGroups: List<Set<String>> = emptyList(),
 ) : ContractOutput
 /** An INTENT_CLASSIFY result: [label] (unknown names are OTHER) and [confidence] clamped to 0..1. */
 data class IntentOutput(val label: com.rokid.context.core.model.context.IntentLabel, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput

@@ -27,6 +27,7 @@ import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.data.runtime.StalePayloadException
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
+import androidx.room.withTransaction
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
@@ -265,7 +266,7 @@ class QueueDrainWorker(
             applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = provenance, imagesDelivered = delivered), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
             tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
             // codex r15: one call per photo here, so each memory derives from the one photo its FACT row already cites: nothing else is carried
-            carriedFrames = emptySet(),
+            carriedOf = { _, _ -> emptySet() },
         )
         // no delivery proof: nothing was written; a retryable failure keeps the job (and its photos) queued with backoff
         if (saved == ExtractSaveResult.Undelivered) throw com.rokid.context.ai.ModelCallException("photos not delivered", retryable = true)
@@ -307,15 +308,23 @@ class QueueDrainWorker(
         } catch (f: com.rokid.context.ai.PhotoForgottenException) {
             throw StalePayloadException()
         }
-        // Final review I1: fenced on every frame whose photo was sent (any one forgotten during the call → nothing written).
-        val written = PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}", null, out.summary, "summary", out.entities,
-            out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
-            generation = generation, derived = true, sourceIds = sources.map { it.id }, fenceFrameIds = frames.map { it.id })
+        // Codex r16: the summary and ALL its provenance are written in ONE fenced transaction. Its carried photos are the reloaded frames plus every photo
+        // its source memories cite or carry (read here, under the fence: a source memory's own CARRIED batch mate is inherited); a wipe since the job
+        // began, a forgotten source memory or any forgotten photo of that union drops the write.
+        val summaryId = "rokid_mem_${job.id.takeLast(12)}"
+        val mdb = MemoryGraph.get(applicationContext).db
+        val written = mdb.withTransaction {
+            if (com.rokid.context.orchestration.MemoryWipe.generation.get() != generation) return@withTransaction false
+            val srcIds = sources.map { it.id }
+            val union = (frames.map { it.id } + mdb.forgetDao().memories(srcIds).mapNotNull { it.frameId } + srcIds.flatMap { id -> mdb.frameSourceDao().forMemory(id).map { it.frameId } }).toSet()
+            if (union.toList().chunked(500).any { mdb.forgetDao().tombstoned(it).isNotEmpty() }) return@withTransaction false
+            val ok = PipelineRecords.appendFact(applicationContext, summaryId, null, out.summary, "summary", out.entities,
+                out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
+                generation = generation, derived = true, sourceIds = srcIds, fenceFrameIds = union.toList())
+            if (ok) mdb.frameSourceDao().insertAll(union.map { com.rokid.context.memory.db.FrameSourceEntity(summaryId, it, null, ExtractSave.CARRIED) })
+            ok
+        }
         if (!written) return
-        // codex r15: the photos the summary saw are its carried provenance (not a description): a later Forget of any of them removes it
-        MemoryGraph.get(applicationContext).db.frameSourceDao().insertAll(frames.map {
-            com.rokid.context.memory.db.FrameSourceEntity("rokid_mem_${job.id.takeLast(12)}", it.id, null, ExtractSave.CARRIED)
-        })
         EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
         if (QueuePayloads.bool(payload, "nudge", true)) com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)

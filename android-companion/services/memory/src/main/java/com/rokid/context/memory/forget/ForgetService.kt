@@ -40,6 +40,9 @@ class ForgetService(
         val expiredFrames: Int = 0,
     ) {
         companion object { val EMPTY = Result(emptySet(), emptySet(), 0, 0, emptyList()) }
+        /** Codex r16: two results of one transaction (a photo's Forget and the CARRIED invalidation it triggers). The invalidation never adds a frame to delete. */
+        internal fun with(o: Result) = Result(forgotten + o.forgotten, invalidated + o.invalidated, redactedAsks + o.redactedAsks, redactedNudges + o.redactedNudges,
+            (framesToDelete + o.framesToDelete).distinct(), (redactedProposals + o.redactedProposals).distinct(), expiredFrames + o.expiredFrames)
     }
 
     private val dao = db.forgetDao()
@@ -58,11 +61,15 @@ class ForgetService(
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
+        // codex r16: memories only DERIVED from this photo (CARRIED, e.g. a batch mate's caption) are a provenance invalidation: their text, vectors, edges and
+        // descendants go and what cites them is redacted, but the photos THEY cite are never locked, tombstoned or deleted
+        val carried = dao.carriedMemoryIdsOfFrame(frameId) - ids.toSet()
+        val invalidatedCarried = if (carried.isEmpty()) Result.EMPTY else cascade(carried, lockFrames = false, provenanceOnly = true, queueOutbox = false)
         if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
             // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan canvas rows (safer default). No frame_source row
             // can exist here: memoryIdsOfFrame already lists them, so an orphan one takes the main path below.
             dropCanvasOutputs(listOf(frameId), null, radiusCascade)
-            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded)
+            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded).with(invalidatedCarried)
         }
         val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded)
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
@@ -71,7 +78,7 @@ class ForgetService(
         val spans = dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts), radiusCascade)
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
-        val out = r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct())
+        val out = r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct()).with(invalidatedCarried)
         if (queueOutbox) queueCleanup(out.framesToDelete, wire, spans, phoneFilesOnly) // same transaction as the delete
         out
     }
@@ -136,7 +143,8 @@ class ForgetService(
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null): Result {
+    /** [provenanceOnly] (codex r16): the memories go but no photo is touched (no lock, no tombstone, no file or Moment of their photos): a CARRIED invalidation. */
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
@@ -144,7 +152,7 @@ class ForgetService(
         val citedFrames = (found.mapNotNull { it.frameId } + forgotten.toList().chunked(CHUNK).flatMap { dao.sourceFramesOf(it) }).distinct()
         // Retention expiry of a memory ([keepKeyframes]) never owns a keyframe (a frame with frame_meta): no tombstone, no JPEG or vector
         // delete. Photos live and die by the photo rules (expirePhotos). Legacy frames and the user's Forget keep the full cascade.
-        val frames = if (keepKeyframes) citedFrames - citedFrames.chunked(CHUNK).flatMap { dao.keyframeIds(it) }.toSet() else citedFrames
+        val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) citedFrames - citedFrames.chunked(CHUNK).flatMap { dao.keyframeIds(it) }.toSet() else citedFrames
         // 1. Closure, before any edge goes.
         val invalidated = if (!invalidateDescendants) emptySet() else forgotten.chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() - forgotten
         val f = forgotten.toList()

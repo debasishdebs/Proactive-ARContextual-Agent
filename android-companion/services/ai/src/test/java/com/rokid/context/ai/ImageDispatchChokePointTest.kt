@@ -126,6 +126,13 @@ class ImageDispatchChokePointTest {
         assertEquals("send:t:0", events.last())
     }
 
+    // codex r16 P2-5: only an explicit NONE is source-free; the id helpers over empty sets still declare stored content (a note text with no ids)
+    @Test fun theIdHelpersNeverCollapseToNone() {
+        for (s in listOf(com.rokid.context.model.PayloadSources.memories(emptySet()), com.rokid.context.model.PayloadSources.frames(emptyList()), com.rokid.context.model.PayloadSources()))
+            assertTrue("$s is stored content", s.stored && s != com.rokid.context.model.PayloadSources.NONE)
+        assertFalse(com.rokid.context.model.PayloadSources.NONE.stored)
+    }
+
     @Test fun aPhotoWithoutRefOrLivenessIsRefusedUnsent() = runTest {
         ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.ANSWER, "v", "m")).getOrThrow()
         assertTrue(err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q", img) } } is ImagesUnguardedException)

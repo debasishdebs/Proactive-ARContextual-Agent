@@ -82,7 +82,8 @@ class RoleRunner(
         // Codex r10: photos only where the key declares them, and a photo-requiring key never runs without its photos.
         if (call.images.isNotEmpty() && call.key.imageUse == ImageUse.NONE) throw ImagesUnguardedException()
         if (call.key.requiresImage && call.images.isEmpty()) throw ImagesUnsupportedException()
-        val sources = call.sources + com.rokid.context.model.PayloadSources.frames(call.images.mapNotNull { it.ref })
+        val refs = call.images.mapNotNull { it.ref }
+        val sources = if (refs.isEmpty()) call.sources else call.sources + com.rokid.context.model.PayloadSources.frames(refs)
         val draft = call.override
         val active = if (draft == null) prompts.active(call.key) else null
         val template = draft?.template ?: active!!.template

@@ -115,7 +115,7 @@ abstract class MomentDao : DerivedStaleDao() {
     /** Photos retention already expired (no `frame` row) still have their capture time on `frame_meta`. */
     @Query("SELECT frameId FROM frame_meta WHERE capturedAtMs IS NOT NULL AND capturedAtMs >= :fromMs AND capturedAtMs <= :toMs") abstract suspend fun metaFrameIdsBetween(fromMs: Long, toMs: Long): List<String>
     @Query("SELECT id FROM memory WHERE createdAt >= :fromMs AND createdAt <= :toMs") abstract suspend fun memoryIdsCreatedBetween(fromMs: Long, toMs: Long): List<String>
-    @Query("SELECT id FROM memory WHERE frameId IN (:frameIds) UNION SELECT memoryId FROM frame_source WHERE frameId IN (:frameIds)") abstract suspend fun memoryIdsOfFrames(frameIds: List<String>): List<String>
+    @Query("SELECT id FROM memory WHERE frameId IN (:frameIds) UNION SELECT memoryId FROM frame_source WHERE frameId IN (:frameIds) AND role != 'CARRIED'") abstract suspend fun memoryIdsOfFrames(frameIds: List<String>): List<String>
     @Query("SELECT frameId, wireFrameId FROM frame_meta WHERE frameId IN (:frameIds) AND wireFrameId IS NOT NULL") abstract suspend fun wireIds(frameIds: List<String>): List<WireIdRow>
     /** Every time a photo is known by: the capture time of `frame_meta` (survives retention's frame expiry) and the row time of `frame`. A photo may have either or both. */
     @Query("SELECT frameId, capturedAtMs AS ms FROM frame_meta WHERE frameId IN (:frameIds) AND capturedAtMs IS NOT NULL UNION ALL SELECT id AS frameId, ts AS ms FROM frame WHERE id IN (:frameIds)")

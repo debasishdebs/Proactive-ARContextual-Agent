@@ -208,7 +208,7 @@ abstract class EmbeddingDao {
     @Query(
         "SELECT COUNT(DISTINCT v.frameId) FROM frame_vector v WHERE v.spaceId = :spaceId AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = v.frameId) AND (" +
             "EXISTS (SELECT 1 FROM memory m WHERE m.frameId = v.frameId AND m.reviewState != 'INVALIDATED') OR " +
-            "EXISTS (SELECT 1 FROM frame_source s JOIN memory m ON m.id = s.memoryId WHERE s.frameId = v.frameId AND m.reviewState != 'INVALIDATED') OR " +
+            "EXISTS (SELECT 1 FROM frame_source s JOIN memory m ON m.id = s.memoryId WHERE s.frameId = v.frameId AND s.role != 'CARRIED' AND m.reviewState != 'INVALIDATED') OR " +
             "EXISTS (SELECT 1 FROM frame_meta fm JOIN frame_cluster c ON c.clusterId = fm.clusterId JOIN memory m ON m.id = c.memoryId " +
             "WHERE fm.frameId = v.frameId AND m.reviewState != 'INVALIDATED'))",
     )
