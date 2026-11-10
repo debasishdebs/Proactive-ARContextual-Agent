@@ -62,7 +62,7 @@ class WiringEndToEndTest {
     private val link = FakeGlassesLink()
     private val install = "inst-1"
     private val prefs = ctx.getSharedPreferences("wiring_e2e_plan", 0).also { it.edit().clear().commit() }
-    private val phoneRt = ArrayList<String?>()
+    private val phoneRt: MutableList<String?> = java.util.Collections.synchronizedList(ArrayList())  // written on the hub's scope, read by the test
     init { DirSync.testOverride = DirSync { true } }
     @After fun close() { scope.cancel(); DirSync.testOverride = null; PlanGraph.installForTests(null); AiGraph.resetForTests(null); MarkGraph.resetForTests(); db.close(); MemoryGraph.resetForTests(null); prefs.edit().clear().commit() }
 
@@ -153,6 +153,8 @@ class WiringEndToEndTest {
         link.emit(GlassesEvent.PlanAckReceived(CapturePlanAck(gen = m.gen, publishId = "7", mode = PlanMode.TRIAL, effectiveHash = "h1", state = PlanAckState.EFFECTIVE, phoneInstall = install, sessionStartMs = m.sessionStartMs)))
         until { db.canvasSlice3Dao().groupState("g1")!!.state == "EFFECTIVE" }
         assertEquals(PlanAckState.EFFECTIVE, sender.lastAck.value!!.state)
+        // the groups write EFFECTIVE and then activate, on the hub's scope: wait for the activation rather than race it
+        until { phoneRt.contains("{}") }
         assertTrue("phone RT activated after EFFECTIVE", phoneRt.contains("{}"))
         // the trial ends on the glasses: REVERTED is final for the group and the gen is NOT sent again next session
         link.emit(GlassesEvent.PlanAckReceived(CapturePlanAck(gen = m.gen, publishId = "7", mode = PlanMode.TRIAL, state = PlanAckState.REVERTED, reason = "auto:trial_end", phoneInstall = install, sessionStartMs = m.sessionStartMs)))
