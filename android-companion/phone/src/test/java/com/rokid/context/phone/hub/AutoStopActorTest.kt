@@ -37,7 +37,7 @@ class AutoStopActorTest {
     private class Recorded(val event: AutoStopEvent, val at: Long, val state: AutoStopState)
 
     /** One run: [threads] submitters, a real multi-thread executor, a fake clock advanced at random; returns the trace and what each step checked. */
-    private class Run(seed: Int, threads: Int, perThread: Int, val gen: (Random) -> AutoStopEvent) {
+    private class Run(seed: Int, threads: Int, perThread: Int, val gen: (Random) -> AutoStopEvent, awaitEach: Boolean = false) {
         val clock = AtomicLong(1_000_000L)
         val store = InMemoryAutoStopStore()
         val trace: MutableList<Recorded> = Collections.synchronizedList(mutableListOf())
@@ -66,7 +66,7 @@ class AutoStopActorTest {
             val rnd = Random(seed)
             val plans = List(threads) { List(perThread) { gen(rnd) to rnd.nextLong(0, 12 * 60_000L) } }
             val done = Collections.synchronizedList(mutableListOf<kotlinx.coroutines.CompletableDeferred<Any?>>())
-            val ts = plans.map { plan -> Thread { for ((e, dt) in plan) { clock.addAndGet(dt); done += engine.submit(e) } } }
+            val ts = plans.map { plan -> Thread { for ((e, dt) in plan) { clock.addAndGet(dt); val d = engine.submit(e); done += d; if (awaitEach) runBlocking { d.await() } } } }
             ts.forEach { it.start() }; ts.forEach { it.join(10_000) }
             runBlocking { done.toList().forEach { it.await() } }
             pool.shutdown(); pool.awaitTermination(5, TimeUnit.SECONDS)
@@ -86,6 +86,16 @@ class AutoStopActorTest {
             assertEquals("seed $seed: persisted == in-memory at the end", run.store.load(), s.saved)
             assertNull("seed $seed: no stop left half-committed", s.pendingStop)
         }
+        // coverage of real stops must not depend on the machine's load: under a busy CPU the submitters outrun the drain and every stop's recheck queues behind a
+        // later input, so the free-running runs may see none. Sequential seeded runs (one submitter that awaits each step) reach a stop deterministically.
+        var sequentialStops = 0
+        repeat(50) { seed ->
+            val run = Run(1_000 + seed, threads = 1, perThread = 40, gen = ::randomEvent, awaitEach = true)
+            sequentialStops += run.stops
+            assertEquals("sequential seed $seed: ${run.violations.take(3)}", emptyList<String>(), run.violations)
+        }
+        assertTrue("the sequential runs reach real stops ($sequentialStops)", sequentialStops > 0)
+        stops += sequentialStops
         assertTrue("the property saw real stops ($stops) and cancelled ones ($cancelled)", stops > 0 && cancelled > 0)
     }
 
