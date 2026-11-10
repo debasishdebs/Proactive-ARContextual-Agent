@@ -56,7 +56,11 @@ data class RoleCall(
 }
 
 /** [replies]: every provider reply the call consumed, the rejected attempts included ([reply] is the last one), for token accounting. */
-data class RoleResult(val output: ContractOutput, val raw: String, val reply: RoutedReply, val promptVersion: Int, val replies: List<RoutedReply> = listOf(reply)) {
+data class RoleResult(
+    val output: ContractOutput, val raw: String, val reply: RoutedReply, val promptVersion: Int, val replies: List<RoutedReply> = listOf(reply),
+    /** Codex r18: the variables the RENDERED request substituted (placeholders of the system preamble and the template); a variable not here was not in the request. */
+    val renderedVars: Set<String> = emptySet(),
+) {
     /** Codex r10 delivery proof: the accepted reply came from the provider call that carried the photos ([RoutedReply.imagesDelivered]). */
     val imagesDelivered: Boolean get() = reply.imagesDelivered
 }
@@ -108,7 +112,8 @@ class RoleRunner(
             val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
             attempts += reply
             val eval = OutputCheck.evaluate(call.key, schema, reply.text, ctx)
-            if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, versionNo, attempts.toList())
+            if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, versionNo, attempts.toList(),
+                renderedVars = PLACEHOLDER.findAll(system.template + "\n" + template).map { it.groupValues[1] }.toSet())
             if (eval.schemaUnusable) {
                 // A corrected reply can't help; the job stays retryable so it succeeds once the prompt's schema is fixed.
                 PcLog.w(TAG, "${call.key.name} v$versionNo output schema can't be applied")
@@ -126,6 +131,7 @@ class RoleRunner(
     private companion object {
         const val TAG = "RoleRunner"
         const val MAX_ECHO = 400
+        private val PLACEHOLDER = Regex("\\{\\{\\s*([a-z_]+)\\s*\\}\\}")
         private val SAFE_PATH = Regex("^\\$[A-Za-z0-9_.\\[\\]]*$")
 
         /** No JSON, or JSON the decoder couldn't read: the problem line is fixed text. */

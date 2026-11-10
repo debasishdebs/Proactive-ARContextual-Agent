@@ -143,7 +143,7 @@ object VisionExtractExecutor : NodeExecutor {
                     val exact = com.rokid.context.model.PayloadSources.frames(b.output.callGroups.filter { g -> it.photo.frameId in g }.flatten() + it.photo.frameId)
                     // every attempt holds the same context text (the chunk's upstream JSON), so its sources come along whenever there is any
                     out += NodeResult(it.frameId, CanvasValue.Extraction(facts, captions), meta = if (i == 0) owner else mate, calls = if (i == 0) owner.calls!! else 0, extracted = b,
-                        exactSources = if (upstream.isEmpty()) exact else exact + provenance)
+                        exactSources = if (b.contextIncluded) exact + provenance else exact) // codex r18: only context the rendered request held
                 }
             } catch (c: CancellationException) {
                 throw c

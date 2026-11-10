@@ -306,6 +306,43 @@ class CanvasProvenanceTest {
         assertTrue("the A fact survives Forget B: $texts", texts.any { "SOLO-A" in it })
     }
 
+    // codex r18 P1-1: provenance reflects the RENDERED request. Vision(batch=2) -> Prompt -> Vision(batch=1, live template without {{context_sources}})
+    // -> memory.write over unrelated A/B: the final A request held only A, so the saved A memory survives Forget B
+    @Test fun unusedContextIsNeverRecordedAsProvenance() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        for ((id, ts) in listOf("A" to 1L, "B" to 2L)) {
+            val f = java.io.File(app.filesDir, "rokid_archive/r$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            com.rokid.context.orchestration.PipelineRecords.appendFrame(app, FrameEntity(id, ts, f.absolutePath, "rokid_glasses", "frame"))
+        }
+        val ai = TestAi.graph(app) { p ->
+            val id = Regex("frame_id: ([AB])").find(p)?.groupValues?.get(1) ?: "A"
+            """{"facts":[{"text":"FINAL-$id","type":"object","confidence":0.9,"tags":[],"source_frame_ids":["$id"]}],"captions":[{"frame_id":"$id","caption":"c $id"}]}"""
+        }.also { TestAi.bindAll(it) }
+        val first = exec(NodeTypes.VISION_EXTRACT, 2) { items -> items.map { NodeResult(it.frameId, CanvasValue.Extraction(listOf(Fact("Mug in ${it.frameId}", "object", 0.9, emptyList(), listOf("A", "B"))), emptyList())) } }
+        val prompt = exec(NodeTypes.PROMPT, 1) { items -> items.map { NodeResult(it.frameId, CanvasValue.Json(buildJsonObject { put("text", "UPSTREAM-${it.frameId}") })) } }
+        val runner = CanvasRunner(
+            db.canvasDao(), { f -> PhotoLoad(f.map(::photo), emptySet()) },
+            mapOf(NodeTypes.PROMPT to prompt, NodeTypes.VISION_EXTRACT to byNode(first, VisionExtractExecutor), NodeTypes.MEMORY_WRITE to MemoryWritePreviewExecutor),
+            { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
+            ConfirmTokens({ now }), { false }, { now }, { "run${++ids}" }, { 0L },
+        )
+        val p = Pipeline(2, "pr", "P", listOf(
+            PipelineNode("photos", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap())),
+            PipelineNode("ext", NodeTypes.VISION_EXTRACT, "ext", buildJsonObject { put("batch", 2); put("prompt", buildJsonObject { put("source", "live") }) }),
+            PipelineNode("prompt", NodeTypes.PROMPT, "prompt", promptParams),
+            PipelineNode("last", NodeTypes.VISION_EXTRACT, "last", buildJsonObject { put("batch", 1); put("prompt", buildJsonObject { put("source", "live") }) }),
+            PipelineNode("write", NodeTypes.MEMORY_WRITE, "Save memory", JsonObject(emptyMap())),
+        ), listOf(PipelineEdge("photos", "ext"), PipelineEdge("ext", "prompt"), PipelineEdge("prompt", "last"), PipelineEdge("last", "write")))
+        val est = runner.estimate(p, listOf("A", "B"), { n -> ModelLabel(n.id, "az", "gpt") })
+        assertTrue("estimate: $est", est is Estimate.Ok)
+        val runId = runner.start(p, p.id, null, listOf("A", "B"), (est as Estimate.Ok).confirmToken, scope)
+        withTimeout(20_000) { runner.active.first { it == null } }
+        assertTrue(CanvasRunSave(app, db, afterSave = { _, _ -> }).save(runId) is CanvasRunSave.Result.Saved)
+        assertTrue(com.rokid.context.orchestration.forget.ForgetActions.forgetMomentOutcome(app, "B").committed)
+        val texts = MemoryGraph.get(app).memories.all().map { it.text }
+        assertTrue("the final A memory survives Forget B: $texts", texts.any { "FINAL-A" in it })
+    }
+
     // ---- codex r14/r15 RULE A property, through the REAL CanvasRunner and PipelineInterpreter: every built-in executor over 3 photos (batches of 2+ where
     // the executor batches), every output OK with a value, and every output row's lineage lists every input photo of its execution (and, for an
     // executor that is not chunkLocal, every input the node consumed before)

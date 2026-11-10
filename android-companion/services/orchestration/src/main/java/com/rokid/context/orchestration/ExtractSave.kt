@@ -34,7 +34,8 @@ data class CallUsage(val promptTokens: Int?, val completionTokens: Int?, val mod
  * [attempts]: one entry per provider attempt behind this output, rejected-output retries and single-photo fallback calls included (S32).
  * Empty by default (unknown), so every existing construction is unchanged.
  */
-data class ExtractedBatch(val output: ExtractOutput, val promptVersion: Int, val attempts: List<CallUsage> = emptyList())
+/** [contextIncluded] (codex r18): some attempt's RENDERED request substituted the context text (`{{context_sources}}`); false = no context reached a model. */
+data class ExtractedBatch(val output: ExtractOutput, val promptVersion: Int, val attempts: List<CallUsage> = emptyList(), val contextIncluded: Boolean = false)
 
 /** A memory [ExtractSave.saveExtraction] wrote: [index] is the position in the (blank-filtered) facts, or null for a caption. */
 data class SavedMemory(val memoryId: String, val frameIds: List<String>, val index: Int?)
@@ -129,6 +130,7 @@ object ExtractSave {
                 callGroups = parts.flatMap { it.output.callGroups }),
             parts.last().promptVersion,
             attempts.toList(),
+            contextIncluded = parts.any { it.contextIncluded },
         )
     }
 
@@ -142,10 +144,12 @@ object ExtractSave {
                 images = photos.map { it.image.copy(ref = it.frameId) }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass,
                 override = override, liveness = liveness, sources = com.rokid.context.model.PayloadSources.frames(photos.map { it.frameId }) + contextProvenance),
         )
-        // codex r17: one group per ATTEMPT, exactly what its prompt held: its own images plus the sources of the context text it included
+        // codex r17/r18: one group per ATTEMPT, exactly what its RENDERED prompt held: its own images plus the context's sources only when the template
+        // substituted the context (a supplied but unused `{{context_sources}}` is not in the request)
+        val included = contextSources.isNotBlank() && "context_sources" in r.renderedVars
         return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered,
-            callGroups = listOf(photos.map { it.frameId }.toSet() + (if (contextSources.isBlank()) emptySet() else contextProvenance.frameIds))),
-            r.promptVersion, usageOf(r.replies))
+            callGroups = listOf(photos.map { it.frameId }.toSet() + (if (included) contextProvenance.frameIds else emptySet()))),
+            r.promptVersion, usageOf(r.replies), contextIncluded = included)
     }
 
     /**
