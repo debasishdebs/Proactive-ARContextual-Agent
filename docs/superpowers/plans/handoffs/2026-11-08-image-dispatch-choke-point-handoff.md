@@ -304,6 +304,22 @@ traced along the graph edges that feed memory.write, never by frame id, batch or
   - `CanvasProvenanceTest.aSideBranchNeverAddsItsSourcesToTheSave`.
   - `ResummarizeWorkerTest.aRebuiltSummaryInheritsItsSourcesPhotosAndGoesWithThem` (the Codex repro).
 
+## Codex r18: rendered requests, replaced provenance, per-edge call lineage
+
+1. **Context counts only if it was rendered.** `RoleResult.renderedVars` lists the placeholders the system preamble and template rendered.
+   `ExtractSave` records a context's sources (`callGroups`, `ExtractedBatch.contextIncluded`) only when `{{context_sources}}` was substituted, and
+   the Vision executor's exact sources follow. The dispatch-side declaration stays conservative.
+   Commit 32a2f194; test `CanvasProvenanceTest.unusedContextIsNeverRecordedAsProvenance`.
+2. **A retried summary replaces its provenance.** The queued reprocess summary's `frame_source` rows are deleted and re-inserted with its content
+   in the same fenced transaction.
+   Commit 8789e97b; test `QueueDrainReprocessTest.aRetriedSummaryReplacesItsProvenance`.
+3. **Call lineage follows producing edges.** `ItemFlow.Out.callLineage` carries the S25 call tokens along the edge that produced the value. Each
+   row's lineage is the frame's own member and mark tokens, plus the delivering edge's calls, plus its own call. A side branch's batch call no
+   longer reaches another branch's rows.
+   Commit 4f1b4b13; test `CanvasProvenanceTest.aSideBranchsSharedCallNeverReachesTheSoloBranchsRows`.
+
+Each test failed before its fix.
+
 ## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
 
 The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the
