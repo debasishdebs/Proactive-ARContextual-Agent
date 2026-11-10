@@ -72,6 +72,27 @@ class ResummarizeWorkerTest {
         assertTrue(prompts.none { "Forgotten diary" in it || "B from A and S" in it || "C from B" in it })
     }
 
+    // codex r17 P1-3: the rebuilt summary inherits its sources' photo provenance. MA cites A and carries X; S from MA/MB; Forget MB; R rebuilt from MA;
+    // MA expires; Forget X -> R is invalidated
+    @Test fun aRebuiltSummaryInheritsItsSourcesPhotosAndGoesWithThem() = runBlocking {
+        for (f in listOf("A", "X")) {
+            graph.db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity(f, 1, "/$f.jpg", "rokid_glasses"))
+            graph.db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(f, null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1))
+        }
+        graph.db.memoryDao().insert(MemoryEntity("MA", "A", "Sibling source with an X detail", "object", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "t"))
+        graph.db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("MA", "A", null, "FACT"), com.rokid.context.memory.db.FrameSourceEntity("MA", "X", null, "CARRIED")))
+        mem("MB", "Another source", derived = false); mem("S", "S from MA and MB")
+        edge("S", "MA"); edge("S", "MB")
+        forget("MB")
+        work()
+        val r = graph.memories.all().single { it.text == "Rebuilt B" }
+        assertEquals(setOf("A", "X"), graph.db.frameSourceDao().forMemory(r.id).filter { it.role == "CARRIED" }.map { it.frameId }.toSet())
+        ForgetService(graph.db, graph.proposals).expire(listOf("MA")) // retention expires MA: R keeps living, its edge to MA goes
+        assertTrue("R survives MA's expiry", graph.memories.all().any { it.id == r.id })
+        ForgetService(graph.db, graph.proposals).forgetMoment("X")
+        assertTrue("R, derived from X's detail, is gone after Forget X", graph.memories.all().none { it.id == r.id && it.reviewState == ReviewState.OK })
+    }
+
     @Test fun noSourcesDeletes() = runBlocking {
         mem("A", "Forgotten", derived = false); mem("B", "Only from A")
         edge("B", "A")

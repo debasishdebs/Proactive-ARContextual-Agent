@@ -316,7 +316,7 @@ class QueueDrainWorker(
         val written = mdb.withTransaction {
             if (com.rokid.context.orchestration.MemoryWipe.generation.get() != generation) return@withTransaction false
             val srcIds = sources.map { it.id }
-            val union = (frames.map { it.id } + mdb.forgetDao().memories(srcIds).mapNotNull { it.frameId } + srcIds.flatMap { id -> mdb.frameSourceDao().forMemory(id).map { it.frameId } }).toSet()
+            val union = frames.map { it.id }.toSet() + ExtractSave.inheritedFrames(mdb, srcIds)
             if (union.toList().chunked(500).any { mdb.forgetDao().tombstoned(it).isNotEmpty() }) return@withTransaction false
             val ok = PipelineRecords.appendFact(applicationContext, summaryId, null, out.summary, "summary", out.entities,
                 out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,

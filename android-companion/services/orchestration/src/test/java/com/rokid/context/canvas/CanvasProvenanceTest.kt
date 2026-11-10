@@ -263,6 +263,49 @@ class CanvasProvenanceTest {
         assertTrue("A is never tombstoned", db.forgetDao().tombstoned(listOf("A")).isEmpty())
     }
 
+    // codex r17 P1-2: a save's provenance follows the edges into memory.write only. [photos, solo(batch=1), write, side(batch=2)] with photos->solo->write
+    // and photos->side: the side branch read A and B together but never fed the save, so Forget B leaves the A fact
+    @Test fun aSideBranchNeverAddsItsSourcesToTheSave() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        for ((id, ts) in listOf("A" to 1L, "B" to 2L)) {
+            val f = java.io.File(app.filesDir, "rokid_archive/s$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            com.rokid.context.orchestration.PipelineRecords.appendFrame(app, FrameEntity(id, ts, f.absolutePath, "rokid_glasses", "frame"))
+        }
+        val ai = TestAi.graph(app) { "{}" }.also { TestAi.bindAll(it) }
+        val solo = exec(NodeTypes.VISION_EXTRACT, 1) { items -> items.map { NodeResult(it.frameId, CanvasValue.Extraction(listOf(Fact("SOLO-${it.frameId}", "object", 0.95, emptyList(), listOf(it.frameId))), emptyList())) } }
+        val side = exec(NodeTypes.VISION_EXTRACT, 2) { items -> items.map { NodeResult(it.frameId, CanvasValue.Extraction(listOf(Fact("SIDE-${it.frameId}", "object", 0.95, emptyList(), listOf("A", "B"))), emptyList())) } }
+        val vision = object : NodeExecutor {
+            override val type = NodeTypes.VISION_EXTRACT
+            private fun of(n: PipelineNode) = if (n.id == "side") side else solo
+            override fun chunkSize(node: PipelineNode) = of(node).chunkSize(node)
+            override fun nominalCalls(node: PipelineNode, items: Int) = 0
+            override fun maxCalls(node: PipelineNode, items: Int) = 0
+            override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext) = of(node).run(node, items, ctx)
+        }
+        val runner = CanvasRunner(
+            db.canvasDao(), { f -> PhotoLoad(f.map(::photo), emptySet()) },
+            mapOf(NodeTypes.VISION_EXTRACT to vision, NodeTypes.MEMORY_WRITE to MemoryWritePreviewExecutor),
+            { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
+            ConfirmTokens({ now }), { false }, { now }, { "run${++ids}" }, { 0L },
+        )
+        val live = buildJsonObject { put("prompt", buildJsonObject { put("source", "live") }) }
+        val p = Pipeline(2, "pb", "P", listOf(
+            PipelineNode("photos", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap())),
+            PipelineNode("solo", NodeTypes.VISION_EXTRACT, "solo", buildJsonObject { put("batch", 1); put("prompt", live["prompt"]!!) }),
+            PipelineNode("write", NodeTypes.MEMORY_WRITE, "Save memory", JsonObject(emptyMap())),
+            PipelineNode("side", NodeTypes.VISION_EXTRACT, "side", buildJsonObject { put("batch", 2); put("prompt", live["prompt"]!!) }),
+        ), listOf(PipelineEdge("photos", "solo"), PipelineEdge("solo", "write"), PipelineEdge("photos", "side")))
+        val est = runner.estimate(p, listOf("A", "B"), { n -> ModelLabel(n.id, "az", "gpt") })
+        assertTrue("estimate: $est ${com.rokid.context.ai.canvas.PipelineValidator.validate(p)}", est is Estimate.Ok)
+        val runId = runner.start(p, p.id, null, listOf("A", "B"), (est as Estimate.Ok).confirmToken, scope)
+        withTimeout(20_000) { runner.active.first { it == null } }
+        val saved = CanvasRunSave(app, db, afterSave = { _, _ -> }).save(runId)
+        assertTrue("saved: $saved", saved is CanvasRunSave.Result.Saved)
+        assertTrue(com.rokid.context.orchestration.forget.ForgetActions.forgetMomentOutcome(app, "B").committed)
+        val texts = MemoryGraph.get(app).memories.all().map { it.text }
+        assertTrue("the A fact survives Forget B: $texts", texts.any { "SOLO-A" in it })
+    }
+
     // ---- codex r14/r15 RULE A property, through the REAL CanvasRunner and PipelineInterpreter: every built-in executor over 3 photos (batches of 2+ where
     // the executor batches), every output OK with a value, and every output row's lineage lists every input photo of its execution (and, for an
     // executor that is not chunkLocal, every input the node consumed before)

@@ -80,8 +80,9 @@ class NodeProvenance(private val ex: NodeExecutor?) {
         earlier = earlier + now
     }
 
-    /** The sources an output of the current chunk carries. */
-    fun of(output: CanvasValue?): com.rokid.context.model.PayloadSources = chunk + valueSources(output)
+    /** The sources an output of the current chunk carries: the executor's [exact] ones when it reports them (codex r17), else the chunk union. */
+    fun of(output: CanvasValue?, exact: com.rokid.context.model.PayloadSources? = null): com.rokid.context.model.PayloadSources =
+        (exact ?: chunk) + valueSources(output)
 }
 
 /** The helper executor's FRAME_FORGET token (this file must not name that executor): the runner stops a run whose photo was forgotten. */
@@ -129,8 +130,8 @@ object VisionExtractExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                // codex r14 RULE B: the upstream JSON in the prompt declares the sources of every item it came from, on every attempt
-                val provenance = chunk.fold(com.rokid.context.model.PayloadSources.NONE) { acc, it -> acc + sourcesOf(it) }
+                // codex r14 RULE B / r17: the upstream JSON in the prompt declares the sources of exactly the items whose JSON it holds (none without JSON)
+                val provenance = chunk.filter { it.value is CanvasValue.Json }.fold(com.rokid.context.model.PayloadSources.NONE) { acc, it -> acc + sourcesOf(it) }
                 val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, ctx.callClass, ctx.liveness, override, sources, contextProvenance = provenance)
                 // One provider call (or a few attempts) behind the whole chunk: only its first item owns the usage, counted once (S32).
                 val owner = ownerMeta(ms(), b.attempts, b.promptVersion, batchId)
@@ -138,7 +139,11 @@ object VisionExtractExecutor : NodeExecutor {
                 chunk.forEachIndexed { i, it ->
                     val facts = b.output.facts.filter { f -> it.frameId in f.sourceFrameIds }
                     val captions = b.output.captions.filter { c -> c.frameId == it.frameId }.take(1)
-                    out += NodeResult(it.frameId, CanvasValue.Extraction(facts, captions), meta = if (i == 0) owner else mate, calls = if (i == 0) owner.calls!! else 0, extracted = b)
+                    // codex r17: this photo's output came only from the attempts whose request carried it (a batch that failed into singletons is not one)
+                    val exact = com.rokid.context.model.PayloadSources.frames(b.output.callGroups.filter { g -> it.photo.frameId in g }.flatten() + it.photo.frameId)
+                    // every attempt holds the same context text (the chunk's upstream JSON), so its sources come along whenever there is any
+                    out += NodeResult(it.frameId, CanvasValue.Extraction(facts, captions), meta = if (i == 0) owner else mate, calls = if (i == 0) owner.calls!! else 0, extracted = b,
+                        exactSources = if (upstream.isEmpty()) exact else exact + provenance)
                 }
             } catch (c: CancellationException) {
                 throw c

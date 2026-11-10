@@ -55,6 +55,13 @@ object ExtractSave {
     /** Codex r15: `frame_source.role` of a photo a memory may be DERIVED from but does not describe (a batch mate, an upstream canvas source). Forget-only. */
     const val CARRIED = "CARRIED"
 
+    /**
+     * Codex r16/r17, the ONE inheritance rule for a memory built from other memories' text (queued reprocess, the Forget resummarizer): every photo
+     * those memories cite or carry. Call it inside the writing transaction; the writer links the result as [CARRIED] and drops the write if any is forgotten.
+     */
+    suspend fun inheritedFrames(db: com.rokid.context.memory.db.ContextDatabase, memoryIds: List<String>): Set<String> =
+        (memoryIds.chunked(500).flatMap { db.forgetDao().memories(it) }.mapNotNull { it.frameId } + memoryIds.flatMap { id -> db.frameSourceDao().forMemory(id).map { it.frameId } }).toSet()
+
     private class Rollback(val result: ExtractSaveResult) : RuntimeException(null, null, false, false)
 
     /** The most photos one VISION_EXTRACT call carries (the schema caps captions at 3). */
@@ -135,7 +142,9 @@ object ExtractSave {
                 images = photos.map { it.image.copy(ref = it.frameId) }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass,
                 override = override, liveness = liveness, sources = com.rokid.context.model.PayloadSources.frames(photos.map { it.frameId }) + contextProvenance),
         )
-        return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered, callGroups = listOf(photos.map { it.frameId }.toSet() + contextProvenance.frameIds)),
+        // codex r17: one group per ATTEMPT, exactly what its prompt held: its own images plus the sources of the context text it included
+        return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered,
+            callGroups = listOf(photos.map { it.frameId }.toSet() + (if (contextSources.isBlank()) emptySet() else contextProvenance.frameIds))),
             r.promptVersion, usageOf(r.replies))
     }
 

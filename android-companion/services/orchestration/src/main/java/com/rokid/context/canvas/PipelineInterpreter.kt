@@ -55,8 +55,9 @@ class PipelineInterpreter(
         val token = newId()
         val traces = ArrayList<CanvasLiveTraceEntity>()
         val lineage = HashMap<String, LinkedHashSet<String>>() // S25: every call whose output a frame's rows derive from
-        fun row(frameId: String, nodeId: String, r: NodeResult): CanvasLiveTraceEntity {
+        fun row(frameId: String, nodeId: String, r: NodeResult, derivedFrom: Set<String> = emptySet()): CanvasLiveTraceEntity {
             val batch = CanvasLineage.compose(lineage.getOrPut(frameId) { LinkedHashSet() }, r.meta?.batchId)
+                .let { b -> if (derivedFrom.isEmpty()) b else listOfNotNull(b).plus(derivedFrom.map { CanvasRunner.MEMBER_TOKEN + it }).joinToString(CanvasLineage.SEP.toString()) }
             return CanvasLiveTraceEntity(
                 publishId, frameId, nodeId, mode, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { cap(CanvasValueJson.encode(it)) }, r.error,
                 batch?.split(CanvasLineage.SEP)?.joinToString(CanvasLineage.SEP.toString()) { "$token:$it" }, clock(),
@@ -70,7 +71,6 @@ class PipelineInterpreter(
         val photoById = photos.associateBy { it.frameId }
         val order = photos.withIndex().associate { it.value.frameId to it.index }
         val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
-        val carried = HashMap<String, com.rokid.context.model.PayloadSources>()
         val labels = LinkedHashMap<String, Pair<String, Float?>>()
         val extractedFrames = HashSet<String>()
         val calls = IdentityHashMap<ExtractedBatch, Boolean>() // the distinct extract calls (every item of a chunk shares one instance)
@@ -94,7 +94,7 @@ class PipelineInterpreter(
                 if (isExtract && id in extractedFrames) { // a second extraction for one photo: refuse before paying for it
                     traces += row(id, node.id, NodeResult(id, null, error = "routing"))
                     failure = failure ?: "routing"
-                } else queue += CanvasItem(id, photoById.getValue(id), v, carried[id] ?: com.rokid.context.model.PayloadSources.NONE)
+                } else queue += CanvasItem(id, photoById.getValue(id), v, gathered.sources[id] ?: com.rokid.context.model.PayloadSources.NONE)
             }
             val ex = executors[node.type]
             val produced = LinkedHashMap<String, ItemFlow.Out>()
@@ -105,13 +105,12 @@ class PipelineInterpreter(
                 results.firstNotNullOfOrNull { r -> r.cause?.takeIf(::isTransient) }?.let { throw it }
                 for (item in chunk) {
                     val r = results.firstOrNull { it.frameId == item.frameId } ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
-                    // r15: the execution's union is also this row's lineage ("mf:<frameId>"), so a Forget of any of those photos reaches it, as in the runner
-                    lineage.getOrPut(item.frameId) { LinkedHashSet() }.addAll(provenance.of(r.value).frameIds.map { CanvasRunner.MEMBER_TOKEN + it })
-                    traces += row(item.frameId, node.id, r)
+                    // r15/r17: the execution's provenance is this row's own lineage ("mf:<frameId>"), so a Forget of any of those photos reaches it, as in the runner
+                    val c = provenance.of(r.value, r.exactSources)
+                    traces += row(item.frameId, node.id, r, c.frameIds)
                     if (r.error != null) { failure = failure ?: reasonOf(r); continue }
                     val v = r.value ?: continue
-                    produced[item.frameId] = ItemFlow.Out(v, r.branch)
-                    carried[item.frameId] = provenance.of(v) // codex r14 RULE A: the union of the whole execution's inputs
+                    produced[item.frameId] = ItemFlow.Out(v, r.branch, c) // codex r14 RULE A / r17: travels along this edge only
                     if (node.type == NodeTypes.SWITCH) labelOf(node, v)?.let { labels.putIfAbsent(item.frameId, it) }
                     if (isExtract) {
                         extractedFrames += item.frameId
