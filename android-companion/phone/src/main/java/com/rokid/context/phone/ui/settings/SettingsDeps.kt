@@ -2,6 +2,8 @@ package com.rokid.context.phone.ui.settings
 
 import android.content.Context
 import com.rokid.context.core.log.PcLog
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flowOn
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.link.AuthActivity
@@ -214,11 +216,10 @@ private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnos
         com.rokid.context.phone.ui.settings.RetentionCounters(it.skippedPhotosDeleted(app), it.describedBeforeDelete(app), it.deletedUndescribed(app), dao.describeWaiting(), dao.describeFailed(),
             MemoryGraph.get(app).db.forgetDao().strandedPhotos())
     }
-    override suspend fun suspectDescriptions(): com.rokid.context.phone.ui.settings.SuspectDescriptions {
-        val dao = MemoryGraph.get(app).db.forgetDao()
-        return com.rokid.context.phone.ui.settings.SuspectDescriptions(dao.suspectDescriptionCount(),
-            dao.suspectDescriptions(com.rokid.context.phone.ui.settings.SuspectDescriptions.SHOWN).map { com.rokid.context.phone.ui.settings.SuspectItem(it.id, it.type, it.createdAt, it.text) })
-    }
+    // Codex r20: observed (the graph is read when the screen subscribes, not when the deps are built on Main)
+    override val suspects: kotlinx.coroutines.flow.Flow<com.rokid.context.phone.ui.settings.SuspectDescriptions> =
+        kotlinx.coroutines.flow.flow { emitAll(com.rokid.context.phone.ui.settings.suspectDescriptionsOf(MemoryGraph.get(app).db.forgetDao())) }
+            .flowOn(kotlinx.coroutines.Dispatchers.IO)
     override suspend fun markForReview(ids: List<String>?): Long {
         val dao = MemoryGraph.get(app).db.forgetDao()
         val at = System.currentTimeMillis()

@@ -118,4 +118,34 @@ class DiagnosticsViewModelTest {
         assertEquals("Glasses not connected — settings will sync when they connect", v.state.value.message)
         v.cancelScope()
     }
+
+    /**
+     * Codex r20 P1: a suspect's snippet must leave Diagnostics as soon as its memory is deleted (RetentionWorker, Forget, Delete all), even while the screen stays
+     * open and nothing else emits: the list observes the database, and no snippet is held outside that observation.
+     */
+    @Test fun aDeletedSuspectLeavesTheOpenScreenAtOnce() = runBlocking {
+        val ctx = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val db = com.rokid.context.memory.db.DatabaseFactory.inMemory(ctx)
+        val dao = db.forgetDao()
+        val before = com.rokid.context.memory.db.ForgetDao.TEXT_RETRY_FIXED_MS - 1
+        db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("p", 1, "/p.jpg", "rokid_glasses"))
+        db.memoryDao().insert(com.rokid.context.memory.db.MemoryEntity("rokid_kf_old_c0", "p", "A desk with keys", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8,
+            com.rokid.context.memory.db.ReviewState.OK, false, before, false, "A desk with keys", null, null))
+        val keyframes = object : KeyframeDiagnostics {
+            override val stats = kotlinx.coroutines.flow.MutableStateFlow(com.rokid.context.work.frames.KeyframeStats())
+            override suspend fun droppedNudges() = emptyMap<String, Int>()
+            override suspend fun sidecarLost() = 0
+            override suspend fun promptIsCurrent() = true
+            override suspend fun retryAllFinal() = 0
+            override val suspects = suspectDescriptionsOf(dao)
+        }
+        val v = DiagnosticsViewModel(actions, pipeline, keyframes = keyframes)
+        try {
+            val shown = withTimeout(5_000) { v.keyframeRows.first { it.suspects.total == 1 } }
+            assertEquals("A desk with keys", shown.suspects.items.single().text)
+            dao.deleteMemories(listOf("rokid_kf_old_c0")) // what RetentionWorker does to an expired SHORT memory
+            val after = withTimeout(5_000) { v.keyframeRows.first { it.suspects.total == 0 } }
+            assertTrue("no snippet of the deleted memory is left", after.suspects.items.isEmpty())
+        } finally { v.cancelScope(); db.close() }
+    }
 }

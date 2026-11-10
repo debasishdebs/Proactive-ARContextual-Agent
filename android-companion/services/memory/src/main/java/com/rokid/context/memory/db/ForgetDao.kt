@@ -107,6 +107,10 @@ abstract class ForgetDao {
     @Query("SELECT a.id AS id, a.frameId AS frameId, a.type AS type, a.createdAt AS createdAt, a.text AS text FROM memory a WHERE " + SUSPECT + " ORDER BY a.createdAt DESC, a.id LIMIT :limit")
     abstract suspend fun suspectDescriptions(limit: Int): List<SuspectDescriptionRow>
     @Query("SELECT COUNT(*) FROM memory a WHERE " + SUSPECT) abstract suspend fun suspectDescriptionCount(): Int
+    /** Codex r20: the same list and count, observed (Room re-runs them when memory, frame or frame_source change), so a deleted or forgotten memory leaves the screen at once. */
+    @Query("SELECT a.id AS id, a.frameId AS frameId, a.type AS type, a.createdAt AS createdAt, a.text AS text FROM memory a WHERE " + SUSPECT + " ORDER BY a.createdAt DESC, a.id LIMIT :limit")
+    abstract fun observeSuspectDescriptions(limit: Int): kotlinx.coroutines.flow.Flow<List<SuspectDescriptionRow>>
+    @Query("SELECT COUNT(*) FROM memory a WHERE " + SUSPECT) abstract fun observeSuspectDescriptionCount(): kotlinx.coroutines.flow.Flow<Int>
     /** Marks [ids] (still suspects) for review at [at]; returns how many. Only the flag: no text, photo or provenance changes. */
     @Query("UPDATE memory SET reviewFlaggedAt = :at WHERE id IN (:ids) AND reviewFlaggedAt IS NULL") abstract suspend fun flagForReview(ids: List<String>, at: Long): Int
     /** Marks every current suspect at [at]; returns how many. */
