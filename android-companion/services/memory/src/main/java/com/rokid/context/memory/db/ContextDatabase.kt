@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -330,5 +330,18 @@ val MIGRATION_14_15: Migration = object : Migration(14, 15) {
         db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `markRef` TEXT DEFAULT NULL")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_frame_meta_markRef` ON `frame_meta` (`markRef`)")
         db.execSQL("ALTER TABLE `canvas_label` ADD COLUMN `photo` TEXT DEFAULT NULL")
+    }
+}
+
+/**
+ * v15 -> v16 (user ruling 2026-11-10, the only schema change of rc1): image-delivery proof. `memory.imageDelivered` (null = unknown for every existing row),
+ * `memory.reviewFlaggedAt` (the user's "Mark for review"), and `canvas_run_item.imageDelivered` (a stored run's per-photo delivery proof, so Run and Save can
+ * save a proved caption). Additive: three nullable columns, no row is touched.
+ */
+val MIGRATION_15_16: Migration = object : Migration(15, 16) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `memory` ADD COLUMN `imageDelivered` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `memory` ADD COLUMN `reviewFlaggedAt` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_run_item` ADD COLUMN `imageDelivered` INTEGER DEFAULT NULL")
     }
 }

@@ -21,6 +21,12 @@ import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Switch
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.Alignment
@@ -96,6 +102,12 @@ interface KeyframeDiagnostics {
     suspend fun capturePlan(): com.rokid.context.canvas.plan.PlanStatus? = null
     /** Puts every FAILED_FINAL frame back to PENDING; returns how many. */
     suspend fun retryAllFinal(): Int
+    /** Room v16: the pre-fix memories that may describe a photo the model never saw (read-only). */
+    suspend fun suspectDescriptions(): SuspectDescriptions = SuspectDescriptions()
+    /** Marks [ids] (null = every current suspect) for review; returns the mark time for [undoMark], or 0 when nothing was marked. Only the flag changes. */
+    suspend fun markForReview(ids: List<String>?): Long = 0
+    /** Clears exactly the marks made at [at]; returns how many. */
+    suspend fun undoMark(at: Long): Int = 0
 
     object None : KeyframeDiagnostics {
         override val stats: StateFlow<KeyframeStats> = MutableStateFlow(KeyframeStats())
@@ -115,6 +127,11 @@ data class RetentionCounters(
     val strandedPhotos: Int = 0,
 )
 
+/** Room v16: one suspect memory (its kind, when it was written, the start of its text). */
+data class SuspectItem(val id: String, val type: String, val createdAt: Long, val text: String)
+/** [total] suspects; [items] the newest of them (the list shows at most [SHOWN]). */
+data class SuspectDescriptions(val total: Int = 0, val items: List<SuspectItem> = emptyList()) { companion object { const val SHOWN = 20 } }
+
 /** The active interpreter publish for the "Live pipeline" line: [live] false is Shadow. */
 data class LivePipelineInfo(val name: String, val version: Int, val live: Boolean, val fallbacks: Int, val interpreted: Int)
 
@@ -128,9 +145,11 @@ data class KeyframeRows(
     val clusterPromptCurrent: Boolean = true,
     val livePipeline: LivePipelineInfo? = null,
     val capturePlan: com.rokid.context.canvas.plan.PlanStatus? = null,
+    val suspects: SuspectDescriptions = SuspectDescriptions(),
 )
 
-data class DiagnosticsUiState(val busy: Boolean = false, val message: String? = null)
+/** [undoAt]: the time of the last "Mark for review" (0 = nothing to undo). */
+data class DiagnosticsUiState(val busy: Boolean = false, val message: String? = null, val undoAt: Long = 0)
 
 class DiagnosticsViewModel(
     private val actions: DiagnosticsActions,
@@ -155,7 +174,7 @@ class DiagnosticsViewModel(
     private fun refreshKeyframes() {
         viewModelScope.launch {
             val loaded = try {
-                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline(), capturePlan = keyframes.capturePlan()) }
+                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline(), capturePlan = keyframes.capturePlan(), suspects = keyframes.suspectDescriptions()) }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
             extras.value = loaded
         }
@@ -166,6 +185,33 @@ class DiagnosticsViewModel(
         val n = keyframes.retryAllFinal()
         refreshKeyframes()
         if (n == 0) "Nothing to retry" else "$n photos queued to retry"
+    }
+
+    /** Room v16 "Mark for review" (single, or every listed suspect): only the flag changes, never text or photos; the last marking can be undone. */
+    fun markSuspect(id: String) = markSuspects(listOf(id))
+    fun markAllSuspects() = markSuspects(null)
+    private fun markSuspects(ids: List<String>?) {
+        if (_state.value.busy) return
+        _state.value = DiagnosticsUiState(busy = true)
+        viewModelScope.launch {
+            val at = try { keyframes.markForReview(ids) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "mark for review failed (${e.javaClass.simpleName})"); -1L }
+            refreshKeyframes()
+            _state.value = when {
+                at < 0 -> DiagnosticsUiState(message = FAILED)
+                at == 0L -> DiagnosticsUiState(message = "Nothing to mark")
+                else -> DiagnosticsUiState(message = MARKED, undoAt = at)
+            }
+        }
+    }
+    fun undoMark() {
+        val at = _state.value.undoAt
+        if (_state.value.busy || at == 0L) return
+        _state.value = DiagnosticsUiState(busy = true)
+        viewModelScope.launch {
+            val n = try { keyframes.undoMark(at) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "undo mark failed (${e.javaClass.simpleName})"); -1 }
+            refreshKeyframes()
+            _state.value = DiagnosticsUiState(message = if (n < 0) FAILED else "Marking undone")
+        }
     }
 
     // F16: plain parameters (named like the test passes them) kept in vals that don't clash with the methods.
@@ -211,6 +257,7 @@ class DiagnosticsViewModel(
 
     companion object {
         const val PAUSED = "Capture is paused — resume it from Home first"
+        const val MARKED = "Marked for review: no longer counted as the photo's description"
         const val FAILED = "That didn't work — try again"
         const val PUSHED = "Settings sent to the glasses"
         const val SETTINGS_READY = "Settings ready to share (no keys included)"
@@ -218,6 +265,14 @@ class DiagnosticsViewModel(
         private const val TAG = "Diagnostics"
     }
 }
+
+/** The fixed texts of the suspect-descriptions card (count-only summary; an item shows its kind, date and the start of its text). */
+object SuspectLines {
+    fun summary(n: Int) = "$n memories written before 2026-11-08 may describe a photo the model never saw (the old text-only retry). The app cannot tell which: marking one for review stops it counting as the photo's description."
+    fun item(i: SuspectItem): String = "${i.type} · " + java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(i.createdAt)) + " · " + i.text.take(60)
+}
+
+private const val ALL = "\u0000all"
 
 @Composable
 fun DiagnosticsScreen(
@@ -247,7 +302,21 @@ fun DiagnosticsScreen(
     /** v0.9.7 B: the developer sensor recording rate in Hz (0 = off); the row shows only with [developerMode]. */
     sensorRecHz: Int = 0,
     onSensorRecHz: (Int) -> Unit = {},
+    /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
+    onMarkSuspect: (String) -> Unit = {},
+    onMarkAllSuspects: () -> Unit = {},
+    onUndoMark: () -> Unit = {},
 ) {
+    var confirmMark by remember { mutableStateOf<String?>(null) } // a memory id, or ALL
+    confirmMark?.let { target ->
+        AlertDialog(
+            onDismissRequest = { confirmMark = null },
+            title = { Text(if (target == ALL) "Mark all ${keyframes.suspects.total} for review?" else "Mark this memory for review?") },
+            text = { Text("A marked memory no longer counts as its photo's description, so retention keeps the photo until it is described again. No text or photo is deleted, and you can undo.") },
+            confirmButton = { TextButton(onClick = { confirmMark = null; if (target == ALL) onMarkAllSuspects() else onMarkSuspect(target) }, modifier = Modifier.testTag("suspect_confirm")) { Text("Mark for review") } },
+            dismissButton = { TextButton(onClick = { confirmMark = null }, modifier = Modifier.testTag("suspect_cancel")) { Text("Cancel") } },
+        )
+    }
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
         SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
@@ -274,6 +343,23 @@ fun DiagnosticsScreen(
                     Icons.Outlined.Replay, PcColors.ChipSky, "Retry all", "Photos that failed for good: ${keyframes.stats.counts["FAILED_FINAL"] ?: 0}",
                     onClick = onRetryAll, enabled = !state.busy && (keyframes.stats.counts["FAILED_FINAL"] ?: 0) > 0,
                 )
+            }
+        }
+        if (keyframes.suspects.total > 0 || state.undoAt != 0L) {
+            SectionLabel("Suspect descriptions")
+            SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) {
+                    NoticeText(SuspectLines.summary(keyframes.suspects.total), tag = "suspect_count")
+                    for (item in keyframes.suspects.items.take(SuspectDescriptions.SHOWN)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(SuspectLines.item(item), style = MaterialTheme.typography.bodySmall, color = PcColors.Ink, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { confirmMark = item.id }, enabled = !state.busy, modifier = Modifier.testTag("suspect_mark_${item.id}")) { Text("Mark for review") }
+                        }
+                    }
+                    if (keyframes.suspects.total > 0) ChipRow(Icons.Outlined.WarningAmber, PcColors.ChipAmber, "Mark all ${keyframes.suspects.total} for review", "Only a flag: no text or photo is deleted",
+                        onClick = { confirmMark = ALL }, enabled = !state.busy)
+                    if (state.undoAt != 0L) ChipRow(Icons.Outlined.Replay, PcColors.ChipSky, "Undo last marking", "Puts those memories back as they were", onClick = onUndoMark, enabled = !state.busy)
+                }
             }
         }
         if (contextHub != null) {

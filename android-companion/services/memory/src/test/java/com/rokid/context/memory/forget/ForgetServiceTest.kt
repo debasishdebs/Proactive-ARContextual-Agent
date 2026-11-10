@@ -39,8 +39,9 @@ class ForgetServiceTest {
 
     @After fun close() = db.close()
 
-    private suspend fun mem(id: String, frameId: String? = null, derived: Boolean = false, text: String = "text of $id", review: ReviewState = ReviewState.OK) =
-        db.memoryDao().insert(MemoryEntity(id, frameId, text, "note", "", MemoryTier.SHORT, 0.8, review, false, 1, derived, text))
+    private suspend fun mem(id: String, frameId: String? = null, derived: Boolean = false, text: String = "text of $id", review: ReviewState = ReviewState.OK,
+                            delivered: Boolean? = null, flaggedAt: Long? = null, createdAt: Long = 1) =
+        db.memoryDao().insert(MemoryEntity(id, frameId, text, "note", "", MemoryTier.SHORT, 0.8, review, false, createdAt, derived, text, delivered, flaggedAt))
 
     private suspend fun edge(child: String, parent: String) = db.forgetDao().insertEdges(listOf(MemorySourceEntity(child, parent)))
     private suspend fun state(id: String) = db.memoryViewDao().byId(id)?.reviewState
@@ -329,6 +330,39 @@ class ForgetServiceTest {
     // codex r11: only an OK, non-derived, non-canvas description makes a photo deletable; a canvas save or a fact awaiting review never does
     private suspend fun cite(memoryId: String, frameId: String, role: String = "FACT") =
         db.frameSourceDao().insertAll(listOf(FrameSourceEntity(memoryId, frameId, null, role)))
+
+    // Room v16 (user ruling 2026-11-10): a memory marked for review, or written without delivery proof, never describes its photo; unknown keeps today's rule
+    @Test fun aFlaggedOrUndeliveredMemoryNeverDescribesItsPhoto() = runBlocking {
+        for (f in listOf("u", "t", "n", "m")) keyframe(f, state = "EXTRACTED")
+        mem("rokid_kf_k1_c0", frameId = "u", delivered = null); cite("rokid_kf_k1_c0", "u")        // unknown (pre-v16): still a description
+        mem("rokid_kf_k2_c0", frameId = "t", delivered = true); cite("rokid_kf_k2_c0", "t")        // proved
+        mem("rokid_kf_k3_c0", frameId = "n", delivered = false); cite("rokid_kf_k3_c0", "n")       // written without proof
+        mem("rokid_kf_k4_c0", frameId = "m", flaggedAt = 5); cite("rokid_kf_k4_c0", "m")           // marked for review
+        assertEquals(listOf("t", "u"), linkedDue().sorted())
+        assertEquals(setOf("n", "m"), db.forgetDao().describeDue(0, 0, 1_000, 0, 0, 10).toSet())
+    }
+
+    // Room v16: the suspect list is the pre-fix, delivery-unknown, unmarked rows that describe a photo; marking is a flag only, and undo restores exactly that marking
+    @Test fun suspectDescriptionsAndTheirMarkingAndUndo() = runBlocking {
+        val before = com.rokid.context.memory.db.ForgetDao.TEXT_RETRY_FIXED_MS - 1
+        keyframe("p", state = "EXTRACTED")
+        mem("rokid_kf_old_c0", frameId = "p", createdAt = before); cite("rokid_kf_old_c0", "p")                                  // suspect
+        mem("rokid_kf_new_c0", frameId = "p", createdAt = before + 10)                                                          // after the fix build: not one
+        mem("rokid_kf_proved_c0", frameId = "p", createdAt = before, delivered = true)                                         // proved: not one
+        mem("rokid_cv_r_0", frameId = "p", createdAt = before)                                                                  // canvas: never a description
+        mem("rokid_mem_rs_1", frameId = "p", createdAt = before, derived = true)                                                // derived: never a description
+        mem("note_1", createdAt = before)                                                                                       // cites no photo
+        val dao = db.forgetDao()
+        assertEquals(listOf("rokid_kf_old_c0"), dao.suspectDescriptions(50).map { it.id })
+        assertEquals(1, dao.suspectDescriptionCount())
+        assertEquals(1, dao.flagAllSuspects(77))
+        assertEquals(0, dao.suspectDescriptionCount())
+        val m = db.memoryDao().all().single { it.id == "rokid_kf_old_c0" }
+        assertEquals(77L, m.reviewFlaggedAt); assertEquals("text of rokid_kf_old_c0", m.text) // only the flag changed
+        assertNotNull(dao.frame("p"))
+        assertEquals(1, dao.unflag(77))
+        assertEquals(1, dao.suspectDescriptionCount())
+    }
 
     // codex r16 P1-1: a memory removed because a CARRIED photo was forgotten is a provenance invalidation: the memory goes, the photo it cites stays
     @Test fun forgettingACarriedPhotoNeverDeletesThePhotoTheMemoryCites() = runBlocking {

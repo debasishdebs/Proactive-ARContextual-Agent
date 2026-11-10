@@ -37,6 +37,14 @@ data class MemoryEntity(
     val createdAt: Long,
     val derived: Boolean,
     val searchText: String,
+    /**
+     * Room v16 (user ruling 2026-11-10): whether the photo(s) this memory describes provably reached the model on the call that wrote it. null = unknown
+     * (every row written before v16), true = the router's delivery proof, false = written without one (text-only writes, unproved canvas facts).
+     * A false row never counts as describing its photo.
+     */
+    val imageDelivered: Boolean? = null,
+    /** Room v16: when the user marked this memory for review (Diagnostics > Suspect descriptions); null = not marked. A marked row never describes its photo. */
+    val reviewFlaggedAt: Long? = null,
 )
 
 /** External-content FTS4 over [MemoryEntity.searchText]; Room keeps it in sync with triggers. Default `simple` tokenizer. */

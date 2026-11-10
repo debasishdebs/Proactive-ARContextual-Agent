@@ -320,7 +320,7 @@ class QueueDrainWorker(
             if (union.toList().chunked(500).any { mdb.forgetDao().tombstoned(it).isNotEmpty() }) return@withTransaction false
             val ok = PipelineRecords.appendFact(applicationContext, summaryId, null, out.summary, "summary", out.entities,
                 out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
-                generation = generation, derived = true, sourceIds = srcIds, fenceFrameIds = union.toList())
+                generation = generation, derived = true, sourceIds = srcIds, fenceFrameIds = union.toList(), imageDelivered = false) // a text summary of memories: describes no photo
             // codex r18: a retry upserts the same summary id, so its provenance is REPLACED with the content, never accumulated
             if (ok) { mdb.frameSourceDao().deleteForMemory(summaryId); mdb.frameSourceDao().insertAll(union.map { com.rokid.context.memory.db.FrameSourceEntity(summaryId, it, null, ExtractSave.CARRIED) }) }
             ok
@@ -376,7 +376,7 @@ class QueueDrainWorker(
         PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
         val written = facts.withIndex().all { (i, f) ->
             PipelineRecords.appendFact(applicationContext, "$factPrefix$i", null, f.text, f.type, f.tags, f.confidence,
-                if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK, generation = generation)
+                if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK, generation = generation, imageDelivered = false) // the user's words: no photo
         }
         if (!written) return
         EmbeddingWorker.enqueue(applicationContext)

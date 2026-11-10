@@ -4,6 +4,9 @@ import android.app.Application
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import org.junit.Assert.assertTrue
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
@@ -133,6 +136,19 @@ class DiagnosticsTest {
         show(KeyframeRows(stats, retention = RetentionCounters(skippedDeleted = 12, describedBeforeDelete = 5, deletedUndescribed = 0, describeWaiting = 7, describeFailed = 2)))
         compose.onNodeWithTag("kf_retention").assertTextContains("skipped 12", substring = true).assertTextContains("described first 5", substring = true).assertTextContains("undescribed 0", substring = true).assertTextContains("waiting 7", substring = true).assertTextContains("describeFailed 2", substring = true)
         compose.onNodeWithTag("kf_describe_waiting").assertTextContains("Photos waiting to be described: 7", substring = true)
+    }
+
+    // Room v16: the suspect-description card lists the suspects; "Mark for review" asks first, then marks exactly that memory; undo shows after a marking
+    @Test fun suspectDescriptionsAreMarkedOnlyAfterConfirmation() {
+        val marked = mutableListOf<String>()
+        val rows = KeyframeRows(stats, suspects = SuspectDescriptions(2, listOf(SuspectItem("m1", "caption", 0L, "A desk with keys"))))
+        compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(undoAt = 9), {}, {}, {}, {}, {}, {}, {}, {}, {}, keyframes = rows, onMarkSuspect = { marked += it }) } }
+        compose.onNodeWithTag("suspect_count").assertTextContains("2 memories written before 2026-11-08", substring = true)
+        compose.onNodeWithTag("suspect_mark_m1").performScrollTo().performClick()
+        assertTrue("nothing is marked before the confirmation", marked.isEmpty())
+        compose.onNodeWithTag("suspect_confirm").performClick()
+        assertEquals(listOf("m1"), marked)
+        compose.onNodeWithText("Undo last marking").assertExists()
     }
 
     // codex r12: the user can see photos only canvas/derived memories cite

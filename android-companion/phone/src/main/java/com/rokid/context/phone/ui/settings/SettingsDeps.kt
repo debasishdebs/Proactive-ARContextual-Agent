@@ -214,6 +214,18 @@ private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnos
         com.rokid.context.phone.ui.settings.RetentionCounters(it.skippedPhotosDeleted(app), it.describedBeforeDelete(app), it.deletedUndescribed(app), dao.describeWaiting(), dao.describeFailed(),
             MemoryGraph.get(app).db.forgetDao().strandedPhotos())
     }
+    override suspend fun suspectDescriptions(): com.rokid.context.phone.ui.settings.SuspectDescriptions {
+        val dao = MemoryGraph.get(app).db.forgetDao()
+        return com.rokid.context.phone.ui.settings.SuspectDescriptions(dao.suspectDescriptionCount(),
+            dao.suspectDescriptions(com.rokid.context.phone.ui.settings.SuspectDescriptions.SHOWN).map { com.rokid.context.phone.ui.settings.SuspectItem(it.id, it.type, it.createdAt, it.text) })
+    }
+    override suspend fun markForReview(ids: List<String>?): Long {
+        val dao = MemoryGraph.get(app).db.forgetDao()
+        val at = System.currentTimeMillis()
+        val n = if (ids == null) dao.flagAllSuspects(at) else dao.flagForReview(ids, at)
+        return if (n > 0) at else 0
+    }
+    override suspend fun undoMark(at: Long): Int = MemoryGraph.get(app).db.forgetDao().unflag(at)
     override suspend fun promptIsCurrent() =
         com.rokid.context.orchestration.ExtractSave.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT))
     override suspend fun clusterPromptIsCurrent() =
