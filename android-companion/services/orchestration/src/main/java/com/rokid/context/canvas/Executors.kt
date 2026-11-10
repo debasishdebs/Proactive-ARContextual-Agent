@@ -63,10 +63,26 @@ internal fun valueSources(v: CanvasValue?): com.rokid.context.model.PayloadSourc
     else com.rokid.context.model.PayloadSources.NONE
 
 /**
- * Codex r13: the provenance an item carries INTO the next node: everything its input was built from ([sourcesOf]) plus what the new value cites. A node
- * that turns a fact citing A+B into JSON loses the citation in the value, so the sources travel beside it (runner and interpreter keep one per item id).
+ * Codex r14 RULE A, applied ONCE at the execution boundary (CanvasRunner and PipelineInterpreter, never per executor): every output of a node
+ * execution carries the union of the sources of ALL inputs that execution consumed (the whole chunk: a Vision batch, a window) plus what the output
+ * value cites. An executor that may keep state across chunks ([NodeExecutor.chunkLocal] false, the default, so a new executor is conservative) also
+ * carries everything the node consumed in earlier chunks. A node that turns a fact citing A+B into JSON loses the citation in the value; the sources
+ * travel beside it, keyed by item id, into the next node's [CanvasItem.sources].
  */
-fun carriedSources(input: CanvasItem, output: CanvasValue?): com.rokid.context.model.PayloadSources = sourcesOf(input) + valueSources(output)
+class NodeProvenance(private val ex: NodeExecutor?) {
+    private var earlier = com.rokid.context.model.PayloadSources.NONE
+    private var chunk = com.rokid.context.model.PayloadSources.NONE
+
+    /** Call once per chunk, before reading [of] for its outputs. */
+    fun consume(items: List<CanvasItem>) {
+        val now = items.fold(com.rokid.context.model.PayloadSources.NONE) { acc, it -> acc + sourcesOf(it) }
+        chunk = if (ex?.chunkLocal == true) now else earlier + now
+        earlier = earlier + now
+    }
+
+    /** The sources an output of the current chunk carries. */
+    fun of(output: CanvasValue?): com.rokid.context.model.PayloadSources = chunk + valueSources(output)
+}
 
 /** The helper executor's FRAME_FORGET token (this file must not name that executor): the runner stops a run whose photo was forgotten. */
 private const val FRAME_FORGET = "frame_forget"
@@ -94,6 +110,7 @@ private fun noCalls(node: PipelineNode, items: Int) = 0
 private fun ceilDiv(n: Int, d: Int) = (n + d - 1) / d
 
 object VisionExtractExecutor : NodeExecutor {
+    override val chunkLocal = true // each run depends on its chunk only (codex r14 RULE A)
     override val type = NodeTypes.VISION_EXTRACT
 
     private fun batch(node: PipelineNode) = (node.params["batch"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.coerceIn(1, ExtractSave.MAX_BATCH) ?: ExtractComposite.DEFAULT_BATCH
@@ -112,7 +129,9 @@ object VisionExtractExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, ctx.callClass, ctx.liveness, override, sources)
+                // codex r14 RULE B: the upstream JSON in the prompt declares the sources of every item it came from, on every attempt
+                val provenance = chunk.fold(com.rokid.context.model.PayloadSources.NONE) { acc, it -> acc + sourcesOf(it) }
+                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, ctx.callClass, ctx.liveness, override, sources, contextProvenance = provenance)
                 // One provider call (or a few attempts) behind the whole chunk: only its first item owns the usage, counted once (S32).
                 val owner = ownerMeta(ms(), b.attempts, b.promptVersion, batchId)
                 val mate = CallMeta(owner.latencyMs, null, null, null, b.promptVersion, batchId)
@@ -134,6 +153,7 @@ object VisionExtractExecutor : NodeExecutor {
 }
 
 object LocalCriticExecutor : NodeExecutor {
+    override val chunkLocal = true // each run depends on its chunk only (codex r14 RULE A)
     override val type = NodeTypes.LOCAL_CRITIC
     override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
     override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
@@ -147,6 +167,7 @@ object LocalCriticExecutor : NodeExecutor {
 }
 
 object CriticExecutor : NodeExecutor {
+    override val chunkLocal = true // each run depends on its chunk only (codex r14 RULE A)
     override val type = NodeTypes.CRITIC
     override fun nominalCalls(node: PipelineNode, items: Int) = items
     override fun maxCalls(node: PipelineNode, items: Int) = items * 2
@@ -178,6 +199,7 @@ object CriticExecutor : NodeExecutor {
 }
 
 object PromptExecutor : NodeExecutor {
+    override val chunkLocal = true // each run depends on its chunk only (codex r14 RULE A)
     override val type = NodeTypes.PROMPT
     override fun nominalCalls(node: PipelineNode, items: Int) = items
     override fun maxCalls(node: PipelineNode, items: Int) = items
@@ -233,6 +255,7 @@ object PromptExecutor : NodeExecutor {
  * (preview) read it as they read any fact. Rows get the lineage token of their own call, and the runner adds the member tokens of a Moment or Scene item, so a Forget reaches them.
  */
 object SummaryExecutor : NodeExecutor {
+    override val chunkLocal = true // each run depends on its chunk only (codex r14 RULE A)
     override val type = NodeTypes.SUMMARY
 
     /**
@@ -363,6 +386,7 @@ object CompareExecutor : NodeExecutor {
 }
 
 object SwitchExecutor : NodeExecutor {
+    override val chunkLocal = true // each run depends on its chunk only (codex r14 RULE A)
     override val type = NodeTypes.SWITCH
     override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
     override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
@@ -396,6 +420,7 @@ object SetFrequencyPreviewExecutor : NodeExecutor {
 
 /** What saving would write, as rows. It writes nothing: ExtractSave.saveExtraction is never called. */
 object MemoryWritePreviewExecutor : NodeExecutor {
+    override val chunkLocal = true // each run depends on its chunk only (codex r14 RULE A)
     override val type = NodeTypes.MEMORY_WRITE
     override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
     override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)

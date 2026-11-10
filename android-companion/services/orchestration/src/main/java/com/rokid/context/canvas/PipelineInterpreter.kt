@@ -98,7 +98,9 @@ class PipelineInterpreter(
             }
             val ex = executors[node.type]
             val produced = LinkedHashMap<String, ItemFlow.Out>()
+            val provenance = NodeProvenance(ex)
             if (failure == null) for (chunk in queue.chunked(ex?.chunkSize(node)?.coerceAtLeast(1) ?: Int.MAX_VALUE)) {
+                provenance.consume(chunk)
                 val results = runChunk(ex, node, chunk, ctx)
                 results.firstNotNullOfOrNull { r -> r.cause?.takeIf(::isTransient) }?.let { throw it }
                 for (item in chunk) {
@@ -107,7 +109,7 @@ class PipelineInterpreter(
                     if (r.error != null) { failure = failure ?: reasonOf(r); continue }
                     val v = r.value ?: continue
                     produced[item.frameId] = ItemFlow.Out(v, r.branch)
-                    carried[item.frameId] = carriedSources(item, v) // codex r13: provenance travels with the output
+                    carried[item.frameId] = provenance.of(v) // codex r14 RULE A: the union of the whole execution's inputs
                     if (node.type == NodeTypes.SWITCH) labelOf(node, v)?.let { labels.putIfAbsent(item.frameId, it) }
                     if (isExtract) {
                         extractedFrames += item.frameId

@@ -179,9 +179,9 @@ class ModelRouter(
         val photoIds = request.sources.frameIds + request.images.mapNotNull { it.ref }
         val memoryIds = request.sources.memoryIds
         val liveness = request.liveness
-        // codex r13: text read from stored content with EMPTY provenance is refused too (lost provenance is never a bypass)
-        if (request.images.any { it.ref.isNullOrBlank() } || ((photoIds.isNotEmpty() || memoryIds.isNotEmpty()) && liveness == null) ||
-            (request.sources.required && photoIds.isEmpty() && memoryIds.isEmpty())) {
+        // codex r14 RULE C: every request carrying stored content (any sources but NONE, or a photo) is guarded, even with empty id sets
+        val guarded = request.sources.stored || photoIds.isNotEmpty() || memoryIds.isNotEmpty()
+        if (request.images.any { it.ref.isNullOrBlank() } || (guarded && liveness == null)) {
             PcLog.w(TAG, "image_dispatch_refused reason=unguarded")
             throw ImagesUnguardedException()
         }
@@ -193,8 +193,8 @@ class ModelRouter(
         // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
-            if (liveness == null || (photoIds.isEmpty() && memoryIds.isEmpty())) p.complete(r) else liveness.holdUploadSlot {
-                val gone = liveness.gone(photoIds)
+            if (liveness == null || !guarded) p.complete(r) else liveness.holdUploadSlot {
+                val gone = liveness.gone(photoIds) // also the wipe generation the liveness captured: checked even when no id is attached
                 val goneMemories = if (memoryIds.isEmpty()) emptySet() else liveness.goneMemories(memoryIds)
                 if (!gone.none || goneMemories.isNotEmpty()) {
                     if (gone.wiped) PcLog.i(TAG, "image_dispatch_dropped reason=wiped photos=${gone.ids.size}")

@@ -63,7 +63,7 @@ class ExtractSaveOverrideTest {
     @Test fun contextSourcesReachPrompt() = runBlocking<Unit> {
         val ai = graph { reply("ex1") }
         val draft = PromptDraft("SRC[{{context_sources}}] {{recent_context}}", DefaultSchemas.text(PromptKey.VISION_EXTRACT))
-        ExtractSave.extract(ai.runner, listOf(photo("ex1")), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive, override = draft, contextSources = "CTXSRC-XYZ")
+        ExtractSave.extract(ai.runner, listOf(photo("ex1")), CallClass.EXTRACT, com.rokid.context.orchestration.AllLive, override = draft, contextSources = "CTXSRC-XYZ", contextProvenance = com.rokid.context.model.PayloadSources.frames(listOf("ex1")))
         assertTrue(prompts.single().contains("SRC[CTXSRC-XYZ]"))
     }
 

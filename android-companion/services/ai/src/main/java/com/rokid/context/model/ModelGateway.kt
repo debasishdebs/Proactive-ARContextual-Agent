@@ -54,28 +54,28 @@ data class ModelRequest(
 }
 
 /**
- * Codex r12: the stored user content a prompt is built from. [frameIds]: photos whose bytes, metadata, facts or captions are in it (row present, not
- * tombstoned). [memoryIds]: memories whose text is in it (present, not INVALIDATED; a memory whose photo legitimately expired is still live; a
- * `photo:` cite id is live while its keyframe metadata stays). Every model call site declares one, [NONE] when the prompt holds no stored user content.
+ * Codex r12/r14: the stored user content a prompt is built from. [frameIds]: photos whose bytes, metadata, facts or captions are in it (row present,
+ * not tombstoned). [memoryIds]: memories whose text is in it (present, not INVALIDATED; a memory whose photo legitimately expired is still live; a
+ * `frame:` cite id is live while its keyframe metadata stays). Every model call site declares one.
+ *
+ * [stored] (codex r14 RULE C): the prompt carries stored user content (memory text, mark labels, captions, facts, frame metadata). Every value but
+ * [NONE] is stored, even with empty id sets (a mark-only Moment): the router then still takes the upload slot and checks the liveness' captured wipe
+ * generation, so a Delete all after the text was read drops the call. Only [NONE], declared at a site whose prompt holds no stored content, skips it.
+ * [frames]/[memories] are "these ids or nothing" helpers: empty input gives [NONE].
  */
-data class PayloadSources(
-    val frameIds: Set<String> = emptySet(), val memoryIds: Set<String> = emptySet(),
-    /**
-     * Codex r13: the prompt's text was READ from stored content, so these sources cannot be empty: an empty set here means the provenance was lost (e.g.
-     * reloaded after a Forget cascade removed it) and the router refuses the call instead of sending unchecked text. Set by [stored].
-     */
-    val required: Boolean = false,
-) {
+@ConsistentCopyVisibility
+data class PayloadSources private constructor(val frameIds: Set<String>, val memoryIds: Set<String>, val stored: Boolean) {
+    constructor(frameIds: Set<String> = emptySet(), memoryIds: Set<String> = emptySet()) : this(frameIds, memoryIds, stored = true)
     val isEmpty: Boolean get() = frameIds.isEmpty() && memoryIds.isEmpty()
-    operator fun plus(o: PayloadSources) = PayloadSources(frameIds + o.frameIds, memoryIds + o.memoryIds, required || o.required)
+    operator fun plus(o: PayloadSources) = PayloadSources(frameIds + o.frameIds, memoryIds + o.memoryIds, stored || o.stored)
     companion object {
-        /** Sources of a prompt whose text was read from stored content ([required]): empty = refused by the router. */
+        /** Sources of a prompt whose text was read from stored content: always [stored], whatever the id sets. */
         fun stored(frameIds: Collection<String>, memoryIds: Collection<String>) =
-            PayloadSources(frameIds.filter { it.isNotBlank() }.toSet(), memoryIds.filter { it.isNotBlank() }.toSet(), required = true)
-        /** Declared: no stored user content (photos, facts, captions, memories, history) is in the prompt. */
-        val NONE = PayloadSources()
-        fun frames(ids: Collection<String>) = PayloadSources(frameIds = ids.filter { it.isNotBlank() }.toSet())
-        fun memories(ids: Collection<String>) = PayloadSources(memoryIds = ids.filter { it.isNotBlank() }.toSet())
+            PayloadSources(frameIds.filter { it.isNotBlank() }.toSet(), memoryIds.filter { it.isNotBlank() }.toSet(), stored = true)
+        /** Declared: no stored user content (photos, facts, captions, memories, labels, history) is in the prompt. The only value that skips the guard. */
+        val NONE = PayloadSources(emptySet(), emptySet(), stored = false)
+        fun frames(ids: Collection<String>) = ids.filter { it.isNotBlank() }.toSet().let { if (it.isEmpty()) NONE else PayloadSources(frameIds = it) }
+        fun memories(ids: Collection<String>) = ids.filter { it.isNotBlank() }.toSet().let { if (it.isEmpty()) NONE else PayloadSources(memoryIds = it) }
     }
 }
 

@@ -84,7 +84,13 @@ object ExtractSave {
      */
     suspend fun extract(
         runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, liveness: PhotoLiveness?, override: PromptDraft? = null, contextSources: String = "",
+        /**
+         * Codex r14 RULE B: the stored content [contextSources] was built from (a canvas node's upstream JSON); declared on EVERY attempt, the
+         * single-photo fallback included. Context text without it is refused: the prompt would carry content the router cannot re-check.
+         */
+        contextProvenance: com.rokid.context.model.PayloadSources = com.rokid.context.model.PayloadSources.NONE,
     ): ExtractedBatch {
+        require(contextSources.isBlank() || contextProvenance != com.rokid.context.model.PayloadSources.NONE) { "context text without provenance" }
         require(photos.isNotEmpty()) { "no photos" }
         val current = promptIsCurrent(
             if (override != null) (override.outputSchema ?: DefaultSchemas.text(PromptKey.VISION_EXTRACT)) else runner.activeSchema(PromptKey.VISION_EXTRACT),
@@ -94,7 +100,7 @@ object ExtractSave {
         for (chunk in if (current) photos.chunked(MAX_BATCH) else photos.map { listOf(it) }) {
             if (chunk.size > 1) {
                 try {
-                    parts += call(runner, chunk, callClass, liveness, override, contextSources).also { attempts += it.attempts }; continue
+                    parts += call(runner, chunk, callClass, liveness, override, contextSources, contextProvenance).also { attempts += it.attempts }; continue
                 } catch (e: ModelCallException) {
                     if (e.kind != FailureKind.INVALID_OUTPUT) throw e
                     attempts += usageOf(e.replies)
@@ -102,7 +108,7 @@ object ExtractSave {
                 }
             }
             chunk.forEach { p ->
-                val r = call(runner, listOf(p), callClass, liveness, override, contextSources).also { attempts += it.attempts }
+                val r = call(runner, listOf(p), callClass, liveness, override, contextSources, contextProvenance).also { attempts += it.attempts }
                 // Legacy reply (no source_frame_ids): the one photo sent is trivially the provenance.
                 parts += if (r.output.provenance) r else r.copy(output = r.output.copy(facts = r.output.facts.map {
                     if (it.sourceFrameIds.isEmpty()) it.copy(sourceFrameIds = listOf(p.frameId)) else it
@@ -118,12 +124,13 @@ object ExtractSave {
 
     private fun usageOf(replies: List<com.rokid.context.ai.RoutedReply>) = replies.map { CallUsage(it.promptTokens, it.completionTokens, it.model, it.latencyMs) }
 
-    private suspend fun call(runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, liveness: PhotoLiveness?, override: PromptDraft?, contextSources: String): ExtractedBatch {
+    private suspend fun call(runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, liveness: PhotoLiveness?, override: PromptDraft?, contextSources: String,
+        contextProvenance: com.rokid.context.model.PayloadSources): ExtractedBatch {
         val lines = photos.map { "frame_id: ${it.frameId} - ${it.description}" }
         val r = runner.run(
             RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = PromptComposer.dataBlock("frames", lines), contextSources = contextSources),
                 images = photos.map { it.image.copy(ref = it.frameId) }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass,
-                override = override, liveness = liveness, sources = com.rokid.context.model.PayloadSources.frames(photos.map { it.frameId })),
+                override = override, liveness = liveness, sources = com.rokid.context.model.PayloadSources.frames(photos.map { it.frameId }) + contextProvenance),
         )
         return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered), r.promptVersion, usageOf(r.replies))
     }

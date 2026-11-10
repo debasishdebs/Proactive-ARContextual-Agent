@@ -56,6 +56,11 @@ class RunContext(
 
 interface NodeExecutor {
     val type: String
+    /**
+     * Codex r14: true only when a run(chunk) depends on nothing but that chunk (no state carried across chunks of one node). False (the default, so a new
+     * executor is conservative) makes every output also carry the sources of everything the node consumed before ([NodeProvenance]).
+     */
+    val chunkLocal: Boolean get() = false
     fun chunkSize(node: PipelineNode): Int = 1
     fun nominalCalls(node: PipelineNode, items: Int): Int
     fun maxCalls(node: PipelineNode, items: Int): Int
