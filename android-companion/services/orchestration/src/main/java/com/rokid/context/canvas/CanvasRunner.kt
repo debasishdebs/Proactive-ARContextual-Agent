@@ -668,9 +668,11 @@ class CanvasRunner(
             markLineageOf.forEach { (k, ids) -> if (ids.isNotEmpty()) lineage.getOrPut(k) { LinkedHashSet() }.addAll(ids.map { MEMBER_TOKEN + it }) }
             val allMarks: Set<String> = markLineageOf.values.flatten().toSet()
 
-            fun write(nodeId: String, frameId: String, r: NodeResult, derivedFrom: Set<String> = emptySet()) {
+            /** Codex r18: the row's call lineage is its frame's own tokens (members, marks) + the calls of its producing edge + its own call; returned for the output. */
+            fun write(nodeId: String, frameId: String, r: NodeResult, derivedFrom: Set<String> = emptySet(), upstreamCalls: Set<String> = emptySet()): Set<String> {
                 val m = r.meta
-                val batch = CanvasLineage.compose(lineage.getOrPut(frameId) { LinkedHashSet() }, m?.batchId)
+                val seen = LinkedHashSet(lineage[frameId].orEmpty()).apply { addAll(upstreamCalls) }
+                val batch = CanvasLineage.compose(seen, m?.batchId)
                     .let { b -> if (derivedFrom.isEmpty()) b else listOfNotNull(b).plus(derivedFrom.map { MEMBER_TOKEN + it }).joinToString(CanvasLineage.SEP.toString()) }
                 pending += CanvasRunItemEntity(
                     runId, frameId, nodeId, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { CanvasValueJson.encode(it) }, r.error,
@@ -678,6 +680,7 @@ class CanvasRunner(
                 )
                 if (r.error != null) failures++
                 calls += r.calls
+                return seen
             }
 
             /** The fenced commit of the rows gathered so far. False = a wipe or a Forget happened: nothing was written, the run stops. */
@@ -772,8 +775,9 @@ class CanvasRunner(
                         // codex r14 RULE A: the union of the whole execution's inputs; r15: its photos also become the row's lineage ("mf:<frameId>"),
                         // so a Forget of any of them deletes the row and a later Save links the saved memory to all of them
                         val c = provenance.of(r.value, r.exactSources)
-                        write(node.id, item.frameId, r, c.frameIds) // the row's own provenance (not accumulated across branches)
-                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch, c) }
+                        // the row's own provenance and call lineage, along its producing edge only (never accumulated across branches)
+                        val callLineage = write(node.id, item.frameId, r, c.frameIds, gathered.callLineage[item.frameId].orEmpty())
+                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch, c, callLineage) }
                     }
                     if (!flush()) { line(Level.I, "write dropped by the wipe/forget fence"); status = "CANCELLED"; break@stop }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)
