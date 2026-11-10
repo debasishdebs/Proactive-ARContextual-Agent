@@ -320,12 +320,43 @@ traced along the graph edges that feed memory.write, never by frame id, batch or
 
 Each test failed before its fix.
 
-## Still open: pre-fix captions (codex r10 item 4, needs a ruling)
+## DONE (user ruling 2026-11-10): Room v16 delivery proof, suspect review, Run-and-Save captions
 
-The existing columns cannot tell a caption written before this fix by the old text-only retry (guessed from metadata) from a real one. Both have the
-same id prefix, `reviewState = OK`, confidence 1.0 and `frame_source` rows, and no column records image delivery. Only a schema change can separate
-them: a delivery-proof column, which means a Room migration from version 15 to 16. The other option is a policy decision to quarantine or re-describe
-every pre-fix caption, for example by `createdAt` before this commit. The hook for either is `DESCRIBES` in `ForgetDao`. No migration was made.
+The open migration ruling is resolved. The user approved ONE additive Room migration, 15 → 16 (`MIGRATION_15_16`, `16.json` exported), and it is
+the only schema change of rc1. It adds three nullable columns:
+
+- `memory.imageDelivered`: null means unknown (every pre-v16 row), true means the router's delivery proof, false means written without proof.
+- `memory.reviewFlaggedAt`: the user's "Mark for review".
+- `canvas_run_item.imageDelivered`: the stored run's per-photo proof.
+
+`MigrationV15to16Test` runs from the real `15.json`. It checks that rows are kept, the new columns are null, indices are intact, the migration is
+additive only, and every upgrade path from 1 to 15 reaches 16. The SQLCipher builder only gains the migration; an encrypted run needs the emulator.
+
+- **Writers.** Every production memory write states `imageDelivered`, and `PromptKeyImageUseTest.everyMemoryWriteDeclaresItsDeliveryProof` scans
+  for it.
+  - Extraction and cluster writes take the router's proof per memory (`ExtractSave.deliveredOf`).
+  - Text writes (explicit remember, reprocess and resummarized summaries) are false.
+  - The legacy import is null.
+- **Description rule.** `ForgetDao.DESCRIBES` treats a flagged row, or `imageDelivered = 0`, as never describing its photo. Null keeps today's rule,
+  so good old captions do not strand photos.
+- **Suspect list.** The database has no record of which calls fell back to text. `ForgetDao.SUSPECT` therefore lists every memory that could be one:
+  - `imageDelivered` is null (written before v16);
+  - it was created before the build that ended the text retry (commit 4eb149c2, 2026-11-07 21:05:17 UTC);
+  - it is not flagged, OK, not derived and not canvas;
+  - it cites a photo via `frameId` or a FACT/CLUSTER_REP row.
+
+  Scale: the log for 11-01 to 11-05 alone shows 1,635 extraction batches over 2,114 photos, so a device's list holds every pre-11-08 photo
+  description: thousands of rows, most of them good, against about 44 real ones.
+  Diagnostics > Suspect descriptions shows the count, the newest 20 rows (kind, time, start of the text) with a confirmed "Mark for review", a
+  confirmed "Mark all N", and "Undo last marking". Marking only sets `reviewFlaggedAt`: no text, photo or provenance changes, and retention keeps
+  the photo until it is described again. There is no canvas GET route, because no keyframe diagnostic has one.
+- **Other paths.** Delete all and Forget remove rows as before. Export writes `imageDelivered` and `reviewFlaggedAt` as optional fields. There is no
+  import path, and the DB is excluded from Android backup.
+- **Run and Save.** The VisionExtractExecutor stores `imageDelivered` on each photo's row from `ExtractedBatch.deliveredPhotos` (the photos of
+  successful attempts whose reply carried the router's proof). The proof travels along the producing edge through a pass-through node only while
+  the captions are unchanged. `CanvasRunSave` proposes and saves a caption only with that proof; the caption is saved with `imageDelivered=true` and
+  each fact with its item's proof. A run stored before v16 has no proof and keeps the refusal. TRACE_SCHEMA is unchanged.
+- **Accepted for rc1 (user ruling):** over-linking. A derived memory can be removed on Forget of a batch-mate photo; a photo is never removed this way.
 
 ## Tests
 
