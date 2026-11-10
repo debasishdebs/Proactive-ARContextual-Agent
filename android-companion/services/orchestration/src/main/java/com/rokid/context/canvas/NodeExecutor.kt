@@ -40,6 +40,8 @@ data class NodeResult(
      * this photo, with the sources of the context text they included). Null = the boundary's conservative chunk union ([NodeProvenance]).
      */
     val exactSources: com.rokid.context.model.PayloadSources? = null,
+    /** Room v16: this item's photo was PROVED delivered as an image on the call that produced this value (Vision sets it; null = not an image call). */
+    val imageDelivered: Boolean? = null,
 ) {
     /** Never prints [cause] or [value]: a cause message can carry provider-derived text. */
     override fun toString() = "NodeResult(frameId=$frameId, branch=$branch, error=$error, calls=$calls)"

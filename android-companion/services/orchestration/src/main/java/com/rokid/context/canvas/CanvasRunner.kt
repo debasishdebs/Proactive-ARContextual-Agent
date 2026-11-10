@@ -95,6 +95,10 @@ class CanvasRunner(
     /** The recent watch values of the phone hub a watch run uses (estimate, start and again right after the fence capture); null = no watch runs. */
     private val watch: WatchRunSource? = null,
 ) {
+    /** Room v16: a pass-through keeps its input's caption proof only while the captions are exactly those the proved call wrote. */
+    private fun sameCaptions(input: CanvasValue, output: CanvasValue?): Boolean =
+        input is CanvasValue.Extraction && output is CanvasValue.Extraction && input.captions == output.captions && input.captions.isNotEmpty()
+
     companion object {
         const val MAX_PHOTOS = 50
         const val MAX_NOMINAL_CALLS = 200
@@ -669,14 +673,14 @@ class CanvasRunner(
             val allMarks: Set<String> = markLineageOf.values.flatten().toSet()
 
             /** Codex r18: the row's call lineage is its frame's own tokens (members, marks) + the calls of its producing edge + its own call; returned for the output. */
-            fun write(nodeId: String, frameId: String, r: NodeResult, derivedFrom: Set<String> = emptySet(), upstreamCalls: Set<String> = emptySet()): Set<String> {
+            fun write(nodeId: String, frameId: String, r: NodeResult, derivedFrom: Set<String> = emptySet(), upstreamCalls: Set<String> = emptySet(), imageDelivered: Boolean? = null): Set<String> {
                 val m = r.meta
                 val seen = LinkedHashSet(lineage[frameId].orEmpty()).apply { addAll(upstreamCalls) }
                 val batch = CanvasLineage.compose(seen, m?.batchId)
                     .let { b -> if (derivedFrom.isEmpty()) b else listOfNotNull(b).plus(derivedFrom.map { MEMBER_TOKEN + it }).joinToString(CanvasLineage.SEP.toString()) }
                 pending += CanvasRunItemEntity(
                     runId, frameId, nodeId, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { CanvasValueJson.encode(it) }, r.error,
-                    m?.latencyMs, m?.promptTokens, m?.completionTokens, m?.model, m?.promptVersion, batch, m?.calls,
+                    m?.latencyMs, m?.promptTokens, m?.completionTokens, m?.model, m?.promptVersion, batch, m?.calls, imageDelivered,
                 )
                 if (r.error != null) failures++
                 calls += r.calls
@@ -776,8 +780,10 @@ class CanvasRunner(
                         // so a Forget of any of them deletes the row and a later Save links the saved memory to all of them
                         val c = provenance.of(r.value, r.exactSources)
                         // the row's own provenance and call lineage, along its producing edge only (never accumulated across branches)
-                        val callLineage = write(node.id, item.frameId, r, c.frameIds, gathered.callLineage[item.frameId].orEmpty())
-                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch, c, callLineage) }
+                        // Room v16: the caption's delivery proof is the executor's (Vision), or travels unchanged with captions passed through unchanged
+                        val proof = r.imageDelivered ?: gathered.imageDelivered[item.frameId]?.takeIf { _ -> sameCaptions(item.value, r.value) }
+                        val callLineage = write(node.id, item.frameId, r, c.frameIds, gathered.callLineage[item.frameId].orEmpty(), proof)
+                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch, c, callLineage, proof) }
                     }
                     if (!flush()) { line(Level.I, "write dropped by the wipe/forget fence"); status = "CANCELLED"; break@stop }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)

@@ -87,7 +87,9 @@ class CanvasRunSave(
     @Volatile internal var testAfterLoad: (suspend () -> Unit)? = null
 
     /** [carried]: per fact (same index), the photos the output item that produced it was derived from (codex r16: per saved memory, never the run's union). */
-    private class Built(val facts: List<Fact>, val ok: List<Boolean>, val captions: List<FrameCaption>, val frames: Set<String>, val carried: List<Set<String>> = emptyList())
+    /** [delivered]: per fact (same index), the stored run's proof that its photo reached the model (Room v16); [captions] are only proved ones. */
+    private class Built(val facts: List<Fact>, val ok: List<Boolean>, val captions: List<FrameCaption>, val frames: Set<String>, val carried: List<Set<String>> = emptyList(),
+                        val delivered: List<Boolean> = emptyList())
 
     private class Loaded(val refusal: Reason?, val built: Built?)
 
@@ -97,9 +99,10 @@ class CanvasRunSave(
         val saved = db.canvasSlice3Dao().meta(CanvasSaveMarker.key(runId))?.toIntOrNull()
         val l = load(runId)
         val b = l.built
-        // Codex r10: captions are never proposed or saved from a stored run: the run table keeps no proof the photo reached the model (ExtractSave refuses
-        // a caption without it), and a caption is the row that lets retention delete the photo.
-        val rows = if (b == null) emptyList() else b.facts.mapIndexed { i, f -> Proposed(f.sourceFrameIds.first(), "fact", f.text, f.type, if (b.ok[i]) "OK" else "NEEDS_REVIEW") }
+        // Room v16 (user ruling 2026-11-10): a caption is proposed and saved only when the stored run PROVES its photo reached the model; a run stored
+        // before v16 (or a caption of an unproved call) keeps the codex r10 refusal
+        val rows = if (b == null) emptyList() else b.facts.mapIndexed { i, f -> Proposed(f.sourceFrameIds.first(), "fact", f.text, f.type, if (b.ok[i]) "OK" else "NEEDS_REVIEW") } +
+            b.captions.map { Proposed(it.frameId, "caption", it.caption, "caption", "OK") }
         return Proposal(l.refusal, saved, rows)
     }
 
@@ -114,13 +117,14 @@ class CanvasRunSave(
         testAfterLoad?.invoke()
         l.refusal?.let { PcLog.i(TAG, "canvas save refused"); return Result.NotSaveable(it) }
         val b = l.built ?: return Result.NothingToSave
-        if (b.facts.isEmpty()) return Result.NothingToSave
+        if (b.facts.isEmpty() && b.captions.isEmpty()) return Result.NothingToSave
         val prefix = PREFIX + runId + "_"
         var needReview = 0
         val res = try {
             gate().write {
                 ExtractSave.saveExtraction(
-                    app, prefix, ExtractOutput(b.facts, captions = emptyList(), provenance = true), b.frames, claims = null,
+                    app, prefix, ExtractOutput(b.facts, captions = b.captions, provenance = true, imagesDelivered = b.captions.isNotEmpty()), b.frames, claims = null,
+                    deliveredOf = { _, index -> index?.let { b.delivered.getOrNull(it) } ?: true }, // a caption is saved only with proof; a fact gets its item's proof
                     tier = MemoryTier.SHORT, reviewState = ReviewState.NEEDS_REVIEW, generation = gen, nowMs = clock(),
                     carriedOf = { ids, index -> index?.let { b.carried.getOrNull(it) } ?: ids.toSet() }, // codex r16: only the item that produced this memory
                     inTransaction = { saved ->
@@ -183,9 +187,9 @@ class CanvasRunSave(
             if (row.status != "OK") continue
             val v = CanvasValueJson.decodeExtraction(row.outputJson) ?: continue
             val derivedFrom = row.batchId?.split('|')?.filter { it.startsWith(CanvasRunner.MEMBER_TOKEN) }?.map { it.removePrefix(CanvasRunner.MEMBER_TOKEN) }.orEmpty()
-            outputs.getOrPut(row.nodeId) { LinkedHashMap() }[row.frameId] = ItemFlow.Out(v, row.branch, com.rokid.context.model.PayloadSources.frames(derivedFrom))
+            outputs.getOrPut(row.nodeId) { LinkedHashMap() }[row.frameId] = ItemFlow.Out(v, row.branch, com.rokid.context.model.PayloadSources.frames(derivedFrom), imageDelivered = row.imageDelivered)
         }
-        class Cand(val frameId: String, val fact: Fact, var ok: Boolean) { val carried = HashSet<String>() }
+        class Cand(val frameId: String, val fact: Fact, var ok: Boolean) { val carried = HashSet<String>(); var delivered = true }
         val facts = LinkedHashMap<Triple<String, String, List<String>>, Cand>()
         val captions = LinkedHashMap<String, String>()
         for (sink in sinks) {
@@ -198,8 +202,10 @@ class CanvasRunSave(
                     val c = facts.getOrPut(Triple(f.text.trim(), f.type, src)) { Cand(frameId, f.copy(text = f.text.trim(), sourceFrameIds = src), true) }
                     if (!trusted) c.ok = false // a fact only counts as checked when every photo that carried it was
                     c.carried += gathered.sources[frameId]?.frameIds.orEmpty()
+                    if (gathered.imageDelivered[frameId] != true) c.delivered = false // proved only when every item that carried it was
                 }
-                x.captions.filter { it.caption.isNotBlank() && it.frameId == frameId }.forEach { captions.putIfAbsent(it.frameId, it.caption.trim()) }
+                // Room v16: only a caption whose photo the stored run proved delivered (a pre-v16 run has no proof: refused as before)
+                if (gathered.imageDelivered[frameId] == true) x.captions.filter { it.caption.isNotBlank() && it.frameId == frameId }.forEach { captions.putIfAbsent(it.frameId, it.caption.trim()) }
             }
         }
         // valid memories only: the photo they came from must still be live (not forgotten, not tombstoned, not expired)
@@ -208,12 +214,12 @@ class CanvasRunSave(
         val kept = facts.values.mapNotNull { c ->
             val src = c.fact.sourceFrameIds.filter { it in live }
             // codex r15: a fact derived from a photo that is gone (forgotten) is not saved, even when its own cited photo is live
-            if (src.isEmpty() || c.carried.any { it !in live }) null else Cand(c.frameId, c.fact.copy(sourceFrameIds = src), c.ok).also { k -> k.carried += c.carried }
+            if (src.isEmpty() || c.carried.any { it !in live }) null else Cand(c.frameId, c.fact.copy(sourceFrameIds = src), c.ok).also { k -> k.carried += c.carried; k.delivered = c.delivered }
         }
         val caps = captions.filterKeys { it in live }.map { FrameCaption(it.key, it.value) }
         val frames = (kept.flatMap { it.fact.sourceFrameIds + it.carried } + caps.map { it.frameId }).toSet()
         return Loaded(null, Built(kept.map { it.fact.copy(tags = (it.fact.tags + TAG_CANVAS).distinct()) }, kept.map { it.ok }, caps, frames,
-            kept.map { it.carried + it.fact.sourceFrameIds }))
+            kept.map { it.carried + it.fact.sourceFrameIds }, kept.map { it.delivered }))
     }
 
     companion object {

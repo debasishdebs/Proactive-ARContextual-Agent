@@ -63,9 +63,28 @@ class CanvasRunSaveTest {
     }
 
     /** A DONE run whose extract node produced [byFrame] (what the run rows hold). */
-    private suspend fun run(id: String, p: Pipeline, byFrame: Map<String, CanvasValue.Extraction>, status: String = "DONE") {
+    /** [proof]: the per-photo delivery proof the v16 runner stores (null = a run stored before v16, or no proof recorded). */
+    private suspend fun run(id: String, p: Pipeline, byFrame: Map<String, CanvasValue.Extraction>, status: String = "DONE", proof: Map<String, Boolean?> = emptyMap()) {
         h.dao.insertRun(CanvasRunEntity(id, "p", null, "h", PipelineJson.encode(p), status, byFrame.size, 1, 0, 0, 1, null, "[]"))
-        byFrame.forEach { (f, v) -> h.dao.upsertItem(CanvasRunItemEntity(id, f, "ext", "OK", null, CanvasValueJson.encode(v), null, null, null, null, null, null, "$id:ext:$f")) }
+        byFrame.forEach { (f, v) -> h.dao.upsertItem(CanvasRunItemEntity(id, f, "ext", "OK", null, CanvasValueJson.encode(v), null, null, null, null, null, null, "$id:ext:$f", imageDelivered = proof[f])) }
+    }
+
+    // Room v16 (user ruling 2026-11-10): a caption is saved only with the stored run's delivery proof for its photo; a pre-v16 run keeps the refusal
+    @Test fun aProvedCaptionIsSavedAnUnprovedOneAndAnOldRunsAreRefused() = runBlocking {
+        frame("f1"); frame("f2"); frame("f3")
+        run("r1", pipeline(), mapOf(
+            "f1" to ext(true, listOf(fact("a mug", "f1")), listOf(FrameCaption("f1", "PROVED desk"))),
+            "f2" to ext(true, listOf(fact("a cup", "f2")), listOf(FrameCaption("f2", "UNPROVED shelf"))),
+        ), proof = mapOf("f1" to true, "f2" to false))
+        assertTrue(saver().save("r1") is CanvasRunSave.Result.Saved)
+        val mem = h.db.memoryDao().all()
+        val cap = mem.single { it.type == "caption" }
+        assertEquals("PROVED desk", cap.text); assertEquals(true, cap.imageDelivered)
+        assertTrue("the unproved caption is refused", mem.none { it.text == "UNPROVED shelf" })
+        assertEquals(true, mem.single { it.text == "a mug" }.imageDelivered); assertEquals(false, mem.single { it.text == "a cup" }.imageDelivered)
+        run("r2", pipeline(), mapOf("f3" to ext(true, listOf(fact("a lamp", "f3")), listOf(FrameCaption("f3", "OLD RUN caption")))))
+        assertTrue(saver().save("r2") is CanvasRunSave.Result.Saved)
+        assertTrue("a run stored before v16 has no proof: its caption is refused", h.db.memoryDao().all().none { it.text == "OLD RUN caption" })
     }
 
     private fun fact(text: String, vararg src: String, type: String = "object") = Fact(text, type, 0.9, listOf("t"), src.toList())

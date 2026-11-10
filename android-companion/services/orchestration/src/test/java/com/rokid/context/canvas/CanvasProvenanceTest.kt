@@ -388,6 +388,40 @@ class CanvasProvenanceTest {
         assertTrue(MemoryGraph.get(app).memories.all().any { "SOLO-A" in it.text })
     }
 
+    // Room v16: a real Vision call stores its delivery proof per photo, the proof travels through a pass-through check, and Run and Save saves the caption
+    @Test fun aRealVisionRunStoresDeliveryProofAndSavesTheProvedCaption() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        for ((id, ts) in listOf("A" to 1L, "B" to 2L)) {
+            val f = java.io.File(app.filesDir, "rokid_archive/v$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1, 2, 3)) }
+            com.rokid.context.orchestration.PipelineRecords.appendFrame(app, FrameEntity(id, ts, f.absolutePath, "rokid_glasses", "frame"))
+        }
+        val ai = TestAi.graph(app) { p ->
+            val ids = Regex("frame_id: ([AB])").findAll(p).map { it.groupValues[1] }.toList().distinct()
+            """{"facts":[${ids.joinToString(",") { """{"text":"Mug $it","type":"object","confidence":0.95,"tags":[],"source_frame_ids":["$it"]}""" }}],"captions":[${ids.joinToString(",") { """{"frame_id":"$it","caption":"CAPTION-$it"}""" }}]}"""
+        }.also { TestAi.bindAll(it) }
+        val runner = CanvasRunner(
+            db.canvasDao(), { f -> PhotoLoad(f.map(::photo), emptySet()) },
+            mapOf(NodeTypes.VISION_EXTRACT to VisionExtractExecutor, NodeTypes.LOCAL_CRITIC to LocalCriticExecutor, NodeTypes.MEMORY_WRITE to MemoryWritePreviewExecutor),
+            { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, liveness = com.rokid.context.orchestration.AllLive) },
+            ConfirmTokens({ now }), { false }, { now }, { "run${++ids}" }, { 0L },
+        )
+        val p = Pipeline(2, "pd", "P", listOf(
+            PipelineNode("photos", NodeTypes.INPUT_PHOTOS, "photos", JsonObject(emptyMap())),
+            PipelineNode("ext", NodeTypes.VISION_EXTRACT, "ext", buildJsonObject { put("batch", 2); put("prompt", buildJsonObject { put("source", "live") }) }),
+            PipelineNode("trust", NodeTypes.LOCAL_CRITIC, "Confidence check", JsonObject(emptyMap())),
+            PipelineNode("write", NodeTypes.MEMORY_WRITE, "Save memory", JsonObject(emptyMap())),
+        ), listOf(PipelineEdge("photos", "ext"), PipelineEdge("ext", "trust"), PipelineEdge("trust", "write", "trusted"), PipelineEdge("trust", "write", "unsure")))
+        val est = runner.estimate(p, listOf("A", "B"), { n -> ModelLabel(n.id, "az", "gpt") }) as Estimate.Ok
+        val runId = runner.start(p, p.id, null, listOf("A", "B"), est.confirmToken, scope)
+        withTimeout(20_000) { runner.active.first { it == null } }
+        val rows = db.canvasDao().items(runId)
+        assertTrue("the Vision rows carry the proof: ${rows.map { "${it.nodeId}/${it.frameId}/${it.imageDelivered}" }}", rows.filter { it.nodeId in setOf("ext", "trust") }.all { it.imageDelivered == true })
+        assertTrue(CanvasRunSave(app, db, afterSave = { _, _ -> }).save(runId) is CanvasRunSave.Result.Saved)
+        val caps = MemoryGraph.get(app).memories.all().filter { it.type == "caption" }
+        assertEquals(setOf("CAPTION-A", "CAPTION-B"), caps.map { it.text }.toSet())
+        assertTrue(caps.all { it.imageDelivered == true })
+    }
+
     // ---- codex r14/r15 RULE A property, through the REAL CanvasRunner and PipelineInterpreter: every built-in executor over 3 photos (batches of 2+ where
     // the executor batches), every output OK with a value, and every output row's lineage lists every input photo of its execution (and, for an
     // executor that is not chunkLocal, every input the node consumed before)

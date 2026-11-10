@@ -35,7 +35,9 @@ data class CallUsage(val promptTokens: Int?, val completionTokens: Int?, val mod
  * Empty by default (unknown), so every existing construction is unchanged.
  */
 /** [contextIncluded] (codex r18): some attempt's RENDERED request substituted the context text (`{{context_sources}}`); false = no context reached a model. */
-data class ExtractedBatch(val output: ExtractOutput, val promptVersion: Int, val attempts: List<CallUsage> = emptyList(), val contextIncluded: Boolean = false)
+/** [deliveredPhotos] (Room v16 Run-and-Save proof): the photos the router PROVED were delivered as images on the successful attempts behind this output. */
+data class ExtractedBatch(val output: ExtractOutput, val promptVersion: Int, val attempts: List<CallUsage> = emptyList(), val contextIncluded: Boolean = false,
+                          val deliveredPhotos: Set<String> = emptySet())
 
 /** A memory [ExtractSave.saveExtraction] wrote: [index] is the position in the (blank-filtered) facts, or null for a caption. */
 data class SavedMemory(val memoryId: String, val frameIds: List<String>, val index: Int?)
@@ -131,6 +133,7 @@ object ExtractSave {
             parts.last().promptVersion,
             attempts.toList(),
             contextIncluded = parts.any { it.contextIncluded },
+            deliveredPhotos = parts.flatMap { it.deliveredPhotos }.toSet(),
         )
     }
 
@@ -149,7 +152,8 @@ object ExtractSave {
         val included = contextSources.isNotBlank() && "context_sources" in r.renderedVars
         return ExtractedBatch((r.output as ExtractOutput).copy(imagesDelivered = r.imagesDelivered,
             callGroups = listOf(photos.map { it.frameId }.toSet() + (if (included) contextProvenance.frameIds else emptySet()))),
-            r.promptVersion, usageOf(r.replies), contextIncluded = included)
+            r.promptVersion, usageOf(r.replies), contextIncluded = included,
+            deliveredPhotos = if (r.imagesDelivered) photos.map { it.frameId }.toSet() else emptySet())
     }
 
     /**
