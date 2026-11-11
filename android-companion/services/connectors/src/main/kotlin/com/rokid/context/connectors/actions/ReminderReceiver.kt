@@ -47,11 +47,15 @@ class ReminderReceiver : BroadcastReceiver() {
         const val PUBLIC_TITLE = "Reminder"
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-        /** Posts the fired reminder [intent] when its proposal in [repo] is still live (see the class doc). */
-        suspend fun show(context: Context, intent: Intent, repo: ProposalRepository) {
+        /**
+         * Posts the fired reminder [intent] when its proposal in [repo] is still live (see the class doc). Codex r21: the check and the post are not atomic with a
+         * Forget or Delete all, whose cleanup cancels the notification AFTER its commit; so the proposal is re-read after posting and the post withdrawn when it
+         * is no longer live. Either the re-read sees the commit, or the post came before it and the cleanup's cancel removes it. [afterCheck]: test hook.
+         */
+        suspend fun show(context: Context, intent: Intent, repo: ProposalRepository, afterCheck: suspend () -> Unit = {}) {
             val id = intent.getStringExtra(ReminderExecutor.EXTRA_ID) ?: return
-            val p = repo.byId(id) ?: return
-            if (p.state != ProposalState.EXECUTED.name || p.paramsJson == ForgetService.REDACTED_PARAMS) return
+            if (!live(repo, id)) return
+            afterCheck()
             val nm = NotificationManagerCompat.from(context)
             if (!nm.areNotificationsEnabled()) return
             context.getSystemService(NotificationManager::class.java)
@@ -65,7 +69,14 @@ class ReminderReceiver : BroadcastReceiver() {
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPublicVersion(NotificationCompat.Builder(context, CHANNEL).setSmallIcon(android.R.drawable.ic_popup_reminder).setContentTitle(PUBLIC_TITLE).build())
                 .build()
-            try { nm.notify(ProposalNotifications.reminderId(id), n) } catch (_: SecurityException) { /* POST_NOTIFICATIONS revoked */ }
+            try { nm.notify(ProposalNotifications.reminderId(id), n) } catch (_: SecurityException) { /* POST_NOTIFICATIONS revoked */ return }
+            val still = try { live(repo, id) } catch (c: CancellationException) { throw c } catch (_: Exception) { false } // unreadable: withdraw rather than risk it
+            if (!still) nm.cancel(ProposalNotifications.reminderId(id))
+        }
+
+        private suspend fun live(repo: ProposalRepository, id: String): Boolean {
+            val p = repo.byId(id) ?: return false
+            return p.state == ProposalState.EXECUTED.name && p.paramsJson != ForgetService.REDACTED_PARAMS
         }
     }
 }

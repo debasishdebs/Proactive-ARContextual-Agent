@@ -53,4 +53,19 @@ class ReminderReceiverTest {
         ReminderReceiver.show(ctx, fired("missing"), repo)
         assertEquals(0, nm.allNotifications.size)
     }
+
+    /**
+     * Codex r21 P1-5: a Forget (or Delete all) that commits, and cancels the reminder's notifications, between the live check and the post can never be
+     * followed by a post of its text: the receiver re-reads after posting and cancels its own notification.
+     */
+    @Test fun aForgetThatCompletesBetweenTheCheckAndThePostLeavesNoNotification() = runBlocking {
+        repo.addIgnore(reminder("p1", System.currentTimeMillis() + 60_000, ProposalState.EXECUTED))
+        ReminderReceiver.show(ctx, fired("p1"), repo, afterCheck = {
+            // the Forget: the redaction commits, then its cleanup cancels the (not yet posted) notification
+            db.openHelper.writableDatabase.execSQL("UPDATE proposal SET paramsJson = ? WHERE id = ?", arrayOf<Any>(ForgetService.REDACTED_PARAMS, "p1"))
+            ProposalNotifications.cancel(ctx, listOf("p1"))
+        })
+        assertEquals("nothing of the forgotten reminder is left on screen", 0, nm.allNotifications.size)
+    }
 }
+
