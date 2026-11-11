@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.phone.ui.activity.MarkRowUi
 import com.rokid.context.phone.ui.list.ListKind
+import com.rokid.context.phone.ui.list.tableChanges
 import com.rokid.context.phone.ui.activity.MarkRows
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 import com.rokid.context.orchestration.AskSources
@@ -32,6 +33,8 @@ class RepoActivityData(
     private val timeline: TimelineRepository, private val asks: AskRepository, private val nudges: NudgeRepository, private val marks: MarkRepository, private val zone: () -> ZoneId,
     /** One nudge row by id, observed (not limited to the recent ones). */
     private val nudgeById: (String) -> Flow<NudgeEntity?> = { id -> nudges.recent(RECENT).map { rows -> rows.firstOrNull { it.id == id } } },
+    /** Room's change signal over some tables (null: lists never re-read; tests without a database). */
+    private val tableChanges: ((Array<String>) -> Flow<Unit>)? = null,
 ) : ActivityData {
     override suspend fun memories(ids: List<String>): List<MemoryEntity> = timeline.memoriesByIds(ids)
     override suspend fun frames(ids: List<String>): List<FrameEntity> = timeline.framesByIds(ids)
@@ -60,6 +63,15 @@ class RepoActivityData(
         else -> emptyFlow()
     }
 
+    /** The tables each list's rows and their summaries are read from (a row cites memories and photos). */
+    override fun listChanges(kind: ListKind): Flow<Unit> = tableChanges?.invoke(when (kind) {
+        ListKind.FRAMES -> arrayOf("frame", "frame_meta")
+        ListKind.MEMORIES, ListKind.MOMENTS -> arrayOf("memory", "frame_source", "frame", "moment")
+        ListKind.ANSWERS -> arrayOf("ask", "memory")
+        ListKind.NUDGES -> arrayOf("nudge", "memory")
+        ListKind.MARKS -> arrayOf("canvas_label", "frame", "frame_meta", "moment")
+    }) ?: emptyFlow()
+
     private fun cited(json: String?): Flow<Unit> {
         val ids = json?.let { AskSources.parse(it) }.orEmpty().filterNot { it.startsWith(PHOTO_CITE_PREFIX) }.distinct()
         return if (ids.isEmpty()) flowOf(Unit) else combine(ids.map { timeline.memory(it) }) { }
@@ -69,4 +81,5 @@ class RepoActivityData(
 }
 
 /** Production [ActivityData] over the app's repositories (the previewer and the lists share it). */
-fun activityData(deps: PhoneDeps) = RepoActivityData(deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.zone, nudgeById = { deps.memory.db.nudgeGateDao().observe(it) })
+fun activityData(deps: PhoneDeps) = RepoActivityData(deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.zone, nudgeById = { deps.memory.db.nudgeGateDao().observe(it) },
+    tableChanges = { t -> deps.memory.db.tableChanges(*t) })

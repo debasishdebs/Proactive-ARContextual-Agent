@@ -1,16 +1,14 @@
 package com.rokid.context.phone.ui.photos
 
 import android.content.Context
-import androidx.room.InvalidationTracker
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.phone.ui.list.tableChanges
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.work.frames.KeyframeGraph
 import com.rokid.context.work.frames.recall.DescribeResult
 import com.rokid.context.work.frames.recall.ImageSearchState
 import com.rokid.context.work.frames.recall.PhotoRecall
 import com.rokid.context.work.frames.recall.RecallResult
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -48,17 +46,8 @@ class PhotoSearchDeps(
                 describePhotos = { KeyframeGraph.get(app).describe.describePhotos(it) },
                 describeScene = { KeyframeGraph.get(app).describe.describeScene(it) },
                 framePaths = { ids -> memory.timeline.framesByIds(ids).associate { it.id to it.path } },
-                changes = flow { emitAll(invalidations(MemoryGraph.get(app).db, "frame", "frame_meta", "memory", "frame_source")) }.debounce(400).flowOn(Dispatchers.IO), // the graphs open off Main (M5)
+                changes = flow { emitAll(MemoryGraph.get(app).db.tableChanges("frame", "frame_meta", "memory", "frame_source")) }.debounce(400).flowOn(Dispatchers.IO), // the graphs open off Main (M5)
             )
-        }
-
-        /** Room's own public change signal ([InvalidationTracker.Observer]), no custom bus (spec §8). */
-        private fun invalidations(db: ContextDatabase, vararg tables: String): Flow<Unit> = callbackFlow {
-            val observer = object : InvalidationTracker.Observer(tables) {
-                override fun onInvalidated(tables: Set<String>) { trySend(Unit) }
-            }
-            db.invalidationTracker.addObserver(observer)
-            awaitClose { db.invalidationTracker.removeObserver(observer) }
         }
     }
 }

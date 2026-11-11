@@ -83,4 +83,6 @@ interface ActivityData {
     suspend fun idsIn(kind: ListKind, range: LongRange): List<String> = emptyList()
     /** Emits when the item [ref] names, or something it cites, changes (a Forget, a redaction, a Trust): the previewer then reads it again. The first emission is the current state. Nothing by default. */
     fun changes(ref: PreviewRef): Flow<Unit> = emptyFlow()
+    /** Codex r21: emits after any write to the tables a [kind] list shows (a Forget, a retention delete, Delete all, a redaction), so the list reads again. Nothing by default. */
+    fun listChanges(kind: ListKind): Flow<Unit> = emptyFlow()
 }
