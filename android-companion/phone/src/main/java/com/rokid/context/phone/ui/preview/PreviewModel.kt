@@ -85,4 +85,6 @@ interface ActivityData {
     fun changes(ref: PreviewRef): Flow<Unit> = emptyFlow()
     /** Codex r21: emits after any write to the tables a [kind] list shows (a Forget, a retention delete, Delete all, a redaction), so the list reads again. Nothing by default. */
     fun listChanges(kind: ListKind): Flow<Unit> = emptyFlow()
+    /** Codex r21: the stored path of photo [id], observed: null once its row is gone. Read once by default. */
+    fun observeFramePath(id: String): Flow<String?> = kotlinx.coroutines.flow.flow { emit(frames(listOf(id)).firstOrNull()?.path) }
 }

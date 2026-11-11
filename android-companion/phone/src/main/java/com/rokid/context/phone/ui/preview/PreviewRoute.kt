@@ -103,7 +103,7 @@ fun PreviewRoute(raw: String, deps: PhoneDeps, nav: NavController) {
     // Debug builds with Developer mode on only: the labelling action for the photo 256-vs-768 test.
     val labels = if (PhotoDimEval.rowVisible(BuildConfig.DEBUG, devOn)) remember { PhotoDimEvalFactory.labels(app) } else null
     val host = PreviewHost(
-        detail, framePath = { id -> data.frames(listOf(id)).firstOrNull()?.path },
+        detail, framePath = { id -> data.frames(listOf(id)).firstOrNull()?.path }, observeFramePath = data::observeFramePath,
         open = { nav.navigate(previewMoment(listOf(it)).route) }, rate = { up -> ref?.let { r -> scope.launch { deps.rateAsk(r.id, up) } } },
         morePhotos = { q -> nav.navigate(Routes.photos(q)) }, proposal = { id -> ProposalCard(id, Modifier.padding(16.dp), onEnable = { nav.navigate(Routes.SETTINGS_ACTIONS) }) },
         addToPhotoTest = labels?.let { l -> { q, id, small -> l.add(q, id, small) } },
