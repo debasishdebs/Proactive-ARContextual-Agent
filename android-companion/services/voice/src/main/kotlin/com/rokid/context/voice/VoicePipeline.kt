@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -37,6 +38,11 @@ class VoicePipeline(
     private val interceptor: UtteranceInterceptor = UtteranceInterceptor.PASS_THROUGH,
     /** The user's device capabilities (v0.9.8 slice D): a switched-off mic does not start a listen. Default = everything on. */
     private val deviceCaps: () -> com.rokid.context.core.model.DeviceCapabilities = { com.rokid.context.core.model.DeviceCapabilities.ALL },
+    /**
+     * Codex r21: emits true once the stored ask [askId] is redacted (a cited source was forgotten) or deleted (Delete all, retention). The Answer on the HUD
+     * and in the hub's frames is then cleared at once, not at the end of its hold. Default: never.
+     */
+    private val answerWithdrawn: (askId: String) -> kotlinx.coroutines.flow.Flow<Boolean> = { kotlinx.coroutines.flow.emptyFlow() },
 ) {
     private val _state = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val state: StateFlow<VoiceState> = _state.asStateFlow()
@@ -56,6 +62,8 @@ class VoicePipeline(
     private var phoneError: String? = null
     private var phoneErrorJob: Job? = null
     private var lastPhoneAskId: String? = null
+    private var withdrawWatch: Job? = null
+    private var watchedAskId: String? = null
 
     init { scope.launch { capabilities.collect { publish() } } }
 
@@ -340,7 +348,21 @@ class VoicePipeline(
 
     private fun set(s: VoiceState) {
         _state.value = s
+        watchWithdrawal(s)
         publish()
+    }
+
+    /** One watcher per Answer on show: a redacted or deleted ask clears it (and stops its speech) at once. */
+    private fun watchWithdrawal(s: VoiceState) {
+        val askId = (s as? VoiceState.Answer)?.askId?.takeIf { it.isNotEmpty() }
+        if (askId == watchedAskId) return
+        withdrawWatch?.cancel(); withdrawWatch = null; watchedAskId = askId
+        if (askId == null) return
+        withdrawWatch = scope.launch {
+            answerWithdrawn(askId).firstOrNull { it } ?: return@launch
+            val now = _state.value
+            if (now is VoiceState.Answer && now.askId == askId) { newGeneration(); log("answer withdrawn"); set(VoiceState.Idle) }
+        }
     }
 
     private fun publish() {

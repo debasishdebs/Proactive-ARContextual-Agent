@@ -23,6 +23,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import com.rokid.context.phone.ui.status.asPauseHub
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withContext
 
@@ -61,6 +64,12 @@ class VoiceGraph private constructor(private val app: Context) {
         log = { PcLog.i(TAG, it) },
         interceptor = utterance.asInterceptor(),
         deviceCaps = { deviceCaps.value },
+        // Codex r21: the stored ask was redacted, or existed and is gone (an answer not yet stored is not withdrawn)
+        answerWithdrawn = { id ->
+            var seen = false
+            kotlinx.coroutines.flow.flow { emitAll(MemoryGraph.get(app).asks.observe(id)) }.flowOn(Dispatchers.IO)
+                .map { a -> if (a != null) seen = true; a?.redacted == true || (a == null && seen) }
+        },
     )
     /** G7: Battery Saver, for the glasses tap's blocked reason (the ask path refuses the ask itself). */
     private val batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app)
