@@ -1,9 +1,8 @@
 // Ask debug: the list of asks, and one ask's retrieval hits, composed prompt (text only), template check and replay.
-import { h, clear, btn } from './dom.js';
+import { h, clear, btn, enc } from './dom.js';
 import { photoThumb } from './photos.js';
 import { when } from './format.js';
 
-const enc = encodeURIComponent;
 export const REDACTED_TEXT = 'This ask was redacted, so it has no debug view.';
 export const DEADLINE_TEXT = 'The replay took too long and was stopped. Nothing was saved. Try again.';
 export const RETRIEVAL_NOTE = 'Re-retrieved as of the ask\'s time; may differ if settings or embeddings changed.';

@@ -100,8 +100,15 @@ object ForgetActions {
      */
     @Volatile var dataRemoved: () -> Unit = {}
 
+    /**
+     * Codex r21: moves after every committed removal (a Forget of any kind, each retention chunk, Delete all). The canvas page reads it
+     * (GET /api/data-generation) and reads its open view again when it moved, so nothing removed stays on screen there.
+     */
+    val removals = java.util.concurrent.atomic.AtomicLong(0)
+
     /** After a committed cascade: files, then the re-summarise. A failure here is logged; the Forget itself succeeded. Returns false when a cached memory export could not be deleted. */
     internal suspend fun apply(context: Context, r: ForgetService.Result): Boolean {
+        removals.incrementAndGet() // the cascade is committed
         // Integration carry 3: a redacted proposal's notifications still show its text; cancel them in any process.
         // Privacy carry: so does an armed reminder alarm (its intent holds the title and note); cancel it too.
         if (r.redactedProposals.isNotEmpty()) {

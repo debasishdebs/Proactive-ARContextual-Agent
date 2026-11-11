@@ -1,9 +1,8 @@
 // The read-only merged canvas (#/merged?ids=a,b): the selected pipelines drawn together in lanes. Plain DOM and SVG through dom.js
 // (createElement and textContent only). The only requests are GET /api/node-types and GET /api/pipelines/{id} for each selected id.
-import { h, s, clear } from './dom.js';
+import { h, s, clear, enc } from './dom.js';
 import { buildMerged } from './mergedflow.js';
 
-const enc = encodeURIComponent;
 const TOP = 28, PAD = 16;
 
 function parse(text) { try { return JSON.parse(text); } catch (e) { return null; } }

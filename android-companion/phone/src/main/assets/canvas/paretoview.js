@@ -1,11 +1,10 @@
 // The Sweep view (Task 36, core): a parameter sweep over traces and its sortable result table. The Pareto front and chart are later work (LA6, LA14).
 // Sorting is the server's (GET /api/sweeps/{id}?sort=&dir=). No frames appear here, so no thumbnails.
-import { h, clear, btn } from './dom.js';
+import { h, clear, btn, enc } from './dom.js';
 import { when } from './format.js';
 import { sweepRequest, sweepRows, sweepSummary, COLUMNS, nextSort, sortQuery, arrow, FUSION_TEXT } from './pareto.js';
 import { tracePicker } from './replayview.js';
 
-const enc = encodeURIComponent;
 const POLL_MS = 2000;
 
 export function resultTable(result, sort, onSort) {

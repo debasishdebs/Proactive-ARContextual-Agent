@@ -1,8 +1,7 @@
 // The inspector's field model: node-type param descriptors → form fields, and raw input → coerced values. Pure.
 // No JSON Schema library: a schema is only checked to be valid JSON here; the server is the authority.
-import { parseGraph, defaultGraph } from './exprgraph.js';
+import { parseGraph, defaultGraph, own } from './exprgraph.js';
 
-const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 const ID = /^[a-z][a-z0-9_]{0,31}$/;
 
 /** What the capture-rate table says about its gaps (S84): they space reserved timer photo attempts only. */

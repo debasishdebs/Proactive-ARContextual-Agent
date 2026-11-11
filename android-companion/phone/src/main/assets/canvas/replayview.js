@@ -1,10 +1,9 @@
 // The Replay view (Task 36): pick traces, optionally a gate candidate and fusion values, start a replay, watch it, read the estimate.
 // Replay results hold no frames, so there are no thumbnails here (photos.js is for views that show a frame).
-import { h, clear, btn } from './dom.js';
+import { h, clear, btn, enc } from './dom.js';
 import { when } from './format.js';
 import { replayRequest, replaySummary, FUSION_TEXT } from './pareto.js';
 
-const enc = encodeURIComponent;
 const POLL_MS = 2000;
 
 /** Checkboxes for the stored traces; returns {node, picked()}. */

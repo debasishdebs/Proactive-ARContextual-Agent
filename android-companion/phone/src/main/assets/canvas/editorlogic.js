@@ -119,7 +119,6 @@ export function titleChange(ed, nodeId, title, nodeTypes) { return dispatch(ed, 
 // ---------------------------------------------------------------- selection
 
 export function selectNode(ed, id) { return Object.assign({}, ed, { sel: { nodes: [id], edges: [] } }); }
-export function selectEdge(ed, id) { return Object.assign({}, ed, { sel: { nodes: [], edges: [id] } }); }
 export function clearSelection(ed) { return ed.sel.nodes.length || ed.sel.edges.length ? Object.assign({}, ed, { sel: noSel() }) : ed; }
 export const singleNode = (ed) => (ed.sel.nodes.length === 1 ? ed.sel.nodes[0] : null);
 

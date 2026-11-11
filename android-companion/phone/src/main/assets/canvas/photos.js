@@ -1,11 +1,10 @@
 // A tested image as a thumbnail that opens full screen next to the model's returned value (spec 0z).
 // Photos come from the authenticated canvas routes through ctx.loadImage (bearer header -> blob URL, revoked on leave);
 // the credential never appears in a photo URL. A forgotten photo answers 404 and shows a message instead of a picture.
-import { h, clear } from './dom.js';
+import { h, clear, enc } from './dom.js';
 
 export const GONE = 'Photo no longer available';
 export const FAILED = 'Photo could not be loaded';
-const enc = encodeURIComponent;
 
 export const failText = (status) => (status === 404 || status === 410 ? GONE : FAILED);
 

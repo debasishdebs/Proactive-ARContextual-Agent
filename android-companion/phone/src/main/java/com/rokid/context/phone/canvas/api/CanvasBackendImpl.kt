@@ -483,6 +483,8 @@ class CanvasBackendImpl(
         return JsonArray(dao.publishHistory(limit).map { p -> JsonObject(publishJson(p) + mapOf("rolledBackAt" to JsonPrimitive(p.rolledBackAt), "rollbackReason" to JsonPrimitive(p.rollbackReason))) })
     }
 
+    override fun dataGeneration(): Long = com.rokid.context.orchestration.forget.ForgetActions.removals.get()
+
     override suspend fun live(limit: Int): JsonObject {
         prune()
         val pub = dao.activeInterpreter() ?: return buildJsonObject {

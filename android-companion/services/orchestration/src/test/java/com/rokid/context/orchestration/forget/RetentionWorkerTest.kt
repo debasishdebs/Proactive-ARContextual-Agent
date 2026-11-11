@@ -81,8 +81,10 @@ class RetentionWorkerTest {
         val kept = File(ctx.filesDir, "rokid_archive/new.jpg").apply { writeBytes(byteArrayOf(2)) }
         graph.db.frameDao().insertIgnore(FrameEntity("f_old", now - 31 * 24 * hour, jpg.absolutePath, "rokid_glasses"))
         graph.db.frameDao().insertIgnore(FrameEntity("f_new", now - hour, kept.absolutePath, "rokid_glasses"))
+        val removals = ForgetActions.removals.get()
         work()
         assertNull(graph.db.forgetDao().frame("f_old"))
+        assertTrue("Codex r21: an open canvas page sees the retention delete", ForgetActions.removals.get() > removals)
         assertFalse(jpg.exists())
         assertTrue(kept.exists() && graph.db.forgetDao().frame("f_new") != null)
     }

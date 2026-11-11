@@ -637,6 +637,17 @@ class CanvasApiTest {
         assertEquals(405, call("POST", "/api/publish/history").status)
     }
 
+    /** Codex r21: the page's refresh signal; it moves after every removal. */
+    @Test fun dataGenerationRoute() {
+        val gen = java.util.concurrent.atomic.AtomicLong(4)
+        val a = CanvasApi(object : CanvasBackend by be { override fun dataGeneration() = gen.get() }, callTimeoutMs = 2_000)
+        fun read() = a.handle(HttpRequest("GET", "/api/data-generation", emptyMap(), mapOf("authorization" to "Bearer abc"), ByteArray(0)))
+        assertEquals(4L, read().obj()["gen"]!!.jsonPrimitive.content.toLong())
+        gen.incrementAndGet()
+        assertEquals(5L, read().obj()["gen"]!!.jsonPrimitive.content.toLong())
+        assertEquals(405, call("POST", "/api/data-generation").status)
+    }
+
     @Test fun liveRoute() {
         assertEquals(200, call("GET", "/api/live").status)
         assertEquals(50, be.lastLiveLimit)

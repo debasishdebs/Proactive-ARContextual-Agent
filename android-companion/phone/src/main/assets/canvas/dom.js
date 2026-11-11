@@ -1,6 +1,7 @@
 // DOM helpers. Everything is built with createElement, textContent and setAttribute: no HTML strings, ever.
 // Data from the API (and model output) is untrusted, so there is no path from a string to markup here.
 const SVG_NS = 'http:' + '//www.w3.org/2000/svg';
+export const enc = encodeURIComponent; // a path segment or query value built from data
 
 function fill(el, attrs, children) {
   for (const [k, v] of Object.entries(attrs || {})) {

@@ -1,5 +1,5 @@
 // The five views. Every string from the API is placed with textContent (through h()); there are no HTML sinks.
-import { h, clear, btn } from './dom.js';
+import { h, clear, btn, enc } from './dom.js';
 import { mountEditor } from './floweditor.js';
 import { photoThumb, openPhoto } from './photos.js';
 import { publishDialog, publishCard } from './versions.js';
@@ -10,7 +10,6 @@ import { statusLabel, errorText, helperCard, loadHelperStatus, hasPython } from 
 import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving, hasMemoryNode, runChoices, momentStart, afterOf } from './runlogic.js';
 
 const pretty = (v) => JSON.stringify(v, null, 2);
-const enc = encodeURIComponent;
 const MAX_PHOTOS = 50;
 const PAGE = 60;
 
