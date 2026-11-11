@@ -34,13 +34,14 @@ class VoicePipelineTest {
     private var deviceCaps = com.rokid.context.core.model.DeviceCapabilities.ALL
     /** The asks whose stored row was redacted or deleted (Codex r21). */
     private val withdrawn = MutableStateFlow<Set<String>>(emptySet())
+    private var withdrawnFor: (String, Boolean) -> kotlinx.coroutines.flow.Flow<Boolean> = { id, _ -> withdrawn.map { id in it } }
 
     private fun TestScope.pipeline() = VoicePipeline(
         backgroundScope, engine, caps, { language() },
         Answerer { q, source -> asked += q to source; answer(q) },
         speaker, bluetoothMedia = { bluetooth }, onFallbackSuspected = { fallbacks++ },
         interceptor = { t, s, g -> interceptor.intercept(t, s, g) }, log = { logs += it }, deviceCaps = { deviceCaps },
-        answerWithdrawn = { id -> withdrawn.map { id in it } },
+        answerWithdrawn = { id, existed -> withdrawnFor(id, existed) },
     ).also { runCurrent() }
 
     @Test fun aSwitchedOffGlassesMicStartsNoListenAndSaysSo() = runTest {
@@ -584,6 +585,27 @@ class VoicePipelineTest {
         assertTrue(p.state.value is VoiceState.Answer)
         withdrawn.value = setOf("ask_t", "ask_1"); runCurrent()
         assertEquals(VoiceState.Idle, p.state.value); assertNull(p.overlay.value)
+    }
+
+    /**
+     * Codex r23: the "its row existed" proof travels with each answer. Voice ask A takes its snapshot; typed ask B arrives while A is Thinking (refused on the
+     * HUD, but its snapshot ran too); Delete all removes both rows; A resumes. A's watcher must count its first null read as a deletion: HUD cleared, speech stopped.
+     */
+    @Test fun aConcurrentTypedAskNeverOverwritesTheVoiceAnswersProofThatItsRowExisted() = runTest {
+        // the production rule (VoiceGraph.withdrawnSignal) over a fake ask table: redacted, or gone after it existed (or after the answer's own snapshot)
+        val rows = MutableStateFlow(mapOf<String, Boolean>("ask_A" to false, "ask_B" to false)) // id -> redacted
+        withdrawnFor = { id, existed -> var seen = existed; rows.map { m -> val r = m[id]; if (r != null) seen = true; r == true || (r == null && seen) } }
+        val gate = CompletableDeferred<AnswerResult>(); answer = { gate.await() }
+        val p = pipeline()
+        p.glassesListenStart(); runCurrent(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertTrue(p.state.value is VoiceState.Thinking)
+        p.showTypedAnswer("ask_B", "keys?", "On the shelf.", stored = true); runCurrent() // B: snapshot taken, refused over a voice ask in progress
+        assertTrue(p.state.value is VoiceState.Thinking)
+        rows.value = emptyMap(); runCurrent() // Delete all, after A's snapshot (A's answer text was read from its row)
+        gate.complete(AnswerResult.Answered("ask_A", "Milk and eggs.", stored = true)); runCurrent()
+        assertEquals(VoiceState.Idle, p.state.value)
+        assertNull(p.overlay.value, "the hub sends no frame of A")
+        assertTrue(speaker.stops > 0 || speaker.spoken.isEmpty(), "A is not left speaking")
     }
 }
 

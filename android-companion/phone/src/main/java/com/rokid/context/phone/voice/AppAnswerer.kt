@@ -45,8 +45,12 @@ class AppAnswerer(
     private val now: () -> Long = System::currentTimeMillis,
 ) : Answerer {
     override suspend fun answer(question: String, source: VoiceSource): AnswerResult = when (val r = ask(question, source.askSource)) {
-        is AskOutcome.Answered -> (r.proposalId?.let { offNotice(it) } ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it, photoLabel = r.photoAtMs?.let(::photoLabel), route = r.route) }
-            ?: AnswerResult.Failed(VoiceCopy.FAILED_HUD, AskActions.FAILED)
+        is AskOutcome.Answered -> {
+            val notice = r.proposalId?.let { offNotice(it) }
+            // stored: the text was read from the ask's own row (an off notice comes from the proposal, which proves nothing about the ask row)
+            (notice ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it, photoLabel = r.photoAtMs?.let(::photoLabel), route = r.route, stored = notice == null) }
+                ?: AnswerResult.Failed(VoiceCopy.FAILED_HUD, AskActions.FAILED)
+        }
         is AskOutcome.Failed -> AnswerResult.Failed(HudAskText.forFailure(r.message), HudAskText.forPhone(r.message))
     }
 

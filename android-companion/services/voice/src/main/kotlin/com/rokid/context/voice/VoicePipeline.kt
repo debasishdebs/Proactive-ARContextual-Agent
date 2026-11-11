@@ -42,7 +42,7 @@ class VoicePipeline(
      * Codex r21: emits true once the stored ask [askId] is redacted (a cited source was forgotten) or deleted (Delete all, retention). The Answer on the HUD
      * and in the hub's frames is then cleared at once, not at the end of its hold. Default: never.
      */
-    private val answerWithdrawn: (askId: String) -> kotlinx.coroutines.flow.Flow<Boolean> = { kotlinx.coroutines.flow.emptyFlow() },
+    private val answerWithdrawn: (askId: String, existed: Boolean) -> kotlinx.coroutines.flow.Flow<Boolean> = { _, _ -> kotlinx.coroutines.flow.emptyFlow() },
 ) {
     private val _state = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val state: StateFlow<VoiceState> = _state.asStateFlow()
@@ -120,12 +120,12 @@ class VoicePipeline(
 
     fun phoneCancel() { if (_state.value.source == VoiceSource.PHONE) reset("phone cancel", VoiceOutcome.CANCELLED) }
 
-    /** A typed Ask's answer, mirrored to the HUD (spec §2.4) and not spoken; never over a voice ask in progress. */
-    fun showTypedAnswer(askId: String, question: String, text: String) {
+    /** A typed Ask's answer, mirrored to the HUD (spec §2.4) and not spoken; never over a voice ask in progress. [stored]: read from its stored row (see [VoiceState.Answer.stored]). */
+    fun showTypedAnswer(askId: String, question: String, text: String, stored: Boolean = false) {
         val s = _state.value
         if (s is VoiceState.Listening || s is VoiceState.Thinking) return
         val g = newGeneration()
-        set(VoiceState.Answer(VoiceSource.PHONE, askId, VoiceText.clean(question), VoiceText.clean(text, MAX_SPOKEN), speaking = false))
+        set(VoiceState.Answer(VoiceSource.PHONE, askId, VoiceText.clean(question), VoiceText.clean(text, MAX_SPOKEN), speaking = false, stored = stored))
         hold(g)
     }
 
@@ -294,7 +294,7 @@ class VoicePipeline(
         if (route?.phone ?: (source == VoiceSource.PHONE)) lastPhoneAskId = r.askId
         val text = VoiceText.clean(r.text, MAX_SPOKEN)
         val speak = if (route == null) source == VoiceSource.PHONE || bluetoothMedia() else (route.phone && source == VoiceSource.PHONE) || (route.glasses && bluetoothMedia())
-        set(VoiceState.Answer(source, r.askId, question, text, speaking = speak, photoLabel = r.photoLabel, hud = route?.glasses ?: true))
+        set(VoiceState.Answer(source, r.askId, question, text, speaking = speak, photoLabel = r.photoLabel, hud = route?.glasses ?: true, stored = r.stored))
         route?.fallback?.let { log("deliver fallback=$it") } // the reason is a fixed token; the row's trace holds it too
         log("answered ${source.name} spoken=$speak")
         outcome(VoiceOutcome.ANSWERED, source)
@@ -354,12 +354,14 @@ class VoicePipeline(
 
     /** One watcher per Answer on show: a redacted or deleted ask clears it (and stops its speech) at once. */
     private fun watchWithdrawal(s: VoiceState) {
-        val askId = (s as? VoiceState.Answer)?.askId?.takeIf { it.isNotEmpty() }
+        val answer = s as? VoiceState.Answer
+        val askId = answer?.askId?.takeIf { it.isNotEmpty() }
         if (askId == watchedAskId) return
         withdrawWatch?.cancel(); withdrawWatch = null; watchedAskId = askId
         if (askId == null) return
+        val existed = answer.stored // this answer's own proof, never a shared field (Codex r23)
         withdrawWatch = scope.launch {
-            answerWithdrawn(askId).firstOrNull { it } ?: return@launch
+            answerWithdrawn(askId, existed).firstOrNull { it } ?: return@launch
             val now = _state.value
             if (now is VoiceState.Answer && now.askId == askId) { newGeneration(); log("answer withdrawn"); set(VoiceState.Idle) }
         }

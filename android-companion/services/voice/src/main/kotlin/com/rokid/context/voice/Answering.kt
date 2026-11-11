@@ -5,7 +5,8 @@ enum class VoiceSource(val askSource: String) { GLASSES("glasses_voice"), PHONE(
 
 sealed interface AnswerResult {
     /** [photoLabel] (wave 3): "Photo HH:mm" of the first cited stored photo; the HUD appends it, the spoken text never has it. */
-    data class Answered(val askId: String, val text: String, val photoLabel: String? = null, val route: com.rokid.context.core.model.DeliveryRoute? = null) : AnswerResult
+    /** [stored]: [text] was read from the stored ask row [askId] (Codex r23: the proof, carried with THIS answer, that its row existed). */
+    data class Answered(val askId: String, val text: String, val photoLabel: String? = null, val route: com.rokid.context.core.model.DeliveryRoute? = null, val stored: Boolean = false) : AnswerResult
     /** [hudText] for the glasses (short), [phoneText] for Home: fixed strings, never provider text. */
     data class Failed(val hudText: String, val phoneText: String) : AnswerResult
 }
@@ -22,7 +23,8 @@ sealed interface VoiceState {
     /** [ended] = no more audio is taken; waiting for the recognizer's final. */
     data class Listening(override val source: VoiceSource, val partial: String, val ended: Boolean = false) : VoiceState
     data class Thinking(override val source: VoiceSource, val question: String) : VoiceState
-    data class Answer(override val source: VoiceSource, val askId: String, val question: String, val text: String, val speaking: Boolean, val photoLabel: String? = null, val hud: Boolean = true) : VoiceState
+    /** [stored]: the answer was read from its stored ask row, so that row existed: a first read of null by the withdrawal watcher is a deletion (Codex r23). */
+    data class Answer(override val source: VoiceSource, val askId: String, val question: String, val text: String, val speaking: Boolean, val photoLabel: String? = null, val hud: Boolean = true, val stored: Boolean = false) : VoiceState
     data class Problem(override val source: VoiceSource, val hudText: String, val phoneText: String) : VoiceState
 }
 
