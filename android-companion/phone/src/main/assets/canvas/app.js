@@ -188,6 +188,7 @@ function showPairing(prefill) {
       const j = await res.json();
       setToken(j.token);
       route();
+      checkData(); // the baseline of a session paired by code
     } catch (e) { showError(e instanceof ApiError ? e : new ApiError(0, 'network', 'The phone could not be reached.')); }
   };
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
@@ -264,14 +265,19 @@ async function route(force) {
 // The phone's data generation moves after every Forget, retention delete and Delete all: the open view is then read again (and its photo blobs revoked).
 let dataGen = null;
 async function checkData() {
-  if (!token || (guardFn && guardFn())) return; // never reload unsaved editor changes under the user; the next check after they are saved does
+  const held = () => !token || (guardFn && guardFn()); // never reload unsaved editor changes under the user; the next check after they are saved does
+  if (held()) return;
   const g = await request('GET', '/api/data-generation').then((r) => (r.ok ? r.json() : null), () => null);
-  if (g && dataGen !== null && g.gen !== dataGen) route(true);
-  if (g) dataGen = g.gen;
+  if (!g || held()) return; // asked again: the user may have started editing while the request was out
+  if (dataGen !== null && g.gen !== dataGen) route(true);
+  dataGen = g.gen;
 }
 
 function boot() {
   lastHash = location.hash;
+  // on every boot path (a pairing code too): a check does nothing until this session holds a token
+  setInterval(checkData, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkData(); });
   const b = parseBootHash(location.hash);
   if (b.token !== undefined) {
     setToken(b.token);
@@ -283,8 +289,6 @@ function boot() {
   window.addEventListener('hashchange', () => route());
   route();
   checkData(); // the baseline
-  setInterval(checkData, 5000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkData(); });
 }
 
 boot();

@@ -9,6 +9,7 @@ class JsViewsTest {
     @Test fun runLogicTests() = JsHarness.assertAllPass("runlogic.test.js")
     @Test fun viewsSmokeTests() = JsHarness.assertAllPass("views-smoke.test.js")
     @Test fun appRoutesTests() = JsHarness.assertAllPass("app-routes.test.js")
+    @Test fun appPairBootTests() = JsHarness.assertAllPass("app-pair.test.js")
     @Test fun paretoTests() = JsHarness.assertAllPass("pareto.test.js")
     @Test fun replayViewTests() = JsHarness.assertAllPass("replay-views.test.js")
     @Test fun devicesViewTests() = JsHarness.assertAllPass("devices-view.test.js")
