@@ -106,6 +106,30 @@ export const tests = {
     eq(reads(), before + 2, 'showing the tab checks too');
     delete b.table['GET /api/data-generation'];
   },
+  /** Codex r22: a generation response that lands after the user started editing never re-routes over the edit. */
+  async aLateGenerationResponseNeverDiscardsAnEditStartedMeanwhile() {
+    const b = await boot();
+    await visit(b, '#/ask/a1');
+    let release = null;
+    let gen = 20;
+    b.table['GET /api/data-generation'] = () => ({ gen });
+    const check = b.env.intervals.find((x) => x.ms === 5000);
+    await check.fn(); await E.settle(600); // the baseline (the previous test left another generation: this may read the view once)
+    const reads = () => b.api.calls.filter((c) => c.path === '/api/asks/a1').length;
+    const before = reads();
+    b.table['GET /api/data-generation'] = () => new Promise((res) => { release = () => res({ gen: 21 }); });
+    const pending = check.fn(); await E.settle(50); // the request is out while the editor is clean
+    let dirty = true;
+    b.app.ctx.guard(() => (dirty ? 'You have unsaved changes.' : null)); // the user starts editing
+    release(); await pending; await E.settle(600);
+    eq(reads(), before, 'the late response did not re-route over the edit');
+    dirty = false;
+    b.table['GET /api/data-generation'] = () => ({ gen: 21 });
+    await check.fn(); await E.settle(600);
+    eq(reads(), before + 1, 'once saved, the next check reads the view again');
+    b.app.ctx.guard(null);
+    delete b.table['GET /api/data-generation'];
+  },
   async navShowsLiveOnlyWithAnInterpreter() {
     const b = await boot();
     await visit(b, '#/');
