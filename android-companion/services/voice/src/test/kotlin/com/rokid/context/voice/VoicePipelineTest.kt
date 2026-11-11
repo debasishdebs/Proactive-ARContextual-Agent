@@ -6,6 +6,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -31,12 +32,15 @@ class VoicePipelineTest {
     private var interceptor: UtteranceInterceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.PassThrough }
     private val logs = mutableListOf<String>()
     private var deviceCaps = com.rokid.context.core.model.DeviceCapabilities.ALL
+    /** The asks whose stored row was redacted or deleted (Codex r21). */
+    private val withdrawn = MutableStateFlow<Set<String>>(emptySet())
 
     private fun TestScope.pipeline() = VoicePipeline(
         backgroundScope, engine, caps, { language() },
         Answerer { q, source -> asked += q to source; answer(q) },
         speaker, bluetoothMedia = { bluetooth }, onFallbackSuspected = { fallbacks++ },
         interceptor = { t, s, g -> interceptor.intercept(t, s, g) }, log = { logs += it }, deviceCaps = { deviceCaps },
+        answerWithdrawn = { id -> withdrawn.map { id in it } },
     ).also { runCurrent() }
 
     @Test fun aSwitchedOffGlassesMicStartsNoListenAndSaysSo() = runTest {
@@ -564,4 +568,22 @@ class VoicePipelineTest {
         p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
         assertTrue((p.overlay.value as Overlay.Toast).text.length <= 120)
     }
+
+    /** Codex r21 P1-4: an answer on the HUD whose stored ask is redacted (a source forgotten) or deleted is cleared at once, not after its hold. */
+    @Test fun aWithdrawnAnswerLeavesTheHudAtOnce() = runTest {
+        val p = pipeline()
+        p.showTypedAnswer("ask_t", "where are my keys", "On the hallway shelf."); runCurrent()
+        assertTrue(p.overlay.value != null, "the typed answer is mirrored")
+        withdrawn.value = setOf("ask_other"); runCurrent()
+        assertTrue(p.state.value is VoiceState.Answer, "another ask's redaction changes nothing")
+        withdrawn.value = setOf("ask_t"); runCurrent()
+        assertEquals(VoiceState.Idle, p.state.value)
+        assertNull(p.overlay.value, "the hub sends no frame of it any more")
+        // a spoken voice answer: its speech stops too
+        p.glassesListenStart(); runCurrent(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertTrue(p.state.value is VoiceState.Answer)
+        withdrawn.value = setOf("ask_t", "ask_1"); runCurrent()
+        assertEquals(VoiceState.Idle, p.state.value); assertNull(p.overlay.value)
+    }
 }
+
