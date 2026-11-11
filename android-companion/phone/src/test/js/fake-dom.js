@@ -105,6 +105,9 @@ export function installFakeDom(ids) {
     createTextNode: (d) => new FakeText(d),
     getElementById: (id) => byId.get(id) || null,
     body: new FakeElement('body'),
+    hidden: false,
+    listeners: {},
+    addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
   };
   return globalThis.document;
 }

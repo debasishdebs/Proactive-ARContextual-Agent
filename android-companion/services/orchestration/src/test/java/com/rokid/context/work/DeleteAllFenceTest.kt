@@ -144,7 +144,9 @@ class DeleteAllFenceTest {
 
     @Test fun appendFactWithAStaleGenerationWritesNothing() = runBlocking<Unit> {
         val before = MemoryWipe.generation.get()
+        val removals = com.rokid.context.orchestration.forget.ForgetActions.removals.get()
         MemoryWipe.deleteAll(ctx)
+        assertTrue("Codex r21: an open canvas page sees Delete all", com.rokid.context.orchestration.forget.ForgetActions.removals.get() > removals)
         assertFalse(PipelineRecords.appendFact(ctx, "rokid_mem_s_0", null, "Stale", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, generation = before))
         assertTrue(PipelineRecords.appendFact(ctx, "rokid_mem_s_1", null, "Fresh", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK))
         assertEquals(listOf("rokid_mem_s_1"), memories().map { it.id })

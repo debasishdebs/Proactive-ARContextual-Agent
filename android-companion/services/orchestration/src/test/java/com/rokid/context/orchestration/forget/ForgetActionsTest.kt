@@ -40,9 +40,11 @@ class ForgetActionsTest {
         graph.db.frameDao().insertIgnore(FrameEntity("f1", 1, jpg.absolutePath, "rokid_glasses"))
         mem("m1", "f1")
         var refreshed = 0
+        val removals = ForgetActions.removals.get()
         assertTrue(ForgetActions.forgetMoment(ctx, "f1") { refreshed++ })
         assertFalse(jpg.exists())
         assertEquals(1, refreshed)
+        assertTrue("Codex r21: an open canvas page sees the removal", ForgetActions.removals.get() > removals)
     }
 
     @Test fun invalidatedDescendantsQueueTheReSummarise() = runBlocking {

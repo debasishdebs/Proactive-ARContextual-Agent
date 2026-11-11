@@ -261,6 +261,15 @@ async function route(force) {
   }
 }
 
+// The phone's data generation moves after every Forget, retention delete and Delete all: the open view is then read again (and its photo blobs revoked).
+let dataGen = null;
+async function checkData() {
+  if (!token || (guardFn && guardFn())) return; // never reload unsaved editor changes under the user; the next check after they are saved does
+  const g = await request('GET', '/api/data-generation').then((r) => (r.ok ? r.json() : null), () => null);
+  if (g && dataGen !== null && g.gen !== dataGen) route(true);
+  if (g) dataGen = g.gen;
+}
+
 function boot() {
   lastHash = location.hash;
   const b = parseBootHash(location.hash);
@@ -273,6 +282,9 @@ function boot() {
   }
   window.addEventListener('hashchange', () => route());
   route();
+  checkData(); // the baseline
+  setInterval(checkData, 5000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkData(); });
 }
 
 boot();

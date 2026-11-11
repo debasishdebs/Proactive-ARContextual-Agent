@@ -23,8 +23,9 @@ class Params {
 /** Installs the globals; returns {timers, runTimers, confirms, uninstall}. [ids] are the elements getElementById knows. */
 export function setup(ids) {
   installFakeDom(ids || []);
-  const env = { timers: [], confirms: [], confirmAnswer: true, listeners: {}, prompts: [] };
+  const env = { timers: [], intervals: [], confirms: [], confirmAnswer: true, listeners: {}, prompts: [] };
   globalThis.setTimeout = (fn, ms) => { env.timers.push({ fn, ms }); return env.timers.length; };
+  globalThis.setInterval = (fn, ms) => { env.intervals.push({ fn, ms }); return env.intervals.length; }; // run by hand (env.intervals[i].fn())
   globalThis.clearTimeout = () => {};
   globalThis.URLSearchParams = Params;
   globalThis.URL = { createObjectURL: () => 'blob:fake', revokeObjectURL() {} };
@@ -49,7 +50,7 @@ export function setup(ids) {
   env.runTimers = async () => { const t = env.timers.splice(0); for (const x of t) await x.fn(); };
   env.uninstall = () => {
     uninstall();
-    for (const k of ['setTimeout', 'clearTimeout', 'URLSearchParams', 'URL', 'sessionStorage', 'location', 'history', 'window']) delete globalThis[k];
+    for (const k of ['setTimeout', 'setInterval', 'clearTimeout', 'URLSearchParams', 'URL', 'sessionStorage', 'location', 'history', 'window']) delete globalThis[k];
   };
   return env;
 }

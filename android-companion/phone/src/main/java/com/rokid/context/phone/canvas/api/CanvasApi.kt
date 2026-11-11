@@ -139,6 +139,7 @@ class CanvasApi(
             "GET publish" -> json(backend.activePublish())
             "GET publish/history" -> json(backend.publishHistory(limit(req, MAX_HISTORY, MAX_HISTORY)))
             "GET live" -> json(backend.live(limit(req, DEFAULT_LIVE, MAX_LIVE)))
+            "GET data-generation" -> json(buildJsonObject { put("gen", backend.dataGeneration()) })
             "POST publish/rollback" -> rollback(req)
             "POST check-prompt" -> checkPrompt(req)
             "GET frames" -> frames(req)
@@ -169,7 +170,7 @@ class CanvasApi(
 
     /** The route shape with ids as `:id`, or null for a path that is no route at all (404). */
     private fun templateOf(s: List<String>): String? = when {
-        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "moments", "scenes", "runs", "compare", "validate", "live") -> s[0]
+        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "moments", "scenes", "runs", "compare", "validate", "live", "data-generation") -> s[0]
         s.size == 2 && s[0] == "pipelines" -> "pipelines/:id"
         s.size == 3 && s[0] == "pipelines" && s[2] in setOf("freeze", "diff") -> "pipelines/:id/${s[2]}"
         s.size == 5 && s[0] == "pipelines" && s[2] == "versions" && s[4] == "publish" -> "pipelines/:id/versions/:n/publish"

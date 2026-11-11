@@ -2,7 +2,7 @@
 // boxes (derived from step inputs: they are the real connections), layouts, and the compile diagnostics/meters placed on steps.
 // Every edit returns {graph, note?} or {error}; the input graph is never mutated. The server (ExprProgram.check) stays the authority.
 
-const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
+export const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 const NAME = /^[a-z][a-z0-9_]{0,23}$/;
 export const MAX_NODES = 32;
 export const MAX_COST = 64;
@@ -62,23 +62,24 @@ function unique(base, used) {
   return name;
 }
 
-// ---- the outer level
-/** Steps a step reads (its `step` inputs). */
-const reads = (s) => s.inputs.filter((i) => own(i, 'step')).map((i) => i.step);
-
-/** Would `from` feeding `to` (a step input of `to` reading step `from`) close a loop? True when `from` already depends on `to`, or from === to. */
-export function stepLoop(g, to, from) {
-  if (to === from) return true;
+/** Would wiring `from` into `to` close a loop? True when walking [sources] back from `from` reaches `to` (or from === to). One walk for both levels. */
+function closesLoop(to, from, sources) {
   const seen = new Set();
   const walk = (n) => {
     if (n === to) return true;
     if (seen.has(n)) return false;
     seen.add(n);
-    const s = stepOf(g, n);
-    return !!s && reads(s).some(walk);
+    return sources(n).some(walk);
   };
   return walk(from);
 }
+
+// ---- the outer level
+/** Steps a step reads (its `step` inputs). */
+const reads = (s) => s.inputs.filter((i) => own(i, 'step')).map((i) => i.step);
+
+/** Would `from` feeding `to` (a step input of `to` reading step `from`) close a loop? True when `from` already depends on `to`, or from === to. */
+export const stepLoop = (g, to, from) => closesLoop(to, from, (n) => (stepOf(g, n) ? reads(stepOf(g, n)) : []));
 
 /** The box-to-box arrows: one per `step` input, {from, to, input}. These are the real connections. */
 export function outerEdges(g) {
@@ -184,17 +185,7 @@ export function removeInput(g, stepName, inputName) {
 const sourcesOf = (s, id) => s.wires.filter((w) => w[1].split('.')[0] === id).map((w) => w[0]);
 
 /** Wiring `from` into node `to`: a loop when `from` already depends on `to` (or is it). */
-export function nodeLoop(s, to, from) {
-  if (from === to) return true;
-  const seen = new Set();
-  const walk = (n) => {
-    if (n === to) return true;
-    if (seen.has(n)) return false;
-    seen.add(n);
-    return sourcesOf(s, n).some(walk);
-  };
-  return walk(from);
-}
+export const nodeLoop = (s, to, from) => closesLoop(to, from, (n) => sourcesOf(s, n));
 
 const DEFAULT_NODE = {
   sig: () => ({ name: 'gyroMax' }), const: () => ({ value: 0 }), cmp: () => ({ f: '>' }), arith: () => ({ f: '+' }), in: () => ({ set: ['REST'] }),

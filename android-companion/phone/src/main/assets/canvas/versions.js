@@ -1,11 +1,10 @@
 // Version diff, the publish dialog (three modes), and the publish card with rollback and history. Server text goes through h() only.
-import { h, clear, btn } from './dom.js';
+import { h, clear, btn, enc } from './dom.js';
 import { rowsFor } from './diffview.js';
 import { MODES, callRangeText, rollbackProblems, historyRows, when } from './format.js';
 import { rollbackPayload } from './runlogic.js';
 import { planStatusCard } from './planpublish.js';
 
-const enc = encodeURIComponent;
 const side = (v) => (v === 'draft' ? 'the draft' : 'v' + v);
 
 export async function diffView(ctx, root, id, a, b) {

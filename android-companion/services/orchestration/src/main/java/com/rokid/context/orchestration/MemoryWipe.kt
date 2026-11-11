@@ -111,6 +111,7 @@ object MemoryWipe {
             val wipe = db.wipeDao()
             val paths = wipe.framePaths()
             val proposals = wipe.wipeMemory()
+            com.rokid.context.orchestration.forget.ForgetActions.removals.incrementAndGet() // committed: an open canvas page reads again
             // P7xP8 I1: as Forget does (ForgetActions.apply), an armed reminder alarm and a posted notification still
             // hold the redacted text: cancel them for every proposal the wipe saw.
             try {

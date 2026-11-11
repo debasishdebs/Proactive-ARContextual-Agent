@@ -1,9 +1,8 @@
 // The Live view: the active interpreter, its label counts and the recent frames with the traces it wrote.
-import { h, clear, btn } from './dom.js';
+import { h, clear, btn, enc } from './dom.js';
 import { photoThumb } from './photos.js';
 import { when } from './format.js';
 
-const enc = encodeURIComponent;
 
 export async function liveView(ctx, root) {
   const d = await ctx.api('GET', '/api/live');

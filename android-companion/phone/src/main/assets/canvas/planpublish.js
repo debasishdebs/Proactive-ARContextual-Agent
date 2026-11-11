@@ -1,9 +1,8 @@
 // Capture-plan publish and rollback UI (Task 37): the five evidence gates with their reasons, SHADOW / TRIAL / LIVE, the TRIAL countdown and the plan actions
 // (Use settings, Restore previous; Undo latest is the existing group-aware rollback). Everything the server wrote goes through h() only.
-import { h, btn } from './dom.js';
+import { h, btn, enc } from './dom.js';
 import { FUSION_TEXT, hoursText } from './pareto.js';
 
-const enc = encodeURIComponent;
 export const PLAN_MODES = [
   { mode: 'SHADOW', label: 'Shadow', text: 'The glasses run the plan beside your settings and report what it would have done. Nothing changes.' },
   { mode: 'TRIAL', label: 'Trial (60 min)', text: 'The plan runs for up to 60 minutes, then the glasses go back to your settings by themselves. Needs milestone M1.' },

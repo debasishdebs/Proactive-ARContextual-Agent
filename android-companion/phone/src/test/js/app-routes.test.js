@@ -84,6 +84,28 @@ export const tests = {
     await visit(b, '#/nope/at/all');
     ok(E.textOf(b.root).includes('Not found.'));
   },
+  /** Codex r21: a Forget, retention delete or Delete all moves the phone's data generation; the open view is read again (on the poll and when the tab shows). */
+  async aDataRemovalReadsTheOpenViewAgain() {
+    const b = await boot();
+    await visit(b, '#/ask/a1');
+    let gen = 7;
+    b.table['GET /api/data-generation'] = () => ({ gen });
+    const check = b.env.intervals.find((x) => x.ms === 5000);
+    ok(check, 'the data check is polled');
+    const reads = () => b.api.calls.filter((c) => c.path === '/api/asks/a1').length;
+    await check.fn(); await E.settle(200);
+    const before = reads();
+    await check.fn(); await E.settle(200);
+    eq(reads(), before, 'an unchanged generation reads nothing again');
+    gen = 8;
+    await check.fn(); await E.settle(600);
+    eq(reads(), before + 1, 'a removal reads the open view again');
+    gen = 9;
+    for (const f of document.listeners.visibilitychange || []) f();
+    await E.settle(600);
+    eq(reads(), before + 2, 'showing the tab checks too');
+    delete b.table['GET /api/data-generation'];
+  },
   async navShowsLiveOnlyWithAnInterpreter() {
     const b = await boot();
     await visit(b, '#/');
