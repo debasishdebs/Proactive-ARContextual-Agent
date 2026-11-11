@@ -2,7 +2,34 @@
 
 Written by Claude (Sonnet 5.5 session, Opus agents for reviews) for the user (debasishkanhar). All times IST. The user's pronouns are unknown: use they/them. Earlier handoffs stay valid for history: `2026-10-25-evening-handoff.md` (long running ledger with dated UPDATE sections), the per-slice handoffs `2026-10-26-*`, `2026-10-27-*`, `2026-10-28-*`, `2026-10-29-*`, `2026-10-30-*`, `2026-11-07-*`, `2026-11-08-*`, and `v1.1-forget-lifecycle-backlog.md`. This file is the consolidated state as of 2026-11-10.
 
-## 0. Resume checklist (do these first)
+## 00. STATE ON 2026-11-11 MORNING (supersedes sections 0 and 0b; the rest is history/reference)
+
+**Gates: GREEN.** PCA Codex r24 READY (no P1) at `b0e61a7d`; LiveFit Codex follow-up 2 READY at `01189a3`. Nothing pushed, nothing installed since 11-08. The user went to sleep on 11-10 night with the goal "continue till full green for v1rc1, have APKs ready; in the morning we install and test".
+
+**Morning plan (needs the user):**
+1. Devices: `adb devices -l`; glasses over Wi-Fi at `192.168.68.118:5555` (IP changed from .104; reboot/firmware resets wireless adb, needs the cable once).
+2. Call check on the phone (`mCallState` must be 0), then BACKUP the phone (`adb -s <phone> exec-out run-as com.rokid.context tar c . > ~/Desktop/rokid/backups/pca-phone-pre-v100rc1-<date>.tar`), only on the user's "go".
+3. Install PCA phone (`adb install -r`), open the app once, then check logcat for the Room v15 -> v16 migration and no crash (first schema change since v15; tested only in JVM/SQLite, never on a real SQLCipher DB). Then PCA glasses and PCA watch (version bump only changes them), then LiveFit phone + watch.
+4. Worn tests (section 8) incl. LiveFit: does the Rokid glasses' Bluetooth/CXR session drop when taken off (decides the "glasses on a desk" known issue), PCA AutoStop, marks, Ask, HUD clears on Forget.
+5. After the tests and the user's OK: release push per section 9 (pre-releases, no APKs; re-check release notes).
+
+**APKs (staged):** see `~/Desktop/rokid/backups/apks-v100-rc1-final-20261111/SHA256SUMS` (PCA phone/glasses/watch debug, versionCode 3/3/31, versionName 1.0.0-rc1) and `~/Desktop/rokid/backups/apks-livefit-rc-20261111-3ce24e9/` (LiveFit phone `494c0af911da`, watch `8808d37003e1`; LiveFit glasses unchanged).
+
+**User rulings 2026-11-10 (binding):**
+- Over-linking (a derived memory deleted because a batch-mate/upstream photo was forgotten; never a photo) ACCEPTED for rc1; P1 from then on = leak / photo or non-derived memory loss / migration failure / crash / deadlock / photo deletable on a non-photo description.
+- YES Room v15 -> v16 (done: `memory.imageDelivered`, `memory.reviewFlaggedAt`, `canvas_run_item.imageDelivered`, all nullable, `468e3bba`).
+- Run and Save: delivery proof added (`3dd74aa8`), proved captions save again.
+- LiveFit worn rule: checkbox list "Keep running while worn", glasses required (locked), watch/phone optional, default glasses only; phone "in use" = screen on + unlocked; an open app or a workout keeps the hub regardless of toggles (my reading of the ruling; the user did not answer the explicit "Nearby toggles off" question).
+
+**What landed overnight (PCA, feat/v099-watch, after 815c1552):** r12-r18 Forget-provenance fixes (PayloadSources on every model call, shared qualifying-description rule, CARRIED provenance per saved memory following real requests and edges, mark ids as sources, every stored-content request generation-checked); v16 migration + suspect list (Diagnostics > Suspect descriptions; criterion = every pre-fix photo description, i.e. thousands of rows, not just the ~44 real ones: "Mark all" re-describes them over many nights at up to 60 paid calls/night; matching the real 44 needs the old phone logs, not done); Run-and-Save proof; test-stability root cause (unit tests could reach the real SQLCipher DB; now fail fast); r20-r23 stale-display fixes (Diagnostics live, record lists observe Room, previews drop deleted photos, canvas pages poll `GET /api/data-generation`, HUD clears on redaction, reminder re-check after post); rc1 version bump. Reviews: `docs/superpowers/reviews/2026-11/codex-r13..r24.md`, `opus-r19.md`.
+
+**LiveFit (`~/Desktop/rokid/lf-remove-pca-push`, branch chore/remove-pca-motion-push, tip `3ce24e9`, not pushed):** worn gating (4a4ab3e), restore race / early-stop / sensor fixes (ca26741, eb4fd95, da17cd5), state traffic stops with the hub + final frame flush + watch stale-frame fallback (5505bc2, 01189a3). Reviews in `code-agent/handoffs/codex-lf*-2026-11-11.md` and the worn-gating handoff.
+
+**Known issues for rc1 (not blocking):** over-linking (accepted); LiveFit glasses on a desk with a user-started session count as worn until the session ends (hardware-dependent); `LocalModelsPageTest.downloadConfirmShowsSizeAndRam` flaky (~2/6 full runs); the new canvas JS refresh test failed once in ~5 runs; the v16 migration not yet run on a real encrypted DB; suspect list is broad (see above); release signing = key rotation at v1.0.0 final; the earlier rc1 gaps in section 11 still apply.
+
+**Pending user decisions:** LiveFit open-app-with-all-Nearby-toggles-off (built as "keeps alive"); LiveFit "Phone" meaning (built as screen on + unlocked); whether to match the ~44 suspects from old logs; glasses Wi-Fi/wireless adb overnight; the rest of section 10.
+
+## 0. Resume checklist (historical, 2026-11-10; see 00 above)
 
 1. `cd ~/Desktop/rokid/pca-v098` (worktree, branch `feat/v099-watch`; last CODE commit `815c1552`, handoff/docs commits sit on top of it, e.g. `9b9aa591`). `git status` should be clean. Never `git stash`, never `git push` without the user's word (they DID authorise the release push, see section 9; still do it only after the gates in section 8).
 2. Read sections 3 (state), 6 (open Codex findings) and 8 (next steps). The user wants: quality good, then a full status review of v1.0.0, then push branches/tags/pre-releases (no APKs) with notes, and "confirm if all are good or not".

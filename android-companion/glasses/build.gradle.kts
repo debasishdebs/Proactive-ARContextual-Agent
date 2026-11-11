@@ -15,8 +15,8 @@ android {
         applicationId = "com.rokid.context.glasses"
         minSdk = 28
         targetSdk = 32 // Rokid OS is fixed
-        versionCode = 2
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.0.0-rc1"
     }
 
     buildTypes {
