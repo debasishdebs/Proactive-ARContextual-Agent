@@ -70,6 +70,8 @@ class RecordListSource(
     override val searchHint = kind.searchHint
     override val emptyText = kind.empty
     override val sortable = false
+    /** Codex r21: re-read when a Forget, a retention delete, Delete all or a redaction changes what the rows show. */
+    override val changes = data.listChanges(kind)
 
     private var shown = pageSize
     private var total = 0
