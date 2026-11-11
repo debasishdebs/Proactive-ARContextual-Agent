@@ -47,13 +47,11 @@ class VoiceGraph private constructor(private val app: Context) {
     private val deviceCaps = com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(app).capabilities
     val utterance = com.rokid.context.voice.Utterance(MarkUtteranceCommands({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { PcLog.i(TAG, it) }), caps = { deviceCaps.value },
         capture = HubCaptureControl({ com.rokid.context.phone.hub.HubGraph.get(app).asPauseHub { com.rokid.context.phone.hub.HubPauses(MemoryGraph.get(app).db.pauseDao()).stored() } }, log = { PcLog.i(TAG, it) }))
-    /** Codex r22: the last ask whose stored row was read (unredacted) just before its answer was shown: it existed, so a first read of null is a deletion. */
-    @Volatile private var snapshotAskId: String? = null
     val pipeline = VoicePipeline(
         scope, AndroidOnDeviceStt(app), capabilities.capabilities, { settings.settings.value.language },
         AppAnswerer(
             ask = { q, source -> AskActions.askFrom(app, q, source) },
-            answerText = { id -> withContext(Dispatchers.IO) { MemoryGraph.get(app).asks.byId(id)?.takeUnless { it.redacted }?.also { snapshotAskId = it.id }?.answer } },
+            answerText = { id -> withContext(Dispatchers.IO) { MemoryGraph.get(app).asks.byId(id)?.takeUnless { it.redacted }?.answer } },
             offNotice = { id ->
                 withContext(Dispatchers.IO) {
                     MemoryGraph.get(app).proposals.byId(id)?.takeIf { it.state == com.rokid.context.memory.ProposalState.SUPPRESSED.name }
@@ -66,9 +64,9 @@ class VoiceGraph private constructor(private val app: Context) {
         log = { PcLog.i(TAG, it) },
         interceptor = utterance.asInterceptor(),
         deviceCaps = { deviceCaps.value },
-        // Codex r21/r22: the stored ask was redacted, or existed and is gone (an answer not yet stored is not withdrawn)
-        answerWithdrawn = { id ->
-            withdrawnSignal(kotlinx.coroutines.flow.flow { emitAll(MemoryGraph.get(app).asks.observe(id)) }.flowOn(Dispatchers.IO), existed = id == snapshotAskId)
+        // Codex r21-r23: the stored ask was redacted, or existed and is gone; [existed] is the shown answer's own proof that its row was read
+        answerWithdrawn = { id, existed ->
+            withdrawnSignal(kotlinx.coroutines.flow.flow { emitAll(MemoryGraph.get(app).asks.observe(id)) }.flowOn(Dispatchers.IO), existed)
         },
     )
     /** G7: Battery Saver, for the glasses tap's blocked reason (the ask path refuses the ask itself). */
@@ -110,8 +108,7 @@ class VoiceGraph private constructor(private val app: Context) {
         scope.launch {
             val a = withContext(Dispatchers.IO) { MemoryGraph.get(app).asks.byId(askId) } ?: return@launch
             if (a.redacted) return@launch
-            snapshotAskId = a.id // the row existed when read: a deletion before the HUD watcher's first read still withdraws it
-            pipeline.showTypedAnswer(a.id, a.question, a.answer)
+            pipeline.showTypedAnswer(a.id, a.question, a.answer, stored = true) // read from its row: a deletion before the HUD watcher's first read still withdraws it
         }
     }
 
