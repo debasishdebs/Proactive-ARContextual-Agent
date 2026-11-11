@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -134,6 +135,16 @@ class PreviewScreenTest {
     }
 
     /** Device check D-E1: in a short viewport (landscape) the photo fills the screen; a one-finger drag on it must scroll the page. */
+    /** Codex r21 P1-2: a photo on screen whose row retention (or a Forget, or Delete all) removes leaves the screen at once: the decoded image is dropped. */
+    @Test fun aPhotoRemovedWhileOnScreenIsDroppedAndSaysSo() {
+        val path = kotlinx.coroutines.flow.MutableStateFlow<String?>("/f1.jpg")
+        show(load(RefKind.MEMORY, "m1")) { it.copy(framePath = { "/f1.jpg" }, observeFramePath = { path }) }
+        compose.waitForIdle()
+        compose.onAllNodesWithTag("photo_expired").assertCountEquals(0) // the photo view is on screen
+        path.value = null // the row is gone
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("photo_expired").fetchSemanticsNodes().isNotEmpty() } // the photo view (and its decoded image) left
+    }
+
     @Test fun dragOnUnzoomedPhotoScrollsThePage() {
         compose.setContent { PcTheme { Box(Modifier.height(360.dp)) { PreviewScreen(PreviewUiState(false, load(RefKind.MEMORY, "m1")), PreviewHost(base, framePath = { "/missing.jpg" }), onBack = {}, onForget = {}) } } }
         compose.onNodeWithTag("preview_image").performTouchInput { swipe(start = center, end = center - Offset(0f, 600f), durationMillis = 300) }

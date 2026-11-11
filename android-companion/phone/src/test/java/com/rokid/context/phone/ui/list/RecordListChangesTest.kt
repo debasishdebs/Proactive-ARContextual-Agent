@@ -11,6 +11,7 @@ import com.rokid.context.phone.ui.TestGraph
 import com.rokid.context.phone.ui.preview.RepoActivityData
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -65,4 +66,18 @@ class RecordListChangesTest {
             changed.await()
         }
     }
+
+    /** Codex r21 P1-2: the previewer's photo path is observed: null once retention removes the frame row. */
+    @Test fun aRetentionDeletedPhotoPathBecomesNull() = runBlocking {
+        graph.db.frameDao().insertIgnore(Fixtures.frame("f1", Fixtures.at(TODAY, 9)))
+        val data = RepoActivityData(graph.timeline, graph.asks, graph.nudges, graph.marks, { Fixtures.ZONE }, tableChanges = { t -> graph.db.tableChanges(*t) })
+        val seen = java.util.Collections.synchronizedList(mutableListOf<String?>())
+        val job = launch(kotlinx.coroutines.Dispatchers.IO) { data.observeFramePath("f1").collect { seen += it } }
+        withTimeout(5_000) { while (seen.isEmpty()) kotlinx.coroutines.delay(10) }
+        assertEquals(Fixtures.frame("f1", 0).path, seen.first())
+        graph.db.forgetDao().deleteFrame("f1")
+        withTimeout(5_000) { while (seen.last() != null) kotlinx.coroutines.delay(10) }
+        job.cancel()
+    }
 }
+

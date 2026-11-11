@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import com.rokid.context.memory.DayBucket
 import java.time.LocalDate
 import java.time.ZoneId
@@ -71,6 +72,12 @@ class RepoActivityData(
         ListKind.NUDGES -> arrayOf("nudge", "memory")
         ListKind.MARKS -> arrayOf("canvas_label", "frame", "frame_meta", "moment")
     }) ?: emptyFlow()
+
+    override fun observeFramePath(id: String): Flow<String?> {
+        val once = kotlinx.coroutines.flow.flow { emit(frames(listOf(id)).firstOrNull()?.path) }
+        val changes = tableChanges?.invoke(arrayOf("frame")) ?: return once
+        return changes.onStart { emit(Unit) }.map { frames(listOf(id)).firstOrNull()?.path }.distinctUntilChanged()
+    }
 
     private fun cited(json: String?): Flow<Unit> {
         val ids = json?.let { AskSources.parse(it) }.orEmpty().filterNot { it.startsWith(PHOTO_CITE_PREFIX) }.distinct()

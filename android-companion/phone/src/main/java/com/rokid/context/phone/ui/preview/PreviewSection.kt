@@ -64,6 +64,8 @@ data class PreviewHost(
     val detail: MemoryDetailUiState,
     /** The stored path of a photo (null: retention deleted it). Called lazily, once per photo shown. */
     val framePath: suspend (String) -> String?,
+    /** Codex r21: the photo's path, OBSERVED (null once retention, a Forget or Delete all removes its row); when set, the pager drops the decoded photo then. */
+    val observeFramePath: ((String) -> kotlinx.coroutines.flow.Flow<String?>)? = null,
     /** "Show that time": the day view, scrolled to [atMs] (null: the top). */
     val showTime: (LocalDate, Long?) -> Unit = { _, _ -> },
     val forgetPhoto: (String) -> Unit = {},
@@ -158,7 +160,11 @@ private fun ImageContent(s: PreviewSection.ImageSection, host: PreviewHost) {
     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("preview_image")) {
         HorizontalPager(pager, key = { s.frameIds[it] }, modifier = Modifier.fillMaxWidth().height(260.dp).testTag("frame_pager")) { page ->
             val id = s.frameIds[page]
-            val shown by produceState<Shown>(Shown.Loading, id) { value = host.framePath(id)?.let { Shown.Ok(it) } ?: Shown.Expired }
+            val shown by produceState<Shown>(Shown.Loading, id) {
+                val observe = host.observeFramePath
+                if (observe == null) value = host.framePath(id)?.let { Shown.Ok(it) } ?: Shown.Expired
+                else observe(id).collect { path -> value = path?.let { Shown.Ok(it) } ?: Shown.Expired } // a removed row drops the decoded photo at once
+            }
             when (val x = shown) {
                 is Shown.Ok -> ZoomableFrame(x.path, Modifier.fillMaxWidth().height(260.dp))
                 Shown.Expired -> Text(MemoryDetailModel.PHOTO_EXPIRED, style = MaterialTheme.typography.labelLarge, color = PcColors.InkSoft, modifier = Modifier.padding(top = 8.dp).testTag("photo_expired"))
