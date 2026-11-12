@@ -127,8 +127,8 @@ abstract class EmbeddingDao {
     abstract suspend fun clearUnembeddable(): Int
 
     @Query("SELECT COUNT(*) FROM frame") protected abstract suspend fun storedPhotoCount(): Int
-    @Query("SELECT COUNT(*) FROM frame f JOIN frame_meta m ON m.frameId = f.id WHERE m.imageVectorSpace = 'unembeddable'") protected abstract suspend fun unembeddablePhotoCount(): Int
-    @Query("SELECT COUNT(*) FROM frame_vector v WHERE v.spaceId = :spaceId AND EXISTS (SELECT 1 FROM frame f WHERE f.id = v.frameId)") protected abstract suspend fun storedPhotoVectorCount(spaceId: String): Int
+    @Query("SELECT COUNT(*) FROM frame f JOIN frame_meta m ON m.frameId = f.id WHERE m.imageVectorSpace = 'unembeddable'") abstract suspend fun unembeddablePhotoCount(): Int
+    @Query("SELECT COUNT(*) FROM frame_vector v WHERE v.spaceId = :spaceId AND EXISTS (SELECT 1 FROM frame f WHERE f.id = v.frameId)") abstract suspend fun storedPhotoVectorCount(spaceId: String): Int
 
     /** Drops the image vectors of [spaceId] whose width is not [dims] (a rebuild must not keep rows a bad write left behind). Returns how many. */
     @Query("DELETE FROM frame_vector WHERE spaceId = :spaceId AND length(blob) != :dims * 4")

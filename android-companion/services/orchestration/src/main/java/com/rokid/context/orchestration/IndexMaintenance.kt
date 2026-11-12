@@ -7,7 +7,9 @@ import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.embed.Canaries
 import com.rokid.context.ai.embed.Embedders
 import com.rokid.context.ai.embed.LocalModelPausedException
+import com.rokid.context.memory.Coverage
 import com.rokid.context.memory.EmbeddingSpaces
+import com.rokid.context.memory.IndexHealth
 import com.rokid.context.memory.Embedder
 import com.rokid.context.memory.ImageDecodeException
 import com.rokid.context.memory.Modality
@@ -185,6 +187,11 @@ class IndexMaintenance(
     private val bulkAllowed: () -> Boolean = { true },
     private val imageBatch: Int = 8,
     private val imageMaxPerRun: Int = 160,
+    /** Log only: why [bulkAllowed] is closed right now (a fixed phrase, never content). */
+    private val bulkReason: () -> String = { "bulk gate closed" },
+    /** Log only: the rate limit of the progress lines and what was already said (shared by the process; tests pass their own). */
+    private val progress: ProgressLimiter = IndexLogShared.progress,
+    private val logState: IndexLogState = IndexLogShared.state,
 ) {
     /** RETRY: a pre-swap canary check could not run; the worker retries with backoff (bounded) and never swaps unchecked. */
     enum class Outcome { IDLE, DONE, MORE, RETRY,
@@ -202,8 +209,10 @@ class IndexMaintenance(
         val bound = embedders.bound() ?: run {
             // No EMBED model: a drift streak (and "index unstable") belonged to a model that is gone.
             if (clock.lastDiscard() != null) clock.recordDiscard(null)
+            logPause("model", "no EMBED model bound (semantic search stays off)")
             return Outcome.IDLE
         }
+        logResume("model", "an EMBED model is bound again")
         if (Modality.IMAGE in bound.embedder.modalities && bound.embedder.imageDims == null) {
             throw IndexConfigException("image embedder must declare imageDims") // before anything is purged or written
         }
@@ -238,30 +247,45 @@ class IndexMaintenance(
             clock.recordDiscard(null) // the user's Rebuild resets the drift streak
         }
         val needsBuild = current == null || current.state == SpaceState.STALE || current.fingerprint != fp
+        val why = when { current == null -> "no index yet"; manual -> "rebuild requested"; current.state == SpaceState.STALE -> "space stale"; else -> "model changed" }
+        val resumed = needsBuild && quietly { spaces.building()?.fingerprint == fp } == true
         val building = if (needsBuild) start(bound, fp) else null
+        if (building != null) logBuildStart(building, bound, why, resumed)
+        syncHealth(when {
+            building != null -> if (resumed) "build resumed: $why" else "build started: $why"
+            needsBuild -> if (clock.unstable()) "auto-rebuild stopped after $MAX_DISCARD_STREAK drift discards; only Rebuild resumes" else "build held 24 h after a drift discard"
+            else -> "no rebuild needed"
+        })
 
         var budget = maxPerRun
         val images = ImageProgress(imageMaxPerRun)
         var activeLeft = false
         var activeImagesLeft = false
+        var activeChecked = false
+        var activeImageCapable = false
         if (current != null && current.state == SpaceState.ACTIVE) {
             val e = if (current.fingerprint == fp) bound.embedder else embedders.forSpace(current)
             if (e != null) {
                 try {
-                    budget = fill(current, e, budget)
-                    fillImages(current, e, images) // catch-up after downtime; the ACTIVE space is read for routing, so its photos come first
+                    budget = fill(current, e, budget, "active")
+                    fillImages(current, e, images, "active") // catch-up after downtime; the ACTIVE space is read for routing, so its photos come first
                     activeLeft = spaces.missing(current.id, 1).isNotEmpty() // re-checked so a memory written meanwhile is not left behind
                     activeImagesLeft = Modality.IMAGE in e.modalities && !images.paused && spaces.missingImages(current.id, 1).isNotEmpty()
+                    activeChecked = true
+                    activeImageCapable = Modality.IMAGE in e.modalities
                 } catch (c: CancellationException) { throw c } catch (c: IndexConfigException) { throw c } catch (t: Exception) {
                     if (building == null) throw t // nothing else to do: let the worker retry with backoff
                     PcLog.i(TAG, "old space not reachable; it keeps its vectors: ${SafeLog.describe(t)}")
                 }
             }
         }
-        if (building == null) return if (activeLeft) Outcome.MORE else if (activeImagesLeft) Outcome.BACKFILL else Outcome.DONE
+        if (building == null) {
+            if (activeChecked && !activeLeft && current != null) logReady(current, imagesDone = !activeImagesLeft && !images.paused, imageCapable = activeImageCapable)
+            return if (activeLeft) Outcome.MORE else if (activeImagesLeft) Outcome.BACKFILL else Outcome.DONE
+        }
 
-        fill(building, bound.embedder, budget)
-        fillImages(building, bound.embedder, images)
+        fill(building, bound.embedder, budget, "building")
+        fillImages(building, bound.embedder, images, "building")
         if (!spaces.coverage(building.id).complete) return Outcome.MORE
         when (check(building, bound.embedder)) {
             Check.UNCHECKED -> { PcLog.i(TAG, "pre-swap canary check could not run; not swapping"); return Outcome.RETRY }
@@ -271,6 +295,8 @@ class IndexMaintenance(
                 val streak = if (last?.fingerprint == fp) last.streak + 1 else 1
                 clock.recordDiscard(DiscardRecord(fp, now(), streak))
                 PcLog.i(TAG, "canaries drifted while building: build discarded (streak $streak)")
+                progress.forget(building.id)
+                syncHealth(if (clock.unstable()) "build discarded after canary drift (streak $streak): auto-rebuild stopped until Rebuild" else "build discarded after canary drift (streak $streak)")
                 return Outcome.DONE
             }
             Check.NOISY -> PcLog.i(TAG, "canaries are noisy, not drifted: swapping")
@@ -287,11 +313,16 @@ class IndexMaintenance(
             }
         }
         if (!spaces.swapIfComplete(building.id, requireImages = imageSpace)) {
+            safeLog { PcLog.i(TAG, "index swap waiting: text complete, ${spaces.missingImageCount(building.id)} photo vectors still missing (photo backfill paused=${images.paused}); space=${building.id}") }
             return if (images.paused) Outcome.DONE else Outcome.BACKFILL
         }
         clock.markCanary(now())
         clock.recordDiscard(null)
-        return if (spaces.missing(building.id, 1).isNotEmpty()) Outcome.MORE else Outcome.DONE
+        val textLeft = spaces.missing(building.id, 1).isNotEmpty()
+        logSwapped(building, previous = current, bound = bound, imageSpace = imageSpace)
+        syncHealth("swap complete: space ${building.id} is ACTIVE")
+        if (!textLeft) logReady(building, imagesDone = true, imageCapable = imageSpace)
+        return if (textLeft) Outcome.MORE else Outcome.DONE
     }
 
     /** Resumes the BUILDING space of this model, or starts one unless drift discards are holding this model back (then null). */
@@ -306,11 +337,14 @@ class IndexMaintenance(
     }
 
     /** Embeds up to [budget] missing memories into [space]; returns what is left of the budget. */
-    private suspend fun fill(space: EmbeddingSpaceEntity, embedder: Embedder, budget: Int): Int {
+    private suspend fun fill(space: EmbeddingSpaceEntity, embedder: Embedder, budget: Int, role: String): Int {
         var left = budget
+        var cov: Coverage? = null // log only: the space's coverage before this run's first write
+        var stored = 0
         while (left > 0) {
             val todo = spaces.missing(space.id, minOf(batch, left))
             if (todo.isEmpty()) break
+            if (cov == null) cov = quietly { spaces.coverage(space.id) }
             val vectors = embedder.embedDocuments(todo.map { it.text })
             var writable = true
             for ((m, v) in todo.zip(vectors)) {
@@ -318,8 +352,13 @@ class IndexMaintenance(
                     throw IndexConfigException("space ${space.id}: ${e.message}")
                 }
                 if (!writable) break
+                stored++
             }
             left -= todo.size
+            cov?.let { c ->
+                val total = maxOf(c.eligible, c.have + stored)
+                if (progress.due("text:${space.id}", c.have + stored, total)) PcLog.i(TAG, IndexLogFormat.progress("text", role, c.have + stored, total, space.id))
+            }
             if (!writable) break // discarded, retired or marked stale meanwhile: nothing more to write here
         }
         return left
@@ -337,18 +376,26 @@ class IndexMaintenance(
      * Every other embedder exception (model, runtime, endpoint, battery) propagates and marks nothing; a photo skipped this run (transient
      * read fault, wrong-width vector) stays on the list for a later run.
      */
-    private suspend fun fillImages(space: EmbeddingSpaceEntity, embedder: Embedder, p: ImageProgress) {
+    private suspend fun fillImages(space: EmbeddingSpaceEntity, embedder: Embedder, p: ImageProgress, role: String) {
         if (Modality.IMAGE !in embedder.modalities) return
         // The width comes only from the embedder (never from a stored vector or the text dim); rows of another width are dropped.
         val dims = embedder.imageDims ?: throw IndexConfigException("image embedder must declare imageDims") // no purge, no write
         val purged = spaces.purgeWrongWidthImages(space.id, dims)
         if (purged > 0) PcLog.w(TAG, "image backfill: dropped $purged vectors of the wrong width")
         val skip = HashSet<String>() // skipped this run: not re-listed, or they would starve the photos behind them
+        var cov: Coverage? = null // log only: photo-vector coverage before this run's first write
+        var storedTotal = 0
         while (p.budget > 0) {
-            if (!bulkAllowed()) { p.paused = true; PcLog.i(TAG, "image backfill paused by the bulk gate"); return }
+            if (!bulkAllowed()) {
+                p.paused = true; PcLog.i(TAG, "image backfill paused by the bulk gate")
+                logPause("images", bulkReason())
+                return
+            }
+            logResume("images", "the bulk gate is open again")
             val want = minOf(imageBatch, p.budget)
             val ids = spaces.missingImages(space.id, want + skip.size).filter { it !in skip }.take(want)
             if (ids.isEmpty()) return
+            if (cov == null) cov = quietly { spaces.imageCoverage(space.id) }
             yield()
             p.budget -= ids.size
             val first = photos(ids)
@@ -373,10 +420,60 @@ class IndexMaintenance(
             // A decoder that fails everything shows as no image vector at all: the swap refuses (see imageSwapHealth) and a new build clears the marks.
             toMark.forEach { spaces.markUnembeddable(it); readAttempts.forget(it) }
             PcLog.i(TAG, "image backfill: ${ids.size} photos, $stored stored, ${toMark.size} unembeddable, $transient deferred, $rejected wrong width")
+            storedTotal += stored
+            cov?.let { c ->
+                val total = maxOf(c.eligible, c.have + storedTotal)
+                if (progress.due("image:${space.id}", c.have + storedTotal, total)) PcLog.i(TAG, IndexLogFormat.progress("image", role, c.have + storedTotal, total, space.id))
+            }
             if (rejected > 0 && stored == 0 && rejected == ids.size - toMark.size - transient) {
                 throw IndexConfigException("space ${space.id}: image vectors have the wrong width")
             }
         }
+    }
+
+    // ---- Index log lines (logging only: counts, space and model ids, durations, fixed reasons; never memory text, captions, queries or photos) ----
+
+    private suspend fun safeLog(block: suspend () -> Unit) { try { block() } catch (c: CancellationException) { throw c } catch (_: Exception) { /* a log line never changes the run */ } }
+    private suspend fun <T> quietly(block: suspend () -> T): T? = try { block() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+
+    private fun logPause(key: String, reason: String) { if (logState.pause(key, reason)) PcLog.i(TAG, "index paused ($key): $reason") }
+    private fun logResume(key: String, now: String) {
+        logState.resume(key)?.let { (reason, ms) -> PcLog.i(TAG, "index resumed ($key): $now; was paused for \"$reason\" for ${IndexLogFormat.duration(ms)}") }
+    }
+
+    /** NONE / NEEDED / RUNNING ([IndexHealth]) or UNSTABLE (auto-rebuild stopped); a line only when it changes. */
+    private suspend fun syncHealth(reason: String) = safeLog {
+        val base = IndexHealth.of(listOfNotNull(spaces.current(), spaces.building()))
+        val state = if (base != IndexHealth.RUNNING && clock.unstable()) "UNSTABLE" else base.name
+        logState.health(state, reason)?.let { PcLog.i(TAG, it) }
+    }
+
+    private suspend fun logBuildStart(b: EmbeddingSpaceEntity, bound: BoundEmbedder, why: String, resumed: Boolean) = safeLog {
+        val text = spaces.coverage(b.id)
+        val images = if (Modality.IMAGE in bound.embedder.modalities) spaces.imageCoverage(b.id) else null
+        PcLog.i(TAG, "index build ${if (resumed) "resumed" else "start"}: space=${b.id} model=${IndexLogFormat.model(b.fingerprint)} why=$why " +
+            "text_total=${text.eligible} text_todo=${(text.eligible - text.have).coerceAtLeast(0)} " +
+            "images_total=${images?.eligible ?: "n/a"} images_todo=${images?.let { it.eligible - it.have } ?: "n/a"}")
+    }
+
+    private suspend fun logSwapped(b: EmbeddingSpaceEntity, previous: EmbeddingSpaceEntity?, bound: BoundEmbedder, imageSpace: Boolean) = safeLog {
+        val text = spaces.coverage(b.id)
+        val images = if (imageSpace) spaces.imageCoverage(b.id) else null
+        PcLog.i(TAG, "index build complete, swapped in: space=${b.id} model=${IndexLogFormat.model(b.fingerprint)} previous=${previous?.id ?: "none"} " +
+            "text=${text.have}/${text.eligible} images=${images?.let { "${it.have}/${it.eligible}" } ?: "n/a"} " +
+            "unembeddable=${if (imageSpace) spaces.unembeddableImages() else 0} duration=${IndexLogFormat.duration(now() - b.createdAt)}")
+        progress.forget(b.id)
+        logState.resetReady(b.id)
+    }
+
+    /** One summary line when [space] can answer semantic search: once per process per space, and again when its photo backfill completes. */
+    private suspend fun logReady(space: EmbeddingSpaceEntity, imagesDone: Boolean, imageCapable: Boolean) = safeLog {
+        if (!logState.firstReady("${space.id}:${if (imagesDone) "full" else "text"}")) return@safeLog
+        val text = spaces.coverage(space.id)
+        val images = if (imageCapable) spaces.imageCoverage(space.id) else null
+        PcLog.i(TAG, "semantic search ready: space=${space.id} model=${IndexLogFormat.model(space.fingerprint)} text=${text.have}/${text.eligible} " +
+            "images=${images?.let { "${it.have}/${it.eligible}" } ?: "n/a"}${if (imageCapable && !imagesDone) " (photo backfill pending)" else ""}" +
+            "${if (imageCapable) " unembeddable=${spaces.unembeddableImages()}" else ""}")
     }
 
     private sealed interface One {

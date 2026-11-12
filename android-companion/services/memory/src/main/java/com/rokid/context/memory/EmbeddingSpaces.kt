@@ -69,6 +69,10 @@ class EmbeddingSpaces(
         dao.putImageChecked(frameId, spaceId, VectorCodec.encode(vector), expectedDims)
     suspend fun purgeWrongWidthImages(spaceId: String, dims: Int): Int = dao.purgeWrongWidthImages(spaceId, dims)
     suspend fun imageSwapHealth(spaceId: String): ImageSwapHealth = dao.imageSwapHealth(spaceId)
+    /** Log-only counts: stored photos holding an image vector in [spaceId] (have) out of those plus the ones still missing (eligible). */
+    suspend fun imageCoverage(spaceId: String): Coverage { val have = dao.storedPhotoVectorCount(spaceId); return Coverage(have, have + dao.missingImageCount(spaceId)) }
+    /** Log-only: photos currently marked `unembeddable`. */
+    suspend fun unembeddableImages(): Int = dao.unembeddablePhotoCount()
     suspend fun markUnembeddable(frameId: String) = dao.markUnembeddable(frameId, now())
     suspend fun coverage(spaceId: String): Coverage = Coverage(dao.coveredCount(spaceId), dao.eligibleCount())
     /** [requireImages]: the building embedder declares IMAGE, so every stored photo (bar `unembeddable` ones) needs a vector in [buildingId] (Ruling 15). */
