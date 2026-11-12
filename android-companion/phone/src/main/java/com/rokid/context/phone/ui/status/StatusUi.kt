@@ -24,6 +24,8 @@ data class StatusUi(
     val pipelineEnabled: Boolean = true,
     /** Legacy switch only (see [CaptureLine.pausedOnGlasses]); always false with the Phase 7 pause control. */
     val pausedOnGlasses: Boolean = false,
+    /** Every active banner, most severe first (Home's pager, ruling 2026-11-13); [banner] is the first of them. */
+    val banners: List<BannerSpec> = listOfNotNull(banner),
 ) {
     companion object {
         val Initial = StatusUi("Glasses offline", live = false, paused = false, batteryPct = null, banner = null)
@@ -31,14 +33,8 @@ data class StatusUi(
         fun build(
             s: GlassesStatus, pipelineEnabled: Boolean, storagePct: Int?, nowMs: Long, index: IndexState = IndexState.NONE,
             pauses: List<PauseRecord> = emptyList(), lastResumeAtMs: Long? = null, batterySaver: Boolean = false,
-        ) = StatusUi(
-            captureText = CaptureLine.text(s, pipelineEnabled, nowMs, pauses),
-            live = CaptureLine.live(s, pipelineEnabled),
-            paused = CaptureLine.paused(s, pipelineEnabled),
-            batteryPct = s.glassesBatteryPct ?: s.frame?.glassesBatteryPct,
-            pipelineEnabled = pipelineEnabled,
-            pausedOnGlasses = CaptureLine.pausedOnGlasses(s, pipelineEnabled),
-            banner = BannerResolver.resolve(
+        ): StatusUi {
+            val all = BannerResolver.candidates(
                 BannerInputs(
                     aiBlockedText = (s.frame?.aiHealth as? Health.Blocked)?.text,
                     link = s.link,
@@ -52,8 +48,18 @@ data class StatusUi(
                     batterySaver = batterySaver,
                     glassesNote = s.note,
                 ),
-            ),
-        )
+            )
+            return StatusUi(
+                captureText = CaptureLine.text(s, pipelineEnabled, nowMs, pauses),
+                live = CaptureLine.live(s, pipelineEnabled),
+                paused = CaptureLine.paused(s, pipelineEnabled),
+                batteryPct = s.glassesBatteryPct ?: s.frame?.glassesBatteryPct,
+                pipelineEnabled = pipelineEnabled,
+                pausedOnGlasses = CaptureLine.pausedOnGlasses(s, pipelineEnabled),
+                banner = all.firstOrNull(),
+                banners = all,
+            )
+        }
 
         /** [batterySaver]: Home passes Android's Battery Saver (G7); other screens leave it off. */
         fun flow(
