@@ -576,7 +576,7 @@ class Hub(
                 seq = ++seq, nowMs = now, link = s.link, activePauses = active, offset = s.offset, settings = settings.read(),
                 glassesBatteryPct = s.glassesBatteryPct, nextCaptureAtMs = s.nextCaptureAtMs, queueDepth = depth,
                 lastFrameAtMs = s.lastFrameAtMs, today = today, aiHealth = health, overlay = overlay(), error = s.error,
-                latestNudge = nudges.latest.value, withdrawnAskIds = recentlyWithdrawn(now),
+                latestNudge = nudges.latest.value, withdrawnAskIds = recentlyWithdrawn(clock()), // Codex r1 P2: the time NOW, after the IO reads, never the snapshot taken before them
             ),
         )
         set(markDirty = false) { it.copy(lastFrame = frame) }
@@ -605,8 +605,9 @@ class Hub(
 
     private fun recentlyWithdrawn(now: Long): List<String> = synchronized(withdrawn) { prune(now); withdrawn.keys.reversed() }
 
+    /** Only entries older than the hint window go; one newer than [now] (withdrawn while a caller held an older time) is always kept (Codex r1 P2). */
     private fun prune(now: Long) {
-        withdrawn.entries.removeAll { now - it.value >= WITHDRAWN_HINT_MS || now < it.value }
+        withdrawn.entries.removeAll { now - it.value >= WITHDRAWN_HINT_MS }
         while (withdrawn.size > WITHDRAWN_MAX) withdrawn.remove(withdrawn.keys.first())
     }
 

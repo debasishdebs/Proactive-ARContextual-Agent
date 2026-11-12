@@ -138,6 +138,13 @@ class HudController(
      * - the glasses' own bounded hold [ANSWER_MAX_MS] ends one the phone keeps sending (a backstop: the phone's worst case is speech plus 30 s).
      */
     private val answerLock = Any()
+    /**
+     * Codex r1 (P1): moves at every session close, under [answerLock] with the clear. A `pc_state` reads it on receipt and is published only under the same lock and only
+     * if it has not moved: a frame of a closed (or since reopened) session never lands after the close, so a close can never be undone by a delayed publication.
+     */
+    @Volatile private var sessionGen = 0L
+    /** Tests only: runs between a frame's receipt and its publication (the race window of Codex r1 P1). */
+    @Volatile internal var beforePublish: () -> Unit = {}
     /** The Answer on the card (without its speaking flag and undo), and when the glasses first saw it (glasses clock). */
     private var answerKey: Overlay.Answer? = null
     private var answerSinceMs = 0L
@@ -146,8 +153,18 @@ class HudController(
 
     private fun keyOf(a: Overlay.Answer) = a.copy(speaking = false, undoProposalId = null)
 
-    /** Applies the rules above to an incoming frame (bridge thread). */
-    private fun cleared(f: StateFrame): StateFrame = synchronized(answerLock) {
+    /**
+     * Publishes a received frame (bridge thread) atomically with respect to [closeSession]: a newer session generation drops it whole (it is stale); a session that is not open
+     * (the activity exited) gets it without an answer card (a closed session holds none).
+     */
+    private fun publish(f: StateFrame, gen: Long) = synchronized(answerLock) {
+        if (gen != sessionGen) { PcLog.i(TAG, "pc_state of a closed session dropped"); return@synchronized }
+        val shown = cleared(f)
+        _frame.value = if (!_sessionOpen.value && shown.overlay is Overlay.Answer) shown.copy(overlay = null) else shown
+    }
+
+    /** Applies the rules above to an incoming frame; called with [answerLock] held. */
+    private fun cleared(f: StateFrame): StateFrame {
         val prev = (_frame.value?.overlay as? Overlay.Answer)?.let(::keyOf)
         val withdrawn = f.withdrawnAskIds.toSet()
         if (prev?.askId != null && prev.askId in withdrawn) { dropped += prev; PcLog.milestone(TAG, "answer card cleared: redaction") }
@@ -156,21 +173,25 @@ class HudController(
         if (a.askId != null && a.askId in withdrawn) dropped += a
         if (a in dropped) return f.copy(overlay = null)
         if (a != answerKey) { answerKey = a; answerSinceMs = clock() }
-        f
+        return f
     }
 
-    /** The bounded glasses hold (every second, with the liveness check). */
+    /**
+     * The bounded glasses hold (every second, with the liveness check). Key-independent (Codex r1): whatever answer is on the card goes once [ANSWER_MAX_MS] passed since an
+     * answer was last published as new; a card whose key is unknown (never expected) counts from that time too, so it can never outlive the bound.
+     */
     private fun expireAnswer() = synchronized(answerLock) {
         val f = _frame.value ?: return@synchronized
         val a = (f.overlay as? Overlay.Answer)?.let(::keyOf) ?: return@synchronized
-        if (a != answerKey || clock() - answerSinceMs < ANSWER_MAX_MS) return@synchronized
-        dropped += a
+        if (clock() - answerSinceMs < ANSWER_MAX_MS) return@synchronized
+        dropped += a; answerKey = null
         _frame.value = f.copy(overlay = null)
         PcLog.milestone(TAG, "answer card cleared: glasses hold ended")
     }
 
-    /** A closed session holds no answer: the card goes now, and the next session shows only its own frames. */
+    /** A closed session holds no answer: the card goes now, and the next session shows only its own frames. Bumps [sessionGen] in the same critical section. */
     private fun dropAnswerOnClose() = synchronized(answerLock) {
+        sessionGen++
         val f = _frame.value ?: return@synchronized
         if (f.overlay !is Overlay.Answer) return@synchronized
         answerKey = null
@@ -230,7 +251,9 @@ class HudController(
         when (val d = Wire.decode<StateFrame>(text)) {
             is Decoded.Ok -> {
                 phoneMessage()
-                _frame.value = cleared(d.value)
+                val gen = sessionGen // after the open: a close from here on moves it, and this frame is then dropped
+                beforePublish()
+                publish(d.value, gen)
                 (d.value.capture as? CaptureState.Paused)?.let { onPhoneSettings(_settings.value.copy(pauses = it.records, pausesExact = false, resumedPauseIds = emptyList())) }
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)

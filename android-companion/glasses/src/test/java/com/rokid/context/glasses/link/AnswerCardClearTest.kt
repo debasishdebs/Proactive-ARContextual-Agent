@@ -86,6 +86,39 @@ class AnswerCardClearTest {
         assertNull(c.frame.value?.overlay)
     }
 
+    /**
+     * Codex r1 P1 repro: a repeat of answer A is received, then paused between receipt and publication; the session closes (and the Forget of A's photo happens while
+     * disconnected); the paused publication resumes. A must not come back: a frame of a closed session never lands after the close, and a newer session's frame wins.
+     */
+    @Test fun aPublicationPausedAcrossASessionCloseNeverRestoresTheAnswer() = runTest {
+        val c = controller()
+        frame(answer)
+        assertEquals(answer, c.frame.value?.overlay)
+        for (reopen in listOf(false, true)) {
+            if (reopen) { frame(answer); assertEquals(answer, c.frame.value?.overlay) }
+            val reached = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+            c.beforePublish = { c.beforePublish = {}; reached.countDown(); release.await() }
+            val t = Thread { frame(answer.copy(speaking = false)) }.also { it.start() }
+            assertTrue(reached.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            bridge.disconnected()
+            assertNull(c.frame.value?.overlay)
+            if (reopen) frame(null) // the next session's first frame arrives before the paused one resumes
+            release.countDown(); t.join(5_000)
+            assertNull("reopen=$reopen: the paused frame of the closed session is dropped", c.frame.value?.overlay)
+        }
+    }
+
+    /** Codex r1: the glasses hold is key-independent: whatever answer is on the card goes at the bound, even after a close reset its key. */
+    @Test fun theBoundExpiresWhateverAnswerIsShown() = runTest {
+        val c = controller()
+        frame(answer)
+        bridge.disconnected(); frame(answer) // a new session shows it again (the phone still holds it): its time restarts there
+        assertEquals(answer, c.frame.value?.overlay)
+        var waited = 0L
+        while (waited < HudController.ANSWER_MAX_MS) { now += 10_000; waited += 10_000; frame(answer); advanceTimeBy(1_000) }
+        assertNull(c.frame.value?.overlay)
+    }
+
     @Test fun aSilentPhoneEndsTheAnswerWithTheSession() = runTest {
         val c = controller()
         frame(answer)
