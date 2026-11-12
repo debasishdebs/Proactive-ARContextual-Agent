@@ -313,7 +313,10 @@ class IndexMaintenance(
             }
         }
         if (!spaces.swapIfComplete(building.id, requireImages = imageSpace)) {
-            safeLog { PcLog.i(TAG, "index swap waiting: text complete, ${spaces.missingImageCount(building.id)} photo vectors still missing (photo backfill paused=${images.paused}); space=${building.id}") }
+            safeLog {
+                val missingPhotos = spaces.missingImageCount(building.id); val paused = images.paused; val spaceId = building.id
+                PcLog.milestone(TAG, "index swap waiting: text complete, $missingPhotos photo vectors still missing (photo backfill paused=$paused); space=$spaceId")
+            }
             return if (images.paused) Outcome.DONE else Outcome.BACKFILL
         }
         clock.markCanary(now())
@@ -357,7 +360,8 @@ class IndexMaintenance(
             left -= todo.size
             cov?.let { c ->
                 val total = maxOf(c.eligible, c.have + stored)
-                if (progress.due("text:${space.id}", c.have + stored, total)) PcLog.i(TAG, IndexLogFormat.progress("text", role, c.have + stored, total, space.id))
+                val done = c.have + stored; val pct = IndexLogFormat.percent(done, total); val spaceId = space.id
+                if (progress.due("text:$spaceId", done, total)) PcLog.i(TAG, "text index ($role): $done/$total embedded ($pct%) space=$spaceId")
             }
             if (!writable) break // discarded, retired or marked stale meanwhile: nothing more to write here
         }
@@ -423,7 +427,8 @@ class IndexMaintenance(
             storedTotal += stored
             cov?.let { c ->
                 val total = maxOf(c.eligible, c.have + storedTotal)
-                if (progress.due("image:${space.id}", c.have + storedTotal, total)) PcLog.i(TAG, IndexLogFormat.progress("image", role, c.have + storedTotal, total, space.id))
+                val done = c.have + storedTotal; val pct = IndexLogFormat.percent(done, total); val spaceId = space.id
+                if (progress.due("image:$spaceId", done, total)) PcLog.i(TAG, "image index ($role): $done/$total embedded ($pct%) space=$spaceId")
             }
             if (rejected > 0 && stored == 0 && rejected == ids.size - toMark.size - transient) {
                 throw IndexConfigException("space ${space.id}: image vectors have the wrong width")
@@ -436,32 +441,41 @@ class IndexMaintenance(
     private suspend fun safeLog(block: suspend () -> Unit) { try { block() } catch (c: CancellationException) { throw c } catch (_: Exception) { /* a log line never changes the run */ } }
     private suspend fun <T> quietly(block: suspend () -> T): T? = try { block() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
 
-    private fun logPause(key: String, reason: String) { if (logState.pause(key, reason)) PcLog.i(TAG, "index paused ($key): $reason") }
-    private fun logResume(key: String, now: String) {
-        logState.resume(key)?.let { (reason, ms) -> PcLog.i(TAG, "index resumed ($key): $now; was paused for \"$reason\" for ${IndexLogFormat.duration(ms)}") }
+    private fun logPause(key: String, reason: String) { if (logState.pause(key, reason)) PcLog.milestone(TAG, "index paused ($key): $reason") }
+    private fun logResume(key: String, what: String) {
+        val (reason, ms) = logState.resume(key) ?: return
+        val waited = IndexLogFormat.duration(ms)
+        PcLog.milestone(TAG, "index resumed ($key): $what; was paused for \"$reason\" for $waited")
     }
 
     /** NONE / NEEDED / RUNNING ([IndexHealth]) or UNSTABLE (auto-rebuild stopped); a line only when it changes. */
     private suspend fun syncHealth(reason: String) = safeLog {
         val base = IndexHealth.of(listOfNotNull(spaces.current(), spaces.building()))
         val state = if (base != IndexHealth.RUNNING && clock.unstable()) "UNSTABLE" else base.name
-        logState.health(state, reason)?.let { PcLog.i(TAG, it) }
+        val change = logState.health(state) ?: return@safeLog
+        val before = change.before
+        if (before == null) PcLog.milestone(TAG, "index health: $state ($reason)") else PcLog.milestone(TAG, "index health: $before -> $state ($reason)")
     }
 
     private suspend fun logBuildStart(b: EmbeddingSpaceEntity, bound: BoundEmbedder, why: String, resumed: Boolean) = safeLog {
         val text = spaces.coverage(b.id)
         val images = if (Modality.IMAGE in bound.embedder.modalities) spaces.imageCoverage(b.id) else null
-        PcLog.i(TAG, "index build ${if (resumed) "resumed" else "start"}: space=${b.id} model=${IndexLogFormat.model(b.fingerprint)} why=$why " +
-            "text_total=${text.eligible} text_todo=${(text.eligible - text.have).coerceAtLeast(0)} " +
-            "images_total=${images?.eligible ?: "n/a"} images_todo=${images?.let { it.eligible - it.have } ?: "n/a"}")
+        val verb = if (resumed) "resumed" else "start"
+        val spaceId = b.id; val model = IndexLogFormat.model(b.fingerprint)
+        val textTotal = text.eligible; val textTodo = (text.eligible - text.have).coerceAtLeast(0)
+        val imagesTotal = images?.eligible?.toString() ?: "n/a"; val imagesTodo = images?.let { it.eligible - it.have }?.toString() ?: "n/a"
+        PcLog.milestone(TAG, "index build $verb: space=$spaceId model=$model why=$why text_total=$textTotal text_todo=$textTodo images_total=$imagesTotal images_todo=$imagesTodo")
     }
 
     private suspend fun logSwapped(b: EmbeddingSpaceEntity, previous: EmbeddingSpaceEntity?, bound: BoundEmbedder, imageSpace: Boolean) = safeLog {
         val text = spaces.coverage(b.id)
         val images = if (imageSpace) spaces.imageCoverage(b.id) else null
-        PcLog.i(TAG, "index build complete, swapped in: space=${b.id} model=${IndexLogFormat.model(b.fingerprint)} previous=${previous?.id ?: "none"} " +
-            "text=${text.have}/${text.eligible} images=${images?.let { "${it.have}/${it.eligible}" } ?: "n/a"} " +
-            "unembeddable=${if (imageSpace) spaces.unembeddableImages() else 0} duration=${IndexLogFormat.duration(now() - b.createdAt)}")
+        val spaceId = b.id; val model = IndexLogFormat.model(b.fingerprint); val prev = previous?.id ?: "none"
+        val textHave = text.have; val textTotal = text.eligible
+        val imageCounts = images?.let { "${it.have}/${it.eligible}" } ?: "n/a"
+        val unembeddable = if (imageSpace) spaces.unembeddableImages() else 0
+        val duration = IndexLogFormat.duration(now() - b.createdAt)
+        PcLog.milestone(TAG, "index build complete, swapped in: space=$spaceId model=$model previous=$prev text=$textHave/$textTotal images=$imageCounts unembeddable=$unembeddable duration=$duration")
         progress.forget(b.id)
         logState.resetReady(b.id)
     }
@@ -471,9 +485,11 @@ class IndexMaintenance(
         if (!logState.firstReady("${space.id}:${if (imagesDone) "full" else "text"}")) return@safeLog
         val text = spaces.coverage(space.id)
         val images = if (imageCapable) spaces.imageCoverage(space.id) else null
-        PcLog.i(TAG, "semantic search ready: space=${space.id} model=${IndexLogFormat.model(space.fingerprint)} text=${text.have}/${text.eligible} " +
-            "images=${images?.let { "${it.have}/${it.eligible}" } ?: "n/a"}${if (imageCapable && !imagesDone) " (photo backfill pending)" else ""}" +
-            "${if (imageCapable) " unembeddable=${spaces.unembeddableImages()}" else ""}")
+        val spaceId = space.id; val model = IndexLogFormat.model(space.fingerprint)
+        val textHave = text.have; val textTotal = text.eligible
+        val imageCounts = images?.let { "${it.have}/${it.eligible}" } ?: "n/a"
+        val tail = (if (imageCapable && !imagesDone) " (photo backfill pending)" else "") + (if (imageCapable) " unembeddable=${spaces.unembeddableImages()}" else "")
+        PcLog.milestone(TAG, "semantic search ready: space=$spaceId model=$model text=$textHave/$textTotal images=$imageCounts$tail")
     }
 
     private sealed interface One {

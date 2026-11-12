@@ -181,6 +181,52 @@ class PcLogTest {
         assertTrue(sink.got.single().first.msg.toByteArray().size <= Line.MAX_MSG_BYTES)
     }
 
+    @Test fun milestoneIsAnInfoLineThatAlwaysReachesTheFile() {
+        PcLog.install(sink)
+        PcLog.milestone("T", "m-off"); PcLog.i("T", "plain-off")
+        PcLog.setDiagnostic(true)
+        PcLog.milestone("T", "m-on")
+        assertEquals(
+            listOf(Triple("m-off", Level.I, Route(true, true)), Triple("plain-off", Level.I, Route(true, false)), Triple("m-on", Level.I, Route(true, true))),
+            sink.got.map { Triple(it.first.msg, it.first.level, it.second) },
+        )
+        assertEquals(listOf(true, false, true), sink.got.map { it.first.milestone })
+    }
+
+    @Test fun milestoneBeforeInstallKeepsItsFlagAtReplay() {
+        PcLog.milestone("T", "early"); PcLog.i("T", "plain")
+        PcLog.install(sink)   // diagnostics off
+        assertEquals(listOf("early" to Route(true, true), "plain" to Route(true, false)), sink.got.map { it.first.msg to it.second })
+    }
+
+    @Test fun milestoneIsByteBoundedLikeEveryLine() {
+        PcLog.install(sink)
+        PcLog.milestone("é€😀".repeat(100), "é€😀".repeat(50_000))
+        val l = sink.got.single().first
+        assertTrue(l.tag.toByteArray().size <= Line.MAX_TAG_BYTES && l.msg.toByteArray().size <= Line.MAX_MSG_BYTES)
+    }
+
+    @Test fun milestoneWritesTheFileWithDiagnosticsOffAndRotatesLikeAnyLine() {
+        val dir = kotlin.io.path.createTempDirectory("ms").toFile()
+        val file = java.io.File(dir, LogFiles.PCA_LOG)
+        val writer = AsyncLineWriter(file, maxBytes = 4_000)
+        // the phone sink's rule, executed on a real writer: logcat is not under test here, the file is
+        PcLog.install(object : LogSink { override fun emit(line: Line, route: Route) { if (route.file) writer.append(line) } })
+        try {
+            PcLog.i("T", "info-hidden"); PcLog.d("T", "debug-hidden")
+            PcLog.milestone("IndexMaintenance", "index build start: space=space_x model=m text_total=3 text_todo=3")
+            assertTrue(writer.awaitIdle(10_000))
+            val text = file.readText()
+            assertTrue(text.contains(" I IndexMaintenance index build start: space=space_x model=m text_total=3 text_todo=3"), text)
+            assertFalse(text.contains("info-hidden")); assertFalse(text.contains("debug-hidden"))
+            repeat(200) { PcLog.milestone("T", "milestone $it ".padEnd(100, 'x')) }   // far past the 4 KB cap: the writer rotates, the file stays bounded
+            assertTrue(writer.awaitIdle(10_000))
+            val rotated = java.io.File(dir, LogFiles.PCA_LOG + ".1")
+            assertTrue(rotated.exists(), "rotated")
+            assertTrue(file.length() + rotated.length() <= 4_000, "bounded: ${file.length()} + ${rotated.length()}")
+        } finally { writer.close(drain = false) }
+    }
+
     @Test fun disabledDebugDoesNoWork() {
         PcLog.install(sink)
         repeat(200_000) { PcLog.d("T", "chatty") }

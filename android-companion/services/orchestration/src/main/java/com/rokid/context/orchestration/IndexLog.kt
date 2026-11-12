@@ -51,12 +51,15 @@ class IndexLogState(private val clock: () -> Long) {
     private val paused = HashMap<String, Pair<String, Long>>()
     private val ready = HashSet<String>()
 
-    /** The line for a health change ("NEEDED -> RUNNING (reason)"), or null when [state] is already the logged one. */
-    @Synchronized fun health(state: String, reason: String): String? {
+    /** A change of the index health: [before] is null for the first state seen in this process. */
+    class HealthChange(val before: String?, val state: String)
+
+    /** The change to log when [state] differs from the last logged one, else null. */
+    @Synchronized fun health(state: String): HealthChange? {
         val before = health
         if (before == state) return null
         health = state
-        return if (before == null) "index health: $state ($reason)" else "index health: $before -> $state ($reason)"
+        return HealthChange(before, state)
     }
 
     /** True when [key] was not paused yet (the caller logs the pause); a repeated pause is silent. */
@@ -79,10 +82,6 @@ class IndexLogState(private val clock: () -> Long) {
 internal object IndexLogFormat {
     /** 0..100, clamped; 100 when [total] is 0 and nothing is left. */
     fun percent(done: Int, total: Int): Int = if (total <= 0) 100 else (done.coerceIn(0, total).toLong() * 100 / total).toInt()
-
-    /** "text index (building): 1200/3400 embedded (35%) space=space_x". */
-    fun progress(kind: String, role: String, done: Int, total: Int, spaceId: String): String =
-        "$kind index ($role): ${done.coerceAtLeast(0)}/$total embedded (${percent(done, total)}%) space=$spaceId"
 
     /** "850 ms", "42 s", "3 min 05 s", "2 h 07 min". */
     fun duration(ms: Long): String {

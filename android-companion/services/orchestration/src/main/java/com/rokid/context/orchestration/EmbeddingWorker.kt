@@ -37,10 +37,13 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         if (!AppConfigStore.isPipelineEnabled(applicationContext)) {
             if (rebuild) { clock.setPendingRebuildToken(id.toString()); clock.setRebuildPending(true) }
             PcLog.i(TAG, "pipeline paused: index work left for resume")
-            if (IndexLogShared.state.pause("pipeline", "phone pipeline is paused")) PcLog.i(TAG, "index paused (pipeline): the phone pause is on; index work waits for resume (rebuild requested=$rebuild)")
+            if (IndexLogShared.state.pause("pipeline", "phone pipeline is paused")) PcLog.milestone(TAG, "index paused (pipeline): the phone pause is on; index work waits for resume (rebuild requested=$rebuild)")
             return Result.success()
         }
-        IndexLogShared.state.resume("pipeline")?.let { (_, ms) -> PcLog.i(TAG, "index resumed (pipeline): the phone pause is off; was paused for ${IndexLogFormat.duration(ms)}") }
+        IndexLogShared.state.resume("pipeline")?.let { (_, ms) ->
+            val waited = IndexLogFormat.duration(ms)
+            PcLog.milestone(TAG, "index resumed (pipeline): the phone pause is off; was paused for $waited")
+        }
         val ai = AiGraph.get(applicationContext)
         val keyframes = KeyframeGraph.get(applicationContext)
         val maintenance = IndexMaintenance(
@@ -84,7 +87,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
                 deferForBattery(context, BulkGateReason.of(power(), backgroundAllowed = true))
                 return Result.success()
             }
-            if (clock.batteryPaused()) PcLog.i(TAG, "index resumed (battery): ${if (local) "charging or battery above ${LocalModelPower.MIN_BATTERY_PCT}%" else "the on-device model is no longer bound"}; the run proceeds")
+            if (clock.batteryPaused()) {
+                val gate = if (local) "charging or battery above ${LocalModelPower.MIN_BATTERY_PCT}%" else "the on-device model is no longer bound"
+                PcLog.milestone(TAG, "index resumed (battery): $gate; the run proceeds")
+            }
             clock.setBatteryPaused(false)
             return run()
         }
@@ -92,7 +98,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         private fun deferForBattery(context: Context, reason: String) {
             PcLog.i(TAG, "on-device index work waits for a charger (battery)")
             val clock = PrefsIndexClock(context)
-            if (!clock.batteryPaused()) PcLog.i(TAG, "index paused (battery): $reason; the run waits for a charger and resumes by itself (pending rebuild=${clock.rebuildPending()})")
+            if (!clock.batteryPaused()) {
+                val pendingRebuild = clock.rebuildPending()
+                PcLog.milestone(TAG, "index paused (battery): $reason; the run waits for a charger and resumes by itself (pending rebuild=$pendingRebuild)")
+            }
             clock.setBatteryPaused(true)
             WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, untilCharging = true))
         }
@@ -107,14 +116,15 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
                 IndexMaintenance.Outcome.BACKFILL -> {
                     val clock = PrefsIndexClock(context)
                     val streak = clock.moreStreak(); clock.setMoreStreak(streak + 1)
-                    PcLog.i(TAG, "index run: photo backfill left (paused, deferred or waiting to swap); next run in ${moreDelayMs(streak) / 1000} s (consecutive=${streak + 1})")
-                    continueLater(context, moreDelayMs(streak)); Result.success()
+                    val delayMs = moreDelayMs(streak); val waitS = delayMs / 1000; val consecutive = streak + 1
+                    PcLog.i(TAG, "index run: photo backfill left (paused, deferred or waiting to swap); next run in $waitS s (consecutive=$consecutive)")
+                    continueLater(context, delayMs); Result.success()
                 }
-                IndexMaintenance.Outcome.RETRY -> { PcLog.i(TAG, "index run: pre-swap check could not run; attempt ${attempt + 1} of $MAX_RUNS"); retryOrFail(attempt) }
+                IndexMaintenance.Outcome.RETRY -> { val attemptNo = attempt + 1; PcLog.i(TAG, "index run: pre-swap check could not run; attempt $attemptNo of $MAX_RUNS"); retryOrFail(attempt) }
                 else -> Result.success()
             }
         } catch (c: CancellationException) {
-            PcLog.i(TAG, "index run stopped before it finished (cancelled: replaced by a newer request, constraints lost or the app stopped); the next run continues")
+            PcLog.milestone(TAG, "index run stopped before it finished (cancelled: replaced by a newer request, constraints lost or the app stopped); the next run continues")
             throw c
         } catch (e: LocalModelPausedException) {
             // The battery fell (or an on-device space was reached) mid-run: wait for a charger, never a failure.

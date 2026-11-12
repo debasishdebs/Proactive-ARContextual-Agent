@@ -24,7 +24,7 @@ class LogContentScanTest {
     }
 
     /** `PcLog.x(tag, MSG)`: the message is the second argument. `log(MSG)` / `warn(MSG)` of an injected sink: the first. */
-    private val pcLogCall = Regex("""\bPcLog\.[diwe]\(""")
+    private val pcLogCall = Regex("""\bPcLog\.(?:[diwe]|milestone)\(""")
     private val sinkCall = Regex("""(?<![\w.])(?:log|warn)\(""")
 
     /** Reviewed `{ PcLog.i(TAG, it) }` adapters (file name to the variable they forward). */
@@ -53,6 +53,10 @@ class LogContentScanTest {
         "m.pipeSize", "sink.pipeSize", "counts.routed", "counts.fast", "counts.dup", "counts.clustered", "w != null", "code?.name ?: \"NONE\"",
         "clock() - t0", "(now - it.ts).coerceAtLeast(0L)", "job.attemptCount + 1", "runAttemptCount + 1", "results.size - failed.size", "loadedLabelled.size",
         "file.exists()", "file.length()", "r768.queries", "r768.smallQueries", "c::class.simpleName", "bytes?.size ?: 0", "eval.problems().size",
+        // Memory-index lifecycle lines (IndexMaintenance, EmbeddingWorker, NightIndexWorker): locals that hold a space id (space_<uuid>), a model id or its hash prefix, a count,
+        // a boolean, a duration phrase or a fixed reason/phrase built in those classes; never memory text, captions, queries or photo content.
+        "key", "role", "total", "pct", "waited", "spaceId", "model", "verb", "textTotal", "textTodo", "imagesTotal", "imagesTodo", "before", "prev", "textHave", "imageCounts", "unembeddable",
+        "duration", "tail", "missingPhotos", "paused", "gate", "pendingRebuild", "rebuild", "waitS", "consecutive", "attemptNo",
         "reps.values.sumOf { it.size }", "counts.closed.joinToString(\",\").ifEmpty { \"-\" }", "runCatching { l.isWearingCheckOn() }",
     )
     private val SAFE_PATTERNS = listOf(
