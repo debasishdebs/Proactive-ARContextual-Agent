@@ -15,7 +15,7 @@ import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.model.CallClass
 import com.rokid.context.orchestration.AiIndexEmbedders
-import com.rokid.context.orchestration.BulkGateReason
+import com.rokid.context.orchestration.BulkGate
 import com.rokid.context.orchestration.IndexMaintenance
 import com.rokid.context.orchestration.PrefsIndexClock
 import com.rokid.context.orchestration.PrefsReadAttempts
@@ -52,16 +52,18 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         return try {
             val keyframes = KeyframeGraph.get(applicationContext)
             val ai = AiGraph.get(applicationContext)
+            // G6 (charging or battery above 70 %) and a phone that is not too hot; the capture-burst check is [NightIndex]'s.
+            val gate = BulkGate({ LocalModelPower.read(applicationContext) }, { keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) })
             val maintenance = IndexMaintenance(
                 MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), PrefsIndexClock(applicationContext),
-                photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = { bulkAllowed(keyframes) },
-                bulkReason = { bulkReason(keyframes) },
+                photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = gate::allowed,
+                bulkReason = gate::reason,
             )
             val night = NightIndex(
                 db = MemoryGraph.get(applicationContext).db, pipeline = keyframes.pipeline,
                 settings = { MemorySettingsStore.get(applicationContext).settings.value },
-                bulkAllowed = { bulkAllowed(keyframes) },
-                gateReason = { bulkReason(keyframes) },
+                bulkAllowed = gate::allowed,
+                gateReason = gate::reason,
                 maintenance = { maintenance.run() },
                 onDescribed = { PipelineStatsStore.addDescribedBeforeDelete(applicationContext, it) },
             )
@@ -75,13 +77,6 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             Result.success() // the next night tries again; nothing here is lost by waiting
         }
     }
-
-    /** G6 (charging or battery above 70 %) and a phone that is not too hot. The capture-burst check is [NightIndex]'s. */
-    private fun bulkAllowed(keyframes: com.rokid.context.work.frames.KeyframeHandle): Boolean =
-        LocalModelPower.bulkAllowed(LocalModelPower.read(applicationContext)) && keyframes.power.mayRunBackground(BackgroundWork.BACKFILL)
-
-    private fun bulkReason(keyframes: com.rokid.context.work.frames.KeyframeHandle): String =
-        BulkGateReason.of(LocalModelPower.read(applicationContext), keyframes.power.mayRunBackground(BackgroundWork.BACKFILL))
 
     companion object {
         private const val TAG = "NightIndexWorker"
@@ -141,7 +136,7 @@ internal class NightIndex(
     data class Result(val queued: Int, val described: Int, val left: Int, val backfill: String)
 
     suspend fun run(): Result {
-        if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); val reason = gateReason(); PcLog.milestone(TAG, "index backfill paused (night job): $reason"); return Result(0, 0, 0, "gate") }
+        if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); val reason = try { gateReason() } catch (_: Exception) { "bulk gate closed" }; PcLog.milestone(TAG, "index backfill paused (night job): $reason"); return Result(0, 0, 0, "gate") }
         val queued = queue()
         var described = 0
         if (queued.isNotEmpty() || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty()) {

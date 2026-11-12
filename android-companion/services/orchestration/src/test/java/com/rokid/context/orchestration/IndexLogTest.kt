@@ -45,6 +45,57 @@ class IndexLogTest {
         assertTrue(l.due("text:s1", 3, 100)); assertFalse(l.due("image:s1", 2, 100))
     }
 
+    @Test fun forgetClearsTheKeysAsTheyAreBuiltForASpace() {
+        val l = ProgressLimiter({ t })
+        assertTrue(l.due("text:space_x", 1, 100)); assertTrue(l.due("image:space_x", 1, 100))
+        assertEquals(2, l.tracked())
+        l.forget("text:space_x"); l.forget("image:space_x")
+        assertEquals(0, l.tracked())
+        assertTrue("a cleared key reports again at once", l.due("text:space_x", 2, 100))
+    }
+
+    @Test fun mayLogIsTheCheapTimeGateBeforeAnyCount() {
+        val l = ProgressLimiter({ t })
+        assertTrue(l.mayLog("k"))                   // never logged: a count may be taken
+        assertTrue(l.due("k", 1, 100))
+        t += 5_000; assertFalse(l.mayLog("k"))      // inside the interval: no count, no line
+        t += 25_000; assertTrue(l.mayLog("k"))
+    }
+
+    @Test fun changedLogsOnlyAChange() {
+        val s = IndexLogState({ t })
+        assertTrue(s.changed("sp:swapwait", "true:2"))
+        repeat(20) { assertFalse(s.changed("sp:swapwait", "true:2")) }   // N identical paused runs: one line
+        assertTrue(s.changed("sp:swapwait", "true:1"))
+        assertTrue(s.changed("sp:swapwait", "true:2"))
+        s.resetReady("sp")
+        assertTrue(s.changed("sp:swapwait", "true:2"))                    // a finished space starts afresh
+    }
+
+    @Test fun gateReasonIsObservationalAndNeverReadsAgain() {
+        var powerReads = 0; var thermalReads = 0
+        val g = BulkGate({ powerReads++; PowerState(40, false) }, { thermalReads++; false })
+        assertFalse(g.allowed())
+        assertEquals(1, powerReads); assertEquals("battery closed: the thermal policy is not consulted", 0, thermalReads)
+        repeat(5) { assertEquals("battery 40% and not charging (needs a charger or battery above 70%)", g.reason()) }
+        assertEquals(1, powerReads); assertEquals(0, thermalReads)           // formatting read nothing
+        val warm = BulkGate({ PowerState(90, false) }, { thermalReads++; false })
+        assertFalse(warm.allowed()); assertEquals(1, thermalReads)
+        assertEquals("thermal/background policy (phone too warm)", warm.reason()); assertEquals(1, thermalReads)
+        assertEquals("before any decision", "bulk gate closed", BulkGate({ error("no") }, { error("no") }).reason())
+    }
+
+    @Test fun formattingTheReasonDoesNotChangeThermalGating() {
+        // The real policy: SEVERE latches in mayRunBackground. A closed battery gate short-circuits before it; the reason must not consult it afterwards.
+        var status = com.rokid.context.work.budget.PhoneThermal.SEVERE; var reads = 0
+        val policy = com.rokid.context.work.budget.PhonePowerPolicy({ t }, { true }, { reads++; status })
+        val g = BulkGate({ PowerState(30, false) }, { policy.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.BACKFILL) })
+        assertFalse(g.allowed()); g.reason(); g.reason()
+        assertEquals("the thermal policy was never read", 0, reads)
+        status = com.rokid.context.work.budget.PhoneThermal.NONE            // cooled before the next extraction
+        assertTrue("no latch was set by the log", policy.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.EXTRACTION))
+    }
+
     @Test fun nothingToDoAndAClockThatWentBackwards() {
         val l = ProgressLimiter({ t })
         assertFalse(l.due("k", 0, 0))

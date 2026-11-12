@@ -46,13 +46,14 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         }
         val ai = AiGraph.get(applicationContext)
         val keyframes = KeyframeGraph.get(applicationContext)
+        val gate = BulkGate({ LocalModelPower.read(applicationContext) }, { keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) })
         val maintenance = IndexMaintenance(
             MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), clock,
             // Ruling 18: only the backfill is bulk (G6: charging or > 70 %; thermal MODERATE+ pauses); live per-frame embedding is not gated here.
             photos = keyframes::photoReads,
             readAttempts = PrefsReadAttempts(applicationContext),
-            bulkAllowed = { LocalModelPower.bulkAllowed(LocalModelPower.read(applicationContext)) && keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) },
-            bulkReason = { BulkGateReason.of(LocalModelPower.read(applicationContext), keyframes.power.mayRunBackground(BackgroundWork.BACKFILL)) },
+            bulkAllowed = gate::allowed,
+            bulkReason = gate::reason, // log only: what `allowed` just saw, never a second read
         )
         return gated(applicationContext, rebuild, id.toString(), usesLocal = { ai.embedders.bindingIsLocal() }, power = { LocalModelPower.read(applicationContext) }) {
             execute(applicationContext, runAttemptCount) { maintenance.run(rebuild, rebuildToken = id.toString()) }
@@ -82,26 +83,37 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         ): Result {
             val clock = PrefsIndexClock(context)
             val local = try { usesLocal() } catch (c: CancellationException) { throw c } catch (e: Exception) { false }
-            if (local && !LocalModelPower.bulkAllowed(power())) {
-                if (rebuild) { clock.setPendingRebuildToken(token); clock.setRebuildPending(true) }
-                deferForBattery(context, BulkGateReason.of(power(), backgroundAllowed = true))
-                return Result.success()
+            if (local) {
+                val p = power() // read once: the decision and its logged reason come from the same value
+                if (!LocalModelPower.bulkAllowed(p)) {
+                    if (rebuild) { clock.setPendingRebuildToken(token); clock.setRebuildPending(true) }
+                    deferForBattery(context, BulkGateReason.of(p, null))
+                    return Result.success()
+                }
             }
-            if (clock.batteryPaused()) {
-                val gate = if (local) "charging or battery above ${LocalModelPower.MIN_BATTERY_PCT}%" else "the on-device model is no longer bound"
-                PcLog.milestone(TAG, "index resumed (battery): $gate; the run proceeds")
-            }
+            logBatteryResume(clock, local)
             clock.setBatteryPaused(false)
             return run()
+        }
+
+        /** Log only: a failure here must never reach the control flow. */
+        private fun logBatteryResume(clock: PrefsIndexClock, local: Boolean) {
+            try {
+                if (!clock.batteryPaused()) return
+                val gate = if (local) "charging or battery above ${LocalModelPower.MIN_BATTERY_PCT}%" else "the on-device model is no longer bound"
+                PcLog.milestone(TAG, "index resumed (battery): $gate; the run proceeds")
+            } catch (_: Exception) { }
         }
 
         private fun deferForBattery(context: Context, reason: String) {
             PcLog.i(TAG, "on-device index work waits for a charger (battery)")
             val clock = PrefsIndexClock(context)
-            if (!clock.batteryPaused()) {
-                val pendingRebuild = clock.rebuildPending()
-                PcLog.milestone(TAG, "index paused (battery): $reason; the run waits for a charger and resumes by itself (pending rebuild=$pendingRebuild)")
-            }
+            try {
+                if (!clock.batteryPaused()) {
+                    val pendingRebuild = clock.rebuildPending()
+                    PcLog.milestone(TAG, "index paused (battery): $reason; the run waits for a charger and resumes by itself (pending rebuild=$pendingRebuild)")
+                }
+            } catch (_: Exception) { }
             clock.setBatteryPaused(true)
             WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, untilCharging = true))
         }
