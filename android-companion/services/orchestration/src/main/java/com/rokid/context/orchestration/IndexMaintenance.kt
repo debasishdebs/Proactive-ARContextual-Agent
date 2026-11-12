@@ -251,11 +251,13 @@ class IndexMaintenance(
         val resumed = needsBuild && quietly { spaces.building()?.fingerprint == fp } == true
         val building = if (needsBuild) start(bound, fp) else null
         if (building != null) logBuildStart(building, bound, why, resumed)
-        syncHealth(when {
-            building != null -> if (resumed) "build resumed: $why" else "build started: $why"
-            needsBuild -> if (clock.unstable()) "auto-rebuild stopped after $MAX_DISCARD_STREAK drift discards; only Rebuild resumes" else "build held 24 h after a drift discard"
-            else -> "no rebuild needed"
-        })
+        syncHealth {
+            when {
+                building != null -> if (resumed) "build resumed: $why" else "build started: $why"
+                needsBuild -> if (clock.unstable()) "auto-rebuild stopped after $MAX_DISCARD_STREAK drift discards; only Rebuild resumes" else "build held 24 h after a drift discard"
+                else -> "no rebuild needed"
+            }
+        }
 
         var budget = maxPerRun
         val images = ImageProgress(imageMaxPerRun)
@@ -296,7 +298,7 @@ class IndexMaintenance(
                 clock.recordDiscard(DiscardRecord(fp, now(), streak))
                 PcLog.i(TAG, "canaries drifted while building: build discarded (streak $streak)")
                 forgetBuildLog(building.id)
-                syncHealth(if (clock.unstable()) "build discarded after canary drift (streak $streak): auto-rebuild stopped until Rebuild" else "build discarded after canary drift (streak $streak)")
+                syncHealth { if (clock.unstable()) "build discarded after canary drift (streak $streak): auto-rebuild stopped until Rebuild" else "build discarded after canary drift (streak $streak)" }
                 return Outcome.DONE
             }
             Check.NOISY -> PcLog.i(TAG, "canaries are noisy, not drifted: swapping")
@@ -326,7 +328,7 @@ class IndexMaintenance(
         clock.recordDiscard(null)
         val textLeft = spaces.missing(building.id, 1).isNotEmpty()
         logSwapped(building, previous = current, bound = bound, imageSpace = imageSpace)
-        syncHealth("swap complete: space ${building.id} is ACTIVE")
+        syncHealth { "swap complete: space ${building.id} is ACTIVE" }
         if (!textLeft) logReady(building, imagesDone = true, imageCapable = imageSpace)
         return if (textLeft) Outcome.MORE else Outcome.DONE
     }
@@ -459,7 +461,8 @@ class IndexMaintenance(
     }
 
     /** NONE / NEEDED / RUNNING ([IndexHealth]) or UNSTABLE (auto-rebuild stopped); a line only when it changes. */
-    private suspend fun syncHealth(reason: String) = safeLog {
+    private suspend fun syncHealth(reasonOf: () -> String) = safeLog { // [reasonOf] runs inside the guard: no log-only read happens in an argument
+        val reason = reasonOf() // before the state is recorded: a failure here leaves the change to be logged next time
         val base = IndexHealth.of(listOfNotNull(spaces.current(), spaces.building()))
         val state = if (base != IndexHealth.RUNNING && clock.unstable()) "UNSTABLE" else base.name
         val change = logState.health(state) ?: return@safeLog
@@ -478,7 +481,11 @@ class IndexMaintenance(
         PcLog.milestone(TAG, "index build $verb: space=$spaceId model=$model why=$why text_total=$textTotal text_todo=$textTodo images_total=$imagesTotal images_todo=$imagesTodo")
     }
 
-    private suspend fun logSwapped(b: EmbeddingSpaceEntity, previous: EmbeddingSpaceEntity?, bound: BoundEmbedder, imageSpace: Boolean) = safeLog {
+    private suspend fun logSwapped(b: EmbeddingSpaceEntity, previous: EmbeddingSpaceEntity?, bound: BoundEmbedder, imageSpace: Boolean) {
+        try { safeLog { logSwappedLine(b, previous, imageSpace) } } finally { forgetBuildLog(b.id) } // the cleanup never depends on the summary's queries
+    }
+
+    private suspend fun logSwappedLine(b: EmbeddingSpaceEntity, previous: EmbeddingSpaceEntity?, imageSpace: Boolean) {
         val text = spaces.coverage(b.id)
         val images = if (imageSpace) spaces.imageCoverage(b.id) else null
         val spaceId = b.id; val model = IndexLogFormat.model(b.fingerprint); val prev = previous?.id ?: "none"
@@ -487,7 +494,6 @@ class IndexMaintenance(
         val unembeddable = if (imageSpace) spaces.unembeddableImages() else 0
         val duration = IndexLogFormat.duration(now() - b.createdAt)
         PcLog.milestone(TAG, "index build complete, swapped in: space=$spaceId model=$model previous=$prev text=$textHave/$textTotal images=$imageCounts unembeddable=$unembeddable duration=$duration")
-        forgetBuildLog(b.id)
     }
 
     /** One summary line when [space] can answer semantic search: once per process per space, and again when its photo backfill completes. */
