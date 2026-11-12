@@ -6,7 +6,7 @@ Debug-signed; no APKs are attached. Phone database is Room v15 (additive migrati
 - A Moment carries text (timestamp plus the visible memory text of its photos), a transcript scaffold and an error reason that survives a rebuild; the text is in `GET /api/moments` and the `input.moments` item; a one-time purge removes invalid Moments and orphan memories at first start; memories of retention-expired photos are no longer treated as orphans.
 
 **Run & Save (slice B)**
-- The canvas run page separates a playground run from Run & Save, which writes through the real memory write path (idempotent, gated, forgettable); a save blocks deletes and exports with typed outcomes.
+- The canvas run page separates a playground run from Run & Save, which writes through the real memory write path (idempotent, gated, forgettable); while a save runs an export is refused with a typed outcome and a delete waits (bounded).
 
 **A mark takes a photo (slice C)**
 - A mark touches capture: the glasses open the camera explicitly, hold it for a setting, and take the mark's photo within a bounded pause and battery exception; additive wire fields (`MarkMessage.photo`, `FrameMeta.markRef`, `pc_mark_photo`, `markPhotoHoldMs`) and a Settings row.
