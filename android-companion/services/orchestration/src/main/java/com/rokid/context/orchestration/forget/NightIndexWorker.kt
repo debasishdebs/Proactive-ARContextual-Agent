@@ -141,7 +141,7 @@ internal class NightIndex(
     data class Result(val queued: Int, val described: Int, val left: Int, val backfill: String)
 
     suspend fun run(): Result {
-        if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); PcLog.i(TAG, "index backfill paused (night job): ${gateReason()}"); return Result(0, 0, 0, "gate") }
+        if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); val reason = gateReason(); PcLog.milestone(TAG, "index backfill paused (night job): $reason"); return Result(0, 0, 0, "gate") }
         val queued = queue()
         var described = 0
         if (queued.isNotEmpty() || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty()) {

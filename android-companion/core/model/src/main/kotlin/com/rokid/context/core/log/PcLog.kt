@@ -47,16 +47,26 @@ object PcLog : LogPort {
     private fun withClass(msg: String, t: Throwable) =
         LogBound.cut(msg, Line.MAX_MSG_BYTES - 80) + " " + LogFields.cls(t)
 
-    override fun log(level: Level, tag: String, msg: String) {
+    /**
+     * A MILESTONE: an INFO line that reaches `pca.log` even with diagnostics off (and logcat as any I line). For rare, explicit state changes that
+     * must be readable after the fact (the memory-index lifecycle); never for per-item or per-batch chatter, and never a substitute for [w]/[e].
+     * Same bounds and rules as every line: [msg] is a constant template plus counts, ids and enum names only, cut to [Line.MAX_MSG_BYTES]; the file's
+     * size and rotation are the writer's.
+     */
+    fun milestone(tag: String, msg: String) = emit(Level.I, tag, msg, milestone = true)
+
+    override fun log(level: Level, tag: String, msg: String) = emit(level, tag, msg, milestone = false)
+
+    private fun emit(level: Level, tag: String, msg: String, milestone: Boolean) {
         try {
             val s = sink
             if (s != null) {
-                val route = LogPolicy.route(level, tag, diagnostic)
+                val route = LogPolicy.route(level, tag, diagnostic, milestone)
                 if (!route.logcat && !route.file) return          // disabled: no Line allocated
-                safeEmit(s, Line(level, tag, msg, System.currentTimeMillis()), route)
+                safeEmit(s, Line(level, tag, msg, System.currentTimeMillis(), milestone), route)
                 return
             }
-            val line = Line(level, tag, msg, System.currentTimeMillis())
+            val line = Line(level, tag, msg, System.currentTimeMillis(), milestone)
             val now = synchronized(lock) {
                 val n = sink
                 if (n == null) { if (ring.size >= RING_CAPACITY) ring.removeFirst(); ring.addLast(line) }
@@ -67,7 +77,7 @@ object PcLog : LogPort {
     }
 
     private fun emitRouted(s: LogSink, line: Line) {
-        val route = LogPolicy.route(line.level, line.tag, diagnostic)
+        val route = LogPolicy.route(line.level, line.tag, diagnostic, line.milestone)
         if (route.logcat || route.file) safeEmit(s, line, route)
     }
 

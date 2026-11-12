@@ -7,8 +7,9 @@ enum class Level { D, I, W, E }
  * One log record. [msg] is a constant template plus counts/enum names only (see [LogFields]).
  * [tag] and [msg] are cut to [MAX_TAG_BYTES] / [MAX_MSG_BYTES] of UTF-8 at construction, so every retained record
  * (ring, writer queue) and every written line has a hard byte bound.
+ * [milestone] marks a line written by [PcLog.milestone]: an INFO line that always reaches the file (see [LogPolicy]); the same bounds apply.
  */
-class Line(val level: Level, tag: String, msg: String, val wallMillis: Long) {
+class Line(val level: Level, tag: String, msg: String, val wallMillis: Long, val milestone: Boolean = false) {
     val tag: String = LogBound.cut(tag, MAX_TAG_BYTES)
     val msg: String = LogBound.cut(msg, MAX_MSG_BYTES)
 

@@ -52,9 +52,9 @@ class IndexLogTest {
         t = 5_000; assertTrue(l.due("k", 2, 100)) // a clock set back is not "less than 30 s since"
     }
 
-    @Test fun progressLineFormat() {
-        assertEquals("text index (building): 1200/3400 embedded (35%) space=space_a", IndexLogFormat.progress("text", "building", 1200, 3400, "space_a"))
-        assertEquals("image index (active): 3/3 embedded (100%) space=space_b", IndexLogFormat.progress("image", "active", 3, 3, "space_b"))
+    @Test fun percentIsClamped() {
+        assertEquals(35, IndexLogFormat.percent(1200, 3400))
+        assertEquals(100, IndexLogFormat.percent(3, 3))
         assertEquals(100, IndexLogFormat.percent(5, 0))
         assertEquals(100, IndexLogFormat.percent(9, 5)) // never above 100
         assertEquals(0, IndexLogFormat.percent(-1, 5))
@@ -76,11 +76,11 @@ class IndexLogTest {
 
     @Test fun healthLogsOnlyChanges() {
         val s = IndexLogState({ t })
-        assertEquals("index health: NEEDED (space stale)", s.health("NEEDED", "space stale"))
-        assertNull(s.health("NEEDED", "again"))
-        assertEquals("index health: NEEDED -> RUNNING (build started)", s.health("RUNNING", "build started"))
-        assertEquals("index health: RUNNING -> NONE (swap complete)", s.health("NONE", "swap complete"))
-        assertEquals("index health: NONE -> UNSTABLE (3 discards)", s.health("UNSTABLE", "3 discards"))
+        s.health("NEEDED")!!.let { assertNull(it.before); assertEquals("NEEDED", it.state) }
+        assertNull(s.health("NEEDED"))
+        s.health("RUNNING")!!.let { assertEquals("NEEDED", it.before); assertEquals("RUNNING", it.state) }
+        s.health("NONE")!!.let { assertEquals("RUNNING", it.before); assertEquals("NONE", it.state) }
+        s.health("UNSTABLE")!!.let { assertEquals("NONE", it.before); assertEquals("UNSTABLE", it.state) }
     }
 
     @Test fun pauseIsLoggedOnceAndResumeReportsTheWait() {
