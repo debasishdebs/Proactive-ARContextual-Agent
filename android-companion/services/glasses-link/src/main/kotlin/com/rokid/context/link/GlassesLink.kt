@@ -13,6 +13,11 @@ interface GlassesLink {
     val ready: SharedFlow<Unit>
     /** Fix wave H2: the glasses' last CXR `wearingStatus` (true = worn) seen on the background link; null when none yet. */
     val wearing: StateFlow<Boolean?> get() = NO_WEARING
+    /**
+     * v1.0 wear fallback: the glasses' system wear check ("Wear detection" in Hi Rokid) as last read on the background link (true = on); null = never read.
+     * Remembered across hub restarts (a device setting, it changes rarely); a re-read on every background bind refreshes it.
+     */
+    val wearCheck: StateFlow<Boolean?> get() = NO_WEARING
     /** Explicit user action (e.g. "Open on glasses"): connects even after a close on the glasses. */
     fun connect()
     /**
