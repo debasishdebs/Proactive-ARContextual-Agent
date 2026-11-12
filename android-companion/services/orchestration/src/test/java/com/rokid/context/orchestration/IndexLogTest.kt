@@ -157,4 +157,16 @@ class IndexLogTest {
         assertEquals("thermal/background policy (phone too warm)", BulkGateReason.of(PowerState(90, false), false))
         assertEquals("bulk gate closed", BulkGateReason.of(PowerState(30, true), true))
     }
+
+    @Test fun theLimiterAndTheStateAreHardBounded() {
+        val l = ProgressLimiter({ t })
+        repeat(500) { l.due("text:space_$it", 1, 100) }
+        assertEquals(ProgressLimiter.MAX_KEYS, l.tracked())
+        assertFalse("the oldest were evicted, the newest kept", l.mayLog("text:space_499"))
+        assertTrue(l.mayLog("text:space_0"))
+        val s = IndexLogState({ t })
+        repeat(500) { s.firstReady("space_$it:full"); s.changed("space_$it:build", "seen") }
+        assertEquals(2 * IndexLogState.MAX_ENTRIES, s.remembered())
+        assertFalse("the newest record survives", s.firstReady("space_499:full"))
+    }
 }

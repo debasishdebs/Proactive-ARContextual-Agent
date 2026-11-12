@@ -482,7 +482,8 @@ class IndexMaintenance(
     }
 
     private suspend fun logSwapped(b: EmbeddingSpaceEntity, previous: EmbeddingSpaceEntity?, bound: BoundEmbedder, imageSpace: Boolean) {
-        try { safeLog { logSwappedLine(b, previous, imageSpace) } } finally { forgetBuildLog(b.id) } // the cleanup never depends on the summary's queries
+        // The cleanup never depends on the summary's queries; the space this swap retired is over too (its catch-up progress key and ready record).
+        try { safeLog { logSwappedLine(b, previous, imageSpace) } } finally { forgetBuildLog(b.id); previous?.let { forgetBuildLog(it.id) } }
     }
 
     private suspend fun logSwappedLine(b: EmbeddingSpaceEntity, previous: EmbeddingSpaceEntity?, imageSpace: Boolean) {
