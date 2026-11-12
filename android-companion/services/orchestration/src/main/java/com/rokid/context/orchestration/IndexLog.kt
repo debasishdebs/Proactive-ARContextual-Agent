@@ -33,8 +33,18 @@ class ProgressLimiter(
         return false
     }
 
-    /** Forgets every key that starts with [prefix] (a build ended: its keys are not needed any more). */
+    /** Whether a line for [key] could be due by time alone (first report, or the interval has passed): a cheap check before any database count is taken for it. */
+    @Synchronized fun mayLog(key: String): Boolean {
+        val s = states[key] ?: return true
+        val now = clock()
+        return now - s.at >= minIntervalMs || now < s.at
+    }
+
+    /** Forgets every key that starts with [prefix]. */
     @Synchronized fun forget(prefix: String) { states.keys.removeAll { it.startsWith(prefix) } }
+
+    /** How many keys are held (tests: a finished build leaves none). */
+    @Synchronized fun tracked(): Int = states.size
 
     companion object {
         const val MIN_INTERVAL_MS = 30_000L
@@ -50,6 +60,7 @@ class IndexLogState(private val clock: () -> Long) {
     private var health: String? = null
     private val paused = HashMap<String, Pair<String, Long>>()
     private val ready = HashSet<String>()
+    private val seen = HashMap<String, String>()
 
     /** A change of the index health: [before] is null for the first state seen in this process. */
     class HealthChange(val before: String?, val state: String)
@@ -76,7 +87,11 @@ class IndexLogState(private val clock: () -> Long) {
     /** True the first time [key] is offered (the caller logs the ready line). */
     @Synchronized fun firstReady(key: String): Boolean = ready.add(key)
 
-    @Synchronized fun resetReady(prefix: String) { ready.removeAll { it.startsWith(prefix) } }
+    /** True when [value] differs from the last one recorded for [key] (the first one counts): a repeated, unchanged state is not logged again. */
+    @Synchronized fun changed(key: String, value: String): Boolean = seen.put(key, value) != value
+
+    /** Forgets what was recorded for every key that starts with [prefix] (a space ended). */
+    @Synchronized fun resetReady(prefix: String) { ready.removeAll { it.startsWith(prefix) }; seen.keys.removeAll { it.startsWith(prefix) } }
 }
 
 internal object IndexLogFormat {
@@ -104,12 +119,35 @@ internal object IndexLogFormat {
 
 /** Why bulk index work is not allowed right now, as a fixed phrase (battery numbers are not content). */
 internal object BulkGateReason {
-    fun of(power: PowerState, backgroundAllowed: Boolean): String = when {
+    /** Pure: formats values the decision already read ([power], and [backgroundAllowed] when it was evaluated); reads nothing itself. */
+    fun of(power: PowerState?, backgroundAllowed: Boolean?): String = when {
+        power == null -> "bulk gate closed"
         !LocalModelPower.bulkAllowed(power) ->
             "battery ${if (power.batteryPct >= 0) "${power.batteryPct}%" else "unknown"} and not charging (needs a charger or battery above ${LocalModelPower.MIN_BATTERY_PCT}%)"
-        !backgroundAllowed -> "thermal/background policy (phone too warm)"
+        backgroundAllowed == false -> "thermal/background policy (phone too warm)"
         else -> "bulk gate closed"
     }
+}
+
+/**
+ * The bulk gate (G6 battery rule, then the phone's thermal policy), evaluated exactly as before (`battery && thermal`, the thermal policy only
+ * consulted when the battery allows). It remembers the values it just read, so [reason] is purely observational: it never reads the battery or
+ * the thermal policy again (the policy's latch and timer are touched only by [allowed]) and never throws.
+ */
+internal class BulkGate(private val power: () -> PowerState, private val background: () -> Boolean) {
+    private class Seen(val power: PowerState, val background: Boolean?)
+    @Volatile private var seen: Seen? = null
+
+    fun allowed(): Boolean {
+        val p = power()
+        if (!LocalModelPower.bulkAllowed(p)) { seen = Seen(p, null); return false }
+        val b = background()
+        seen = Seen(p, b)
+        return b
+    }
+
+    /** Why the last [allowed] said no, from what it saw. */
+    fun reason(): String = try { seen.let { BulkGateReason.of(it?.power, it?.background) } } catch (_: Exception) { "bulk gate closed" }
 }
 
 /** The process-wide instances the workers and [IndexMaintenance] log through (one rate limit and one "already said" memory per process). */

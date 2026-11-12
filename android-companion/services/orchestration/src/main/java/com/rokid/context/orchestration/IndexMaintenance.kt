@@ -295,7 +295,7 @@ class IndexMaintenance(
                 val streak = if (last?.fingerprint == fp) last.streak + 1 else 1
                 clock.recordDiscard(DiscardRecord(fp, now(), streak))
                 PcLog.i(TAG, "canaries drifted while building: build discarded (streak $streak)")
-                progress.forget(building.id)
+                forgetBuildLog(building.id)
                 syncHealth(if (clock.unstable()) "build discarded after canary drift (streak $streak): auto-rebuild stopped until Rebuild" else "build discarded after canary drift (streak $streak)")
                 return Outcome.DONE
             }
@@ -304,7 +304,8 @@ class IndexMaintenance(
         }
         // Ruling 15: image coverage is required per space, iff the building embedder declares IMAGE. Paused backfill waits for the next trigger (no spin).
         val imageSpace = Modality.IMAGE in bound.embedder.modalities
-        if (imageSpace && spaces.missingImageCount(building.id) == 0) {
+        val missingImages = if (imageSpace) spaces.missingImageCount(building.id) else 0
+        if (imageSpace && missingImages == 0) {
             // Every photo is covered or marked: with no image vector at all (or a mostly-marked library) that is a broken decoder, not a finished build.
             val health = spaces.imageSwapHealth(building.id)
             if (health != ImageSwapHealth.OK) {
@@ -314,7 +315,9 @@ class IndexMaintenance(
         }
         if (!spaces.swapIfComplete(building.id, requireImages = imageSpace)) {
             safeLog {
-                val missingPhotos = spaces.missingImageCount(building.id); val paused = images.paused; val spaceId = building.id
+                val missingPhotos = missingImages; val paused = images.paused; val spaceId = building.id
+                // Only a change is news: the same paused state with a similar number of photos left (same power-of-two bucket) is not logged again.
+                if (!logState.changed("$spaceId:swapwait", "$paused:${32 - Integer.numberOfLeadingZeros(missingPhotos)}")) return@safeLog
                 PcLog.milestone(TAG, "index swap waiting: text complete, $missingPhotos photo vectors still missing (photo backfill paused=$paused); space=$spaceId")
             }
             return if (images.paused) Outcome.DONE else Outcome.BACKFILL
@@ -342,14 +345,15 @@ class IndexMaintenance(
     /** Embeds up to [budget] missing memories into [space]; returns what is left of the budget. */
     private suspend fun fill(space: EmbeddingSpaceEntity, embedder: Embedder, budget: Int, role: String): Int {
         var left = budget
-        var cov: Coverage? = null // log only: the space's coverage before this run's first write
-        var stored = 0
+        var cov: Coverage? = null // log only: the space's coverage, counted only when a progress line could be written (no library-wide count per batch)
+        var since = 0 // stored after [cov] was counted
+        val key = "text:${space.id}"
         while (left > 0) {
             val todo = spaces.missing(space.id, minOf(batch, left))
             if (todo.isEmpty()) break
-            if (cov == null) cov = quietly { spaces.coverage(space.id) }
             val vectors = embedder.embedDocuments(todo.map { it.text })
             var writable = true
+            var stored = 0
             for ((m, v) in todo.zip(vectors)) {
                 writable = try { spaces.put(m.id, space.id, v) } catch (e: IllegalArgumentException) {
                     throw IndexConfigException("space ${space.id}: ${e.message}")
@@ -358,10 +362,10 @@ class IndexMaintenance(
                 stored++
             }
             left -= todo.size
+            if (cov != null) since += stored else if (progress.mayLog(key)) { cov = quietly { spaces.coverage(space.id) }; since = 0 } // counted after this batch's writes
             cov?.let { c ->
-                val total = maxOf(c.eligible, c.have + stored)
-                val done = c.have + stored; val pct = IndexLogFormat.percent(done, total); val spaceId = space.id
-                if (progress.due("text:$spaceId", done, total)) PcLog.i(TAG, "text index ($role): $done/$total embedded ($pct%) space=$spaceId")
+                val done = c.have + since; val total = maxOf(c.eligible, done); val pct = IndexLogFormat.percent(done, total); val spaceId = space.id
+                if (progress.due(key, done, total)) PcLog.i(TAG, "text index ($role): $done/$total embedded ($pct%) space=$spaceId")
             }
             if (!writable) break // discarded, retired or marked stale meanwhile: nothing more to write here
         }
@@ -387,19 +391,20 @@ class IndexMaintenance(
         val purged = spaces.purgeWrongWidthImages(space.id, dims)
         if (purged > 0) PcLog.w(TAG, "image backfill: dropped $purged vectors of the wrong width")
         val skip = HashSet<String>() // skipped this run: not re-listed, or they would starve the photos behind them
-        var cov: Coverage? = null // log only: photo-vector coverage before this run's first write
-        var storedTotal = 0
+        var cov: Coverage? = null // log only: photo-vector coverage, counted only when a progress line could be written
+        var since = 0 // stored after [cov] was counted
+        val key = "image:${space.id}"
+
         while (p.budget > 0) {
             if (!bulkAllowed()) {
                 p.paused = true; PcLog.i(TAG, "image backfill paused by the bulk gate")
-                logPause("images", bulkReason())
+                logPause("images", try { bulkReason() } catch (c: CancellationException) { throw c } catch (_: Exception) { "bulk gate closed" })
                 return
             }
             logResume("images", "the bulk gate is open again")
             val want = minOf(imageBatch, p.budget)
             val ids = spaces.missingImages(space.id, want + skip.size).filter { it !in skip }.take(want)
             if (ids.isEmpty()) return
-            if (cov == null) cov = quietly { spaces.imageCoverage(space.id) }
             yield()
             p.budget -= ids.size
             val first = photos(ids)
@@ -424,11 +429,10 @@ class IndexMaintenance(
             // A decoder that fails everything shows as no image vector at all: the swap refuses (see imageSwapHealth) and a new build clears the marks.
             toMark.forEach { spaces.markUnembeddable(it); readAttempts.forget(it) }
             PcLog.i(TAG, "image backfill: ${ids.size} photos, $stored stored, ${toMark.size} unembeddable, $transient deferred, $rejected wrong width")
-            storedTotal += stored
+            if (cov != null) since += stored else if (progress.mayLog(key)) { cov = quietly { spaces.imageCoverage(space.id) }; since = 0 } // counted after this batch's writes
             cov?.let { c ->
-                val total = maxOf(c.eligible, c.have + storedTotal)
-                val done = c.have + storedTotal; val pct = IndexLogFormat.percent(done, total); val spaceId = space.id
-                if (progress.due("image:$spaceId", done, total)) PcLog.i(TAG, "image index ($role): $done/$total embedded ($pct%) space=$spaceId")
+                val done = c.have + since; val total = maxOf(c.eligible, done); val pct = IndexLogFormat.percent(done, total); val spaceId = space.id
+                if (progress.due(key, done, total)) PcLog.i(TAG, "image index ($role): $done/$total embedded ($pct%) space=$spaceId")
             }
             if (rejected > 0 && stored == 0 && rejected == ids.size - toMark.size - transient) {
                 throw IndexConfigException("space ${space.id}: image vectors have the wrong width")
@@ -440,6 +444,12 @@ class IndexMaintenance(
 
     private suspend fun safeLog(block: suspend () -> Unit) { try { block() } catch (c: CancellationException) { throw c } catch (_: Exception) { /* a log line never changes the run */ } }
     private suspend fun <T> quietly(block: suspend () -> T): T? = try { block() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+
+    /** A space ended (swapped in or discarded): its progress keys and "already said" records go. */
+    private fun forgetBuildLog(spaceId: String) {
+        progress.forget("text:$spaceId"); progress.forget("image:$spaceId")
+        logState.resetReady(spaceId)
+    }
 
     private fun logPause(key: String, reason: String) { if (logState.pause(key, reason)) PcLog.milestone(TAG, "index paused ($key): $reason") }
     private fun logResume(key: String, what: String) {
@@ -458,6 +468,7 @@ class IndexMaintenance(
     }
 
     private suspend fun logBuildStart(b: EmbeddingSpaceEntity, bound: BoundEmbedder, why: String, resumed: Boolean) = safeLog {
+        if (!logState.changed("${b.id}:build", "seen")) return@safeLog // once per space and process: a build resumed by every run is not news
         val text = spaces.coverage(b.id)
         val images = if (Modality.IMAGE in bound.embedder.modalities) spaces.imageCoverage(b.id) else null
         val verb = if (resumed) "resumed" else "start"
@@ -476,8 +487,7 @@ class IndexMaintenance(
         val unembeddable = if (imageSpace) spaces.unembeddableImages() else 0
         val duration = IndexLogFormat.duration(now() - b.createdAt)
         PcLog.milestone(TAG, "index build complete, swapped in: space=$spaceId model=$model previous=$prev text=$textHave/$textTotal images=$imageCounts unembeddable=$unembeddable duration=$duration")
-        progress.forget(b.id)
-        logState.resetReady(b.id)
+        forgetBuildLog(b.id)
     }
 
     /** One summary line when [space] can answer semantic search: once per process per space, and again when its photo backfill completes. */
