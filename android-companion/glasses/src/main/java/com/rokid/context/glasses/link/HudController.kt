@@ -145,8 +145,13 @@ class HudController(
      * if it has not moved: a frame of a closed (or since reopened) session never lands after the close, so a close can never be undone by a delayed publication.
      */
     @Volatile private var sessionGen = 0L
-    /** Tests only: runs between a frame's receipt and its publication (the race window of Codex r1 P1). */
-    @Volatile internal var beforePublish: () -> Unit = {}
+    /** Tests only: runs right after a frame's receipt, before its decode and the session open (the race window of Codex r1/r2 P1). */
+    @Volatile internal var afterReceipt: () -> Unit = {}
+    /**
+     * Codex r2 (P1): every ask id a frame named in `withdrawnAskIds` (newest last, bounded by [WITHDRAWN_SEEN_MAX]). An Answer of one of them is never published again, in this
+     * session or a later one: ask ids are unique, and a withdrawn ask never comes back. Guarded by [answerLock].
+     */
+    private val withdrawnSeen = LinkedHashSet<String>()
     /** The Answer on the card (without its speaking flag and undo), and when the glasses first saw it (glasses clock). */
     private var answerKey: Overlay.Answer? = null
     private var answerSinceMs = 0L
@@ -160,6 +165,9 @@ class HudController(
      * (the activity exited) gets it without an answer card (a closed session holds none).
      */
     private fun publish(f: StateFrame, gen: Long) = synchronized(answerLock) {
+        // the withdrawals a frame names count even when the frame itself is stale
+        f.withdrawnAskIds.forEach { withdrawnSeen.remove(it); withdrawnSeen += it }
+        while (withdrawnSeen.size > WITHDRAWN_SEEN_MAX) withdrawnSeen.remove(withdrawnSeen.first())
         if (gen != sessionGen) { PcLog.i(TAG, "pc_state of a closed session dropped"); return@synchronized }
         val shown = cleared(f)
         _frame.value = if (!_sessionOpen.value && shown.overlay is Overlay.Answer) shown.copy(overlay = null) else shown
@@ -168,7 +176,7 @@ class HudController(
     /** Applies the rules above to an incoming frame; called with [answerLock] held. */
     private fun cleared(f: StateFrame): StateFrame {
         val prev = (_frame.value?.overlay as? Overlay.Answer)?.let(::keyOf)
-        val withdrawn = f.withdrawnAskIds.toSet()
+        val withdrawn: Set<String> = withdrawnSeen
         if (prev?.askId != null && prev.askId in withdrawn) { dropped += prev; PcLog.milestone(TAG, "answer card cleared: redaction") }
         val a = (f.overlay as? Overlay.Answer)?.let(::keyOf)
         if (a == null) { answerKey = null; dropped.clear(); return f }
@@ -251,11 +259,12 @@ class HudController(
     }
 
     private fun onState(text: String) {
+        // Codex r2: the generation is read at RECEIPT, before the decode and the session open; a close at any later point moves it and this frame is then dropped whole
+        val gen = sessionGen
+        afterReceipt()
         when (val d = Wire.decode<StateFrame>(text)) {
             is Decoded.Ok -> {
                 phoneMessage()
-                val gen = sessionGen // after the open: a close from here on moves it, and this frame is then dropped
-                beforePublish()
                 publish(d.value, gen)
                 (d.value.capture as? CaptureState.Paused)?.let { onPhoneSettings(_settings.value.copy(pauses = it.records, pausesExact = false, resumedPauseIds = emptyList())) }
             }
@@ -385,5 +394,7 @@ class HudController(
         const val TAG = "PcHud"
         /** The glasses' own bound on one answer card (the phone's is its speech, watchdog-bounded, plus a 30 s hold): 5 min. */
         const val ANSWER_MAX_MS = 300_000L
+        /** How many withdrawn ask ids the glasses remember (the phone names at most 20 per frame, each for a minute). */
+        const val WITHDRAWN_SEEN_MAX = 64
     }
 }

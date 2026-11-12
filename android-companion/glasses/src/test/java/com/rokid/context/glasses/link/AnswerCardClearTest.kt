@@ -97,7 +97,7 @@ class AnswerCardClearTest {
         for (reopen in listOf(false, true)) {
             if (reopen) { frame(answer); assertEquals(answer, c.frame.value?.overlay) }
             val reached = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
-            c.beforePublish = { c.beforePublish = {}; reached.countDown(); release.await() }
+            c.afterReceipt = { c.afterReceipt = {}; reached.countDown(); release.await() }
             val t = Thread { frame(answer.copy(speaking = false)) }.also { it.start() }
             assertTrue(reached.await(5, java.util.concurrent.TimeUnit.SECONDS))
             bridge.disconnected()
@@ -106,6 +106,40 @@ class AnswerCardClearTest {
             release.countDown(); t.join(5_000)
             assertNull("reopen=$reopen: the paused frame of the closed session is dropped", c.frame.value?.overlay)
         }
+    }
+
+    /**
+     * Codex r2 P1, the exact repro: a repeat of A is held right after RECEIPT (before phoneMessage() and the generation read of r1); BT drops; the Forget of A's photo
+     * happens; the session reopens with an idle frame. A resumes inside the new session and must not adopt its generation: it is dropped, A stays off the card.
+     */
+    @Test fun anAnswerHeldBeforeTheSessionOpenNeverAdoptsTheReopenedSession() = runTest {
+        val c = controller()
+        frame(answer)
+        val reached = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        c.afterReceipt = { c.afterReceipt = {}; reached.countDown(); release.await() }
+        val t = Thread { frame(answer.copy(speaking = false)) }.also { it.start() }
+        assertTrue(reached.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        bridge.disconnected() // the link drops; the Forget runs on the phone meanwhile
+        assertNull(c.frame.value?.overlay)
+        frame(null) // the reopened session's first frame: idle
+        assertTrue(c.sessionOpen.value)
+        release.countDown(); t.join(5_000)
+        assertNull("the held frame of the old session is dropped, not republished in the new one", c.frame.value?.overlay)
+        assertTrue(c.sessionOpen.value)
+    }
+
+    /** Codex r2: an Answer whose ask a frame ever named as withdrawn is never published again, even by a later frame that no longer names it, and after a reconnect. */
+    @Test fun aWithdrawnAskIsNeverRepublished() = runTest {
+        val c = controller()
+        frame(null, withdrawn = listOf("ask_1"))
+        frame(null)
+        frame(answer)
+        assertNull("a late frame that still carries it", c.frame.value?.overlay)
+        bridge.disconnected(); frame(answer)
+        assertNull("nor after a reconnect", c.frame.value?.overlay)
+        val other = answer.copy(askId = "ask_2", text = "Milk and eggs.")
+        frame(other)
+        assertEquals("another ask still shows", other, c.frame.value?.overlay)
     }
 
     /** Codex r1: the glasses hold is key-independent: whatever answer is on the card goes at the bound, even after a close reset its key. */
