@@ -69,8 +69,11 @@ class HubTest {
     init { DirSync.testOverride = DirSync { true } } // Robolectric cannot fsync a directory
     @After fun close() { DirSync.testOverride = null; db.close() }
     private val now = 1_793_000_000_000L
+    /** Set to hold a broadcast inside its IO reads (Codex r1 P2 repro). */
+    @Volatile private var todayGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    @Volatile private var todayEntered: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     private val sources = object : HubSources {
-        override suspend fun today() = listOf(MemoryLine("m1", now, "Keys on the hallway shelf"))
+        override suspend fun today(): List<MemoryLine> { todayGate?.let { g -> todayEntered?.complete(Unit); g.await() }; return listOf(MemoryLine("m1", now, "Keys on the hallway shelf")) }
         override suspend fun queueDepth() = 2
         override suspend fun aiHealth(nowMs: Long): Health = Health.Ok
     }
@@ -763,6 +766,26 @@ class HubTest {
         voice.overlay.value = null
         t += Hub.WITHDRAWN_HINT_MS; h.refresh(); advanceTimeBy(300)
         assertTrue("the hint ends after a minute", link.lastFrame().withdrawnAskIds.isEmpty())
+    }
+
+    /** Codex r1 P2: a withdrawal made while a broadcast is inside its IO reads (its time snapshot older) is kept, and every frame of the next minute names it. */
+    @Test fun aWithdrawalDuringAnInFlightBroadcastIsNeverPrunedByItsOlderTime() = runTest {
+        val link = FakeGlassesLink()
+        var t = now
+        val h = hub(link, clock = { t })
+        advanceTimeBy(300)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>(); val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        todayEntered = entered; todayGate = gate
+        h.refresh(); advanceTimeBy(300); runCurrent()
+        assertTrue("the broadcast is held inside sources.today()", entered.isCompleted)
+        t += 5_000
+        h.withdrawAsks(listOf("ask_1"))
+        todayGate = null; gate.complete(Unit); advanceTimeBy(300); runCurrent()
+        assertEquals("the held broadcast keeps it", listOf("ask_1"), link.lastFrame().withdrawnAskIds)
+        h.refresh(); advanceTimeBy(300)
+        assertEquals("so does the next frame", listOf("ask_1"), link.lastFrame().withdrawnAskIds)
+        t += Hub.WITHDRAWN_HINT_MS - 1_000; h.refresh(); advanceTimeBy(300)
+        assertEquals("still inside its minute", listOf("ask_1"), link.lastFrame().withdrawnAskIds)
     }
 
     /**
