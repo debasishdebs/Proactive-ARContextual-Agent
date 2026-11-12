@@ -43,6 +43,8 @@ class VoicePipeline(
      * and in the hub's frames is then cleared at once, not at the end of its hold. Default: never.
      */
     private val answerWithdrawn: (askId: String, existed: Boolean) -> kotlinx.coroutines.flow.Flow<Boolean> = { _, _ -> kotlinx.coroutines.flow.emptyFlow() },
+    /** rc1 fix: lines that must reach `pca.log` even with diagnostics off (an answer withdrawn). Fixed event names only, never text or ids. */
+    private val milestone: (String) -> Unit = {},
 ) {
     private val _state = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val state: StateFlow<VoiceState> = _state.asStateFlow()
@@ -363,8 +365,27 @@ class VoicePipeline(
         withdrawWatch = scope.launch {
             answerWithdrawn(askId, existed).firstOrNull { it } ?: return@launch
             val now = _state.value
-            if (now is VoiceState.Answer && now.askId == askId) { newGeneration(); log("answer withdrawn"); set(VoiceState.Idle) }
+            if (now is VoiceState.Answer && now.askId == askId) withdrawShown("watcher")
         }
+    }
+
+    /**
+     * rc1 fix: a committed Forget redacted or deleted [askIds]. The Answer shown for one of them (phone Home voice card, the HUD overlay and the hub's frames) is cleared at
+     * once and its speech stops, whether or not the row watcher has seen the change yet. True when a shown answer was cleared; false (nothing shown for them) is a no-op.
+     */
+    fun withdraw(askIds: Collection<String>): Boolean {
+        val now = _state.value as? VoiceState.Answer ?: return false
+        if (now.askId.isEmpty() || now.askId !in askIds) return false
+        withdrawShown("forget")
+        return true
+    }
+
+    /** [how] is a call-site constant (`watcher` / `forget`). */
+    private fun withdrawShown(how: String) {
+        newGeneration()
+        log("answer withdrawn")
+        milestone("answer withdrawn by=$how")
+        set(VoiceState.Idle)
     }
 
     private fun publish() {
@@ -386,7 +407,7 @@ class VoicePipeline(
         // v0.9.9: the transient Listening and Thinking frames are HUD frames: not sent while the user switched the glasses display off (the answer still routes by DeliveryRoute).
         is VoiceState.Listening -> if (s.source == VoiceSource.GLASSES && deviceCaps().glassesDisplay) Overlay.Listening(VoiceText.clip(s.partial, HUD_TEXT)) else null
         is VoiceState.Thinking -> if (s.source == VoiceSource.GLASSES && deviceCaps().glassesDisplay) Overlay.Listening(VoiceText.clip(s.question, HUD_TEXT)) else null
-        is VoiceState.Answer -> if (s.hud) Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), hudAnswer(s), s.speaking) else null
+        is VoiceState.Answer -> if (s.hud) Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), hudAnswer(s), s.speaking, askId = s.askId.ifEmpty { null }) else null
         is VoiceState.Problem -> if (s.source == VoiceSource.GLASSES) Overlay.Toast(VoiceText.clip(s.hudText, HUD_TEXT)) else null
     }
 

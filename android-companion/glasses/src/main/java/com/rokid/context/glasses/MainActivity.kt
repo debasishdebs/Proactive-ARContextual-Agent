@@ -220,7 +220,10 @@ class MainActivity : ComponentActivity() {
         val auto = autoConfirmId
         if (returnToMinimised && auto != null && (o as? Overlay.Confirm)?.proposalId != auto) afterConfirm() // answered or withdrawn on the phone
         if (o == lastOverlay) return
+        val prev = lastOverlay
         lastOverlay = o
+        // rc1 fix: the phone ended the Answer (hold over, withdrawn by a Forget, cancelled): a pop-up still showing it goes now, not at its own timeout.
+        if (prev is Overlay.Answer && o !is Overlay.Answer) PopupOverlay.textFor(prev, controller.settings.value.verbosity)?.let { t -> if (runtime.popup.text == t) runtime.popup.hide() }
         if (!minimised || !Settings.canDrawOverlays(this)) return
         if (o is Overlay.Confirm) {
             if (o.proposalId == launchedConfirmId) return

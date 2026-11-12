@@ -261,6 +261,7 @@ class MomentForget(
     private fun ForgetService.Result.plus(o: ForgetService.Result) = ForgetService.Result(
         forgotten + o.forgotten, invalidated + o.invalidated, redactedAsks + o.redactedAsks, redactedNudges + o.redactedNudges,
         (framesToDelete + o.framesToDelete).distinct(), (redactedProposals + o.redactedProposals).distinct(), expiredFrames + o.expiredFrames,
+        (redactedAskIds + o.redactedAskIds).distinct(),
     )
 
     companion object {

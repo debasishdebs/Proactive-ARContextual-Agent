@@ -33,6 +33,8 @@ data class HubInputs(
     val error: UserFacingError?,
     /** Phone clock; converted to glasses clock in the frame (Phase 7). */
     val latestNudge: NudgeLine? = null,
+    /** rc1 fix: asks a Forget just redacted; the glasses drop an Answer they hold for one of them. */
+    val withdrawnAskIds: List<String> = emptyList(),
 )
 
 object StateFrameBuilder {
@@ -55,6 +57,7 @@ object StateFrameBuilder {
             today = i.today.take(8),
             overlay = i.overlay,
             error = i.error?.title,
+            withdrawnAskIds = i.withdrawnAskIds,
         )
     }
 

@@ -115,6 +115,8 @@ sealed interface Overlay {
      */
     @Serializable @SerialName("answer") data class Answer(
         val question: String, val text: String, val speaking: Boolean, val undoProposalId: String? = null,
+        /** Additive (rc1 fix): the stored ask this card shows, so a later [StateFrame.withdrawnAskIds] can clear it; null from an old phone. */
+        val askId: String? = null,
     ) : Overlay
     @Serializable @SerialName("nudge") data class Nudge(val text: String) : Overlay
     @Serializable @SerialName("confirm") data class Confirm(val proposalId: String, val title: String, val detail: String) : Overlay
@@ -140,6 +142,11 @@ data class StateFrame(
     val today: List<MemoryLine> = emptyList(),
     val overlay: Overlay? = null,
     val error: String? = null,
+    /**
+     * Additive (rc1 fix): asks a Forget redacted or deleted in the last minute (newest first, bounded). Glasses showing or holding an Answer for one of
+     * them drop it at once, whatever [overlay] says. Old glasses ignore it (the overlay of every frame already replaces theirs).
+     */
+    val withdrawnAskIds: List<String> = emptyList(),
 )
 
 @Serializable enum class HudPage { GLANCE, TODAY, STATUS }

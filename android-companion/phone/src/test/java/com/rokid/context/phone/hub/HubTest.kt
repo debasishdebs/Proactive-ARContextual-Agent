@@ -741,6 +741,31 @@ class HubTest {
     }
 
     /**
+     * rc1 (2026-11-13): a Forget that redacted an ask AFTER the phone's 30 s hold (voice already Idle) still reaches the glasses: the next frame goes out at once
+     * and names the ask in `withdrawnAskIds` for a minute; a voice Answer of a withdrawn ask is never framed, even before the voice side clears it.
+     */
+    @Test fun aForgetAfterTheHoldNamesTheWithdrawnAskInTheNextFrames() = runTest {
+        val link = FakeGlassesLink()
+        val voice = FakeHubVoice()
+        var t = now
+        val h = hub(link, clock = { t }, voice = voice)
+        voice.overlay.value = Overlay.Answer("where did I keep my shoes", "On the floor.", speaking = false, askId = "ask_1"); advanceTimeBy(300)
+        assertEquals("ask_1", (link.lastFrame().overlay as Overlay.Answer).askId)
+        voice.overlay.value = null; advanceTimeBy(300) // the hold ended: Idle
+        assertNull(link.lastFrame().overlay)
+        assertTrue(link.lastFrame().withdrawnAskIds.isEmpty())
+        val before = link.sent.count { it.first == Channels.STATE }
+        h.withdrawAsks(listOf("ask_1")); advanceTimeBy(300)
+        assertTrue("a frame goes out at once", link.sent.count { it.first == Channels.STATE } > before)
+        assertEquals(listOf("ask_1"), link.lastFrame().withdrawnAskIds)
+        voice.overlay.value = Overlay.Answer("where did I keep my shoes", "On the floor.", speaking = false, askId = "ask_1"); advanceTimeBy(300)
+        assertNull("a withdrawn ask's Answer is never framed", link.lastFrame().overlay)
+        voice.overlay.value = null
+        t += Hub.WITHDRAWN_HINT_MS; h.refresh(); advanceTimeBy(300)
+        assertTrue("the hint ends after a minute", link.lastFrame().withdrawnAskIds.isEmpty())
+    }
+
+    /**
      * BUG-R2-5: while the undo window is open an Answer carries it (the HUD shows the answer with the undo line and a
      * double-tap undoes), in either order; a phone Listening still wins; once the window closes the plain Answer shows.
      */

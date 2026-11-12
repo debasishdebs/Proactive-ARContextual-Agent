@@ -93,6 +93,8 @@ class ContextApp : Application() {
         com.rokid.context.work.OrchestrationScheduler(this).ensureBackgroundWork()
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
         com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog
+        // rc1 fix: a committed Forget withdraws the answers of the asks it redacted wherever they may still show (phone voice card, glasses HUD through the hub's frames).
+        com.rokid.context.orchestration.forget.ForgetActions.asksRedacted = { ids -> android.os.Handler(android.os.Looper.getMainLooper()).post { runCatching { com.rokid.context.phone.voice.VoiceGraph.onAsksRedacted(this, ids) }.onFailure { PcLog.w("ContextApp", "answer withdrawal failed: ${it.javaClass.simpleName}") } } }
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)
         // A hub that stopped itself (glasses away) may start again when the platform starts this process (a 15 min job) AND the app is exempt from battery optimization; never otherwise, never after a manual stop.
         // Codex review 4: only an event is submitted here; the claim, its commits and the start run on the AutoStop actor's IO context, never on the main thread.
