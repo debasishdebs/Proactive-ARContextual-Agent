@@ -49,6 +49,8 @@ class AutoStopController(
     private val scheduleWake: (Long) -> Unit = {},
     /** The hub service is up ([ContextHubService.isRunning] in production): tells "already running" from a refused start. */
     private val serviceRunning: () -> Boolean = hubRunning,
+    /** v1.0 wear fallback: the glasses' "not worn (estimated)" (gated on the system wear check; [GlassesWearEstimate]). */
+    private val wornEstimated: () -> Boolean = { false },
     /** A private engine over this store (tests); production passes the shared [engine] instead. */
     store: AutoStopStore? = null,
     /** Where a private engine's steps (and their commits) run: Dispatchers.IO; tests pass [SerialStateMachine.DIRECT]. */
@@ -63,7 +65,7 @@ class AutoStopController(
 
     init {
         this.engine.attach(AutoStopEngine.HubPort(
-            sample = { HubSignals(hubRunning(), link(), worn(), inFront(), lastFrontMs(), busy(), runActive()) }, wake = ::wakeInputs,
+            sample = { HubSignals(hubRunning(), link(), worn(), inFront(), lastFrontMs(), busy(), runActive(), wornEstimated()) }, wake = ::wakeInputs,
             stopHub = stopHub, wakeHub = wakeHub, scheduleWake = scheduleWake, publishNote = publishNote, timeText = timeText, log = log,
         ))
     }
@@ -156,9 +158,9 @@ class AutoStopEngine(
         val log = p?.log ?: this.log
         val warn = p?.log ?: this.warn
         when (f) {
-            is AutoStopEffect.Note -> p?.let { it.publishNote(f.reason?.let { r -> BackgroundPolicy.stoppedNote(r, it.timeText(f.sinceMs)) }) }
+            is AutoStopEffect.Note -> p?.let { it.publishNote(f.reason?.let { r -> BackgroundPolicy.stoppedNote(r, it.timeText(BackgroundPolicy.noteSinceMs(r, f.sinceMs))) }) }
             is AutoStopEffect.StopHub -> {
-                when (f.reason) { BackgroundPolicy.Away.NOT_WORN -> log("auto_stop_not_worn"); BackgroundPolicy.Away.DISCONNECTED -> log("auto_stop_disconnected") }
+                when (f.reason) { BackgroundPolicy.Away.NOT_WORN -> log("auto_stop_not_worn"); BackgroundPolicy.Away.DISCONNECTED -> log("auto_stop_disconnected"); BackgroundPolicy.Away.NOT_WORN_EST -> log("auto_stop_not_worn_est") }
                 p?.stopHub?.invoke()
             }
             is AutoStopEffect.StartWake -> {
