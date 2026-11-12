@@ -15,6 +15,7 @@ import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.model.CallClass
 import com.rokid.context.orchestration.AiIndexEmbedders
+import com.rokid.context.orchestration.BulkGateReason
 import com.rokid.context.orchestration.IndexMaintenance
 import com.rokid.context.orchestration.PrefsIndexClock
 import com.rokid.context.orchestration.PrefsReadAttempts
@@ -54,11 +55,13 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             val maintenance = IndexMaintenance(
                 MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), PrefsIndexClock(applicationContext),
                 photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = { bulkAllowed(keyframes) },
+                bulkReason = { bulkReason(keyframes) },
             )
             val night = NightIndex(
                 db = MemoryGraph.get(applicationContext).db, pipeline = keyframes.pipeline,
                 settings = { MemorySettingsStore.get(applicationContext).settings.value },
                 bulkAllowed = { bulkAllowed(keyframes) },
+                gateReason = { bulkReason(keyframes) },
                 maintenance = { maintenance.run() },
                 onDescribed = { PipelineStatsStore.addDescribedBeforeDelete(applicationContext, it) },
             )
@@ -76,6 +79,9 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
     /** G6 (charging or battery above 70 %) and a phone that is not too hot. The capture-burst check is [NightIndex]'s. */
     private fun bulkAllowed(keyframes: com.rokid.context.work.frames.KeyframeHandle): Boolean =
         LocalModelPower.bulkAllowed(LocalModelPower.read(applicationContext)) && keyframes.power.mayRunBackground(BackgroundWork.BACKFILL)
+
+    private fun bulkReason(keyframes: com.rokid.context.work.frames.KeyframeHandle): String =
+        BulkGateReason.of(LocalModelPower.read(applicationContext), keyframes.power.mayRunBackground(BackgroundWork.BACKFILL))
 
     companion object {
         private const val TAG = "NightIndexWorker"
@@ -129,11 +135,13 @@ internal class NightIndex(
     /** At most this many model calls a night: ~1,000 trip photos drain over several nights, not one. */
     private val maxCalls: Int = MAX_CALLS,
     private val callClass: CallClass = CallClass.BACKFILL,
+    /** Log only: why [bulkAllowed] is closed right now. */
+    private val gateReason: () -> String = { "bulk gate closed" },
 ) {
     data class Result(val queued: Int, val described: Int, val left: Int, val backfill: String)
 
     suspend fun run(): Result {
-        if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); return Result(0, 0, 0, "gate") }
+        if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); PcLog.i(TAG, "index backfill paused (night job): ${gateReason()}"); return Result(0, 0, 0, "gate") }
         val queued = queue()
         var described = 0
         if (queued.isNotEmpty() || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty()) {
