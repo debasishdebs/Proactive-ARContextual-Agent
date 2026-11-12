@@ -132,4 +132,42 @@ class IndexMaintenanceLogTest {
         assertTrue("no progress line in the window", lines.none { it.first.msg.startsWith("text index") })
         assertEquals(false, limiter.mayLog("text:${active.id}"))
     }
+
+    @Test fun aLogOnlyReadThatThrowsNeverChangesTheOutcome() = runBlocking {
+        // Codex repro: lastDiscard() answers twice (the run's own reads), then throws: only the log's health read is left to fail.
+        var reads = 0
+        val flaky = object : IndexClock by clock {
+            override fun unstable(): Boolean = (lastDiscard()?.streak ?: 0) >= IndexMaintenance.MAX_DISCARD_STREAK // the default reads the delegate, not this clock
+            override fun lastDiscard(): DiscardRecord? { if (++reads > 2) throw IllegalStateException("prefs unreadable"); return DiscardRecord("fp-test", t, 1) }
+        }
+        val m = IndexMaintenance(spaces, embedders, flaky, { t }, bulkAllowed = { bulk }, progress = limiter, logState = state)
+        assertEquals("build held after a drift discard: DONE as without the log", Outcome.DONE, m.run())
+        assertTrue("the third read was reached (inside the guard)", reads >= 3)
+    }
+
+    /** One finished build on a fresh database; the Nth call of the run's clock (counted by a dry run) is made to fail. */
+    private data class Finished(val nowCalls: Int, val outcome: Outcome, val limiterKeys: Int, val spaceSaidAgain: Boolean)
+
+    private fun finishedBuild(failNowAt: Int?): Finished = runBlocking {
+        val db2 = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
+        try {
+            val sp = EmbeddingSpaces(db2.embeddingDao())
+            MemoryRepository(db2.memoryDao()).run { add(MemoryEntity("m1", null, "text m1", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "")); add(MemoryEntity("m2", null, "text m2", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "")) }
+            val lim = ProgressLimiter({ t }); val st = IndexLogState({ t })
+            var calls = 0
+            val m = IndexMaintenance(sp, embedders, clock, { calls++; if (failNowAt != null && calls == failNowAt) throw IllegalStateException("clock failed") else t }, batch = 2, progress = lim, logState = st)
+            val outcome = m.run()
+            Finished(calls, outcome, lim.tracked(), spaceSaidAgain = !st.changed("${sp.queryable()!!.id}:build", "seen"))
+        } finally { db2.close() }
+    }
+
+    @Test fun theBuildLogIsClearedEvenWhenTheSwapSummaryFails() {
+        val dry = finishedBuild(null)
+        assertEquals(Outcome.DONE, dry.outcome); assertEquals("a swapped space leaves no key", 0, dry.limiterKeys)
+        // the last clock read of the run is the summary's duration: it fails after the coverage queries and before the line
+        val failed = finishedBuild(dry.nowCalls)
+        assertEquals("the run is unchanged", Outcome.DONE, failed.outcome)
+        assertEquals("cleanup does not depend on the summary", 0, failed.limiterKeys)
+        assertEquals("the space's 'already said' record is gone too", false, failed.spaceSaidAgain)
+    }
 }
