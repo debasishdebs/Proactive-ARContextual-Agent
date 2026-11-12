@@ -13,7 +13,7 @@ Debug-signed; no APKs are attached. Phone database is Room v15 (additive migrati
 - Voice, glasses voice and Home chat share one text backend; phone-origin marks ask the glasses for a photo (`pc_mark_photo_request`, time-bounded and rate limited); undo replies truthfully.
 
 **Reviews**
-- Codex rounds on slices A, B, C (five rounds) and D (two rounds); the last two Forget-scope findings stay open and are reachable only in Developer mode.
+- Codex rounds: slice A two, B three, C five, D two; the last two Forget-scope findings stay open at this tag (both reachable only in Developer mode, fixed in v0.9.8).
 
 **Known limitations**
-- Moment and Scene Forget scope is Developer mode only (a rule re-check and uncounted batch peers remain open when the gate is lifted); LIVE guards and values wait for the worn gate.
+- Moment and Scene Forget scope is Developer mode only (the engine does not re-check Developer mode, and scrubbing an outside photo deletes its batch peers' results uncounted; both fixed in v0.9.8); LIVE guards and values wait for the worn gate.
