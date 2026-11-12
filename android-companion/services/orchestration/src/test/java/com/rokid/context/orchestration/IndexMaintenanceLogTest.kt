@@ -170,4 +170,19 @@ class IndexMaintenanceLogTest {
         assertEquals("cleanup does not depend on the summary", 0, failed.limiterKeys)
         assertEquals("the space's 'already said' record is gone too", false, failed.spaceSaidAgain)
     }
+
+    @Test fun repeatedRebuildsAndCatchUpsKeepTheLogStateBounded() = runBlocking {
+        mem("m0"); photo("p0", 1)
+        assertEquals(Outcome.DONE, maintenance().run())
+        var peakKeys = 0; var peakRemembered = 0
+        repeat(12) { n ->
+            mem("catch$n"); maintenance().run()                       // catch-up into the active space: its progress key and ready record
+            t += 60_000
+            assertEquals(Outcome.DONE, maintenance().run(rebuild = true, rebuildToken = "rebuild-$n"))   // a new space replaces it
+            peakKeys = maxOf(peakKeys, limiter.tracked()); peakRemembered = maxOf(peakRemembered, state.remembered())
+        }
+        assertTrue("progress keys stay with the current space only: $peakKeys", peakKeys <= 2)
+        assertTrue("records stay with the current space only: $peakRemembered", peakRemembered <= 4)
+        assertEquals(1, spaces.queryable()?.let { 1 })
+    }
 }

@@ -18,7 +18,7 @@ class ProgressLimiter(
     private val stepPct: Int = STEP_PCT,
 ) {
     private class State(var at: Long, var bucket: Int)
-    private val states = HashMap<String, State>()
+    private val states = LinkedHashMap<String, State>() // insertion order: the oldest key goes first when [MAX_KEYS] is exceeded
 
     /** True when [done] of [total] for [key] should be logged now; records that it was. */
     @Synchronized fun due(key: String, done: Int, total: Int): Boolean {
@@ -28,6 +28,7 @@ class ProgressLimiter(
         val s = states[key]
         if (s == null || bucket > s.bucket || now - s.at >= minIntervalMs || now < s.at) {
             states[key] = State(now, bucket)
+            while (states.size > MAX_KEYS) states.remove(states.keys.first())
             return true
         }
         return false
@@ -49,6 +50,8 @@ class ProgressLimiter(
     companion object {
         const val MIN_INTERVAL_MS = 30_000L
         const val STEP_PCT = 10
+        /** Backstop: a process never holds more keys than this, whatever the builds did (a finished space also clears its own). */
+        const val MAX_KEYS = 48
     }
 }
 
@@ -59,8 +62,8 @@ class ProgressLimiter(
 class IndexLogState(private val clock: () -> Long) {
     private var health: String? = null
     private val paused = HashMap<String, Pair<String, Long>>()
-    private val ready = HashSet<String>()
-    private val seen = HashMap<String, String>()
+    private val ready = LinkedHashSet<String>()
+    private val seen = LinkedHashMap<String, String>()
 
     /** A change of the index health: [before] is null for the first state seen in this process. */
     class HealthChange(val before: String?, val state: String)
@@ -85,12 +88,20 @@ class IndexLogState(private val clock: () -> Long) {
         paused.remove(key)?.let { (reason, at) -> reason to (clock() - at).coerceAtLeast(0L) }
 
     /** True the first time [key] is offered (the caller logs the ready line). */
-    @Synchronized fun firstReady(key: String): Boolean = ready.add(key)
+    @Synchronized fun firstReady(key: String): Boolean = ready.add(key).also { if (it) while (ready.size > MAX_ENTRIES) ready.remove(ready.first()) }
 
     /** True when [value] differs from the last one recorded for [key] (the first one counts): a repeated, unchanged state is not logged again. */
-    @Synchronized fun changed(key: String, value: String): Boolean = seen.put(key, value) != value
+    @Synchronized fun changed(key: String, value: String): Boolean = (seen.put(key, value) != value).also { while (seen.size > MAX_ENTRIES) seen.remove(seen.keys.first()) }
 
     /** Forgets what was recorded for every key that starts with [prefix] (a space ended). */
+    /** How many "already said" records are held (tests). */
+    @Synchronized fun remembered(): Int = ready.size + seen.size
+
+    companion object {
+        /** Backstop for each of the two record sets, oldest evicted first. */
+        const val MAX_ENTRIES = 48
+    }
+
     @Synchronized fun resetReady(prefix: String) { ready.removeAll { it.startsWith(prefix) }; seen.keys.removeAll { it.startsWith(prefix) } }
 }
 
