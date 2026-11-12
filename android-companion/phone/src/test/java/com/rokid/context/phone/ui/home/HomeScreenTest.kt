@@ -18,7 +18,10 @@ import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.banner.BannerInputs
+import com.rokid.context.phone.ui.banner.BannerPagerTags
 import com.rokid.context.phone.ui.banner.BannerResolver
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeLeft
 import com.rokid.context.phone.ui.status.StatusUi
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -65,6 +68,19 @@ class HomeScreenTest {
         show(HomeUiState(status = StatusUi("Paused", false, true, null, BannerResolver.resolve(BannerInputs(link = LinkState.OFFLINE)), pipelineEnabled = false)))
         compose.onNodeWithText("❚❚ Paused").assertIsDisplayed()
         compose.onNodeWithContentDescription("Resume capture").assertIsDisplayed()
+        compose.onNodeWithText("Reconnect").performClick()
+        assertEquals(BannerAction.RECONNECT, banner)
+    }
+
+    @Test fun homeShowsEveryBannerAsSwipeableTilesWithDots() {
+        val all = BannerResolver.candidates(BannerInputs(aiBlockedText = "no key", link = LinkState.OFFLINE, pipelineEnabled = false))
+        show(HomeUiState(status = StatusUi("Paused", false, true, null, all.first(), pipelineEnabled = false, banners = all)))
+        compose.onNodeWithText("Fix now").assertIsDisplayed()
+        compose.onNodeWithTag(BannerPagerTags.dot(0, true)).assertIsDisplayed()
+        compose.onNodeWithTag(BannerPagerTags.dot(2, false)).assertIsDisplayed()
+        compose.onNodeWithTag(BannerPagerTags.PAGER).performTouchInput { swipeLeft() }
+        compose.waitForIdle()
+        compose.onNodeWithTag(BannerPagerTags.dot(1, true)).assertIsDisplayed()
         compose.onNodeWithText("Reconnect").performClick()
         assertEquals(BannerAction.RECONNECT, banner)
     }

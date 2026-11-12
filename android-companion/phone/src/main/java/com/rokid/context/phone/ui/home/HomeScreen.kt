@@ -57,7 +57,7 @@ import com.rokid.context.core.ui.components.SectionLabel
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.banner.BannerAction
-import com.rokid.context.phone.ui.banner.BannerHost
+import com.rokid.context.phone.ui.banner.BannerPager
 import com.rokid.context.phone.ui.actions.ProposalCard
 
 /** A nudge whose source was forgotten (Forget redacts the row; its text is never shown). */
@@ -115,7 +115,7 @@ fun HomeScreen(
                 color = PcColors.InkSoft, modifier = Modifier.padding(start = 20.dp, top = 6.dp, bottom = 2.dp).testTag("photos_today"),
             )
         }
-        item { BannerHost(state.status.banner, onBannerAction) }
+        item { BannerPager(state.status.banners, onBannerAction) }
         if (state.limited) item {
             com.rokid.context.core.ui.components.Banner(
                 tone = com.rokid.context.core.ui.components.BannerTone.SLATE, title = LimitedMode.TITLE,

@@ -40,4 +40,13 @@ class StatusUiIndexTest {
         val s = StatusUi.flow(glasses, FakePipelineControl(), flowOf(Fixtures.NOW), flowOf(10), batterySaver = flowOf(true)).first()
         assertEquals(BannerKind.BATTERY_SAVER, s.banner?.kind)
     }
+
+    /** Ruling 2026-11-13: Home gets every active banner (most severe first); `banner` stays the first of them. */
+    @Test fun statusCarriesEveryActiveBannerMostSevereFirst() = runBlocking {
+        val glasses = FakeGlassesStatusSource(FakeGlassesStatusSource.connected(Fixtures.stateFrame()))
+        val s = StatusUi.flow(glasses, FakePipelineControl(), flowOf(Fixtures.NOW), flowOf(95), flowOf(IndexState.UNSTABLE), batterySaver = flowOf(true)).first()
+        assertEquals(listOf(BannerKind.BATTERY_SAVER, BannerKind.INDEX, BannerKind.STORAGE), s.banners.map { it.kind })
+        assertEquals(s.banners.first(), s.banner)
+        assertEquals(emptyList<Any>(), StatusUi.Initial.banners)
+    }
 }

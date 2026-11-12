@@ -69,7 +69,11 @@ data class BannerSpec(
     val action: BannerAction? = null,
 )
 
-/** spec §2.2: one banner at a time, highest severity first. */
+/**
+ * spec §2.2, revised by the 2026-11-13 ruling: [candidates] lists every active banner, highest severity first. Home shows them all as
+ * swipeable tiles with page dots ([BannerPager]; the first page is the most severe, one banner = no dots). [resolve] is the single most
+ * severe banner, for callers that show only one (the Activity screen, StatusUi.banner).
+ */
 object BannerResolver {
     private const val MAX_TEXT = 60
     const val EMBED_NOT_SET_TITLE = "Semantic search is off \u00b7 no Embeddings model"
