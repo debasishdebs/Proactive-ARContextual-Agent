@@ -26,6 +26,7 @@ Debug-signed; no APKs are attached (release signing is a key rotation at v1.0.0 
 - Over-linking: a memory can be removed when an unrelated photo that was processed in the same batch is forgotten. Photos are never deleted this way.
 - Glasses wear detection: when the glasses report wear detection as off, or the firmware pins the proximity sensor to worn, "not worn" is not detected, so AutoStop never sees the glasses as taken off (it still stops when they disconnect). Turn Wear detection on in the glasses and reboot them. A fallback is planned for v1.0 final.
 - The suspect list is broad: it holds every older photo description, not only the bad ones. Re-describing costs model calls, up to 60 a night.
+- The vision provider's content filter can refuse some ordinary home photos (HTTP 400). Those photos stay stored without a description (no text-only guess is made); they are never deleted for lacking one.
 - Two tests are occasionally flaky (the local models download dialog and a canvas refresh test).
 - "Delete this mark" is not a voice command (it is treated as a question); delete a mark from Activity.
 - Release signing is pending (v1.0.0 final).
