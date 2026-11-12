@@ -260,6 +260,36 @@ class ForgetServiceTest {
         assertTrue(db.askDao().byId("q1")!!.redacted); assertFalse(db.askDao().byId("q2")!!.redacted)
     }
 
+    /** rc1 (2026-11-13): a GLASSES VOICE answer is stored like any ask; Forget of its cited photo (or of the photo's caption) redacts it and names it for the withdrawal. */
+    @Test fun aGlassesVoiceAnswerIsRedactedByAForgetOfItsCitedPhotoOrCaption() = runBlocking {
+        keyframe("f1"); mem("cap1", frameId = "f1")
+        db.askDao().upsert(AskEntity("v1", 1, "where did I keep my shoes", "Shoes are on the floor.", """["cap1"]""", null, "glasses_voice", false))
+        val r = service.forgetMoment("f1")
+        assertEquals(listOf("v1"), r.redactedAskIds); assertEquals(1, r.redactedAsks)
+        assertTrue(db.askDao().byId("v1")!!.redacted)
+        keyframe("f2"); mem("cap2", frameId = "f2")
+        db.askDao().upsert(AskEntity("v2", 1, "where did I keep my shoes", "Shoes are on the floor.", """["cap2"]""", null, "glasses_voice", false))
+        val f = service.forgetFact("cap2")
+        assertEquals(listOf("v2"), f.redactedAskIds)
+        assertTrue(db.askDao().byId("v2")!!.redacted)
+    }
+
+    /** rc1: a Forget fact that deletes the photo (its last caption) also redacts an answer that cited the photo itself (`frame:<id>`); retention keeps its no-photo-cite rule. */
+    @Test fun aFactForgetThatDeletesThePhotoRedactsAnswersCitingThePhotoItself() = runBlocking {
+        keyframe("f1"); mem("cap1", frameId = "f1")
+        db.askDao().upsert(AskEntity("v1", 1, "shoes?", "On the floor.", """["${PHOTO_CITE_PREFIX}f1"]""", null, "glasses_voice", false))
+        db.askDao().upsert(AskEntity("v2", 1, "q", "unrelated", """["${PHOTO_CITE_PREFIX}f10"]""", null, "glasses_voice", false))
+        val r = service.forgetFact("cap1")
+        assertTrue("the photo goes", r.framesToDelete.contains("/f1.jpg"))
+        assertEquals(listOf("v1"), r.redactedAskIds)
+        assertTrue(db.askDao().byId("v1")!!.redacted); assertFalse(db.askDao().byId("v2")!!.redacted)
+        // retention expiry of a memory never redacts a photo cite
+        db.frameDao().insertIgnore(FrameEntity("legacy", 1, "/legacy.jpg", "rokid_glasses")); mem("m2", frameId = "legacy")
+        db.askDao().upsert(AskEntity("v3", 1, "q", "a", """["${PHOTO_CITE_PREFIX}legacy"]""", null, "glasses_voice", false))
+        service.expire(listOf("m2"))
+        assertFalse(db.askDao().byId("v3")!!.redacted)
+    }
+
     @Test fun expiredUncaptionedSkippedPhotoCanBeForgotten() = runBlocking {
         keyframe("f1"); db.askDao().upsert(AskEntity("q1", 1, "q", "a skipped photo", """["${PHOTO_CITE_PREFIX}f1"]""", null, "phone_typed", false))
         service.expirePhotos(listOf("f1")) // retention: frame row gone, no memory, meta and vector kept

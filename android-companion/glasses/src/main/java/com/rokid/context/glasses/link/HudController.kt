@@ -10,6 +10,7 @@ import com.rokid.context.core.model.AutoOpen
 import com.rokid.context.core.model.UserExit
 import com.rokid.context.core.model.PhoneContextMessage
 import com.rokid.context.core.model.MotionHint
+import com.rokid.context.core.model.Overlay
 import com.rokid.context.core.model.context.MotionContextMessage
 import com.rokid.context.core.model.WearMessage
 import com.rokid.context.core.model.CommandEnvelope
@@ -126,7 +127,55 @@ class HudController(
         bridge.subscribe(Channels.MARK_PHOTO_REQUEST) { text -> (Wire.decode<com.rokid.context.core.model.MarkPhotoRequest>(text) as? Decoded.Ok)?.value?.let { r -> try { acceptMarkPhotoRequest(r) } catch (e: Exception) { PcLog.w(TAG, "mark photo request failed: ${e.javaClass.simpleName}") } } }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { PcLog.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { PcLog.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
-        scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
+        scope.launch { while (isActive) { refreshConnection(); expireAnswer(); delay(1_000) } }
+    }
+
+    /**
+     * rc1 fix (2026-11-13): the answer card is phone state and is cleared explicitly and idempotently here, whatever the presenter does:
+     * - a frame whose overlay is not that Answer (the phone's hold ended, a cancel, a withdrawal) replaces it (as before);
+     * - a frame naming its ask in `withdrawnAskIds` (a Forget redacted it) drops it, even when the frame itself still carries it;
+     * - a session close (BT lost, phone silent for 25 s, exit) drops it: a reconnect shows only what the phone's next frame says, never a stale answer;
+     * - the glasses' own bounded hold [ANSWER_MAX_MS] ends one the phone keeps sending (a backstop: the phone's worst case is speech plus 30 s).
+     */
+    private val answerLock = Any()
+    /** The Answer on the card (without its speaking flag and undo), and when the glasses first saw it (glasses clock). */
+    private var answerKey: Overlay.Answer? = null
+    private var answerSinceMs = 0L
+    /** An Answer that ran past [ANSWER_MAX_MS] or was withdrawn: further frames carrying it show without it until the phone sends something else. */
+    private val dropped = LinkedHashSet<Overlay.Answer>()
+
+    private fun keyOf(a: Overlay.Answer) = a.copy(speaking = false, undoProposalId = null)
+
+    /** Applies the rules above to an incoming frame (bridge thread). */
+    private fun cleared(f: StateFrame): StateFrame = synchronized(answerLock) {
+        val prev = (_frame.value?.overlay as? Overlay.Answer)?.let(::keyOf)
+        val withdrawn = f.withdrawnAskIds.toSet()
+        if (prev?.askId != null && prev.askId in withdrawn) { dropped += prev; PcLog.milestone(TAG, "answer card cleared: redaction") }
+        val a = (f.overlay as? Overlay.Answer)?.let(::keyOf)
+        if (a == null) { answerKey = null; dropped.clear(); return f }
+        if (a.askId != null && a.askId in withdrawn) dropped += a
+        if (a in dropped) return f.copy(overlay = null)
+        if (a != answerKey) { answerKey = a; answerSinceMs = clock() }
+        f
+    }
+
+    /** The bounded glasses hold (every second, with the liveness check). */
+    private fun expireAnswer() = synchronized(answerLock) {
+        val f = _frame.value ?: return@synchronized
+        val a = (f.overlay as? Overlay.Answer)?.let(::keyOf) ?: return@synchronized
+        if (a != answerKey || clock() - answerSinceMs < ANSWER_MAX_MS) return@synchronized
+        dropped += a
+        _frame.value = f.copy(overlay = null)
+        PcLog.milestone(TAG, "answer card cleared: glasses hold ended")
+    }
+
+    /** A closed session holds no answer: the card goes now, and the next session shows only its own frames. */
+    private fun dropAnswerOnClose() = synchronized(answerLock) {
+        val f = _frame.value ?: return@synchronized
+        if (f.overlay !is Overlay.Answer) return@synchronized
+        answerKey = null
+        _frame.value = f.copy(overlay = null)
+        PcLog.milestone(TAG, "answer card cleared: session closed")
     }
 
     /**
@@ -181,7 +230,7 @@ class HudController(
         when (val d = Wire.decode<StateFrame>(text)) {
             is Decoded.Ok -> {
                 phoneMessage()
-                _frame.value = d.value
+                _frame.value = cleared(d.value)
                 (d.value.capture as? CaptureState.Paused)?.let { onPhoneSettings(_settings.value.copy(pauses = it.records, pausesExact = false, resumedPauseIds = emptyList())) }
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
@@ -258,6 +307,7 @@ class HudController(
         synchronized(ctxLock) {
             if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); phoneSessionStartMs = 0L; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
         }
+        dropAnswerOnClose()
         refreshConnection()
     }
 
@@ -305,5 +355,9 @@ class HudController(
         _connection.value = connectionFor(everReceived, liveness.isOnline(), outdated, clock() - startedAt)
     }
 
-    companion object { const val TAG = "PcHud" }
+    companion object {
+        const val TAG = "PcHud"
+        /** The glasses' own bound on one answer card (the phone's is its speech, watchdog-bounded, plus a 30 s hold): 5 min. */
+        const val ANSWER_MAX_MS = 300_000L
+    }
 }

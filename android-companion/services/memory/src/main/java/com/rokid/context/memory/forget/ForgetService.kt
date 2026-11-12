@@ -38,11 +38,14 @@ class ForgetService(
         val redactedProposals: List<String> = emptyList(),
         /** [expirePhotos]: how many photos it actually expired (a recheck or `requireLinked` skip is not counted). */
         val expiredFrames: Int = 0,
+        /** rc1 fix: the ids of the redacted asks ([redactedAsks] of them): an answer still shown for one (phone, glasses HUD) is withdrawn after the commit. */
+        val redactedAskIds: List<String> = emptyList(),
     ) {
         companion object { val EMPTY = Result(emptySet(), emptySet(), 0, 0, emptyList()) }
         /** Codex r16: two results of one transaction (a photo's Forget and the CARRIED invalidation it triggers). The invalidation never adds a frame to delete. */
         internal fun with(o: Result) = Result(forgotten + o.forgotten, invalidated + o.invalidated, redactedAsks + o.redactedAsks, redactedNudges + o.redactedNudges,
-            (framesToDelete + o.framesToDelete).distinct(), (redactedProposals + o.redactedProposals).distinct(), expiredFrames + o.expiredFrames)
+            (framesToDelete + o.framesToDelete).distinct(), (redactedProposals + o.redactedProposals).distinct(), expiredFrames + o.expiredFrames,
+            (redactedAskIds + o.redactedAskIds).distinct())
     }
 
     private val dao = db.forgetDao()
@@ -175,8 +178,13 @@ class ForgetService(
                 if (outside.isNotEmpty()) { db.canvasDao().deleteCanvasOutputsForFrames(outside); db.canvasSlice3Dao().scrubOutputsOfLockedFrames(outside, now) }
             }
         }
+        // The photo goes only when no surviving memory cites it (memory.frameId or frame_source); its image vector goes with it.
+        val uncited = inside.filter { dao.remainingRefs(it) == 0 }
         // 5. Redaction (exact JSON match after a LIKE prefilter: "A1" never matches "A").
-        val cited = forgotten + invalidated + extraCited // extraCited: `frame:<id>` photo cites (S1)
+        // rc1 fix: a user's Forget that deletes a photo (a Forget fact of its last caption) also redacts the answers that cited the photo itself as `frame:<id>`
+        // (an answer recalled it before it had a caption memory). Retention ([scrubAccepted] false) keeps its rule: it never redacts photo cites.
+        val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
+        val cited = forgotten + invalidated + extraCited + goneCites // extraCited: `frame:<id>` photo cites (S1)
         val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
         val nudges = cited.flatMap { id -> dao.nudgesCiting(likeFor(id)) }.distinctBy { it.id }.filter { n -> parseIds(n.sourceIdsJson).any { it in cited } }
         asks.forEach { dao.redactAsk(it.id, REDACTED) }
@@ -197,12 +205,10 @@ class ForgetService(
                 redactedProposals.chunked(CHUNK).forEach { c -> actions.scrubLogs(c); actions.scrubParams(c, REDACTED_PARAMS) }
             }
         }
-        // The photo goes only when no surviving memory cites it (memory.frameId or frame_source); its image vector goes with it.
-        val uncited = inside.filter { dao.remainingRefs(it) == 0 }
         uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         if (queueOutbox) queueCleanup(files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans, phoneFilesOnly) // same transaction as the delete
-        return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
+        return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals, redactedAskIds = asks.map { it.id })
     }
 
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */

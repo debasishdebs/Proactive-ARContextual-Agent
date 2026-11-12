@@ -47,6 +47,38 @@ class ForgetActionsTest {
         assertTrue("Codex r21: an open canvas page sees the removal", ForgetActions.removals.get() > removals)
     }
 
+    /**
+     * rc1 (2026-11-13): one milestone line per committed Forget (scope and counts, no id, no text, reaches the file with diagnostics off), and the redacted asks are handed to the
+     * withdrawal hook so an answer still shown for them (phone, glasses) is cleared, whether or not the voice hold already ended.
+     */
+    @Test fun aForgetLogsOneMilestoneAndWithdrawsTheVoiceAnswerItRedacted() = runBlocking {
+        val lines = mutableListOf<Pair<com.rokid.context.core.log.Line, com.rokid.context.core.log.Route>>()
+        com.rokid.context.core.log.PcLog.testOnlyResetNeverCallFromProduction()
+        com.rokid.context.core.log.PcLog.install(object : com.rokid.context.core.log.LogSink {
+            override fun emit(line: com.rokid.context.core.log.Line, route: com.rokid.context.core.log.Route) { synchronized(lines) { lines += line to route } }
+        })
+        val withdrawn = mutableListOf<List<String>>()
+        val hook = ForgetActions.asksRedacted
+        ForgetActions.asksRedacted = { withdrawn += it }
+        try {
+            val jpg = File(ctx.filesDir, "rokid_archive/shoes.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+            graph.db.frameDao().insertIgnore(FrameEntity("f_shoes", 1, jpg.absolutePath, "rokid_glasses"))
+            mem("cap_shoes", "f_shoes")
+            graph.asks.add(com.rokid.context.memory.db.AskEntity("ask_v1", 1, "where did I keep my shoes", "Shoes are on the floor.", "[\"cap_shoes\"]", null, "glasses_voice", false))
+            assertTrue(ForgetActions.forgetMoment(ctx, "f_shoes"))
+            assertTrue(graph.asks.byId("ask_v1")!!.redacted)
+            assertEquals(listOf(listOf("ask_v1")), withdrawn)
+            val done = synchronized(lines) { lines.filter { it.first.msg.startsWith("forget done") } }
+            assertEquals(1, done.size)
+            assertEquals("forget done scope=PHOTO photos=1 memories=1 invalidated=0 asks=1", done.single().first.msg)
+            assertTrue("a milestone, in the file with diagnostics off", done.single().first.milestone && done.single().second.file)
+            assertFalse("no id in it", done.single().first.msg.contains("shoes"))
+        } finally {
+            ForgetActions.asksRedacted = hook
+            com.rokid.context.core.log.PcLog.testOnlyResetNeverCallFromProduction()
+        }
+    }
+
     @Test fun invalidatedDescendantsQueueTheReSummarise() = runBlocking {
         mem("A"); mem("B")
         graph.db.forgetDao().insertEdges(listOf(MemorySourceEntity("B", "A")))

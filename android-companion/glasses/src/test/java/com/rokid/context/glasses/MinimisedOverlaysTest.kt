@@ -136,6 +136,21 @@ class MinimisedOverlaysTest {
         }
     }
 
+    /** rc1 (2026-11-13): the phone ending the Answer (its hold, or a Forget withdrawing it) takes a pop-up still showing it down at once. */
+    @Test fun anAnswerPopupGoesWhenThePhoneEndsTheAnswer() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(popupSeconds = 20)))
+            minimised(s)
+            frame(Overlay.Answer("where did I keep my shoes", "Shoes are on the floor.", speaking = true, askId = "ask_1"))
+            assertEquals("Shoes are on the floor.", runtime.popup.text)
+            frame(Overlay.Answer("where did I keep my shoes", "Shoes are on the floor.", speaking = false, askId = "ask_1"))
+            assertEquals("Shoes are on the floor.", runtime.popup.text, "speech ending keeps it")
+            frame(null)
+            assertNull(runtime.popup.text, "the phone's overlay ended: the pop-up goes now, not at its 20 s timeout")
+            assertTrue(popups().isEmpty())
+        }
+    }
+
     @Test fun newerPopupReplacesOlder() {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             minimised(s)

@@ -78,6 +78,7 @@ class InvalidMomentPurge(
     private fun merge(a: ForgetService.Result, b: ForgetService.Result) = ForgetService.Result(
         a.forgotten + b.forgotten, a.invalidated + b.invalidated, a.redactedAsks + b.redactedAsks, a.redactedNudges + b.redactedNudges,
         (a.framesToDelete + b.framesToDelete).distinct(), (a.redactedProposals + b.redactedProposals).distinct(), a.expiredFrames + b.expiredFrames,
+        (a.redactedAskIds + b.redactedAskIds).distinct(),
     )
 
     companion object {

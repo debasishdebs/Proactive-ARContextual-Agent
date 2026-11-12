@@ -46,10 +46,10 @@ object ForgetActions {
     suspend fun forgetMoment(context: Context, frameId: String, onForgotten: () -> Unit = {}): Boolean = forgetMomentOutcome(context, frameId, onForgotten).committed
 
     suspend fun forgetFactOutcome(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten) { it.forgetFact(memoryId) }
+        run(context, onForgotten, LoggedScope.FACT) { it.forgetFact(memoryId) }
 
     suspend fun forgetMomentOutcome(context: Context, frameId: String, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten) { it.forgetMoment(frameId) }
+        run(context, onForgotten, LoggedScope.PHOTO) { it.forgetMoment(frameId) }
 
     /**
      * The granular Forget with the user's SCOPE (Photo | Moment | Scene, [ForgetScopeSetting]): memory detail's Forget fact and Forget photo, and any Moment or Scene entry, go through here. Same gate, same typed
@@ -58,9 +58,14 @@ object ForgetActions {
      */
     suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, undoMark: (suspend (String) -> Unit)? = null, onForgotten: () -> Unit = {}): Outcome =
         if (target is ForgetTarget.Mark) markOutcome(target.labelId, onForgotten, undoMark)
-        else run(context, onForgotten) { svc ->
-            val engine = ScopedForget(MemoryGraph.get(context).db, svc)
-            engine.forget(engine.plan(target, scope), expectedHash).cascade
+        else {
+            var ran: ForgetScope? = null
+            run(context, onForgotten, { ran?.let { LoggedScope.valueOf(it.name) } ?: LoggedScope.PHOTO }) { svc ->
+                val engine = ScopedForget(MemoryGraph.get(context).db, svc)
+                val plan = engine.plan(target, scope)
+                ran = plan.effective
+                engine.forget(plan, expectedHash).cascade
+            }
         }
 
     /**
@@ -101,6 +106,24 @@ object ForgetActions {
     @Volatile var dataRemoved: () -> Unit = {}
 
     /**
+     * rc1 fix (set once by the phone at start-up): the ids of the asks a committed removal redacted or deleted. An answer still shown for one of them (the phone's voice
+     * card, the glasses HUD through the hub's frames) is withdrawn at once, whatever the voice hold or the row watcher did. Called after the commit, on IO; never throws into the Forget.
+     */
+    @Volatile var asksRedacted: (List<String>) -> Unit = {}
+
+    /** The scope a Forget's milestone line names (a fixed token: FACT and PHOTO for the single-item Forgets, MOMENT/SCENE for the scoped engine, RANGE for a time range). */
+    enum class LoggedScope { FACT, PHOTO, MOMENT, SCENE, RANGE }
+
+    /**
+     * rc1 fix: ONE milestone line per committed Forget (reaches `pca.log` with diagnostics off), scope and counts only: never an id, a path or any text.
+     * photos = phone photo files the Forget removed (a JPEG, not its sidecar); memories = rows deleted; asks = answers redacted.
+     */
+    internal fun logDone(kind: LoggedScope, r: ForgetService.Result) {
+        val photos = r.framesToDelete.filterNot { it.endsWith(".meta.json") }
+        PcLog.milestone(TAG, "forget done scope=${kind.name} photos=${photos.size} memories=${r.forgotten.size} invalidated=${r.invalidated.size} asks=${r.redactedAskIds.size}")
+    }
+
+    /**
      * Codex r21: moves after every committed removal (a Forget of any kind, each retention chunk, Delete all). The canvas page reads it
      * (GET /api/data-generation) and reads its open view again when it moved, so nothing removed stays on screen there.
      */
@@ -109,6 +132,9 @@ object ForgetActions {
     /** After a committed cascade: files, then the re-summarise. A failure here is logged; the Forget itself succeeded. Returns false when a cached memory export could not be deleted. */
     internal suspend fun apply(context: Context, r: ForgetService.Result): Boolean {
         removals.incrementAndGet() // the cascade is committed
+        if (r.redactedAskIds.isNotEmpty()) {
+            try { asksRedacted(r.redactedAskIds) } catch (e: Exception) { PcLog.w(TAG, "answer withdrawal not sent: ${SafeLog.describe(e)}") }
+        }
         // Integration carry 3: a redacted proposal's notifications still show its text; cancel them in any process.
         // Privacy carry: so does an armed reminder alarm (its intent holds the title and note); cancel it too.
         if (r.redactedProposals.isNotEmpty()) {
@@ -138,6 +164,7 @@ object ForgetActions {
 
     /** The cleanup after a committed RANGE Forget (the coordinator calls it inside the delete gate): the same as a fact or photo Forget. False = a cached export could not be deleted. */
     suspend fun afterRange(context: Context, r: ForgetService.Result): Boolean {
+        logDone(LoggedScope.RANGE, r)
         val clean = apply(context, r)
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }
@@ -166,10 +193,13 @@ object ForgetActions {
         }
     }
 
-    private suspend fun run(context: Context, onForgotten: () -> Unit, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
+    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: LoggedScope, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
+        run(context, onForgotten, { kind }, op)
+
+    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
         withContext(Dispatchers.IO + NonCancellable) {
             try {
-                DataOpGate.shared.delete { runLocked(context, onForgotten, op) }
+                DataOpGate.shared.delete { runLocked(context, onForgotten, kind, op) }
             } catch (e: DataOpGate.WriteInProgress) {
                 PcLog.w(TAG, "forget not run: save in progress")
                 Outcome.SAVE_IN_PROGRESS
@@ -179,7 +209,7 @@ object ForgetActions {
             }
         }
 
-    private suspend fun runLocked(context: Context, onForgotten: () -> Unit, op: suspend (ForgetService) -> ForgetService.Result): Outcome {
+    private suspend fun runLocked(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, op: suspend (ForgetService) -> ForgetService.Result): Outcome {
         val r = try {
             val graph = MemoryGraph.get(context)
             op(ForgetService(graph.db, graph.proposals))
@@ -197,6 +227,7 @@ object ForgetActions {
             return Outcome.FAILED
         }
         // Committed: everything after this is best effort and never turns the Forget into a failure.
+        runCatching { logDone(kind(), r) }
         val cacheClean = apply(context, r)
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }

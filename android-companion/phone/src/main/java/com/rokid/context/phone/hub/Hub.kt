@@ -576,14 +576,39 @@ class Hub(
                 seq = ++seq, nowMs = now, link = s.link, activePauses = active, offset = s.offset, settings = settings.read(),
                 glassesBatteryPct = s.glassesBatteryPct, nextCaptureAtMs = s.nextCaptureAtMs, queueDepth = depth,
                 lastFrameAtMs = s.lastFrameAtMs, today = today, aiHealth = health, overlay = overlay(), error = s.error,
-                latestNudge = nudges.latest.value,
+                latestNudge = nudges.latest.value, withdrawnAskIds = recentlyWithdrawn(now),
             ),
         )
         set(markDirty = false) { it.copy(lastFrame = frame) }
         if (s.link.carriesData && link.send(Channels.STATE, Wire.encode(frame))) actions.onShown(frame.overlay)
     }
 
-    private fun overlay(): Overlay? = pickOverlay(voice.overlay.value, actions.overlay.value, minimisedHint ?: nudges.overlay.value)
+    private fun overlay(): Overlay? {
+        // rc1 fix: never a frame of an Answer a Forget withdrew, even if the voice side has not cleared it yet
+        val v = voice.overlay.value.takeUnless { o -> o is Overlay.Answer && o.askId != null && o.askId in recentlyWithdrawn(clock()) }
+        return pickOverlay(v, actions.overlay.value, minimisedHint ?: nudges.overlay.value)
+    }
+
+    /** Ask ids a committed Forget redacted or deleted, with the phone time they were withdrawn (newest last); bounded by [WITHDRAWN_MAX] and [WITHDRAWN_HINT_MS]. */
+    private val withdrawn = LinkedHashMap<String, Long>()
+
+    /**
+     * rc1 fix: a committed Forget redacted or deleted [askIds]. The next frame (sent at once) names them in `withdrawnAskIds` for [WITHDRAWN_HINT_MS], so glasses that
+     * still show or hold an Answer of one of them (the phone side already Idle after its hold, a frame missed on a link gap) drop it; no frame carries such an Answer.
+     */
+    fun withdrawAsks(askIds: Collection<String>) {
+        if (askIds.isEmpty()) return
+        val now = clock()
+        synchronized(withdrawn) { askIds.forEach { withdrawn.remove(it); withdrawn[it] = now }; prune(now) }
+        broadcaster.markDirty()
+    }
+
+    private fun recentlyWithdrawn(now: Long): List<String> = synchronized(withdrawn) { prune(now); withdrawn.keys.reversed() }
+
+    private fun prune(now: Long) {
+        withdrawn.entries.removeAll { now - it.value >= WITHDRAWN_HINT_MS || now < it.value }
+        while (withdrawn.size > WITHDRAWN_MAX) withdrawn.remove(withdrawn.keys.first())
+    }
 
     companion object {
         const val TAG = "ContextHub"
@@ -601,6 +626,9 @@ class Hub(
             return actions ?: voice ?: nudge
         }
         const val HELLO_REQUEST_MIN_INTERVAL_MS = 10_000L
+        /** How long a withdrawn ask stays in the frames' `withdrawnAskIds`: six heartbeats, so a glasses app that reconnects within it still hears it. */
+        const val WITHDRAWN_HINT_MS = 60_000L
+        const val WITHDRAWN_MAX = 20
         /** Glasses pop-up for "Open on glasses" while minimised: the HUD stays in the background. */
         const val OPEN_WHILE_MINIMISED = "Running in the background \u00b7 open it on your glasses"
         const val MINIMISED_HINT_MS = 5_000L

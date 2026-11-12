@@ -62,6 +62,7 @@ class VoiceGraph private constructor(private val app: Context) {
         AndroidSpeaker(app), bluetoothMedia = { AudioRoutes.hasBluetoothMedia(app) },
         onFallbackSuspected = { capabilities.onFallbackSuspected() },
         log = { PcLog.i(TAG, it) },
+        milestone = { PcLog.milestone(TAG, it) },
         interceptor = utterance.asInterceptor(),
         deviceCaps = { deviceCaps.value },
         // Codex r21-r23: the stored ask was redacted, or existed and is gone; [existed] is the shown answer's own proof that its row was read
@@ -112,8 +113,27 @@ class VoiceGraph private constructor(private val app: Context) {
         }
     }
 
+    /**
+     * rc1 fix: a committed Forget redacted or deleted [askIds] (any thread). The answer the pipeline still shows for one of them is withdrawn on Main (its own milestone line);
+     * the hub always names them in its next frames, so glasses that still hold such an answer after the phone's hold ended drop it too (one milestone line here).
+     */
+    fun withdrawAsks(askIds: List<String>, hub: (List<String>) -> Unit) {
+        scope.launch {
+            val shown = pipeline.withdraw(askIds)
+            hub(askIds)
+            if (!shown) PcLog.milestone(TAG, "hud clear sent for a redaction asks=${askIds.size}")
+        }
+    }
+
     companion object {
         const val TAG = "PcVoice"
+
+        /** rc1 fix: the Forget hook (ContextApp): withdraw [askIds] wherever an answer of theirs may still show, phone and glasses. */
+        fun onAsksRedacted(context: Context, askIds: List<String>) {
+            if (askIds.isEmpty()) return
+            val app = context.applicationContext
+            get(app).withdrawAsks(askIds) { ids -> com.rokid.context.phone.hub.HubGraph.get(app).withdrawAsks(ids) }
+        }
 
         /**
          * True once the observed ask [rows] is redacted, or gone after it existed. [existed]: a snapshot read the row just before the answer was shown, so

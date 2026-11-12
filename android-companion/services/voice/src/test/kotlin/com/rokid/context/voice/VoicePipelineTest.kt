@@ -171,10 +171,10 @@ class VoicePipelineTest {
         assertEquals(Overlay.Listening("What do I need from the store"), p.overlay.value, "thinking keeps the flush suspended")
         runCurrent()
         assertEquals(listOf("What do I need from the store" to VoiceSource.GLASSES), asked)
-        assertEquals(Overlay.Answer("What do I need from the store", "Milk and eggs.", speaking = true), p.overlay.value)
+        assertEquals(Overlay.Answer("What do I need from the store", "Milk and eggs.", speaking = true, askId = "ask_1"), p.overlay.value)
         assertEquals(listOf("Milk and eggs."), speaker.spoken)
         speaker.finish()
-        assertEquals(Overlay.Answer("What do I need from the store", "Milk and eggs.", speaking = false), p.overlay.value)
+        assertEquals(Overlay.Answer("What do I need from the store", "Milk and eggs.", speaking = false, askId = "ask_1"), p.overlay.value)
         advanceTimeBy(30_001)
         assertNull(p.overlay.value)
         assertEquals(VoiceState.Idle, p.state.value)
@@ -184,7 +184,7 @@ class VoicePipelineTest {
         bluetooth = false
         val p = pipeline()
         p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
-        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = false), p.overlay.value)
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = false, askId = "ask_1"), p.overlay.value)
         assertTrue(speaker.spoken.isEmpty())
         advanceTimeBy(30_001)
         assertNull(p.overlay.value)
@@ -293,7 +293,7 @@ class VoicePipelineTest {
         assertTrue(p.phone.value.thinking)
         assertNull(p.overlay.value)
         engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
-        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true), p.overlay.value)
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true, askId = "ask_1"), p.overlay.value)
         assertEquals(listOf("Milk and eggs."), speaker.spoken, "a phone ask is spoken on the current route")
         assertEquals("ask_1", p.phone.value.lastAskId)
     }
@@ -308,7 +308,7 @@ class VoicePipelineTest {
         answer = routed(phone = false, glasses = true)
         val p = pipeline()
         p.phoneStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
-        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = false), p.overlay.value)
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = false, askId = "ask_1"), p.overlay.value)
         assertTrue(speaker.spoken.isEmpty(), "not spoken on the phone")
         assertNull(p.phone.value.lastAskId, "not offered to Home either")
     }
@@ -327,7 +327,7 @@ class VoicePipelineTest {
         answer = routed(phone = true, glasses = true)
         val p = pipeline()
         p.phoneStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
-        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true), p.overlay.value)
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true, askId = "ask_1"), p.overlay.value)
         assertEquals(listOf("Milk and eggs."), speaker.spoken)
         assertEquals("ask_1", p.phone.value.lastAskId)
     }
@@ -341,7 +341,7 @@ class VoicePipelineTest {
         answer = { AnswerResult.Answered("ask_2", "Milk and eggs.", route = com.rokid.context.core.model.DeliveryRoute(phone = false, glasses = true, explicit = false)) }
         advanceTimeBy(30_001)
         p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
-        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true), p.overlay.value)
+        assertEquals(Overlay.Answer("where are my keys", "Milk and eggs.", speaking = true, askId = "ask_2"), p.overlay.value)
     }
 
     @Test fun providerTextNeverReachesTheHud() = runTest {
@@ -379,7 +379,7 @@ class VoicePipelineTest {
     @Test fun aTypedAnswerIsMirroredSilentlyAndNeverOverAVoiceAsk() = runTest {
         val p = pipeline()
         p.showTypedAnswer("ask_t", "where are my keys", "On the hallway shelf.")
-        assertEquals(Overlay.Answer("where are my keys", "On the hallway shelf.", speaking = false), p.overlay.value)
+        assertEquals(Overlay.Answer("where are my keys", "On the hallway shelf.", speaking = false, askId = "ask_t"), p.overlay.value)
         assertTrue(speaker.spoken.isEmpty())
         p.glassesListenStart()
         p.showTypedAnswer("ask_u", "q", "a")
@@ -399,7 +399,7 @@ class VoicePipelineTest {
         answer = { AnswerResult.Answered("ask_1", "Keys on the desk.", photoLabel = "Photo 08:53") }
         val p = pipeline()
         p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
-        assertEquals(Overlay.Answer("where are my keys", "Keys on the desk. \u00b7 Photo 08:53", speaking = true), p.overlay.value)
+        assertEquals(Overlay.Answer("where are my keys", "Keys on the desk. \u00b7 Photo 08:53", speaking = true, askId = "ask_1"), p.overlay.value)
         assertEquals(listOf("Keys on the desk."), speaker.spoken)
         assertEquals("Keys on the desk.", (p.state.value as VoiceState.Answer).text)
     }
@@ -474,7 +474,7 @@ class VoicePipelineTest {
         speaker.available = false
         val p = pipeline()
         p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
-        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = false), p.overlay.value)
+        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = false, askId = "ask_1"), p.overlay.value)
         advanceTimeBy(30_001)
         assertNull(p.overlay.value)
     }
@@ -547,7 +547,7 @@ class VoicePipelineTest {
         p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
         p.linkLost()
         gate.complete(AnswerResult.Answered("ask_1", "Milk and eggs.")); runCurrent()
-        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = true), p.overlay.value)
+        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = true, askId = "ask_1"), p.overlay.value)
     }
 
     @Test fun aPhoneAnswerIsHeldThirtySecondsAfterItsSpeech() = runTest {
@@ -557,7 +557,7 @@ class VoicePipelineTest {
         assertTrue((p.overlay.value as Overlay.Answer).speaking, "held while still speaking")
         speaker.finish()
         advanceTimeBy(29_999)
-        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = false), p.overlay.value)
+        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = false, askId = "ask_1"), p.overlay.value)
         advanceTimeBy(2)
         assertNull(p.overlay.value)
         assertEquals(VoiceState.Idle, p.state.value)
@@ -585,6 +585,34 @@ class VoicePipelineTest {
         assertTrue(p.state.value is VoiceState.Answer)
         withdrawn.value = setOf("ask_t", "ask_1"); runCurrent()
         assertEquals(VoiceState.Idle, p.state.value); assertNull(p.overlay.value)
+    }
+
+    /**
+     * rc1 (2026-11-13): a committed Forget withdraws the asks it redacted directly, not only through the row watcher. A glasses voice answer still on the HUD
+     * is cleared at once, its speech stops and one milestone line (no text, no id) says so; after the hold (Idle) the same call changes nothing.
+     */
+    @Test fun aForgetWithdrawsTheShownGlassesVoiceAnswerAndLogsAMilestone() = runTest {
+        val milestones = mutableListOf<String>()
+        withdrawnFor = { _, _ -> kotlinx.coroutines.flow.emptyFlow() } // the row watcher never fires: only the explicit path can clear it
+        val p = VoicePipeline(
+            backgroundScope, engine, caps, { language() }, Answerer { q, source -> asked += q to source; answer(q) },
+            speaker, bluetoothMedia = { bluetooth }, log = { logs += it }, answerWithdrawn = { id, existed -> withdrawnFor(id, existed) }, milestone = { milestones += it },
+        ).also { runCurrent() }
+        p.glassesListenStart(); runCurrent(); engine.last.listener.onFinal(SttResult.Text("where did I keep my shoes")); runCurrent()
+        assertEquals("ask_1", (p.overlay.value as Overlay.Answer).askId, "the HUD card names its ask")
+        val stopsBefore = speaker.stops
+        assertFalse(p.withdraw(listOf("ask_other")), "another ask's redaction changes nothing")
+        assertTrue(p.state.value is VoiceState.Answer)
+        assertTrue(p.withdraw(listOf("ask_other", "ask_1")))
+        assertEquals(VoiceState.Idle, p.state.value); assertNull(p.overlay.value)
+        assertTrue(speaker.stops > stopsBefore, "its speech stops")
+        assertEquals(listOf("answer withdrawn by=forget"), milestones)
+        // after the hold the phone side is already Idle: a later Forget is a no-op here (the hub tells the glasses)
+        p.glassesListenStart(); runCurrent(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        speaker.finish(); advanceTimeBy(30_001); runCurrent()
+        assertEquals(VoiceState.Idle, p.state.value, "the 30 s hold ended")
+        assertFalse(p.withdraw(listOf("ask_1")))
+        assertEquals(1, milestones.size)
     }
 
     /**
