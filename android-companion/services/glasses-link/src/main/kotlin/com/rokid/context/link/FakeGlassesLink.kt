@@ -38,9 +38,6 @@ class FakeGlassesLink(initial: LinkState = LinkState.CONNECTED) : GlassesLink {
     /** Tests: the wear state the SDK reports (fix wave H). */
     val wearingFlow = kotlinx.coroutines.flow.MutableStateFlow<Boolean?>(null)
     override val wearing: kotlinx.coroutines.flow.StateFlow<Boolean?> get() = wearingFlow
-    /** Tests: the glasses' system wear check as last read (v1.0 wear fallback). */
-    val wearCheckFlow = kotlinx.coroutines.flow.MutableStateFlow<Boolean?>(null)
-    override val wearCheck: kotlinx.coroutines.flow.StateFlow<Boolean?> get() = wearCheckFlow
     override fun connectOnce() { connectOnceCalls++ }
     override fun connectAutomatic() { automaticCalls++ }
     override fun probeAlive() { probeCalls++ }

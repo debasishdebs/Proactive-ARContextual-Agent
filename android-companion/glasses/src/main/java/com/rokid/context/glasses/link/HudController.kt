@@ -95,8 +95,6 @@ class HudController(
     @Volatile var onMarksDue: () -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
     @Volatile var onWear: (Boolean?) -> Unit = {}
-    /** `pc_wear` wearCheck (v1.0 wear fallback): the glasses' system wear check as the phone read it; null = not known / an old phone. */
-    @Volatile var onWearCheck: (Boolean?) -> Unit = {}
     /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
     @Volatile var onPhoneUse: (Boolean?) -> Unit = {}
     /** `pc_auto_open` (fix wave I): the phone reopened the app by itself; a launcher-looking start of the last seconds was really that. */
@@ -254,7 +252,6 @@ class HudController(
     private fun onWearMessage(m: WearMessage) {
         if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_wear ignored"); return }
         phoneSessionStartMs = m.sessionStartMs
-        onWearCheck(m.wearCheck)
         onWear(m.worn)
     }
 
