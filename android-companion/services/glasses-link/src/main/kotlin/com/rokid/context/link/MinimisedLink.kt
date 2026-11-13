@@ -20,6 +20,8 @@ internal interface BackgroundTransport {
     fun stop()
     /** null while unbound; otherwise Hi Rokid's code (0 = handed over, not delivered). */
     fun send(channel: String, json: String): Int?
+    /** v1.0 wear fallback: the glasses' system wear check, read now on the bound link; null when unbound or the read failed. */
+    fun readWearCheck(): Boolean? = null
 }
 
 /**
@@ -153,6 +155,9 @@ internal class MinimisedLink(
         tx++
         return true
     }
+
+    /** The wear check as the bound background link reads it now (null = not bound / unreadable). */
+    fun readWearCheck(): Boolean? = transport.readWearCheck()
 
     fun stop() {
         confirmJob?.cancel(); confirmJob = null

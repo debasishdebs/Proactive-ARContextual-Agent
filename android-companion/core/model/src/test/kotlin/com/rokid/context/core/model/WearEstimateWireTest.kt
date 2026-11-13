@@ -41,17 +41,26 @@ class WearEstimateWireTest {
         assertEquals(OldWearMessage(worn = true, atMs = 9, sessionStartMs = 1), old)
     }
 
-    @Test fun theEstimateAppliesOnlyWhileTheWearCheckIsNotOn() {
-        assertTrue(WearEstimate.applies(wearCheck = false, realWearKnown = true), "check off: the pinned 'worn' is not a real signal")
-        assertTrue(WearEstimate.applies(wearCheck = false, realWearKnown = false))
-        assertTrue(WearEstimate.applies(wearCheck = null, realWearKnown = false), "no wear signal at all: unknown because of the check")
-        assertFalse(WearEstimate.applies(wearCheck = true, realWearKnown = false), "check on: the real sensor will speak")
-        assertFalse(WearEstimate.applies(wearCheck = true, realWearKnown = true))
-        assertFalse(WearEstimate.applies(wearCheck = null, realWearKnown = true), "a wear value with the check state unknown (old phone) counts as real")
+    @Test fun aWearCheckUpdateTravelsWithoutAWearValueAndAnOldGlassesBuildIgnoresIt() {
+        val m = WearMessage(atMs = 9, sessionStartMs = 1, wearCheck = true)
+        val text = Wire.encode(m)
+        assertFalse(text.contains("\"worn\""), text)
+        assertEquals(m, assertIs<Decoded.Ok<WearMessage>>(Wire.decode<WearMessage>(text)).value)
+        assertFalse(Wire.decode<OldWearMessage>(text) is Decoded.Ok<*>, "an old glasses build cannot decode it: ignored, as when nothing was sent")
+    }
+
+    @Test fun theEstimateAppliesOnlyAfterAPositiveWearCheckOff() {
+        assertTrue(WearEstimate.applies(wearCheck = false, sensorLive = false), "check said off: the pinned 'worn' is not a real signal")
+        assertFalse(WearEstimate.applies(wearCheck = null, sensorLive = false), "unknown = no estimate (conservative)")
+        assertFalse(WearEstimate.applies(wearCheck = true, sensorLive = false), "check on: the real sensor speaks")
+        assertFalse(WearEstimate.applies(wearCheck = false, sensorLive = true), "a real wear change was seen: the sensor works after all")
     }
 
     @Test fun tunablesAreTheRuledValues() {
         assertEquals(600_000L, WearEstimate.WINDOW_MS)
         assertEquals("not worn (estimated)", WearEstimate.WORD)
+        assertEquals(3_000L, WearEstimate.MAX_GAP_MS)
+        assertEquals(90L, WearEstimate.MIN_COVERAGE_PCT)
+        assertEquals(180_000L, WearEstimate.FRESH_MS)
     }
 }

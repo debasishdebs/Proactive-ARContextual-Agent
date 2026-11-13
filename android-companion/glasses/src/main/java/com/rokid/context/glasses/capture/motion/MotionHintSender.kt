@@ -27,12 +27,15 @@ class MotionHintSender(
     private var force = false
     private var lastSentHash: String? = null
     private var lastSentEst: Boolean? = null
+    private var lastState = MotionState.UNKNOWN
+    private var lastFrac = -1f
 
     /** Send at the next second whatever the cadence (the session just opened). */
     @Synchronized fun forceNext() { force = true }
 
     @Synchronized fun onSecond(state: MotionState, nowMs: Long) {
         expire(nowMs)
+        lastState = state
         val walking = state == MotionState.WALKING
         val since = nowMs - lastSendAt
         val hash = classifierHash()
@@ -40,6 +43,7 @@ class MotionHintSender(
         if (force || hash != lastSentHash || est != lastSentEst || (walking != lastSentWalking && since >= MIN_GAP_MS) || since >= REFRESH_MS) {
             force = false
             val frac = if (filled < MIN_SLOTS) -1f else stills.toFloat() / filled
+            lastFrac = frac
             // A failed send (session closed, bridge error) is not a send: it is retried on the next second.
             if (send(MotionHint(state = state, atMs = clock(), stillFrac5m = frac, classifierHash = hash, wearEst = est))) { lastSendAt = nowMs; lastSentWalking = walking; lastSentHash = hash; lastSentEst = est }
         }
@@ -50,6 +54,15 @@ class MotionHintSender(
         if (still) stills++
         next = (next + 1) % SLOTS
         if (filled < SLOTS) filled++
+    }
+
+    /**
+     * Codex r1 finding 2: sensing is stopping (Smart left): if the phone was last told "not worn (estimated)", tell it `wearEst=false` now (best effort; the phone
+     * also expires an estimate the glasses stop re-sending). The phone treats the hint as any other (state and share as last seen).
+     */
+    @Synchronized fun withdrawEstimate(nowMs: Long) {
+        if (lastSentEst != true) return
+        if (send(MotionHint(state = lastState, atMs = clock(), stillFrac5m = lastFrac, classifierHash = lastSentHash, wearEst = false))) { lastSendAt = nowMs; lastSentEst = false }
     }
 
     /** Drops samples a full window old or older, so a scheduling gap never lets stale seconds count as recent coverage. */
