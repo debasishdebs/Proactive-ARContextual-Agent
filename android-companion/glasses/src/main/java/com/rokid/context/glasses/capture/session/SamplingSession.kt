@@ -521,8 +521,7 @@ class SamplingSession(
         started = true
         if (capturePaused()) return "paused"
         if (s.pauseWhenNotWorn && !wear.worn.value) return "not_worn" // only a real pc_wear=false makes it false
-        // v1.0 wear fallback: "not worn (estimated)" (only while the system wear check is not on) pauses like a park; the real not_worn above always wins.
-        if (s.pauseWhenNotWorn && (wear.parked.value || wear.estimated.value)) return "parked"
+        if (s.pauseWhenNotWorn && wear.parked.value) return "parked"
         if (s.pauseWhenPhoneInUse && phoneInUse()) return "phone_in_use"
         if (heat.level.value == HeatLevel.STOP) return "heat"
         if (FrameGuard.lowBattery(batteryPct(), charging())) return "battery"

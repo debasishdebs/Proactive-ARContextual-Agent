@@ -337,22 +337,6 @@ class HubTest {
         assertTrue("re-sent on ready", link.sent.any { it.first == Channels.WEAR })
     }
 
-    /** v1.0 wear fallback: pc_wear carries the system wear check; the glasses' estimate reaches the hub only while that check is not on. */
-    @Test fun wearCheckRidesPcWearAndTheGlassesEstimateIsGated() = runTest {
-        val link = FakeGlassesLink()
-        val h = hub(link)
-        link.setState(LinkState.CONNECTED); runCurrent()
-        link.sent.clear()
-        link.wearingFlow.value = true; runCurrent()
-        assertNull("not read yet", (Wire.decode<com.rokid.context.core.model.WearMessage>(link.lastOn(Channels.WEAR)) as Decoded.Ok).value.wearCheck)
-        link.wearCheckFlow.value = false; runCurrent()
-        assertEquals("a new read is re-sent at once", false, (Wire.decode<com.rokid.context.core.model.WearMessage>(link.lastOn(Channels.WEAR)) as Decoded.Ok).value.wearCheck)
-        link.emit(com.rokid.context.link.GlassesEvent.MotionHintReceived(com.rokid.context.core.model.MotionHint(com.rokid.context.core.model.MotionState.STILL, 1, wearEst = true))); runCurrent()
-        assertTrue(h.wearEstimate.active.value)
-        link.wearCheckFlow.value = true; runCurrent()
-        assertFalse("the real sensor is on: it wins", h.wearEstimate.active.value)
-    }
-
     /** Battery wave A task 7: the phone-in-use flag is forwarded as pc_phone_ctx on change and again when the session opens. */
     @Test fun phoneUseIsForwardedToTheGlasses() = runTest {
         val link = FakeGlassesLink()

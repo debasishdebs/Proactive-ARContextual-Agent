@@ -62,7 +62,6 @@ class CxrGlassesLink(
         onWearing = { w -> PcLog.i(TAG, "watcher: wearing=$w"); _wearing.value = w },
         // Fix wave I1: the SDK reports only changes, so the device-info snapshot on each bind is what refreshes a value we dropped.
         onWearingSnapshot = { w -> PcLog.i(TAG, "watcher: wearing snapshot known=${w != null}"); if (w != null) _wearing.value = w },
-        onWearCheck = { on -> if (on != null) rememberWearCheck(on) },
     ) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
     /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
     private val minimised: MinimisedLink = MinimisedLink(
@@ -82,16 +81,6 @@ class CxrGlassesLink(
     override val events: SharedFlow<GlassesEvent> = _events
     private val _wearing = MutableStateFlow<Boolean?>(null)
     override val wearing: StateFlow<Boolean?> = _wearing
-    private val _wearCheck = MutableStateFlow(storedWearCheck())
-    override val wearCheck: StateFlow<Boolean?> = _wearCheck
-
-    /** v1.0 wear fallback: the last read of the glasses' system wear check, kept in the link prefs (-1 none, 0 off, 1 on). */
-    private fun storedWearCheck(): Boolean? = when (app.getSharedPreferences(PREFS, 0).getInt(KEY_WEAR_CHECK, -1)) { 0 -> false; 1 -> true; else -> null }
-    private fun rememberWearCheck(on: Boolean) {
-        if (_wearCheck.value == on) return
-        _wearCheck.value = on
-        app.getSharedPreferences(PREFS, 0).edit().putInt(KEY_WEAR_CHECK, if (on) 1 else 0).apply()
-    }
     private val _ready = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override val ready: SharedFlow<Unit> = _ready
 
@@ -376,8 +365,6 @@ class CxrGlassesLink(
         /** Hi Rokid has authorized this app (a pairing is stored). Never exposes the stored value. */
         fun isPaired(context: Context): Boolean = context.getSharedPreferences(PREFS, 0).getString(KEY_TOKEN, null) != null
         internal const val KEY_TOKEN = "token"
-        /** v1.0 wear fallback: the last read of the glasses' system wear check. */
-        internal const val KEY_WEAR_CHECK = "wear_check"
         @Volatile var instance: CxrGlassesLink? = null
     }
 }

@@ -8,8 +8,6 @@ data class WakeInputs(val exempt: Boolean, val minutes: Int, val linkAllowed: Bo
 /** What the live hub reports (cheap in-memory reads): running, link, wear, our app in front / last in front, an ask or a Run in flight. */
 data class HubSignals(
     val hubRunning: Boolean, val link: LinkState, val worn: Boolean?, val inFront: Boolean, val lastFrontMs: Long, val busy: Boolean, val runActive: Boolean,
-    /** v1.0 wear fallback: the glasses' "not worn (estimated)" ([GlassesWearEstimate.active]). */
-    val wornEstimated: Boolean = false,
 )
 
 /**
@@ -132,7 +130,7 @@ object AutoStopMachine {
             val wait = BackgroundPolicy.wakeAllowed(w.exempt, true, s1.saved.manualStop, w.minutes, false, w.linkAllowed)
             return T(s1, fx, reply = AutoStopSleep(if (wait) untilNextWake(s1, t) else null))
         }
-        val away = BackgroundPolicy.away(h.link, h.worn, h.wornEstimated) ?: return T(present(s), fx, reply = AutoStopSleep(null))
+        val away = BackgroundPolicy.away(h.link, h.worn) ?: return T(present(s), fx, reply = AutoStopSleep(null))
         val n = BackgroundPolicy.cleanAutoStopMin(w.minutes)
         val since = s.awaySince ?: if (s.saved.wakeProbe && n != BackgroundPolicy.AUTO_STOP_NEVER) t - maxOf(0L, n * 60_000L - BackgroundPolicy.WAKE_PROBE_MS) else t
         val d = decide(w, h, away, since, t)
@@ -157,7 +155,7 @@ object AutoStopMachine {
     private fun confirm(s: AutoStopState, t: Long): T {
         val p = s.pendingStop; val w = s.wake; val h = s.hub
         if (p == null || w == null || h == null || !h.hubRunning || s.persistFailing) return evaluate(s, t)
-        val away = BackgroundPolicy.away(h.link, h.worn, h.wornEstimated) ?: return evaluate(s, t)
+        val away = BackgroundPolicy.away(h.link, h.worn) ?: return evaluate(s, t)
         val d = decide(w, h, away, p.sinceMs, t)
         if (!d.stop || d.reason == null) return evaluate(s, t)
         if (d.reason != s.saved.reason) return T(s.copy(saved = s.saved.copy(reason = d.reason), pendingStop = p.copy(reason = d.reason)), recheck = AutoStopEvent.ConfirmStop())

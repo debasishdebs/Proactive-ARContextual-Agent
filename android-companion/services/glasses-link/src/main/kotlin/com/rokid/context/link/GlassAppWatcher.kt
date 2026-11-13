@@ -29,8 +29,6 @@ internal class GlassAppWatcher(
     private val onWearing: (Boolean) -> Unit = {},
     /** Fix wave I1: a device-info snapshot's `wearingStatus` (parsed: null = unreadable); reported on connect and on every change. */
     private val onWearingSnapshot: (Boolean?) -> Unit = {},
-    /** v1.0 wear fallback: the system wear check as read on each bind (null = the read failed). */
-    private val onWearCheck: (Boolean?) -> Unit = {},
     private val onOurAppResumed: () -> Unit,
 ) : BackgroundTransport {
     @Volatile private var link: CXRLink? = null
@@ -82,7 +80,6 @@ internal class GlassAppWatcher(
             .onFailure { PcLog.w(CxrGlassesLink.TAG, "watcher: device info request failed (${it.javaClass.simpleName})") }
         val wearCheck = runCatching { l.isWearingCheckOn() }.getOrNull()
         PcLog.i(CxrGlassesLink.TAG, "watcher: wear check on=$wearCheck")
-        onWearCheck(wearCheck)
     }
 
     override fun send(channel: String, json: String): Int? {

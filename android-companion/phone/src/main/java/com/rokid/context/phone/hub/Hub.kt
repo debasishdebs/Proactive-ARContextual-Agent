@@ -159,9 +159,7 @@ class Hub(
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
             // null = unknown again (session closed, offline, BT lost): the stale value is dropped, never re-sent (fix wave I1).
-            scope.launch { link.wearing.collect { w -> wearEstimate.onWear(w); if (w != null) positiveSignal(); lastWorn = w; _wearUnknownSince.value = if (w != null) null else (_wearUnknownSince.value ?: clock()); if (w != null) { lastWornAtMs = clock(); PcLog.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else PcLog.i(TAG, "wear unknown") } },
-            // v1.0 wear fallback: a new read of the glasses' system wear check gates the estimate and goes to the glasses with the wear value.
-            scope.launch { link.wearCheck.collect { wearCheck -> wearEstimate.onWearCheck(wearCheck); PcLog.i(TAG, "wear check on=$wearCheck"); guarded("wear") { sendWear() } } },
+            scope.launch { link.wearing.collect { w -> if (w != null) positiveSignal(); lastWorn = w; _wearUnknownSince.value = if (w != null) null else (_wearUnknownSince.value ?: clock()); if (w != null) { lastWornAtMs = clock(); PcLog.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else PcLog.i(TAG, "wear unknown") } },
             scope.launch { phoneUse.collect { guarded("phone_ctx") { sendPhoneContext() } } },
             scope.launch { motionContext.collect { m -> guarded("motion_ctx") { onMotionContext(m) } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
@@ -299,7 +297,6 @@ class Hub(
     }
 
     private fun onLinkState(s: LinkState) {
-        wearEstimate.onLink(s.carriesData)
         // Minimised keeps the glasses session (and its clock offset) on the background link; push-to-talk needs the HUD.
         if (s != LinkState.CONNECTED) voice.onLinkLost()
         if (!s.carriesData) { newSession(); diagControl?.cancel() }
@@ -318,11 +315,8 @@ class Hub(
 
     private suspend fun sendWear() {
         val w = lastWorn ?: return
-        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = lastWornAtMs, sessionStartMs = sessionStartMs, wearCheck = link.wearCheck.value)))
+        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = lastWornAtMs, sessionStartMs = sessionStartMs)))
     }
-
-    /** v1.0 wear fallback: the glasses' "not worn (estimated)", gated by the system wear check ([GlassesWearEstimate]); AutoStop reads it. */
-    val wearEstimate = GlassesWearEstimate()
 
     /** The last `pc_motion_ctx` this session sent; a null from the context hub ends it with an explicit UNKNOWN. */
     private var lastMotionCtx: MotionContextMessage? = null
@@ -503,7 +497,7 @@ class Hub(
             }
             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
             GlassesEvent.ListenEnd -> voice.onListenEnd()
-            is GlassesEvent.MotionHintReceived -> { wearEstimate.onHint(e.hint.wearEst); onMotionHint(e.hint) }
+            is GlassesEvent.MotionHintReceived -> onMotionHint(e.hint)
             is GlassesEvent.PlanAckReceived -> {
                 peerTracker.onCapsAck() // any decoded plan ack proves the glasses speak the channel, stale or not
                 when (ackGate.classify(e.ack)) {

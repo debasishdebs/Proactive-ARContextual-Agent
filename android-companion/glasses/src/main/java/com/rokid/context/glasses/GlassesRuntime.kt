@@ -97,7 +97,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** About a second of "photo sent" after a frame is buffered or delivered (Glance check, icon ring pulse). */
     val photoCue = PhotoCue(scope)
     /** One wear state for the process, fed by the phone's `pc_wear` (see [WearDetector]); the sampling session gates on it. */
-    val wear = com.rokid.context.glasses.capture.motion.WearDetector(log = { DiagLog.i(CAPTURE_TAG, it) }).apply { config = { com.rokid.context.glasses.capture.motion.WearParkConfig.of(settingsCache.read()) } }
+    val wear = com.rokid.context.glasses.capture.motion.WearDetector().apply { config = { com.rokid.context.glasses.capture.motion.WearParkConfig.of(settingsCache.read()) } }
     /** The phone's `pc_phone_ctx` (in use = screen on and unlocked), debounced; the sampling session gates on it. */
     val phoneUse = com.rokid.context.glasses.capture.session.PhoneUse()
     /** Wave B: the phone motion hub's state (`pc_motion_ctx`) with its TTL and the local walking veto (spec 2026-10-21 §9.1). */
@@ -255,8 +255,6 @@ class GlassesRuntime private constructor(private val app: Context) {
         // The icon ticks once a second: redraw it as the cue starts and ends, so a 1 s pulse is never missed.
         scope.launch { photoCue.active.collect { minimisedIcon.refresh() } }
         scope.launch { captureBlink.active.collect { minimisedIcon.refresh() } }
-        // v1.0 wear fallback: push-to-talk (a listen) is the wearer interacting; it ends a "not worn (estimated)" at once.
-        scope.launch { listening.collect { if (it) wear.onInteraction() } }
     }
 
     init {
@@ -293,7 +291,6 @@ class GlassesRuntime private constructor(private val app: Context) {
         controller = c
         c.onFrameAck = uplink::onAck
         c.onWear = { w -> if (w == null) wear.reset() else { wear.onRemote(w); PcLog.i(TAG, "wear=$w (from the phone)") } }
-        c.onWearCheck = { wearCheck -> wear.onWearCheck(wearCheck) }
         c.onMotionContext = { m -> contextGate.onMessage(m, android.os.SystemClock.elapsedRealtime()) }
         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
@@ -331,7 +328,6 @@ class GlassesRuntime private constructor(private val app: Context) {
     fun detach(c: HudController) {
         c.onFrameAck = {}
         c.onWear = {}
-        c.onWearCheck = {}
         c.onPhoneUse = {}
         c.onMotionContext = {}
         c.onAutoOpen = {}

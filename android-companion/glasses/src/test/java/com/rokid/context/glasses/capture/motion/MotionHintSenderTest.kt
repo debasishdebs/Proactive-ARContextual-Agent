@@ -84,20 +84,4 @@ class MotionHintSenderTest {
         now = 1_000L; t.onSecond(MotionState.STILL, now); now = 61_000L; t.onSecond(MotionState.STILL, now)
         assertEquals(listOf<String?>(null), out.map { it.classifierHash }.distinct())
     }
-
-    @Test fun theWearEstimateRidesTheHintAndAChangeIsSentAtOnce() {
-        var est: Boolean? = false
-        val out = ArrayList<MotionHint>()
-        val t = MotionHintSender({ now }, wearEst = { est }) { out += it; true }
-        for (sec in 1..3) { now = sec * 1_000L; t.onSecond(MotionState.STILL, now) }
-        assertEquals(listOf<Boolean?>(false), out.map { it.wearEst }, "the first hint carries it")
-        est = true
-        now = 4_000L; t.onSecond(MotionState.STILL, now)
-        assertEquals(listOf<Boolean?>(false, true), out.map { it.wearEst }, "the estimate does not wait for the 60 s refresh")
-        est = false
-        now = 5_000L; t.onSecond(MotionState.STILL, now)
-        assertEquals(listOf<Boolean?>(false, true, false), out.map { it.wearEst }, "worn again is sent at once too")
-        now = 6_000L; t.onSecond(MotionState.STILL, now)
-        assertEquals(3, out.size)
-    }
 }
