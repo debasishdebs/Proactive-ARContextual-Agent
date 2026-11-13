@@ -14,9 +14,9 @@ android {
         applicationId = "com.rokid.context"
         minSdk = 30 // Health Services passive monitoring needs Wear OS 3
         targetSdk = 35
-        // Phone is versionCode 3 / "1.0.0-rc1"; the watch keeps its own range (phone code * 10 + 1 = watch form factor).
-        versionCode = 31
-        versionName = "1.0.0-rc1"
+        // Phone is versionCode 4 / "1.0.0"; the watch keeps its own range (phone code * 10 + 1 = watch form factor).
+        versionCode = 41
+        versionName = "1.0.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
