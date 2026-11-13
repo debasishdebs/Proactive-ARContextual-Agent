@@ -255,7 +255,8 @@ class HudController(
         if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_wear ignored"); return }
         phoneSessionStartMs = m.sessionStartMs
         onWearCheck(m.wearCheck)
-        onWear(m.worn)
+        // worn = null: the message only carries the wear check; the real wear value is left alone (onWear(null) means a closed session)
+        m.worn?.let { onWear(it) }
     }
 
     private fun onState(text: String) {

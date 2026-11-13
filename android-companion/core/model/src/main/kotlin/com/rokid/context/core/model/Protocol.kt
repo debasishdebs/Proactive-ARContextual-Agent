@@ -70,7 +70,8 @@ object Channels {
 /** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
 @Serializable data class WearMessage(
     val v: Int = PROTOCOL_VERSION,
-    val worn: Boolean,
+    /** v1.0: null = the wear value is unknown and this message only carries [wearCheck] (an old glasses build cannot decode it and ignores it, as before). */
+    val worn: Boolean? = null,
     val atMs: Long,
     /** Fix wave I, additive: when the phone's current glasses session began (phone clock). A value seen before it is stale and ignored; 0 = not sent (old phone). */
     val sessionStartMs: Long = 0L,

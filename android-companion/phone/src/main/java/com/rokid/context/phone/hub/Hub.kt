@@ -316,13 +316,24 @@ class Hub(
     val wearUnknownSince: StateFlow<Long?> = _wearUnknownSince
     private var lastWornAtMs = 0L
 
+    /**
+     * Codex r1 finding 4: the wear check travels even with no wear value (worn = null: the message then only carries the check; an old glasses build ignores it).
+     * Without a wear value and without a check there is nothing to say.
+     */
     private suspend fun sendWear() {
-        val w = lastWorn ?: return
-        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = lastWornAtMs, sessionStartMs = sessionStartMs, wearCheck = link.wearCheck.value)))
+        val w = lastWorn
+        val check = link.wearCheck.value
+        if (w == null && check == null) return
+        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = if (w != null) lastWornAtMs else clock(), sessionStartMs = sessionStartMs, wearCheck = check)))
     }
 
     /** v1.0 wear fallback: the glasses' "not worn (estimated)", gated by the system wear check ([GlassesWearEstimate]); AutoStop reads it. */
-    val wearEstimate = GlassesWearEstimate()
+    private var wearExpiryJob: Job? = null
+    val wearEstimate: GlassesWearEstimate = GlassesWearEstimate(clock = clock, scheduleExpiry = { ms ->
+        // one timer: each refresh from the glasses replaces it; the estimate expires FRESH_MS after the last one
+        wearExpiryJob?.cancel()
+        wearExpiryJob = scope.launch { delay(ms); wearEstimate.tick() }
+    })
 
     /** The last `pc_motion_ctx` this session sent; a null from the context hub ends it with an explicit UNKNOWN. */
     private var lastMotionCtx: MotionContextMessage? = null

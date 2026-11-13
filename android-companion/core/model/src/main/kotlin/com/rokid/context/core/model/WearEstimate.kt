@@ -10,6 +10,8 @@ package com.rokid.context.core.model
  * phone hub) stays "worn". They are provisional and need device tuning: the glasses log the run's peaks when the estimate starts and when a still run reaches the
  * window without it.
  *
+ * Missing, failed or stalled IMU data is never quiet time: a second counts only with fresh samples ([MAX_GAP_MS], [MIN_COVERAGE_PCT]).
+ *
  * Wire: additive optional fields only ([MotionHint.wearEst] glasses to phone, [WearMessage.wearCheck] phone to glasses); [PROTOCOL_VERSION] is unchanged.
  */
 object WearEstimate {
@@ -21,14 +23,16 @@ object WearEstimate {
     const val QUIET_ACC_VAR = 0.005f
     /** The status word (AutoStop note, logs). */
     const val WORD = "not worn (estimated)"
+    /** A tick later than this, or this long without a fresh IMU sample, ends the quiet run (missing data is never quiet time). */
+    const val MAX_GAP_MS = 3_000L
+    /** The window must have real IMU samples in at least this share of its seconds (short batching holes are allowed). */
+    const val MIN_COVERAGE_PCT = 90L
+    /** Phone side: an estimate not re-sent by the glasses within this long expires (the glasses re-send every 60 s while it holds). */
+    const val FRESH_MS = 180_000L
 
     /**
-     * The estimate may stand only while the system wear check is not on: [wearCheck] false (the "worn" the SDK reports is pinned, not real), or unknown with no
-     * wear value at all ([realWearKnown] false). With the check on, or a wear value while the check state is unknown (an old phone), the real signal wins.
+     * The estimate may stand only when the phone positively said, in the CURRENT session, that the system wear check is off ([wearCheck] false), and no real
+     * wear change (worn to not worn or back) was seen in it ([sensorLive]: the sensor works after all). Unknown (null) or on = no estimate: the real signal wins.
      */
-    fun applies(wearCheck: Boolean?, realWearKnown: Boolean): Boolean = when (wearCheck) {
-        true -> false
-        false -> true
-        null -> !realWearKnown
-    }
+    fun applies(wearCheck: Boolean?, sensorLive: Boolean): Boolean = wearCheck == false && !sensorLive
 }

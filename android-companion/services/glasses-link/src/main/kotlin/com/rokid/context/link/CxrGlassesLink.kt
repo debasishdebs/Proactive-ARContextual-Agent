@@ -62,7 +62,7 @@ class CxrGlassesLink(
         onWearing = { w -> PcLog.i(TAG, "watcher: wearing=$w"); _wearing.value = w },
         // Fix wave I1: the SDK reports only changes, so the device-info snapshot on each bind is what refreshes a value we dropped.
         onWearingSnapshot = { w -> PcLog.i(TAG, "watcher: wearing snapshot known=${w != null}"); if (w != null) _wearing.value = w },
-        onWearCheck = { on -> if (on != null) rememberWearCheck(on) },
+        onWearCheck = { on -> post { wearCheckState.onRead(on); PcLog.i(TAG, "wear check on=$on (stored=${wearCheckState.persisted})") } },
     ) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
     /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
     private val minimised: MinimisedLink = MinimisedLink(
@@ -82,16 +82,11 @@ class CxrGlassesLink(
     override val events: SharedFlow<GlassesEvent> = _events
     private val _wearing = MutableStateFlow<Boolean?>(null)
     override val wearing: StateFlow<Boolean?> = _wearing
-    private val _wearCheck = MutableStateFlow(storedWearCheck())
-    override val wearCheck: StateFlow<Boolean?> = _wearCheck
-
-    /** v1.0 wear fallback: the last read of the glasses' system wear check, kept in the link prefs (-1 none, 0 off, 1 on). */
+    /** v1.0 wear fallback: the wear check as read in the CURRENT session only (null until read); the prefs value is a display/log hint ([WearCheckState]). */
+    private val wearCheckState = WearCheckState(storedWearCheck()) { app.getSharedPreferences(PREFS, 0).edit().putInt(KEY_WEAR_CHECK, if (it) 1 else 0).apply() }
+    override val wearCheck: StateFlow<Boolean?> get() = wearCheckState.value
+    /** The last non-null wear check read (-1 none, 0 off, 1 on), kept in the link prefs for display and log only. */
     private fun storedWearCheck(): Boolean? = when (app.getSharedPreferences(PREFS, 0).getInt(KEY_WEAR_CHECK, -1)) { 0 -> false; 1 -> true; else -> null }
-    private fun rememberWearCheck(on: Boolean) {
-        if (_wearCheck.value == on) return
-        _wearCheck.value = on
-        app.getSharedPreferences(PREFS, 0).edit().putInt(KEY_WEAR_CHECK, if (on) 1 else 0).apply()
-    }
     private val _ready = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override val ready: SharedFlow<Unit> = _ready
 
@@ -117,6 +112,7 @@ class CxrGlassesLink(
             _state.value = s; PcLog.i(TAG, "link=$s")
             // Fix wave I1: a wear value from before a link loss must never come back; the next bind's snapshot or change refreshes it.
             if (s == LinkState.OFFLINE || s == LinkState.PAUSED_BT || s == LinkState.NOT_AUTHORIZED) _wearing.value = null
+            if (s == LinkState.OFFLINE || s == LinkState.PAUSED_BT || s == LinkState.NOT_AUTHORIZED) wearCheckState.invalidate() // the next open or bind reads it again
         }
     }
 
@@ -215,6 +211,10 @@ class CxrGlassesLink(
     }
 
     private fun openSession() {
+        // Codex r1 finding 3: every session open re-reads the wear check (the background link, if bound, is the only reader; none = unknown = no estimate)
+        val check = minimised.readWearCheck()
+        wearCheckState.onRead(check)
+        PcLog.i(TAG, "session open: wear check on=$check (stored=${wearCheckState.persisted})")
         minimised.stop() // unbind the background link before a session binds its own CXRLink
         val token = token()
         if (token == null || !auth.authorized) {

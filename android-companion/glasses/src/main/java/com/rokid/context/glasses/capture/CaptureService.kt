@@ -345,6 +345,7 @@ class CaptureService : LifecycleService() {
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
         exprSignals.reset() // a capture session restart empties every window history (3c C1b)
         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir, signals = exprSignals).also { it.start(motion, wear) }
+        runtime.wear.imuSampleAt = { motion.prevGyroMs() } // the estimate counts only seconds with fresh IMU samples
         val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }, exprSignals, { (runtime.contextGate.ageMs(SystemClock.elapsedRealtime()) ?: 0L) / 1000L }) // SHADOW: counts only, no camera
         motion.addTap(shadow)
         motion.addTap(runtime.traceRecorder) // records only while a trace runs (collect on, clean boundary); one volatile read otherwise
@@ -373,6 +374,9 @@ class CaptureService : LifecycleService() {
         val cur = smart ?: return
         smart = null
         runtime.plan.host = null
+        // Codex r1 finding 2: sensing stops, so the estimate ends and the phone is told (withdrawn) before the hint sender goes
+        runtime.wear.stopSensing()
+        hintSender?.withdrawEstimate(SystemClock.elapsedRealtime())
         hintSender = null
         runtime.resetLocalMotion()
         cur.rateJob?.cancel()

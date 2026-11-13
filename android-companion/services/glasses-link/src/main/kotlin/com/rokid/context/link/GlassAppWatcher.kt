@@ -85,6 +85,8 @@ internal class GlassAppWatcher(
         onWearCheck(wearCheck)
     }
 
+    override fun readWearCheck(): Boolean? = link?.let { l -> runCatching { l.isWearingCheckOn() }.getOrNull() }
+
     override fun send(channel: String, json: String): Int? {
         val l = link ?: return null
         val code = try {
