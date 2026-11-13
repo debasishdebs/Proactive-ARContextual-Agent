@@ -23,6 +23,7 @@ Debug-signed; no APKs are attached (release signing is a key rotation at v1.0.0 
 - Installed and worn-tested on the phone, glasses and watch: no crash; Forget on a worn day and question answering were not yet exercised.
 
 **Known issues**
+- An answer shown on the glasses could stay on screen after its photo was forgotten on the phone (the phone's lists updated, the HUD kept the old answer). Fixed in v1.0.0.
 - Over-linking: a memory can be removed when an unrelated photo that was processed in the same batch is forgotten. Photos are never deleted this way.
 - Glasses wear detection: when the glasses report wear detection as off, or the firmware pins the proximity sensor to worn, "not worn" is not detected, so AutoStop never sees the glasses as taken off (it still stops when they disconnect). Turn Wear detection on in the glasses and reboot them. A fallback is planned for v1.0 final.
 - The suspect list is broad: it holds every older photo description, not only the bad ones. Re-describing costs model calls, up to 60 a night.
