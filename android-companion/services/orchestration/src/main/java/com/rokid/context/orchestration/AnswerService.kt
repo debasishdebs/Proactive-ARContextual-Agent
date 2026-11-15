@@ -277,7 +277,8 @@ class AnswerService(
         val photo = firstCitedPhoto(r, out.sources)
         // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
         // The ask is saved: a failing intake must not fail it (nor make a queue job retry it). Cancellation still propagates.
-        val proposalId = out.proposedAction?.let { action ->
+        // An eval ask (tools/eval_pca.py) never takes a proposal in: no HUD confirmation, notification or action may come from it.
+        val proposalId = out.proposedAction?.takeIf { source != AskActions.EVAL_SOURCE }?.let { action ->
             try {
                 proposals.onProposed(ProposalOrigin.ASK, id, action, nowMs)
             } catch (c: CancellationException) {

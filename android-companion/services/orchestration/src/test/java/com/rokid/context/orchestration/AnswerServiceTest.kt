@@ -102,6 +102,17 @@ class AnswerServiceTest {
         assertEquals("p-fake", r.proposalId)
     }
 
+    @Test fun evalAskNeverTakesAProposalIn() = runBlocking {
+        val mem = MemoryGraph.get(ctx)
+        mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
+        var called = false
+        val service = AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }, proposals = ProposalIntake { _, _, _, _ -> called = true; "p-fake" })
+        val r = service.answerOrThrow("add milk", AskActions.EVAL_SOURCE, nowMs = 99)
+        assertFalse(called)
+        assertEquals(null, r.proposalId)
+        assertEquals(AskActions.EVAL_SOURCE, mem.asks.byId(r.askId)?.source)
+    }
+
     @Test fun failingIntakeStillAnswersAndCancellationPropagates() = runBlocking {
         val mem = MemoryGraph.get(ctx)
         mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
