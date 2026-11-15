@@ -93,6 +93,9 @@ object AskActions {
     /** The `ask.source` of a typed (Home chat) ask. Its answer reaches the glasses HUD through the phone's mirror ([DeliveryRoute.mirrorsChatToHud]). */
     const val TYPED_SOURCE = "phone_typed"
 
+    /** The `ask.source` of a developer eval ask (`POST /api/ask/eval`, tools/eval_pca.py): no glasses path, never listed in Activity or the Home feed. */
+    const val EVAL_SOURCE = "canvas_eval"
+
     /**
      * Voice asks (Phase 6): the same answer path and messages, recorded with their [source] (`glasses_voice`,
      * `phone_voice`). The transcript gets the question hygiene of [AnswerService] (collapse + data-block folding).

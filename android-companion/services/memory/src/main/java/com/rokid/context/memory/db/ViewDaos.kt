@@ -84,8 +84,9 @@ interface AskDao {
     @Query("UPDATE ask SET answer = :answer, sourcesJson = :sourcesJson WHERE id = :id") suspend fun complete(id: String, answer: String, sourcesJson: String): Int
     @Query("SELECT * FROM ask WHERE id = :id") suspend fun byId(id: String): AskEntity?
     @Query("SELECT * FROM ask WHERE id = :id") fun observe(id: String): Flow<AskEntity?>
-    @Query("SELECT * FROM ask ORDER BY ts DESC LIMIT :limit") fun observeRecent(limit: Int): Flow<List<AskEntity>>
-    @Query("SELECT ts FROM ask WHERE ts >= :fromMs AND ts < :toMs") fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
+    /** The user's asks: a developer eval ask (source `canvas_eval`, AskActions.EVAL_SOURCE) is never listed. */
+    @Query("SELECT * FROM ask WHERE source != 'canvas_eval' ORDER BY ts DESC LIMIT :limit") fun observeRecent(limit: Int): Flow<List<AskEntity>>
+    @Query("SELECT ts FROM ask WHERE ts >= :fromMs AND ts < :toMs AND source != 'canvas_eval'") fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
     @Query("UPDATE ask SET rating = :rating WHERE id = :id") suspend fun setRating(id: String, rating: Int?): Int
 }
 

@@ -155,6 +155,7 @@ class CanvasApi(
             "GET asks/:id" -> askView(id(s[1]))
             "POST asks/:id/replay" -> withTimeout(mutationDeadlineMs) { replay(id(s[1]), req) }
             "POST retrieve/debug" -> retrieveDebug(req)
+            "POST ask/eval" -> withTimeout(mutationDeadlineMs) { askEval(req) }
             "POST runs" -> startRun(req)
             "GET runs" -> json(backend.runs())
             "GET runs/:id" -> json(backend.run(id(s[1])) ?: throw NoSuchElementException())
@@ -182,6 +183,7 @@ class CanvasApi(
         s.size == 2 && s[0] == "asks" -> "asks/:id"
         s.size == 3 && s[0] == "asks" && s[2] == "replay" -> "asks/:id/replay"
         s.size == 2 && s[0] == "retrieve" && s[1] == "debug" -> "retrieve/debug"
+        s.size == 2 && s[0] == "ask" && s[1] == "eval" -> "ask/eval"
         s.size == 2 && s[0] == "runs" -> "runs/:id"
         s.size == 3 && s[0] == "runs" && s[2] in setOf("cancel", "scores", "proposal", "save") -> "runs/:id/${s[2]}"
         else -> null
@@ -487,6 +489,18 @@ class CanvasApi(
             json(backend.retrieveDebug(query, mode, topK, notAfter, snippets))
         } catch (e: IllegalStateException) {
             if (e.message == "busy") throw ApiError(409, "busy", "An export or delete is running. Try again.") else throw e
+        }
+    }
+
+    /** The developer eval Ask (tools/eval_pca.py): the real answer path, one model call; the question is never logged or echoed. */
+    private suspend fun askEval(req: HttpRequest): HttpResponse {
+        val question = body(req).str("question", MAX_QUERY).also { if (it.isBlank()) throw bad("Missing or bad \"question\".") }
+        return try {
+            json(backend.askEval(question))
+        } catch (e: SecurityException) {
+            throw ApiError(403, "forbidden", "Developer mode is off.")
+        } catch (e: AskRedacted) {
+            throw ApiError(409, "refused", "A memory used by this ask was forgotten while it ran. No answer is shown.")
         }
     }
 

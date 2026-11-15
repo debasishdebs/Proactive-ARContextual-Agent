@@ -105,6 +105,14 @@ class FeedRepositoriesTest {
         assertEquals(2, asks.timesIn(day).first().size)
     }
 
+    @Test fun evalAsksAreNeverListed() = runTest {
+        asks.upsert(AskEntity("a1", day.first + 1, "q1", "a1", "[]", null, "phone_typed", false))
+        asks.upsert(AskEntity("e1", day.first + 2, "q2", "a2", "[]", null, "canvas_eval", false))
+        assertEquals(listOf("a1"), asks.recent(10).first().map { it.id })
+        assertEquals(listOf(day.first + 1), asks.timesIn(day).first())
+        assertEquals("e1", asks.observe("e1").first()?.id) // still readable by id (the canvas ask view)
+    }
+
     @Test fun nudgesProposalsAndTracesReadBack() = runTest {
         assertTrue(nudges.addIgnore(NudgeEntity("n1", day.first + 3, "Milk low", "fridge", "[]", 1, "h1", "phone", false)))
         assertFalse(nudges.addIgnore(NudgeEntity("n1", day.first + 3, "dup", "", "[]", 1, "h1", "phone", false)))
