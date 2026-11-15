@@ -155,7 +155,7 @@ class CanvasApi(
             "GET asks/:id" -> askView(id(s[1]))
             "POST asks/:id/replay" -> withTimeout(mutationDeadlineMs) { replay(id(s[1]), req) }
             "POST retrieve/debug" -> retrieveDebug(req)
-            "POST ask/eval" -> withTimeout(mutationDeadlineMs) { askEval(req) }
+            "POST ask/eval" -> askEval(req) // no request deadline: the ask commits its row, so a timeout could report failure after it was saved
             "POST runs" -> startRun(req)
             "GET runs" -> json(backend.runs())
             "GET runs/:id" -> json(backend.run(id(s[1])) ?: throw NoSuchElementException())
