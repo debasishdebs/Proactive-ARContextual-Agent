@@ -18,13 +18,15 @@ Usage:
   tools/eval_pca.py --judge gpt-4o --baseline tools/testdata/qna-eval/runs/20261116-1200
   tools/eval_pca.py --rejudge tools/testdata/qna-eval/runs/20261116-1200 --judge gpt-4o   # judge again, no phone calls
 
-Route contract (POST /api/ask/eval, body {"question": str}; 403 while Developer mode is off, 409 if a memory it used was forgotten mid-ask):
-  {"askId": str, "status": "answered" | "failed", "answer": str, "notice": str?, "mode": str, "fallback": bool,
-   "latencyMs": int, "appVersion": str, "photoFrameId": str?, "photoAtMs": int?,
-   "sources": [{"memoryId": str, "rank": int, "score": float, "cited": bool, "inPrompt": bool, "lexical": float?, "semantic": float?,
-                "fused": float, "createdAt": int, "frameIds": [str], "capturedAtMs": int?, "place": {"label": str}?,
-                "momentId": str?, "momentIds": [str], "momentType": str?, "snippet": str (<= 400 chars)}]}
-  The ask is stored like a Home ask with source canvas_eval: it has no glasses path and is never listed in Home or Activity.
+Route contract (POST /api/ask/eval, body {"question": str}; 403 while Developer mode is off, 409 if anything the answer used was forgotten mid-ask):
+  {"askId": str, "status": "answered" | "failed", "answer": str, "notice": str?, "mode": str ("UNKNOWN" without a re-run), "fallback": bool,
+   "scores": "rerun" | "none", "latencyMs": int, "appVersion": str, "photoFrameId": str?, "photoAtMs": int?,
+   "cited": [str] (memory ids and frame:<id> photo cites the answer cited), "dependsOn": [str] (inputs it used without citing),
+   "sources": [{"memoryId": str? (null for a cited photo), "rank": int? (null when the re-run did not rank it), "cited": bool, "inPrompt": bool?,
+                "score": float?, "lexical": float?, "semantic": float?, "fused": float?, "createdAt": int?, "frameIds": [str],
+                "capturedAtMs": int?, "place": {"label": str}?, "momentId": str?, "momentIds": [str], "momentType": str?, "snippet": str (<= 400 chars)}]}
+  Ranks and scores come from re-running the retrieval as of the ask ("scores": "rerun"); "cited" is exactly what the answer cited.
+  The ask is stored like a Home ask with source canvas_eval: it has no glasses path, takes no proposed action and is never listed in Home or Activity.
 """
 import argparse
 import datetime as dt
@@ -296,7 +298,7 @@ def write_report(path, results, meta, baseline=None):
                 if photo and r.get("thumbs", {}).get(photo):
                     photo = "![](%s)" % r["thumbs"][photo]
                 w("| %s | %s | %s | %s | %s | %s | %s |" % (s.get("rank", ""), "yes" if s.get("cited") else "", fmt_ts(s.get("capturedAtMs") or s.get("createdAt")),
-                                                         place_of(s), (s.get("momentId") or "") + (" (%s)" % s["momentType"] if s.get("momentType") else ""), photo, s.get("memoryId", "")))
+                                                         place_of(s), (s.get("momentId") or "") + (" (%s)" % s["momentType"] if s.get("momentType") else ""), photo, s.get("memoryId") or "(photo)"))
     open(path, "w").write("\n".join(out) + "\n")
 
 

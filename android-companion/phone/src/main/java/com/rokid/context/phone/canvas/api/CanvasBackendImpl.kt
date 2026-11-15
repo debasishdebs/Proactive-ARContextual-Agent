@@ -1,6 +1,7 @@
 package com.rokid.context.phone.canvas.api
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.contract.PromptKey
@@ -739,41 +740,54 @@ class CanvasBackendImpl(
         val row = dao.ask(answered.askId) ?: throw NoSuchElementException()
         if (row.redacted) throw com.rokid.context.canvas.AskRedacted()
         val cited = com.rokid.context.orchestration.AskSources.parse(row.sourcesJson)
+        val photoPrefix = com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
+        val (photoCites, memoryCites) = cited.partition { it.startsWith(photoPrefix) }
         // The debug view re-runs the retrieval as of the ask (ranks and scores); it refuses when any hit's photo is gone (also an expired one), and then
-        // the cited memories alone are reported. Cited memories the re-run does not rank are appended, so every memory the answer used is listed.
+        // the cited memories alone are reported. Cited memories the re-run does not rank are appended, so every memory the answer cited is listed; a
+        // cited photo (`frame:<id>`) is its own source with no memory.
         val view = try { askDebug.value.view(answered.askId) } catch (e: com.rokid.context.canvas.AskRedacted) { null }
         val ranked = view?.hits.orEmpty()
-        val hits = ranked + cited.filter { id -> ranked.none { it.memoryId == id } }.map { id -> AskDebug.Hit(id, "", null, null, null, 0.0, 0.0, true, true) }
+        val hits = ranked + memoryCites.filter { id -> ranked.none { it.memoryId == id } }.map { id -> AskDebug.Hit(id, "", null, null, null, 0.0, 0.0, true, true) }
         val graph = MemoryGraph.get(app)
         val memories = graph.timeline.memoriesByIds(hits.map { it.memoryId }).associateBy { it.id }
-        val frameIds = (hits.mapNotNull { it.frameId ?: memories[it.memoryId]?.frameId } + listOfNotNull(answered.photoFrameId)).distinct()
+        val citedFrames = photoCites.map { it.removePrefix(photoPrefix) }
+        val frameIds = (hits.mapNotNull { it.frameId ?: memories[it.memoryId]?.frameId } + citedFrames + listOfNotNull(answered.photoFrameId)).distinct()
         val frames = PipelineRecords.framesByIds(app, frameIds).associateBy { it.id }
         val momentDao = graph.db.momentDao()
-        class Source(val hit: AskDebug.Hit, val rank: Int?, val text: String, val createdAt: Long?, val frame: com.rokid.context.memory.db.FrameEntity?, val moments: List<String>, val momentType: String?)
+        val partKinds = listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.FRAME)
+        class Source(val memoryId: String?, val rank: Int?, val hit: AskDebug.Hit?, val cited: Boolean, val text: String, val createdAt: Long?, val frameId: String?, val moments: List<String>, val momentType: String?)
+        suspend fun moments(refs: List<String>): Pair<List<String>, String?> = momentDao.momentIdsHolding(partKinds, refs).let { m -> m to m.firstOrNull()?.let { momentDao.moment(it)?.momentType?.name } }
         val gathered = hits.mapIndexed { i, h ->
-            val frame = (h.frameId ?: memories[h.memoryId]?.frameId)?.let { frames[it] }
-            val moments = momentDao.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.FRAME), listOfNotNull(h.memoryId, frame?.id))
-            Source(h, if (i < ranked.size) i + 1 else null, h.text.ifEmpty { memories[h.memoryId]?.text.orEmpty() }, memories[h.memoryId]?.createdAt, frame, moments,
-                moments.firstOrNull()?.let { momentDao.moment(it)?.momentType?.name })
+            val frameId = h.frameId ?: memories[h.memoryId]?.frameId
+            val (m, type) = moments(listOfNotNull(h.memoryId, frameId))
+            Source(h.memoryId, if (i < ranked.size) i + 1 else null, h, h.memoryId in cited, h.text.ifEmpty { memories[h.memoryId]?.text.orEmpty() }, memories[h.memoryId]?.createdAt, frameId, m, type)
+        } + citedFrames.map { f -> val (m, type) = moments(listOf(f)); Source(null, null, null, true, "", null, f, m, type) }
+        // Validated in ONE transaction right before the reply is built from it: the generation, the ask row (whose answer is the one returned), every
+        // stored dependency of the ask (cited or not) and every returned memory and photo cite. Anything gone refuses the whole answer.
+        val deps = com.rokid.context.orchestration.AskSources.parseAll(row.sourcesJson)
+        val returned = gathered.mapNotNull { it.memoryId } + citedFrames.map { photoPrefix + it }
+        val (now, gonePhotos) = graph.db.withTransaction {
+            if (MemoryWipe.generation.get() != generation) throw com.rokid.context.canvas.AskRedacted()
+            val now = dao.ask(answered.askId)
+            if (now == null || now.redacted || now.sourcesJson != row.sourcesJson) throw com.rokid.context.canvas.AskRedacted()
+            if (!com.rokid.context.memory.forget.ForgetFence.allLive(graph.db, deps + returned)) throw com.rokid.context.canvas.AskRedacted()
+            // a tombstoned (forgotten or expired) photo keeps its memory in the reply but is never named
+            val shown = gathered.mapNotNull { it.frameId?.takeIf { f -> f in frames } }.toSet() + listOfNotNull(answered.photoFrameId?.takeIf { it in frames })
+            now to shown.filter { dao.tombstonedAmong(listOf(it)) != 0 }.toSet()
         }
-        // Rechecked after every read, right before anything is returned: the generation, the ask itself, each memory (Forget) and each photo
-        if (MemoryWipe.generation.get() != generation) throw com.rokid.context.canvas.AskRedacted()
-        val now = dao.ask(answered.askId)
-        if (now == null || now.redacted) throw com.rokid.context.canvas.AskRedacted()
-        val live = com.rokid.context.memory.forget.ForgetFence.liveIds(graph.db, gathered.map { it.hit.memoryId })
-        val shownPhotos = gathered.mapNotNull { it.frame?.id }.toSet() + listOfNotNull(answered.photoFrameId?.takeIf { it in frames })
-        val gonePhotos = shownPhotos.filter { dao.tombstonedAmong(listOf(it)) != 0 }.toSet() + shownPhotos.filter { PipelineRecords.framesByIds(app, listOf(it)).isEmpty() }
         return buildJsonObject {
             put("askId", now.id); put("status", "answered"); put("answer", now.answer); put("notice", answered.notice)
-            put("mode", view?.mode); put("fallback", view?.fallback); put("latencyMs", latency); put("appVersion", version)
-            put("cited", JsonArray(cited.filter { it in live }.map { JsonPrimitive(it) }))
+            put("mode", view?.mode ?: "UNKNOWN"); put("fallback", view?.fallback ?: false); put("scores", if (view != null) "rerun" else "none")
+            put("latencyMs", latency); put("appVersion", version)
+            put("cited", JsonArray(cited.map { JsonPrimitive(it) }))
+            put("dependsOn", JsonArray(deps.filter { it !in cited }.map { JsonPrimitive(it) }))
             val photo = answered.photoFrameId?.takeIf { it in frames && it !in gonePhotos }
             put("photoFrameId", photo); put("photoAtMs", if (photo != null) answered.photoAtMs else null)
-            put("sources", JsonArray(gathered.filter { it.hit.memoryId in live }.map { g ->
-                val frame = g.frame?.takeIf { it.id !in gonePhotos }
+            put("sources", JsonArray(gathered.map { g ->
+                val frame = g.frameId?.let { frames[it] }?.takeIf { it.id !in gonePhotos }
                 buildJsonObject {
-                    put("memoryId", g.hit.memoryId); put("rank", g.rank); put("cited", g.hit.memoryId in cited); put("inPrompt", g.hit.inPrompt)
-                    if (g.rank != null) { put("score", g.hit.score); put("lexical", g.hit.lexical); put("semantic", g.hit.semantic); put("fused", g.hit.fused) }
+                    put("memoryId", g.memoryId); put("rank", g.rank); put("cited", g.cited); put("inPrompt", g.hit?.inPrompt)
+                    if (g.rank != null && g.hit != null) { put("score", g.hit.score); put("lexical", g.hit.lexical); put("semantic", g.hit.semantic); put("fused", g.hit.fused) }
                     put("createdAt", g.createdAt)
                     put("frameIds", JsonArray(listOfNotNull(frame?.id).map { JsonPrimitive(it) }))
                     put("capturedAtMs", frame?.ts)
