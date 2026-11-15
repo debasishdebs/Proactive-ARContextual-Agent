@@ -89,6 +89,13 @@ private class FakeBackend : CanvasBackend {
         if (retrieveBusy) throw IllegalStateException("busy")
         return buildJsonObject { put("mode", mode ?: "HYBRID"); put("semanticUnavailable", false); put("fallback", false); put("hits", JsonArray(emptyList())) }
     }
+    var lastEval: String? = null
+    var evalThrows: Throwable? = null
+    override suspend fun askEval(question: String): JsonObject {
+        enter("askEval"); lastEval = question
+        evalThrows?.let { throw it }
+        return buildJsonObject { put("askId", "a1"); put("status", "answered"); put("answer", "On the hook"); put("sources", JsonArray(emptyList())) }
+    }
     var lastHistoryLimit = -1
     override suspend fun publishHistory(limit: Int): JsonArray { enter("history"); lastHistoryLimit = limit; return JsonArray(listOf(buildJsonObject { put("id", 1); put("kind", "interpreter") })) }
     var lastLiveLimit = -1
@@ -789,6 +796,29 @@ class CanvasApiTest {
             assertEquals(b.take(60), 400, call("POST", "/api/retrieve/debug", b).status)
         }
         assertFalse(be.calls.any { it == "retrieveDebug" })
+    }
+
+    @Test fun askEvalRunsTheQuestionAndNeverEchoesIt() {
+        val r = call("POST", "/api/ask/eval", """{"question":"where are my keys"}""")
+        assertEquals(200, r.status)
+        assertEquals("where are my keys", be.lastEval)
+        assertEquals("a1", r.obj()["askId"]!!.jsonPrimitive.content)
+        assertFalse(String(r.body).contains("where are my keys"))
+    }
+
+    @Test fun askEvalValidation() {
+        for (b in listOf("""{}""", """{"question":""}""", """{"question":"  "}""", """{"question":5}""", """{"question":"${"x".repeat(2_001)}"}""", "[]", "nope")) {
+            assertEquals(b.take(60), 400, call("POST", "/api/ask/eval", b).status)
+        }
+        assertFalse(be.calls.any { it == "askEval" })
+        for (m in listOf("GET", "PUT", "DELETE", "PATCH")) assertEquals(m, 405, call(m, "/api/ask/eval", """{"question":"q"}""").status)
+    }
+
+    @Test fun askEvalNeedsDeveloperModeAndRefusesAForgottenMemory() {
+        be.evalThrows = SecurityException("developer_mode_off")
+        assertEquals(403, call("POST", "/api/ask/eval", """{"question":"q"}""").status)
+        be.evalThrows = AskRedacted()
+        assertEquals(409, call("POST", "/api/ask/eval", """{"question":"q"}""").status)
     }
 
     @Test fun retrieveDebugIsPostOnly() {

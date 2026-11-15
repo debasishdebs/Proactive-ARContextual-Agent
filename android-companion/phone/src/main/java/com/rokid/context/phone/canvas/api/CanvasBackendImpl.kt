@@ -107,6 +107,8 @@ class CanvasBackendImpl(
         private const val NOT_SET = "not set"
         private const val LIVE_BATCH_NODE = "_batch"
         private const val ASK_LIST_LIMIT = 50
+        /** Characters of a memory's text an eval Ask returns per source (enough for the judge; the full text stays on GET /api/frames/:id). */
+        private const val EVAL_SNIPPET = 400
         private const val ASK_ANSWER_PREVIEW = 140
         /** Fixed text for a pipeline JSON that cannot be decoded (never the decoder's message, never the input). */
         const val UNDECODABLE = "The pipeline JSON is not valid."
@@ -717,6 +719,48 @@ class CanvasBackendImpl(
                     }
                 }))
             }
+        }
+    }
+
+    // ---- Eval Ask (tools/eval_pca.py): a real Ask, Developer mode only; the question and answer are returned, never logged ----
+
+    override suspend fun askEval(question: String): JsonObject {
+        start()
+        if (!com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled.value) throw SecurityException("developer_mode_off")
+        val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull()
+        val started = android.os.SystemClock.elapsedRealtime()
+        val outcome = com.rokid.context.orchestration.AskActions.askFrom(app, question, com.rokid.context.orchestration.AskActions.EVAL_SOURCE)
+        val latency = android.os.SystemClock.elapsedRealtime() - started
+        if (outcome is com.rokid.context.orchestration.AskOutcome.Failed) return buildJsonObject {
+            put("status", "failed"); put("answer", outcome.message); put("latencyMs", latency); put("appVersion", version); put("sources", JsonArray(emptyList()))
+        }
+        val answered = outcome as com.rokid.context.orchestration.AskOutcome.Answered
+        val v = askDebug.value.view(answered.askId) ?: throw NoSuchElementException()
+        val graph = MemoryGraph.get(app)
+        val memories = graph.timeline.memoriesByIds(v.hits.map { it.memoryId }).associateBy { it.id }
+        // framesByIds drops a forgotten, expired or deleted photo: such a hit keeps its memory but names no photo
+        val frames = PipelineRecords.framesByIds(app, v.hits.mapNotNull { it.frameId }).associateBy { it.id }
+        val momentDao = graph.db.momentDao()
+        return buildJsonObject {
+            put("askId", v.askId); put("status", "answered"); put("answer", v.answer); put("notice", answered.notice)
+            put("mode", v.mode); put("fallback", v.fallback); put("latencyMs", latency); put("appVersion", version)
+            put("photoFrameId", answered.photoFrameId); put("photoAtMs", answered.photoAtMs)
+            put("sources", JsonArray(v.hits.mapIndexed { i, h ->
+                val frame = h.frameId?.let { frames[it] }
+                val moments = momentDao.momentIdsHolding(listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.FRAME), listOfNotNull(h.memoryId, frame?.id))
+                buildJsonObject {
+                    put("memoryId", h.memoryId); put("rank", i + 1); put("score", h.score); put("cited", h.cited); put("inPrompt", h.inPrompt)
+                    put("lexical", h.lexical); put("semantic", h.semantic); put("fused", h.fused)
+                    put("createdAt", memories[h.memoryId]?.createdAt)
+                    put("frameIds", JsonArray(listOfNotNull(frame?.id).map { JsonPrimitive(it) }))
+                    put("capturedAtMs", frame?.ts)
+                    put("place", frame?.placeLabel?.let { buildJsonObject { put("label", it) } } ?: JsonNull)
+                    put("momentIds", JsonArray(moments.map { JsonPrimitive(it) }))
+                    put("momentId", moments.firstOrNull())
+                    put("momentType", moments.firstOrNull()?.let { momentDao.moment(it)?.momentType?.name })
+                    put("snippet", h.text.take(EVAL_SNIPPET))
+                }
+            }))
         }
     }
 

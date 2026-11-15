@@ -124,6 +124,12 @@ interface CanvasBackend {
      * [IllegalStateException] ("busy") during an export, delete or save. Never logs the query.
      */
     suspend fun retrieveDebug(query: String, mode: String?, topK: Int?, notAfterMs: Long?, snippets: Boolean): JsonObject = throw IllegalArgumentException("retrieve debug is not available")
+    /**
+     * One real Ask of [question] for tools/eval_pca.py (a model call): stored with source `canvas_eval` (no glasses path, hidden from Activity). Returns the
+     * answer and every retrieved memory with its photo, capture time, place and Moments. Throws [SecurityException] while Developer mode is off and
+     * [com.rokid.context.canvas.AskRedacted] when a memory it used was forgotten while it ran.
+     */
+    suspend fun askEval(question: String): JsonObject = throw IllegalArgumentException("ask eval is not available")
 }
 
 /** A pipeline of an A/B pair: the draft when [version] is null. */
