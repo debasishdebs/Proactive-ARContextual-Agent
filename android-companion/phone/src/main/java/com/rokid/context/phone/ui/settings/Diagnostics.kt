@@ -394,7 +394,7 @@ fun DiagnosticsScreen(
         }
         state.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(20.dp)) }
         SectionLabel("Developer")
-        SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+        SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) { Column { // SoftCard is a Box: without the Column its rows draw on top of each other
             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Developer mode", style = MaterialTheme.typography.titleSmall)
@@ -414,7 +414,7 @@ fun DiagnosticsScreen(
                     ChipRow(Icons.Outlined.PhotoCamera, PcColors.ChipAmber, "Photo search dimension test (debug)", "Compare image search at 768 and 256 dimensions on your photos", onClick = onOpenPhotoDimTest)
                 }
             }
-        }
+        } }
     }
 }
 
