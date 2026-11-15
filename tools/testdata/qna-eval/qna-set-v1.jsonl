@@ -1,0 +1,50 @@
+{"id": "q01", "set": "2026-11-15 market evening", "difficulty": "easy", "question": "Where did I eat tonight?", "expected": "SPL Kolkata Rolls (21:17-21:27)"}
+{"id": "q02", "set": "2026-11-15 market evening", "difficulty": "easy", "question": "What vegetables did I buy tonight?", "expected": "Tomatoes, carrots, potatoes, cucumbers, brinjal, beans (20:35-20:53)"}
+{"id": "q03", "set": "2026-11-15 market evening", "difficulty": "easy", "question": "How did I get to the market?", "expected": "By scooter"}
+{"id": "q04", "set": "2026-11-15 market evening", "difficulty": "medium", "question": "What time did I get home tonight?", "expected": "About 21:45-21:48"}
+{"id": "q05", "set": "2026-11-15 market evening", "difficulty": "medium", "question": "Did I buy any fruit tonight?", "expected": "Yes, apples and oranges (about 21:07)"}
+{"id": "q06", "set": "2026-11-15 market evening", "difficulty": "medium", "question": "Did I see karela at the market?", "expected": "Yes, bitter gourd at the first stall (about 20:41)"}
+{"id": "q07", "set": "2026-11-15 market evening", "difficulty": "tough", "question": "Did I buy greens before or after the fruit?", "expected": "Before: greens 21:02-21:05, fruit 21:07"}
+{"id": "q08", "set": "2026-11-15 market evening", "difficulty": "tough", "question": "How did I pay at the corn cart?", "expected": "On the phone with UPI (PIN screen visible, 21:12)"}
+{"id": "q09", "set": "2026-11-15 market evening", "difficulty": "fail", "question": "How many different stalls did I stop at tonight?", "expected": "About 5-6: vegetables, greens, fruit, corn cart, Kolkata Rolls, a general store"}
+{"id": "q10", "set": "2026-11-15 market evening", "difficulty": "fail", "question": "What is my flat number?", "expected": "Never visible: must say it doesn't know"}
+{"id": "q11", "set": "2026-11-12 home afternoon", "difficulty": "easy", "question": "Where are my keys hanging?", "expected": "On a wall hook beside the wooden door (about 13:39, marked)"}
+{"id": "q12", "set": "2026-11-12 home afternoon", "difficulty": "easy", "question": "Where did I see the football?", "expected": "On a dark table by the window and balcony (about 13:39, marked)"}
+{"id": "q13", "set": "2026-11-12 home afternoon", "difficulty": "medium", "question": "Where did I see the soccer ball?", "expected": "Same as the football (synonym test; earlier 'football' failed, 'soccer ball' worked)"}
+{"id": "q14", "set": "2026-11-12 home afternoon", "difficulty": "medium", "question": "What does my sofa cover look like?", "expected": "Orange and blue leaf print"}
+{"id": "q15", "set": "2026-11-12 home afternoon", "difficulty": "medium", "question": "What's on the shelves around the TV?", "expected": "Hexagonal wooden shelves with books and decor"}
+{"id": "q16", "set": "2026-11-12 home afternoon", "difficulty": "medium", "question": "Was I playing a game on 12 Nov? What controller?", "expected": "Yes, a white PlayStation controller (14:12 and 14:28)"}
+{"id": "q17", "set": "2026-11-12 home afternoon", "difficulty": "tough", "question": "When did I last see my keys?", "expected": "About 13:39 on 12 Nov"}
+{"id": "q18", "set": "2026-11-12 home afternoon", "difficulty": "tough", "question": "What was on the TV when I held my phone up to it?", "expected": "A game or satellite-style map; the phone showed the same view (14:08-14:10)"}
+{"id": "q19", "set": "2026-11-12 home afternoon", "difficulty": "tough", "question": "What was on my laptop screen on 12 Nov?", "expected": "Code or a terminal early on; later a beach wallpaper"}
+{"id": "q20", "set": "2026-11-12 home afternoon", "difficulty": "fail", "question": "Where did I keep my shoes?", "expected": "Must NOT answer from the forgotten 'shoes on the floor' photo (Forget test)"}
+{"id": "q21", "set": "2026-11-08 Diwali night", "difficulty": "easy", "question": "Did I burst crackers on Diwali?", "expected": "Yes, outside on 8 Nov from about 21:54 to 22:50"}
+{"id": "q22", "set": "2026-11-08 Diwali night", "difficulty": "easy", "question": "What lights are around my TV unit?", "expected": "Colourful LED strip lights (blue and pink) around the TV and shelves"}
+{"id": "q23", "set": "2026-11-08 Diwali night", "difficulty": "medium", "question": "What time did we go out to burst crackers on 8 Nov?", "expected": "About 21:54"}
+{"id": "q24", "set": "2026-11-08 Diwali night", "difficulty": "medium", "question": "What kind of crackers did we burst?", "expected": "Sparklers, fountains and ground crackers lit on the road; boxes of crackers on the ground"}
+{"id": "q25", "set": "2026-11-08 Diwali night", "difficulty": "medium", "question": "What was I doing around 2:30 AM on 8 Nov?", "expected": "Up at home in the dark: TV on, laptop open, scrolling the phone"}
+{"id": "q26", "set": "2026-11-08 Diwali night", "difficulty": "tough", "question": "How long were we bursting crackers?", "expected": "About an hour (21:54-22:50)"}
+{"id": "q27", "set": "2026-11-08 Diwali night", "difficulty": "tough", "question": "Until what time was I awake on the night of 7-8 Nov?", "expected": "About 03:38"}
+{"id": "q28", "set": "2026-11-08 Diwali night", "difficulty": "tough", "question": "Where did we burst the crackers?", "expected": "On the road or compound outside, under bright lights, with debris everywhere"}
+{"id": "q29", "set": "2026-11-08 Diwali night", "difficulty": "fail", "question": "Who was bursting crackers with me?", "expected": "Can describe people (e.g. a woman in a maroon outfit) but must not invent names"}
+{"id": "q30", "set": "2026-11-08 Diwali night", "difficulty": "fail", "question": "How many crackers did we burst?", "expected": "Can't be counted from photos: must not give a precise number"}
+{"id": "q31", "set": "2026-11-10 home evening", "difficulty": "easy", "question": "Did someone visit me on 10 Nov?", "expected": "Yes, a man in a green shirt and jeans sat on the sofa (about 22:33-23:04)"}
+{"id": "q32", "set": "2026-11-10 home evening", "difficulty": "easy", "question": "What colour is my sofa?", "expected": "Teal"}
+{"id": "q33", "set": "2026-11-10 home evening", "difficulty": "medium", "question": "What was I doing with cables on the sofa around 21:10 on 10 Nov?", "expected": "Plugging chargers and cables into an extension board by the sofa (21:10-21:14)"}
+{"id": "q34", "set": "2026-11-10 home evening", "difficulty": "medium", "question": "What football jersey did someone wear on 10 Nov?", "expected": "A red Manchester United jersey (21:39-21:46)"}
+{"id": "q35", "set": "2026-11-10 home evening", "difficulty": "medium", "question": "Was I using my laptop on 10 Nov?", "expected": "Yes, about 21:48-21:59"}
+{"id": "q36", "set": "2026-11-10 home evening", "difficulty": "tough", "question": "What was on the coffee table while the guest was over?", "expected": "A laptop, drink cans and a pink box (22:39-23:04)"}
+{"id": "q37", "set": "2026-11-10 home evening", "difficulty": "tough", "question": "What drink was on the table on 10 Nov?", "expected": "Cans; one looks like Corona (23:04), verify"}
+{"id": "q38", "set": "2026-11-10 home evening", "difficulty": "tough", "question": "What did I do before the guest arrived on 10 Nov?", "expected": "Used the laptop, then a PlayStation controller (about 21:48-21:59)"}
+{"id": "q39", "set": "2026-11-10 home evening", "difficulty": "fail", "question": "How long did the guest stay?", "expected": "At least 22:33-23:04; capture ended 23:17, so it can't be sure"}
+{"id": "q40", "set": "2026-11-10 home evening", "difficulty": "fail", "question": "What was the guest talking about?", "expected": "No audio: must say it can't tell"}
+{"id": "q41", "set": "cross-session", "difficulty": "easy", "question": "On which days did I watch TV this month?", "expected": "8, 10, 12 and 15 Nov"}
+{"id": "q42", "set": "cross-session", "difficulty": "medium", "question": "When did I last use my laptop?", "expected": "15 Nov, about 21:52"}
+{"id": "q43", "set": "cross-session", "difficulty": "medium", "question": "When did I last use the PlayStation controller?", "expected": "12 Nov, 14:28 (also 10 Nov 21:59)"}
+{"id": "q44", "set": "cross-session", "difficulty": "medium", "question": "Which evenings did I go out this month?", "expected": "8 Nov (crackers) and 15 Nov (market)"}
+{"id": "q45", "set": "cross-session", "difficulty": "tough", "question": "Did I have guests at home this month?", "expected": "Yes, on 10 Nov"}
+{"id": "q46", "set": "cross-session", "difficulty": "tough", "question": "What's the latest I stayed up this month?", "expected": "About 03:38 on 8 Nov"}
+{"id": "q47", "set": "cross-session", "difficulty": "tough", "question": "What's on the wall near my TV?", "expected": "Hexagonal shelves, a dartboard and small decor frames"}
+{"id": "q48", "set": "cross-session", "difficulty": "tough", "question": "How many times did I go to the market this month?", "expected": "Once, on 15 Nov"}
+{"id": "q49", "set": "cross-session", "difficulty": "fail", "question": "Did I spend more time at home or outside on 15 Nov?", "expected": "Outside ~75 min (20:32-21:45), home ~10 min captured; needs time aggregation"}
+{"id": "q50", "set": "cross-session", "difficulty": "fail", "question": "What did I eat this month?", "expected": "Rolls and corn on 15 Nov, a snack at home; needs aggregation across days"}
