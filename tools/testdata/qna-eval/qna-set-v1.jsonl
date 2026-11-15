@@ -3,7 +3,7 @@
 {"id": "q03", "set": "2026-11-15 market evening", "difficulty": "easy", "question": "How did I get to the market?", "expected": "By scooter"}
 {"id": "q04", "set": "2026-11-15 market evening", "difficulty": "medium", "question": "What time did I get home tonight?", "expected": "About 21:45-21:48"}
 {"id": "q05", "set": "2026-11-15 market evening", "difficulty": "medium", "question": "Did I buy any fruit tonight?", "expected": "Yes, apples and oranges (about 21:07)"}
-{"id": "q06", "set": "2026-11-15 market evening", "difficulty": "medium", "question": "Did I see karela at the market?", "expected": "Yes, bitter gourd at the first stall (about 20:41)"}
+{"id": "q06", "set": "2026-11-15 market evening", "difficulty": "medium", "question": "Did I see karela at the market?", "expected": "Yes, bitter gourd at the first stall (about 20:41)", "needs": "multilingual"}
 {"id": "q07", "set": "2026-11-15 market evening", "difficulty": "tough", "question": "Did I buy greens before or after the fruit?", "expected": "Before: greens 21:02-21:05, fruit 21:07"}
 {"id": "q08", "set": "2026-11-15 market evening", "difficulty": "tough", "question": "How did I pay at the corn cart?", "expected": "On the phone with UPI (PIN screen visible, 21:12)"}
 {"id": "q09", "set": "2026-11-15 market evening", "difficulty": "fail", "question": "How many different stalls did I stop at tonight?", "expected": "About 5-6: vegetables, greens, fruit, corn cart, Kolkata Rolls, a general store"}

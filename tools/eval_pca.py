@@ -251,6 +251,8 @@ def summarise(results, key):
 def write_report(path, results, meta, baseline=None):
     out = []
     w = out.append
+    parked = [r for r in results if r.get("needs")]
+    results = [r for r in results if not r.get("needs")]
     total = sum(r.get("score") or 0 for r in results)
     w("# PCA QnA eval %s" % meta["started"])
     w("")
@@ -276,9 +278,15 @@ def write_report(path, results, meta, baseline=None):
         for r, b in sorted(changed, key=lambda rb: (rb[0].get("score") or 0) - (rb[1].get("score") or 0)):
             arrow = "REGRESSED" if (r.get("score") or 0) < (b.get("score") or 0) else "improved"
             w("- %s %s: %s -> %s. %s" % (r["id"], arrow, b.get("verdict"), r.get("verdict"), r["question"]))
+    if parked:
+        w("")
+        w("## Not scored yet (need a feature that has not shipped)")
+        w("")
+        for r in parked:
+            w("- %s (needs %s): %s -> %s" % (r["id"], r["needs"], r["question"], r.get("verdict") or "?"))
     w("")
     w("## Questions")
-    for r in results:
+    for r in results + parked:
         w("")
         w("### %s [%s, %s] %s: %s" % (r["id"], r.get("difficulty"), r.get("set"), (r.get("verdict") or "?").upper(), r["question"]))
         w("")
@@ -345,8 +353,13 @@ def main():
     if a.rejudge:
         prev = {r["id"]: r for r in (json.loads(l) for l in open(os.path.join(a.rejudge, "results.jsonl")) if l.strip())}
         results = [dict(prev[q["id"]]) for q in questions if q["id"] in prev]
+        by_id = {q["id"]: q for q in questions}
         for r in results:
             r.pop("judges", None)
+            r["expected"] = by_id[r["id"]]["expected"]  # the dataset may have been corrected since the run
+            r.pop("needs", None)
+            if by_id[r["id"]].get("needs"):
+                r["needs"] = by_id[r["id"]]["needs"]
         meta["phoneVersion"] = json.load(open(os.path.join(a.rejudge, "meta.json"))).get("phoneVersion")
     else:
         phone = Phone()
@@ -354,6 +367,8 @@ def main():
         for i, q in enumerate(questions, 1):
             r = phone.ask(q["question"])
             r.update({k: q[k] for k in ("id", "set", "difficulty", "question", "expected")})
+            if q.get("needs"):
+                r["needs"] = q["needs"]
             if a.thumbs:
                 tdir = os.path.join(out_dir, "thumbs")
                 os.makedirs(tdir, exist_ok=True)
@@ -384,8 +399,9 @@ def main():
     if a.baseline:
         baseline = [json.loads(l) for l in open(os.path.join(a.baseline, "results.jsonl")) if l.strip()]
     write_report(os.path.join(out_dir, "report.md"), results, meta, baseline)
-    total = sum(r.get("score") or 0 for r in results)
-    print("score %.1f/%d -> %s" % (total, len(results), os.path.join(out_dir, "report.md")))
+    scored = [r for r in results if not r.get("needs")]
+    total = sum(r.get("score") or 0 for r in scored)
+    print("score %.1f/%d (%d not scored yet) -> %s" % (total, len(scored), len(results) - len(scored), os.path.join(out_dir, "report.md")))
 
 
 if __name__ == "__main__":
