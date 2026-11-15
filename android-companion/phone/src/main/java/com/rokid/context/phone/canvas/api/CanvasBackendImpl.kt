@@ -787,7 +787,7 @@ class CanvasBackendImpl(
             put("cited", JsonArray(cited.map { JsonPrimitive(it) }))
             put("dependsOn", JsonArray(deps.filter { it !in cited }.map { JsonPrimitive(it) }))
             val photo = answered.photoFrameId?.takeIf { it in frames && it !in gonePhotos }
-            put("photoFrameId", photo); put("photoAtMs", if (photo != null) answered.photoAtMs else null)
+            put("photoFrameId", photo); put("photoAtMs", photo?.let { snap.capturedAt[it] }) // frame_meta capture time, null when unknown
             put("sources", JsonArray(gathered.mapIndexed { i, g ->
                 val frame = g.frameId?.let { frames[it] }?.takeIf { it.id !in gonePhotos }
                 buildJsonObject {
