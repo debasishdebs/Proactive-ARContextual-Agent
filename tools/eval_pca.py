@@ -9,7 +9,7 @@ with an earlier one and lists regressions.
 Phone side: POST /api/ask/eval (Developer mode, authenticated like every /api route; see "Route contract" below).
 Pair first with  tools/m1-run.sh pair <host:port> <code> <fp8>  (this tool reuses its state: host, auth.hdr, cert.der).
 
-Judges: loaded with load_model(<name>) from language_models.py (the rokid-upi-payment-mvp module; --lm-path).
+Judges: loaded with load_model(<name>) from tools/llm/language_models.py (API-only, no torch; --lm-path).
 Credentials come from the .env that module reads (--env-file); nothing secret is printed or written.
 
 Usage:
@@ -40,7 +40,7 @@ import time
 
 ASK_ROUTE = "/api/ask/eval"
 FRAME_ID = re.compile(r"^(?!\.)(?!.*\.\.)(?!.*\.$)[A-Za-z0-9:_.-]{1,64}$")
-DEFAULT_LM_PATH = os.path.expanduser("~/Desktop/rokid/rokid-upi-payment-mvp/phone-app/src/main/python")
+DEFAULT_LM_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "llm")  # API-only language_models.py (no torch)
 DEFAULT_DATASET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testdata/qna-eval/qna-set-v1.jsonl")
 VERDICTS = ("correct", "partial", "wrong", "hallucinated", "refused")
 SCORE = {"correct": 1.0, "partial": 0.5, "wrong": 0.0, "hallucinated": 0.0, "refused": 0.0}
@@ -320,7 +320,7 @@ def main():
     ap.add_argument("--dataset", default=DEFAULT_DATASET)
     ap.add_argument("--judge", action="append", default=[], help="model name for load_model(); repeat for several judges")
     ap.add_argument("--lm-path", default=DEFAULT_LM_PATH, help="folder that holds language_models.py")
-    ap.add_argument("--env-file", default=os.path.join(DEFAULT_LM_PATH, ".env"), help=".env with the judges' credentials")
+    ap.add_argument("--env-file", action="append", default=None, help=".env with the judges' credentials; repeatable (default: tools/llm/.env, then the repo .env)")
     ap.add_argument("--out-dir", default=None, help="default tools/testdata/qna-eval/runs/<timestamp>")
     ap.add_argument("--ids", default="", help="comma-separated question ids")
     ap.add_argument("--set", action="append", default=[], help="only questions whose set contains this text")
@@ -371,7 +371,9 @@ def main():
             time.sleep(a.gap)
 
     if a.judge:
-        load_env(a.env_file)
+        here = os.path.dirname(os.path.abspath(__file__))
+        for path in a.env_file or [os.path.join(here, "llm", ".env"), os.path.join(os.path.dirname(here), ".env")]:
+            load_env(path)  # the first file wins: load_env never overrides a variable already set
         run_judges(load_judges(a.judge, a.lm_path, a.workers), questions, results, a.max_tokens)
 
     with open(os.path.join(out_dir, "results.jsonl"), "w") as f:

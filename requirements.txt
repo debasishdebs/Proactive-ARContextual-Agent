@@ -1,0 +1,22 @@
+# Python tools of the Proactive Context repo (the Android apps build with Gradle and need none of this).
+# API-only: no torch. Install into the project env:  pip install -r requirements.txt
+
+# QnA eval judges: tools/eval_pca.py -> tools/llm/language_models.py (load_model, batched_generate)
+openai>=1.40
+httpx>=0.27
+requests>=2.31
+urllib3>=2.0
+tqdm>=4.66
+python-dotenv>=1.0
+# tiktoken>=0.7          # optional: exact token counts in tools/llm (falls back to ~4 chars per token)
+
+# Motion classifier training (tools/motion-train) and photo contact sheets / reference checks
+numpy>=1.26
+scikit-learn>=1.4
+Pillow>=10.0
+
+# Tests of tools/canvas-helper and tools/trace-lab
+pytest>=8.0
+
+# Not included on purpose: tools/nomic_reference.py (one-off Nomic reference embeddings) needs torch, transformers and
+# sentence-transformers; install those separately only when regenerating the reference file.

@@ -7,7 +7,7 @@
 {"id": "q07", "set": "2026-11-15 market evening", "difficulty": "tough", "question": "Did I buy greens before or after the fruit?", "expected": "Before: greens 21:02-21:05, fruit 21:07"}
 {"id": "q08", "set": "2026-11-15 market evening", "difficulty": "tough", "question": "How did I pay at the corn cart?", "expected": "On the phone with UPI (PIN screen visible, 21:12)"}
 {"id": "q09", "set": "2026-11-15 market evening", "difficulty": "fail", "question": "How many different stalls did I stop at tonight?", "expected": "About 5-6: vegetables, greens, fruit, corn cart, Kolkata Rolls, a general store"}
-{"id": "q10", "set": "2026-11-15 market evening", "difficulty": "fail", "question": "What is my flat number?", "expected": "Never visible: must say it doesn't know"}
+{"id": "q10", "set": "2026-11-15 market evening", "difficulty": "tough", "question": "What is my flat number?", "expected": "The number on the flat sign by the door (seen about 21:47 on 15 Nov); must not invent a different number"}
 {"id": "q11", "set": "2026-11-12 home afternoon", "difficulty": "easy", "question": "Where are my keys hanging?", "expected": "On a wall hook beside the wooden door (about 13:39, marked)"}
 {"id": "q12", "set": "2026-11-12 home afternoon", "difficulty": "easy", "question": "Where did I see the football?", "expected": "On a dark table by the window and balcony (about 13:39, marked)"}
 {"id": "q13", "set": "2026-11-12 home afternoon", "difficulty": "medium", "question": "Where did I see the soccer ball?", "expected": "Same as the football (synonym test; earlier 'football' failed, 'soccer ball' worked)"}
@@ -17,7 +17,7 @@
 {"id": "q17", "set": "2026-11-12 home afternoon", "difficulty": "tough", "question": "When did I last see my keys?", "expected": "About 13:39 on 12 Nov"}
 {"id": "q18", "set": "2026-11-12 home afternoon", "difficulty": "tough", "question": "What was on the TV when I held my phone up to it?", "expected": "A game or satellite-style map; the phone showed the same view (14:08-14:10)"}
 {"id": "q19", "set": "2026-11-12 home afternoon", "difficulty": "tough", "question": "What was on my laptop screen on 12 Nov?", "expected": "Code or a terminal early on; later a beach wallpaper"}
-{"id": "q20", "set": "2026-11-12 home afternoon", "difficulty": "fail", "question": "Where did I keep my shoes?", "expected": "Must NOT answer from the forgotten 'shoes on the floor' photo (Forget test)"}
+{"id": "q20", "set": "2026-11-12 home afternoon", "difficulty": "fail", "question": "Where did I keep my shoes?", "expected": "Forget test: any shoe location from a photo that was NOT forgotten is correct (e.g. a shoe rack). It must NOT say \"on the floor\": that photo was forgotten."}
 {"id": "q21", "set": "2026-11-08 Diwali night", "difficulty": "easy", "question": "Did I burst crackers on Diwali?", "expected": "Yes, outside on 8 Nov from about 21:54 to 22:50"}
 {"id": "q22", "set": "2026-11-08 Diwali night", "difficulty": "easy", "question": "What lights are around my TV unit?", "expected": "Colourful LED strip lights (blue and pink) around the TV and shelves"}
 {"id": "q23", "set": "2026-11-08 Diwali night", "difficulty": "medium", "question": "What time did we go out to burst crackers on 8 Nov?", "expected": "About 21:54"}
