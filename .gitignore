@@ -49,3 +49,6 @@ window.xml
 keystore.properties
 signing/
 .env*
+
+# QnA eval runs hold personal answers and photo thumbnails: never committed
+tools/testdata/qna-eval/runs/
