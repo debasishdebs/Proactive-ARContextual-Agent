@@ -755,26 +755,31 @@ class CanvasBackendImpl(
         val frames = PipelineRecords.framesByIds(app, frameIds).associateBy { it.id }
         val momentDao = graph.db.momentDao()
         val partKinds = listOf(com.rokid.context.memory.db.MomentPartKind.MEMORY, com.rokid.context.memory.db.MomentPartKind.FRAME)
-        class Source(val memoryId: String?, val rank: Int?, val hit: AskDebug.Hit?, val cited: Boolean, val text: String, val createdAt: Long?, val frameId: String?, val moments: List<String>, val momentType: String?)
-        suspend fun moments(refs: List<String>): Pair<List<String>, String?> = momentDao.momentIdsHolding(partKinds, refs).let { m -> m to m.firstOrNull()?.let { momentDao.moment(it)?.momentType?.name } }
+        class Source(val memoryId: String?, val rank: Int?, val hit: AskDebug.Hit?, val cited: Boolean, val text: String, val createdAt: Long?, val frameId: String?)
         val gathered = hits.mapIndexed { i, h ->
-            val frameId = h.frameId ?: memories[h.memoryId]?.frameId
-            val (m, type) = moments(listOfNotNull(h.memoryId, frameId))
-            Source(h.memoryId, if (i < ranked.size) i + 1 else null, h, h.memoryId in cited, h.text.ifEmpty { memories[h.memoryId]?.text.orEmpty() }, memories[h.memoryId]?.createdAt, frameId, m, type)
-        } + citedFrames.map { f -> val (m, type) = moments(listOf(f)); Source(null, null, null, true, "", null, f, m, type) }
+            Source(h.memoryId, if (i < ranked.size) i + 1 else null, h, h.memoryId in cited, h.text.ifEmpty { memories[h.memoryId]?.text.orEmpty() }, memories[h.memoryId]?.createdAt,
+                h.frameId ?: memories[h.memoryId]?.frameId)
+        } + citedFrames.map { f -> Source(null, null, null, true, "", null, f) }
         // Validated in ONE transaction right before the reply is built from it: the generation, the ask row (whose answer is the one returned), every
-        // stored dependency of the ask (cited or not) and every returned memory and photo cite. Anything gone refuses the whole answer.
+        // stored dependency of the ask (cited or not) and every returned memory and photo cite. Anything gone refuses the whole answer. The Moments
+        // and capture times are read inside it too, so a Moment a Forget removed is never named.
         val deps = com.rokid.context.orchestration.AskSources.parseAll(row.sourcesJson)
         val returned = gathered.mapNotNull { it.memoryId } + citedFrames.map { photoPrefix + it }
-        val (now, gonePhotos) = graph.db.withTransaction {
+        class Snapshot(val ask: com.rokid.context.memory.db.AskEntity, val gonePhotos: Set<String>, val moments: List<List<String>>, val momentTypes: List<String?>, val capturedAt: Map<String, Long?>)
+        val snap = graph.db.withTransaction {
             if (MemoryWipe.generation.get() != generation) throw com.rokid.context.canvas.AskRedacted()
             val now = dao.ask(answered.askId)
             if (now == null || now.redacted || now.sourcesJson != row.sourcesJson) throw com.rokid.context.canvas.AskRedacted()
             if (!com.rokid.context.memory.forget.ForgetFence.allLive(graph.db, deps + returned)) throw com.rokid.context.canvas.AskRedacted()
             // a tombstoned (forgotten or expired) photo keeps its memory in the reply but is never named
             val shown = gathered.mapNotNull { it.frameId?.takeIf { f -> f in frames } }.toSet() + listOfNotNull(answered.photoFrameId?.takeIf { it in frames })
-            now to shown.filter { dao.tombstonedAmong(listOf(it)) != 0 }.toSet()
+            val moments = gathered.map { g -> momentDao.momentIdsHolding(partKinds, listOfNotNull(g.memoryId, g.frameId)) }
+            val types = moments.map { m -> m.firstOrNull()?.let { momentDao.moment(it)?.momentType?.name } }
+            val captured = graph.db.frameMetaDao().byIds(shown.toList()).associate { it.frameId to it.capturedAtMs }
+            Snapshot(now, shown.filter { dao.tombstonedAmong(listOf(it)) != 0 }.toSet(), moments, types, captured)
         }
+        val now = snap.ask
+        val gonePhotos = snap.gonePhotos
         return buildJsonObject {
             put("askId", now.id); put("status", "answered"); put("answer", now.answer); put("notice", answered.notice)
             put("mode", view?.mode ?: "UNKNOWN"); put("fallback", view?.fallback ?: false); put("scores", if (view != null) "rerun" else "none")
@@ -783,17 +788,17 @@ class CanvasBackendImpl(
             put("dependsOn", JsonArray(deps.filter { it !in cited }.map { JsonPrimitive(it) }))
             val photo = answered.photoFrameId?.takeIf { it in frames && it !in gonePhotos }
             put("photoFrameId", photo); put("photoAtMs", if (photo != null) answered.photoAtMs else null)
-            put("sources", JsonArray(gathered.map { g ->
+            put("sources", JsonArray(gathered.mapIndexed { i, g ->
                 val frame = g.frameId?.let { frames[it] }?.takeIf { it.id !in gonePhotos }
                 buildJsonObject {
                     put("memoryId", g.memoryId); put("rank", g.rank); put("cited", g.cited); put("inPrompt", g.hit?.inPrompt)
                     if (g.rank != null && g.hit != null) { put("score", g.hit.score); put("lexical", g.hit.lexical); put("semantic", g.hit.semantic); put("fused", g.hit.fused) }
                     put("createdAt", g.createdAt)
                     put("frameIds", JsonArray(listOfNotNull(frame?.id).map { JsonPrimitive(it) }))
-                    put("capturedAtMs", frame?.ts)
+                    put("capturedAtMs", frame?.let { snap.capturedAt[it.id] }) // frame_meta capture time (null when unknown), not the file time
                     put("place", frame?.placeLabel?.let { buildJsonObject { put("label", it) } } ?: JsonNull)
-                    put("momentIds", JsonArray(g.moments.map { JsonPrimitive(it) }))
-                    put("momentId", g.moments.firstOrNull()); put("momentType", g.momentType)
+                    put("momentIds", JsonArray(snap.moments[i].map { JsonPrimitive(it) }))
+                    put("momentId", snap.moments[i].firstOrNull()); put("momentType", snap.momentTypes[i])
                     put("snippet", g.text.take(EVAL_SNIPPET))
                 }
             }))
