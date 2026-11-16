@@ -108,6 +108,7 @@ object HubGraph {
         signal: (Context) -> Unit = { com.rokid.context.work.frames.KeyframeGraph.get(it).signal() },
     ) {
         try { enqueue(app) } finally {
+            ContextHubService.restorePeriodicJobsAsync(app) // v1.1 T7: a frame arrived, so the normal cadence is back (no-op unless reduced)
             coalescer.request(scope) {
                 try { commit(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     PcLog.w(Hub.TAG, "receipt commit failed: ${e.javaClass.simpleName}")

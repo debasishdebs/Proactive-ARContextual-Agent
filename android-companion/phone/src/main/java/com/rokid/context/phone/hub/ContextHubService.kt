@@ -85,6 +85,7 @@ class ContextHubService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             val hub = HubGraph.get(this)
             hub.start(userInitiated = isUserStart(intent)) // only a user start connects at once; every other one (a sticky restart's null intent, an AutoStop wake) goes through the call guard and the hourly cap
+            restorePeriodicJobsAsync(applicationContext) // v1.1 T7: the normal 15 minute cadence again (a no-op unless the stop had reduced it)
             com.rokid.context.work.OrchestrationScheduler(this).ensureBackgroundWork() // the link-up path: retention and the Moment cadence run whatever the pipeline flag says (unique, KEEP)
             com.rokid.context.work.frames.KeyframeGraph.get(this).start() // the hub service owns the keyframe pipeline while it runs
             watcher = CoroutineScope(Dispatchers.Main.immediate).launch {
@@ -147,6 +148,7 @@ class ContextHubService : Service() {
             if (!expectedStop) { AutoStopWake.engine(this).submit(AutoStopEvent.ManualStopped); PcLog.i(TAG, "manual_stop") }
             else AutoStopWake.engine(this).submit(AutoStopEvent.ExpectedStopped) // v1.1 T3: stopped on purpose, so it is not a lost hub
             expectedStop = false
+            reducePeriodicJobsAsync(applicationContext) // v1.1 T7: a stop on purpose (the user's too) with nothing waiting: 60 minute battery-guarded jobs; a LOST hub never gets here
             watcher?.cancel(); closedWatcher?.cancel()
             ClosedNoticeReceiver.notice = null
             cancelClosedNotice(this)
@@ -316,6 +318,16 @@ class ContextHubService : Service() {
             resume?.let { start.putExtra(EXTRA_RESUME, it) }
             return runCatching { context.startForegroundService(start) }
                 .onFailure { PcLog.w(TAG, "start refused: ${it.javaClass.simpleName}") }.isSuccess
+        }
+
+        /** v1.1 T7: off the main thread (prefs, the inbox listing and the queue file are read). Never throws. */
+        internal fun reducePeriodicJobsAsync(app: Context) {
+            kotlin.concurrent.thread(name = "cadence-reduce") { runCatching { com.rokid.context.work.OrchestrationScheduler(app).reducePeriodicJobsIfIdle() } }
+        }
+
+        internal fun restorePeriodicJobsAsync(app: Context) {
+            if (!com.rokid.context.work.OrchestrationScheduler.cadenceReduced(app)) return
+            kotlin.concurrent.thread(name = "cadence-restore") { runCatching { com.rokid.context.work.OrchestrationScheduler(app).restorePeriodicJobs() } }
         }
 
         /** Review hub-wp2 r3: guarded unless explicitly a user start. Only an intent marked [EXTRA_FORCE] (a tapped Reconnect, the app in front) connects the glasses at once; a null intent, an AutoStop wake and any unmarked start go through the call guard and the hourly cap. */

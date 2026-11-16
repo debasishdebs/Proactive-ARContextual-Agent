@@ -11,6 +11,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigReader
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.PipelineStatsStore
@@ -39,11 +40,12 @@ class OrchestrationScheduler(
     private val workManager = WorkManager.getInstance(context)
 
     fun scheduleFrameIngest() {
-        val request = PeriodicWorkRequestBuilder<FrameIngestWorker>(15, TimeUnit.MINUTES)
+        val request = PeriodicWorkRequestBuilder<FrameIngestWorker>(periodMinutes(), TimeUnit.MINUTES)
             .addTag(TAG_FRAME_INGEST)
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
+                    .setRequiresBatteryNotLow(reduced())
                     .build(),
             )
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
@@ -57,8 +59,9 @@ class OrchestrationScheduler(
     }
 
     fun scheduleQueueDrain() {
-        val request = PeriodicWorkRequestBuilder<QueueDrainWorker>(15, TimeUnit.MINUTES)
+        val request = PeriodicWorkRequestBuilder<QueueDrainWorker>(periodMinutes(), TimeUnit.MINUTES)
             .addTag(TAG_QUEUE_DRAIN)
+            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(reduced()).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
         workManager.enqueueUniquePeriodicWork(
@@ -243,9 +246,46 @@ class OrchestrationScheduler(
     }
 
     /** The Moment cadence: every 15 minutes (WorkManager's minimum) the current and the previous hour of stored Moments are rebuilt (see `MomentCadenceWorker`). Unique, KEEP; it only rebuilds a projection, so a pause does not cancel it. */
-    fun ensureMomentCadence() {
-        val request = PeriodicWorkRequestBuilder<com.rokid.context.canvas.moment.MomentCadenceWorker>(15, TimeUnit.MINUTES).build()
-        workManager.enqueueUniquePeriodicWork(com.rokid.context.canvas.moment.MomentCadenceWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+    fun ensureMomentCadence(policy: ExistingPeriodicWorkPolicy = ExistingPeriodicWorkPolicy.KEEP) {
+        val request = PeriodicWorkRequestBuilder<com.rokid.context.canvas.moment.MomentCadenceWorker>(periodMinutes(), TimeUnit.MINUTES)
+            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(reduced()).build())
+            .build()
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.canvas.moment.MomentCadenceWorker.NAME, policy, request)
+    }
+
+    // v1.1 T7: the reduced cadence. While the hub is stopped on purpose with nothing waiting, the three 15-minute jobs (frame ingest, queue drain, Moment cadence) run every
+    // 60 minutes and only with the battery not low (user ruling 2026-11-16: background jobs keep running under battery guards, nothing is cancelled). The flag is persisted so a
+    // process start (ensureBackgroundWork, MainActivity) does not put the 15-minute period back.
+    private fun reduced(): Boolean = cadenceReduced(context)
+    private fun periodMinutes(): Long = if (reduced()) REDUCED_PERIOD_MIN else NORMAL_PERIOD_MIN
+
+    /** True while the periodic jobs run at the reduced cadence. */
+    fun periodicReduced(): Boolean = reduced()
+
+    /**
+     * An EXPECTED stop of the hub (auto, manual or watchdog) with an empty inbox and an empty queue: the periodic jobs fall back to 60 minutes, battery guarded. Anything waiting keeps
+     * the normal cadence (it still has to drain). A LOST hub never calls this (its jobs are its recovery chances). Reads files and prefs: not on Main. True = reduced.
+     */
+    fun reducePeriodicJobsIfIdle(): Boolean {
+        if (reduced()) return true
+        val inboxEmpty = RokidFrameInbox.inboxDir(context).listFiles().orEmpty().none { it.isFile && !it.name.endsWith(".part") }
+        if (!inboxEmpty || QueueRuntimeStore.snapshot(context).totalPending > 0) return false
+        context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_REDUCED, true).commit()
+        reschedulePeriodic()
+        return true
+    }
+
+    /** The hub started, or a frame was stored: the normal 15-minute cadence again. A no-op (one prefs read) when not reduced. */
+    fun restorePeriodicJobs() {
+        if (!reduced()) return
+        context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_REDUCED, false).commit()
+        reschedulePeriodic()
+    }
+
+    /** Re-enqueues the three jobs with the period of the current mode; the ingest and the drain only while processing is on (paused = cancelled, stays so). */
+    private fun reschedulePeriodic() {
+        if (config.isPipelineEnabled(context)) { runCatching { scheduleFrameIngest() }; runCatching { scheduleQueueDrain() } }
+        runCatching { ensureMomentCadence(ExistingPeriodicWorkPolicy.UPDATE) }
     }
 
     /**
@@ -354,6 +394,12 @@ class OrchestrationScheduler(
     }
 
     companion object {
+        /** The reduced-cadence flag (one cached prefs read): the cheap check before any restore work. */
+        fun cadenceReduced(context: Context): Boolean = context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).getBoolean(KEY_REDUCED, false)
+        const val CADENCE_PREFS = "periodic_cadence"
+        private const val KEY_REDUCED = "reduced"
+        const val NORMAL_PERIOD_MIN = 15L
+        const val REDUCED_PERIOD_MIN = 60L
         private const val DELETED_MEANWHILE = "Memory was deleted meanwhile; nothing was queued."
         const val FRAME_INGEST_WORK = "frame_ingest_work"
         const val QUEUE_DRAIN_WORK = "queue_drain_work"
