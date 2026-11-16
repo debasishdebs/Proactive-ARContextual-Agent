@@ -48,6 +48,23 @@ class DeletionGraphWipeTest {
         db.sceneDao().replace(SceneEntity("S00000001", 1, 0, 0, 999, "HOUR_END", null, null, null, 1, 1), listOf(ScenePartEntity("S00000001", "MOMENT", "00000001", "r", 0)))
         m.replaceSensor("00000001", listOf(com.rokid.context.memory.db.MomentSensorEntity("00000001", 5, "t", 1, "OFFSET_ESTIMATED", 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "STILL", null, 1, 1)), 1, "build")
         s.forgetRangeTx(100, 200, 1) // writes the forget-range fence into canvas_meta
+        seedTheRest()
+    }
+
+    /**
+     * Forget lifecycle M1: the registry now lists EVERY table, so the ones this test never seeded by hand (frames, memories, asks, the settings tables ...) get one generated row each: every column of its
+     * declared type (NOT NULL columns included), through `PRAGMA table_info`. The wipe must still empty each WIPED one, and a KEPT one must still hold its row. Tables of `places.db` are not in this database.
+     */
+    private fun seedTheRest() {
+        val raw = db.openHelper.writableDatabase
+        val here = ArrayList<String>()
+        raw.query("SELECT name FROM sqlite_master WHERE type='table'").use { while (it.moveToNext()) here += it.getString(0) }
+        DeletionGraph.TABLES.filter { it.name in here && it.fate != DeletionGraph.Fate.FOLLOWS && rows(raw, it.name) == 0 }.forEach { entry ->
+            val cols = ArrayList<Pair<String, String>>()
+            raw.query("PRAGMA table_info(`${entry.name}`)").use { while (it.moveToNext()) cols += it.getString(1) to it.getString(2).uppercase() }
+            val values = cols.joinToString(",") { (_, type) -> when { "INT" in type -> "1"; "REAL" in type || "FLOA" in type || "DOUB" in type -> "1.0"; "BLOB" in type -> "x'00'"; else -> "'seed'" } }
+            raw.execSQL("INSERT INTO `${entry.name}` (${cols.joinToString(",") { "`${it.first}`" }}) VALUES ($values)")
+        }
     }
 
     @Test fun theRealWipeEmptiesEveryRegisteredWipedTableAndKeepsTheKeptOnes() = runBlocking {
@@ -57,7 +74,7 @@ class DeletionGraphWipeTest {
         assertTrue("registered WIPED tables with no seed row in this test (seed them, or the wipe is unproven): $unseeded", unseeded.isEmpty())
         db.wipeDao().wipeMemory()
         DeletionGraph.wipedTables.forEach { assertEquals("$it must be empty after Delete all", 0, rows(raw, it)) }
-        DeletionGraph.TABLES.filter { it.fate == DeletionGraph.Fate.KEPT }.map { it.name }.filter { it != "canvas_meta" }.forEach { assertEquals("$it is kept by design", 1, rows(raw, it).coerceAtMost(1)) }
+        DeletionGraph.TABLES.filter { it.fate == DeletionGraph.Fate.KEPT }.map { it.name }.filter { it != "canvas_meta" && it !in listOf("area") /* places.db */ }.forEach { assertEquals("$it is kept by design", 1, rows(raw, it).coerceAtMost(1)) }
         assertTrue("the forget-range fence value is emptied (the epoch covers what came before)", db.canvasSlice3Dao().forgottenRanges().isEmpty())
     }
 }

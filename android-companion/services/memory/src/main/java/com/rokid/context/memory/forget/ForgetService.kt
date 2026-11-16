@@ -253,7 +253,7 @@ class ForgetService(
         return spans
     }
 
-    private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"
+    private fun likeFor(id: String) = Companion.likeFor(id)
 
     companion object {
         /** The DEFAULT of [ForgetRadius] (a mark labels the 10 s before it): how far around a forgotten photo's capture time marks and traces are linked to it unless the user set another. */
@@ -268,7 +268,10 @@ class ForgetService(
         /** Proposal states retention never scrubs or disarms (final review C1). */
         private val ACCEPTED = listOf(com.rokid.context.memory.ProposalState.EXECUTING.name, com.rokid.context.memory.ProposalState.EXECUTED.name)
 
-        private fun parseIds(json: String): Set<String> = runCatching {
+        /** The LIKE prefilter of a cited id (exact JSON match follows): shared with the lifecycle planner so both read the same asks and nudges. */
+        internal fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"
+
+        internal fun parseIds(json: String): Set<String> = runCatching {
             val a = JSONArray(json)
             // A trailing {"dependsOn":[...]} (a nudge built from earlier nudges) lists ids the text rests on without citing them: forgetting one redacts too.
             (0 until a.length()).flatMap { i ->

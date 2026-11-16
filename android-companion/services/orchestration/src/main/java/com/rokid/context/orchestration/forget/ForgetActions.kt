@@ -46,10 +46,10 @@ object ForgetActions {
     suspend fun forgetMoment(context: Context, frameId: String, onForgotten: () -> Unit = {}): Boolean = forgetMomentOutcome(context, frameId, onForgotten).committed
 
     suspend fun forgetFactOutcome(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten, LoggedScope.FACT) { it.forgetFact(memoryId) }
+        run(context, onForgotten, LoggedScope.FACT, shadowRoot = com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.MEMORY, memoryId)) { it.forgetFact(memoryId) }
 
     suspend fun forgetMomentOutcome(context: Context, frameId: String, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten, LoggedScope.PHOTO) { it.forgetMoment(frameId) }
+        run(context, onForgotten, LoggedScope.PHOTO, shadowRoot = com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, frameId)) { it.forgetMoment(frameId) }
 
     /**
      * The granular Forget with the user's SCOPE (Photo | Moment | Scene, [ForgetScopeSetting]): memory detail's Forget fact and Forget photo, and any Moment or Scene entry, go through here. Same gate, same typed
@@ -193,13 +193,13 @@ object ForgetActions {
         }
     }
 
-    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: LoggedScope, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
-        run(context, onForgotten, { kind }, op)
+    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref? = null, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
+        run(context, onForgotten, { kind }, shadowRoot, op)
 
-    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
+    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref? = null, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
         withContext(Dispatchers.IO + NonCancellable) {
             try {
-                DataOpGate.shared.delete { runLocked(context, onForgotten, kind, op) }
+                DataOpGate.shared.delete { runLocked(context, onForgotten, kind, shadowRoot, op) }
             } catch (e: DataOpGate.WriteInProgress) {
                 PcLog.w(TAG, "forget not run: save in progress")
                 Outcome.SAVE_IN_PROGRESS
@@ -209,7 +209,8 @@ object ForgetActions {
             }
         }
 
-    private suspend fun runLocked(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, op: suspend (ForgetService) -> ForgetService.Result): Outcome {
+    private suspend fun runLocked(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref?, op: suspend (ForgetService) -> ForgetService.Result): Outcome {
+        val shadow = if (shadowRoot != null) ForgetShadow.before(context, shadowRoot) else null // Forget lifecycle M2: reads only, off by default (DeveloperFlags), never affects the Forget
         val r = try {
             val graph = MemoryGraph.get(context)
             op(ForgetService(graph.db, graph.proposals))
@@ -228,6 +229,7 @@ object ForgetActions {
         }
         // Committed: everything after this is best effort and never turns the Forget into a failure.
         runCatching { logDone(kind(), r) }
+        runCatching { ForgetShadow.after(shadow, kind(), r) }
         val cacheClean = apply(context, r)
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }

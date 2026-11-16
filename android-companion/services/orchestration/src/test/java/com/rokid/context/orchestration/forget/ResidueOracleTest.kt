@@ -484,6 +484,107 @@ class ResidueOracleTest {
         assertClean("mark undo (before the rebuild)", listOf(undoMark))
     }
 
+    // ---- Forget lifecycle M0: the exact delete set of each path on the FULL world (Moments, Scenes, run rows of both, derived fields, sensor rows, export) ----
+
+    /** Row-level snapshot of every table (primary key to row text); the delta of a path is what was deleted, changed or added. Same method as `memory/.../DbSnapshot`; keys only are rendered. */
+    private fun snapshot(): Map<String, Map<String, String>> {
+        val sdb = h.db.openHelper.readableDatabase
+        val tables = ArrayList<String>()
+        sdb.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'room_%' AND name NOT LIKE 'android_%' AND name NOT LIKE 'memory_fts%'").use { c -> while (c.moveToNext()) tables += c.getString(0) }
+        return tables.associateWith { t ->
+            val pk = ArrayList<Pair<Int, String>>(); val cols = ArrayList<String>()
+            sdb.query("PRAGMA table_info(`$t`)").use { c -> while (c.moveToNext()) { cols += c.getString(1); if (c.getInt(5) > 0) pk += c.getInt(5) to c.getString(1) } }
+            val keyCols = pk.sortedBy { it.first }.map { it.second }.ifEmpty { listOf(cols.first()) }
+            val rows = HashMap<String, String>()
+            sdb.query("SELECT * FROM `$t`").use { c ->
+                val idx = keyCols.map { c.getColumnIndex(it) }
+                while (c.moveToNext()) rows[idx.joinToString("|") { c.getString(it) ?: "null" }] = (0 until c.columnCount).joinToString("\u0001") { i -> if (c.getType(i) == android.database.Cursor.FIELD_TYPE_BLOB) "blob${c.getBlob(i).size}" else (c.getString(i) ?: "null") }
+            }
+            rows
+        }
+    }
+    private fun renderDelta(before: Map<String, Map<String, String>>, after: Map<String, Map<String, String>>): String = listOf("deleted", "changed", "added").flatMap { label ->
+        (before.keys + after.keys).sorted().filter { !(label == "added" && it == "summary_trace") }.mapNotNull { t -> // summary_trace: background workers append trace notes (random ids) at any time
+            val a = before[t].orEmpty(); val b = after[t].orEmpty()
+            val keys = when (label) { "deleted" -> a.keys - b.keys; "added" -> b.keys - a.keys; else -> a.keys.intersect(b.keys).filter { a[it] != b[it] } }
+            if (keys.isEmpty()) null else "$label $t: ${keys.sorted().joinToString(", ")}"
+        }
+    }.joinToString("\n")
+    private suspend fun golden(expected: String, op: suspend () -> Unit) {
+        world(); val before = snapshot(); op()
+        assertEquals(expected.trimIndent().trim(), renderDelta(before, snapshot()))
+    }
+
+    /** The transactional core of a Forget (the post-commit re-summarise of ForgetActions.apply is asynchronous and would make the set time-dependent). */
+    private fun svc() = com.rokid.context.memory.forget.ForgetService(h.db, com.rokid.context.memory.ProposalRepository(h.db.proposalDao(), h.db.actionDao(), h.db))
+    @Test fun goldenForgetFact() = runBlocking { golden("""
+            deleted canvas_label: mark-FORGOT
+            deleted canvas_run_item: run1|moment:68f6b0ea|ask, run1|moment:68f6b0ea|in, run1|moment:68f6b464|ask, run1|moment:68f6b6bc|ask, run2|scene:S68f6b0ea|ask, run2|scene:S68f6b0ea|in, run2|scene:S68f6b464|ask, run2|scene:S68f6b6bc|ask
+            deleted memory: mem-FORGOT
+            deleted memory_source: mem-DERIVED|mem-FORGOT
+            deleted moment: 68f6b0ea
+            deleted moment_part: 68f6b0ea|CITE|frame:frame-FORGOT, 68f6b0ea|FRAME|frame-FORGOT, 68f6b0ea|MEMORY|mem-FORGOT
+            deleted moment_sensor: 68f6b0ea|1760997610
+            deleted object_audit: MOMENT|68f6b0ea|1, MOMENT|68f6b0ea|2, MOMENT|68f6b0ea|3, MOMENT|68f6b0ea|4, MOMENT|68f6b0ea|5, SCENE|S68f6b0ea|1, SCENE|S68f6b0ea|2
+            deleted object_derived: MOMENT|68f6b0ea|SUMMARY
+            deleted scene: S68f6b0ea
+            deleted scene_part: S68f6b0ea|MOMENT|68f6b0ea
+            changed ask: ask-FORGOT
+            changed canvas_meta: labelRev
+            changed memory: mem-DERIVED
+            added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
+            added cleanup_outbox: 1, 2
+            added forget_tombstone: frame-FORGOT
+        """) { svc().forgetFact(mem) } }
+    @Test fun goldenForgetPhoto() = runBlocking { golden("""
+            deleted canvas_label: mark-FORGOT
+            deleted canvas_run_item: run1|moment:68f6b0ea|ask, run1|moment:68f6b0ea|in, run1|moment:68f6b464|ask, run1|moment:68f6b6bc|ask, run2|scene:S68f6b0ea|ask, run2|scene:S68f6b0ea|in, run2|scene:S68f6b464|ask, run2|scene:S68f6b6bc|ask
+            deleted frame: frame-FORGOT
+            deleted frame_meta: frame-FORGOT
+            deleted memory: mem-FORGOT
+            deleted memory_source: mem-DERIVED|mem-FORGOT
+            deleted moment: 68f6b0ea
+            deleted moment_part: 68f6b0ea|CITE|frame:frame-FORGOT, 68f6b0ea|FRAME|frame-FORGOT, 68f6b0ea|MEMORY|mem-FORGOT
+            deleted moment_sensor: 68f6b0ea|1760997610
+            deleted object_audit: MOMENT|68f6b0ea|1, MOMENT|68f6b0ea|2, MOMENT|68f6b0ea|3, MOMENT|68f6b0ea|4, MOMENT|68f6b0ea|5, SCENE|S68f6b0ea|1, SCENE|S68f6b0ea|2
+            deleted object_derived: MOMENT|68f6b0ea|SUMMARY
+            deleted scene: S68f6b0ea
+            deleted scene_part: S68f6b0ea|MOMENT|68f6b0ea
+            changed ask: ask-FORGOT
+            changed canvas_meta: labelRev
+            changed memory: mem-DERIVED
+            added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
+            added cleanup_outbox: 1, 2, 4
+            added forget_tombstone: frame-FORGOT
+        """) { svc().forgetMoment(frame) } }
+    @Test fun goldenMarkUndo() = runBlocking { golden("""
+            deleted canvas_label: mark-UNDO
+            deleted canvas_run_item: run1|moment:68f6b6bc|ask, run1|moment:68f6b6bc|in, run2|scene:S68f6b6bc|ask, run2|scene:S68f6b6bc|in
+            changed canvas_meta: labelRev
+            added object_audit: MOMENT|68f6b6bc|2, SCENE|S68f6b6bc|2
+        """) { assertTrue(h.dao3.deleteLabel(undoMark)) } }
+    @Test fun goldenDeleteAll() = runBlocking { golden("""
+            deleted ask: ask-FORGOT
+            deleted canvas_label: mark-FORGOT, mark-UNDO
+            deleted canvas_run: run-watch, run1, run2
+            deleted canvas_run_item: run-watch|watch:1000|n, run1|moment:68f6b0ea|ask, run1|moment:68f6b0ea|in, run1|moment:68f6b464|ask, run1|moment:68f6b464|in, run1|moment:68f6b6bc|ask, run1|moment:68f6b6bc|in, run2|scene:S68f6b0ea|ask, run2|scene:S68f6b0ea|in, run2|scene:S68f6b464|ask, run2|scene:S68f6b464|in, run2|scene:S68f6b6bc|ask, run2|scene:S68f6b6bc|in
+            deleted frame: frame-FORGOT, frame-KEEP
+            deleted frame_meta: frame-FORGOT, frame-KEEP
+            deleted memory: mem-DERIVED, mem-FORGOT, mem-KEEP
+            deleted memory_source: mem-DERIVED|mem-FORGOT
+            deleted moment: 68f6b0ea, 68f6b464, 68f6b6bc
+            deleted moment_part: 68f6b0ea|CITE|frame:frame-FORGOT, 68f6b0ea|FRAME|frame-FORGOT, 68f6b0ea|MEMORY|mem-FORGOT, 68f6b464|FRAME|frame-KEEP, 68f6b464|MEMORY|mem-KEEP, 68f6b6bc|MARK|mark-UNDO
+            deleted moment_sensor: 68f6b0ea|1760997610
+            deleted object_audit: MOMENT|68f6b0ea|1, MOMENT|68f6b0ea|2, MOMENT|68f6b0ea|3, MOMENT|68f6b0ea|4, MOMENT|68f6b0ea|5, MOMENT|68f6b464|1, MOMENT|68f6b6bc|1, SCENE|S68f6b0ea|1, SCENE|S68f6b0ea|2, SCENE|S68f6b464|1, SCENE|S68f6b6bc|1
+            deleted object_derived: MOMENT|68f6b0ea|SUMMARY
+            deleted scene: S68f6b0ea, S68f6b464, S68f6b6bc
+            deleted scene_part: S68f6b0ea|MOMENT|68f6b0ea, S68f6b464|MOMENT|68f6b464, S68f6b6bc|MOMENT|68f6b6bc
+            changed canvas_meta: labelRev
+            added canvas_helper_cleanup: 1
+            added canvas_meta: frame_forget_rev
+            added cleanup_outbox: 1
+        """) { MemoryWipe.deleteAll(app) } }
+
     @Ignore("GAP-9: frame_cluster.repFrameIds keeps the id of a forgotten photo (ids only); see the design doc section 5")
     @Test fun gap9ClusterRowsDoNotKeepAForgottenFrameId() = runBlocking {
         world()
