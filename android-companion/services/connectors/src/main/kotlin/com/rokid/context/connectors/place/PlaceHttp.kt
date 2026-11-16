@@ -4,8 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.launch
 import com.rokid.context.memory.place.currentZoneTicket
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -57,10 +55,11 @@ class UrlConnectionPlaceHttp(
             lastByHost[u.host] = clock()
         }
         return withContext(Dispatchers.IO) {
-            ticket?.check() // after the host gap and the dispatch hop, immediately before the connection exists
-            val c = u.openConnection() as HttpURLConnection
-            // The fence closing cancels this coroutine: the blocking connection is torn down from here at once (a read in flight does not wait for its timeout).
-            val watcher = launch { try { awaitCancellation() } finally { runCatching { c.disconnect() } } }
+            val c = u.openConnection() as HttpURLConnection // not connected yet: no byte leaves before connect()
+            val tripped = java.util.concurrent.atomic.AtomicBoolean(false)
+            // Registered synchronously, and the registration IS the admission check (one step under the fence lock): a close before it throws, a close after it runs this hook on the
+            // closing thread, so a blocked connect/read is torn down at once. No watcher coroutine whose start could be cancelled away.
+            val reg = ticket?.onClose { tripped.set(true); runCatching { c.disconnect() } }
             try {
                 c.connectTimeout = connectTimeoutMs; c.readTimeout = readTimeoutMs
                 c.instanceFollowRedirects = false
@@ -70,6 +69,10 @@ class UrlConnectionPlaceHttp(
                 if (body != null) {
                     c.requestMethod = "POST"; c.doOutput = true
                     c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+                }
+                c.connect() // handshake only; the request line (with the cell) and the body go out after this
+                if (tripped.get()) throw com.rokid.context.memory.place.ZoneFenced()
+                if (body != null) {
                     c.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
                 }
                 val code = c.responseCode
@@ -85,7 +88,9 @@ class UrlConnectionPlaceHttp(
                     }
                     out.toString("UTF-8")
                 }
-            } finally { watcher.cancel(); c.disconnect() }
+            } catch (e: IOException) {
+                if (tripped.get()) throw com.rokid.context.memory.place.ZoneFenced() else throw e
+            } finally { reg?.close(); c.disconnect() }
         }
     }
 
