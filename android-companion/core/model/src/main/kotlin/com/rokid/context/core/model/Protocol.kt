@@ -63,6 +63,8 @@ object Channels {
     val stillFrac5m: Float = -1f,
     /** v0.9.7 A, additive: the hash of the classifier thresholds the glasses run (`default` or 12 hex); null from an old glasses build. */
     val classifierHash: String? = null,
+    /** v1.0 wear fallback, additive: true = the glasses estimate "not worn (estimated)" ([WearEstimate]); false = no estimate; null = an old glasses build (never a guess). */
+    val wearEst: Boolean? = null,
 )
 
 /** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
@@ -72,6 +74,8 @@ object Channels {
     val atMs: Long,
     /** Fix wave I, additive: when the phone's current glasses session began (phone clock). A value seen before it is stale and ignored; 0 = not sent (old phone). */
     val sessionStartMs: Long = 0L,
+    /** v1.0 wear fallback, additive: the glasses' system wear check as the phone last read it (true = on, false = off); null = not known (or an old phone). */
+    val wearCheck: Boolean? = null,
 )
 
 /** Phone to glasses on `pc_auto_open` (fix wave I): the phone reopened the app by itself a moment ago; it must stay in icon mode. */

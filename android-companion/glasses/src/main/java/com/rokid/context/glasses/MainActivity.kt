@@ -303,6 +303,7 @@ class MainActivity : ComponentActivity() {
 
     /** Touchpad keys are ours: KEYCODE_NOTIFICATION must never reach the system, or it moves our task to the back. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) runtime.wear.onInteraction() // v1.0 wear fallback: a touch on the pad is the wearer (ends "not worn (estimated)")
         if (hudHidden.value) return super.dispatchKeyEvent(event) // M3: nothing is visible, so no key may answer a Confirm
         val r = when (event.action) {
             KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis(), exitGate !is ExitGate.Idle)
@@ -317,7 +318,7 @@ class MainActivity : ComponentActivity() {
 
     /** BACK is a double-tap on some firmware (Live Fit); never page navigation, never "exit". */
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
-    override fun onBackPressed() = handle(keys.onBack(System.currentTimeMillis(), exitGate !is ExitGate.Idle))
+    override fun onBackPressed() { runtime.wear.onInteraction(); handle(keys.onBack(System.currentTimeMillis(), exitGate !is ExitGate.Idle)) }
 
     private fun scheduleSwipeClose() {
         swipeTimer.removeCallbacks(closeSwipe)

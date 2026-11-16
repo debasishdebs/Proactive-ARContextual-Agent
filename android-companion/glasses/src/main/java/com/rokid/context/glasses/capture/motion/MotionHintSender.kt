@@ -13,6 +13,8 @@ class MotionHintSender(
     private val clock: () -> Long,
     /** v0.9.7 A: the hash of the classifier thresholds in force, echoed on every hint; null = not reported. A change is sent at the next second. */
     private val classifierHash: () -> String? = { null },
+    /** v1.0 wear fallback: the glasses' "not worn (estimated)" ([WearDetector.estimated]), echoed on every hint; null = not reported. A change is sent at the next second. */
+    private val wearEst: () -> Boolean? = { null },
     private val send: (MotionHint) -> Boolean,
 ) {
     private val ring = BooleanArray(SLOTS)
@@ -24,6 +26,7 @@ class MotionHintSender(
     private var lastSentWalking = false
     private var force = false
     private var lastSentHash: String? = null
+    private var lastSentEst: Boolean? = null
 
     /** Send at the next second whatever the cadence (the session just opened). */
     @Synchronized fun forceNext() { force = true }
@@ -33,11 +36,12 @@ class MotionHintSender(
         val walking = state == MotionState.WALKING
         val since = nowMs - lastSendAt
         val hash = classifierHash()
-        if (force || hash != lastSentHash || (walking != lastSentWalking && since >= MIN_GAP_MS) || since >= REFRESH_MS) {
+        val est = wearEst()
+        if (force || hash != lastSentHash || est != lastSentEst || (walking != lastSentWalking && since >= MIN_GAP_MS) || since >= REFRESH_MS) {
             force = false
             val frac = if (filled < MIN_SLOTS) -1f else stills.toFloat() / filled
             // A failed send (session closed, bridge error) is not a send: it is retried on the next second.
-            if (send(MotionHint(state = state, atMs = clock(), stillFrac5m = frac, classifierHash = hash))) { lastSendAt = nowMs; lastSentWalking = walking; lastSentHash = hash }
+            if (send(MotionHint(state = state, atMs = clock(), stillFrac5m = frac, classifierHash = hash, wearEst = est))) { lastSendAt = nowMs; lastSentWalking = walking; lastSentHash = hash; lastSentEst = est }
         }
         val still = state == MotionState.STILL
         if (filled == SLOTS && ring[next]) stills--

@@ -340,7 +340,7 @@ class CaptureService : LifecycleService() {
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
             glanceKeep = guard::keep,
         )
-        hintSender = MotionHintSender(clock, classifierHash = { classifierHashNow }) { h -> runtime.controller?.sendMotionHint(h) == true }
+        hintSender = MotionHintSender(clock, classifierHash = { classifierHashNow }, wearEst = { runtime.wear.estimated.value }) { h -> runtime.controller?.sendMotionHint(h) == true }
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
         exprSignals.reset() // a capture session restart empties every window history (3c C1b)

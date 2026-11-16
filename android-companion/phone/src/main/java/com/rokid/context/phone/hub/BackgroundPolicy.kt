@@ -104,6 +104,12 @@ object BackgroundPolicy {
     enum class Away(val token: String, val word: String) {
         NOT_WORN("auto_stop_not_worn", "not worn"),
         DISCONNECTED("auto_stop_disconnected", "not connected"),
+        /**
+         * v1.0 wear fallback: the glasses estimate "not worn (estimated)" ([com.rokid.context.core.model.WearEstimate]: 10 min with no head micro-motion and no
+         * interaction, only while the system wear check is not on). The away window starts when the phone receives the estimate, so the hub stops N min after it,
+         * that is [com.rokid.context.core.model.WearEstimate.WINDOW_MS] + N after the last head motion (default 10 + 20 = 30 min), always longer than a real off-head event (N).
+         */
+        NOT_WORN_EST("auto_stop_not_worn_est", com.rokid.context.core.model.WearEstimate.WORD),
     }
 
     /**
@@ -111,9 +117,10 @@ object BackgroundPolicy {
      * Link up with the wear signal unknown counts as present (the "up within the last N min" rule: it turns into away the moment the link drops).
      * A link whose glasses app was closed ([LinkState.CLOSED_ON_GLASSES], VERSION_MISMATCH) still reaches the glasses: present unless worn == false.
      */
-    fun away(link: LinkState, worn: Boolean?): Away? = when {
+    fun away(link: LinkState, worn: Boolean?, estimated: Boolean = false): Away? = when {
         link == LinkState.OFFLINE || link == LinkState.PAUSED_BT || link == LinkState.NOT_AUTHORIZED || link == LinkState.CONNECTING -> Away.DISCONNECTED
-        worn == false -> Away.NOT_WORN
+        worn == false -> Away.NOT_WORN // a real off-head always wins over the estimate
+        estimated -> Away.NOT_WORN_EST // [GlassesWearEstimate.active]: already gated on the system wear check being off
         else -> null
     }
 
@@ -155,4 +162,7 @@ object BackgroundPolicy {
 
     /** The status line after the hub stopped itself; null when it did not. [time] is a local HH:mm. */
     fun stoppedNote(reason: Away, sinceText: String): String = "Stopped: glasses ${reason.word} since $sinceText. Tap to start"
+
+    /** The time the note names: for the estimate, when the glasses went still (the estimate arrives [com.rokid.context.core.model.WearEstimate.WINDOW_MS] later). */
+    fun noteSinceMs(reason: Away, sinceMs: Long): Long = if (reason == Away.NOT_WORN_EST) (sinceMs - com.rokid.context.core.model.WearEstimate.WINDOW_MS).coerceAtLeast(0L) else sinceMs
 }
