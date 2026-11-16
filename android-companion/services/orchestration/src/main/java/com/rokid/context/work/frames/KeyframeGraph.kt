@@ -77,6 +77,8 @@ object KeyframeGraph {
      * stops. [KeyframeHandle.signal] pokes it (a failure there never reaches the pipeline).
      */
     @Volatile var intentSampler: com.rokid.context.work.frames.intent.IntentSampler? = null
+    /** Place Guide: the matcher the hub installs; poked after each committed frame like [intentSampler] (it does nothing unless the switch is on and the frame is a dwell photo). */
+    @Volatile var placeSampler: com.rokid.context.work.frames.place.PlaceSampler? = null
 
     /**
      * Test override of the canvas intent sink. [FrameIntentSink.None] (the default) means the production writer: [com.rokid.context.work.frames.intent.FrameIntentWriter]
@@ -188,6 +190,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     fun signal() {
         pipeline.start(scope); pipeline.signal()
         try { KeyframeGraph.intentSampler?.poke() } catch (e: Exception) { PcLog.w(TAG, "intent poke failed: ${e.javaClass.simpleName}") }
+        try { KeyframeGraph.placeSampler?.poke() } catch (e: Exception) { PcLog.w(TAG, "place poke failed: ${e.javaClass.simpleName}") }
     }
 
     /**
@@ -210,6 +213,8 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     /** Whether the active network has validated internet access (ConnectivityManager). Unknown counts as online: only a clear "no" means offline. */
+    internal fun networkUp(): Boolean = networkValidated()
+
     private fun networkValidated(): Boolean = try {
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val caps = cm?.activeNetwork?.let(cm::getNetworkCapabilities)

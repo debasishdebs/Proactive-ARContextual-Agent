@@ -23,7 +23,9 @@ enum class PromptKey(val role: Role?, val label: String, val imageUse: ImageUse 
     /** Wave 2: one call summarises up to 3 closed scene clusters. Appended so [of] still returns VISION_EXTRACT for the role. */
     CLUSTER_SUMMARY(Role.VISION_EXTRACT, "Scene summaries", ImageUse.REQUIRED),
     /** Wave B: one photo in, the wearer's activity out ([IntentOutput]). Appended after [CLUSTER_SUMMARY]; [of] still returns VISION_EXTRACT for the role. */
-    INTENT_CLASSIFY(Role.VISION_EXTRACT, "Activity from a photo", ImageUse.REQUIRED);
+    INTENT_CLASSIFY(Role.VISION_EXTRACT, "Activity from a photo", ImageUse.REQUIRED),
+    /** Place Guide: one photo plus numbered candidate names in, a candidate number or NONE out ([PlaceMatchOutput]). Appended after [INTENT_CLASSIFY]. */
+    PLACE_MATCH(Role.VISION_EXTRACT, "Place from a photo", ImageUse.REQUIRED);
 
     /** The input is the photo: no retry path ever drops it (see [ImageUse.REQUIRED]). */
     val requiresImage: Boolean get() = imageUse == ImageUse.REQUIRED

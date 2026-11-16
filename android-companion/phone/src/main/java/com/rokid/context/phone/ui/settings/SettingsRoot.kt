@@ -102,7 +102,9 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
         "Capture & privacy" to listOf(
             SettingRow(Icons.Outlined.Schedule, PcColors.ChipAmber, "Capture schedule", state.captureSummary, Routes.SETTINGS_CAPTURE),
             SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", "Pause, quiet hours", Routes.SETTINGS_PRIVACY),
-        ),
+        ) + if (developerMode) listOf(
+            SettingRow(Icons.Outlined.Search, PcColors.ChipMint, "Place Guide", "Monument cards, seed an area", Routes.SETTINGS_PLACE_GUIDE),
+        ) else emptyList(),
         "AI" to listOf(
             SettingRow(Icons.Outlined.AccountTree, PcColors.ChipViolet, "Agent flows", "See and tune each step of every agent", Routes.SETTINGS_FLOWS),
             SettingRow(Icons.Outlined.DownloadForOffline, PcColors.ChipMint, "On-device models", "Run search models on your phone", Routes.SETTINGS_LOCAL_MODELS),

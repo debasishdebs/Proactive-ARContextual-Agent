@@ -630,10 +630,14 @@ class Hub(
         if (s.link.carriesData && link.send(Channels.STATE, Wire.encode(frame))) actions.onShown(frame.overlay)
     }
 
+    /** Place Guide seam (PG2): the place card as an [Overlay], or null. Nothing maps a card onto the wire yet (PG3 adds the additive protocol field and sets this). */
+    @Volatile var placeOverlay: () -> Overlay? = { null }
+
     private fun overlay(): Overlay? {
         // rc1 fix: never a frame of an Answer a Forget withdrew, even if the voice side has not cleared it yet
         val v = voice.overlay.value.takeUnless { o -> o is Overlay.Answer && o.askId != null && o.askId in recentlyWithdrawn(clock()) }
-        return pickOverlay(v, actions.overlay.value, minimisedHint ?: nudges.overlay.value)
+        // PG3 maps the place card (PlaceGraph.port.card) onto an additive wire overlay and passes it here; until then no place overlay exists on the wire.
+        return pickOverlay(v, actions.overlay.value, minimisedHint ?: nudges.overlay.value, place = placeOverlay())
     }
 
     /** Ask ids a committed Forget redacted or deleted, with the phone time they were withdrawn (newest last); bounded by [WITHDRAWN_MAX] and [WITHDRAWN_HINT_MS]. */
@@ -662,16 +666,16 @@ class Hub(
         const val TAG = "ContextHub"
 
         /**
-         * Precedence (Phase 7): voice Listening > actions (Confirm/undo toast) > other voice overlays > nudge.
+         * Precedence (Phase 7): voice Listening > actions (Confirm/undo toast) > other voice overlays > place card > nudge (Place Guide, PG2: `place ?: nudge`).
          * BUG-R2-5: an undo toast and an Answer at once (either order) become the Answer carrying the undo, so the wearer
          * sees both and a double-tap undoes while the window is open.
          */
-        fun pickOverlay(voice: Overlay?, actions: Overlay?, nudge: Overlay?): Overlay? {
+        fun pickOverlay(voice: Overlay?, actions: Overlay?, nudge: Overlay?, place: Overlay? = null): Overlay? {
             if (voice is Overlay.Listening) return voice
             if (voice is Overlay.Answer && actions is Overlay.Toast && actions.undoProposalId != null) {
                 return voice.copy(undoProposalId = actions.undoProposalId)
             }
-            return actions ?: voice ?: nudge
+            return actions ?: voice ?: (place ?: nudge)
         }
         const val HELLO_REQUEST_MIN_INTERVAL_MS = 10_000L
         /** How long a withdrawn ask stays in the frames' `withdrawnAskIds`: six heartbeats, so a glasses app that reconnects within it still hears it. */

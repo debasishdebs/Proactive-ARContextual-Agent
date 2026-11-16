@@ -51,6 +51,10 @@ object RoleContracts {
                 (o.getValue("confidence") as JsonPrimitive).double.toFloat().coerceIn(0f, 1f),
                 extras(o, "label", "confidence"),
             )
+            // "choice" and "confidence" are required; "box" (and anything else) stays in extras and is ignored. No free text is read.
+            PromptKey.PLACE_MATCH -> PlaceMatchOutput(
+                str(o, "choice").trim().take(40), (o.getValue("confidence") as JsonPrimitive).double.toFloat().coerceIn(0f, 1f), extras(o, "choice", "confidence"),
+            )
             PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->
                     val fo = f.jsonObject
@@ -99,6 +103,7 @@ object RoleContracts {
                     ?.let { add("captions for photos that were not sent: ${it.take(3).joinToString(", ") { c -> c.frameId }}") }
             }
             is IntentOutput -> Unit
+            is PlaceMatchOutput -> Unit
             is SummaryOutput -> if (output.confidence !in 0.0..1.0) add("confidence must be 0–1")
             is CriticOutput -> Unit
             is AnswerOutput -> {

@@ -177,7 +177,7 @@ object HubGraph {
         val watchdogRef = java.util.concurrent.atomic.AtomicReference<GlassesWatchdog>()
         val ctxSettings = com.rokid.context.phone.context.ContextSourceSettings.of(app)
         // Pause zones: the same foreground location type is also held while any enabled zone exists (no background location, no geofencing).
-        com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxSettings.enabled(com.rokid.context.phone.context.SpeedSource.ID) || com.rokid.context.phone.zone.ZoneGraph.get(app).wantsLocation() }
+        com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxSettings.enabled(com.rokid.context.phone.context.SpeedSource.ID) || com.rokid.context.phone.zone.ZoneGraph.get(app).wantsLocation() || com.rokid.context.work.frames.place.PlaceGuideSettings.of(app).enabled }
         var sourcesOn = BackgroundPolicy.CONTEXT_SOURCE_IDS.count(ctxSettings::enabled)
         ctxScope.launch { ctxSettings.changes.collect {
             ContextHubService.refreshLocationType(app)
@@ -190,6 +190,14 @@ object HubGraph {
             locationHeld = { ContextHubService.locationHeld.value }, onChange = { ContextHubService.refreshLocationType(app) },
         )
         ctxRegistry.register(speed); ctxRegistry.speed = speed
+        // Place Guide (PG2): poked after each committed frame; does nothing unless its switch is on, the frame is a dwell photo and no pause zone is active, approaching or unreadable (fail closed).
+        com.rokid.context.work.frames.KeyframeGraph.placeSampler?.close()
+        val placeFixes = com.rokid.context.phone.place.PlaceFixProvider.create(app) { com.rokid.context.phone.zone.ZoneGraph.peek() }
+        com.rokid.context.work.frames.KeyframeGraph.placeSampler = com.rokid.context.work.frames.place.PlaceSamplers.create(
+            app, ctxScope, fix = placeFixes::fresh,
+            zoneBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || pauses.zoneRecords().isNotEmpty() },
+            onCard = com.rokid.context.work.frames.place.PlaceGraph.port::publish,
+        )
         // Opt-in, default off. Calls only inside a vehicle episode a listed Bluetooth device started; never pauses or throttles capture.
         ctxRegistry.register(com.rokid.context.phone.context.ImageIntentSource(
             sinkFor = ctxHub::sinkFor, decision = { ctxHub.decision.value }, stats = ctxHub.stats,

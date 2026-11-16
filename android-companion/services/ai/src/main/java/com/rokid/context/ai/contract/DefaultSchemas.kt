@@ -84,6 +84,11 @@ object DefaultSchemas {
         {"type":"object","properties":{"label":{"type":"string","enum":["SITTING_IDLE","WORKOUT","COMPUTER_WORK","DRIVING","VEHICLE_PASSENGER","FLIGHT_CABIN","WALKING","OTHER"]},"confidence":{"type":"number"}},"required":["label","confidence"]}
     """.trimIndent()
 
+    /** PLACE_MATCH (Place Guide B4): a candidate number or NONE and a confidence; an optional box is ignored. No free-text field. */
+    private val PLACE = """
+        {"type":"object","properties":{"choice":{"type":"string","maxLength":8},"confidence":{"type":"number"},"box":{"type":"array","maxItems":4,"items":{"type":"number"}}},"required":["choice","confidence"],"additionalProperties":false}
+    """.trimIndent()
+
     private val SUMMARY = """
         {"type":"object","properties":{"summary":{"type":"string","minLength":1,"maxLength":1000},
           "events":{"type":"array","items":{"type":"string"}},"entities":{"type":"array","items":{"type":"string"}},
@@ -119,6 +124,7 @@ object DefaultSchemas {
         PromptKey.VISION_EXTRACT -> VISION_FACTS
         PromptKey.CLUSTER_SUMMARY -> CLUSTER_FACTS
         PromptKey.INTENT_CLASSIFY -> INTENT
+        PromptKey.PLACE_MATCH -> PLACE
         PromptKey.EXPLICIT_REMEMBER -> FACTS
         PromptKey.SUMMARIZE -> SUMMARY
         PromptKey.CRITIC -> CRITIC

@@ -151,6 +151,10 @@ object MemoryWipe {
             context.getExternalFilesDir(null)?.let { File(it, FencedFiles.STAGING_DIR) }?.let { d -> d.deleteRecursively(); if (d.exists()) leftovers++ }
             // Slice 3a privacy: the persisted capture-plan state and the Collect session window go too.
             WIPED_PREFS.forEach { if (!clearWipedPrefs(context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE), it)) leftovers++ }
+            // Place Guide: the fetched places and their recency go; seeded areas stay and pause zones are never touched (they are not in places.db).
+            try { com.rokid.context.work.frames.place.PlaceGraph.deleteAll(context) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                leftovers++; PcLog.w("MemoryWipe", "place pack not cleared: ${SafeLog.describe(e)}")
+            }
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             // Slice 3a (S58): files and devices follow through the registered listeners (the glasses get the NEW epoch). After everything above; never throws.
