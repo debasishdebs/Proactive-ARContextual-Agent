@@ -109,7 +109,9 @@ class GlassesRuntime private constructor(private val app: Context) {
     @Volatile private var localMotion = MotionState.STILL
     @Volatile private var lastWalkAtMs: Long? = null
     /** The capture service reports the local classifier state (and null-resets it on stop) for the walking veto. */
-    internal fun noteLocalMotion(s: MotionState, nowMs: Long) { localMotion = s; if (s == MotionState.WALKING) lastWalkAtMs = nowMs }
+    internal fun noteLocalMotion(s: MotionState, nowMs: Long) { localMotion = s; if (s == MotionState.WALKING) lastWalkAtMs = nowMs; motionListener?.invoke(s) }
+    /** Place Guide PG3: the HUD's place-card dismissal listens for head-motion onset here (set by the activity while it exists). */
+    @Volatile internal var motionListener: ((MotionState) -> Unit)? = null
     internal fun resetLocalMotion() { localMotion = MotionState.STILL }
     /**
      * The context state to apply right now, computed on demand from the gate (TTL, apply flag, kill switch, local walking

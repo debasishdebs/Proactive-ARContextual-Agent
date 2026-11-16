@@ -31,6 +31,7 @@ import com.rokid.context.core.hud.HudToast
 import com.rokid.context.core.hud.Label
 import com.rokid.context.core.hud.OutlinedBox
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.core.model.PlaceCardInfo
 
 /** One overlay at full scale in the lower band (spec §3.2–§3.3). */
 @Composable
@@ -38,7 +39,7 @@ fun OverlayView(o: Overlay, confirmHighlightYes: Boolean, recording: Boolean = f
     when (o) {
         is Overlay.Listening -> ListeningOverlay(o.partial, recording)
         is Overlay.Answer -> AnswerCard(o)
-        is Overlay.Nudge -> NudgeToast(o.text)
+        is Overlay.Nudge -> if (o.place != null) PlaceCardView(o.place!!) else NudgeToast(o.text)
         is Overlay.Confirm -> ConfirmOverlay(o.title, o.detail, confirmHighlightYes)
         Overlay.PausedSplash -> PausedSplash()
         is Overlay.Toast -> HudToast(o.text)
@@ -85,6 +86,19 @@ fun NudgeToast(text: String) {
             Label(" HEADS UP", 18.sp, Hud.SECONDARY)
         }
         Label(text, 24.sp, Hud.PRIMARY, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** Place Guide card (PG3): title, one line, and the source (or "nearby · not checked"). Same band and position as every overlay. */
+@Composable
+fun PlaceCardView(c: PlaceCardInfo) {
+    Column(
+        Modifier.background(Color.Black).border(Hud.STROKE, Hud.Green.copy(alpha = Hud.SECONDARY), RoundedCornerShape(14.dp))
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Label(c.title, 26.sp, Hud.PRIMARY, FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Label(c.line, 22.sp, Hud.PRIMARY, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        Label(c.source, 18.sp, Hud.TERTIARY, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

@@ -163,4 +163,69 @@ class HudPresenterTest {
         val next = Overlay.Answer("other", "Another answer.", speaking = false)
         assertEquals(next, p.present(frame(next), Verbosity.SILENT, HudNav(), null, 11_000).overlay)
     }
+
+    // Place Guide PG3
+    private val place = Overlay.Nudge("Charminar: A monument.", com.rokid.context.core.model.PlaceCardInfo("Charminar", "A monument.", "Wikipedia", false))
+    private val place2 = Overlay.Nudge("Golconda: A fort.", com.rokid.context.core.model.PlaceCardInfo("Golconda", "A fort.", "Wikipedia", false))
+
+    @Test fun aPlaceCardShowsAtMediumAndMaxNeverAtSilent() {
+        assertEquals(place, HudPresenter().present(frame(place), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
+        assertEquals(place, HudPresenter().present(frame(place), Verbosity.MAX, HudNav(), null, 0).overlay)
+        assertNull(HudPresenter().present(frame(place), Verbosity.SILENT, HudNav(), null, 0).overlay)
+    }
+
+    @Test fun aPlaceCardExpiresAtTwelveSeconds() {
+        val p = HudPresenter()
+        assertEquals(place, p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 1_000).overlay)
+        assertEquals(place, p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 12_999).overlay)
+        assertNull(p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 13_000).overlay)
+        assertNull(p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 20_000).overlay, "the same card does not come back on the next heartbeat")
+    }
+
+    @Test fun headMotionOnsetAfterTwoAndAHalfSecondsDismissesTheCard() {
+        val p = HudPresenter()
+        p.onMotion(com.rokid.context.core.model.MotionState.STILL, 0)
+        p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 1_000)
+        p.onMotion(com.rokid.context.core.model.MotionState.HEAD_MOVING, 3_500)
+        assertNull(p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 3_600).overlay)
+        assertNull(p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 4_000).overlay)
+    }
+
+    @Test fun motionBeforeTwoAndAHalfSecondsDoesNotDismiss() {
+        val p = HudPresenter()
+        p.onMotion(com.rokid.context.core.model.MotionState.STILL, 0)
+        p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 1_000)
+        p.onMotion(com.rokid.context.core.model.MotionState.HEAD_MOVING, 3_499)
+        assertEquals(place, p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 3_600).overlay)
+        // a sustained motion state is not a new onset
+        p.onMotion(com.rokid.context.core.model.MotionState.HEAD_MOVING, 5_000)
+        assertEquals(place, p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 5_100).overlay)
+    }
+
+    @Test fun anOldMotionOnsetNeverDismissesANewerCard() {
+        val p = HudPresenter()
+        p.onMotion(com.rokid.context.core.model.MotionState.STILL, 0); p.onMotion(com.rokid.context.core.model.MotionState.WALKING, 100)
+        assertEquals(place, p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 5_000).overlay)
+    }
+
+    @Test fun theNextCardReplacesTheCurrentOneAndRestartsTheTimer() {
+        val p = HudPresenter()
+        p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 0)
+        assertEquals(place2, p.present(frame(place2), Verbosity.MEDIUM, HudNav(), null, 10_000).overlay)
+        assertEquals(place2, p.present(frame(place2), Verbosity.MEDIUM, HudNav(), null, 21_000).overlay)
+        assertNull(p.present(frame(place2), Verbosity.MEDIUM, HudNav(), null, 22_000).overlay)
+    }
+
+    @Test fun aPlaceCardIsRefusedWhileAZoneIsActive() {
+        val p = HudPresenter()
+        assertNull(p.present(frame(place), Verbosity.MAX, HudNav(), null, 0, zoneActive = true).overlay)
+        assertEquals(nudge, p.present(frame(nudge), Verbosity.MAX, HudNav(), null, 1, zoneActive = true).overlay, "a plain nudge is not a place card")
+        val q = HudPresenter()
+        assertEquals(place, q.present(frame(place), Verbosity.MAX, HudNav(), null, 0).overlay)
+        assertNull(q.present(frame(place), Verbosity.MAX, HudNav(), null, 1_000, zoneActive = true).overlay, "a zone that starts while it shows takes it down")
+    }
+
+    @Test fun aPlainNudgeStillNeedsMax() {
+        assertNull(HudPresenter().present(frame(nudge), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
+    }
 }

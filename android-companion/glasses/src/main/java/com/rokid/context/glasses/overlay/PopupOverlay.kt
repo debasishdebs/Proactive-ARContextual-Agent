@@ -80,7 +80,7 @@ class PopupOverlay(private val context: Context, private val windowManager: Wind
          */
         fun textFor(o: Overlay?, verbosity: Verbosity): String? = when (o) {
             is Overlay.Answer -> o.text.ifBlank { o.question }.ifBlank { null }
-            is Overlay.Nudge -> o.text.takeIf { verbosity != Verbosity.SILENT }
+            is Overlay.Nudge -> (o.place?.let { "${it.title}\n${it.line}\n${it.source}" } ?: o.text).takeIf { verbosity != Verbosity.SILENT }
             is Overlay.Toast -> o.text
             is Overlay.Confirm, is Overlay.Listening, Overlay.PausedSplash, null -> null
         }

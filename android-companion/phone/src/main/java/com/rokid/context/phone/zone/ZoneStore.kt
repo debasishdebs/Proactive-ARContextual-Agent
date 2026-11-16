@@ -20,7 +20,8 @@ import kotlinx.serialization.builtins.serializer
 class ZoneStore(private val prefs: SharedPreferences) {
     @Volatile private var good: List<PauseZone>? = null
     @Volatile private var bad = false
-    private var failedRaw: String? = null
+    /** Every value this store tried to commit and could not (Android keeps each one in memory anyway): none of them is ever accepted as the stored list. Cleared only by a successful commit. */
+    private val failedRaws = HashSet<String>()
 
     /** True when the stored list exists but cannot be read (or the preference read threw): the zones are UNKNOWN. */
     val corrupt: Boolean get() { zones(); return bad }
@@ -29,7 +30,7 @@ class ZoneStore(private val prefs: SharedPreferences) {
     fun zones(): List<PauseZone> {
         val raw = try { prefs.getString(KEY, null) } catch (e: Exception) { bad = true; return good.orEmpty() }
         // Android keeps a value in memory when its disk commit failed: a value this store tried to write and could not is NOT the stored list (it would be lost with the process).
-        if (raw != null && raw == failedRaw) { restoreDurable(); return good.orEmpty() }
+        if (raw != null && raw in failedRaws) { restoreDurable(); return good.orEmpty() }
         if (raw == null) { bad = false; good = emptyList(); return emptyList() }
         val parsed = runCatching { Wire.json.decodeFromString(LIST, raw) }.getOrNull()
         // Valid JSON that holds an invalid or repeated zone is not a list we may filter: dropping a zone silently would unprotect it. Unreadable = protect everything.
@@ -55,15 +56,21 @@ class ZoneStore(private val prefs: SharedPreferences) {
         val clean = zones.filter(PauseZone::isValid).distinctBy { it.id }
         val raw = Wire.json.encodeToString(LIST, clean)
         val ok = try { prefs.edit().putString(KEY, raw).commit() } catch (e: Exception) { false }
-        if (ok) { good = clean; bad = false; failedRaw = null } else { failedRaw = raw; restoreDurable() }
+        if (ok) { good = clean; bad = false; failedRaws.clear() } else { failedRaws += raw; restoreDurable() }
         return ok
     }
 
-    /** After a failed commit the preferences object may still hold the failed value in memory: put the last durable list back (best effort; [good] stays the truth meanwhile). */
+    /**
+     * After a failed commit the preferences object may still hold the failed value in memory: put the last durable list back (best effort; [good] stays the truth meanwhile). A restore that
+     * itself fails is remembered like any failed commit, and a restore never clears [bad]: only a successful [replaceAll] does. While the stored list is unreadable the restore is not tried
+     * at all (it would overwrite what cannot be read with a cached list that may be stale or empty).
+     */
     private fun restoreDurable() {
+        if (bad) return
         val last = good ?: return
-        val ok = try { prefs.edit().putString(KEY, Wire.json.encodeToString(LIST, last)).commit() } catch (e: Exception) { false }
-        if (ok) failedRaw = null
+        val raw = Wire.json.encodeToString(LIST, last)
+        val ok = try { prefs.edit().putString(KEY, raw).commit() } catch (e: Exception) { false }
+        if (ok) failedRaws.clear() else failedRaws += raw
     }
 
     /** The next record number, durable before it is used. Throws when it cannot be made durable: the number is then never used, so it can never be issued twice. */

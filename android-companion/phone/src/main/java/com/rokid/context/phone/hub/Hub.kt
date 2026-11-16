@@ -19,6 +19,7 @@ import com.rokid.context.core.model.MotionHint
 import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.core.model.context.MotionContextMessage
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.core.model.PlaceCardInfo
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.PROTOCOL_VERSION
@@ -117,6 +118,9 @@ class Hub(
     private val zoneEnforce: () -> Boolean = { false },
     /** Pause zones: called at EVERY [start] (first start, a restart after [stop], a recovery in a surviving process): the zones are judged again from "nothing known". */
     private val zoneStart: () -> Unit = {},
+    /** Place Guide PG3: the newest place card (PlaceGraph.port.card) and the way to drop it. Never stored; it expires after [PlaceCardInfo.SHOW_MS]. */
+    private val placeCards: StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
+    private val placeClear: () -> Unit = {},
 ) : GlassesStatusSource {
     private fun linkAllowed(): Boolean = inFront() || BackgroundPolicy.linkMachineryAllowed(reopenEnabled(), paired())
     /** Phone clock of the last tapped Reconnect (0 = none): keeps the hub service wanted for [BackgroundPolicy.USER_ASK_HOLD_MS]. */
@@ -179,6 +183,8 @@ class Hub(
             scope.launch { actions.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { nudges.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { nudges.latest.drop(1).collect { broadcaster.markDirty() } },
+            // Place Guide PG3: a new card re-broadcasts at once and starts its 12 s life; a cleared card re-broadcasts so the glasses drop it.
+            scope.launch { placeCards.drop(1).collect { c -> onPlaceCard(c) } },
             // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
             scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
             // LGC4P: Developer mode on/off republishes the settings at once (diagRecord) and restarts (on) or ends (off) the control re-send.
@@ -280,7 +286,10 @@ class Hub(
 
     /** Pause zones: a zone record was added or ended, or the approach flag changed: push the settings (the glasses hear it at once) and a frame. */
     suspend fun zonesChanged() {
-        guarded("zones") { pushSettings(); broadcaster.markDirty(); refreshPauses() }
+        // Fail closed: a push the link did not accept (or that threw) is reported to the zone controller, which keeps its publish pending and retries; connected glasses may still be capturing.
+        var pushed = false
+        guarded("zones") { pushed = pushSettings(); broadcaster.markDirty(); refreshPauses() }
+        check(pushed) { "zone settings push not accepted" }
     }
 
     /** Something a frame shows changed outside the hub's own flows: send a fresh frame (≤ 4 Hz). */
@@ -594,6 +603,7 @@ class Hub(
             Command.ListenStart -> { PcLog.i(TAG, "listen start"); try { onGlassesListenStart(clock()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "listen join failed (${e.javaClass.simpleName})") }; voice.onListenStart() }
             Command.Cancel -> { PcLog.i(TAG, "voice cancel"); voice.onCancel() }
             is Command.Confirm -> { PcLog.i(TAG, "confirm answered"); actions.onConfirm(c.proposalId, c.yes) }
+            is Command.DismissPlace -> onPlaceDismissed(c.title)
             is Command.Undo -> { PcLog.i(TAG, "undo asked"); actions.onUndo(c.proposalId) }
             else -> PcLog.i(TAG, "command ${c::class.simpleName} is handled in a later phase")
         }
@@ -630,8 +640,33 @@ class Hub(
         if (s.link.carriesData && link.send(Channels.STATE, Wire.encode(frame))) actions.onShown(frame.overlay)
     }
 
-    /** Place Guide seam (PG2): the place card as an [Overlay], or null. Nothing maps a card onto the wire yet (PG3 adds the additive protocol field and sets this). */
-    @Volatile var placeOverlay: () -> Overlay? = { null }
+    private var placeExpiry: Job? = null
+
+    private fun onPlaceCard(c: com.rokid.context.work.frames.place.PlaceCard?) {
+        placeExpiry?.cancel(); placeExpiry = null
+        if (c != null) {
+            if (c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.PHOTO) PcLog.i(TAG, "place card up (photo)") else PcLog.i(TAG, "place card up (nearby)")
+            placeExpiry = scope.launch { delay(PlaceCardInfo.SHOW_MS); placeClear() }
+        }
+        broadcaster.markDirty()
+    }
+
+    /** The glasses dismissed or timed out the card titled [title]: drop it only if it is still the phone's card (a newer card stays). */
+    private fun onPlaceDismissed(title: String) {
+        val c = placeCards.value ?: return
+        if (c.title == title) { PcLog.i(TAG, "place card dismissed on glasses"); placeClear() }
+    }
+
+    /**
+     * Place Guide: the place card as a [Overlay.Nudge] carrying [PlaceCardInfo] (its text is "title: line" for an older glasses build), or null. Never while a pause zone
+     * is approached or enforced (the card is built from a photo; defence in depth, the sampler already refuses).
+     */
+    fun placeOverlay(): Overlay? {
+        val c = placeCards.value ?: return null
+        if (zoneApproach() || zoneEnforce()) return null
+        val info = PlaceCardInfo(c.title, c.line, c.sourceLabel, nearby = c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.NEARBY)
+        return Overlay.Nudge("${c.title}: ${c.line}", info)
+    }
 
     private fun overlay(): Overlay? {
         // rc1 fix: never a frame of an Answer a Forget withdrew, even if the voice side has not cleared it yet

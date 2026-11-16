@@ -128,11 +128,25 @@ sealed interface Overlay {
         /** Additive (rc1 fix): the stored ask this card shows, so a later [StateFrame.withdrawnAskIds] can clear it; null from an old phone. */
         val askId: String? = null,
     ) : Overlay
-    @Serializable @SerialName("nudge") data class Nudge(val text: String) : Overlay
+    /**
+     * [place] (Place Guide PG3, additive): present = this nudge is a place card. [text] then carries "title: line", so an older glasses build (which ignores [place]) shows an ordinary
+     * nudge (Max only). A new glasses build shows the card at Medium and Max for [PlaceCardInfo.SHOW_MS] and never during a pause zone.
+     */
+    @Serializable @SerialName("nudge") data class Nudge(val text: String, val place: PlaceCardInfo? = null) : Overlay
     @Serializable @SerialName("confirm") data class Confirm(val proposalId: String, val title: String, val detail: String) : Overlay
     @Serializable @SerialName("paused_splash") data object PausedSplash : Overlay
     /** [undoProposalId] (Phase 7, additive): an undo toast; a glasses double-tap then undoes instead of toggling pause. */
     @Serializable @SerialName("toast") data class Toast(val text: String, val undoProposalId: String? = null) : Overlay
+}
+
+/** Place Guide card on the wire (PG3). [line] is at most 140 chars, built from the place pack; [nearby] = only the nearest place, not checked against the photo. */
+@Serializable data class PlaceCardInfo(val title: String, val line: String, val source: String, val nearby: Boolean = false) {
+    companion object {
+        /** How long the glasses show a card; the phone clears its copy at the same time. */
+        const val SHOW_MS = 12_000L
+        /** A head-motion onset dismisses a card only once it has been up this long. */
+        const val MOTION_DISMISS_AFTER_MS = 2_500L
+    }
 }
 
 /** Full HUD state pushed phone → glasses on `pc_state` (spec §1.6). Short human strings only. */
@@ -355,6 +369,8 @@ sealed interface Command {
     @Serializable @SerialName("cancel") data object Cancel : Command
     /** Phase 7, additive: undo an executed proposal (glasses double-tap on an undo toast). */
     @Serializable @SerialName("undo") data class Undo(val proposalId: String) : Command
+    /** Place Guide PG3, additive: the glasses dismissed (or let expire) the place card titled [title]; the phone clears its copy only if that is still its card (a newer one is kept). An older phone fails to decode it (Malformed) and ignores it. */
+    @Serializable @SerialName("dismiss_place") data class DismissPlace(val title: String) : Command
 }
 
 /** `pc_cmd` payload: commands are wrapped so every message carries [v]. */

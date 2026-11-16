@@ -80,7 +80,8 @@ class ZoneController(
     private var lastEnforce: Pair<Boolean, Boolean>? = null
     private var publishPending = false
     /** Intervals of zones that were left while their record could not be stored: retried (as an interval) by every [tick]; meanwhile retained in [ZoneHold]. */
-    private val exitedUnstored = ArrayList<Pair<Long, Long>>()
+    private class Missed(val zoneId: String, val from: Long, val to: Long)
+    private val exitedUnstored = ArrayList<Missed>()
 
     private val _snapshot = MutableStateFlow(ZoneSnapshot(emptyList(), ZoneEvaluation(emptyList()), monitoring = false))
     val snapshot: StateFlow<ZoneSnapshot> = _snapshot
@@ -134,7 +135,7 @@ class ZoneController(
             val fixWall = (wall() - (elapsed() - fix.timeMs).coerceAtLeast(0L))
             for (st in ev.zones) {
                 val old = memo[st.zoneId]
-                val clear = if (st.lastClearMs == fix.timeMs && st.zoneId !in unstored) fixWall else old?.clearWallMs
+                val clear = if (st.lastClearMs == fix.timeMs && st.zoneId !in unstored && exitedUnstored.none { it.zoneId == st.zoneId }) fixWall else old?.clearWallMs
                 val m = ZoneMemo(st.measured.name, clear, fixWall)
                 if (m.state != old?.state || m.clearWallMs != old.clearWallMs) memoDirty = true
                 memo[st.zoneId] = m
@@ -287,7 +288,7 @@ class ZoneController(
         val wallNow = wall()
         for (id in unstored.keys.filter { it !in insideIds }) {
             val from = unstored.remove(id) ?: continue
-            exitedUnstored += from to wallNow
+            exitedUnstored += Missed(id, from, wallNow)
             ZoneHold.retain(from, wallNow, wallNow)
         }
         retryExited()
@@ -306,12 +307,15 @@ class ZoneController(
         saveMemo()
     }
 
-    /** Stores the intervals that ended unstored, as closed intervals (start, then end). A failure keeps them for the next tick. */
+    /**
+     * Stores the intervals that ended unstored, as closed intervals (start, then end). A failure keeps them for the next tick. Until an interval is durable its zone's clear time in the memo
+     * does not advance ([onFix]): a restart then still backdates the protection to before the interval, instead of starting after a memory-only one.
+     */
     private suspend fun retryExited() {
         for (iv in exitedUnstored.toList()) {
             try {
                 val id = ZonePause.pauseId(UNSTORED_ID, store.nextSeq())
-                sink.add(PauseRecord(id, PauseOrigin.PHONE, iv.first, null))
+                sink.add(PauseRecord(id, PauseOrigin.PHONE, iv.from, null))
                 exitedUnstored.remove(iv) // stored; if the end below fails, the next reconcile ends this record (its zone is not inside)
                 sink.end(setOf(id))
             } catch (e: CancellationException) {
