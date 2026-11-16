@@ -24,6 +24,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], application = Application::class)
 class ZoneControllerTest {
+    @org.junit.Before fun resetGlobals() { ClockGuard.reset(); ZoneHold.set(null) }
     private val ctx = ApplicationProvider.getApplicationContext<Application>()
     private val zone = PauseZone("z1", "Reserve", south = 10.0, west = 20.0, north = 10.01, east = 20.01, bufferM = 300)
     private val m = 111_194.93
@@ -49,6 +50,8 @@ class ZoneControllerTest {
 
     private fun fix(meters: Double, acc: Float = 10f) = ZoneFix(el, 10.0 - meters / m, 20.005, acc)
     private suspend fun at(meters: Double, acc: Float = 10f, advance: Long = 1_000L) { el += advance; wall += advance; c.onFix(fix(meters, acc)) }
+    /** Two qualifying fixes: the exit of a fail-closed or inside reading. */
+    private suspend fun at2(meters: Double, acc: Float = 10f) { at(meters, acc); at(meters, acc) }
 
     @Test fun noZonesMeansNoRecordsNoFixesWantedAndApproachFalse() = runTest {
         c.start()
@@ -64,7 +67,7 @@ class ZoneControllerTest {
 
     @Test fun aFarFixEndsTheFailClosedRecordAndAnEntryAddsANewNumberedOne() = runTest {
         c.upsert(zone); c.start(); val first = sink.records.single().pauseId
-        at(50_000.0)
+        at(50_000.0); assertEquals("one fix does not end the fail-closed start", 1, sink.records.size); at(50_000.0)
         assertTrue(sink.records.isEmpty()); assertEquals("cleared", notes.events.last()); assertFalse(c.approach)
         assertEquals(FixCadence(FixPriority.BALANCED, 300_000L), c.cadence.value)
         at(100.0)
@@ -80,31 +83,33 @@ class ZoneControllerTest {
     }
 
     @Test fun theApproachFlagIsPublishedWhenItChangesAndOnEveryRecordChange() = runTest {
-        c.upsert(zone); c.start(); at(50_000.0)
+        c.upsert(zone); c.start(); at2(50_000.0)
         val before = sink.publishes
         at(51_000.0); assertEquals("nothing changed: no push", before, sink.publishes)
         at(1_500.0); assertTrue("approach began", sink.publishes > before)
     }
 
     @Test fun aStaleFixFailsClosedBackdatedToTheLastTrustedFix() = runTest {
-        c.upsert(zone); c.start(); at(1_000.0); val lastFixWall = wall
+        c.upsert(zone); c.start(); at2(1_000.0); val lastFixWall = wall
         el += 200_000; wall += 200_000; c.tick() // 3 min 20 s without a fix while APPROACH
         val r = sink.records.single()
         assertEquals("frames since the last trusted fix are inside the zone interval", lastFixWall, r.createdAtMs)
         assertEquals("paused:Reserve:unknown", notes.events.last())
-        at(1_000.0); assertTrue("a fresh fix reads APPROACH again: the record ends", sink.records.isEmpty())
+        at2(1_000.0); assertTrue("two fresh fixes read APPROACH again: the record ends", sink.records.isEmpty())
     }
 
     @Test fun locationRevokedWhileApproachFailsClosedAndALongOutsideSpellDoesNot() = runTest {
-        c.upsert(zone); c.start(); at(1_000.0); c.onLocationAvailable(false)
-        assertEquals(1, sink.records.size); c.onLocationAvailable(true); assertTrue(sink.records.isEmpty())
-        at(80_000.0); at(80_000.0); c.onLocationAvailable(false); assertTrue("outside: not paused by itself", sink.records.isEmpty())
+        c.upsert(zone); c.start(); at2(1_000.0); c.onLocationAvailable(false)
+        assertEquals(1, sink.records.size); c.onLocationAvailable(true); assertEquals("restoring access clears nothing", 1, sink.records.size)
+        at2(1_000.0); assertTrue(sink.records.isEmpty())
+        at2(80_000.0); c.onLocationAvailable(false); assertTrue("outside: not paused by itself", sink.records.isEmpty())
     }
 
     @Test fun aFailedRecordWriteIsRetriedByTheNextTick() = runTest {
         sink.failAdd = true; c.upsert(zone); c.start()
-        assertTrue(sink.records.isEmpty()); assertTrue(logs.any { it.startsWith("zone reconcile failed") })
-        sink.failAdd = false; c.tick(); assertEquals(1, sink.records.size)
+        assertTrue(sink.records.isEmpty()); assertTrue(logs.any { it.startsWith("zone pause not stored") })
+        assertTrue("held in memory while the record cannot be stored", ZoneHold.held && c.enforcing && c.approach)
+        sink.failAdd = false; c.tick(); assertEquals(1, sink.records.size); assertFalse(ZoneHold.held)
     }
 
     @Test fun aZoneCannotBeDisabledEditedOrDeletedWhileInsideNorBeforeItsFirstFix() = runTest {
@@ -117,7 +122,7 @@ class ZoneControllerTest {
     }
 
     @Test fun outsideAZoneCanBeDisabledEditedAndDeletedAndItsRecordsEnd() = runTest {
-        c.upsert(zone); c.start(); at(50_000.0)
+        c.upsert(zone); c.start(); at2(50_000.0)
         assertEquals(ZoneChange.OK, c.upsert(zone.copy(bufferM = 500))); assertEquals(500, c.zones().single().bufferM)
         assertEquals(ZoneChange.OK, c.setEnabled("z1", false)); assertFalse(c.wantsLocation()); assertNull(c.cadence.value)
         assertEquals(ZoneChange.OK, c.setEnabled("z1", true)); assertTrue(c.wantsLocation())
@@ -130,7 +135,7 @@ class ZoneControllerTest {
     }
 
     @Test fun aZoneAddedWhileInsideAnotherIsJudgedByTheFreshLastFixAtOnce() = runTest {
-        c.upsert(zone); c.start(); at(30_000.0)
+        c.upsert(zone); c.start(); at2(30_000.0)
         val near = PauseZone("z2", "Near", south = 10.0, west = 20.0, north = 10.01, east = 20.01, bufferM = 40_000)
         c.upsert(near)
         assertEquals(listOf("zone:z2:"), sink.records.map { it.pauseId.substringBeforeLast(':') + ":" })

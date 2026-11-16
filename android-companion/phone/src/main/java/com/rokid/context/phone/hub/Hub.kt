@@ -113,6 +113,10 @@ class Hub(
     private val inFront: () -> Boolean = { false },
     /** Pause zones: the phone is within a zone's approach band or inside it; sent at every settings push as `HudSettings.zoneApproach` (the glasses pause locally if the link drops). */
     private val zoneApproach: () -> Boolean = { false },
+    /** Pause zones: a zone pause could not be stored (or the zones cannot be read) and is held in memory; sent at every settings push as `HudSettings.zoneEnforce` so the glasses pause too. */
+    private val zoneEnforce: () -> Boolean = { false },
+    /** Pause zones: called at EVERY [start] (first start, a restart after [stop], a recovery in a surviving process): the zones are judged again from "nothing known". */
+    private val zoneStart: () -> Unit = {},
 ) : GlassesStatusSource {
     private fun linkAllowed(): Boolean = inFront() || BackgroundPolicy.linkMachineryAllowed(reopenEnabled(), paired())
     /** Phone clock of the last tapped Reconnect (0 = none): keeps the hub service wanted for [BackgroundPolicy.USER_ASK_HOLD_MS]. */
@@ -159,6 +163,7 @@ class Hub(
     fun start(userInitiated: Boolean = false) {
         if (started) return
         ctxStart()
+        zoneStart()
         jobs = listOf(
             scope.launch { link.state.collect { s -> onLinkState(s) } },
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
@@ -466,6 +471,7 @@ class Hub(
         ).let { it.copy(
             diagRecord = devMode.value,
             zoneApproach = zoneApproach(), // pause zones: computed at push time, never the stored value
+            zoneEnforce = zoneEnforce(),
             // v0.9.7 B: the developer sensor recording is a diagnostics feature: its rate goes on the wire only while Developer mode is on (and only a preset); the stored value alone never decides
             sensorRecHz = if (devMode.value) it.sensorRecHz.takeIf { hz -> hz in com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ } ?: 0 else 0,
         ) }

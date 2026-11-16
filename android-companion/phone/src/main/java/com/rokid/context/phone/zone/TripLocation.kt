@@ -11,10 +11,12 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.zone.FixCadence
 import com.rokid.context.core.model.zone.FixPriority
 import com.rokid.context.core.model.zone.ZoneFix
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -36,17 +38,28 @@ class TripLocation(
         fun accessValid(): Boolean
         /** Idempotent: updates at [cadence], or stopped (null). Fixes come back through [TripLocation.onFix]. */
         fun request(cadence: FixCadence?)
+        /** True while the last registration with the platform failed (its Task completed with an error): no fixes are coming, so the location counts as unavailable until a retry succeeds. */
+        val registrationFailed: Boolean get() = false
     }
 
     @Volatile private var wanted: FixCadence? = null
     private var started = false
+    private var supervision: Job? = null
 
     @Synchronized
     fun start() {
         if (started) return
         started = true
-        scope.launch { controller.cadence.collect { wanted = it; apply() } }
-        scope.launch { while (true) { delay(tickMs); apply(); controller.tick() } }
+        scope.launch { controller.cadence.collect { wanted = it; apply(); supervise(it != null) } }
+    }
+
+    /** The 15 s supervision (access re-check, staleness, record repair) runs only while a zone exists; with none it is suspended and costs nothing. */
+    @Synchronized
+    private fun supervise(on: Boolean) {
+        if (!on) { supervision?.cancel(); supervision = null; return }
+        if (supervision?.isActive == true) return
+        // apply() reports to the controller, which reconciles (staleness, record repair, retries): no second tick on top of it.
+        supervision = scope.launch { while (true) { delay(tickMs); apply() } }
     }
 
     /** From the platform callback (any thread). */
@@ -57,12 +70,13 @@ class TripLocation(
         val want = wanted
         if (want == null) { platform.request(null); return }
         val ok = platform.accessValid()
-        controller.onLocationAvailable(ok)
+        controller.onLocationAvailable(ok && !platform.registrationFailed)
         platform.request(if (ok) want else null)
     }
 
     companion object {
         const val TICK_MS = 15_000L
+        private const val TAG = "PcZone"
 
         fun create(context: Context, controller: ZoneController, scope: CoroutineScope, foreground: () -> Boolean, locationHeld: () -> Boolean): TripLocation {
             lateinit var self: TripLocation
@@ -76,7 +90,8 @@ class TripLocation(
         private val ctx: Context, private val owner: () -> TripLocation,
         private val foreground: () -> Boolean, private val locationHeld: () -> Boolean,
     ) : Platform {
-        private var current: FixCadence? = null
+        private val reg = Registration()
+        override val registrationFailed: Boolean get() = reg.failed
         private val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 if (!accessValid()) return
@@ -96,14 +111,36 @@ class TripLocation(
 
         @Synchronized
         override fun request(cadence: FixCadence?) {
-            if (cadence == current) return
+            if (!reg.wants(cadence)) return
             val client = LocationServices.getFusedLocationProviderClient(ctx)
             runCatching { client.removeLocationUpdates(callback) }
-            current = null
+            reg.clear()
             if (cadence == null) return
             val prio = if (cadence.priority == FixPriority.HIGH) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY
             val req = LocationRequest.Builder(prio, cadence.intervalMs).setMinUpdateIntervalMillis(cadence.intervalMs / 2).build()
-            if (runCatching { client.requestLocationUpdates(req, callback, Looper.getMainLooper()) }.isSuccess) current = cadence
+            reg.begin(cadence)
+            // The registration is a Task: only its SUCCESS makes the cadence current. A failure (or a throw) leaves it unset, so the next apply retries, and is reported.
+            try {
+                client.requestLocationUpdates(req, callback, Looper.getMainLooper())
+                    .addOnSuccessListener { reg.done(cadence, true) }
+                    .addOnFailureListener { reg.done(cadence, false); PcLog.i(TAG, "location registration failed cls=${it.javaClass.simpleName}") }
+            } catch (e: Exception) { reg.done(cadence, false); PcLog.i(TAG, "location registration threw cls=${e.javaClass.simpleName}") }
+        }
+    }
+
+    /** What the platform has accepted ([current]) and what is still being registered ([pending]); a failed registration is remembered until a retry succeeds. */
+    internal class Registration {
+        @Volatile var current: FixCadence? = null; private set
+        @Volatile var pending: FixCadence? = null; private set
+        @Volatile var failed = false; private set
+        /** True when [cadence] differs from what is current or in flight (or must be stopped). */
+        @Synchronized fun wants(cadence: FixCadence?): Boolean = if (cadence == null) current != null || pending != null else cadence != current && cadence != pending
+        @Synchronized fun clear() { current = null; pending = null }
+        @Synchronized fun begin(c: FixCadence) { pending = c }
+        @Synchronized fun done(c: FixCadence, ok: Boolean) {
+            if (pending != c) return
+            pending = null
+            if (ok) { current = c; failed = false } else failed = true
         }
     }
 }

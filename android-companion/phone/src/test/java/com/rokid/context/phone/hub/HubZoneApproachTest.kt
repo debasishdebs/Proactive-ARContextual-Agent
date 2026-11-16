@@ -44,6 +44,8 @@ class HubZoneApproachTest {
         override suspend fun today() = listOf(MemoryLine("m1", now, "x")); override suspend fun queueDepth() = 0; override suspend fun aiHealth(nowMs: Long): Health = Health.Ok
     }
     private var approach = false
+    private var enforce = false
+    private var zoneStarts = 0
 
     private fun TestScope.rig(): Pair<Hub, FakeGlassesLink> {
         val link = FakeGlassesLink(); link.setState(LinkState.CONNECTED)
@@ -52,7 +54,7 @@ class HubZoneApproachTest {
         val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger, onStored = {})
         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_zone_${tmp.root.name}", 0)) { "hud" }
         settings.write(settings.read().copy(zoneApproach = true)) // a stored value must never reach the wire
-        val hub = Hub(backgroundScope, link, pauses, settings, ingestor, sources, clock = { now }, io = StandardTestDispatcher(testScheduler), zoneApproach = { approach })
+        val hub = Hub(backgroundScope, link, pauses, settings, ingestor, sources, clock = { now }, io = StandardTestDispatcher(testScheduler), zoneApproach = { approach }, zoneEnforce = { enforce }, zoneStart = { zoneStarts++ })
         hub.start(); runCurrent()
         return hub to link
     }
@@ -79,5 +81,18 @@ class HubZoneApproachTest {
     @Test fun theDefaultHubNeverSetsTheFlag() = runTest {
         approach = false; val (hub, link) = rig(); link.emitReady(); runCurrent(); hub.updateSettings { it }; runCurrent()
         assertTrue(link.pushes().all { !it.zoneApproach })
+    }
+
+    // Codex zones r1 P1-8: the in-memory hold travels to the glasses; P1-5: every hub start judges the zones again.
+    @Test fun theEnforceFlagIsComputedAtEveryPushAndEndsWithTheFirstPushThatOmitsIt() = runTest {
+        val (hub, link) = rig(); link.emitReady(); runCurrent()
+        enforce = true; hub.zonesChanged(); runCurrent(); assertTrue(link.pushes().last().zoneEnforce)
+        enforce = false; hub.zonesChanged(); runCurrent(); assertFalse(link.pushes().last().zoneEnforce)
+    }
+
+    @Test fun everyHubStartAsksTheZonesToBeJudgedAgain() = runTest {
+        val (hub, _) = rig(); assertEquals(1, zoneStarts)
+        hub.stop(); hub.start(); runCurrent(); assertEquals("a restart in the same process re-establishes the NO_FIX protection", 2, zoneStarts)
+        hub.start(); assertEquals("a start of a running hub is a no-op", 2, zoneStarts)
     }
 }

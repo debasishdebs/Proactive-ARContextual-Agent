@@ -7,6 +7,7 @@ import com.rokid.context.core.model.zone.PauseZone
 import com.rokid.context.core.model.zone.ZoneEvaluator
 import com.rokid.context.core.model.zone.ZonePresets
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -24,9 +25,24 @@ class ZoneStoreTest {
         assertEquals(listOf(z, ZonePresets.JARAWA), ZoneStore(ctx.getSharedPreferences(name, 0)).zones())
     }
 
-    @Test fun anUnreadableListReadsAsNoZones() {
+    @Test fun anUnreadableListIsAnExplicitErrorNotAnEmptyListAndIsNeverOverwrittenBlindly() { // Codex r1 P1-9
         val p = ctx.getSharedPreferences("zs_bad_${System.nanoTime()}", 0); p.edit().putString("zones", "{not json").commit()
-        assertTrue(ZoneStore(p).zones().isEmpty())
+        val s = ZoneStore(p)
+        assertTrue(s.corrupt); assertFalse("a write must not replace what cannot be read", s.write(listOf(z))); assertTrue(s.corrupt)
+        assertTrue(s.replaceAll(listOf(z))); assertFalse(s.corrupt); assertEquals(listOf(z), s.zones())
+    }
+
+    @Test fun aFailedCommitIsReportedAndLeavesTheListAlone() {
+        val p = FailingPrefs(ctx.getSharedPreferences("zs_fail_${System.nanoTime()}", 0)); val s = ZoneStore(p)
+        assertTrue(s.write(listOf(z))); p.fail = true
+        assertFalse(s.write(listOf(z, ZonePresets.JARAWA))); assertEquals(listOf(z), s.zones())
+    }
+
+    @Test fun aSequenceNumberThatCouldNotBeStoredIsNeverUsed() {
+        val name = "zs_seqfail_${System.nanoTime()}"; val p = FailingPrefs(ctx.getSharedPreferences(name, 0)); val s = ZoneStore(p)
+        assertEquals(1L, s.nextSeq()); p.fail = true
+        try { s.nextSeq(); org.junit.Assert.fail("must throw") } catch (e: IllegalStateException) { /* expected */ }
+        p.fail = false; assertEquals("the number that failed is issued only once it is durable", 2L, s.nextSeq())
     }
 
     @Test fun theRecordCounterIsDurableAndNeverRepeats() {
@@ -38,5 +54,17 @@ class ZoneStoreTest {
     @Test fun theDefaultsHoldTheSpecAndOnlyUserConfigurationIsStored() {
         assertEquals("pause_zones", ZoneStore.PREFS); assertEquals(300, z.bufferM); assertTrue(z.enabled)
         assertEquals(3 * 60_000L, ZoneEvaluator.STALE_MS)
+    }
+}
+
+/** SharedPreferences whose commit() can be made to fail (a full disk). */
+class FailingPrefs(private val d: android.content.SharedPreferences, @Volatile var fail: Boolean = false) : android.content.SharedPreferences by d {
+    override fun edit(): android.content.SharedPreferences.Editor {
+        val e = d.edit()
+        return object : android.content.SharedPreferences.Editor by e {
+            override fun putString(k: String?, v: String?) = apply { e.putString(k, v) }
+            override fun putLong(k: String?, v: Long) = apply { e.putLong(k, v) }
+            override fun commit(): Boolean = if (fail) false else e.commit()
+        }
     }
 }

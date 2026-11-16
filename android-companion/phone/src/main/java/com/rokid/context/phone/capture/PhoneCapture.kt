@@ -133,6 +133,12 @@ class PhoneCaptureControl(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val uri: (File) -> Uri = { PhoneCapture.uriFor(app, it) },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /**
+     * Pause zones: true when a zone pause overlapped [fromMs, toMs] (phone wall ms): the same HISTORICAL admission a glasses frame gets. The camera app is open between [prepare] and [finish], so the
+     * photo may have been taken in a zone that was left again before the check at [finish]. Fail closed: a throw counts as an overlap. Default (tests) = never.
+     */
+    private val zoneOverlap: suspend (fromMs: Long, toMs: Long) -> Boolean = { _, _ -> false },
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : CaptureNowControl {
     private val state = MutableStateFlow(true)
     override val paused: StateFlow<Boolean> = state.asStateFlow()
@@ -157,6 +163,10 @@ class PhoneCaptureControl(
         val file = withContext(io) { capture.pending().firstOrNull() } ?: return if (saved) CaptureResult.FAILED else CaptureResult.CANCELLED
         if (!saved) { withContext(io) { capture.discard(file) }; return CaptureResult.CANCELLED }
         if (read()) { withContext(io) { capture.discard(file) }; return CaptureResult.PAUSED }
+        // The shot's window opens when its target was made (`phone_<ms>.jpg`; unreadable = as old as the file) and closes now.
+        val from = file.name.removePrefix("phone_").removeSuffix(".jpg").toLongOrNull() ?: file.lastModified().coerceAtMost(clock())
+        val overlapped = try { zoneOverlap(minOf(from, clock()), clock()) } catch (c: CancellationException) { throw c } catch (e: Exception) { true }
+        if (overlapped) { withContext(io) { capture.discard(file) }; return CaptureResult.PAUSED }
         return if (capture.ingest(file)) CaptureResult.SAVED else CaptureResult.FAILED
     }
 
@@ -172,6 +182,11 @@ class PhoneCaptureControl(
             now: () -> Long = System::currentTimeMillis,
         ): suspend () -> Boolean = {
             com.rokid.context.phone.hub.HubPauses(dao(), quietHours, zone, now).pausedNow()
+        }
+
+        /** The zone-overlap check for [PhoneCaptureControl]'s `zoneOverlap`: Room intervals plus the in-memory enforcement flag. */
+        fun zoneOverlap(dao: () -> com.rokid.context.memory.db.PauseDao, now: () -> Long = System::currentTimeMillis): suspend (Long, Long) -> Boolean = { from, to ->
+            com.rokid.context.phone.hub.HubPauses(dao(), now = now).zoneOverlaps(from, to)
         }
     }
 }
