@@ -43,7 +43,11 @@ class FakeGlassesLink(initial: LinkState = LinkState.CONNECTED) : GlassesLink {
     override val wearCheck: kotlinx.coroutines.flow.StateFlow<Boolean?> get() = wearCheckFlow
     override fun connectOnce() { connectOnceCalls++ }
     override fun connectAutomatic() { automaticCalls++ }
-    override fun probeAlive() { probeCalls++ }
+    var probeOpenCalls = 0
+        private set
+    override fun probeAlive(openIfGone: Boolean) { probeCalls++; if (openIfGone) probeOpenCalls++ }
+    /** Tests: the link state that makes [reconnectEligible] true (as CxrGlassesLink: OFFLINE). */
+    override fun reconnectEligible(): Boolean = _state.value == LinkState.OFFLINE
     override fun watchForReopen() { watchCalls++ }
     override fun connectOnResume() { resumeCalls++ }
     override suspend fun send(channel: String, json: String): Boolean {

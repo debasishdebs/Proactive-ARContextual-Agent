@@ -151,9 +151,9 @@ class CxrGlassesLink(
 
     override fun watchForReopen() = post { act(policy.watchOnly()) }
 
-    override fun probeAlive() = post {
+    override fun probeAlive(openIfGone: Boolean) = post {
         if (!policy.minimised) return@post
-        openAfterSilence = true
+        openAfterSilence = openIfGone
         minimised.probeNow()
     }
 
@@ -170,6 +170,16 @@ class CxrGlassesLink(
         authTimedOut = false
         auth.clearStale(now())
         act(policy.manualConnect())
+    }
+
+    override fun reconnectEligible(): Boolean = shouldReconnectOnResume(_state.value, token() != null, authDeclined, authTimedOut, policy.waitingAuthRetry)
+
+    override fun reconnectAutomatic() = post {
+        if (!reconnectEligible()) return@post
+        PcLog.i(TAG, "watchdog: reconnecting automatically")
+        authTimedOut = false
+        auth.clearStale(now())
+        act(policy.manualConnect(auto = true))
     }
 
     override fun close() = post {

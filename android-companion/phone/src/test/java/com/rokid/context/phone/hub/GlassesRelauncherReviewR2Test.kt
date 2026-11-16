@@ -68,4 +68,47 @@ class GlassesRelauncherReviewR2Test {
         assertEquals("once the store works, the one remaining attempt is used", 1, launches); assertEquals("six in the hour, never seven", 6, disk.attempts().size)
         b.stop()
     }
+
+    /** Review hub-wp2 r3 P2-3: the expiry cleanup inside the post-write validation must not erase the reservation from disk. */
+    @Test fun anAttemptExpiringWhileTheWriteIsHeldKeepsItsReservationOnDisk() = runTest {
+        val io = HeldIo(); val store = InMemoryRelaunchStore().apply { saveAttempts(List(5) { 1L }) }; var launches = 0
+        val state = MutableStateFlow(LinkState.CONNECTED)
+        val clock = { currentTime + 3_600_000L - 7_000L } // the five old attempts expire 7 s into the test
+        val r = GlassesRelauncher(backgroundScope, state, { true }, Guards(), { launches++; state.value = LinkState.CONNECTING }, clock, {}, store = store, io = io)
+        r.start(); runCurrent(); state.value = LinkState.CLOSED_ON_GLASSES; runCurrent()
+        advanceTimeBy(8_100) // the attempt reserves at once and holds on IO; the old attempts expire before the write completes
+        pump(io)
+        assertEquals(1, launches)
+        val t = store.attempts()
+        assertEquals("the reservation is on disk (the expired ones may or may not be)", 1, t.count { it > 1L })
+    }
+
+    /** Review hub-wp2 r3 P2-4: cancellation landing right after the write returned still takes the reservation back; six such writes leave the quota intact. */
+    @Test fun sixCancelledWritesLeaveNoHourlyLimit() = runTest {
+        val io = HeldIo(); val store = InMemoryRelaunchStore(); var launches = 0
+        val state = MutableStateFlow(LinkState.CONNECTED)
+        val r = GlassesRelauncher(backgroundScope, state, { true }, Guards(), { launches++; state.value = LinkState.CONNECTING }, { currentTime }, {}, store = store, io = io)
+        r.start(); runCurrent()
+        repeat(6) {
+            state.value = LinkState.CLOSED_ON_GLASSES; runCurrent(); advanceTimeBy(8_100) // the write is held
+            r.onUserExit() // cancels the attempt job while the noncancellable write is in flight
+            pump(io)
+            r.onExplicitOpen(); state.value = LinkState.CONNECTED; runCurrent()
+        }
+        assertEquals("nothing launched", 0, launches)
+        assertEquals("every cancelled reservation was taken back", emptyList<Long>(), store.attempts())
+        state.value = LinkState.CLOSED_ON_GLASSES; runCurrent(); advanceTimeBy(8_100); pump(io)
+        assertEquals("no 'hourly limit': the seventh try launches", 1, launches)
+    }
+
+    /** Review hub-wp2 r3 P2-5 / P1: a not-eligible automatic open reserves nothing and launches nothing; user-initiated opens never go through here. */
+    @Test fun aNotEligibleAttemptConsumesNoQuota() = runTest {
+        val store = InMemoryRelaunchStore().apply { saveAttempts(List(5) { currentTime - 1 }) }; var launches = 0; var eligible = false
+        val state = MutableStateFlow(LinkState.OFFLINE)
+        val r = GlassesRelauncher(backgroundScope, state, { true }, Guards(), {}, { currentTime }, {}, store = store, io = kotlinx.coroutines.Dispatchers.Unconfined)
+        repeat(3) { assertEquals("not eligible", r.attemptNow({ launches++ }, { eligible })); runCurrent() }
+        assertEquals(0, launches); assertEquals("no slot reserved", 5, store.attempts().size)
+        eligible = true; assertEquals(null, r.attemptNow({ launches++ }, { eligible })); runCurrent()
+        assertEquals(1, launches); assertEquals(6, store.attempts().size)
+    }
 }

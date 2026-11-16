@@ -119,7 +119,7 @@ class HubTest {
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
             reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
         )
-            .also { if (start) { it.start(); runCurrent() } }
+            .also { if (start) { it.start(userInitiated = true); runCurrent() } }
     }
     private fun FakeGlassesLink.lastOn(channel: String) = sent.last { it.first == channel }.second
     private fun hello(glassesNowMs: Long = now, pauses: List<PauseRecord> = emptyList()) =
@@ -589,7 +589,7 @@ class HubTest {
         val guards = object : RelaunchGuards { override fun callIdle() = idle; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
         val store = InMemoryRelaunchStore()
         val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = store, start = false)
-        h.start(recover = true); runCurrent()
+        h.start(); runCurrent()
         advanceTimeBy(120_000)
         assertEquals("no connect of any kind during a call", 0, link.connectOnceCalls + link.automaticCalls + link.connectCalls)
         idle = true; advanceTimeBy(10_100)
@@ -602,7 +602,7 @@ class HubTest {
         val guards = object : RelaunchGuards { override fun callIdle() = true; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
         val store = InMemoryRelaunchStore().apply { saveAttempts(List(6) { now - 1 }) }
         val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = store, start = false)
-        h.start(recover = true); runCurrent(); advanceTimeBy(30 * 60_000L)
+        h.start(); runCurrent(); advanceTimeBy(30 * 60_000L)
         assertEquals("six reopens in the hour: no seventh", 0, link.automaticCalls + link.connectOnceCalls)
     }
 
@@ -612,7 +612,7 @@ class HubTest {
         var idle = false
         val guards = object : RelaunchGuards { override fun callIdle() = idle; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
         val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, start = false)
-        h.start(recover = ContextHubService.isRecoveryStart(null)); runCurrent(); advanceTimeBy(120_000)
+        h.start(userInitiated = ContextHubService.isUserStart(null)); runCurrent(); advanceTimeBy(120_000)
         assertEquals("no connect of any kind during a call", 0, link.connectOnceCalls + link.automaticCalls + link.connectCalls + link.resumeCalls)
         idle = true; advanceTimeBy(10_100)
         assertEquals(1, link.automaticCalls); assertEquals(0, link.connectOnceCalls)
@@ -626,17 +626,50 @@ class HubTest {
         val store = InMemoryRelaunchStore().apply { saveAttempts(List(6) { now - 1 }) }
         val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = store, start = false)
         h.watchdogReconnect(); runCurrent()
-        assertEquals("a call and all six attempts spent", 0, link.resumeCalls + link.automaticCalls + link.connectOnceCalls)
+        assertEquals("a call and all six attempts spent", 0, link.automaticCalls + link.connectOnceCalls)
         idle = true; h.watchdogReconnect(); runCurrent()
-        assertEquals("the quota still blocks after the call", 0, link.resumeCalls + link.automaticCalls)
+        assertEquals("the quota still blocks after the call", 0, link.automaticCalls)
         val free = FakeGlassesLink(LinkState.OFFLINE); val fresh = InMemoryRelaunchStore(); idle = false
         val h2 = hub(free, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = fresh, start = false)
-        h2.watchdogReconnect(); runCurrent(); assertEquals("a call: no reconnect", 0, free.resumeCalls)
+        h2.watchdogReconnect(); runCurrent(); assertEquals("a call: no reconnect", 0, free.automaticCalls)
         idle = true; h2.watchdogReconnect(); runCurrent()
-        assertEquals("after the call and its settle: one reconnect", 1, free.resumeCalls); assertEquals("counted against the quota", 1, fresh.attempts().size)
+        assertEquals("after the call and its settle: one reconnect", 1, free.automaticCalls); assertEquals("counted against the quota", 1, fresh.attempts().size)
     }
 
-    @Test fun anOrdinaryStartStillConnectsAtOnce() = runTest {
+    /** Review hub-wp2 r3 P1-1: an AutoStop wake start (wake, not forced) is guarded by default: no connect during a call, one automatic connect after it. */
+    @Test fun anAutoStopWakeStartNeverConnectsDuringACall() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        var idle = false
+        val guards = object : RelaunchGuards { override fun callIdle() = idle; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, start = false)
+        val wake = android.content.Intent(ctx, ContextHubService::class.java).putExtra("com.rokid.context.hub.WAKE", true)
+        h.start(userInitiated = ContextHubService.isUserStart(wake)); runCurrent(); advanceTimeBy(120_000)
+        assertEquals("no connect of any kind during a call", 0, link.connectOnceCalls + link.automaticCalls + link.connectCalls + link.resumeCalls)
+        idle = true; advanceTimeBy(10_100)
+        assertEquals(1, link.automaticCalls); assertEquals(0, link.connectOnceCalls)
+    }
+
+    /** Review hub-wp2 r3 P2-5: a BT-paused link makes the watchdog reconnect a no-op that must not spend the last quota slot. */
+    @Test fun aPausedBtWatchdogTickConsumesNoQuota() = runTest {
+        val link = FakeGlassesLink(LinkState.PAUSED_BT)
+        val guards = object : RelaunchGuards { override fun callIdle() = true; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        val store = InMemoryRelaunchStore().apply { saveAttempts(List(5) { now - 1 }) }
+        val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = store, start = false)
+        repeat(3) { h.watchdogReconnect(); runCurrent() }
+        assertEquals("nothing opened", 0, link.automaticCalls + link.resumeCalls); assertEquals("no slot spent", 5, store.attempts().size)
+        link.setState(LinkState.OFFLINE); h.watchdogReconnect(); runCurrent()
+        assertEquals("the OFFLINE recovery still has its slot", 1, link.automaticCalls); assertEquals(6, store.attempts().size)
+    }
+
+    /** Review hub-wp2 r3 P1-2: the watchdog's probe of a minimised app never opens the app itself; a wearer's tap still does. */
+    @Test fun theWatchdogProbeNeverOpensTheApp() = runTest {
+        val link = FakeGlassesLink(LinkState.MINIMISED)
+        val h = hub(link)
+        h.watchdogProbe(); assertEquals(1, link.probeCalls); assertEquals(0, link.probeOpenCalls)
+        h.requestReconnect(); runCurrent(); assertEquals(1, link.probeOpenCalls)
+    }
+
+    @Test fun aUserStartStillConnectsAtOnce() = runTest {
         val link = FakeGlassesLink(LinkState.OFFLINE)
         val guards = object : RelaunchGuards { override fun callIdle() = false; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
         hub(link, reopenGuards = guards)

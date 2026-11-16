@@ -152,8 +152,8 @@ class Hub(
 
     val started: Boolean get() = jobs.isNotEmpty()
 
-    /** [recover] = the service was started by the lost-hub recovery: its automatic connect goes through the call guard and the hourly cap ([GlassesRelauncher.connectAfterRecovery]). */
-    fun start(recover: Boolean = false) {
+    /** Review hub-wp2 r3: guarded by default. Only a [userInitiated] start (a tapped Reconnect, the app in front) connects at once; every other start (an AutoStop wake, a sticky restart, the watchdog's hub recovery) connects through the call guard and the hourly cap ([GlassesRelauncher.connectGuarded]). */
+    fun start(userInitiated: Boolean = false) {
         if (started) return
         ctxStart()
         jobs = listOf(
@@ -183,7 +183,7 @@ class Hub(
             set { it.copy(closedByUser = true) }
             link.watchForReopen() // N4: the wearer's own reopen must still be noticed
         }
-        else if (linkAllowed()) { val r = relauncher; if (recover && r != null) r.connectAfterRecovery() else link.connectOnce() }
+        else if (linkAllowed()) { val r = relauncher; if (!userInitiated && r != null) r.connectGuarded() else link.connectOnce() }
         else PcLog.i(TAG, "glasses link off (setting off or not paired): not connecting")
     }
 
@@ -390,8 +390,13 @@ class Hub(
     suspend fun requestMarkPhoto(ref: String): Boolean = link.send(Channels.MARK_PHOTO_REQUEST, Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = ref, atMs = clock(), sessionStartMs = sessionStartMs)))
 
     /** Review hub-wp2 r2 P1-1: an automatic session open waits for the call guard (settle included), the setting and the hourly cap like every reopen; a blocked one is retried by the watchdog's own ladder. */
-    fun watchdogReconnect() { val r = relauncher; if (r == null) link.connectOnResume() else r.attemptNow { link.connectOnResume() } }
-    fun watchdogProbe() = link.probeAlive()
+    fun watchdogReconnect() {
+        val r = relauncher
+        // Review hub-wp2 r3 P1-2/P2-5: the automatic policy (a failure is the relauncher's to retry, never the link's timers) and eligibility read before a quota slot is reserved.
+        if (r == null) link.connectOnResume() else r.attemptNow(launch = link::reconnectAutomatic, eligible = link::reconnectEligible)
+    }
+    /** A silent minimised app only moves the link to CLOSED_ON_GLASSES; the reopen after it is the relauncher's guarded one (a wearer's tap is the one that opens at once). */
+    fun watchdogProbe() = link.probeAlive(openIfGone = false)
     fun standingDown(): Boolean = standDown.active
     /** The Home banner's watchdog line ("Glasses not connected · last heard 7 min ago"), null = nothing to say. */
     fun setWatchdogNote(note: String?) { if (_state.value.watchdogNote != note) set { it.copy(watchdogNote = note) } }

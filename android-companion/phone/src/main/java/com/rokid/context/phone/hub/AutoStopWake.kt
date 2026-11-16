@@ -50,7 +50,7 @@ object AutoStopWake {
                     )
                 },
                 startWake = { ContextHubService.ensureRunning(app, wake = true) }, scheduleWake = { schedule(app, it) },
-                startRecover = { ContextHubService.ensureRunning(app, wake = true, recover = true) },
+                startRecover = { ContextHubService.ensureRunning(app, wake = true) }, // unmarked = guarded: no glasses connect except through the call guard and the hourly cap
                 hubStart = LadderHubStartGate(hubLadder(app)) { callIdle(app) },
             )
         }.also { shared = it }

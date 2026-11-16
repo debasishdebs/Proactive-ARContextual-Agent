@@ -354,4 +354,21 @@ class GlassesSessionPolicyTest {
         assertTrue(p.backgroundLink)
         assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.onEvent(LinkEvent.GlassesAppOpened))
     }
+
+    /** Review hub-wp2 r3 P1-2: an automatic open (the relauncher's, the watchdog's) has no link-side retry timer of its own: neither a connect failure nor an auth timeout schedules one. */
+    @Test fun anAutomaticOpenNeverArmsALinkRetryTimer() {
+        val p = GlassesSessionPolicy()
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(auto = true))
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.ConnectFailed), "no ScheduleRetry")
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty(), "and no timer to fire")
+        p.manualConnect(auto = true)
+        assertEquals(listOf(LinkAction.MarkAuthNeeded), p.onEvent(LinkEvent.AuthTimedOut), "an auth timeout is not retried around the guards")
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+    }
+
+    @Test fun anExplicitOpenStillRetriesAfterAnAuthTimeout() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect()
+        assertTrue(p.onEvent(LinkEvent.AuthTimedOut).any { it is LinkAction.ScheduleRetry })
+    }
 }
