@@ -2,7 +2,9 @@ package com.rokid.context.memory.place
 
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -207,5 +209,22 @@ class PlacePackTest {
     @Test fun theDatabaseIsItsOwnFileNamedPlacesDb() {
         assertEquals("places.db", PlacesDatabase.NAME)
         assertEquals(1, 1)
+    }
+
+    // Codex Place Guide r1: Delete all shares the fetch lock and invalidates a fetch already in flight.
+    @Test fun aFetchStartedBeforeDeleteAllCannotReinsertAfterIt() = runBlocking {
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>(); val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val src = object : CellSource {
+            override suspend fun fetchCell(cell: String): CellFetch { started.complete(Unit); release.await(); return CellFetch(listOf(fp("wd:Q1"))) }
+        }
+        val p = pack(src)
+        val fetch = async { p.ensureCell(cell, true) }
+        started.await()
+        val del = async { p.deleteAll() }
+        yield() // deleteAll has advanced the epoch and is waiting for the lock
+        release.complete(Unit)
+        del.await(); assertEquals(CellOutcome.FAILED, fetch.await())
+        assertEquals("nothing came back after Delete all", 0, p.size().first)
+        assertEquals("the cell is fetched again at the next glance", CellOutcome.FETCHED, pack(FakeSource { CellFetch(listOf(fp("wd:Q1"))) }).ensureCell(cell, true))
     }
 }
