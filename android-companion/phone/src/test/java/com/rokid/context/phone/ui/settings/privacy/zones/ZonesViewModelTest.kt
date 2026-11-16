@@ -28,6 +28,8 @@ class FakeZoneEditor : ZoneEditor {
     val snap = MutableStateFlow(ZoneSnapshot(emptyList(), ZoneEvaluation(emptyList())))
     override val snapshot: StateFlow<ZoneSnapshot> = snap
     var fix: ZoneFix? = null
+    var stored: List<PauseZone> = emptyList()
+    override fun storedZones() = stored
     var next: ZoneChange = ZoneChange.OK
     val upserts = mutableListOf<PauseZone>()
     val calls = mutableListOf<String>()
@@ -152,6 +154,21 @@ class ZonesViewModelTest {
         val old = vm(elapsed = 900L + 4 * 60_000L); watch(old)
         ed.snap.value = ed.snap.value.copy(zones = emptyList())
         assertNull(old.state.value.you)
+    }
+
+    @Test fun savedZonesShowWhileTheHubIsStopped() = runTest {
+        ed.stored = listOf(ZonePresets.JARAWA, ZonePresets.JARAWA.copy(id = "off", name = "Off one", enabled = false))
+        ed.snap.value = ZoneSnapshot(emptyList(), ZoneEvaluation(emptyList()), monitoring = false)
+        val v = vm(); watch(v)
+        val rows = v.state.value.rows
+        assertEquals(listOf("jarawa", "off"), rows.map { it.zone.id })
+        assertEquals("Not monitored (hub stopped)", rows[0].chip.text)
+        assertFalse(rows[0].inside)
+        assertTrue(rows[1].chip.text.startsWith("Off"))
+        assertFalse(v.state.value.presetAvailable)
+        ed.snap.value = ZoneSnapshot(listOf(ZonePresets.JARAWA), ZoneEvaluation(listOf(status("jarawa", ZoneState.OUTSIDE))))
+        assertEquals(listOf("jarawa"), v.state.value.rows.map { it.zone.id })
+        assertTrue(v.state.value.rows[0].chip.text.startsWith("Outside"))
     }
 
     @Test fun presetButtonDisappearsOnceAdded() = runTest {

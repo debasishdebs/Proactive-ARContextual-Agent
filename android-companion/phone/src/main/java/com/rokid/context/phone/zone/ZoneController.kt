@@ -37,7 +37,11 @@ interface ZoneNotifier {
 /** [PROTECTED]: the stored zones cannot be read (all zones unknown). [NOT_READY]: the zones are not judged yet (before start or while recovering). [STORE_FAILED]: the change was not stored. All three refuse (fail closed). */
 enum class ZoneChange { OK, BLOCKED_INSIDE, INVALID, NOT_FOUND, PROTECTED, NOT_READY, STORE_FAILED }
 
-data class ZoneSnapshot(val zones: List<PauseZone>, val evaluation: ZoneEvaluation, val protectedMode: Boolean = false) {
+data class ZoneSnapshot(
+    val zones: List<PauseZone>, val evaluation: ZoneEvaluation, val protectedMode: Boolean = false,
+    /** False until the hub has started the controller and judged the zones once: [zones] is then empty although zones may be saved (the map screen reads the store instead). */
+    val monitoring: Boolean = true,
+) {
     /** The phone is within a zone's approach band or inside it (also by fail-closed): sent to the glasses as `HudSettings.zoneApproach`. */
     val approach: Boolean get() = evaluation.overall >= ZoneState.APPROACH
     /** The zones cannot be read ([ZoneStore.corrupt]): all zones are unknown and capture is held. */
@@ -76,7 +80,7 @@ class ZoneController(
     private var memoDirty = false
     private var lastEnforce: Pair<Boolean, Boolean>? = null
 
-    private val _snapshot = MutableStateFlow(ZoneSnapshot(emptyList(), ZoneEvaluation(emptyList())))
+    private val _snapshot = MutableStateFlow(ZoneSnapshot(emptyList(), ZoneEvaluation(emptyList()), monitoring = false))
     val snapshot: StateFlow<ZoneSnapshot> = _snapshot
     private val _cadence = MutableStateFlow<FixCadence?>(null)
     /** How fixes are wanted now (null = no zone, no fixes). */
