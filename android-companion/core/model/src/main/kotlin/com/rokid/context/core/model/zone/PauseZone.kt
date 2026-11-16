@@ -63,3 +63,7 @@ object ZonePresets {
 
     val ALL: List<PauseZone> = listOf(JARAWA)
 }
+
+/** What survives a process death about one zone: the latched state, when a fix last proved us clear of it (WALL clock ms) and when the last fix of any kind arrived (wall ms). Never a coordinate. */
+@Serializable
+data class ZoneMemo(val state: String = "INSIDE", val clearWallMs: Long? = null, val lastFixWallMs: Long? = null)

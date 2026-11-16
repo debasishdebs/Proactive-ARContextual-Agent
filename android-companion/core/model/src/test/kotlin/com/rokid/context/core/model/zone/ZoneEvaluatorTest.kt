@@ -14,7 +14,10 @@ class ZoneEvaluatorTest {
     /** A point due south of the box edge, [meters] from it, in the box's longitude range (so the distance is exactly that). */
     private fun south(meters: Double, acc: Float = 10f) = ZoneFix(t, 10.0 - meters / m, 20.005, acc)
 
-    private fun evaluator(vararg zones: PauseZone = arrayOf(zone)) = ZoneEvaluator().also { it.setZones(zones.toList(), t) }
+    /** No fix yet: every zone reads INSIDE (NO_FIX, latched). */
+    private fun fresh(vararg zones: PauseZone = arrayOf(zone)) = ZoneEvaluator().also { it.setZones(zones.toList(), t) }
+    /** Established outside: two qualifying far fixes after the start (the exit of the fail-closed start). */
+    private fun evaluator(vararg zones: PauseZone = arrayOf(zone)) = fresh(*zones).also { e -> repeat(2) { t += 1_000; e.onFix(south(50_000.0), t) } }
     private fun ZoneEvaluator.fix(meters: Double, acc: Float = 10f, advance: Long = 1_000L): ZoneState {
         t += advance
         onFix(south(meters, acc), t)
@@ -22,8 +25,8 @@ class ZoneEvaluatorTest {
     }
 
     @Test fun noFixYetReadsInsideForEveryEnabledZone() {
-        val e = evaluator(); val s = e.evaluate(t).zones.single()
-        assertEquals(ZoneState.INSIDE, s.state); assertEquals(ZoneState.OUTSIDE, s.measured); assertEquals(ZoneReason.NO_FIX, s.reason)
+        val e = fresh(); val s = e.evaluate(t).zones.single()
+        assertEquals(ZoneState.INSIDE, s.state); assertEquals(ZoneState.INSIDE, s.measured); assertEquals(ZoneReason.NO_FIX, s.reason)
     }
 
     @Test fun noZonesIsOutsideAndEmpty() {
@@ -121,27 +124,56 @@ class ZoneEvaluatorTest {
         val e = evaluator(); e.fix(1_000.0)
         assertEquals(ZoneState.APPROACH, e.evaluate(t + ZoneEvaluator.STALE_MS).state("z1")) // exactly 3 min is still fresh
         val s = e.evaluate(t + ZoneEvaluator.STALE_MS + 1).zones.single()
-        assertEquals(ZoneState.INSIDE, s.state); assertEquals(ZoneState.APPROACH, s.measured); assertEquals(ZoneReason.STALE_FIX, s.reason)
+        assertEquals(ZoneState.INSIDE, s.state); assertEquals(ZoneState.INSIDE, s.measured); assertEquals(ZoneReason.STALE_FIX, s.reason) // latched
         val i = evaluator(); i.fix(10.0)
         assertEquals(ZoneReason.STALE_FIX, i.evaluate(t + ZoneEvaluator.STALE_MS + 1).zones.single().reason)
     }
 
-    @Test fun aStaleFixWhileOutsideStaysOutside() {
+    @Test fun anOutsideZoneToleratesTheFarCadenceButNotAnHourOfSilence() {
         val e = evaluator(); e.fix(50_000.0)
-        assertEquals(ZoneState.OUTSIDE, e.evaluate(t + 60 * 60_000L).state("z1")) // the far cadence is 5 min: never "stale"
+        assertEquals(ZoneState.OUTSIDE, e.evaluate(t + ZoneEvaluator.OUTSIDE_STALE_MS).state("z1")) // the far cadence is 5 min
+        val s = e.evaluate(t + ZoneEvaluator.OUTSIDE_STALE_MS + 1).zones.single() // nothing proves we are still outside: fail closed, latched
+        assertEquals(ZoneState.INSIDE, s.state); assertEquals(ZoneReason.STALE_FIX, s.reason)
     }
 
     @Test fun anotherFixClearsTheStaleReading() {
         val e = evaluator(); e.fix(1_000.0)
         t += 10 * 60_000L
         assertEquals(ZoneState.INSIDE, e.evaluate(t).state("z1"))
+        assertEquals(ZoneState.INSIDE, e.fix(1_000.0)) // latched: one fix does not clear it
         assertEquals(ZoneState.APPROACH, e.fix(1_000.0))
     }
 
     @Test fun locationOffWhileApproachOrInsideFailsClosed() {
         val e = evaluator(); e.fix(1_000.0); e.onLocationAvailable(false)
         assertEquals(ZoneReason.LOCATION_OFF, e.evaluate(t).zones.single().reason); assertEquals(ZoneState.INSIDE, e.evaluate(t).overall)
-        e.onLocationAvailable(true); assertEquals(ZoneState.APPROACH, e.evaluate(t).overall)
+        e.onLocationAvailable(true); assertEquals(ZoneState.INSIDE, e.evaluate(t).overall) // restoring access clears nothing
+        assertEquals(ZoneState.INSIDE, e.fix(1_000.0)); assertEquals(ZoneState.APPROACH, e.fix(1_000.0)) // two qualifying fixes do
+    }
+
+    @Test fun aVagueFarFixAfterRecoveryNeverClearsAFailClosedZone() { // Codex r1 P1-1: one 5 km-accuracy outside fix cleared the pause
+        val e = evaluator(); e.fix(1_000.0); t += 10 * 60_000L; e.evaluate(t) // stale: latched INSIDE
+        assertEquals(ZoneState.INSIDE, e.fix(50_000.0, acc = 5_000f)); assertEquals(ZoneState.INSIDE, e.fix(50_000.0, acc = 5_000f))
+        assertEquals(ZoneState.INSIDE, e.fix(50_000.0)); assertEquals(ZoneState.OUTSIDE, e.fix(50_000.0))
+    }
+
+    @Test fun aRestartForgetsEverythingAndNeedsTwoQualifyingFixes() { // P1-5: a surviving process
+        val e = evaluator(); e.fix(50_000.0); e.restart()
+        assertEquals(ZoneReason.NO_FIX, e.evaluate(t).zones.single().reason); assertNull(e.evaluate(t).zones.single().lastClearMs)
+        assertEquals(ZoneState.INSIDE, e.fix(50_000.0)); assertEquals(ZoneState.OUTSIDE, e.fix(50_000.0))
+    }
+
+    @Test fun aReplayedFixCountsOnce() { // P2-10
+        val e = evaluator(); e.fix(10.0)
+        val f1 = south(50_000.0); t += 1_000; val f2 = ZoneFix(t, f1.lat, f1.lon, 10f)
+        assertTrue(e.onFix(f2, t)); assertFalse(e.onFix(f2, t)); assertFalse(e.onFix(f2.copy(), t))
+        assertEquals(ZoneState.INSIDE, e.evaluate(t).state("z1")) // the same fix twice is not the second qualifying fix
+        t += 1_000; assertTrue(e.onFix(south(50_000.0), t)); assertEquals(ZoneState.OUTSIDE, e.evaluate(t).state("z1"))
+    }
+
+    @Test fun theLastClearTimeIsTheLastFixThatProvedNotInside() {
+        val e = evaluator(); e.fix(50_000.0); val clear = t; e.fix(10.0)
+        assertEquals(clear, e.evaluate(t).zones.single().lastClearMs)
     }
 
     @Test fun locationOffWhileOutsideIsNotInsideByItself() {
@@ -150,7 +182,7 @@ class ZoneEvaluatorTest {
     }
 
     @Test fun aFixAlreadyStaleOnArrivalIsIgnored() {
-        val e = evaluator(); val old = ZoneFix(t - ZoneEvaluator.STALE_MS - 1, 10.0, 20.005, 5f)
+        val e = fresh(); val old = ZoneFix(t - ZoneEvaluator.STALE_MS - 1, 10.0, 20.005, 5f)
         assertFalse(e.onFix(old, t)); assertEquals(ZoneReason.NO_FIX, e.evaluate(t).zones.single().reason)
     }
 
@@ -161,7 +193,7 @@ class ZoneEvaluatorTest {
     }
 
     @Test fun nonFiniteOrOutOfRangeFixesAreIgnored() {
-        val e = evaluator()
+        val e = fresh()
         assertFalse(e.onFix(ZoneFix(t, Double.NaN, 20.0, 5f), t)); assertFalse(e.onFix(ZoneFix(t, 10.0, Double.POSITIVE_INFINITY, 5f), t))
         assertFalse(e.onFix(ZoneFix(t, 95.0, 20.0, 5f), t)); assertFalse(e.onFix(ZoneFix(t, 10.0, 200.0, 5f), t))
         assertEquals(ZoneReason.NO_FIX, e.evaluate(t).zones.single().reason)
@@ -211,7 +243,7 @@ class ZoneEvaluatorTest {
     }
 
     @Test fun cadenceIsHighWithoutAFixAndNullWithoutZones() {
-        assertEquals(TripCadence.HIGH, TripCadence.select(evaluator().evaluate(t)))
+        assertEquals(TripCadence.HIGH, TripCadence.select(fresh().evaluate(t)))
         assertNull(TripCadence.select(ZoneEvaluator().evaluate(t)))
     }
 
@@ -233,7 +265,7 @@ class ZoneEvaluatorTest {
         val p = ZonePresets.JARAWA
         assertTrue(p.isValid()); assertEquals("jarawa", p.id); assertEquals(5_000, p.bufferM); assertTrue(p.enabled); assertEquals("jarawa", p.preset)
         assertEquals(listOf(p), ZonePresets.ALL)
-        fun at(lat: Double, lon: Double) = ZoneEvaluator().also { it.setZones(listOf(p), t); it.onFix(ZoneFix(t, lat, lon, 10f), t) }.evaluate(t).overall
+        fun at(lat: Double, lon: Double) = ZoneEvaluator().also { it.setZones(listOf(p), t); it.onFix(ZoneFix(t, lat, lon, 10f), t); it.onFix(ZoneFix(t + 1, lat, lon, 10f), t + 1) }.evaluate(t).overall
         assertEquals(ZoneState.INSIDE, at(11.97, 92.72))      // the middle of the box
         assertEquals(ZoneState.INSIDE, at(11.78, 92.72))      // 2 km south of the box: inside the 5 km buffer
         assertEquals(ZoneState.INSIDE, at(11.80 - 4.9 / 111.19, 92.72))
