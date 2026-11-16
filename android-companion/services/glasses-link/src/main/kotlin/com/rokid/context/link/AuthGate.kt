@@ -9,10 +9,19 @@ class AuthGate(private val timeoutMs: Long = AUTH_TIMEOUT_MS) {
     private var cancelled = false // closed by the owner: results of the cancelled attempt are ignored until the next begin
     private var rejected = false // the SDK rejected a token since the last started session
 
-    /** True when the caller should launch the authorization UI now (none is in flight, or the last one is stale). */
-    fun begin(now: Long): Boolean {
-        if (inFlight && now - startedAt < timeoutMs) return false
+    /** Review hub-wp2 r5 P1: the origin of the attempt (the phone's automatic open), kept here and not in the mutable session policy. */
+    var automatic = false
+        private set
+    /** The attempt's timeout fired: a result that still arrives is late. */
+    var expired = false
+        private set
+
+    /** True when the caller should launch the authorization UI now (none is in flight, or the last one is stale). A user open joining an automatic attempt takes the origin over. */
+    fun begin(now: Long, automatic: Boolean = false): Boolean {
+        if (inFlight && now - startedAt < timeoutMs) { if (!automatic) this.automatic = false; return false }
         cancelled = false
+        expired = false
+        this.automatic = automatic
         inFlight = true
         startedAt = now
         return true
@@ -25,7 +34,7 @@ class AuthGate(private val timeoutMs: Long = AUTH_TIMEOUT_MS) {
     fun cancel() { inFlight = false; cancelled = true }
 
     /** The timeout fired without any result. */
-    fun expire() { inFlight = false }
+    fun expire() { inFlight = false; expired = true }
 
     /** Returns true if this result should be applied; late/duplicate reports for a resolved attempt are ignored. */
     fun result(ok: Boolean): Boolean {

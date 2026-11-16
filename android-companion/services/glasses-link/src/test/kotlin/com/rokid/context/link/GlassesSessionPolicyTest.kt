@@ -400,6 +400,28 @@ class GlassesSessionPolicyTest {
         assertEquals(AuthContinuation.HAND_BACK, authContinuation(automaticOpen = true, stillAllowed = false), "a call started during the authorization: nothing opens")
     }
 
+    /** Review hub-wp2 r5 P1 probe: automatic open -> auth timeout -> late success with the call guard blocked: nothing opens, no link-owned retry. */
+    @Test fun aLateSuccessAfterAnAutomaticAuthTimeoutOpensNothing() {
+        val p = GlassesSessionPolicy()
+        val g = AuthGate()
+        p.manualConnect(auto = true)
+        g.begin(0, policy(p))
+        g.expire()
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed), p.onEvent(LinkEvent.AuthTimedOut))
+        assertFalse(p.automaticOpen, "the policy flag is cleared; the origin is not read from it")
+        assertTrue(g.result(true))
+        assertEquals(AuthContinuation.DISCARD, authContinuation(g.automatic, stillAllowed = false, expired = g.expired))
+        assertEquals(AuthContinuation.DISCARD, authContinuation(g.automatic, stillAllowed = true, expired = g.expired))
+    }
+
+    @Test fun aLateSuccessOfAUserAttemptStillOpensAsUser() {
+        val g = AuthGate()
+        g.begin(0, automatic = false); g.expire()
+        assertEquals(AuthContinuation.OPEN_AS_USER, authContinuation(g.automatic, stillAllowed = false, expired = g.expired))
+    }
+
+    private fun policy(p: GlassesSessionPolicy) = p.automaticOpen
+
     /** Review hub-wp2 r4 P2-3: an automatic open's authorization that never reports back is OFFLINE plus a message to the retry owner, never a NOT_AUTHORIZED nobody retries. */
     @Test fun anAutomaticAuthTimeoutHandsBackToTheRelauncher() {
         val p = GlassesSessionPolicy()

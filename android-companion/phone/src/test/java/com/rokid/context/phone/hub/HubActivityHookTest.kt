@@ -39,6 +39,20 @@ class HubActivityHookTest {
         assertFalse("the hook doesn't build the hub", HubGraph.isBuilt)
     }
 
+    /** Review hub-wp2 r5: the internally launched Hi Rokid AuthActivity resuming is not the wearer opening the app. */
+    @Test fun anInternalAuthActivityResumeIsNotAUserForeground() {
+        HubGraph.resetForTests(null)
+        val front = mutableListOf<Int>()
+        val h = HubResumeHook(voiceForeground = { _, _ -> voiceForeground++ }, front = { front += 1 })
+        shadowOf(app).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT)
+        val auth = Robolectric.buildActivity(com.rokid.context.link.AuthActivity::class.java).get()
+        h.onActivityResumed(auth)
+        assertEquals(0, voiceForeground); assertTrue(front.isEmpty())
+        assertNull("no hub start", shadowOf(app).nextStartedService)
+        h.onActivityResumed(Robolectric.buildActivity(Activity::class.java).setup().get())
+        assertEquals("a user activity still counts", 1, voiceForeground)
+    }
+
     /**
      * Fix round 1 (review I1): the first resume of a cold process comes before the service's onCreate (isRunning() is
      * false), and with BLUETOOTH_CONNECT denied the hub never runs. Voice is re-checked on every resume anyway.

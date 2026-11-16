@@ -208,10 +208,12 @@ fun sendRoute(state: LinkState): SendRoute = when (state) {
 }
 
 /** Review hub-wp2 r4 P1-1: what an authorization that has just completed does with the open that waited for it. */
-enum class AuthContinuation { OPEN_AS_USER, OPEN_AS_AUTOMATIC, HAND_BACK }
+enum class AuthContinuation { OPEN_AS_USER, OPEN_AS_AUTOMATIC, HAND_BACK, DISCARD }
 
-/** A user open continues as one; an automatic open continues as automatic while the owner's guards still allow it, else it goes back to the relauncher's guarded retry (never opens during a call). */
-fun authContinuation(automaticOpen: Boolean, stillAllowed: Boolean): AuthContinuation = when {
+/** [automaticOpen] is the origin stored with the authorization attempt ([AuthGate.automatic]), not the session policy's flag. A user open continues as one; an automatic open continues as automatic while the owner's guards still allow it, else it goes back to the relauncher's guarded retry (never opens during a call). */
+fun authContinuation(automaticOpen: Boolean, stillAllowed: Boolean, expired: Boolean = false): AuthContinuation = when {
+    // Review hub-wp2 r5 P1: an automatic attempt that already timed out was handed back to the relauncher (AutoOpenFailed); its late success only keeps the token, it opens nothing.
+    automaticOpen && expired -> AuthContinuation.DISCARD
     !automaticOpen -> AuthContinuation.OPEN_AS_USER
     stillAllowed -> AuthContinuation.OPEN_AS_AUTOMATIC
     else -> AuthContinuation.HAND_BACK
