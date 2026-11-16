@@ -54,6 +54,8 @@ class BackupRulesTest {
         com.rokid.context.phone.hub.PrefsStandDown.PREFS,
         // Derived state: restored, they would say adoption / retirement already happened on an install that never did it.
         "frame_adoption", "space_retired_at", "image_read_attempts", "night_index",
+        // Pause zones: this phone's recent state (see backup_rules.xml).
+        "pause_zone_state",
         // v0.9.9 final fixes: the hub restart ladder is device state (when this phone last tried to start its hub): never restored.
         "hub_restart",
         // v1.1 T7: the reduced periodic-job cadence is device state of the hub's last stop: back to the normal 15 minutes after a restore.
