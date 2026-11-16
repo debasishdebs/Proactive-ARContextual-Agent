@@ -79,4 +79,21 @@ class AuthGateTest {
         assertTrue(g.result(true))
         assertTrue(g.authorized)
     }
+
+    /** Review hub-wp2 r5 P1: the origin lives with the attempt; a user open joining it takes it over. */
+    @Test fun theAttemptKeepsItsOriginAndAUserOpenTakesItOver() {
+        val g = AuthGate()
+        assertTrue(g.begin(0, automatic = true)); assertTrue(g.automatic)
+        assertFalse(g.begin(1, automatic = true)); assertTrue(g.automatic)
+        assertFalse(g.begin(2, automatic = false)); assertFalse(g.automatic, "the wearer's open joined the attempt")
+    }
+
+    @Test fun anExpiredAttemptIsMarkedLateUntilTheNextOne() {
+        val g = AuthGate()
+        g.begin(0, automatic = true); g.expire()
+        assertTrue(g.expired); assertTrue(g.automatic)
+        assertTrue(g.result(true), "the late success is accepted (the token is kept)")
+        g.begin(1, automatic = true)
+        assertFalse(g.expired)
+    }
 }

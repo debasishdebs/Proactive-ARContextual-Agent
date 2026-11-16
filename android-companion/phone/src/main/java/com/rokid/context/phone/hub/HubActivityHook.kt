@@ -3,6 +3,7 @@ package com.rokid.context.phone.hub
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import com.rokid.context.link.AuthActivity
 import com.rokid.context.phone.voice.VoiceGraph
 
 /**
@@ -37,11 +38,14 @@ class HubResumeHook(
     private val positive: (Activity) -> Unit = {},
     /** AutoStop: the app came to the front (resume) or finally left it (stopped): the front hold of [BackgroundPolicy.FRONT_HOLD_MS] counts from the last of these. */
     private val front: () -> Unit = {},
+    /** Review hub-wp2 r5: an activity the app launches itself (the Hi Rokid authorization trampoline) resuming is not the wearer opening the app: no user origin, no reconnect. */
+    private val internal: (Activity) -> Boolean = { it is AuthActivity },
 ) : Application.ActivityLifecycleCallbacks {
     private var resumes = 0L
     private var started = 0
 
     override fun onActivityResumed(activity: Activity) {
+        if (internal(activity)) return
         val resume = ++resumes
         positive(activity)
         front()

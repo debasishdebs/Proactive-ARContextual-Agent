@@ -146,7 +146,8 @@ class CxrGlassesLink(
         if (ok) {
             authDeclined = false
             // Review hub-wp2 r4 P1-1: the open that waited for the authorization keeps its origin; an automatic one is re-checked against the guards and otherwise handed back to the relauncher.
-            when (authContinuation(policy.automaticOpen, autoOwner?.autoOpenStillAllowed() ?: true)) {
+            when (authContinuation(auth.automatic, autoOwner?.autoOpenStillAllowed() ?: true, auth.expired)) {
+                AuthContinuation.DISCARD -> Unit
                 AuthContinuation.OPEN_AS_USER -> act(policy.manualConnect())
                 AuthContinuation.OPEN_AS_AUTOMATIC -> act(policy.manualConnect(auto = true))
                 AuthContinuation.HAND_BACK -> act(policy.onEvent(LinkEvent.ConnectFailed))
@@ -244,7 +245,7 @@ class CxrGlassesLink(
         if (token == null || !auth.authorized) {
             // CXR-L only works after an in-process requestAuthorization, so connect waits for AuthActivity.
             if (authDeclined) { act(policy.onEvent(LinkEvent.AuthFailed)); return }
-            if (!auth.begin(now())) return
+            if (!auth.begin(now(), policy.automaticOpen)) return
             // A blocked background activity start never reports back: give up after the timeout.
             authJob = scope.launch {
                 delay(AuthGate.AUTH_TIMEOUT_MS)
