@@ -38,6 +38,7 @@ class LocalEmbedPowerGateTest {
     }
 
     private fun queued(): List<WorkInfo> = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(EmbeddingWorker.NAME).get()
+    private fun waits(): List<WorkInfo> = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(EmbeddingWorker.NAME_WAIT).get().filter { !it.state.isFinished }
 
     private suspend fun gate(power: PowerState, local: Boolean = true, rebuild: Boolean = false) =
         EmbeddingWorker.gated(ctx, rebuild, token = "req-1", usesLocal = { local }, power = { power }) { ran++; ListenableWorker.Result.success() }
@@ -48,7 +49,7 @@ class LocalEmbedPowerGateTest {
             assertTrue(r is ListenableWorker.Result.Success)
         }
         assertEquals("never embedded", 0, ran)
-        assertTrue("re-checks later, not only on the system charging signal", queued().any { !it.state.isFinished && !it.constraints.requiresCharging() && it.initialDelayMillis == EmbeddingWorker.BATTERY_RECHECK_MS })
+        assertTrue("re-checks later, not only on the system charging signal", waits().any { !it.constraints.requiresCharging() && it.initialDelayMillis == EmbeddingWorker.BATTERY_RECHECK_MS })
         assertTrue("the banner reason is set", clock.batteryPaused())
         assertTrue("a Rebuild stays pending", clock.rebuildPending())
         assertEquals("req-1", clock.pendingRebuildToken())
@@ -64,20 +65,38 @@ class LocalEmbedPowerGateTest {
         assertTrue(queued().none { it.constraints.requiresCharging() })
     }
 
-    @Test fun aNewRequestReplacesABatteryWait() = runBlocking {
+    @Test fun savesDuringAPauseKeepOneWaitAndLeaveTheIndexQueueAlone() = runBlocking {
         gate(PowerState(30, charging = false))
-        assertTrue(clock.batteryPaused())
-        val waiting = queued().filter { !it.state.isFinished }.map { it.id }.toSet()
-        EmbeddingWorker.enqueue(ctx)
-        val now = queued().filter { !it.state.isFinished }
-        assertTrue("the wait was replaced by a run that reads the power now", now.none { it.id in waiting })
-        assertTrue(now.any { it.initialDelayMillis == 0L })
+        val wait = waits().single().id
+        val before = queued().map { it.id }.toSet()
+        repeat(5) { EmbeddingWorker.enqueue(ctx) } // five saves while paused
+        assertEquals("still the one wait", listOf(wait), waits().map { it.id })
+        assertEquals("no extra index run was queued or replaced", before, queued().map { it.id }.toSet())
+    }
+
+    @Test fun aRebuildStillRunsNowWhilePaused() = runBlocking {
+        gate(PowerState(30, charging = false))
+        EmbeddingWorker.enqueue(ctx, rebuild = true)
+        assertTrue(queued().any { !it.state.isFinished && it.initialDelayMillis == 0L })
+        assertTrue("the wait is untouched", waits().isNotEmpty())
+    }
+
+    @Test fun changingTheBatteryLevelRechecksNow() = runBlocking {
+        gate(PowerState(30, charging = false))
+        val wait = waits().single().id
+        EmbeddingWorker.recheckBatteryNow(ctx)
+        val now = waits()
+        assertTrue("the wait was replaced by an immediate run", now.none { it.id == wait } && now.any { it.initialDelayMillis == 0L })
+        clock.setBatteryPaused(false)
+        val ids = waits().map { it.id }
+        EmbeddingWorker.recheckBatteryNow(ctx)
+        assertEquals("not paused: nothing is enqueued", ids, waits().map { it.id })
     }
 
     @Test fun batteryDroppingMidRunDefersInsteadOfFailing() = runBlocking {
         val r = EmbeddingWorker.execute(ctx, attempt = 4) { throw LocalModelPausedException() }
         assertTrue(r is ListenableWorker.Result.Success)
         assertTrue(clock.batteryPaused())
-        assertTrue(queued().any { !it.state.isFinished && it.initialDelayMillis == EmbeddingWorker.BATTERY_RECHECK_MS })
+        assertTrue(waits().any { it.initialDelayMillis == EmbeddingWorker.BATTERY_RECHECK_MS })
     }
 }

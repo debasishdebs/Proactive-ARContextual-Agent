@@ -49,6 +49,7 @@ class ContextApp : Application() {
                 com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(this); com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this)
                 com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this); com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(this)
                 com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this); com.rokid.context.phone.canvas.DeveloperModeStore.get(this)
+                com.rokid.context.phone.ui.settings.capture.IndexBatteryStore.get(this)
             }.onFailure { PcLog.w("ContextApp", "settings warm-up failed: ${it.javaClass.simpleName}") }
         }
         // Phone power policy inputs (spec P2.5): the real thermal status and whether the app is in the foreground.
@@ -94,7 +95,10 @@ class ContextApp : Application() {
         // The Moment cadence and retention are scheduled on EVERY process start (not only when MainActivity runs with processing on): the cadence builds the MARK Moments of marks recorded by an older build.
         com.rokid.context.work.OrchestrationScheduler(this).ensureBackgroundWork()
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
-        com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog
+        // daily canary check + any backlog; the scheduling decision reads the index prefs, so it runs off the main thread (Codex idxbatt r1 P2)
+        kotlin.concurrent.thread(name = "index-enqueue") {
+            runCatching { com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) }.onFailure { PcLog.w("ContextApp", "index enqueue failed: ${it.javaClass.simpleName}") }
+        }
         // rc1 fix: a committed Forget withdraws the answers of the asks it redacted wherever they may still show (phone voice card, glasses HUD through the hub's frames).
         com.rokid.context.orchestration.forget.ForgetActions.asksRedacted = { ids -> android.os.Handler(android.os.Looper.getMainLooper()).post { runCatching { com.rokid.context.phone.voice.VoiceGraph.onAsksRedacted(this, ids) }.onFailure { PcLog.w("ContextApp", "answer withdrawal failed: ${it.javaClass.simpleName}") } } }
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)

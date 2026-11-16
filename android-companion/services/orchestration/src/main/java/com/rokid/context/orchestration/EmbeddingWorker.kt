@@ -65,6 +65,8 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         /** Runs in total for one request (the first included) before a failure is final. */
         private const val MAX_RUNS = 5
         const val NAME = "embedding_index"
+        /** The battery wait lives under its own unique name: saves keep coalescing under [NAME] and a queued Rebuild is never replaced by a wait. */
+        const val NAME_WAIT = "embedding_index_battery_wait"
         const val KEY_REBUILD = "rebuild"
 
         /**
@@ -118,7 +120,7 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             // 2026-11-16: re-check after a delay instead of waiting for the system CHARGING constraint. Some phones never report "stable power"
             // on a charger (the job then never ran although the battery service said charging), and the battery level can also rise above the
             // user's setting without a charger. The next run reads the power again and either proceeds or defers once more.
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, recheckAfterMs = BATTERY_RECHECK_MS))
+            WorkManager.getInstance(context).enqueueUniqueWork(NAME_WAIT, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, recheckAfterMs = BATTERY_RECHECK_MS))
         }
 
         /** One run's outcome as a WorkManager result. A config failure is recorded and stops; other failures retry a bounded number of times. */
@@ -171,10 +173,24 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             // The request exists first, so its id is the pending token (token, then flag: a reader of the flag finds the token).
             val req = request(rebuild)
             if (rebuild) PrefsIndexClock(context).apply { setPendingRebuildToken(req.id.toString()); setRebuildPending(true); recordDiscard(null) }
-            // 2026-11-16: a battery-paused run is only a wait (nothing runs), so a new request replaces it and reads the power now. This also
-            // frees a wait queued by older builds on the system CHARGING constraint, which some phones never report as met on a charger.
+            // 2026-11-16 (Codex idxbatt r1): while the index is battery-paused an ordinary request only makes sure a wait exists (KEEP: one
+            // re-check per BATTERY_RECHECK_MS however many memories arrive); only a Rebuild runs now (it re-defers when the power is still low).
+            // The wait is its own unique work, so this never replaces a queued Rebuild or a run that is already going.
+            val paused = !rebuild && try { PrefsIndexClock(context).batteryPaused() } catch (_: Exception) { false }
+            if (paused) {
+                WorkManager.getInstance(context).enqueueUniqueWork(NAME_WAIT, ExistingWorkPolicy.KEEP, request(false, recheckAfterMs = BATTERY_RECHECK_MS))
+                return
+            }
+            WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, req)
+        }
+
+        /**
+         * An explicit resume trigger (the user changed the indexing battery level): while battery-paused, replace the wait with a run that reads the
+         * power now. Does nothing when not paused. Safe off the main thread only.
+         */
+        fun recheckBatteryNow(context: Context) {
             val paused = try { PrefsIndexClock(context).batteryPaused() } catch (_: Exception) { false }
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild || paused) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, req)
+            if (paused) WorkManager.getInstance(context).enqueueUniqueWork(NAME_WAIT, ExistingWorkPolicy.REPLACE, request(false))
         }
 
         /** The wait before the next image-backfill run: 30 s, doubling per consecutive BACKFILL, at most 15 min (never a tight loop). */
