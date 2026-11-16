@@ -169,7 +169,8 @@ class AutoStopEngine(
                 p?.stopHub?.invoke()
             }
             is AutoStopEffect.StartWake -> {
-                if (f.recover) hubStart.record(clock()) // the ladder's attempt is durable BEFORE the start
+                // the ladder's attempt is one atomic check-and-record on the shared ladder, durable BEFORE the start; a watchdog start that got there first means no start here
+                if (f.recover && !hubStart.record(clock())) return AutoStopEvent.WakeResult(false, runCatching { wakeNow()?.serviceRunning }.getOrNull() == true)
                 val issued = runCatching { if (f.controller && p != null) p.wakeHub() else if (f.recover) (startRecover ?: startWake)() else startWake() }.getOrDefault(false)
                 return AutoStopEvent.WakeResult(issued, runCatching { wakeNow()?.serviceRunning }.getOrNull() == true)
             }

@@ -84,7 +84,7 @@ class ContextHubService : Service() {
             AutoStopWake.engine(this).submit(AutoStopEvent.HubForeground) // a wake in progress is complete only now (Codex review 5)
             val nm = getSystemService(NotificationManager::class.java)
             val hub = HubGraph.get(this)
-            hub.start(recover = intent?.getBooleanExtra(EXTRA_RECOVER, false) == true) // a lost hub's recovery connects the glasses only through the call guard and the hourly cap
+            hub.start(recover = isRecoveryStart(intent)) // every automatic start (a sticky restart's null intent included) connects the glasses only through the call guard and the hourly cap
             com.rokid.context.work.OrchestrationScheduler(this).ensureBackgroundWork() // the link-up path: retention and the Moment cadence run whatever the pipeline flag says (unique, KEEP)
             com.rokid.context.work.frames.KeyframeGraph.get(this).start() // the hub service owns the keyframe pipeline while it runs
             watcher = CoroutineScope(Dispatchers.Main.immediate).launch {
@@ -176,7 +176,7 @@ class ContextHubService : Service() {
         /** A background start by the wake path ([BackgroundPolicy.wakeDue], needs the battery exemption): starts although [hubNeededNow] says no, but is not a user start. */
         private const val EXTRA_WAKE = "com.rokid.context.hub.WAKE"
         /** The start is a lost hub's recovery ([AutoStopEffect.StartWake.recover]): implies [EXTRA_WAKE]; the glasses connect only through the relaunch guards. */
-        private const val EXTRA_RECOVER = "com.rokid.context.hub.RECOVER"
+        internal const val EXTRA_RECOVER = "com.rokid.context.hub.RECOVER"
         @Volatile private var lastText = READY
         @Volatile private var lastPaused = false
         /** Notification action intents (handled in [onStartCommand], on the pause control's IO). */
@@ -319,6 +319,9 @@ class ContextHubService : Service() {
             return runCatching { context.startForegroundService(start) }
                 .onFailure { PcLog.w(TAG, "start refused: ${it.javaClass.simpleName}") }.isSuccess
         }
+
+        /** Review hub-wp2 r2 P1-1: an automatic start is a recovery start: a sticky restart's null intent, or the one that says so; only then does the glasses connect go through the call guard and the hourly cap. */
+        internal fun isRecoveryStart(intent: Intent?): Boolean = intent == null || intent.getBooleanExtra(EXTRA_RECOVER, false)
 
         /** A start is in front only when its intent says so; a sticky restart's null intent is the background. */
         internal fun startedInFront(intent: Intent?): Boolean = intent?.getBooleanExtra(EXTRA_IN_FRONT, false) == true

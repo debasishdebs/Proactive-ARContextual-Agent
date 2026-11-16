@@ -606,6 +606,36 @@ class HubTest {
         assertEquals("six reopens in the hour: no seventh", 0, link.automaticCalls + link.connectOnceCalls)
     }
 
+    /** Review hub-wp2 r2 P1-1/P3: the production start of a sticky restart (null intent) is a recovery start: no connect during a call. */
+    @Test fun aStickyRestartWithNullIntentNeverConnectsDuringACall() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        var idle = false
+        val guards = object : RelaunchGuards { override fun callIdle() = idle; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, start = false)
+        h.start(recover = ContextHubService.isRecoveryStart(null)); runCurrent(); advanceTimeBy(120_000)
+        assertEquals("no connect of any kind during a call", 0, link.connectOnceCalls + link.automaticCalls + link.connectCalls + link.resumeCalls)
+        idle = true; advanceTimeBy(10_100)
+        assertEquals(1, link.automaticCalls); assertEquals(0, link.connectOnceCalls)
+    }
+
+    /** Review hub-wp2 r2 P1-1: the watchdog's own reconnect (link OFFLINE, hub up) goes through the call guard and the hourly quota. */
+    @Test fun theWatchdogReconnectNeverBypassesTheCallGuardOrTheQuota() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        var idle = false
+        val guards = object : RelaunchGuards { override fun callIdle() = idle; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        val store = InMemoryRelaunchStore().apply { saveAttempts(List(6) { now - 1 }) }
+        val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = store, start = false)
+        h.watchdogReconnect(); runCurrent()
+        assertEquals("a call and all six attempts spent", 0, link.resumeCalls + link.automaticCalls + link.connectOnceCalls)
+        idle = true; h.watchdogReconnect(); runCurrent()
+        assertEquals("the quota still blocks after the call", 0, link.resumeCalls + link.automaticCalls)
+        val free = FakeGlassesLink(LinkState.OFFLINE); val fresh = InMemoryRelaunchStore(); idle = false
+        val h2 = hub(free, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = fresh, start = false)
+        h2.watchdogReconnect(); runCurrent(); assertEquals("a call: no reconnect", 0, free.resumeCalls)
+        idle = true; h2.watchdogReconnect(); runCurrent()
+        assertEquals("after the call and its settle: one reconnect", 1, free.resumeCalls); assertEquals("counted against the quota", 1, fresh.attempts().size)
+    }
+
     @Test fun anOrdinaryStartStillConnectsAtOnce() = runTest {
         val link = FakeGlassesLink(LinkState.OFFLINE)
         val guards = object : RelaunchGuards { override fun callIdle() = false; override fun mediaIdle() = true; override fun worn(): Boolean? = null }

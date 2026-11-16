@@ -176,7 +176,7 @@ class HubLiveRecoveryTest {
         val gate = object : HubStartGate {
             private val real = LadderHubStartGate(ladder) { call }
             override fun dueInMs(nowMs: Long) = real.dueInMs(nowMs)
-            override fun record(nowMs: Long) { order += "record"; real.record(nowMs) }
+            override fun record(nowMs: Long): Boolean { order += "record"; return real.record(nowMs) }
             override fun callIdle() = real.callIdle()
         }
         val e = AutoStopEngine(store, { now }, SerialStateMachine.DIRECT, { WakeInputs(true, 20, true, false) }, { order += "plain"; true }, { order += "schedule" }, startRecover = { order += "recover"; true }, hubStart = gate)

@@ -22,6 +22,14 @@ class ContextHubServiceTest {
         assertFalse(HubGraph.isBuilt)
     }
 
+    /** Review hub-wp2 r2 P1-1: a sticky restart (null intent) is a recovery start; a user start is not. */
+    @Test fun aStickyRestartIsARecoveryStartAndAUserStartIsNot() {
+        val ctx = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
+        assertTrue(ContextHubService.isRecoveryStart(null))
+        assertTrue(ContextHubService.isRecoveryStart(android.content.Intent(ctx, ContextHubService::class.java).putExtra(ContextHubService.EXTRA_RECOVER, true)))
+        assertFalse(ContextHubService.isRecoveryStart(android.content.Intent(ctx, ContextHubService::class.java).putExtra(ContextHubService.EXTRA_FORCE, true)))
+    }
+
     /** Android 14+ needs a runtime prerequisite for a connectedDevice FGS; BLUETOOTH_CONNECT exists from API 31. */
     @Test fun startsOnlyWithTheBluetoothPrerequisite() {
         assertTrue(ContextHubService.canStart(sdk = 30, bluetoothGranted = false))
