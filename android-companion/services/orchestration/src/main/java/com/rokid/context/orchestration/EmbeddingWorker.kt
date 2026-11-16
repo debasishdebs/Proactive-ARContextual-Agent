@@ -115,7 +115,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
                 }
             } catch (_: Exception) { }
             clock.setBatteryPaused(true)
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, untilCharging = true))
+            // 2026-11-16: re-check after a delay instead of waiting for the system CHARGING constraint. Some phones never report "stable power"
+            // on a charger (the job then never ran although the battery service said charging), and the battery level can also rise above the
+            // user's setting without a charger. The next run reads the power again and either proceeds or defers once more.
+            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, recheckAfterMs = BATTERY_RECHECK_MS))
         }
 
         /** One run's outcome as a WorkManager result. A config failure is recorded and stops; other failures retry a bounded number of times. */
@@ -151,9 +154,13 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         }
 
         private fun retryOrFail(attempt: Int): Result = if (attempt + 1 < MAX_RUNS) Result.retry() else Result.failure()
-        private fun request(rebuild: Boolean, untilCharging: Boolean = false) = OneTimeWorkRequestBuilder<EmbeddingWorker>()
+        /** How long a battery-paused run waits before it reads the power again. */
+        const val BATTERY_RECHECK_MS = 15 * 60_000L
+
+        private fun request(rebuild: Boolean, recheckAfterMs: Long = 0L) = OneTimeWorkRequestBuilder<EmbeddingWorker>()
             .setInputData(workDataOf(KEY_REBUILD to rebuild))
-            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).setRequiresCharging(untilCharging).build())
+            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
+            .apply { if (recheckAfterMs > 0) setInitialDelay(recheckAfterMs, java.util.concurrent.TimeUnit.MILLISECONDS) }
             .build()
 
         /** New memories, app start, binding change: KEEP (a run already queued will see them). Rebuild: REPLACE. */
@@ -164,7 +171,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             // The request exists first, so its id is the pending token (token, then flag: a reader of the flag finds the token).
             val req = request(rebuild)
             if (rebuild) PrefsIndexClock(context).apply { setPendingRebuildToken(req.id.toString()); setRebuildPending(true); recordDiscard(null) }
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, req)
+            // 2026-11-16: a battery-paused run is only a wait (nothing runs), so a new request replaces it and reads the power now. This also
+            // frees a wait queued by older builds on the system CHARGING constraint, which some phones never report as met on a charger.
+            val paused = try { PrefsIndexClock(context).batteryPaused() } catch (_: Exception) { false }
+            WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild || paused) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, req)
         }
 
         /** The wait before the next image-backfill run: 30 s, doubling per consecutive BACKFILL, at most 15 min (never a tight loop). */
