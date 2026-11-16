@@ -60,6 +60,8 @@ sealed interface AutoStopEvent {
     data class GlassesNearby(val via: String = "acl", val wake: WakeInputs? = null) : AutoStopEvent
     /** Feedback of [AutoStopEffect.StartWake]: the start request was issued / the service is up after it. */
     data class WakeResult(val issued: Boolean, val serviceRunning: Boolean) : AutoStopEvent
+    /** v1.1 review r1 P2-5/P2-6: a start for the glasses' ACL connect was refused at the last moment because a call began (or its settle runs): it is deferred, not dropped. */
+    object NearbyCallBlocked : AutoStopEvent
     /** The hub service entered the foreground ([ContextHubService]): a wake in progress is complete. */
     object HubForeground : AutoStopEvent
     /** A user start (app opened, Reconnect tapped): the manual stop, the auto stop, the ladder, a pending probe and the away window are all over. */
@@ -78,7 +80,7 @@ sealed interface AutoStopEffect {
     /** The status line: [reason] null = none. */
     data class Note(val reason: BackgroundPolicy.Away?, val sinceMs: Long = 0L) : AutoStopEffect
     data class StopHub(val reason: BackgroundPolicy.Away) : AutoStopEffect
-    data class StartWake(val via: String, val controller: Boolean, val recover: Boolean = false) : AutoStopEffect
+    data class StartWake(val via: String, val controller: Boolean, val recover: Boolean = false, /** The call check is repeated right before the start (the state was written since the first look). */ val nearby: Boolean = false) : AutoStopEffect
     data class ScheduleWake(val delayMs: Long, val controller: Boolean) : AutoStopEffect
     /** A fixed log line ([Line]), with the wake entry point [via] where it applies. */
     data class Log(val line: Line, val via: String = "") : AutoStopEffect
@@ -105,10 +107,12 @@ object AutoStopMachine {
     const val PERSIST_LOG_EVERY_MS = 60_000L
     /** A recovery held back by a call looks again after this (the guard's own 15 s settle is inside [HubStartGate.callIdle]). */
     const val RECOVER_CALL_RECHECK_MS = 15_000L
+    /** An ACL connect deferred by a call is honoured for this long, then dropped (a bounded request, never an open-ended one). */
+    const val NEARBY_PENDING_MS = 10 * 60_000L
 
     /** A pending stop's mark is rolled back first (it restores the hub-live flag it cleared: the service may well still run), then the user start's bookkeeping. */
     private fun userStarted(s0: AutoStopState): AutoStopState { val s = cancel(s0); return s.copy(
-        saved = s.saved.copy(manualStop = false, autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, wakeStep = 0, nextWakeAtMs = 0L, wakeProbe = false, wakeStartedAtMs = 0L),
+        saved = s.saved.copy(nearbyPendingAtMs = 0L, manualStop = false, autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, wakeStep = 0, nextWakeAtMs = 0L, wakeProbe = false, wakeStartedAtMs = 0L),
         pendingStop = null, awaySince = null,
     ) }
 
@@ -123,7 +127,11 @@ object AutoStopMachine {
         // A user start: the full configured N applies again (the probe's synthetic away start goes with the probe).
         AutoStopEvent.UserStarted -> T(userStarted(s), listOf(AutoStopEffect.Note(null)))
         // A stop event ends the pending stop's rollback too: a later cancel must never restore the hub-live flag or clear the auto-stop mark of a hub that is stopped.
-        AutoStopEvent.ManualStopped -> T(s.copy(saved = s.saved.copy(manualStop = true, hubLive = false), pendingStop = null))
+        AutoStopEvent.ManualStopped -> T(s.copy(saved = s.saved.copy(manualStop = true, hubLive = false, nearbyPendingAtMs = 0L), pendingStop = null))
+        AutoStopEvent.NearbyCallBlocked -> {
+            val c = s.claim
+            if (c == null) T(s) else T(s.copy(claim = null, saved = s.saved.copy(wakeProbe = false, nearbyPendingAtMs = now)), listOf(AutoStopEffect.ScheduleWake(RECOVER_CALL_RECHECK_MS, false)), reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        }
         AutoStopEvent.ExpectedStopped -> T(s.copy(saved = s.saved.copy(hubLive = false), pendingStop = null))
         is AutoStopEvent.PersistFailed -> persistFailed(s, now)
         AutoStopEvent.PersistRecovered -> T(s.copy(persistFailing = false))
@@ -138,7 +146,7 @@ object AutoStopMachine {
 
     private fun live(x: AutoStopState) = x.copy(saved = x.saved.copy(hubLive = true))
 
-    private fun cleared(x: AutoStopState) = x.copy(saved = x.saved.copy(autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, wakeStartedAtMs = 0L))
+    private fun cleared(x: AutoStopState) = x.copy(saved = x.saved.copy(autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, wakeStartedAtMs = 0L, nearbyPendingAtMs = 0L))
 
     private fun evaluate(s0: AutoStopState, t: Long): T {
         val w = s0.wake; val h = s0.hub
@@ -222,6 +230,13 @@ object AutoStopMachine {
         val w = s.wake
         // v1.1 T3: a LOST hub (still marked live, yet not up, and not stopped on purpose) is recovered through the same persisted ladder as a wake.
         val lost = s.saved.hubLive && s.saved.autoStoppedAtMs == 0L
+        // v1.1 review r1 P2-5: an ACL connect deferred by a call is retried here (the scheduled wake is a process start), through the same guarded path
+        if (s.saved.nearbyPendingAtMs != 0L) {
+            val live = w != null && t - s.saved.nearbyPendingAtMs in 0..NEARBY_PENDING_MS && s.saved.autoStoppedAtMs != 0L && !s.saved.manualStop && w.linkAllowed && !w.serviceRunning &&
+                s.saved.wakeStartedAtMs == 0L && s.pendingStop == null
+            if (live) return nearby(s, "acl-deferred", t, deferred = true)
+            return processStart(s.copy(saved = s.saved.copy(nearbyPendingAtMs = 0L)), via, t)
+        }
         if (w == null || (s.saved.autoStoppedAtMs == 0L && !lost) || s.saved.manualStop) return T(s, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
         if (s.saved.wakeStartedAtMs != 0L) {
             // An interrupted wake (the process may have died in it): recover it at its timeout, or now.
@@ -237,13 +252,19 @@ object AutoStopMachine {
      * manual stop, link machinery allowed, no hub service, no wake in flight and no call (or its settle) starts; the start is the same unmarked ([AutoStopEffect.StartWake],
      * not recovery) request as a wake, so the glasses connect only through the call guard and the hourly cap. The reply is the claim's, like a process start's.
      */
-    private fun nearby(s0: AutoStopState, via: String, t: Long): T {
+    private fun nearby(s0: AutoStopState, via: String, t: Long, deferred: Boolean = false): T {
         val w = s0.wake
         val stopped = s0.saved.autoStoppedAtMs != 0L && !s0.saved.manualStop
-        val s = s0.copy(saved = s0.saved.copy(wakeStep = 0, nextWakeAtMs = if (s0.saved.autoStoppedAtMs != 0L) t + BackgroundPolicy.wakeDelayMs(0) else 0L))
-        if (!stopped || w == null || !w.linkAllowed || w.serviceRunning || !w.callIdle || s0.saved.wakeStartedAtMs != 0L || s0.pendingStop != null) return T(s, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        val keep = s0.saved.nearbyPendingAtMs
+        val cleared = s0.saved.copy(nearbyPendingAtMs = 0L)
+        // a deferred retry does not restart the ladder again; a fresh signal does
+        val base = if (deferred) cleared else cleared.copy(wakeStep = 0, nextWakeAtMs = if (s0.saved.autoStoppedAtMs != 0L) t + BackgroundPolicy.wakeDelayMs(0) else 0L)
+        val s = s0.copy(saved = base)
+        if (!stopped || w == null || !w.linkAllowed || w.serviceRunning || s0.saved.wakeStartedAtMs != 0L || s0.pendingStop != null) return T(s, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        // a call: the signal is KEPT (bounded) and looked at again after the call's settle, through the same guards
+        if (!w.callIdle) return T(s.copy(saved = base.copy(nearbyPendingAtMs = if (deferred && keep != 0L) keep else t)), listOf(AutoStopEffect.ScheduleWake(RECOVER_CALL_RECHECK_MS, false)), reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
         val c = WakeClaim(via, t, controller = false, exempt = w.exempt)
-        return T(s.copy(saved = s.saved.copy(wakeProbe = true), claim = c), listOf(AutoStopEffect.Log(AutoStopEffect.Line.WAKE_ATTEMPT, via), AutoStopEffect.StartWake(via, false)))
+        return T(s.copy(saved = base.copy(wakeProbe = true), claim = c), listOf(AutoStopEffect.Log(AutoStopEffect.Line.WAKE_ATTEMPT, via), AutoStopEffect.StartWake(via, false, nearby = true)))
     }
 
     /**

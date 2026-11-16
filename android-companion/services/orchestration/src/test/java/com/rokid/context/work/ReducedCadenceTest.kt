@@ -81,4 +81,24 @@ class ReducedCadenceTest {
         assertTrue(wm.getWorkInfosForUniqueWork(OrchestrationScheduler.FRAME_INGEST_WORK).get().all { it.state.isFinished })
         assertEquals(TimeUnit.MINUTES.toMillis(60), intervalMs(MomentCadenceWorker.NAME))
     }
+
+    // ---- review hub-wp3 r1 ----
+
+    @Test fun aReduceDecidedBeforeARestorationCannotUndoIt() {
+        val epoch = OrchestrationScheduler.cadenceEpoch() // the stop
+        OrchestrationScheduler.noteCadenceRestore() // a hub start or a frame arrives (not reduced yet: it has nothing to restore) ...
+        sched.restorePeriodicJobs()
+        assertFalse("... and the late reduce is void", sched.reducePeriodicJobsIfIdle(epoch) { true })
+        assertFalse(OrchestrationScheduler.cadenceReduced(ctx)); all.forEach { assertEquals(TimeUnit.MINUTES.toMillis(15), intervalMs(it)) }
+        assertTrue("a reduce from the latest epoch still works", sched.reducePeriodicJobsIfIdle(OrchestrationScheduler.cadenceEpoch()) { true })
+    }
+
+    @Test fun anEmptyQueueIsNotEnoughWhileMomentsAreNotCaughtUp() {
+        assertFalse(sched.reducePeriodicJobsIfIdle(OrchestrationScheduler.cadenceEpoch()) { false })
+        assertFalse(OrchestrationScheduler.cadenceReduced(ctx)); all.forEach { assertEquals(TimeUnit.MINUTES.toMillis(15), intervalMs(it)) }
+    }
+
+    @Test fun theDefaultCatchUpRebuildsAndAllowsTheReduceWhenNothingFails() {
+        assertTrue(sched.reducePeriodicJobsIfIdle())
+    }
 }

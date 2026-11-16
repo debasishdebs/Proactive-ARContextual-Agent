@@ -20,11 +20,12 @@ class GlassesAclReceiver : BroadcastReceiver() {
         if (intent.action != BluetoothDevice.ACTION_ACL_CONNECTED) return
         val app = context.applicationContext
         val address = runCatching { IntentCompat.getParcelableExtra(intent, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)?.address }.getOrNull()
-        if (!matches(address, pairedAddress(app))) return
-        PcLog.i(TAG, "glasses_nearby acl")
-        val pending = runCatching { goAsync() }.getOrNull()
-        kotlin.concurrent.thread(name = "glasses-acl") {
-            try { runCatching { submit(app) } } finally { runCatching { pending?.finish() } }
+        if (address.isNullOrBlank()) return
+        // review r1 P3: the stored-address read (SharedPreferences) and the match are off Main, inside the async section
+        ReceiverWork.run(runCatching { goAsync() }.getOrNull(), "glasses-acl") {
+            if (!matches(address, pairedAddress(app))) return@run
+            PcLog.i(TAG, "glasses_nearby acl")
+            submit(app)
         }
     }
 
@@ -38,14 +39,16 @@ class GlassesAclReceiver : BroadcastReceiver() {
         @Volatile internal var pairedAddress: (Context) -> String? = { app -> if (CxrGlassesLink.isPaired(app)) CxrGlassesLink.pairedAddress(app) else null }
 
         /** The event goes to the process-wide engine; a test seam. */
-        @Volatile internal var submit: (Context) -> Unit = { app -> AutoStopWake.engine(app).submit(AutoStopEvent.GlassesNearby()) }
+        @Volatile internal var submit: (Context) -> Unit = { app -> ReceiverWork.await(AutoStopWake.engine(app), AutoStopEvent.GlassesNearby()) }
 
         /** Rokid glasses show up in the bonded list under a name that contains this. */
         private const val NAME_HINT = "rokid"
 
         /**
-         * Learns the glasses' address while the link is up: the ONE bonded device whose name says Rokid; none or several = nothing learned (nothing then matches). Off the main thread,
-         * needs BLUETOOTH_CONNECT. Display names and addresses never leave this function.
+         * Learns the glasses' address while the link is up: the ONE bonded device whose name says Rokid. The CXR SDK (client-l 1.1.2) exposes no address of the session's device
+         * (SessionConfig, GlassesInfo and the link carry none), so the name is the only identity available. A different single device REPLACES a stored address; none or several (or a
+         * stored address that is no longer bonded) = nothing is learned AND the stored address is forgotten (nothing then matches); a pairing change forgets it too
+         * ([CxrGlassesLink.forgetAddress]). Off the main thread, needs BLUETOOTH_CONNECT. Display names and addresses never leave this function.
          */
         fun learn(context: Context) {
             val app = context.applicationContext
@@ -54,7 +57,10 @@ class GlassesAclReceiver : BroadcastReceiver() {
                 val adapter = (app.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter ?: return
                 @Suppress("MissingPermission") // checked above
                 val bonded = adapter.bondedDevices.orEmpty().map { it.address to runCatching { it.name }.getOrNull() }
-                pick(bonded)?.let { CxrGlassesLink.rememberAddress(app, it) }
+                when (val a = pick(bonded)) {
+                    null -> CxrGlassesLink.forgetAddress(app)
+                    else -> if (!a.equals(CxrGlassesLink.pairedAddress(app), ignoreCase = true)) CxrGlassesLink.rememberAddress(app, a)
+                }
             }
         }
 
