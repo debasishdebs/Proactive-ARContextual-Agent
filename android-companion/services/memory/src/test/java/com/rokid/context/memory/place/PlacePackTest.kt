@@ -227,4 +227,46 @@ class PlacePackTest {
         assertEquals("nothing came back after Delete all", 0, p.size().first)
         assertEquals("the cell is fetched again at the next glance", CellOutcome.FETCHED, pack(FakeSource { CellFetch(listOf(fp("wd:Q1"))) }).ensureCell(cell, true))
     }
+
+    // Codex r4: the zone fence sits at the dispatch points of the pack.
+
+    @Test fun anAttemptWaitingForTheFetchLockIsCancelledByTheFenceAndNeverFetches() = runBlocking {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val other = Geohash5.encode(17.3833, 78.4011)
+        val src = object : CellSource {
+            val asked = mutableListOf<String>()
+            override suspend fun fetchCell(cell: String): CellFetch { asked += cell; if (asked.size == 1) gate.await(); return CellFetch(emptyList()) }
+        }
+        val p = pack(src); val fence = ZoneFence()
+        val first = async { p.ensureCell(cell, true) }
+        while (src.asked.isEmpty()) yield()
+        val second = fence.launch(this) { p.ensureCell(other, true) }
+        yield(); fence.hold()
+        gate.complete(Unit); first.await(); second.join()
+        assertTrue(second.isCancelled); assertEquals(listOf(cell), src.asked)
+    }
+
+    @Test fun aTicketThatClosedDuringTheLockWaitIsRevalidatedAfterItEvenWithoutCancellation() = runBlocking {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val other = Geohash5.encode(17.3833, 78.4011)
+        var blocked = false
+        val src = object : CellSource {
+            val asked = mutableListOf<String>()
+            override suspend fun fetchCell(cell: String): CellFetch { asked += cell; if (asked.size == 1) gate.await(); return CellFetch(emptyList()) }
+        }
+        val p = pack(src); val fence = ZoneFence { blocked }
+        val first = async { p.ensureCell(cell, true) }
+        while (src.asked.isEmpty()) yield()
+        val second = async { kotlinx.coroutines.withContext(fence.ticket()) { runCatching { p.ensureCell(other, true) } } }
+        yield(); blocked = true // the zone arrives while B waits for the lock; B itself is not cancelled
+        gate.complete(Unit); first.await()
+        assertTrue(second.await().exceptionOrNull() is ZoneFenced); assertEquals(listOf(cell), src.asked)
+    }
+
+    @Test fun aClosedTicketNeverReachesTheSource() = runBlocking {
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1"))) }
+        val fence = ZoneFence(); fence.hold()
+        val r = runCatching { kotlinx.coroutines.withContext(fence.ticket()) { pack(src).candidates(CHARMINAR_LAT, CHARMINAR_LON, true) } }
+        assertTrue(r.exceptionOrNull() is ZoneFenced); assertTrue(src.asked.isEmpty())
+    }
 }

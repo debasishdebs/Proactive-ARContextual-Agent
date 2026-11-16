@@ -162,4 +162,21 @@ class ZoneControllerTest {
         c2.start()
         assertEquals(listOf("z1"), c2.zones().map { it.id }); assertEquals(ZoneState.INSIDE, c2.snapshot.value.evaluation.state("z1")); assertTrue(c2.approach)
     }
+
+    // Codex r4: Place Guide's single zone fence is held BEFORE the first record is stored and released only when everything is clear.
+    @Test fun thePlaceGuideFenceIsHeldBeforeTheRecordIsStoredAndReleasedWhenClear() = runTest {
+        val calls = ArrayList<String>()
+        val sink2 = object : ZoneSink {
+            override suspend fun activeZoneRecords() = emptyList<PauseRecord>()
+            override suspend fun add(record: PauseRecord) { calls += "add" }
+            override suspend fun end(ids: Set<String>) {}
+            override suspend fun publish() { calls += "publish" }
+        }
+        val cc = ZoneController(ZoneStore(ctx.getSharedPreferences("zt_${System.nanoTime()}", 0)), sink2, notes, elapsed = { el }, wall = { wall }, onProtect = { calls += "protect=$it" })
+        cc.upsert(zone); cc.start()
+        assertTrue(calls.indexOf("protect=true") in 0 until calls.indexOf("add"))
+        assertEquals("protect=true", calls.last { it.startsWith("protect=") })
+        el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f)); el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f))
+        assertEquals("protect=false", calls.last { it.startsWith("protect=") })
+    }
 }

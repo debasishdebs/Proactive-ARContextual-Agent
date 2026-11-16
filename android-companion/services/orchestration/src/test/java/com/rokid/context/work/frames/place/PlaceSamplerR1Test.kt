@@ -47,6 +47,7 @@ class PlaceSamplerR1Test {
     private var flight = PlaceFlight()
     private var frameId = "f1"
     private var blockedOverride: (() -> Boolean)? = null
+    private val fence = com.rokid.context.memory.place.ZoneFence()
 
     private val store = object : PlaceFrameStore {
         override suspend fun newestDwell(sinceReceivedMs: Long): PlaceFrame { onNewest(); return PlaceFrame(frameId, now - 5_000) }
@@ -59,7 +60,7 @@ class PlaceSamplerR1Test {
         match = { _, _ -> matchCalls++; onMatch(); reply },
         saveMemory = { saved++; onSave(); true }, onCard = { holder.publish(it) }, clock = { now }, enabled = { true },
         zoneBlocked = { blockedOverride?.invoke() ?: zone }, networkUp = { online }, generation = { gen }, flight = flight, stats = { outcomes += it },
-        cards = holder, deleteMemory = { deleted += it },
+        cards = holder, deleteMemory = { deleted += it }, fence = fence,
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -95,17 +96,18 @@ class PlaceSamplerR1Test {
         assertEquals(listOf(PlaceOutcome.DROPPED), outcomes); assertNull(holder.card.value)
     }
 
-    @Test fun aZoneThatBeginsRightAfterPublicationWithdrawsTheCardAndTheMemory() = runTest {
-        blockedOverride = { zone || holder.card.value != null } // the zone becomes active the moment the card is out
-        poke()
-        assertNull(holder.card.value); assertEquals(listOf(PlaceOutcome.DROPPED), outcomes)
-        assertEquals(listOf("f1"), deleted)
+    @Test fun aZoneThatBeginsRightAfterPublicationWithdrawsTheCard() = runTest {
+        // The zone controller holds the fence (PlaceGraph.protect) the moment a zone is approached: the card is withdrawn with it.
+        val s = sampler(this); s.poke(); runCurrent()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(holder.card.value != null)
+        fence.hold(); holder.clear()
+        assertNull(holder.card.value)
     }
 
     @Test fun theFallbackCardIsFencedToo() = runTest {
-        online = false; onFix = { }; blockedOverride = { zone || holder.card.value != null }
+        online = false; onFix = { fence.hold() }
         poke()
-        assertNull(holder.card.value); assertEquals(listOf(PlaceOutcome.DROPPED), outcomes)
+        assertNull(holder.card.value); assertEquals(PlaceOutcome.ZONE, outcomes.last())
     }
 
     @Test fun theTwentySecondGapRunsFromTheEndOfTheCall() = runTest {
@@ -142,9 +144,8 @@ class PlaceSamplerR1Test {
     @Test fun aPublicationThatStartedBeforeAWithdrawalNeverLandsAfterIt() = runTest {
         val h = PlaceCardHolder(); val e = h.epoch()
         h.clear()
-        assertFalse(h.publishIf(PlaceCards.photo(CHARMINAR, "f1"), e) { true }); assertNull(h.card.value)
-        assertTrue(h.publishIf(PlaceCards.photo(CHARMINAR, "f1"), h.epoch()) { true })
-        assertFalse(h.publishIf(PlaceCards.photo(CHARMINAR, "f2"), h.epoch()) { false })
+        assertFalse(h.publishIf(PlaceCards.photo(CHARMINAR, "f1"), e)); assertNull(h.card.value)
+        assertTrue(h.publishIf(PlaceCards.photo(CHARMINAR, "f1"), h.epoch()))
     }
 
     @Test fun theForgetAndDeleteAllListenersWithdrawThroughTheGraph() = runTest {

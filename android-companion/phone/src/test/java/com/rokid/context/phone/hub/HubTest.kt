@@ -910,6 +910,33 @@ class HubTest {
         assertEquals(1, cleared); assertNull(cards.value)
     }
 
+    @Test fun aDelayedDismissOfAnOldCardNeverClearsANewerCardWithTheSameTitle() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards, placeClear = { cards.value = null }); link.emitReady(); runCurrent()
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(300)
+        cards.value = placeCard.copy(cardId = "pc2", frameId = "f2"); advanceTimeBy(300) // same title, a new instance
+        assertEquals("pc2", (link.lastFrame().overlay as Overlay.Nudge).place!!.id)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Charminar", "pc1"))); runCurrent()
+        assertEquals("the old instance's dismissal is ignored", "pc2", cards.value?.cardId)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Charminar", "pc2"))); runCurrent()
+        assertNull(cards.value)
+    }
+
+    @Test fun anOlderGlassesDismissWithoutAnIdStillMatchesByTitle() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards, placeClear = { cards.value = null }); link.emitReady(); runCurrent()
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(300)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Charminar"))); runCurrent()
+        assertNull(cards.value)
+    }
+
+    @Test fun aCardThatAlreadyExistsWhenTheHubStartsStillExpires() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(placeCard.copy(cardId = "pc1"))
+        hub(link, placeCards = cards, placeClear = { cards.value = null }); link.emitReady(); runCurrent()
+        advanceTimeBy(11_000); assertNotNull(cards.value)
+        advanceTimeBy(1_500); assertNull("the restart did not skip its expiry", cards.value)
+    }
+
     @Test fun aNewCardRestartsTheTwelveSeconds() = runTest {
         val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
         hub(link, placeCards = cards, placeClear = { cards.value = null }); link.emitReady(); runCurrent()

@@ -121,6 +121,8 @@ class Hub(
     /** Place Guide PG3: the newest place card (PlaceGraph.port.card) and the way to drop it. Never stored; it expires after [PlaceCardInfo.SHOW_MS]. */
     private val placeCards: StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
     private val placeClear: () -> Unit = {},
+    /** Clears the card only if it is still the instance [cardId]; false = a different (newer) card or none, nothing cleared. Atomic in production (PlaceCardHolder.clearIf). */
+    private val placeClearIf: (cardId: String) -> Boolean = { id -> if (placeCards.value?.cardId == id) { placeClear(); true } else false },
 ) : GlassesStatusSource {
     private fun linkAllowed(): Boolean = inFront() || BackgroundPolicy.linkMachineryAllowed(reopenEnabled(), paired())
     /** Phone clock of the last tapped Reconnect (0 = none): keeps the hub service wanted for [BackgroundPolicy.USER_ASK_HOLD_MS]. */
@@ -183,8 +185,9 @@ class Hub(
             scope.launch { actions.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { nudges.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { nudges.latest.drop(1).collect { broadcaster.markDirty() } },
-            // Place Guide PG3: a new card re-broadcasts at once and starts its 12 s life; a cleared card re-broadcasts so the glasses drop it.
-            scope.launch { placeCards.drop(1).collect { c -> onPlaceCard(c) } },
+            // Place Guide PG3: a new card re-broadcasts at once and starts its 12 s life; a cleared card re-broadcasts so the glasses drop it. The card that already exists when the hub (re)starts is
+            // NOT skipped: its expiry is scheduled too (a card must never outlive its 12 s because the hub restarted under it).
+            scope.launch { placeCards.collect { c -> onPlaceCard(c) } },
             // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
             scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
             // LGC4P: Developer mode on/off republishes the settings at once (diagRecord) and restarts (on) or ends (off) the control re-send.
@@ -603,7 +606,7 @@ class Hub(
             Command.ListenStart -> { PcLog.i(TAG, "listen start"); try { onGlassesListenStart(clock()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "listen join failed (${e.javaClass.simpleName})") }; voice.onListenStart() }
             Command.Cancel -> { PcLog.i(TAG, "voice cancel"); voice.onCancel() }
             is Command.Confirm -> { PcLog.i(TAG, "confirm answered"); actions.onConfirm(c.proposalId, c.yes) }
-            is Command.DismissPlace -> onPlaceDismissed(c.title)
+            is Command.DismissPlace -> onPlaceDismissed(c.title, c.cardId)
             is Command.Undo -> { PcLog.i(TAG, "undo asked"); actions.onUndo(c.proposalId) }
             else -> PcLog.i(TAG, "command ${c::class.simpleName} is handled in a later phase")
         }
@@ -651,8 +654,12 @@ class Hub(
         broadcaster.markDirty()
     }
 
-    /** The glasses dismissed or timed out the card titled [title]: drop it only if it is still the phone's card (a newer card stays). */
-    private fun onPlaceDismissed(title: String) {
+    /**
+     * The glasses dismissed or timed out a card: with [cardId] (a current glasses build) only that instance is cleared, atomically, so a delayed dismissal never clears a newer card that has
+     * the same title; without it (an older glasses build) the title decides, as before.
+     */
+    private fun onPlaceDismissed(title: String, cardId: String?) {
+        if (cardId != null) { if (placeClearIf(cardId)) PcLog.i(TAG, "place card dismissed on glasses"); return }
         val c = placeCards.value ?: return
         if (c.title == title) { PcLog.i(TAG, "place card dismissed on glasses"); placeClear() }
     }
@@ -664,7 +671,7 @@ class Hub(
     fun placeOverlay(): Overlay? {
         val c = placeCards.value ?: return null
         if (zoneApproach() || zoneEnforce()) return null
-        val info = PlaceCardInfo(c.title, c.line, c.sourceLabel, nearby = c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.NEARBY)
+        val info = PlaceCardInfo(c.title, c.line, c.sourceLabel, nearby = c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.NEARBY, id = c.cardId.ifEmpty { null })
         return Overlay.Nudge("${c.title}: ${c.line}", info)
     }
 

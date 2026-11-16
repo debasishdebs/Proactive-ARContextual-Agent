@@ -4,6 +4,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import com.rokid.context.memory.place.currentZoneTicket
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -46,13 +49,18 @@ class UrlConnectionPlaceHttp(
     private suspend fun send(url: String, body: String?): String {
         val u = URL(url)
         require(u.protocol == "https") { "place fetch is https only" }
+        val ticket = currentZoneTicket()
+        ticket?.check()
         lock.withLock {
             val wait = (lastByHost[u.host] ?: Long.MIN_VALUE).let { if (it == Long.MIN_VALUE) 0L else it + minGapMs - clock() }
             if (wait > 0) pause(wait)
             lastByHost[u.host] = clock()
         }
         return withContext(Dispatchers.IO) {
+            ticket?.check() // after the host gap and the dispatch hop, immediately before the connection exists
             val c = u.openConnection() as HttpURLConnection
+            // The fence closing cancels this coroutine: the blocking connection is torn down from here at once (a read in flight does not wait for its timeout).
+            val watcher = launch { try { awaitCancellation() } finally { runCatching { c.disconnect() } } }
             try {
                 c.connectTimeout = connectTimeoutMs; c.readTimeout = readTimeoutMs
                 c.instanceFollowRedirects = false
@@ -77,7 +85,7 @@ class UrlConnectionPlaceHttp(
                     }
                     out.toString("UTF-8")
                 }
-            } finally { c.disconnect() }
+            } finally { watcher.cancel(); c.disconnect() }
         }
     }
 

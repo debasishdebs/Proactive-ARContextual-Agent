@@ -37,6 +37,7 @@ object ZoneGraph {
             elapsed = SystemClock::elapsedRealtime, log = { PcLog.i(TAG, it) },
             onZonesChanged = { ContextHubService.refreshLocationType(app) },
             stateStore = state,
+            onProtect = com.rokid.context.work.frames.place.PlaceGraph::protect,
         )
     }
 }
