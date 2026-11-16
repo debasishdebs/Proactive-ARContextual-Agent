@@ -304,8 +304,23 @@ class HudControllerTest {
         assertEquals(listOf<Boolean?>(true, false, true), checks)
         wear(false, 1, sessionNo = 1L, epoch = 99L) // a new phone epoch (the hub restarted) is applied: it cannot be ordered against the old one
         assertEquals(listOf<Boolean?>(true, false, true, false), checks)
+        wear(true, 5, sessionNo = 2L, epoch = 77L, w = true) // the replaced epoch's late message must stay dropped (Codex wear r5)
+        wear(null, 6, sessionNo = 2L, epoch = 77L, w = false)
+        assertEquals(listOf<Boolean?>(true, false, true, false), checks)
+        assertEquals("a retired epoch cannot offer a wear value either (null = the closed HUD session)", listOf<Boolean?>(true, null), worn)
         wear(true, 1, sessionNo = 0L, epoch = 0L, start = 0L) // an old phone (no epoch) is never ignored
         assertEquals(listOf<Boolean?>(true, false, true, false, true), checks)
+    }
+
+    @Test fun anOldPhoneWithoutAnEpochStillKeepsItsSendOrderWithinASession() = runTest {
+        val c = controller()
+        val checks = ArrayList<Boolean?>()
+        c.onWearCheck = { checks += it }
+        fun wear(check: Boolean?, seq: Long) = bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = null, atMs = 500, sessionStartMs = 200, wearCheck = check, seq = seq)))
+        wear(true, 20); wear(false, 10)
+        assertEquals("the delayed check off is dropped", listOf<Boolean?>(true), checks)
+        wear(false, 30)
+        assertEquals(listOf<Boolean?>(true, false), checks)
     }
 
     @Test fun aFreshPhoneContextReachesTheCallbackAndAStaleOneIsIgnored() = runTest {

@@ -93,6 +93,9 @@ class HudController(
     @Volatile private var phoneSessionStartMs = 0L
     /** Codex wear r2-r4: the phone hub epoch and session number the last applied `pc_wear` named, and its newest send order. They survive a HUD session close on purpose (a retired session's late message must stay dropped). Under [ctxLock]. */
     private var lastWearEpoch = 0L
+    private val retiredWearEpochs = ArrayDeque<Long>()
+    private var legacyWearSessionMs = 0L
+    private var legacyWearSeq = 0L
     private var lastWearSessionNo = 0L
     private var lastWearSeq = 0L
     /** The session is open and the phone is talking (session open, or a hello request on an open session): re-send unacked marks. */
@@ -262,12 +265,23 @@ class HudController(
         // ordered by seq. A closed HUD session fences nothing else, so a silence recovery or reconnect of the same phone session keeps working. A new epoch (the phone's hub
         // restarted) or an old phone (epoch 0) cannot be ordered: it is applied.
         synchronized(ctxLock) {
-            if (m.phoneEpoch != 0L && m.phoneEpoch == lastWearEpoch) {
-                if (m.sessionNo < lastWearSessionNo) { PcLog.i(TAG, "pc_wear of a retired session ignored"); return }
-                if (m.sessionNo > lastWearSessionNo) { lastWearSessionNo = m.sessionNo; lastWearSeq = 0L }
-                else if (m.seq != 0L && m.seq < lastWearSeq) { PcLog.i(TAG, "older pc_wear ignored"); return }
-            } else { lastWearEpoch = m.phoneEpoch; lastWearSessionNo = m.sessionNo; lastWearSeq = 0L }
-            if (m.seq != 0L) lastWearSeq = m.seq
+            if (m.phoneEpoch == 0L) {
+                // a phone without epochs: the old rule, plus send order within the same phone session start when it sends one
+                if (m.sessionStartMs == legacyWearSessionMs) { if (m.seq != 0L && m.seq < legacyWearSeq) { PcLog.i(TAG, "older pc_wear ignored"); return } }
+                else { legacyWearSessionMs = m.sessionStartMs; legacyWearSeq = 0L }
+                if (m.seq != 0L) legacyWearSeq = m.seq
+            } else {
+                if (m.phoneEpoch in retiredWearEpochs) { PcLog.i(TAG, "pc_wear of a retired phone epoch ignored"); return }
+                if (m.phoneEpoch == lastWearEpoch) {
+                    if (m.sessionNo < lastWearSessionNo) { PcLog.i(TAG, "pc_wear of a retired session ignored"); return }
+                    if (m.sessionNo > lastWearSessionNo) { lastWearSessionNo = m.sessionNo; lastWearSeq = 0L }
+                    else if (m.seq != 0L && m.seq < lastWearSeq) { PcLog.i(TAG, "older pc_wear ignored"); return }
+                } else { // the phone's hub restarted: the old epoch is retired for good (its late messages must not come back)
+                    if (lastWearEpoch != 0L) { retiredWearEpochs.addLast(lastWearEpoch); while (retiredWearEpochs.size > MAX_RETIRED_EPOCHS) retiredWearEpochs.removeFirst() }
+                    lastWearEpoch = m.phoneEpoch; lastWearSessionNo = m.sessionNo; lastWearSeq = 0L
+                }
+                if (m.seq != 0L) lastWearSeq = m.seq
+            }
             phoneSessionStartMs = m.sessionStartMs
             onWearCheck(m.wearCheck)
             // worn = null: the message only carries the wear check; the real wear value is left alone (onWear(null) means a closed session)
@@ -413,5 +427,7 @@ class HudController(
         const val ANSWER_MAX_MS = 300_000L
         /** How many withdrawn ask ids the glasses remember (the phone names at most 20 per frame, each for a minute). */
         const val WITHDRAWN_SEEN_MAX = 64
+        /** How many replaced phone hub epochs the glasses remember (a hub restart is rare; a replaced epoch's late `pc_wear` is dropped). */
+        const val MAX_RETIRED_EPOCHS = 16
     }
 }
