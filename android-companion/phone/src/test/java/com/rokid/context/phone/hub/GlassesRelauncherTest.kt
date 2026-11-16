@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -24,19 +25,19 @@ class GlassesRelauncherTest {
         override fun worn() = wornNow
     }
 
-    private class Rig(val t: TestScope, val guards: Guards = Guards(), var on: Boolean = true, val standDown: StandDown = InMemoryStandDown(), var fullScreen: Boolean = false, initial: LinkState = LinkState.CONNECTED) {
+    private class Rig(val t: TestScope, val guards: Guards = Guards(), var on: Boolean = true, val standDown: StandDown = InMemoryStandDown(), var fullScreen: Boolean = false, initial: LinkState = LinkState.CONNECTED, val store: RelaunchStore = InMemoryRelaunchStore()) {
         val state = MutableStateFlow(initial)
         var reopens = 0
         val logs = ArrayList<String>()
         val r = GlassesRelauncher(
             t.backgroundScope, state, { on }, guards, { reopens++; state.value = LinkState.CONNECTING }, { t.currentTime }, { logs += it },
-            standDown = standDown, reopenIsFullScreen = { fullScreen },
+            standDown = standDown, reopenIsFullScreen = { fullScreen }, store = store,
         ).also { r -> r.start() }
         fun close() { state.value = LinkState.MINIMISED; state.value = LinkState.CLOSED_ON_GLASSES }
     }
 
-    private fun TestScope.rig(g: Guards = Guards(), on: Boolean = true, standDown: StandDown = InMemoryStandDown(), fullScreen: Boolean = false, initial: LinkState = LinkState.CONNECTED) =
-        Rig(this, g, on, standDown, fullScreen, initial).also { runCurrent() }
+    private fun TestScope.rig(g: Guards = Guards(), on: Boolean = true, standDown: StandDown = InMemoryStandDown(), fullScreen: Boolean = false, initial: LinkState = LinkState.CONNECTED, store: RelaunchStore = InMemoryRelaunchStore()) =
+        Rig(this, g, on, standDown, fullScreen, initial, store).also { runCurrent() }
 
     @Test fun reopensEightSecondsAfterTheClose() = runTest {
         val r = rig()
@@ -307,6 +308,68 @@ class GlassesRelauncherTest {
         assertTrue(r.logs.toString(), r.logs.any { it == "relaunch: attempt in 8 s (step 0)" })
         advanceTimeBy(8_100); assertTrue(r.logs.toString(), r.logs.any { it == "relaunch: waiting (call active)" })
     }
+
+    // --- v1.1 T5: the pending close and the hourly attempts survive a phone process death (a rebuilt relauncher on the same store) ---
+
+    @Test fun theHourlyCapHoldsAcrossARebuildAndNoSeventhReopenWithinTheHour() = runTest {
+        val store = InMemoryRelaunchStore()
+        val first = rig(store = store)
+        listOf(9_000L, 31_000L, 121_000L, 301_000L, 601_000L, 601_000L).forEachIndexed { n, wait -> first.close(); runCurrent(); advanceTimeBy(wait); assertEquals(n + 1, first.reopens) }
+        first.r.stop()
+        val second = rig(store = store, initial = LinkState.CLOSED_ON_GLASSES)
+        advanceTimeBy(30 * 60_000L)
+        assertEquals("the sixth attempt in this hour is the last, even in a new process", 0, second.reopens)
+        assertTrue(second.logs.any { it == "relaunch: waiting (hourly limit)" })
+        advanceTimeBy(HOUR + 20_000L - currentTime) // the first attempt (t=8 s) is an hour old
+        assertEquals("the oldest attempt aged out, so one more goes ahead", 1, second.reopens)
+    }
+
+    @Test fun aRebuiltRelauncherLogsTheResumedCloseWithItsAge() = runTest {
+        val store = InMemoryRelaunchStore()
+        val first = rig(Guards().apply { call = false }, store = store)
+        first.close(); runCurrent(); advanceTimeBy(20_000L)
+        first.r.stop()
+        val second = rig(Guards().apply { call = false }, store = store, initial = LinkState.OFFLINE)
+        assertTrue(second.logs.toString(), second.logs.any { it == "relaunch: resumed pending close (age 20 s, why=call active)" })
+    }
+
+    @Test fun aResumedCloseStillWaitsForTheCallAndItsSettle() = runTest {
+        val store = InMemoryRelaunchStore().apply { savePending(PendingClose(currentTime, "call active")) }
+        val g = Guards().apply { call = false }
+        val r = rig(g, store = store, initial = LinkState.OFFLINE)
+        advanceTimeBy(5 * 60_000L); assertEquals("a call blocks the resumed attempt", 0, r.reopens)
+        g.call = true // callIdle() is the only gate: its 15 s settle after the call is inside the guard
+        advanceTimeBy(10_100L); assertEquals(1, r.reopens)
+    }
+
+    @Test fun aStaleOrFutureCloseIsDroppedNotResumed() = runTest {
+        advanceTimeBy(5 * HOUR)
+        val old = InMemoryRelaunchStore().apply { savePending(PendingClose(currentTime - GlassesRelauncher.PENDING_MAX_AGE_MS - 1, "closed")) }
+        val a = rig(store = old, initial = LinkState.OFFLINE)
+        advanceTimeBy(60_000L)
+        assertEquals(0, a.reopens); assertNull(old.pending())
+        assertTrue(a.logs.any { it.startsWith("relaunch: dropped a stale pending close") })
+        assertTrue(a.logs.none { it.startsWith("relaunch: resumed") })
+        val future = InMemoryRelaunchStore().apply { savePending(PendingClose(currentTime + 60_000L, "closed")) }
+        val b = rig(store = future, initial = LinkState.OFFLINE)
+        advanceTimeBy(60_000L)
+        assertEquals(0, b.reopens); assertNull(future.pending())
+    }
+
+    @Test fun thePendingCloseIsClearedWhenTheAppIsBackOrTheWearerStandsDown() = runTest {
+        val store = InMemoryRelaunchStore()
+        val r = rig(store = store)
+        r.close(); runCurrent()
+        assertEquals("closed", store.pending()?.why)
+        advanceTimeBy(8_100L); assertEquals(1, r.reopens)
+        r.state.value = LinkState.CONNECTED; runCurrent()
+        assertNull("the app is back", store.pending())
+        r.close(); runCurrent(); assertEquals(true, store.pending() != null)
+        r.r.onUserExit(); assertNull("the wearer stood down", store.pending())
+        assertEquals("the attempt was saved for the cap", 1, store.attempts().size)
+    }
+
+    private companion object { const val HOUR = 3_600_000L }
 }
 
 /** The watchdog's trigger: [GlassesRelauncher.attemptNow] reuses every guard, the back-off bookkeeping and the hourly cap. */

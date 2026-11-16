@@ -68,6 +68,45 @@ class PrefsStandDown(private val prefs: android.content.SharedPreferences) : Sta
     }
 }
 
+/** v1.1 T5: a glasses close not yet answered by a reopen, kept across a phone process death. [why] is the last blocker (`closed` before any). */
+data class PendingClose(val closedAtMs: Long, val why: String)
+
+/** v1.1 T5: the pending close and the hourly reopen attempts, so a rebuilt relauncher keeps the 6/h cap and its open close. */
+interface RelaunchStore {
+    fun pending(): PendingClose?
+    fun savePending(p: PendingClose)
+    fun clearPending()
+    /** Phone-clock times of our reopens, oldest first. */
+    fun attempts(): List<Long>
+    fun saveAttempts(a: List<Long>)
+}
+
+class InMemoryRelaunchStore : RelaunchStore {
+    private var pending: PendingClose? = null
+    private var attempts: List<Long> = emptyList()
+    override fun pending() = pending
+    override fun savePending(p: PendingClose) { pending = p }
+    override fun clearPending() { pending = null }
+    override fun attempts() = attempts
+    override fun saveAttempts(a: List<Long>) { attempts = a }
+}
+
+/** [RelaunchStore] in the same prefs file as [PrefsStandDown] (`relaunch_state`). Times only, never a name or number. */
+class PrefsRelaunchStore(private val prefs: android.content.SharedPreferences) : RelaunchStore {
+    override fun pending(): PendingClose? =
+        prefs.getLong(KEY_PENDING_AT, 0L).takeIf { it > 0L }?.let { PendingClose(it, prefs.getString(KEY_PENDING_WHY, null) ?: "closed") }
+    override fun savePending(p: PendingClose) { prefs.edit().putLong(KEY_PENDING_AT, p.closedAtMs).putString(KEY_PENDING_WHY, p.why).apply() }
+    override fun clearPending() { if (prefs.contains(KEY_PENDING_AT)) prefs.edit().remove(KEY_PENDING_AT).remove(KEY_PENDING_WHY).apply() }
+    override fun attempts(): List<Long> = prefs.getString(KEY_ATTEMPTS, null)?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty()
+    override fun saveAttempts(a: List<Long>) { prefs.edit().putString(KEY_ATTEMPTS, a.joinToString(",")).apply() }
+
+    private companion object {
+        const val KEY_PENDING_AT = "pending_closed_at"
+        const val KEY_PENDING_WHY = "pending_why"
+        const val KEY_ATTEMPTS = "attempts"
+    }
+}
+
 /**
  * Fix wave H2. Rokid's AssistServer force-stops the glasses app whenever it opens another scene (call, message, music,
  * glasses removed). After that the link ends in [LinkState.CLOSED_ON_GLASSES]; with "Reopen after Rokid closes it" on
@@ -95,8 +134,11 @@ class GlassesRelauncher(
     private val standDown: StandDown = InMemoryStandDown(),
     /** Fix wave I: true only when the reopen would put the HUD full screen (the media guard then applies); the glasses reopen into icon mode, so the default is false. */
     private val reopenIsFullScreen: () -> Boolean = { false },
+    /** v1.1 T5: the pending close and the hourly attempts, kept across a phone restart. */
+    private val store: RelaunchStore = InMemoryRelaunchStore(),
 ) {
-    private val attempts = ArrayDeque<Long>()
+    /** A saved attempt older than an hour no longer counts, and one from the future (a clock change) is dropped. */
+    private val attempts = ArrayDeque(store.attempts().filter { it > now() - HOUR_MS && it <= now() })
     private var step = 0
     private var connectedSince: Long? = null
     private var job: Job? = null
@@ -114,12 +156,30 @@ class GlassesRelauncher(
     private var blockedWhy = ""
 
     /** Observes the link until the returned job is cancelled (the hub's lifetime). */
-    fun start(): Job = scope.launch {
+    fun start(): Job {
+        resumePending()
+        return scope.launch { observe() }
+    }
+
+    /**
+     * v1.1 T5: a close still open when the phone process died. It resumes through the same guards (a call still blocks, with its 15 s settle),
+     * and an expired or future one is dropped. A link that comes back as CLOSED_ON_GLASSES takes the normal path; one that is OFFLINE gets a timed attempt now.
+     */
+    private fun resumePending() {
+        val p = store.pending() ?: return
+        val age = now() - p.closedAtMs
+        if (age < 0 || age > PENDING_MAX_AGE_MS || standDown.active) { store.clearPending(); log("relaunch: dropped a stale pending close (age ${age / 1000} s)"); return }
+        log("relaunch: resumed pending close (age ${age / 1000} s, why=${p.why})")
+        guards.onSceneEvent(now()) // a guard that cannot read the call state holds for a while, as after a fresh close
+        if (state.value == LinkState.OFFLINE) scheduleNext(afterFailure = true)
+    }
+
+    private suspend fun observe() {
         var prev: LinkState? = null
         state.collect { s ->
             if (prev != null && prev != s) log("relaunch: link $prev->$s")
             if (s == LinkState.CONNECTED) { if (connectedSince == null) connectedSince = now(); standDown.connected() }
-            if (s == LinkState.CONNECTED || s == LinkState.MINIMISED) failures = 0
+            if (s == LinkState.CONNECTED || s == LinkState.MINIMISED) { failures = 0; store.clearPending() }
             if (s == LinkState.CONNECTED || s == LinkState.MINIMISED || s == LinkState.PAUSED_BT) awaitingSince = null
             if (s == LinkState.CLOSED_ON_GLASSES && prev != LinkState.CLOSED_ON_GLASSES) onClosed()
             // Fix wave I4: our own reopen failed (the link is OFFLINE again soon after it): the next try follows the backoff and the cap.
@@ -139,10 +199,10 @@ class GlassesRelauncher(
      * The wearer exited the app on purpose (`pc_user_exit`): this close is not Rokid's, so nothing reopens it automatically.
      * No timer: an explicit open ([onExplicitOpen]) or the app connecting again ends the stand-down at once.
      */
-    fun onUserExit() { standDown.enter(now()); job?.cancel(); job = null; log("relaunch: user exit, standing down") }
+    fun onUserExit() { standDown.enter(now()); store.clearPending(); job?.cancel(); job = null; log("relaunch: user exit, standing down") }
 
     /** The user asked to open the glasses app (phone "Open on glasses"): the stand-down is over. */
-    fun onExplicitOpen() { if (standDown.active) log("relaunch: explicit open, stand-down cleared"); standDown.clear(now()); failures = 0 }
+    fun onExplicitOpen() { if (standDown.active) log("relaunch: explicit open, stand-down cleared"); standDown.clear(now()); store.clearPending(); failures = 0 }
 
     /**
      * A positive signal (a wear event, the app in front, the setting switched on): the failed-reopen back-off starts again, and a close that
@@ -165,6 +225,7 @@ class GlassesRelauncher(
         if (since != null && now() - since >= stableMs) step = 0
         guards.onSceneEvent(now())
         if (standDown.active) { log("relaunch: closed by the wearer, not reopening"); return }
+        store.savePending(PendingClose(now(), "closed"))
         scheduleNext()
     }
 
@@ -181,7 +242,7 @@ class GlassesRelauncher(
         delay(firstDelayMs)
         var lastWhy = ""
         while (state.value == LinkState.CLOSED_ON_GLASSES || (afterFailure && state.value == LinkState.OFFLINE)) {
-            if (standDown.active) return
+            if (standDown.active) { store.clearPending(); return }
             val why = blocker()
             if (why == null) { noteCleared(); doReopen(); return }
             if (why != lastWhy) { log("relaunch: waiting ($why)"); lastWhy = why }
@@ -193,7 +254,7 @@ class GlassesRelauncher(
     }
 
     private fun doReopen() {
-        attempts.addLast(now()); step++; awaitingSince = now(); lastReopenAt = now()
+        attempts.addLast(now()); store.saveAttempts(attempts.toList()); step++; awaitingSince = now(); lastReopenAt = now()
         log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
         try { reopen() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
     }
@@ -218,7 +279,10 @@ class GlassesRelauncher(
      */
     private fun noteBlocked(why: String) {
         val t = now()
-        if (blockedSince == null || blockedWhy != why) { blockedSince = t; blockedWhy = why }
+        if (blockedSince == null || blockedWhy != why) {
+            blockedSince = t; blockedWhy = why
+            store.pending()?.let { store.savePending(it.copy(why = why)) }
+        }
         val inputs = if (why == CALL_ACTIVE) guards.callInputs() else null
         val sig = "$why|$inputs"
         val since = t - blockLoggedAt
@@ -238,7 +302,9 @@ class GlassesRelauncher(
     private fun blocker(): String? {
         if (!enabled()) return SETTING_OFF
         val cutoff = now() - HOUR_MS
+        val before = attempts.size
         while (attempts.isNotEmpty() && attempts.first() <= cutoff) attempts.removeFirst()
+        if (attempts.size != before) store.saveAttempts(attempts.toList())
         if (attempts.size >= maxPerHour) return HOURLY_LIMIT
         if (!guards.callIdle()) return CALL_ACTIVE
         if (reopenIsFullScreen() && !guards.mediaIdle()) return "media active"
@@ -259,6 +325,8 @@ class GlassesRelauncher(
         const val BLOCK_HEARTBEAT_MS = 300_000L
         const val STABLE_MS = 60_000L
         const val HOUR_MS = 3_600_000L
+        /** A pending close older than this (the glasses were away or the wearer moved on) is not resumed. */
+        const val PENDING_MAX_AGE_MS = 2 * HOUR_MS
         /** A reopen whose link is OFFLINE again within this long failed. */
         const val RESULT_WINDOW_MS = 60_000L
         const val AUTO_OPEN_WINDOW_MS = 45_000L
