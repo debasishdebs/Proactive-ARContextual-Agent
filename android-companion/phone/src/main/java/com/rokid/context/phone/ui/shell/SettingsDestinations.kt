@@ -384,6 +384,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_PRIVACY) { PrivacyRoute(s, back, openZones = { nav.navigate(Routes.SETTINGS_PRIVACY_ZONES) }) }
     composable(Routes.SETTINGS_PRIVACY_ZONES) { ZonesRoute(s, back) }
+    composable(Routes.SETTINGS_PLACE_GUIDE) {
+        val app = LocalContext.current.applicationContext
+        com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back)
+    }
     composable(Routes.SETTINGS_SOURCES) {
         val activity = LocalContext.current.findActivity()
         SourcesRoute(s, back) { p -> activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, p) } ?: true }

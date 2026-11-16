@@ -21,6 +21,7 @@ val CaptureFlow = AgentFlow(
         step("extract", "Facts from frames", *role(PromptKey.VISION_EXTRACT)),
         step("scene", "Scene summaries", *role(PromptKey.CLUSTER_SUMMARY)),
         step("intent", "Activity from a photo", *role(PromptKey.INTENT_CLASSIFY)),
+        step("place", "Place from a photo", *role(PromptKey.PLACE_MATCH)),
         step("confidence", "Confidence check"),
         step("critic", "Critic", *role(PromptKey.CRITIC)),
         step("save", "Save memory"),

@@ -32,6 +32,12 @@ data class ExtractOutput(
     /** Codex r16, in memory only: the photos of each model call behind this output (one set per call); a memory is derived from the calls that saw its photos. */
     val callGroups: List<Set<String>> = emptyList(),
 ) : ContractOutput
+/**
+ * A PLACE_MATCH result: [choice] is the candidate number the model picked or "NONE" (the caller maps it back and treats anything outside the sent set as NONE), [confidence] clamped to 0..1.
+ * There is no free-text field; an optional `box` is kept in [extras] and ignored until v1.4.
+ */
+data class PlaceMatchOutput(val choice: String, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
+
 /** An INTENT_CLASSIFY result: [label] (unknown names are OTHER) and [confidence] clamped to 0..1. */
 data class IntentOutput(val label: com.rokid.context.core.model.context.IntentLabel, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
 data class SummaryOutput(

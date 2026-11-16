@@ -78,6 +78,8 @@
     <exclude domain="sharedpref" path="export_cleanup.xml" />
     <!-- Pause zones: the recent past of THIS phone (latched state, last clear-fix time, clock-rollback total); a restore would describe a place and time it never saw. -->
     <exclude domain="sharedpref" path="pause_zone_state.xml" />
+    <!-- Place Guide switch: per-device, off again after a restore -->
+    <exclude domain="sharedpref" path="place_guide.xml" />
     <!-- 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore or a device transfer never turns a grant on. -->
     <exclude domain="sharedpref" path="canvas_helper_grants.xml" />
     <exclude domain="file" path="canvas_traces" />

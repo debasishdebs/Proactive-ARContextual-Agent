@@ -48,7 +48,7 @@ data class RoleCall(
 ) {
     val effectiveClass: CallClass
         get() = callClass ?: when (key) {
-            PromptKey.VISION_EXTRACT, PromptKey.CLUSTER_SUMMARY, PromptKey.INTENT_CLASSIFY -> CallClass.EXTRACT
+            PromptKey.VISION_EXTRACT, PromptKey.CLUSTER_SUMMARY, PromptKey.INTENT_CLASSIFY, PromptKey.PLACE_MATCH -> CallClass.EXTRACT
             PromptKey.NUDGE -> CallClass.NUDGE
             PromptKey.ANSWER -> CallClass.USER
             else -> CallClass.OTHER

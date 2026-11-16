@@ -13,6 +13,7 @@ object TemplateVariables {
     fun required(key: PromptKey): Set<String> = when (key) {
         // The INTENT_CLASSIFY seed is a fixed instruction over one attached photo: it takes no variables.
         PromptKey.SYSTEM, PromptKey.INTENT_CLASSIFY -> emptySet()
+        // PLACE_MATCH carries its numbered candidate list in {{recent_context}} (the else branch).
         PromptKey.ANSWER -> setOf("question", "retrieved_memories")
         else -> setOf("recent_context")
     }

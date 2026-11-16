@@ -96,6 +96,6 @@ class PromptKeyImageUseTest {
         for (key in PromptKey.entries.filter { it.role?.requiredCapability == Capability.VISION }) {
             assertTrue("$key runs on a vision role but is not marked requiresImage", key.requiresImage)
         }
-        assertEquals(setOf(PromptKey.VISION_EXTRACT, PromptKey.CLUSTER_SUMMARY, PromptKey.INTENT_CLASSIFY), PromptKey.entries.filter { it.requiresImage }.toSet())
+        assertEquals(setOf(PromptKey.VISION_EXTRACT, PromptKey.CLUSTER_SUMMARY, PromptKey.INTENT_CLASSIFY, PromptKey.PLACE_MATCH), PromptKey.entries.filter { it.requiresImage }.toSet())
     }
 }

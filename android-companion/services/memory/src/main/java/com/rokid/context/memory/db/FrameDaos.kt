@@ -377,6 +377,10 @@ interface FrameMetaDao {
     @Query("SELECT * FROM frame_meta WHERE createdAt >= :sinceMs AND intentLabel IS NULL ORDER BY createdAt DESC, frameId LIMIT 1")
     suspend fun newestUnlabelled(sinceMs: Long): FrameMetaEntity?
 
+    /** Place Guide: the newest dwell photo received at or after [sinceMs] that is not forgotten, for the sampler (no schema change: a query only). */
+    @Query("SELECT * FROM frame_meta WHERE dwell = 1 AND createdAt >= :sinceMs AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_meta.frameId) ORDER BY createdAt DESC, frameId LIMIT 1")
+    suspend fun newestDwell(sinceMs: Long): FrameMetaEntity?
+
     /** Wave 3: sets the capture time of a photo (phone clock). Returns the rows changed. */
     @Query("UPDATE frame_meta SET capturedAtMs = :capturedAtMs WHERE frameId = :frameId")
     suspend fun setCapturedAt(frameId: String, capturedAtMs: Long): Int
