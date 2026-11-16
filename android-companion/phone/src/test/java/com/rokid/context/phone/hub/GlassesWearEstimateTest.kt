@@ -21,7 +21,8 @@ class GlassesWearEstimateTest {
     @Test fun theRealSignalWins() {
         e.onWearCheck(true); e.onHint(true); assertFalse("wear check on", e.active.value)
         e.onWearCheck(null); e.onWear(true); assertFalse("a wear value with the check state unknown", e.active.value)
-        e.onWear(null); assertTrue("no wear value and the check state unknown", e.active.value)
+        e.onWear(null); assertFalse("an unknown wear check never estimates (Codex wear r1 P1-4)", e.active.value)
+        e.onWearCheck(false); assertTrue("only a wear check read as OFF lets the estimate through", e.active.value)
         e.onWearCheck(true); assertFalse(e.active.value)
     }
 
