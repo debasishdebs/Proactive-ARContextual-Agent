@@ -27,11 +27,15 @@ interface GlassesLink {
     fun connectAutomatic() = connect()
     /**
      * Fix wave I1: while MINIMISED the wearer asked to open the app: check that it is alive (a liveness probe). Silence moves
-     * the link to CLOSED_ON_GLASSES and then opens it (an explicit connect); an answer leaves everything as it was.
+     * the link to CLOSED_ON_GLASSES and then, when [openIfGone] (a wearer's tap), opens it (an explicit connect); an automatic caller passes false and leaves the reopen to the relauncher's guards. An answer leaves everything as it was.
      */
-    fun probeAlive() = Unit
+    fun probeAlive(openIfGone: Boolean = true) = Unit
     /** Fix wave I N4: the wearer exited the app earlier: do not connect, only watch for the wearer opening it again. */
     fun watchForReopen() = Unit
+    /** Review hub-wp2 r3 P1-2/P2-5: whether [reconnectAutomatic] would do anything now (read BEFORE an attempt is reserved against the hourly quota). */
+    fun reconnectEligible(): Boolean = true
+    /** Review hub-wp2 r3 P1-2: the watchdog's OFFLINE reconnect as the phone's own automatic open: like [connectOnResume]'s checks but, as [connectAutomatic], a failure is not retried here (no 2/5/10/30 s loop around the guards). */
+    fun reconnectAutomatic() = connectAutomatic()
     /** Hub start: one attempt, no retry loop when the glasses are away. */
     fun connectOnce()
     /** Phone app resumed: reconnects only an OFFLINE, authorized link ([shouldReconnectOnResume]). */

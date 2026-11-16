@@ -114,8 +114,9 @@ class GlassesSessionPolicy(
         LinkEvent.GlassesAppOpened ->
             if (backgroundLink) { state = S.Connecting; listOf(LinkAction.MarkConnecting, LinkAction.Connect) } else emptyList()
         LinkEvent.AuthFailed -> { state = S.Idle; listOf(LinkAction.MarkAuthNeeded) }
+        // An automatic open's auth timeout is not retried here either: a 2/5/10 s retry timer would reopen around the relauncher's guards.
         LinkEvent.AuthTimedOut ->
-            if (authRetries < MAX_AUTH_RETRIES) {
+            if (!automatic && authRetries < MAX_AUTH_RETRIES) {
                 authRetries++
                 state = S.WaitingAuthRetry
                 listOf(LinkAction.MarkConnecting, LinkAction.ScheduleRetry(authBackoff.next()))

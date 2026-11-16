@@ -22,12 +22,28 @@ class ContextHubServiceTest {
         assertFalse(HubGraph.isBuilt)
     }
 
-    /** Review hub-wp2 r2 P1-1: a sticky restart (null intent) is a recovery start; a user start is not. */
-    @Test fun aStickyRestartIsARecoveryStartAndAUserStartIsNot() {
+    /** Review hub-wp2 r3 P1-1: guarded unless explicitly a user start: a sticky null intent, an AutoStop wake (wake=true, nothing else) and an unmarked start are all guarded. */
+    @Test fun onlyAnExplicitlyForcedStartIsAUserStart() {
         val ctx = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
-        assertTrue(ContextHubService.isRecoveryStart(null))
-        assertTrue(ContextHubService.isRecoveryStart(android.content.Intent(ctx, ContextHubService::class.java).putExtra(ContextHubService.EXTRA_RECOVER, true)))
-        assertFalse(ContextHubService.isRecoveryStart(android.content.Intent(ctx, ContextHubService::class.java).putExtra(ContextHubService.EXTRA_FORCE, true)))
+        fun intent() = android.content.Intent(ctx, ContextHubService::class.java)
+        assertFalse(ContextHubService.isUserStart(null))
+        assertFalse(ContextHubService.isUserStart(intent()))
+        assertFalse("an AutoStop wake", ContextHubService.isUserStart(intent().putExtra("com.rokid.context.hub.WAKE", true).putExtra(ContextHubService.EXTRA_FORCE, false)))
+        assertTrue(ContextHubService.isUserStart(intent().putExtra(ContextHubService.EXTRA_FORCE, true)))
+    }
+
+    /** Review hub-wp2 r3 P1-1: the intents the production wake paths (cold worker and live controller, both [AutoStopWake]'s ensureRunning(wake = true)) and the watchdog's hub recovery build are guarded; a forced one is the user's. */
+    @Test fun theProductionAutomaticStartsBuildGuardedIntents() {
+        val ctx = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
+        org.robolectric.Shadows.shadowOf(ctx).grantPermissions(android.Manifest.permission.BLUETOOTH_CONNECT)
+        val saved = ContextHubService.hubNeededNow
+        ContextHubService.hubNeededNow = { true }
+        try {
+            fun started(call: () -> Unit): android.content.Intent { call(); return org.robolectric.Shadows.shadowOf(ctx).nextStartedService }
+            assertFalse("an AutoStop wake", ContextHubService.isUserStart(started { ContextHubService.ensureRunning(ctx, wake = true) }))
+            assertFalse("the watchdog's hub recovery", ContextHubService.isUserStart(started { ContextHubService.ensureRunning(ctx) }))
+            assertTrue("a tapped Reconnect / the app in front", ContextHubService.isUserStart(started { ContextHubService.ensureRunning(ctx, force = true) }))
+        } finally { ContextHubService.hubNeededNow = saved }
     }
 
     /** Android 14+ needs a runtime prerequisite for a connectedDevice FGS; BLUETOOTH_CONNECT exists from API 31. */

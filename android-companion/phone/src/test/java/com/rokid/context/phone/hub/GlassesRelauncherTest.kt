@@ -393,7 +393,7 @@ class GlassesRelauncherTest {
         val g = Guards().apply { call = false }
         val store = InMemoryRelaunchStore()
         val r = rig(g, initial = LinkState.OFFLINE, store = store)
-        r.r.connectAfterRecovery(); runCurrent()
+        r.r.connectGuarded(); runCurrent()
         advanceTimeBy(120_000); assertEquals("never during a call", 0, r.reopens)
         g.call = true
         advanceTimeBy(10_100); assertEquals("after the call (and its settle, which the guard owns)", 1, r.reopens)
@@ -404,7 +404,7 @@ class GlassesRelauncherTest {
         val store = InMemoryRelaunchStore().apply { saveAttempts(List(6) { 0L }) }
         val r = rig(initial = LinkState.OFFLINE, store = store)
         advanceTimeBy(1_000)
-        r.r.connectAfterRecovery(); runCurrent()
+        r.r.connectGuarded(); runCurrent()
         advanceTimeBy(30 * 60_000L); assertEquals("six in the hour already: no seventh", 0, r.reopens)
         assertTrue(r.logs.any { it == "relaunch: waiting (hourly limit)" })
         advanceTimeBy(HOUR); assertEquals("the oldest attempt aged out", 1, r.reopens)

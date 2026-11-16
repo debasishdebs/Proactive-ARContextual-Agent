@@ -42,7 +42,7 @@ class GlassesRelauncherRecoveryTest {
         val guards = AndroidRelaunchGuards(androidx.test.core.app.ApplicationProvider.getApplicationContext(), { null }, clock = { currentTime + 1_000_000L }, elapsed = { currentTime }, modeSource = { mode }, callStateSource = { null }, watchModeChanges = false)
         val state = MutableStateFlow(LinkState.OFFLINE); var launches = 0
         val r = GlassesRelauncher(backgroundScope, state, { true }, guards, { launches++ }, { currentTime }, {}, io = kotlinx.coroutines.Dispatchers.Unconfined)
-        r.start(); runCurrent(); r.connectAfterRecovery(); runCurrent()
+        r.start(); runCurrent(); r.connectGuarded(); runCurrent()
         advanceTimeBy(20_000); assertEquals("in a call", 0, launches)
         mode = android.media.AudioManager.MODE_NORMAL; // the call ends now; the next poll stamps it
         advanceTimeBy(10_000); assertEquals("under 15 s since the end: still settling", 0, launches)

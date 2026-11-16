@@ -248,15 +248,15 @@ class GlassesRelauncher(
         job = scope.launch { attemptLoop(wait) }
     }
 
-    private suspend fun attemptLoop(firstDelayMs: Long) {
+    private suspend fun attemptLoop(firstDelayMs: Long, launch: () -> Unit = reopen, eligible: () -> Boolean = ALWAYS) {
         delay(firstDelayMs)
         var lastWhy = ""
         while (state.value == LinkState.CLOSED_ON_GLASSES || (afterFailure && state.value == LinkState.OFFLINE)) {
             if (standDown.active) { store.clearPending(); return }
-            val why = blocker()
+            val why = blocker(eligible)
             if (why == null) {
                 noteCleared()
-                if (doReopen()) return
+                if (doReopen(launch, eligible)) return
                 delay(pollMs); continue // deferred (record not durable, or a guard closed meanwhile): the guarded retry
             }
             if (why != lastWhy) { log("relaunch: waiting ($why)"); lastWhy = why }
@@ -268,17 +268,25 @@ class GlassesRelauncher(
     }
 
     /**
-     * Review hub-wp2 r2 P1-2/P2-4. The attempt is committed on [io] BEFORE the launch (a kill right after it can never let a rebuilt relauncher allow a 7th reopen in the hour),
-     * and the launch happens only if that write succeeded AND every guard still holds after it (the write suspends: a call may have started meanwhile). Returns true = launched;
-     * false = deferred (the record is rolled back, nothing launched) and the caller keeps its guarded retry.
+     * THE choke point (review hub-wp2 r3): every automatic opening of the glasses app ends here, and nothing else launches one. [launch] runs only when [eligible] says it would do something
+     * (checked BEFORE a slot is reserved: a no-op never costs quota), the setting, the hourly cap, the call guard (settle included), media and worn hold, and none of that changed while the record was written.
+     * The attempt is committed on [io] BEFORE the launch (a kill right after it can never let a rebuilt relauncher allow a 7th reopen in the hour). Returns true = launched; false = deferred
+     * (the reservation is rolled back whatever the reason, a guard, a failed write or a cancellation; nothing launched) and the caller keeps its guarded retry.
      */
-    private suspend fun doReopen(launch: () -> Unit = reopen): Boolean {
+    private suspend fun doReopen(launch: () -> Unit = reopen, eligible: () -> Boolean = ALWAYS): Boolean {
         val t = now(); val reserved = attempts.toList() + t
-        val durable = withContext(NonCancellable + io) { store.saveAttemptsDurable(reserved) }
-        if (!durable) { log("relaunch: attempt record not durable, not launching"); return false }
-        val why = try { coroutineContext.ensureActive(); blocker() } catch (e: CancellationException) { rollback(); throw e }
-        if (why != null) { log("relaunch: blocked after the record ($why), not launching"); rollback(); noteBlocked(why); return false }
-        attempts.addLast(t); step++; awaitingSince = t; lastReopenAt = t
+        var committed = false
+        try {
+            val durable = withContext(NonCancellable + io) { store.saveAttemptsDurable(reserved) }
+            if (!durable) { log("relaunch: attempt record not durable, not launching"); return false }
+            coroutineContext.ensureActive()
+            val why = blocker(eligible)
+            if (why != null) { log("relaunch: blocked after the record ($why), not launching"); noteBlocked(why); return false }
+            attempts.addLast(t); step++; awaitingSince = t; lastReopenAt = t
+            committed = true
+        } finally {
+            if (!committed) rollback() // also when cancellation lands right after the write returned: the cleanup surrounds the write itself
+        }
         log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
         try { launch() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
         return true
@@ -289,28 +297,28 @@ class GlassesRelauncher(
 
     /**
      * The watchdog's periodic trigger: one attempt now through every guard of the event-driven path (setting, hourly cap, call idle
-     * including its post-call settle, media, worn) plus the stand-down. Null = reopened; else why not ("pending" = a timed attempt is queued).
-     * [launch] = the session-opening call to guard (default: the reopen); review hub-wp2 r2 P1-1: the watchdog's own reconnect goes through here too.
+     * including its post-call settle, media, worn) plus the stand-down. Null = reopened; else why not ("pending" = a timed attempt is queued; "not eligible" = nothing to open).
+     * [launch] = the session-opening call to guard (default: the reopen); [eligible] is read before a slot is reserved (review hub-wp2 r3 P2-5).
      */
-    fun attemptNow(launch: (() -> Unit)? = null): String? {
+    fun attemptNow(launch: (() -> Unit)? = null, eligible: () -> Boolean = ALWAYS): String? {
         if (standDown.active) return "stood down"
         if (job?.isActive == true) return "pending"
-        val why = blocker()
+        val why = blocker(eligible)
         if (why != null) { log("relaunch: watchdog waiting ($why)"); noteBlocked(why); return why }
         noteCleared()
-        job = scope.launch(start = CoroutineStart.UNDISPATCHED) { doReopen(launch ?: reopen) } // the durable write is off Main; the launch follows it
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) { doReopen(launch ?: reopen, eligible) } // the durable write is off Main; the launch follows it
         return null
     }
 
     /**
-     * v1.1 hub recovery (review hub-wp2 r1 P1): the lost hub's automatic connect is a glasses launch like any reopen: it waits for every guard (a call and its
+     * Every automatic start of the hub (an AutoStop wake cold or live, a sticky restart, the watchdog's hub recovery; only a user start is exempt): the automatic connect waits for every guard (a call and its
      * settle, the setting, the hourly cap) through the same loop and counts as an attempt. Never connects during a call; retries when the blocker clears.
      */
-    fun connectAfterRecovery() {
+    fun connectGuarded() {
         if (standDown.active) return
         job?.cancel()
         afterFailure = true
-        log("relaunch: recovery connect through the guards")
+        log("relaunch: guarded automatic connect")
         job = scope.launch { attemptLoop(0L) }
     }
 
@@ -340,12 +348,13 @@ class GlassesRelauncher(
     }
 
     /** The first reason not to reopen now, or null. */
-    private fun blocker(): String? {
+    private fun blocker(eligible: () -> Boolean = ALWAYS): String? {
         if (!enabled()) return SETTING_OFF
+        if (!eligible()) return NOT_ELIGIBLE // before anything is reserved: a no-op never costs quota
+        // Pruning is in memory only (review hub-wp2 r3 P2-3): a persist here could write the list before a reservation in flight is added to it and erase that reservation from disk;
+        // an expired entry left on disk is dropped on load and by the next reservation's write.
         val cutoff = now() - HOUR_MS
-        val before = attempts.size
         while (attempts.isNotEmpty() && attempts.first() <= cutoff) attempts.removeFirst()
-        if (attempts.size != before) store.saveAttempts(attempts.toList())
         if (attempts.size >= maxPerHour) return HOURLY_LIMIT
         if (!guards.callIdle()) return CALL_ACTIVE
         if (reopenIsFullScreen() && !guards.mediaIdle()) return "media active"
@@ -361,6 +370,8 @@ class GlassesRelauncher(
         private const val CALL_ACTIVE = "call active"
         private const val SETTING_OFF = "setting off"
         private const val HOURLY_LIMIT = "hourly limit"
+        private const val NOT_ELIGIBLE = "not eligible"
+        private val ALWAYS: () -> Boolean = { true }
         /** Diagnostics: a changed blocker or input is logged at most this often; an unchanged block repeats this often. */
         const val BLOCK_CHANGE_MIN_MS = 30_000L
         const val BLOCK_HEARTBEAT_MS = 300_000L
