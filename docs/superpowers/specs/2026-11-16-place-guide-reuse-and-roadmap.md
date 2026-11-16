@@ -140,3 +140,15 @@ Total ≈ 15 Sd across 9 working days. **Cut line if late**: the hub fix and pau
 6. **Card verbosity**: show place cards at MEDIUM too, not only MAX like nudges?
 7. **Delete all**: clears the pack's fetched places and recency but keeps seeded areas and never removes pause zones. OK?
 8. **Release-key rotation** after Sri Lanka (1.3.0), and the Forget redesign in 1.2.0 only if shadow mode is clean. Agree?
+
+## Rulings (user, 2026-11-16, answers to section F)
+1. Versions: accepted in principle, but the user wants EVERYTHING of the old v1.1 and the Place Guide finished and INSTALLED before Andaman (freeze day 10, 26 Nov), not deferred to a Sri Lanka build. Mitigations agreed by default: the Forget redesign ships with its shadow steps (M0-M5) on and the destructive switch-over (M6-M9) behind an off-by-default flag, flipped only if the shadow run is clean on real data; phone backup before every install; 1.0.0 APKs staged for rollback; anything not Codex-READY and tested by day 10 stays off the installed build.
+2. Place storage: a `type="place"` memory row, no migration (user left the default).
+3. Location: the hub's existing foreground location only.
+4. Zones: no override while inside, 5 km buffer on the Jarawa preset, 300 m on user zones.
+5. Place match: a second photo call per glance near a site.
+6. Cards shown at MEDIUM as well as MAX.
+7. Delete all clears fetched places, keeps seeded areas, never removes pause zones.
+8. Release-key rotation after Sri Lanka (1.3.0).
+Build constraint: Gradle runs one build at a time on this laptop (it was swapping), so writing code can be parallel but building and testing is serial.
+
