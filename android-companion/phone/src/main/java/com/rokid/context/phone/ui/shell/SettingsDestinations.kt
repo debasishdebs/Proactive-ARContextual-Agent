@@ -76,6 +76,7 @@ import com.rokid.context.phone.ui.settings.memory.MemorySettingsViewModel
 import com.rokid.context.phone.ui.settings.memory.ReviewQueueScreen
 import com.rokid.context.phone.ui.settings.memory.ReviewQueueViewModel
 import com.rokid.context.phone.ui.settings.privacy.PrivacyRoute
+import com.rokid.context.phone.ui.settings.privacy.zones.ZonesRoute
 import com.rokid.context.phone.ui.settings.prompts.PromptEditorScreen
 import com.rokid.context.phone.ui.settings.prompts.PromptEditorViewModel
 import com.rokid.context.phone.ui.settings.prompts.PromptHistoryScreen
@@ -381,7 +382,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         LogsScreen(state, onBack = back, onRefresh = vm::refresh)
     }
 
-    composable(Routes.SETTINGS_PRIVACY) { PrivacyRoute(s, back) }
+    composable(Routes.SETTINGS_PRIVACY) { PrivacyRoute(s, back, openZones = { nav.navigate(Routes.SETTINGS_PRIVACY_ZONES) }) }
+    composable(Routes.SETTINGS_PRIVACY_ZONES) { ZonesRoute(s, back) }
     composable(Routes.SETTINGS_SOURCES) {
         val activity = LocalContext.current.findActivity()
         SourcesRoute(s, back) { p -> activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, p) } ?: true }

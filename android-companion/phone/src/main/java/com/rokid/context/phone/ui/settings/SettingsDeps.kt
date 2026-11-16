@@ -107,6 +107,10 @@ class SettingsDeps(
     val contextSources: ContextSourcesControl = ContextSourcesControl.None,
     /** Settings > Capture: the active canvas capture plan row and "Use settings" (slice 3a Task 28). The composition task (33) binds the real one. */
     val capturePlan: com.rokid.context.phone.ui.settings.capture.CapturePlanControl = com.rokid.context.phone.ui.settings.capture.CapturePlanControl.None,
+    /** Settings > Privacy > Pause zones: built on first use (the controller reaches the memory database). Null where no zone engine is wired (tests). */
+    val zoneEditor: (() -> com.rokid.context.phone.ui.settings.privacy.zones.ZoneEditor)? = null,
+    /** Whether the app holds a location permission right now (the zones screen's fail-closed banner). */
+    val locationGranted: () -> Boolean = { false },
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -176,6 +180,11 @@ class SettingsDeps(
             capturePlan = com.rokid.context.phone.canvas.ProcessPlanControl { HubGraph.get(app); com.rokid.context.phone.canvas.PlanGraph.current() },
             glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
             contextSources = AppContextSources(app),
+            zoneEditor = { com.rokid.context.phone.ui.settings.privacy.zones.ControllerZoneEditor(com.rokid.context.phone.zone.ZoneGraph.get(app)) },
+            locationGranted = {
+                listOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)
+                    .any { androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
+            },
         )
     }
 }
