@@ -51,9 +51,17 @@ object AutoStopWake {
                 },
                 startWake = { ContextHubService.ensureRunning(app, wake = true) }, scheduleWake = { schedule(app, it) },
                 startRecover = { ContextHubService.ensureRunning(app, wake = true, recover = true) },
-                hubStart = LadderHubStartGate(PrefsHubRestartStore { app.getSharedPreferences(HUB_RESTART_PREFS, Context.MODE_PRIVATE) }) { callIdle(app) },
+                hubStart = LadderHubStartGate(hubLadder(app)) { callIdle(app) },
             )
         }.also { shared = it }
+    }
+
+    /** Review hub-wp2 r2 P2: the process-wide owner of the hub restart ladder; the watchdog and the recovery gate both use THIS instance (never two caches of one record). */
+    @Volatile private var ladder: HubLadder? = null
+    fun hubLadder(context: Context): HubLadder = ladder ?: synchronized(this) {
+        ladder ?: context.applicationContext.let { app ->
+            HubLadder(PrefsHubRestartStore { app.getSharedPreferences(HUB_RESTART_PREFS, Context.MODE_PRIVATE) }, System::currentTimeMillis, Dispatchers.IO.asExecutor(), { PcLog.w(GlassesWatchdog.TAG, it) })
+        }.also { ladder = it }
     }
 
     /** The watchdog's persisted hub restart ladder (the recovery shares it). */

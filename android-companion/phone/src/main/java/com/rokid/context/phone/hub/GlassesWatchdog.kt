@@ -65,6 +65,8 @@ class GlassesWatchdog(
     executor: Executor = Dispatchers.IO.asExecutor(),
     /** Runs the ladder record's write retry (null = the engine's timer thread; tests pass their own). */
     persistRetry: ((Long, Runnable) -> Unit)? = null,
+    /** Review hub-wp2 r2 P2: THE owner of the hub restart ladder, shared (one process-wide instance in production) with the lost-hub recovery's [LadderHubStartGate]; default = a private one over [hubStore]. */
+    ladderOwner: HubLadder = HubLadder(hubStore, now, executor, warn, persistRetry),
 ) {
     sealed interface Verdict {
         object Off : Verdict
@@ -83,12 +85,7 @@ class GlassesWatchdog(
     private var lastLogged: String? = null
     private var quietTicks = 0
     /** The back-offs (reconnect, hub restart, last start): the one actor; see [WatchdogLadder]. Loaded from [hubStore] on its first step (on [executor]). */
-    private val ladder = SerialStateMachine<WatchdogLadder.State, WatchdogLadder.Event, WatchdogLadder.Effect>(
-        load = { WatchdogLadder.State(saved = hubStore.load()) }, reduce = WatchdogLadder::reduce, persisted = { it.saved }, save = { hubStore.save(it.saved) },
-        now = now, executor = executor, onError = { warn("watchdog ladder step failed: ${it.javaClass.simpleName}") },
-        run = { warn("persist_failed"); null }, // the one effect: WatchdogLadder.Effect.PersistFailedLog (at most once a minute)
-        persistFailed = { n -> WatchdogLadder.Event.PersistFailed(n) }, persistRecovered = WatchdogLadder.Event.PersistRecovered, schedule = persistRetry,
-    )
+    private val ladder = ladderOwner.machine
     /** One tick at a time (the tick's own log/baseline fields); the ladder itself is serialised by its actor. */
     private val ticking = Mutex()
     private var gate = BackgroundPolicy.Gate.ACTIVE
@@ -236,6 +233,8 @@ object WatchdogLadder {
         data class TryHubStart(val atMs: Long) : Event
         /** A reconnect attempt at [atMs]; reply true = due and recorded. */
         data class TryReconnect(val atMs: Long) : Event
+        /** Read-only: how long until a hub start attempt is allowed at [atMs]; reply = the wait in ms (0 = now). */
+        data class StartWait(val atMs: Long) : Event
         /** Write-behind bookkeeping: writing the latest record failed ([failures] in a row); nothing is undone, the hub keeps running. */
         data class PersistFailed(val failures: Int) : Event
         object PersistRecovered : Event
@@ -262,6 +261,7 @@ object WatchdogLadder {
         is Event.TryHubStart ->
             if (startAllowed(s, e.atMs)) Transition(s.copy(saved = HubRestartSnapshot(BackgroundPolicy.attempted(s.saved.backoff, e.atMs), e.atMs)), reply = true)
             else Transition(s, reply = false)
+        is Event.StartWait -> Transition(s, reply = startWaitMs(s.saved, e.atMs))
         is Event.TryReconnect ->
             if (s.reconnect.due(e.atMs)) Transition(s.copy(reconnect = BackgroundPolicy.attempted(s.reconnect, e.atMs)), reply = true) else Transition(s, reply = false)
         Event.PersistRecovered -> Transition(s.copy(persistFailing = false))
@@ -270,6 +270,28 @@ object WatchdogLadder {
             Transition(s.copy(persistFailing = true, persistLoggedAtMs = if (logNow) now else s.persistLoggedAtMs), if (logNow) listOf<Effect>(Effect.PersistFailedLog) else emptyList())
         }
     }
+}
+
+/**
+ * Review hub-wp2 r2 P2: the ONE owner of the hub restart ladder: one actor ([SerialStateMachine]) whose in-memory state is authoritative, shared by the watchdog and the lost-hub
+ * recovery gate. Every check-and-record (`TryHubStart`) is one atomic step, so no cached copy goes stale, no save overwrites a newer one, and a watchdog start can never fall
+ * within the minimum interval of a recovery's record (nor the other way round).
+ */
+class HubLadder(
+    hubStore: HubRestartStore, now: () -> Long, executor: Executor, warn: (String) -> Unit, persistRetry: ((Long, Runnable) -> Unit)? = null,
+) {
+    val machine = SerialStateMachine<WatchdogLadder.State, WatchdogLadder.Event, WatchdogLadder.Effect>(
+        load = { WatchdogLadder.State(saved = hubStore.load()) }, reduce = WatchdogLadder::reduce, persisted = { it.saved }, save = { hubStore.save(it.saved) },
+        now = now, executor = executor, onError = { warn("watchdog ladder step failed: ${it.javaClass.simpleName}") },
+        run = { warn("persist_failed"); null }, // the one effect: WatchdogLadder.Effect.PersistFailedLog (at most once a minute)
+        persistFailed = { n -> WatchdogLadder.Event.PersistFailed(n) }, persistRecovered = WatchdogLadder.Event.PersistRecovered, schedule = persistRetry,
+    )
+
+    /** Blocking (call it off Main): atomic check-and-record of a hub start attempt at [t]; true = allowed and recorded (written before this returns). */
+    fun tryStart(t: Long): Boolean = runBlocking { machine.submit(WatchdogLadder.Event.TryHubStart(t)).await() } == true
+
+    /** Blocking: how long until a hub start attempt is allowed (0 = now), from the authoritative state. */
+    fun waitMs(t: Long): Long = (runBlocking { machine.submit(WatchdogLadder.Event.StartWait(t)).await() } as? Long) ?: 0L
 }
 
 /** Persisted state of the hub restart attempts: the ladder (step, next allowed time) and the time of the last start attempt. One record. */
@@ -299,17 +321,17 @@ class PrefsHubRestartStore(private val prefs: () -> android.content.SharedPrefer
  */
 interface HubStartGate {
     fun dueInMs(nowMs: Long): Long
-    fun record(nowMs: Long)
+    /** Atomic check-and-record on the shared ladder: true = due and recorded (durable before this returns); false = a watchdog start (or another recovery) got there first, so do not start. */
+    fun record(nowMs: Long): Boolean
     fun callIdle(): Boolean
 
-    object None : HubStartGate { override fun dueInMs(nowMs: Long) = 0L; override fun record(nowMs: Long) {}; override fun callIdle() = true }
+    object None : HubStartGate { override fun dueInMs(nowMs: Long) = 0L; override fun record(nowMs: Long) = true; override fun callIdle() = true }
 }
 
-class LadderHubStartGate(private val store: HubRestartStore, private val call: () -> Boolean) : HubStartGate {
-    override fun dueInMs(nowMs: Long) = WatchdogLadder.startWaitMs(store.load(), nowMs)
-    override fun record(nowMs: Long) {
-        val s = store.load()
-        store.save(HubRestartSnapshot(BackgroundPolicy.attempted(s.backoff, nowMs), nowMs))
-    }
+class LadderHubStartGate(private val ladder: HubLadder, private val call: () -> Boolean) : HubStartGate {
+    /** Tests: a private direct-executor owner over [store]. */
+    constructor(store: HubRestartStore, call: () -> Boolean) : this(HubLadder(store, System::currentTimeMillis, SerialStateMachine.DIRECT, {}), call)
+    override fun dueInMs(nowMs: Long) = ladder.waitMs(nowMs)
+    override fun record(nowMs: Long) = ladder.tryStart(nowMs)
     override fun callIdle() = call()
 }

@@ -30,6 +30,9 @@ class GlassesRelauncherRecoveryTest {
             val again = PrefsRelaunchStore(ctx.getSharedPreferences("relaunch_state_durable_test", 0))
             assertEquals(listOf(1L, 2L, 3L, 4L, 5L, 6L), again.attempts())
             assertEquals("a rebuilt relauncher holds the cap", 6, PrefsRelaunchStore(ctx.getSharedPreferences("relaunch_state_durable_test", 0)).attempts().size)
+            // what a fresh process reads is the committed file on disk (a second SharedPreferences cache over the same name proves nothing): read the XML itself
+            val file = java.io.File(ctx.applicationInfo.dataDir, "shared_prefs/relaunch_state_durable_test.xml")
+            assertTrue("the committed record is in the file", file.exists() && file.readText().contains("1,2,3,4,5,6"))
             prefs.edit().clear().commit()
         }
 

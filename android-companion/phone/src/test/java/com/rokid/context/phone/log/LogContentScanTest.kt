@@ -33,6 +33,7 @@ class LogContentScanTest {
         "VoiceGraph.kt" to setOf("it"), "GlassesRelauncher.kt" to setOf("it"), "HubGraph.kt" to setOf("it"), "Hub.kt" to setOf("m"),
         "GlassesWatchdog.kt" to setOf("it"), "AutoStopController.kt" to setOf("it"), "GlassesWearEstimate.kt" to setOf("it"), "AutoStopWake.kt" to setOf("it"), "StateBroadcaster.kt" to setOf("it"), "CxrGlassesLink.kt" to setOf("it"), "SessionSlot.kt" to setOf("it"),
         "AndroidSpeaker.kt" to setOf("it.wire"), "GlassesRuntime.kt" to setOf("\"ptt: \$it\""),
+        "PhoneExitDiagnostics.kt" to setOf("\"\${format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live)}\""), // file-scoped: numeric fields and controlled flags only (review hub-wp2 r2)
         "WatchLinkState.kt" to setOf("it"), // WatchDropLog: only "watch drop reason=<fixed token> n=<count>"
     )
 
@@ -51,7 +52,7 @@ class LogContentScanTest {
         "PROTOCOL_VERSION", "MAX_ATTEMPTS", "MAX_RUNS", "RetryPolicy.MAX_ATTEMPTS", "PipelineStatsStore.K_V2_SIDECAR_LOST", "linkState()", "stage(eval)",
         "call.key.name", "callClass.name", "key.name", "kind.name", "outcome.name", "e.kind", "e.retryable", "e.remote", "e.errno", "r.code", "r.errorCode", "r.isSuccess", "r.origin",
         "done.verdict", "reply.truncated", "it.pipeSize", "it.capacityBytes", "h.bufferSize", "h.glassesBatteryPct", "h.resumedAtMs.size", "measured.glassesMinusPhoneMs",
-        "m.pipeSize", "sink.pipeSize", "counts.routed", "counts.fast", "counts.dup", "counts.clustered", "w != null", "intent == null", "format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live)", "code?.name ?: \"NONE\"",
+        "m.pipeSize", "sink.pipeSize", "counts.routed", "counts.fast", "counts.dup", "counts.clustered", "w != null", "intent == null", "code?.name ?: \"NONE\"",
         "clock() - t0", "(now - it.ts).coerceAtLeast(0L)", "job.attemptCount + 1", "runAttemptCount + 1", "results.size - failed.size", "loadedLabelled.size",
         "file.exists()", "file.length()", "r768.queries", "r768.smallQueries", "c::class.simpleName", "bytes?.size ?: 0", "eval.problems().size",
         // Memory-index lifecycle lines (IndexMaintenance, EmbeddingWorker, NightIndexWorker): locals that hold a space id (space_<uuid>), a model id or its hash prefix, a count,

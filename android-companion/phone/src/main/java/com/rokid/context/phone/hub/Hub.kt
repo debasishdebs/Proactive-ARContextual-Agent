@@ -389,7 +389,8 @@ class Hub(
     /** v0.9.7 slice D: asks the glasses for the photo of the phone-origin mark [ref]; false = it could not be sent (the caller records the reason). */
     suspend fun requestMarkPhoto(ref: String): Boolean = link.send(Channels.MARK_PHOTO_REQUEST, Wire.encode(com.rokid.context.core.model.MarkPhotoRequest(ref = ref, atMs = clock(), sessionStartMs = sessionStartMs)))
 
-    fun watchdogReconnect() = link.connectOnResume()
+    /** Review hub-wp2 r2 P1-1: an automatic session open waits for the call guard (settle included), the setting and the hourly cap like every reopen; a blocked one is retried by the watchdog's own ladder. */
+    fun watchdogReconnect() { val r = relauncher; if (r == null) link.connectOnResume() else r.attemptNow { link.connectOnResume() } }
     fun watchdogProbe() = link.probeAlive()
     fun standingDown(): Boolean = standDown.active
     /** The Home banner's watchdog line ("Glasses not connected · last heard 7 min ago"), null = nothing to say. */

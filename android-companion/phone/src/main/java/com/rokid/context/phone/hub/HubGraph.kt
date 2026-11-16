@@ -258,15 +258,14 @@ object HubGraph {
                 now = System::currentTimeMillis, enabled = { KeepRunningNearby.of(app).enabled() },
                 captureActive = { hub.activePauses.value.isEmpty() }, hubRunning = { hub.started }, link = { hub.link.state.value },
                 lastHeardAtMs = { hub.lastHeardAtMs }, standingDown = hub::standingDown,
-                startHub = { ContextHubService.ensureRunning(app) }, reconnect = hub::watchdogReconnect, probeAlive = hub::watchdogProbe,
+                startHub = { ContextHubService.ensureRunning(app, recover = true) }, reconnect = hub::watchdogReconnect, probeAlive = hub::watchdogProbe,
                 relaunch = hub::watchdogRelaunch, publish = hub::setWatchdogNote,
                 // Settings > Capture: the silence threshold and the tick, read at every tick (defaults 3 min and 150 s, as before)
                 silentMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::silentMs,
                 periodMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::tickMs,
                 paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) },
                 hubNeeded = { ContextHubService.appInForeground() || BackgroundInputs.hubNeeded(app) }, stopHub = { ContextHubService.stop(app) },
-                hubStore = PrefsHubRestartStore { app.getSharedPreferences(AutoStopWake.HUB_RESTART_PREFS, android.content.Context.MODE_PRIVATE) },
-                executor = Dispatchers.IO.asExecutor(), // the ladder actor commits on IO, never on the loop's main thread
+                ladderOwner = AutoStopWake.hubLadder(app), // the ONE owner of the hub restart ladder, shared with the lost-hub recovery; it commits on IO, never on the loop's main thread
             ).also { watchdogRef.set(it) }.start(scope)
             // AutoStop (user ruling 2026-11-07): the hub stops by itself after the glasses were off-head or disconnected for N minutes; a woken hub (battery exemption) looks for them first.
             val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)

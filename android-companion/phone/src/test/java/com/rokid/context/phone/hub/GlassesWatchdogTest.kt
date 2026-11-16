@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,15 +29,31 @@ class GlassesWatchdogTest {
         var starts = 0; var reconnects = 0; var probes = 0; var relaunches = 0
         val notes = ArrayList<String?>()
         val logs = ArrayList<String>(); val warns = ArrayList<String>()
+        val owner = HubLadder(store, { nowMs }, SerialStateMachine.DIRECT, { warns += it })
         val w = GlassesWatchdog(
             now = { nowMs }, enabled = { enabled }, captureActive = { capture }, hubRunning = { running }, link = { link },
             lastHeardAtMs = { heard }, standingDown = { standing },
             startHub = { starts++ }, reconnect = { reconnects++ }, probeAlive = { probes++ }, relaunch = { relaunches++; relaunchResult },
             publish = { notes += it },
             log = { logs += it }, warn = { warns += it },
-            paired = { paired }, hubNeeded = { hubNeeded }, stopHub = { stops++; running = false }, hubStore = store, executor = SerialStateMachine.DIRECT,
+            paired = { paired }, hubNeeded = { hubNeeded }, stopHub = { stops++; running = false }, hubStore = store, executor = SerialStateMachine.DIRECT, ladderOwner = owner,
         )
         fun silentFor(min: Long) { heard = nowMs - min * 60_000L }
+    }
+
+    /** Review hub-wp2 r2 P2: one owner for the restart ladder: a watchdog that cached its ladder before a recovery's record still holds the recovery's back-off and minimum interval, and neither save overwrites the other. */
+    @Test fun aWatchdogStartNeverFollowsARecoveryRecordWithinItsBackOffAndNothingIsOverwritten() {
+        val store = InMemoryHubRestartStore(); val r = Rig(store = store).apply { silentFor(1) }
+        r.w.tick() // hub running: the watchdog's actor has loaded (and cached) the ladder
+        val gate = LadderHubStartGate(r.owner) { true }
+        assertTrue("recorded by the recovery", gate.record(r.nowMs)); val recordedAt = r.nowMs
+        r.running = false; r.nowMs += 1
+        r.w.tick(); assertEquals("1 ms after the recovery record: no watchdog start", 0, r.starts)
+        assertEquals("the recovery's record was not overwritten", recordedAt, store.load().lastStartAtMs)
+        r.nowMs = recordedAt + 5 * 60_000L; r.w.tick(); assertEquals("after its rung: one start", 1, r.starts)
+        val startedAt = r.nowMs
+        assertFalse("and the other way: a recovery right after a watchdog start is refused", gate.record(startedAt + 1))
+        assertEquals(startedAt, store.load().lastStartAtMs)
     }
 
     @Test fun recentHeartbeatDoesNothing() {

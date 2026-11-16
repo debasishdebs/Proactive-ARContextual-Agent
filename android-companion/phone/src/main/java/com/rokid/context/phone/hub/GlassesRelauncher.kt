@@ -17,6 +17,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -252,7 +254,11 @@ class GlassesRelauncher(
         while (state.value == LinkState.CLOSED_ON_GLASSES || (afterFailure && state.value == LinkState.OFFLINE)) {
             if (standDown.active) { store.clearPending(); return }
             val why = blocker()
-            if (why == null) { noteCleared(); doReopen(); return }
+            if (why == null) {
+                noteCleared()
+                if (doReopen()) return
+                delay(pollMs); continue // deferred (record not durable, or a guard closed meanwhile): the guarded retry
+            }
             if (why != lastWhy) { log("relaunch: waiting ($why)"); lastWhy = why }
             noteBlocked(why)
             // No polling for what only a person changes (the setting) and no 10 s poll for the hourly cap: sleep until its oldest attempt ages out.
@@ -261,25 +267,38 @@ class GlassesRelauncher(
         }
     }
 
-    /** The attempt is durable (committed on [io]) BEFORE the launch: a kill right after it can never let a rebuilt relauncher allow a 7th reopen in the hour. */
-    private suspend fun doReopen() {
-        attempts.addLast(now()); val saved = attempts.toList(); step++; awaitingSince = now(); lastReopenAt = now()
-        if (!withContext(NonCancellable + io) { store.saveAttemptsDurable(saved) }) log("relaunch: attempt record not durable")
+    /**
+     * Review hub-wp2 r2 P1-2/P2-4. The attempt is committed on [io] BEFORE the launch (a kill right after it can never let a rebuilt relauncher allow a 7th reopen in the hour),
+     * and the launch happens only if that write succeeded AND every guard still holds after it (the write suspends: a call may have started meanwhile). Returns true = launched;
+     * false = deferred (the record is rolled back, nothing launched) and the caller keeps its guarded retry.
+     */
+    private suspend fun doReopen(launch: () -> Unit = reopen): Boolean {
+        val t = now(); val reserved = attempts.toList() + t
+        val durable = withContext(NonCancellable + io) { store.saveAttemptsDurable(reserved) }
+        if (!durable) { log("relaunch: attempt record not durable, not launching"); return false }
+        val why = try { coroutineContext.ensureActive(); blocker() } catch (e: CancellationException) { rollback(); throw e }
+        if (why != null) { log("relaunch: blocked after the record ($why), not launching"); rollback(); noteBlocked(why); return false }
+        attempts.addLast(t); step++; awaitingSince = t; lastReopenAt = t
         log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
-        try { reopen() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
+        try { launch() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
+        return true
     }
+
+    /** Takes back a reservation that was not launched, durably when it can (a failed rollback only costs quota, never adds a launch). */
+    private suspend fun rollback() { withContext(NonCancellable + io) { store.saveAttemptsDurable(attempts.toList()) } }
 
     /**
      * The watchdog's periodic trigger: one attempt now through every guard of the event-driven path (setting, hourly cap, call idle
      * including its post-call settle, media, worn) plus the stand-down. Null = reopened; else why not ("pending" = a timed attempt is queued).
+     * [launch] = the session-opening call to guard (default: the reopen); review hub-wp2 r2 P1-1: the watchdog's own reconnect goes through here too.
      */
-    fun attemptNow(): String? {
+    fun attemptNow(launch: (() -> Unit)? = null): String? {
         if (standDown.active) return "stood down"
         if (job?.isActive == true) return "pending"
         val why = blocker()
         if (why != null) { log("relaunch: watchdog waiting ($why)"); noteBlocked(why); return why }
         noteCleared()
-        job = scope.launch(start = CoroutineStart.UNDISPATCHED) { doReopen() } // the durable write is off Main; the launch follows it
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) { doReopen(launch ?: reopen) } // the durable write is off Main; the launch follows it
         return null
     }
 
