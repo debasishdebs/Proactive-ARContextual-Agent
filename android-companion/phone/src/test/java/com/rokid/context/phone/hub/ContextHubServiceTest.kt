@@ -220,4 +220,26 @@ class ContextHubServiceTest {
         val r = (0 until receivers.getLength()).map { receivers.item(it) as org.w3c.dom.Element }.single { it.getAttribute("android:name") == ".phone.hub.ClosedNoticeReceiver" }
         assertEquals("false", r.getAttribute("android:exported"))
     }
+
+    // --- v1.1 T2: the silent onStartCommand exits now log once, with sticky= ---------------------------------------------------
+
+    private fun startRefusals(intent: android.content.Intent?): List<String> {
+        val seen = java.util.Collections.synchronizedList(mutableListOf<String>())
+        com.rokid.context.core.log.PcLog.testOnlyResetNeverCallFromProduction()
+        com.rokid.context.core.log.PcLog.install(object : com.rokid.context.core.log.LogSink {
+            override fun emit(line: com.rokid.context.core.log.Line, route: com.rokid.context.core.log.Route) { if (line.msg.startsWith("start_refused")) seen += line.msg }
+        })
+        val saved = ContextHubService.hubNeededNow
+        ContextHubService.hubNeededNow = { false }
+        try {
+            Robolectric.buildService(ContextHubService::class.java).create().get().onStartCommand(intent, 0, 1)
+        } finally { ContextHubService.hubNeededNow = saved; com.rokid.context.core.log.PcLog.testOnlyResetNeverCallFromProduction() }
+        return seen.toList()
+    }
+
+    @Test fun aStickyStartNobodyNeedsLogsItsBranchOnce() =
+        assertEquals(listOf("start_refused branch=not_needed sticky=true"), startRefusals(null))
+
+    @Test fun aNonStickyBackgroundStartNobodyNeedsLogsItToo() =
+        assertEquals(listOf("start_refused branch=not_needed sticky=false"), startRefusals(android.content.Intent()))
 }

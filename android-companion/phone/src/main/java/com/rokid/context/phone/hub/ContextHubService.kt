@@ -77,8 +77,9 @@ class ContextHubService : Service() {
         if (!running) {
             // Nothing needs the hub (glasses link off or unpaired, no context source, no ask): a sticky restart in the background does not bring it back. A tapped Reconnect forces a start.
             val needed = intent?.getBooleanExtra(EXTRA_FORCE, false) == true || intent?.getBooleanExtra(EXTRA_WAKE, false) == true || hubNeededNow(this)
-            if (stopsOnBackgroundStart(startedInFront(intent), needed)) { stopSelf(); return START_NOT_STICKY }
-            if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
+            // v1.1 T2: both exits are silent otherwise; sticky=true is the null intent of a system restart.
+            if (stopsOnBackgroundStart(startedInFront(intent), needed)) { PcLog.milestone(TAG, "start_refused branch=not_needed sticky=${intent == null}"); stopSelf(); return START_NOT_STICKY }
+            if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { PcLog.milestone(TAG, "start_refused branch=foreground_refused sticky=${intent == null}"); stopSelf(); return START_NOT_STICKY }
             running = true
             AutoStopWake.engine(this).submit(AutoStopEvent.HubForeground) // a wake in progress is complete only now (Codex review 5)
             val nm = getSystemService(NotificationManager::class.java)
