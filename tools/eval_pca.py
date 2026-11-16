@@ -21,6 +21,7 @@ Usage:
 Route contract (POST /api/ask/eval, body {"question": str}; 403 while Developer mode is off, 409 if anything the answer used was forgotten mid-ask):
   {"askId": str, "status": "answered" | "failed", "answer": str, "notice": str?, "mode": str ("UNKNOWN" without a re-run), "fallback": bool,
    "scores": "rerun" | "none", "latencyMs": int, "appVersion": str, "photoFrameId": str?, "photoAtMs": int?,
+   "index": {"active": bool, "textEmbedded": int?, "textEligible": int?, "imagesEmbedded": int?, "imagesEligible": int?, "complete": bool},
    "cited": [str] (memory ids and frame:<id> photo cites the answer cited), "dependsOn": [str] (inputs it used without citing),
    "sources": [{"memoryId": str? (null for a cited photo), "rank": int? (null when the re-run did not rank it), "cited": bool, "inPrompt": bool?,
                 "score": float?, "lexical": float?, "semantic": float?, "fused": float?, "createdAt": int?, "frameIds": [str],
@@ -259,6 +260,9 @@ def write_report(path, results, meta, baseline=None):
     w("Dataset `%s` (%d questions), judges: %s, phone build: %s." % (meta["dataset"], len(results), ", ".join(meta["judges"]) or "none", meta.get("phoneVersion") or "?"))
     w("")
     w("**Score %.1f / %d (%.0f%%)**" % (total, len(results), 100.0 * total / max(1, len(results))))
+    if meta.get("indexNote"):
+        w("")
+        w("> **Unfair run: %s**" % meta["indexNote"])
     for key, title in (("difficulty", "By difficulty"), ("set", "By session")):
         w("")
         w("## %s" % title)
@@ -339,6 +343,7 @@ def main():
     ap.add_argument("--gap", type=float, default=2.0, help="seconds between asks")
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--max-tokens", type=int, default=400)
+    ap.add_argument("--require-complete-index", action="store_true", help="exit with an error (after writing the run) when the phone's search index is not complete")
     a = ap.parse_args()
 
     ids = set(filter(None, a.ids.split(",")))
@@ -381,6 +386,8 @@ def main():
                             open(os.path.join(out_dir, name), "wb").write(data)
                             r["thumbs"][f] = name
             meta["phoneVersion"] = meta.get("phoneVersion") or r.get("appVersion")
+            if isinstance(r.get("index"), dict):
+                meta["index"] = r["index"]  # the last answer's view of the search index
             results.append(r)
             print("[%d/%d] %s %s" % (i, len(questions), q["id"], r.get("status")), file=sys.stderr)
             time.sleep(a.gap)
@@ -394,6 +401,13 @@ def main():
     with open(os.path.join(out_dir, "results.jsonl"), "w") as f:
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    idx = meta.get("index")
+    if idx is not None and not idx.get("complete"):
+        meta["indexNote"] = ("the search index was not complete (text %s/%s, photos %s/%s): memories not yet embedded are invisible to semantic search; "
+                             "put the phone on a charger and rerun" % (idx.get("textEmbedded"), idx.get("textEligible"), idx.get("imagesEmbedded"), idx.get("imagesEligible")))
+        print("WARNING: " + meta["indexNote"], file=sys.stderr)
+        if a.require_complete_index:
+            raise SystemExit("index incomplete and --require-complete-index set: results kept in %s but not scored as a baseline" % out_dir)
     json.dump(meta, open(os.path.join(out_dir, "meta.json"), "w"), indent=1)
     baseline = None
     if a.baseline:

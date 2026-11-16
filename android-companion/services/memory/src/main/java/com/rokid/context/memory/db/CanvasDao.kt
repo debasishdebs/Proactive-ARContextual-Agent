@@ -142,7 +142,8 @@ abstract class CanvasDao {
 
     // --- A/B groups, asks, token means ---
     @Query("SELECT * FROM canvas_run WHERE abGroup = :group ORDER BY startedAt, runId") abstract suspend fun runsInGroup(group: String): List<CanvasRunEntity>
-    @Query("SELECT * FROM ask ORDER BY ts DESC LIMIT :limit") abstract suspend fun recentAsks(limit: Int): List<AskEntity>
+    /** The user's recent asks: a developer eval ask (source `canvas_eval`) is not listed, so it never pushes the user's own asks out of the page. */
+    @Query("SELECT * FROM ask WHERE source != 'canvas_eval' ORDER BY ts DESC LIMIT :limit") abstract suspend fun recentAsks(limit: Int): List<AskEntity>
     @Query("SELECT * FROM ask WHERE id = :id") abstract suspend fun ask(id: String): AskEntity?
     /** How many of [ids] are memories that still exist and are not INVALIDATED (the Forget fence of a replay, S35). */
     open suspend fun liveMemoryCount(ids: Collection<String>): Int = ids.toList().chunked(CHUNK).sumOf { liveMemories(it) }

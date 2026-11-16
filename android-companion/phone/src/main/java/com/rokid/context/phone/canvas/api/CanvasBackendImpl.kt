@@ -780,7 +780,17 @@ class CanvasBackendImpl(
         }
         val now = snap.ask
         val gonePhotos = snap.gonePhotos
+        // How much of the search index exists (a half-built index makes a run unfair: the eval tool flags it). Read after the answer, outside the fence: counts only.
+        val space = runCatching { graph.spaces.queryable() }.getOrNull()
+        val textCov = space?.let { runCatching { graph.spaces.coverage(it.id) }.getOrNull() }
+        val imageCov = space?.let { runCatching { graph.spaces.imageCoverage(it.id) }.getOrNull() }
         return buildJsonObject {
+            put("index", buildJsonObject {
+                put("active", space != null)
+                put("textEmbedded", textCov?.have); put("textEligible", textCov?.eligible)
+                put("imagesEmbedded", imageCov?.have); put("imagesEligible", imageCov?.eligible)
+                put("complete", textCov?.complete == true && imageCov?.complete != false)
+            })
             put("askId", now.id); put("status", "answered"); put("answer", now.answer); put("notice", answered.notice)
             put("mode", view?.mode ?: "UNKNOWN"); put("fallback", view?.fallback ?: false); put("scores", if (view != null) "rerun" else "none")
             put("latencyMs", latency); put("appVersion", version)

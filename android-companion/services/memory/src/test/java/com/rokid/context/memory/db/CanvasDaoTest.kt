@@ -265,6 +265,13 @@ class CanvasDaoTest {
         assertEquals(listOf("a3", "a2"), dao.recentAsks(2).map { it.id })
     }
 
+    @Test fun recentAsksLeaveOutEvalAsks() = runBlocking {
+        db.askDao().upsert(AskEntity("a1", 1, "q", "a", "[]", null, "phone_typed", false))
+        db.askDao().upsert(AskEntity("e1", 2, "q", "a", "[]", null, "canvas_eval", false))
+        db.askDao().upsert(AskEntity("a3", 3, "q", "a", "[]", null, "glasses_voice", false))
+        assertEquals(listOf("a3", "a1"), dao.recentAsks(10).map { it.id })
+    }
+
     // ---- S24 fences ----
     @Test fun fencedTraceCommitsWhenFenceHolds() = runBlocking {
         assertTrue(dao.commitTracesFenced(listOf(trace(1, "f1")), 7, setOf("f1")) { 7 })
