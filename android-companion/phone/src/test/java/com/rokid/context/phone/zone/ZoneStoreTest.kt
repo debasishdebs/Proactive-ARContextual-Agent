@@ -42,7 +42,7 @@ class ZoneStoreTest {
         val name = "zs_seqfail_${System.nanoTime()}"; val p = FailingPrefs(ctx.getSharedPreferences(name, 0)); val s = ZoneStore(p)
         assertEquals(1L, s.nextSeq()); p.fail = true
         try { s.nextSeq(); org.junit.Assert.fail("must throw") } catch (e: IllegalStateException) { /* expected */ }
-        p.fail = false; assertEquals("the number that failed is issued only once it is durable", 2L, s.nextSeq())
+        p.fail = false; assertEquals("the failed number (2) stays in the memory of the preferences, as on Android, and is never issued", 3L, s.nextSeq())
     }
 
     @Test fun theRecordCounterIsDurableAndNeverRepeats() {
@@ -64,7 +64,8 @@ class FailingPrefs(private val d: android.content.SharedPreferences, @Volatile v
         return object : android.content.SharedPreferences.Editor by e {
             override fun putString(k: String?, v: String?) = apply { e.putString(k, v) }
             override fun putLong(k: String?, v: Long) = apply { e.putLong(k, v) }
-            override fun commit(): Boolean = if (fail) false else e.commit()
+            /** Like Android: the value reaches the in-memory map even when the disk write fails. */
+            override fun commit(): Boolean { val ok = e.commit(); return ok && !fail }
         }
     }
 }

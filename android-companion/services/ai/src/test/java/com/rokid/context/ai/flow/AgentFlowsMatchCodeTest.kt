@@ -87,6 +87,8 @@ class AgentFlowsMatchCodeTest {
 
     @Test fun answerProposesOnlyWithProposedAction() {
         val answer = src("orchestration/AnswerService.kt")
-        anchor("ask answer->propose \"if proposedAction\"", "PromptKey.ANSWER" in answer && "out.proposedAction?.let" in answer)
+        anchor("ask answer->propose \"if proposedAction\"", "PromptKey.ANSWER" in answer && Regex("""out\.proposedAction\?\.(takeIf \{[^}]*\}\?\.)?let""").containsMatchIn(answer))
+        // ask/eval r1: an eval ask still proposes only with a proposedAction, and never reaches the intake (the filter sits between the two)
+        anchor("ask answer->propose (eval asks skip intake)", "takeIf { source != AskActions.EVAL_SOURCE }" in answer || "out.proposedAction?.let" in answer)
     }
 }
