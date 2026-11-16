@@ -265,7 +265,7 @@ object HubGraph {
                 periodMs = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)::tickMs,
                 paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) },
                 hubNeeded = { ContextHubService.appInForeground() || BackgroundInputs.hubNeeded(app) }, stopHub = { ContextHubService.stop(app) },
-                hubStore = PrefsHubRestartStore { app.getSharedPreferences("hub_restart", android.content.Context.MODE_PRIVATE) },
+                hubStore = PrefsHubRestartStore { app.getSharedPreferences(AutoStopWake.HUB_RESTART_PREFS, android.content.Context.MODE_PRIVATE) },
                 executor = Dispatchers.IO.asExecutor(), // the ladder actor commits on IO, never on the loop's main thread
             ).also { watchdogRef.set(it) }.start(scope)
             // AutoStop (user ruling 2026-11-07): the hub stops by itself after the glasses were off-head or disconnected for N minutes; a woken hub (battery exemption) looks for them first.

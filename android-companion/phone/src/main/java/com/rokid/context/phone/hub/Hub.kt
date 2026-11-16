@@ -122,7 +122,7 @@ class Hub(
 
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
-        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> com.rokid.context.core.log.PcLog.i(GlassesRelauncher.TAG, m) }, standDown = standDown, store = relaunchStore)
+        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> com.rokid.context.core.log.PcLog.i(GlassesRelauncher.TAG, m) }, standDown = standDown, store = relaunchStore, io = io)
     }
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state
@@ -152,7 +152,8 @@ class Hub(
 
     val started: Boolean get() = jobs.isNotEmpty()
 
-    fun start() {
+    /** [recover] = the service was started by the lost-hub recovery: its automatic connect goes through the call guard and the hourly cap ([GlassesRelauncher.connectAfterRecovery]). */
+    fun start(recover: Boolean = false) {
         if (started) return
         ctxStart()
         jobs = listOf(
@@ -182,7 +183,7 @@ class Hub(
             set { it.copy(closedByUser = true) }
             link.watchForReopen() // N4: the wearer's own reopen must still be noticed
         }
-        else if (linkAllowed()) link.connectOnce()
+        else if (linkAllowed()) { val r = relauncher; if (recover && r != null) r.connectAfterRecovery() else link.connectOnce() }
         else PcLog.i(TAG, "glasses link off (setting off or not paired): not connecting")
     }
 

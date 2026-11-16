@@ -243,9 +243,14 @@ object WatchdogLadder {
 
     sealed interface Effect { object PersistFailedLog : Effect }
 
-    private fun startAllowed(s: State, t: Long): Boolean {
-        val d = t - s.saved.lastStartAtMs
-        return s.saved.backoff.due(t) && (d < 0 || d >= GlassesWatchdog.MIN_HUB_START_MS) // a clock set back must not block for ever
+    private fun startAllowed(s: State, t: Long): Boolean = startWaitMs(s.saved, t) == 0L
+
+    /** Pure: how long until a hub start attempt is allowed (0 = now): the back-off deadline and the minimum interval since the last start. A clock set back never blocks for ever. */
+    fun startWaitMs(saved: HubRestartSnapshot, t: Long): Long {
+        val rung = BackgroundPolicy.remainingMs(t, saved.backoff.nextAtMs, BackgroundPolicy.BACKOFF_MS.last())
+        val d = t - saved.lastStartAtMs
+        val gap = if (d < 0 || d >= GlassesWatchdog.MIN_HUB_START_MS) 0L else GlassesWatchdog.MIN_HUB_START_MS - d
+        return maxOf(rung, gap)
     }
 
     fun reduce(s: State, e: Event, now: Long): Transition<State, Event, Effect> = when (e) {
@@ -285,4 +290,26 @@ class InMemoryHubRestartStore(initial: HubRestartSnapshot = HubRestartSnapshot()
 class PrefsHubRestartStore(private val prefs: () -> android.content.SharedPreferences) : HubRestartStore {
     override fun load() = prefs().let { HubRestartSnapshot(BackgroundPolicy.Backoff(it.getInt("step", 0), it.getLong("next_at", 0L)), it.getLong("last_start", 0L)) }
     override fun save(s: HubRestartSnapshot): Boolean = prefs().edit().putInt("step", s.backoff.step).putLong("next_at", s.backoff.nextAtMs).putLong("last_start", s.lastStartAtMs).commit()
+}
+
+/**
+ * Review hub-wp2 r1 P2: the lost-hub recovery shares the watchdog's persisted ladder ([HubRestartStore]: the 60 s minimum between starts, then 5/15/30/60 min) with its
+ * last-start time. [dueInMs] is read-only (an input of the pure reducer); [record] writes the attempt BEFORE the start (blocking: call it on the AutoStop actor's IO context).
+ * [callIdle] is the existing call guard (mode, telephony and the 15 s settle): a recovery never connects or launches during a call.
+ */
+interface HubStartGate {
+    fun dueInMs(nowMs: Long): Long
+    fun record(nowMs: Long)
+    fun callIdle(): Boolean
+
+    object None : HubStartGate { override fun dueInMs(nowMs: Long) = 0L; override fun record(nowMs: Long) {}; override fun callIdle() = true }
+}
+
+class LadderHubStartGate(private val store: HubRestartStore, private val call: () -> Boolean) : HubStartGate {
+    override fun dueInMs(nowMs: Long) = WatchdogLadder.startWaitMs(store.load(), nowMs)
+    override fun record(nowMs: Long) {
+        val s = store.load()
+        store.save(HubRestartSnapshot(BackgroundPolicy.attempted(s.backoff, nowMs), nowMs))
+    }
+    override fun callIdle() = call()
 }

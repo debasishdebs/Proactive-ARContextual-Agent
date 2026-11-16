@@ -107,6 +107,11 @@ class AutoStopEngine(
     onStep: (AutoStopEvent, Long, AutoStopState) -> Unit = { _, _, _ -> },
     /** Delayed persistence retries (null = the engine's own timer thread). */
     schedule: ((Long, Runnable) -> Unit)? = null,
+    /** A lost hub's recovery start (null = [startWake]); it must start the service with the recovery mark so the glasses connect only through the guards. */
+    private val startRecover: (() -> Boolean)? = null,
+    /** The recovery's inputs and record: the persisted watchdog ladder and the call guard ([HubStartGate]). */
+    private val hubStart: HubStartGate = HubStartGate.None,
+    private val clock: () -> Long = now,
 ) {
     /** The live hub's side: its inputs, its effects. */
     class HubPort(
@@ -149,7 +154,7 @@ class AutoStopEngine(
     private fun prepare(@Suppress("UNUSED_PARAMETER") s: AutoStopState, e: AutoStopEvent): AutoStopEvent = when (e) {
         is AutoStopEvent.Evaluate -> if (e.wake != null && e.hub != null) e else AutoStopEvent.Evaluate(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
         is AutoStopEvent.ConfirmStop -> if (e.wake != null && e.hub != null) e else AutoStopEvent.ConfirmStop(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
-        is AutoStopEvent.ProcessStarted -> if (e.wake != null) e else e.copy(wake = wakeNow())
+        is AutoStopEvent.ProcessStarted -> if (e.wake != null) e else e.copy(wake = wakeNow()?.let { it.copy(callIdle = hubStart.callIdle(), hubStartInMs = hubStart.dueInMs(clock())) })
         else -> e
     }
 
@@ -164,7 +169,8 @@ class AutoStopEngine(
                 p?.stopHub?.invoke()
             }
             is AutoStopEffect.StartWake -> {
-                val issued = runCatching { if (f.controller && p != null) p.wakeHub() else startWake() }.getOrDefault(false)
+                if (f.recover) hubStart.record(clock()) // the ladder's attempt is durable BEFORE the start
+                val issued = runCatching { if (f.controller && p != null) p.wakeHub() else if (f.recover) (startRecover ?: startWake)() else startWake() }.getOrDefault(false)
                 return AutoStopEvent.WakeResult(issued, runCatching { wakeNow()?.serviceRunning }.getOrNull() == true)
             }
             is AutoStopEffect.ScheduleWake -> if (f.controller && p != null) p.scheduleWake(f.delayMs) else scheduleWake(f.delayMs)

@@ -84,7 +84,7 @@ class ContextHubService : Service() {
             AutoStopWake.engine(this).submit(AutoStopEvent.HubForeground) // a wake in progress is complete only now (Codex review 5)
             val nm = getSystemService(NotificationManager::class.java)
             val hub = HubGraph.get(this)
-            hub.start()
+            hub.start(recover = intent?.getBooleanExtra(EXTRA_RECOVER, false) == true) // a lost hub's recovery connects the glasses only through the call guard and the hourly cap
             com.rokid.context.work.OrchestrationScheduler(this).ensureBackgroundWork() // the link-up path: retention and the Moment cadence run whatever the pipeline flag says (unique, KEEP)
             com.rokid.context.work.frames.KeyframeGraph.get(this).start() // the hub service owns the keyframe pipeline while it runs
             watcher = CoroutineScope(Dispatchers.Main.immediate).launch {
@@ -175,6 +175,8 @@ class ContextHubService : Service() {
         @Volatile private var expectedStop = false
         /** A background start by the wake path ([BackgroundPolicy.wakeDue], needs the battery exemption): starts although [hubNeededNow] says no, but is not a user start. */
         private const val EXTRA_WAKE = "com.rokid.context.hub.WAKE"
+        /** The start is a lost hub's recovery ([AutoStopEffect.StartWake.recover]): implies [EXTRA_WAKE]; the glasses connect only through the relaunch guards. */
+        private const val EXTRA_RECOVER = "com.rokid.context.hub.RECOVER"
         @Volatile private var lastText = READY
         @Volatile private var lastPaused = false
         /** Notification action intents (handled in [onStartCommand], on the pause control's IO). */
@@ -304,15 +306,15 @@ class ContextHubService : Service() {
         /**
          * Idempotent: called on every activity resume ([resume] numbers it) and on Reconnect, so always from the front. Nothing starts when nothing needs
          * the hub (see [BackgroundPolicy]) unless [force] (a user start: a tapped Reconnect or the app opened; it ends a manual stop and an auto stop) or [wake]
-         * (the AutoStop wake path: only with the battery exemption, never a user start). True = a start was issued (Android 12+ may still refuse a background one).
+         * (the AutoStop wake path: only with the battery exemption, never a user start); [recover] = a lost hub's recovery (a wake whose glasses connect is guarded). True = a start was issued (Android 12+ may still refuse a background one).
          */
-        fun ensureRunning(context: Context, resume: Long? = null, force: Boolean = false, wake: Boolean = false): Boolean {
+        fun ensureRunning(context: Context, resume: Long? = null, force: Boolean = false, wake: Boolean = false, recover: Boolean = false): Boolean {
             if (force) AutoStopWake.engine(context).submit(AutoStopEvent.UserStarted) // an event: committed on the AutoStop actor's IO context
             if (!force && !wake && !hubNeededNow(context)) return false
             val granted = Build.VERSION.SDK_INT < 31 ||
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
             if (!shouldStart(running, canStart(Build.VERSION.SDK_INT, granted))) return false
-            val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true).putExtra(EXTRA_FORCE, force).putExtra(EXTRA_WAKE, wake)
+            val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true).putExtra(EXTRA_FORCE, force).putExtra(EXTRA_WAKE, wake).putExtra(EXTRA_RECOVER, recover)
             resume?.let { start.putExtra(EXTRA_RESUME, it) }
             return runCatching { context.startForegroundService(start) }
                 .onFailure { PcLog.w(TAG, "start refused: ${it.javaClass.simpleName}") }.isSuccess
