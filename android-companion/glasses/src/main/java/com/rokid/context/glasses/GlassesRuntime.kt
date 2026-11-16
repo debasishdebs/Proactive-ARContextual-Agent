@@ -241,7 +241,6 @@ class GlassesRuntime private constructor(private val app: Context) {
                     .map { ExitRecord(it.reason, it.status, it.importance, it.pss, it.rss, it.timestamp) }
             }.getOrDefault(emptyList())
         },
-        unverifiedWhy = { f -> ExitClassifier.unverifiedWhy(f) { pid -> ProcCaller.read(pid, f.timestampMs) } },
         lastExit = {
             if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) null
             else runCatching {
@@ -250,8 +249,9 @@ class GlassesRuntime private constructor(private val app: Context) {
                     ?.let { ExitFacts(it.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED, it.description, it.timestamp) }
             }.getOrNull()
         },
-        classify = { f, lastAlive, now -> ExitClassifier.classify(f, lastAlive, now) { pid -> ProcCaller.read(pid, f.timestampMs) } },
+        classify = { f, lastAlive, now -> ExitClassifier.classifyWithWhy(f, lastAlive, now) { pid -> ProcCaller.read(pid, f.timestampMs) } },
         log = { DiagLog.i(CAPTURE_TAG, it) },
+        background = { work -> ioScope.launch { work() } },
     )
     /** Fix wave I: when a start goes straight to icon mode (after a kill, or on the phone's automatic reopen). */
     val startGate = AutoStartGate(takePending = { restarts.takeStartMinimised() }, uptimeMs = { android.os.SystemClock.uptimeMillis() })

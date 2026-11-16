@@ -242,4 +242,30 @@ class ContextHubServiceTest {
 
     @Test fun aNonStickyBackgroundStartNobodyNeedsLogsItToo() =
         assertEquals(listOf("start_refused branch=not_needed sticky=false"), startRefusals(android.content.Intent()))
+
+    /** v1.1 T2 review: the hub is needed, but the foreground entry is refused: one `foreground_refused` line, not sticky, and no hub is built. */
+    private fun refusedForeground(intent: android.content.Intent?): Pair<List<String>, Int> {
+        val seen = java.util.Collections.synchronizedList(mutableListOf<String>())
+        com.rokid.context.core.log.PcLog.testOnlyResetNeverCallFromProduction()
+        com.rokid.context.core.log.PcLog.install(object : com.rokid.context.core.log.LogSink {
+            override fun emit(line: com.rokid.context.core.log.Line, route: com.rokid.context.core.log.Route) { if (line.msg.startsWith("start_refused")) seen += line.msg }
+        })
+        val savedNeeded = ContextHubService.hubNeededNow; val savedStarter = ContextHubService.foregroundStarter
+        ContextHubService.hubNeededNow = { true }
+        ContextHubService.foregroundStarter = { _, _, _, _ -> throw SecurityException("refused") }
+        HubGraph.resetForTests(null)
+        val result: Int
+        try {
+            result = Robolectric.buildService(ContextHubService::class.java).create().get().onStartCommand(intent, 0, 1)
+            assertFalse("a refused foreground entry builds no hub", HubGraph.isBuilt)
+        } finally { ContextHubService.hubNeededNow = savedNeeded; ContextHubService.foregroundStarter = savedStarter; com.rokid.context.core.log.PcLog.testOnlyResetNeverCallFromProduction() }
+        return seen.toList() to result
+    }
+
+    @Test fun aNeededHubWhoseForegroundEntryFailsLogsOneRefusalAndIsNotSticky() {
+        val (lines, result) = refusedForeground(null)
+        assertEquals(listOf("start_refused branch=foreground_refused sticky=true"), lines)
+        assertEquals(android.app.Service.START_NOT_STICKY, result)
+        assertEquals(listOf("start_refused branch=foreground_refused sticky=false"), refusedForeground(android.content.Intent()).first)
+    }
 }

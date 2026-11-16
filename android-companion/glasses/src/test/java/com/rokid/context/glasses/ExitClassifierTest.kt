@@ -50,4 +50,15 @@ class ExitClassifierTest {
         assertEquals(UnverifiedWhy("pid_reused", 4242), why(facts()) { CallerInfo("com.rokid.x", startedBeforeExit = false) })
 
     @Test fun aVerifiedCallerHasNoSubCause() = assertNull(why(facts()) { CallerInfo("com.android.shell", true) })
+
+    /** v1.1 T8 review (P3): the kind and the sub-cause come from one lookup, so a lookup that changes between calls cannot split them. */
+    @Test fun kindAndSubCauseShareOneCallerSnapshot() {
+        var calls = 0
+        val c = ExitClassifier.classifyWithWhy(facts(), lastAlive, now) { calls++; if (calls == 1) null else CallerInfo("com.rokid.x", true) }
+        assertEquals(Classified(ExitKind.UNKNOWN, UnverifiedWhy("proc_hidden", 4242)), c)
+        assertEquals(1, calls)
+        calls = 0
+        val ok = ExitClassifier.classifyWithWhy(facts(), lastAlive, now) { calls++; if (calls == 1) CallerInfo("com.rokid.x", true) else null }
+        assertEquals(Classified(ExitKind.ROKID, null), ok)
+    }
 }

@@ -130,7 +130,7 @@ class ContextHubService : Service() {
     /** startForeground with [wanted], falling back to connectedDevice alone if the mic type is refused. */
     private fun enterForeground(text: String, wanted: Int): Boolean {
         val entered = enterWithFallback(wanted) { types ->
-            runCatching { ServiceCompat.startForeground(this, ID, notification(text, lastPaused), types) }
+            runCatching { foregroundStarter(this, ID, notification(text, lastPaused), types) }
                 .onFailure { PcLog.w(TAG, "foreground ($types) refused: ${it.javaClass.simpleName}") }.getOrThrow()
         }
         micRetry.entered(tried = wanted, entered = entered)
@@ -294,6 +294,9 @@ class ContextHubService : Service() {
 
         /** One line for the legacy Live screen (Task 12 shows it in place of the RFCOMM bridge message). */
         fun statusLine(): String = lastText
+
+        /** startForeground; a seam for tests (Robolectric never refuses it). */
+        @Volatile internal var foregroundStarter: (android.app.Service, Int, android.app.Notification, Int) -> Unit = { svc, id, n, types -> ServiceCompat.startForeground(svc, id, n, types) }
 
         /** Whether anything needs the hub foreground service now ([BackgroundPolicy.hubNeeded]); a seam for tests. */
         @Volatile internal var hubNeededNow: (Context) -> Boolean = { BackgroundInputs.hubNeeded(it) }
