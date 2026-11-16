@@ -91,9 +91,9 @@ class HudController(
     @Volatile var onMarkPhotoRequest: (com.rokid.context.core.model.MarkPhotoRequest) -> Unit = {}
     /** The phone's session start (phone clock) as its last accepted message named it; 0 = none yet. A photo request of another session is refused. */
     @Volatile private var phoneSessionStartMs = 0L
-    /** Codex wear r2 P1-2: the newest `pc_wear` order applied in the current phone session, and the newest phone session start that was closed (its late messages are dropped). */
+    /** Codex wear r2/r3: the phone session the last applied `pc_wear` named, and its newest send order (a lower one in the same session is a late message and is dropped). Under [ctxLock]. */
+    private var lastWearSessionMs = 0L
     private var lastWearSeq = 0L
-    private var closedPhoneSessionMs = 0L
     /** The session is open and the phone is talking (session open, or a hello request on an open session): re-send unacked marks. */
     @Volatile var onMarksDue: () -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
@@ -256,10 +256,11 @@ class HudController(
     /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
     private fun onWearMessage(m: WearMessage) {
         if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_wear ignored"); return }
-        // Codex wear r2 P1-2: one lock with the session close; a message of an older or already closed phone session, or older than one applied, is dropped
+        // Codex wear r3: the order is kept per WEAR identity (the session the last applied pc_wear named), not through [phoneSessionStartMs] that every channel overwrites, and a
+        // closed session fences nothing: a reconnect or a silence recovery on the same phone session must keep working. A message of another session starts the numbering again;
+        // the worst a late message of an older session can do is offer a stale check, and the phone only honours an estimate while ITS current read of the check is OFF.
         synchronized(ctxLock) {
-            if (m.sessionStartMs != 0L && (m.sessionStartMs <= closedPhoneSessionMs || (phoneSessionStartMs != 0L && m.sessionStartMs < phoneSessionStartMs))) { PcLog.i(TAG, "pc_wear of an old session ignored"); return }
-            if (m.sessionStartMs != phoneSessionStartMs) lastWearSeq = 0L // a newer phone session numbers from the start again
+            if (m.sessionStartMs != lastWearSessionMs) { lastWearSessionMs = m.sessionStartMs; lastWearSeq = 0L }
             else if (m.seq != 0L && m.seq < lastWearSeq) { PcLog.i(TAG, "older pc_wear ignored"); return }
             if (m.seq != 0L) lastWearSeq = m.seq
             phoneSessionStartMs = m.sessionStartMs
@@ -351,7 +352,7 @@ class HudController(
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
         synchronized(ctxLock) {
-            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); closedPhoneSessionMs = maxOf(closedPhoneSessionMs, phoneSessionStartMs); lastWearSeq = 0L; phoneSessionStartMs = 0L; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
+            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); lastWearSessionMs = 0L; lastWearSeq = 0L; phoneSessionStartMs = 0L; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
         }
         dropAnswerOnClose()
         refreshConnection()
