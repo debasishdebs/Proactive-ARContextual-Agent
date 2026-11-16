@@ -30,6 +30,8 @@ import kotlin.math.roundToInt
 /** What the map screen needs of the zone engine. The UI never writes pauses: it only edits zones through these calls and reads the engine's own judgement. */
 interface ZoneEditor {
     val snapshot: StateFlow<ZoneSnapshot>
+    /** The saved zones, read from the store: shown while the hub has not started the engine (the snapshot is empty then), so a saved zone never looks absent. */
+    fun storedZones(): List<PauseZone>
     /** The newest fix, in memory only (the "you are here" dot); null when none. */
     fun lastFix(): ZoneFix?
     suspend fun upsert(zone: PauseZone): ZoneChange
@@ -40,6 +42,7 @@ interface ZoneEditor {
 
 class ControllerZoneEditor(private val c: ZoneController) : ZoneEditor {
     override val snapshot: StateFlow<ZoneSnapshot> get() = c.snapshot
+    override fun storedZones(): List<PauseZone> = c.zones()
     override fun lastFix(): ZoneFix? = c.lastFix()
     override suspend fun upsert(zone: PauseZone) = c.upsert(zone)
     override suspend fun setEnabled(id: String, enabled: Boolean) = c.setEnabled(id, enabled)
@@ -55,12 +58,14 @@ data class ZoneChip(val text: String, val level: ChipLevel)
 object ZoneWords {
     const val DENIED_BANNER = "Location is not allowed. While any pause zone is on, capture is PAUSED, because the app cannot tell whether you are inside one. Allow location to let capture run outside the zones."
     const val PROTECTED_BANNER = "The saved zones cannot be read, so capture is paused everywhere until they are restored. Nothing can be changed here meanwhile."
+    const val NOT_MONITORED = "Not monitored (hub stopped)"
     const val PRESET_LABEL = "Add Jarawa reserve preset (UNVERIFIED, approximate)"
     const val PRESET_NOTE = "The Jarawa box was typed from memory of the road, not measured. Check it on the map and adjust it before relying on it."
 
     /** Chip text for a zone: the engine's reading in plain words, with the fail-closed reason when capture is held without a fix saying so. */
-    fun chip(zone: PauseZone, status: ZoneStatus?): ZoneChip {
+    fun chip(zone: PauseZone, status: ZoneStatus?, monitoring: Boolean = true): ZoneChip {
         if (!zone.enabled) return ZoneChip("Off: not checked, this zone does not pause capture", ChipLevel.OFF)
+        if (!monitoring) return ZoneChip(NOT_MONITORED, ChipLevel.OFF)
         if (status == null) return ZoneChip("Not judged yet: counted as inside, capture is held until the first location check", ChipLevel.PAUSED)
         return when (status.state) {
             ZoneState.OUTSIDE -> ZoneChip("Outside" + away(status), ChipLevel.CLEAR)
@@ -178,14 +183,15 @@ class ZonesViewModel(
     private val local = MutableStateFlow(Local())
 
     val state: StateFlow<ZonesUiState> = combine(editor.snapshot, local) { snap, l ->
-        val rows = snap.zones.map { z ->
+        // Before the hub starts the engine its snapshot is empty: show the saved zones, unmonitored, never an empty list.
+        val rows = (if (snap.monitoring) snap.zones else editor.storedZones()).map { z ->
             val st = snap.evaluation.zones.firstOrNull { it.zoneId == z.id }
-            ZoneRowUi(z, ZoneWords.chip(z, st), z.enabled && (st == null || st.state == ZoneState.INSIDE))
+            ZoneRowUi(z, ZoneWords.chip(z, st, snap.monitoring), snap.monitoring && z.enabled && (st == null || st.state == ZoneState.INSIDE))
         }
         val fix = editor.lastFix()?.takeIf { elapsed() - it.timeMs <= ZoneEvaluator.STALE_MS }
         ZonesUiState(
             rows, snap.protectedMode, l.draft, l.draftError, l.message, l.messageIsError, l.granted, l.request, l.drawing,
-            fix?.let { LatLon(it.lat, it.lon) }, snap.zones.none { it.id == ZonePresets.JARAWA_ID }, l.pendingDelete,
+            fix?.let { LatLon(it.lat, it.lon) }, rows.none { it.zone.id == ZonePresets.JARAWA_ID }, l.pendingDelete,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ZonesUiState())
 
