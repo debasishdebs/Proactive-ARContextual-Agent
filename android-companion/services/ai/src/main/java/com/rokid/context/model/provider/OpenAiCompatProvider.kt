@@ -35,6 +35,8 @@ class OpenAiCompatProvider(
     private val apiVersion: String = "2024-10-21",
     private val style: ApiStyle = ApiStyle.AZURE,
     private val client: OkHttpClient = Http.modelClient(),
+    /** Test seam: runs after the payload is built, just before fence admission. */
+    internal val beforeAdmit: () -> Unit = {},
 ) : ModelProvider {
     enum class ApiStyle { AZURE, OPENAI }
 
@@ -73,7 +75,7 @@ class OpenAiCompatProvider(
             .addHeader("Content-Type", "application/json")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
             .build()
-        client.newCall(http).execute().use { response ->
+        executeFenced(client, http, beforeAdmit).use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw ProviderHttpException(response.code, "Azure OpenAI", body)
             val json = Json.parseToJsonElement(body).jsonObject

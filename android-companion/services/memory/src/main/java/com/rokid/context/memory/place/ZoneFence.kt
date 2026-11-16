@@ -29,6 +29,7 @@ class ZoneFence(
     private var epochValue = 0L
     private var heldValue = false
     private var job: CompletableJob = Job()
+    private val closeHooks = LinkedHashSet<() -> Unit>()
 
     val held: Boolean get() = synchronized(lock) { heldValue }
     fun epoch(): Long = synchronized(lock) { epochValue }
@@ -49,6 +50,18 @@ class ZoneFence(
     /** Runs [block] only if [ticket] is still open, under the lock; null = not run. [block] must not suspend. */
     fun <T : Any> act(ticket: ZoneTicket, block: () -> T): T? = synchronized(lock) { if (ticket.fence === this && openLocked(ticket.epoch)) block() else null }
 
+    /**
+     * Registers [hook] to run (synchronously, on the closing thread, outside the lock) when the fence closes, but only if [ticket] is still open: the check and the registration are one step
+     * under the lock, so a close either precedes it (throws [ZoneFenced], nothing registered) or sees the hook. Close the returned handle when the dispatch is over.
+     */
+    fun onClose(ticket: ZoneTicket, hook: () -> Unit): AutoCloseable {
+        synchronized(lock) {
+            if (ticket.fence !== this || !openLocked(ticket.epoch)) throw ZoneFenced()
+            closeHooks.add(hook)
+        }
+        return AutoCloseable { synchronized(lock) { closeHooks.remove(hook) } }
+    }
+
     /** A zone is approached, entered, recorded or unreadable: nothing runs until [release], and everything in flight is cancelled now. */
     fun hold() { close(true) }
 
@@ -60,12 +73,15 @@ class ZoneFence(
 
     private fun close(hold: Boolean) {
         val old: CompletableJob
+        val hooks: List<() -> Unit>
         synchronized(lock) {
+            hooks = closeHooks.toList(); closeHooks.clear()
             if (hold) heldValue = true
             epochValue++
             old = job
             job = Job()
         }
+        hooks.forEach { runCatching(it) }
         old.cancel(ZoneFenced())
     }
 }
@@ -75,6 +91,9 @@ class ZoneTicket(val fence: ZoneFence, val epoch: Long) : AbstractCoroutineConte
     companion object Key : CoroutineContext.Key<ZoneTicket>
 
     fun isOpen(): Boolean = fence.open(epoch)
+
+    /** [ZoneFence.onClose] for this ticket: the registration is the admission check. */
+    fun onClose(hook: () -> Unit): AutoCloseable = fence.onClose(this, hook)
 
     /** Throws [ZoneFenced] unless open. Call as the last step before a dispatch, with no suspension between the call and the action. */
     fun check() { if (!isOpen()) throw ZoneFenced() }

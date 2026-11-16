@@ -28,6 +28,8 @@ class OllamaProvider(
     private val baseUrl: String = EnvDefaults.ollamaBaseUrl,
     private val model: String = EnvDefaults.ollamaModel,
     private val client: OkHttpClient = Http.modelClient(150),
+    /** Test seam: runs after the payload is built, just before fence admission. */
+    internal val beforeAdmit: () -> Unit = {},
 ) : ModelProvider {
     override suspend fun generate(prompt: String): String = complete(ModelRequest(prompt)).text
 
@@ -51,7 +53,7 @@ class OllamaProvider(
             .addHeader("Content-Type", "application/json")
             .post(payload.toString().toRequestBody("application/json".toMediaType()))
             .build()
-        client.newCall(http).execute().use { response ->
+        executeFenced(client, http, beforeAdmit).use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw ProviderHttpException(response.code, "Ollama", body)
             val json = Json.parseToJsonElement(body).jsonObject
