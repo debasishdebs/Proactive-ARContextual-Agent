@@ -29,12 +29,12 @@ class RestartDiagnostics(
     private val log: (String) -> Unit,
     /** What the wearer last saw before this process started: [UiModeStore] full | icon | home. */
     private val uiMode: () -> String = { UiModeStore.HOME },
-    /** (exit, lastAliveMs, nowMs) -> its kind, or null when it is not a counted force-stop (see [ExitClassifier]). */
-    private val classify: (ExitFacts, Long, Long) -> ExitKind? = { f, _, _ -> if (f.userRequested) ExitKind.UNKNOWN else null },
+    /** (exit, lastAliveMs, nowMs) -> its kind and, for an unverified caller, why (ONE caller lookup for both), or null when it is not a counted force-stop (see [ExitClassifier]). */
+    private val classify: (ExitFacts, Long, Long) -> Classified? = { f, _, _ -> if (f.userRequested) Classified(ExitKind.UNKNOWN) else null },
     /** The last [EXIT_RECORDS] exit records of this package, newest first (v1.1 T8); empty = unavailable. */
     private val recentExits: () -> List<ExitRecord> = { emptyList() },
-    /** Why the newest force-stop's caller is unverified (v1.1 T8); only asked for forcestop_unverified. */
-    private val unverifiedWhy: (ExitFacts) -> UnverifiedWhy? = { null },
+    /** Runs the added diagnostics off the calling (main) thread (v1.1 T8 review); the default runs them inline. */
+    private val background: (() -> Unit) -> Unit = { it() },
 ) {
     /**
      * True after a restart that follows a death while the app was meant to be running (a heartbeat was stored, no update and
@@ -82,7 +82,8 @@ class RestartDiagnostics(
             exit != null && exit.timestampMs in (lastAlive + 1)..now -> ((now - exit.timestampMs) / 1_000L).toInt()
             else -> ((now - lastAlive).coerceAtLeast(0L) / 1_000L).toInt()
         }
-        val kind = if (lastAlive > 0L && installedAtMs() <= lastAlive && exit != null) classify(exit, lastAlive, now) else null
+        val classified = if (lastAlive > 0L && installedAtMs() <= lastAlive && exit != null) classify(exit, lastAlive, now) else null
+        val kind = classified?.kind
         val reason = when {
             lastAlive <= 0L -> "unknown"
             installedAtMs() > lastAlive -> "install"
@@ -102,9 +103,10 @@ class RestartDiagnostics(
         }
         e.apply()
         // Counts only (S20): never the exit description or a package name. v1.1 T8: for an unverified caller also the sub-cause and the pid NUMBER (no name), then one line of the last exit records.
-        val sub = if (reason == "forcestop_unverified" && exit != null) runCatching { unverifiedWhy(exit) }.getOrNull()?.let { " sub=${it.why}" + (it.pid?.let { p -> " pid=$p" } ?: "") }.orEmpty() else ""
+        val sub = if (reason == "forcestop_unverified") classified?.why?.let { " sub=${it.why}" + (it.pid?.let { p -> " pid=$p" } ?: "") }.orEmpty() else ""
         log("restart rokid=$closes unknown=$unverifiedCloses other=$otherCloses gap=$gap reason=$reason ui_mode=$mode$sub")
-        runCatching { recentExits().takeIf { it.isNotEmpty() }?.let { log(formatExits(it, now)) } }
+        // A second Binder call (and its `/proc` reads): never on the main thread.
+        background { runCatching { recentExits().takeIf { it.isNotEmpty() }?.let { log(formatExits(it, now)) } } }
         if (mode == UiModeStore.HOME) onExit() else heartbeat() // a start is alive too: a second start right away must not read the old gap again
     }
 

@@ -23,7 +23,7 @@ class RestartDiagnosticsTest {
 
     private fun diag(name: String) = RestartDiagnostics(
         ApplicationProvider.getApplicationContext<Context>().getSharedPreferences(name, Context.MODE_PRIVATE).also { it.edit().clear().commit() },
-        wallClock = { wall }, installedAtMs = { installedAt }, lastExit = ::exit, log = { logs += it }, classify = { f, _, _ -> if (f.userRequested) kind else null },
+        wallClock = { wall }, installedAtMs = { installedAt }, lastExit = ::exit, log = { logs += it }, classify = { f, _, _ -> if (f.userRequested) kind?.let { Classified(it) } else null },
     )
 
 
@@ -36,7 +36,7 @@ class RestartDiagnosticsTest {
 
     @Test fun forceStopAfterAHeartbeatCountsAsRokidClosingTheApp() {
         val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd2", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind?.let { Classified(it) } else null })
         mk().heartbeat()
         wall += 38_400; userRequestedExit = true
         val d = mk(); d.onProcessStart()
@@ -50,7 +50,7 @@ class RestartDiagnosticsTest {
 
     @Test fun anInstallAfterTheLastHeartbeatIsNotRokidClosingIt() {
         val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd3", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind?.let { Classified(it) } else null })
         mk().heartbeat()
         wall += 60_000; installedAt = wall - 10_000; userRequestedExit = true
         val d = mk(); d.onProcessStart()
@@ -60,7 +60,7 @@ class RestartDiagnosticsTest {
 
     @Test fun otherExitsAreUnknownAndLogsAreCountOnly() {
         val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd4", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind?.let { Classified(it) } else null })
         mk().heartbeat(); wall += 90_000; userRequestedExit = false
         mk().onProcessStart()
         assertEquals("restart rokid=0 unknown=0 other=0 gap=90 reason=unknown ui_mode=full", logs.last())
@@ -73,7 +73,7 @@ class RestartDiagnosticsTest {
     @Test fun aKillInIconOrFullModeRestartsMinimisedOnceButNeverFromHome() {
         val prefs = prefs("rd5")
         val modes = UiModeStore(prefs)
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { modes.get() }, classify = { f, _, _ -> if (f.userRequested) kind else null })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { modes.get() }, classify = { f, _, _ -> if (f.userRequested) kind?.let { Classified(it) } else null })
         modes.set(UiModeStore.ICON); mk().heartbeat(); wall += 20_000; userRequestedExit = true
         val d = mk(); d.onProcessStart()
         assertEquals("restart rokid=1 unknown=0 other=0 gap=20 reason=forcestop_rokid ui_mode=icon", logs.last())
@@ -93,7 +93,7 @@ class RestartDiagnosticsTest {
     @Test fun aDeliberateCloseLeavesNoGapAndNoCount() {
         val prefs = prefs("rd6")
         val modes = UiModeStore(prefs)
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { modes.get() }, classify = { f, _, _ -> if (f.userRequested) kind else null })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { modes.get() }, classify = { f, _, _ -> if (f.userRequested) kind?.let { Classified(it) } else null })
         modes.set(UiModeStore.FULL); mk().heartbeat()
         modes.set(UiModeStore.HOME); val d = mk(); d.onUserExit(wall); wall += 3_600_000
         d.heartbeat() // the runtime's timer keeps ticking after the exit
@@ -108,7 +108,7 @@ class RestartDiagnosticsTest {
 
     private fun cumulative(name: String): Pair<android.content.SharedPreferences, () -> RestartDiagnostics> {
         val prefs = prefs(name)
-        return prefs to { RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null }) }
+        return prefs to { RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind?.let { Classified(it) } else null }) }
     }
 
     @Test fun otherForceStopNotCountedAsRokid() {
@@ -180,15 +180,34 @@ class RestartDiagnosticsTest {
     @Test fun unverifiedStartLogsSubCauseAndTheLastExitRecordsWithoutDescriptions() {
         val sp = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd_t8", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
         fun mk() = RestartDiagnostics(
-            sp, wallClock = { wall }, lastExit = ::exit, log = { logs += it }, uiMode = { UiModeStore.FULL }, classify = { _, _, _ -> ExitKind.UNKNOWN },
+            sp, wallClock = { wall }, lastExit = ::exit, log = { logs += it }, uiMode = { UiModeStore.FULL }, classify = { _, _, _ -> Classified(ExitKind.UNKNOWN, UnverifiedWhy("proc_hidden", 4242)) },
             recentExits = { listOf(ExitRecord(10, 0, 100, 2048, 4096, wall - 5_000), ExitRecord(4, 0, 400, 0, 0, wall - 60_000)) },
-            unverifiedWhy = { UnverifiedWhy("proc_hidden", 4242) },
         )
         mk().heartbeat(); wall += 30_000; userRequestedExit = true; exitAt = wall - 5_000
         mk().onProcessStart()
         assertEquals("restart rokid=0 unknown=1 other=0 gap=5 reason=forcestop_unverified ui_mode=full sub=proc_hidden pid=4242", logs[logs.size - 2])
         assertEquals("exits n=2 [reason=10 status=0 imp=100 pssKB=2048 rssKB=4096 ago=5s] [reason=4 status=0 imp=400 pssKB=0 rssKB=0 ago=60s]", logs.last())
         assertEquals(false, logs.any { it.contains("4242 ") || it.contains("force stop") }, "no description text")
+    }
+
+    /** v1.1 T8 review (P2): the extra exit-record read is off the calling thread; a blocked collector must not block onProcessStart. */
+    @Test fun aBlockedExitRecordCollectorDoesNotBlockTheCaller() {
+        val sp = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd_t8b", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
+        val release = java.util.concurrent.CountDownLatch(1)
+        val done = java.util.concurrent.CountDownLatch(1)
+        val seen = java.util.Collections.synchronizedList(mutableListOf<String>())
+        fun mk() = RestartDiagnostics(
+            sp, wallClock = { wall }, lastExit = ::exit, log = { seen += it; if (it.startsWith("exits")) done.countDown() }, uiMode = { UiModeStore.FULL },
+            recentExits = { release.await(); listOf(ExitRecord(10, 0, 100, 1, 2, wall - 1_000)) },
+            background = { work -> Thread { work() }.also { it.isDaemon = true }.start() },
+        )
+        mk().heartbeat(); wall += 30_000
+        val started = System.nanoTime()
+        mk().onProcessStart() // returns although the collector is still blocked
+        assertEquals(true, (System.nanoTime() - started) < 2_000_000_000L)
+        assertEquals(true, seen.single().startsWith("restart "), "only the restart line so far")
+        release.countDown(); assertEquals(true, done.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(true, seen.last().startsWith("exits n=1"))
     }
 
     @Test fun formatters() {
