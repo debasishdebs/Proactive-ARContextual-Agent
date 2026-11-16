@@ -1,5 +1,7 @@
 package com.rokid.context.core.model
 
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -371,5 +373,36 @@ class ProtocolTest {
         assertEquals(h, assertIs<Decoded.Ok<MotionHint>>(Wire.decode<MotionHint>(Wire.encode(h))).value)
         val old = assertIs<Decoded.Ok<MotionHint>>(Wire.decode<MotionHint>("""{"state":"STILL","atMs":3,"v":1}""")).value
         assertEquals(-1f, old.stillFrac5m); assertEquals(MotionState.STILL, old.state)
+    }
+
+    // Place Guide PG3: the card rides an optional field of the existing nudge overlay; PROTOCOL_VERSION stays 1.
+    @Serializable private data class LegacyNudge(val text: String)
+
+    @Test fun placeCardRoundTrips() {
+        val o = Overlay.Nudge("Charminar: A monument.", PlaceCardInfo("Charminar", "A monument.", "Wikipedia \u00b7 fetched 12 Nov", nearby = false))
+        val f = frame(o)
+        assertEquals(1, PROTOCOL_VERSION)
+        assertEquals(f, assertIs<Decoded.Ok<StateFrame>>(Wire.decode<StateFrame>(Wire.encode(f))).value)
+        val n = Overlay.Nudge("Mecca Masjid: 40 m away", PlaceCardInfo("Mecca Masjid", "40 m away", "nearby \u00b7 not checked", nearby = true))
+        assertEquals(n, assertIs<Decoded.Ok<StateFrame>>(Wire.decode<StateFrame>(Wire.encode(frame(n)))).value.overlay)
+    }
+
+    @Test fun anOldGlassesBuildIgnoresThePlaceField() {
+        val json = Wire.encode<Overlay>(Overlay.Nudge("Charminar: A monument.", PlaceCardInfo("Charminar", "A monument.", "Wikipedia", false)))
+        assertTrue(json.contains("\"place\""))
+        // an older build's Nudge had only `text`: with ignoreUnknownKeys the extra field never breaks it and it shows the ordinary nudge text
+        assertEquals("Charminar: A monument.", Wire.json.decodeFromString<LegacyNudge>(json).text)
+    }
+
+    @Test fun anOldPhoneNudgeHasNoPlace() {
+        val n = assertIs<Overlay.Nudge>(Wire.json.decodeFromString<Overlay>("""{"kind":"nudge","text":"Leave in 10 min"}"""))
+        assertEquals(null, n.place); assertEquals(Overlay.Nudge("Leave in 10 min"), n)
+        assertFalse(Wire.encode<Overlay>(n).contains("place"))
+    }
+
+    @Test fun dismissPlaceRoundTripsAndAnUnknownCommandIsMalformedNotAThrow() {
+        val e = CommandEnvelope(command = Command.DismissPlace("Charminar"))
+        assertEquals(e, assertIs<Decoded.Ok<CommandEnvelope>>(Wire.decode<CommandEnvelope>(Wire.encode(e))).value)
+        assertIs<Decoded.Malformed>(Wire.decode<CommandEnvelope>("""{"v":1,"command":{"kind":"from_the_future"}}"""))
     }
 }

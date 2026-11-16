@@ -1,7 +1,9 @@
 package com.rokid.context.core.hud.render
 
 import com.rokid.context.core.model.HudPage
+import com.rokid.context.core.model.MotionState
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.core.model.PlaceCardInfo
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Verbosity
 
@@ -30,6 +32,19 @@ class HudPresenter {
     private var dismissedAnswer: Overlay.Answer? = null
     private var held: Overlay? = null
 
+    @Volatile private var motionOnsetAtMs = 0L
+    private var lastMotion = MotionState.UNKNOWN
+    /** The glasses IMU class (any thread, about once a second). An onset is a change from still or unknown to head moving, walking or a vehicle. */
+    fun onMotion(state: MotionState, nowMs: Long) {
+        val moving = state == MotionState.HEAD_MOVING || state == MotionState.WALKING || state == MotionState.VEHICLE
+        val wasStill = lastMotion == MotionState.STILL || lastMotion == MotionState.UNKNOWN
+        lastMotion = state
+        if (moving && wasStill) motionOnsetAtMs = nowMs
+    }
+
+    /** True while a place card is the phone overlay shown and has not been dismissed (the activity tells the phone when it goes). */
+    fun placeShown(): Boolean = shown?.isPlace() == true
+
     /** Dismissing an Answer that carried the undo also dismisses that undo (the wearer saw it and moved on). */
     fun dismiss(o: Overlay?) {
         if (o !is Overlay.Answer) { dismissed = o; return }
@@ -53,11 +68,15 @@ class HudPresenter {
      * an undo outranks it (the phone refused or ended the ask); a Confirm waits under it (votes need it on screen, final
      * review I1) and local toasts wait too.
      */
-    fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long, recording: Boolean = false): HudView {
+    fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long, recording: Boolean = false, zoneActive: Boolean = false): HudView {
         val pages = pagesFor(verbosity)
         val page = if (pages.isEmpty()) null else nav.page.takeIf { it in pages } ?: HudPage.GLANCE
-        val phone = visibleOf(frame?.overlay)?.takeIf { allowed(it, verbosity) }
+        // Place Guide defence in depth: never a place card while a pause zone is active, whatever the phone sent.
+        val phone = visibleOf(frame?.overlay)?.takeIf { allowed(it, verbosity) && !(zoneActive && it.isPlace()) }
         if (phone != shown) { shown = phone; shownAtMs = nowMs; held = null }
+        // Head-motion onset (after the card has been up at least 2.5 s) dismisses it through the ordinary dismissal: the same card never returns.
+        val onset = motionOnsetAtMs
+        if (phone != null && phone.isPlace() && onset > 0 && onset >= shownAtMs + PlaceCardInfo.MOTION_DISMISS_AFTER_MS && onset <= nowMs) { dismiss(phone); shown = null; return present(frame, verbosity, nav, local, nowMs, recording, zoneActive) }
         // Final review I1: a live Confirm hidden under the glasses' Listening is held; its window restarts when it shows.
         if (recording && phone is Overlay.Confirm && held == null && nowMs - shownAtMs < limitMs(phone)) held = phone
         if (held != null && !recording) { shownAtMs = nowMs; held = null }
@@ -91,10 +110,16 @@ class HudPresenter {
         /** A phone toast with no undo: every one is voice copy for an ask the phone refused or ended. */
         fun Overlay?.isAskFailure(): Boolean = this is Overlay.Toast && undoProposalId == null
 
-        fun allowed(o: Overlay, v: Verbosity): Boolean = !(o is Overlay.Nudge && v != Verbosity.MAX)
+        fun Overlay?.isPlace(): Boolean = this is Overlay.Nudge && place != null
+
+        /** A place card shows at Medium and Max (never Silent); a plain nudge only at Max. */
+        fun allowed(o: Overlay, v: Verbosity): Boolean = when {
+            o.isPlace() -> v != Verbosity.SILENT
+            else -> !(o is Overlay.Nudge && v != Verbosity.MAX)
+        }
 
         fun limitMs(o: Overlay): Long = when (o) {
-            is Overlay.Nudge -> NUDGE_MS
+            is Overlay.Nudge -> if (o.place != null) PlaceCardInfo.SHOW_MS else NUDGE_MS
             is Overlay.Confirm -> CONFIRM_MS
             Overlay.PausedSplash -> SPLASH_MS
             is Overlay.Toast -> if (o.undoProposalId != null) UNDO_TOAST_MS else TOAST_MS

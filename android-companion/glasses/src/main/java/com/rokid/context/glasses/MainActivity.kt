@@ -45,6 +45,7 @@ import com.rokid.context.core.hud.render.pagesFor
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.core.model.PlaceCardInfo
 import com.rokid.context.glasses.capture.CaptureScheduler
 import com.rokid.context.glasses.capture.CaptureService
 import com.rokid.context.glasses.capture.diag.PopupGate
@@ -101,6 +102,7 @@ class MainActivity : ComponentActivity() {
     private val confirmTimeout = Runnable { afterConfirm() }
     /** The last phone overlay seen, so a heartbeat repeat never re-pops. */
     private var lastOverlay: Overlay? = null
+    private var shownPlaceTitle: String? = null
     /** Minimised when this start began, until the next intent decides why we came forward. */
     private var wasMinimised = false
     private var sessionReopenedAtMs = Long.MIN_VALUE / 2
@@ -120,6 +122,7 @@ class MainActivity : ComponentActivity() {
             hello = { runtime.hello(nextCaptureAt()) },
         )
         runtime.attach(controller)
+        runtime.motionListener = { m -> presenter.onMotion(m, System.currentTimeMillis()) }
         runtime.ptt.onProblem = { p -> runOnUiThread { local = LocalOverlay.Toast(pttText(p), System.currentTimeMillis()) } }
         controller.onActivityStart()
         controller.start()
@@ -232,9 +235,11 @@ class MainActivity : ComponentActivity() {
             runCatching { applicationContext.startActivity(confirmIntent()) }.onFailure { PcLog.w(TAG, "confirm open refused: ${it.javaClass.simpleName}") }
             return
         }
+        // Place Guide PG3: a place card shows at Medium and Max only, and never while a pause zone is active (fail closed when the pauses are not loaded).
+        if (o is Overlay.Nudge && o.place != null && (controller.settings.value.verbosity == com.rokid.context.core.model.Verbosity.SILENT || runtime.pauses.zoneActive())) return
         val pm = getSystemService(PowerManager::class.java)
         if (!PopupGate.show(o, pm?.isInteractive ?: true, com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied()).nudges)) { runtime.screenWakes.onNudgeSkipped(); return }
-        PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let { runtime.screenWakes.onOurUi(); runtime.popup.show(it, controller.settings.value.popupMs()) }
+        PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let { runtime.screenWakes.onOurUi(); runtime.popup.show(it, if (o is Overlay.Nudge && o.place != null) PlaceCardInfo.SHOW_MS else controller.settings.value.popupMs()) }
     }
 
     private fun confirmIntent() = Intent(this, MainActivity::class.java).putExtra(EXTRA_RETURN_TO, RETURN_TO_MINIMISED)
@@ -281,7 +286,14 @@ class MainActivity : ComponentActivity() {
         }
         val todayRows = frame?.today?.size ?: 0
         LaunchedEffect(settings.verbosity, todayRows) { nav = nav.reconcile(pagesFor(settings.verbosity), todayRows) }
-        val view = presenter.present(frame, settings.verbosity, nav, local, now, recording)
+        val view = presenter.present(frame, settings.verbosity, nav, local, now, recording, zoneActive = runtime.pauses.zoneActive())
+        // Place Guide PG3: a card that leaves the screen (12 s, motion, zone, level) tells the phone, which then drops its copy; a replacing card is untouched (the phone matches the title).
+        val placeTitle = (view.overlay as? Overlay.Nudge)?.place?.title
+        LaunchedEffect(placeTitle) {
+            val prev = shownPlaceTitle
+            shownPlaceTitle = placeTitle
+            if (placeTitle == null && prev != null) controller.send(Command.DismissPlace(prev))
+        }
         // Votes follow the presented overlay: an expired, hidden or dismissed Confirm can never be answered unseen.
         val shownConfirm = view.overlay as? Overlay.Confirm
         LaunchedEffect(shownConfirm?.proposalId) { confirm.onConfirm(shownConfirm); highlightYes = confirm.highlightYes }
@@ -329,7 +341,7 @@ class MainActivity : ComponentActivity() {
         for (input in inputs) {
             val now = System.currentTimeMillis()
             val recording = runtime.listening.value
-            val view = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, recording)
+            val view = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, recording, zoneActive = runtime.pauses.zoneActive())
             val shown = view.overlay
             confirm.onConfirm(shown as? Overlay.Confirm)
             highlightYes = confirm.highlightYes
@@ -567,6 +579,7 @@ class MainActivity : ComponentActivity() {
         cancelAsk()
         controller.onActivityExit()
         if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this); runtime.minimisedIcon.hide(); runtime.popup.hide() }
+        runtime.motionListener = null
         runtime.detach(controller)
         super.onDestroy()
     }

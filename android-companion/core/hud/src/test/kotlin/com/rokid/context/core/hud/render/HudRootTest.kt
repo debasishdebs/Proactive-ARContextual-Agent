@@ -122,4 +122,13 @@ class HudRootTest {
         compose.onNodeWithText("thinking", substring = true).assertExists()
         compose.onNodeWithText("tap to send", substring = true).assertDoesNotExist()
     }
+
+    @Test fun placeCardShowsTitleLineAndSourceAndTheNearbyLabel() {
+        var m by mutableStateOf(model(overlay = Overlay.Nudge("x", com.rokid.context.core.model.PlaceCardInfo("Charminar", "A 16th-century monument.", "Wikipedia \u00b7 fetched 12 Nov"))))
+        compose.setContent { HudRoot(m) }
+        for (t in listOf("Charminar", "A 16th-century monument.", "Wikipedia \u00b7 fetched 12 Nov")) compose.onNodeWithText(t, substring = true).assertExists()
+        compose.onNodeWithText("HEADS UP", substring = true).assertDoesNotExist()
+        m = model(overlay = Overlay.Nudge("x", com.rokid.context.core.model.PlaceCardInfo("Mecca Masjid", "40 m away", "nearby \u00b7 not checked", nearby = true)))
+        compose.onNodeWithText("nearby \u00b7 not checked", substring = true).assertExists()
+    }
 }

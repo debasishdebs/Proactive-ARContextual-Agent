@@ -107,6 +107,9 @@ class HubTest {
         paired: () -> Boolean = { true },
         onPositiveSignal: () -> Unit = {},
         inFront: () -> Boolean = { false },
+        placeCards: kotlinx.coroutines.flow.StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
+        placeClear: () -> Unit = {},
+        zoneApproach: () -> Boolean = { false },
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -118,6 +121,7 @@ class HubTest {
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
             reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
+            placeCards = placeCards, placeClear = placeClear, zoneApproach = zoneApproach,
         )
             .also { if (start) { it.start(userInitiated = true); runCurrent() } }
     }
@@ -864,6 +868,69 @@ class HubTest {
         assertEquals(Overlay.Nudge("Heads up"), link.lastFrame().overlay)
         nudges.latest.value = NudgeLine("Milk low", now); advanceTimeBy(300)
         assertEquals(NudgeLine("Milk low", now), link.lastFrame().latestNudge)
+    }
+
+    private val placeCard = com.rokid.context.work.frames.place.PlaceCard("p1", "Charminar", "A 16th-century mosque and monument.", "Wikipedia · fetched 12 Nov", com.rokid.context.work.frames.place.PlaceConfidence.PHOTO, "f1")
+
+    /** Place Guide PG3: a card re-broadcasts at once as a Nudge carrying the place, "title: line" as its text for an older glasses build. */
+    @Test fun aPlaceCardIsBroadcastWhenItArrives() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        link.sent.clear()
+        cards.value = placeCard; advanceTimeBy(300)
+        val o = link.lastFrame().overlay as Overlay.Nudge
+        assertEquals("Charminar: A 16th-century mosque and monument.", o.text)
+        assertEquals(com.rokid.context.core.model.PlaceCardInfo("Charminar", "A 16th-century mosque and monument.", "Wikipedia · fetched 12 Nov", nearby = false), o.place)
+    }
+
+    @Test fun aNearbyCardIsMarkedNearby() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards); link.emitReady(); runCurrent()
+        cards.value = com.rokid.context.work.frames.place.PlaceCard("p2", "Mecca Masjid", "40 m away", com.rokid.context.work.frames.place.PlaceCards.NEARBY_LABEL, com.rokid.context.work.frames.place.PlaceConfidence.NEARBY, "f2")
+        advanceTimeBy(300)
+        val p = (link.lastFrame().overlay as Overlay.Nudge).place!!
+        assertTrue(p.nearby); assertEquals("nearby · not checked", p.source)
+    }
+
+    @Test fun theCardIsClearedAfterTwelveSecondsAndTheGlassesAreTold() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards, placeClear = { cards.value = null }); link.emitReady(); runCurrent()
+        cards.value = placeCard; advanceTimeBy(300)
+        advanceTimeBy(11_000); assertNotNull(link.lastFrame().overlay)
+        advanceTimeBy(1_500); assertNull(cards.value); assertNull(link.lastFrame().overlay)
+    }
+
+    @Test fun aGlassesDismissClearsOnlyTheMatchingCard() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null); var cleared = 0
+        hub(link, placeCards = cards, placeClear = { cleared++; cards.value = null }); link.emitReady(); runCurrent()
+        cards.value = placeCard; advanceTimeBy(300)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Golconda"))); runCurrent()
+        assertEquals("a stale dismiss of another card is ignored", 0, cleared)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Charminar"))); runCurrent()
+        assertEquals(1, cleared); assertNull(cards.value)
+    }
+
+    @Test fun aNewCardRestartsTheTwelveSeconds() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards, placeClear = { cards.value = null }); link.emitReady(); runCurrent()
+        cards.value = placeCard; advanceTimeBy(8_000)
+        cards.value = placeCard.copy(placeId = "p3", title = "Golconda"); advanceTimeBy(8_000)
+        assertEquals("Golconda", (link.lastFrame().overlay as Overlay.Nudge).place!!.title)
+        advanceTimeBy(4_500); assertNull(cards.value)
+    }
+
+    @Test fun noPlaceCardOnTheWireDuringAZone() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards, zoneApproach = { true }); link.emitReady(); runCurrent()
+        cards.value = placeCard; advanceTimeBy(300)
+        assertNull(link.lastFrame().overlay)
+    }
+
+    @Test fun aVoiceOverlayBeatsAPlaceCard() = runTest {
+        val link = FakeGlassesLink(); val voice = FakeHubVoice(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, voice = voice, placeCards = cards); link.emitReady(); runCurrent()
+        cards.value = placeCard; voice.overlay.value = Overlay.Listening("x"); advanceTimeBy(300)
+        assertEquals(Overlay.Listening("x"), link.lastFrame().overlay)
     }
 
     /**
