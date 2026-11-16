@@ -89,6 +89,7 @@ class HubTest {
         actions: HubActions = HubActions.None,
         nudges: HubNudges = HubNudges.None,
         reopenGuards: RelaunchGuards? = null,
+        relaunchStore: RelaunchStore = InMemoryRelaunchStore(),
         standDown: StandDown = InMemoryStandDown(),
         phoneUse: kotlinx.coroutines.flow.StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(false),
         motionContext: kotlinx.coroutines.flow.StateFlow<MotionContextMessage?> = kotlinx.coroutines.flow.MutableStateFlow(null),
@@ -113,7 +114,7 @@ class HubTest {
         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
         return Hub(
             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
-            startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
+            startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, relaunchStore = relaunchStore, standDown = standDown, phoneUse = phoneUse,
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
             reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
@@ -579,6 +580,37 @@ class HubTest {
         link.sent.clear(); advanceTimeBy(60_000)
         link.emitReady(); advanceTimeBy(300)
         assertTrue("no marker long after the reopen", link.sent.none { it.first == Channels.AUTO_OPEN })
+    }
+
+    /** Review hub-wp2 r1 P1: a lost hub's recovery start connects the glasses only through the call guard and the hourly cap; an ordinary start is unchanged. */
+    @Test fun aRecoveryStartNeverConnectsDuringACallAndConnectsOnceAfterIt() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        var idle = false
+        val guards = object : RelaunchGuards { override fun callIdle() = idle; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        val store = InMemoryRelaunchStore()
+        val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = store, start = false)
+        h.start(recover = true); runCurrent()
+        advanceTimeBy(120_000)
+        assertEquals("no connect of any kind during a call", 0, link.connectOnceCalls + link.automaticCalls + link.connectCalls)
+        idle = true; advanceTimeBy(10_100)
+        assertEquals("connects once the call is over", 1, link.automaticCalls); assertEquals(0, link.connectOnceCalls)
+        assertEquals("and the connect counts against the hourly cap", 1, store.attempts().size)
+    }
+
+    @Test fun aRecoveryStartWithTheHourlyQuotaSpentDoesNotConnect() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        val guards = object : RelaunchGuards { override fun callIdle() = true; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        val store = InMemoryRelaunchStore().apply { saveAttempts(List(6) { now - 1 }) }
+        val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = store, start = false)
+        h.start(recover = true); runCurrent(); advanceTimeBy(30 * 60_000L)
+        assertEquals("six reopens in the hour: no seventh", 0, link.automaticCalls + link.connectOnceCalls)
+    }
+
+    @Test fun anOrdinaryStartStillConnectsAtOnce() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        val guards = object : RelaunchGuards { override fun callIdle() = false; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        hub(link, reopenGuards = guards)
+        assertEquals(1, link.connectOnceCalls)
     }
 
     /** Fix wave I C1: "Open on glasses" while minimised checks that the glasses are alive (the link opens the app if they are dead). */

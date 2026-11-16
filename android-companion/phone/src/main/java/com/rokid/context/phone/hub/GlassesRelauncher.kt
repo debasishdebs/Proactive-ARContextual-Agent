@@ -13,6 +13,9 @@ import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -79,6 +82,8 @@ interface RelaunchStore {
     /** Phone-clock times of our reopens, oldest first. */
     fun attempts(): List<Long>
     fun saveAttempts(a: List<Long>)
+    /** Review hub-wp2 r1 P2: the attempts are on disk when this returns (blocking: call it off Main); the reopen that follows may be killed at once. True = durable. */
+    fun saveAttemptsDurable(a: List<Long>): Boolean { saveAttempts(a); return true }
 }
 
 class InMemoryRelaunchStore : RelaunchStore {
@@ -99,6 +104,7 @@ class PrefsRelaunchStore(private val prefs: android.content.SharedPreferences) :
     override fun clearPending() { if (prefs.contains(KEY_PENDING_AT)) prefs.edit().remove(KEY_PENDING_AT).remove(KEY_PENDING_WHY).apply() }
     override fun attempts(): List<Long> = prefs.getString(KEY_ATTEMPTS, null)?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty()
     override fun saveAttempts(a: List<Long>) { prefs.edit().putString(KEY_ATTEMPTS, a.joinToString(",")).apply() }
+    override fun saveAttemptsDurable(a: List<Long>): Boolean = prefs.edit().putString(KEY_ATTEMPTS, a.joinToString(",")).commit()
 
     private companion object {
         const val KEY_PENDING_AT = "pending_closed_at"
@@ -136,6 +142,8 @@ class GlassesRelauncher(
     private val reopenIsFullScreen: () -> Boolean = { false },
     /** v1.1 T5: the pending close and the hourly attempts, kept across a phone restart. */
     private val store: RelaunchStore = InMemoryRelaunchStore(),
+    /** Where the durable attempt write runs before a launch (never Main); tests pass Dispatchers.Unconfined. */
+    private val io: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO,
 ) {
     /** A saved attempt older than an hour no longer counts, and one from the future (a clock change) is dropped. */
     private val attempts = ArrayDeque(store.attempts().filter { it > now() - HOUR_MS && it <= now() })
@@ -253,8 +261,10 @@ class GlassesRelauncher(
         }
     }
 
-    private fun doReopen() {
-        attempts.addLast(now()); store.saveAttempts(attempts.toList()); step++; awaitingSince = now(); lastReopenAt = now()
+    /** The attempt is durable (committed on [io]) BEFORE the launch: a kill right after it can never let a rebuilt relauncher allow a 7th reopen in the hour. */
+    private suspend fun doReopen() {
+        attempts.addLast(now()); val saved = attempts.toList(); step++; awaitingSince = now(); lastReopenAt = now()
+        if (!withContext(NonCancellable + io) { store.saveAttemptsDurable(saved) }) log("relaunch: attempt record not durable")
         log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
         try { reopen() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
     }
@@ -269,8 +279,20 @@ class GlassesRelauncher(
         val why = blocker()
         if (why != null) { log("relaunch: watchdog waiting ($why)"); noteBlocked(why); return why }
         noteCleared()
-        doReopen()
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) { doReopen() } // the durable write is off Main; the launch follows it
         return null
+    }
+
+    /**
+     * v1.1 hub recovery (review hub-wp2 r1 P1): the lost hub's automatic connect is a glasses launch like any reopen: it waits for every guard (a call and its
+     * settle, the setting, the hourly cap) through the same loop and counts as an attempt. Never connects during a call; retries when the blocker clears.
+     */
+    fun connectAfterRecovery() {
+        if (standDown.active) return
+        job?.cancel()
+        afterFailure = true
+        log("relaunch: recovery connect through the guards")
+        job = scope.launch { attemptLoop(0L) }
     }
 
     /**

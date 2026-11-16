@@ -29,7 +29,8 @@ class HubLiveRecoveryTest {
         assertTrue(hasStart(r)); assertEquals(listOf(AutoStopEffect.Line.HUB_RECOVER_ATTEMPT), lines(r))
         assertEquals("process start, exempt=true", r.effects.filterIsInstance<AutoStopEffect.Log>().single().via)
         assertTrue("a recovered hub with no glasses stops after the probe", r.state.saved.wakeProbe)
-        assertEquals(1, r.state.saved.wakeStep); assertEquals(t0 + 120 * min, r.state.saved.nextWakeAtMs); assertTrue(r.state.saved.hubLive)
+        assertEquals("the AutoStop wake ladder is not used by a recovery (the watchdog's persisted ladder is)", 0, r.state.saved.wakeStep); assertEquals(0L, r.state.saved.nextWakeAtMs); assertTrue(r.state.saved.hubLive)
+        assertTrue("the start is a recovery start (guarded glasses connect)", r.effects.filterIsInstance<AutoStopEffect.StartWake>().single().recover)
     }
 
     @Test fun theStartIsSettledOnTheEventAndLogsStarted() {
@@ -87,13 +88,14 @@ class HubLiveRecoveryTest {
         // after the start timeout the interrupted wake is over; the rung still stands
         val timedOut = start(state(first.state.saved), t0 + 3 * min)
         assertFalse(hasStart(timedOut)); assertEquals(AutoStopWake.Claim.NOT_DUE, claim(timedOut))
-        // a late process start, with the rung due: the second rung (120 min)
+        assertEquals("the watchdog ladder's first rung is the retry", 5 * min, timedOut.effects.filterIsInstance<AutoStopEffect.ScheduleWake>().single().delayMs)
+        // a late process start, with the watchdog ladder due: a start
         val later = start(state(timedOut.state.saved), t0 + 121 * min)
-        assertTrue(hasStart(later)); assertEquals(2, later.state.saved.wakeStep); assertEquals(t0 + 121 * min + 240 * min, later.state.saved.nextWakeAtMs)
-        // a not-yet-due rung with no wake in progress schedules the remaining time
-        val early = start(state(first.state.saved.copy(wakeStartedAtMs = 0L)), t0 + 5 * min)
+        assertTrue(hasStart(later))
+        // the ladder not due yet (input from the persisted watchdog ladder): nothing starts, the remaining time is scheduled
+        val early = start(state(first.state.saved.copy(wakeStartedAtMs = 0L), ok.copy(hubStartInMs = 2 * min)), t0 + 5 * min)
         assertFalse(hasStart(early)); assertEquals(AutoStopWake.Claim.NOT_DUE, claim(early))
-        assertTrue(early.effects.any { it is AutoStopEffect.ScheduleWake })
+        assertEquals(2 * min, early.effects.filterIsInstance<AutoStopEffect.ScheduleWake>().single().delayMs)
     }
 
     @Test fun hubForegroundSetsTheFlagAndAnAutoStopClearsItAndACancelledStopRestoresIt() {
@@ -119,5 +121,75 @@ class HubLiveRecoveryTest {
         assertFalse(old.hubLive); assertEquals(5L, old.autoStoppedAtMs); assertEquals(1, old.wakeStep)
         val snap = old.copy(hubLive = true); PrefsAutoStopStore { prefs }.save(snap)
         assertEquals(snap, PrefsAutoStopStore { prefs }.load()); assertTrue(PrefsAutoStopStore { prefs }.hubLive())
+    }
+
+    // --- review hub-wp2 r1: the call guard, the shared ladder, and the pending-stop interleavings ---
+
+    @Test fun aRecoveryDuringACallIsDeferredAndConsumesNothing() {
+        val r = start(state(AutoStopSnapshot(hubLive = true), ok.copy(callIdle = false)))
+        assertFalse("never starts (and so never connects the glasses) during a call or its settle", hasStart(r)); assertEquals(AutoStopWake.Claim.NOT_DUE, claim(r))
+        assertEquals(AutoStopMachine.RECOVER_CALL_RECHECK_MS, r.effects.filterIsInstance<AutoStopEffect.ScheduleWake>().single().delayMs)
+        assertEquals(AutoStopSnapshot(hubLive = true), r.state.saved)
+        assertTrue("after the call: the recovery goes ahead", hasStart(start(state(AutoStopSnapshot(hubLive = true), ok.copy(callIdle = true)), t0 + 20_000)))
+    }
+
+    @Test fun theRecoveryUsesTheWatchdogLadderAndItsMinimumIntervalSurvivesResets() {
+        val store = InMemoryHubRestartStore(); val gate = LadderHubStartGate(store) { true }
+        assertEquals(0L, gate.dueInMs(t0)); gate.record(t0)
+        assertEquals("the watchdog's first rung is 5 min", 5 * min, gate.dueInMs(t0)); assertEquals(5 * min - 1, gate.dueInMs(t0 + 1))
+        val reset = WatchdogLadder.reduce(WatchdogLadder.State(saved = store.load()), WatchdogLadder.Event.HubRunning, t0 + 10_000).state.saved // foreground, present: the step resets
+        assertEquals("a reset cannot permit an immediate re-recovery: the 60 s minimum stands", 50_000L, WatchdogLadder.startWaitMs(reset, t0 + 10_000))
+        assertEquals(0L, WatchdogLadder.startWaitMs(reset, t0 + 60_000))
+        gate.record(t0 + 5 * min); assertEquals("then 15 min", 15 * min - 1, gate.dueInMs(t0 + 5 * min + 1))
+    }
+
+    private fun pending(prevLive: Boolean, atMs: Long = t0): AutoStopState {
+        val p = PendingStop(BackgroundPolicy.Away.DISCONNECTED, t0 - 20 * min, atMs, prevNextWakeAtMs = 0L, prevProbe = false, prevHubLive = prevLive)
+        val mark = AutoStopSnapshot(autoStoppedAtMs = atMs, reason = BackgroundPolicy.Away.DISCONNECTED, awaySinceMs = t0 - 20 * min, nextWakeAtMs = atMs + 120 * min, hubLive = false)
+        return AutoStopState(saved = mark, wake = ok.copy(serviceRunning = true), pendingStop = p)
+    }
+    private val away = HubSignals(hubRunning = true, link = com.rokid.context.core.model.LinkState.OFFLINE, worn = null, inFront = false, lastFrontMs = 0L, busy = false, runActive = false)
+
+    @Test fun aUserStartDuringAPendingStopRestoresTheHubLiveFlag() {
+        val s = AutoStopMachine.reduce(pending(prevLive = true), AutoStopEvent.UserStarted, t0 + 1).state
+        assertTrue("the service still runs: a later process death must be recovered", s.saved.hubLive); assertEquals(null, s.pendingStop); assertEquals(0L, s.saved.autoStoppedAtMs)
+        // and the confirm queued behind it cannot bring the stop back
+        val c = AutoStopMachine.reduce(s, AutoStopEvent.ConfirmStop(ok.copy(serviceRunning = true), away), t0 + 2)
+        assertTrue(c.effects.none { it is AutoStopEffect.StopHub })
+    }
+
+    @Test fun anExpectedOrManualStopDuringAPendingStopIsNotRolledBack() {
+        for (e in listOf(AutoStopEvent.ExpectedStopped, AutoStopEvent.ManualStopped)) {
+            val s = AutoStopMachine.reduce(pending(prevLive = true), e, t0 + 1).state
+            assertEquals(null, s.pendingStop); assertFalse(s.saved.hubLive)
+            // the confirm that follows sees the hub stopped: it must neither restore hubLive=true nor clear the auto-stop mark
+            val c = AutoStopMachine.reduce(s, AutoStopEvent.ConfirmStop(ok, away.copy(hubRunning = false)), t0 + 2).state
+            assertFalse("not live again", c.saved.hubLive); assertEquals("the mark stays", t0, c.saved.autoStoppedAtMs)
+        }
+    }
+
+    @Test fun theRecoveryEffectRecordsTheLadderBeforeTheStartAndAnImmediateSecondProcessStartDoesNotStartAgain() {
+        val snap = AutoStopSnapshot(hubLive = true)
+        val store = object : AutoStopStore { var saved = snap; override fun load() = saved; override fun save(s: AutoStopSnapshot): Boolean { saved = s; return true } }
+        var call = true; val order = ArrayList<String>(); var now = t0
+        val ladder = InMemoryHubRestartStore()
+        val gate = object : HubStartGate {
+            private val real = LadderHubStartGate(ladder) { call }
+            override fun dueInMs(nowMs: Long) = real.dueInMs(nowMs)
+            override fun record(nowMs: Long) { order += "record"; real.record(nowMs) }
+            override fun callIdle() = real.callIdle()
+        }
+        val e = AutoStopEngine(store, { now }, SerialStateMachine.DIRECT, { WakeInputs(true, 20, true, false) }, { order += "plain"; true }, { order += "schedule" }, startRecover = { order += "recover"; true }, hubStart = gate)
+        call = false
+        assertEquals(AutoStopWake.Claim.NOT_DUE, ((kotlinx.coroutines.runBlocking { e.submit(AutoStopEvent.ProcessStarted("process start")).await() }) as AutoStopClaimed).claim)
+        assertEquals("a call: neither a start nor a ladder attempt", listOf("schedule"), order); order.clear()
+        call = true; now += 20_000
+        assertEquals(AutoStopWake.Claim.STARTED, ((kotlinx.coroutines.runBlocking { e.submit(AutoStopEvent.ProcessStarted("process start")).await() }) as AutoStopClaimed).claim)
+        assertEquals("the ladder attempt is recorded before the recovery start", listOf("record", "recover"), order.take(2))
+        assertEquals(now, ladder.load().lastStartAtMs)
+        // the hub dies again at once (foreground, then death): the shared ladder still holds the 60 s minimum
+        order.clear(); store.saved = store.saved.copy(wakeStartedAtMs = 0L, hubLive = true); now += 30_000
+        kotlinx.coroutines.runBlocking { e.submit(AutoStopEvent.ProcessStarted("process start")).await() }
+        assertTrue(order.toString(), order.none { it == "recover" || it == "record" })
     }
 }

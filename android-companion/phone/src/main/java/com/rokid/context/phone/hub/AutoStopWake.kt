@@ -50,9 +50,19 @@ object AutoStopWake {
                     )
                 },
                 startWake = { ContextHubService.ensureRunning(app, wake = true) }, scheduleWake = { schedule(app, it) },
+                startRecover = { ContextHubService.ensureRunning(app, wake = true, recover = true) },
+                hubStart = LadderHubStartGate(PrefsHubRestartStore { app.getSharedPreferences(HUB_RESTART_PREFS, Context.MODE_PRIVATE) }) { callIdle(app) },
             )
         }.also { shared = it }
     }
+
+    /** The watchdog's persisted hub restart ladder (the recovery shares it). */
+    const val HUB_RESTART_PREFS = "hub_restart"
+
+    /** The existing call guard (the hub's own once built, else one of this process): a recovery never connects during a call or its 15 s settle. */
+    private val coldGuards = java.util.concurrent.atomic.AtomicReference<RelaunchGuards>()
+    private fun callIdle(app: Context): Boolean =
+        (HubGraph.callGuards ?: coldGuards.get() ?: AndroidRelaunchGuards(app, { null }).also { coldGuards.compareAndSet(null, it) }.let { coldGuards.get()!! }).callIdle()
 
     private const val VIA_PROCESS = "process start"
     private const val WORKER_WAIT_MS = 60_000L

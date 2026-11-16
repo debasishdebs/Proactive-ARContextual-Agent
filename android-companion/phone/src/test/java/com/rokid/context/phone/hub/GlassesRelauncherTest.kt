@@ -31,7 +31,7 @@ class GlassesRelauncherTest {
         val logs = ArrayList<String>()
         val r = GlassesRelauncher(
             t.backgroundScope, state, { on }, guards, { reopens++; state.value = LinkState.CONNECTING }, { t.currentTime }, { logs += it },
-            standDown = standDown, reopenIsFullScreen = { fullScreen }, store = store,
+            standDown = standDown, reopenIsFullScreen = { fullScreen }, store = store, io = kotlinx.coroutines.Dispatchers.Unconfined,
         ).also { r -> r.start() }
         fun close() { state.value = LinkState.MINIMISED; state.value = LinkState.CLOSED_ON_GLASSES }
     }
@@ -227,7 +227,7 @@ class GlassesRelauncherTest {
 
     @Test fun theHourlyCapSleepsUntilItsOldestAttemptAgesOutInsteadOfPollingEveryTenSeconds() = runTest {
         val state = MutableStateFlow(LinkState.CONNECTED); var reopens = 0; val logs = ArrayList<String>()
-        GlassesRelauncher(backgroundScope, state, { true }, Guards(), { reopens++; state.value = LinkState.CONNECTING }, { currentTime }, { logs += it }, stepsMs = listOf(1_000L), maxPerHour = 1).start()
+        GlassesRelauncher(backgroundScope, state, { true }, Guards(), { reopens++; state.value = LinkState.CONNECTING }, { currentTime }, { logs += it }, stepsMs = listOf(1_000L), maxPerHour = 1, io = kotlinx.coroutines.Dispatchers.Unconfined).start()
         runCurrent()
         state.value = LinkState.CLOSED_ON_GLASSES; runCurrent(); advanceTimeBy(1_100); assertEquals(1, reopens)
         state.value = LinkState.MINIMISED; state.value = LinkState.CLOSED_ON_GLASSES; runCurrent(); advanceTimeBy(1_100)
@@ -369,6 +369,47 @@ class GlassesRelauncherTest {
         assertEquals("the attempt was saved for the cap", 1, store.attempts().size)
     }
 
+    // --- review hub-wp2 r1: the attempt is durable BEFORE the launch, and the recovery connect goes through the guards and the cap ---
+
+    private class OrderStore : RelaunchStore {
+        val events = ArrayList<String>(); private var a: List<Long> = emptyList()
+        override fun pending(): PendingClose? = null
+        override fun savePending(p: PendingClose) {}
+        override fun clearPending() {}
+        override fun attempts() = a
+        override fun saveAttempts(a: List<Long>) { this.a = a }
+        override fun saveAttemptsDurable(a: List<Long>): Boolean { events += "durable"; this.a = a; return true }
+    }
+
+    @Test fun theAttemptIsDurableBeforeTheLaunch() = runTest {
+        val store = OrderStore(); val order = store.events
+        val state = MutableStateFlow(LinkState.CLOSED_ON_GLASSES)
+        val r = GlassesRelauncher(backgroundScope, state, { true }, Guards(), { order += "launch" }, { currentTime }, {}, store = store, io = kotlinx.coroutines.Dispatchers.Unconfined)
+        r.start(); runCurrent(); advanceTimeBy(8_100)
+        assertEquals(listOf("durable", "launch"), order)
+    }
+
+    @Test fun aRecoveryConnectWaitsForTheCallAndItsSettleThenConnectsOnce() = runTest {
+        val g = Guards().apply { call = false }
+        val store = InMemoryRelaunchStore()
+        val r = rig(g, initial = LinkState.OFFLINE, store = store)
+        r.r.connectAfterRecovery(); runCurrent()
+        advanceTimeBy(120_000); assertEquals("never during a call", 0, r.reopens)
+        g.call = true
+        advanceTimeBy(10_100); assertEquals("after the call (and its settle, which the guard owns)", 1, r.reopens)
+        assertEquals("counted against the hourly cap", 1, store.attempts().size)
+    }
+
+    @Test fun aRecoveryConnectRespectsTheExhaustedHourlyQuota() = runTest {
+        val store = InMemoryRelaunchStore().apply { saveAttempts(List(6) { 0L }) }
+        val r = rig(initial = LinkState.OFFLINE, store = store)
+        advanceTimeBy(1_000)
+        r.r.connectAfterRecovery(); runCurrent()
+        advanceTimeBy(30 * 60_000L); assertEquals("six in the hour already: no seventh", 0, r.reopens)
+        assertTrue(r.logs.any { it == "relaunch: waiting (hourly limit)" })
+        advanceTimeBy(HOUR); assertEquals("the oldest attempt aged out", 1, r.reopens)
+    }
+
     private companion object { const val HOUR = 3_600_000L }
 }
 
@@ -378,7 +419,7 @@ class GlassesRelauncherAttemptNowTest {
     private class G : RelaunchGuards { var call = true; var wornNow: Boolean? = null; override fun callIdle() = call; override fun mediaIdle() = true; override fun worn() = wornNow }
     private fun TestScope.make(g: G = G(), sd: StandDown = InMemoryStandDown(), max: Int = 6, on: () -> Boolean = { true }): Pair<GlassesRelauncher, IntArray> {
         val n = IntArray(1)
-        val r = GlassesRelauncher(backgroundScope, kotlinx.coroutines.flow.MutableStateFlow(LinkState.CONNECTED), on, g, { n[0]++ }, { currentTime }, {}, standDown = sd, maxPerHour = max)
+        val r = GlassesRelauncher(backgroundScope, kotlinx.coroutines.flow.MutableStateFlow(LinkState.CONNECTED), on, g, { n[0]++ }, { currentTime }, {}, standDown = sd, maxPerHour = max, io = kotlinx.coroutines.Dispatchers.Unconfined)
         return r to n
     }
 
