@@ -266,6 +266,11 @@ data class HudSettings(
      * so the camera stops even without the phone. Absent on the wire (an old phone) = false. Old glasses ignore it. The zone itself is never sent: only this flag and `zone:` pause records.
      */
     val zoneApproach: Boolean = false,
+    /**
+     * Pause zones, additive: the phone could not durably record a zone pause (or cannot read its zones) and holds capture paused in memory; the glasses pause while this is true. Re-sent at every
+     * push, so it ends with the first push that omits it. Absent (an old phone) = false. Old glasses ignore it.
+     */
+    val zoneEnforce: Boolean = false,
 )
 
 /** The recording rates the phone offers (Hz); the sensors run at 50 Hz and more in the classifier's FULL mode, so these are inside their real capability. */
