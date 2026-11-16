@@ -82,4 +82,54 @@ class FrameAdmissionTest {
     @Test fun unsafeIdIsRejected() = runTest {
         assertEquals(Admission.Reject(FrameAckReason.DECODE), FrameAdmission(ledger(), Intervals()).decide(meta("../x", phoneNow), ClockOffset(0), phoneNow))
     }
+
+    // ---- Pause zones: a frame captured inside a zone interval is dropped whatever it is, before any mark allowance is asked. ----
+
+    /** Ordinary pauses and zone intervals separately; a zone interval is also a pause (like the hub's Room history). */
+    private class ZoneHistory(val zone: List<Pair<Long, Long?>>, val other: List<Pair<Long, Long?>> = emptyList()) : PauseHistory {
+        private fun List<Pair<Long, Long?>>.covers(t: Long) = any { (s, e) -> t >= s && (e == null || t < e) }
+        override suspend fun pausedAt(phoneMs: Long) = zone.covers(phoneMs) || other.covers(phoneMs)
+        override suspend fun zonePausedAt(phoneMs: Long) = zone.covers(phoneMs)
+    }
+    private class CountingMarks(var state: MarkState = MarkState.OPEN) : MarkLookup {
+        var asked = 0; var claimed = 0
+        override suspend fun state(markRef: String): MarkState { asked++; return state }
+        override suspend fun claim(markRef: String, frameId: String): Boolean { claimed++; return true }
+    }
+    private fun markMeta(id: String, markRef: String?, at: Long) = FrameMeta(frameId = id, chunkIdx = 0, chunkCount = 1, crc32 = 1, capturedAtMs = at, markRef = markRef)
+
+    @Test fun aFrameInsideAZoneIntervalIsDropped() = runTest {
+        val a = FrameAdmission(ledger(), ZoneHistory(listOf((phoneNow - 600_000) to null)))
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("z1", phoneNow - 1_000), ClockOffset(0), phoneNow))
+    }
+
+    @Test fun aMarkPhotoInsideAZoneIntervalIsDroppedAndTheAllowanceIsNeverAsked() = runTest {
+        val marks = CountingMarks()
+        val a = FrameAdmission(ledger(), ZoneHistory(listOf((phoneNow - 600_000) to null)), marks = MarkPhotoAllowance(marks))
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(markMeta("z2", "ep:1", phoneNow - 1_000), ClockOffset(0), phoneNow))
+        assertEquals(0, marks.asked, "a zone beats the mark allowance before it is looked at"); assertEquals(0, marks.claimed, "no allowance is consumed")
+    }
+
+    @Test fun aMarkPhotoDuringAnOrdinaryPauseStillPassesButNotInAZone() = runTest {
+        val a = FrameAdmission(ledger(), ZoneHistory(zone = listOf((phoneNow - 100_000) to (phoneNow - 50_000)), other = listOf((phoneNow - 600_000) to null)), marks = MarkPhotoAllowance(CountingMarks()))
+        // before the zone began: an ordinary pause only, the mark allowance applies as before
+        assertEquals(Admission.Ingest(phoneNow - 300_000), a.decide(markMeta("z3", "ep:1", phoneNow - 300_000), ClockOffset(0), phoneNow))
+        // inside the zone interval, even though the same ordinary pause also covers it
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(markMeta("z4", "ep:2", phoneNow - 75_000), ClockOffset(0), phoneNow))
+        // after the zone interval closed (half open): the ordinary pause and the allowance decide again
+        assertEquals(Admission.Ingest(phoneNow - 50_000), a.decide(markMeta("z5", "ep:3", phoneNow - 50_000), ClockOffset(0), phoneNow))
+    }
+
+    @Test fun theZoneIntervalIsHalfOpenAndUsesTheCorrectedTime() = runTest {
+        val start = phoneNow - 600_000; val end = phoneNow - 300_000
+        val a = FrameAdmission(ledger(), ZoneHistory(listOf(start to end)))
+        assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("h1", start + twoHours), ClockOffset(twoHours), phoneNow))
+        assertEquals(Admission.Ingest(end), a.decide(meta("h2", end), ClockOffset(0), phoneNow))
+        assertEquals(Admission.Ingest(start - 1), a.decide(meta("h3", start - 1), ClockOffset(0), phoneNow))
+    }
+
+    @Test fun aHistoryThatKnowsNothingOfZonesChangesNothing() = runTest {
+        // the default zonePausedAt is false: the old interface contract holds for any other history
+        assertEquals(Admission.Ingest(phoneNow - 10), FrameAdmission(ledger(), Intervals()).decide(meta("n1", phoneNow - 10), ClockOffset(0), phoneNow))
+    }
 }

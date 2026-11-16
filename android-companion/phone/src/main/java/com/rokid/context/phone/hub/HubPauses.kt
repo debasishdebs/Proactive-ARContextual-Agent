@@ -4,6 +4,7 @@ import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.QuietHours
 import com.rokid.context.core.model.QuietWindow
+import com.rokid.context.core.model.zone.ZonePause
 import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.PauseHistory
 import com.rokid.context.memory.db.PauseDao
@@ -67,10 +68,21 @@ class HubPauses(
      * clock; never later than now). A past [atMs] is a Resume made offline: frames captured after it are admitted.
      */
     suspend fun resume(clears: Set<String>, atMs: Long? = null) {
-        if (clears.isEmpty()) return
+        // Pause zones: no Resume (the app's, the glasses', a voice command, an old glasses build's double-tap) names a `zone:` record; only [resumeZones] ends one.
+        val named = clears.filterNot(ZonePause::isZoneRecord).toSet()
+        if (named.isEmpty()) return
         val t = now()
-        dao.resumeNamed(clears, atMs?.coerceAtMost(t) ?: t)
+        dao.resumeNamed(named, atMs?.coerceAtMost(t) ?: t)
     }
+
+    /** Pause zones: ends the named `zone:` records now (the zone logic only: the zone was left, disabled while outside, or removed while outside). Other ids are ignored. */
+    suspend fun resumeZones(ids: Set<String>) {
+        val zone = ids.filter(ZonePause::isZoneRecord).toSet()
+        if (zone.isNotEmpty()) dao.resumeNamed(zone, now())
+    }
+
+    /** Pause zones: the active `zone:` records, as stored. */
+    suspend fun zoneRecords(): List<PauseRecord> = stored().filter { ZonePause.isZoneRecord(it.pauseId) }
 
     /**
      * Quiet hours were turned off (BUG-R2-6): ends every stored QUIET_HOURS record now (the phone's and any union'd from
@@ -80,6 +92,12 @@ class HubPauses(
         val ids = stored().filter { it.origin == PauseOrigin.QUIET_HOURS }.map { it.pauseId }.toSet()
         resume(ids)
         return ids
+    }
+
+    /** Pause zones: true when [phoneMs] is inside a retained `zone:` interval (the frame gate: a zone beats the mark allowance). */
+    override suspend fun zonePausedAt(phoneMs: Long): Boolean {
+        active()
+        return dao.countZoneCovering(phoneMs) > 0
     }
 
     /** Ids the phone resumed (closed intervals <= 7 d, no live record, newest 200), sent as `HudSettings.resumedPauseIds`. */
