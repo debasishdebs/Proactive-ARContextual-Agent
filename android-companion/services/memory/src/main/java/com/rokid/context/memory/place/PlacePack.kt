@@ -66,7 +66,9 @@ class PlacePack(
         if (isFresh(dao.cell(cell))) return CellOutcome.FRESH
         val src = source
         if (!networkUp || src == null) return CellOutcome.OFFLINE
+        zoneCheck() // an attempt whose zone fence closed never queues for the lock
         return fetchLock.withLock {
+            zoneCheck() // ... and one that waited for it asks again: the fence may have closed during the wait
             if (isFresh(dao.cell(cell))) return@withLock CellOutcome.FRESH // another caller fetched it while we waited
             fetchAndStore(cell, src, seeded = false)
         }
@@ -144,7 +146,7 @@ class PlacePack(
 
     private suspend fun fetchAndStore(cell: String, src: CellSource, seeded: Boolean): CellOutcome {
         val epoch = wipeEpoch.get()
-        val got = try { src.fetchCell(cell) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+        val got = try { zoneCheck(); src.fetchCell(cell) } catch (e: CancellationException) { throw e } catch (e: Exception) {
             log("cell fetch failed cls=${e.javaClass.simpleName}")
             return CellOutcome.FAILED
         }

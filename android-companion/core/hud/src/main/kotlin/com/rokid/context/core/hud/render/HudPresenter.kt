@@ -32,15 +32,9 @@ class HudPresenter {
     private var dismissedAnswer: Overlay.Answer? = null
     private var held: Overlay? = null
 
-    @Volatile private var motionOnsetAtMs = 0L
-    private var lastMotion = MotionState.UNKNOWN
-    /** The glasses IMU class (any thread, about once a second). An onset is a change from still or unknown to head moving, walking or a vehicle. */
-    fun onMotion(state: MotionState, nowMs: Long) {
-        val moving = state == MotionState.HEAD_MOVING || state == MotionState.WALKING || state == MotionState.VEHICLE
-        val wasStill = lastMotion == MotionState.STILL || lastMotion == MotionState.UNKNOWN
-        lastMotion = state
-        if (moving && wasStill) motionOnsetAtMs = nowMs
-    }
+    private val motion = MotionOnset()
+    /** The glasses IMU class (any thread, about once a second). An onset is a change from still or unknown to head moving, walking or a vehicle ([MotionOnset]). */
+    fun onMotion(state: MotionState, nowMs: Long) { motion.onMotion(state, nowMs) }
 
     /** True while a place card is the phone overlay shown and has not been dismissed (the activity tells the phone when it goes). */
     fun placeShown(): Boolean = shown?.isPlace() == true
@@ -75,8 +69,7 @@ class HudPresenter {
         val phone = visibleOf(frame?.overlay)?.takeIf { allowed(it, verbosity) && !(zoneActive && it.isPlace()) }
         if (phone != shown) { shown = phone; shownAtMs = nowMs; held = null }
         // Head-motion onset (after the card has been up at least 2.5 s) dismisses it through the ordinary dismissal: the same card never returns.
-        val onset = motionOnsetAtMs
-        if (phone != null && phone.isPlace() && onset > 0 && onset >= shownAtMs + PlaceCardInfo.MOTION_DISMISS_AFTER_MS && onset <= nowMs) { dismiss(phone); shown = null; return present(frame, verbosity, nav, local, nowMs, recording, zoneActive) }
+        if (phone != null && phone.isPlace() && MotionOnset.dismisses(motion.lastOnsetAtMs, shownAtMs, nowMs)) { dismiss(phone); shown = null; return present(frame, verbosity, nav, local, nowMs, recording, zoneActive) }
         // Final review I1: a live Confirm hidden under the glasses' Listening is held; its window restarts when it shows.
         if (recording && phone is Overlay.Confirm && held == null && nowMs - shownAtMs < limitMs(phone)) held = phone
         if (held != null && !recording) { shownAtMs = nowMs; held = null }

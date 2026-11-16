@@ -4,10 +4,16 @@ import com.rokid.context.ai.contract.PlaceMatchOutput
 import com.rokid.context.memory.place.Geo
 import com.rokid.context.memory.place.PlaceCandidates
 import com.rokid.context.memory.place.PlaceEntity
+import com.rokid.context.memory.place.ZoneFence
+import com.rokid.context.memory.place.ZoneFenced
+import com.rokid.context.memory.place.ZoneTicket
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** A fix as the sampler needs it: where, how old and how accurate. Held in a local only; never stored or logged. */
@@ -26,7 +32,28 @@ interface PlaceFrameStore {
 data class PlaceMatchResult(val output: PlaceMatchOutput, val delivered: Boolean)
 
 /** What the memory writer needs for one `type="place"` row. */
-data class PlaceMemoryRequest(val frameId: String, val place: PlaceEntity, val parentName: String?, val confidence: Float, val delivered: Boolean, val generation: Long)
+data class PlaceMemoryRequest(
+    val frameId: String, val place: PlaceEntity, val parentName: String?, val confidence: Float, val delivered: Boolean, val generation: Long,
+    /** Asked INSIDE the memory transaction, after the rows are written and before the commit: false aborts the transaction (nothing becomes durable). */
+    val allowed: () -> Boolean = { true },
+)
+
+/**
+ * The durable record of place memories that may exist without a card: marked BEFORE the commit, cleared once the attempt ended with its card published (the memory stays) or the memory
+ * was taken back. Whatever is still marked (a rollback that failed, a process death in between) is deleted by the next sweep.
+ */
+interface PlaceMemoryLedger {
+    fun mark(frameId: String)
+    fun clear(frameId: String)
+    fun pending(): Set<String>
+}
+
+class InMemoryPlaceLedger : PlaceMemoryLedger {
+    private val ids = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    override fun mark(frameId: String) { ids.add(frameId) }
+    override fun clear(frameId: String) { ids.remove(frameId) }
+    override fun pending(): Set<String> = ids.toSet()
+}
 
 enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED }
 
@@ -75,6 +102,9 @@ class PlaceSampler(
     private val cards: PlaceCardHolder? = null,
     /** Removes the place memory this attempt wrote for [frameId] (a zone became active while it was being saved). */
     private val deleteMemory: suspend (frameId: String) -> Unit = {},
+    /** THE zone fence: the attempt runs in its cancellable job and every side effect goes through it. */
+    private val fence: ZoneFence = ZoneFence(),
+    private val ledger: PlaceMemoryLedger = InMemoryPlaceLedger(),
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
@@ -84,7 +114,7 @@ class PlaceSampler(
     fun poke() {
         if (closed || !enabled()) return
         if (!flight.busy.compareAndSet(false, true)) { finish(PlaceOutcome.BUSY); return }
-        val j = scope.launch { run() }
+        val j = fence.launch(scope) { run() }
         job = j
         j.invokeOnCompletion { flight.busy.set(false) }
     }
@@ -99,31 +129,57 @@ class PlaceSampler(
     }
 
     private suspend fun run() {
-        try { finish(attempt()) } catch (c: CancellationException) { throw c } catch (_: Exception) { finish(PlaceOutcome.FAILED) }
+        val ticket = coroutineContext[ZoneTicket] ?: fence.ticket()
+        try {
+            sweep()
+            finish(attempt(ticket))
+        } catch (c: CancellationException) {
+            if (c is ZoneFenced || !ticket.isOpen()) finish(PlaceOutcome.ZONE)
+            throw c
+        } catch (_: Exception) { finish(PlaceOutcome.FAILED) }
     }
 
-    /** Why work must stop now, or null. Asked after EVERY suspension point and before every side effect (a fix, a fetch, an upload, a write, a card): the zone state can change at any of them. */
-    private suspend fun stopped(gen: Long, frameId: String? = null): PlaceOutcome? = when {
-        !live(gen) -> PlaceOutcome.DISABLED
-        zoneBlocked() -> PlaceOutcome.ZONE
-        frameId != null && store.tombstoned(frameId) -> PlaceOutcome.DROPPED
-        else -> null
+    /** Takes back every place memory a failed rollback left marked. Runs to the end even if the attempt is cancelled; a failure leaves the mark for the next sweep. */
+    suspend fun sweep() {
+        val ids = ledger.pending()
+        if (ids.isEmpty()) return
+        withContext(NonCancellable) { for (id in ids) takeBack(id) }
     }
 
-    private suspend fun attempt(): PlaceOutcome {
+    /** Deletes the memory of [frameId] and clears its mark; false (mark kept) when the deletion failed. */
+    private suspend fun takeBack(frameId: String): Boolean {
+        repeat(ROLLBACK_TRIES) { n ->
+            try { deleteMemory(frameId); ledger.clear(frameId); return true } catch (c: CancellationException) { if (c !is ZoneFenced) throw c } catch (_: Exception) { }
+            if (n < ROLLBACK_TRIES - 1) delay(ROLLBACK_RETRY_MS)
+        }
+        return false
+    }
+
+    /**
+     * Why work must stop now, or null. Asked after EVERY suspension point (the suspending parts first) and the synchronous fence LAST, so that nothing suspends between the final check and
+     * the action it guards (a fix, a fetch, an upload, a write, a card).
+     */
+    private suspend fun stopped(gen: Long, ticket: ZoneTicket, frameId: String? = null): PlaceOutcome? {
+        if (!live(gen)) return PlaceOutcome.DISABLED
+        if (zoneBlocked()) return PlaceOutcome.ZONE
+        if (frameId != null && store.tombstoned(frameId)) return PlaceOutcome.DROPPED
+        return if (!ticket.isOpen() || !live(gen)) PlaceOutcome.ZONE else null
+    }
+
+    private suspend fun attempt(ticket: ZoneTicket): PlaceOutcome {
         val gen = generation()
         val cardEpoch = cards?.epoch() ?: 0L
         // The zone gate comes first: nothing below runs while a zone is active, approaching or unreadable.
-        stopped(gen)?.let { return it }
+        stopped(gen, ticket)?.let { return it }
         val now = clock()
         val f = store.newestDwell(now - RECENT_MS) ?: return PlaceOutcome.NO_FRAME
         val cap = f.capturedAtMs
         if (cap == null || cap < now - RECENT_MS || cap > now + SKEW_MS || store.tombstoned(f.frameId)) return PlaceOutcome.STALE_FRAME
         if (f.frameId in handled) return PlaceOutcome.SEEN
-        stopped(gen, f.frameId)?.let { return it } // before the fix is asked for
+        stopped(gen, ticket, f.frameId)?.let { return it } // before the fix is asked for
         val fx = fix() ?: return PlaceOutcome.NO_FIX
         if (fx.ageMs < 0 || fx.ageMs > MAX_FIX_AGE_MS || fx.accuracyM.isNaN() || fx.accuracyM > MAX_FIX_ACCURACY_M || !fx.lat.isFinite() || !fx.lon.isFinite()) return PlaceOutcome.STALE_FIX
-        stopped(gen, f.frameId)?.let { return it } // before the pack may fetch
+        stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
         remember(f.frameId)
         val online = networkUp()
         val found = candidates(fx.lat, fx.lon, online)
@@ -137,52 +193,66 @@ class PlaceSampler(
         val callOk = online && elapsed() - flight.lastCallAt >= MIN_CALL_GAP_MS
         if (online && !callOk) return PlaceOutcome.RATE_LIMITED
         flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now)
-        stopped(gen, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
-        if (!callOk || !admit()) return fallback(hits, f.frameId, gen, cardEpoch)
+        stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
+        if (!callOk || !admit()) return fallback(hits, f.frameId, gen, cardEpoch, ticket)
         flight.lastCallAt = elapsed()
         val lines = hits.mapIndexed { i, h -> "${i + 1}. ${h.first.name} | ${h.first.kind.replace('_', ' ')}" }
+        if (!ticket.isOpen()) return PlaceOutcome.ZONE // the last check; nothing suspends between it and the call, which the fence's job cancels if the zone comes later
         val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
         flight.lastCallAt = elapsed() // the permit wait and the call are over: the gap runs from here, not from the start of the attempt
-        if (stopped(gen, f.frameId) != null) return PlaceOutcome.DROPPED
-        if (res == null || !res.delivered) return fallback(hits, f.frameId, gen, cardEpoch)
+        if (stopped(gen, ticket, f.frameId) != null) return PlaceOutcome.DROPPED
+        if (res == null || !res.delivered) return fallback(hits, f.frameId, gen, cardEpoch, ticket)
         val choice = res.output.choice
         if (choice.equals(NONE, ignoreCase = true)) return PlaceOutcome.NONE
         val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: return PlaceOutcome.CONTRACT
         if (res.output.confidence < MIN_CONFIDENCE) return PlaceOutcome.LOW_CONFIDENCE
         val place = hits[idx - 1].first
         val parent = place.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name }
-        val saved = saveMemory(PlaceMemoryRequest(f.frameId, place, parent, res.output.confidence, res.delivered, gen))
-        if (!saved) return PlaceOutcome.DROPPED
-        // A zone that became active while the memory was being saved: the memory goes again and no card is shown.
-        if (stopped(gen, f.frameId) != null) { rollback(f.frameId, gen); return PlaceOutcome.DROPPED }
-        if (!publish(PlaceCards.photo(place, f.frameId), cardEpoch, gen, f.frameId)) { rollback(f.frameId, gen); return PlaceOutcome.DROPPED }
-        return PlaceOutcome.MATCHED
-    }
-
-    /** Takes back the memory of a photo whose card was not (or may not be) shown because a zone, a Forget or a wipe came first. Best effort: Forget and Delete all remove it on their own. */
-    private suspend fun rollback(frameId: String, gen: Long) {
-        if (generation() != gen) return // Delete all already removed everything
-        try { deleteMemory(frameId) } catch (c: CancellationException) { throw c } catch (_: Exception) { }
+        return commit(place, parent, res, f.frameId, gen, cardEpoch, ticket)
     }
 
     /**
-     * Shows [card] only if nothing withdrew cards since the attempt began and the zone, switch, wipe and forget fences still hold at the moment of publication; then asks the zone once more and
-     * withdraws the card if a zone began in between. False = no card (the caller drops the attempt).
+     * Writes the memory and shows the card, as one unit. The mark in the [ledger] is durable BEFORE the commit and cleared only when the card is out (the memory stays) or the memory is taken
+     * back, so a rollback that fails, a cancellation or a process death in between leaves a mark the next [sweep] acts on. The transaction itself refuses to commit once the fence closed.
      */
-    private suspend fun publish(card: PlaceCard, epoch: Long, gen: Long, frameId: String): Boolean {
+    private suspend fun commit(place: PlaceEntity, parent: String?, res: PlaceMatchResult, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket): PlaceOutcome {
+        var keep = false
+        ledger.mark(frameId)
+        try {
+            val saved = saveMemory(PlaceMemoryRequest(frameId, place, parent, res.output.confidence, res.delivered, gen, allowed = { ticket.isOpen() && live(gen) }))
+            if (!saved) return PlaceOutcome.DROPPED
+            // A zone that became active while the memory was being saved (after its last in-transaction check): the memory goes again and no card is shown.
+            if (stopped(gen, ticket, frameId) != null) return PlaceOutcome.DROPPED
+            if (!publish(PlaceCards.photo(place, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+            keep = true
+            return PlaceOutcome.MATCHED
+        } finally {
+            withContext(NonCancellable) { if (keep) ledger.clear(frameId) else rollback(frameId, gen) }
+        }
+    }
+
+    /** Takes back the memory of a photo whose card was not (or may not be) shown because a zone, a Forget or a wipe came first. Never skipped by cancellation; a failure stays marked for [sweep]. */
+    private suspend fun rollback(frameId: String, gen: Long) {
+        if (generation() != gen) { ledger.clear(frameId); return } // Delete all already removed everything
+        takeBack(frameId)
+    }
+
+    /**
+     * Shows [card] only if nothing withdrew cards since the attempt began and the fence, switch, wipe and forget fences still hold: the fence check, the switch/wipe check and the holder's
+     * epoch check are made together, under the fence's lock, in the same synchronous step as the publication. False = no card (the caller drops the attempt).
+     */
+    private suspend fun publish(card: PlaceCard, epoch: Long, gen: Long, frameId: String, ticket: ZoneTicket): Boolean {
+        if (stopped(gen, ticket, frameId) != null) return false // the suspending checks (zone records, tombstone) come first; the synchronous ones below come last
         val h = cards
-        val out = if (h != null) h.publishIf(card, epoch) { stopped(gen, frameId) == null } else if (stopped(gen, frameId) == null) { onCard(card); true } else false
-        if (!out) return false
-        if (zoneBlocked()) { h?.withdraw(frameId, card.placeId); return false }
-        return true
+        return fence.act(ticket) { if (!live(gen)) false else if (h != null) h.publishIf(card, epoch) else { onCard(card); true } } == true
     }
 
     /** The nearest place's card when it is unique within [NEARBY_M] (edge distance); otherwise nothing. */
-    private suspend fun fallback(hits: List<Pair<PlaceEntity, Double>>, frameId: String, gen: Long, epoch: Long): PlaceOutcome {
+    private suspend fun fallback(hits: List<Pair<PlaceEntity, Double>>, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket): PlaceOutcome {
         val first = hits.firstOrNull() ?: return PlaceOutcome.NOTHING_NEARBY
         if (gap(first.first, first.second) > NEARBY_M) return PlaceOutcome.NOTHING_NEARBY
         if (hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M) return PlaceOutcome.NOTHING_NEARBY
-        if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId)) return PlaceOutcome.DROPPED
+        if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
         return PlaceOutcome.NEARBY
     }
 
@@ -202,6 +272,8 @@ class PlaceSampler(
         const val MAX_LIST = 16
         const val MIN_CONFIDENCE = 0.5f
         const val NONE = "NONE"
+        internal const val ROLLBACK_TRIES = 3
+        internal const val ROLLBACK_RETRY_MS = 200L
         private const val HANDLED_MAX = 32
     }
 }

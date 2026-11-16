@@ -15,7 +15,10 @@ enum class PlaceConfidence(val wire: String) { PHOTO("photo"), NEARBY("nearby") 
  * What the wearer sees (spec 2026-11-16 §B4). Every field is built from the place pack by [PlaceCards]; the model never writes card text (it only picks a candidate number).
  * [line] is at most [PlaceCards.LINE_MAX] characters; [sourceLabel] is like "Wikipedia · fetched 12 Nov" or "nearby · not checked".
  */
-data class PlaceCard(val placeId: String, val title: String, val line: String, val sourceLabel: String, val confidence: PlaceConfidence, val frameId: String)
+data class PlaceCard(val placeId: String, val title: String, val line: String, val sourceLabel: String, val confidence: PlaceConfidence, val frameId: String,
+    /** This card instance, stamped by [PlaceCardHolder] when it is published ("" before); a dismissal names it so a later card with the same title is never cleared by it. */
+    val cardId: String = "",
+)
 
 /**
  * Delivery seam (PG2): the phone side holds the newest card here; the overlay mapping onto the wire (an additive protocol field) and the glasses rendering are PG3. The hub reads [card]
@@ -40,12 +43,17 @@ class PlaceCardHolder : PlacePort {
     /** The withdrawal count: read at the start of an attempt, handed back to [publishIf]. */
     fun epoch(): Long = synchronized(lock) { epochValue }
 
-    fun publish(card: PlaceCard) { synchronized(lock) { _card.value = card } }
+    private var seq = 0L
 
-    /** Publishes [card] only when no withdrawal happened since [epoch] and [allowed] (zone, switch, wipe, forget) still holds. False = nothing was published. */
-    suspend fun publishIf(card: PlaceCard, epoch: Long, allowed: suspend () -> Boolean): Boolean {
-        if (!allowed()) return false
-        return synchronized(lock) { if (epochValue != epoch) false else { _card.value = card; true } }
+    fun publish(card: PlaceCard) { synchronized(lock) { _card.value = card.copy(cardId = "pc${++seq}") } }
+
+    /** Publishes [card] only when no withdrawal happened since [epoch]. Synchronous: the caller makes the zone/switch/wipe checks in the same step (see PlaceSampler.publish). False = nothing was published. */
+    fun publishIf(card: PlaceCard, epoch: Long): Boolean =
+        synchronized(lock) { if (epochValue != epoch) false else { _card.value = card.copy(cardId = "pc${++seq}"); true } }
+
+    /** Clears the card only if it is still the instance [cardId] (a newer card with the same title stays). Withdrawals fence attempts in flight only when something was cleared. */
+    fun clearIf(cardId: String): Boolean = synchronized(lock) {
+        if (_card.value?.cardId == cardId) { epochValue++; _card.value = null; true } else false
     }
 
     /** Withdraws the card when it belongs to one of [frameIds] (a Forget), and fences attempts in flight. */

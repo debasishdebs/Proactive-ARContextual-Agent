@@ -132,4 +132,30 @@ class PlaceFetchTest {
         runCatching { limited.get("https://127.0.0.1:1/a") }; runCatching { limited.get("https://127.0.0.1:1/b") }
         assertEquals(listOf(400L), pauses)
     }
+
+    // Codex r4: the zone fence is asked immediately before EACH request (Wikipedia geosearch, Wikipedia pages, Wikidata, Overpass), and a closed fence sends nothing further.
+    @Test fun theFenceClosingBeforeAnyRequestOfACellStopsEveryLaterRequest() {
+        val total = FixtureHttp("golconda").let { h -> kotlinx.coroutines.runBlocking { source(h).fetchCell(golcondaCell) }; h.gets.size + h.posts.size }
+        assertTrue(total >= 3)
+        for (closeAt in 1..total) {
+            val h = FixtureHttp("golconda")
+            val fence = com.rokid.context.memory.place.ZoneFence()
+            val counting = object : PlaceHttp {
+                var n = 0
+                override suspend fun get(url: String): String { if (++n == closeAt) fence.hold(); return h.get(url) }
+                override suspend fun postForm(url: String, form: Map<String, String>): String { if (++n == closeAt) fence.hold(); return h.postForm(url, form) }
+            }
+            val src = PlaceCellSource(WikipediaHttpSource(counting), WikidataHttpSource(counting), OverpassHttpSource(counting))
+            val result = runCatching { kotlinx.coroutines.runBlocking { kotlinx.coroutines.withContext(fence.ticket()) { src.fetchCell(golcondaCell) } } }
+            // closing during the LAST request leaves nothing further to dispatch; every earlier closing stops the cell
+            assertEquals(closeAt < total, result.exceptionOrNull() is com.rokid.context.memory.place.ZoneFenced, "closeAt=$closeAt")
+            assertEquals(closeAt, counting.n, "closeAt=$closeAt: no request after the fence closed")
+        }
+    }
+
+    @Test fun theHttpClientNeverConnectsWithAClosedTicket() {
+        val fence = com.rokid.context.memory.place.ZoneFence(); fence.hold()
+        val r = runCatching { kotlinx.coroutines.runBlocking { kotlinx.coroutines.withContext(fence.ticket()) { UrlConnectionPlaceHttp().get("https://invalid.invalid/x") } } }
+        assertTrue(r.exceptionOrNull() is com.rokid.context.memory.place.ZoneFenced)
+    }
 }

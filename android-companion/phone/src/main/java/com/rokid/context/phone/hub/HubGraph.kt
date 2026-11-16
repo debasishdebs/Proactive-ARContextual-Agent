@@ -192,6 +192,8 @@ object HubGraph {
         ctxRegistry.register(speed); ctxRegistry.speed = speed
         // Place Guide (PG2): poked after each committed frame; does nothing unless its switch is on, the frame is a dwell photo and no pause zone is active, approaching or unreadable (fail closed).
         com.rokid.context.work.frames.KeyframeGraph.placeSampler?.close()
+        // The fence's synchronous second opinion, read at every check: the controller's own flags (the controller also holds the fence itself).
+        com.rokid.context.work.frames.place.PlaceGraph.fence.extraBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } }
         val placeFixes = com.rokid.context.phone.place.PlaceFixProvider.create(app) { com.rokid.context.phone.zone.ZoneGraph.peek() }
         com.rokid.context.work.frames.KeyframeGraph.placeSampler = com.rokid.context.work.frames.place.PlaceSamplers.create(
             app, ctxScope, fix = placeFixes::fresh,
@@ -262,7 +264,7 @@ object HubGraph {
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
-            placeCards = com.rokid.context.work.frames.place.PlaceGraph.port.card, placeClear = com.rokid.context.work.frames.place.PlaceGraph.port::clear,
+            placeCards = com.rokid.context.work.frames.place.PlaceGraph.port.card, placeClear = com.rokid.context.work.frames.place.PlaceGraph.port::clear, placeClearIf = com.rokid.context.work.frames.place.PlaceGraph.port::clearIf,
             zoneApproach = { com.rokid.context.phone.zone.ZoneGraph.get(app).approach },
             zoneEnforce = { com.rokid.context.phone.zone.ZoneGraph.get(app).enforcing },
             // Every hub start and recovery judges the zones again from "nothing known" (not only the graph's construction): see ZoneController.start.

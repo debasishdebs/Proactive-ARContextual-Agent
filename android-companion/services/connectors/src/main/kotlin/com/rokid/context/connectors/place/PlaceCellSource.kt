@@ -5,6 +5,7 @@ import com.rokid.context.memory.place.CellSource
 import com.rokid.context.memory.place.FetchedPlace
 import com.rokid.context.memory.place.Geohash5
 import com.rokid.context.memory.place.PlaceKinds
+import com.rokid.context.memory.place.zoneCheck
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -21,11 +22,12 @@ class PlaceCellSource(
 ) : CellSource {
     override suspend fun fetchCell(cell: String): CellFetch {
         val box = requireNotNull(Geohash5.bounds(cell)) { "not a cell" }
+        zoneCheck() // the zone fence is asked immediately before EACH request (Wikipedia, Wikidata, Overpass), not once per cell
         val hits = wikipedia.geosearch(box)
-        val pages = hits.map { it.pageId }.distinct().chunked(WikipediaHttpSource.EXTRACT_BATCH).flatMap { wikipedia.pages(it) }
+        val pages = hits.map { it.pageId }.distinct().chunked(WikipediaHttpSource.EXTRACT_BATCH).flatMap { zoneCheck(); wikipedia.pages(it) }
         val hitById = hits.associateBy { it.pageId }
         val qids = pages.mapNotNull { it.qid }.distinct()
-        val entities = qids.chunked(WikidataHttpSource.BATCH).fold(emptyMap<String, WikidataEntity>()) { acc, ids -> acc + wikidata.entities(ids) }
+        val entities = qids.chunked(WikidataHttpSource.BATCH).fold(emptyMap<String, WikidataEntity>()) { acc, ids -> zoneCheck(); acc + wikidata.entities(ids) }
 
         val kept = LinkedHashMap<String, FetchedPlace>()
         val hasPart = HashMap<String, List<String>>()
@@ -45,6 +47,7 @@ class PlaceCellSource(
         val osmPlaces = ArrayList<FetchedPlace>()
         if (overpass != null) {
             try {
+                zoneCheck()
                 for (el in overpass.elements(box)) {
                     val wd = el.tags["wikidata"]?.let { "wd:$it" }
                     val joined = wd?.let { kept[it] }

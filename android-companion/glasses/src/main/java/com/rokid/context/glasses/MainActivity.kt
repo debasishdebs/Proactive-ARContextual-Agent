@@ -102,7 +102,9 @@ class MainActivity : ComponentActivity() {
     private val confirmTimeout = Runnable { afterConfirm() }
     /** The last phone overlay seen, so a heartbeat repeat never re-pops. */
     private var lastOverlay: Overlay? = null
-    private var shownPlaceTitle: String? = null
+    private var shownPlaceCard: PlaceCardInfo? = null
+    /** The place card the minimised pop-up shows (so it can be withdrawn before its timer). */
+    private val placePopup = com.rokid.context.glasses.overlay.PlacePopupTracker()
     /** Minimised when this start began, until the next intent decides why we came forward. */
     private var wasMinimised = false
     private var sessionReopenedAtMs = Long.MIN_VALUE / 2
@@ -122,7 +124,11 @@ class MainActivity : ComponentActivity() {
             hello = { runtime.hello(nextCaptureAt()) },
         )
         runtime.attach(controller)
-        runtime.motionListener = { m -> presenter.onMotion(m, System.currentTimeMillis()) }
+        runtime.motionListener = { m ->
+            val now = System.currentTimeMillis()
+            presenter.onMotion(m, now)
+            placePopup.onMotion(m, now)?.let { w -> runOnUiThread { withdrawPlacePopup(w) } } // the same motion rule as the HUD card
+        }
         runtime.ptt.onProblem = { p -> runOnUiThread { local = LocalOverlay.Toast(pttText(p), System.currentTimeMillis()) } }
         controller.onActivityStart()
         controller.start()
@@ -138,6 +144,9 @@ class MainActivity : ComponentActivity() {
         }
         // While minimised the composition is stopped: overlays go to the pop-up, a Confirm opens the HUD (spec 2026-10-14 §4).
         lifecycleScope.launch { controller.frame.collect { onPhoneOverlay(it?.overlay) } }
+        // A zone activating (settings with zoneApproach / zoneEnforce, or a zone record) takes an already visible place pop-up down at once.
+        lifecycleScope.launch { controller.settings.collect { placePopup.zoneActive(runtime.pauses.zoneActive())?.let { withdrawPlacePopup(it) } } }
+        lifecycleScope.launch { runtime.pauses.records.collect { placePopup.zoneActive(runtime.pauses.zoneActive())?.let { withdrawPlacePopup(it) } } }
         lifecycleScope.launch {
             controller.sessionOpen.collect { open -> if (open && minimised) sessionReopenedAtMs = SystemClock.uptimeMillis() }
         }
@@ -160,6 +169,7 @@ class MainActivity : ComponentActivity() {
         minimised = false
         runtime.minimisedIcon.hide() // the full HUD is back
         runtime.popup.hide()
+        placePopup.gone()
         // In front now: start the keep-alive camera service so captures keep working after the wearer leaves the HUD.
         runtime.uiMode.set(UiModeStore.FULL)
         runtime.iconBlocked = false
@@ -227,6 +237,8 @@ class MainActivity : ComponentActivity() {
         lastOverlay = o
         // rc1 fix: the phone ended the Answer (hold over, withdrawn by a Forget, cancelled): a pop-up still showing it goes now, not at its own timeout.
         if (prev is Overlay.Answer && o !is Overlay.Answer) PopupOverlay.textFor(prev, controller.settings.value.verbosity)?.let { t -> if (runtime.popup.text == t) runtime.popup.hide() }
+        // The phone withdrew the place card (overlay null: expired, Forget, Delete all, a zone) or replaced it with anything else: its pop-up goes now, whatever the card, not only for an Answer.
+        placePopup.overlayChanged(o)?.let { withdrawPlacePopup(it) }
         if (!minimised || !Settings.canDrawOverlays(this)) return
         if (o is Overlay.Confirm) {
             if (o.proposalId == launchedConfirmId) return
@@ -239,7 +251,17 @@ class MainActivity : ComponentActivity() {
         if (o is Overlay.Nudge && o.place != null && (controller.settings.value.verbosity == com.rokid.context.core.model.Verbosity.SILENT || runtime.pauses.zoneActive())) return
         val pm = getSystemService(PowerManager::class.java)
         if (!PopupGate.show(o, pm?.isInteractive ?: true, com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied()).nudges)) { runtime.screenWakes.onNudgeSkipped(); return }
-        PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let { runtime.screenWakes.onOurUi(); runtime.popup.show(it, if (o is Overlay.Nudge && o.place != null) PlaceCardInfo.SHOW_MS else controller.settings.value.popupMs()) }
+        PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let {
+            runtime.screenWakes.onOurUi()
+            runtime.popup.show(it, if (o is Overlay.Nudge && o.place != null) PlaceCardInfo.SHOW_MS else controller.settings.value.popupMs())
+            if (o is Overlay.Nudge && o.place != null) placePopup.show(o.place!!, it, System.currentTimeMillis()) else placePopup.gone()
+        }
+    }
+
+    /** Takes the place pop-up down (only while it still shows that card's text) and tells the phone which card instance is gone, so it drops its copy. */
+    private fun withdrawPlacePopup(w: com.rokid.context.glasses.overlay.PlacePopupTracker.Shown) {
+        if (runtime.popup.text == w.text) runtime.popup.hide()
+        controller.send(Command.DismissPlace(w.card.title, w.card.id))
     }
 
     private fun confirmIntent() = Intent(this, MainActivity::class.java).putExtra(EXTRA_RETURN_TO, RETURN_TO_MINIMISED)
@@ -287,12 +309,12 @@ class MainActivity : ComponentActivity() {
         val todayRows = frame?.today?.size ?: 0
         LaunchedEffect(settings.verbosity, todayRows) { nav = nav.reconcile(pagesFor(settings.verbosity), todayRows) }
         val view = presenter.present(frame, settings.verbosity, nav, local, now, recording, zoneActive = runtime.pauses.zoneActive())
-        // Place Guide PG3: a card that leaves the screen (12 s, motion, zone, level) tells the phone, which then drops its copy; a replacing card is untouched (the phone matches the title).
-        val placeTitle = (view.overlay as? Overlay.Nudge)?.place?.title
-        LaunchedEffect(placeTitle) {
-            val prev = shownPlaceTitle
-            shownPlaceTitle = placeTitle
-            if (placeTitle == null && prev != null) controller.send(Command.DismissPlace(prev))
+        // Place Guide PG3: a card that leaves the screen (12 s, motion, zone, level) tells the phone, which then drops its copy; a replacing card is untouched (the phone matches the card instance id, the title for an older phone).
+        val placeCard = (view.overlay as? Overlay.Nudge)?.place
+        LaunchedEffect(placeCard) {
+            val prev = shownPlaceCard
+            shownPlaceCard = placeCard
+            if (placeCard == null && prev != null) controller.send(Command.DismissPlace(prev.title, prev.id))
         }
         // Votes follow the presented overlay: an expired, hidden or dismissed Confirm can never be answered unseen.
         val shownConfirm = view.overlay as? Overlay.Confirm

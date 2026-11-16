@@ -405,4 +405,24 @@ class ProtocolTest {
         assertEquals(e, assertIs<Decoded.Ok<CommandEnvelope>>(Wire.decode<CommandEnvelope>(Wire.encode(e))).value)
         assertIs<Decoded.Malformed>(Wire.decode<CommandEnvelope>("""{"v":1,"command":{"kind":"from_the_future"}}"""))
     }
+
+    // Codex r4: the card instance id is additive and optional in both directions.
+    @Serializable private data class LegacyDismiss(val title: String)
+
+    @Test fun theCardIdRoundTripsAndOldPeersInteroperate() {
+        val o = Overlay.Nudge("Charminar: A.", PlaceCardInfo("Charminar", "A.", "Wikipedia", id = "pc7"))
+        assertEquals(o, assertIs<Decoded.Ok<StateFrame>>(Wire.decode<StateFrame>(Wire.encode(frame(o)))).value.overlay)
+        val e = CommandEnvelope(command = Command.DismissPlace("Charminar", "pc7"))
+        assertEquals(e, assertIs<Decoded.Ok<CommandEnvelope>>(Wire.decode<CommandEnvelope>(Wire.encode(e))).value)
+        // an older glasses build (no id) sends the title only: it decodes with cardId = null (the phone then falls back to the title)
+        val old = assertIs<Decoded.Ok<CommandEnvelope>>(Wire.decode<CommandEnvelope>("""{"v":1,"command":{"kind":"dismiss_place","title":"Charminar"}}""")).value
+        assertEquals(Command.DismissPlace("Charminar", null), old.command)
+        // an older phone's card has no id
+        val oldCard = assertIs<Overlay.Nudge>(Wire.json.decodeFromString<Overlay>("""{"kind":"nudge","text":"x: y","place":{"title":"x","line":"y","source":"s","nearby":false}}"""))
+        assertEquals(null, oldCard.place!!.id)
+        // an older phone ignores the new fields (ignoreUnknownKeys), and a card with no id does not write one
+        assertFalse(Wire.encode<Overlay>(Overlay.Nudge("a: b", PlaceCardInfo("a", "b", "s"))).contains("\"id\""))
+        assertEquals("Charminar", Wire.json.decodeFromString<LegacyDismiss>(Wire.encode<Command>(Command.DismissPlace("Charminar", "pc7"))).title)
+        assertEquals(1, PROTOCOL_VERSION)
+    }
 }

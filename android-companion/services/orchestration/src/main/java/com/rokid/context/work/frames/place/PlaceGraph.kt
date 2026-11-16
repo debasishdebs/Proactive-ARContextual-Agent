@@ -16,12 +16,21 @@ object PlaceGraph {
     @Volatile private var pack: PlacePack? = null
     val port: PlaceCardHolder = PlaceCardHolder()
 
+    /**
+     * THE zone fence of Place Guide, shared by the sampler, the pack's fetches, the upload, the memory write and the card. The zone controller [protect]s it; the switch, Delete all and Forget
+     * trip it. Everything in flight is cancelled by it.
+     */
+    val fence = com.rokid.context.memory.place.ZoneFence()
+
+    /** The zone controller's word: [active] = some zone is approached, entered, recorded or unreadable. Closes the fence and withdraws the card at once; released when clear. */
+    fun protect(active: Boolean) { if (active) { if (!fence.held) { fence.hold(); port.clear() } } else fence.release() }
+
     init {
         // A published card holds photo-derived content: Forget of its photo withdraws it, a range Forget or Delete all withdraws every card (committed deletions only; fenced against publication by the holder's epoch).
         com.rokid.context.memory.forget.ForgetListeners.register(object : com.rokid.context.memory.forget.ForgetListener {
-            override suspend fun onFramesForgotten(frameIds: List<String>) { port.withdrawFrames(frameIds) }
-            override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { port.clear() }
-            override suspend fun onDeleteAll() { port.clear() }
+            override suspend fun onFramesForgotten(frameIds: List<String>) { fence.trip(); port.withdrawFrames(frameIds) }
+            override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { fence.trip(); port.clear() }
+            override suspend fun onDeleteAll() { fence.trip(); port.clear() }
         })
     }
 
@@ -38,6 +47,7 @@ object PlaceGraph {
      * never opened and its file does not exist.
      */
     suspend fun deleteAll(context: Context) {
+        fence.trip() // attempts in flight (a fetch, an upload, a write) end first
         port.clear() // the card goes first, and a card still being made is fenced out
         val app = context.applicationContext
         if (pack == null && !app.getDatabasePath(PlacesDatabase.NAME).exists()) return
@@ -51,7 +61,7 @@ object PlaceGraph {
 class PlaceGuideSettings private constructor(private val prefs: android.content.SharedPreferences) {
     var enabled: Boolean
         get() = prefs.getBoolean(KEY, false)
-        set(v) { prefs.edit().putBoolean(KEY, v).apply() }
+        set(v) { prefs.edit().putBoolean(KEY, v).apply(); if (!v) PlaceGraph.fence.trip() }
 
     companion object {
         const val PREFS = "place_guide"

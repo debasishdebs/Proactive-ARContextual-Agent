@@ -257,7 +257,7 @@ class PlaceSamplerTest {
         poke()
         assertTrue(cards.isEmpty())
         val fields = PlaceCard::class.java.declaredFields.map { it.name }.toSet()
-        assertEquals(setOf("placeId", "title", "line", "sourceLabel", "confidence", "frameId"), fields)
+        assertEquals(setOf("placeId", "title", "line", "sourceLabel", "confidence", "frameId", "cardId"), fields)
     }
 
     @Test fun logsAreOutcomeNamesOnly() = runTest {

@@ -67,6 +67,11 @@ class ZoneController(
     private val onZonesChanged: () -> Unit = {},
     /** The persisted zone state (latched state, last time a fix proved us clear, last fix time). Null = kept in memory only (tests). */
     private val stateStore: ZoneStateStore? = null,
+    /**
+     * Place Guide's zone fence (one for every Place Guide side effect): true = some zone is approached, entered, recorded or unreadable (called BEFORE a record is stored or a state is
+     * published, so no Place Guide action can start in the gap); false = all clear. Called synchronously, from any of this controller's paths.
+     */
+    private val onProtect: (Boolean) -> Unit = {},
 ) {
     private val mutex = Mutex()
     private val evaluator = ZoneEvaluator()
@@ -110,6 +115,7 @@ class ZoneController(
 
     private fun raise() {
         if (!store.corrupt && !wantsLocation()) { ZoneHold.update(null); return }
+        onProtect(true) // unjudged: fail closed
         val now = wall()
         val known = stateStore?.let { it.load() } ?: memo
         val clears = known.values.map { it.clearWallMs }
@@ -253,6 +259,7 @@ class ZoneController(
         val ev = evaluator.evaluate(now)
         val insideIds = ev.inside.map { it.zoneId }.toMutableSet()
         if (store.corrupt) insideIds += PROTECTED_ID
+        if (insideIds.isNotEmpty() || ev.overall >= ZoneState.APPROACH || enforcing) onProtect(true) // before any record is stored
         var changed = false
         var uncovered = insideIds.toSet()
         try {
@@ -296,6 +303,7 @@ class ZoneController(
         val zones = store.zones()
         _snapshot.value = ZoneSnapshot(zones, ev, store.corrupt)
         ready = true
+        onProtect(approach || enforcing)
         _cadence.value = TripCadence.select(ev)
         notify(ev, zones, insideIds)
         val key = (ev.overall >= ZoneState.APPROACH) to enforcing

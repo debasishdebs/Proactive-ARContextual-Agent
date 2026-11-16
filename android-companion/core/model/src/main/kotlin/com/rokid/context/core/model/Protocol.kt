@@ -140,7 +140,11 @@ sealed interface Overlay {
 }
 
 /** Place Guide card on the wire (PG3). [line] is at most 140 chars, built from the place pack; [nearby] = only the nearest place, not checked against the photo. */
-@Serializable data class PlaceCardInfo(val title: String, val line: String, val source: String, val nearby: Boolean = false) {
+@Serializable data class PlaceCardInfo(
+    val title: String, val line: String, val source: String, val nearby: Boolean = false,
+    /** Additive: this card instance (the phone numbers every published card); null from an old phone. A dismissal names it so a later card with the same title is never cleared by it. */
+    val id: String? = null,
+) {
     companion object {
         /** How long the glasses show a card; the phone clears its copy at the same time. */
         const val SHOW_MS = 12_000L
@@ -369,8 +373,8 @@ sealed interface Command {
     @Serializable @SerialName("cancel") data object Cancel : Command
     /** Phase 7, additive: undo an executed proposal (glasses double-tap on an undo toast). */
     @Serializable @SerialName("undo") data class Undo(val proposalId: String) : Command
-    /** Place Guide PG3, additive: the glasses dismissed (or let expire) the place card titled [title]; the phone clears its copy only if that is still its card (a newer one is kept). An older phone fails to decode it (Malformed) and ignores it. */
-    @Serializable @SerialName("dismiss_place") data class DismissPlace(val title: String) : Command
+    /** Place Guide PG3, additive: the glasses dismissed (or let expire) the place card titled [title]; the phone clears its copy only if that is still its card (a newer one is kept). [cardId] (additive) names the card instance: with it the phone clears only that instance; without it (an older glasses build) it falls back to the title. An older phone fails to decode it (Malformed) and ignores it. */
+    @Serializable @SerialName("dismiss_place") data class DismissPlace(val title: String, val cardId: String? = null) : Command
 }
 
 /** `pc_cmd` payload: commands are wrapped so every message carries [v]. */
