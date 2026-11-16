@@ -161,6 +161,7 @@ class SettingsDeps(
             sources = AppSources(app),
             capture = com.rokid.context.phone.capture.PhoneCaptureControl(
                 app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }, quietHours = { HubGraph.get(app).hudSettings.value.quietHours }),
+                zoneOverlap = com.rokid.context.phone.capture.PhoneCaptureControl.zoneOverlap({ MemoryGraph.get(app).db.pauseDao() }),
             ),
             lazyActions = lazy { com.rokid.context.connectors.actions.ActionsGraph.get(app) },
             localModels = StoreLocalModels(com.rokid.context.data.models.LocalModelStore(app)),

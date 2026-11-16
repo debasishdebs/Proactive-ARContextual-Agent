@@ -255,10 +255,13 @@ object HubGraph {
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
             zoneApproach = { com.rokid.context.phone.zone.ZoneGraph.get(app).approach },
+            zoneEnforce = { com.rokid.context.phone.zone.ZoneGraph.get(app).enforcing },
+            // Every hub start and recovery judges the zones again from "nothing known" (not only the graph's construction): see ZoneController.start.
+            zoneStart = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.beginRestart(); scope.launch { z.start() } } },
         ).also { hubRef.set(it) }.also { hub ->
-            // Pause zones: judge the stored zones now (fail closed until the first fix) and ask for fixes only while zones exist, under the hub's own foreground location type.
+            // Pause zones: the zones are judged at every hub start (Hub.start -> zoneStart); here also ask for fixes only while zones exist, under the hub's own foreground location type.
             com.rokid.context.phone.zone.ZoneGraph.get(app).let { zones ->
-                scope.launch { zones.start() }
+                scope.launch { zones.start() } // and at the graph's construction too (the map UI and "Capture now" can run before the hub does)
                 com.rokid.context.phone.zone.TripLocation.create(app, zones, scope, foreground = ContextHubService::appInForeground, locationHeld = { ContextHubService.locationHeld.value }).start()
             }
             // v0.9.8 slice C: a flow's glasses delivery target asks this (not connected = the phone, with the reason recorded)

@@ -32,6 +32,7 @@ class HubPausesZoneTest {
     private val db = testDb(ApplicationProvider.getApplicationContext())
     private var t = 1_793_000_000_000L
     private val pauses = HubPauses(db.pauseDao()) { t }
+    @org.junit.Before fun resetClockGuard() { com.rokid.context.phone.zone.ClockGuard.reset(); com.rokid.context.phone.zone.ZoneHold.set(null) }
     @After fun close() = db.close()
 
     private fun zoneRecord(id: String = "jarawa", n: Long = 1) = PauseRecord(ZonePause.pauseId(id, n), PauseOrigin.PHONE, t, null)
@@ -107,5 +108,15 @@ class HubPausesZoneTest {
         pauses.resumeZones(setOf("zone:jarawa:1")); t += 1_000
         assertTrue("after the zone, the ordinary pause and the allowance decide again", admission.decide(meta("d", "ep:3", t - 500), ClockOffset(0), t) is Admission.Ingest)
         assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), admission.decide(meta("e", "ep:2", start + 30_500), ClockOffset(0), t))
+    }
+
+    // Codex zones r1 P1-7: the historical overlap the phone camera is checked with.
+    @Test fun zoneOverlapsSeesAnIntervalThatOverlapsTheShotWindowEvenAfterTheZoneWasLeft() = runTest {
+        com.rokid.context.phone.zone.ClockGuard.reset()
+        val open = t; pauses.add(zoneRecord()); t += 120_000; pauses.resumeZones(setOf("zone:jarawa:1")); t += 600_000
+        assertTrue("opened the camera outside, photographed inside, back outside", pauses.zoneOverlaps(open - 60_000, t))
+        assertFalse(pauses.zoneOverlaps(open - 60_000, open - 1)); assertFalse(pauses.zoneOverlaps(open + 120_000, t))
+        com.rokid.context.phone.zone.ZoneHold.set(open + 1_000_000L); assertTrue(pauses.zoneOverlaps(open + 1_000_000L, open + 1_000_001L)); assertTrue(pauses.pausedNow())
+        com.rokid.context.phone.zone.ZoneHold.set(null)
     }
 }

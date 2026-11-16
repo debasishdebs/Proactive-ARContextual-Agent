@@ -28,10 +28,14 @@ object ZoneGraph {
             override suspend fun end(ids: Set<String>) = pauses.resumeZones(ids)
             override suspend fun publish() = HubGraph.zonesChanged()
         }
+        val state = ZoneStateStore(app.getSharedPreferences(ZoneStateStore.PREFS, Context.MODE_PRIVATE))
+        // A backward move of the wall clock is remembered across a process death (it widens the zone admission window for the retained history).
+        state.clock().let { (peak, rollback) -> ClockGuard.restore(peak, rollback, state.rollbackAt()) { p, r, at -> state.saveClock(p, r, at) } }
         return ZoneController(
             ZoneStore(app.getSharedPreferences(ZoneStore.PREFS, Context.MODE_PRIVATE)), sink, AndroidZoneNotifier(app),
             elapsed = SystemClock::elapsedRealtime, log = { PcLog.i(TAG, it) },
             onZonesChanged = { ContextHubService.refreshLocationType(app) },
+            stateStore = state,
         )
     }
 }

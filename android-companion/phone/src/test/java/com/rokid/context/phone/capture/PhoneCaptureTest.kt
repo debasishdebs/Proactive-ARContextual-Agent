@@ -54,8 +54,10 @@ class PhoneCaptureTest {
 
     private var pausedNow = false
     private var reads = 0
+    private var overlap = false
+    private val windows = ArrayList<Pair<Long, Long>>()
     private fun control(c: PhoneCapture = capture) =
-        PhoneCaptureControl(ctx, pausedNow = { reads++; pausedNow }, capture = c, io = Dispatchers.Unconfined, uri = { android.net.Uri.fromFile(it) }, scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined))
+        PhoneCaptureControl(ctx, pausedNow = { reads++; pausedNow }, capture = c, zoneOverlap = { f, t -> windows += f to t; overlap }, clock = { 5_000L }, io = Dispatchers.Unconfined, uri = { android.net.Uri.fromFile(it) }, scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined))
 
     private fun photo(f: File) = f.apply { outputStream().use { Bitmap.createBitmap(800, 600, Bitmap.Config.ARGB_8888).compress(Bitmap.CompressFormat.JPEG, 90, it) } }
     private fun captureDir() = File(ctx.cacheDir, "capture")
@@ -99,5 +101,23 @@ class PhoneCaptureTest {
         c.refresh()
         assertEquals(false, c.paused.value)
         assertTrue(reads >= 2)
+    }
+
+    // Codex zones r1 P1-7: Capture now gets the historical zone admission: a zone that overlapped the shot window drops the photo even though capture is not paused at prepare or finish.
+    @Test fun aShotTakenInAZoneThatWasLeftAgainIsDiscardedNotArchived() = runBlocking {
+        val c = control()
+        val ready = c.prepare() as CapturePrepare.Ready
+        photo(File(ready.uri.path!!))
+        overlap = true; pausedNow = false // outside again at finish: the two point checks both pass
+        assertEquals(CaptureResult.PAUSED, c.finish(saved = true))
+        assertTrue(enqueued.isEmpty()); assertTrue(captureDir().listFiles().orEmpty().isEmpty())
+        assertTrue("the window opens at the target's own timestamp", windows.single().first <= windows.single().second)
+    }
+
+    @Test fun aZoneCheckThatThrowsFailsClosed() = runBlocking {
+        val c = PhoneCaptureControl(ctx, pausedNow = { false }, capture = capture, io = Dispatchers.Unconfined, uri = { android.net.Uri.fromFile(it) }, scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined), zoneOverlap = { _, _ -> error("db") })
+        val ready = c.prepare() as CapturePrepare.Ready
+        photo(File(ready.uri.path!!))
+        assertEquals(CaptureResult.PAUSED, c.finish(saved = true)); assertTrue(enqueued.isEmpty())
     }
 }

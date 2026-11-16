@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HubCaptureControlTest {
@@ -97,5 +99,28 @@ class HubCaptureControlTest {
     @Test fun repliesNeverMentionBatteryBecauseThePhoneHasNoSignalForIt() = runBlocking {
         val r = HubCaptureControl({ hubWith(PauseRecord("p", PauseOrigin.PHONE, 1L)) }).resume(UtteranceSource.PHONE_CHAT) as CaptureResult.Said
         assertEquals(false, r.reply.contains("battery", ignoreCase = true))
+    }
+
+    // Codex zones r1 P2-12: a zone pause is not the user's pause.
+    private val zoneRec = PauseRecord("zone:jarawa:1", PauseOrigin.PHONE, 1L, null)
+
+    @Test fun resumeWhileOnlyAZonePauseIsActiveGetsTheZoneSpecificRefusal() = runBlocking {
+        val hub = hubWith(zoneRec)
+        assertEquals(CaptureResult.Said(HubCaptureControl.ZONE_REFUSAL), HubCaptureControl({ hub }).resume(UtteranceSource.PHONE_VOICE))
+        assertEquals(emptyList<Set<String>>(), hub.resumed)
+    }
+
+    @Test fun pauseWhileAZonePauseIsActiveCreatesALastingUserPauseSoZoneExitDoesNotResume() = runBlocking {
+        val hub = hubWith(zoneRec)
+        assertEquals(CaptureResult.Said(Utterance.CAPTURE_PAUSED), HubCaptureControl({ hub }).pause(UtteranceSource.PHONE_VOICE))
+        assertEquals(1, hub.pauses); assertEquals(1, hub.active.value.count { !it.pauseId.startsWith("zone:") && it.origin == PauseOrigin.PHONE && it.untilMs == null })
+        hub.active.value = hub.active.value.filterNot { it.pauseId.startsWith("zone:") } // the zone ends by itself
+        assertEquals("the user's pause stays", 1, hub.active.value.size)
+    }
+
+    @Test fun resumeClearsTheUsersPauseButSaysTheZoneStaysAndNeverNamesTheZone() = runBlocking {
+        val hub = hubWith(zoneRec, PauseRecord("u1", PauseOrigin.PHONE, 1L, null))
+        val r = HubCaptureControl({ hub }).resume(UtteranceSource.PHONE_VOICE) as CaptureResult.Said
+        assertEquals(listOf(setOf("u1")), hub.resumed); assertTrue(r.reply, r.reply.contains(HubCaptureControl.ZONE_HOLD)); assertFalse(r.reply, r.reply.contains("jarawa", true))
     }
 }

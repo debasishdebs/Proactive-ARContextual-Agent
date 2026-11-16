@@ -33,13 +33,17 @@ interface PauseDao {
     @Query("SELECT * FROM pause_record ORDER BY createdAtMs ASC") suspend fun records(): List<PauseRecordEntity>
     @Query("DELETE FROM pause_record WHERE pauseId IN (:ids)") suspend fun deleteRecords(ids: List<String>)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertInterval(interval: PauseIntervalEntity): Long
-    @Query("UPDATE pause_interval SET effectiveEndMs = :endMs WHERE pauseId = :pauseId AND effectiveEndMs IS NULL")
+    /** An interval never ends before it starts (a clock moved backwards between its start and its end). */
+    @Query("UPDATE pause_interval SET effectiveEndMs = CASE WHEN :endMs < startMs THEN startMs ELSE :endMs END WHERE pauseId = :pauseId AND effectiveEndMs IS NULL")
     suspend fun closeInterval(pauseId: String, endMs: Long)
     @Query("SELECT COUNT(*) FROM pause_interval WHERE startMs <= :t AND (effectiveEndMs IS NULL OR :t < effectiveEndMs)")
     suspend fun countCovering(t: Long): Int
     /** Pause zones: intervals of `zone:` records covering [t] (open or closed). */
     @Query("SELECT COUNT(*) FROM pause_interval WHERE pauseId LIKE 'zone:%' AND startMs <= :t AND (effectiveEndMs IS NULL OR :t < effectiveEndMs)")
     suspend fun countZoneCovering(t: Long): Int
+    /** Pause zones: `zone:` intervals that overlap [fromMs, toMs) (open ones included): the capture of a photo that took time, or a clock-rollback-widened frame time. */
+    @Query("SELECT COUNT(*) FROM pause_interval WHERE pauseId LIKE 'zone:%' AND startMs < :toMs AND (effectiveEndMs IS NULL OR effectiveEndMs > :fromMs)")
+    suspend fun countZoneOverlapping(fromMs: Long, toMs: Long): Int
     @Query("DELETE FROM pause_interval WHERE effectiveEndMs IS NOT NULL AND effectiveEndMs < :before")
     suspend fun pruneEndedBefore(before: Long)
     @Query("SELECT * FROM pause_interval ORDER BY startMs ASC") suspend fun intervals(): List<PauseIntervalEntity>

@@ -10,6 +10,8 @@ import com.rokid.context.link.PauseHistory
 import com.rokid.context.memory.db.PauseDao
 import com.rokid.context.memory.db.PauseIntervalEntity
 import com.rokid.context.memory.db.PauseRecordEntity
+import com.rokid.context.phone.zone.ClockGuard
+import com.rokid.context.phone.zone.ZoneHold
 import java.time.ZoneId
 import java.util.UUID
 
@@ -96,8 +98,22 @@ class HubPauses(
 
     /** Pause zones: true when [phoneMs] is inside a retained `zone:` interval (the frame gate: a zone beats the mark allowance). */
     override suspend fun zonePausedAt(phoneMs: Long): Boolean {
+        ClockGuard.observe(now())
+        ZoneHold.since()?.let { if (phoneMs >= it) return true } // a zone pause that could not be stored is still enforced
         active()
-        return dao.countZoneCovering(phoneMs) > 0
+        // After a backward clock move, frame times mapped with the new offset sit [rollback] earlier than the stored interval starts: the check reaches that far (fail closed).
+        return dao.countZoneOverlapping(phoneMs, phoneMs + ClockGuard.widenMs() + 1) > 0
+    }
+
+    /**
+     * Pause zones: true when a `zone:` interval overlaps [fromMs, toMs] (a photo whose capture time is only known as a window, the phone camera): the same historical admission a glasses frame gets.
+     * Fail closed: an unstored zone pause counts from its start on, and a clock that moved backwards widens the window.
+     */
+    suspend fun zoneOverlaps(fromMs: Long, toMs: Long): Boolean {
+        ClockGuard.observe(now())
+        ZoneHold.since()?.let { if (toMs >= it) return true }
+        active()
+        return dao.countZoneOverlapping(fromMs - ClockGuard.widenMs(), toMs + ClockGuard.widenMs() + 1) > 0
     }
 
     /** Ids the phone resumed (closed intervals <= 7 d, no live record, newest 200), sent as `HudSettings.resumedPauseIds`. */
@@ -131,6 +147,7 @@ class HubPauses(
      * quiet-hours occurrence that was never created. A resumed occurrence (closed interval) does not pause (final review I2).
      */
     suspend fun pausedNow(): Boolean {
+        if (ZoneHold.held) return true
         if (stored().isNotEmpty()) return true
         val q = quietHours() ?: return false
         val occ = QuietWindow.occurrenceAt(q, now(), zone()) ?: return false
