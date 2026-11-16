@@ -17,6 +17,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -138,7 +139,7 @@ class CaptureSettingsTest {
     @Test fun windowToleranceRowIsShownAndSetsThePercent() {
         var picked = -1
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(windowMinValidPct = 90), onBack = {}, onWindowTolerance = { picked = it }) } }
-        compose.onNodeWithTag("window_tolerance").performScrollTo().assertIsDisplayed()
+        compose.scrollToTag("window_tolerance").assertIsDisplayed()
         compose.onNodeWithTag("window_tolerance").performClick()
         compose.onNodeWithTag("window_tolerance_2").performClick()   // 50, 60, 70
         assertEquals(70, picked)
@@ -234,7 +235,7 @@ class CaptureSettingsTest {
     @Test fun theMarkPhotoHoldRowSitsNextToTheOtherCaptureSettingsAndOffersTwoToFourSeconds() {
         var picked = -1
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(markPhotoHoldMs = 3_000), onBack = {}, onMarkPhotoHold = { picked = it }) } }
-        compose.onNodeWithTag("mark_photo_hold").performScrollTo().assertExists()
+        compose.scrollToTag("mark_photo_hold").assertExists()
         compose.onNodeWithTag("mark_photo_hold_note").assertExists()
         compose.onNodeWithContentDescription("Mark photo hold: 3 s").assertExists()
         compose.onNodeWithTag("mark_photo_hold").performClick()
@@ -374,7 +375,7 @@ class CaptureSettingsTest {
 
     @Test fun wearCardShowsBatteryTextWithoutClaimingAReason() {
         show(CaptureSettingsUiState())
-        compose.onNodeWithTag("wear_card").performScrollTo().assertIsDisplayed()
+        compose.scrollToTag("wear_card").assertIsDisplayed()
         compose.onNodeWithText("Turning it on in Hi Rokid may use more battery").assertExists()
         compose.onNodeWithTag("wear_steps").assertExists()
         compose.onNodeWithTag("wear_missing").assertDoesNotExist()
@@ -384,17 +385,17 @@ class CaptureSettingsTest {
     @Test fun wearCardWarnsWhenMissingAndOffersOpenWhenInstalled() {
         var opened = 0
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(wearSignalKnown = false, wearMissingLong = true), onBack = {}, onOpenHiRokid = { opened++ }) } }
-        compose.onNodeWithTag("wear_missing").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("open_hi_rokid").performScrollTo().performClick()
+        compose.scrollToTag("wear_missing").assertIsDisplayed()
+        compose.scrollToTag("open_hi_rokid").performClick()
         assertEquals(1, opened)
     }
 
     @Test fun wearCardSwitchAndPickersCallBack() {
         var enabled: Boolean? = null; var unknown = 0; var worn = 0
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(), onBack = {}, onWearParkEnabled = { enabled = it }, onWearParkUnknown = { unknown = it }, onWearParkWorn = { worn = it }) } }
-        compose.onNodeWithTag("wear_park_enabled").performScrollTo().performClick()
+        compose.scrollToTag("wear_park_enabled").performClick()
         assertEquals(false, enabled)
-        compose.onNodeWithTag("wear_park_unknown").performScrollTo().performClick()
+        compose.scrollToTag("wear_park_unknown").performClick()
         compose.onNodeWithText("5 min").performClick()
         assertEquals(300, unknown)
         assertEquals(0, worn)
@@ -478,7 +479,7 @@ class CaptureSettingsTest {
     @Test fun theNewRowsAreShownAndReportTheChoice() {
         var silent = -1; var tick = -1; var radius = -1; var scenes = -1
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(), onBack = {}, onWatchdogSilent = { silent = it }, onWatchdogTick = { tick = it }, onForgetRadius = { radius = it }, onSceneRebuilds = { scenes = it }) } }
-        fun pick(tag: String, i: Int) { compose.onNodeWithTag(tag).performScrollTo().performClick(); compose.onNodeWithTag("${tag}_$i").performClick() }
+        fun pick(tag: String, i: Int) { compose.scrollToTag(tag).performClick(); compose.onNodeWithTag("${tag}_$i").performClick() }
         pick("watchdog_silent", 3) // 2, 3, 5, 10 min
         pick("watchdog_tick", 0) // 60 s
         pick("forget_radius", 3) // 30 s
@@ -510,7 +511,7 @@ class CaptureSettingsTest {
         vm.cancelScope()
         var picked: com.rokid.context.memory.forget.ForgetScope? = null
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(developerMode = true), onBack = {}, onForgetScope = { picked = it }) } }
-        compose.onNodeWithTag("forget_scope").performScrollTo().assertIsDisplayed().performClick()
+        compose.scrollToTag("forget_scope").assertIsDisplayed().performClick()
         compose.onNodeWithTag("forget_scope_2").performClick()
         assertEquals(com.rokid.context.memory.forget.ForgetScope.SCENE, picked)
         com.rokid.context.memory.forget.ForgetScope.values().forEach { sc ->
@@ -553,9 +554,15 @@ class CaptureSettingsTest {
         assertEquals(com.rokid.context.memory.forget.ForgetScope.PHOTO, s.forgetScope); assertEquals(false, s.developerMode); vm.cancelScope()
         var picked: com.rokid.context.memory.forget.ForgetScope? = null
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(developerMode = s.developerMode, forgetScope = s.forgetScope), onBack = {}, onForgetScope = { picked = it }) } }
-        compose.onNodeWithTag("forget_scope").performScrollTo().performClick()
+        compose.scrollToTag("forget_scope").performClick()
         compose.onNodeWithTag("forget_scope_1").assertIsNotEnabled(); compose.onNodeWithTag("forget_scope_2").assertIsNotEnabled(); compose.onNodeWithTag("forget_scope_0").assertIsEnabled()
-        compose.onNodeWithTag("forget_scope_experimental").performScrollTo().assertIsDisplayed()
+        compose.scrollToTag("forget_scope_experimental").assertIsDisplayed()
         assertEquals(null, picked)
     }
+}
+
+/** The screen is a LazyColumn: a row below the fold is not composed until the list scrolls to it, so scroll the list first. */
+private fun androidx.compose.ui.test.junit4.ComposeContentTestRule.scrollToTag(tag: String): androidx.compose.ui.test.SemanticsNodeInteraction {
+    onNode(androidx.compose.ui.test.hasScrollToNodeAction()).performScrollToNode(androidx.compose.ui.test.hasTestTag(tag))
+    return onNodeWithTag(tag).performScrollTo()
 }

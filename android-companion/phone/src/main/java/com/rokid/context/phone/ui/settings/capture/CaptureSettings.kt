@@ -208,6 +208,8 @@ fun CaptureSettingsScreen(
     onWearParkEnabled: (Boolean) -> Unit = {}, onWearParkUnknown: (Int) -> Unit = {}, onWearParkWorn: (Int) -> Unit = {}, onOpenHiRokid: (() -> Unit)? = null,
     /** Run in the background card: already exempt from battery optimization, and the user's tap on the button (the destination starts the system dialog). */
     batteryExempt: Boolean = false, onRequestBattery: () -> Unit = {},
+    /** Settings > Capture > AI: the battery level above which on-device indexing runs without a charger ([IndexBatteryStore]). */
+    indexBatteryPct: Int = com.rokid.context.ai.embed.LocalModelPower.DEFAULT_MIN_BATTERY_PCT, onIndexBattery: (Int) -> Unit = {},
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
     val longWork = state.workMinutes > 45
@@ -283,6 +285,9 @@ fun CaptureSettingsScreen(
                 val paces = AiCallPaceStore.OPTIONS_MS
                 ChoiceRow("AI call pace", paces.map(CaptureLabels::pace), paces.indexOf(state.paceMs), { onPace(paces[it]) }, tag = "pace")
                 NoticeText("One background AI call per this long.")
+                val levels = com.rokid.context.ai.embed.LocalModelPower.OPTIONS_PCT
+                ChoiceRow("On-device indexing on battery", levels.map { "Above $it%" }, levels.indexOf(indexBatteryPct).coerceAtLeast(0), { onIndexBattery(levels[it]) }, tag = "index_battery")
+                NoticeText("Below this, and not charging, new memories wait for a charger before semantic search can find them. Lower keeps search fresher and uses more battery.")
             }
         }
         item {

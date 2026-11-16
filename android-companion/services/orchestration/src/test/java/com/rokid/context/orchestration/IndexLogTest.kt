@@ -77,7 +77,7 @@ class IndexLogTest {
         val g = BulkGate({ powerReads++; PowerState(40, false) }, { thermalReads++; false })
         assertFalse(g.allowed())
         assertEquals(1, powerReads); assertEquals("battery closed: the thermal policy is not consulted", 0, thermalReads)
-        repeat(5) { assertEquals("battery 40% and not charging (needs a charger or battery above 70%)", g.reason()) }
+        repeat(5) { assertEquals("battery 40% and not charging (needs a charger or battery above 50%)", g.reason()) } // the default level (Settings > Capture)
         assertEquals(1, powerReads); assertEquals(0, thermalReads)           // formatting read nothing
         val warm = BulkGate({ PowerState(90, false) }, { thermalReads++; false })
         assertFalse(warm.allowed()); assertEquals(1, thermalReads)
@@ -152,6 +152,12 @@ class IndexLogTest {
     }
 
     @Test fun gateReasonNamesTheBlocker() {
+        val saved = com.rokid.context.ai.embed.LocalModelPower.minBatteryPct
+        com.rokid.context.ai.embed.LocalModelPower.minBatteryPct = { 70 }
+        try { gateReasonAtSeventy() } finally { com.rokid.context.ai.embed.LocalModelPower.minBatteryPct = saved }
+    }
+
+    private fun gateReasonAtSeventy() {
         assertEquals("battery 55% and not charging (needs a charger or battery above 70%)", BulkGateReason.of(PowerState(55, false), true))
         assertEquals("battery unknown and not charging (needs a charger or battery above 70%)", BulkGateReason.of(PowerState(-1, false), true))
         assertEquals("thermal/background policy (phone too warm)", BulkGateReason.of(PowerState(90, false), false))

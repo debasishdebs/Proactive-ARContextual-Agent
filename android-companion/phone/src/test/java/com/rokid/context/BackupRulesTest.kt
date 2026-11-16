@@ -66,6 +66,8 @@ class BackupRulesTest {
         com.rokid.context.phone.log.PrefsWipePending.PREFS,
         // AI call pace (10 / 12 / 15 s) paces this phone's own model calls (the call budget reads it): per-device, back to the default after a restore.
         com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
+        // 2026-11-16: the on-device indexing battery level is a per-device setting: back to the default (50 %) after a restore.
+        com.rokid.context.phone.ui.settings.capture.IndexBatteryStore.PREFS,
         // 3d: the global window tolerance is a per-device compile default: back to 90 after a restore.
         com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.PREFS,
         // v0.9.7 A: disabled catalogue signals and derived-signal definitions are per-device config tied to the canvas guards in the excluded DB: back to empty after a restore.

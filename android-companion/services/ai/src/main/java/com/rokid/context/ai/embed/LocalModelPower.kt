@@ -17,7 +17,8 @@ data class PowerState(val batteryPct: Int, val charging: Boolean) {
 
 /**
  * Gaps G6, MVP spec 6: "Local model allowed only when charging OR battery >70%", applied to on-device
- * (LLAMACPP_LOCAL) embeddings.
+ * (LLAMACPP_LOCAL) embeddings. 2026-11-16 (user): the battery level is a setting (Settings > Capture > AI, 30 / 50 / 70 %, default 50 %):
+ * the app sets [minBatteryPct] at start; without it the default applies.
  *
  * Ruling (recorded in the G1/G6 report): the spec has no rule for a user's own search (MVP 6 predates on-device
  * embeddings, and "Manual readContext bypasses schedule"), so one short query embed (<= [QUERY_MAX_CHARS]) is allowed
@@ -25,8 +26,15 @@ data class PowerState(val batteryPct: Int, val charging: Boolean) {
  * a gated search falls back to lexical through the existing semantic-unavailable path.
  */
 object LocalModelPower {
-    const val MIN_BATTERY_PCT = 70
+    const val DEFAULT_MIN_BATTERY_PCT = 50
+    val OPTIONS_PCT = listOf(30, 50, 70)
     const val QUERY_MAX_CHARS = 512
+
+    /** The user's "On-device indexing on battery" level; bulk work runs above it (or while charging). */
+    @Volatile var minBatteryPct: () -> Int = { DEFAULT_MIN_BATTERY_PCT }
+
+    /** The level in force now, clamped to 0..100 (a failing provider falls back to the default). */
+    val MIN_BATTERY_PCT: Int get() = (runCatching { minBatteryPct() }.getOrNull() ?: DEFAULT_MIN_BATTERY_PCT).coerceIn(0, 100)
 
     fun bulkAllowed(p: PowerState): Boolean = p.charging || p.batteryPct > MIN_BATTERY_PCT
 

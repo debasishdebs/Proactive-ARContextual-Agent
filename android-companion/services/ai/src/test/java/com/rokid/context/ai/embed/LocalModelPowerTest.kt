@@ -56,9 +56,21 @@ class LocalModelPowerTest {
     }
     private val longQuery = "where did I leave the milk carton " + "and the rest of the shopping ".repeat(30)
     private val db = DatabaseFactory.inMemory(ctx)
-    @After fun close() { MemoryGraph.resetForTests(null); db.close() }
+    @After fun close() { MemoryGraph.resetForTests(null); db.close(); LocalModelPower.minBatteryPct = { LocalModelPower.DEFAULT_MIN_BATTERY_PCT } }
+
+    @Test fun theBatteryLevelIsASettingDefaultFifty() {
+        assertEquals(50, LocalModelPower.MIN_BATTERY_PCT)
+        assertTrue(LocalModelPower.bulkAllowed(PowerState(51, false)))
+        assertFalse(LocalModelPower.bulkAllowed(PowerState(50, false)))
+        LocalModelPower.minBatteryPct = { 30 }
+        assertTrue(LocalModelPower.bulkAllowed(PowerState(31, false)))
+        assertFalse(LocalModelPower.bulkAllowed(PowerState(30, false)))
+        LocalModelPower.minBatteryPct = { error("prefs") }
+        assertEquals("a failing provider keeps the default", 50, LocalModelPower.MIN_BATTERY_PCT)
+    }
 
     @Test fun theRuleIsChargingOrAboveSeventy() {
+        LocalModelPower.minBatteryPct = { 70 }
         assertTrue(LocalModelPower.bulkAllowed(PowerState(71, false)))
         assertFalse(LocalModelPower.bulkAllowed(PowerState(70, false)))
         assertTrue(LocalModelPower.bulkAllowed(PowerState(5, true)))

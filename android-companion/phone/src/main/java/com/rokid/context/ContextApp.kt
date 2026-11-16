@@ -28,6 +28,8 @@ class ContextApp : Application() {
         // One call budget for every provider call (P2); its period follows Settings > Capture > AI call pace (10 / 12 / 15 s).
         // Codex review 5: the preference-backed stores below are read lazily (first use, normally on a worker) and warmed on a background thread, never loaded here.
         com.rokid.context.ai.AiGraph.gate = com.rokid.context.work.budget.CallBudget(clock = System::currentTimeMillis, periodMs = { com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(this).paceMs.value })
+        // 2026-11-16: on-device index work runs above the battery level set in Settings > Capture > AI (default 50 %); read lazily like the call pace.
+        com.rokid.context.ai.embed.LocalModelPower.minBatteryPct = { com.rokid.context.phone.ui.settings.capture.IndexBatteryStore.get(this).pct.value }
         // 3d: the canvas compiler's default window tolerance follows Settings > Capture > Window tolerance (new compiles only; a published plan holds its own number).
         com.rokid.context.ai.canvas.plan.WindowTolerance.provider = { com.rokid.context.phone.ui.settings.capture.WindowToleranceStore.get(this).pct.value }
         // v0.9.7 A: the canvas compiler and try-it read the disabled signals and derived definitions from Settings (new compiles only; a published plan is already expanded).
