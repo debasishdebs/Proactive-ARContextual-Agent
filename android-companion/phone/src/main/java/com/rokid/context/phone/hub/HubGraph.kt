@@ -284,6 +284,8 @@ object HubGraph {
                 autoStopRef.set(ctl)
                 scope.launch { kotlinx.coroutines.flow.combine(hub.link.state, hub.link.wearing, hub.wearEstimate.active) { l, w, e -> Triple(l, w, e) }.collect { ctl.poke() } }
                 scope.launch { timing.autoStopMin.collect { ctl.poke() } }
+                // v1.1 T6: the glasses' Bluetooth address is learned while the link is up (the ACL receiver matches only it).
+                scope.launch { hub.link.state.collect { if (it == com.rokid.context.core.model.LinkState.CONNECTED) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { GlassesAclReceiver.learn(app) } } }
             }.start(scope)
         }
     }

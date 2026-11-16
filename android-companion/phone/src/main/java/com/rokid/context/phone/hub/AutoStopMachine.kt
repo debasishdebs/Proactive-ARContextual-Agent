@@ -52,6 +52,12 @@ sealed interface AutoStopEvent {
     data class ConfirmStop(val wake: WakeInputs? = null, val hub: HubSignals? = null) : AutoStopEvent
     /** A process start ([AutoStopWake]: Application.onCreate, the one-shot wake worker): a due wake may start the hub, an interrupted one is recovered. */
     data class ProcessStarted(val via: String, val wake: WakeInputs? = null) : AutoStopEvent
+    /**
+     * v1.1 T6: the paired glasses' Bluetooth ACL connect ([GlassesAclReceiver], the address already matched). A positive signal: the wake ladder starts again; an auto-stopped hub
+     * that was not stopped by hand starts as a probe hub ([BackgroundPolicy.WAKE_PROBE_MS]) through the guarded start path, with or without the battery exemption (Android decides
+     * whether the start is allowed). A manual stop is never overridden.
+     */
+    data class GlassesNearby(val via: String = "acl", val wake: WakeInputs? = null) : AutoStopEvent
     /** Feedback of [AutoStopEffect.StartWake]: the start request was issued / the service is up after it. */
     data class WakeResult(val issued: Boolean, val serviceRunning: Boolean) : AutoStopEvent
     /** The hub service entered the foreground ([ContextHubService]): a wake in progress is complete. */
@@ -110,6 +116,7 @@ object AutoStopMachine {
         is AutoStopEvent.Evaluate -> evaluate(s.copy(wake = e.wake ?: s.wake, hub = e.hub ?: s.hub), now)
         is AutoStopEvent.ConfirmStop -> confirm(s.copy(wake = e.wake ?: s.wake, hub = e.hub ?: s.hub), now)
         is AutoStopEvent.ProcessStarted -> processStart(s.copy(wake = e.wake ?: s.wake), e.via, now)
+        is AutoStopEvent.GlassesNearby -> nearby(s.copy(wake = e.wake ?: s.wake), e.via, now)
         is AutoStopEvent.WakeResult -> wakeResult(s, e, now)
         // The hub is live from now on (a lost hub is told apart from a stopped one by this flag); a wake in progress is complete.
         AutoStopEvent.HubForeground -> if (s.saved.wakeStartedAtMs == 0L) T(live(s)) else T(live(cleared(s)), listOf(AutoStopEffect.Note(null)))
@@ -223,6 +230,20 @@ object AutoStopMachine {
             return T(s1, fx, reply = AutoStopClaimed(AutoStopWake.Claim.NOT_DUE))
         }
         return if (lost) recover(s, w, t, via) else claim(s, w, t, via, false, emptyList())
+    }
+
+    /**
+     * v1.1 T6: see [AutoStopEvent.GlassesNearby]. Always: the ladder restarts (the next rung is one step from now while the hub is stopped). Then only an auto-stopped hub with no
+     * manual stop, link machinery allowed, no hub service, no wake in flight and no call (or its settle) starts; the start is the same unmarked ([AutoStopEffect.StartWake],
+     * not recovery) request as a wake, so the glasses connect only through the call guard and the hourly cap. The reply is the claim's, like a process start's.
+     */
+    private fun nearby(s0: AutoStopState, via: String, t: Long): T {
+        val w = s0.wake
+        val stopped = s0.saved.autoStoppedAtMs != 0L && !s0.saved.manualStop
+        val s = s0.copy(saved = s0.saved.copy(wakeStep = 0, nextWakeAtMs = if (s0.saved.autoStoppedAtMs != 0L) t + BackgroundPolicy.wakeDelayMs(0) else 0L))
+        if (!stopped || w == null || !w.linkAllowed || w.serviceRunning || !w.callIdle || s0.saved.wakeStartedAtMs != 0L || s0.pendingStop != null) return T(s, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        val c = WakeClaim(via, t, controller = false, exempt = w.exempt)
+        return T(s.copy(saved = s.saved.copy(wakeProbe = true), claim = c), listOf(AutoStopEffect.Log(AutoStopEffect.Line.WAKE_ATTEMPT, via), AutoStopEffect.StartWake(via, false)))
     }
 
     /**

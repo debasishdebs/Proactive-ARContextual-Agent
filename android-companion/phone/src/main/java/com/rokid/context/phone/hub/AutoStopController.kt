@@ -155,6 +155,7 @@ class AutoStopEngine(
         is AutoStopEvent.Evaluate -> if (e.wake != null && e.hub != null) e else AutoStopEvent.Evaluate(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
         is AutoStopEvent.ConfirmStop -> if (e.wake != null && e.hub != null) e else AutoStopEvent.ConfirmStop(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
         is AutoStopEvent.ProcessStarted -> if (e.wake != null) e else e.copy(wake = wakeNow()?.let { it.copy(callIdle = hubStart.callIdle(), hubStartInMs = hubStart.dueInMs(clock())) })
+        is AutoStopEvent.GlassesNearby -> if (e.wake != null) e else e.copy(wake = wakeNow()?.let { it.copy(callIdle = hubStart.callIdle()) })
         else -> e
     }
 
