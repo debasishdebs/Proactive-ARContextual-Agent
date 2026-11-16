@@ -34,6 +34,7 @@ class LogContentScanTest {
         "GlassesWatchdog.kt" to setOf("it"), "AutoStopController.kt" to setOf("it"), "GlassesWearEstimate.kt" to setOf("it"), "AutoStopWake.kt" to setOf("it"), "StateBroadcaster.kt" to setOf("it"), "CxrGlassesLink.kt" to setOf("it"), "SessionSlot.kt" to setOf("it"),
         "AndroidSpeaker.kt" to setOf("it.wire"), "GlassesRuntime.kt" to setOf("\"ptt: \$it\""),
         "PhoneExitDiagnostics.kt" to setOf("\"\${format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live)}\""), // file-scoped: numeric fields and controlled flags only (review hub-wp2 r2)
+        "ZoneGraph.kt" to setOf("it"), // zone log lines: counts, state and reason names, a class name (ZoneController); never a zone name or a coordinate
         "WatchLinkState.kt" to setOf("it"), // WatchDropLog: only "watch drop reason=<fixed token> n=<count>"
     )
 

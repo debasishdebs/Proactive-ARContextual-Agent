@@ -32,6 +32,9 @@ object HubGraph {
 
     internal val isBuilt: Boolean get() = hub != null
 
+    /** Pause zones: the zone state changed (records or the approach flag): the hub pushes settings and a frame. A no-op before the hub is built. */
+    internal suspend fun zonesChanged() { hub?.zonesChanged() }
+
     /** An ask in progress on the glasses, or a Reconnect the user just tapped: keeps the hub service wanted ([BackgroundPolicy.Needs.activeWork]). False before the hub is built. */
     internal fun busy(): Boolean = hub?.busy() == true
 
@@ -173,7 +176,8 @@ object HubGraph {
         // permission is granted (spec §5); fix REQUESTS still follow ctxHub.speedWanted (vehicle suspected) and valid access.
         val watchdogRef = java.util.concurrent.atomic.AtomicReference<GlassesWatchdog>()
         val ctxSettings = com.rokid.context.phone.context.ContextSourceSettings.of(app)
-        com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxSettings.enabled(com.rokid.context.phone.context.SpeedSource.ID) }
+        // Pause zones: the same foreground location type is also held while any enabled zone exists (no background location, no geofencing).
+        com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxSettings.enabled(com.rokid.context.phone.context.SpeedSource.ID) || com.rokid.context.phone.zone.ZoneGraph.get(app).wantsLocation() }
         var sourcesOn = BackgroundPolicy.CONTEXT_SOURCE_IDS.count(ctxSettings::enabled)
         ctxScope.launch { ctxSettings.changes.collect {
             ContextHubService.refreshLocationType(app)
@@ -250,7 +254,13 @@ object HubGraph {
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
+            zoneApproach = { com.rokid.context.phone.zone.ZoneGraph.get(app).approach },
         ).also { hubRef.set(it) }.also { hub ->
+            // Pause zones: judge the stored zones now (fail closed until the first fix) and ask for fixes only while zones exist, under the hub's own foreground location type.
+            com.rokid.context.phone.zone.ZoneGraph.get(app).let { zones ->
+                scope.launch { zones.start() }
+                com.rokid.context.phone.zone.TripLocation.create(app, zones, scope, foreground = ContextHubService::appInForeground, locationHeld = { ContextHubService.locationHeld.value }).start()
+            }
             // v0.9.8 slice C: a flow's glasses delivery target asks this (not connected = the phone, with the reason recorded)
             com.rokid.context.orchestration.DeliveryEnvironment.glassesConnected = { hub.link.state.value == com.rokid.context.core.model.LinkState.CONNECTED }
             // Process-lifetime watchdog: it outlives the hub service, so it can also bring a dead service back (ensureRunning is refused harmlessly where Android forbids it).
