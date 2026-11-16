@@ -68,8 +68,8 @@ enum class SemanticOff(val text: String) {
     /** No Embeddings model is bound (and so no index was ever built): the next step is to set one up. */
     NO_MODEL("no Embeddings model is set. Download Nomic Embed in Settings > AI > On-device models and use it for Embeddings, or bind an embeddings endpoint in Settings > Model endpoints > Embeddings"),
     /** An Embeddings model is bound but no index exists yet: the first build has not run, or its first probe of the model failed (codex r9 P2-6). */
-    NO_INDEX("the search index is not built yet. It builds in the background (on-device: only while charging or above 70 % battery); if it never appears, test the Embeddings endpoint in Settings > Model endpoints > Embeddings"),
-    INDEX_BUILDING("the search index is still being built (on-device: only while charging or above 70 % battery)"),
+    NO_INDEX("the search index is not built yet. It builds in the background (on-device: only while charging or above the battery level set in Settings > Capture); if it never appears, test the Embeddings endpoint in Settings > Model endpoints > Embeddings"),
+    INDEX_BUILDING("the search index is still being built (on-device: only while charging or above the battery level set in Settings > Capture)"),
     INDEX_STALE("the search index needs a rebuild (Settings > Retrieval > Rebuild)"),
     MODEL_CHANGED("the Embeddings endpoint changed since the index was built; it rebuilds in the background"),
     QUERY_FAILED("the Embeddings model or the search index failed for this question"),

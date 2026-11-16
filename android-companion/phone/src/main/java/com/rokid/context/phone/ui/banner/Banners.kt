@@ -9,7 +9,7 @@ enum class IndexState {
     NONE, NEEDED, RUNNING,
     /** Auto-rebuild stopped after repeated canary drift (Task 11); only the user's Rebuild resumes it. */
     UNSTABLE,
-    /** Gaps G6: on-device index work waits for a charger (battery 70 % or less, not charging). */
+    /** Gaps G6: on-device index work waits for a charger (at or below the battery level set in Settings > Capture, not charging). */
     BATTERY_PAUSED,
     /** 2026-11-08: no Embeddings model is bound, so Ask and search use keyword matches only (it used to degrade silently). */
     EMBED_NOT_SET;

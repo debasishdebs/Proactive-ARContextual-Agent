@@ -203,7 +203,7 @@ class PhotoDimEval(
         const val MAX_QUERIES = 400
         const val BATCH = 8
         const val TIME_LIMIT_MS = 20 * 60_000L
-        const val BLOCKED = "Paused: the phone is warm, or the battery is under 70% and not charging. Plug in or let it cool, then run again."
+        const val BLOCKED = "Paused: the phone is warm, or the battery is under the level set in Settings > Capture and not charging. Plug in or let it cool, then run again."
 
         /** The Diagnostics row exists only in debug builds with Developer mode on. */
         fun rowVisible(debug: Boolean, developerMode: Boolean): Boolean = debug && developerMode

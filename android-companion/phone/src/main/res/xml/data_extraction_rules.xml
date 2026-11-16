@@ -48,6 +48,7 @@
         <exclude domain="sharedpref" path="hub_auto_stop.xml" />
         <exclude domain="sharedpref" path="pc_dev.xml" />
         <exclude domain="sharedpref" path="ai_call_pace.xml" />
+        <exclude domain="sharedpref" path="index_battery.xml" />
         <exclude domain="sharedpref" path="window_tolerance.xml" />
     <exclude domain="sharedpref" path="signal_config.xml" />
     <exclude domain="sharedpref" path="device_capabilities.xml" />
@@ -121,6 +122,7 @@
         <exclude domain="sharedpref" path="hub_auto_stop.xml" />
         <exclude domain="sharedpref" path="pc_dev.xml" />
         <exclude domain="sharedpref" path="ai_call_pace.xml" />
+        <exclude domain="sharedpref" path="index_battery.xml" />
         <exclude domain="sharedpref" path="window_tolerance.xml" />
     <exclude domain="sharedpref" path="signal_config.xml" />
     <exclude domain="sharedpref" path="device_capabilities.xml" />
