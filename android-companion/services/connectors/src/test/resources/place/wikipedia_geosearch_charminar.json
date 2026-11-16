@@ -1,0 +1,44 @@
+{
+ "_note": "Hand-written fixture in the documented response shape (not a captured response); ids are synthetic.",
+ "batchcomplete": true,
+ "query": {
+  "geosearch": [
+   {
+    "pageid": 101,
+    "ns": 0,
+    "title": "Charminar",
+    "lat": 17.361944,
+    "lon": 78.474722,
+    "dist": 12.0,
+    "primary": ""
+   },
+   {
+    "pageid": 102,
+    "ns": 0,
+    "title": "Laad Bazaar",
+    "lat": 17.3622,
+    "lon": 78.4741,
+    "dist": 60.5,
+    "primary": ""
+   },
+   {
+    "pageid": 103,
+    "ns": 0,
+    "title": "Mecca Masjid, Hyderabad",
+    "lat": 17.3604,
+    "lon": 78.4736,
+    "dist": 200.1,
+    "primary": ""
+   },
+   {
+    "pageid": 104,
+    "ns": 0,
+    "title": "Mir Mahboob Ali Khan, Asaf Jah VI",
+    "lat": 17.3615,
+    "lon": 78.475,
+    "dist": 35.0,
+    "primary": ""
+   }
+  ]
+ }
+}

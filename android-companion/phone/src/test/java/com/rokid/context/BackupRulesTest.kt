@@ -20,6 +20,8 @@ class BackupRulesTest {
         // Markers that say "already done in the DB": restored without the DB they would skip re-seeding/re-import.
         "sharedpref:ai_seed.xml", "sharedpref:legacy_import.xml",
         "database:context.db", "database:context.db-wal", "database:context.db-shm",
+        // Place Guide PG1: the place pack is its own SQLCipher database (same key as context.db, whose key file is excluded): public place text plus the recency of what was looked at.
+        "database:places.db", "database:places.db-wal", "database:places.db-shm", "database:places.db-journal",
         // On-device embeddings spec section 4: downloaded models (large, re-downloadable) are never backed up.
         "file:models",
         // Final review I4: the photo test's labels (queries.json holds the user's free text about their photos) never leave the phone.
@@ -295,5 +297,16 @@ class BackupRulesTest {
         val fenced = File("../services/orchestration/src/main/java/com/rokid/context/canvas/trace/FencedFiles.kt").readText()
         for (n in slice3aFiles) assertTrue(n, fenced.contains("\"$n\""))
         assertTrue(File("../services/memory/src/main/java/com/rokid/context/memory/db/DeletionEpochStore.kt").readText().contains("const val PREFS = \"deletion_epoch\""))
+    }
+
+    /** The place pack is a separate file from context.db, listed in every section, and is not a prefs file or a config export. */
+    @Test fun thePlacePackDatabaseIsExcludedEverywhereAndNeverExported() {
+        assertEquals("places.db", com.rokid.context.memory.place.PlacesDatabase.NAME)
+        assertEquals("context.db", com.rokid.context.memory.db.DatabaseFactory.NAME)
+        for (section in allSections()) {
+            val ex = excludes(section)
+            for (f in listOf("places.db", "places.db-wal", "places.db-shm", "places.db-journal")) assertTrue("${section.tagName}: $f", "database:$f" in ex)
+        }
+        assertTrue(com.rokid.context.orchestration.ConfigExport.PREFS_FILES.none { it.contains("place", ignoreCase = true) })
     }
 }

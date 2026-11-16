@@ -1,0 +1,51 @@
+{
+ "_note": "Hand-written fixture in the documented response shape (not a captured response); ids are synthetic.",
+ "batchcomplete": true,
+ "query": {
+  "pages": [
+   {
+    "pageid": 201,
+    "ns": 0,
+    "title": "Golconda Fort",
+    "extract": "Golconda Fort is a fortified citadel and an early capital city of the Qutb Shahi dynasty. It is located in Hyderabad, Telangana. Built of granite, it is known for its acoustics.",
+    "pageprops": {
+     "wikibase_item": "Q9000011"
+    },
+    "coordinates": [
+     {
+      "lat": 17.3833,
+      "lon": 78.4011,
+      "primary": "",
+      "globe": "earth"
+     }
+    ]
+   },
+   {
+    "pageid": 202,
+    "ns": 0,
+    "title": "Bala Hissar Gate",
+    "extract": "Bala Hissar Gate is the main entrance to the upper citadel. Its carved arch faces east.",
+    "pageprops": {
+     "wikibase_item": "Q9000012"
+    }
+   },
+   {
+    "pageid": 203,
+    "ns": 0,
+    "title": "Fateh Darwaza",
+    "extract": "Fateh Darwaza is the Victory Gate of the fort. It is known for its clap acoustics.",
+    "pageprops": {
+     "wikibase_item": "Q9000013"
+    },
+    "coordinates": [
+     {
+      "lat": 17.379,
+      "lon": 78.3975,
+      "primary": "",
+      "globe": "earth"
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -1,0 +1,68 @@
+{
+ "_note": "Hand-written fixture in the documented response shape (not a captured response); ids are synthetic.",
+ "batchcomplete": true,
+ "query": {
+  "pages": [
+   {
+    "pageid": 101,
+    "ns": 0,
+    "title": "Charminar",
+    "extract": "Charminar is a monument and mosque located in Hyderabad, Telangana, India. It was constructed in 1591. The landmark is the symbol of the city.",
+    "pageprops": {
+     "wikibase_item": "Q9000001"
+    },
+    "coordinates": [
+     {
+      "lat": 17.361944,
+      "lon": 78.474722,
+      "primary": "",
+      "globe": "earth"
+     }
+    ]
+   },
+   {
+    "pageid": 102,
+    "ns": 0,
+    "title": "Laad Bazaar",
+    "extract": "Laad Bazaar is a market near the Charminar. It is known for bangles.",
+    "pageprops": {
+     "wikibase_item": "Q9000002"
+    }
+   },
+   {
+    "pageid": 103,
+    "ns": 0,
+    "title": "Mecca Masjid, Hyderabad",
+    "extract": "The Mecca Masjid is a mosque in Hyderabad. It is one of the oldest and largest mosques in India.",
+    "pageprops": {
+     "wikibase_item": "Q9000003"
+    },
+    "coordinates": [
+     {
+      "lat": 17.3604,
+      "lon": 78.4736,
+      "primary": "",
+      "globe": "earth"
+     }
+    ]
+   },
+   {
+    "pageid": 104,
+    "ns": 0,
+    "title": "Mir Mahboob Ali Khan, Asaf Jah VI",
+    "extract": "Mir Mahboob Ali Khan was the sixth Nizam of Hyderabad State.",
+    "pageprops": {
+     "wikibase_item": "Q9000004"
+    },
+    "coordinates": [
+     {
+      "lat": 17.3615,
+      "lon": 78.475,
+      "primary": "",
+      "globe": "earth"
+     }
+    ]
+   }
+  ]
+ }
+}

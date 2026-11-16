@@ -1,0 +1,190 @@
+{
+ "_note": "Hand-written fixture in the documented response shape (not a captured response); ids are synthetic.",
+ "entities": {
+  "Q9000001": {
+   "type": "item",
+   "id": "Q9000001",
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4989906,
+         "id": "Q4989906"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P625": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P625",
+       "datavalue": {
+        "value": {
+         "latitude": 17.361944,
+         "longitude": 78.474722,
+         "altitude": null,
+         "precision": 1e-05,
+         "globe": "http://www.wikidata.org/entity/Q2"
+        },
+        "type": "globecoordinate"
+       },
+       "datatype": "globe-coordinate"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q9000002": {
+   "type": "item",
+   "id": "Q9000002",
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 330284,
+         "id": "Q330284"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P625": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P625",
+       "datavalue": {
+        "value": {
+         "latitude": 17.3622,
+         "longitude": 78.4741,
+         "altitude": null,
+         "precision": 1e-05,
+         "globe": "http://www.wikidata.org/entity/Q2"
+        },
+        "type": "globecoordinate"
+       },
+       "datatype": "globe-coordinate"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q9000003": {
+   "type": "item",
+   "id": "Q9000003",
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 32815,
+         "id": "Q32815"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P625": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P625",
+       "datavalue": {
+        "value": {
+         "latitude": 17.3604,
+         "longitude": 78.4736,
+         "altitude": null,
+         "precision": 1e-05,
+         "globe": "http://www.wikidata.org/entity/Q2"
+        },
+        "type": "globecoordinate"
+       },
+       "datatype": "globe-coordinate"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q9000004": {
+   "type": "item",
+   "id": "Q9000004",
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 5,
+         "id": "Q5"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P625": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P625",
+       "datavalue": {
+        "value": {
+         "latitude": 17.3615,
+         "longitude": 78.475,
+         "altitude": null,
+         "precision": 1e-05,
+         "globe": "http://www.wikidata.org/entity/Q2"
+        },
+        "type": "globecoordinate"
+       },
+       "datatype": "globe-coordinate"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  }
+ },
+ "success": 1
+}

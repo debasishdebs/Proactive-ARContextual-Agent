@@ -1,0 +1,199 @@
+{
+ "_note": "Hand-written fixture in the documented response shape (not a captured response); ids are synthetic.",
+ "entities": {
+  "Q9000011": {
+   "type": "item",
+   "id": "Q9000011",
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 1785071,
+         "id": "Q1785071"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P527": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9000012,
+         "id": "Q9000012"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     },
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9000013,
+         "id": "Q9000013"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P625": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P625",
+       "datavalue": {
+        "value": {
+         "latitude": 17.3833,
+         "longitude": 78.4011,
+         "altitude": null,
+         "precision": 1e-05,
+         "globe": "http://www.wikidata.org/entity/Q2"
+        },
+        "type": "globecoordinate"
+       },
+       "datatype": "globe-coordinate"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q9000012": {
+   "type": "item",
+   "id": "Q9000012",
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4989906,
+         "id": "Q4989906"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P361": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 9000011,
+         "id": "Q9000011"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P625": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P625",
+       "datavalue": {
+        "value": {
+         "latitude": 17.3841,
+         "longitude": 78.4022,
+         "altitude": null,
+         "precision": 1e-05,
+         "globe": "http://www.wikidata.org/entity/Q2"
+        },
+        "type": "globecoordinate"
+       },
+       "datatype": "globe-coordinate"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  },
+  "Q9000013": {
+   "type": "item",
+   "id": "Q9000013",
+   "claims": {
+    "P31": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P",
+       "datavalue": {
+        "value": {
+         "entity-type": "item",
+         "numeric-id": 4989906,
+         "id": "Q4989906"
+        },
+        "type": "wikibase-entityid"
+       },
+       "datatype": "wikibase-item"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ],
+    "P625": [
+     {
+      "mainsnak": {
+       "snaktype": "value",
+       "property": "P625",
+       "datavalue": {
+        "value": {
+         "latitude": 17.379,
+         "longitude": 78.3975,
+         "altitude": null,
+         "precision": 1e-05,
+         "globe": "http://www.wikidata.org/entity/Q2"
+        },
+        "type": "globecoordinate"
+       },
+       "datatype": "globe-coordinate"
+      },
+      "type": "statement",
+      "rank": "normal"
+     }
+    ]
+   }
+  }
+ },
+ "success": 1
+}
