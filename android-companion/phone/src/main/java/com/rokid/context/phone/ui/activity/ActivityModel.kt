@@ -161,6 +161,7 @@ object MarkRows {
         MarkPhotoReason.RATE_LIMITED -> "too many photo requests in a minute"
         MarkPhotoReason.SESSION_CLOSED -> "the glasses link had closed"
         MarkPhotoReason.UNKNOWN_SESSION -> "the glasses link was not ready"
+        MarkPhotoReason.PAUSE_ZONE -> "photos are not allowed in a pause zone"
         else -> token
     }
 

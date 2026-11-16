@@ -114,6 +114,8 @@ class BackupRulesTest {
         "watch_list",
         // Activity sort (Latest first / Oldest first / A-Z / Z-A) is a plain UI preference kept in hub_settings: restored.
         com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS,
+        // Pause zones: user configuration (ids, names, boxes, buffers; no DB ids), restored and exported. The per-install record counter is harmless after a restore.
+        com.rokid.context.phone.zone.ZoneStore.PREFS,
     )
 
     /**

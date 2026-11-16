@@ -36,6 +36,8 @@ object ConfigExport {
     val PREFS_FILES = listOf(
         "hub_settings", "voice_settings", "retrieval_settings", "prompt_settings", "persona_settings", "context_sources",
         "action_settings", "memory_settings",
+        // Pause zones (user configuration: ids, names, boxes, buffers). Delete all never touches this file.
+        "pause_zones",
     )
 
     private val SECRET_NAME = Regex("(?i)(api[_-]?key|token|secret|password|passphrase|credential|auth)")

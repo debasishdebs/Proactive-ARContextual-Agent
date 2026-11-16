@@ -111,6 +111,8 @@ class Hub(
     private val onPositiveSignal: () -> Unit = {},
     /** v0.9.9: our app is in front: the glasses link connects as before even with the setting off (only the BACKGROUND stops, see [BackgroundPolicy]). */
     private val inFront: () -> Boolean = { false },
+    /** Pause zones: the phone is within a zone's approach band or inside it; sent at every settings push as `HudSettings.zoneApproach` (the glasses pause locally if the link drops). */
+    private val zoneApproach: () -> Boolean = { false },
 ) : GlassesStatusSource {
     private fun linkAllowed(): Boolean = inFront() || BackgroundPolicy.linkMachineryAllowed(reopenEnabled(), paired())
     /** Phone clock of the last tapped Reconnect (0 = none): keeps the hub service wanted for [BackgroundPolicy.USER_ASK_HOLD_MS]. */
@@ -269,6 +271,11 @@ class Hub(
         val pushed = onHubScope { pushSettings().also { broadcaster.markDirty() } }
         refreshPauses()
         return pushed
+    }
+
+    /** Pause zones: a zone record was added or ended, or the approach flag changed: push the settings (the glasses hear it at once) and a frame. */
+    suspend fun zonesChanged() {
+        guarded("zones") { pushSettings(); broadcaster.markDirty(); refreshPauses() }
     }
 
     /** Something a frame shows changed outside the hub's own flows: send a fresh frame (≤ 4 Hz). */
@@ -458,6 +465,7 @@ class Hub(
         // LGC4P: the Developer-mode switch at push time, never the stored value (a restart would otherwise re-send false and switch recording off).
         ).let { it.copy(
             diagRecord = devMode.value,
+            zoneApproach = zoneApproach(), // pause zones: computed at push time, never the stored value
             // v0.9.7 B: the developer sensor recording is a diagnostics feature: its rate goes on the wire only while Developer mode is on (and only a preset); the stored value alone never decides
             sensorRecHz = if (devMode.value) it.sensorRecHz.takeIf { hz -> hz in com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ } ?: 0 else 0,
         ) }
