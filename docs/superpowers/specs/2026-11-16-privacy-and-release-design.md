@@ -203,3 +203,9 @@ apksigner sign --ks ~/.android/debug.keystore --next-signer --ks ~/<signing dir>
 1. **Debuggable phone release?** Non-debuggable is real hardening and the true production path, but it ends `run-as` backups. Debuggable keeps backups and keeps the developer-only tools on.
 2. **Play publishing in plan?** If yes, the release key we generate is the one to upload to Play later, and the Play rules should be checked before K3.
 3. **Debug signer after rotation:** keep it trusted for a transition window (easy rollback) or revoke its capabilities (`installed-data`, `rollback` false), so the well-known debug key can no longer update the app?
+
+## Rulings (user, 2026-11-16)
+- Release signing uses APK Signature Scheme v3 key rotation so the release-signed build installs OVER the debug-signed apps. Hard requirement: the existing database, marks, Moments, asks and photos are retained (no uninstall, no fresh start). Test the rotation on a spare install first (the `--rotation-min-sdk-version` flag is UNVERIFIED), back up the phone before the real switch.
+- Both builds are signed with the release key: the public one non-debuggable, a debuggable variant for the user's own devices so `run-as` backups keep working. A fresh start (needs an import for the export, which does not exist) is only considered at v2/v3 if the user wants it.
+- Signed release APKs may be published on GitHub; debug-signed ones never. Rokid-Coder's pattern: PKCS12 release key in GitHub Actions secrets, signer SHA-256 pinned in the build, CI draft release, manual publish.
+
