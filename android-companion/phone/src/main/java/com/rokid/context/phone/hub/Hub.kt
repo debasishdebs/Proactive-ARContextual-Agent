@@ -71,6 +71,7 @@ class Hub(
     private val reopenEnabled: () -> Boolean = { true },
     /** Fix wave I2: the wearer's exit, persisted: a phone restart must never reopen an app the wearer exited. */
     private val standDown: StandDown = InMemoryStandDown(),
+    private val relaunchStore: RelaunchStore = InMemoryRelaunchStore(),
     /** Battery wave A §7: true while the phone screen is on and unlocked; forwarded as `pc_phone_ctx`. */
     private val phoneUse: StateFlow<Boolean> = MutableStateFlow(false),
     /** Wave B: the context hub's `pc_motion_ctx` message; null = nothing to say (a revoke is sent on the way to null). */
@@ -121,7 +122,7 @@ class Hub(
 
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
-        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> com.rokid.context.core.log.PcLog.i(GlassesRelauncher.TAG, m) }, standDown = standDown)
+        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> com.rokid.context.core.log.PcLog.i(GlassesRelauncher.TAG, m) }, standDown = standDown, store = relaunchStore)
     }
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state

@@ -239,6 +239,7 @@ object HubGraph {
             reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }).also { callGuards = it }, reopenEnabled = { KeepRunningNearby.of(app).enabled() }, paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) },
             onPositiveSignal = { watchdogRef.get()?.onPositiveSignal() }, inFront = ContextHubService::appInForeground,
             standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
+            relaunchStore = PrefsRelaunchStore(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
             phoneUse = phoneUse.inUse,
             motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,
             applyToCapture = { com.rokid.context.phone.context.ContextSourceSettings.of(app).applyToCapture },
