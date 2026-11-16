@@ -16,6 +16,15 @@ object PlaceGraph {
     @Volatile private var pack: PlacePack? = null
     val port: PlaceCardHolder = PlaceCardHolder()
 
+    init {
+        // A published card holds photo-derived content: Forget of its photo withdraws it, a range Forget or Delete all withdraws every card (committed deletions only; fenced against publication by the holder's epoch).
+        com.rokid.context.memory.forget.ForgetListeners.register(object : com.rokid.context.memory.forget.ForgetListener {
+            override suspend fun onFramesForgotten(frameIds: List<String>) { port.withdrawFrames(frameIds) }
+            override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { port.clear() }
+            override suspend fun onDeleteAll() { port.clear() }
+        })
+    }
+
     fun pack(context: Context): PlacePack = pack ?: synchronized(this) { pack ?: build(context.applicationContext).also { pack = it } }
 
     private fun build(app: Context): PlacePack {
@@ -29,6 +38,7 @@ object PlaceGraph {
      * never opened and its file does not exist.
      */
     suspend fun deleteAll(context: Context) {
+        port.clear() // the card goes first, and a card still being made is fenced out
         val app = context.applicationContext
         if (pack == null && !app.getDatabasePath(PlacesDatabase.NAME).exists()) return
         pack(app).deleteAll()

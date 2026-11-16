@@ -52,6 +52,8 @@ class PlacePack(
 ) {
     private val dao = db.dao()
     private val fetchLock = Mutex()
+    /** Advanced by [deleteAll] before it takes [fetchLock]: a fetch that began earlier discards its answer instead of re-inserting what Delete all removed. */
+    private val wipeEpoch = java.util.concurrent.atomic.AtomicLong(0)
 
     /** The pack's size (count, bytes), for the Trips screen. */
     suspend fun size(): Pair<Int, Long> = dao.placeCount() to dao.totalBytes()
@@ -120,13 +122,18 @@ class PlacePack(
      * The Delete all hook: removes every fetched place that is not seeded or pinned, forgets the cells outside the seeded areas (so they are fetched again), and clears all
      * recency. Seeded areas, what they seeded and pinned places stay. Pause zones are not stored here and are never touched.
      */
-    suspend fun deleteAll() = db.withTransaction {
-        val removed = dao.deleteFetched()
-        dao.resetRecency()
-        val areas = dao.areas().map { it.box }
-        val stale = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b == null || areas.none { it.intersects(b) } }
-        eachChunk(stale) { dao.deleteCells(it) }
-        log("pack cleared removed=$removed cells=${stale.size}")
+    suspend fun deleteAll() {
+        wipeEpoch.incrementAndGet() // outstanding fetches are invalidated at once (they cannot store), then the lock waits for them to end
+        fetchLock.withLock {
+            db.withTransaction {
+                val removed = dao.deleteFetched()
+                dao.resetRecency()
+                val areas = dao.areas().map { it.box }
+                val stale = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b == null || areas.none { it.intersects(b) } }
+                eachChunk(stale) { dao.deleteCells(it) }
+                log("pack cleared removed=$removed cells=${stale.size}")
+            }
+        }
     }
 
     private fun isFresh(c: CellEntity?): Boolean {
@@ -136,14 +143,17 @@ class PlacePack(
     }
 
     private suspend fun fetchAndStore(cell: String, src: CellSource, seeded: Boolean): CellOutcome {
+        val epoch = wipeEpoch.get()
         val got = try { src.fetchCell(cell) } catch (e: CancellationException) { throw e } catch (e: Exception) {
             log("cell fetch failed cls=${e.javaClass.simpleName}")
             return CellOutcome.FAILED
         }
+        if (wipeEpoch.get() != epoch) { log("cell fetch dropped: Delete all ran"); return CellOutcome.FAILED }
         val t = now()
         val clean = got.places.filter { it.kind in PlaceKinds.ALL && it.lat.isFinite() && it.lon.isFinite() && it.name.isNotBlank() }.distinctBy { it.id }
         var evicted = 0
         db.withTransaction {
+            if (wipeEpoch.get() != epoch) return@withTransaction
             val old = chunked(clean.map { it.id }) { dao.byIds(it) }.associateBy { it.id }
             dao.putPlaces(clean.map { f ->
                 val o = old[f.id]

@@ -78,6 +78,16 @@ class HubZoneApproachTest {
         assertFalse(link.pushes().last().zoneApproach)
     }
 
+    // Codex zones r3-1: a push the link did not accept is an error to the zone controller (it keeps its publish pending and retries).
+    @Test fun aZoneChangeTheLinkDidNotAcceptIsReportedSoTheControllerRetries() = runTest {
+        val (hub, link) = rig(); link.emitReady(); runCurrent()
+        link.setState(LinkState.OFFLINE)
+        val failed = try { hub.zonesChanged(); false } catch (e: IllegalStateException) { true }
+        assertTrue("the failure reaches the caller", failed)
+        link.setState(LinkState.CONNECTED)
+        hub.zonesChanged() // accepted: no error
+    }
+
     @Test fun theDefaultHubNeverSetsTheFlag() = runTest {
         approach = false; val (hub, link) = rig(); link.emitReady(); runCurrent(); hub.updateSettings { it }; runCurrent()
         assertTrue(link.pushes().all { !it.zoneApproach })

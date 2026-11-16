@@ -27,12 +27,36 @@ interface PlacePort {
     fun clear()
 }
 
-/** The in-memory holder behind [PlacePort]. A card is never stored. */
+/**
+ * The in-memory holder behind [PlacePort]. A card is never stored. Publication and withdrawal are fenced by an [epoch]: every withdrawal ([clear], [withdrawFrames]) advances it, and a card is
+ * published only if the epoch is still the one the attempt started with, so a Forget or Delete all that ran while the card was being made can never be followed by its publication.
+ */
 class PlaceCardHolder : PlacePort {
     private val _card = MutableStateFlow<PlaceCard?>(null)
+    private val lock = Any()
+    private var epochValue = 0L
     override val card: StateFlow<PlaceCard?> = _card
-    fun publish(card: PlaceCard) { _card.value = card }
-    override fun clear() { _card.value = null }
+
+    /** The withdrawal count: read at the start of an attempt, handed back to [publishIf]. */
+    fun epoch(): Long = synchronized(lock) { epochValue }
+
+    fun publish(card: PlaceCard) { synchronized(lock) { _card.value = card } }
+
+    /** Publishes [card] only when no withdrawal happened since [epoch] and [allowed] (zone, switch, wipe, forget) still holds. False = nothing was published. */
+    suspend fun publishIf(card: PlaceCard, epoch: Long, allowed: suspend () -> Boolean): Boolean {
+        if (!allowed()) return false
+        return synchronized(lock) { if (epochValue != epoch) false else { _card.value = card; true } }
+    }
+
+    /** Withdraws the card when it belongs to one of [frameIds] (a Forget), and fences attempts in flight. */
+    fun withdrawFrames(frameIds: Collection<String>) { synchronized(lock) { epochValue++; if (_card.value?.frameId in frameIds) _card.value = null } }
+
+    /** Withdraws the card when it is for [frameId] or [placeId], and fences attempts in flight. */
+    fun withdraw(frameId: String?, placeId: String? = null) {
+        synchronized(lock) { epochValue++; _card.value?.let { if (it.frameId == frameId || (placeId != null && it.placeId == placeId)) _card.value = null } }
+    }
+
+    override fun clear() { synchronized(lock) { epochValue++; _card.value = null } }
 }
 
 object PlaceCards {
