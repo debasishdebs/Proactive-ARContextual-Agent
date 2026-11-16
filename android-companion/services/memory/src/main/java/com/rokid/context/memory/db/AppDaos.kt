@@ -37,6 +37,9 @@ interface PauseDao {
     suspend fun closeInterval(pauseId: String, endMs: Long)
     @Query("SELECT COUNT(*) FROM pause_interval WHERE startMs <= :t AND (effectiveEndMs IS NULL OR :t < effectiveEndMs)")
     suspend fun countCovering(t: Long): Int
+    /** Pause zones: intervals of `zone:` records covering [t] (open or closed). */
+    @Query("SELECT COUNT(*) FROM pause_interval WHERE pauseId LIKE 'zone:%' AND startMs <= :t AND (effectiveEndMs IS NULL OR :t < effectiveEndMs)")
+    suspend fun countZoneCovering(t: Long): Int
     @Query("DELETE FROM pause_interval WHERE effectiveEndMs IS NOT NULL AND effectiveEndMs < :before")
     suspend fun pruneEndedBefore(before: Long)
     @Query("SELECT * FROM pause_interval ORDER BY startMs ASC") suspend fun intervals(): List<PauseIntervalEntity>

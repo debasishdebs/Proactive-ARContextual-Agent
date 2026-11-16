@@ -9,6 +9,11 @@ import com.rokid.context.core.model.MarkRef
 interface PauseHistory {
     /** True when [phoneMs] falls inside a retained pause interval, open or closed. */
     suspend fun pausedAt(phoneMs: Long): Boolean
+    /**
+     * Pause zones: true when [phoneMs] falls inside a retained interval of a `zone:` pause. A zone beats every allowance (a mark photo included), so [FrameAdmission] asks it first.
+     * The hub's Room-backed `HubPauses` overrides it; the default (false) is only for a history that cannot hold zone records.
+     */
+    suspend fun zonePausedAt(phoneMs: Long): Boolean = false
 }
 
 sealed interface Admission {
@@ -77,6 +82,8 @@ class FrameAdmission(
         // v0.9.6 slice C, the ONE phone-side exception of "a mark touches capture": the photo taken for a mark passes the pause history (the user asked for it explicitly) only when its mark is REAL (stored, no
         // photo yet) and this frame holds that mark's single allowance ([MarkPhotoAllowance]). A photo whose mark has not arrived yet is held (no ack: the glasses resend once the mark is stored).
         // Everything else of that moment is still dropped. The wipe fence, the Moment Forget fences and the dedupe above and in the intake still apply.
+        // Pause zones: photographing inside a zone is not allowed, so a frame captured inside a zone interval is dropped whatever it is (a mark photo included), before the mark allowance is even looked at.
+        if (pauses.zonePausedAt(t)) return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
         if (pauses.pausedAt(t)) {
             val ref = meta.markRef
             if (ref == null || !MarkRef.isValid(ref)) return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
