@@ -40,6 +40,7 @@ class LogContentScanTest {
     private val SINK_VARIABLES = mapOf(
         "TraceRecorder.kt" to setOf("r.line()"), "ContextHub.kt" to setOf("stats.line(_decision.value.state)"), "CanvasServer.kt" to setOf("line"),
         "FeatureLogger.kt" to setOf("classifier.features()"), "VoicePipeline.kt" to setOf("why"),
+        "RestartDiagnostics.kt" to setOf("formatExits(it, now)"), // fixed format: "exits n=<count> [reason= status= imp= pssKB= rssKB= ago=]..." (numbers only)
     )
 
     /** Names that hold a count, an enum/state name, a wire channel name or a fixed call-site constant (each reviewed; `what`/`how`/`why`/`cmd`/`channel` are literals at their call sites). */
@@ -50,7 +51,7 @@ class LogContentScanTest {
         "PROTOCOL_VERSION", "MAX_ATTEMPTS", "MAX_RUNS", "RetryPolicy.MAX_ATTEMPTS", "PipelineStatsStore.K_V2_SIDECAR_LOST", "linkState()", "stage(eval)",
         "call.key.name", "callClass.name", "key.name", "kind.name", "outcome.name", "e.kind", "e.retryable", "e.remote", "e.errno", "r.code", "r.errorCode", "r.isSuccess", "r.origin",
         "done.verdict", "reply.truncated", "it.pipeSize", "it.capacityBytes", "h.bufferSize", "h.glassesBatteryPct", "h.resumedAtMs.size", "measured.glassesMinusPhoneMs",
-        "m.pipeSize", "sink.pipeSize", "counts.routed", "counts.fast", "counts.dup", "counts.clustered", "w != null", "code?.name ?: \"NONE\"",
+        "m.pipeSize", "sink.pipeSize", "counts.routed", "counts.fast", "counts.dup", "counts.clustered", "w != null", "intent == null", "format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live)", "code?.name ?: \"NONE\"",
         "clock() - t0", "(now - it.ts).coerceAtLeast(0L)", "job.attemptCount + 1", "runAttemptCount + 1", "results.size - failed.size", "loadedLabelled.size",
         "file.exists()", "file.length()", "r768.queries", "r768.smallQueries", "c::class.simpleName", "bytes?.size ?: 0", "eval.problems().size",
         // Memory-index lifecycle lines (IndexMaintenance, EmbeddingWorker, NightIndexWorker): locals that hold a space id (space_<uuid>), a model id or its hash prefix, a count,

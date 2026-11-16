@@ -62,7 +62,7 @@ class CxrGlassesLink(
         onWearing = { w -> PcLog.i(TAG, "watcher: wearing=$w"); _wearing.value = w },
         // Fix wave I1: the SDK reports only changes, so the device-info snapshot on each bind is what refreshes a value we dropped.
         onWearingSnapshot = { w -> PcLog.i(TAG, "watcher: wearing snapshot known=${w != null}"); if (w != null) _wearing.value = w },
-        onWearCheck = { on -> post { wearCheckState.onRead(on); PcLog.i(TAG, "wear check on=$on (stored=${wearCheckState.persisted})") } },
+        onWearCheck = { wearCheck -> post { wearCheckState.onRead(wearCheck); val stored = wearCheckState.persisted; PcLog.i(TAG, "wear check on=$wearCheck (stored=$stored)") } },
     ) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
     /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
     private val minimised: MinimisedLink = MinimisedLink(
@@ -212,9 +212,10 @@ class CxrGlassesLink(
 
     private fun openSession() {
         // Codex r1 finding 3: every session open re-reads the wear check (the background link, if bound, is the only reader; none = unknown = no estimate)
-        val check = minimised.readWearCheck()
-        wearCheckState.onRead(check)
-        PcLog.i(TAG, "session open: wear check on=$check (stored=${wearCheckState.persisted})")
+        val wearCheck = minimised.readWearCheck()
+        wearCheckState.onRead(wearCheck)
+        val stored = wearCheckState.persisted
+        PcLog.i(TAG, "session open: wear check on=$wearCheck (stored=$stored)")
         minimised.stop() // unbind the background link before a session binds its own CXRLink
         val token = token()
         if (token == null || !auth.authorized) {

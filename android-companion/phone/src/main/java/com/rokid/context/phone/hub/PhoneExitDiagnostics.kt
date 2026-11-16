@@ -32,7 +32,7 @@ object PhoneExitDiagnostics {
                     .map { ExitFacts(it.reason, it.status, it.importance, it.pss, it.rss, it.timestamp) }
             }.getOrDefault(emptyList())
             val live = runCatching { if (PrefsAutoStopStore.of(context).load().hubLive) "y" else "n" }.getOrDefault("n/a")
-            PcLog.milestone(TAG, format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live))
+            PcLog.milestone(TAG, "${format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live)}")
         }
     }
 }
