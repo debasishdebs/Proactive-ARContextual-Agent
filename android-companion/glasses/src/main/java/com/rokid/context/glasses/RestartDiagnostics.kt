@@ -31,6 +31,10 @@ class RestartDiagnostics(
     private val uiMode: () -> String = { UiModeStore.HOME },
     /** (exit, lastAliveMs, nowMs) -> its kind, or null when it is not a counted force-stop (see [ExitClassifier]). */
     private val classify: (ExitFacts, Long, Long) -> ExitKind? = { f, _, _ -> if (f.userRequested) ExitKind.UNKNOWN else null },
+    /** The last [EXIT_RECORDS] exit records of this package, newest first (v1.1 T8); empty = unavailable. */
+    private val recentExits: () -> List<ExitRecord> = { emptyList() },
+    /** Why the newest force-stop's caller is unverified (v1.1 T8); only asked for forcestop_unverified. */
+    private val unverifiedWhy: (ExitFacts) -> UnverifiedWhy? = { null },
 ) {
     /**
      * True after a restart that follows a death while the app was meant to be running (a heartbeat was stored, no update and
@@ -97,8 +101,10 @@ class RestartDiagnostics(
             null -> {}
         }
         e.apply()
-        // Counts only (S20): never the exit description, a pid or a package name.
-        log("restart rokid=$closes unknown=$unverifiedCloses other=$otherCloses gap=$gap reason=$reason ui_mode=$mode")
+        // Counts only (S20): never the exit description or a package name. v1.1 T8: for an unverified caller also the sub-cause and the pid NUMBER (no name), then one line of the last exit records.
+        val sub = if (reason == "forcestop_unverified" && exit != null) runCatching { unverifiedWhy(exit) }.getOrNull()?.let { " sub=${it.why}" + (it.pid?.let { p -> " pid=$p" } ?: "") }.orEmpty() else ""
+        log("restart rokid=$closes unknown=$unverifiedCloses other=$otherCloses gap=$gap reason=$reason ui_mode=$mode$sub")
+        runCatching { recentExits().takeIf { it.isNotEmpty() }?.let { log(formatExits(it, now)) } }
         if (mode == UiModeStore.HOME) onExit() else heartbeat() // a start is alive too: a second start right away must not read the old gap again
     }
 
@@ -115,6 +121,23 @@ class RestartDiagnostics(
         const val KEY_EXIT_AT = "user_exit_at_ms"
     }
 }
+
+/** One ApplicationExitInfo reduced to numbers (v1.1 T8). There is no description field on purpose: it can carry other apps' names. */
+data class ExitRecord(val reason: Int, val status: Int, val importance: Int, val pssKb: Long, val rssKb: Long, val timestampMs: Long)
+
+const val EXIT_RECORDS = 3
+
+/** `exits n=2 [reason=10 status=0 imp=100 pssKB=1 rssKB=2 ago=40s] [...]`, newest first; ago is relative to [nowMs]. */
+fun formatExits(records: List<ExitRecord>, nowMs: Long): String =
+    "exits n=${records.size}" + records.joinToString("") {
+        " [reason=${it.reason} status=${it.status} imp=${it.importance} pssKB=${it.pssKb} rssKB=${it.rssKb} ago=${((nowMs - it.timestampMs).coerceAtLeast(0L)) / 1_000L}s]"
+    }
+
+/** `trim level=<ComponentCallbacks2 level> usedMB=<n> ui_mode=<m>` (v1.1 T8). */
+fun formatTrim(level: Int, usedMb: Long, mode: String): String = "trim level=$level usedMB=$usedMb ui_mode=$mode"
+
+/** `mem usedMB=<n> ui_mode=icon`, once a minute while the app is minimised (v1.1 T8). */
+fun formatMem(usedMb: Long, mode: String): String = "mem usedMB=$usedMb ui_mode=$mode"
 
 /** Fix wave H: which of full-screen HUD, minimised icon or neither the wearer last had; persisted on change, count-free text only. */
 class UiModeStore(private val prefs: SharedPreferences) {
