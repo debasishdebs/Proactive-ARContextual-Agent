@@ -30,6 +30,7 @@ object ZoneGraph {
         }
         val state = ZoneStateStore(app.getSharedPreferences(ZoneStateStore.PREFS, Context.MODE_PRIVATE))
         // A backward move of the wall clock is remembered across a process death (it widens the zone admission window for the retained history).
+        ClockGuard.elapsedSource = SystemClock::elapsedRealtime
         state.clock().let { (peak, rollback) -> ClockGuard.restore(peak, rollback, state.rollbackAt()) { p, r, at -> state.saveClock(p, r, at) } }
         return ZoneController(
             ZoneStore(app.getSharedPreferences(ZoneStore.PREFS, Context.MODE_PRIVATE)), sink, AndroidZoneNotifier(app),

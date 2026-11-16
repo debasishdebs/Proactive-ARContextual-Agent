@@ -197,4 +197,27 @@ class MarkPhotoCaptureTest {
             zoneActive = { zone }, zoneActiveNow = { zone })
         assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE), c.take("ep:1"))
     }
+
+    // Codex zones r2 P1-1: a zone that becomes active during the hold closes the camera at once, and it is never reopened.
+    @Test fun aZoneDuringTheHoldClosesTheCameraImmediatelyAndNeverReopensIt() = runTest {
+        hold = 4_000L
+        val cam = FakeCamera(this, listOf(100L to copy(true), 2_500L to copy(false)))
+        val r = async { capture(cam).take("ep:1") }
+        advanceTimeBy(1_000); zone = true // between frames: only the poll can see it
+        advanceTimeBy(MarkPhotoCapture.ZONE_POLL_MS + 1); runCurrent()
+        assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE), r.await())
+        assertEquals(1, cam.closedAt.size); assertTrue(cam.closedAt.single() <= 1_000L + MarkPhotoCapture.ZONE_POLL_MS + 1, "closed within one poll, not at the end of the hold")
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(1, cam.opened, "never reopened"); assertEquals(1, cam.closedAt.size); assertTrue(stored.isEmpty())
+    }
+
+    @Test fun aZoneSeenByAFrameCallbackClosesTheCameraAtThatFrame() = runTest {
+        hold = 4_000L
+        val cam = FakeCamera(this, listOf(100L to copy(true), 1_500L to copy(false), 3_000L to copy(false)))
+        val r = async { capture(cam).take("ep:1") }
+        advanceTimeBy(1_000); zone = true
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE), r.await())
+        assertTrue(cam.closedAt.single() <= 1_500L); assertEquals(1, cam.opened)
+    }
 }

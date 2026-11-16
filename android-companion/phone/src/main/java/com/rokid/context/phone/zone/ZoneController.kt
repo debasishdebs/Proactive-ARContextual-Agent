@@ -75,10 +75,12 @@ class ZoneController(
     @Volatile private var ready = false
     /** Per zone: the memo that survives a process death (wall times only). */
     private val memo = LinkedHashMap<String, ZoneMemo>()
-    private var stateBlind = false
     private var memoSavedAtMs = Long.MIN_VALUE
     private var memoDirty = false
     private var lastEnforce: Pair<Boolean, Boolean>? = null
+    private var publishPending = false
+    /** Intervals of zones that were left while their record could not be stored: retried (as an interval) by every [tick]; meanwhile retained in [ZoneHold]. */
+    private val exitedUnstored = ArrayList<Pair<Long, Long>>()
 
     private val _snapshot = MutableStateFlow(ZoneSnapshot(emptyList(), ZoneEvaluation(emptyList()), monitoring = false))
     val snapshot: StateFlow<ZoneSnapshot> = _snapshot
@@ -94,10 +96,25 @@ class ZoneController(
     /** Capture is held in memory because a zone pause could not be stored or the zones cannot be read: sent to the glasses as `HudSettings.zoneEnforce`. */
     val enforcing: Boolean get() = ZoneHold.held || store.corrupt
 
-    init { ZoneHold.set(null) }
+    /** Zones that read INSIDE whose pause record could not be stored: id -> start. Retained after the exit (see [reconcile]); also keeps the memo's clear time from advancing. */
+    private val unstored = LinkedHashMap<String, Long>()
 
-    /** Called synchronously when the hub (re)starts: until [start] has judged the zones again, the flag fails closed. */
-    fun beginRestart() { ready = false }
+    init { ZoneHold.set(null); raise() }
+
+    /**
+     * Called synchronously when the hub (re)starts: until [start] has judged the zones again, nothing is admitted or captured. The restart barrier is the in-memory [ZoneHold] from the
+     * last clear time we know (unknown = the whole history): admission drops from there, and the glasses are told to enforce, even if the link syncs an empty pause list meanwhile.
+     */
+    fun beginRestart() { ready = false; raise() }
+
+    private fun raise() {
+        if (!store.corrupt && !wantsLocation()) { ZoneHold.update(null); return }
+        val now = wall()
+        val known = stateStore?.let { it.load() } ?: memo
+        val clears = known.values.map { it.clearWallMs }
+        val from = if (clears.isEmpty() || clears.any { it == null }) now - HISTORY_MS else clears.filterNotNull().min()
+        ZoneHold.update(minOf(from, now) - ClockGuard.widenMs())
+    }
 
     /** Any enabled zone exists: location fixes are wanted (the service holds the location type for it). Cheap; safe from any thread. */
     fun wantsLocation(): Boolean = store.zones().any { it.enabled }
@@ -106,19 +123,18 @@ class ZoneController(
     suspend fun start() = locked {
         evaluator.setZones(store.zones(), elapsed())
         evaluator.restart() // nothing is known after a start or a recovery, even in a process that survived: every zone reads INSIDE until two qualifying fixes
-        memo.clear()
-        stateBlind = false
-        stateStore?.let { memo.putAll(it.load()); stateBlind = it.unreadable }
+        stateStore?.let { memo.clear(); memo.putAll(it.load()) }
         reconcile()
     }
 
     suspend fun onFix(fix: ZoneFix) = locked {
+        ClockGuard.observe(wall())
         if (evaluator.onFix(fix, elapsed())) {
             val ev = evaluator.evaluate(elapsed())
             val fixWall = (wall() - (elapsed() - fix.timeMs).coerceAtLeast(0L))
             for (st in ev.zones) {
                 val old = memo[st.zoneId]
-                val clear = if (st.lastClearMs == fix.timeMs) fixWall else old?.clearWallMs
+                val clear = if (st.lastClearMs == fix.timeMs && st.zoneId !in unstored) fixWall else old?.clearWallMs
                 val m = ZoneMemo(st.measured.name, clear, fixWall)
                 if (m.state != old?.state || m.clearWallMs != old.clearWallMs) memoDirty = true
                 memo[st.zoneId] = m
@@ -131,7 +147,7 @@ class ZoneController(
     suspend fun onLocationAvailable(ok: Boolean) = locked { evaluator.onLocationAvailable(ok, elapsed()); reconcile() }
 
     /** Time passes with no fix: staleness is judged, records are repaired if a write failed. */
-    suspend fun tick() = locked { reconcile() }
+    suspend fun tick() = locked { ClockGuard.observe(wall()); reconcile() }
 
     fun zones(): List<PauseZone> = store.zones()
 
@@ -151,6 +167,13 @@ class ZoneController(
 
     /** Stores [zones] as the whole list: the explicit way out of the protected (unreadable) state. */
     suspend fun replaceAll(zones: List<PauseZone>): ZoneChange = locked {
+        if (zones.any { !it.isValid() } || zones.distinctBy { it.id }.size != zones.size) return@locked ZoneChange.INVALID
+        // The same guards as the single edits: nothing is weakened (changed, disabled, dropped) before the zones are judged or while it reads INSIDE. An unreadable list has no zones to weaken.
+        if (!store.corrupt) {
+            if (!ready) return@locked ZoneChange.NOT_READY
+            val next = zones.associateBy { it.id }
+            store.zones().firstOrNull { old -> next[old.id] != old && insideNow(old.id) }?.let { return@locked ZoneChange.BLOCKED_INSIDE }
+        } else if (!ready) return@locked ZoneChange.NOT_READY
         if (!store.replaceAll(zones)) return@locked ZoneChange.STORE_FAILED
         changed()
         ZoneChange.OK
@@ -191,6 +214,9 @@ class ZoneController(
         evaluator.setZones(store.zones(), elapsed())
         val ids = store.zones().map { it.id }.toSet()
         if (memo.keys.retainAll(ids)) memoDirty = true
+        // A zone that did not exist before has no past to protect: its history starts now. (A zone with no memo that did exist is UNKNOWN: see [startOf].)
+        val born = wall()
+        for (id in ids) if (id !in memo) { memo[id] = ZoneMemo("INSIDE", born, born); memoDirty = true }
         saveMemo(force = true)
         reconcile()
         runCatching { onZonesChanged() }
@@ -209,8 +235,9 @@ class ZoneController(
     /** The start of a zone's pause: the last time a fix proved the phone was not inside (the uncertainty window), never after now, widened by any clock rollback. */
     private fun startOf(id: String): Long {
         val now = wall()
-        val clear = if (id == PROTECTED_ID) memo.values.mapNotNull { it.clearWallMs }.minOrNull() else memo[id]?.clearWallMs
-        val from = clear ?: if (stateBlind) now - HISTORY_MS else now
+        val clear = if (id == PROTECTED_ID) memo.values.map { it.clearWallMs }.let { c -> if (c.isEmpty() || c.any { it == null }) null else c.filterNotNull().min() } else memo[id]?.clearWallMs
+        // No clear time (no memo saved, or an unreadable one) = UNKNOWN: protected from a conservative past, never from "now".
+        val from = clear ?: (now - HISTORY_MS)
         ClockGuard.observe(now)
         return minOf(from, now) - ClockGuard.widenMs()
     }
@@ -227,24 +254,25 @@ class ZoneController(
         if (store.corrupt) insideIds += PROTECTED_ID
         var changed = false
         var uncovered = insideIds.toSet()
-        var holdSince: Long? = null
         try {
             val records = sink.activeZoneRecords()
             val covered = records.mapNotNull { ZonePause.zoneIdOf(it.pauseId) }.toSet()
             uncovered = insideIds - covered
+            unstored.keys.removeAll(covered)
             for (id in uncovered.toList()) {
-                val start = startOf(id)
+                val start = unstored[id] ?: startOf(id)
                 try {
                     val state = ev.zones.firstOrNull { it.zoneId == id }
                     sink.add(PauseRecord(ZonePause.pauseId(id, store.nextSeq()), PauseOrigin.PHONE, start, null))
                     log("zone pause added state=${(state?.state ?: ZoneState.INSIDE).name} reason=${(state?.reason ?: ZoneReason.NO_FIX).name}")
                     uncovered = uncovered - id
+                    unstored.remove(id)
                     changed = true
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     log("zone pause not stored cls=${e.javaClass.simpleName}")
-                    holdSince = minOf(holdSince ?: start, start)
+                    unstored[id] = minOf(unstored[id] ?: start, start)
                 }
             }
             val ending = records.filter { ZonePause.zoneIdOf(it.pauseId) !in insideIds }.map { it.pauseId }.toSet()
@@ -253,20 +281,43 @@ class ZoneController(
             throw e
         } catch (e: Exception) {
             log("zone reconcile failed cls=${e.javaClass.simpleName}")
-            if (uncovered.isNotEmpty() && holdSince == null) holdSince = uncovered.minOf { startOf(it) }
+            for (id in uncovered) unstored.putIfAbsent(id, startOf(id))
         }
-        ZoneHold.set(holdSince)
+        // A zone whose pause was never stored and that the phone has now left: the interval it missed stays enforced (in memory, and retried into the store), or buffered inside-zone frames would pass.
+        val wallNow = wall()
+        for (id in unstored.keys.filter { it !in insideIds }) {
+            val from = unstored.remove(id) ?: continue
+            exitedUnstored += from to wallNow
+            ZoneHold.retain(from, wallNow, wallNow)
+        }
+        retryExited()
+        ZoneHold.update(unstored.filterKeys { it in insideIds }.values.minOrNull())
         val zones = store.zones()
         _snapshot.value = ZoneSnapshot(zones, ev, store.corrupt)
         ready = true
         _cadence.value = TripCadence.select(ev)
         notify(ev, zones, insideIds)
         val key = (ev.overall >= ZoneState.APPROACH) to enforcing
-        if (changed || lastEnforce != key) {
-            lastEnforce = key
-            try { sink.publish() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("zone publish failed cls=${e.javaClass.simpleName}") }
+        if (changed) publishPending = true
+        if (publishPending || lastEnforce != key) {
+            // Only a publish that went out counts: a failed one is retried by the next tick (the glasses may still be capturing).
+            try { sink.publish(); lastEnforce = key; publishPending = false } catch (e: CancellationException) { throw e } catch (e: Exception) { publishPending = true; log("zone publish failed cls=${e.javaClass.simpleName}") }
         }
         saveMemo()
+    }
+
+    /** Stores the intervals that ended unstored, as closed intervals (start, then end). A failure keeps them for the next tick. */
+    private suspend fun retryExited() {
+        for (iv in exitedUnstored.toList()) {
+            try {
+                val id = ZonePause.pauseId(UNSTORED_ID, store.nextSeq())
+                sink.add(PauseRecord(id, PauseOrigin.PHONE, iv.first, null))
+                exitedUnstored.remove(iv) // stored; if the end below fails, the next reconcile ends this record (its zone is not inside)
+                sink.end(setOf(id))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) { log("zone interval not stored cls=${e.javaClass.simpleName}") }
+        }
     }
 
     private fun notify(ev: ZoneEvaluation, zones: List<PauseZone>, insideIds: Set<String>) {
@@ -282,6 +333,7 @@ class ZoneController(
     companion object {
         /** The id of the pseudo zone that holds capture while the stored zones cannot be read. */
         const val PROTECTED_ID = "_unreadable"
+        private const val UNSTORED_ID = "_missed"
         private const val MEMO_SAVE_MS = 60_000L
         private const val HISTORY_MS = 7 * 24 * 3_600_000L
     }

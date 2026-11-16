@@ -166,10 +166,10 @@ class ZoneR1Test {
 
     @Test fun theWidenedWindowIsRememberedAcrossAProcessDeath() {
         val saved = ArrayList<Triple<Long, Long, Long>>()
-        ClockGuard.restore(0, 0, 0) { p, r, a -> saved += Triple(p, r, a) }
+        ClockGuard.restore(0, 0, 0) { p, r, a -> saved += Triple(p, r, a); true }
         ClockGuard.observe(1_000_000L); ClockGuard.observe(400_000L)
         assertEquals(600_000L, ClockGuard.widenMs()); assertEquals(600_000L, saved.last().second)
-        ClockGuard.reset(); ClockGuard.restore(saved.last().first, saved.last().second, saved.last().third) { _, _, _ -> }
+        ClockGuard.reset(); ClockGuard.restore(saved.last().first, saved.last().second, saved.last().third) { _, _, _ -> true }
         assertEquals(600_000L, ClockGuard.widenMs())
         ClockGuard.observe(400_000L + 8 * 24 * 3_600_000L); assertEquals("expires with the retained history", 0L, ClockGuard.widenMs())
     }

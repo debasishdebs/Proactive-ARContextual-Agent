@@ -99,7 +99,7 @@ class HubPauses(
     /** Pause zones: true when [phoneMs] is inside a retained `zone:` interval (the frame gate: a zone beats the mark allowance). */
     override suspend fun zonePausedAt(phoneMs: Long): Boolean {
         ClockGuard.observe(now())
-        ZoneHold.since()?.let { if (phoneMs >= it) return true } // a zone pause that could not be stored is still enforced
+        if (ZoneHold.covers(phoneMs, phoneMs)) return true // a zone pause that could not be stored (held or ended) is still enforced
         active()
         // After a backward clock move, frame times mapped with the new offset sit [rollback] earlier than the stored interval starts: the check reaches that far (fail closed).
         return dao.countZoneOverlapping(phoneMs, phoneMs + ClockGuard.widenMs() + 1) > 0
@@ -111,7 +111,7 @@ class HubPauses(
      */
     suspend fun zoneOverlaps(fromMs: Long, toMs: Long): Boolean {
         ClockGuard.observe(now())
-        ZoneHold.since()?.let { if (toMs >= it) return true }
+        if (ZoneHold.covers(fromMs, toMs)) return true
         active()
         return dao.countZoneOverlapping(fromMs - ClockGuard.widenMs(), toMs + ClockGuard.widenMs() + 1) > 0
     }

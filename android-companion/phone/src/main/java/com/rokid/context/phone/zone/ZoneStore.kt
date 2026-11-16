@@ -11,7 +11,7 @@ import kotlinx.serialization.builtins.serializer
 /**
  * The user's pause zones (spec 2026-11-16 §B2): a small JSON list in its own prefs file, no Room. User configuration: backed up and included in the settings export
  * (`ConfigExport.PREFS_FILES`); Delete all never touches it. Also holds the per-install counter that makes every `zone:<id>:<n>` record id unique (never reused, so a closed
- * interval's tombstone can never swallow a later pause). Only valid zones are stored.
+ * interval's tombstone can never swallow a later pause). Only valid zones are stored; a stored list that holds an invalid or repeated zone is unreadable, not filtered.
  *
  * **Fail closed.** A stored list that cannot be read is NOT an empty list: [corrupt] turns true, [zones] keeps the last good list read or written in this process (empty when none), and the
  * controller holds capture paused ("protected") until [replaceAll] stores a list again. [write] and [nextSeq] return/throw on a failed synchronous commit: a zone change that did not
@@ -20,6 +20,7 @@ import kotlinx.serialization.builtins.serializer
 class ZoneStore(private val prefs: SharedPreferences) {
     @Volatile private var good: List<PauseZone>? = null
     @Volatile private var bad = false
+    private var failedRaw: String? = null
 
     /** True when the stored list exists but cannot be read (or the preference read threw): the zones are UNKNOWN. */
     val corrupt: Boolean get() { zones(); return bad }
@@ -27,14 +28,18 @@ class ZoneStore(private val prefs: SharedPreferences) {
     @Synchronized
     fun zones(): List<PauseZone> {
         val raw = try { prefs.getString(KEY, null) } catch (e: Exception) { bad = true; return good.orEmpty() }
+        // Android keeps a value in memory when its disk commit failed: a value this store tried to write and could not is NOT the stored list (it would be lost with the process).
+        if (raw != null && raw == failedRaw) { restoreDurable(); return good.orEmpty() }
         if (raw == null) { bad = false; good = emptyList(); return emptyList() }
         val parsed = runCatching { Wire.json.decodeFromString(LIST, raw) }.getOrNull()
-        if (parsed == null) { bad = true; return good.orEmpty() }
+        // Valid JSON that holds an invalid or repeated zone is not a list we may filter: dropping a zone silently would unprotect it. Unreadable = protect everything.
+        if (parsed == null || parsed.any { !it.isValid() } || parsed.distinctBy { it.id }.size != parsed.size) { bad = true; return good.orEmpty() }
         bad = false
-        return parsed.filter(PauseZone::isValid).distinctBy { it.id }.also { good = it }
+        good = parsed
+        return parsed
     }
 
-    /** Replaces the whole list, committed synchronously. False = the commit failed (the caller reports it; the in-memory list is NOT changed). Invalid zones are dropped. */
+    /** Replaces the whole list, committed synchronously. False = the commit failed (the caller reports it; the list is NOT changed, not even in memory). */
     @Synchronized
     fun write(zones: List<PauseZone>): Boolean {
         zones()
@@ -48,9 +53,17 @@ class ZoneStore(private val prefs: SharedPreferences) {
 
     private fun commit(zones: List<PauseZone>): Boolean {
         val clean = zones.filter(PauseZone::isValid).distinctBy { it.id }
-        val ok = try { prefs.edit().putString(KEY, Wire.json.encodeToString(LIST, clean)).commit() } catch (e: Exception) { false }
-        if (ok) { good = clean; bad = false }
+        val raw = Wire.json.encodeToString(LIST, clean)
+        val ok = try { prefs.edit().putString(KEY, raw).commit() } catch (e: Exception) { false }
+        if (ok) { good = clean; bad = false; failedRaw = null } else { failedRaw = raw; restoreDurable() }
         return ok
+    }
+
+    /** After a failed commit the preferences object may still hold the failed value in memory: put the last durable list back (best effort; [good] stays the truth meanwhile). */
+    private fun restoreDurable() {
+        val last = good ?: return
+        val ok = try { prefs.edit().putString(KEY, Wire.json.encodeToString(LIST, last)).commit() } catch (e: Exception) { false }
+        if (ok) failedRaw = null
     }
 
     /** The next record number, durable before it is used. Throws when it cannot be made durable: the number is then never used, so it can never be issued twice. */
@@ -90,7 +103,7 @@ class ZoneStateStore(private val prefs: SharedPreferences) {
 
     /** The highest wall clock this phone has seen, for clock-rollback detection across a process death; and the rollback total still inside the retained history. */
     @Synchronized fun clock(): Pair<Long, Long> = prefs.getLong(PEAK, 0L) to prefs.getLong(ROLLBACK, 0L)
-    @Synchronized fun saveClock(peak: Long, rollbackMs: Long, rollbackAtMs: Long) { prefs.edit().putLong(PEAK, peak).putLong(ROLLBACK, rollbackMs).putLong(ROLLBACK_AT, rollbackAtMs).commit() }
+    @Synchronized fun saveClock(peak: Long, rollbackMs: Long, rollbackAtMs: Long): Boolean = try { prefs.edit().putLong(PEAK, peak).putLong(ROLLBACK, rollbackMs).putLong(ROLLBACK_AT, rollbackAtMs).commit() } catch (e: Exception) { false }
     @Synchronized fun rollbackAt(): Long = prefs.getLong(ROLLBACK_AT, 0L)
 
     companion object {

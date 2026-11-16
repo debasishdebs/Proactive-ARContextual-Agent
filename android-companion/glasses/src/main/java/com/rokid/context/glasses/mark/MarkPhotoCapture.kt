@@ -11,7 +11,6 @@ import com.rokid.context.glasses.capture.session.KeyframeEncoder
 import com.rokid.context.glasses.capture.session.SamplingCamera
 import com.rokid.context.glasses.capture.keyframe.Candidate
 import com.rokid.context.glasses.capture.keyframe.ImageHashes
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** How a mark's photo ended: [Taken] (buffered, its frame names the mark) or [Failed] with a [MarkPhotoReason] token. */
@@ -77,9 +76,10 @@ class MarkPhotoCapture(
         var best: Best? = null
         var lastAt: Long? = null
         val zoneSeen = java.util.concurrent.atomic.AtomicBoolean(false)
+        val zoneAbort = kotlinx.coroutines.CompletableDeferred<Unit>()
         try {
             val opened = try { camera.open { src ->
-                if (zoneActiveNow()) { zoneSeen.set(true); synchronized(lock) { best = null }; return@open } // a zone became active during the hold: nothing seen from then on is kept
+                if (zoneActiveNow()) { zoneSeen.set(true); zoneAbort.complete(Unit); synchronized(lock) { best = null }; return@open } // a zone became active during the hold: nothing is kept, and the camera is closed at once
                 val now = clock()
                 if (lastAt?.let { now - it < frameGapMs } == true) return@open
                 val c = try { src.copy() } catch (e: Exception) { null } ?: return@open
@@ -88,7 +88,14 @@ class MarkPhotoCapture(
                 synchronized(lock) { if (best == null || b > best!!.blur) best = Best(c, b, now) }
             } } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { false }
             if (!opened) return MarkPhotoOutcome.Failed(if (camera.busy) MarkPhotoReason.CAMERA_BUSY else MarkPhotoReason.CAMERA_BIND_FAILED)
-            delay(hold) // the camera stays open for the hold: the light is on, the exposure settles, the user sees it
+            // the camera stays open for the hold: the light is on, the exposure settles, the user sees it. A zone that becomes active ends it at once (a frame callback, or the poll): the camera is closed, never reopened.
+            var left = hold
+            while (left > 0 && !zoneSeen.get()) {
+                if (zoneActiveNow()) { zoneSeen.set(true); break }
+                val step = minOf(ZONE_POLL_MS, left)
+                withTimeoutOrNull(step) { zoneAbort.await() }
+                left -= step
+            }
         } finally {
             camera.close()
         }
@@ -117,6 +124,8 @@ class MarkPhotoCapture(
         const val SESSION = "mark"
         const val OWNER_WAIT_MS = 5_000L
         const val FRAME_GAP_MS = 250L
+        /** How often the zone is asked while the camera is held open (a frame callback ends the hold sooner). */
+        const val ZONE_POLL_MS = 100L
         /** The time to bind the camera and hand over the first frame, on top of the hold. */
         const val OPEN_SLACK_MS = 3_000L
     }
