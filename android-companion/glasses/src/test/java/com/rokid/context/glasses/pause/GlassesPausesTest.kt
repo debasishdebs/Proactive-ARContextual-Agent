@@ -426,21 +426,48 @@ class PauseSourceTest {
         p.toggle(); assertFalse("an ordinary pause is not a zone", p.zoneActive())
         p.toggle(); p.mergeFromPhone(listOf(zoneRec)); assertTrue(p.zoneActive())
         p.mergeFromPhone(HudSettings(resumedPauseIds = listOf("zone:jarawa:1"), pausesExact = true)); assertFalse(p.zoneActive())
-        approach = true; linked = true; assertFalse(p.zoneActive())
+        approach = true; linked = true; p.onSessionOpened(); p.mergeFromPhone(emptyList()); assertFalse("synced: the phone decides", p.zoneActive())
         linked = false; assertTrue(p.zoneActive())
     }
 
     @Test fun approachWithTheLinkDownPausesLocallyAndLiftsWhenTheLinkReturnsOrTheFlagClears() = runBlocking {
         val p = zonePauses().also { it.ensureLoaded() }
         assertTrue(p.captureAllowed())
-        approach = true; assertTrue("link up: the phone decides", p.captureAllowed())
+        approach = true; p.onSessionOpened(); p.mergeFromPhone(emptyList()); assertTrue("link up and synced: the phone decides", p.captureAllowed())
         linked = false; assertFalse(p.captureAllowed()); assertEquals("ZONE_LINK_DOWN", p.sourceLabel())
-        linked = true; assertTrue(p.captureAllowed())
+        linked = true; p.onSessionOpened(); p.mergeFromPhone(emptyList()); assertTrue("an exact pause merge of the new session releases it", p.captureAllowed())
         linked = false; approach = false; assertTrue("not approaching: a dropped link is normal", p.captureAllowed()); assertEquals("none", p.sourceLabel())
     }
 
     @Test fun zoneRecordsLabelAsZone() = runBlocking {
         val p = zonePauses().also { it.ensureLoaded() }; p.mergeFromPhone(listOf(zoneRec))
         assertEquals("ZONE", p.sourceLabel())
+    }
+
+    // Codex zones r1 P1-3: the local approach hold is released only by an authoritative sync after the reconnect, not by any message.
+    @Test fun reconnectingDoesNotReleaseTheApproachHoldUntilAnExactPauseMergeArrives() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }
+        approach = true; linked = false; assertFalse(p.captureAllowed())
+        linked = true; p.onSessionOpened() // the session opens on ANY message, a hello request included
+        assertFalse("reconnected but not told: still held", p.captureAllowed()); assertTrue(p.zoneActive())
+        p.mergeFromPhone(HudSettings(pauses = emptyList(), pausesExact = false, zoneApproach = true)); assertFalse("an inexact push is not authoritative", p.captureAllowed())
+        p.mergeFromPhone(listOf(zoneRec)); assertFalse("the zone record itself holds", p.captureAllowed())
+        p.mergeFromPhone(HudSettings(pauses = emptyList(), pausesExact = true, resumedPauseIds = listOf("zone:jarawa:1"), zoneApproach = true)); assertTrue(p.captureAllowed())
+        p.onSessionOpened(); assertFalse("a new session needs a new sync", p.captureAllowed())
+    }
+
+    @Test fun aLostLinkAfterASyncHoldsAgainAndTheNextSessionNeedsItsOwnSync() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }
+        approach = true; p.onSessionOpened(); p.mergeFromPhone(emptyList()); assertTrue(p.captureAllowed())
+        linked = false; assertFalse(p.captureAllowed()); linked = true
+        assertFalse("the sync belonged to the session that is gone", p.captureAllowed())
+    }
+
+    @Test fun theEnforceFlagHoldsCaptureAndAMarkPhotoWhateverTheLinkSays() = runBlocking {
+        var enforce = false
+        val p = runBlocking { job?.cancelAndJoin(); val j = SupervisorJob().also { job = it }
+            GlassesPauses(PauseStore(File(tmp.root, "enf.preferences_pb"), CoroutineScope(Dispatchers.IO + j)) { now }, { now }, { "id${++n}" }, log = {}, zoneEnforce = { enforce }) }
+        p.ensureLoaded(); assertTrue(p.captureAllowed()); assertFalse(p.zoneActive())
+        enforce = true; assertFalse(p.captureAllowed()); assertTrue(p.zoneActive())
     }
 }

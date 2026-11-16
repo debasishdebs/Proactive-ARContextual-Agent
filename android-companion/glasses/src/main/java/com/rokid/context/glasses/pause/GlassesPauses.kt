@@ -40,7 +40,15 @@ class GlassesPauses(
     private val zoneApproach: () -> Boolean = { false },
     /** Pause zones: the phone link is up. A link that is not known to be up counts as down. */
     private val linkUp: () -> Boolean = { true },
+    /** Pause zones: the phone said (last `pc_settings`) that it holds a zone pause in memory it could not store, or cannot read its zones ([HudSettings.zoneEnforce]). */
+    private val zoneEnforce: () -> Boolean = { false },
 ) {
+    /** The current link session got an authoritative pause sync (an exact `pc_settings` merge) since it opened: the only thing that releases the local approach hold after a reconnect. */
+    @Volatile private var syncedThisSession = false
+
+    /** A new phone session opened (any first message, a hello request included): nothing is synced until its exact pause merge arrives. */
+    fun onSessionOpened() { syncedThisSession = false }
+
     private val mutex = Mutex()
     private val _records = MutableStateFlow<List<PauseRecord>>(emptyList())
     val records: StateFlow<List<PauseRecord>> = _records
@@ -98,7 +106,13 @@ class GlassesPauses(
     fun captureAllowed(nowMs: Long = clock()): Boolean = loaded && active(nowMs).isEmpty() && !unhandledQuiet(nowMs) && !zoneLinkHold()
 
     /** The phone is in or near a pause zone and the link is down: the phone cannot say it left, so capture holds here (fail closed). */
-    private fun zoneLinkHold(): Boolean = zoneApproach() && !linkUp()
+    private fun zoneLinkHold(): Boolean {
+        if (zoneEnforce()) return true
+        if (!zoneApproach()) return false
+        if (!linkUp()) { syncedThisSession = false; return true }
+        // The link is up, but "up" is not "told": a phone that walked into the zone while the link was down has not yet said so. Held until the session's exact pause merge arrives.
+        return !syncedThisSession
+    }
 
     /**
      * Pause zones: a photo is not allowed now (an active `zone:` record, or the local approach hold, or the store is not loaded yet). A mark photo checks this, because it
@@ -191,6 +205,7 @@ class GlassesPauses(
         _records.value = recs.values.toList()
         quietLocked(now)
         if (PauseState(_records.value, tombstones, provisional, phoneResumed, quietHandled) != before) save(_records.value)
+        if (s.pausesExact && linkUp()) syncedThisSession = true // authoritative: the phone's CURRENT pause set (zone records included) is merged
         MergeResult(added, removed)
     }
 
