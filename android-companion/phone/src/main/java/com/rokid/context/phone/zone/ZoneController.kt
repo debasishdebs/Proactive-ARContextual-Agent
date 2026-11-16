@@ -131,6 +131,9 @@ class ZoneController(
 
     fun zones(): List<PauseZone> = store.zones()
 
+    /** The newest fix, for the map's "you are here" dot only (in memory, never stored or logged); null when none has arrived since the process started. */
+    fun lastFix(): ZoneFix? = evaluator.lastFix
+
     /** Adds or replaces a zone. An existing zone that reads INSIDE cannot be changed (it could be shrunk or moved out from under the phone). */
     suspend fun upsert(zone: PauseZone): ZoneChange = locked {
         if (!zone.isValid()) return@locked ZoneChange.INVALID

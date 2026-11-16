@@ -54,8 +54,11 @@ class ZoneEvaluator {
     }
 
     private val zs = LinkedHashMap<String, Z>()
-    private var last: ZoneFix? = null
+    @Volatile private var last: ZoneFix? = null
     private var locationOk = true
+
+    /** The newest accepted fix, held in memory only (the map draws the "you are here" dot from it; it is never stored or logged). */
+    val lastFix: ZoneFix? get() = last
 
     /** The enabled, valid zones; the state of a zone with the same geometry is kept, any other starts unevaluated and is judged by the last fix when that is still fresh. */
     fun setZones(zones: List<PauseZone>, nowMs: Long) {
