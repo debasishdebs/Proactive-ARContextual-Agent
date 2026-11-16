@@ -1,5 +1,6 @@
 package com.rokid.context.orchestration.nudge
 
+import com.rokid.context.memory.forget.lifecycle.Leases
 import com.rokid.context.core.log.PcLog
 import androidx.room.withTransaction
 import com.rokid.context.ai.SafeLog
@@ -71,6 +72,9 @@ class NudgeEngine(
      * Serialized with every other run through [NudgeRunLock] (the daily cap is read-then-write). [trigger] is the node type that started the run: a published Nudge flow runs
      * only on its own root, so any other trigger returns [NudgeRun.NotThisTrigger]; the built-in flow's root is the summarizer pass.
      */
+    /** Test seam: runs after the model answered (its upload slot released) and before the nudge commits through its lease. Null in production. */
+    @Volatile internal var testBeforeCommit: (suspend () -> Unit)? = null
+
     suspend fun runOnce(trigger: String = NodeTypes.TRIGGER_SUMMARIZER, builtInOnly: Boolean = false, scope: String? = null): NudgeRun = NudgeRunLock.mutex.withLock { runLocked(trigger, builtInOnly, scope) }
 
     private suspend fun runLocked(trigger: String, builtInOnly: Boolean, scope: String?): NudgeRun {
@@ -89,49 +93,58 @@ class NudgeEngine(
         // the edge state is updated even when a gate below drops the run
         plan?.signal?.let { sig -> if (!SignalGate(triggers.meta, plan.scope, triggers.signals).fires(sig, now)) return NudgeRun.NoSignal }
         gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }
-        val photo = if (plan != null && plan.imageQuery && trigger in PHOTO_TRIGGERS) triggerPhoto(now) else null
-        val built = buildInputs(now, plan, photo)
-        // the query photo is a source of the nudge: Forget of it (while the model runs) drops the nudge, and it is stored as a dependency
-        val prepared = if (photo == null) built else built.copy(fenceIds = built.fenceIds + (PHOTO_CITE_PREFIX + photo.frameId))
-        if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
-        if (plan != null && !triggers.limiter.admit(trigger, plan.maxPerHour, plan.scope)) {
-            memory.traces.upsert(SummaryTraceEntity("nudge_drop_$now", "NUDGE_DROPPED", now, "TRIGGER_RATE"))
-            return NudgeRun.RateLimited
+        val lease = try { com.rokid.context.orchestration.DataOpGate.shared.lease(Leases.Kind.NUDGE) } catch (e: com.rokid.context.orchestration.DataOpGate.LeaseBlocked) { return NudgeRun.Failed } // a Forget holds the gate: no nudge now
+        try {
+            val photo = if (plan != null && plan.imageQuery && trigger in PHOTO_TRIGGERS) triggerPhoto(now) else null
+            val built = buildInputs(now, plan, photo)
+            // the query photo is a source of the nudge: Forget of it (while the model runs) drops the nudge, and it is stored as a dependency
+            val prepared = if (photo == null) built else built.copy(fenceIds = built.fenceIds + (PHOTO_CITE_PREFIX + photo.frameId))
+            if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
+            lease.extend(Leases.refsOf(prepared.inputIds + prepared.fenceIds)) // what this nudge reads: a Forget that reaches it revokes the lease
+            if (plan != null && !triggers.limiter.admit(trigger, plan.maxPerHour, plan.scope)) {
+                memory.traces.upsert(SummaryTraceEntity("nudge_drop_$now", "NUDGE_DROPPED", now, "TRIGGER_RATE"))
+                return NudgeRun.RateLimited
+            }
+            val out = try {
+                // codex r12: the recent memories, photo cites and nudge-history sources of the prompt are re-checked live by the router inside the permit
+                runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds, callClass = com.rokid.context.model.CallClass.NUDGE,
+                    sources = com.rokid.context.model.PayloadSources.stored(emptyList(), prepared.inputIds + prepared.fenceIds),
+                    liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory))).output as NudgeOutput
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                PcLog.i(TAG, "nudge failed: ${SafeLog.describe(e)}")
+                memory.traces.upsert(SummaryTraceEntity("nudge_run_$now", "NUDGE_FAILED", now, SafeLog.describe(e)))
+                return NudgeRun.Failed
+            }
+            val text = AskText.collapse(out.text).take(MAX_TEXT)
+            if (!out.shouldNudge || text.isEmpty()) return NudgeRun.NotNeeded
+            val gate = gates.check(text, h, now)
+            if (gate != Gate.PASS) { recordDropped(memory, gate, now); return NudgeRun.Dropped(gate) }
+            val id = "nudge_${UUID.randomUUID()}"
+            val route = routeOf(plan, h.verbosity)
+            // Forget fence (integration carry 1): a memory in the prompt or cited forgotten while the model ran means the
+            // text may hold forgotten content, so the nudge is dropped (no row, no proposal). Checked in the insert transaction.
+            testBeforeCommit?.invoke()
+            lease.extend(Leases.refsOf(out.sourceIds))
+            // M3: the nudge commits THROUGH its read lease (revoked by a Forget while the model ran: no row); checkLive = false keeps the live check below as it was
+            val live = (lease.commit(memory.db, checkLive = false) {
+                if (!ForgetFence.allLive(memory.db, prepared.inputIds + prepared.fenceIds + out.sourceIds)) return@commit false
+                memory.nudges.addIgnore(
+                    NudgeEntity(
+                        id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encodeWithDeps(out.sourceIds, prepared.fenceIds + prepared.inputIds), // codex r15: every input is a dependency
+                        priority = out.priority, hash = NudgeGates.hash(text), shownOn = route.shownOn, redacted = false,
+                    ),
+                )
+                true
+            } as? Leases.Commit.Committed)?.value == true
+            if (!live) return NudgeRun.Forgotten
+            route.fallback?.let { memory.traces.upsert(SummaryTraceEntity("nudge_deliver_$id", "NUDGE_DELIVERY_FALLBACK", now, it)) } // never silent: the reason token, no text
+            out.proposedAction?.let { intake.onProposed(ProposalOrigin.NUDGE, id, it, now) }
+            return NudgeRun.Shown(id)
+        } finally {
+            lease.close()
         }
-        val out = try {
-            // codex r12: the recent memories, photo cites and nudge-history sources of the prompt are re-checked live by the router inside the permit
-            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds, callClass = com.rokid.context.model.CallClass.NUDGE,
-                sources = com.rokid.context.model.PayloadSources.stored(emptyList(), prepared.inputIds + prepared.fenceIds),
-                liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory))).output as NudgeOutput
-        } catch (c: CancellationException) {
-            throw c
-        } catch (e: Exception) {
-            PcLog.i(TAG, "nudge failed: ${SafeLog.describe(e)}")
-            memory.traces.upsert(SummaryTraceEntity("nudge_run_$now", "NUDGE_FAILED", now, SafeLog.describe(e)))
-            return NudgeRun.Failed
-        }
-        val text = AskText.collapse(out.text).take(MAX_TEXT)
-        if (!out.shouldNudge || text.isEmpty()) return NudgeRun.NotNeeded
-        val gate = gates.check(text, h, now)
-        if (gate != Gate.PASS) { recordDropped(memory, gate, now); return NudgeRun.Dropped(gate) }
-        val id = "nudge_${UUID.randomUUID()}"
-        val route = routeOf(plan, h.verbosity)
-        // Forget fence (integration carry 1): a memory in the prompt or cited forgotten while the model ran means the
-        // text may hold forgotten content, so the nudge is dropped (no row, no proposal). Checked in the insert transaction.
-        val live = memory.db.withTransaction {
-            if (!ForgetFence.allLive(memory.db, prepared.inputIds + prepared.fenceIds + out.sourceIds)) return@withTransaction false
-            memory.nudges.addIgnore(
-                NudgeEntity(
-                    id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encodeWithDeps(out.sourceIds, prepared.fenceIds + prepared.inputIds), // codex r15: every input is a dependency
-                    priority = out.priority, hash = NudgeGates.hash(text), shownOn = route.shownOn, redacted = false,
-                ),
-            )
-            true
-        }
-        if (!live) return NudgeRun.Forgotten
-        route.fallback?.let { memory.traces.upsert(SummaryTraceEntity("nudge_deliver_$id", "NUDGE_DELIVERY_FALLBACK", now, it)) } // never silent: the reason token, no text
-        out.proposedAction?.let { intake.onProposed(ProposalOrigin.NUDGE, id, it, now) }
-        return NudgeRun.Shown(id)
     }
 
     private class Lookup(val plan: FlowPlan?, val failed: Boolean = false)

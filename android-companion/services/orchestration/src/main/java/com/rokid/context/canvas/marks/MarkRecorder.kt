@@ -161,7 +161,11 @@ class MarkRecorder(
         val frame = dao.label(target)?.frameId
         if (frame != null && !forgetPhoto(frame)) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
         // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
-        DataOpGate.shared.delete { dao.deleteLabel(target); dao.deleteLabel("$target:i") }
+        DataOpGate.shared.delete {
+            // Forget lifecycle M3: a read lease on the mark (a run or derive over it) is revoked before the delete
+            DataOpGate.shared.leases.revoke(com.rokid.context.memory.forget.lifecycle.Leases.marks(listOf(target, "$target:i")))
+            dao.deleteLabel(target); dao.deleteLabel("$target:i")
+        }
         l?.atMs?.let(onChanged)
     }
 

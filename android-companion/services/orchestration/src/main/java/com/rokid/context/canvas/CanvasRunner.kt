@@ -622,14 +622,22 @@ class CanvasRunner(
         }
     }
 
+    private fun markLineageOfAll(momentByKey: Map<String, Moment>, sceneByKey: Map<String, SceneRunItem>): List<String> = momentByKey.values.flatMap { markLineage(it) } + sceneByKey.values.flatMap { it.markIds }
+
     /** Runs one run to a terminal row and returns the status it wrote ("DONE", "CANCELLED", "STOPPED_HOT", "FAILED"). Rethrows cancellation of the scope. */
     private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null, ssel: SceneSel? = null, wsel: WatchSel? = null): String {
         var calls = 0
         var failures = 0
         var status = "DONE"
+        var lease: com.rokid.context.memory.forget.lifecycle.Leases.Lease? = null
         try {
             val ctx = context(runId)
             val gen = generation() // captured BEFORE the photos are loaded: every write below is fenced on it (S24)
+            // Forget lifecycle M3 (design 2.3, C1): ONE read lease for the whole run. It covers every photo of the run (a photo run's peers too), the member photos, marks and memories of its Moments and Scenes;
+            // a Forget that reaches any of them revokes it and every flush below then writes nothing (the run ends CANCELLED). Opened before the loads, extended with what was read.
+            val rl = try { com.rokid.context.orchestration.DataOpGate.shared.lease(com.rokid.context.memory.forget.lifecycle.Leases.Kind.CANVAS_RUN, emptyList(), gen, generation) }
+            catch (e: com.rokid.context.orchestration.DataOpGate.LeaseBlocked) { line(Level.I, "run not started: delete in progress"); return withContext(NonCancellable) { finish(runId, "CANCELLED", calls, failures) } }
+            lease = rl
             // WP8: a pipeline with a helper node also captures the helper fence (wipe generation, deletion epoch, frame-Forget revision) BEFORE the frames load; the run's own
             // write below stays the existing fenced path (insertRunItemsFenced) on the wipe generation and the tombstones.
             val helperFence = p.nodes.firstNotNullOfOrNull { executors[it.type] as? HelperExecutor }?.captureFence()
@@ -657,6 +665,16 @@ class CanvasRunner(
                     sceneByKey.mapValues { (_, s) -> com.rokid.context.model.PayloadSources(s.frameIds.toSet(), s.memoryIds.toSet(), s.markIds.toSet()) }
             val allMembers: Set<String> = members.values.flatten().toSet()
             val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null && wsel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
+            run {
+                val memoryIds = (momentByKey.values.flatMap { m -> m.memories.map { it.id } } + sceneByKey.values.flatMap { it.memoryIds }).distinct()
+                val liveMemories = memoryIds.isEmpty() || dao.liveMemoryCount(memoryIds) == memoryIds.size // one already hidden at the start stays with the row fences only
+                rl.extend(
+                    com.rokid.context.memory.forget.lifecycle.Leases.photos(photoById.keys + allMembers) + com.rokid.context.memory.forget.lifecycle.Leases.marks(markLineageOfAll(momentByKey, sceneByKey)) +
+                        (if (liveMemories) com.rokid.context.memory.forget.lifecycle.Leases.memories(memoryIds) else emptyList()) +
+                        momentByKey.values.map { com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.MOMENT, it.id) } +
+                        sceneByKey.values.map { com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.SCENE, it.id) },
+                )
+            }
             val order = ids.withIndex().associate { it.value to it.index }
             val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
             val pending = ArrayList<CanvasRunItemEntity>()
@@ -691,7 +709,7 @@ class CanvasRunner(
             suspend fun flush(): Boolean {
                 if (pending.isEmpty()) return true
                 val rows = pending.toList(); pending.clear()
-                return dao.insertRunItemsFenced(rows, emptyList(), gen, allMembers, allMarks, generation)
+                return dao.insertRunItemsLeased(rows, emptyList(), rl, gen, allMembers, allMarks, generation)
             }
 
             stop@ for (node in ItemFlow.topological(p)) {
@@ -798,6 +816,8 @@ class CanvasRunner(
         } catch (e: Throwable) {
             line(Level.W, "run failed")
             status = "FAILED"
+        } finally {
+            lease?.close()
         }
         return withContext(NonCancellable) { finish(runId, status, calls, failures) }
     }

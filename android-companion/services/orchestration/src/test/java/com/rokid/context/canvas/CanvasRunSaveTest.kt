@@ -325,4 +325,16 @@ class CanvasRunSaveTest {
         assertNull(h.dao3.meta(CanvasSaveMarker.key("r2")))
         assertFalse(rows("SELECT key FROM canvas_meta").any { (it[0] ?: "").startsWith(CanvasSaveMarker.PREFIX) })
     }
+
+    /** Forget lifecycle M3: a Forget that reaches a photo the run produced from, between the load and the write, revokes the save's lease: nothing is saved. */
+    @Test fun aLeaseRevokedBetweenTheLoadAndTheSaveWritesNothing() = runBlocking {
+        frame("f1"); frame("f2")
+        run("r1", pipeline(), mapOf("f1" to ext(true, listOf(fact("a mug", "f1")))), status = "DONE")
+        val s = saver()
+        s.testAfterLoad = { com.rokid.context.orchestration.DataOpGate.shared.leases.revoke(com.rokid.context.memory.forget.lifecycle.Leases.photos(listOf("f1"))) }
+        assertEquals(CanvasRunSave.Result.NothingToSave, s.save("r1"))
+        assertEquals(emptyList<Any>(), memories()); assertNull(h.dao3.meta(CanvasSaveMarker.key("r1")))
+        assertEquals("a retry (no Forget now) saves", CanvasRunSave.Result.Saved(1, 0), saver().save("r1"))
+        assertEquals(0, com.rokid.context.orchestration.DataOpGate.shared.leases.openCount)
+    }
 }

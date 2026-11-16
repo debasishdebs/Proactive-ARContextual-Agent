@@ -134,38 +134,46 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
             drop(old.id)
             true
         }
-        val vars = PromptVars(
-            recentContext = PromptComposer.dataBlock("memories", sources.map { it.text }) + "\n" +
-                PromptComposer.dataBlock("critic_notes", listOf(NOTE)),
-        )
-        // codex r12: the surviving source memories' text is re-checked live by the router inside the permit (a Forget meanwhile drops the call unsent)
-        val out = runner.run(RoleCall(PromptKey.SUMMARIZE, vars, callClass = com.rokid.context.model.CallClass.BACKFILL,
-            sources = com.rokid.context.model.PayloadSources.stored(emptyList(), sources.map { it.id }), liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(graph, generation))).output as SummaryOutput
-        val text = out.summary.replace(TextHygiene.SEPARATORS, " ").trim().take(260)
-        if (text.isEmpty()) throw IllegalStateException("empty summary")
-        val newId = "$PREFIX${UUID.randomUUID()}"
-        return db.withTransaction {
-            if (MemoryWipe.generation.get() != generation) return@withTransaction false
-            // Forget fence: a source forgotten during the model call means the output may hold forgotten text.
-            val now = liveSources(old.id).map { it.id }.toSet()
-            if (now != sources.map { it.id }.toSet() || dao.memories(listOf(old.id)).isEmpty()) return@withTransaction false
-            // codex r17: the rebuilt summary inherits every photo its sources cite or carry (the shared rule), fenced here with the write
-            val inherited = com.rokid.context.orchestration.ExtractSave.inheritedFrames(db, sources.map { it.id })
-            if (inherited.toList().chunked(CHUNK).any { dao.tombstoned(it).isNotEmpty() }) return@withTransaction false
-            val tags = out.entities.map { it.replace(TextHygiene.SEPARATORS, " ").trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.take(5).joinToString(" ")
-            val confidence = minOf(out.confidence, sources.maxOf { it.confidence }).coerceIn(0.0, 1.0)
-            db.memoryDao().insert(
-                MemoryEntity(
-                    id = newId, frameId = null, text = text, type = "summary", tags = tags, tier = old.tier, confidence = confidence,
-                    reviewState = ReviewState.OK, trusted = false, createdAt = old.createdAt, derived = true, // fix round 1 C1: keeps its retention window
-                    searchText = SearchNormalizer.normalize("$text $tags"), imageDelivered = false, // a text summary of memories: describes no photo
-                ),
+        // Forget lifecycle M3: a read lease over the surviving sources; a Forget that reaches one while the model runs revokes it and the rebuilt summary is not written (the row stays for the next run)
+        val lease = com.rokid.context.orchestration.DataOpGate.shared.lease(com.rokid.context.memory.forget.lifecycle.Leases.Kind.RESUMMARIZE, com.rokid.context.memory.forget.lifecycle.Leases.memories(sources.map { it.id }), generation)
+        try {
+            val vars = PromptVars(
+                recentContext = PromptComposer.dataBlock("memories", sources.map { it.text }) + "\n" +
+                    PromptComposer.dataBlock("critic_notes", listOf(NOTE)),
             )
-            dao.insertEdges(sources.map { MemorySourceEntity(newId, it.id) })
-            db.frameSourceDao().insertAll(inherited.map { com.rokid.context.memory.db.FrameSourceEntity(newId, it, null, com.rokid.context.orchestration.ExtractSave.CARRIED) })
-            dao.insertEdges(dao.edgesTo(listOf(old.id)).map { MemorySourceEntity(it.memoryId, newId) })
-            drop(old.id)
-            true
+            // codex r12: the surviving source memories' text is re-checked live by the router inside the permit (a Forget meanwhile drops the call unsent)
+            val out = runner.run(RoleCall(PromptKey.SUMMARIZE, vars, callClass = com.rokid.context.model.CallClass.BACKFILL,
+                sources = com.rokid.context.model.PayloadSources.stored(emptyList(), sources.map { it.id }), liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(graph, generation))).output as SummaryOutput
+            val text = out.summary.replace(TextHygiene.SEPARATORS, " ").trim().take(260)
+            if (text.isEmpty()) throw IllegalStateException("empty summary")
+            val newId = "$PREFIX${UUID.randomUUID()}"
+            val committed = lease.commit(db, checkLive = false) {
+                if (MemoryWipe.generation.get() != generation) return@commit false
+                // Forget fence: a source forgotten during the model call means the output may hold forgotten text.
+                val now = liveSources(old.id).map { it.id }.toSet()
+                if (now != sources.map { it.id }.toSet() || dao.memories(listOf(old.id)).isEmpty()) return@commit false
+                // codex r17: the rebuilt summary inherits every photo its sources cite or carry (the shared rule), fenced here with the write
+                val inherited = com.rokid.context.orchestration.ExtractSave.inheritedFrames(db, sources.map { it.id })
+                if (inherited.toList().chunked(CHUNK).any { dao.tombstoned(it).isNotEmpty() }) return@commit false
+                val tags = out.entities.map { it.replace(TextHygiene.SEPARATORS, " ").trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.take(5).joinToString(" ")
+                val confidence = minOf(out.confidence, sources.maxOf { it.confidence }).coerceIn(0.0, 1.0)
+                db.memoryDao().insert(
+                    MemoryEntity(
+                        id = newId, frameId = null, text = text, type = "summary", tags = tags, tier = old.tier, confidence = confidence,
+                        reviewState = ReviewState.OK, trusted = false, createdAt = old.createdAt, derived = true, // fix round 1 C1: keeps its retention window
+                        searchText = SearchNormalizer.normalize("$text $tags"), imageDelivered = false, // a text summary of memories: describes no photo
+                    ),
+                )
+                dao.insertEdges(sources.map { MemorySourceEntity(newId, it.id) })
+                db.frameSourceDao().insertAll(inherited.map { com.rokid.context.memory.db.FrameSourceEntity(newId, it, null, com.rokid.context.orchestration.ExtractSave.CARRIED) })
+                dao.insertEdges(dao.edgesTo(listOf(old.id)).map { MemorySourceEntity(it.memoryId, newId) })
+                drop(old.id)
+                true
+            }
+            return (committed as? com.rokid.context.memory.forget.lifecycle.Leases.Commit.Committed)?.value == true
+
+        } finally {
+            lease.close()
         }
     }
 

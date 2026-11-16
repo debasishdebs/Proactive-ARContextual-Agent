@@ -806,4 +806,34 @@ class CanvasRunnerTest {
         assertEquals(10_000L, dao.run(st.runA)!!.startedAt)
         assertTrue(dao.run(st.runB)!!.startedAt >= 15_000L)
     }
+
+    // ---- Forget lifecycle M3 (T6): one read lease for the whole run ----
+
+    private fun singletonExtract(onChunk: (List<CanvasItem>) -> Unit) = fake(NodeTypes.VISION_EXTRACT, chunk = 1, nominal = { it }, onChunk = onChunk) { _, it -> NodeResult(it.frameId, extraction(it.frameId), calls = 1) }
+
+    /** Leak 4 (C1): a singleton flush used to check only its own photo's key, so text a batch call took from a forgotten PEER photo was written. The lease covers every photo of the run. */
+    @Test fun aSingletonFlushAfterAPeerPhotoWasForgottenWritesNothing() = runBlocking<Unit> {
+        var first = true
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to singletonExtract { if (first) { first = false; runBlocking { MemoryGraph.get(app).db.forgetDao().insertTombstone(ForgetTombstoneEntity("f3", 1)) } } }))
+        val id = begin(r, DefaultPipelines.liveExtract(), frames(3)); finish(r)
+        assertTrue("f1's own row was not forgotten, yet nothing derived is written", dao.items(id).none { it.nodeId != "photos" })
+        assertEquals("CANCELLED", dao.run(id)?.status)
+        assertEquals(0, com.rokid.context.orchestration.DataOpGate.shared.leases.openCount)
+    }
+
+    /** Leak 5 on a run: a Forget that reaches a photo of the run (a fact Forget revokes without tombstoning it) cancels the run before its next write. */
+    @Test fun aLeaseRevokedMidRunCancelsTheRunAndWritesNothingFurther() = runBlocking<Unit> {
+        var first = true
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to singletonExtract { if (first) { first = false; com.rokid.context.orchestration.DataOpGate.shared.leases.revoke(com.rokid.context.memory.forget.lifecycle.Leases.photos(listOf("f2"))) } }))
+        val id = begin(r, DefaultPipelines.liveExtract(), frames(3)); finish(r)
+        assertTrue(dao.items(id).none { it.nodeId != "photos" })
+        assertEquals("CANCELLED", dao.run(id)?.status)
+    }
+
+    @Test fun aForgetThatReachesNothingOfTheRunLeavesItAlone() = runBlocking<Unit> {
+        var first = true
+        val r = runner(liveFakes(onExtractChunk = { if (first) { first = false; com.rokid.context.orchestration.DataOpGate.shared.leases.revoke(com.rokid.context.memory.forget.lifecycle.Leases.photos(listOf("other"))) } }))
+        val run = runAll(r, DefaultPipelines.liveExtract(), frames(3))
+        assertEquals("DONE", run.status); assertEquals(3, dao.items(run.runId).count { it.nodeId == "extract" })
+    }
 }

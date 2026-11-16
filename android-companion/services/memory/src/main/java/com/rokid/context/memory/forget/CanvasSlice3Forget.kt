@@ -9,7 +9,7 @@ import com.rokid.context.memory.db.ContextDatabase
  * replay and sweep that read a tombstoned trace, overlaps the range or was computed under older labels is INVALIDATED with its result deleted. Files and devices follow
  * through the `ForgetListener` seam (the caller's job, after commit); the durable `cleanup_outbox` rows (tombstoned glasses traces, the glasses range) are written in the same transaction by [CleanupOutbox].
  */
-class CanvasSlice3Forget(private val db: ContextDatabase, private val clock: () -> Long = System::currentTimeMillis) {
+class CanvasSlice3Forget(val db: ContextDatabase, private val clock: () -> Long = System::currentTimeMillis) {
     data class Result(
         val tombstonedTraceIds: List<String>, val labelsDeleted: Int, val resultsInvalidated: Int,
         /** What the cascade removed (frames to delete, redacted proposals, invalidated derived facts): the caller must run the post-commit cleanup (`ForgetActions.apply`) on it. */
