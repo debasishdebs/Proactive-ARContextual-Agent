@@ -170,6 +170,8 @@ class AutoStopEngine(
                 p?.stopHub?.invoke()
             }
             is AutoStopEffect.StartWake -> {
+                // review r1 P2-6: the call state was sampled before the snapshot was written; look again right before the start (the session open is guarded again too)
+                if (f.nearby && !runCatching { hubStart.callIdle() }.getOrDefault(false)) return AutoStopEvent.NearbyCallBlocked
                 // the ladder's attempt is one atomic check-and-record on the shared ladder, durable BEFORE the start; a watchdog start that got there first means no start here
                 if (f.recover && !hubStart.record(clock())) return AutoStopEvent.WakeResult(false, runCatching { wakeNow()?.serviceRunning }.getOrNull() == true)
                 val issued = runCatching { if (f.controller && p != null) p.wakeHub() else if (f.recover) (startRecover ?: startWake)() else startWake() }.getOrDefault(false)

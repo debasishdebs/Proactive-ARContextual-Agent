@@ -263,23 +263,46 @@ class OrchestrationScheduler(
     fun periodicReduced(): Boolean = reduced()
 
     /**
-     * An EXPECTED stop of the hub (auto, manual or watchdog) with an empty inbox and an empty queue: the periodic jobs fall back to 60 minutes, battery guarded. Anything waiting keeps
-     * the normal cadence (it still has to drain). A LOST hub never calls this (its jobs are its recovery chances). Reads files and prefs: not on Main. True = reduced.
+     * An EXPECTED stop of the hub (auto, manual or watchdog) with an empty inbox and an empty queue AND the Moments caught up: the periodic jobs fall back to 60 minutes, battery guarded.
+     * Anything waiting keeps the normal cadence (it still has to drain). A LOST hub never calls this (its jobs are its recovery chances). Reads files and prefs: not on Main. True = reduced.
+     *
+     * Review hub-wp3 r1: [epoch] is [cadenceEpoch] as it was when the stop happened; any [restorePeriodicJobs] since (a hub start, a stored frame) bumps it, and the write below is under
+     * the same lock as the restore, so a late reduce can never undo a restoration. [momentsCaughtUp] (default: [momentsCaughtUpNow]) is a durable catch-up, not just empty queues: a failed
+     * Moment build is recovered only by the cadence's current-and-previous-hour rebuild, which a longer period could let expire.
      */
-    fun reducePeriodicJobsIfIdle(): Boolean {
+    fun reducePeriodicJobsIfIdle(epoch: Long = cadenceEpoch(), momentsCaughtUp: () -> Boolean = ::momentsCaughtUpNow): Boolean {
         if (reduced()) return true
         val inboxEmpty = RokidFrameInbox.inboxDir(context).listFiles().orEmpty().none { it.isFile && !it.name.endsWith(".part") }
         if (!inboxEmpty || QueueRuntimeStore.snapshot(context).totalPending > 0) return false
-        context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_REDUCED, true).commit()
-        reschedulePeriodic()
+        if (!momentsCaughtUp()) return false
+        synchronized(CADENCE_LOCK) {
+            if (cadenceEpoch() != epoch || reduced()) return reduced() // restored (or reduced) meanwhile: this stale decision is void
+            context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_REDUCED, true).commit()
+            reschedulePeriodic()
+        }
         return true
     }
 
-    /** The hub started, or a frame was stored: the normal 15-minute cadence again. A no-op (one prefs read) when not reduced. */
+    /** Drains the trigger's pending seconds and rebuilds the current and previous hour now; false when anything failed or does not finish in time (then the cadence stays normal). */
+    private fun momentsCaughtUpNow(): Boolean = runCatching {
+        kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeoutOrNull(CATCH_UP_TIMEOUT_MS) {
+                val t = com.rokid.context.canvas.moment.MomentTriggers.get(context)
+                val before = t.failures
+                t.flush(); t.rebuildRecent(System.currentTimeMillis())
+                t.failures == before
+            } == true
+        }
+    }.getOrDefault(false)
+
+    /** The hub started, or a frame was stored: the normal 15-minute cadence again. A no-op (one prefs read) when not reduced, but it always voids any reduce decided before it. */
     fun restorePeriodicJobs() {
-        if (!reduced()) return
-        context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_REDUCED, false).commit()
-        reschedulePeriodic()
+        cadenceEpochCounter.incrementAndGet()
+        synchronized(CADENCE_LOCK) {
+            if (!reduced()) return
+            context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_REDUCED, false).commit()
+            reschedulePeriodic()
+        }
     }
 
     /** Re-enqueues the three jobs with the period of the current mode; the ingest and the drain only while processing is on (paused = cancelled, stays so). */
@@ -397,6 +420,13 @@ class OrchestrationScheduler(
         /** The reduced-cadence flag (one cached prefs read): the cheap check before any restore work. */
         fun cadenceReduced(context: Context): Boolean = context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).getBoolean(KEY_REDUCED, false)
         const val CADENCE_PREFS = "periodic_cadence"
+        private val CADENCE_LOCK = Any()
+        private val cadenceEpochCounter = java.util.concurrent.atomic.AtomicLong()
+        private const val CATCH_UP_TIMEOUT_MS = 60_000L
+        /** Counts the restorations of the normal cadence (also those that found nothing to restore): a stop captures it, a reduce is valid only while it is unchanged. */
+        fun cadenceEpoch(): Long = cadenceEpochCounter.get()
+        /** A restoration was requested (the cheap, synchronous part of [OrchestrationScheduler.restorePeriodicJobs]). */
+        fun noteCadenceRestore() { cadenceEpochCounter.incrementAndGet() }
         private const val KEY_REDUCED = "reduced"
         const val NORMAL_PERIOD_MIN = 15L
         const val REDUCED_PERIOD_MIN = 60L

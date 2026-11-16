@@ -123,7 +123,11 @@ class CxrGlassesLink(
         try {
             manager.requestAuthorization(activity, listOf(GlassPermission.MICROPHONE, GlassPermission.DEVICE_MANAGE, GlassPermission.MEDIA)) { r ->
                 PcLog.i(TAG, "authorize ok=${r.isSuccess} code=${r.errorCode}")
-                r.token?.takeIf { r.isSuccess }?.let { app.getSharedPreferences(PREFS, 0).edit().putString(KEY_TOKEN, it).apply() }
+                r.token?.takeIf { r.isSuccess }?.let {
+                    // a different pairing (a new token) is a different device until it is learned again
+                    if (token() != it) forgetAddress(app)
+                    app.getSharedPreferences(PREFS, 0).edit().putString(KEY_TOKEN, it).apply()
+                }
                 // Success without any usable token would loop AuthActivity: treat it as a failure.
                 val ok = r.isSuccess && (r.token != null || token() != null)
                 post { onAuthResult(ok) }
@@ -310,7 +314,7 @@ class CxrGlassesLink(
 
     /** Forget the rejected token; the retry goes through the bounded authorization path in [openSession]. */
     private fun onTokenRejected() {
-        app.getSharedPreferences(PREFS, 0).edit().remove(KEY_TOKEN).apply()
+        app.getSharedPreferences(PREFS, 0).edit().remove(KEY_TOKEN).remove(KEY_ADDRESS).apply()
         if (auth.tokenRejected()) act(policy.onEvent(LinkEvent.ConnectFailed))
         else { authDeclined = true; act(policy.onEvent(LinkEvent.AuthFailed)) }
     }
@@ -408,6 +412,8 @@ class CxrGlassesLink(
          * Kept in the `rokid_link` prefs (device state of this pairing, never backed up). The address is never logged or shown.
          */
         fun pairedAddress(context: Context): String? = context.getSharedPreferences(PREFS, 0).getString(KEY_ADDRESS, null)?.takeIf { it.isNotBlank() }
+        /** The pairing changed or the device can no longer be told: no address matches until it is learned again. */
+        fun forgetAddress(context: Context) { context.getSharedPreferences(PREFS, 0).edit().remove(KEY_ADDRESS).apply() }
         fun rememberAddress(context: Context, address: String) { context.getSharedPreferences(PREFS, 0).edit().putString(KEY_ADDRESS, address.uppercase()).apply() }
         /** v1.0 wear fallback: the last read of the glasses' system wear check. */
         internal const val KEY_WEAR_CHECK = "wear_check"

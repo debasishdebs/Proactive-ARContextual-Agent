@@ -13,10 +13,7 @@ class HubBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val via = viaOf(intent.action) ?: return
         val app = context.applicationContext
-        val pending = runCatching { goAsync() }.getOrNull()
-        kotlin.concurrent.thread(name = "hub-boot") {
-            try { runCatching { submit(app, via) } } finally { runCatching { pending?.finish() } }
-        }
+        ReceiverWork.run(runCatching { goAsync() }.getOrNull(), "hub-boot") { submit(app, via) }
     }
 
     companion object {
@@ -30,6 +27,6 @@ class HubBootReceiver : BroadcastReceiver() {
         }
 
         /** The event goes to the process-wide engine; a test seam. */
-        @Volatile internal var submit: (Context, String) -> Unit = { app, via -> AutoStopWake.engine(app).submit(AutoStopEvent.ProcessStarted(via)) }
+        @Volatile internal var submit: (Context, String) -> Unit = { app, via -> ReceiverWork.await(AutoStopWake.engine(app), AutoStopEvent.ProcessStarted(via)) }
     }
 }

@@ -141,3 +141,18 @@ class AutoStopWakeWorker(context: Context, params: WorkerParameters) : Worker(co
         return Result.success()
     }
 }
+
+/**
+ * Review hub-wp3 r1 P2-4: a manifest receiver's work. [goAsync] first (the broadcast's lifetime then covers the work), everything else on a worker thread, and the
+ * [PendingResult.finish] only AFTER [work] returned (it waits for the engine's outcome, bounded by [WAIT_MS], so the platform never ends the process under a half-done event).
+ */
+internal object ReceiverWork {
+    const val WAIT_MS = 8_000L
+
+    fun run(pending: android.content.BroadcastReceiver.PendingResult?, name: String, work: () -> Unit) {
+        kotlin.concurrent.thread(name = name) { try { runCatching { work() } } finally { runCatching { pending?.finish() } } }
+    }
+
+    /** Waits (on this worker thread) for the engine's reply to [e], at most [WAIT_MS]. */
+    fun await(engine: AutoStopEngine, e: AutoStopEvent) { runBlocking { withTimeoutOrNull(WAIT_MS) { engine.submit(e).await() } } }
+}

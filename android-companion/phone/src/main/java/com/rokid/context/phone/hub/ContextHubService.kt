@@ -322,10 +322,12 @@ class ContextHubService : Service() {
 
         /** v1.1 T7: off the main thread (prefs, the inbox listing and the queue file are read). Never throws. */
         internal fun reducePeriodicJobsAsync(app: Context) {
-            kotlin.concurrent.thread(name = "cadence-reduce") { runCatching { com.rokid.context.work.OrchestrationScheduler(app).reducePeriodicJobsIfIdle() } }
+            val epoch = com.rokid.context.work.OrchestrationScheduler.cadenceEpoch() // taken at the stop: a hub start or a frame since then voids this reduce
+            kotlin.concurrent.thread(name = "cadence-reduce") { runCatching { com.rokid.context.work.OrchestrationScheduler(app).reducePeriodicJobsIfIdle(epoch) } }
         }
 
         internal fun restorePeriodicJobsAsync(app: Context) {
+            com.rokid.context.work.OrchestrationScheduler.noteCadenceRestore() // always: a reduce that is still deciding must see this restoration
             if (!com.rokid.context.work.OrchestrationScheduler.cadenceReduced(app)) return
             kotlin.concurrent.thread(name = "cadence-restore") { runCatching { com.rokid.context.work.OrchestrationScheduler(app).restorePeriodicJobs() } }
         }
