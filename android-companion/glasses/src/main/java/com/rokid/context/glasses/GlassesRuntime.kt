@@ -77,6 +77,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         // Pause zones: with the phone in a zone's approach band and the link down (or not known up), capture pauses here.
         zoneApproach = { (latestSettings ?: settingsCache.read().also { latestSettings = it }).zoneApproach },
         linkUp = { controller?.sessionOpen?.value == true },
+        zoneEnforce = { (latestSettings ?: settingsCache.read().also { latestSettings = it }).zoneEnforce },
     )
     /** One camera owner for the process: the sampling session and every Fixed capture take turns through it. */
     val cameraOwner = CameraOwner()
@@ -321,7 +322,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onMotionContext = { m -> contextGate.onMessage(m, android.os.SystemClock.elapsedRealtime()) }
         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
-        c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
+        c.onSessionOpened = { pauses.onSessionOpened(); scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
         c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
         c.onPhoneSettingsPush = { s -> diagRecord.onSettings(s.diagRecord) }
         c.onCapturePlan = { m -> plan.onMessage(m) }
@@ -419,7 +420,8 @@ class GlassesRuntime private constructor(private val app: Context) {
      * same [captureGate], so a pause toggle that clears the buffer either runs before it (the photo stays) or after it (a pause after the mark drops its undelivered photo, as for any frame).
      */
     fun bufferMarkPhoto(frameId: String, keyframe: KeyframeOut, capturedAtMs: Long, luma: Int?, batteryPct: Int?, markRef: String): Boolean {
-        val stored = synchronized(captureGate) { buffer.add(frameId, keyframe.jpeg, capturedAtMs, luma, keyframe.phash, batteryPct, keyframe = keyframe, markRef = markRef) }
+        // Pause zones: re-checked at the very last moment, under the gate (a zone can become active while the camera was being acquired or held): a photo taken into a zone is never stored.
+        val stored = synchronized(captureGate) { !pauses.zoneActive() && buffer.add(frameId, keyframe.jpeg, capturedAtMs, luma, keyframe.phash, batteryPct, keyframe = keyframe, markRef = markRef) }
         if (stored) { controller?.sendHello(); uplink.kick() } // no capture blink: the mark has its own cue
         return stored
     }

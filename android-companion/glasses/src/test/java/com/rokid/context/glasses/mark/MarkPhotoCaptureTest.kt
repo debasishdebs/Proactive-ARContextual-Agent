@@ -62,7 +62,7 @@ class MarkPhotoCaptureTest {
         store = { id, out, at, luma, ref -> if (storeOk) stored += Stored(id, out, at, luma, ref); storeOk },
         holdMs = { hold }, heatStop = { heat }, clock = { testScheduler.currentTime }, newFrameId = { "mk${it}" },
         onKeep = { c, _, _ -> kept += c }, ownerWaitMs = ownerWaitMs, frameGapMs = 250,
-        zoneActive = { zone },
+        zoneActive = { zone }, zoneActiveNow = { zone },
     )
 
     @Test fun theCameraStaysOpenForTheHoldAndTheSharpestFrameIsThePhoto() = runTest {
@@ -167,5 +167,34 @@ class MarkPhotoCaptureTest {
         a.await(); b.await()
         assertTrue(c2.openedAt >= c1.closedAt.single(), "never two bound cameras at once")
         assertEquals(listOf("ep:1", "ep:2"), stored.map { it.markRef })
+    }
+
+    // Codex zones r1 P1-2: the zone is asked again after the camera is acquired, during the hold, and before the photo is stored.
+    @Test fun aZoneThatBecomesActiveWhileTheCameraWasBeingAcquiredStopsTheMarkBeforeTheCameraOpens() = runTest {
+        val owner = CameraOwner(); val cam = FakeCamera(this, listOf(10L to copy(true)))
+        val holder = backgroundScope.launch { owner.acquire("session") { delay(3_000) } }
+        runCurrent()
+        val r = async { capture(cam, owner).take("ep:1") }
+        advanceTimeBy(1_000); zone = true // after the initial check, while waiting for the owner
+        advanceTimeBy(3_000); runCurrent()
+        assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE), r.await())
+        assertEquals(0, cam.opened); assertTrue(stored.isEmpty()); holder.cancel()
+    }
+
+    @Test fun aZoneThatBecomesActiveDuringTheHoldDiscardsThePhoto() = runTest {
+        val cam = FakeCamera(this, listOf(100L to copy(true), 2_500L to copy(false)))
+        val r = async { capture(cam).take("ep:1") }
+        advanceTimeBy(1_000); zone = true
+        advanceTimeBy(5_000); runCurrent()
+        assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE), r.await())
+        assertTrue(stored.isEmpty()); assertTrue(cam.closedAt.isNotEmpty())
+    }
+
+    @Test fun aStoreThatRefusesBecauseTheZoneBecameActiveSaysPauseZone() = runTest {
+        val cam = FakeCamera(this, listOf(100L to copy(true)))
+        val c = MarkPhotoCapture(CameraOwner(), cam, KeyframeEncoder { EncodedKeyframe(byteArrayOf(9), 640, 480) },
+            store = { _, _, _, _, _ -> zone = true; false }, holdMs = { 2_000 }, heatStop = { false }, clock = { testScheduler.currentTime }, newFrameId = { "mk$it" },
+            zoneActive = { zone }, zoneActiveNow = { zone })
+        assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE), c.take("ep:1"))
     }
 }

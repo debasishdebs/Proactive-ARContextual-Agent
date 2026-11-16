@@ -55,6 +55,8 @@ class MarkPhotoCapture(
      * is loaded first; REQUIRED (no default), so a caller cannot forget it.
      */
     private val zoneActive: suspend () -> Boolean,
+    /** The same rule without suspending: asked inside the camera callback and right before the photo is stored. REQUIRED, like [zoneActive]. */
+    private val zoneActiveNow: () -> Boolean,
 ) {
     private class Best(val copy: FrameCopy, val blur: Float, val at: Long)
 
@@ -63,7 +65,10 @@ class MarkPhotoCapture(
         if (heatStop()) return MarkPhotoOutcome.Failed(MarkPhotoReason.HEAT)
         val hold = holdMs().coerceIn(MARK_PHOTO_HOLD_MIN_MS.toLong(), MARK_PHOTO_HOLD_MAX_MS.toLong())
         var acquired = false
-        val r = withTimeoutOrNull(ownerWaitMs + hold + OPEN_SLACK_MS) { owner.acquire(OWNER) { acquired = true; hold(markRef, hold) } }
+        // The camera may be acquired up to ownerWaitMs later: the zone is asked again the moment the camera is ours, before it is opened.
+        val r = withTimeoutOrNull(ownerWaitMs + hold + OPEN_SLACK_MS) {
+            owner.acquire(OWNER) { acquired = true; if (zoneActive()) MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE) else hold(markRef, hold) }
+        }
         return r ?: MarkPhotoOutcome.Failed(if (acquired) MarkPhotoReason.NO_FRAME else MarkPhotoReason.CAMERA_BUSY)
     }
 
@@ -71,8 +76,10 @@ class MarkPhotoCapture(
         val lock = Any()
         var best: Best? = null
         var lastAt: Long? = null
+        val zoneSeen = java.util.concurrent.atomic.AtomicBoolean(false)
         try {
             val opened = try { camera.open { src ->
+                if (zoneActiveNow()) { zoneSeen.set(true); synchronized(lock) { best = null }; return@open } // a zone became active during the hold: nothing seen from then on is kept
                 val now = clock()
                 if (lastAt?.let { now - it < frameGapMs } == true) return@open
                 val c = try { src.copy() } catch (e: Exception) { null } ?: return@open
@@ -85,13 +92,14 @@ class MarkPhotoCapture(
         } finally {
             camera.close()
         }
+        if (zoneSeen.get() || zoneActiveNow()) return MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE) // after the hold: discard whatever was seen
         val b = synchronized(lock) { best } ?: return MarkPhotoOutcome.Failed(if (camera.busy) MarkPhotoReason.CAMERA_BUSY else MarkPhotoReason.NO_FRAME)
         val enc = try { encoder.encode(b.copy.pixels) } catch (e: Exception) { null } ?: return MarkPhotoOutcome.Failed(MarkPhotoReason.NO_FRAME)
         val d = ImageHashes.dHash(b.copy.thumb); val p = ImageHashes.pHash(b.copy.thumb)
         val luma = meanLuma(b.copy)
         val frameId = newFrameId(b.at)
         val out = KeyframeOut(enc.jpeg, enc.width, MotionState.UNKNOWN, dwell = false, blur = b.blur, dhash = hex(d), phash = hex(p), sampleSeq = b.at, sessionId = SESSION)
-        if (!store(frameId, out, b.at, luma, markRef)) return MarkPhotoOutcome.Failed(MarkPhotoReason.NOT_STORED)
+        if (!store(frameId, out, b.at, luma, markRef)) return MarkPhotoOutcome.Failed(if (zoneActiveNow()) MarkPhotoReason.PAUSE_ZONE else MarkPhotoReason.NOT_STORED)
         try { onKeep(Candidate(b.at, b.copy.thumb, b.copy.pixels), d, p) } catch (e: Exception) { /* the photo is stored; the gate's memory is a courtesy */ }
         return MarkPhotoOutcome.Taken(frameId)
     }
