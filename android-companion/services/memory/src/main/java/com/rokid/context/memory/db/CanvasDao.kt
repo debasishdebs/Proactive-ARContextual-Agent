@@ -128,6 +128,15 @@ abstract class CanvasDao {
         return true
     }
 
+    /**
+     * Forget lifecycle M3 (design 2.3, C1): [insertRunItemsFenced] committed THROUGH the run's read [lease]: nothing is written when the lease was revoked by a Forget (it covers EVERY photo, member, mark and memory
+     * the run reads, so a singleton flush after a peer photo was forgotten writes nothing) or one of its live checks fails; the fence of the rows' own keys stays as the second line.
+     */
+    @Transaction open suspend fun insertRunItemsLeased(rows: List<CanvasRunItemEntity>, scores: List<CanvasScoreEntity>, lease: com.rokid.context.memory.forget.lifecycle.Leases.Lease, generation: Long, frameIds: Set<String>, labelIds: Set<String> = emptySet(), currentGeneration: () -> Long): Boolean {
+        if (!lease.verify(this)) return false
+        return insertRunItemsFenced(rows, scores, generation, frameIds, labelIds, currentGeneration)
+    }
+
     /** How many of [ids] are not labels (marks) any more. */
     open suspend fun labelsMissing(ids: Collection<String>): Int = ids.distinct().let { u -> u.size - u.chunked(CHUNK).sumOf { labelsAmong(it).size } }
     @Query("SELECT labelId FROM canvas_label WHERE labelId IN (:ids)") protected abstract suspend fun labelsAmong(ids: List<String>): List<String>

@@ -11,9 +11,12 @@ import java.io.IOException
  *   at most [waitMs] (30 s), then throws [ExportInProgress]; the caller fails the Forget visibly (a Forget is never silently dropped). Deletes do not exclude each other
  *   (they never did; each is its own transaction), so the gate is also re-entrant for them.
  * - An EXPORT takes the shared side with [export]: try-acquire only. It throws [DeleteRunning] at once while any delete runs OR waits (a waiting delete must not starve).
+ * - A READ LEASE (Forget lifecycle M3, design 2026-11-16 2.3) is the third side, [lease]: a flow that reads stored user data and writes something derived from it registers the refs it read in [leases] and commits through
+ *   the lease. It waits (bounded) while a delete HOLDS the exclusive side, never while one merely waits (a Save holds a write slot and may open a lease), and it is never waited for: a delete does not wait for a lease, it
+ *   REVOKES the leases it reaches ([Leases.revoke]) and a revoked lease's commit writes nothing.
  * No other contention logic. [MemoryExport]'s generation check stays as a cheap defensive check for the one writer the gate does not cover (a memory edit).
  */
-class DataOpGate(private val waitMs: Long = WAIT_MS) {
+class DataOpGate(private val waitMs: Long = WAIT_MS, val leases: com.rokid.context.memory.forget.lifecycle.Leases = com.rokid.context.memory.forget.lifecycle.Leases.shared) {
     /** A delete gave up waiting for a running export: nothing was deleted, try again. */
     open class ExportInProgress(message: String = "export in progress, try again") : IOException(message)
 
@@ -34,6 +37,9 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
 
     /** A write (a canvas Save) gave up waiting for a running export ([byExport]) or delete: nothing was written, try again. */
     class WriteBlocked(val byExport: Boolean) : IOException(if (byExport) "export in progress, try again" else "delete in progress, try again")
+
+    /** A read lease gave up waiting for a running delete: the flow did not start, try again. */
+    class LeaseBlocked : IOException("delete in progress, try again")
 
     private val lock = Any()
     private var exporters = 0
@@ -117,6 +123,19 @@ class DataOpGate(private val waitMs: Long = WAIT_MS) {
             synchronized(lock) { if (reserved) { dispatchers--; reserved = false } }
             bump()
         }
+    }
+
+    /**
+     * Opens a read lease on [inputs] (more can be added with `extend`). Waits at most [waitMs] while a delete runs, then throws [LeaseBlocked]; the lease is registered in the SAME step as the admission check, so a
+     * delete that starts afterwards finds it in [leases] and revokes it when it reaches its inputs. The caller closes it in a `finally`. [generation] is the wipe generation read BEFORE the flow's reads.
+     */
+    suspend fun lease(kind: com.rokid.context.memory.forget.lifecycle.Leases.Kind, inputs: Collection<com.rokid.context.memory.forget.lifecycle.Ref> = emptyList(), generation: Long = MemoryWipe.generation.get(),
+                      currentGeneration: () -> Long = { MemoryWipe.generation.get() }): com.rokid.context.memory.forget.lifecycle.Leases.Lease {
+        fun tryOpen() = synchronized(lock) { if (deleters == 0) leases.open(kind, inputs, generation, currentGeneration) else null }
+        tryOpen()?.let { return it }
+        var got: com.rokid.context.memory.forget.lifecycle.Leases.Lease? = null
+        withTimeoutOrNull(waitMs) { changed.first { tryOpen().also { l -> got = l } != null } }
+        return got ?: throw LeaseBlocked()
     }
 
     /** True while an export, delete or write runs or a delete waits: a read that must not overlap them (the retrieve-debug route) fails closed. */

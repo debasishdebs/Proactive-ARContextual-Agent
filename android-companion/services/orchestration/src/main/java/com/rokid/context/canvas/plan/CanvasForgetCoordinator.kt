@@ -28,6 +28,8 @@ class CanvasForgetCoordinator(
 ) : ForgetListener {
     /** The user forgot the time range. Returns what was tombstoned. */
     suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result = com.rokid.context.orchestration.DataOpGate.shared.delete {
+        // Forget lifecycle M3: the read leases that reach the range are revoked before the delete (a planner failure revokes them all)
+        com.rokid.context.orchestration.forget.LeaseRevocation.before(forget.db) { it.planRange(fromMs, toMs) }
         val r = forget.forgetRange(fromMs, toMs)
         val clean = afterCascade(r.cascade)
         afterRange(fromMs, toMs, r.tombstonedTraceIds)

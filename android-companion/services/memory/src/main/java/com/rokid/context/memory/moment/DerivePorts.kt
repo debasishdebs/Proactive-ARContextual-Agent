@@ -33,11 +33,13 @@ class DeriveRegistry {
 
 /** Rebuilds derived fields through the registry. Reads the reason from the audit, calls the port of the object's kind and writes the answer with [ObjectAudit.writeDerived]. */
 class DeriveRunner(private val audit: ObjectAudit, private val registry: DeriveRegistry, private val fence: () -> com.rokid.context.memory.db.DaoFence) {
+    /** The database the lease commit runs its transaction on (the DerivePass sets it; without it a lease is not used). */
+    var db: com.rokid.context.memory.db.ContextDatabase? = null
     /** True when a port answered and its write was stored. A result that is obsolete when it arrives (object deleted, Delete all, inputs changed) is dropped: see [rebuildOutcome]. */
     suspend fun rebuild(obj: MomentObject, field: String): Boolean = rebuildOutcome(obj, field) == com.rokid.context.memory.db.ObjectDao.WriteOutcome.WRITTEN
 
     /** [WriteOutcome.WRITTEN] when stored, the rejection when the answer was obsolete, null when no port answered. */
-    suspend fun rebuildOutcome(obj: MomentObject, field: String): com.rokid.context.memory.db.ObjectDao.WriteOutcome? {
+    suspend fun rebuildOutcome(obj: MomentObject, field: String, lease: com.rokid.context.memory.forget.lifecycle.Leases.Lease? = null): com.rokid.context.memory.db.ObjectDao.WriteOutcome? {
         val captured = fence()
         val req = DeriveRequest(obj, field, audit.reason(obj), captured, audit.inputSeq(obj))
         val answer = when (field) {
@@ -47,7 +49,14 @@ class DeriveRunner(private val audit: ObjectAudit, private val registry: DeriveR
             else -> null
         } ?: return null
         if (answer.field != field) return null // a port writes only the field it was asked for
-        return audit.writeDerivedGuarded(obj, field, answer.value, answer.ref, answer.builtRev, req.fence, req.inputSeq)
+        // Forget lifecycle M3: with a read [lease] (the DerivePass holds one over the object and what its text was read from) the write commits THROUGH it: a Forget that reached those inputs while the model
+        // ran revoked it and nothing is written (reported as a stale input, like any obsolete answer). The input-revision guard of the write stays as the second line.
+        val db = db
+        if (lease == null || db == null) return audit.writeDerivedGuarded(obj, field, answer.value, answer.ref, answer.builtRev, req.fence, req.inputSeq)
+        return when (val c = lease.commit(db, checkLive = false) { audit.writeDerivedGuarded(obj, field, answer.value, answer.ref, answer.builtRev, req.fence, req.inputSeq) }) {
+            is com.rokid.context.memory.forget.lifecycle.Leases.Commit.Committed -> c.value
+            com.rokid.context.memory.forget.lifecycle.Leases.Commit.Fenced -> com.rokid.context.memory.db.ObjectDao.WriteOutcome.STALE_INPUT
+        }
     }
 
     /** Rebuilds every field that is absent or stale (hidden). Returns the number rebuilt. */

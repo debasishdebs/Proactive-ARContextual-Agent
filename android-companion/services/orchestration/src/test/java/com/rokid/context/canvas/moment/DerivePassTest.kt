@@ -240,4 +240,14 @@ class DerivePassTest {
         photo(0, "cat on sofa"); fx.mark("mk:1:1", t(0) + 100, "tap"); moments.build(listOf(mid(0)))
         assertEquals(listOf("cat on sofa"), inputs.lines(ObjectRef(ObjectKind.MOMENT, mid(0), 1)))
     }
+
+    /** Forget lifecycle M3 (T6): a Forget that reaches a memory the text was read from, while the model runs, revokes the pass's lease: the derived field is not written. */
+    @Test fun aLeaseRevokedDuringTheModelCallWritesNoDerivedField() = runBlocking<Unit> {
+        photo(0, "cat on sofa SECRET"); on()
+        onModel = { com.rokid.context.orchestration.DataOpGate.shared.leases.revoke(listOf(com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.MEMORY, "m0"))); onModel = {} }
+        val rep = pass().runIfDue(MS)!!
+        assertTrue("the answer was rejected, not written: $rep", rep.rejected >= 1)
+        assertNull("no summary of the forgotten text", audit.readDerived(ObjectRef(ObjectKind.MOMENT, mid(0)), DerivedField.SUMMARY))
+        assertEquals(0, com.rokid.context.orchestration.DataOpGate.shared.leases.openCount)
+    }
 }

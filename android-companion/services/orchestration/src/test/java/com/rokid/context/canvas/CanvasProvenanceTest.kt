@@ -168,7 +168,10 @@ class CanvasProvenanceTest {
         }
         val runId = runForgettingB(vision, NodeTypes.SUMMARY to SummaryExecutor)
         assertTrue("no Summary text was sent after B was forgotten: $sent", sent.isEmpty())
-        assertEquals(listOf("frame_forget"), MemoryGraph.get(app).db.canvasDao().items(runId).filter { it.nodeId == "last" && it.frameId == "A" }.map { it.error })
+        // Forget lifecycle M3 (C1): B is a photo of this run, so its Forget revokes the run's lease and the run ends CANCELLED before the "last" row of A is written (before M3 that row was written as a frame_forget error): nothing with text
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        assertEquals("CANCELLED", dao.run(runId)?.status)
+        assertTrue(dao.items(runId).filter { it.nodeId == "last" }.all { it.outputJson == null && (it.error == null || it.error == "frame_forget") })
     }
 
     // codex r14 P1-2: Vision(batch=2) -> Prompt -> Vision(batch=1): the final Vision request declares its upstream JSON's sources (A+B), not just photo A
@@ -180,8 +183,9 @@ class CanvasProvenanceTest {
             buildJsonObject { put("batch", 1); put("prompt", buildJsonObject { put("source", "draft"); put("template", "X {{recent_context}} {{context_sources}}"); put("schema", kotlinx.serialization.json.JsonNull) }) })
         assertTrue("no request carrying B-derived upstream JSON was sent after B was forgotten: $sent", sent.isEmpty())
         val dao = MemoryGraph.get(app).db.canvasDao()
-        assertEquals("run ${dao.run(runId)?.status} items ${dao.items(runId).map { "${it.nodeId}/${it.frameId}/${it.status}/${it.error}" }}",
-            listOf("frame_forget"), dao.items(runId).filter { it.nodeId == "last" && it.frameId == "A" }.map { it.error })
+        // Forget lifecycle M3 (C1): as above, the run is cancelled by the lease; the "last" row of A (a frame_forget error before M3) is not written, and nothing with text is
+        assertEquals("CANCELLED", dao.run(runId)?.status)
+        assertTrue(dao.items(runId).filter { it.nodeId == "last" }.all { it.outputJson == null && (it.error == null || it.error == "frame_forget") })
     }
 
     // codex r15 P1-3: the carried union reaches persistence. Vision(2) -> Prompt -> Summary -> LocalCritic -> memory.write; A's summary carries a B detail

@@ -132,6 +132,7 @@ object ForgetActions {
     /** After a committed cascade: files, then the re-summarise. A failure here is logged; the Forget itself succeeded. Returns false when a cached memory export could not be deleted. */
     internal suspend fun apply(context: Context, r: ForgetService.Result): Boolean {
         removals.incrementAndGet() // the cascade is committed
+        runCatching { LeaseRevocation.after(r) } // M3: the second line behind the revocation before the delete (retention and range come through here too)
         if (r.redactedAskIds.isNotEmpty()) {
             try { asksRedacted(r.redactedAskIds) } catch (e: Exception) { PcLog.w(TAG, "answer withdrawal not sent: ${SafeLog.describe(e)}") }
         }
@@ -210,6 +211,10 @@ object ForgetActions {
         }
 
     private suspend fun runLocked(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref?, op: suspend (ForgetService) -> ForgetService.Result): Outcome {
+        // Forget lifecycle M3: the read leases that reach what this Forget touches are revoked BEFORE the delete (no new lease can open, we hold the gate); an unplanned scope revokes them all
+        try {
+            if (shadowRoot != null) LeaseRevocation.before(MemoryGraph.get(context).db) { it.plan(setOf(shadowRoot), com.rokid.context.memory.forget.lifecycle.Policy.User) } else LeaseRevocation.all("scoped")
+        } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) { LeaseRevocation.all("no graph") }
         val shadow = if (shadowRoot != null) ForgetShadow.before(context, shadowRoot) else null // Forget lifecycle M2: reads only, off by default (DeveloperFlags), never affects the Forget
         val r = try {
             val graph = MemoryGraph.get(context)

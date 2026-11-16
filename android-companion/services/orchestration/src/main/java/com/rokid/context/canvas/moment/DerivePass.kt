@@ -109,7 +109,7 @@ class DeriveInputs(private val db: ContextDatabase) {
     }.map { it.replace(WS, " ").trim().take(MAX_LINE) }.filter { it.isNotEmpty() }.take(MAX_LINES)
 
     /** Codex r12: the memories and photos [lines] reads for [obj] (a Scene: its member Moments'), declared on the model call. */
-    private suspend fun sources(obj: MomentObject): com.rokid.context.model.PayloadSources = when (obj.kind) {
+    internal suspend fun sources(obj: MomentObject): com.rokid.context.model.PayloadSources = when (obj.kind) {
         ObjectKind.MOMENT -> momentSources(obj.id)
         ObjectKind.SCENE -> db.sceneDao().parts(obj.id).filter { it.kind == ScenePartKind.MOMENT }
             .fold(com.rokid.context.model.PayloadSources.NONE) { acc, p -> acc + momentSources(p.refId) }
@@ -177,7 +177,7 @@ class DerivePass(
 ) {
     data class Report(val written: Int, val rejected: Int, val failed: Int, val objects: Int)
     private val audit = ObjectAudit(db.objectDao())
-    private val runner = DeriveRunner(audit, registry, fence)
+    private val runner = DeriveRunner(audit, registry, fence).also { it.db = db }
 
     suspend fun runIfDue(nowMs: Long): Report? {
         if (!cadence.enabled() || !cadence.isDue(nowMs)) return null
@@ -192,7 +192,14 @@ class DerivePass(
             for (f in need) {
                 if (gate.refused || !cadence.enabled()) break // the switch is re-read before every field call; a refused call stops the pass
                 try {
-                    when (runner.rebuildOutcome(obj, f)) { WriteOutcome.WRITTEN -> written++; null -> {}; else -> rejected++ }
+                    // Forget lifecycle M3: a read lease over the object and every memory, photo and mark its text is read from; the write commits through it (a Forget that reached them meanwhile revokes it)
+                    val lease = com.rokid.context.orchestration.DataOpGate.shared.lease(com.rokid.context.memory.forget.lifecycle.Leases.Kind.DERIVE)
+                    try {
+                        val src = inputs.sources(obj)
+                        val own = com.rokid.context.memory.forget.lifecycle.Ref(if (obj.kind == ObjectKind.SCENE) com.rokid.context.memory.forget.lifecycle.Family.SCENE else com.rokid.context.memory.forget.lifecycle.Family.MOMENT, obj.id)
+                        lease.extend(listOf(own) + com.rokid.context.memory.forget.lifecycle.Leases.photos(src.frameIds) + com.rokid.context.memory.forget.lifecycle.Leases.refsOf(src.memoryIds) + com.rokid.context.memory.forget.lifecycle.Leases.marks(src.markIds))
+                        when (runner.rebuildOutcome(obj, f, lease)) { WriteOutcome.WRITTEN -> written++; null -> {}; else -> rejected++ }
+                    } finally { lease.close() }
                 } catch (c: CancellationException) { throw c } catch (e: Exception) { failed++; break }
             }
         }

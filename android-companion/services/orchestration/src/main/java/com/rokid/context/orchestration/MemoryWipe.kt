@@ -99,6 +99,7 @@ object MemoryWipe {
         MemoryGraph.markLegacyImportDone(context)
         AskPhotoPolicy.set(context, false) // Delete all withdraws the consent to send photos with questions (like image intent); re-enabling is one tap
         generation.incrementAndGet()
+        com.rokid.context.orchestration.forget.LeaseRevocation.all("delete all") // M3: Delete all revokes every read lease (the generation check is the second line)
         val wipedAt = System.currentTimeMillis()
         val wipedElapsed = SystemClock.elapsedRealtime()
         // Fix round 2 I2: every file in the inbox when the fence is marked is pre-wipe, whatever its stamp says.

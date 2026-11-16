@@ -167,4 +167,18 @@ class ResummarizeWorkerTest {
         work()
         assertEquals(777L, graph.memories.all().single { it.text == "Rebuilt B" }.createdAt)
     }
+
+    /** Forget lifecycle M3: a source forgotten while the summary is being rebuilt revokes the lease; the rebuilt text is not written and the row stays hidden for the next run. */
+    @Test fun aLeaseRevokedDuringTheModelCallWritesNoRebuiltSummary() = runBlocking {
+        mem("A", "Forgotten diary page", derived = false); mem("S", "Sibling source about the desk", derived = false); mem("B", "B from A and S")
+        edge("B", "A"); edge("B", "S")
+        forget("A")
+        val first = reply
+        reply = { p -> com.rokid.context.orchestration.DataOpGate.shared.leases.revoke(com.rokid.context.memory.forget.lifecycle.Leases.memories(listOf("S"))); reply = first; first(p) }
+        work()
+        assertTrue("nothing rebuilt from a revoked lease", graph.memories.all().none { it.text.startsWith("Rebuilt") })
+        assertEquals("B stays hidden for the next run", ReviewState.INVALIDATED, graph.db.memoryViewDao().byId("B")!!.reviewState)
+        work()
+        assertTrue("the next run rebuilds it", graph.memories.all().any { it.text.startsWith("Rebuilt") })
+    }
 }

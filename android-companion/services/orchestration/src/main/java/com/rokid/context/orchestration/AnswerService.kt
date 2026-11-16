@@ -233,6 +233,9 @@ class AnswerService(
      * [generation]: read before retrieval. If Delete all runs while the model answers, the ask (built from memories that
      * no longer exist) is not saved and the call fails as "no memories" (review I1).
      */
+    /** Test seam: runs after the model answered (its upload slot released) and before the ask commits through its lease (a test runs a Forget there). Null in production. */
+    @Volatile internal var testBeforeCommit: (suspend () -> Unit)? = null
+
     suspend fun answerOrThrow(
         question: String, source: String, nowMs: Long = System.currentTimeMillis(), askId: String? = null,
         generation: Long = MemoryWipe.generation.get(),
@@ -246,49 +249,58 @@ class AnswerService(
         } catch (e: Exception) {
             PcLog.i(TAG, "backlog extraction before ask failed (${e.javaClass.simpleName})")
         }
-        val r = retrieveWithFlow(q, nowMs)
-        // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
-        if (r.memories.isEmpty() && r.photos.isEmpty() && !ActionTriggers.matches(q)) {
-            runCatching(onNoMatch).onFailure { PcLog.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
-            throw NoMemoriesException()
-        }
-        // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
-        // unsent, PhotoForgottenException; it is never re-asked as text).
-        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
-            // codex r12: everything stored the prompt carries (memories, photo lines, history dependencies) is re-checked live by the router inside the permit
-            sources = r.sources, liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
-        val text = AskText.collapse(out.answer).take(MAX_ANSWER)
-        if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
-        val id = askId ?: "ask_${UUID.randomUUID()}"
-        var redacted = false
-        val saved = memory.db.withTransaction {
-            if (MemoryWipe.generation.get() != generation) return@withTransaction false
-            // Phase 7 Forget fence (Stream F fix round 1 I1): a memory in the prompt or cited was forgotten while the
-            // model answered, so the reply may hold forgotten text: store it redacted, with no sources and no proposal.
-            redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + r.fenceIds + out.sources)
-            memory.asks.add(
-                if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
-                else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds + r.ids) /* codex r15: every input, cited or not, is a dependency */, null, source, false),
-            )
-            true
-        }
-        if (!saved) throw NoMemoriesException()
-        if (redacted) return AskOutcome.Answered(id)
-        val photo = firstCitedPhoto(r, out.sources)
-        // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
-        // The ask is saved: a failing intake must not fail it (nor make a queue job retry it). Cancellation still propagates.
-        // An eval ask (tools/eval_pca.py) never takes a proposal in: no HUD confirmation, notification or action may come from it.
-        val proposalId = out.proposedAction?.takeIf { source != AskActions.EVAL_SOURCE }?.let { action ->
-            try {
-                proposals.onProposed(ProposalOrigin.ASK, id, action, nowMs)
-            } catch (c: CancellationException) {
-                throw c
-            } catch (t: Throwable) {
-                PcLog.w(TAG, "proposal intake failed (${t.javaClass.simpleName})")
-                null
+        val lease = com.rokid.context.orchestration.DataOpGate.shared.lease(com.rokid.context.memory.forget.lifecycle.Leases.Kind.ASK, emptyList(), generation)
+        try {
+            val r = retrieveWithFlow(q, nowMs)
+            lease.extend(com.rokid.context.memory.forget.lifecycle.Leases.refsOf(r.ids + r.fenceIds)) // what this answer reads: a Forget that reaches it revokes the lease
+            // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
+            if (r.memories.isEmpty() && r.photos.isEmpty() && !ActionTriggers.matches(q)) {
+                runCatching(onNoMatch).onFailure { PcLog.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
+                throw NoMemoriesException()
             }
+            // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
+            // unsent, PhotoForgottenException; it is never re-asked as text).
+            val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
+                // codex r12: everything stored the prompt carries (memories, photo lines, history dependencies) is re-checked live by the router inside the permit
+                sources = r.sources, liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
+            val text = AskText.collapse(out.answer).take(MAX_ANSWER)
+            if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
+            val id = askId ?: "ask_${UUID.randomUUID()}"
+            var redacted = false
+            testBeforeCommit?.invoke()
+            lease.extend(com.rokid.context.memory.forget.lifecycle.Leases.refsOf(out.sources))
+            // M3: the ask commits THROUGH its read lease: revoked by a Forget (or Delete all) while the model answered, nothing is written. checkLive = false keeps the redacted-row rule below as it was.
+            val saved = (lease.commit(memory.db, checkLive = false) {
+                if (MemoryWipe.generation.get() != generation) return@commit false
+                // Phase 7 Forget fence (Stream F fix round 1 I1): a memory in the prompt or cited was forgotten while the
+                // model answered, so the reply may hold forgotten text: store it redacted, with no sources and no proposal.
+                redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + r.fenceIds + out.sources)
+                memory.asks.add(
+                    if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
+                    else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds + r.ids) /* codex r15: every input, cited or not, is a dependency */, null, source, false),
+                )
+                true
+            } as? com.rokid.context.memory.forget.lifecycle.Leases.Commit.Committed)?.value == true
+            if (!saved) throw NoMemoriesException()
+            if (redacted) return AskOutcome.Answered(id)
+            val photo = firstCitedPhoto(r, out.sources)
+            // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
+            // The ask is saved: a failing intake must not fail it (nor make a queue job retry it). Cancellation still propagates.
+            // An eval ask (tools/eval_pca.py) never takes a proposal in: no HUD confirmation, notification or action may come from it.
+            val proposalId = out.proposedAction?.takeIf { source != AskActions.EVAL_SOURCE }?.let { action ->
+                try {
+                    proposals.onProposed(ProposalOrigin.ASK, id, action, nowMs)
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    PcLog.w(TAG, "proposal intake failed (${t.javaClass.simpleName})")
+                    null
+                }
+            }
+            return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = routeOf(r.target, source, id, nowMs), notice = AskActions.semanticNotice(r.semanticOff))
+        } finally {
+            lease.close()
         }
-        return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = routeOf(r.target, source, id, nowMs), notice = AskActions.semanticNotice(r.semanticOff))
     }
 
     /**

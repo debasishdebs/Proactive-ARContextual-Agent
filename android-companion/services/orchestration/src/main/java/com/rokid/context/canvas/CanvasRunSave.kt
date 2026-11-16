@@ -115,7 +115,14 @@ class CanvasRunSave(
         db.canvasSlice3Dao().meta(key)?.let { return Result.AlreadySaved(it.toIntOrNull() ?: 0) }
         // the wipe generation is read BEFORE the run, its outputs and its photos are loaded: a Delete all that ran after this point makes the save refuse (Wiped), never commit what it loaded
         val gen = generation()
+        // Forget lifecycle M3: a read lease from before the load; the photos the run produced from are added once known. Revoked by a Forget that reaches them, the save then writes nothing.
+        val lease = try { gate().lease(com.rokid.context.memory.forget.lifecycle.Leases.Kind.CANVAS_SAVE, emptyList(), gen, generation) } catch (e: DataOpGate.LeaseBlocked) { return Result.Busy(false) }
+        try { return saveLeased(runId, key, gen, lease) } finally { lease.close() }
+    }
+
+    private suspend fun saveLeased(runId: String, key: String, gen: Long, lease: com.rokid.context.memory.forget.lifecycle.Leases.Lease): Result {
         val l = load(runId)
+        l.built?.let { lease.extend(com.rokid.context.memory.forget.lifecycle.Leases.photos(it.frames)) }
         testAfterLoad?.invoke()
         l.refusal?.let { PcLog.i(TAG, "canvas save refused"); return Result.NotSaveable(it) }
         val b = l.built ?: return Result.NothingToSave
@@ -132,6 +139,7 @@ class CanvasRunSave(
                     carriedOf = { ids, index -> index?.let { b.carried.getOrNull(it) } ?: (ids.toSet() + ids.flatMap { b.captionCarried[it].orEmpty() }) },
                     inTransaction = { saved ->
                         if (db.canvasSlice3Dao().meta(key) != null) throw Marked() // a concurrent save won: roll this one back
+                        if (!lease.verify(db)) throw Gone(Result.NothingToSave) // M3: a Forget revoked the lease (a photo the run read): the transaction rolls back, nothing is saved
                         // re-read inside the transaction what the load saw: the run must still be DONE and every source photo must still be a live row (a forgotten one is fenced by the tombstone check)
                         val run = db.canvasDao().run(runId)
                         if (run == null || run.status != "DONE") throw Gone(Result.NotSaveable(Reason.NOT_DONE))
