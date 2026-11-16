@@ -50,6 +50,8 @@ class WearDetector(
      * advanced since the previous second: a timer tick without samples is not an observation.
      */
     @Volatile var imuSampleAt: (() -> Long?)? = null
+    /** The time of the newest linear-acceleration sample: a second counts only when BOTH the gyro and this advanced and both are fresh ([WearEstimate.MAX_SAMPLE_AGE_MS]). */
+    @Volatile var accSampleAt: (() -> Long?)? = null
     /** A real wear change (worn to not worn or back) seen in this session: the sensor works, so no estimate until the session ends. */
     private var sensorLive = false
     private var quietSinceMs = -1L
@@ -57,6 +59,10 @@ class WearDetector(
     private var uncoveredStreak = 0
     private var lastSecondAt = -1L
     private var lastSampleAt: Long? = null
+    private var lastAccAt: Long? = null
+    /** The last [WearEstimate.COVERAGE_WINDOW_S] seconds, true = covered by fresh samples (continuous coverage check, also after the run reached the window). */
+    private val recentCoverage = ArrayDeque<Boolean>()
+    private var recentCovered = 0
     /** The quiet run reached the window with enough coverage (the raw estimate, before [WearEstimate.applies]). */
     private var quietLong = false
     private var quietPeakGyro = 0f
@@ -86,12 +92,19 @@ class WearDetector(
         val tickGap = lastSecondAt >= 0 && tMs - lastSecondAt > WearEstimate.MAX_GAP_MS
         lastSecondAt = tMs
         val sample = imuSampleAt?.invoke()
-        val covered = sample != null && sample != lastSampleAt
+        val acc = accSampleAt?.invoke()
+        val fresh = sample != null && acc != null && tMs - sample <= WearEstimate.MAX_SAMPLE_AGE_MS && tMs - acc <= WearEstimate.MAX_SAMPLE_AGE_MS
+        val covered = fresh && sample != lastSampleAt && acc != lastAccAt // both streams delivered something new, and recently
         if (sample != null) lastSampleAt = sample
+        if (acc != null) lastAccAt = acc
         uncoveredStreak = if (covered) 0 else uncoveredStreak + 1
+        recentCoverage.addLast(covered); if (covered) recentCovered++
+        if (recentCoverage.size > WearEstimate.COVERAGE_WINDOW_S && recentCoverage.removeFirst()) recentCovered--
+        // Continuous coverage: a run (also one that already reached the window) ends when the last minute is not covered enough.
+        val poorCoverage = recentCoverage.size >= MIN_COVERAGE_SECONDS && recentCovered * 100L < recentCoverage.size * WearEstimate.MIN_COVERAGE_PCT
         val quiet = gyroMax < WearEstimate.QUIET_GYRO_RAD_S && accVariance < WearEstimate.QUIET_ACC_VAR
         val why: String? = when {
-            tickGap || uncoveredStreak * 1000L > WearEstimate.MAX_GAP_MS -> { endQuietRun(); "no_imu_data" }
+            tickGap || poorCoverage || uncoveredStreak * 1000L > WearEstimate.MAX_GAP_MS -> { endQuietRun(); "no_imu_data" }
             !covered -> if (quietLong) null else "no_imu_data" // a short batching hole: neither quiet nor motion
             quiet -> {
                 if (quietSinceMs < 0) { quietSinceMs = tMs; quietCovered = 0; quietPeakGyro = 0f; quietPeakAcc = 0f }
@@ -125,7 +138,8 @@ class WearDetector(
     /** The IMU feed stopped (Smart capture left): no samples, no estimate; a new feed starts the window again. */
     @Synchronized fun stopSensing() {
         imuSampleAt = null
-        endQuietRun(); lastSecondAt = -1L; lastSampleAt = null; uncoveredStreak = 0
+        accSampleAt = null
+        endQuietRun(); lastSecondAt = -1L; lastSampleAt = null; lastAccAt = null; uncoveredStreak = 0; recentCoverage.clear(); recentCovered = 0
         publish("sensing_stopped", null)
     }
 
@@ -151,7 +165,7 @@ class WearDetector(
     /** Forget a still run carried over from before a session restart (an unbroken run must be seen by this session). The estimate's quiet run too. */
     fun resetStillRun() {
         stillSinceMs = -1L; _parked.value = false
-        synchronized(this) { endQuietRun(); stillLongLogged = false; lastSecondAt = -1L; lastSampleAt = null; uncoveredStreak = 0; publish("restart", null) }
+        synchronized(this) { endQuietRun(); stillLongLogged = false; lastSecondAt = -1L; lastSampleAt = null; lastAccAt = null; uncoveredStreak = 0; recentCoverage.clear(); recentCovered = 0; publish("restart", null) }
     }
 
     fun verdictLine(): String = "wear=${_worn.value} known=$known parked=${_parked.value}"
@@ -177,6 +191,8 @@ class WearDetector(
         const val STILL_ACC_VAR = 0.01f
         const val PARK_UNKNOWN_MS = 120_000L
         const val PARK_WORN_MS = 600_000L
+        /** Fewest seconds of history before the rolling coverage can end a run (a few missed seconds right after the start are the start-up gap, not poor coverage). */
+        private const val MIN_COVERAGE_SECONDS = 20
     }
 }
 

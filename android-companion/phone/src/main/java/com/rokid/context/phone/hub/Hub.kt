@@ -315,6 +315,9 @@ class Hub(
     /** Phone clock ms since the wear signal went missing (hub start counts); null while it is available. For the Wear detection card. */
     val wearUnknownSince: StateFlow<Long?> = _wearUnknownSince
     private var lastWornAtMs = 0L
+    /** Send order of `pc_wear` (Codex wear r2 P1-2): strictly increasing, so a late message can never override a newer one on the glasses. */
+    private var wearSeq = 0L
+    @Synchronized private fun nextWearSeq(): Long { wearSeq += 1; return wearSeq }
 
     /**
      * Codex r1 finding 4: the wear check travels even with no wear value (worn = null: the message then only carries the check; an old glasses build ignores it).
@@ -324,12 +327,12 @@ class Hub(
         val w = lastWorn
         val check = link.wearCheck.value
         if (w == null && check == null) return
-        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = if (w != null) lastWornAtMs else clock(), sessionStartMs = sessionStartMs, wearCheck = check)))
+        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = if (w != null) lastWornAtMs else clock(), sessionStartMs = sessionStartMs, wearCheck = check, seq = nextWearSeq())))
     }
 
     /** v1.0 wear fallback: the glasses' "not worn (estimated)", gated by the system wear check ([GlassesWearEstimate]); AutoStop reads it. */
     private var wearExpiryJob: Job? = null
-    val wearEstimate: GlassesWearEstimate = GlassesWearEstimate(clock = clock, scheduleExpiry = { ms ->
+    val wearEstimate: GlassesWearEstimate = GlassesWearEstimate(clock = { android.os.SystemClock.elapsedRealtime() }, scheduleExpiry = { ms ->
         // one timer: each refresh from the glasses replaces it; the estimate expires FRESH_MS after the last one
         wearExpiryJob?.cancel()
         wearExpiryJob = scope.launch { delay(ms); wearEstimate.tick() }

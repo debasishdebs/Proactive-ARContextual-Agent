@@ -36,4 +36,20 @@ class GlassesWearEstimateTest {
         e.onLink(true); assertFalse("a new session must report it again", e.active.value)
         e.onHint(true); assertTrue(e.active.value)
     }
+
+    // ---- Codex wear r2 P1-3: freshness follows a monotonic clock and an early timer is re-armed ----
+
+    @Test fun anEarlyTimerRearmsForTheRestAndTheEstimateStillExpires() {
+        var now = 1_000L; val armed = mutableListOf<Long>()
+        val x = GlassesWearEstimate(clock = { now }, scheduleExpiry = { armed += it }).apply { onLink(true); onWearCheck(false) }
+        x.onHint(true); assertTrue(x.active.value); assertEquals(listOf(com.rokid.context.core.model.WearEstimate.FRESH_MS), armed)
+        now += 100_000L; x.tick() // fires early (the deadline is 80 s away)
+        assertTrue(x.active.value); assertEquals(com.rokid.context.core.model.WearEstimate.FRESH_MS - 100_000L, armed.last())
+        now += 80_000L; x.tick(); assertFalse("expired at the deadline", x.active.value); assertEquals("nothing is re-armed once it ended", 2, armed.size)
+    }
+
+    @Test fun theDefaultClockIsMonotonic() {
+        val a = GlassesWearEstimate(); a.onLink(true); a.onWearCheck(false); a.onHint(true)
+        assertTrue(a.active.value) // System.nanoTime based: a wall clock moved back an hour cannot strand it past FRESH_MS (the injected-clock test above covers the deadline)
+    }
 }

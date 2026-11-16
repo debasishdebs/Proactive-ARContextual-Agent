@@ -27,6 +27,10 @@ object WearEstimate {
     const val MAX_GAP_MS = 3_000L
     /** The window must have real IMU samples in at least this share of its seconds (short batching holes are allowed). */
     const val MIN_COVERAGE_PCT = 90L
+    /** A gyro or acceleration sample older than this at the second's tick is not fresh evidence (a stalled or batched delivery). */
+    const val MAX_SAMPLE_AGE_MS = 5_000L
+    /** Coverage is judged over the last minute, continuously: it must stay at [MIN_COVERAGE_PCT] or the quiet run ends. */
+    const val COVERAGE_WINDOW_S = 60
     /** Phone side: an estimate not re-sent by the glasses within this long expires (the glasses re-send every 60 s while it holds). */
     const val FRESH_MS = 180_000L
 
