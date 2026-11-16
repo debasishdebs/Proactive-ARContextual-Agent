@@ -45,6 +45,7 @@
         <!-- Wave B: opt-in context sources, my-car addresses, LiveFit digest, watch epoch/seq: every source is off after a restore. -->
         <exclude domain="sharedpref" path="ctx_hub_state.xml" />
         <exclude domain="sharedpref" path="hub_restart.xml" />
+        <exclude domain="sharedpref" path="periodic_cadence.xml" />
         <exclude domain="sharedpref" path="hub_auto_stop.xml" />
         <exclude domain="sharedpref" path="pc_dev.xml" />
         <exclude domain="sharedpref" path="ai_call_pace.xml" />
@@ -119,6 +120,7 @@
         <!-- Wave B: opt-in context sources, my-car addresses, LiveFit digest, watch epoch/seq: every source is off after a restore. -->
         <exclude domain="sharedpref" path="ctx_hub_state.xml" />
         <exclude domain="sharedpref" path="hub_restart.xml" />
+        <exclude domain="sharedpref" path="periodic_cadence.xml" />
         <exclude domain="sharedpref" path="hub_auto_stop.xml" />
         <exclude domain="sharedpref" path="pc_dev.xml" />
         <exclude domain="sharedpref" path="ai_call_pace.xml" />

@@ -87,6 +87,12 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+        <!-- v1.1 T6: the paired glasses' Bluetooth connect (matched by address in the receiver; no new permission, BLUETOOTH_CONNECT is declared) tells a stopped hub they are nearby. -->
+        <receiver android:name=".phone.hub.GlassesAclReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+            </intent-filter>
+        </receiver>
         <!-- Wave B: the car-app library's unused permission activity and notification receiver are not needed (only CarConnection is). -->
         <activity android:name="androidx.car.app.CarAppPermissionActivity" tools:node="remove" />
         <receiver android:name="androidx.car.app.notification.CarAppNotificationBroadcastReceiver" tools:node="remove" />

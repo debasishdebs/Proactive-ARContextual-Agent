@@ -56,6 +56,8 @@ class BackupRulesTest {
         "frame_adoption", "space_retired_at", "image_read_attempts", "night_index",
         // v0.9.9 final fixes: the hub restart ladder is device state (when this phone last tried to start its hub): never restored.
         "hub_restart",
+        // v1.1 T7: the reduced periodic-job cadence is device state of the hub's last stop: back to the normal 15 minutes after a restore.
+        com.rokid.context.work.OrchestrationScheduler.CADENCE_PREFS,
         // v0.9.9 AutoStop: the manual stop, the auto stop and the wake ladder are device state: never restored onto another phone.
         com.rokid.context.phone.hub.PrefsAutoStopStore.PREFS,
         // Wave B: opt-in context sources, my-car addresses, the LiveFit digest, the watch epoch/seq: every source off after a restore.

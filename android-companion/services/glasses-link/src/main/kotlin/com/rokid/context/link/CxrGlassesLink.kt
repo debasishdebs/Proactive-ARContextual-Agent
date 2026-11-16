@@ -402,6 +402,13 @@ class CxrGlassesLink(
         /** Hi Rokid has authorized this app (a pairing is stored). Never exposes the stored value. */
         fun isPaired(context: Context): Boolean = context.getSharedPreferences(PREFS, 0).getString(KEY_TOKEN, null) != null
         internal const val KEY_TOKEN = "token"
+        internal const val KEY_ADDRESS = "glasses_address"
+        /**
+         * v1.1 T6: the Bluetooth address of the paired glasses, learned by the phone while the link is up, so the ACL-connect receiver can tell them from any other device.
+         * Kept in the `rokid_link` prefs (device state of this pairing, never backed up). The address is never logged or shown.
+         */
+        fun pairedAddress(context: Context): String? = context.getSharedPreferences(PREFS, 0).getString(KEY_ADDRESS, null)?.takeIf { it.isNotBlank() }
+        fun rememberAddress(context: Context, address: String) { context.getSharedPreferences(PREFS, 0).edit().putString(KEY_ADDRESS, address.uppercase()).apply() }
         /** v1.0 wear fallback: the last read of the glasses' system wear check. */
         internal const val KEY_WEAR_CHECK = "wear_check"
         @Volatile var instance: CxrGlassesLink? = null
