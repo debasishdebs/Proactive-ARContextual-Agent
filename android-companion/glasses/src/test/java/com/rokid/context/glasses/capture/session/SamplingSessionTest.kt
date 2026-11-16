@@ -236,6 +236,31 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
+    @Test fun wearEstimatePausesCaptureOnlyWhileTheWearCheckIsOff() = runTest {
+        val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = true))
+        r.wear.config = { com.rokid.context.glasses.capture.motion.WearParkConfig(false, 120_000L, 600_000L) } // park off: only the estimate can pause
+        r.startSensors()
+        r.gyroMag = 2f
+        r.session.start()
+        delay(2_000)
+        assertTrue(r.camera.isOpen)
+        r.wear.onWearCheck(true); r.wear.onRemote(true)
+        for (i in 0 until 700) r.wear.onSecond(0.004f, 0.0001f, i * 1000L)
+        delay(1_000)
+        assertTrue(r.camera.isOpen, "wear check on: the real signal says worn, no estimate")
+        assertNull(r.session.status.value.reason)
+        r.wear.onWearCheck(false) // the quiet run is already past the window
+        assertTrue(r.wear.estimated.value)
+        delay(1_000)
+        assertFalse(r.camera.isOpen)
+        assertEquals("parked", r.session.status.value.reason)
+        r.wear.onInteraction() // a tap: worn again at once
+        delay(1_000)
+        assertTrue(r.camera.isOpen)
+        assertNull(r.session.status.value.reason)
+        r.session.stop("test")
+    }
+
     @Test fun phoneInUseBlocksOnlyWithThePauseSetting() = runTest {
         val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenPhoneInUse = true))
         r.startSensors()

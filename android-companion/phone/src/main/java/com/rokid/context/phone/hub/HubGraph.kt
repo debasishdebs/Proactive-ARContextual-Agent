@@ -271,7 +271,7 @@ object HubGraph {
             val timing = com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(app)
             AutoStopController(
                 now = System::currentTimeMillis, minutes = timing::autoStopMinNow, hubRunning = { hub.started },
-                link = { hub.link.state.value }, worn = hub::wornNow, inFront = ContextHubService::appInForeground, lastFrontMs = { lastFrontMs },
+                link = { hub.link.state.value }, worn = hub::wornNow, wornEstimated = { hub.wearEstimate.active.value }, inFront = ContextHubService::appInForeground, lastFrontMs = { lastFrontMs },
                 busy = hub::busy, runActive = { collectSession?.active() == true },
                 stopHub = { ContextHubService.stop(app) }, wakeHub = { ContextHubService.ensureRunning(app, wake = true) },
                 exempt = { AutoStopWake.exempt(app) },
@@ -281,7 +281,7 @@ object HubGraph {
                 engine = AutoStopWake.engine(app), // the ONE actor the worker, the process start and the service's user start / manual stop also feed
             ).also { ctl ->
                 autoStopRef.set(ctl)
-                scope.launch { kotlinx.coroutines.flow.combine(hub.link.state, hub.link.wearing) { l, w -> l to w }.collect { ctl.poke() } }
+                scope.launch { kotlinx.coroutines.flow.combine(hub.link.state, hub.link.wearing, hub.wearEstimate.active) { l, w, e -> Triple(l, w, e) }.collect { ctl.poke() } }
                 scope.launch { timing.autoStopMin.collect { ctl.poke() } }
             }.start(scope)
         }
