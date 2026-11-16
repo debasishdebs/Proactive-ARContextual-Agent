@@ -16,10 +16,13 @@ data class HubSignals(
  * A stop that is decided and committed (the mark, which already carries the reason and the cleared probe) but not yet executed: [AutoStopEvent.ConfirmStop]
  * runs it or cancels it, reverting the mark to the [prevNextWakeAtMs] / [prevProbe] it replaced.
  */
-data class PendingStop(val reason: BackgroundPolicy.Away, val sinceMs: Long, val atMs: Long, val prevNextWakeAtMs: Long, val prevProbe: Boolean)
+data class PendingStop(val reason: BackgroundPolicy.Away, val sinceMs: Long, val atMs: Long, val prevNextWakeAtMs: Long, val prevProbe: Boolean, val prevHubLive: Boolean = false)
 
-/** A wake whose start request is in flight; [controller] = the live controller claimed it (else a process start / the worker). */
-data class WakeClaim(val via: String, val atMs: Long, val controller: Boolean)
+/**
+ * A wake whose start request is in flight; [controller] = the live controller claimed it (else a process start / the worker). [recover] = it is a lost hub's
+ * recovery (v1.1 T3, logged as `hub_recover`), not the wake of an auto-stopped hub; [exempt] is the battery exemption at the claim (for that log).
+ */
+data class WakeClaim(val via: String, val atMs: Long, val controller: Boolean, val recover: Boolean = false, val exempt: Boolean = false)
 
 /** The AutoStop state: [saved] is the persisted part (exactly what [AutoStopStore] holds after each step); the rest is the process's working memory. */
 data class AutoStopState(
@@ -51,6 +54,8 @@ sealed interface AutoStopEvent {
     object UserStarted : AutoStopEvent
     /** The user stopped the hub service by hand. */
     object ManualStopped : AutoStopEvent
+    /** The hub service ended on purpose (the app's own stop: the watchdog, leaving the front, the AutoStop policy): it is not lost, nothing to recover. */
+    object ExpectedStopped : AutoStopEvent
     /** Write-behind bookkeeping: writing the latest snapshot failed ([failures] in a row). In memory only: the event that changed the state still happened. */
     data class PersistFailed(val failures: Int) : AutoStopEvent
     /** The latest snapshot is saved again. */
@@ -65,7 +70,7 @@ sealed interface AutoStopEffect {
     data class ScheduleWake(val delayMs: Long, val controller: Boolean) : AutoStopEffect
     /** A fixed log line ([Line]), with the wake entry point [via] where it applies. */
     data class Log(val line: Line, val via: String = "") : AutoStopEffect
-    enum class Line { WAKE_ATTEMPT, WAKE_ALREADY_RUNNING, WAKE_REFUSED, WAKE_TIMED_OUT, PERSIST_FAILED }
+    enum class Line { WAKE_ATTEMPT, WAKE_ALREADY_RUNNING, WAKE_REFUSED, WAKE_TIMED_OUT, PERSIST_FAILED, HUB_RECOVER_ATTEMPT, HUB_RECOVER_STARTED, HUB_RECOVER_REFUSED }
 }
 
 /** Replies: the controller's next sleep (null = until the next poke), or a process start's claim. */
@@ -97,10 +102,12 @@ object AutoStopMachine {
         is AutoStopEvent.ConfirmStop -> confirm(s.copy(wake = e.wake ?: s.wake, hub = e.hub ?: s.hub), now)
         is AutoStopEvent.ProcessStarted -> processStart(s.copy(wake = e.wake ?: s.wake), e.via, now)
         is AutoStopEvent.WakeResult -> wakeResult(s, e, now)
-        AutoStopEvent.HubForeground -> if (s.saved.wakeStartedAtMs == 0L) T(s) else T(cleared(s), listOf(AutoStopEffect.Note(null)))
+        // The hub is live from now on (a lost hub is told apart from a stopped one by this flag); a wake in progress is complete.
+        AutoStopEvent.HubForeground -> if (s.saved.wakeStartedAtMs == 0L) T(live(s)) else T(live(cleared(s)), listOf(AutoStopEffect.Note(null)))
         // A user start: the full configured N applies again (the probe's synthetic away start goes with the probe).
         AutoStopEvent.UserStarted -> T(userStarted(s), listOf(AutoStopEffect.Note(null)))
-        AutoStopEvent.ManualStopped -> T(s.copy(saved = s.saved.copy(manualStop = true)))
+        AutoStopEvent.ManualStopped -> T(s.copy(saved = s.saved.copy(manualStop = true, hubLive = false)))
+        AutoStopEvent.ExpectedStopped -> T(s.copy(saved = s.saved.copy(hubLive = false)))
         is AutoStopEvent.PersistFailed -> persistFailed(s, now)
         AutoStopEvent.PersistRecovered -> T(s.copy(persistFailing = false))
     }
@@ -111,6 +118,8 @@ object AutoStopMachine {
         if (s.pendingStop != null || s.saved.autoStoppedAtMs == 0L || s.saved.wakeStartedAtMs != 0L || why == null) return AutoStopEffect.Note(null)
         return AutoStopEffect.Note(why, s.saved.awaySinceMs.takeIf { it > 0 } ?: s.saved.autoStoppedAtMs)
     }
+
+    private fun live(x: AutoStopState) = x.copy(saved = x.saved.copy(hubLive = true))
 
     private fun cleared(x: AutoStopState) = x.copy(saved = x.saved.copy(autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, wakeStartedAtMs = 0L))
 
@@ -142,8 +151,8 @@ object AutoStopMachine {
             // A stop already being committed: its confirm is queued; nothing more to decide.
             if (s.pendingStop != null) return T(s.copy(awaySince = since), fx, reply = AutoStopSleep(BackgroundPolicy.BUSY_RECHECK_MS))
             // The mark is the WHOLE persisted outcome of the stop (reason, since, next rung, probe used up): the confirm then commits nothing.
-            val mark = s.saved.copy(autoStoppedAtMs = t, reason = d.reason, awaySinceMs = since, nextWakeAtMs = t + BackgroundPolicy.wakeDelayMs(s.saved.wakeStep), wakeProbe = false)
-            val p = PendingStop(d.reason, since, t, s.saved.nextWakeAtMs, s.saved.wakeProbe)
+            val mark = s.saved.copy(autoStoppedAtMs = t, reason = d.reason, awaySinceMs = since, nextWakeAtMs = t + BackgroundPolicy.wakeDelayMs(s.saved.wakeStep), wakeProbe = false, hubLive = false)
+            val p = PendingStop(d.reason, since, t, s.saved.nextWakeAtMs, s.saved.wakeProbe, s.saved.hubLive)
             return T(s.copy(saved = mark, awaySince = since, pendingStop = p), fx, recheck = AutoStopEvent.ConfirmStop())
         }
         return T(cancel(s).copy(awaySince = since), fx, reply = AutoStopSleep(d.recheckInMs))
@@ -173,7 +182,7 @@ object AutoStopMachine {
     private fun cancel(s: AutoStopState): AutoStopState {
         val p = s.pendingStop ?: return s
         if (s.saved.autoStoppedAtMs != p.atMs) return s.copy(pendingStop = null)
-        return s.copy(pendingStop = null, saved = s.saved.copy(autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, nextWakeAtMs = p.prevNextWakeAtMs, wakeProbe = p.prevProbe))
+        return s.copy(pendingStop = null, saved = s.saved.copy(autoStoppedAtMs = 0L, reason = null, awaySinceMs = 0L, nextWakeAtMs = p.prevNextWakeAtMs, wakeProbe = p.prevProbe, hubLive = p.prevHubLive))
     }
 
     /** The glasses were seen present: no away window, no probe, the wake ladder starts again. */
@@ -193,14 +202,29 @@ object AutoStopMachine {
 
     private fun processStart(s: AutoStopState, via: String, t: Long): T {
         val w = s.wake
-        if (w == null || s.saved.autoStoppedAtMs == 0L || s.saved.manualStop) return T(s, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        // v1.1 T3: a LOST hub (still marked live, yet not up, and not stopped on purpose) is recovered through the same persisted ladder as a wake.
+        val lost = s.saved.hubLive && s.saved.autoStoppedAtMs == 0L
+        if (w == null || (s.saved.autoStoppedAtMs == 0L && !lost) || s.saved.manualStop) return T(s, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
         if (s.saved.wakeStartedAtMs != 0L) {
             // An interrupted wake (the process may have died in it): recover it at its timeout, or now.
             if (!wakeExpired(s, t)) return T(s, listOf(AutoStopEffect.ScheduleWake(wakeLeft(s, t), false)), reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
             val (s1, fx) = timedOut(s, t)
             return T(s1, fx, reply = AutoStopClaimed(AutoStopWake.Claim.NOT_DUE))
         }
-        return claim(s, w, t, via, false, emptyList())
+        return if (lost) recover(s, w, t, via) else claim(s, w, t, via, false, emptyList())
+    }
+
+    /**
+     * v1.1 T3: the lost hub's recovery. Same ladder as [claim] (rung consumed and saved before the start, probe on: a recovered hub with no glasses stops after
+     * [BackgroundPolicy.WAKE_PROBE_MS]); no auto stop is involved, and the battery exemption is only logged (Android decides whether the start is allowed).
+     */
+    private fun recover(s: AutoStopState, w: WakeInputs, t: Long, via: String): T {
+        val c = WakeClaim(via, t, controller = false, recover = true, exempt = w.exempt)
+        if (!w.linkAllowed || w.serviceRunning) return settle(s, c, AutoStopWake.Claim.NONE, emptyList())
+        if (!BackgroundPolicy.deadlinePassed(t, s.saved.nextWakeAtMs, MAX_RUNG)) return settle(s, c, AutoStopWake.Claim.NOT_DUE, emptyList())
+        val step = s.saved.wakeStep + 1
+        val s1 = s.copy(saved = s.saved.copy(wakeStep = step, nextWakeAtMs = t + BackgroundPolicy.wakeDelayMs(step), wakeProbe = true), claim = c)
+        return T(s1, listOf(AutoStopEffect.Log(AutoStopEffect.Line.HUB_RECOVER_ATTEMPT, "$via, exempt=${w.exempt}"), AutoStopEffect.StartWake(via, false)))
     }
 
     /**
@@ -224,11 +248,18 @@ object AutoStopMachine {
     private fun wakeResult(s: AutoStopState, e: AutoStopEvent.WakeResult, t: Long): T {
         val c = s.claim ?: return T(s) // stale: nothing in flight
         val s0 = s.copy(claim = null)
+        val why = "${c.via}, exempt=${c.exempt}"
         return when {
-            e.issued -> settle(s0.copy(saved = s0.saved.copy(wakeStartedAtMs = t)), c, AutoStopWake.Claim.STARTED, listOf(AutoStopEffect.ScheduleWake(WAKE_START_TIMEOUT_MS, false)))
+            e.issued -> settle(
+                s0.copy(saved = s0.saved.copy(wakeStartedAtMs = t)), c, AutoStopWake.Claim.STARTED,
+                listOfNotNull(if (c.recover) AutoStopEffect.Log(AutoStopEffect.Line.HUB_RECOVER_STARTED, why) else null) + AutoStopEffect.ScheduleWake(WAKE_START_TIMEOUT_MS, false),
+            )
             e.serviceRunning -> settle(cleared(s0), c, AutoStopWake.Claim.ALREADY_RUNNING, listOf(AutoStopEffect.Log(AutoStopEffect.Line.WAKE_ALREADY_RUNNING, c.via)))
             // refused: the probe never runs; it only clears (a user start in between can never be undone by this)
-            else -> settle(s0.copy(saved = s0.saved.copy(wakeProbe = false)), c, AutoStopWake.Claim.REFUSED, listOf(AutoStopEffect.Log(AutoStopEffect.Line.WAKE_REFUSED, c.via)))
+            else -> settle(
+                s0.copy(saved = s0.saved.copy(wakeProbe = false)), c, AutoStopWake.Claim.REFUSED,
+                listOf(if (c.recover) AutoStopEffect.Log(AutoStopEffect.Line.HUB_RECOVER_REFUSED, why) else AutoStopEffect.Log(AutoStopEffect.Line.WAKE_REFUSED, c.via)),
+            )
         }
     }
 

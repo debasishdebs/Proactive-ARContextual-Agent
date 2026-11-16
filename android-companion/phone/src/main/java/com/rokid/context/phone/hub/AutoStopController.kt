@@ -174,6 +174,9 @@ class AutoStopEngine(
                 AutoStopEffect.Line.WAKE_REFUSED -> warn("auto_stop wake refused (${f.via})")
                 AutoStopEffect.Line.WAKE_TIMED_OUT -> warn("auto_stop wake timed out")
                 AutoStopEffect.Line.PERSIST_FAILED -> warn("persist_failed")
+                AutoStopEffect.Line.HUB_RECOVER_ATTEMPT -> log("hub_recover attempt (${f.via})")
+                AutoStopEffect.Line.HUB_RECOVER_STARTED -> log("hub_recover started (${f.via})")
+                AutoStopEffect.Line.HUB_RECOVER_REFUSED -> warn("hub_recover refused (${f.via})")
             }
         }
         return null
