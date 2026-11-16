@@ -36,4 +36,18 @@ class ExitClassifierTest {
         assertEquals(ExitKind.ROKID, kind(facts(ts = now), c))
         assertNull(kind(facts(ts = now + 1), c))
     }
+
+    private fun why(f: ExitFacts, caller: (Int) -> CallerInfo?) = ExitClassifier.unverifiedWhy(f, caller)
+
+    @Test fun subCauseNoPid() {
+        assertEquals(UnverifiedWhy("no_pid", null), why(facts(desc = "something else")) { CallerInfo("com.rokid.x", true) })
+        assertEquals(UnverifiedWhy("no_pid", null), why(facts(desc = null)) { CallerInfo("com.rokid.x", true) })
+    }
+
+    @Test fun subCauseHiddenCarriesThePid() = assertEquals(UnverifiedWhy("proc_hidden", 4242), why(facts()) { null })
+
+    @Test fun subCauseReusedCarriesThePid() =
+        assertEquals(UnverifiedWhy("pid_reused", 4242), why(facts()) { CallerInfo("com.rokid.x", startedBeforeExit = false) })
+
+    @Test fun aVerifiedCallerHasNoSubCause() = assertNull(why(facts()) { CallerInfo("com.android.shell", true) })
 }

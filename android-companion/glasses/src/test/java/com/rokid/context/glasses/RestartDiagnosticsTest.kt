@@ -176,4 +176,24 @@ class RestartDiagnosticsTest {
         val d2 = mk(); d2.onProcessStart()
         assertEquals(2, d2.closes, "no second reset")
     }
+
+    @Test fun unverifiedStartLogsSubCauseAndTheLastExitRecordsWithoutDescriptions() {
+        val sp = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd_t8", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
+        fun mk() = RestartDiagnostics(
+            sp, wallClock = { wall }, lastExit = ::exit, log = { logs += it }, uiMode = { UiModeStore.FULL }, classify = { _, _, _ -> ExitKind.UNKNOWN },
+            recentExits = { listOf(ExitRecord(10, 0, 100, 2048, 4096, wall - 5_000), ExitRecord(4, 0, 400, 0, 0, wall - 60_000)) },
+            unverifiedWhy = { UnverifiedWhy("proc_hidden", 4242) },
+        )
+        mk().heartbeat(); wall += 30_000; userRequestedExit = true; exitAt = wall - 5_000
+        mk().onProcessStart()
+        assertEquals("restart rokid=0 unknown=1 other=0 gap=5 reason=forcestop_unverified ui_mode=full sub=proc_hidden pid=4242", logs[logs.size - 2])
+        assertEquals("exits n=2 [reason=10 status=0 imp=100 pssKB=2048 rssKB=4096 ago=5s] [reason=4 status=0 imp=400 pssKB=0 rssKB=0 ago=60s]", logs.last())
+        assertEquals(false, logs.any { it.contains("4242 ") || it.contains("force stop") }, "no description text")
+    }
+
+    @Test fun formatters() {
+        assertEquals("exits n=0", formatExits(emptyList(), 1L))
+        assertEquals("trim level=15 usedMB=88 ui_mode=icon", formatTrim(15, 88, "icon"))
+        assertEquals("mem usedMB=88 ui_mode=icon", formatMem(88, "icon"))
+    }
 }

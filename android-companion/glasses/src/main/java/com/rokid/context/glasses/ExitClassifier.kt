@@ -8,6 +8,9 @@ data class CallerInfo(val name: String, val startedBeforeExit: Boolean)
 
 enum class ExitKind { ROKID, OTHER, UNKNOWN }
 
+/** Why a force-stop caller could not be verified: [why] is no_pid | proc_hidden | pid_reused; [pid] is the number from the description, if any. */
+data class UnverifiedWhy(val why: String, val pid: Int?)
+
 object ExitClassifier {
     private val PID = Regex("""from pid (\d+)""")
     private const val FRESH_SLACK_MS = 5_000L
@@ -24,6 +27,13 @@ object ExitClassifier {
         val c = caller(pid) ?: return ExitKind.UNKNOWN
         if (!c.startedBeforeExit) return ExitKind.UNKNOWN
         return if (c.name.startsWith("com.rokid.")) ExitKind.ROKID else ExitKind.OTHER
+    }
+
+    /** The reason [classify] answers UNKNOWN for a force-stop (null = the caller is verified). The pid is a number, never text from the description. */
+    fun unverifiedWhy(f: ExitFacts, caller: (Int) -> CallerInfo?): UnverifiedWhy? {
+        val pid = PID.find(f.description.orEmpty())?.groupValues?.get(1)?.toIntOrNull() ?: return UnverifiedWhy("no_pid", null)
+        val c = caller(pid) ?: return UnverifiedWhy("proc_hidden", pid)
+        return if (c.startedBeforeExit) null else UnverifiedWhy("pid_reused", pid)
     }
 }
 

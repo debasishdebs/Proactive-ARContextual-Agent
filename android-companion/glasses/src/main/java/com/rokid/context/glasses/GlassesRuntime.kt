@@ -233,6 +233,15 @@ class GlassesRuntime private constructor(private val app: Context) {
         diagPrefs,
         uiMode = { uiMode.get() },
         installedAtMs = { runCatching { app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime }.getOrDefault(0L) },
+        recentExits = {
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) emptyList()
+            else runCatching {
+                app.getSystemService(android.app.ActivityManager::class.java)
+                    .getHistoricalProcessExitReasons(app.packageName, 0, EXIT_RECORDS)
+                    .map { ExitRecord(it.reason, it.status, it.importance, it.pss, it.rss, it.timestamp) }
+            }.getOrDefault(emptyList())
+        },
+        unverifiedWhy = { f -> ExitClassifier.unverifiedWhy(f) { pid -> ProcCaller.read(pid, f.timestampMs) } },
         lastExit = {
             if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) null
             else runCatching {
@@ -251,7 +260,19 @@ class GlassesRuntime private constructor(private val app: Context) {
 
     init {
         runCatching { restarts.onProcessStart() }
-        scope.launch { while (true) { delay(HEARTBEAT_MS); runCatching { restarts.heartbeat() }; runCatching { pollTraceState() } } }
+        scope.launch {
+            var beats = 0
+            while (true) {
+                delay(HEARTBEAT_MS); runCatching { restarts.heartbeat() }; runCatching { pollTraceState() }
+                // v1.1 T8: heap use once a minute while minimised, so a later self-restart can be read against memory pressure.
+                if (++beats % 2 == 0 && uiMode.get() == UiModeStore.ICON) DiagLog.i(CAPTURE_TAG, formatMem(usedMb(), UiModeStore.ICON))
+            }
+        }
+        app.registerComponentCallbacks(object : android.content.ComponentCallbacks2 {
+            override fun onTrimMemory(level: Int) { DiagLog.i(CAPTURE_TAG, formatTrim(level, usedMb(), uiMode.get())) }
+            override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {}
+            @Deprecated("Deprecated in Java") override fun onLowMemory() {}
+        })
         // The icon ticks once a second: redraw it as the cue starts and ends, so a 1 s pulse is never missed.
         scope.launch { photoCue.active.collect { minimisedIcon.refresh() } }
         scope.launch { captureBlink.active.collect { minimisedIcon.refresh() } }
@@ -439,6 +460,8 @@ class GlassesRuntime private constructor(private val app: Context) {
         if (r.added.any { it.isActiveAt(now) }) withContext(Dispatchers.IO) { synchronized(captureGate) { buffer.clear() } }
         return r
     }
+
+    private fun usedMb(): Long = Runtime.getRuntime().let { (it.totalMemory() - it.freeMemory()) shr 20 }
 
     fun batteryPct(): Int? = app.getSystemService(BatteryManager::class.java)
         ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
