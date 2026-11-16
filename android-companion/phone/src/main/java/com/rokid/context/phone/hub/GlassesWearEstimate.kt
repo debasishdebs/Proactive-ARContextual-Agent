@@ -13,7 +13,8 @@ import kotlinx.coroutines.flow.StateFlow
  * Feeds [BackgroundPolicy.away] ([BackgroundPolicy.Away.NOT_WORN_EST]).
  */
 class GlassesWearEstimate(
-    private val clock: () -> Long = System::currentTimeMillis,
+    /** A MONOTONIC clock (Codex wear r2 P1-3): freshness must not follow the wall clock, which a user or the network can move back. The hub passes `SystemClock.elapsedRealtime`. */
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
     /** Called with the delay after which [tick] must run (an estimate was reported or refreshed); the host replaces its previous timer. */
     private val scheduleExpiry: (Long) -> Unit = {},
     private val log: (String) -> Unit = { PcLog.i(Hub.TAG, it) },
@@ -49,8 +50,11 @@ class GlassesWearEstimate(
     }
     /** The glasses' system wear check as read in the CURRENT link session (null = not read yet / unreadable: no estimate). */
     @Synchronized fun onWearCheck(on: Boolean?) { wearCheck = on; update() }
-    /** The expiry timer: an estimate not refreshed within [WearEstimate.FRESH_MS] ends. */
-    @Synchronized fun tick() = update()
+    /** The expiry timer: an estimate not refreshed within [WearEstimate.FRESH_MS] ends. A timer that fires early (the deadline is not due yet) is re-armed for the rest. */
+    @Synchronized fun tick() {
+        update()
+        if (reported) scheduleExpiry(maxOf(1L, WearEstimate.FRESH_MS - (clock() - reportedAtMs)))
+    }
 
     private fun update() {
         if (reported && clock() - reportedAtMs >= WearEstimate.FRESH_MS) { reported = false; log("glasses: estimate not refreshed, expired") }

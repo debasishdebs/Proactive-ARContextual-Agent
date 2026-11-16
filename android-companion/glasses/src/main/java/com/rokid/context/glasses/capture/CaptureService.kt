@@ -345,7 +345,8 @@ class CaptureService : LifecycleService() {
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
         exprSignals.reset() // a capture session restart empties every window history (3c C1b)
         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir, signals = exprSignals).also { it.start(motion, wear) }
-        runtime.wear.imuSampleAt = { motion.prevGyroMs() } // the estimate counts only seconds with fresh IMU samples
+        runtime.wear.imuSampleAt = { motion.prevGyroMs() } // the estimate counts only seconds with fresh gyro AND acceleration samples
+        runtime.wear.accSampleAt = { motion.accelNewestMs() }
         val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }, exprSignals, { (runtime.contextGate.ageMs(SystemClock.elapsedRealtime()) ?: 0L) / 1000L }) // SHADOW: counts only, no camera
         motion.addTap(shadow)
         motion.addTap(runtime.traceRecorder) // records only while a trace runs (collect on, clean boundary); one volatile read otherwise

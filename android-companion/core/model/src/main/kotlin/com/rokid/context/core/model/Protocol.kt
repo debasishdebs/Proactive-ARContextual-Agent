@@ -77,6 +77,8 @@ object Channels {
     val sessionStartMs: Long = 0L,
     /** v1.0 wear fallback, additive: the glasses' system wear check as the phone last read it (true = on, false = off); null = not known (or an old phone). */
     val wearCheck: Boolean? = null,
+    /** v1.1 (Codex wear r2), additive: the phone's send order within [sessionStartMs]; the glasses ignore a message older than one they applied (a delayed "check off" never beats a newer "check on"). 0 = not sent (old phone). */
+    val seq: Long = 0L,
 )
 
 /** Phone to glasses on `pc_auto_open` (fix wave I): the phone reopened the app by itself a moment ago; it must stay in icon mode. */

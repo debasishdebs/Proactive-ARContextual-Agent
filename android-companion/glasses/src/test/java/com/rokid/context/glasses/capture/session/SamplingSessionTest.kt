@@ -245,7 +245,9 @@ class SamplingSessionTest {
         delay(2_000)
         assertTrue(r.camera.isOpen)
         r.wear.onWearCheck(true); r.wear.onRemote(true)
-        for (i in 0 until 700) r.wear.onSecond(0.004f, 0.0001f, i * 1000L)
+        var gyroAt = 0L; var accAt = 0L // fresh gyro AND acceleration samples every second: the estimate counts only observed quiet (Codex wear r2 P1-1)
+        r.wear.imuSampleAt = { gyroAt }; r.wear.accSampleAt = { accAt }
+        for (i in 0 until 700) { val t = i * 1000L; gyroAt = t; accAt = t; r.wear.onSecond(0.004f, 0.0001f, t) }
         delay(1_000)
         assertTrue(r.camera.isOpen, "wear check on: the real signal says worn, no estimate")
         assertNull(r.session.status.value.reason)

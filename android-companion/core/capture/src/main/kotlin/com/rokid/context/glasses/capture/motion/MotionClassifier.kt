@@ -214,6 +214,8 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
 
     /** The previous gyro sensor time (the `dt` source of the next sample), or null before any. */
     @Synchronized fun prevGyroMs(): Long? = lastGyroMs.takeIf { it >= 0 }
+    /** The time of the newest linear-acceleration sample (null before any): with [prevGyroMs] it tells the wear estimate whether the IMU is delivering. */
+    @Synchronized fun accelNewestMs(): Long? = accelNewestMs.takeIf { it > 0 }
 
     @Synchronized fun markPose() { rx = 0f; ry = 0f; rz = 0f; walked = false; qx = 0f; qy = 0f; qz = 0f }
 
