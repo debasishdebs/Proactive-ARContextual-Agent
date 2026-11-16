@@ -145,6 +145,7 @@ class ContextHubService : Service() {
             running = false
             // Not our own stop (the watchdog, leaving the front, the AutoStop policy all go through [stop]): the user stopped it by hand (the system's running-apps list). It stays stopped until the user starts it again.
             if (!expectedStop) { AutoStopWake.engine(this).submit(AutoStopEvent.ManualStopped); PcLog.i(TAG, "manual_stop") }
+            else AutoStopWake.engine(this).submit(AutoStopEvent.ExpectedStopped) // v1.1 T3: stopped on purpose, so it is not a lost hub
             expectedStop = false
             watcher?.cancel(); closedWatcher?.cancel()
             ClosedNoticeReceiver.notice = null

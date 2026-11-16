@@ -12,7 +12,7 @@ data class ExitFacts(val reason: Int, val status: Int, val importance: Int, val 
 /**
  * v1.1 T1 (hub-restart design section 3): at every cold process start ONE `PcExit` line says how the previous processes of the phone app ended, so a
  * hub that vanished (15 Nov 22:15) can be explained next time. `exempt` is the battery-optimisation exemption (recovery from a process start needs it
- * on Android 12+); `hubLive` stays `n/a` until the hub-live flag exists (T3). Numbers and flags only, never the exit description.
+ * on Android 12+); `hubLive` is the persisted AutoStop flag (T3): y at a cold start with the hub down = the hub was lost. Numbers and flags only, never the exit description.
  */
 object PhoneExitDiagnostics {
     const val TAG = "PcExit"
@@ -31,7 +31,8 @@ object PhoneExitDiagnostics {
                 context.getSystemService(ActivityManager::class.java).getHistoricalProcessExitReasons(context.packageName, 0, RECORDS)
                     .map { ExitFacts(it.reason, it.status, it.importance, it.pss, it.rss, it.timestamp) }
             }.getOrDefault(emptyList())
-            PcLog.milestone(TAG, format(records, System.currentTimeMillis(), AutoStopWake.exempt(context)))
+            val live = runCatching { if (PrefsAutoStopStore.of(context).load().hubLive) "y" else "n" }.getOrDefault("n/a")
+            PcLog.milestone(TAG, format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live))
         }
     }
 }
