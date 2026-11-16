@@ -80,6 +80,13 @@
         <!-- P7-B proposals -->
         <receiver android:name=".phone.actions.ProposalActionReceiver" android:exported="false" />
         <receiver android:name=".phone.hub.ClosedNoticeReceiver" android:exported="false" />
+        <!-- v1.1 T4: a reboot or an update ends a live hub with its process; this re-submits the process-start event so the recovery runs (RECEIVE_BOOT_COMPLETED is declared by services/connectors). -->
+        <receiver android:name=".phone.hub.HubBootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <!-- Wave B: the car-app library's unused permission activity and notification receiver are not needed (only CarConnection is). -->
         <activity android:name="androidx.car.app.CarAppPermissionActivity" tools:node="remove" />
         <receiver android:name="androidx.car.app.notification.CarAppNotificationBroadcastReceiver" tools:node="remove" />
