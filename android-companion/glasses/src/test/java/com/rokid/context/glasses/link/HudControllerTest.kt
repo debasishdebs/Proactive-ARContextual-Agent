@@ -280,6 +280,36 @@ class HudControllerTest {
         assertEquals("an old phone (no session start) is never ignored", listOf<Boolean?>(false, true), seen)
     }
 
+    /** Codex wear r2/r3: a delayed pc_wear never beats a newer one of its session, whatever other channels did in between, and a reconnect on the same phone session keeps working. */
+    @Test fun wearUpdatesAreOrderedBySendOrderPerWearSession() = runTest {
+        val c = controller()
+        val checks = ArrayList<Boolean?>()
+        c.onWearCheck = { checks += it }
+        fun wear(check: Boolean?, seq: Long, session: Long = 200L) = bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = null, atMs = 500, sessionStartMs = session, wearCheck = check, seq = seq)))
+        wear(true, 20)
+        // an older phone context of ANOTHER session must not reset the wear order (it shares the session identity of the other channels)
+        bridge.phone(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = true, atMs = 150, sessionStartMs = 100)))
+        wear(false, 10) // the delayed "check off"
+        assertEquals("the late check off is dropped", listOf<Boolean?>(true), checks)
+        wear(false, 30)
+        assertEquals(listOf<Boolean?>(true, false), checks)
+        wear(true, 25)
+        assertEquals("seq 25 is older than the applied 30", listOf<Boolean?>(true, false), checks)
+        wear(true, 1, session = 300L) // a new phone session numbers from the start again
+        assertEquals(listOf<Boolean?>(true, false, true), checks)
+    }
+
+    @Test fun wearUpdatesKeepWorkingAfterTheSessionClosedAndReopenedOnTheSamePhoneSession() = runTest {
+        val c = controller()
+        val checks = ArrayList<Boolean?>()
+        c.onWearCheck = { checks += it }
+        bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = null, atMs = 500, sessionStartMs = 200, wearCheck = false, seq = 7)))
+        bridge.phone(Channels.STATE, state()) // the session is open
+        bridge.disconnected() // the HUD session closes (silence recovery or a transport blip) and the phone, still in the same session, sends again
+        bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = null, atMs = 900, sessionStartMs = 200, wearCheck = true, seq = 8)))
+        assertEquals("a higher seq of the same phone session is applied again (no lockout)", listOf<Boolean?>(false, true), checks)
+    }
+
     @Test fun aFreshPhoneContextReachesTheCallbackAndAStaleOneIsIgnored() = runTest {
         val c = controller()
         val seen = ArrayList<Boolean?>()
