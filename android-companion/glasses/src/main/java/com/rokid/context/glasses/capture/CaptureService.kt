@@ -537,6 +537,7 @@ class CaptureService : LifecycleService() {
             heatStop = { heat.level.value == HeatLevel.STOP },
             clock = System::currentTimeMillis, newFrameId = ::newFrameId,
             onKeep = { c, d, p -> gate.recordKeep(c, d, p, SystemClock.elapsedRealtime()) },
+            zoneActive = { runtime.pauses.ensureLoaded(); runtime.pauses.zoneActive() },
         )
     }
 

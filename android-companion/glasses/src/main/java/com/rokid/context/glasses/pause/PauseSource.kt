@@ -8,7 +8,9 @@ import com.rokid.context.core.model.PauseOrigin
  * reads as [PERSISTED]. The battery policy is not a pause record: it shows as BATTERY_LOW through [forReason].
  */
 enum class PauseSource {
-    USER_GLASSES, USER_PHONE, QUIET_HOURS, STORE_UNREADABLE, PERSISTED, OTHER;
+    USER_GLASSES, USER_PHONE, QUIET_HOURS, STORE_UNREADABLE, PERSISTED, OTHER,
+    /** A `zone:` pause record (the phone is in or near a pause zone), and the local hold while the link is down in the approach band. */
+    ZONE, ZONE_LINK_DOWN;
 
     companion object {
         fun of(origin: PauseOrigin): PauseSource = when (origin) {

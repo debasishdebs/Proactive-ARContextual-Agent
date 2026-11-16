@@ -525,8 +525,12 @@ class MainActivity : ComponentActivity() {
             }
             is PauseToggle.Resumed -> {
                 controller.send(Command.Resume(t.clears))
-                local = LocalOverlay.Toast("Capture resumed", now)
+                local = LocalOverlay.Toast(if (t.zoneHeld) ZONE_LOCKED else "Capture resumed", now)
                 PcLog.i(TAG, "resumed ${t.clears.size} pause(s)")
+            }
+            is PauseToggle.ZoneLocked -> {
+                local = LocalOverlay.Toast(ZONE_LOCKED, now)
+                PcLog.i(TAG, "pause tap refused: zone")
             }
         }
     }
@@ -579,6 +583,8 @@ class MainActivity : ComponentActivity() {
         private const val EXIT_RETRY_MS = 60L
         private const val EXIT_FLUSH_MS = 120L
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
+        /** Pause zones: shown when a double-tap cannot resume capture. */
+        const val ZONE_LOCKED = "Pause zone: capture off"
         /** Minimised without SYSTEM_ALERT_WINDOW: plain moveTaskToBack, no icon (spec 2026-10-14 §3). */
         const val NO_OVERLAY_TOAST = "Allow 'display over other apps' for the icon"
         const val EXTRA_RETURN_TO = "com.rokid.context.glasses.extra.RETURN_TO"

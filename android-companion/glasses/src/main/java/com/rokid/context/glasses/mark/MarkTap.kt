@@ -34,6 +34,7 @@ class MarkCue(private val scope: CoroutineScope, private val durationMs: Long = 
             MarkPhotoReason.CAMERA_BUSY -> "no photo: busy"
             MarkPhotoReason.HEAT -> "no photo: warm"
             MarkPhotoReason.NOT_STORED -> "no photo: full"
+            MarkPhotoReason.PAUSE_ZONE -> "zone: no photo"
             else -> "no photo"
         }
     }

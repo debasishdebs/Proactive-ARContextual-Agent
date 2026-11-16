@@ -368,4 +368,79 @@ class PauseSourceTest {
         assertEquals("-", PauseSource.forReason("not_worn", "none"))
         assertEquals("-", PauseSource.forReason(null, "none"))
     }
+
+    // ---- Pause zones: `zone:` records are the phone's; a double-tap never clears them, and the approach flag holds capture while the link is down. ----
+
+    private val zoneRec = PauseRecord("zone:jarawa:1", PauseOrigin.PHONE, 1_000_000, null)
+    private var approach = false
+    private var linked = true
+
+    private fun zonePauses(name: String = "zone.preferences_pb"): GlassesPauses = runBlocking {
+        job?.cancelAndJoin()
+        val j = SupervisorJob().also { job = it }
+        GlassesPauses(PauseStore(File(tmp.root, name), CoroutineScope(Dispatchers.IO + j)) { now }, { now }, { "id${++n}" }, log = {}, zoneApproach = { approach }, linkUp = { linked })
+    }
+
+    @Test fun aDoubleTapNeverClearsAZoneRecord() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(listOf(zoneRec))
+        assertFalse(p.captureAllowed())
+        assertEquals(PauseToggle.ZoneLocked, p.toggle())
+        assertEquals(PauseToggle.ZoneLocked, p.toggle())
+        assertFalse(p.captureAllowed()); assertEquals(listOf("zone:jarawa:1"), p.records.value.map { it.pauseId })
+        assertTrue(p.resumedAtMs().isEmpty()); assertTrue("no pause was added by the tap", p.records.value.size == 1)
+    }
+
+    @Test fun aDoubleTapClearsTheWearersOwnPausesButTheZoneStaysAndSaysSo() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }
+        val own = (p.toggle() as PauseToggle.Paused).record // the wearer pauses first
+        p.mergeFromPhone(listOf(zoneRec, PauseRecord("phone1", PauseOrigin.PHONE, now, null)))
+        val t = p.toggle() as PauseToggle.Resumed
+        assertEquals(setOf(own.pauseId, "phone1"), t.clears); assertTrue(t.zoneHeld)
+        assertFalse("the zone still holds capture", p.captureAllowed())
+        assertEquals(listOf("zone:jarawa:1"), p.records.value.map { it.pauseId })
+    }
+
+    @Test fun withoutAZoneARestingToggleStillResumesLikeBefore() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }
+        p.toggle(); val t = p.toggle() as PauseToggle.Resumed
+        assertFalse(t.zoneHeld); assertTrue(p.captureAllowed())
+    }
+
+    @Test fun aZoneRecordSurvivesARestartAndTheTap() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }; p.mergeFromPhone(listOf(zoneRec)); p.toggle()
+        val again = zonePauses().also { it.ensureLoaded() }
+        assertFalse(again.captureAllowed()); assertEquals(PauseToggle.ZoneLocked, again.toggle())
+    }
+
+    @Test fun thePhoneEndsAZoneRecordByNameOnly() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }; p.mergeFromPhone(listOf(zoneRec))
+        p.mergeFromPhone(HudSettings(pauses = emptyList(), pausesExact = true, resumedPauseIds = listOf("zone:jarawa:1")))
+        assertTrue(p.captureAllowed())
+    }
+
+    @Test fun zoneActiveFollowsZoneRecordsAndTheApproachLinkHold() = runBlocking {
+        val p = zonePauses()
+        assertTrue("not loaded: fail closed", p.zoneActive())
+        p.ensureLoaded(); assertFalse(p.zoneActive())
+        p.toggle(); assertFalse("an ordinary pause is not a zone", p.zoneActive())
+        p.toggle(); p.mergeFromPhone(listOf(zoneRec)); assertTrue(p.zoneActive())
+        p.mergeFromPhone(HudSettings(resumedPauseIds = listOf("zone:jarawa:1"), pausesExact = true)); assertFalse(p.zoneActive())
+        approach = true; linked = true; assertFalse(p.zoneActive())
+        linked = false; assertTrue(p.zoneActive())
+    }
+
+    @Test fun approachWithTheLinkDownPausesLocallyAndLiftsWhenTheLinkReturnsOrTheFlagClears() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }
+        assertTrue(p.captureAllowed())
+        approach = true; assertTrue("link up: the phone decides", p.captureAllowed())
+        linked = false; assertFalse(p.captureAllowed()); assertEquals("ZONE_LINK_DOWN", p.sourceLabel())
+        linked = true; assertTrue(p.captureAllowed())
+        linked = false; approach = false; assertTrue("not approaching: a dropped link is normal", p.captureAllowed()); assertEquals("none", p.sourceLabel())
+    }
+
+    @Test fun zoneRecordsLabelAsZone() = runBlocking {
+        val p = zonePauses().also { it.ensureLoaded() }; p.mergeFromPhone(listOf(zoneRec))
+        assertEquals("ZONE", p.sourceLabel())
+    }
 }

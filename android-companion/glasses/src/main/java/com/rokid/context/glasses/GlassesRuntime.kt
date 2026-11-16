@@ -74,6 +74,9 @@ class GlassesRuntime private constructor(private val app: Context) {
     val pauses = GlassesPauses(
         PauseStore(File(app.filesDir, "pauses.preferences_pb"), ioScope),
         quiet = QuietHoursClock { latestSettings ?: settingsCache.read().also { latestSettings = it } },
+        // Pause zones: with the phone in a zone's approach band and the link down (or not known up), capture pauses here.
+        zoneApproach = { (latestSettings ?: settingsCache.read().also { latestSettings = it }).zoneApproach },
+        linkUp = { controller?.sessionOpen?.value == true },
     )
     /** One camera owner for the process: the sampling session and every Fixed capture take turns through it. */
     val cameraOwner = CameraOwner()
