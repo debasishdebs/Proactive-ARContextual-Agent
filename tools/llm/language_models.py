@@ -74,6 +74,9 @@ SUPPORTED_MODELS = [
     "gpt-5.4",
     "gpt-5.4-mini",
     "kg-gpt-5.4",
+    "kg-gpt-5.6-terra",
+    "gemini-3.1-pro-preview",
+    "gemini-3.8-flash",
 ]
 
 
@@ -2185,6 +2188,40 @@ class NowLLM(APIBaseModel):
         )
 
 
+class GeminiDirect(APIBaseModel):
+    """Google Gemini through the public API key (GEMINI_API_KEY): generateContent over REST, same generate()/batched_generate() interface."""
+    API_RETRY_SLEEP = 2
+    API_ERROR_OUTPUT = "$ERROR$"
+    API_MAX_RETRY = 4
+    API_TIMEOUT = 120
+    NUM_PARALLEL_CALLS = 5
+
+    def __init__(self, model_name, api_key=None, num_workers=5, desc=None, record_times=False, enable_token_logging=False):
+        super().__init__(model_name, record_times=record_times, num_workers=num_workers, description=desc, position=None, enable_token_logging=enable_token_logging)
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+
+    def generate(self, conv, max_n_tokens=1024, temperature=0.0, top_p=1.0, thinking_budget=None):
+        text = conv if isinstance(conv, str) else "\n".join(m.get("content", "") for m in conv if isinstance(m, dict))
+        body = {"contents": [{"role": "user", "parts": [{"text": text}]}],
+                "generationConfig": {"maxOutputTokens": max_n_tokens, "temperature": temperature, "topP": top_p}}
+        output = self.API_ERROR_OUTPUT
+        for attempt in range(self.API_MAX_RETRY):
+            try:
+                r = requests.post(self.url, params={"key": self.api_key}, json=body, timeout=self.API_TIMEOUT)
+                if r.status_code == 200:
+                    parts = (((r.json().get("candidates") or [{}])[0].get("content") or {}).get("parts")) or []
+                    output = "".join(p.get("text", "") for p in parts) or self.API_ERROR_OUTPUT
+                    break
+                output = f"{self.API_ERROR_OUTPUT}[{self.model_name}] HTTP {r.status_code}"
+                if r.status_code not in (429, 500, 502, 503, 504):
+                    break
+            except Exception as e:
+                output = f"{self.API_ERROR_OUTPUT}[{self.model_name}] {type(e).__name__}"
+            time.sleep(self.API_RETRY_SLEEP * (attempt + 1))
+        return output
+
+
 def load_model(
     model_name,
     desc=None,
@@ -2268,6 +2305,26 @@ def load_model(
         )
         lm.API_MAX_RETRY = 5
         lm.API_RETRY_SLEEP = 5
+    elif model_name == "kg-gpt-5.6-terra":
+        # The phone app's own Azure deployment (same endpoint and key as kg-gpt-5.4; deployment gpt-5.6-terra)
+        lm = GPT(
+            model_name="gpt-5.6-terra",
+            api_version=os.getenv("AZURE_KG_API_VERSION", "2024-12-01-preview"),
+            endpoint=os.getenv("AZURE_KG_ENDPOINT"),
+            token=os.getenv("AZURE_KG_54_API_KEY"),
+            system_prompt=None,
+            chat_completion=True,
+            num_workers=n_workers,
+            desc=desc,
+            record_times=perf,
+            structured_response=structured_response,
+            response_format=response_schema,
+        )
+        lm.API_MAX_RETRY = 5
+        lm.API_RETRY_SLEEP = 5
+    elif model_name in ("gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash"):
+        # direct Google API (GEMINI_API_KEY); thinking models need room: use max_n_tokens >= 2000 for judging
+        lm = GeminiDirect(model_name, num_workers=min(n_workers, 5), desc=desc, record_times=perf)
     elif model_name == "gpt-5-chat":
         lm = GPT(
             model_name="gpt-5-chat",
