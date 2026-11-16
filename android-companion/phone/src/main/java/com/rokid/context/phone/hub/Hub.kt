@@ -317,6 +317,9 @@ class Hub(
     private var lastWornAtMs = 0L
     /** Send order of `pc_wear` (Codex wear r2 P1-2): strictly increasing, so a late message can never override a newer one on the glasses. */
     private var wearSeq = 0L
+    /** Random per hub start, and the number of link sessions opened since (`pc_wear` carries both: Codex wear r4 retired-session fence, independent of the wall clock). */
+    private val phoneEpoch: Long = kotlin.random.Random.nextLong().let { if (it == 0L) 1L else it }
+    private var sessionNo = 0L
     @Synchronized private fun nextWearSeq(): Long { wearSeq += 1; return wearSeq }
 
     /**
@@ -327,7 +330,7 @@ class Hub(
         val w = lastWorn
         val check = link.wearCheck.value
         if (w == null && check == null) return
-        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = if (w != null) lastWornAtMs else clock(), sessionStartMs = sessionStartMs, wearCheck = check, seq = nextWearSeq())))
+        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = if (w != null) lastWornAtMs else clock(), sessionStartMs = sessionStartMs, wearCheck = check, seq = nextWearSeq(), phoneEpoch = phoneEpoch, sessionNo = sessionNo)))
     }
 
     /** v1.0 wear fallback: the glasses' "not worn (estimated)", gated by the system wear check ([GlassesWearEstimate]); AutoStop reads it. */
@@ -407,6 +410,7 @@ class Hub(
      */
     private fun newSession() {
         sessionStartMs = clock()
+        sessionNo += 1
         offset = null
         anchoredBeforeOffset.clear()
         lastHelloRequestAtMs = null

@@ -91,8 +91,9 @@ class HudController(
     @Volatile var onMarkPhotoRequest: (com.rokid.context.core.model.MarkPhotoRequest) -> Unit = {}
     /** The phone's session start (phone clock) as its last accepted message named it; 0 = none yet. A photo request of another session is refused. */
     @Volatile private var phoneSessionStartMs = 0L
-    /** Codex wear r2/r3: the phone session the last applied `pc_wear` named, and its newest send order (a lower one in the same session is a late message and is dropped). Under [ctxLock]. */
-    private var lastWearSessionMs = 0L
+    /** Codex wear r2-r4: the phone hub epoch and session number the last applied `pc_wear` named, and its newest send order. They survive a HUD session close on purpose (a retired session's late message must stay dropped). Under [ctxLock]. */
+    private var lastWearEpoch = 0L
+    private var lastWearSessionNo = 0L
     private var lastWearSeq = 0L
     /** The session is open and the phone is talking (session open, or a hello request on an open session): re-send unacked marks. */
     @Volatile var onMarksDue: () -> Unit = {}
@@ -256,12 +257,16 @@ class HudController(
     /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
     private fun onWearMessage(m: WearMessage) {
         if (m.atMs < m.sessionStartMs) { PcLog.i(TAG, "stale pc_wear ignored"); return }
-        // Codex wear r3: the order is kept per WEAR identity (the session the last applied pc_wear named), not through [phoneSessionStartMs] that every channel overwrites, and a
-        // closed session fences nothing: a reconnect or a silence recovery on the same phone session must keep working. A message of another session starts the numbering again;
-        // the worst a late message of an older session can do is offer a stale check, and the phone only honours an estimate while ITS current read of the check is OFF.
+        // Codex wear r3/r4: the order is kept per WEAR identity, not through [phoneSessionStartMs] that every channel overwrites, and never through the wall clock. Within one phone
+        // epoch a lower session number is a retired session's late message (dropped, also after the HUD session closed), a higher one starts the numbering again, an equal one is
+        // ordered by seq. A closed HUD session fences nothing else, so a silence recovery or reconnect of the same phone session keeps working. A new epoch (the phone's hub
+        // restarted) or an old phone (epoch 0) cannot be ordered: it is applied.
         synchronized(ctxLock) {
-            if (m.sessionStartMs != lastWearSessionMs) { lastWearSessionMs = m.sessionStartMs; lastWearSeq = 0L }
-            else if (m.seq != 0L && m.seq < lastWearSeq) { PcLog.i(TAG, "older pc_wear ignored"); return }
+            if (m.phoneEpoch != 0L && m.phoneEpoch == lastWearEpoch) {
+                if (m.sessionNo < lastWearSessionNo) { PcLog.i(TAG, "pc_wear of a retired session ignored"); return }
+                if (m.sessionNo > lastWearSessionNo) { lastWearSessionNo = m.sessionNo; lastWearSeq = 0L }
+                else if (m.seq != 0L && m.seq < lastWearSeq) { PcLog.i(TAG, "older pc_wear ignored"); return }
+            } else { lastWearEpoch = m.phoneEpoch; lastWearSessionNo = m.sessionNo; lastWearSeq = 0L }
             if (m.seq != 0L) lastWearSeq = m.seq
             phoneSessionStartMs = m.sessionStartMs
             onWearCheck(m.wearCheck)
@@ -352,7 +357,7 @@ class HudController(
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
         synchronized(ctxLock) {
-            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); lastWearSessionMs = 0L; lastWearSeq = 0L; phoneSessionStartMs = 0L; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
+            if (_sessionOpen.compareAndSet(true, false)) { PcLog.i(TAG, "session closed: $why"); phoneSessionStartMs = 0L; onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
         }
         dropAnswerOnClose()
         refreshConnection()
