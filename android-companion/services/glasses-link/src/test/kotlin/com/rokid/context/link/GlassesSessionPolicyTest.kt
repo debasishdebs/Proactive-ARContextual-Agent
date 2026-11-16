@@ -335,14 +335,14 @@ class GlassesSessionPolicyTest {
         assertEquals(listOf(LinkAction.MarkClosedOnGlasses), p.onEvent(LinkEvent.BackgroundSilent))
         // the reopen (guarded, automatic) connects; a failure does not enter the 2/5/10/30 s retry loop (fix wave I4)
         assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(auto = true))
-        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.ConnectFailed))
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed), p.onEvent(LinkEvent.ConnectFailed))
     }
 
     @Test fun anAutomaticConnectNeverRetriesOnItsOwnButAnExplicitOneStillDoes() {
         val p = GlassesSessionPolicy()
         p.onEvent(LinkEvent.DevicePresent) // a nearby device makes the explicit path retry
         p.manualConnect(auto = true)
-        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.Closed))
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed), p.onEvent(LinkEvent.Closed))
         p.manualConnect()
         assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.ConnectFailed))
     }
@@ -359,10 +359,10 @@ class GlassesSessionPolicyTest {
     @Test fun anAutomaticOpenNeverArmsALinkRetryTimer() {
         val p = GlassesSessionPolicy()
         assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(auto = true))
-        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.ConnectFailed), "no ScheduleRetry")
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed), p.onEvent(LinkEvent.ConnectFailed), "no ScheduleRetry")
         assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty(), "and no timer to fire")
         p.manualConnect(auto = true)
-        assertEquals(listOf(LinkAction.MarkAuthNeeded), p.onEvent(LinkEvent.AuthTimedOut), "an auth timeout is not retried around the guards")
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed), p.onEvent(LinkEvent.AuthTimedOut), "an auth timeout is not retried around the guards, and goes back to the relauncher")
         assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
     }
 
@@ -370,5 +370,51 @@ class GlassesSessionPolicyTest {
         val p = GlassesSessionPolicy()
         p.manualConnect()
         assertTrue(p.onEvent(LinkEvent.AuthTimedOut).any { it is LinkAction.ScheduleRetry })
+    }
+
+    /** Review hub-wp2 r4 P1-1 (the probe: automatic connect, authorization's manual connect, ConnectFailed, ScheduleRetry, Connect): the continuation after an authorization stays automatic and arms no retry. */
+    @Test fun anAuthorizationContinuationOfAnAutomaticOpenArmsNoLinkRetry() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent); p.onEvent(LinkEvent.Closed) // a nearby device: explicit opens retry
+        p.manualConnect(auto = true)
+        assertTrue(p.automaticOpen, "the open waiting for the authorization is automatic")
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(auto = p.automaticOpen), "the continuation")
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed), p.onEvent(LinkEvent.ConnectFailed), "no ScheduleRetry, the relauncher is told")
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+        // the old continuation (a plain manualConnect) would have armed one
+        p.manualConnect(auto = true); p.manualConnect()
+        assertTrue(p.onEvent(LinkEvent.ConnectFailed).any { it is LinkAction.ScheduleRetry })
+    }
+
+    @Test fun aUserOpenStaysAUserOpenThroughAuthorization() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect()
+        assertFalse(p.automaticOpen)
+        p.manualConnect(auto = p.automaticOpen)
+        assertTrue(p.onEvent(LinkEvent.ConnectFailed).any { it is LinkAction.ScheduleRetry })
+    }
+
+    @Test fun authContinuationDecidesByOriginAndGuards() {
+        assertEquals(AuthContinuation.OPEN_AS_USER, authContinuation(automaticOpen = false, stillAllowed = false), "a user open is never held back by the relauncher's guards")
+        assertEquals(AuthContinuation.OPEN_AS_AUTOMATIC, authContinuation(automaticOpen = true, stillAllowed = true))
+        assertEquals(AuthContinuation.HAND_BACK, authContinuation(automaticOpen = true, stillAllowed = false), "a call started during the authorization: nothing opens")
+    }
+
+    /** Review hub-wp2 r4 P2-3: an automatic open's authorization that never reports back is OFFLINE plus a message to the retry owner, never a NOT_AUTHORIZED nobody retries. */
+    @Test fun anAutomaticAuthTimeoutHandsBackToTheRelauncher() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(auto = true)
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed), p.onEvent(LinkEvent.AuthTimedOut))
+        assertFalse(p.waitingAuthRetry); assertFalse(p.automaticOpen)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(auto = true), "the relauncher's next attempt opens again")
+    }
+
+    /** Review hub-wp2 r4 P2-5: an automatic probe never revokes a user's pending open; it ends when the probe resolves. */
+    @Test fun anAutomaticProbeKeepsAUserRequestUntilItResolves() {
+        val o = OpenAfterSilence()
+        o.request(true); o.request(false)
+        assertTrue(o.pending, "the watchdog's probe overlapped the user's Reconnect")
+        o.clear(); assertFalse(o.pending)
+        o.request(false); assertFalse(o.pending, "an automatic probe alone requests nothing")
     }
 }

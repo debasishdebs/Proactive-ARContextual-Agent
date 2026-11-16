@@ -4,6 +4,16 @@ import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
+/**
+ * Review hub-wp2 r4: whoever owns the retries of the phone's AUTOMATIC opens ([GlassesRelauncher]). The link reports back to it explicitly: nothing is inferred from [GlassesLink.state].
+ */
+interface AutoOpenOwner {
+    /** An authorization that an automatic open waited for just completed: false = a guard (call, setting, ...) blocks now, so the link opens nothing and hands the open back with [autoOpenFailed]. */
+    fun autoOpenStillAllowed(): Boolean
+    /** An automatic open ended without a session (a failure, a refusal, an authorization timeout, a handed-back open): the owner schedules the guarded retry. */
+    fun autoOpenFailed()
+}
+
 /** Phone side of the glasses link (spec §1.7). [CxrGlassesLink] in the app; [FakeGlassesLink] in tests. */
 interface GlassesLink {
     /** Never [LinkState.VERSION_MISMATCH]: the hub derives that from [GlassesEvent.Outdated]. */
@@ -27,9 +37,12 @@ interface GlassesLink {
     fun connectAutomatic() = connect()
     /**
      * Fix wave I1: while MINIMISED the wearer asked to open the app: check that it is alive (a liveness probe). Silence moves
-     * the link to CLOSED_ON_GLASSES and then, when [openIfGone] (a wearer's tap), opens it (an explicit connect); an automatic caller passes false and leaves the reopen to the relauncher's guards. An answer leaves everything as it was.
+     * the link to CLOSED_ON_GLASSES and then, when [openIfGone] (a wearer's tap), opens it (an explicit connect); an automatic caller passes false and leaves the reopen to the relauncher's guards.
+     * Review hub-wp2 r4 P2-5: an automatic probe never takes back an outstanding user request; that stays until the probe resolves. An answer leaves everything as it was.
      */
     fun probeAlive(openIfGone: Boolean = true) = Unit
+    /** Review hub-wp2 r4: the owner of the automatic opens' retries; null = none. */
+    fun setAutoOpenOwner(owner: AutoOpenOwner?) = Unit
     /** Fix wave I N4: the wearer exited the app earlier: do not connect, only watch for the wearer opening it again. */
     fun watchForReopen() = Unit
     /** Review hub-wp2 r3 P1-2/P2-5: whether [reconnectAutomatic] would do anything now (read BEFORE an attempt is reserved against the hourly quota). */

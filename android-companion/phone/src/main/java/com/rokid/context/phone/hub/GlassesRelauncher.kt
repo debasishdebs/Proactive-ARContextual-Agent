@@ -10,6 +10,7 @@ import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.link.AutoOpenOwner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -21,6 +22,8 @@ import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** What may stop the phone from reopening the glasses app right now. Every answer is read fresh at the moment of the attempt. */
 interface RelaunchGuards {
@@ -146,12 +149,16 @@ class GlassesRelauncher(
     private val store: RelaunchStore = InMemoryRelaunchStore(),
     /** Where the durable attempt write runs before a launch (never Main); tests pass Dispatchers.Unconfined. */
     private val io: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO,
-) {
+) : AutoOpenOwner {
     /** A saved attempt older than an hour no longer counts, and one from the future (a clock change) is dropped. */
     private val attempts = ArrayDeque(store.attempts().filter { it > now() - HOUR_MS && it <= now() })
     private var step = 0
     private var connectedSince: Long? = null
     private var job: Job? = null
+    /** Review hub-wp2 r4 P2-2: one reservation at a time (reserve, durable write, commit or rollback). A replaced attempt's cancellation cleanup finishes before the replacement reserves, so it can never erase the replacement's record. */
+    private val reservation = Mutex()
+    /** Between [start] and [stop]: a result from the link after the hub stopped schedules nothing. */
+    @Volatile private var running = false
     /** Phone clock of our last reopen while its outcome is open (the link neither connected nor failed yet). */
     private var awaitingSince: Long? = null
     private var lastReopenAt: Long? = null
@@ -167,6 +174,7 @@ class GlassesRelauncher(
 
     /** Observes the link until the returned job is cancelled (the hub's lifetime). */
     fun start(): Job {
+        running = true
         resumePending()
         return scope.launch { observe() }
     }
@@ -203,7 +211,28 @@ class GlassesRelauncher(
     }
 
     /** The hub stops: forget any pending attempt. */
-    fun stop() { job?.cancel(); job = null }
+    fun stop() { running = false; job?.cancel(); job = null }
+
+    /**
+     * Review hub-wp2 r4 P1-1: the link asks, when an authorization that an AUTOMATIC open waited for completes, whether that open may still go ahead. The setting, the call guard (settle
+     * included), media, worn and the stand-down are read fresh; the hourly cap is not (the open already holds its slot). False = the link hands the open back ([autoOpenFailed]).
+     */
+    override fun autoOpenStillAllowed(): Boolean {
+        val why = if (!enabled()) SETTING_OFF else if (standDown.active) "stood down" else guardBlocker()
+        if (why != null) log("relaunch: authorization done but a guard blocks ($why), the open goes back to the guarded retry")
+        return why == null
+    }
+
+    /**
+     * Review hub-wp2 r4 P2-3/P2-4: the explicit result of our automatic open when it ended without a session (a synchronous or asynchronous failure, a refusal, an authorization that timed out
+     * or was handed back): the next try follows the back-off and the cap. Not inferred from [state], whose OFFLINE-CONNECTING-OFFLINE a StateFlow can conflate into no change at all.
+     */
+    override fun autoOpenFailed() {
+        if (!running || awaitingSince == null) return
+        awaitingSince = null
+        if (standDown.active) { log("relaunch: reopen failed, standing down"); return }
+        failures++; log("relaunch: reopen failed, trying again later"); scheduleNext(afterFailure = true)
+    }
 
     /**
      * The wearer exited the app on purpose (`pc_user_exit`): this close is not Rokid's, so nothing reopens it automatically.
@@ -274,22 +303,28 @@ class GlassesRelauncher(
      * (the reservation is rolled back whatever the reason, a guard, a failed write or a cancellation; nothing launched) and the caller keeps its guarded retry.
      */
     private suspend fun doReopen(launch: () -> Unit = reopen, eligible: () -> Boolean = ALWAYS): Boolean {
+        val t = reservation.withLock { reserve(eligible) } ?: return false
+        log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
+        try { launch() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
+        return true
+    }
+
+    /** Under [reservation]: the durable record, a fresh look at every guard, then the commit. Null = deferred (the reservation is rolled back whatever the reason). */
+    private suspend fun reserve(eligible: () -> Boolean): Long? {
         val t = now(); val reserved = attempts.toList() + t
         var committed = false
         try {
             val durable = withContext(NonCancellable + io) { store.saveAttemptsDurable(reserved) }
-            if (!durable) { log("relaunch: attempt record not durable, not launching"); return false }
+            if (!durable) { log("relaunch: attempt record not durable, not launching"); return null }
             coroutineContext.ensureActive()
             val why = blocker(eligible)
-            if (why != null) { log("relaunch: blocked after the record ($why), not launching"); noteBlocked(why); return false }
+            if (why != null) { log("relaunch: blocked after the record ($why), not launching"); noteBlocked(why); return null }
             attempts.addLast(t); step++; awaitingSince = t; lastReopenAt = t
             committed = true
         } finally {
             if (!committed) rollback() // also when cancellation lands right after the write returned: the cleanup surrounds the write itself
         }
-        log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
-        try { launch() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
-        return true
+        return t
     }
 
     /** Takes back a reservation that was not launched, durably when it can (a failed rollback only costs quota, never adds a launch). */
@@ -356,6 +391,11 @@ class GlassesRelauncher(
         val cutoff = now() - HOUR_MS
         while (attempts.isNotEmpty() && attempts.first() <= cutoff) attempts.removeFirst()
         if (attempts.size >= maxPerHour) return HOURLY_LIMIT
+        return guardBlocker()
+    }
+
+    /** The call, media and worn guards (read fresh). */
+    private fun guardBlocker(): String? {
         if (!guards.callIdle()) return CALL_ACTIVE
         if (reopenIsFullScreen() && !guards.mediaIdle()) return "media active"
         if (guards.worn() == false) return "glasses not worn"

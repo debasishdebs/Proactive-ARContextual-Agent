@@ -124,6 +124,7 @@ class Hub(
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
         GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> com.rokid.context.core.log.PcLog.i(GlassesRelauncher.TAG, m) }, standDown = standDown, store = relaunchStore, io = io)
     }
+    init { relauncher?.let { link.setAutoOpenOwner(it) } } // review hub-wp2 r4: the link reports the end of an automatic open to its retry owner explicitly
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state
     private val _status = MutableStateFlow(_state.value.toGlassesStatus())
