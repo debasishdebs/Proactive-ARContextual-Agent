@@ -153,20 +153,21 @@ class PrivacyCallbacks(
     val quietFrom: (Int) -> Unit,
     val quietTo: (Int) -> Unit,
     val saveQuiet: () -> Unit,
+    val openZones: () -> Unit = {},
 ) {
     companion object {
-        fun of(vm: PrivacyViewModel, back: () -> Unit) = PrivacyCallbacks(
-            back, vm::pauseFor, vm::resumeShown, vm::setQuietEnabled, vm::setQuietFrom, vm::setQuietTo, vm::saveQuietHours,
+        fun of(vm: PrivacyViewModel, back: () -> Unit, openZones: () -> Unit = {}) = PrivacyCallbacks(
+            back, vm::pauseFor, vm::resumeShown, vm::setQuietEnabled, vm::setQuietFrom, vm::setQuietTo, vm::saveQuietHours, openZones,
         )
     }
 }
 
 /** Settings › Privacy route: the VM over the shared pause control ([SettingsDeps.pauses]) and the hub's HUD settings. */
 @Composable
-fun PrivacyRoute(deps: SettingsDeps, back: () -> Unit) {
+fun PrivacyRoute(deps: SettingsDeps, back: () -> Unit, openZones: () -> Unit = {}) {
     val vm = viewModel { PrivacyViewModel(deps.pauses, deps.hud) }
     val state by vm.state.collectAsStateWithLifecycle()
-    PrivacyScreen(state, PrivacyCallbacks.of(vm, back))
+    PrivacyScreen(state, PrivacyCallbacks.of(vm, back, openZones))
 }
 
 @Composable
@@ -199,6 +200,13 @@ fun PrivacyScreen(state: PrivacyUiState, on: PrivacyCallbacks) {
                     state.quietError?.let { NoticeText(it, error = true, tag = "quiet_error") }
                     PrimaryAction("Save", on.saveQuiet, tag = "quiet_save", enabled = state.canSave)
                 }
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Pause zones", style = MaterialTheme.typography.titleMedium)
+                Text("Capture stops inside the areas you mark on a map, and in a ring around them.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+                SecondaryAction("Open pause zones", on.openZones, tag = "open_zones")
             }
         }
         item {

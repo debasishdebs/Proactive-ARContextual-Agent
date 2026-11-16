@@ -52,6 +52,8 @@ object Routes {
     const val SETTINGS_MEMORY_REVIEW = "settings/memory/review"
     const val DIAGNOSTICS_LOGS = "settings/diagnostics/logs"
     const val SETTINGS_PRIVACY = "settings/privacy"
+    /** Settings -> Privacy -> Pause zones: the map, the zone list and the new-zone form. */
+    const val SETTINGS_PRIVACY_ZONES = "settings/privacy/zones"
     const val SETTINGS_SOURCES = "settings/sources"
     const val SETTINGS_ACTIONS = "settings/actions"
     const val SETTINGS_SHOPPING = "settings/shopping"
