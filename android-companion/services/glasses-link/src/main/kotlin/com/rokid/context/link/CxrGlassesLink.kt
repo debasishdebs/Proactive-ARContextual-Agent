@@ -67,12 +67,14 @@ class CxrGlassesLink(
     /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
     private val minimised: MinimisedLink = MinimisedLink(
         scope, watcher, inbound,
-        onAlive = { openAfterSilence = false; act(policy.onEvent(LinkEvent.BackgroundAlive)) },
+        onAlive = { openAfterSilence.clear(); act(policy.onEvent(LinkEvent.BackgroundAlive)) },
         onSilent = { post { onBackgroundSilent() } },
         log = { PcLog.i(TAG, it) },
     )
     /** The wearer asked to open the app while minimised and a liveness probe is out: if the glasses are silent, open it for real. */
-    private var openAfterSilence = false
+    private val openAfterSilence = OpenAfterSilence()
+    /** Review hub-wp2 r4: the relauncher, told when an automatic open ends without a session and asked before an authorization continues one. */
+    @Volatile private var autoOwner: AutoOpenOwner? = null
     /** One background bind attempt per stay out of the foreground: a failed bind is not retried in a loop. */
     private var backgroundTried = false
 
@@ -141,7 +143,15 @@ class CxrGlassesLink(
         if (!auth.result(ok)) return // late or duplicate report for an attempt already resolved
         authJob?.cancel(); authJob = null
         authTimedOut = false
-        if (ok) { authDeclined = false; act(policy.manualConnect()) }
+        if (ok) {
+            authDeclined = false
+            // Review hub-wp2 r4 P1-1: the open that waited for the authorization keeps its origin; an automatic one is re-checked against the guards and otherwise handed back to the relauncher.
+            when (authContinuation(policy.automaticOpen, autoOwner?.autoOpenStillAllowed() ?: true)) {
+                AuthContinuation.OPEN_AS_USER -> act(policy.manualConnect())
+                AuthContinuation.OPEN_AS_AUTOMATIC -> act(policy.manualConnect(auto = true))
+                AuthContinuation.HAND_BACK -> act(policy.onEvent(LinkEvent.ConnectFailed))
+            }
+        }
         else { authDeclined = true; act(policy.onEvent(LinkEvent.AuthFailed)) } // no auto-relaunch
     }
 
@@ -153,13 +163,13 @@ class CxrGlassesLink(
 
     override fun probeAlive(openIfGone: Boolean) = post {
         if (!policy.minimised) return@post
-        openAfterSilence = openIfGone
+        openAfterSilence.request(openIfGone) // an automatic probe never revokes a user's request that is still out
         minimised.probeNow()
     }
 
     private fun onBackgroundSilent() {
         act(policy.onEvent(LinkEvent.BackgroundSilent))
-        if (openAfterSilence && !policy.minimised) { openAfterSilence = false; PcLog.i(TAG, "minimised app is gone: opening it on request"); act(policy.manualConnect()) }
+        if (openAfterSilence.pending && !policy.minimised) { openAfterSilence.clear(); PcLog.i(TAG, "minimised app is gone: opening it on request"); act(policy.manualConnect()) }
     }
 
     override fun connectOnce() = post { auth.clearStale(now()); act(policy.autoConnect()) }
@@ -182,8 +192,10 @@ class CxrGlassesLink(
         act(policy.manualConnect(auto = true))
     }
 
+    override fun setAutoOpenOwner(owner: AutoOpenOwner?) { autoOwner = owner }
+
     override fun close() = post {
-        openAfterSilence = false
+        openAfterSilence.clear()
         minimised.stop()
         retryJob?.cancel(); connectJob?.cancel(); authJob?.cancel()
         auth.cancel() // a late AuthActivity result must not reopen a session after stop
@@ -198,6 +210,7 @@ class CxrGlassesLink(
         for (a in actions) when (a) {
             LinkAction.Connect -> openSession()
             LinkAction.SendSettings -> _ready.tryEmit(Unit)
+            LinkAction.AutoOpenFailed -> autoOwner?.autoOpenFailed()
             is LinkAction.ScheduleRetry -> retryJob = scope.launch { delay(a.delayMs); act(policy.onEvent(LinkEvent.RetryTimer)) }
             else -> a.linkState()?.let(::setState)
         }
@@ -216,7 +229,7 @@ class CxrGlassesLink(
 
     /** On [scope]: a glasses message on the background link (only its current bind's messages are decoded). */
     private fun onBackgroundMessage(cmd: String, parts: List<String>) {
-        openAfterSilence = false
+        openAfterSilence.clear()
         minimised.onMessage(cmd, parts).forEach { _events.tryEmit(it) }
     }
 
@@ -238,7 +251,8 @@ class CxrGlassesLink(
                 auth.expire()
                 authTimedOut = true // not a decline: with a token, the next phone-app resume retries
                 PcLog.i(TAG, "authorization timed out")
-                act(policy.onEvent(LinkEvent.AuthTimedOut)) // BUG-R2-4: bounded automatic retry, then NOT_AUTHORIZED
+                act(policy.onEvent(LinkEvent.AuthTimedOut)) // BUG-R2-4: bounded automatic retry, then NOT_AUTHORIZED; an automatic open goes back to the relauncher (OFFLINE)
+                if (token() == null) setState(LinkState.NOT_AUTHORIZED) // nothing to retry without a pairing
             }
             if (AuthActivity.launch(app).isFailure) onAuthResult(false)
             return

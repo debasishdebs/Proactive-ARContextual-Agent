@@ -30,6 +30,13 @@ class FakeGlassesLink(initial: LinkState = LinkState.CONNECTED) : GlassesLink {
     var resumeCalls = 0
         private set
 
+    /** Tests: the owner of the automatic opens' retries (as the relauncher in the app). */
+    var autoOwner: AutoOpenOwner? = null
+        private set
+    override fun setAutoOpenOwner(owner: AutoOpenOwner?) { autoOwner = owner }
+    /** Tests: an automatic open ended without a session (as CxrGlassesLink reports it). */
+    fun failAutomatic() { autoOwner?.autoOpenFailed() }
+
     fun setState(s: LinkState) { _state.value = s }
     suspend fun emit(e: GlassesEvent) = _events.emit(e)
     fun emitReady() { _ready.tryEmit(Unit) }

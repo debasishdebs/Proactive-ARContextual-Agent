@@ -597,6 +597,18 @@ class HubTest {
         assertEquals("and the connect counts against the hourly cap", 1, store.attempts().size)
     }
 
+    /** Review hub-wp2 r4 P2-4: the production wiring: the link reports the end of an automatic open to the relauncher (its owner), which retries after the 5 min back-off. */
+    @Test fun aFailedAutomaticOpenReportedByTheLinkIsRetriedByTheRelauncher() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        val guards = object : RelaunchGuards { override fun callIdle() = true; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+        val h = hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = guards, relaunchStore = InMemoryRelaunchStore(), start = false)
+        h.start(); runCurrent(); advanceTimeBy(100)
+        assertEquals(1, link.automaticCalls)
+        link.failAutomatic() // the open failed synchronously: OFFLINE stayed OFFLINE, so only the explicit result says so
+        advanceTimeBy(299_000); assertEquals(1, link.automaticCalls)
+        advanceTimeBy(2_000); assertEquals("retried after five minutes", 2, link.automaticCalls)
+    }
+
     @Test fun aRecoveryStartWithTheHourlyQuotaSpentDoesNotConnect() = runTest {
         val link = FakeGlassesLink(LinkState.OFFLINE)
         val guards = object : RelaunchGuards { override fun callIdle() = true; override fun mediaIdle() = true; override fun worn(): Boolean? = null }

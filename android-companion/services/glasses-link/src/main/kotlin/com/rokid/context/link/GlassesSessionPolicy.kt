@@ -45,6 +45,8 @@ sealed interface LinkAction {
     data object MarkDisconnected : LinkAction
     data object MarkClosedOnGlasses : LinkAction
     data object MarkAuthNeeded : LinkAction
+    /** Review hub-wp2 r4: an AUTOMATIC open ended without a session (failure, refusal, authorization timeout): the relauncher, which owns its retries, is told explicitly. */
+    data object AutoOpenFailed : LinkAction
     /** Our glasses app left the foreground: data goes on the background link, the HUD is never started (Option A). */
     data object MarkMinimised : LinkAction
 }
@@ -58,7 +60,7 @@ fun LinkAction.linkState(): LinkState? = when (this) {
     LinkAction.MarkClosedOnGlasses -> LinkState.CLOSED_ON_GLASSES
     LinkAction.MarkAuthNeeded -> LinkState.NOT_AUTHORIZED
     LinkAction.MarkMinimised -> LinkState.MINIMISED
-    LinkAction.Connect, LinkAction.SendSettings, is LinkAction.ScheduleRetry -> null
+    LinkAction.Connect, LinkAction.SendSettings, LinkAction.AutoOpenFailed, is LinkAction.ScheduleRetry -> null
 }
 
 /** Pure session lifecycle rules for the CXR-L link (ported from Live Fit; spec §1.7). */
@@ -75,6 +77,8 @@ class GlassesSessionPolicy(
     private var authRetries = 0 // automatic re-authorizations after a timeout since the last success or explicit action
     /** Fix wave I4: the current connect is the phone's automatic reopen; a failure ends it (the relauncher owns the retries and the hourly cap). */
     private var automatic = false
+    /** Review hub-wp2 r4 P1-1: the open in progress is the phone's automatic one; an authorization that completes continues it as automatic (never as a user open). */
+    val automaticOpen: Boolean get() = automatic
     private val idle get() = state == S.Idle || state == S.ClosedOnGlasses
 
     /** True while the app was closed on the glasses and nothing else has happened since (the link watches for a reopen). */
@@ -113,16 +117,18 @@ class GlassesSessionPolicy(
         LinkEvent.BackgroundSilent -> if (state == S.Minimised) { state = S.ClosedOnGlasses; listOf(LinkAction.MarkClosedOnGlasses) } else emptyList()
         LinkEvent.GlassesAppOpened ->
             if (backgroundLink) { state = S.Connecting; listOf(LinkAction.MarkConnecting, LinkAction.Connect) } else emptyList()
-        LinkEvent.AuthFailed -> { state = S.Idle; listOf(LinkAction.MarkAuthNeeded) }
-        // An automatic open's auth timeout is not retried here either: a 2/5/10 s retry timer would reopen around the relauncher's guards.
+        LinkEvent.AuthFailed -> { state = S.Idle; automatic = false; listOf(LinkAction.MarkAuthNeeded) }
+        // An automatic open's auth timeout is not retried here either (a 2/5/10 s retry timer would reopen around the relauncher's guards) and is not a verdict (NOT_AUTHORIZED
+        // would leave no retry owner): the link goes OFFLINE and the relauncher is told, so its back-off ladder tries again through every guard.
         LinkEvent.AuthTimedOut ->
-            if (!automatic && authRetries < MAX_AUTH_RETRIES) {
+            if (automatic) { state = S.Idle; automatic = false; listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed) }
+            else if (authRetries < MAX_AUTH_RETRIES) {
                 authRetries++
                 state = S.WaitingAuthRetry
                 listOf(LinkAction.MarkConnecting, LinkAction.ScheduleRetry(authBackoff.next()))
             } else { state = S.Idle; listOf(LinkAction.MarkAuthNeeded) }
         LinkEvent.ConnectTimeout -> if (state == S.Connecting) onEvent(LinkEvent.ConnectFailed) else emptyList()
-        LinkEvent.ConnectRefused -> { state = S.Idle; listOf(LinkAction.MarkDisconnected) }
+        LinkEvent.ConnectRefused -> { val auto = automatic; state = S.Idle; automatic = false; if (auto) listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed) else listOf(LinkAction.MarkDisconnected) }
         LinkEvent.Closed, LinkEvent.ConnectFailed -> {
             // Transient failures retry 2/5/10/30 s, then at most [MAX_CEILING_RETRIES] more 30 s retries, then wait for the user.
             if (present && !automatic && ceilingRetries < MAX_CEILING_RETRIES) {
@@ -130,7 +136,7 @@ class GlassesSessionPolicy(
                 if (delay >= backoff.ceilingMs) ceilingRetries++
                 state = S.WaitingRetry
                 listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(delay))
-            } else { state = S.Idle; automatic = false; listOf(LinkAction.MarkDisconnected) }
+            } else { val auto = automatic; state = S.Idle; automatic = false; if (auto) listOf(LinkAction.MarkDisconnected, LinkAction.AutoOpenFailed) else listOf(LinkAction.MarkDisconnected) }
         }
         LinkEvent.RetryTimer -> when {
             present && state == S.WaitingRetry -> { state = S.Connecting; listOf(LinkAction.Connect) }
@@ -199,4 +205,25 @@ fun sendRoute(state: LinkState): SendRoute = when (state) {
     LinkState.CONNECTED -> SendRoute.SESSION
     LinkState.MINIMISED -> SendRoute.BACKGROUND
     else -> SendRoute.NONE
+}
+
+/** Review hub-wp2 r4 P1-1: what an authorization that has just completed does with the open that waited for it. */
+enum class AuthContinuation { OPEN_AS_USER, OPEN_AS_AUTOMATIC, HAND_BACK }
+
+/** A user open continues as one; an automatic open continues as automatic while the owner's guards still allow it, else it goes back to the relauncher's guarded retry (never opens during a call). */
+fun authContinuation(automaticOpen: Boolean, stillAllowed: Boolean): AuthContinuation = when {
+    !automaticOpen -> AuthContinuation.OPEN_AS_USER
+    stillAllowed -> AuthContinuation.OPEN_AS_AUTOMATIC
+    else -> AuthContinuation.HAND_BACK
+}
+
+/**
+ * Review hub-wp2 r4 P2-5: the wearer's request (a tapped Reconnect while minimised) to open the app if the liveness probe finds it gone. Sticky until the probe resolves: an automatic probe
+ * (the watchdog's) that overlaps it never takes the request back.
+ */
+class OpenAfterSilence {
+    var pending = false
+        private set
+    fun request(openIfGone: Boolean) { pending = pending || openIfGone }
+    fun clear() { pending = false }
 }
