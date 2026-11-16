@@ -109,7 +109,7 @@ class MomentForget(
      * grown with the batch-wide peers of every key in it until nothing is added. Batch peers are regenerable run results, not user data: they are NOT part of the plan hash (the preview's count is an estimate); the delete
      * computes this closure once, before it deletes anything, and removes it in one call, so no per-photo step can lose the lineage a later step needs. Returns (all keys, the peers among them).
      */
-    private suspend fun closureOf(d: Found, e: SceneEffect?, sceneIds: Collection<String>, byKey: Boolean = true): Pair<Set<String>, Set<String>> {
+    internal suspend fun closureOf(d: Found, e: SceneEffect?, sceneIds: Collection<String>, byKey: Boolean = true): Pair<Set<String>, Set<String>> {
         // the range / id Forget keeps its old behaviour: only the photos' lineage (the by-key rows are the scoped Forget's)
         val base = (if (!byKey) d.frames else d.frames + d.outsideFrames + d.labels + (d.moments + d.projected).map { "moment:$it" } + ((e?.removed ?: emptySet()) + sceneIds).map { "scene:$it" }).toSet()
         var keys = base
@@ -129,11 +129,11 @@ class MomentForget(
         mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
     )
 
-    private fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
+    internal fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
         val lo = Math.floorDiv(maxOf(it.first, 0L), 1000L).coerceAtMost(MomentId.MAX_SECOND); val hi = Math.floorDiv(it.last, 1000L).coerceAtMost(MomentId.MAX_SECOND)
         lo * 1000..hi * 1000 + 999
     })
-    private fun secondsOf(merged: List<LongRange>): List<Long> =
+    internal fun secondsOf(merged: List<LongRange>): List<Long> =
         if (merged.sumOf { it.last / 1000 - it.first / 1000 + 1 } <= MAX_TOMBSTONED_SPAN) merged.flatMap { (it.first / 1000..it.last / 1000).toList() } else emptyList()
 
     private fun mergeSpans(spans: List<LongRange>): List<LongRange> = com.rokid.context.memory.db.CanvasSlice3Dao.mergeRanges(spans)
@@ -145,12 +145,12 @@ class MomentForget(
      *   and the stored Moments of those seconds (or holding those sources). What the delete merely TOUCHES outside them is counted, never deleted: [outsideFrames] (photos an in-span fact cites: locked only) and [descendants]
      *   (derived facts elsewhere that become invalid).
      */
-    private class Found(
+    internal class Found(
         val frames: Set<String>, val memories: Set<String>, val labels: Set<String>, val projected: Set<String>, val moments: Set<String>,
         val outsideFrames: Set<String> = emptySet(), val descendants: Set<String> = emptySet(),
     )
 
-    private suspend fun discover(requestedSeconds: List<Long>, spans: List<LongRange>, bounded: Boolean = false): Found {
+    internal suspend fun discover(requestedSeconds: List<Long>, spans: List<LongRange>, bounded: Boolean = false): Found {
         val md = db.momentDao(); val fd = db.forgetDao()
         val frames = LinkedHashSet<String>(); val memories = LinkedHashSet<String>(); val labels = LinkedHashSet<String>(); val projected = LinkedHashSet<String>()
         val between = LinkedHashSet<String>()

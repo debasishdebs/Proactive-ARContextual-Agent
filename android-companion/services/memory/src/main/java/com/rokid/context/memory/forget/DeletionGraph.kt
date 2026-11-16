@@ -1,9 +1,10 @@
 package com.rokid.context.memory.forget
 
 /**
- * The deletion inventory (slice 3a, S38, S58): EVERY `canvas_*` table, and every canvas/mark preference file and folder, with what Delete all does to it.
- * A new table, prefs file or folder that is not listed here fails `DeletionGraphInventoryTest` (tables, via Room's entity list) and `DeletionInventoryFilesTest`
- * (prefs and folders, via a source and backup-rules scan), so a later task cannot add an artefact and forget to delete it. Names only: this holds no data.
+ * The deletion inventory (slice 3a, S38, S58; Forget lifecycle M1): EVERY table of `context.db` and `places.db`, and every canvas/mark/privacy preference file and folder, with what Delete all does to it.
+ * A new table, prefs file or folder that is not listed here fails `DeletionGraphInventoryTest` (tables, read from Room's exported schema) and `DeletionInventoryFilesTest`
+ * (prefs and folders, via a source and backup-rules scan), so a later task cannot add an artefact and forget to delete it. Who OWNS each table is `lifecycle.Families` (`FamilyInventoryTest`).
+ * Names only: this holds no data.
  */
 object DeletionGraph {
     enum class Fate {
@@ -11,12 +12,18 @@ object DeletionGraph {
         WIPED,
         /** Survives Delete all on purpose: it holds no user data (hashes, states, prompts, settings, the fence itself). The reason is the contract. */
         KEPT,
+        /** Cleared in part by Delete all: rows deleted or their content blanked, the table stays (open proposals, the fetched places). The reason says which. */
+        SCRUBBED,
+        /** Follows its base table through database triggers: no statement of its own (the FTS index of `memory`). */
+        FOLLOWS,
     }
 
     data class Entry(val name: String, val fate: Fate, val why: String)
 
     private fun w(n: String, why: String) = Entry(n, Fate.WIPED, why)
     private fun k(n: String, why: String) = Entry(n, Fate.KEPT, why)
+    private fun s(n: String, why: String) = Entry(n, Fate.SCRUBBED, why)
+    private fun f(n: String, why: String) = Entry(n, Fate.FOLLOWS, why)
 
     val TABLES: List<Entry> = listOf(
         w("canvas_trace", "IMU and hub traces (motion history); a Forget range tombstones them"),
@@ -43,6 +50,36 @@ object DeletionGraph {
         k("cleanup_outbox", "ids, paths and ranges only, no user content; unacknowledged rows survive Delete all so glasses, laptop and phone-file cleanup still happens; only acknowledged rows are removed"),
         k("canvas_pipeline", "pipelines are user-authored prompts and settings"), k("canvas_pipeline_version", "frozen pipeline versions: prompts"),
         k("canvas_publish", "publish records: hashes and snapshots of prompts, no photo data"),
+        // Forget lifecycle M1: the tables the canvas inventory never listed (what `WipeDao.wipeMemory` has always done to them).
+        w("frame", "the photo row and its JPEG path; Forget photo and retention delete the row, Delete all deletes every row and the files"),
+        w("frame_meta", "capture metadata of a photo (times, wire id, motion): deleted with the photo"),
+        w("frame_vector", "the photo's image vector: deleted with the photo"),
+        w("frame_state", "per-photo pipeline state: deleted with the photo"),
+        w("frame_source", "memory-to-photo edges (FACT, CARRIED), including a Place Guide memory's FACT row: deleted with the memory or the photo"),
+        w("frame_cluster", "scene clusters of photos (ids and states; `repFrameIds` names photos)"),
+        w("forget_tombstone", "the extraction lock of a forgotten photo (a frame id and a time); Delete all clears it, the deletion epoch is the new fence"),
+        w("memory", "facts, captions and summaries, and the Place Guide memories (type `place`): the user's data, deleted by every Forget of it and by Delete all"),
+        f("memory_fts", "the full-text index of `memory`: its triggers delete the rows with the memory; no statement of its own"),
+        w("memory_source", "derivation edges between memories (ids only)"),
+        w("memory_vector", "text vectors of memories, in every embedding space"),
+        w("embedding_space", "the embedding spaces and their states (model ids and fingerprints); rebuilt after a wipe"),
+        w("summary_trace", "trace notes of the summariser: ids and counts, deleted by Delete all"),
+        w("ask", "saved questions and answers: Forget redacts the answer of an ask whose sources were forgotten; Delete all deletes every row"),
+        w("nudge", "saved nudges: Forget redacts a nudge whose sources were forgotten; Delete all deletes every row"),
+        s("proposal", "every proposal came from an ask or a nudge: Delete all deletes the open ones and replaces the params of the rest with the redaction marker"),
+        s("action_log", "action details are emptied by Delete all and by the Forget that redacts their proposal"),
+        k("endpoint", "model endpoints (the key itself is in the key vault): settings, no user content"),
+        k("role_binding", "which model serves which role: settings"),
+        k("prompt", "active prompt versions: settings"),
+        k("prompt_version", "frozen prompt versions: user-authored prompts"),
+        k("pause_record", "pauses the user asked for (origin, times): settings and history of switches, no photo or memory content"),
+        k("pause_interval", "the effective pause intervals: times and origin names only"),
+        k("shopping_item", "the user's shopping list: a user list, not memory"),
+        k("note", "the user's notes: a user list, not memory"),
+        // places.db (Place Guide, a separate encrypted database): public place text fetched from Wikipedia, Wikidata and OpenStreetMap. NOT derived from a photo; no Forget reaches it.
+        s("place", "fetched places (public text) are deleted by Delete all and their recency reset; seeded areas, what they seeded and pinned places stay (`PlacePack.deleteAll`)"),
+        s("cell", "fetched 5 km cells: Delete all removes the cells that no seeded area covers"),
+        k("area", "seeded download areas (a bounding box and a state): the user's own download choice; Delete all keeps them"),
     )
 
     /** Phone SharedPreferences names (without `.xml`). */
@@ -54,6 +91,9 @@ object DeletionGraph {
         w("export_cleanup", "a boolean and a counter: a cached memory export could not be deleted by a Forget and its retry is due (no user data; Delete all empties the export folder itself and clears the mark)"),
         k("deletion_epoch", "the persisted deletion epoch (install id, counter, wipedAtMs): it IS the fence and holds no user data"),
         k("mark_settings", "reserved: mark toggles (settings, not memory); not written yet"),
+        k("pause_zones", "pause zones (the user's own places, radii and switches): a setting; NEVER deleted by a Forget or Delete all, and exported with the settings"),
+        k("pause_zone_state", "the latched zone state, the last clear-fix time and the clock-rollback total of THIS phone: a setting, excluded from backup; never deleted by a Forget or Delete all"),
+        k("place_guide", "the Place Guide switch (default off): a setting; Delete all leaves it, and a published card is withdrawn through the ForgetListener instead"),
     )
 
     /** The GLASSES app's prefs (a different device: Delete all reaches them through the new epoch in `pc_trace_ctl`, not by this process). */
