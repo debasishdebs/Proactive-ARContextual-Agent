@@ -30,7 +30,7 @@ interface MarkPhotoRunner {
  * v0.9.6 slice C, "a mark touches capture": opens the camera explicitly for ONE photo and keeps it open for the hold (the user's `markPhotoHoldMs`, clamped to 2..4 s), then keeps the sharpest
  * usable frame of the hold. Every camera use goes through [owner] (one user at a time; it waits at most [ownerWaitMs] for a running sampling episode, then says `camera_busy`).
  *
- * **The bounded exception.** This class deliberately does NOT consult the capture pauses, the battery saver, the low-battery floor or the dark-frame skip (a mark is the user's explicit request, even
+ * **The bounded exception.** Except for a pause ZONE ([zoneActive]: photographing there is not allowed, a mark included), this class deliberately does NOT consult the capture pauses, the battery saver, the low-battery floor or the dark-frame skip (a mark is the user's explicit request, even
  * while capture is paused or the battery policy would stop it). It is bounded: one photo per call, the hold (at most [MARK_PHOTO_HOLD_MAX_MS]) of camera time, one camera at a time, the camera is released
  * on every path including cancellation, and heat STOP still refuses (hardware safety). Nothing else about capture changes: no pause, battery or quiet-hours rule is touched.
  * Pure seams, no logging (a mark never reaches the diagnostic files; the caller turns the outcome into the HUD cue and, on failure, a `pc_mark_photo`).
@@ -50,10 +50,16 @@ class MarkPhotoCapture(
     private val onKeep: (Candidate, Long, Long) -> Unit = { _, _, _ -> },
     private val ownerWaitMs: Long = OWNER_WAIT_MS,
     private val frameGapMs: Long = FRAME_GAP_MS,
+    /**
+     * Pause zones: true = a `zone:` pause record is active (or its local approach hold): NO photo, whatever else is true. The one pause rule a mark does NOT bypass. A suspend seam so the pause store
+     * is loaded first; REQUIRED (no default), so a caller cannot forget it.
+     */
+    private val zoneActive: suspend () -> Boolean,
 ) {
     private class Best(val copy: FrameCopy, val blur: Float, val at: Long)
 
     suspend fun take(markRef: String): MarkPhotoOutcome {
+        if (zoneActive()) return MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE) // before the camera is touched
         if (heatStop()) return MarkPhotoOutcome.Failed(MarkPhotoReason.HEAT)
         val hold = holdMs().coerceIn(MARK_PHOTO_HOLD_MIN_MS.toLong(), MARK_PHOTO_HOLD_MAX_MS.toLong())
         var acquired = false

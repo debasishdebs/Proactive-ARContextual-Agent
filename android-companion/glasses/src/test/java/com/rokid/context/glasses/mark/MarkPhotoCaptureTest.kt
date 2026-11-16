@@ -52,6 +52,7 @@ class MarkPhotoCaptureTest {
     private val stored = ArrayList<Stored>()
     private var storeOk = true
     private var heat = false
+    private var zone = false
     private var hold = 3_000L
     private var encoderOk = true
     private val kept = ArrayList<Candidate>()
@@ -61,6 +62,7 @@ class MarkPhotoCaptureTest {
         store = { id, out, at, luma, ref -> if (storeOk) stored += Stored(id, out, at, luma, ref); storeOk },
         holdMs = { hold }, heatStop = { heat }, clock = { testScheduler.currentTime }, newFrameId = { "mk${it}" },
         onKeep = { c, _, _ -> kept += c }, ownerWaitMs = ownerWaitMs, frameGapMs = 250,
+        zoneActive = { zone },
     )
 
     @Test fun theCameraStaysOpenForTheHoldAndTheSharpestFrameIsThePhoto() = runTest {
@@ -93,6 +95,21 @@ class MarkPhotoCaptureTest {
         heat = true; val cam = FakeCamera(this, listOf(10L to copy(true)))
         assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.HEAT), capture(cam).take("ep:1"))
         assertEquals(0, cam.opened); assertTrue(stored.isEmpty())
+    }
+
+    /** Pause zones: the one pause rule a mark does not bypass; refused before the camera is touched, with its own token. */
+    @Test fun aPauseZoneRefusesTheMarkPhotoBeforeTheCameraIsOpened() = runTest {
+        zone = true; val cam = FakeCamera(this, listOf(10L to copy(true)))
+        assertEquals(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE), capture(cam).take("ep:1"))
+        assertEquals(0, cam.opened); assertTrue(stored.isEmpty()); assertTrue(cam.closedAt.isEmpty())
+        assertEquals(0L, testScheduler.currentTime, "no hold, no waiting")
+    }
+
+    @Test fun thePauseZoneBeatsHeatAndAFreeCameraAndLiftsWhenTheZoneEnds() = runTest {
+        zone = true; heat = true; val cam = FakeCamera(this, listOf(10L to copy(true)))
+        assertEquals(MarkPhotoReason.PAUSE_ZONE, (capture(cam).take("ep:1") as MarkPhotoOutcome.Failed).reason)
+        zone = false; heat = false
+        assertIs<MarkPhotoOutcome.Taken>(capture(cam).take("ep:2"))
     }
 
     @Test fun aBusyCameraOwnerWaitsAtMostFiveSecondsThenSaysBusy() = runTest {

@@ -4,6 +4,7 @@ import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.core.model.zone.ZonePause
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,7 +17,10 @@ data class MergeResult(val added: List<PauseRecord>, val removed: Set<String>)
 
 sealed interface PauseToggle {
     data class Paused(val record: PauseRecord) : PauseToggle
-    data class Resumed(val clears: Set<String>) : PauseToggle
+    /** [zoneHeld]: a `zone:` record is still active, so capture stays off although the wearer's own pauses were cleared. */
+    data class Resumed(val clears: Set<String>, val zoneHeld: Boolean = false) : PauseToggle
+    /** Pause zones: the tap changed nothing; only active `zone:` records remain and a double-tap never clears them. */
+    data object ZoneLocked : PauseToggle
 }
 
 /**
@@ -32,6 +36,10 @@ class GlassesPauses(
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val log: (String) -> Unit = { PcLog.w(TAG, it) },
     private val quiet: QuietHoursClock? = null,
+    /** Pause zones: the phone said (last `pc_settings`) it is within a zone's approach band or inside it. */
+    private val zoneApproach: () -> Boolean = { false },
+    /** Pause zones: the phone link is up. A link that is not known to be up counts as down. */
+    private val linkUp: () -> Boolean = { true },
 ) {
     private val mutex = Mutex()
     private val _records = MutableStateFlow<List<PauseRecord>>(emptyList())
@@ -69,7 +77,7 @@ class GlassesPauses(
     fun active(nowMs: Long = clock()): List<PauseRecord> = _records.value.filter { it.isActiveAt(nowMs) }
 
     private fun sourceOf(r: PauseRecord): PauseSource =
-        if (r.pauseId == PauseStore.UNREADABLE_ID) PauseSource.STORE_UNREADABLE else sources[r.pauseId] ?: PauseSource.PERSISTED
+        if (r.pauseId == PauseStore.UNREADABLE_ID) PauseSource.STORE_UNREADABLE else if (ZonePause.isZoneRecord(r.pauseId)) PauseSource.ZONE else sources[r.pauseId] ?: PauseSource.PERSISTED
 
     private fun labelOf(r: PauseRecord) = sourceOf(r).name + if (r.pauseId in restored) "/restored" else ""
 
@@ -82,12 +90,21 @@ class GlassesPauses(
     fun sourceLabel(nowMs: Long = clock()): String {
         if (!loaded) return "NOT_LOADED"
         val act = active(nowMs)
-        if (act.isEmpty()) return if (unhandledQuiet(nowMs)) PauseSource.QUIET_HOURS.name else "none"
+        if (act.isEmpty()) return if (unhandledQuiet(nowMs)) PauseSource.QUIET_HOURS.name else if (zoneLinkHold()) PauseSource.ZONE_LINK_DOWN.name else "none"
         return labelOf(act)
     }
 
     /** Also closed inside a quiet-hours occurrence not yet handled (not yet turned into a record). */
-    fun captureAllowed(nowMs: Long = clock()): Boolean = loaded && active(nowMs).isEmpty() && !unhandledQuiet(nowMs)
+    fun captureAllowed(nowMs: Long = clock()): Boolean = loaded && active(nowMs).isEmpty() && !unhandledQuiet(nowMs) && !zoneLinkHold()
+
+    /** The phone is in or near a pause zone and the link is down: the phone cannot say it left, so capture holds here (fail closed). */
+    private fun zoneLinkHold(): Boolean = zoneApproach() && !linkUp()
+
+    /**
+     * Pause zones: a photo is not allowed now (an active `zone:` record, or the local approach hold, or the store is not loaded yet). A mark photo checks this, because it
+     * bypasses every other pause.
+     */
+    fun zoneActive(nowMs: Long = clock()): Boolean = !loaded || active(nowMs).any { ZonePause.isZoneRecord(it.pauseId) } || zoneLinkHold()
 
     private fun unhandledQuiet(nowMs: Long): Boolean {
         val occ = quiet?.occurrenceAt(nowMs) ?: return false
@@ -98,14 +115,20 @@ class GlassesPauses(
         loadLocked()
         val now = clock()
         quietLocked(now) // inside quiet hours the tap resumes the occurrence instead of adding a pause
-        val active = active(now)
-        if (active.isNotEmpty()) {
+        val all = active(now)
+        // Pause zones: a double-tap never clears a `zone:` record; only the phone's zone logic ends it.
+        val zoneRecords = all.filter { ZonePause.isZoneRecord(it.pauseId) }
+        val active = all - zoneRecords.toSet()
+        if (active.isEmpty() && zoneRecords.isNotEmpty()) {
+            log("pause tap refused: zone n=${zoneRecords.size}")
+            PauseToggle.ZoneLocked
+        } else if (active.isNotEmpty()) {
             val clears = active.map { it.pauseId }.toSet()
             tombstones = tombstones + clears.associateWith { now }
             provisional = provisional - clears
             log("pause resumed n=${clears.size} src=${labelOf(active)}")
             save(_records.value.filter { it.pauseId !in clears && it.isActiveAt(now) })
-            PauseToggle.Resumed(clears)
+            PauseToggle.Resumed(clears, zoneHeld = zoneRecords.isNotEmpty())
         } else {
             val r = PauseRecord(newId(), PauseOrigin.GLASSES, createdAtMs = now, untilMs = null)
             sources = sources + (r.pauseId to PauseSource.USER_GLASSES)

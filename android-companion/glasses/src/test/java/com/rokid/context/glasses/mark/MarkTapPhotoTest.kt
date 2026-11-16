@@ -87,6 +87,16 @@ class MarkTapPhotoTest {
         assertEquals(listOf(MarkPhotoResult(epoch = "ep", seq = 1, reason = MarkPhotoReason.CAMERA_BUSY)), reports)
     }
 
+    /** Pause zones: the refusal is shown plainly (one short line, held as long as any error) and the phone is told with its own token; the mark itself is still kept. */
+    @Test fun aPauseZoneRefusalIsShownAsZoneNoPhotoAndReportedWithItsToken() = runTest {
+        val (t, _, cue) = rig(Runner(MarkPhotoOutcome.Failed(MarkPhotoReason.PAUSE_ZONE)))
+        t.onTap(true); runCurrent()
+        assertEquals("zone: no photo", cue.text.value); assertTrue(cue.text.value!!.length <= 14)
+        advanceTimeBy(MarkCue.ERROR_MS - 1); assertEquals("zone: no photo", cue.text.value)
+        assertEquals(listOf(MarkPhotoResult(epoch = "ep", seq = 1, reason = "pause_zone")), reports)
+        assertEquals(1, sent.size)
+    }
+
     @Test fun aFailedReportThatCannotBeSentNeverBreaksTheTap() = runTest {
         reportUp = false
         val (t, _, cue) = rig(Runner(MarkPhotoOutcome.Failed(MarkPhotoReason.HEAT)))

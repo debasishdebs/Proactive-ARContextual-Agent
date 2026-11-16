@@ -261,6 +261,11 @@ data class HudSettings(
      * Never read by the motion classifier, the capture decisions or the sampling-rate policy, and not part of any settings hash. Old glasses ignore it.
      */
     val sensorRecHz: Int = 0,
+    /**
+     * Pause zones, additive: the phone is within a pause zone's approach band (or inside it). While true and the phone link is down the glasses pause capture locally (fail closed),
+     * so the camera stops even without the phone. Absent on the wire (an old phone) = false. Old glasses ignore it. The zone itself is never sent: only this flag and `zone:` pause records.
+     */
+    val zoneApproach: Boolean = false,
 )
 
 /** The recording rates the phone offers (Hz); the sensors run at 50 Hz and more in the classifier's FULL mode, so these are inside their real capability. */
@@ -463,6 +468,8 @@ object MarkPhotoReason {
     const val RATE_LIMITED = "rate_limited"
     const val SESSION_CLOSED = "session_closed"
     const val UNKNOWN_SESSION = "unknown_session"
+    /** Pause zones: a mark photo is refused while a `zone:` pause record is active (photographing is not allowed there). */
+    const val PAUSE_ZONE = "pause_zone"
     /** Only a short token is ever stored: a wild value from the wire is cut and cleaned. */
     fun clean(raw: String): String = raw.filter { it.isLetterOrDigit() || it == '_' }.take(32).ifEmpty { NO_FRAME }
 }
