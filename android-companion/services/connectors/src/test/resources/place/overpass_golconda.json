@@ -1,0 +1,51 @@
+{
+ "_note": "Hand-written fixture in the documented response shape (not a captured response); ids are synthetic.",
+ "version": 0.6,
+ "generator": "Overpass API",
+ "elements": [
+  {
+   "type": "way",
+   "id": 555,
+   "center": {
+    "lat": 17.3835,
+    "lon": 78.401
+   },
+   "bounds": {
+    "minlat": 17.379,
+    "minlon": 78.396,
+    "maxlat": 17.388,
+    "maxlon": 78.406
+   },
+   "nodes": [
+    1,
+    2,
+    3
+   ],
+   "tags": {
+    "name": "Golconda Fort",
+    "historic": "fort",
+    "wikidata": "Q9000011"
+   }
+  },
+  {
+   "type": "node",
+   "id": 777,
+   "lat": 17.385,
+   "lon": 78.403,
+   "tags": {
+    "name": "Taramati Viewpoint",
+    "tourism": "viewpoint"
+   }
+  },
+  {
+   "type": "node",
+   "id": 778,
+   "lat": 17.3851,
+   "lon": 78.4031,
+   "tags": {
+    "name": "Roadside cross",
+    "historic": "wayside_cross"
+   }
+  }
+ ]
+}

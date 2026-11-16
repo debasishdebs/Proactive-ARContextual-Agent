@@ -1,0 +1,35 @@
+{
+ "_note": "Hand-written fixture in the documented response shape (not a captured response); ids are synthetic.",
+ "batchcomplete": true,
+ "query": {
+  "geosearch": [
+   {
+    "pageid": 201,
+    "ns": 0,
+    "title": "Golconda Fort",
+    "lat": 17.3833,
+    "lon": 78.4011,
+    "dist": 0.0,
+    "primary": ""
+   },
+   {
+    "pageid": 202,
+    "ns": 0,
+    "title": "Bala Hissar Gate",
+    "lat": 17.3841,
+    "lon": 78.4022,
+    "dist": 140.0,
+    "primary": ""
+   },
+   {
+    "pageid": 203,
+    "ns": 0,
+    "title": "Fateh Darwaza",
+    "lat": 17.379,
+    "lon": 78.3975,
+    "dist": 420.0,
+    "primary": ""
+   }
+  ]
+ }
+}
