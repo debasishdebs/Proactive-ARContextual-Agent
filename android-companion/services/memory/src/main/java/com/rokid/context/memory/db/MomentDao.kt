@@ -157,6 +157,33 @@ abstract class MomentDao : DerivedStaleDao() {
     )
     abstract fun marksIn(fromMs: Long, toMs: Long): kotlinx.coroutines.flow.Flow<List<MarkRow>>
 
+    /** Keyset page of marks (A1): the [marksIn] row and filter, `[fromMs, toMs)`, newest first then `labelId ASC` (today's tie order), rows strictly after the cursor `(cKey, cId)` (first page: `(toMs, "")`), at most [n]. */
+    @Query(
+        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance, l.frameId AS frameId, " +
+            "(SELECT q.refId FROM moment_part q JOIN memory y ON y.id = q.refId WHERE q.momentId = p.momentId AND q.kind = 'MEMORY' AND y.reviewState != 'INVALIDATED' ORDER BY q.partTimeMs, q.refId LIMIT 1) AS memoryId " +
+            "FROM canvas_label l LEFT JOIN moment_part p ON p.kind = 'MARK' AND p.refId = l.labelId LEFT JOIN moment m ON m.momentId = p.momentId " +
+            "WHERE l.kind = 'MOMENT' AND l.atMs >= :fromMs AND l.atMs < :toMs AND (l.atMs < :cKey OR (l.atMs = :cKey AND l.labelId > :cId)) ORDER BY l.atMs DESC, l.labelId ASC LIMIT :n",
+    )
+    abstract suspend fun marksPage(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<MarkRow>
+
+    /** The marks named by [ids] (any day): replaces a scan of every mark. Callers chunk [ids]. */
+    @Query(
+        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance, l.frameId AS frameId, " +
+            "(SELECT q.refId FROM moment_part q JOIN memory y ON y.id = q.refId WHERE q.momentId = p.momentId AND q.kind = 'MEMORY' AND y.reviewState != 'INVALIDATED' ORDER BY q.partTimeMs, q.refId LIMIT 1) AS memoryId " +
+            "FROM canvas_label l LEFT JOIN moment_part p ON p.kind = 'MARK' AND p.refId = l.labelId LEFT JOIN moment m ON m.momentId = p.momentId " +
+            "WHERE l.kind = 'MOMENT' AND l.labelId IN (:ids) ORDER BY l.atMs DESC, l.labelId ASC",
+    )
+    abstract suspend fun marksByIds(ids: List<String>): List<MarkRow>
+
+    /** One mark observed (null while unknown or once forgotten). */
+    @Query(
+        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance, l.frameId AS frameId, " +
+            "(SELECT q.refId FROM moment_part q JOIN memory y ON y.id = q.refId WHERE q.momentId = p.momentId AND q.kind = 'MEMORY' AND y.reviewState != 'INVALIDATED' ORDER BY q.partTimeMs, q.refId LIMIT 1) AS memoryId " +
+            "FROM canvas_label l LEFT JOIN moment_part p ON p.kind = 'MARK' AND p.refId = l.labelId LEFT JOIN moment m ON m.momentId = p.momentId " +
+            "WHERE l.kind = 'MOMENT' AND l.labelId = :id",
+    )
+    abstract fun observeMark(id: String): kotlinx.coroutines.flow.Flow<MarkRow?>
+
     data class MarkRow(
         val labelId: String, val code: String, val atMs: Long, val momentId: String?,
         val momentType: com.rokid.context.memory.moment.MomentType?, val noPhotoReason: com.rokid.context.memory.moment.NoPhotoReason?,

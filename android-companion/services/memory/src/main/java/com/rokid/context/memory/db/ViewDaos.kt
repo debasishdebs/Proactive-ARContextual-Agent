@@ -17,6 +17,10 @@ interface FrameViewDao {
     @Query("SELECT ts FROM frame WHERE ts >= :fromMs AND ts < :toMs")
     fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
 
+    /** Keyset page (activity pagination A1): newest first, ties by id DESC, rows strictly after the cursor `(cKey, cId)`. The first page passes `(toMs, "")`. Bounded by [n], served by the `ts` index. */
+    @Query("SELECT * FROM frame WHERE ts >= :fromMs AND ts < :toMs AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
+    suspend fun pageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<FrameEntity>
+
     @Query("SELECT * FROM frame WHERE id = :id") suspend fun byId(id: String): FrameEntity?
     @Query("SELECT * FROM frame WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<FrameEntity>
 }
@@ -28,6 +32,25 @@ abstract class MemoryViewDao : DerivedStaleDao() {
 
     @Query("SELECT createdAt FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState = 'OK'")
     abstract fun observeVisibleTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
+
+    /** Keyset page of the visible memories by `createdAt` (list view), newest first, ties by id DESC. Same filter as [observeVisibleTimes]. */
+    @Query("SELECT * FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState = 'OK' AND (createdAt < :cKey OR (createdAt = :cKey AND id < :cId)) ORDER BY createdAt DESC, id DESC LIMIT :n")
+    abstract suspend fun visiblePageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<MemoryEntity>
+
+    /**
+     * One page of the visible memories of a day for the broken-down view: a memory sits at its frame's `ts`, else its `createdAt` ([visibleMomentTimes]). `createdAt` within the day uses the index, then the
+     * hour `[hFromMs, hToMs)` is tested on the display time. Newest first, ties by id DESC. The rows whose display time falls before the day ("Earlier photos") are `hFromMs = Long.MIN_VALUE, hToMs = dayFromMs`.
+     */
+    @Query(
+        "SELECT m.* FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= :dayFromMs AND m.createdAt < :dayToMs AND m.reviewState = 'OK' " +
+            "AND COALESCE(f.ts, m.createdAt) >= :hFromMs AND COALESCE(f.ts, m.createdAt) < :hToMs " +
+            "AND (COALESCE(f.ts, m.createdAt) < :cKey OR (COALESCE(f.ts, m.createdAt) = :cKey AND m.id < :cId)) ORDER BY COALESCE(f.ts, m.createdAt) DESC, m.id DESC LIMIT :n",
+    )
+    abstract suspend fun momentPageIn(dayFromMs: Long, dayToMs: Long, hFromMs: Long, hToMs: Long, cKey: Long, cId: String, n: Int): List<MemoryEntity>
+
+    /** The display time of every visible memory whose `createdAt` is in the day: the hour counts of the broken-down view (bucketed in Kotlin, so a DST day is right). */
+    @Query("SELECT COALESCE(f.ts, m.createdAt) FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= :dayFromMs AND m.createdAt < :dayToMs AND m.reviewState = 'OK'")
+    abstract suspend fun visibleMomentTimes(dayFromMs: Long, dayToMs: Long): List<Long>
 
     @Query("SELECT * FROM memory WHERE reviewState = 'OK' ORDER BY createdAt DESC LIMIT :limit")
     abstract fun observeRecentVisible(limit: Int): Flow<List<MemoryEntity>>
@@ -82,6 +105,10 @@ interface AskDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIgnore(ask: AskEntity): Long
     /** Field-level completion (Phase 2 carry): writes the answer and sources only, never the rating. */
     @Query("UPDATE ask SET answer = :answer, sourcesJson = :sourcesJson WHERE id = :id") suspend fun complete(id: String, answer: String, sourcesJson: String): Int
+    @Query("SELECT * FROM ask WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<AskEntity>
+    /** Keyset page (A1): newest first, ties by id DESC. Same filter as [observeTimes]: a developer eval ask is never listed. */
+    @Query("SELECT * FROM ask WHERE ts >= :fromMs AND ts < :toMs AND source != 'canvas_eval' AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
+    suspend fun pageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<AskEntity>
     @Query("SELECT * FROM ask WHERE id = :id") suspend fun byId(id: String): AskEntity?
     @Query("SELECT * FROM ask WHERE id = :id") fun observe(id: String): Flow<AskEntity?>
     /** The user's asks: a developer eval ask (source `canvas_eval`, AskActions.EVAL_SOURCE) is never listed. */
@@ -93,6 +120,11 @@ interface AskDao {
 @Dao
 interface NudgeDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIgnore(nudge: NudgeEntity): Long
+    @Query("SELECT * FROM nudge WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<NudgeEntity>
+    @Query("SELECT * FROM nudge WHERE id = :id") fun observe(id: String): Flow<NudgeEntity?>
+    /** Keyset page (A1): newest first, ties by id DESC; no other filter (as [observeTimes]). */
+    @Query("SELECT * FROM nudge WHERE ts >= :fromMs AND ts < :toMs AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
+    suspend fun pageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<NudgeEntity>
     @Query("SELECT * FROM nudge ORDER BY ts DESC LIMIT :limit") fun observeRecent(limit: Int): Flow<List<NudgeEntity>>
     @Query("SELECT ts FROM nudge WHERE ts >= :fromMs AND ts < :toMs") fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
 }
