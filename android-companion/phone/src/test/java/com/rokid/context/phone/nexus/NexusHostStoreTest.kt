@@ -39,4 +39,14 @@ class NexusHostStoreTest {
         assertEquals(2, Regex("nexus_host\\.xml").findAll(java.io.File(xml, "data_extraction_rules.xml").readText()).count()) // cloud backup and device transfer
         assertEquals(com.rokid.context.memory.forget.DeletionGraph.Fate.KEPT, com.rokid.context.memory.forget.DeletionGraph.PREFS.single { it.name == "nexus_host" }.fate)
     }
+
+    @Test fun theThreeSwitchesAreOffByDefaultStoredInTheSameFileAndOnlyTrueMeansOn() {
+        val s = NexusHostStore(prefs)
+        assertEquals(NexusSwitches(false, false, false), s.switchesNow()); assertTrue(prefs.all.isEmpty())
+        assertTrue(s.setSwitches(NexusSwitches(voice = true))); assertFalse(s.setSwitches(NexusSwitches(voice = true)))
+        assertEquals(NexusSwitches(voice = true), NexusHostStore(prefs).switchesNow())
+        assertEquals(NexusSwitches(voice = true), s.switches.value)
+        prefs.edit().putString("voice", "true").remove("tts").commit()
+        assertEquals(NexusSwitches(), NexusHostStore(prefs).switchesNow())
+    }
 }

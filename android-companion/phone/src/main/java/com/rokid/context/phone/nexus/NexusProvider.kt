@@ -9,6 +9,8 @@ import com.rokid.context.core.model.HudHost
 import io.github.pca.nexusport.DropReason
 import io.github.pca.nexusport.HudEvent
 import io.github.pca.nexusport.NexusActionHandler
+import io.github.pca.nexusport.NexusAskHandler
+import io.github.pca.nexusport.NexusSkillProvider
 import io.github.pca.nexusport.NexusConfig
 import io.github.pca.nexusport.NexusGates
 import io.github.pca.nexusport.NexusHudSink
@@ -80,6 +82,11 @@ class NexusProvider(
     private val clock: () -> Long = System::currentTimeMillis,
     private val tickMs: Long = 1_000L,
     private val teardownMaxMs: Long = 30_000L,
+    /** The user's Nexus switches (all OFF by default). */
+    private val switches: () -> NexusSwitches = { NexusSwitches() },
+    /** The assist-button ask and the four skills; inert while the matching switch is off (the sink also checks). */
+    private val asks: NexusAskHandler? = null,
+    private val skills: NexusSkillProvider? = null,
 ) : HudShow {
     private val lock = Any()
     @Volatile private var sink: NexusHudSink? = null
@@ -133,11 +140,23 @@ class NexusProvider(
         synchronized(lock) {
             if (!wanted) return
             sink = try {
-                NexusHudSink.connect(binder, gates, { NexusConfig(enabled = host() == HudHost.NEXUS) }, actions, log)
+                NexusHudSink.connect(binder, gates, ::config, actions, log, asks = asks, skills = skills)
             } catch (_: Exception) { log("nexus connect failed"); null }
             _bound.value = sink != null
             if (sink != null) startTick()
         }
+    }
+
+    /** Read on every gate check, so a switch takes effect at once. STT and the assist takeover are ONE user switch ("Nexus voice"). */
+    private fun config(): NexusConfig {
+        val s = switches()
+        return NexusConfig(enabled = host() == HudHost.NEXUS, ttsEnabled = s.tts, sttEnabled = s.voice, assistTakeover = s.voice, skillsEnabled = s.skills)
+    }
+
+    /** Call whenever a Nexus switch changes: pushes the feature bits (turning the ask off stops an open listening). A no-op while nothing is connected. */
+    fun refreshFeatures() {
+        val s = sink ?: return
+        try { s.refreshFeatures() } catch (_: Exception) { log("nexus refresh features failed") }
     }
 
     private fun onGone() {
