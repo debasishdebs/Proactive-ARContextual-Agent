@@ -953,6 +953,20 @@ class HubTest {
         assertNull(link.lastFrame().overlay)
     }
 
+    /** Codex z1 r1 P1-3: the final zone filter of the answer overlay: an Answer already queued is never framed while a zone is approached or entered, and a zone that starts withdraws it from the next frame. */
+    @Test fun anAnswerOverlayIsNeverFramedInAZoneAndAZoneStartingWithdrawsIt() = runTest {
+        val link = FakeGlassesLink(); val voice = FakeHubVoice(); var zone = false
+        val h = hub(link, voice = voice, zoneApproach = { zone }); link.emitReady(); runCurrent()
+        voice.overlay.value = Overlay.Answer("q", "Milk.", speaking = false, askId = "ask_1"); advanceTimeBy(300)
+        assertEquals("ask_1", (link.lastFrame().overlay as Overlay.Answer).askId)
+        zone = true; h.refresh(); advanceTimeBy(300)
+        assertNull("the queued answer is withdrawn from the next frame", link.lastFrame().overlay)
+        voice.overlay.value = Overlay.Answer("q2", "Eggs.", speaking = false, askId = "ask_2"); advanceTimeBy(300)
+        assertNull("a new answer is never framed in a zone", link.lastFrame().overlay)
+        voice.overlay.value = Overlay.Listening("x"); advanceTimeBy(300)
+        assertEquals("only an answer (stored text) is filtered", Overlay.Listening("x"), link.lastFrame().overlay)
+    }
+
     @Test fun aVoiceOverlayBeatsAPlaceCard() = runTest {
         val link = FakeGlassesLink(); val voice = FakeHubVoice(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
         hub(link, voice = voice, placeCards = cards); link.emitReady(); runCurrent()

@@ -303,9 +303,11 @@ class AnswerService(
     ): AskOutcome.Answered {
         val q = AskText.collapse(question).take(MAX_QUESTION)
         if (q.isEmpty()) throw EmptyQuestionException()
+        zoneGuard.prepare() // the stored zone records, before the first check (a process that died in a zone refuses until the controller judged)
+        val ticket = zoneGuard.ticket() // taken BEFORE the first check: a zone that starts after it closes it, and every provider dispatch below is fenced by it
         zoneGuard.check() // Z1 point 0: nothing starts in a zone (the backlog extraction below is a model call too)
         try {
-            zoned { beforeRetrieve() }
+            zoned(ticket) { beforeRetrieve() }
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
@@ -314,7 +316,7 @@ class AnswerService(
         val lease = com.rokid.context.orchestration.DataOpGate.shared.lease(com.rokid.context.memory.forget.lifecycle.Leases.Kind.ASK, emptyList(), generation)
         try {
             zoneGuard.check() // Z1 point 1
-            val r = zoned { retrieveWithFlow(q, nowMs) }
+            val r = zoned(ticket) { retrieveWithFlow(q, nowMs) }
             lease.extend(com.rokid.context.memory.forget.lifecycle.Leases.refsOf(r.ids + r.fenceIds)) // what this answer reads: a Forget that reaches it revokes the lease
             // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
             if (r.memories.isEmpty() && r.photos.isEmpty() && !ActionTriggers.matches(q)) {
@@ -324,9 +326,9 @@ class AnswerService(
             // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
             // unsent, PhotoForgottenException; it is never re-asked as text).
             zoneGuard.check() // Z1 point 2: the last step before the dispatch (the call itself is cancelled by [zoned] if a zone comes later)
-            val out = zoned { runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
+            val out = zoned(ticket) { runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
                 // codex r12: everything stored the prompt carries (memories, photo lines, history dependencies) is re-checked live by the router inside the permit
-                sources = r.sources, liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput }
+                sources = r.sources, liveness = AskZoneLiveness(com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation), zoneGuard, ticket))).output as AnswerOutput }
             val text = AskText.collapse(out.answer).take(MAX_ANSWER)
             if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
             val id = askId ?: "ask_${UUID.randomUUID()}"
@@ -352,8 +354,8 @@ class AnswerService(
             if (!saved) throw NoMemoriesException()
             if (redacted) return AskOutcome.Answered(id)
             // Z1 point 4: the answer is saved (the phone may browse it), but a zone entered since: nothing goes to the glasses, no proposal is taken in, no route.
+            val photo = firstCitedPhoto(r, out.sources) // a suspension: read BEFORE the delivery check, which must come after the last one
             if (zoneGuard.blocked()) return AskOutcome.Answered(id, deliveryWithheld = true, notice = AskActions.ZONE_DELIVERY_WITHHELD)
-            val photo = firstCitedPhoto(r, out.sources)
             // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
             // The ask is saved: a failing intake must not fail it (nor make a queue job retry it). Cancellation still propagates.
             // An eval ask (tools/eval_pca.py) never takes a proposal in: no HUD confirmation, notification or action may come from it.
@@ -367,21 +369,39 @@ class AnswerService(
                     null
                 }
             }
-            return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = routeOf(r.target, source, id, nowMs), notice = AskActions.semanticNotice(r.semanticOff))
+            val route = routeOf(r.target, source, id, nowMs)
+            // Z1 point 5 (Codex z1 r1 P1-3): the proposal intake and the route were suspensions; the delivery decision is made AFTER the last of them.
+            if (zoneGuard.blocked()) return AskOutcome.Answered(id, deliveryWithheld = true, notice = AskActions.ZONE_DELIVERY_WITHHELD)
+            return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = route, notice = AskActions.semanticNotice(r.semanticOff))
         } finally {
             lease.close()
         }
     }
 
     /**
-     * Z1: runs [block] while watching the zone: if the zone fence closes meanwhile the work is cancelled and [AskZoneBlockedException] is thrown (a poll, so a state flip without a fence callback is seen too).
-     * No guard (or one that never blocks) costs one idle child.
+     * Z1 (Codex z1 r1 P1-2): runs [block] inside the Ask's zone [ticket]. The ticket travels in the coroutine context, so every provider dispatch of the block (the model call, its validation retry,
+     * a router retry, the time-anchor call) is fenced like Place Guide's: registering its cancel hook IS the admission check ([com.rokid.context.memory.place.ZoneTicket.onClose]), and a zone that starts
+     * later cancels the call at once (no poll). A closed fence ends as [AskZoneBlockedException]. Without a ticket (no fence: tests of the pure parts) a poll of the guard is the fallback.
      */
-    private suspend fun <T> zoned(block: suspend () -> T): T {
+    private suspend fun <T> zoned(ticket: com.rokid.context.memory.place.ZoneTicket?, block: suspend () -> T): T {
+        if (ticket == null) return zonedPolled(block)
+        try {
+            return kotlinx.coroutines.coroutineScope {
+                val scopeJob = coroutineContext[kotlinx.coroutines.Job]!!
+                val reg = try { ticket.onClose { scopeJob.cancel(com.rokid.context.memory.place.ZoneFenced()) } } catch (e: com.rokid.context.memory.place.ZoneFenced) { throw AskZoneBlockedException() }
+                try { kotlinx.coroutines.withContext(ticket) { block() } } finally { reg.close() }
+            }
+        } catch (c: CancellationException) {
+            if (kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.isActive != false && (c is com.rokid.context.memory.place.ZoneFenced || !ticket.isOpen())) throw AskZoneBlockedException()
+            throw c
+        }
+    }
+
+    private suspend fun <T> zonedPolled(block: suspend () -> T): T {
         if (zoneGuard === AskZoneGuard.None) return block()
         return kotlinx.coroutines.coroutineScope {
             val watcher = launch { while (true) { kotlinx.coroutines.delay(zonePollMs); if (zoneGuard.blocked()) throw AskZoneBlockedException() } }
-            try { block() } finally { watcher.cancel() }
+            try { block() } catch (f: com.rokid.context.memory.place.ZoneFenced) { throw AskZoneBlockedException() } finally { watcher.cancel() }
         }
     }
 

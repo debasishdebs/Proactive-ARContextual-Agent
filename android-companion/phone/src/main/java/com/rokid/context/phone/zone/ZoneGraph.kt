@@ -38,6 +38,10 @@ object ZoneGraph {
             onZonesChanged = { ContextHubService.refreshLocationType(app) },
             stateStore = state,
             onProtect = com.rokid.context.work.frames.place.PlaceGraph::protect,
+            onState = { active, judged ->
+                com.rokid.context.orchestration.AskZoneFence.protect(active, judged)
+                if (active) com.rokid.context.phone.voice.VoiceGraph.onZoneStarted() // withdraw an answer already on the glasses/phone card, stop its speech
+            },
         )
     }
 }

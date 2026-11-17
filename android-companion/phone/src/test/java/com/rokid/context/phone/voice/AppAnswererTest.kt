@@ -85,6 +85,21 @@ class AppAnswererTest {
         assertEquals(refused, a.answer("q", VoiceSource.PHONE))
     }
 
+    /** Codex z1 r1 P1-3: offNotice and answerText suspend; a zone that starts during either is caught by the check AFTER them. */
+    @Test fun aZoneStartingDuringTheDeliveryReadsIsNotDelivered() = runBlocking {
+        val refused = AnswerResult.Failed(AskActions.ZONE_PAUSED, AskActions.ZONE_PAUSED)
+        var zone = false
+        val onText = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1") }, answerText = { zone = true; "Milk." }, deliveryBlocked = { zone })
+        assertEquals(refused, onText.answer("q", VoiceSource.GLASSES))
+        zone = false
+        val onNotice = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", proposalId = "p1") }, answerText = { "Noted." }, offNotice = { zone = true; "Notes are off." }, deliveryBlocked = { zone })
+        assertEquals(refused, onNotice.answer("q", VoiceSource.GLASSES))
+        zone = false
+        assertEquals(AnswerResult.Answered("a1", "Milk.", stored = true), AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1") }, answerText = { "Milk." }, deliveryBlocked = { zone }).answer("q", VoiceSource.GLASSES))
+    }
+
+    @Test fun theVoiceModuleRefusalIsTheAskRefusal() { assertEquals(AskActions.ZONE_PAUSED, com.rokid.context.voice.VoiceCopy.ZONE_PAUSED) }
+
     @Test fun theChatMirrorIsWithheldInAZone() {
         val mirrored = mutableListOf<String>()
         mirrorTypedAnswer(AskOutcome.Answered("a1", deliveryWithheld = true)) { mirrored += it }

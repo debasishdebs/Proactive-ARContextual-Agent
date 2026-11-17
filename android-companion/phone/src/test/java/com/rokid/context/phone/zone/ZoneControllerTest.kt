@@ -179,4 +179,19 @@ class ZoneControllerTest {
         el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f)); el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f))
         assertEquals("protect=false", calls.last { it.startsWith("protect=") })
     }
+
+    /** Codex z1 r1 P1-1: Ask's fence hears every protection with whether the zones were judged, and the last protection is persisted for the next process (the key and file are the ones AskZoneFence reads). */
+    @Test fun askIsToldEveryProtectionWithItsJudgedFlagAndTheLastOneIsPersisted() = runTest {
+        assertEquals(ZoneStateStore.PREFS, com.rokid.context.orchestration.AskZoneFence.ZONE_STATE_PREFS)
+        assertEquals(ZoneStateStore.PROTECT, com.rokid.context.orchestration.AskZoneFence.PROTECT_KEY); assertEquals(ZoneStore.PREFS, com.rokid.context.orchestration.AskZoneFence.ZONES_PREFS)
+        val calls = ArrayList<Pair<Boolean, Boolean>>()
+        val prefs = ctx.getSharedPreferences("zs_${System.nanoTime()}", 0)
+        val cc = ZoneController(ZoneStore(ctx.getSharedPreferences("zt_${System.nanoTime()}", 0)), sink, notes, elapsed = { el }, wall = { wall }, stateStore = ZoneStateStore(prefs), onState = { a, j -> calls += a to j })
+        assertEquals("no zone: nothing to judge, open", listOf(false to true), calls); calls.clear()
+        cc.upsert(zone); cc.start()
+        assertEquals("unjudged and active first, judged after the start", true to false, calls.first()); assertEquals(true to true, calls.last())
+        assertTrue("persisted before any record is stored", prefs.getBoolean(ZoneStateStore.PROTECT, false))
+        el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f)); el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f))
+        assertEquals(false to true, calls.last()); assertFalse(prefs.getBoolean(ZoneStateStore.PROTECT, true))
+    }
 }

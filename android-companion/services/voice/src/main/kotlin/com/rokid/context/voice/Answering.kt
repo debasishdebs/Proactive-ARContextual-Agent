@@ -63,6 +63,8 @@ data class VoiceTimings(
 
 /** Every voice string the HUD or Home can show (short, fixed; spec §5.1 step 5, §6.3). */
 object VoiceCopy {
+    /** Pause zones: the fixed refusal (the same text as `AskActions.ZONE_PAUSED`; a phone test pins it). */
+    const val ZONE_PAUSED = "Paused: you're in a pause zone"
     const val COULDNT_HEAR_HUD = "Couldn't hear that"
     const val COULDNT_HEAR_PHONE = "Couldn't hear that — try again"
     const val NOT_SUPPORTED_HUD = VoiceStatusText.NOT_SUPPORTED_HUD

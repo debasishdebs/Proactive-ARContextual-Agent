@@ -14,15 +14,24 @@ The database is SQLCipher-encrypted. Its 32-byte passphrase is created once by `
 
 ## 1. Backup (before installing)
 
-```
-mkdir -p ~/Desktop/rokid/backups
-adb exec-out run-as com.rokid.context tar c . > ~/Desktop/rokid/backups/pca-phone-pre-<tag>.tar
-```
+The app must NOT be running while it is archived: a live SQLCipher database in WAL mode changes under `tar` (a checkpoint or a write between two reads gives a file that passes a size check and is still inconsistent). So:
 
-- Use a real tag, e.g. `pre-v17-20261121`. Needs the debuggable build currently on the phone (`run-as`); if `run-as` is refused, stop and tell the user: do not install.
-- Check it: `tar tf ~/Desktop/rokid/backups/pca-phone-pre-<tag>.tar | grep -E 'databases/context\.db|shared_prefs/db_key\.xml'` must list both, and `ls -l` shows a file of plausible size (the same order as `databases/context.db`). Also copy the original photos folder the same way if it is outside `run-as .` (it is under `files/`, so it is included).
-- Record: `adb shell dumpsys package com.rokid.context | grep -E 'versionName|versionCode|signatures|Signing'` into the tag's notes (the APK you will reinstall on rollback must match).
-- Keep the previous APK file next to the backup.
+1. Not during a call. Stop the app (a force-stop is allowed: it is not an uninstall and keeps all data): `adb shell am force-stop com.rokid.context`. Confirm it is down: `adb shell pidof com.rokid.context` prints nothing. Do not open the app again until the backup is validated (a widget, an alarm or a sync can restart it: if `pidof` prints a pid, force-stop again and re-take the backup).
+2. Take the snapshot with the app stopped. The tar must include the `-wal` and `-shm` files next to `databases/context.db` (they hold committed pages that are not in the main file yet; `tar c .` includes them):
+   ```
+   mkdir -p ~/Desktop/rokid/backups
+   adb exec-out run-as com.rokid.context tar c . > ~/Desktop/rokid/backups/pca-phone-pre-<tag>.tar
+   ```
+   Use a real tag, e.g. `pre-v17-20261121`. Needs the debuggable build currently on the phone (`run-as`); if `run-as` is refused, stop and tell the user: do not install.
+3. Validate the snapshot BEFORE relying on it (any failure = take it again with the app stopped; do not install):
+   - `tar tf ~/Desktop/rokid/backups/pca-phone-pre-<tag>.tar > /dev/null && echo TAR_OK` (the archive reads to its end; a truncated stream fails).
+   - `tar tvf ~/Desktop/rokid/backups/pca-phone-pre-<tag>.tar | grep -E 'databases/context\.db|shared_prefs/db_key\.xml'` lists both, and shows any `context.db-wal` / `context.db-shm` that existed (a non-empty `-wal` is normal after a stop).
+   - Sizes: `ls -l` of the tar is the same order as the live `adb shell run-as com.rokid.context ls -l databases/` (main file + -wal + -shm) plus `files/`; a tar of a few KB is a failed snapshot.
+   - Header readable: extract `databases/context.db` into a temp dir (`tar xf ... -C <tmp> ./databases/context.db`) and check `head -c 16 <tmp>/databases/context.db | xxd` is not the plain text `SQLite format 3` (the file is encrypted; 16 bytes of random-looking data = intact and still sealed) and its length is a multiple of the page size (4096, `stat -f%z`). A plaintext header or a zero-length file means a bad snapshot or an unencrypted install: stop and ask.
+   - Record the tar's `shasum -a 256` next to the notes.
+4. Also copy the original photos folder the same way if it is outside `run-as .` (it is under `files/`, so it is included).
+5. Record: `adb shell dumpsys package com.rokid.context | grep -E 'versionName|versionCode|signatures|Signing'` into the tag's notes (the APK you will reinstall on rollback must match).
+6. Keep the previous APK file next to the backup.
 
 ## 2. Install
 
@@ -41,14 +50,18 @@ Pre-flight evidence already collected: `EncryptedMigrationV16to17DeviceTest` (an
 
 ## 4. Rollback (only if section 3 fails)
 
-Do not clear data and do not uninstall.
+Do not clear data and do not uninstall. Not during a call.
 
-1. Stop the app: `adb shell am force-stop com.rokid.context`.
-2. Reinstall the PREVIOUS APK with the same signature. It cannot open a v17 file, so first put the v16 data back:
-   - `adb exec-out run-as com.rokid.context sh -c 'rm -f databases/context.db databases/context.db-wal databases/context.db-shm'`
-   - `cat ~/Desktop/rokid/backups/pca-phone-pre-<tag>.tar | adb shell run-as com.rokid.context tar x` (restores `databases/`, `shared_prefs/db_key.xml`, `files/`; the master key in the Keystore was never touched).
+1. Stop the app: `adb shell am force-stop com.rokid.context` (confirm `adb shell pidof com.rokid.context` prints nothing).
+2. PRESERVE THE BROKEN STATE FIRST. Nothing is deleted or replaced until this is done and validated:
+   - `adb exec-out run-as com.rokid.context tar c . > ~/Desktop/rokid/backups/pca-phone-broken-<tag>.tar` (the app is stopped, so this snapshot is consistent; it includes `-wal` and `-shm`).
+   - Validate it like section 1 step 3 (`tar tf`, the listing, sizes, the header). If it cannot be taken or does not validate: STOP, replace nothing, ask for help.
+   - Also keep an on-device copy next to the live data, which restores without a laptop: `adb shell run-as com.rokid.context sh -c 'mkdir -p quarantine-<tag> && cp -p databases/context.db* quarantine-<tag>/ && cp -p shared_prefs/db_key.xml quarantine-<tag>/'` and check `ls -l` lists the same files and sizes. (`quarantine-<tag>` is a sibling of `databases/` inside the app's private directory; the app ignores it.)
+3. Only now put the v16 data back. Reinstalling the old APK cannot open a v17 file, so the database files are replaced by the validated pre-install backup:
+   - Move, never delete, the broken files out of the way: `adb shell run-as com.rokid.context sh -c 'mkdir -p quarantine-<tag>/replaced && for f in databases/context.db databases/context.db-wal databases/context.db-shm; do [ -e $f ] && mv $f quarantine-<tag>/replaced/; done; true'`.
+   - `cat ~/Desktop/rokid/backups/pca-phone-pre-<tag>.tar | adb shell run-as com.rokid.context tar x` restores `databases/` (with its `-wal` / `-shm`), `shared_prefs/db_key.xml` and `files/`; the master key in the Keystore was never touched. (This overwrites `db_key.xml` and `files/` entries with the pre-install copies; the broken versions are in the tar and the quarantine folder from step 2.)
    - `adb install -r <previous.apk>` (same signature), open the app, run the checks of section 3 (items 1, 2, 4, 5).
-3. If the restore does not open either: STOP. Do not delete anything else, do not rotate keys. Pull the current state first (`adb exec-out run-as com.rokid.context tar c . > ~/Desktop/rokid/backups/pca-phone-broken-<tag>.tar`) and ask for help; the tar of the broken state plus the pre-install backup is everything needed.
+4. If the restore does not open either: STOP. Do not delete anything else, do not rotate keys. The broken-state tar, the quarantine folder and the pre-install backup are everything needed; put the quarantined files back with `mv` if asked, and ask for help.
 
 ## 5. If the wrong thing happens
 
