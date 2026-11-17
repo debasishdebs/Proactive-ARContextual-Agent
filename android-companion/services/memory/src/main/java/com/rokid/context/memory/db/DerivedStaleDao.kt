@@ -42,6 +42,12 @@ abstract class DerivedStaleDao {
     @Query("SELECT * FROM moment_sensor WHERE momentId IN (:ids) ORDER BY momentId, phoneSecond") abstract suspend fun sensorOf(ids: List<String>): List<MomentSensorEntity>
     @Query("SELECT * FROM moment_sensor WHERE phoneSecond >= :fromSec AND phoneSecond <= :toSec ORDER BY phoneSecond, momentId") abstract suspend fun sensorBetween(fromSec: Long, toSec: Long): List<MomentSensorEntity>
     @Query("SELECT COUNT(*) FROM moment_sensor") abstract suspend fun sensorCount(): Int
+    /** The newest sensor second at or after [fromSec], or null (read only; the derived-signal try-it picks its window end with it). */
+    @Query("SELECT MAX(phoneSecond) FROM moment_sensor WHERE phoneSecond >= :fromSec") abstract suspend fun latestSensorSecond(fromSec: Long): Long?
+    /** The first sensor second, the last one and the number of seconds of ONE trace revision (the coverage the try-it labels). Read only. */
+    @Query("SELECT MIN(phoneSecond) FROM moment_sensor WHERE traceId = :traceId AND traceRevision = :rev") abstract suspend fun firstSensorSecondOf(traceId: String, rev: Int): Long?
+    @Query("SELECT MAX(phoneSecond) FROM moment_sensor WHERE traceId = :traceId AND traceRevision = :rev") abstract suspend fun lastSensorSecondOf(traceId: String, rev: Int): Long?
+    @Query("SELECT COUNT(*) FROM moment_sensor WHERE traceId = :traceId AND traceRevision = :rev") abstract suspend fun sensorSecondCountOf(traceId: String, rev: Int): Int
     @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun insertSensor(rows: List<MomentSensorEntity>)
     @Query("DELETE FROM moment_sensor WHERE momentId IN (:ids)") abstract suspend fun deleteSensorOf(ids: List<String>)
     @Query("SELECT DISTINCT momentId FROM moment_sensor WHERE traceId = :traceId ORDER BY momentId") protected abstract suspend fun sensorMomentsOfTrace(traceId: String): List<String>

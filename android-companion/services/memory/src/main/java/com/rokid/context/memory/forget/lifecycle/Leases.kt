@@ -14,7 +14,9 @@ import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
  * The existing fences (wipe generation, tombstones, [ForgetFence]) stay as the second line, checked in the same transaction. Ids only; nothing here ever holds text.
  */
 class Leases {
-    enum class Kind { ASK, NUDGE, CANVAS_RUN, DERIVE, CANVAS_SAVE, RESUMMARIZE, REANSWER }
+    enum class Kind { ASK, NUDGE, CANVAS_RUN, DERIVE, CANVAS_SAVE, RESUMMARIZE, REANSWER,
+        /** The derived-signal try-it (v1.2): a read-only preview over imported-trace seconds; it commits nothing, it only verifies before showing. */
+        TRY_IT }
 
     private val lock = Any()
     private val open = LinkedHashSet<Lease>()
@@ -104,6 +106,28 @@ class Leases {
             return !revoked
         }
 
+        /**
+         * [verify] plus the liveness of the TRACE and MOMENT inputs, which [verify] does not look at (it checks photos, memories and marks): every trace input exists, is not tombstoned, not quarantined and (when
+         * [traceRevisions] names it) still has the revision the numbers were read under; every Moment input exists and is not tombstoned. Used by the try-it, whose inputs are exactly those; the checks of the other
+         * lease kinds are unchanged. Call it inside the reading transaction and again right before the answer is shown.
+         */
+        suspend fun verifyReadable(db: ContextDatabase, traceRevisions: Map<String, Int> = emptyMap()): Boolean {
+            if (!verify(db, true)) return false
+            val all = inputs()
+            val slice = db.canvasSlice3Dao()
+            for (id in all.filter { it.family == Family.TRACE }.map { it.id }) {
+                val t = slice.trace(id)
+                if (t == null || t.tombstoned || t.clockQuality == com.rokid.context.memory.db.TraceClock.QUARANTINED || traceRevisions[id]?.let { it != t.revision } == true) { revoked = true; return false }
+            }
+            val moments = all.filter { it.family == Family.MOMENT }.map { it.id }.distinct()
+            if (moments.isNotEmpty()) {
+                val md = db.momentDao()
+                val present = moments.chunked(CHUNK).sumOf { c -> c.count { md.moment(it) != null } }
+                if (present != moments.size || moments.chunked(CHUNK).any { md.tombstonedAmong(it).isNotEmpty() }) { revoked = true; return false }
+            }
+            return !revoked
+        }
+
         /** Runs [block] in ONE Room transaction if [verify] still holds there, else writes nothing ([Commit.Fenced]). The transaction takes the write lock before [verify] reads. */
         suspend fun <T> commit(db: ContextDatabase, checkLive: Boolean = true, block: suspend () -> T): Commit<T> = db.withTransaction {
             if (!verify(db, checkLive)) Commit.Fenced else Commit.Committed(block())
@@ -112,6 +136,7 @@ class Leases {
 
     companion object {
         private const val HISTORY = 32
+        private const val CHUNK = 400
         /** The one registry of the process (the `DataOpGate.shared` gate uses it). */
         val shared = Leases()
 
