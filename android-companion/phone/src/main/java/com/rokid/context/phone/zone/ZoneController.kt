@@ -126,15 +126,27 @@ class ZoneController(
         onProtect(active)
         val st = stateStore
         if (active) {
+            clearStoreFailures = 0
             onState(true, judged)
             if (persistedProtect != true) { if (st == null || st.saveProtect(true)) persistedProtect = true }
         } else if (!judged) {
             onState(false, false)
         } else {
             val stored = persistedProtect == false || st == null || st.saveProtect(false)
-            if (stored) { persistedProtect = false; onState(false, true) } else { log("zone protect flag not stored"); onState(true, true) }
+            if (stored) { persistedProtect = false; clearStoreFailures = 0; onState(false, true) }
+            else {
+                // Codex z1 r11 A P1: the in-memory judgement is the gate, the persisted flag a durability copy. Every call retries the store. A failed store of a CLEAR holds the fence only while there is
+                // something to protect: with no enabled zone (and a readable list) nothing is, so it releases at once; with zones judged OUTSIDE it holds conservatively for a bounded number of
+                // consecutive failed stores (each is one reconcile on a fresh judgement), then releases, so a persistent prefs failure is never a permanent lockout. A stale true flag only makes the next process
+                // start closed until it judges (Ask's startup rule). An ACTIVE state never takes this path: it is reported before its store.
+                clearStoreFailures++
+                log("zone protect flag not stored")
+                val nothingToProtect = !store.corrupt && !wantsLocation() && !enforcing
+                if (nothingToProtect || clearStoreFailures > CLEAR_STORE_RETRIES) onState(false, true) else onState(true, true)
+            }
         }
     }
+    private var clearStoreFailures = 0
 
     /** Closes the fences at once when the zones read approached, entered or fail-closed, BEFORE the disk writes of a fix or a zone edit. */
     private fun fenceFirst() {
@@ -379,6 +391,8 @@ class ZoneController(
         const val PROTECTED_ID = "_unreadable"
         private const val UNSTORED_ID = "_missed"
         private const val MEMO_SAVE_MS = 60_000L
+        /** Consecutive failed stores of a clear flag, in a world with zones, that still hold Ask's fence before it releases on the controller's own (in-memory) judgement. */
+        private const val CLEAR_STORE_RETRIES = 3
         private const val HISTORY_MS = 7 * 24 * 3_600_000L
     }
 }

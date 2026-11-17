@@ -258,5 +258,19 @@ class AskZoneFenceTest {
         AskZoneFence.prepare(); assertFalse(AskZoneFence.blocked())
     }
 
+    /** Codex z1 r11 A P1: judged and clear, still held (the controller could not store the clear flag) and no enabled zone: prepare() keeps reconciling and releases; with a zone configured it does not. */
+    @Test fun aJudgedClearHeldFenceWithNoZonesIsReleasedByPrepare() = runBlocking {
+        ctx.getSharedPreferences(AskZoneFence.ZONES_PREFS, Context.MODE_PRIVATE).edit().putString(AskZoneFence.ZONES_KEY, "[]").commit()
+        AskZoneFence.install(ctx)
+        AskZoneFence.protect(active = false, judged = true)
+        AskZoneFence.fence.hold()
+        AskZoneFence.prepare()
+        assertFalse(AskZoneFence.fence.held); assertFalse(AskZoneFence.blocked())
+        ctx.getSharedPreferences(AskZoneFence.ZONES_PREFS, Context.MODE_PRIVATE).edit().putString(AskZoneFence.ZONES_KEY, """[{"id":"a"}]""").commit()
+        AskZoneFence.fence.hold(); AskZoneFence.prepare()
+        assertTrue("a configured zone is not the fence's to release", AskZoneFence.fence.held)
+        AskZoneFence.protect(active = true, judged = true); AskZoneFence.prepare(); assertTrue(AskZoneFence.blocked())
+    }
+
     @Test fun theSwitchDefaultsOn() { assertTrue(AskZoneFence.isEnabled(ctx)); AskZoneFence.setEnabled(ctx, false); assertFalse(AskZoneFence.isEnabled(ctx)); AskZoneFence.setEnabled(ctx, true) }
 }
