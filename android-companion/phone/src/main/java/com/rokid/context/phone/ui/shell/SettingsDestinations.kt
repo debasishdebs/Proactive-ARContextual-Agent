@@ -393,6 +393,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val app = LocalContext.current.applicationContext
         com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back, changingConfigurations = rememberIsChangingConfigurations())
     }
+    composable(Routes.SETTINGS_NEXUS) {
+        val app = LocalContext.current.applicationContext
+        com.rokid.context.phone.ui.settings.nexus.NexusRoute(remember { com.rokid.context.phone.ui.settings.nexus.AndroidNexusControl(app) }, back)
+    }
     composable(Routes.SETTINGS_SOURCES) {
         val activity = LocalContext.current.findActivity()
         SourcesRoute(s, back) { p -> activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, p) } ?: true }

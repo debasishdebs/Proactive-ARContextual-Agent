@@ -98,7 +98,9 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
             SettingRow(GlassesIcon, PcColors.ChipMint, "Rokid Glasses", state.glassesSummary, Routes.SETTINGS_GLASSES),
             SettingRow(Icons.Outlined.PhoneAndroid, PcColors.ChipSky, "Phone camera & mic", state.voiceSummary, Routes.SETTINGS_PHONE_INPUTS),
             SettingRow(Icons.Outlined.Tune, PcColors.ChipAmber, "Mic and display", "Where flows listen and show", Routes.SETTINGS_DEVICE_CAPABILITIES),
-        ),
+        ) + if (developerMode) listOf(
+            SettingRow(GlassesIcon, PcColors.ChipSlate, "Rokid Nexus", "Optional second HUD host (off)", Routes.SETTINGS_NEXUS),
+        ) else emptyList(),
         "Capture & privacy" to listOf(
             SettingRow(Icons.Outlined.Schedule, PcColors.ChipAmber, "Capture schedule", state.captureSummary, Routes.SETTINGS_CAPTURE),
             SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", "Pause, quiet hours", Routes.SETTINGS_PRIVACY),

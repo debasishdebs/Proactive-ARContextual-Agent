@@ -18,6 +18,16 @@
     <!-- Relaunch guard: reads only whether a call is in progress (never numbers or contacts); optional, the audio-mode fallback stays when denied. Asked in Settings > Phone camera & mic. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
+    <!-- Rokid Nexus (v2.0, opt-in, OFF by default): the signature permission the optional PCA Nexus bridge APK defines. Held only if that APK is installed with PCA's own signing key; without it PCA never binds anything. -->
+    <uses-permission android:name="io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT" />
+
+    <!-- Package visibility (Android 11+) for the Settings > Rokid Nexus screen and the bind: the bridge, the Nexus phone hub and Rokid-Coder. Read-only presence checks; PCA never installs or launches them. -->
+    <queries>
+        <package android:name="io.github.pca.nexusbridge" />
+        <package android:name="com.anezium.rokidbus.phone" />
+        <package android:name="io.github.debasishdebs.rokidcoder" />
+    </queries>
+
     <!-- P7-C sources -->
     <!-- Settings › Data sources (R-64): asked for only when a source is turned on; context only, never sent to the glasses. -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />

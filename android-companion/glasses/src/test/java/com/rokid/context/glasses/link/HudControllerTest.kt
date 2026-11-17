@@ -465,4 +465,49 @@ class HudControllerTest {
         controller(); bridge.phone(Channels.STATE, state())
         assertEquals(1, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
     }
+
+    // ---- v2.0 T7: HUD host ----
+
+    private fun stateWith(o: com.rokid.context.core.model.Overlay?) =
+        Wire.encode(StateFrame(seq = 2, capture = CaptureState.Running, intervalSec = 300, phoneLinked = true, aiHealth = Health.Ok, overlay = o))
+
+    @Test fun hostPcaShowsNudgeAnswerAndPlaceCardAsBefore() = runTest {
+        val c = controller("hud_host_pca")
+        val nudge = com.rokid.context.core.model.Overlay.Nudge("heads up")
+        bridge.phone(Channels.STATE, stateWith(nudge))
+        assertEquals(nudge, c.frame.value?.overlay)
+    }
+
+    @Test fun hostNexusSuppressesNudgesPlaceCardsAndAnswersButKeepsPcasOwnInputOverlays() = runTest {
+        val c = controller("hud_host_nexus")
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(hudHost = com.rokid.context.core.model.HudHost.NEXUS)))
+        bridge.phone(Channels.STATE, stateWith(com.rokid.context.core.model.Overlay.Nudge("heads up")))
+        assertEquals(null, c.frame.value?.overlay)
+        bridge.phone(Channels.STATE, stateWith(com.rokid.context.core.model.Overlay.Nudge("Title: line", com.rokid.context.core.model.PlaceCardInfo("Title", "line", "src"))))
+        assertEquals(null, c.frame.value?.overlay)
+        bridge.phone(Channels.STATE, stateWith(com.rokid.context.core.model.Overlay.Answer("q", "a", speaking = false, askId = "a1")))
+        assertEquals(null, c.frame.value?.overlay)
+        val listening = com.rokid.context.core.model.Overlay.Listening("hel")
+        bridge.phone(Channels.STATE, stateWith(listening))
+        assertEquals(listening, c.frame.value?.overlay)
+    }
+
+    @Test fun switchingTheHostToNexusWithdrawsTheCardAlreadyShown() = runTest {
+        val c = controller("hud_host_switch")
+        bridge.phone(Channels.STATE, stateWith(com.rokid.context.core.model.Overlay.Nudge("heads up")))
+        assertTrue(c.frame.value?.overlay != null)
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(hudHost = com.rokid.context.core.model.HudHost.NEXUS)))
+        assertEquals(null, c.frame.value?.overlay)
+        // and back: the next frame shows cards again
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(hudHost = com.rokid.context.core.model.HudHost.PCA)))
+        bridge.phone(Channels.STATE, stateWith(com.rokid.context.core.model.Overlay.Nudge("again")))
+        assertEquals(com.rokid.context.core.model.Overlay.Nudge("again"), c.frame.value?.overlay)
+    }
+
+    @Test fun anOldPhoneSettingsWithoutTheFieldMeansPca() = runTest {
+        val c = controller("hud_host_old_phone")
+        bridge.phone(Channels.SETTINGS, """{"v":1,"verbosity":"MEDIUM"}""")
+        bridge.phone(Channels.STATE, stateWith(com.rokid.context.core.model.Overlay.Nudge("heads up")))
+        assertEquals(com.rokid.context.core.model.Overlay.Nudge("heads up"), c.frame.value?.overlay)
+    }
 }

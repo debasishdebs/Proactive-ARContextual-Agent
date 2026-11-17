@@ -176,9 +176,17 @@ class HudController(
         f.withdrawnAskIds.forEach { withdrawnSeen.remove(it); withdrawnSeen += it }
         while (withdrawnSeen.size > WITHDRAWN_SEEN_MAX) withdrawnSeen.remove(withdrawnSeen.first())
         if (gen != sessionGen) { PcLog.i(TAG, "pc_state of a closed session dropped"); return@synchronized }
-        val shown = cleared(f)
+        val shown = hostFiltered(cleared(f))
         _frame.value = if (!_sessionOpen.value && shown.overlay is Overlay.Answer) shown.copy(overlay = null) else shown
     }
+
+    /**
+     * v2.0 T7: while the phone says the HUD host is Rokid Nexus (`pc_settings.hudHost`), Nexus draws the nudge, place-card and answer cards; this build draws none of them (defence in depth: the phone
+     * also hands them to Nexus only through its own gates, and a card inside a zone is never drawn by either). Listening, Confirm, toasts and the pause splash stay: they are PCA's own input flows.
+     * The default (and a phone that never sent the field) is PCA: nothing changes.
+     */
+    private fun hostFiltered(f: StateFrame): StateFrame =
+        if (_settings.value.hudHost == com.rokid.context.core.model.HudHost.NEXUS && (f.overlay is Overlay.Answer || f.overlay is Overlay.Nudge)) f.copy(overlay = null) else f
 
     /** Applies the rules above to an incoming frame; called with [answerLock] held. */
     private fun cleared(f: StateFrame): StateFrame {
@@ -312,6 +320,8 @@ class HudController(
                 val v = HudSettingsCache.validQuiet(d.value)
                 _settings.value = v
                 cache.write(v)
+                // v2.0 T7: a switch of the HUD host to Nexus withdraws the card already on this display at once, not at the next frame.
+                synchronized(answerLock) { _frame.value?.let { cur -> val h = hostFiltered(cur); if (h !== cur) _frame.value = h } }
                 onPhoneSettings(v)
                 onPhoneSettingsPush(v)
             }

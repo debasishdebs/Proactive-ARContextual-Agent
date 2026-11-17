@@ -92,6 +92,7 @@ dependencies {
     implementation(project(":services:connectors"))
     implementation(project(":services:voice"))
     implementation(project(":core:ui"))
+    implementation(project(":nexus-port")) // v2.0: the seam to the optional Nexus bridge APK (AIDL + the NexusHudSink choke point); no Nexus SDK here
     implementation(project(":core:hud")) // clampHudScale, Hud.MIN_SCALE/MAX_SCALE for the glasses settings (Task 16)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.5")

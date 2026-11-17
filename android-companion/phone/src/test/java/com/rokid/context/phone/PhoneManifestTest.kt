@@ -31,4 +31,18 @@ class PhoneManifestTest {
             .filter { it.readText().contains("com.livear.fit") }.map { it.path }.toList()
         assertTrue(hits.toString(), hits.isEmpty())
     }
+
+    /** v2.0 Rokid Nexus: the ONLY manifest additions are the bridge's signature permission and three package-visibility entries (bridge, Nexus hub, Rokid-Coder); no other new permission. */
+    @Test fun theNexusAdditionsAreOneSignaturePermissionAndThreeQueries() {
+        val manifest = File("src/main/AndroidManifest.xml").readText()
+        assertTrue(manifest.contains("<uses-permission android:name=\"io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT\" />"))
+        val queries = manifest.substringAfter("<queries>").substringBefore("</queries>")
+        assertTrue(queries.trim().lines().map { it.trim() }.sorted() == listOf(
+            "<package android:name=\"com.anezium.rokidbus.phone\" />", "<package android:name=\"io.github.debasishdebs.rokidcoder\" />", "<package android:name=\"io.github.pca.nexusbridge\" />",
+        ))
+        val perms = Regex("<uses-permission android:name=\"([^\"]+)\"").findAll(manifest).map { it.groupValues[1] }.toSet()
+        assertTrue(perms.toString(), perms.none { "nexus" in it.lowercase() && it != "io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT" })
+        // PCA declares no component of the bridge
+        assertFalse(manifest.contains("NexusPortService"))
+    }
 }

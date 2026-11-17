@@ -36,6 +36,7 @@ class LogContentScanTest {
         "PhoneExitDiagnostics.kt" to setOf("\"\${format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live)}\""), // file-scoped: numeric fields and controlled flags only (review hub-wp2 r2)
         "ZoneGraph.kt" to setOf("it"), // zone log lines: counts, state and reason names, a class name (ZoneController); never a zone name or a coordinate
         "PlaceGraph.kt" to setOf("it"), "PlaceSamplers.kt" to setOf("it"), "AndroidPlaceGuideControl.kt" to setOf("it"), // AndroidPlaceGuideControl: the pin log lines ("pin created count=<n>", literals) // Place Guide: pack log lines (counts, outcome and class names) and "place outcome=<NAME>" from the sampler; never a name, coordinate or summary
+        "NexusGraph.kt" to setOf("it"), // Nexus bridge: the sink's literal lines (event, slot, reason and result names, counts); never card text (NexusLogContentScanTest)
         "WatchLinkState.kt" to setOf("it"), // WatchDropLog: only "watch drop reason=<fixed token> n=<count>"
     )
 

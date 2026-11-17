@@ -123,6 +123,10 @@ class Hub(
     private val placeClear: () -> Unit = {},
     /** Clears the card only if it is still the instance [cardId]; false = a different (newer) card or none, nothing cleared. Atomic in production (PlaceCardHolder.clearIf). */
     private val placeClearIf: (cardId: String) -> Boolean = { id -> if (placeCards.value?.cardId == id) { placeClear(); true } else false },
+    /** v2.0 T7: who draws the HUD cards (the Rokid Nexus opt-in choice, default PCA's glasses app). Read at every settings push (`HudSettings.hudHost`) and every frame; never stored with the HUD settings. */
+    private val hudHost: () -> com.rokid.context.core.model.HudHost = { com.rokid.context.core.model.HudHost.PCA },
+    /** v2.0: the hub stopped (the Nexus bridge hides everything it shows). */
+    private val onStopped: () -> Unit = {},
 ) : GlassesStatusSource {
     private fun linkAllowed(): Boolean = inFront() || BackgroundPolicy.linkMachineryAllowed(reopenEnabled(), paired())
     /** Phone clock of the last tapped Reconnect (0 = none): keeps the hub service wanted for [BackgroundPolicy.USER_ASK_HOLD_MS]. */
@@ -214,6 +218,7 @@ class Hub(
         jobs = emptyList()
         relauncher?.stop()
         link.close()
+        try { onStopped() } catch (e: Exception) { PcLog.w(TAG, "stop hook failed (${e.javaClass.simpleName})") }
     }
 
     /**
@@ -484,6 +489,7 @@ class Hub(
             diagRecord = devMode.value,
             zoneApproach = zoneApproach(), // pause zones: computed at push time, never the stored value
             zoneEnforce = zoneEnforce(),
+            hudHost = hudHost(), // v2.0 T7: computed at push time; the glasses draw no popups or cards while it is NEXUS
             // v0.9.7 B: the developer sensor recording is a diagnostics feature: its rate goes on the wire only while Developer mode is on (and only a preset); the stored value alone never decides
             sensorRecHz = if (devMode.value) it.sensorRecHz.takeIf { hz -> hz in com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ } ?: 0 else 0,
         ) }
@@ -680,7 +686,9 @@ class Hub(
         // Codex z1 r1 P1-3: the final zone filter of the answer overlay, read at frame time: no Answer (stored text) is ever sent to the glasses while a zone is approached, entered or unreadable
         val v = voice.overlay.value.takeUnless { o -> o is Overlay.Answer && ((o.askId != null && o.askId in recentlyWithdrawn(clock())) || zoneApproach() || zoneEnforce()) }
         // PG3 maps the place card (PlaceGraph.port.card) onto an additive wire overlay and passes it here; until then no place overlay exists on the wire.
-        return pickOverlay(v, actions.overlay.value, minimisedHint ?: nudges.overlay.value, place = placeOverlay())
+        // v2.0 T7: each component is filtered BEFORE the precedence rule, so an undo toast still shows when the answer it belongs to is drawn by Nexus.
+        val host = hudHost()
+        return pickOverlay(forHost(v, host), actions.overlay.value, minimisedHint ?: forHost(nudges.overlay.value, host), place = forHost(placeOverlay(), host))
     }
 
     /** Ask ids a committed Forget redacted or deleted, with the phone time they were withdrawn (newest last); bounded by [WITHDRAWN_MAX] and [WITHDRAWN_HINT_MS]. */
@@ -706,6 +714,13 @@ class Hub(
     }
 
     companion object {
+        /**
+         * v2.0 T7: while Rokid Nexus draws the cards, no frame carries an answer, nudge or place-card overlay (an older glasses build, which does not know `hudHost`, would otherwise draw them a second time).
+         * PCA's own input overlays (listening, confirm, toasts, the pause splash) stay. The default host changes nothing.
+         */
+        fun forHost(o: Overlay?, host: com.rokid.context.core.model.HudHost): Overlay? =
+            if (host == com.rokid.context.core.model.HudHost.NEXUS && (o is Overlay.Answer || o is Overlay.Nudge)) null else o
+
         const val TAG = "ContextHub"
 
         /**

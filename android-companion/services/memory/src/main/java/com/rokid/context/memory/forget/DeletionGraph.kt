@@ -95,6 +95,7 @@ object DeletionGraph {
         k("pause_zone_state", "the latched zone state, the last clear-fix time and the clock-rollback total of THIS phone: a setting, excluded from backup; never deleted by a Forget or Delete all"),
         k("place_pins", "the user's pinned places (names, notes, positions: their own words): user configuration; NEVER deleted by a Forget or Delete all, carried only by the explicit settings export and EXCLUDED from backup, cloud backup and device transfer (exact positions and private notes; unlike pause_zones, which stays in backup; places.db, their copy, is excluded too and rebuilt from this list)"),
         k("place_guide", "the Place Guide switch (default off): a setting; Delete all leaves it, and a published card is withdrawn through the ForgetListener instead"),
+        k("nexus_host", "the HUD host choice (PCA glasses app by default, Rokid Nexus opt-in) and nothing else: a setting; Delete all leaves it, and whatever the Nexus bridge shows is withdrawn through the ForgetListener instead. Excluded from backup and transfer"),
     )
 
     /** The GLASSES app's prefs (a different device: Delete all reaches them through the new epoch in `pc_trace_ctl`, not by this process). */

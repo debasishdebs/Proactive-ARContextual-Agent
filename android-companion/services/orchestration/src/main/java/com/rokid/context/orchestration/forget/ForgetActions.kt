@@ -77,6 +77,7 @@ object ForgetActions {
         return withContext(Dispatchers.IO + NonCancellable) {
             try {
                 undoMark(labelId)
+                runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
                 runCatching(onForgotten)
                 Outcome.DONE
             } catch (e: DataOpGate.WriteInProgress) {
@@ -202,6 +203,7 @@ object ForgetActions {
         withContext(Dispatchers.IO + NonCancellable) {
             try {
                 val r = coordinator.forgetRange(fromMs, toMs)
+                runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
                 if (!r.cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE
             } catch (e: DataOpGate.WriteInProgress) { Outcome.SAVE_IN_PROGRESS
             } catch (e: DataOpGate.ExportInProgress) { Outcome.EXPORT_IN_PROGRESS
@@ -263,6 +265,7 @@ object ForgetActions {
         val cacheClean = apply(context, r)
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }
+        runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
         runCatching(onForgotten)
         runCatching { com.rokid.context.work.frames.place.PlaceRecovery.kick(context) } // a place memory still marked is retried now
         if (!cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) {
