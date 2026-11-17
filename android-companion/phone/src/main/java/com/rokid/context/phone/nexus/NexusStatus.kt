@@ -13,7 +13,11 @@ object NexusPackages {
 }
 
 /** What is installed on this phone. */
-data class NexusInstalled(val bridge: Boolean, val hub: Boolean, val rokidCoder: Boolean)
+data class NexusInstalled(
+    val bridge: Boolean, val hub: Boolean, val rokidCoder: Boolean,
+    /** A package named like the bridge is installed but is not signed like PCA (or a pinned key): PCA never binds it. */
+    val bridgeUntrusted: Boolean = false,
+)
 
 /** Everything the screen's state is derived from; no text. */
 data class NexusInputs(
@@ -28,11 +32,16 @@ data class NexusInputs(
     val lastCode: Int? = null,
     /** PCA's own glasses link is up (so PCA holds the glasses link itself). */
     val pcaLinkUp: Boolean = false,
+    /** The last bind (or a package change) found the bridge's signer is not PCA's. */
+    val bridgeUntrusted: Boolean = false,
 )
 
 /** The states of the "Rokid Nexus" screen. */
 enum class NexusState {
-    BRIDGE_NOT_INSTALLED, BRIDGE_REFUSED, HUB_NOT_INSTALLED,
+    BRIDGE_NOT_INSTALLED,
+    /** A package with the bridge's name is installed, but it is not signed like PCA: it is treated as not installed and never bound. */
+    BRIDGE_NOT_INSTALLED_UNTRUSTED,
+    BRIDGE_REFUSED, HUB_NOT_INSTALLED,
     /** Installed, but the HUD host is PCA's own glasses app (the default). */
     OFF,
     /** Nexus is the host and the bridge is connecting, or nothing was sent yet to learn the hub's answer. */
@@ -48,6 +57,7 @@ enum class NexusState {
  */
 object NexusStatus {
     fun of(i: NexusInputs): NexusState = when {
+        i.bridgeUntrusted || i.installed.bridgeUntrusted -> NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED
         !i.installed.bridge -> NexusState.BRIDGE_NOT_INSTALLED
         i.bindRefused -> NexusState.BRIDGE_REFUSED
         !i.installed.hub -> NexusState.HUB_NOT_INSTALLED
@@ -64,6 +74,7 @@ object NexusStatus {
 
     fun title(s: NexusState): String = when (s) {
         NexusState.BRIDGE_NOT_INSTALLED -> "Bridge not installed"
+        NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED -> "Bridge not trusted"
         NexusState.BRIDGE_REFUSED -> "Bridge cannot be used"
         NexusState.HUB_NOT_INSTALLED -> "Nexus not installed"
         NexusState.OFF -> "Off"
@@ -77,6 +88,7 @@ object NexusStatus {
 
     fun detail(s: NexusState): String = when (s) {
         NexusState.BRIDGE_NOT_INSTALLED -> "The PCA Nexus bridge app is not on this phone. It is a separate, optional app. PCA works fully without it; nothing is installed for you."
+        NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED -> "An app named like the PCA Nexus bridge is installed, but it is not signed with the same key as PCA, so PCA treats the bridge as not installed and sends it nothing. Uninstall it, then install the bridge that came with this PCA release."
         NexusState.BRIDGE_REFUSED -> "Android did not let PCA connect to the bridge. It must be signed with the same key as PCA. Reinstall the bridge that came with this PCA release."
         NexusState.HUB_NOT_INSTALLED -> "The Rokid Nexus app (com.anezium.rokidbus.phone) is not on this phone. The bridge needs it to reach the glasses. PCA does not install it."
         NexusState.OFF -> "PCA's own glasses app draws the cards. Nothing is sent to Nexus."

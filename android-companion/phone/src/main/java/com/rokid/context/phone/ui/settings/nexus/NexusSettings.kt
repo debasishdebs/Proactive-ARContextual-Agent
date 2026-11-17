@@ -46,13 +46,13 @@ interface NexusControl {
 
 class AndroidNexusControl(private val app: Context) : NexusControl {
     private val store = NexusHostStore.of(app)
-    private val probe = NexusProbe(app.packageManager)
+    private val probe = NexusProbe(app.packageManager, app.packageName)
     private val installed = MutableStateFlow(probe.installed())
 
     // Collected only while the screen shows it (WhileSubscribed): no timer or collector runs otherwise.
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
     override val state: StateFlow<NexusUiState> = combine(store.host, store.switches, installed, NexusGraph.evidence) { h, sw, inst, ev ->
-        NexusUiState(h, inst, NexusStatus.of(NexusInputs(inst, h == HudHost.NEXUS, ev.bindRefused, ev.bound, ev.lastCode, ev.pcaLinkUp)), sw)
+        NexusUiState(h, inst, NexusStatus.of(NexusInputs(inst, h == HudHost.NEXUS, ev.bindRefused, ev.bound, ev.lastCode, ev.pcaLinkUp, ev.bridgeUntrusted)), sw)
     }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), NexusUiState(store.current(), installed.value, NexusStatus.of(NexusInputs(installed.value, store.current() == HudHost.NEXUS)), store.switchesNow()))
 
     override fun setHost(h: HudHost) { store.set(h) }
@@ -105,7 +105,7 @@ fun NexusScreen(state: NexusUiState, onHost: (HudHost) -> Unit, onRecheck: () ->
         item {
             SettingsCard {
                 Text(NexusStatus.title(state.state), style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("nexus_state_title"))
-                NoticeText(NexusStatus.detail(state.state), error = state.state == NexusState.CAPABILITY_DENIED || state.state == NexusState.BRIDGE_REFUSED, tag = "nexus_state_detail")
+                NoticeText(NexusStatus.detail(state.state), error = state.state == NexusState.CAPABILITY_DENIED || state.state == NexusState.BRIDGE_REFUSED || state.state == NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED, tag = "nexus_state_detail")
                 if (state.installed.rokidCoder) NoticeText(NexusStatus.ROKID_CODER_NOTE, tag = "nexus_rc_note")
                 SecondaryAction("Check again", onRecheck, tag = "nexus_recheck")
             }

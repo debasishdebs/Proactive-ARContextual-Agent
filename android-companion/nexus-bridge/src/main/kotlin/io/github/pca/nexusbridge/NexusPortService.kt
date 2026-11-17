@@ -11,14 +11,16 @@ import android.os.IBinder
 import android.os.Process
 import android.os.RemoteException
 import io.github.pca.nexusport.NexusPort
+import io.github.pca.nexusport.PackageSignerSource
+import io.github.pca.nexusport.PcaSignerTrust
 import io.github.pca.nexusport.NexusResult
 import io.github.pca.nexusport.NexusSkillHost
 import io.github.pca.nexusport.NexusPortCallback
 import io.github.pca.nexusport.NexusPortVersion
 
 /**
- * PCA phone app -> bridge. Exported behind the SIGNATURE permission BIND_NEXUS_PORT (an unrelated app cannot bind it), and every call re-checks that the caller is signed with this APK's key (defence in
- * depth: the permission is checked at bind time only). Binding it also binds the Nexus plugin service in-process, so the plugin is alive while PCA is connected.
+ * PCA phone app -> bridge. Exported behind the SIGNATURE permission BIND_NEXUS_PORT (an unrelated app cannot bind it), and every call re-checks that the caller is signed with this APK's key, or with a certificate pinned in
+ * [PcaSignerTrust.PINNED] (empty by default) (defence in depth: the permission is checked at bind time only; no callback is ever accepted from an unverified process). Binding it also binds the Nexus plugin service in-process, so the plugin is alive while PCA is connected.
  */
 class NexusPortService : Service() {
     private val keepPlugin = object : ServiceConnection {
@@ -30,7 +32,12 @@ class NexusPortService : Service() {
     private fun callerAllowed(): Boolean {
         val uid = Binder.getCallingUid()
         if (uid == Process.myUid()) return true
-        return packageManager.checkSignatures(Process.myUid(), uid) == PackageManager.SIGNATURE_MATCH
+        if (packageManager.checkSignatures(Process.myUid(), uid) == PackageManager.SIGNATURE_MATCH) return true
+        // Not the same key: only a caller whose EVERY package is signed with a certificate PINNED in code is let in (PcaSignerTrust.PINNED is empty by default, so this is a no unless a release pins one).
+        if (PcaSignerTrust.PINNED.isEmpty()) return false
+        val source = PackageSignerSource(packageManager)
+        val pkgs = packageManager.getPackagesForUid(uid)?.toList().orEmpty()
+        return pkgs.isNotEmpty() && pkgs.all { PcaSignerTrust.trusted(source, packageName, it) }
     }
 
     private inline fun <T> guard(block: () -> T): T {
@@ -53,7 +60,7 @@ class NexusPortService : Service() {
                 override fun onAskFailed(reason: Int) { runCatching { callback.onAskFailed(reason) } }
             }
             // PCA's process died: nothing may stay on the glasses on its behalf.
-            runCatching { callback.asBinder().linkToDeath({ BridgeHost.renderer.hideAll(); BridgeHost.renderer.setFeatures(0); BridgeHost.renderer.events = null; BridgeHost.skillHost = null }, 0) }
+            runCatching { callback.asBinder().linkToDeath({ BridgeHost.renderer.hideAll(); BridgeHost.renderer.setFeatures(0); BridgeHost.renderer.events = null; BridgeHost.skillHost = null; BridgeHost.listenAuth = null }, 0) }
             Unit
         }
 
@@ -71,7 +78,8 @@ class NexusPortService : Service() {
         override fun stopListening(): Int = guard { BridgeHost.renderer.stopListening() }
 
         override fun setSkillHost(host: NexusSkillHost?): Int = guard {
-            if (host == null) { BridgeHost.skillHost = null; return@guard NexusResult.OK }
+            if (host == null) { BridgeHost.skillHost = null; BridgeHost.listenAuth = null; return@guard NexusResult.OK }
+            BridgeHost.listenAuth = { try { host.authorizeListen() } catch (_: RemoteException) { false } catch (_: RuntimeException) { false } }
             BridgeHost.skillHost = SkillHostClient { opId -> try { host.invoke(opId) } catch (_: RemoteException) { null } catch (_: RuntimeException) { null } }
             NexusResult.OK
         }
@@ -87,7 +95,7 @@ class NexusPortService : Service() {
         BridgeHost.renderer.hideAll()
         BridgeHost.renderer.setFeatures(0)
         BridgeHost.renderer.events = null
-        BridgeHost.skillHost = null
+        BridgeHost.skillHost = null; BridgeHost.listenAuth = null
         if (pluginBound) { unbindService(keepPlugin); pluginBound = false }
         return false
     }

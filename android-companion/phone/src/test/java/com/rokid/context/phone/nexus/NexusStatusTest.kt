@@ -18,6 +18,14 @@ class NexusStatusTest {
         assertEquals(NexusState.BRIDGE_REFUSED, NexusStatus.of(nexus(refused = true)))
     }
 
+    @Test fun aLookAlikeBridgeIsAStateOfItsOwnAndNeverUsable() {
+        val untrusted = NexusInstalled(bridge = false, hub = true, rokidCoder = false, bridgeUntrusted = true)
+        assertEquals(NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED, NexusStatus.of(NexusInputs(untrusted, hostIsNexus = false)))
+        assertEquals(NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED, NexusStatus.of(nexus(untrusted)))
+        assertEquals(NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED, NexusStatus.of(NexusInputs(all, hostIsNexus = true, bridgeUntrusted = true, bound = true, lastCode = NexusResult.OK)))
+        assertEquals("Bridge not trusted", NexusStatus.title(NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED))
+    }
+
     @Test fun offByDefaultWhenBothAreInstalled() {
         assertEquals(NexusState.OFF, NexusStatus.of(NexusInputs(all, hostIsNexus = false)))
     }
