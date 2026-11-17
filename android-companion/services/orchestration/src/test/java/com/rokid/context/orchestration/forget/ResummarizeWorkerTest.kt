@@ -29,6 +29,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class ResummarizeWorkerTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val prompts = mutableListOf<String>()
     private var reply: suspend (String) -> String = { p ->

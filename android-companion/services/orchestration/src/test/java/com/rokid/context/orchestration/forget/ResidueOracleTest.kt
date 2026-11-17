@@ -67,6 +67,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class ResidueOracleTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     /** Residue the user ruled acceptable (2026-10-25). Distinct from `@Ignore`: this is not an open bug. */
     @kotlin.annotation.Retention(AnnotationRetention.RUNTIME) @kotlin.annotation.Target(AnnotationTarget.FUNCTION)
     annotation class AcceptedResidue(val gap: String, val reason: String)

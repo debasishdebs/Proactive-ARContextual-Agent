@@ -31,6 +31,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class MarkPhotoRecorderTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val epoch = DeletionEpoch("inst", 2, 1_000)
     private lateinit var dao: com.rokid.context.memory.db.CanvasSlice3Dao

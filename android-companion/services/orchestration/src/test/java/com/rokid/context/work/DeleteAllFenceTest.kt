@@ -40,6 +40,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class DeleteAllFenceTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     /** The model reply; a test may wipe from inside it, i.e. while the job waits on the AI. */
     private var reply: suspend (String) -> String = { "{}" }

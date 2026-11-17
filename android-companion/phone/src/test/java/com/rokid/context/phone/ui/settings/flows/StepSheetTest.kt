@@ -138,7 +138,8 @@ class StepSheetTest {
      */
     private fun tap(tag: String) { node(tag).performSemanticsAction(SemanticsActions.OnClick); compose.waitForIdle() }
 
-    private fun waitText(tag: String, text: String) = compose.waitUntil(5_000) { runCatching { node(tag).assertTextEquals(text) }.isSuccess }
+    /** Same assertion, a ceiling that survives a full-suite run on 2 workers (the test passes alone in seconds). */
+    private fun waitText(tag: String, text: String) = compose.waitUntil(20_000) { runCatching { node(tag).assertTextEquals(text) }.isSuccess }
 
     @Test fun answerOpensPromptAndModelTabs() {
         host("ask")
@@ -185,7 +186,7 @@ class StepSheetTest {
         compose.waitUntil(5_000) { exists("role_EMBED_model") }
         tap("role_EMBED_model")
         tap("role_EMBED_model_1")
-        runBlocking { withTimeout(5_000) { while (ai.bindings.get(Role.EMBED)?.model != "mxbai-embed") delay(10) } }
+        runBlocking { withTimeout(20_000) { while (ai.bindings.get(Role.EMBED)?.model != "mxbai-embed") delay(10) } }
         waitText("flow_line_ask_search_Model", "mxbai-embed")
         // The Capture section is scrolled off (and not composed); bring its Embed card back under the sheet.
         compose.onNodeWithTag("flow_view").performScrollToNode(hasTestTag("flow_node_capture_embed"))

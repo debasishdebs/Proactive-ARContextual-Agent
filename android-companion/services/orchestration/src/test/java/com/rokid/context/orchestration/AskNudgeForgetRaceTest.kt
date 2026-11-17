@@ -19,6 +19,7 @@ import com.rokid.context.orchestration.nudge.NudgeHud
 import com.rokid.context.orchestration.nudge.NudgeInputs
 import com.rokid.context.orchestration.nudge.NudgeRun
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -38,6 +39,7 @@ import java.time.ZoneId
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class AskNudgeForgetRaceTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val zone = ZoneId.of("Asia/Kolkata")
     private val now = LocalDateTime.of(2026, 10, 12, 18, 0).atZone(zone).toInstant().toEpochMilli()
@@ -94,10 +96,12 @@ class AskNudgeForgetRaceTest {
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO)
         var forget: kotlinx.coroutines.Deferred<ForgetActions.Outcome>? = null
         duringModel = { forget = scope.async { ForgetActions.forgetFactOutcome(ctx, "rokid_mem_1") }; kotlinx.coroutines.delay(200) } // it is parked behind the call's upload slot
-        runCatching { AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }).answerOrThrow("milk?", "phone_typed", nowMs = now) }
-        assertEquals(ForgetActions.Outcome.DONE, kotlinx.coroutines.withTimeout(20_000) { forget!!.await() })
-        val rows = asks()
-        assertTrue("either nothing was saved or the row is redacted: $rows", rows.all { it.redacted && it.answer != "There is milk." })
-        assertEquals(0, DataOpGate.shared.leases.openCount)
+        try {
+            runCatching { AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }).answerOrThrow("milk?", "phone_typed", nowMs = now) }
+            assertEquals(ForgetActions.Outcome.DONE, kotlinx.coroutines.withTimeout(20_000) { forget!!.await() })
+            val rows = asks()
+            assertTrue("either nothing was saved or the row is redacted: $rows", rows.all { it.redacted && it.answer != "There is milk." })
+            assertEquals(0, DataOpGate.shared.leases.openCount)
+        } finally { scope.cancel() } // the Forget must not outlive the test (its gate side and database)
     }
 }

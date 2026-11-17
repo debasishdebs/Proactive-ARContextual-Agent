@@ -40,6 +40,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class CanvasRunSaveTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val app = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var h: PyFnRunHarness
     private val followUps = ArrayList<List<SavedMemory>>()
