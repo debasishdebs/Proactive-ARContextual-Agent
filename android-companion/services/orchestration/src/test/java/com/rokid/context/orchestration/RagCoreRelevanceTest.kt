@@ -118,6 +118,25 @@ class RagCoreRelevanceTest {
 
     private fun hit(text: String, lexical: Double?, semantic: Double?) = ScoredMemory(MemoryEntity("x", null, text, "note", "", MemoryTier.SHORT, 0.9, ReviewState.OK, false, 0, false, ""), lexical, semantic, 1.0, 1.0)
 
+    private fun sm(id: String, f: Double) = ScoredMemory(MemoryEntity(id, null, id, "note", "", MemoryTier.SHORT, 0.9, ReviewState.OK, false, 0, false, ""), null, null, f, f)
+
+    @Test fun r12ProbeScoresAreRescaledSoThePrimaryHitSurvivesTheRelevanceFloor() {
+        val first = RetrievalResult(listOf(sm("right", 0.0328), sm("p2", 0.0320)), RetrievalMode.HYBRID, false)
+        val probe = RetrievalResult(listOf(sm("noise", 0.693), sm("n2", 0.40)), RetrievalMode.LEXICAL, false)
+        val merged = RagCore.withProbe(first, probe, 10)
+        assertEquals(listOf("right", "noise", "p2", "n2"), merged.hits.map { it.memory.id })
+        assertEquals(0.0328, merged.hits.first { it.memory.id == "noise" }.fused, 1e-9)
+        val rel = OrderRules.relevant(merged.hits, 0.5, false).map { it.memory.id }
+        assertTrue(rel.toString(), "right" in rel && "p2" in rel) // before the fix the cutoff was 0.3465 and the primary hits were dropped
+    }
+
+    @Test fun r12NoProbeHitsOrAnEmptyListLeaveScoresUntouched() {
+        val first = RetrievalResult(listOf(sm("a", 0.0328)), RetrievalMode.HYBRID, false)
+        assertEquals(listOf(0.0328), RagCore.withProbe(first, RetrievalResult(emptyList(), RetrievalMode.LEXICAL, false), 5).hits.map { it.fused })
+        val both = RagCore.withProbe(first, RetrievalResult(listOf(sm("b", 0.0)), RetrievalMode.LEXICAL, false), 5)
+        assertEquals(listOf("a", "b"), both.hits.map { it.memory.id }) // Hinglish: both still returned
+    }
+
     @Test fun theRelevanceCheckPerMode() {
         fun r(mode: RetrievalMode, h: ScoredMemory) = WindowRelevance.relevant("Where are my keys on 10 Nov?", "on 10 nov", RetrievalResult(listOf(h), mode, false))
         assertFalse(r(RetrievalMode.LEXICAL, hit("The cat is on the sofa", 1.0, null)))

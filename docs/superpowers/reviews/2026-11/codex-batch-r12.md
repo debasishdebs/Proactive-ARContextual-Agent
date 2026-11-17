@@ -1,0 +1,5 @@
+- **P1 — Probe scores can discard the correct answer.** [RagCore.kt:337](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/RagCore.kt:337) merges ranks while retaining incompatible scores. `orderedPool` subsequently compares their `fused` values through `OrderRules.relevant`. With HYBRID/RRF, the best primary score is approximately **0.0328**; a probe BM25 score of **0.693** raises the default cutoff to **0.3465**, dropping every primary hit. A “last”/“first” question can therefore answer from the wrong episode. Normalize scores or apply relevance filtering separately before merging.
+
+No additional P1 found in payload isolation, date caching, Ask fencing, original-question delivery, or confirmation-token paths. Static review only; tests were not run in the read-only environment.
+
+NOT READY
