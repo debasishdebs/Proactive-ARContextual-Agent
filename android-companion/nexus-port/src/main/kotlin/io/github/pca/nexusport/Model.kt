@@ -2,7 +2,10 @@ package io.github.pca.nexusport
 
 /** The HUD slots Nexus gives a plugin. Nexus has exactly ONE notice, ONE pin and ONE voice per plugin, so the handle registry is keyed by slot. */
 enum class Slot(val code: Int) {
-    NOTICE(1), PIN(2), ACTIVITY(3), SURFACE(4), SPEECH(5);
+    NOTICE(1), PIN(2), ACTIVITY(3), SURFACE(4), SPEECH(5),
+
+    /** The Nexus speech-to-text session of an assist-button ask (T5). Only a handle in the sink's registry: a trip stops the listening. */
+    LISTEN(6);
 
     companion object {
         fun of(code: Int): Slot? = entries.firstOrNull { it.code == code }
@@ -42,14 +45,16 @@ object NexusResult {
     fun hideMustRetry(code: Int): Boolean = code == ERROR || code == RATE_LIMITED || code == BUSY
 }
 
-/** Feature bits PCA pushes with [NexusPort.setFeatures]. The bridge starts with 0 (all off). STT and the assist takeover are reserved: nothing in 2.0 sets them. */
+/** Feature bits PCA pushes with [NexusPort.setFeatures]. The bridge starts with 0 (all off). STT and ASSIST (the assist-button ask) are only set when the user switched both on. */
 object NexusFeatures {
     const val NONE = 0
     const val TTS = 1
     const val STT = 2
     const val ASSIST = 4
+    /** The four action-only skills (T6) may run. Without it the bridge answers every skill call with the domain code `disabled`, without calling PCA. */
+    const val SKILLS = 8
     /** The bits this version understands; a mask with any other bit is rejected by the bridge. */
-    const val KNOWN = TTS or STT or ASSIST
+    const val KNOWN = TTS or STT or ASSIST or SKILLS
 }
 
 object NexusPortVersion { const val CURRENT = 1 }
@@ -71,6 +76,15 @@ object NexusLimits {
     const val SPEECH_CHARS = 1024
     /** A speech that never reports its end is considered over after this long. */
     const val SPEECH_MAX_MS = 60_000L
+    /** A Nexus listening session that never ends is considered over after this long. */
+    const val LISTEN_MAX_MS = 30_000L
+    /** An ask whose answer never comes back through the sink is forgotten after this long. */
+    const val ASK_MAX_MS = 60_000L
+    /** The transcript handed to PCA's voice backend is cut to this many UTF-16 units. */
+    const val ASK_TEXT_CHARS = 1_000
+    /** Nexus kills a skill call after 15 s (Skills v1); PCA answers inside this, so a late answer is never needed. */
+    const val SKILL_DEADLINE_MS = 15_000L
+    const val SKILL_HOST_TIMEOUT_MS = 12_000L
 }
 
 data class NexusAction(val id: String, val label: String)

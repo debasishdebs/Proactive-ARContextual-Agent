@@ -23,6 +23,12 @@ class FakeBus : NexusBusClient {
     override fun speak(text: String): Int { calls += "speak"; if (result == NexusResult.OK) speaking = true; return result }
     override fun stopSpeech(): Int { calls += "stop"; speaking = false; return NexusResult.OK }
     override fun forgetNotices(onAccepted: () -> Unit): Int { calls += "forget"; acceptForget = onAccepted; return result }
+    var listen: ListenCallbacks? = null
+    var listenResult = NexusResult.OK
+    var takeover: Boolean? = null
+    override fun startListening(cb: ListenCallbacks): Int { calls += "listen"; if (listenResult == NexusResult.OK) listen = cb; return listenResult }
+    override fun stopListening(): Int { calls += "stopListen"; listen = null; return NexusResult.OK }
+    override fun setAssistTakeover(enabled: Boolean): Int { calls += "takeover:$enabled"; takeover = enabled; return NexusResult.OK }
 }
 
 class BridgeRendererTest {
@@ -50,7 +56,7 @@ class BridgeRendererTest {
     }
 
     @Test fun unknownFeatureBitsAreRejected() {
-        assertEquals(NexusResult.INVALID, r.setFeatures(NexusFeatures.KNOWN + 8))
+        assertEquals(NexusResult.INVALID, r.setFeatures(NexusFeatures.KNOWN + 16))
     }
 
     @Test fun validationIsASecondLineOfDefence() {

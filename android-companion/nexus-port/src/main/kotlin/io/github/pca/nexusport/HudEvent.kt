@@ -37,6 +37,14 @@ sealed interface HudEvent {
         override val ref get() = "capture"
     }
 
+    /** A short, fixed-text notice for an assist-button ask that did not get a transcript. Content-free. */
+    data class AskNotice(val kind: Kind) : HudEvent {
+        enum class Kind { BUSY, NO_SPEECH, UNAVAILABLE }
+        override val sources: Set<String> get() = emptySet()
+        override val proactive get() = false
+        override val ref get() = "ask-notice"
+    }
+
     /** Kinds PCA 2.0 does not draw on Nexus (cut to 2.x): mapped to nothing and dropped as UNSUPPORTED. */
     data class Activity(override val ref: String, val title: String, override val sources: Set<String>) : HudEvent {
         override val proactive get() = false

@@ -53,6 +53,9 @@
             <meta-data android:name="com.anezium.rokidbus.plugin.RECEIVE_PREFIXES" android:value="/plugin/pca,/system/plugin,/stt,/tts/started,/tts/done" />
             <meta-data android:name="com.anezium.rokidbus.plugin.LAUNCHABLE" android:value="false" />
             <meta-data android:name="com.anezium.rokidbus.plugin.SETTINGS_ACTIVITY" android:value=".SettingsActivity" />
+            <!-- T6: four action-only skills (status, pause_capture, resume_capture, mark_moment). No memory content. Declaring a catalog returns the plugin to Pending until the wearer approves again,
+                 and each operation starts OFF for every caller; PCA also keeps the SKILLS feature bit OFF until the user switches skills on. -->
+            <meta-data android:name="com.anezium.rokidbus.plugin.SKILLS" android:resource="@raw/nexus_skills" />
         </service>
     </application>
 </manifest>

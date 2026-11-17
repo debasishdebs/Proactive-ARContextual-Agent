@@ -15,6 +15,33 @@ Design: `docs/superpowers/specs/2026-11-17-nexus-spike-and-v2-plan.md` (sections
 
 The transport is the thin `NexusTransport` / `NexusBusClient` pair. Option B (PCA traffic over the Nexus bus) replaces those, not the sink or the gates.
 
+## Assist-button ask (T5) and skills (T6): what the phone-side agent implements
+
+Both are additive to the port (`NexusPortVersion.CURRENT` stays 1; the new AIDL methods are appended, so old transaction ids do not move) and OFF by default. `NexusConfig` gained `skillsEnabled`; the ask needs
+`enabled && sttEnabled && assistTakeover` (`NexusConfig.askEnabled()`); `featureMask()` then pushes `STT|ASSIST`, and `SKILLS` when skills are on. PCA push-to-talk stays the Ask input path (ruling B-Q4).
+Nexus owns the microphone and the speech engine: the bridge has no audio permission and no code that records.
+
+| Seam (all in `:nexus-port`) | What the phone does |
+|---|---|
+| `NexusHudSink.connect(binder, gates, config, actions, log, asks = NexusAskHandler, skills = NexusSkillProvider)` | Pass both when the user's switches exist. Both params are nullable; with `null` the ask and skills stay inert. |
+| `NexusAskHandler.ask(askId, text)` | Run `text` through PCA's voice backend (`VoiceGraph`, text in, text out) and gates, then answer with `sink.show(HudEvent.AskAnswer(ref = askId, ..., speak = <the user's TTS switch>))`: the SAME sink and gates; TTS happens only if the TTS switch is on. `text` is the transcript: never log it. No retry. |
+| `NexusAskHandler.refused(askId, why: AskRefusal)` | The ask will not be answered on Nexus (`ZONE_PAUSED`, `PAUSED`, `NOT_WORN`, `DISABLED`, `CANCELLED`). NOTHING was delivered to Nexus. `why.text` is a fixed line the phone may show on its own screen. A later `show(AskAnswer(askId))` returns `Dropped(TRIPPED)`. |
+| `NexusSkillProvider.invoke(op: SkillOp): SkillResult` | Four ops (`STATUS`, `PAUSE_CAPTURE`, `RESUME_CAPTURE`, `MARK_MOMENT`) returning `Done(state)` with `state` in `SkillState` (`capturing`, `paused`, `zone_paused`, `stopped`), or `Refused(code)` with a `SkillCodes` token (`pause_zone`, `paused`, `not_worn`, ...). `RESUME_CAPTURE` must refuse with `pause_zone` while a zone pause is active; `MARK_MOMENT` must go through the same mark path and zone/pause refusals as the HUD Mark action. Return no memory content. The sink also checks the fences first and applies a 12 s ceiling (Nexus gives 15 s). |
+| `NexusHudSink.refreshFeatures()` | Call when any Nexus switch changes (the mask is pushed; turning the ask off stops an open listening). Mode off stays `trip(TripReason.MODE_OFF)`. |
+| `trip(...)` | The existing call also ends a listening or pending ask: it stops the Nexus speech session, tells the handler `refused`, and drops a late answer. Call it from the same places as before (zone hold, pause, not worn, Forget...). |
+
+AIDL additions (appended): `NexusPort.stopListening()`, `NexusPort.setSkillHost(NexusSkillHost)`, new `NexusSkillHost.invoke(String): String` (`ok:<state>` or `fail:<code>`, synchronous), and on `NexusPortCallback`
+`onListening(boolean)`, `onAskTranscript(String)`, `onAskFailed(int)`. The sink is still the only caller of `NexusPort` and the only implementer of the callback and the skill host (`NexusChokePointTest`); the phone never touches AIDL.
+
+Flow: assist button -> hub opens the plugin with `AI_ASSIST` -> `BridgeRenderer.assistOpened()` opens ONE Nexus speech session (only with the `STT` and `ASSIST` bits) -> final transcript -> `onAskTranscript` -> the sink gates it
+(zone, pause, worn) -> `NexusAskHandler.ask`. `DENIED_BUSY` / `NO_SPEECH` / any other end gives a short fixed notice ("Microphone busy. Try again.", "Didn't catch that.", "Voice ask unavailable."). A trip mid-ask stops the
+session, delivers nothing and reports `AskRefusal`. The bridge also moves the hub's assist-takeover switch to match (`setAssistantTakeover(false)` unless the ask is on; the hub's own default is ON once the wearer approves
+`assistant`). Logs: literal names and counts only, never a transcript.
+
+Skills: `res/raw/nexus_skills.json` (four ops, `data: ["status"]`, output `state` is an enum, no input) is checked by `SkillCatalogTest` with Nexus's own `SkillCatalogParser` and `SkillSchemaValidator`. The wearer approves each
+operation per caller in Nexus; PCA additionally keeps the `SKILLS` bit off until the user switches skills on (then every call answers the domain code `disabled`). Declaring the catalog asks Nexus for the `skills_provider`
+grant, which returns an installed plugin to Pending once. No operation takes input or returns memory content.
+
 ## How the Nexus SDK resolves
 
 Pinned to the upstream tag **`sdk-v0.27.0`** (github.com/Anezium/Rokid-Nexus, Apache-2.0), consumed as the normal Maven artifact
@@ -32,7 +59,7 @@ License: the Nexus SDK is Apache License 2.0, (c) 2026 Anezium (it also carries 
 
 `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE` (normal, install-time, as in the SDK sample), plus a signature permission this app DEFINES, `io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT`.
 The merged APK also gets `io.github.pca.nexusbridge.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, a self-defined signature permission that AndroidX adds. No INTERNET, storage, location, Bluetooth, camera, microphone or notification permission.
-The PCA phone app will need `<uses-permission BIND_NEXUS_PORT/>` and a `<queries>` entry for `io.github.pca.nexusbridge` when its provider is added (not done in this change: the phone is untouched).
+T5/T6 add NO permission (no microphone: Nexus owns audio) and one `<meta-data>` (the skills catalog). The PCA phone app will need `<uses-permission BIND_NEXUS_PORT/>` and a `<queries>` entry for `io.github.pca.nexusbridge` when its provider is added (not done in this change: the phone is untouched).
 
 ## Remove it
 
