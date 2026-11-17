@@ -324,19 +324,6 @@ class RagCore(
         )
     }
 
-    /** T10: [first] with the hits of the own-language word search added, alternating by rank (first's best, probe's best, ...), no memory twice, at most [topK]. Scores stay each search's own. */
-    internal fun withProbe(first: com.rokid.context.memory.retrieval.RetrievalResult, probe: com.rokid.context.memory.retrieval.RetrievalResult, topK: Int): com.rokid.context.memory.retrieval.RetrievalResult {
-        val seen = HashSet<String>()
-        val extra = probe.hits.filter { p -> first.hits.none { it.memory.id == p.memory.id } }
-        val merged = buildList {
-            for (i in 0 until maxOf(first.hits.size, extra.size)) {
-                first.hits.getOrNull(i)?.let { if (seen.add(it.memory.id)) add(it) }
-                extra.getOrNull(i)?.let { if (seen.add(it.memory.id)) add(it) }
-            }
-        }.take(topK)
-        return first.copy(hits = merged)
-    }
-
     /** The first line of the memories block (spec section 4). [used]: the window that ran (null = none, the memories are from other dates). Fixed words plus the window's own label and phrase. */
     internal fun windowNote(asked: TimeWindow, used: TimeWindow?, step: Int): String = when {
         used != null && step == 0 -> "note: time window ${used.label} (\"${asked.phrase}\"); the times on the memory lines are when they happened"
@@ -478,6 +465,22 @@ class RagCore(
             "frame=${m.frameId ?: "none"} · ${AskText.clip(AskText.collapse(m.text), MAX_MEMORY_CHARS)}"
 
     companion object {
+    /** T10: [first] with the hits of the own-language word search added, alternating by rank (first's best, probe's best, ...), no memory twice, at most [topK]. R12: the probe's `fused`/`score` are scaled so its best equals first's best (one scale, so the relevance floor of `OrderRules.relevant` is the single-query one); the raw lexical/semantic stay. */
+    internal fun withProbe(first: com.rokid.context.memory.retrieval.RetrievalResult, probe: com.rokid.context.memory.retrieval.RetrievalResult, topK: Int): com.rokid.context.memory.retrieval.RetrievalResult {
+        val seen = HashSet<String>()
+        val firstTop = first.hits.maxOfOrNull { it.fused } ?: 0.0
+        val probeTop = probe.hits.maxOfOrNull { it.fused } ?: 0.0
+        val k = if (firstTop > 0.0 && probeTop > 0.0) firstTop / probeTop else 1.0
+        val extra = probe.hits.filter { p -> first.hits.none { it.memory.id == p.memory.id } }.map { if (k == 1.0) it else it.copy(fused = it.fused * k, score = it.score * k) }
+        val merged = buildList {
+            for (i in 0 until maxOf(first.hits.size, extra.size)) {
+                first.hits.getOrNull(i)?.let { if (seen.add(it.memory.id)) add(it) }
+                extra.getOrNull(i)?.let { if (seen.add(it.memory.id)) add(it) }
+            }
+        }.take(topK)
+        return first.copy(hits = merged)
+    }
+
         private const val TAG = "RagCore"
         private const val MAX_MEMORY_CHARS = 500
         private const val FALLBACK = 10
