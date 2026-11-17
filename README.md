@@ -18,7 +18,7 @@ Three apps, one repo (`android-companion/`):
 
 ## Modules
 
-`:phone`, `:glasses`, `:watch`, `:core:model`, `:core:capture`, `:core:hud`, `:core:ui`, `:services:ai` (includes the llama.cpp submodule), `:services:memory`, `:services:orchestration`, `:services:glasses-link`, `:services:voice`, `:services:connectors`.
+`:phone`, `:glasses`, `:watch`, `:core:model`, `:core:capture`, `:core:hud`, `:core:ui`, `:services:ai` (includes the llama.cpp submodule), `:services:memory`, `:services:orchestration`, `:services:glasses-link`, `:services:voice`, `:services:connectors`, and the optional Nexus pair `:nexus-port` (the AIDL seam and the one gate, `NexusHudSink`) and `:nexus-bridge` (a separate headless APK, `io.github.pca.nexusbridge`; see `android-companion/nexus-bridge/README.md`). Both are in the `test` task above; the bridge is OFF by default and not part of the phone APK.
 
 ## Build
 
