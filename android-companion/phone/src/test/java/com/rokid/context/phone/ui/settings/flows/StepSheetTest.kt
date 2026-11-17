@@ -150,7 +150,9 @@ class StepSheetTest {
         node("step_prompt_variables").assertExists()
         node("step_open_editor").assertExists()
         tap("step_tab_Model")
-        waitText("step_model_header", "Model for Answer \u00b7 shared by 2 steps")
+        val answerUsers = AgentFlows.nodesUsing(Role.ANSWER).map { it.second.title }
+        waitText("step_model_header", "Model for Answer \u00b7 shared by ${answerUsers.size} steps")
+        node("step_model_users").assertTextEquals("Used by: ${answerUsers.distinct().joinToString(", ")}")
         compose.waitUntil(5_000) { exists("role_ANSWER_model") }
         node("role_ANSWER_model").assertContentDescriptionEquals("Model: gpt-4o")
     }
