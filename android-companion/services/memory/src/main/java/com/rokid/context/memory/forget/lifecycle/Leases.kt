@@ -37,6 +37,9 @@ class Leases {
         open.count { l -> (l.inputs.any { it in set }).also { hit -> if (hit) l.revoked = true } }
     }
 
+    /** Revokes every open lease whose inputs the [plan] reaches (the executor calls it after its in-transaction re-plan). Returns how many. */
+    fun revoke(plan: ForgetPlan): Int = revoke(plan.nodes.keys)
+
     /** Revokes every open lease (Delete all, an unplanned Forget: fail closed). */
     fun revokeAll(): Int = synchronized(lock) {
         record(null)

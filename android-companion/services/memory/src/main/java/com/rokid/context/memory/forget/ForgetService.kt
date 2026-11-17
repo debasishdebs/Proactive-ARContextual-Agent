@@ -6,6 +6,8 @@ import com.rokid.context.memory.ProposalRepository
 import com.rokid.context.memory.db.CanvasSlice3Dao
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.ForgetTombstoneEntity
+import com.rokid.context.memory.forget.lifecycle.ForgetExecutor
+import com.rokid.context.memory.forget.lifecycle.ForgetV2
 import org.json.JSONArray
 
 /** Wave 3: a saved answer cites a photo as `frame:<frameId>` in its sources. Forget on the photo redacts those answers (S1). */
@@ -49,6 +51,9 @@ class ForgetService(
     }
 
     private val dao = db.forgetDao()
+    /** Forget lifecycle M4: the v2 executor (used only while [ForgetV2] is on; every legacy body below stays as it was). */
+    internal val executor by lazy { ForgetExecutor(db, proposals, clock, this) }
+    private val v2: Boolean get() = ForgetV2.on
 
     suspend fun forgetFact(memoryId: String): Result = forgetFacts(listOf(memoryId))
 
@@ -57,7 +62,7 @@ class ForgetService(
      * (`frame_meta`, `frame_vector`, state, no `frame` row, no memory) is still a moment (S2). Saved answers that cited it (`frame:<id>`) are
      * redacted with their proposals and alarms (S1), unless [redactCites] is false (retention's legacy-frame expiry never redacts). Empty only when no frame, metadata, vector, state or memory exists.
      */
-    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true, phoneFilesOnly: Boolean = false): Result = notifying { forgetMomentTx(frameId, redactCites, phoneFilesOnly = phoneFilesOnly) }
+    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true, phoneFilesOnly: Boolean = false): Result = notifying { if (v2) executor.forgetPhoto(frameId, redactCites, phoneFilesOnly = phoneFilesOnly) else forgetMomentTx(frameId, redactCites, phoneFilesOnly = phoneFilesOnly) }
 
     internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null): Result = db.withTransaction {
         val radiusCascade = bounded == null
@@ -90,7 +95,7 @@ class ForgetService(
      * Forget fact for [ids] (retention passes chunks). A frame's JPEG is listed only when no memory points at it any
      * more; its row is kept (with the tombstone) so the frame is never extracted again.
      */
-    suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { forgetFactsTx(ids, lockFrames) }
+    suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { if (v2) executor.forgetFacts(ids, lockFrames) else forgetFactsTx(ids, lockFrames) }
 
     internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, bounded: Set<String>? = null): Result = db.withTransaction {
         cascade(ids.distinct(), lockFrames, queueOutbox = queueOutbox, bounded = bounded)
@@ -102,13 +107,14 @@ class ForgetService(
      * Final review C1: retention is storage hygiene, not a user removal, so an accepted proposal (EXECUTING/EXECUTED)
      * keeps its params, log and armed alarm; it is not listed in [Result.redactedProposals]. PENDING still expires.
      */
-    suspend fun expire(ids: Collection<String>): Result = notifying { expireTx(ids) }
+    suspend fun expire(ids: Collection<String>): Result = notifying { if (v2) executor.expire(ids) else expireTx(ids) }
 
     /**
      * Row 8 (suspect descriptions): removes the marked suspect [ids] (their rows, vectors and edges; the derived summaries built on them are invalidated and rebuilt; asks and nudges that cited them are
      * redacted). Never touches a photo: no tombstone, no JPEG or vector delete (keyframes are kept; the caller proved a replacement exists or the photo is already gone), accepted proposals keep their params.
      */
     suspend fun removeDescriptions(ids: Collection<String>): Result = notifying {
+        if (v2) return@notifying executor.removeDescriptions(ids)
         db.withTransaction { cascade(ids.distinct(), lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true) }
     }
 
@@ -127,7 +133,7 @@ class ForgetService(
      * the skipped-photo rule inside the transaction and skipped when it no longer qualifies: a photo the user described after the caller selected
      * it is kept (S4).
      */
-    suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = notifying { expirePhotosTx(frameIds, requireLinked, recheckSkipped) }
+    suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = notifying { if (v2) executor.expirePhotos(frameIds, requireLinked, recheckSkipped) else expirePhotosTx(frameIds, requireLinked, recheckSkipped) }
 
     internal suspend fun expirePhotosTx(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = db.withTransaction {
         val paths = mutableListOf<String>()
@@ -222,6 +228,8 @@ class ForgetService(
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
     private class Pending(val frames: List<String>, val spans: List<Triple<Long, Long, List<String>>>)
     private val pendingFrames = java.util.concurrent.ConcurrentLinkedQueue<Pending>()
+    /** The executor's way to register what listeners are told after the commit (the same queue [dropCanvasOutputs] fills). */
+    internal fun addPending(frames: List<String>, spans: List<Triple<Long, Long, List<String>>>) { pendingFrames.add(Pending(frames, spans)) }
 
     /** Runs [tx]; only after it committed are the registered [ForgetListener]s told which photos went (a rolled-back transaction tells nobody). */
     internal suspend fun notifying(tx: suspend () -> Result): Result {

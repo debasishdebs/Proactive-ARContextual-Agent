@@ -124,7 +124,7 @@ class MomentForget(
     /** The preview's estimate of the regenerable results that will be rebuilt (informational, never hashed). */
     private suspend fun peersOf(d: Found, e: SceneEffect): Set<String> = closureOf(d, e, emptyList()).second
 
-    private fun hashOf(spans: List<LongRange>, d: Found, e: SceneEffect): String = ForgetPlanHash.of(
+    internal fun hashOf(spans: List<LongRange>, d: Found, e: SceneEffect): String = ForgetPlanHash.of(
         ForgetScope.MOMENT, spans,
         mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
     )
@@ -201,6 +201,10 @@ class MomentForget(
 
     private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String> = emptyList(), byKey: Boolean = false, expectedHash: String? = null, guard: () -> Unit = {}): Result {
         var counts = Result.EMPTY
+        if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on) { // Forget lifecycle M4 (flag forgetV2, off by default): the one executor, same delete set
+            service.notifying { counts = service.executor.forgetSpans(this, requestedSeconds, spans, sceneIds, byKey, expectedHash, guard, testFaultBeforeCommit); counts.cascade }
+            return counts
+        }
         service.notifying {
         db.withTransaction {
             guard() // the caller's last authorization check, inside the deleting transaction (a throw rolls everything back)

@@ -16,6 +16,19 @@ interface ForgetFamily {
     /** A family with no store yet: the inventory test fails the day one gets a table, so its dependents and its delete are written first. */
     val reserved: Boolean get() = false
     suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> = emptyList()
+    /** True when this family deletes or changes user-derived rows through [selfDelete] (M4). The families that never are a deletion target (config, control, place pack and card, reserved) say false. */
+    val selfDeletes: Boolean get() = false
+    /**
+     * The ONLY code that deletes, redacts or invalidates the rows of this family, called by the [ForgetExecutor] inside its one transaction. [fate]: ERASE removes the rows, REBUILD erases the content now (the row stays
+     * as INVALIDATED / redacted), DROP removes a regenerable result. A family that does not support a fate throws: the executor never asks for it.
+     */
+    suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { throw UnsupportedOperationException("${family.token} has no selfDelete") }
+}
+
+/** What a selfDelete may use: the database, the proposal repository, the Forget's clock reading and the post-commit notification queue of the [com.rokid.context.memory.forget.ForgetService]. */
+class DeleteCtx(val db: ContextDatabase, val proposals: com.rokid.context.memory.ProposalRepository, val now: Long, private val pending: (List<String>, List<Triple<Long, Long, List<String>>>) -> Unit) {
+    /** Registers the photos and time spans a listener is told about after the commit. */
+    fun notifyAfterCommit(frames: List<String>, spans: List<Triple<Long, Long, List<String>>>) = pending(frames, spans)
 }
 
 /** Read-only access for planning. Reads only: a plan never writes, takes no lock and starts no transaction. */
