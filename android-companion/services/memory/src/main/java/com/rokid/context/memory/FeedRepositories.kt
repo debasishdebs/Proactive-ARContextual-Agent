@@ -79,6 +79,8 @@ class AskRepository(private val dao: AskDao) {
     fun recent(limit: Int): Flow<List<AskEntity>> = dao.observeRecent(limit).distinctUntilChanged()
     fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1).distinctUntilChanged()
     suspend fun setRating(id: String, rating: Int?): Boolean = dao.setRating(id, rating) > 0
+    /** M5: the answer in the forgotten-source state was asked again as [newAskId]. */
+    suspend fun markReasked(id: String, newAskId: String): Boolean = dao.markReasked(id, com.rokid.context.memory.forget.AskSourceStates.reasked(newAskId)) > 0
 }
 
 class NudgeRepository(private val dao: NudgeDao) {

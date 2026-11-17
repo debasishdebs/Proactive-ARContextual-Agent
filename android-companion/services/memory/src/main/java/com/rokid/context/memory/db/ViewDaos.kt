@@ -117,6 +117,8 @@ interface AskDao {
     /** The user's asks: a developer eval ask (source `canvas_eval`, AskActions.EVAL_SOURCE) is never listed. */
     @Query("SELECT * FROM ask WHERE source != 'canvas_eval' ORDER BY ts DESC LIMIT :limit") fun observeRecent(limit: Int): Flow<List<AskEntity>>
     @Query("SELECT ts FROM ask WHERE ts >= :fromMs AND ts < :toMs AND source != 'canvas_eval'") fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
+    /** The user asked a forgotten-source question again: the old row says so (no second button). Only a row in the SOURCE_FORGOTTEN state changes. */
+    @Query("UPDATE ask SET sourceStates = :states WHERE id = :id AND redacted = 1 AND sourceStates LIKE '%\"SOURCE_FORGOTTEN\"%'") suspend fun markReasked(id: String, states: String): Int
     @Query("UPDATE ask SET rating = :rating WHERE id = :id") suspend fun setRating(id: String, rating: Int?): Int
 }
 

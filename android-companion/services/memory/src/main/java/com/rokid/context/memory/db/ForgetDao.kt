@@ -246,6 +246,12 @@ abstract class ForgetDao {
     @Query("SELECT * FROM ask WHERE redacted = 0 AND sourcesJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCiting(likePattern: String): List<AskEntity>
     @Query("SELECT * FROM nudge WHERE redacted = 0 AND sourceIdsJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun nudgesCiting(likePattern: String): List<NudgeEntity>
     @Query("UPDATE ask SET answer = :text, sourcesJson = '[]', redacted = 1 WHERE id = :id") abstract suspend fun redactAsk(id: String, text: String): Int
+    /** M5 (`forgetV2`): the answer is erased, the QUESTION stays, and the source state says why (the row offers "Ask again"). */
+    @Query("UPDATE ask SET answer = :text, sourcesJson = '[]', redacted = 1, sourceStates = :states WHERE id = :id") abstract suspend fun redactAskForgotten(id: String, text: String, states: String): Int
+    /** M5 prefilter: answers whose `sourceStates` (cited or history ids) may contain an id; the caller parses the JSON exactly. */
+    @Query("SELECT * FROM ask WHERE redacted = 0 AND sourceStates LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCitingStates(likePattern: String): List<AskEntity>
+    /** M5 N1 (`forgetV2`): a nudge reached by a dependency is deleted (nudges are time-bound; the proposals are expired and scrubbed by their own family). */
+    @Query("DELETE FROM nudge WHERE id = :id") abstract suspend fun deleteNudge(id: String): Int
     @Query("UPDATE nudge SET text = :text, why = '', sourceIdsJson = '[]', redacted = 1 WHERE id = :id") abstract suspend fun redactNudge(id: String, text: String): Int
 
     // --- provenance edges, used by the reprocess path and the re-summarise worker --------------------------------
