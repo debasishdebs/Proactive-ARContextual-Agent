@@ -41,7 +41,7 @@ object NexusGraph {
         private set
 
     /** What the settings screen reads besides the install state: the connection and the last HUD answer. */
-    data class Evidence(val bound: Boolean = false, val bindRefused: Boolean = false, val lastCode: Int? = null, val pcaLinkUp: Boolean = false)
+    data class Evidence(val bound: Boolean = false, val bindRefused: Boolean = false, val lastCode: Int? = null, val pcaLinkUp: Boolean = false, val bridgeUntrusted: Boolean = false)
     private val _evidence = kotlinx.coroutines.flow.MutableStateFlow(Evidence())
     val evidence: kotlinx.coroutines.flow.StateFlow<Evidence> = _evidence
     private var forgetListener: ForgetListener? = null
@@ -85,6 +85,7 @@ object NexusGraph {
             askFence = { AskZoneFence.blocked() },
             paused = { !hub.captureRunning() },
             worn = { hub.wornNow() == true || (hub.wornNow() == null && hub.wearEstimate.active.value) },
+            passFactory = { fencePass(PlaceGraph.fence, AskZoneFence::ticket, AskZoneFence::blocked) },
         )
         val popup = { hub.hudSettings.value.popupMs() }
         // The assist-button ask: PCA's ONE text backend (AppAnswerer over AskActions.askFrom, all its gates), delivered only through the sink. Both are inert while their switch is off.
@@ -109,7 +110,7 @@ object NexusGraph {
             log = { PcLog.i(TAG, it) },
         )
         val provider = NexusProvider(ServiceBridgeLink(app.applicationContext), store::current, gates, AppActions(app, scope), scope, log = { PcLog.i(TAG, it) },
-            switches = store::switchesNow, asks = asks, skills = skills)
+            switches = store::switchesNow, asks = asks, skills = skills, debt = store)
         providerRef = provider
         val feeder = NexusFeeder(
             scope, provider, popupMs = popup,
@@ -140,8 +141,16 @@ object NexusGraph {
         } }
         scope.launch { hub.link.wearing.collect { w -> if (w == false) provider.trip(TripReason.NOT_WORN) } }
         feeder.startPolling()
+        // The bridge package was added, replaced or removed: its signer is verified again (a replaced bridge must not keep a connection it earned as another APK).
+        try {
+            app.applicationContext.registerReceiver(object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: Intent?) { if (i?.data?.schemeSpecificPart == NexusPackages.BRIDGE) provider.onPackageChanged() }
+            }, android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_ADDED); addAction(Intent.ACTION_PACKAGE_REPLACED); addAction(Intent.ACTION_PACKAGE_REMOVED); addAction(Intent.ACTION_PACKAGE_CHANGED); addDataScheme("package")
+            })
+        } catch (e: Exception) { PcLog.w(TAG, "nexus package receiver failed (${e.javaClass.simpleName})") }
         scope.launch { kotlinx.coroutines.flow.combine(provider.bound, provider.bind, provider.lastCode, hub.link.state) { b, bind, code, link ->
-            Evidence(bound = b, bindRefused = bind == BridgeLink.Bind.REFUSED, lastCode = code, pcaLinkUp = link.carriesData)
+            Evidence(bound = b, bindRefused = bind == BridgeLink.Bind.REFUSED, lastCode = code, pcaLinkUp = link.carriesData, bridgeUntrusted = bind == BridgeLink.Bind.UNTRUSTED)
         }.collect { _evidence.value = it } }
 
         scope.launch { PlaceGraph.port.card.collect { feeder.placeCard(it) } }

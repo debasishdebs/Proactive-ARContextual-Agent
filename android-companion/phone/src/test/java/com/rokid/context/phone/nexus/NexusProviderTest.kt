@@ -1,6 +1,8 @@
 package com.rokid.context.phone.nexus
 
 import android.app.Application
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import android.os.IBinder
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.HudHost
@@ -46,8 +48,16 @@ private class FakePort : NexusPort.Stub() {
 
 private class FakeLink(val port: FakePort, private val result: BridgeLink.Bind = BridgeLink.Bind.BOUND) : BridgeLink {
     var binds = 0; var unbinds = 0
-    override fun bind(onConnected: (IBinder) -> Unit, onGone: () -> Unit): BridgeLink.Bind { binds++; if (result == BridgeLink.Bind.BOUND) onConnected(port); return result }
+    var trustedNow = true
+    var deferConnect = false
+    var connected: ((IBinder) -> Unit)? = null; var gone: (() -> Unit)? = null
+    override fun bind(onConnected: (IBinder) -> Unit, onGone: () -> Unit): BridgeLink.Bind {
+        binds++; connected = onConnected; gone = onGone
+        if (result == BridgeLink.Bind.BOUND && !deferConnect) onConnected(port)
+        return result
+    }
     override fun unbind() { unbinds++ }
+    override fun trusted() = trustedNow
 }
 
 /** v2.0: the flag-OFF provider, the fail-closed gates through the real sink, and the trip fan-out. */
@@ -62,13 +72,14 @@ class NexusProviderTest {
     private val link = FakeLink(port)
     private val actions = object : NexusActionHandler { override fun mark(ref: String) = Unit; override fun more(ref: String) = Unit }
 
-    private fun TestScope.provider(): NexusProvider {
+    private val debt = MemoryWipeDebt()
+    private fun TestScope.provider(d: WipeDebt = debt, l: BridgeLink = link): NexusProvider {
         val gates = PcaNexusGates(
             sourcesLive = { if (liveThrows) throw IllegalStateException("db") else live },
             zoneFence = { if (zoneThrows) throw IllegalStateException("fence") else zone },
             askFence = { ask }, paused = { paused }, worn = { worn },
         )
-        return NexusProvider(link, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime })
+        return NexusProvider(l, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime }, debt = d)
     }
 
     @Test fun aSettingChangeCallsRefreshFeaturesAndPushesTheMask() = runTest {
@@ -205,5 +216,97 @@ class NexusProviderTest {
         port.showCode = NexusResult.NOT_REGISTERED
         assertEquals(Outcome.Dropped(DropReason.TRANSPORT, NexusResult.NOT_REGISTERED), p.show(nudge))
         assertEquals(NexusResult.NOT_REGISTERED, p.lastCode.value)
+    }
+
+    // ---- Codex v2 r1 P1-3: a spoofed bridge ----
+
+    @Test fun anUntrustedBridgeIsNeverBoundAndNeverGetsABinder() = runTest {
+        host = HudHost.NEXUS; link.trustedNow = false
+        val p = provider(); p.refresh()
+        assertEquals(0, link.binds)
+        assertEquals(BridgeLink.Bind.UNTRUSTED, p.bind.value)
+        assertEquals(null, port.registered)       // no callback, no skill host, nothing handed over
+        assertFalse(p.bound.value)
+        assertEquals(null, p.show(nudge))
+    }
+
+    @Test fun aConnectionFromAPackageThatTurnedUntrustedIsDroppedBeforeAnythingIsHandedOver() = runTest {
+        host = HudHost.NEXUS; link.deferConnect = true
+        val p = provider(); p.refresh()
+        assertEquals(1, link.binds)
+        link.trustedNow = false                    // the package was replaced between the bind and the connection
+        link.connected!!(port)
+        assertEquals(null, port.registered); assertFalse(p.bound.value)
+        assertEquals(BridgeLink.Bind.UNTRUSTED, p.bind.value); assertEquals(1, link.unbinds)
+    }
+
+    @Test fun aReplacedBridgeIsVerifiedAgainOnThePackageBroadcastAndRecoversWhenTrustedAgain() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh()
+        assertTrue(p.bound.value); assertEquals(Outcome.Shown(false), p.show(nudge))
+        link.trustedNow = false; p.onPackageChanged()
+        assertFalse(p.bound.value); assertEquals(BridgeLink.Bind.UNTRUSTED, p.bind.value); assertEquals(1, link.unbinds)
+        assertEquals(null, p.show(nudge))
+        link.trustedNow = true; p.onPackageChanged()
+        assertTrue(p.bound.value); assertEquals(BridgeLink.Bind.BOUND, p.bind.value)
+    }
+
+    // ---- Codex v2 r1 P1-5: the history wipe is owed until the hub acknowledges ----
+
+    @Test fun aForgetWhileTheBridgeIsDisconnectedIsOwedAndSentOnTheNextConnection() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh(); p.show(nudge)
+        link.gone!!()                              // the bridge process died
+        assertFalse(p.bound.value)
+        p.trip(TripReason.FORGET)                  // a disconnected trip used to return at once
+        assertTrue("the debt is recorded", debt.wipeOwed()); assertEquals(0, port.forgets)
+        link.connected!!(port)                     // the service restarted: the same binding reconnects
+        assertEquals("the owed wipe goes out on connect", 1, port.forgets)
+        port.registered?.onForgetAccepted()
+        assertFalse("settled by the acknowledgement", debt.wipeOwed())
+    }
+
+    @Test fun anUnacknowledgedWipeIsNotDroppedAfterTheTeardownTimeoutAndIsRetriedWithBackoff() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh(); p.show(nudge)
+        host = HudHost.PCA; p.refresh()
+        val first = port.forgets
+        advanceTimeBy(35_000)
+        assertEquals("the stop let go of the bridge...", 1, link.unbinds)
+        assertTrue("...but the debt stays", debt.wipeOwed())
+        advanceTimeBy(30_000); testScheduler.runCurrent()
+        assertEquals("a retry bound it again, only for the wipe", 2, link.binds)
+        assertTrue(port.forgets > first)
+        assertEquals("nothing but the wipe", null, p.show(nudge))
+        port.registered?.onForgetAccepted()
+        advanceTimeBy(2_000)
+        assertFalse(debt.wipeOwed())
+        assertEquals("unbound after the acknowledgement", 2, link.unbinds)
+        advanceTimeBy(1_000_000); assertEquals("no further attempt once paid", 2, link.binds)
+    }
+
+    @Test fun theDebtSurvivesAProcessRestartAndIsPaidByTheNextProvider() = runTest {
+        val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("nexus_debt_test", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
+        host = HudHost.NEXUS
+        val store1 = NexusHostStore(prefs)
+        val p1 = provider(store1); p1.refresh()
+        link.gone!!()
+        p1.trip(TripReason.DELETE_ALL)             // the process is killed right after
+        assertTrue(prefs.getBoolean("wipe_owed", false))
+        // ---- a new process: a new store over the same file, a new provider; Nexus is no longer the host
+        host = HudHost.PCA
+        val port2 = FakePort(); val link2 = FakeLink(port2)
+        val store2 = NexusHostStore(prefs)
+        assertTrue(store2.wipeOwed())
+        val p2 = provider(store2, link2); p2.refresh()
+        assertEquals(1, link2.binds); assertEquals("the wipe is sent on provider start", 1, port2.forgets)
+        port2.registered?.onForgetAccepted()
+        assertFalse(store2.wipeOwed()); assertFalse(NexusHostStore(prefs).wipeOwed())
+        assertFalse("no stored debt, nothing else bound at start", prefs.all.containsKey("wipe_owed"))
+    }
+
+    @Test fun nothingIsOwedAndNothingBindsWhenNexusWasNeverUsed() = runTest {
+        val p = provider(); p.refresh(); p.trip(TripReason.FORGET); p.trip(TripReason.DELETE_ALL)
+        assertFalse(debt.wipeOwed()); assertEquals(0, link.binds)
     }
 }

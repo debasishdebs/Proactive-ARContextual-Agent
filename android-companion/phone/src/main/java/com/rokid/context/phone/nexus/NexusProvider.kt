@@ -16,6 +16,9 @@ import io.github.pca.nexusport.NexusGates
 import io.github.pca.nexusport.NexusHudSink
 import io.github.pca.nexusport.NexusResult
 import io.github.pca.nexusport.Outcome
+import io.github.pca.nexusport.PackageSignerSource
+import io.github.pca.nexusport.PcaSignerTrust
+import io.github.pca.nexusport.SignerSource
 import io.github.pca.nexusport.Slot
 import io.github.pca.nexusport.TripReason
 import kotlinx.coroutines.CancellationException
@@ -25,6 +28,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
+import kotlin.math.min
 import kotlinx.coroutines.launch
 
 /** Where PCA's HUD items go (the provider in production, a fake in tests). Null = nothing was sent (the host is not Nexus, or the bridge is not connected). */
@@ -34,17 +38,43 @@ fun interface HudShow {
 
 /** The connection to the bridge APK's `NexusPortService`. */
 interface BridgeLink {
-    enum class Bind { BOUND, NOT_INSTALLED, REFUSED }
+    /** [UNTRUSTED]: a package with the bridge's name is installed but is not signed like PCA (or a pinned key): it is never bound and never given a binder. */
+    enum class Bind { BOUND, NOT_INSTALLED, REFUSED, UNTRUSTED }
 
     fun bind(onConnected: (IBinder) -> Unit, onGone: () -> Unit): Bind
     fun unbind()
+
+    /** The installed bridge is signed like PCA right now (checked again on every bind, every connection and every package change). Default true for fakes. */
+    fun trusted(): Boolean = true
+}
+
+/** The history wipe PCA owes the Nexus hub, kept until the hub acknowledges it (persisted by [NexusHostStore]; in memory in tests). */
+interface WipeDebt {
+    fun wipeOwed(): Boolean
+    fun owe()
+    fun settle()
+}
+
+class MemoryWipeDebt(private var owed: Boolean = false) : WipeDebt {
+    override fun wipeOwed() = owed
+    override fun owe() { owed = true }
+    override fun settle() { owed = false }
 }
 
 /** The real link: an explicit bind to the bridge's service (signature permission BIND_NEXUS_PORT; an unrelated key makes Android refuse it). Never starts anything else. */
-class ServiceBridgeLink(private val app: Context) : BridgeLink {
+class ServiceBridgeLink(
+    private val app: Context,
+    private val signers: SignerSource = PackageSignerSource(app.packageManager),
+    private val pinned: Set<String> = PcaSignerTrust.PINNED,
+) : BridgeLink {
     private var conn: ServiceConnection? = null
 
+    /** An explicit bind names only a package, and any app can claim the bridge's name while the genuine one is absent: the signer is verified first (Codex v2 r1 P1-3). */
+    override fun trusted(): Boolean = PcaSignerTrust.trusted(signers, app.packageName, NexusPackages.BRIDGE, pinned)
+
     override fun bind(onConnected: (IBinder) -> Unit, onGone: () -> Unit): BridgeLink.Bind {
+        if (try { signers.signing(NexusPackages.BRIDGE) } catch (_: Exception) { null } == null) return BridgeLink.Bind.NOT_INSTALLED
+        if (!trusted()) return BridgeLink.Bind.UNTRUSTED
         val c = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) { if (service != null) onConnected(service) }
             override fun onServiceDisconnected(name: ComponentName?) = onGone()
@@ -67,9 +97,15 @@ class ServiceBridgeLink(private val app: Context) : BridgeLink {
 }
 
 /**
- * v2.0: PCA's side of the Nexus bridge. FLAG-OFF: it binds only while the user chose Nexus as the HUD host ([host]), and does nothing at all otherwise. It holds the ONE [NexusHudSink] (the choke point:
+ * v2.0: PCA's side of the Nexus bridge. FLAG-OFF: it binds only while the user chose Nexus as the HUD host ([host]), and does nothing at all otherwise (the one exception: an unacknowledged history wipe, below). It holds the ONE [NexusHudSink] (the choke point:
  * provenance, zone fences, pause, not worn, fail closed) over the real fences ([gates]), forwards HUD items to it and fans every close event ([trip]) into it.
- * Switching the host away from Nexus is a MODE_OFF trip (everything hidden, history wipe asked), and the bridge stays bound until Nexus accepted the wipe or [teardownMaxMs] passed.
+ *
+ * **Trust (Codex v2 r1 P1-3).** The bridge is bound by package name, which any app can claim while the genuine bridge is absent. [BridgeLink.trusted] (the package's signing certificate against PCA's own or a pinned one)
+ * is checked before every bind, again when a connection arrives (nothing is handed to the binder before that), and on every package change ([onPackageChanged]). An untrusted package is [BridgeLink.Bind.UNTRUSTED].
+ *
+ * **Wipe debt (Codex v2 r1 P1-5).** Forget, Delete all and mode off owe the glasses hub a history wipe (Nexus keeps notices up to 24 h). The debt is a stored flag ([debt], in `nexus_host`, not backed up) set BEFORE anything else,
+ * whether or not the bridge is connected, and cleared only when the hub acknowledges. A bridge that is not connected, a teardown that times out and a process restart all keep it: the next bind (provider start, [refresh],
+ * app to the front, the backoff retry of [retryBaseMs] doubling up to [retryMaxMs]) sends it again, binding the bridge for just that purpose when the host is not Nexus. Nothing else is ever drawn then.
  * Logs: literal event names only (the sink's own lines are forwarded through [log]); never card text.
  */
 class NexusProvider(
@@ -81,12 +117,16 @@ class NexusProvider(
     private val log: (String) -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
     private val tickMs: Long = 1_000L,
+    /** How long a stop waits for the hub's acknowledgement before it lets go of the bridge (the debt stays and a retry is scheduled). */
     private val teardownMaxMs: Long = 30_000L,
     /** The user's Nexus switches (all OFF by default). */
     private val switches: () -> NexusSwitches = { NexusSwitches() },
     /** The assist-button ask and the four skills; inert while the matching switch is off (the sink also checks). */
     private val asks: NexusAskHandler? = null,
     private val skills: NexusSkillProvider? = null,
+    private val debt: WipeDebt = MemoryWipeDebt(),
+    private val retryBaseMs: Long = 30_000L,
+    private val retryMaxMs: Long = 900_000L,
 ) : HudShow {
     private val lock = Any()
     @Volatile private var sink: NexusHudSink? = null
@@ -94,6 +134,9 @@ class NexusProvider(
     private var stopping = false
     private var stoppingSince = 0L
     private var tickJob: Job? = null
+    private var watchJob: Job? = null
+    private var retryJob: Job? = null
+    private var retryDelay = retryBaseMs
 
     private val _bound = MutableStateFlow(false)
     /** The bridge is connected. */
@@ -107,44 +150,91 @@ class NexusProvider(
 
     fun liveSlots(): Set<Slot> = sink?.liveSlots() ?: emptySet()
 
-    /** Brings the connection in line with the host choice. Idempotent; call it after a switch, at start and when the app comes to the front. */
+    /** Brings the connection in line with the host choice and the wipe debt. Idempotent; call it after a switch, at start and when the app comes to the front. */
     fun refresh() {
         synchronized(lock) {
             if (host() == HudHost.NEXUS) {
                 stopping = false
-                if (!wanted) {
-                    wanted = true // before the bind: a connection may be reported before bindService returns
-                    val r = link.bind(::onConnected, ::onGone)
-                    _bind.value = r
-                    wanted = r == BridgeLink.Bind.BOUND
-                    when (r) {
-                        BridgeLink.Bind.BOUND -> log("nexus bind bound")
-                        BridgeLink.Bind.NOT_INSTALLED -> log("nexus bind not installed")
-                        BridgeLink.Bind.REFUSED -> log("nexus bind refused")
-                    }
-                }
+                watchJob?.cancel(); watchJob = null
+                if (!wanted) bindLocked()
             } else if (wanted && !stopping) {
+                debt.owe()   // switching Nexus off is a MODE_OFF: the hub's history must be wiped, connected or not
                 val s = sink
-                if (s == null) { link.unbind(); wanted = false; _bound.value = false }
+                if (s == null) { link.unbind(); wanted = false; _bound.value = false; scheduleRetryLocked() }
                 else {
                     s.trip(TripReason.MODE_OFF)
                     stopping = true
                     stoppingSince = clock()
+                    startWatchLocked()
                     log("nexus switched off: waiting for the history wipe")
                 }
+            } else if (!wanted && debt.wipeOwed()) {
+                // A wipe is still owed and the bridge is not bound (restart, a timed-out teardown, a disconnected trip): bind it for that alone.
+                stopping = true
+                stoppingSince = clock()
+                bindLocked()
+                if (wanted) { startWatchLocked(); log("nexus wipe retry bound") } else stopping = false
             }
         }
     }
 
+    /** Lock held. Verifies the signer, then binds; [wanted] follows the result. */
+    private fun bindLocked() {
+        wanted = true // before the bind: a connection may be reported before bindService returns
+        val r = if (!safeTrusted()) BridgeLink.Bind.UNTRUSTED else link.bind(::onConnected, ::onGone)
+        _bind.value = r
+        wanted = r == BridgeLink.Bind.BOUND
+        when (r) {
+            BridgeLink.Bind.BOUND -> log("nexus bind bound")
+            BridgeLink.Bind.NOT_INSTALLED -> log("nexus bind not installed")
+            BridgeLink.Bind.REFUSED -> log("nexus bind refused")
+            BridgeLink.Bind.UNTRUSTED -> log("nexus bind untrusted")
+        }
+    }
+
+    private fun safeTrusted(): Boolean = try { link.trusted() } catch (_: Exception) { false }
+
     private fun onConnected(binder: IBinder) {
         synchronized(lock) {
             if (!wanted) return
+            // Re-verified on EVERY connection (a reconnect after the package was replaced is a new process): nothing is handed to the binder before this passes.
+            if (!safeTrusted()) { untrustedLocked(); return }
             sink = try {
-                NexusHudSink.connect(binder, gates, ::config, actions, log, asks = asks, skills = skills)
+                NexusHudSink.connect(binder, gates, ::config, actions, log, asks = asks, skills = skills, wipeOwed = debt.wipeOwed(), onForgetAcked = ::onWipeAcked)
             } catch (_: Exception) { log("nexus connect failed"); null }
             _bound.value = sink != null
             if (sink != null) startTick()
         }
+    }
+
+    /** Lock held. The package behind the bridge's name is not (or no longer) signed like PCA: let go of it, say so, keep nothing connected. */
+    private fun untrustedLocked() {
+        try { link.unbind() } catch (_: Exception) { }
+        sink = null; tickJob?.cancel(); tickJob = null; watchJob?.cancel(); watchJob = null
+        wanted = false; stopping = false; _bound.value = false
+        _bind.value = BridgeLink.Bind.UNTRUSTED
+        log("nexus bridge untrusted")
+    }
+
+    /**
+     * The bridge package was added, replaced or removed (the phone's package broadcast). A bound bridge is verified again at once; an unbound one is retried when Nexus is the host or a wipe is owed. Safe from any thread.
+     */
+    fun onPackageChanged() {
+        synchronized(lock) {
+            if (wanted) { if (!safeTrusted()) untrustedLocked() }
+            else if (host() == HudHost.NEXUS || debt.wipeOwed()) refresh()
+        }
+    }
+
+    /** The hub accepted the history wipe: the debt is paid unless a newer one was incurred meanwhile. */
+    private fun onWipeAcked() {
+        synchronized(lock) {
+            if (sink?.forgetOwed() == true) return
+            debt.settle()
+            retryDelay = retryBaseMs
+            retryJob?.cancel(); retryJob = null
+        }
+        log("nexus wipe acknowledged")
     }
 
     /** Read on every gate check, so a switch takes effect at once. STT and the assist takeover are ONE user switch ("Nexus voice"). */
@@ -160,6 +250,7 @@ class NexusProvider(
     }
 
     private fun onGone() {
+        // The wipe debt is stored, not held by the sink: a lost connection owes nothing new and forgets nothing.
         synchronized(lock) { sink = null; _bound.value = false; tickJob?.cancel(); tickJob = null }
         log("nexus bridge gone")
     }
@@ -175,17 +266,52 @@ class NexusProvider(
         }
     }
 
+    /** Lock held. Watches a stop even while nothing is connected (no tick runs then). */
+    private fun startWatchLocked() {
+        watchJob?.cancel()
+        watchJob = scope.launch {
+            while (isActive) {
+                delay(tickMs)
+                if (finishStopIfDue()) break
+            }
+        }
+    }
+
     private fun finishStopIfDue(): Boolean = synchronized(lock) {
         if (!stopping) return false
-        val owed = sink?.forgetOwed() == true
+        val owed = debt.wipeOwed()
         if (owed && clock() - stoppingSince < teardownMaxMs) return false
-        link.unbind(); sink = null; wanted = false; stopping = false; _bound.value = false; tickJob = null
+        link.unbind(); sink = null; wanted = false; stopping = false; _bound.value = false; tickJob?.cancel(); tickJob = null; watchJob = null
         log("nexus unbound")
+        if (owed) scheduleRetryLocked()   // NOT dropped: the debt is stored and the next attempt comes with a longer wait
         true
     }
 
-    /** A close event. Hides everything on Nexus at once (and asks for the history wipe on Forget, Delete all and mode off). Safe from any thread; a no-op while nothing is connected. */
+    /** Lock held. One pending retry at most; the wait doubles up to [retryMaxMs] and resets on an acknowledgement. */
+    private fun scheduleRetryLocked() {
+        if (retryJob?.isActive == true) return
+        val d = retryDelay
+        retryDelay = min(retryDelay * 2, retryMaxMs)
+        retryJob = scope.launch {
+            delay(d)
+            synchronized(lock) { retryJob = null }
+            if (debt.wipeOwed()) { log("nexus wipe retry"); refresh() }
+        }
+    }
+
+    /**
+     * A close event. Hides everything on Nexus at once (and asks for the history wipe on Forget, Delete all and mode off). Safe from any thread. The wipe debt is recorded FIRST, connected or not (the bridge may be
+     * down, mid-reconnect or about to be unbound); the sink sends it now when it can and the provider sends it again on the next bind until the hub acknowledges.
+     */
     fun trip(reason: TripReason) {
+        if (reason == TripReason.FORGET || reason == TripReason.DELETE_ALL || reason == TripReason.MODE_OFF) {
+            synchronized(lock) {
+                if (wanted || sink != null || debt.wipeOwed()) {
+                    debt.owe()
+                    if (sink == null && !stopping) scheduleRetryLocked()
+                }
+            }
+        }
         val s = sink ?: return
         try { s.trip(reason) } catch (_: Exception) { log("nexus trip failed") }
     }

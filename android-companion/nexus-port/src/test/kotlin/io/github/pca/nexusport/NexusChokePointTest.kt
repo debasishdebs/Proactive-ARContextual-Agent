@@ -62,6 +62,7 @@ class NexusChokePointTest {
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusFeeder.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusGatesAdapter.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusGraph.kt",
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusProbe.kt",         // P1-3: the bridge signer check (PcaSignerTrust) for the install state
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusProvider.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusSkills.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusStatus.kt",

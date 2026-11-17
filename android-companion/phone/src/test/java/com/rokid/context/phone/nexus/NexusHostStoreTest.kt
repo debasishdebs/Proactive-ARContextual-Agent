@@ -49,4 +49,13 @@ class NexusHostStoreTest {
         prefs.edit().putString("voice", "true").remove("tts").commit()
         assertEquals(NexusSwitches(), NexusHostStore(prefs).switchesNow())
     }
+
+    @Test fun theWipeDebtIsStoredSynchronouslyAndSettledOnlyByAnAcknowledgement() {
+        val s = NexusHostStore(prefs)
+        assertFalse(s.wipeOwed()); assertTrue(prefs.all.isEmpty())
+        s.owe(); assertTrue(s.wipeOwed()); assertTrue(NexusHostStore(prefs).wipeOwed())
+        s.settle(); assertFalse(NexusHostStore(prefs).wipeOwed()); assertTrue(prefs.all.isEmpty())
+        prefs.edit().putString("wipe_owed", "x").commit()
+        assertTrue("an unreadable flag counts as owed", NexusHostStore(prefs).wipeOwed())
+    }
 }
