@@ -15,9 +15,9 @@ import kotlinx.serialization.json.put
 /**
  * `/api/signals` (v0.9.7 A): `GET` lists the catalogue with `enabled` flags and the derived definitions; `POST /api/signals/enabled {name, enabled}` switches a catalogue signal for
  * guards; `PUT /api/signals/derived/<name> {graph}` saves a derived signal (validated by the guard validator, 400 with `problems` otherwise); `DELETE /api/signals/derived/<name>`.
- * Auth, Host/Origin policy and the body limit are the router's. A derived signal is only ever evaluated in SHADOW/TRIAL (the nodes that use it are not liveable).
+ * `POST /api/signals/try` is the read-only real-data preview ([SignalTry]; Developer mode and a default-OFF flag, enforced there). Auth, Host/Origin policy and the body limit are the router's. A derived signal is only ever evaluated in SHADOW/TRIAL (the nodes that use it are not liveable).
  */
-class SignalRoutes(private val store: SignalConfigStore) {
+class SignalRoutes(private val store: SignalConfigStore, private val tryIt: SignalTry? = null) {
     suspend fun handle(req: HttpRequest): HttpResponse? {
         val path = req.path
         if (path != "/api/signals" && !path.startsWith("/api/signals/")) return null
@@ -25,11 +25,13 @@ class SignalRoutes(private val store: SignalConfigStore) {
         return try {
             when {
                 path == "/api/signals" && m == "GET" -> HttpResponse.json(200, list())
+                path == "/api/signals/try" -> tryIt?.handle(req) ?: HttpResponse.error(404, "not_found", "Not found.")
                 path == "/api/signals/enabled" && m == "POST" -> enabled(req)
                 path.startsWith("/api/signals/derived/") && m == "PUT" -> put(path.removePrefix("/api/signals/derived/"), req)
                 path.startsWith("/api/signals/derived/") && m == "DELETE" -> { store.deleteDerived(path.removePrefix("/api/signals/derived/")); HttpResponse.json(200, buildJsonObject { put("ok", true) }) }
                 else -> HttpResponse.error(405, "bad_request", "Method not allowed.")
             }
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e   // the 30 s deadline of a read-only POST must reach the router
         } catch (e: Throwable) { HttpResponse.error(500, "internal", "Something went wrong.") }
     }
 
@@ -39,6 +41,7 @@ class SignalRoutes(private val store: SignalConfigStore) {
         val c = store.config.value
         return buildJsonObject {
             put("signals", JsonArray(SignalCatalog.all.map { s -> buildJsonObject { put("name", s.name); put("type", s.type.name.lowercase()); put("unit", s.unit); put("enabled", s.name !in c.disabled) } }))
+            put("tryIt", buildJsonObject { put("available", tryIt?.allowed() == true) })
             put("derived", JsonArray(c.derived.map { d -> buildJsonObject { put("name", d.name); put("ref", "d_" + d.name); put("graph", d.graph) } }))
         }
     }

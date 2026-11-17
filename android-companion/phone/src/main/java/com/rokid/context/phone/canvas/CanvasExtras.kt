@@ -51,6 +51,12 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 candidates = com.rokid.context.canvas.plan.ReplayCandidates(db.canvasDao())::forHash,
                 signals = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app),
                 devices = com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(app),
+                signalTry = DeveloperModeStore.get(app).let { dev ->
+                    com.rokid.context.phone.canvas.api.SignalTry(
+                        com.rokid.context.canvas.signal.SignalTryReader(db), { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app).config.value },
+                        dev.enabled, dev.signalTryEnabled, com.rokid.context.work.frames.KeyframeGraph.systemThermal(app),
+                    )
+                },
             )
         }
 
@@ -72,6 +78,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             signals: com.rokid.context.phone.ui.settings.capture.SignalConfigStore? = null,
             /** v0.9.8 slice D: the device capability store (`/api/devices`); null = the routes are not registered. */
             devices: com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore? = null,
+            /** v1.2 row 2: the real-data derived-signal preview behind `POST /api/signals/try`; null = the route answers 404. */
+            signalTry: com.rokid.context.phone.canvas.api.SignalTry? = null,
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
             val replays = ReplayRoutes(replay, candidates ?: { null })
@@ -82,7 +90,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 add(ApiExtra(planRoutes::handle))
                 if (moments != null) MomentRoutes(devMode::value, moments).let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
-                signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it)::handle)) }
+                signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it, signalTry)::handle)) }
                 devices?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.DeviceRoutes(it)::handle)) }
             }
             return CanvasExtras(all, replay, startup, sweeps)
