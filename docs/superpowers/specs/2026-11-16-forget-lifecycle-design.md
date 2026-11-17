@@ -195,3 +195,20 @@ Each task is one PR. "T1" means the golden delete sets of task 1. `mem/forget/li
 4. **Batch mates.** Is a solo re-describe of the surviving batch photos (B1, one model call each) acceptable, or should v1's invalidate-and-remove stay?
 5. **Scoped Forget.** Can Moment and Scene Forget leave Developer mode once M3 and M4 ship and pass a worn test?
 6. **Mass Forget size.** One transaction with a 5,000-node ceiling (no schema change, recommended), or a chunked durable job that needs a new `forget_job` table (v17 migration)?
+
+## 8. M4 implementation note and DESIGN_DIVERGENCE (rulings needed, 2026-11-17)
+
+M4 is built: `ForgetExecutor` (`mem/forget/lifecycle/ForgetExecutor.kt`) is the single deleting code path behind the flag `forgetV2` (OFF by default; `DeveloperFlags.forgetV2`, key `forget_v2` in the backup-excluded `pc_dev` preferences, read by `ForgetV2`). With it ON, every Forget is one transaction: re-plan with the `ForgetPlanner`, `Leases.revoke(plan)` (a planner failure revokes every lease), then the families' `selfDelete` in the order of the v1 cascade, then the outbox rows. Switched paths: fact, photo, mark undo, range, Moment ids, Moment/Scene scope, retention (memories and photos), suspect-description removal, Delete all (`ForgetExecutor.wipeMemory`: revoke all, then the existing wipe). With the flag OFF the legacy bodies in `ForgetService` and `MomentForget` run unchanged and the callers keep their `LeaseRevocation` calls; ON, those call sites defer to the executor. `GoldenDeleteSetTest` runs every path twice (flag OFF and ON) and both must equal the same literal set. `ForgetExecutorInventoryTest` fails on any deleting DAO call outside the executor, the families and the DAO layer, with a ratchet for the legacy copies.
+
+**What M4 deliberately does NOT change.** The executor deletes exactly what v1 deletes. Where the design differs, v1 is kept and the difference is listed in code as `DesignDivergence.ALL` (each entry names the golden test that pins v1). Please rule on each; a ruling changes that golden and the family code together (M5/M7 work).
+
+| Id | Design | v1 (implemented) | Golden |
+|---|---|---|---|
+| CARRIED_BATCH_MATE | B1: the batch mate is rebuilt (solo re-describe) | invalidated with its descendants; its own photos are never locked or deleted; no re-describe | `forgetPhoto` |
+| FACT_FORGET_LOCKS_CITED_PHOTO | a fact Forget removes the fact only | every photo the fact cites is tombstoned, and a photo no surviving memory cites loses its vector and file | `forgetFact` |
+| SCENE_REBUILD_VS_DROP | a Scene that loses Moments is rebuilt | it shrinks (derived fields hidden) and only an empty or named Scene is dropped | `momentScopeSpans` |
+| ASK_NUDGE_REDACTED_IN_PLACE | A1 re-answers, N1 deletes the nudge | answers and nudges are redacted in place (the question stays); proposals expire and are scrubbed | `forgetFact` |
+| MULTI_PHOTO_CASCADE | rebuild from the surviving photos | forgetting one photo of a multi-photo memory deletes the memory and cascades to its other photo | `forgetFarPhotoCitedByAMultiPhotoFact` |
+| REPLAY_SWEEP_INVALIDATION | replays and sweeps are planned RunResult nodes | invalidated by the range Forget (`invalidateBySources`), helper jobs voided and scrubbed, `moment_sensor` purged by time: none of it is in the plan or its hash | `rangeForget` |
+
+Not implemented, as ruled: the additive ask JSON-state column (needs a migration ruling) and the A1/N1/M5 UI states. Known limits of M4: the plan is used for the lease revocation (and the scoped Forget's confirmed hash); the delete itself follows the v1 steps over the same database state, because the v1 steps are order dependent. The planner gaps (replays, sweeps, helper jobs, `moment_sensor`) stay open: closing them would change the plan hash of the range Forget, so they need the ruling above first.
