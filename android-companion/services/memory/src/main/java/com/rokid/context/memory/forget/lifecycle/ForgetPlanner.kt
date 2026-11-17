@@ -105,10 +105,11 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             val uncited = inside.filter { f -> fd.memoryIdsOfFrame(f).none { it !in goneMemories } }
             val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
             val cited = forgotten + invalidated + extraCited + goneCites
-            val asks = AnswerFamily.citing(cited, tx).filter { Ref(Family.ANSWER, it) !in nodes }
-            val nudges = NudgeFamily.citing(cited, tx).filter { Ref(Family.NUDGE, it) !in nodes }
+            val v2Rules = ForgetV2.on // the same rule the executor applies (AskRules): preview == delete
+            val reached = AskRules.reach(cited, tx, v2Rules, skipAsks = nodes.keys.filter { it.family == Family.ANSWER }.map { it.id }.toSet(), skipNudges = nodes.keys.filter { it.family == Family.NUDGE }.map { it.id }.toSet())
+            val asks = reached.asks; val nudges = reached.nudges
             asks.forEach { put(Ref(Family.ANSWER, it), Fate.REBUILD) }
-            nudges.forEach { put(Ref(Family.NUDGE, it), Fate.REBUILD) }
+            nudges.forEach { put(Ref(Family.NUDGE, it), if (v2Rules) Fate.ERASE else Fate.REBUILD) }
             proposals(asks + nudges, scrubAccepted)
         }
 

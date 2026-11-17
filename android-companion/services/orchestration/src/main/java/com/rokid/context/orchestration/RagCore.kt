@@ -137,6 +137,8 @@ data class RagContext(
     val recent: List<MemoryEntity> = emptyList(), val recentLines: List<String> = emptyList(), val history: List<String> = emptyList(),
     val photoLines: List<String> = emptyList(), val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(),
     val imageEndpointId: String? = null, val fallback: Boolean = false, val historyIds: Set<String> = emptySet(),
+    /** M5 (design A2): the nudges whose text is in [history], as `nudge:<id>` (the item itself is a dependency of what is built from it). Ids only. */
+    val historyRefs: Set<String> = emptySet(),
     val hits: List<ScoredMemory> = emptyList(), val mode: RetrievalMode? = null, val semanticUnavailable: Boolean = false,
     /** Why semantic search did not run (set when [semanticUnavailable]); shown, never a silent degrade (2026-11-08). */
     val semanticOff: com.rokid.context.memory.retrieval.SemanticOff? = null,
@@ -247,7 +249,7 @@ class RagCore(
         history?.let { h ->
             val texts = h.map { AskText.collapse(it.first.text) }
             val kept = AskText.bounded(texts, left).size
-            ctx = ctx.copy(history = texts.take(kept), historyIds = h.take(kept).flatMap { it.second }.toSet())
+            ctx = ctx.copy(history = texts.take(kept), historyIds = h.take(kept).flatMap { it.second }.toSet(), historyRefs = h.take(kept).map { com.rokid.context.memory.forget.AskSourceStates.NUDGE_PREFIX + it.first.id }.toSet())
         }
         return ctx
     }
