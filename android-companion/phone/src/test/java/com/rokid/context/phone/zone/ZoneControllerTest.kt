@@ -194,4 +194,38 @@ class ZoneControllerTest {
         el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f)); el += 1_000; wall += 1_000; cc.onFix(ZoneFix(el, 10.0 - 50_000.0 / m, 20.005, 10f))
         assertEquals(false to true, calls.last()); assertFalse(prefs.getBoolean(ZoneStateStore.PROTECT, true))
     }
+
+    /** SharedPreferences whose commit of `protect=true` waits on [release] (a slow disk), announcing [entered]. */
+    private fun slowPrefs(entered: java.util.concurrent.CountDownLatch, release: java.util.concurrent.CountDownLatch): android.content.SharedPreferences {
+        val real = ctx.getSharedPreferences("zs_${System.nanoTime()}", 0)
+        fun editor(e: android.content.SharedPreferences.Editor): android.content.SharedPreferences.Editor {
+            var slow = false
+            return java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(android.content.SharedPreferences.Editor::class.java)) { self, m, a ->
+                if (m.name == "putBoolean" && a[0] == ZoneStateStore.PROTECT && a[1] == true) slow = true
+                if (m.name == "commit" && slow) { entered.countDown(); release.await() }
+                val r = m.invoke(e, *(a ?: emptyArray()))
+                if (r === e) self else r
+            } as android.content.SharedPreferences.Editor
+        }
+        return java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(android.content.SharedPreferences::class.java)) { _, m, a ->
+            if (m.name == "edit") editor(real.edit()) else m.invoke(real, *(a ?: emptyArray()))
+        } as android.content.SharedPreferences
+    }
+
+    /** Codex z1 r10 P1-1: the entry reaches Ask's fence BEFORE the prefs commit: while the disk blocks, Ask dispatch and delivery are already refused and its ticket is closed. */
+    @Test fun anEntryDuringABlockedPrefsCommitStillBlocksAskDispatchAndDelivery() {
+        val ask = com.rokid.context.orchestration.AskZoneFence
+        ask.fence = com.rokid.context.memory.place.ZoneFence()
+        val entered = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        try {
+            val cc = ZoneController(ZoneStore(ctx.getSharedPreferences("zt_${System.nanoTime()}", 0)), sink, notes, elapsed = { el }, wall = { wall }, stateStore = ZoneStateStore(slowPrefs(entered, release)), onState = { a, j -> ask.protect(a, j) })
+            assertFalse(ask.blocked()); val ticket = ask.ticket()!!; assertTrue(ticket.isOpen())
+            val t = Thread { kotlinx.coroutines.runBlocking { cc.upsert(zone) } }.also { it.start() }
+            assertTrue("the commit began", entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            assertTrue("dispatch and delivery both read blocked() during the commit", ask.blocked()); assertFalse("the in-flight Ask's ticket is closed", ticket.isOpen())
+            assertFalse("a new ticket is already closed", ask.ticket()!!.isOpen())
+            release.countDown(); t.join(10_000)
+            assertTrue(ask.blocked())
+        } finally { release.countDown(); ask.fence = com.rokid.context.memory.place.ZoneFence() }
+    }
 }

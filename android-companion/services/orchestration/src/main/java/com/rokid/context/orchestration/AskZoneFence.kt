@@ -59,6 +59,15 @@ object AskZoneFence : AskZoneGuard {
     @Volatile private var judged = false
     /** A stored zone record was found by [prepare] before the controller judged. */
     @Volatile private var recordsBlock = false
+    /** Every controller decision ([protect]) advances this; a startup read ([prepare]) that began before the latest decision is discarded (Codex z1 r10 P1-2). */
+    @Volatile private var decision = 0L
+    /** The last `active` the controller reported. */
+    @Volatile private var controllerActive = false
+    /** [prepare] found no enabled zone and no live zone record: the persisted protect flag is stale and no longer holds. Reset by every controller decision. */
+    @Volatile private var startupClear = false
+    private val lock = Any()
+    /** Test seam: whether a live `zone:` pause record is stored. Null = the database. */
+    @Volatile internal var liveRecordsReader: (suspend (Context) -> Boolean)? = null
 
     fun install(context: Context) {
         val a = context.applicationContext ?: return
@@ -75,7 +84,8 @@ object AskZoneFence : AskZoneGuard {
      * The zone controller's word, synchronously, from any of its paths ([active] = a zone is approached, entered, recorded or unreadable; [judged] = it has judged the zones since the process started).
      * Active closes the fence and cancels every Ask dispatch in flight at once; clear and judged opens it again.
      */
-    fun protect(active: Boolean, judged: Boolean) {
+    fun protect(active: Boolean, judged: Boolean) = synchronized(lock) {
+        decision++; controllerActive = active; startupClear = false
         if (judged) { this.judged = true; recordsBlock = false }
         if (active) { if (!fence.held) fence.hold() } else if (this.judged) fence.release()
     }
@@ -84,6 +94,7 @@ object AskZoneFence : AskZoneGuard {
     private fun startupBlocked(): Boolean {
         if (judged) return false
         val a = app ?: return false
+        if (startupClear) return false
         return try {
             recordsBlock ||
                 a.getSharedPreferences(ZONE_STATE_PREFS, Context.MODE_PRIVATE).getBoolean(PROTECT_KEY, false) ||
@@ -100,18 +111,31 @@ object AskZoneFence : AskZoneGuard {
         } catch (e: Exception) { true }
     }
 
+    /**
+     * Reads the stored zone records and reconciles the fence with what is stored, while the controller has not judged. Idempotent: every Ask runs it again. The read result is applied atomically against the
+     * controller's decisions: a result that began before the latest [protect] is discarded (a late read must not re-hold what the controller cleared). No enabled zone and no live zone record = nothing to protect.
+     */
     override suspend fun prepare() {
-        if (judged || recordsBlock) return
+        if (judged) return
         val a = app ?: return
-        try {
-            val now = System.currentTimeMillis()
-            val live = com.rokid.context.memory.MemoryGraph.get(a).db.pauseDao().records().any { com.rokid.context.core.model.zone.ZonePause.isZoneRecord(it.pauseId) && (it.untilMs == null || now < it.untilMs!!) }
-            if (live) { recordsBlock = true; fence.hold() }
+        val gen = decision
+        val live: Boolean? = try {
+            liveRecordsReader?.invoke(a) ?: run {
+                val now = System.currentTimeMillis()
+                com.rokid.context.memory.MemoryGraph.get(a).db.pauseDao().records().any { com.rokid.context.core.model.zone.ZonePause.isZoneRecord(it.pauseId) && (it.untilMs == null || now < it.untilMs!!) }
+            }
         } catch (c: kotlinx.coroutines.CancellationException) {
             throw c
         } catch (e: Exception) {
             PcLog.i(TAG, "zone records unreadable (${e.javaClass.simpleName}); fail closed")
-            recordsBlock = true; fence.hold()
+            null
+        }
+        synchronized(lock) {
+            if (decision != gen || judged) return // stale: the controller decided meanwhile
+            if (live != false) { recordsBlock = true; startupClear = false; if (!fence.held) fence.hold(); return }
+            recordsBlock = false
+            val noZones = try { !zonesMayBeInForce(a.getSharedPreferences(ZONES_PREFS, Context.MODE_PRIVATE).getString(ZONES_KEY, null)) } catch (e: Exception) { false }
+            if (noZones) { startupClear = true; if (fence.held && !controllerActive) fence.release() } else startupClear = false
         }
     }
 
@@ -130,7 +154,7 @@ object AskZoneFence : AskZoneGuard {
 
     /** Tests: the process-start state. */
     internal fun resetForTests() {
-        fence = ZoneFence(); extraBlocked = null; enabledProvider = { true }; app = null; judged = false; recordsBlock = false
+        fence = ZoneFence(); extraBlocked = null; enabledProvider = { true }; app = null; judged = false; recordsBlock = false; decision = 0L; controllerActive = false; startupClear = false; liveRecordsReader = null
     }
 }
 
