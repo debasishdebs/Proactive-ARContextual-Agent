@@ -185,7 +185,7 @@ class OrchestrationScheduler(
         generation: Long = MemoryWipe.generation.get(),
     ): HistoricalBackfillResult {
         // Fix round 1: a run that is already stale touches nothing, not even the purges.
-        if (MemoryWipe.generation.get() != generation) return HistoricalBackfillResult(0, 0, 0, DELETED_MEANWHILE)
+        if (com.rokid.context.provenance.ProvenanceGate.isWiped(generation)) return HistoricalBackfillResult(0, 0, 0, DELETED_MEANWHILE)
         val config = this.config.getWithoutSecret(context)
         val purgeResult = PipelineRecords.purgeNonPhotoAndSynthetic(context)
         val selected = PipelineRecords.allFrames(context)

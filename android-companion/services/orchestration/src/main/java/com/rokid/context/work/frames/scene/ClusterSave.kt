@@ -9,7 +9,6 @@ import com.rokid.context.memory.db.FrameSourceEntity
 import com.rokid.context.memory.db.FrameState
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
-import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.SavedMemory
 
@@ -45,11 +44,12 @@ object ClusterSave {
         if (!out.imagesDelivered) { PcLog.w(TAG, "cluster save refused: no image delivery proof"); return ClusterSaveResult.Undelivered }
         val db = MemoryGraph.get(context).db
         val results = out.clusters.filter { it.clusterId in sent }
+        val gate = com.rokid.context.provenance.ProvenanceGate(db)
         return try {
             db.withTransaction {
-                if (MemoryWipe.generation.get() != generation) throw Rollback(ClusterSaveResult.Wiped)
+                if (gate.wiped(generation)) throw Rollback(ClusterSaveResult.Wiped)
                 val members = results.associate { it.clusterId to db.frameMetaDao().members(it.clusterId).map { m -> m.frameId } }
-                val live = liveFrames(context, (members.values.flatten() + sent.values.flatten()).distinct())
+                val live = liveFrames(gate, context, (members.values.flatten() + sent.values.flatten()).distinct())
                 // codex r15: one call (up to 3 clusters) saw every representative it was sent, so any output may carry any of them; a representative
                 // forgotten since the call rolls the whole output back (the clusters are retried), and every saved memory is linked to all of them
                 val carried = sent.values.flatten().toSet()
@@ -74,7 +74,7 @@ object ClusterSave {
                     val summaryId = "rokid_cl_${claimId}_$i"
                     if (!PipelineRecords.appendFact(context, summaryId, reps.first(), c.summary, "cluster_summary", listOf("scene"), 1.0, MemoryTier.LONG, ReviewState.OK,
                             nowMs, generation, fenceFrameIds = reps, imageDelivered = out.imagesDelivered)) {
-                        throw Rollback(if (MemoryWipe.generation.get() != generation) ClusterSaveResult.Wiped else ClusterSaveResult.Stale)
+                        throw Rollback(if (gate.wiped(generation)) ClusterSaveResult.Wiped else ClusterSaveResult.Stale)
                     }
                     saved += SavedMemory(summaryId, reps, null)
                     val all = (members.getValue(c.clusterId) + reps).distinct().filter { it in live }
@@ -117,10 +117,10 @@ object ClusterSave {
     }
 
     /** The frames of [ids] that still exist and were not forgotten (tombstoned). */
-    private suspend fun liveFrames(context: Context, ids: List<String>): Set<String> {
+    private suspend fun liveFrames(gate: com.rokid.context.provenance.ProvenanceGate, context: Context, ids: List<String>): Set<String> {
         val db = MemoryGraph.get(context).db
         return ids.chunked(MAX_IN).flatMap { chunk ->
-            val gone = db.forgetDao().tombstoned(chunk).toSet()
+            val gone = gate.goneFrames(chunk.toSet(), requirePresent = false)
             db.frameDao().byIds(chunk).map { it.id }.filter { it !in gone }
         }.toSet()
     }

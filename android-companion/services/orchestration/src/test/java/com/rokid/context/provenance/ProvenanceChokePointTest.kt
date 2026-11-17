@@ -28,21 +28,12 @@ class ProvenanceChokePointTest {
 
     /** Known sites outside the gate, per file: (primitive count). Migrate one to the gate, then lower the number here. Never raise it. */
     private val RATCHET = mapOf(
-        "phone/src/main/java/com/rokid/context/phone/canvas/api/CanvasBackendImpl.kt" to 6,
-        "services/orchestration/src/main/java/com/rokid/context/canvas/AskDebug.kt" to 2,
-        "services/orchestration/src/main/java/com/rokid/context/canvas/CanvasRunner.kt" to 1,
-        "services/orchestration/src/main/java/com/rokid/context/canvas/LiveExtract.kt" to 3,
-        "services/orchestration/src/main/java/com/rokid/context/canvas/moment/DaoMomentSource.kt" to 1,
-        "services/orchestration/src/main/java/com/rokid/context/canvas/moment/MomentBuilder.kt" to 1,
-        "services/orchestration/src/main/java/com/rokid/context/data/runtime/QueueRuntimeStore.kt" to 1,
-        "services/orchestration/src/main/java/com/rokid/context/orchestration/ExtractSave.kt" to 2,
-        "services/orchestration/src/main/java/com/rokid/context/orchestration/PipelineRecords.kt" to 1, // existing(): the extraction lock on a frame listing
-        "services/orchestration/src/main/java/com/rokid/context/orchestration/forget/ResummarizeWorker.kt" to 2,
-        "services/orchestration/src/main/java/com/rokid/context/work/OrchestrationScheduler.kt" to 1,
-        "services/orchestration/src/main/java/com/rokid/context/work/QueueDrainWorker.kt" to 2,
-        "services/orchestration/src/main/java/com/rokid/context/work/frames/intent/IntentSamplers.kt" to 1,
-        "services/orchestration/src/main/java/com/rokid/context/work/frames/place/PlaceSamplers.kt" to 1,
-        "services/orchestration/src/main/java/com/rokid/context/work/frames/scene/ClusterSave.kt" to 3,
+        "phone/src/main/java/com/rokid/context/phone/canvas/api/CanvasBackendImpl.kt" to 4, // ForgetFence.liveIds/allLive (the gate's catch-all differs) and 2x CanvasDao.tombstonedAmong; see the ratchet notes of the privacy spec
+        "services/orchestration/src/main/java/com/rokid/context/canvas/AskDebug.kt" to 2, // CanvasDao.tombstonedAmong counts
+        "services/orchestration/src/main/java/com/rokid/context/canvas/CanvasRunner.kt" to 1, // CanvasDao.tombstonedAmong + labelsMissing in one pre-call fence
+        "services/orchestration/src/main/java/com/rokid/context/canvas/LiveExtract.kt" to 1, // CanvasDao.tombstonedAmong (a seam the LiveExtract fakes replace)
+        "services/orchestration/src/main/java/com/rokid/context/canvas/moment/DaoMomentSource.kt" to 1, // MOMENT tombstones, not photo tombstones
+        "services/orchestration/src/main/java/com/rokid/context/canvas/moment/MomentBuilder.kt" to 1, // MOMENT tombstones, not photo tombstones
     )
 
     internal fun rawCount(text: String) = RAW.sumOf { (_, re) -> text.lines().filterNot { it.trimStart().startsWith("//") || it.trimStart().startsWith("*") || it.trimStart().startsWith("/*") }.sumOf { re.findAll(it).count() } }

@@ -114,7 +114,8 @@ object LiveExtract {
                 val pub = deps.dao.activeInterpreter()?.takeIf { it.mode == LiveMode.SHADOW.name } ?: return
                 // privacy: the photos were loaded before the live save; a Delete all or a Forget since then must stop the run BEFORE any model call
                 val ids = photos.map { it.frameId }
-                if (MemoryWipe.generation.get() != generation || deps.dao.tombstonedAmong(ids) > 0) return
+                // the wipe rule is the gate's; the tombstone read stays on the canvas DAO (a seam the fakes of LiveExtract tests replace), see the ratchet notes of the privacy spec
+                if (com.rokid.context.provenance.ProvenanceGate.isWiped(generation) || deps.dao.tombstonedAmong(ids) > 0) return
                 val outcome = interpret(deps, pub, "SHADOW", photos) { deps.context("shadow:${pub.id}", CallClass.EXPERIMENT, liveness) }
                 val traces = when (outcome) {
                     is PipelineInterpreter.Outcome.Extracted -> outcome.traces
@@ -152,7 +153,7 @@ object LiveExtract {
         if (committed && !effects.fellBack) {
             for ((frameId, label) in effects.labels) {
                 if (frameId !in savedFrames) continue
-                if (MemoryWipe.generation.get() != generation) break
+                if (com.rokid.context.provenance.ProvenanceGate.isWiped(generation)) break
                 try { deps.sink.record(frameId, label.first, label.second, deps.clock()) }
                 catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.w(TAG, "intent sink failed: ${e.javaClass.simpleName}") }
             }
