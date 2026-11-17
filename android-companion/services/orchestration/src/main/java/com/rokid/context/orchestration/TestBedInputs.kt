@@ -71,6 +71,7 @@ class TestBedInputs(
             PromptKey.PLACE_MATCH -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("candidates", text.lines().filter { it.isNotBlank() })), frameFor(input)?.let { FrameInputs.fromFrames(listOf(it), 1) }.orEmpty(), emptySet())
             // The question is the editor's text; no photo, no memory.
             PromptKey.TIME_ANCHOR -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("question", listOf(text))), emptyList(), emptySet())
+            PromptKey.CONDENSE_QUERY -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("question", listOf(text))), emptyList(), emptySet())
             PromptKey.EXPLICIT_REMEMBER -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(text))), emptyList(), emptySet())
             PromptKey.SUMMARIZE -> Prepared(
                 PromptVars(recentContext = PromptComposer.dataBlock("memories", text.lines().filter { it.isNotBlank() }) + "\n" + PromptComposer.dataBlock("critic_notes", listOf("test run"))),

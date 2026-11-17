@@ -34,7 +34,13 @@ enum class RagType { TEXT, IMAGE }
  * One retrieval request: [text] and/or [vector] (a photo's image embedding, e.g. a later Nudge trigger). With a [vector] the photo store is searched
  * by it; with only [text] by words (what an Ask does for its photo lines). [type] says which kind the query is.
  */
-class RagQuery(val text: String? = null, val vector: FloatArray? = null, val vectorSpace: String? = null) {
+class RagQuery(
+    val text: String? = null, val vector: FloatArray? = null, val vectorSpace: String? = null,
+    /** The `rag.condense` node (spec section 10, T10): the words the memory and photo SEARCH uses instead of [text] (the question as asked still drives the ordering words and the answer). Null = [text]. */
+    val search: String? = null,
+    /** A second WORD search over the memories, in the question's own language; its hits join the first search's (T10). Null = none. */
+    val probe: String? = null,
+) {
     val type: RagType get() = if (vector != null) RagType.IMAGE else RagType.TEXT
 }
 
@@ -196,13 +202,13 @@ class RagCore(
         // A windowed memory store runs first: the window that survives its widening is the one the photos are searched in (otherwise the order below is unchanged).
         var store: MemoryStoreResult? = null
         val windowedSrc = sources.filterIsInstance<RagSource.MemoryStore>().firstOrNull()?.takeIf { it.window != null && query.text != null }
-        if (windowedSrc != null) store = memoryStore(query.text!!, windowedSrc, s, params, nowMs)
+        if (windowedSrc != null) store = memoryStore(query.text!!, windowedSrc, s, params, nowMs, query.search ?: query.text, query.probe)
         val photoWin = store?.windowUsed
         val recalled = if (photoSrc == null) emptyList() else when {
             query.vector != null -> recalledByVector(query.vector, query.vectorSpace, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
             query.text != null && photoSrc.windowMs == null && photoWin != null ->
-                recalledPhotos(query.text, nowMs, minOf(photoSrc.notAfterMs ?: Long.MAX_VALUE, photoWin.toMs - 1), photoWin.fromMs)
-            query.text != null -> recalledPhotos(query.text, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
+                recalledPhotos(query.search ?: query.text, nowMs, minOf(photoSrc.notAfterMs ?: Long.MAX_VALUE, photoWin.toMs - 1), photoWin.fromMs)
+            query.text != null -> recalledPhotos(query.search ?: query.text, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
             else -> emptyList()
         }
         val photoPart = photoPart(fenceCites(recalled), params.charBound)
@@ -212,7 +218,7 @@ class RagCore(
         val recentFound = mutableListOf<MemoryEntity>()
         var history: List<Pair<NudgeEntity, List<String>>>? = null
         for (src in sources) when (src) {
-            is RagSource.MemoryStore -> if (query.text != null && store == null) store = memoryStore(query.text, src, s, params, nowMs)
+            is RagSource.MemoryStore -> if (query.text != null && store == null) store = memoryStore(query.text, src, s, params, nowMs, query.search ?: query.text, query.probe)
             is RagSource.RecentWindow -> recentFound += recent(nowMs, src.windowMs, params.recentCap)
             is RagSource.Explicit -> recentFound += explicit(src.memoryIds)
             is RagSource.NudgeHistory -> if (history == null) history = nudgeHistory(nowMs - src.windowMs)
@@ -283,7 +289,7 @@ class RagCore(
         return OrderRules.pick(d, cands, spec, m.topK, zone(), budget) { compactLine(it.memory, it.at).length }
     }
 
-    private suspend fun memoryStore(q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long): MemoryStoreResult {
+    private suspend fun memoryStore(q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long, search: String = q, probe: String? = null): MemoryStoreResult {
         val asked = src.window
         // Spec section 5: the question's words pick an ordering; a row that needs many candidates asks the retriever for a bigger pool.
         val stateDefault = src.order == null && src.stateNewest && OrderRules.isStateQuestion(q)
@@ -300,8 +306,12 @@ class RagCore(
         var step = 0
         for ((i, w) in steps.withIndex()) {
             step = i
-            r = retriever?.retrieveWindowed(q, s, nowMs, pool, src.notAfterMs, w?.let { EventWindow(it.fromMs, it.toMs) })
-            if (w == null || (r != null && windowRelevant(q, asked?.phrase, r))) break
+            val ev = w?.let { EventWindow(it.fromMs, it.toMs) }
+            r = retriever?.retrieveWindowed(search, s, nowMs, pool, src.notAfterMs, ev)
+            // T10: the question in its own language is a second WORD search (a voice transcript may be in it); only the first search says what ran.
+            if (r != null && probe != null && probe != search)
+                retriever?.retrieveWindowed(probe, s.copy(mode = com.rokid.context.memory.retrieval.RetrievalMode.LEXICAL), nowMs, pool, src.notAfterMs, ev)?.let { r = withProbe(r!!, it, pool ?: s.topK) }
+            if (w == null || (r != null && windowRelevant(search, asked?.phrase, r))) break
         }
         val fallback = r == null || r.hits.isEmpty()
         // No hits: the newest trusted memories, under the same minConfidence and top-k the retriever applies.
@@ -312,6 +322,19 @@ class RagCore(
             fence(poolAll), fallback, r, if (asked == null) null else windowNote(asked, if (fallback) null else steps[step], step), used,
             decision, spec, asked, s.topK, s.minConfidence,
         )
+    }
+
+    /** T10: [first] with the hits of the own-language word search added, alternating by rank (first's best, probe's best, ...), no memory twice, at most [topK]. Scores stay each search's own. */
+    internal fun withProbe(first: com.rokid.context.memory.retrieval.RetrievalResult, probe: com.rokid.context.memory.retrieval.RetrievalResult, topK: Int): com.rokid.context.memory.retrieval.RetrievalResult {
+        val seen = HashSet<String>()
+        val extra = probe.hits.filter { p -> first.hits.none { it.memory.id == p.memory.id } }
+        val merged = buildList {
+            for (i in 0 until maxOf(first.hits.size, extra.size)) {
+                first.hits.getOrNull(i)?.let { if (seen.add(it.memory.id)) add(it) }
+                extra.getOrNull(i)?.let { if (seen.add(it.memory.id)) add(it) }
+            }
+        }.take(topK)
+        return first.copy(hits = merged)
     }
 
     /** The first line of the memories block (spec section 4). [used]: the window that ran (null = none, the memories are from other dates). Fixed words plus the window's own label and phrase. */

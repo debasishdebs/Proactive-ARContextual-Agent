@@ -30,6 +30,7 @@ import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.orchestration.retrieval.LlmWindowResolver
+import com.rokid.context.orchestration.retrieval.QueryCondenser
 import com.rokid.context.orchestration.retrieval.TimeWindow
 import com.rokid.context.orchestration.retrieval.WindowResolver
 import com.rokid.context.prompt.PromptComposer
@@ -126,6 +127,8 @@ class AnswerService(
     private val llmWindows: WindowResolver? = null,
     /** Z1: the pause-zone fence. Refuses the model call and the delivery while a zone is active; [AskZoneGuard.None] = no fence (tests of the pure parts). */
     private val zoneGuard: AskZoneGuard = AskZoneGuard.None,
+    /** The `rag.condense` node's model call (T10). Null = a [QueryCondenser] over this service's own runner (the normal text-call gates); a test passes its own. */
+    private val condenser: QueryCondenser? = null,
 ) {
     /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
     data class Retrieved(
@@ -160,6 +163,31 @@ class AnswerService(
         } catch (c: CancellationException) { throw c } catch (e: Exception) {
             PcLog.i(TAG, "time window unavailable (${e.javaClass.simpleName})"); null
         }
+
+    /**
+     * T10 `rag.condense`: the search words of [q] (null = search the question as asked). The one CONDENSE_QUERY call is part of the Ask dispatch: it is fenced like the Answer call (the pause-zone
+     * check first, then the call under the Ask's ticket because [retrieve] runs inside it), goes through the runner and the router like any text call (the user's text gates, the pause, the budget
+     * class), and carries only the question and the date ([com.rokid.context.model.PayloadSources.NONE]). Never fails the ask: only a zone block and a cancellation propagate.
+     */
+    private suspend fun condensedQuery(q: String, nowMs: Long, spec: com.rokid.context.ai.canvas.CondenseSpec): QueryCondenser.Condensed? {
+        zoneGuard.check()
+        return try { (condenser ?: defaultCondenser).condense(q, nowMs, zone(), spec.translate) } catch (c: CancellationException) { throw c } catch (z: AskZoneBlockedException) { throw z } catch (e: Exception) {
+            PcLog.i(TAG, "query condensing unavailable (${e.javaClass.simpleName})"); null
+        }
+    }
+
+    private val defaultCondenser: QueryCondenser by lazy { QueryCondenser(ask = ::condenseCall) }
+
+    /** The one CONDENSE_QUERY call: the question (as a data block) and today's date; no memory, photo or label. A broken contract is null (the raw question is searched). */
+    private suspend fun condenseCall(question: String, nowMs: Long, z: ZoneId): com.rokid.context.ai.contract.CondenseOutput? {
+        val today = java.time.Instant.ofEpochMilli(nowMs).atZone(z)
+        val vars = PromptVars(recentContext = PromptComposer.dataBlock("question", listOf(question)) + "\nToday: ${today.toLocalDate()} (${today.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.ENGLISH)})")
+        return try {
+            runner.run(RoleCall(PromptKey.CONDENSE_QUERY, vars, callClass = com.rokid.context.model.CallClass.USER, sources = com.rokid.context.model.PayloadSources.NONE)).output as? com.rokid.context.ai.contract.CondenseOutput
+        } catch (e: ModelCallException) {
+            if (e.kind == FailureKind.INVALID_OUTPUT) null else throw e
+        }
+    }
 
     private val defaultLlmWindows: WindowResolver by lazy { LlmWindowResolver(ask = ::timeAnchor, anchor = ::eventEpisode) }
 
@@ -197,7 +225,9 @@ class AnswerService(
         val q = AskText.collapse(question).take(MAX_QUESTION)
         val builtIn = plan == FlowPlan.BUILT_IN_QUERY
         val ragSources = plan.askSources(windowOf(q, nowMs, plan.window)).map { if (builtIn && it is RagSource.MemoryStore) it.copy(stateNewest = true) else it }
-        val c = rag.retrieve(RagQuery(q), ragSources, plan.ragParams(), nowMs)
+        // T10: the search words (and the own-language probe) replace the question for the SEARCH only; the Answer prompt below still gets the original question.
+        val condensed = plan.condense?.let { condensedQuery(q, nowMs, it) }
+        val c = rag.retrieve(RagQuery(q, search = condensed?.query, probe = condensed?.probe), ragSources, plan.ragParams(), nowMs)
         return Retrieved(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
