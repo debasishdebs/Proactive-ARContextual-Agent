@@ -57,7 +57,7 @@ object PipelineRecords {
 
     /** Real, on-disk `rokid*` frames that no Forget has tombstoned (the extraction lock, spec §6.1.1). */
     private suspend fun existing(g: MemoryGraph, list: List<FrameEntity>): List<FrameEntity> {
-        val locked = list.map { it.id }.distinct().chunked(MAX_IN).flatMap { g.db.forgetDao().tombstoned(it) }.toSet()
+        val locked = list.map { it.id }.distinct().chunked(MAX_IN).flatMap { com.rokid.context.provenance.ProvenanceGate(g.db).goneFrames(it.toSet(), requirePresent = false) }.toSet()
         return withContext(Dispatchers.IO) {
             list.filter { it.id !in locked && it.source.startsWith("rokid", ignoreCase = true) && it.path.isNotBlank() && File(it.path).exists() }
         }

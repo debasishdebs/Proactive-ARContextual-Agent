@@ -137,8 +137,14 @@ class ProvenanceGate(
         }
     }
 
+    /** True when a Delete all ran since [generation] was read (the wipe rule of [check], for flows that have no sources to name). */
+    fun wiped(generation: Long): Boolean = currentGeneration() != generation
+
     companion object {
         private const val MAX_IN = 500
+
+        /** The wipe rule for code that holds no database: a Delete all ran since [generation] was read. Same rule as [wiped] over the app's wipe counter. */
+        fun isWiped(generation: Long): Boolean = MemoryWipe.generation.get() != generation
 
         /** The gate over the app's memory database, with the Place Guide zone fence supplied by the caller (the orchestration layer's `PlaceGraph.fence::blocked`). */
         fun forGraph(g: MemoryGraph, zoneBlocked: () -> Boolean = { false }) = ProvenanceGate(g.db, zoneBlocked)

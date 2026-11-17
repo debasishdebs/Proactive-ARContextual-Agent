@@ -104,7 +104,7 @@ object QueueRuntimeStore {
         personaSnapshot: String,
         ttlHours: Int = 24,
     ): QueueJobRecord? = synchronized(lock) {
-        if (MemoryWipe.generation.get() != generation) null else enqueue(context, queue, payload, personaSnapshot, ttlHours)
+        if (com.rokid.context.provenance.ProvenanceGate.isWiped(generation)) null else enqueue(context, queue, payload, personaSnapshot, ttlHours)
     }
 
     fun claimNextReady(context: Context, nowEpochMs: Long = System.currentTimeMillis()): QueueJobRecord? {

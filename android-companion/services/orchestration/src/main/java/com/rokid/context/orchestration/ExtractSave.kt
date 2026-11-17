@@ -188,11 +188,12 @@ object ExtractSave {
         }
         val facts = output.facts.filter { it.text.isNotBlank() }
         return try {
+            val gate = com.rokid.context.provenance.ProvenanceGate(db)
             db.withTransaction {
-                if (MemoryWipe.generation.get() != generation) throw Rollback(ExtractSaveResult.Wiped)
+                if (gate.wiped(generation)) throw Rollback(ExtractSaveResult.Wiped)
                 val allCarried = (facts.mapIndexed { i, f -> carriedOf(f.sourceFrameIds.filter { it in sentFrameIds }.ifEmpty { sentFrameIds.take(1) }, i) } +
                     output.captions.map { carriedOf(listOf(it.frameId), null) }).flatten().toSet()
-                if (allCarried.isNotEmpty() && allCarried.toList().chunked(500).any { db.forgetDao().tombstoned(it).isNotEmpty() }) {
+                if (allCarried.isNotEmpty() && gate.goneFrames(allCarried, requirePresent = false).isNotEmpty()) {
                     PcLog.i(TAG, "extraction dropped: a source photo was forgotten")
                     throw Rollback(ExtractSaveResult.StaleClaim)
                 }

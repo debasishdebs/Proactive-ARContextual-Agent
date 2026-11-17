@@ -29,7 +29,7 @@ class RoomIntentFrameStore(private val db: () -> ContextDatabase) : IntentFrameS
     override suspend fun setIntentIfUnlabelled(frameId: String, label: String, conf: Float, at: Long): Int =
         db().frameMetaDao().setIntentIfUnlabelled(frameId, label, conf, at)
 
-    override suspend fun tombstoned(frameId: String): Boolean = db().forgetDao().tombstoned(listOf(frameId)).isNotEmpty()
+    override suspend fun tombstoned(frameId: String): Boolean = com.rokid.context.provenance.ProvenanceGate(db()).goneFrames(setOf(frameId), requirePresent = false).isNotEmpty()
 }
 
 /** The production [IntentSampler]: one photo per call through INTENT_CLASSIFY, gated like the extraction pipeline. */

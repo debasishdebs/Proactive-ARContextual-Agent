@@ -130,7 +130,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
     private suspend fun process(old: MemoryEntity, inCycle: Boolean, generation: Long): Boolean {
         val sources = if (inCycle) emptyList() else liveSources(old.id)
         if (sources.isEmpty()) return db.withTransaction {
-            if (MemoryWipe.generation.get() != generation) return@withTransaction false
+            if (com.rokid.context.provenance.ProvenanceGate(db).wiped(generation)) return@withTransaction false
             drop(old.id)
             true
         }
@@ -148,7 +148,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
             if (text.isEmpty()) throw IllegalStateException("empty summary")
             val newId = "$PREFIX${UUID.randomUUID()}"
             val committed = lease.commit(db, checkLive = false) {
-                if (MemoryWipe.generation.get() != generation) return@commit false
+                if (com.rokid.context.provenance.ProvenanceGate(db).wiped(generation)) return@commit false
                 // Forget fence: a source forgotten during the model call means the output may hold forgotten text.
                 val now = liveSources(old.id).map { it.id }.toSet()
                 if (now != sources.map { it.id }.toSet() || dao.memories(listOf(old.id)).isEmpty()) return@commit false

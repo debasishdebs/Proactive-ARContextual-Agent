@@ -35,7 +35,7 @@ class RoomPlaceFrameStore(private val db: () -> com.rokid.context.memory.db.Cont
         return PlaceFrame(m.frameId, cap)
     }
 
-    override suspend fun tombstoned(frameId: String): Boolean = db().forgetDao().tombstoned(listOf(frameId)).isNotEmpty()
+    override suspend fun tombstoned(frameId: String): Boolean = com.rokid.context.provenance.ProvenanceGate(db()).goneFrames(setOf(frameId), requirePresent = false).isNotEmpty()
 }
 
 /**

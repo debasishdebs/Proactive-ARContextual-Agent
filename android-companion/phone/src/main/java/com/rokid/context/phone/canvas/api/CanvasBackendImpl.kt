@@ -582,7 +582,7 @@ class CanvasBackendImpl(
         val image = if (!thumb) FrameImage(bytes, type) else withContext(Dispatchers.Default) { thumbnailer(bytes) }?.let { FrameImage(it, "image/jpeg") } ?: return null
         // like a live Ask (S35), as late as possible (after the decode, right before the answer is built): a Forget or a Delete all that landed
         // while the file was opened or decoded means nothing is served
-        if (MemoryWipe.generation.get() != generation || dao.tombstonedAmong(listOf(id)) > 0 || PipelineRecords.framesByIds(app, listOf(id)).isEmpty()) return null
+        if (com.rokid.context.provenance.ProvenanceGate.isWiped(generation) || dao.tombstonedAmong(listOf(id)) > 0 || PipelineRecords.framesByIds(app, listOf(id)).isEmpty()) return null
         return image
     }
 
@@ -771,7 +771,7 @@ class CanvasBackendImpl(
         val returned = gathered.mapNotNull { it.memoryId } + citedFrames.map { photoPrefix + it }
         class Snapshot(val ask: com.rokid.context.memory.db.AskEntity, val gonePhotos: Set<String>, val moments: List<List<String>>, val momentTypes: List<String?>, val capturedAt: Map<String, Long?>)
         val snap = graph.db.withTransaction {
-            if (MemoryWipe.generation.get() != generation) throw com.rokid.context.canvas.AskRedacted()
+            if (com.rokid.context.provenance.ProvenanceGate.isWiped(generation)) throw com.rokid.context.canvas.AskRedacted()
             val now = dao.ask(answered.askId)
             if (now == null || now.redacted || now.sourcesJson != row.sourcesJson) throw com.rokid.context.canvas.AskRedacted()
             if (!com.rokid.context.memory.forget.ForgetFence.allLive(graph.db, deps + returned)) throw com.rokid.context.canvas.AskRedacted()
