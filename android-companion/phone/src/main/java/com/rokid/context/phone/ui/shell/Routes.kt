@@ -95,10 +95,11 @@ object Routes {
     fun startRoute(onboardingComplete: Boolean) = if (onboardingComplete) HOME else ONBOARDING
 
     /** [route] is the destination's pattern (`NavDestination.route`). */
-    fun tabFor(route: String?, previewRef: String? = null): Tab? = when {
+    fun tabFor(route: String?, previewRef: String? = null, openedFrom: Tab? = null): Tab? = when {
         route == null || route == ONBOARDING -> null
-        // An answer or a nudge is opened from Home; every other item is Activity's.
-        route == HOME || (route.startsWith("preview/") && previewRef?.let { it.startsWith("ask:") || it.startsWith("nudge:") } == true) -> Tab.HOME
+        // An answer or a nudge is opened from Home unless Activity (its Answers list, a day, a list) opened it ([openedFrom] = the tab of the screen below it); every other item is Activity's.
+        route == HOME -> Tab.HOME
+        route.startsWith("preview/") && previewRef?.let { it.startsWith("ask:") || it.startsWith("nudge:") } == true -> if (openedFrom == Tab.ACTIVITY) Tab.ACTIVITY else Tab.HOME
         route.startsWith("activity") || route.startsWith("day/") || route.startsWith("photos") || route.startsWith("preview/") || route.startsWith("list/") -> Tab.ACTIVITY
         route.startsWith("settings") -> Tab.SETTINGS
         else -> null

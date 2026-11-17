@@ -213,12 +213,16 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 }
 
 @Composable
-fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit) {
+fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }) {
     val vm = viewModel { PlaceGuideViewModel(control) }
     val state by vm.state.collectAsStateWithLifecycle()
-    androidx.compose.runtime.DisposableEffect(vm) { onDispose { vm.cancelPin() } } // leaving the screen drops an unused position
+    // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
+    androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
     PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin))
 }
+
+/** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */
+internal fun dropsDraftOnDispose(changingConfigurations: Boolean): Boolean = !changingConfigurations
 
 class PlaceGuideActions(
     val setBudget: (Int) -> Unit = {}, val askClear: () -> Unit = {}, val confirmClear: () -> Unit = {}, val cancelClear: () -> Unit = {},

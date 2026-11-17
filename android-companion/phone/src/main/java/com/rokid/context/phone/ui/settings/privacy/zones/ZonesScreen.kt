@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -270,11 +271,45 @@ private fun MapButton(text: String, tag: String, onClick: () -> Unit) {
     TextButton(onClick, Modifier.testTag(tag)) { Text(text, style = MaterialTheme.typography.labelLarge) }
 }
 
-/** drawText derives its max constraints from canvas size minus offset; off-canvas labels made them negative and crashed. Skip those, clamp the rest. */
-internal fun DrawScope.drawLabel(tm: TextMeasurer, text: String, at: Offset, style: TextStyle) {
-    val w = size.width - at.x; val h = size.height - at.y
-    if (!at.x.isFinite() || !at.y.isFinite() || w < 1f || h < 1f || at.x + 4096f < 0f) return
-    drawText(tm, text, at, style, size = Size(w, h))
+/**
+ * Lays [text] out with explicit, never-negative constraints and draws it. A tick label ([shift] false) is one line starting at [at] (skipped when off-canvas);
+ * a zone name ([shift] true) is wrapped at a sensible max width and slid left when it would run off the right edge, so it is never one character wide.
+ * Returns the label's right edge (canvas px), or null when it was skipped.
+ */
+internal fun DrawScope.drawLabel(tm: TextMeasurer, text: String, at: Offset, style: TextStyle, shift: Boolean = false): Float? {
+    if (!at.x.isFinite() || !at.y.isFinite() || size.height - at.y < 1f || at.x + 4096f < 0f) return null
+    val maxW = if (shift) minOf(size.width - 4f, LABEL_MAX_WIDTH_DP.dp.toPx()) else size.width - at.x
+    if (maxW < 1f) return null
+    val layout = tm.measure(text, style, softWrap = shift, constraints = Constraints(maxWidth = maxW.toInt().coerceAtLeast(1)))
+    val x = if (shift) at.x.coerceAtMost(size.width - layout.size.width).coerceAtLeast(0f) else at.x
+    drawText(layout, topLeft = Offset(x, at.y))
+    return x + layout.size.width
+}
+
+private const val LABEL_MAX_WIDTH_DP = 160
+private const val TICK_GAP_PX = 6f
+
+/** One longitude gridline: its x, and its label (null when the label would overlap the previous kept one) with the label's [left, right] edges. */
+internal class LonTick(val x: Float, val text: String?, val left: Float, val right: Float)
+
+internal fun DrawScope.lonTicks(v: MapViewport, tm: TextMeasurer, label: TextStyle): List<LonTick> {
+    val step = v.gridStepDeg()
+    val tl = v.toLatLon(0f, 0f); val br = v.toLatLon(size.width, size.height)
+    val decimals = if (step < 0.001) 4 else if (step < 0.01) 3 else if (step < 0.1) 2 else if (step < 1.0) 1 else 0
+    val out = ArrayList<LonTick>()
+    var lon = floor(tl.lon / step) * step
+    var n = 0
+    var lastRight = Float.NEGATIVE_INFINITY
+    while (lon <= br.lon && n++ < 200) {
+        val x = v.toPx(v.centerLat, lon).x
+        val text = degText(lon, decimals, "E", "W")
+        val w = tm.measure(text, label, softWrap = false).size.width
+        val keep = x + 2f >= lastRight + TICK_GAP_PX
+        if (keep) lastRight = x + 2f + w
+        out += LonTick(x, if (keep) text else null, x + 2f, x + 2f + w)
+        lon += step
+    }
+    return out
 }
 
 internal fun DrawScope.drawGrid(v: MapViewport, tm: TextMeasurer) {
@@ -282,16 +317,12 @@ internal fun DrawScope.drawGrid(v: MapViewport, tm: TextMeasurer) {
     val tl = v.toLatLon(0f, 0f); val br = v.toLatLon(size.width, size.height)
     val label = TextStyle(fontSize = 10.sp, color = PcColors.InkSoft)
     val decimals = if (step < 0.001) 4 else if (step < 0.01) 3 else if (step < 0.1) 2 else if (step < 1.0) 1 else 0
-    var lon = floor(tl.lon / step) * step
-    var n = 0
-    while (lon <= br.lon && n++ < 200) {
-        val x = v.toPx(v.centerLat, lon).x
-        drawLine(PcColors.Line, Offset(x, 0f), Offset(x, size.height), 1f)
-        drawLabel(tm, degText(lon, decimals, "E", "W"), Offset(x + 2f, size.height - 14.sp.toPx()), label)
-        lon += step
+    for (t in lonTicks(v, tm, label)) {
+        drawLine(PcColors.Line, Offset(t.x, 0f), Offset(t.x, size.height), 1f)
+        t.text?.let { drawLabel(tm, it, Offset(t.x + 2f, size.height - 14.sp.toPx()), label) }
     }
     var lat = floor(br.lat / step) * step
-    n = 0
+    var n = 0
     while (lat <= tl.lat && n++ < 200) {
         val y = v.toPx(lat, v.centerLon).y
         drawLine(PcColors.Line, Offset(0f, y), Offset(size.width, y), 1f)
@@ -307,7 +338,7 @@ internal fun DrawScope.drawZone(v: MapViewport, z: PauseZone, tm: TextMeasurer, 
     drawBox(v, MapViewport.ringOf(z), c.copy(alpha = 0.7f), filled = false, dashed = true)
     drawBox(v, doubleArrayOf(z.south, z.west, z.north, z.east), c, filled = true, dashed = false)
     val p = v.toPx(z.north, z.west)
-    drawLabel(tm, z.name, Offset(p.x + 4f, p.y + 2f), TextStyle(fontSize = 11.sp, color = Color(0xFF7A1010)))
+    drawLabel(tm, z.name, Offset(p.x + 4f, p.y + 2f), TextStyle(fontSize = 11.sp, color = Color(0xFF7A1010)), shift = true)
 }
 
 private fun DrawScope.drawBox(v: MapViewport, b: DoubleArray, color: Color, filled: Boolean, dashed: Boolean) {

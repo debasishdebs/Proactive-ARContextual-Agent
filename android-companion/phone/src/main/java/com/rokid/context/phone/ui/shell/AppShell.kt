@@ -105,7 +105,10 @@ fun AppShell(
                 }
                 PillNav(
                     items = TABS,
-                    selectedRoute = Routes.tabFor(route, entry?.arguments?.getString("ref"))?.route.orEmpty(),
+                    selectedRoute = Routes.tabFor(
+                        route, entry?.arguments?.getString("ref"),
+                        entry?.let { nav.previousBackStackEntry }?.let { Routes.tabFor(it.destination.route, it.arguments?.getString("ref")) },
+                    )?.route.orEmpty(),
                     onSelect = { tab ->
                         nav.navigate(tab) {
                             popUpTo(Routes.HOME) { saveState = false }

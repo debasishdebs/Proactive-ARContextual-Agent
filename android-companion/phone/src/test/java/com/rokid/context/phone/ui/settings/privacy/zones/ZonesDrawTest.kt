@@ -10,6 +10,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.zone.PauseZone
+import androidx.compose.ui.unit.sp
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -45,6 +47,41 @@ class ZonesDrawTest {
             // zone on the very edge / mostly off-screen: its name label lands past the canvas bottom-right
             draw(w, h, MapViewport(17.3600, 78.4760, 50_000.0, w.toFloat(), h.toFloat()), listOf(charminar))
             draw(w, h, MapViewport(17.2, 78.3, 50_000.0, w.toFloat(), h.toFloat()), listOf(charminar))
+        }
+    }
+
+    private val jarawa = PauseZone(id = "j", name = "Jarawa reserve (Andaman Trunk Road)", south = 11.5, west = 92.4, north = 12.0, east = 92.7, bufferM = 5000, enabled = true)
+
+    private fun scope(w: Int, h: Int, block: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit) =
+        CanvasDrawScope().draw(density, LayoutDirection.Ltr, Canvas(android.graphics.Canvas()), androidx.compose.ui.geometry.Size(w.toFloat(), h.toFloat()), block)
+
+    @Test fun aLongZoneNameNearTheRightEdgeSlidesLeftAndIsNeverOneCharacterWide() {
+        val w = 1080; val h = 600
+        var right: Float? = null; var lines = 99
+        scope(w, h) {
+            val style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp)
+            // label anchored 6 px from the right edge: used to be laid out in a 6 px wide column
+            right = drawLabel(tm, jarawa.name, androidx.compose.ui.geometry.Offset(w - 6f, 20f), style, shift = true)
+            lines = tm.measure(jarawa.name, style, softWrap = true, constraints = androidx.compose.ui.unit.Constraints(maxWidth = (160 * 2))).lineCount
+        }
+        assertTrue("label stays on the canvas", right!! <= w + 0.5f)
+        assertTrue("label wraps into few lines, not a one-character column", lines <= 4)
+        draw(w, h, MapViewport(11.75, 92.7, 200_000.0, w.toFloat(), h.toFloat()), listOf(jarawa))
+        draw(320, 640, MapViewport.default(320f, 640f), listOf(jarawa))
+    }
+
+    @Test fun longitudeTickLabelsAreSkippedWhenTheyWouldOverlapWhenZoomedIn() {
+        val w = 1080; val h = 600
+        var kept = emptyList<LonTick>(); var all = 0
+        for (span in listOf(60.0, 400.0, 2_000.0, 20_000.0)) {
+            val v = MapViewport(17.3616, 78.4747, span, w.toFloat(), h.toFloat())
+            scope(w, h) {
+                val ticks = lonTicks(v, tm, androidx.compose.ui.text.TextStyle(fontSize = 10.sp)); all += ticks.size
+                kept = ticks.filter { it.text != null }
+                drawGrid(v, tm)
+            }
+            for ((a, b) in kept.zipWithNext()) assertTrue("labels ${a.left}..${a.right} and ${b.left} overlap (span $span)", a.right <= b.left)
+            assertTrue(kept.isNotEmpty())
         }
     }
 }
