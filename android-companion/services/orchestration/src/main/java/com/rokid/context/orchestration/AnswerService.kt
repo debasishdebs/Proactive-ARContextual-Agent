@@ -189,7 +189,9 @@ class AnswerService(
     /** [plan]: the sources and params of the Query flow; the built-in plan is today's Ask (the memory and photo stores, the user's settings). */
     suspend fun retrieve(question: String, nowMs: Long, plan: FlowPlan = FlowPlan.BUILT_IN_QUERY): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val c = rag.retrieve(RagQuery(q), plan.askSources(windowOf(q, nowMs, plan.window)), plan.ragParams(), nowMs)
+        val builtIn = plan == FlowPlan.BUILT_IN_QUERY
+        val ragSources = plan.askSources(windowOf(q, nowMs, plan.window)).map { if (builtIn && it is RagSource.MemoryStore) it.copy(stateNewest = true) else it }
+        val c = rag.retrieve(RagQuery(q), ragSources, plan.ragParams(), nowMs)
         return Retrieved(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
@@ -224,7 +226,7 @@ class AnswerService(
         withSources: Boolean = true,
     ): ScoredRetrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val c = rag.retrieve(RagQuery(q), listOf(RagSource.MemoryStore(notAfterMs, windowOf(q, nowMs))), params, nowMs)
+        val c = rag.retrieve(RagQuery(q), listOf(RagSource.MemoryStore(notAfterMs, windowOf(q, nowMs), stateNewest = true)), params, nowMs)
         val vars = PromptVars(
             question = PromptComposer.dataBlock("question", listOf(q)),
             retrievedMemories = PromptComposer.dataBlock("memories", listOfNotNull(c.windowNote) + c.memoryLines),

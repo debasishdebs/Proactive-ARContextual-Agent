@@ -102,7 +102,7 @@ class ProvenanceChokePointTest {
         } finally { dir.deleteRecursively() }
     }
 
-    /** A prompt built from photo-derived variables must declare stored sources: a call that interpolates these into its prompt with `PayloadSources.NONE` (or no sources) fails. */
+    /** A prompt built from photo-derived variables must declare stored sources: a call that interpolates these into its prompt with `PayloadSources.NONE`, or with no `sources` argument at all (the default is NONE), fails. */
     @Test fun noModelCallBuildsPhotoDerivedTextWithSourcesNone() {
         val derived = Regex("""\b(caption|ocrText|sceneText|sceneSummary|photoLines|photoText)\b""")
         val bad = mutableListOf<String>()
@@ -114,7 +114,9 @@ class ProvenanceChokePointTest {
                 var depth = 0; var end = text.length
                 for (i in m.range.last until text.length) { when (text[i]) { '(' -> depth++; ')' -> { depth--; if (depth == 0) { end = i; break } } } }
                 val call = text.substring(m.range.first, end + 1)
-                if (derived.containsMatchIn(call) && Regex("""sources\s*=\s*(com\.rokid\.context\.model\.)?PayloadSources\.NONE""").containsMatchIn(call)) bad += "${rel(f)}:${text.substring(0, m.range.first).count { it == '\n' } + 1}"
+                val none = Regex("""\bsources\s*=\s*(com\.rokid\.context\.model\.)?PayloadSources\.NONE""").containsMatchIn(call)
+                val omitted = !Regex("""\bsources\s*=""").containsMatchIn(call) // the default is NONE too
+                if (derived.containsMatchIn(call) && (none || omitted)) bad += "${rel(f)}:${text.substring(0, m.range.first).count { it == '\n' } + 1}"
             }
         }
         assertEquals("model calls carrying photo-derived text with sources NONE", emptyList<String>(), bad)

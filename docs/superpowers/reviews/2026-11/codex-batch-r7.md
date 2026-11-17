@@ -1,0 +1,9 @@
+- **P1 — Unrelated hits prevent widening.** [RagCore.kt:172](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/RagCore.kt:172) treats any hit as relevant. In SEMANTIC/HYBRID mode, an unrelated vector match inside the requested window stops widening, hiding the relevant memory outside it. This affects built-in Ask automatically. Apply a meaningful relevance check before stopping; test an unrelated in-window hit against a relevant outside-window hit.
+
+- **P1 — “Last state” is asserted without retrieving the latest state.** [read_context_answer.txt:13](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/ai/src/main/assets/prompts/seeds/read_context_answer.txt:13) instructs the model to report the last observed state, but retrieval still selects by relevance and truncates to top-k. An older “burner lit” memory can survive while a newer state is omitted, producing an unsupported last-state answer. Retrieve the latest relevant state explicitly, or qualify it as an observation among the retrieved memories.
+
+For **B**, I found no new P1 in the changed paths: lease checks remain, and the export predicate moved unchanged. The ratchet is weaker than its description: a file-level `ProvenanceGate` token does not prove every write is fenced, DAO files are excluded, and the NONE check misses omitted/default sources.
+
+No additional P1 found in DST/day boundaries, retrieval compatibility, missing-vector fusion, or edited-prompt fingerprint handling. Static review only; tests could not run in the read-only sandbox.
+
+NOT READY
