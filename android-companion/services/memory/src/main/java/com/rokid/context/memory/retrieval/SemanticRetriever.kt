@@ -28,7 +28,7 @@ class SemanticRetriever(
         searchOrOff(query, limit, minConfidence, notAfterMs).hits
 
     /** As [search], with the reason when it is unavailable (2026-11-08 quality fix: the reason is shown, never a silent degrade). */
-    suspend fun searchOrOff(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null): SemanticSearch = try {
+    suspend fun searchOrOff(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null, window: EventWindow? = null): SemanticSearch = try {
         val current = spaces.current()
         val space = current?.takeIf { it.state == SpaceState.ACTIVE }
         if (space == null) {
@@ -44,7 +44,13 @@ class SemanticRetriever(
             else {
                 val q = embedder.embedQuery(query)
                 if (q.size != space.dim || !VectorMath.usable(q)) SemanticSearch(null, SemanticOff.QUERY_FAILED)
-                else SemanticSearch(if (notAfterMs == null) index.search(space.id, q, limit, minConfidence) else index.searchUntil(space.id, q, limit, minConfidence, notAfterMs), null)
+                else SemanticSearch(
+                    when {
+                        window != null -> index.searchWindow(space.id, q, limit, minConfidence, notAfterMs, window)
+                        notAfterMs == null -> index.search(space.id, q, limit, minConfidence)
+                        else -> index.searchUntil(space.id, q, limit, minConfidence, notAfterMs)
+                    }, null, space.id,
+                )
             }
         }
     } catch (c: CancellationException) {
@@ -54,11 +60,21 @@ class SemanticRetriever(
         SemanticSearch(null, SemanticOff.QUERY_FAILED)
     }
 
+    /** Which of [ids] have a vector in [spaceId] (R4); null = unknown or a failure, so the caller keeps today's scoring. Cancellation propagates. */
+    suspend fun embeddedAmong(spaceId: String, ids: Collection<String>): Set<String>? = try {
+        if (ids.isEmpty()) emptySet() else index.embeddedAmong(spaceId, ids)
+    } catch (c: CancellationException) {
+        throw c
+    } catch (e: Exception) {
+        PcLog.i(TAG, "embedded-id lookup failed (${e.javaClass.simpleName})")
+        null
+    }
+
     private companion object { const val TAG = "SemanticRetriever" }
 }
 
 /** [hits] null = unavailable, and then [off] says why. */
-data class SemanticSearch(val hits: List<Hit>?, val off: SemanticOff?)
+data class SemanticSearch(val hits: List<Hit>?, val off: SemanticOff?, val spaceId: String? = null)
 
 /**
  * Why semantic search could not run (fixed words only: no exception text, no endpoint names). [text] is what the user reads after

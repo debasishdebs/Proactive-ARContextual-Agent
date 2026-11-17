@@ -3,8 +3,8 @@ question=BEGIN_DATA question
 END_DATA question
 ---
 memories=BEGIN_DATA memories
-- id=rokid_mem_1 · 2027-01-15 07:00 · confidence 0.90 · frame=none · Milk carton nearly empty
-- id=rokid_mem_2 · 2027-01-15 06:00 · confidence 0.80 · frame=none · Bought bread and milk at the corner shop
+- id=rokid_mem_1 · Fri 15 Jan 2027 07:00 · confidence 0.90 · frame=none · Milk carton nearly empty
+- id=rokid_mem_2 · Fri 15 Jan 2027 06:00 · confidence 0.80 · frame=none · Bought bread and milk at the corner shop
 END_DATA memories
 ---
 recent=

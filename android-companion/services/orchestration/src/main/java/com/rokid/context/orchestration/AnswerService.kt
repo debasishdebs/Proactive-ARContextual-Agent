@@ -28,6 +28,8 @@ import com.rokid.context.memory.retrieval.ScoredMemory
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.orchestration.retrieval.TimeWindow
+import com.rokid.context.orchestration.retrieval.WindowResolver
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
 import com.rokid.context.work.frames.FramePhotos
@@ -109,6 +111,11 @@ class AnswerService(
     private val photoImages: suspend (frameIds: List<String>) -> Map<String, ModelImageInput> = { emptyMap() },
     /** The published Query pipeline (v0.9.8 slice B); none = the built-in plan. */
     private val flows: FlowPlans = FlowPlans.None,
+    /**
+     * Retrieval-quality spec section 3: the date and time words of a question as a window for the memory store. The rules (pure, local) by default; the
+     * optional LLM fallback and the canvas `rag.window` switch (a later package) replace this one seam. [WindowResolver.None] = no window, today's behaviour.
+     */
+    private val windows: WindowResolver = WindowResolver.Rules,
 ) {
     /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
     data class Retrieved(
@@ -132,18 +139,24 @@ class AnswerService(
         )
     }
 
+    /** The question's time window, or null. A resolver failure is no window (never fails the ask); nothing about the question is logged. */
+    private suspend fun windowOf(q: String, nowMs: Long): TimeWindow? =
+        try { windows.resolve(q, nowMs, zone()) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            PcLog.i(TAG, "time window unavailable (${e.javaClass.simpleName})"); null
+        }
+
     /** The shared retrieval core (v0.9.8): memories and photos with every gate; the prompt vars of the ask are built here. */
     internal val rag = RagCore(memory, retriever, settings, zone, photos, photosAsOf, photosWindowed = photosWindowed, photosAllowed = photosAllowed, imageEndpointId = imageEndpointId, photoImages = photoImages)
 
     /** [plan]: the sources and params of the Query flow; the built-in plan is today's Ask (the memory and photo stores, the user's settings). */
     suspend fun retrieve(question: String, nowMs: Long, plan: FlowPlan = FlowPlan.BUILT_IN_QUERY): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val c = rag.retrieve(RagQuery(q), plan.askSources(), plan.ragParams(), nowMs)
+        val c = rag.retrieve(RagQuery(q), plan.askSources(windowOf(q, nowMs)), plan.ragParams(), nowMs)
         return Retrieved(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
                 question = PromptComposer.dataBlock("question", listOf(q)),
-                retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines + c.photoLines + c.recentLines + c.history),
+                retrievedMemories = PromptComposer.dataBlock("memories", listOfNotNull(c.windowNote) + c.memoryLines + c.photoLines + c.recentLines + c.history),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
             c.memories + c.recent, c.photos, c.images, c.imageEndpointId, c.historyIds, semanticOff = c.semanticOff,
@@ -173,10 +186,10 @@ class AnswerService(
         withSources: Boolean = true,
     ): ScoredRetrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val c = rag.retrieve(RagQuery(q), listOf(RagSource.MemoryStore(notAfterMs)), params, nowMs)
+        val c = rag.retrieve(RagQuery(q), listOf(RagSource.MemoryStore(notAfterMs, windowOf(q, nowMs))), params, nowMs)
         val vars = PromptVars(
             question = PromptComposer.dataBlock("question", listOf(q)),
-            retrievedMemories = PromptComposer.dataBlock("memories", c.memoryLines),
+            retrievedMemories = PromptComposer.dataBlock("memories", listOfNotNull(c.windowNote) + c.memoryLines),
             contextSources = PromptComposer.dataBlock("sources", if (withSources) sources.lines(q, nowMs) else emptyList()),
         )
         return ScoredRetrieved(Retrieved(vars, c.memories), c.hits, c.mode!!, c.semanticUnavailable, c.fallback, c.memoryLines, c.semanticOff)

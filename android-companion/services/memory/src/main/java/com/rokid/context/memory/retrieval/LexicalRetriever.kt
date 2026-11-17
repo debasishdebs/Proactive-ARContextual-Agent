@@ -15,12 +15,16 @@ import kotlin.coroutines.coroutineContext
  */
 class LexicalRetriever(private val dao: RetrievalDao, private val io: CoroutineDispatcher = Dispatchers.IO) {
     /** [notAfterMs] (S34): only memories created at or before it are candidates, applied in the query, before [limit]. Null = today's behaviour. */
-    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null): List<Hit> {
+    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null, window: EventWindow? = null): List<Hit> {
         if (limit <= 0) return emptyList()
         val match = SearchNormalizer.toAnyMatchQuery(query) ?: return emptyList()
         return withContext(io) {
             val top = TopHits(limit)
-            val cursor = if (notAfterMs == null) dao.lexicalCursor(match, minConfidence) else dao.lexicalCursorUntil(match, minConfidence, notAfterMs)
+            val cursor = when {
+                window != null -> dao.lexicalCursorWindow(match, minConfidence, notAfterMs ?: Long.MAX_VALUE, window.fromMs, window.toMs) // [window]: event time, before [limit]
+                notAfterMs == null -> dao.lexicalCursor(match, minConfidence)
+                else -> dao.lexicalCursorUntil(match, minConfidence, notAfterMs)
+            }
             try {
                 val idCol = cursor.getColumnIndexOrThrow("id")
                 val miCol = cursor.getColumnIndexOrThrow("mi")

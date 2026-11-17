@@ -7,6 +7,9 @@ import java.util.PriorityQueue
 
 data class Hit(val id: String, val score: Double)
 
+/** An event-time window `[fromMs, toMs)` for retrieval: the photo's capture time, else when the memory was written (retrieval-quality spec section 4). */
+data class EventWindow(val fromMs: Long, val toMs: Long)
+
 /** spec §4.6 `VectorIndex`: swappable; v1 is brute force (fine below ~50k memories, spec §7). Reads one space only. */
 interface VectorIndex {
     /** Only memories with confidence ≥ [minConfidence] are candidates, so a threshold never empties the top-[limit]. */
@@ -18,6 +21,13 @@ interface VectorIndex {
      */
     suspend fun searchUntil(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long): List<Hit> =
         throw UnsupportedOperationException("index cannot bound by time")
+
+    /** [search] over memories whose event time is in [window] (and created at or before [notAfterMs]), applied BEFORE the top-[limit] cut. Same default as [searchUntil]. */
+    suspend fun searchWindow(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long?, window: EventWindow): List<Hit> =
+        throw UnsupportedOperationException("index cannot bound by event time")
+
+    /** Which of [ids] have a vector in [spaceId]; null = this index cannot say (callers then treat every id as embedded, today's behaviour). */
+    suspend fun embeddedAmong(spaceId: String, ids: Collection<String>): Set<String>? = null
 }
 
 /**
@@ -33,7 +43,13 @@ class BruteForceVectorIndex(private val dao: EmbeddingDao, private val pageSize:
     override suspend fun searchUntil(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long): List<Hit> =
         scan(spaceId, query, limit, minConfidence, notAfterMs)
 
-    private suspend fun scan(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long?): List<Hit> {
+    override suspend fun searchWindow(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long?, window: EventWindow): List<Hit> =
+        scan(spaceId, query, limit, minConfidence, notAfterMs, window)
+
+    override suspend fun embeddedAmong(spaceId: String, ids: Collection<String>): Set<String>? =
+        withContext(Dispatchers.Default) { ids.toList().chunked(CHUNK).flatMap { dao.embeddedAmong(spaceId, it) }.toSet() }
+
+    private suspend fun scan(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long?, window: EventWindow? = null): List<Hit> {
         if (limit <= 0 || !VectorMath.usable(query)) return emptyList()
         val page = pageSize.coerceAtLeast(1)
         return withContext(Dispatchers.Default) {
@@ -41,7 +57,11 @@ class BruteForceVectorIndex(private val dao: EmbeddingDao, private val pageSize:
             val v = FloatArray(query.size) // reused for every row: no per-vector allocation
             var after = 0L
             while (true) {
-                val rows = if (notAfterMs == null) dao.livePage(spaceId, after, minConfidence, page) else dao.livePageUntil(spaceId, after, minConfidence, notAfterMs, page)
+                val rows = when {
+                    window != null -> dao.livePageWindow(spaceId, after, minConfidence, notAfterMs ?: Long.MAX_VALUE, window.fromMs, window.toMs, page)
+                    notAfterMs == null -> dao.livePage(spaceId, after, minConfidence, page)
+                    else -> dao.livePageUntil(spaceId, after, minConfidence, notAfterMs, page)
+                }
                 for (r in rows) {
                     // A corrupt blob or a vector of another dimension is skipped, never scored.
                     if (!VectorCodec.decodeInto(r.blob, v)) continue
@@ -54,6 +74,8 @@ class BruteForceVectorIndex(private val dao: EmbeddingDao, private val pageSize:
         }
     }
 }
+
+private const val CHUNK = 900 // below SQLite's 999 bound-parameter limit
 
 /** Bounded top-[k]: keeps the best hits by score descending, then id ascending, in O(k) memory. */
 internal class TopHits(private val k: Int) {
