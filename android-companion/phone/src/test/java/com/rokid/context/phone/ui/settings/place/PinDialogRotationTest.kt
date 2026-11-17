@@ -1,12 +1,9 @@
 package com.rokid.context.phone.ui.settings.place
 
 import android.app.Application
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performClick
@@ -37,7 +34,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], application = Application::class)
 class PinDialogRotationTest {
     companion object { @Volatile lateinit var holder: Ctl }
-    @get:Rule val compose = androidx.compose.ui.test.junit4.createEmptyComposeRule()
+    @get:Rule val compose = androidx.compose.ui.test.junit4.createComposeRule()
 
     class Ctl : PlaceGuideControl {
         override var enabled = false
@@ -51,10 +48,12 @@ class PinDialogRotationTest {
         )
     }
 
-    class PinActivity : ComponentActivity() {
-        override fun onCreate(savedInstanceState: android.os.Bundle?) {
-            super.onCreate(savedInstanceState)
-            setContent { PlaceGuideRoute(holder, back = {}, changingConfigurations = { isChangingConfigurations }) }
+    /** A rotation is simulated without a Robolectric-built activity (a buildActivity window leaks into the JVM and later Compose tests never get idle): the ViewModelStore is retained, the route is disposed with the configuration-change flag set, then composed again. */
+    private class Owner : androidx.lifecycle.ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
+
+    private fun host(owner: Owner, shown: androidx.compose.runtime.MutableState<Boolean>, changing: () -> Boolean) = compose.setContent {
+        androidx.compose.runtime.CompositionLocalProvider(androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner provides owner) {
+            if (shown.value) PlaceGuideRoute(holder, back = {}, changingConfigurations = changing)
         }
     }
 
@@ -66,30 +65,32 @@ class PinDialogRotationTest {
 
     @Test fun rotationKeepsTheDialogTypedTextAndFixThenLeavingDropsThem() {
         val c = Ctl(); holder = c
-        val ctl = org.robolectric.Robolectric.buildActivity(PinActivity::class.java).setup()
+        val owner = Owner(); val shown = mutableStateOf(true); var changing = false
+        host(owner, shown) { changing }
         openDialog()
         compose.onNodeWithTag("pin_f_name").performTextInput("Mirror Wall")
         assertTrue(c.pinning.hasDraft)
 
-        val rotated = ctl.recreate() // a configuration change: a new activity, the ViewModel store is retained
-
-        compose.waitForIdle()
+        changing = true; shown.value = false; compose.waitForIdle() // a configuration change: the route is disposed, the ViewModel store is retained
+        changing = false; shown.value = true; compose.waitForIdle()
         compose.onNodeWithTag("pin_dialog").assertIsDisplayed()
         compose.onNodeWithTag("pin_f_name").assertIsDisplayed()
         assertTrue("the held position survives a rotation", c.pinning.hasDraft)
         compose.onNodeWithTag("pin_f_save").performClick()
         compose.waitUntil(5_000) { c.stored.isNotEmpty() }
         assertEquals("Mirror Wall", c.stored.single().name)
-        rotated.pause().stop().destroy()
+        owner.viewModelStore.clear()
     }
 
     @Test fun leavingTheScreenDropsTheDraft() {
         val c = Ctl(); holder = c
-        val ctl = org.robolectric.Robolectric.buildActivity(PinActivity::class.java).setup()
+        val owner = Owner(); val shown = mutableStateOf(true)
+        host(owner, shown) { false }
         openDialog()
         assertTrue(c.pinning.hasDraft)
-        ctl.pause().stop().destroy() // really finishing, not recreating
+        shown.value = false; compose.waitForIdle() // really leaving, not recreating
         assertFalse(c.pinning.hasDraft)
+        owner.viewModelStore.clear()
     }
 
     @Test fun anExpiredDraftAfterRotationIsRefusedOnSaveSoTheUserStartsAgain() = runBlocking {
