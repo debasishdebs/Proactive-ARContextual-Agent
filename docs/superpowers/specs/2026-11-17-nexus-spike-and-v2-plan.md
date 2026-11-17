@@ -102,3 +102,14 @@ Trust statement for `PRIVACY.md`: the Nexus hubs are third-party code (one maint
 5. **Default HUD host** when both are available: PCA's overlay (recommended until S3) or Nexus?
 6. **Distribution:** the bridge APK on GitHub only, or also the RokidBrew registry / Nexus Store?
 7. **When can you do the hardware half-day** (S2, S3)? It is after the Sri Lanka build at the earliest, and it means installing Nexus 2.0.4 next to PCA (backup first, never uninstall).
+
+## 6. S0/S1 findings (2026-11-17, no glasses)
+
+Full evidence: `reviews/2026-11/nexus-spike-s0-s1-2026-11-17.md`. Nothing above was edited.
+
+- **Upstream moved.** The clone `15cd98ad` is 680 commits behind. The latest release is **v2.6.0 (14 Nov, SDK `sdk-v0.27.0`)**, not 2.0.4. Re-pick the version to install and its APK digests before S2. The digests in S0 above were not re-checked (no download).
+- **Spec lines.** BUSSPEC L8-12 (one CXR-L session, the phone hub owns it) is unchanged, so S2 is still the deciding gate. The manifest and approval model are unchanged, plus an optional `LAUNCHABLE` key, a `specialUse` foreground-service declaration in the sample, and new per-plugin switches in Plugin access. Skills v1 limits and parser are byte-identical, with one new refusal (`SKILL_LEASE_DENIED`). Notices, pins and activities are unchanged; **card immersions are deprecated** and browsable content is now a **page**.
+- **Q-section answers from the probe.** The phone hub **starts without Hi Rokid or glasses** (emulator, debug build of v2.6.0). Discovery gives Pending, then Allow gives Approved, with no further prompt after a hub restart or a plugin reinstall. With the link down, approved surface calls return `CAPABILITY_NOT_AVAILABLE` (not `DENIED_NO_LINK`), and `NOT_REGISTERED` before the hub registers the plugin (a push cold-starts the hub in about 1.5 s). The 4-op catalog is accepted once `data` is non-empty (`["status"]`) and string outputs are enums.
+- **The SDK resolves offline** only by building `bus-client` from an upstream worktree (JitPack artifacts are not cached). T1 should pin a published tag and fetch it normally.
+- **Plan edits to carry into 2.0:** T6 declares `data: ["status"]` and validates with the shared `SkillCatalogParser`; T3/T8 treat `CAPABILITY_NOT_AVAILABLE` and `NOT_REGISTERED` as quiet give-ups; future list UI should be a launcher page.
+- **Still open (hardware or other):** S2 coexistence, S3 STT/TTS and battery, how notices and pins render, the per-operation Skills consent screen (needs the Assistant plugin as a caller), the Bus inspector, S1b. Open questions 1-7 above are unchanged; the 2026-11-17 rulings (one at a time, PCA default HUD, no content skills, no Nexus STT/TTS, GitHub only) stand.
