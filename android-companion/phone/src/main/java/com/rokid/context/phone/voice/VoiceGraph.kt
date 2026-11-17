@@ -61,6 +61,7 @@ class VoiceGraph private constructor(private val app: Context) {
             },
         ),
         AndroidSpeaker(app), bluetoothMedia = { AudioRoutes.hasBluetoothMedia(app) },
+        deliveryBlocked = com.rokid.context.orchestration.AskZoneFence::blocked, // the last check before an answer is shown, sent to the glasses or spoken (Codex z1 r1 P1-3)
         onFallbackSuspected = { capabilities.onFallbackSuspected() },
         log = { PcLog.i(TAG, it) },
         milestone = { PcLog.milestone(TAG, it) },
@@ -110,6 +111,7 @@ class VoiceGraph private constructor(private val app: Context) {
         scope.launch {
             val a = withContext(Dispatchers.IO) { MemoryGraph.get(app).asks.byId(askId) } ?: return@launch
             if (a.redacted) return@launch
+            if (com.rokid.context.orchestration.AskZoneFence.blocked()) return@launch // the zone may have started during the read: the check is after the last suspension (Codex z1 r1 P1-3)
             pipeline.showTypedAnswer(a.id, a.question, a.answer, stored = true) // read from its row: a deletion before the HUD watcher's first read still withdraws it
         }
     }
@@ -144,6 +146,9 @@ class VoiceGraph private constructor(private val app: Context) {
             var seen = existed
             return rows.map { a -> if (a != null) seen = true; a?.redacted == true || (a == null && seen) }
         }
+        /** A pause zone started (any thread, from the zone controller): the answer on the HUD / phone card is withdrawn and its speech stops. Nothing is built when no voice graph exists. */
+        fun onZoneStarted() { graph?.let { g -> g.scope.launch { g.pipeline.withdrawForZone() } } }
+
         @Volatile private var graph: VoiceGraph? = null
 
         fun get(context: Context): VoiceGraph = graph ?: synchronized(this) { graph ?: VoiceGraph(context.applicationContext).also { graph = it } }

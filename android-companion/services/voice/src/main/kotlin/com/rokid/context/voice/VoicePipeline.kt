@@ -45,6 +45,8 @@ class VoicePipeline(
     private val answerWithdrawn: (askId: String, existed: Boolean) -> kotlinx.coroutines.flow.Flow<Boolean> = { _, _ -> kotlinx.coroutines.flow.emptyFlow() },
     /** rc1 fix: lines that must reach `pca.log` even with diagnostics off (an answer withdrawn). Fixed event names only, never text or ids. */
     private val milestone: (String) -> Unit = {},
+    /** Pause zones (Codex z1 r1 P1-3): true = a zone is active (or unsure) NOW. Asked as the last step before an answer is shown or spoken; the answer is then replaced by the fixed refusal. */
+    private val deliveryBlocked: () -> Boolean = { false },
 ) {
     private val _state = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val state: StateFlow<VoiceState> = _state.asStateFlow()
@@ -126,6 +128,7 @@ class VoicePipeline(
     fun showTypedAnswer(askId: String, question: String, text: String, stored: Boolean = false) {
         val s = _state.value
         if (s is VoiceState.Listening || s is VoiceState.Thinking) return
+        if (deliveryBlocked()) return // a zone: nothing is mirrored to the glasses
         val g = newGeneration()
         set(VoiceState.Answer(VoiceSource.PHONE, askId, VoiceText.clean(question), VoiceText.clean(text, MAX_SPOKEN), speaking = false, stored = stored))
         hold(g)
@@ -291,6 +294,7 @@ class VoicePipeline(
     }
 
     private fun answered(g: Long, source: VoiceSource, question: String, r: AnswerResult.Answered) {
+        if (deliveryBlocked()) { problem(g, source, VoiceOutcome.ANSWER_FAILED, VoiceCopy.ZONE_PAUSED, VoiceCopy.ZONE_PAUSED); return }
         // A flow's delivery target (v0.9.8 slice C): each surface is in or out, once. No route = the surface that asked, exactly as before.
         val route = r.route?.takeIf { it.explicit }
         if (route?.phone ?: (source == VoiceSource.PHONE)) lastPhoneAskId = r.askId
@@ -378,6 +382,12 @@ class VoicePipeline(
         if (now.askId.isEmpty() || now.askId !in askIds) return false
         withdrawShown("forget")
         return true
+    }
+
+    /** A pause zone started: the Answer on show (phone card, HUD overlay, queued frames) is cleared at once and its speech stops. A no-op without one. */
+    fun withdrawForZone() {
+        if (_state.value !is VoiceState.Answer) return
+        withdrawShown("zone")
     }
 
     /** [how] is a call-site constant (`watcher` / `forget`). */

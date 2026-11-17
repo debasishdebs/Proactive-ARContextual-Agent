@@ -113,12 +113,16 @@ class ZoneStateStore(private val prefs: SharedPreferences) {
     @Synchronized fun saveClock(peak: Long, rollbackMs: Long, rollbackAtMs: Long): Boolean = try { prefs.edit().putLong(PEAK, peak).putLong(ROLLBACK, rollbackMs).putLong(ROLLBACK_AT, rollbackAtMs).commit() } catch (e: Exception) { false }
     @Synchronized fun rollbackAt(): Long = prefs.getLong(ROLLBACK_AT, 0L)
 
+    /** The last protection the controller reported (Codex z1 r1 P1-1): read by Ask's zone fence in a new process, before any controller exists (`AskZoneFence.PROTECT_KEY` pins the key). Synchronous. */
+    @Synchronized fun saveProtect(active: Boolean): Boolean = try { prefs.edit().putBoolean(PROTECT, active).commit() } catch (e: Exception) { false }
+
     companion object {
         const val PREFS = "pause_zone_state"
         private const val KEY = "memo"
         private const val PEAK = "peakWall"
         private const val ROLLBACK = "rollbackMs"
         private const val ROLLBACK_AT = "rollbackAt"
+        const val PROTECT = "protect"
         private val MAP = MapSerializer(String.serializer(), ZoneMemo.serializer())
     }
 }

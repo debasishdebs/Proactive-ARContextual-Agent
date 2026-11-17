@@ -615,6 +615,28 @@ class VoicePipelineTest {
         assertEquals(1, milestones.size)
     }
 
+    /** Codex z1 r1 P1-3: the zone is asked again as the last step before an answer is shown or spoken; a zone that starts later withdraws the answer on show and stops its speech. */
+    @Test fun aZoneRefusesTheShownAndSpokenAnswerAndWithdrawsOneAlreadyOnShow() = runTest {
+        var zone = false
+        val p = VoicePipeline(
+            backgroundScope, engine, caps, { language() }, Answerer { q, source -> asked += q to source; answer(q) },
+            speaker, bluetoothMedia = { bluetooth }, log = { logs += it }, deliveryBlocked = { zone },
+        ).also { runCurrent() }
+        zone = true
+        p.glassesListenStart(); runCurrent(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertTrue(speaker.spoken.isEmpty(), "nothing is spoken in a zone")
+        assertEquals(Overlay.Toast(VoiceCopy.ZONE_PAUSED), p.overlay.value)
+        p.showTypedAnswer("ask_t", "q", "text"); assertFalse(p.state.value is VoiceState.Answer, "no typed mirror in a zone")
+        advanceTimeBy(30_001); runCurrent()
+        zone = false
+        p.glassesListenStart(); runCurrent(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertEquals("ask_1", (p.overlay.value as Overlay.Answer).askId)
+        val stops = speaker.stops
+        p.withdrawForZone()
+        assertEquals(VoiceState.Idle, p.state.value); assertNull(p.overlay.value); assertTrue(speaker.stops > stops, "its speech stops")
+        p.withdrawForZone() // nothing on show: a no-op
+    }
+
     /**
      * Codex r23: the "its row existed" proof travels with each answer. Voice ask A takes its snapshot; typed ask B arrives while A is Thinking (refused on the
      * HUD, but its snapshot ran too); Delete all removes both rows; A resumes. A's watcher must count its first null read as a deletion: HUD cleared, speech stopped.

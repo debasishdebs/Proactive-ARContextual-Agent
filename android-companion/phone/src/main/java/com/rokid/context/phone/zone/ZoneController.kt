@@ -72,6 +72,11 @@ class ZoneController(
      * published, so no Place Guide action can start in the gap); false = all clear. Called synchronously, from any of this controller's paths.
      */
     private val onProtect: (Boolean) -> Unit = {},
+    /**
+     * Ask's zone fence (Codex z1 r1 P1-1), called synchronously right after every [onProtect]: `active` is the same flag, `judged` is true once this controller has judged the zones in this process
+     * (false while a start or a restart is pending). The last `active` is also persisted ([ZoneStateStore.saveProtect]) so a new process starts with it, before any controller exists.
+     */
+    private val onState: (active: Boolean, judged: Boolean) -> Unit = { _, _ -> },
 ) {
     private val mutex = Mutex()
     private val evaluator = ZoneEvaluator()
@@ -113,9 +118,17 @@ class ZoneController(
      */
     fun beginRestart() { ready = false; raise() }
 
+    /** [onProtect] and [onState] together; persists the flag when it changes (an unjudged or active state is stored at once; a clear one only when judged). */
+    private fun protect(active: Boolean, judged: Boolean = ready) {
+        onProtect(active)
+        if (active || judged) { if (persistedProtect != active) { persistedProtect = active; stateStore?.saveProtect(active) } }
+        onState(active, judged)
+    }
+    private var persistedProtect: Boolean? = null
+
     private fun raise() {
-        if (!store.corrupt && !wantsLocation()) { ZoneHold.update(null); return }
-        onProtect(true) // unjudged: fail closed
+        if (!store.corrupt && !wantsLocation()) { ZoneHold.update(null); protect(false, true); return } // no enabled zone: nothing to judge
+        protect(true, false) // unjudged: fail closed
         val now = wall()
         val known = stateStore?.let { it.load() } ?: memo
         val clears = known.values.map { it.clearWallMs }
@@ -259,7 +272,7 @@ class ZoneController(
         val ev = evaluator.evaluate(now)
         val insideIds = ev.inside.map { it.zoneId }.toMutableSet()
         if (store.corrupt) insideIds += PROTECTED_ID
-        if (insideIds.isNotEmpty() || ev.overall >= ZoneState.APPROACH || enforcing) onProtect(true) // before any record is stored
+        if (insideIds.isNotEmpty() || ev.overall >= ZoneState.APPROACH || enforcing) protect(true) // before any record is stored
         var changed = false
         var uncovered = insideIds.toSet()
         try {
@@ -303,7 +316,7 @@ class ZoneController(
         val zones = store.zones()
         _snapshot.value = ZoneSnapshot(zones, ev, store.corrupt)
         ready = true
-        onProtect(approach || enforcing)
+        protect(approach || enforcing, true)
         _cadence.value = TripCadence.select(ev)
         notify(ev, zones, insideIds)
         val key = (ev.overall >= ZoneState.APPROACH) to enforcing

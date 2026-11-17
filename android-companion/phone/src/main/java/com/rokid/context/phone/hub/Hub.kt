@@ -677,7 +677,8 @@ class Hub(
 
     private fun overlay(): Overlay? {
         // rc1 fix: never a frame of an Answer a Forget withdrew, even if the voice side has not cleared it yet
-        val v = voice.overlay.value.takeUnless { o -> o is Overlay.Answer && o.askId != null && o.askId in recentlyWithdrawn(clock()) }
+        // Codex z1 r1 P1-3: the final zone filter of the answer overlay, read at frame time: no Answer (stored text) is ever sent to the glasses while a zone is approached, entered or unreadable
+        val v = voice.overlay.value.takeUnless { o -> o is Overlay.Answer && ((o.askId != null && o.askId in recentlyWithdrawn(clock())) || zoneApproach() || zoneEnforce()) }
         // PG3 maps the place card (PlaceGraph.port.card) onto an additive wire overlay and passes it here; until then no place overlay exists on the wire.
         return pickOverlay(v, actions.overlay.value, minimisedHint ?: nudges.overlay.value, place = placeOverlay())
     }

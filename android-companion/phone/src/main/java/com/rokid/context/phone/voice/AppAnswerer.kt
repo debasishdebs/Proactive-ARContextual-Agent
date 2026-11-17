@@ -48,14 +48,19 @@ class AppAnswerer(
     private val deliveryBlocked: () -> Boolean = { false },
 ) : Answerer {
     override suspend fun answer(question: String, source: VoiceSource): AnswerResult = when (val r = ask(question, source.askSource)) {
-        is AskOutcome.Answered -> if (r.deliveryWithheld || deliveryBlocked()) AnswerResult.Failed(HudAskText.forFailure(AskActions.ZONE_PAUSED), HudAskText.forPhone(AskActions.ZONE_PAUSED)) else {
+        is AskOutcome.Answered -> if (r.deliveryWithheld || deliveryBlocked()) zoneRefusal() else {
             val notice = r.proposalId?.let { offNotice(it) }
             // stored: the text was read from the ask's own row (an off notice comes from the proposal, which proves nothing about the ask row)
-            (notice ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it, photoLabel = r.photoAtMs?.let(::photoLabel), route = r.route, stored = notice == null) }
+            val text = (notice ?: answerText(r.askId))?.takeIf { it.isNotBlank() }
+            // Codex z1 r1 P1-3: offNotice and answerText SUSPEND (database reads): the zone is asked again here, after the last of them, as the last step before the result leaves
+            if (deliveryBlocked()) zoneRefusal()
+            else text?.let { AnswerResult.Answered(r.askId, it, photoLabel = r.photoAtMs?.let(::photoLabel), route = r.route, stored = notice == null) }
                 ?: AnswerResult.Failed(VoiceCopy.FAILED_HUD, AskActions.FAILED)
         }
         is AskOutcome.Failed -> AnswerResult.Failed(HudAskText.forFailure(r.message), HudAskText.forPhone(r.message))
     }
+
+    private fun zoneRefusal() = AnswerResult.Failed(HudAskText.forFailure(AskActions.ZONE_PAUSED), HudAskText.forPhone(AskActions.ZONE_PAUSED))
 
     /** "Photo HH:mm" (or "Photo Fri 14:02" when not from today) in the system zone: the capture time of the first cited stored photo (fixed copy plus a time, never provider text). */
     private fun photoLabel(atMs: Long): String {
