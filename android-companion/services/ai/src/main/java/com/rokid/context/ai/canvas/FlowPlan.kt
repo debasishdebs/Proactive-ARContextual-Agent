@@ -35,6 +35,57 @@ object RagRetrieveParams {
 }
 
 /**
+ * `rag.window` (retrieval quality section 3): [rules] reads the date words of the question, [llmFallback] lets one cheap model call resolve a time cue the rules did not
+ * (default off), [widen] says how far the soft filter widens when the window has no relevant hit.
+ */
+object WindowParams {
+    val WIDEN = listOf("NONE", "DAY", "DAY_THEN_ALL")
+    val schema = ParamSchema(listOf(
+        ParamSpec("rules", ParamKind.BOOL, label = "Read date words", default = JsonPrimitive(true)),
+        ParamSpec("llmFallback", ParamKind.BOOL, label = "Ask the model when the rules find no window", default = JsonPrimitive(false)),
+        ParamSpec("widen", ParamKind.ENUM, label = "When nothing matches", options = WIDEN, default = JsonPrimitive("DAY_THEN_ALL")),
+    ))
+}
+
+/**
+ * `rag.order` (retrieval quality section 5). The keyword rows are comma-separated phrases matched on word boundaries (blank = the row is off), tried in this order:
+ * night extent, previous, first, latest, count, state. [defaultOrder] and [selection] apply when no row matches.
+ */
+object OrderParams {
+    val ORDERS = listOf("RELEVANCE", "NEWEST", "OLDEST", "TIME")
+    val SELECTIONS = listOf("TOP_K", "PER_DAY")
+    const val NIGHT_WORDS = "stayed up, awake, go to bed, went to bed, went to sleep"
+    const val PREVIOUS_WORDS = "previous, the time before, before that"
+    const val FIRST_WORDS = "first time, the first, earliest, when did i first"
+    const val LATEST_WORDS = "last, latest, most recent, where are my, where is my"
+    const val COUNT_WORDS = "how many, which days, which evenings, how often, every time"
+    const val STATE_WORDS = "did i turn off, did i switch off, did i close, did i lock"
+    private fun words(name: String, label: String, d: String) = ParamSpec(name, ParamKind.TEXT, label = label, maxLen = 200, default = JsonPrimitive(d))
+    val schema = ParamSchema(listOf(
+        ParamSpec("defaultOrder", ParamKind.ENUM, label = "Default order", options = ORDERS, default = JsonPrimitive("RELEVANCE")),
+        ParamSpec("relevanceFloor", ParamKind.NUMBER, label = "Relevance floor", min = 0.0, max = 1.0, default = JsonPrimitive(0.5)),
+        ParamSpec("selection", ParamKind.ENUM, label = "Default selection", options = SELECTIONS, default = JsonPrimitive("TOP_K")),
+        ParamSpec("perDay", ParamKind.INT, label = "Hits per day", min = 1.0, max = 3.0, default = JsonPrimitive(2)),
+        ParamSpec("maxDays", ParamKind.INT, label = "Most days", min = 1.0, max = 400.0, default = JsonPrimitive(31)),
+        ParamSpec("maxChars", ParamKind.INT, label = "Max characters when one hit per day", min = 0.0, default = JsonPrimitive(8000)),
+        words("nightWords", "Words: how late (last capture of each night)", NIGHT_WORDS), words("previousWords", "Words: the one before the newest", PREVIOUS_WORDS),
+        words("firstWords", "Words: oldest first", FIRST_WORDS), words("latestWords", "Words: newest first", LATEST_WORDS), words("countWords", "Words: one hit per day", COUNT_WORDS), words("stateWords", "Words: last seen state", STATE_WORDS),
+    ))
+}
+
+/** The `rag.window` choices a compiled plan carries; null on the plan = the built-in behaviour (rules only, widen DAY_THEN_ALL, no model call). */
+data class WindowSpec(val rules: Boolean = true, val llmFallback: Boolean = false, val widen: String = "DAY_THEN_ALL")
+
+/**
+ * The `rag.order` choices a compiled plan carries; null on the plan = the built-in behaviour (relevance order, top-k). [words] maps a row (`night`, `previous`, `first`, `latest`, `count`, `state`) to its
+ * phrases; a blank row is off.
+ */
+data class OrderSpec(
+    val defaultOrder: String = "RELEVANCE", val relevanceFloor: Double = 0.5, val selection: String = "TOP_K", val perDay: Int = 2, val maxDays: Int = 31, val maxChars: Int = 8_000,
+    val words: Map<String, List<String>> = emptyMap(),
+)
+
+/**
  * The params of the slice C Nudge triggers. Every one has `maxPerHour`, the per-pipeline rate limit (runs the trigger may start in a rolling hour; absent = [DEFAULT_PER_HOUR]).
  * `trigger.signal` embeds `agg.window` and `gate.compare` (their own schemas, one evaluation: the newest `window` Scenes' sensor feature, `op` over it, then the comparison) rather than
  * chaining the nodes, so the Nudge chain keeps one linear shape. `trigger.schedule` takes a [CronSpec].
@@ -71,6 +122,10 @@ data class FlowPlan(
     val cron: String? = null,
     /** The publication this plan was read from ("" = not from a publish). Persisted trigger state (rate stamps, held signal, schedule checkpoint) is keyed by it, so a new publish starts clean. */
     val scope: String = "",
+    /** The optional `rag.window` node of a Query (null = the built-in rules-only behaviour). */
+    val window: WindowSpec? = null,
+    /** The optional `rag.order` node of a Query (null = relevance order, top-k). */
+    val order: OrderSpec? = null,
 ) {
     data class Signal(val aggregate: WindowAggregate.Settings, val compare: NumberCompare.Settings)
 
@@ -91,7 +146,7 @@ data class FlowPlan(
         /** Today's Nudge: OK memories of the last 6 h and the nudges of the last 24 h; its own counts bound it. The trigger's image, when it gives one, joins (as today). Shown by the verbosity setting (`both`). */
         val BUILT_IN_NUDGE = FlowPlan(Kind.NUDGE, memories = false, photos = false, recent = true, history = true, imageQuery = true, recentWindowMin = 360, historyWindowMin = 1440, target = "both")
 
-        fun isFlowType(type: String) = type == NodeTypes.INPUT_UTTERANCE || type.startsWith("trigger.") || type == NodeTypes.RAG_RETRIEVE || type == NodeTypes.GATE_NUDGE || type == NodeTypes.OUT_DELIVER || type == NodeTypes.EMBED_TEXT
+        fun isFlowType(type: String) = type == NodeTypes.INPUT_UTTERANCE || type.startsWith("trigger.") || type == NodeTypes.RAG_RETRIEVE || type == NodeTypes.GATE_NUDGE || type == NodeTypes.OUT_DELIVER || type == NodeTypes.EMBED_TEXT || type == NodeTypes.RAG_WINDOW || type == NodeTypes.RAG_ORDER
 
         fun isFlow(p: Pipeline) = p.nodes.any { isFlowType(it.type) }
 
@@ -101,9 +156,9 @@ data class FlowPlan(
             else -> null
         }
 
-        /** The ordered node types of each flow; `embed.text` is the one optional step. */
+        /** The ordered node types of each flow; `embed.text`, `rag.window` and `rag.order` are the optional Query steps. */
         private fun expected(kind: Kind, root: String): List<String> = when (kind) {
-            Kind.QUERY -> listOf(NodeTypes.INPUT_UTTERANCE, NodeTypes.EMBED_TEXT, NodeTypes.RAG_RETRIEVE, NodeTypes.PROMPT, NodeTypes.OUT_DELIVER)
+            Kind.QUERY -> listOf(NodeTypes.INPUT_UTTERANCE, NodeTypes.RAG_WINDOW, NodeTypes.EMBED_TEXT, NodeTypes.RAG_RETRIEVE, NodeTypes.RAG_ORDER, NodeTypes.PROMPT, NodeTypes.OUT_DELIVER)
             Kind.NUDGE -> listOf(root, NodeTypes.RAG_RETRIEVE, NodeTypes.PROMPT, NodeTypes.GATE_NUDGE, NodeTypes.OUT_DELIVER)
         }
 
@@ -117,7 +172,7 @@ data class FlowPlan(
             if (roots.size != 1) return emptyList() // the generic root rule already says so
             val out = mutableListOf<Problem>()
             val want = expected(kind, roots[0].type).toMutableList()
-            if (kind == Kind.QUERY && p.nodes.none { it.type == NodeTypes.EMBED_TEXT }) want.remove(NodeTypes.EMBED_TEXT)
+            if (kind == Kind.QUERY) for (optional in listOf(NodeTypes.EMBED_TEXT, NodeTypes.RAG_WINDOW, NodeTypes.RAG_ORDER)) if (p.nodes.none { it.type == optional }) want.remove(optional)
             // walk the chain from the root; every node must be on it, once, in order
             val outs = p.edges.groupBy { it.from }
             val ins = p.edges.groupBy { it.to }
@@ -149,6 +204,24 @@ data class FlowPlan(
             return out
         }
 
+        private fun windowSpec(o: JsonObject): WindowSpec {
+            fun b(n: String, d: Boolean) = (o[n] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: d
+            val widen = (o["widen"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it in WindowParams.WIDEN } ?: "DAY_THEN_ALL"
+            return WindowSpec(b("rules", true), b("llmFallback", false), widen)
+        }
+
+        private fun orderSpec(o: JsonObject): OrderSpec {
+            fun s(n: String, d: String, ok: List<String>) = (o[n] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it in ok } ?: d
+            fun i(n: String, d: Int, r: IntRange) = ((o[n] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: d).coerceIn(r)
+            fun w(n: String, d: String) = ((o[n] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: d).split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+            val floor = (o["relevanceFloor"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toDoubleOrNull()?.coerceIn(0.0, 1.0) ?: 0.5
+            return OrderSpec(
+                s("defaultOrder", "RELEVANCE", OrderParams.ORDERS), floor, s("selection", "TOP_K", OrderParams.SELECTIONS), i("perDay", 2, 1..3), i("maxDays", 31, 1..400), i("maxChars", 8_000, 0..100_000),
+                mapOf("night" to w("nightWords", OrderParams.NIGHT_WORDS), "previous" to w("previousWords", OrderParams.PREVIOUS_WORDS), "first" to w("firstWords", OrderParams.FIRST_WORDS), "latest" to w("latestWords", OrderParams.LATEST_WORDS),
+                    "count" to w("countWords", OrderParams.COUNT_WORDS), "state" to w("stateWords", OrderParams.STATE_WORDS)),
+            )
+        }
+
         /** [shapeProblems] plus what the callers do not route (a delivery target that means nothing for the flow). A refused pipeline can still be saved and edited. */
         fun compile(p: Pipeline): Compiled {
             if (!isFlow(p)) return Compiled.Refused(listOf("not a Query or Nudge pipeline"))
@@ -163,7 +236,10 @@ data class FlowPlan(
             if (kind == Kind.NUDGE && target == "caller") reasons += "node ${deliver.id}: a Nudge has no caller; deliver to phone, glasses or both"
             fun flag(name: String, d: Boolean) = (rag[name] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: d
             fun int(name: String, d: Int) = (rag[name] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: d
+            val windowNode = if (kind == Kind.QUERY) p.nodes.firstOrNull { it.type == NodeTypes.RAG_WINDOW } else null
+            val orderNode = if (kind == Kind.QUERY) p.nodes.firstOrNull { it.type == NodeTypes.RAG_ORDER } else null
             val out = base.copy(
+                window = windowNode?.let { windowSpec(it.params) }, order = orderNode?.let { orderSpec(it.params) },
                 memories = flag("memories", base.memories), photos = flag("photos", base.photos), recent = flag("recent", base.recent), history = flag("history", base.history),
                 imageQuery = flag("imageQuery", base.imageQuery), recentWindowMin = int("recentWindowMin", base.recentWindowMin), historyWindowMin = int("historyWindowMin", base.historyWindowMin),
                 rag = JsonObject(rag.filterKeys { it in RagRetrieveParams.ragNames }), target = target,

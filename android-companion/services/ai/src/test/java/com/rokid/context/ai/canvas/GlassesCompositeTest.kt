@@ -109,6 +109,7 @@ class GlassesCompositeTest {
         DefaultPipelines.STARTER_WATCH_MOTION -> DefaultPipelines.starterWatchMotion()
         DefaultPipelines.DEFAULT_QUERY -> DefaultPipelines.defaultQuery()
         DefaultPipelines.DEFAULT_NUDGE -> DefaultPipelines.defaultNudge()
+        DefaultPipelines.DATED_QUERY -> DefaultPipelines.datedQuery()
         else -> DefaultPipelines.starterMomentSummary()
     }
 
@@ -123,6 +124,7 @@ class GlassesCompositeTest {
             "starter-watch-motion" to "f5782e0d8610:28c9cf15a753d921",
             "default-query" to "none:pipeline has no capture half",
             "default-nudge" to "none:pipeline has no capture half",
+            "dated-query" to "none:pipeline has no capture half",
         )
         assertEquals(DefaultPipelines.all.toSet(), pinned.keys)
         val got = DefaultPipelines.all.associateWith { id ->

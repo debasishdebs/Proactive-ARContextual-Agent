@@ -55,6 +55,11 @@ object RoleContracts {
             PromptKey.PLACE_MATCH -> PlaceMatchOutput(
                 str(o, "choice").trim().take(40), (o.getValue("confidence") as JsonPrimitive).double.toFloat().coerceIn(0f, 1f), extras(o, "choice", "confidence"),
             )
+            // "kind" is required; the rest default to "" (a `none` answer carries no range). No free text is trusted: the caller validates and bounds every field.
+            PromptKey.TIME_ANCHOR -> TimeAnchorOutput(
+                str(o, "kind").trim().lowercase().take(12), opt(o, "from").orEmpty().trim().take(20), opt(o, "to").orEmpty().trim().take(20),
+                opt(o, "event").orEmpty().trim().take(80), opt(o, "label").orEmpty().trim().take(60), extras(o, "kind", "from", "to", "event", "label"),
+            )
             PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->
                     val fo = f.jsonObject
@@ -104,6 +109,7 @@ object RoleContracts {
             }
             is IntentOutput -> Unit
             is PlaceMatchOutput -> Unit
+            is TimeAnchorOutput -> if (output.kind !in setOf("date", "range", "event", "none")) add("kind must be date, range, event or none")
             is SummaryOutput -> if (output.confidence !in 0.0..1.0) add("confidence must be 0–1")
             is CriticOutput -> Unit
             is AnswerOutput -> {

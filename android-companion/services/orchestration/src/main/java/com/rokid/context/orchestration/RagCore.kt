@@ -15,6 +15,7 @@ import com.rokid.context.memory.retrieval.RetrievalMode
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.memory.retrieval.ScoredMemory
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.orchestration.retrieval.OrderRules
 import com.rokid.context.orchestration.retrieval.TimeWindow
 import com.rokid.context.orchestration.retrieval.TimeWindowRules
 import com.rokid.context.work.frames.recall.PhotoHit
@@ -44,7 +45,13 @@ sealed interface RagSource {
     /** The memory store through the user's retrieval mode (lexical/semantic/hybrid), the newest trusted memories when nothing matches. [notAfterMs]: the Ask debug view's cutoff (S34), before the retriever's limits. Needs a text query.
      * [window] (retrieval-quality spec section 4): a soft filter on the memories' EVENT time (capture time, else when written). It is tried first, then a day wider,
      * then dropped when nothing relevant is in it; [RagContext.windowNote] tells the answer model which step ran. Null = no filter, today's behaviour. */
-    data class MemoryStore(val notAfterMs: Long? = null, val window: TimeWindow? = null) : RagSource
+    data class MemoryStore(
+        val notAfterMs: Long? = null, val window: TimeWindow? = null,
+        /** The plan's `rag.order` node (spec section 5): which memories reach the prompt, in which order. Null = relevance order, top-k. */
+        val order: com.rokid.context.ai.canvas.OrderSpec? = null,
+        /** How far the window widens when nothing in it is relevant (the `rag.window` node): NONE, DAY or DAY_THEN_ALL. */
+        val widen: String = "DAY_THEN_ALL",
+    ) : RagSource
     /**
      * The photo store (image vectors; words or a vector query), behind the photo gate. [notAfterMs]: the cutoff (the debug view's, S34) and [windowMs] (only photos of the last [windowMs]) both go into
      * the search and the selection, so they apply BEFORE top-k and the relevance margin (the caption fallback is not searched: captionK = 0).
@@ -209,15 +216,23 @@ class RagCore(
         store?.let { m ->
             // A photo whose caption is already a retrieved memory is listed once, as the photo line.
             val citeIds = ctx.photos.map { it.citeId }.toSet()
-            val pool = m.pool.filter { it.id !in citeIds }
-            val times = eventTimes(pool)
-            left -= m.note?.let { it.length + 1 } ?: 0
-            val lines = AskText.bounded(pool.map { line(it, times[it.id] ?: it.createdAt) }, left)
+            var pool = m.pool.filter { it.id !in citeIds }
+            var times = eventTimes(pool)
+            var compact = false
+            var note = m.note
+            val ordered = m.decision?.let { d -> orderedPool(d, m, citeIds, s, left - (note?.let { it.length + 1 } ?: 0), nowMs) }
+            if (ordered != null) {
+                pool = ordered.items.map { it.memory }; times = ordered.items.associate { it.memory.id to it.at }; compact = ordered.compact
+                note = if (m.note == null) "note: ${ordered.note}" else "${m.note}; ${ordered.note}"
+                if (compact && params.maxChars == null) left += m.order!!.maxChars - DEFAULT_CHARS // the one-hit-per-day budget replaces the 5,000 default (spec section 5)
+            }
+            left -= note?.let { it.length + 1 } ?: 0
+            val lines = AskText.bounded(pool.map { if (compact) compactLine(it, times[it.id] ?: it.createdAt) else line(it, times[it.id] ?: it.createdAt) }, left)
             left -= lines.sumOf { it.length + 1 }
             ctx = ctx.copy(
-                memories = pool.take(lines.size), memoryLines = lines, fallback = m.fallback, hits = m.result?.hits.orEmpty(), mode = m.result?.modeUsed,
+                memories = pool.take(lines.size), memoryLines = lines, fallback = m.fallback && ordered == null, hits = m.result?.hits.orEmpty(), mode = m.result?.modeUsed,
                 semanticUnavailable = m.result?.semanticUnavailable ?: false, semanticOff = m.result?.semanticOff,
-                windowNote = m.note, windowUsed = m.windowUsed, eventTimes = times,
+                windowNote = note, windowUsed = m.windowUsed, eventTimes = times,
             )
         }
         if (recentFound.isNotEmpty()) {
@@ -237,18 +252,48 @@ class RagCore(
     private class MemoryStoreResult(
         val pool: List<MemoryEntity>, val fallback: Boolean, val result: com.rokid.context.memory.retrieval.RetrievalResult?,
         val note: String? = null, val windowUsed: TimeWindow? = null,
+        /** The `rag.order` decision for this question (null = no node, or nothing to do) and the node's spec; [asked] is the window the question named (before any widening). */
+        val decision: OrderRules.Decision? = null, val order: com.rokid.context.ai.canvas.OrderSpec? = null, val asked: TimeWindow? = null, val topK: Int = 0, val minConfidence: Double = 0.0,
     )
+
+    /**
+     * The `rag.order` selection (spec section 5): the relevant hits, or for a row that ignores relevance every memory of the window, ordered and cut by [OrderRules].
+     * Null = keep the retriever's own order. Candidates are fenced like every other memory.
+     */
+    private suspend fun orderedPool(d: OrderRules.Decision, m: MemoryStoreResult, citeIds: Set<String>, s: RetrievalSettings, budget: Int, nowMs: Long): OrderRules.Picked? {
+        val spec = m.order ?: return null
+        val cands: List<OrderRules.Cand> = if (d.ignoreRelevance) {
+            val w = m.asked ?: TimeWindow(nowMs - 31 * 86_400_000L, nowMs + 1, "", "", TimeWindow.Source.RULES)
+            val rows = memory.db.retrievalDao().inWindow(m.minConfidence, w.fromMs, w.toMs, NIGHT_SCAN)
+            val byId = rows.map { it.id }.chunked(900).flatMap { memory.db.forgetDao().memories(it) }.filter { it.reviewState == ReviewState.OK }.associateBy { it.id }
+            val live = fence(rows.mapNotNull { byId[it.id] }).associateBy { it.id }
+            rows.mapNotNull { r -> live[r.id]?.takeIf { it.id !in citeIds }?.let { OrderRules.Cand(it, r.at, 0.0) } }
+        } else {
+            val result = m.result ?: return null
+            val live = m.pool.filter { it.id !in citeIds }.map { it.id }.toSet()
+            val rel = OrderRules.relevant(result.hits.filter { it.memory.id in live }, spec.relevanceFloor, result.modeUsed == RetrievalMode.SEMANTIC)
+            val at = eventTimes(rel.map { it.memory })
+            rel.map { OrderRules.Cand(it.memory, at[it.memory.id] ?: it.memory.createdAt, it.fused) }
+        }
+        return OrderRules.pick(d, cands, spec, m.topK, zone(), budget) { compactLine(it.memory, it.at).length }
+    }
 
     private suspend fun memoryStore(q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long): MemoryStoreResult {
         val asked = src.window
-        // Spec section 4: the window, then a day wider, then no window. The first step with a relevant result wins; the last step always does.
-        val steps: List<TimeWindow?> = if (asked == null) listOf(null) else listOf(asked, TimeWindowRules.widened(asked, nowMs, zone()), null)
+        // Spec section 5: the question's words pick an ordering; a row that needs many candidates asks the retriever for a bigger pool.
+        val decision = src.order?.let { OrderRules.decide(q, it, asked) }?.takeUnless { it.isNoop }
+        val pool = if (decision == null || decision.ignoreRelevance) params.poolSize else maxOf(params.poolSize ?: 0, ORDER_POOL)
+        // Spec section 4: the window, then a day wider, then no window (`rag.window` can shorten this). The first step with a relevant result wins; the last step always does.
+        val steps: List<TimeWindow?> = if (asked == null) listOf(null) else buildList {
+            add(asked)
+            if (src.widen != "NONE") TimeWindowRules.widened(asked, nowMs, zone())?.let { add(it) }
+            if (src.widen == "DAY_THEN_ALL") add(null)
+        }
         var r: com.rokid.context.memory.retrieval.RetrievalResult? = null
         var step = 0
         for ((i, w) in steps.withIndex()) {
-            if (w == null && i == 1) continue // the window could not grow
             step = i
-            r = retriever?.retrieveWindowed(q, s, nowMs, params.poolSize, src.notAfterMs, w?.let { EventWindow(it.fromMs, it.toMs) })
+            r = retriever?.retrieveWindowed(q, s, nowMs, pool, src.notAfterMs, w?.let { EventWindow(it.fromMs, it.toMs) })
             if (w == null || (r != null && windowRelevant(r))) break
         }
         val fallback = r == null || r.hits.isEmpty()
@@ -256,7 +301,10 @@ class RagCore(
         val poolAll = if (!fallback) r!!.hits.map { it.memory } else
             memory.memories.recent(30, src.notAfterMs).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
         val used = if (asked == null || fallback) null else steps[step]
-        return MemoryStoreResult(fence(poolAll), fallback, r, if (asked == null) null else windowNote(asked, if (fallback) null else steps[step], step), used)
+        return MemoryStoreResult(
+            fence(poolAll), fallback, r, if (asked == null) null else windowNote(asked, if (fallback) null else steps[step], step), used,
+            decision, src.order, asked, s.topK, s.minConfidence,
+        )
     }
 
     /** The first line of the memories block (spec section 4). [used]: the window that ran (null = none, the memories are from other dates). Fixed words plus the window's own label and phrase. */
@@ -390,6 +438,10 @@ class RagCore(
     /** The short form of a recent memory: `id=<id> · HH:mm · <text ≤ 300>`. */
     private fun recentLine(m: MemoryEntity): String = "id=${m.id} \u00b7 ${RECENT_TIME.withZone(zone()).format(Instant.ofEpochMilli(m.createdAt))} \u00b7 ${AskText.clip(AskText.collapse(m.text), MAX_RECENT_CHARS)}"
 
+    /** The short line of the one-hit-per-day form: `id=<id> · Sun 15 Nov 21:17 · <text ≤ 240>`. */
+    private fun compactLine(m: MemoryEntity, at: Long): String =
+        "id=${m.id} · ${COMPACT_TIME.withZone(zone()).format(Instant.ofEpochMilli(at))} · ${AskText.clip(AskText.collapse(m.text), MAX_COMPACT_CHARS)}"
+
     /** [at] is the event time: when it happened (the photo's capture time), not when the memory was written. */
     private fun line(m: MemoryEntity, at: Long): String =
         "id=${m.id} · ${EVENT_TIME.withZone(zone()).format(Instant.ofEpochMilli(at))} · confidence ${"%.2f".format(Locale.US, m.confidence)} · " +
@@ -399,6 +451,11 @@ class RagCore(
         private const val TAG = "RagCore"
         private const val MAX_MEMORY_CHARS = 500
         private const val FALLBACK = 10
+        private const val ORDER_POOL = 60 // candidates asked of the retriever when a `rag.order` row needs more than top-k
+        private const val NIGHT_SCAN = 600 // most memories a night-extent row reads from its window
+        private const val MAX_COMPACT_CHARS = 240
+        private const val DEFAULT_CHARS = RagParams.DEFAULT_MAX_CHARS
+        private val COMPACT_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.US)
         private const val MAX_RECENT_CHARS = 300
         private val RECENT_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
         internal const val MAX_PHOTO_IMAGES = AskPhotoPolicy.MAX_PHOTOS

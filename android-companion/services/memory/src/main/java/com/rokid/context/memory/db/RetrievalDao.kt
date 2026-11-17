@@ -27,6 +27,15 @@ interface RetrievalDao {
     @Query("SELECT m.id AS id, COALESCE(fm.capturedAtMs, m.createdAt) AS at FROM memory m LEFT JOIN frame_meta fm ON fm.frameId = m.frameId WHERE m.id IN (:ids)")
     suspend fun eventTimes(ids: List<String>): List<EventTimeRow>
 
+    /**
+     * The newest OK memories (confidence >= [minConfidence]) whose EVENT time is in `[fromMs, toMs)`, newest first, at most [limit]. No text match: the canvas ordering rows that
+     * ignore relevance (the last capture of each night) read the window itself. The caller fences the ids (ProvenanceGate) before use.
+     */
+    @Query("SELECT m.id AS id, COALESCE(fm.capturedAtMs, m.createdAt) AS at FROM memory m LEFT JOIN frame_meta fm ON fm.frameId = m.frameId " +
+        "WHERE m.reviewState = 'OK' AND m.confidence >= :minConfidence AND COALESCE(fm.capturedAtMs, m.createdAt) >= :fromMs AND COALESCE(fm.capturedAtMs, m.createdAt) < :toMs " +
+        "ORDER BY COALESCE(fm.capturedAtMs, m.createdAt) DESC LIMIT :limit")
+    suspend fun inWindow(minConfidence: Double, fromMs: Long, toMs: Long, limit: Int): List<EventTimeRow>
+
     companion object {
         /** The event time of a memory row, as a SQL expression over the aliases `memory` and `fm` (frame_meta). */
         const val EVENT_TIME_SQL = "COALESCE(fm.capturedAtMs, memory.createdAt)"

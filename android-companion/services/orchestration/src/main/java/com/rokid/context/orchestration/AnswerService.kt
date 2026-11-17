@@ -28,6 +28,7 @@ import com.rokid.context.memory.retrieval.ScoredMemory
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.orchestration.retrieval.LlmWindowResolver
 import com.rokid.context.orchestration.retrieval.TimeWindow
 import com.rokid.context.orchestration.retrieval.WindowResolver
 import com.rokid.context.prompt.PromptComposer
@@ -116,6 +117,11 @@ class AnswerService(
      * optional LLM fallback and the canvas `rag.window` switch (a later package) replace this one seam. [WindowResolver.None] = no window, today's behaviour.
      */
     private val windows: WindowResolver = WindowResolver.Rules,
+    /**
+     * The LLM fallback of the `rag.window` node (spec section 3), used only when the rules found no window and the plan switched it on. Null = [LlmWindowResolver] over this
+     * service's own runner and retriever (the normal text-call gates); a test passes its own.
+     */
+    private val llmWindows: WindowResolver? = null,
 ) {
     /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
     data class Retrieved(
@@ -140,10 +146,42 @@ class AnswerService(
     }
 
     /** The question's time window, or null. A resolver failure is no window (never fails the ask); nothing about the question is logged. */
-    private suspend fun windowOf(q: String, nowMs: Long): TimeWindow? =
-        try { windows.resolve(q, nowMs, zone()) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+    private suspend fun windowOf(q: String, nowMs: Long, spec: com.rokid.context.ai.canvas.WindowSpec? = null): TimeWindow? =
+        try {
+            val byRules = if (spec != null && !spec.rules) null else windows.resolve(q, nowMs, zone())
+            // The model is asked only when the plan allows it and the rules found nothing; it gets the question text and the date, never a memory.
+            byRules ?: if (spec?.llmFallback == true) (llmWindows ?: defaultLlmWindows).resolve(q, nowMs, zone()) else null
+        } catch (c: CancellationException) { throw c } catch (e: Exception) {
             PcLog.i(TAG, "time window unavailable (${e.javaClass.simpleName})"); null
         }
+
+    private val defaultLlmWindows: WindowResolver by lazy { LlmWindowResolver(ask = ::timeAnchor, anchor = ::eventEpisode) }
+
+    /**
+     * The one TIME_ANCHOR call: the question (as a data block) and today's date. No memory, photo or label is in it (declared [com.rokid.context.model.PayloadSources.NONE]); it goes
+     * through the runner and the router like any text call, so the user's text gates, the pause and the budget class apply. A broken contract is null (no window).
+     */
+    private suspend fun timeAnchor(question: String, nowMs: Long, z: ZoneId): com.rokid.context.ai.contract.TimeAnchorOutput? {
+        val today = java.time.Instant.ofEpochMilli(nowMs).atZone(z)
+        val vars = PromptVars(recentContext = PromptComposer.dataBlock("question", listOf(question)) + "\nToday: ${today.toLocalDate()} (${today.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, java.util.Locale.ENGLISH)}), time zone ${z.id}")
+        return try {
+            runner.run(RoleCall(PromptKey.TIME_ANCHOR, vars, callClass = com.rokid.context.model.CallClass.USER, sources = com.rokid.context.model.PayloadSources.NONE)).output as? com.rokid.context.ai.contract.TimeAnchorOutput
+        } catch (e: ModelCallException) {
+            if (e.kind == FailureKind.INVALID_OUTPUT) null else throw e
+        }
+    }
+
+    /** For `kind=event`: the capture span of the live memories that best match [event] (the top hit and the hits within 30 minutes of it). Reads times only; nothing goes to the model. */
+    private suspend fun eventEpisode(event: String, nowMs: Long): Pair<Long, Long>? {
+        val hits = retriever.retrieve(event, settings(), nowMs, 10).hits
+        if (hits.isEmpty()) return null
+        val live = com.rokid.context.provenance.ProvenanceGate.forGraph(memory).liveFilter(hits) { listOf(it.memory.id) }
+        val at = memory.db.retrievalDao().eventTimes(live.map { it.memory.id }).associate { it.id to it.at }
+        val times = live.mapNotNull { at[it.memory.id] }
+        val first = times.firstOrNull() ?: return null
+        val episode = times.filter { kotlin.math.abs(it - first) <= com.rokid.context.orchestration.retrieval.OrderRules.EPISODE_GAP_MS }
+        return episode.min() to episode.max()
+    }
 
     /** The shared retrieval core (v0.9.8): memories and photos with every gate; the prompt vars of the ask are built here. */
     internal val rag = RagCore(memory, retriever, settings, zone, photos, photosAsOf, photosWindowed = photosWindowed, photosAllowed = photosAllowed, imageEndpointId = imageEndpointId, photoImages = photoImages)
@@ -151,7 +189,7 @@ class AnswerService(
     /** [plan]: the sources and params of the Query flow; the built-in plan is today's Ask (the memory and photo stores, the user's settings). */
     suspend fun retrieve(question: String, nowMs: Long, plan: FlowPlan = FlowPlan.BUILT_IN_QUERY): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val c = rag.retrieve(RagQuery(q), plan.askSources(windowOf(q, nowMs)), plan.ragParams(), nowMs)
+        val c = rag.retrieve(RagQuery(q), plan.askSources(windowOf(q, nowMs, plan.window)), plan.ragParams(), nowMs)
         return Retrieved(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.

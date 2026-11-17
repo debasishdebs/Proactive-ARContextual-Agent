@@ -18,12 +18,15 @@ val AskFlow = AgentFlow(
     purpose = "Answers your questions from your memories.",
     nodes = listOf(
         FlowNode("question", "Question", NodeKind.INPUT),
+        step("when", "Resolve time words", *role(PromptKey.TIME_ANCHOR)),
         step("search", "Search memories", Facet.Retrieval, Facet.Model(Role.EMBED)),
         step("answer", "Answer", *role(PromptKey.ANSWER)),
         FlowNode("shown", "Answer shown / spoken", NodeKind.OUTPUT),
         step("propose", "Propose action"),
     ),
     edges = listOf(
+        FlowEdge("question", "when", "no date found, fallback on"),
+        FlowEdge("when", "search"),
         FlowEdge("question", "search"),
         FlowEdge("search", "answer"),
         FlowEdge("answer", "shown"),
