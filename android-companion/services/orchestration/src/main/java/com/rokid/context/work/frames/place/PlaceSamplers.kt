@@ -66,7 +66,7 @@ object PlaceSamplers {
         val keyframes = KeyframeGraph.get(app)
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
-            candidates = { lat, lon, up -> withContext(Dispatchers.IO) { PlaceGraph.pack(app).candidates(lat, lon, up) } },
+            candidates = { lat, lon, up -> withContext(Dispatchers.IO) { PlaceGraph.readyPack(app).candidates(lat, lon, up) } },
             match = { id, lines -> matchCall(app, id, lines, zoneBlocked, currentZoneTicket()) },
             saveMemory = { PlaceMemory.save(app, it, pending = true) }, reveal = { id, gen -> PlaceMemory.reveal(app, id, gen) }, onRollbackFailed = { PlaceRecovery.ensure(app) }, onCard = onCard, clock = System::currentTimeMillis,
             elapsed = android.os.SystemClock::elapsedRealtime, cards = PlaceGraph.port, deleteMemory = { PlaceMemory.delete(app, it) },

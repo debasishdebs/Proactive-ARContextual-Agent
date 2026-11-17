@@ -73,7 +73,13 @@ object PlaceCards {
 
     /** A photo-confirmed card: the first sentence of the pack summary and where the pack got it. */
     fun photo(p: PlaceEntity, frameId: String): PlaceCard =
-        PlaceCard(p.id, p.name, firstSentence(p.summary).ifEmpty { kindLabel(p.kind) }, sourceLabel(p), PlaceConfidence.PHOTO, frameId)
+        PlaceCard(p.id, p.name, (if (p.source == USER_SOURCE) userLine(p.summary) else firstSentence(p.summary)).ifEmpty { kindLabel(p.kind) }, sourceLabel(p), PlaceConfidence.PHOTO, frameId)
+
+    /** The text of a user place: the user's own note, whole (it is at most 140 characters), on one line. It is never summarised or rewritten. */
+    fun userLine(note: String): String = note.replace(Regex("\\s+"), " ").trim().take(LINE_MAX)
+
+    const val USER_SOURCE = "user"
+    const val USER_LABEL = "Your note"
 
     /** The fallback: name and distance only, never a summary (the place was not checked against the photo). */
     fun nearby(p: PlaceEntity, distanceM: Double, frameId: String): PlaceCard =
@@ -98,11 +104,11 @@ object PlaceCards {
 
     /** "Wikipedia · fetched 12 Nov" (the source and the day the pack fetched it). */
     fun sourceLabel(p: PlaceEntity, zone: java.util.TimeZone = java.util.TimeZone.getDefault()): String {
+        if (p.source == USER_SOURCE) return USER_LABEL
         val name = when {
             p.source.startsWith("wikipedia") -> "Wikipedia"
             p.source == "wikidata" -> "Wikidata"
             p.source == "osm" -> "OpenStreetMap"
-            p.source == "user" -> "Your pin"
             else -> "Place pack"
         }
         if (p.fetchedAt <= 0) return name
