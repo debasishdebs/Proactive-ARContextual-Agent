@@ -47,7 +47,7 @@ class WithdrawTest {
         s.trip(TripReason.FORGET)
         s.tick(); s.tick()
         assertEquals(3, t.forgets)
-        s.events.onForgetAccepted()
+        s.events.onForgetAccepted(s.wipeGeneration())
         s.tick()
         assertEquals(3, t.forgets)
         assertTrue(!s.forgetOwed())

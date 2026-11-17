@@ -50,7 +50,7 @@ class FencedDeliveryTest {
     @Test fun aHoldThatLandsDuringTheTransportCallWaitsForItAndTheTripWithdrawsIt() = runBlocking<Unit> {
         val inShow = CountDownLatch(1); val release = CountDownLatch(1)
         val slow = object : NexusTransport by t {
-            override fun show(cmd: NexusCommand): Int { inShow.countDown(); release.await(5, TimeUnit.SECONDS); return t.show(cmd) }
+            override fun show(cmd: NexusCommand, epoch: Long): Int { inShow.countDown(); release.await(5, TimeUnit.SECONDS); return t.show(cmd, epoch) }
         }
         val s = NexusHudSink(slow, g, { cfg }, FakeActions(), { 0L }, {}, asks)
         val shown = thread { runBlocking { s.show(answer(speak = true)) } }

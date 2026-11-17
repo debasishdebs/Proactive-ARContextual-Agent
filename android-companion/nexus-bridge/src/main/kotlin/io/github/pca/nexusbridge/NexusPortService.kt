@@ -51,10 +51,12 @@ class NexusPortService : Service() {
         override fun setCallback(callback: NexusPortCallback?) = guard {
             val r = BridgeHost.renderer
             if (callback == null) { r.events = null; return@guard }
+            r.resetEpoch()
             r.events = object : BridgeEvents {
                 override fun onAction(slot: Int, actionId: String) { runCatching { callback.onAction(slot, actionId) } }
                 override fun onSpeechDone() { runCatching { callback.onSpeechDone() } }
-                override fun onForgetAccepted() { runCatching { callback.onForgetAccepted() } }
+                override fun onForgetAccepted() = Unit      // the legacy acknowledgement carries no generation; the phone only sends the generation-carrying request
+                override fun onForgetAcceptedAt(generation: Long) { runCatching { callback.onForgetAcceptedAt(generation) } }
                 override fun onListening(active: Boolean) { runCatching { callback.onListening(active) } }
                 override fun onAskTranscript(text: String) { runCatching { callback.onAskTranscript(text) } }
                 override fun onAskFailed(reason: Int) { runCatching { callback.onAskFailed(reason) } }
@@ -69,6 +71,14 @@ class NexusPortService : Service() {
         override fun show(slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?): Int = guard {
             BridgeHost.renderer.show(slot, title, text, ttlMs, wake, actionIds?.toList().orEmpty(), actionLabels?.toList().orEmpty())
         }
+
+        override fun showAt(epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?): Int = guard {
+            BridgeHost.renderer.showAt(epoch, slot, title, text, ttlMs, wake, actionIds?.toList().orEmpty(), actionLabels?.toList().orEmpty())
+        }
+
+        override fun speakAt(epoch: Long, text: String?): Int = guard { BridgeHost.renderer.speakAt(epoch, text) }
+        override fun tripAt(epoch: Long): Int = guard { BridgeHost.renderer.tripAt(epoch) }
+        override fun forgetHistoryAt(generation: Long): Int = guard { BridgeHost.renderer.forgetHistoryAt(generation) }
 
         override fun hide(slot: Int): Int = guard { BridgeHost.renderer.hide(slot) }
         override fun speak(text: String?): Int = guard { BridgeHost.renderer.speak(text) }

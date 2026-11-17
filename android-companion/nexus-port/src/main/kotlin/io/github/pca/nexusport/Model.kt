@@ -31,10 +31,12 @@ object NexusResult {
     const val DISABLED = 8
     /** A kind PCA 2.0 does not draw (activity, surface). */
     const val UNSUPPORTED = 9
+    /** The show was stamped with a trip epoch older than the latest trip the bridge was told of: dropped bridge-side. */
+    const val STALE = 10
 
     fun name(code: Int): String = when (code) {
         OK -> "OK"; BUSY -> "BUSY"; NOT_AVAILABLE -> "NOT_AVAILABLE"; NOT_REGISTERED -> "NOT_REGISTERED"; NOT_GRANTED -> "NOT_GRANTED"
-        INVALID -> "INVALID"; RATE_LIMITED -> "RATE_LIMITED"; ERROR -> "ERROR"; DISABLED -> "DISABLED"; UNSUPPORTED -> "UNSUPPORTED"
+        INVALID -> "INVALID"; RATE_LIMITED -> "RATE_LIMITED"; ERROR -> "ERROR"; DISABLED -> "DISABLED"; UNSUPPORTED -> "UNSUPPORTED"; STALE -> "STALE"
         else -> "UNKNOWN"
     }
 
@@ -85,6 +87,8 @@ object NexusLimits {
     /** Nexus kills a skill call after 15 s (Skills v1); PCA answers inside this, so a late answer is never needed. */
     const val SKILL_DEADLINE_MS = 15_000L
     const val SKILL_HOST_TIMEOUT_MS = 12_000L
+    /** The hard timeout of ONE binder call from the phone to the bridge: a bridge that does not answer in time is unhealthy (trip, wipe debt, backoff). */
+    const val CALL_TIMEOUT_MS = 2_000L
 }
 
 data class NexusAction(val id: String, val label: String)

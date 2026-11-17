@@ -19,7 +19,12 @@ internal class FakeNexusTransport : NexusTransport {
 
     override fun setEvents(events: NexusEvents?): Int { this.events = events; return NexusResult.OK }
     override fun setFeatures(mask: Int): Int { calls += "features"; features = mask; return NexusResult.OK }
-    override fun show(cmd: NexusCommand): Int {
+    val epochs = mutableListOf<Long>()
+    val forgetGens = mutableListOf<Long>()
+    val trippedEpochs = mutableListOf<Long>()
+    var forgetResult = NexusResult.OK
+    override fun show(cmd: NexusCommand, epoch: Long): Int {
+        epochs += epoch
         calls += "show:${cmd.slot.name}"
         if (showResult == NexusResult.OK) { live += cmd.slot; shown += cmd; expiry[cmd.slot] = now() + cmd.ttlMs }
         return showResult
@@ -29,7 +34,7 @@ internal class FakeNexusTransport : NexusTransport {
         if (hideResult == NexusResult.OK) live -= slot
         return hideResult
     }
-    override fun speak(text: String): Int {
+    override fun speak(text: String, epoch: Long): Int {
         calls += "speak"
         if (speakResult == NexusResult.OK) { live += Slot.SPEECH; spoken += text; expiry[Slot.SPEECH] = now() + NexusLimits.SPEECH_MAX_MS }
         return speakResult
@@ -39,7 +44,8 @@ internal class FakeNexusTransport : NexusTransport {
         if (hideResult == NexusResult.OK) live -= Slot.SPEECH
         return hideResult
     }
-    override fun forgetHistory(): Int { calls += "forget"; forgets++; return NexusResult.OK }
+    override fun forgetHistory(generation: Long): Int { calls += "forget"; forgets++; forgetGens += generation; return forgetResult }
+    override fun tripped(epoch: Long): Int { trippedEpochs += epoch; return NexusResult.OK }
     var skillHost = false
     override fun stopListening(): Int {
         calls += "stopListen"

@@ -12,6 +12,8 @@ interface BridgeEvents {
     fun onAction(slot: Int, actionId: String)
     fun onSpeechDone()
     fun onForgetAccepted()
+    /** The hub accepted the wipe requested with [generation] (additive; v2 r2 P1-3). */
+    fun onForgetAcceptedAt(generation: Long) = Unit
     /** T5: a Nexus speech session opened or ended. */
     fun onListening(active: Boolean) = Unit
     /** T5: the one final transcript (never logged). */
@@ -29,11 +31,14 @@ class BridgeRenderer(
     private val log: (String) -> Unit = {},
     /** Asks PCA's phone (synchronously) whether a Nexus speech session may open NOW. Default: no (fail closed). Called BEFORE any speech session is opened. */
     private val authorizeListen: () -> Boolean = { false },
+    /** The longest the phone's `authorizeListen` binder call may take; no answer in time = no (fail closed). */
+    private val authorizeTimeoutMs: Long = 2_000L,
 ) {
     @Volatile var events: BridgeEvents? = null
     @Volatile private var features = NexusFeatures.NONE
     /** The feature bits PCA last set (0 until it sets any). The skill router reads it. */
     val currentFeatures: Int get() = features
+    private val authPool = java.util.concurrent.ThreadPoolExecutor(0, 4, 3, java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue()) { r -> Thread(r, "pca-bridge-auth").also { it.isDaemon = true } }
     private val listenLock = Any()
     private var listenGen = 0
     private var finalSeen = false
@@ -72,10 +77,9 @@ class BridgeRenderer(
             finalSeen = false
         }
         b.stopListening()      // never two sessions
-        // PCA's gates (mode, worn, zone fences, PAUSE) answer BEFORE the microphone is opened; no answer, a throw or a no = no session.
-        val allowed = try { authorizeListen() } catch (_: Exception) { false }
-        if (!allowed || !current(gen)) { log("bridge assist ignored reason=NOT_AUTHORIZED"); return }
-        val r = b.startListening(object : ListenCallbacks {
+        // PCA's gates (mode, worn, zone fences, PAUSE) answer BEFORE the microphone is opened; no answer in time, a throw or a no = no session.
+        val allowed = authorizedInTime()
+        val callbacks = object : ListenCallbacks {
             override fun onStarted() { if (current(gen)) ev.onListening(true) }
             override fun onFinal(text: String) {
                 synchronized(listenLock) { if (gen != listenGen || finalSeen) return; finalSeen = true }
@@ -92,12 +96,29 @@ class BridgeRenderer(
                     else -> ev.onListening(false)
                 }
             }
-        })
-        if (!current(gen)) { b.stopListening(); return }      // a trip came while the session was opening: close it, whatever it reports
+        }
+        // COMPARE-AND-OPEN: the generation is checked and the session opened under the SAME lock a trip ([stopListening]) takes to bump it. A trip that completed first makes the compare fail (nothing opens);
+        // a trip that comes later waits for the open and then stops it. No interleaving leaves a session open after a completed trip.
+        var r = NexusResult.OK
+        var opened = false
+        synchronized(listenLock) {
+            if (allowed && gen == listenGen) { r = b.startListening(callbacks); opened = true }
+        }
+        if (!opened) { log("bridge assist ignored reason=NOT_AUTHORIZED"); return }
+        if (!current(gen)) { b.stopListening(); return }      // belt and braces: a trip that finished meanwhile still closes the session (idempotent)
         if (r != NexusResult.OK) {
             log("bridge listening refused code=${NexusResult.name(r)}")
             ev.onAskFailed(AskFail.OTHER)
         }
+    }
+
+    /** The phone's answer, in [authorizeTimeoutMs] at most: a call that hangs, throws or answers no is a no. */
+    private fun authorizedInTime(): Boolean {
+        val f = try { authPool.submit(java.util.concurrent.Callable { authorizeListen() }) } catch (_: java.util.concurrent.RejectedExecutionException) { return false }
+        return try { f.get(authorizeTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) == true }
+        catch (_: java.util.concurrent.TimeoutException) { f.cancel(true); log("bridge listen authorization timed out"); false }
+        catch (_: java.util.concurrent.ExecutionException) { false }
+        catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
     }
 
     private fun current(gen: Int) = synchronized(listenLock) { gen == listenGen }
@@ -106,6 +127,33 @@ class BridgeRenderer(
     fun stopListening(): Int {
         synchronized(listenLock) { listenGen++; finalSeen = true }
         return bus()?.stopListening() ?: NexusResult.OK
+    }
+
+    // ---- v2 r2 P1-1: trip epochs. The phone stamps every show and speech with its trip epoch and tells the bridge the latest trip; a late show after a trip is dropped here. ----
+
+    private val latestTrip = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** A new phone connection starts a new epoch counter. */
+    fun resetEpoch() { latestTrip.set(0) }
+
+    /** Records the latest trip epoch (monotonic max). Never blocks. */
+    fun tripAt(epoch: Long): Int { latestTrip.accumulateAndGet(epoch) { a, b -> if (a > b) a else b }; return NexusResult.OK }
+
+    private fun stale(epoch: Long) = epoch < latestTrip.get()
+
+    /** [show] unless the phone tripped after this show was admitted; one that lands while the trip happens is hidden again. */
+    fun showAt(epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int {
+        if (stale(epoch)) { log("bridge show stale"); return NexusResult.STALE }
+        val r = show(slot, title, text, ttlMs, wake, ids, labels)
+        if (r == NexusResult.OK && stale(epoch)) { hide(slot); log("bridge show stale"); return NexusResult.STALE }
+        return r
+    }
+
+    fun speakAt(epoch: Long, text: String?): Int {
+        if (stale(epoch)) { log("bridge show stale"); return NexusResult.STALE }
+        val r = speak(text)
+        if (r == NexusResult.OK && stale(epoch)) { stopSpeech(); log("bridge show stale"); return NexusResult.STALE }
+        return r
     }
 
     fun show(slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int {
@@ -150,6 +198,12 @@ class BridgeRenderer(
     fun forgetHistory(): Int {
         val b = bus() ?: return quiet(NexusResult.NOT_REGISTERED)
         return b.forgetNotices { events?.onForgetAccepted() }
+    }
+
+    /** [forgetHistory] for the debt [generation]: the acknowledgement carries it back. */
+    fun forgetHistoryAt(generation: Long): Int {
+        val b = bus() ?: return quiet(NexusResult.NOT_REGISTERED)
+        return b.forgetNotices { events?.onForgetAcceptedAt(generation) }
     }
 
     /** PCA's process died, or it asked for everything off. Never throws. */

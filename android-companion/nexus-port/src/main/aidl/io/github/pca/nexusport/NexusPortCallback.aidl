@@ -12,4 +12,7 @@ oneway interface NexusPortCallback {
     void onAskTranscript(String text);
     /** The session ended without a transcript: an AskFail code (1 DENIED_BUSY, 2 NO_SPEECH, 3 OTHER). */
     void onAskFailed(int reason);
+    // ---- appended in the v2 r2 fix (additive) ----
+    /** The hub accepted the history wipe requested with [generation] (see NexusPort.forgetHistoryAt). An acknowledgement settles the debt only up to that generation. */
+    void onForgetAcceptedAt(long generation);
 }

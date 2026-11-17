@@ -31,6 +31,7 @@ private class FakePort : NexusPort.Stub() {
     val shown = mutableListOf<Int>()
     val hidden = mutableListOf<Int>()
     var forgets = 0
+    var forgetGen = 0L
     var features = -1
     var registered: NexusPortCallback? = null
     var showCode = NexusResult.OK
@@ -42,6 +43,12 @@ private class FakePort : NexusPort.Stub() {
     override fun speak(text: String?) = NexusResult.OK
     override fun stopSpeech() = NexusResult.OK
     override fun forgetHistory(): Int { forgets++; return NexusResult.OK }
+    override fun showAt(epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?) = show(slot, title, text, ttlMs, wake, actionIds, actionLabels)
+    override fun speakAt(epoch: Long, text: String?) = NexusResult.OK
+    override fun tripAt(epoch: Long) = NexusResult.OK
+    override fun forgetHistoryAt(generation: Long): Int { forgets++; forgetGen = generation; return NexusResult.OK }
+    /** The hub accepts the newest wipe request. */
+    fun ack() { registered?.onForgetAcceptedAt(forgetGen) }
     override fun stopListening() = NexusResult.OK
     override fun setSkillHost(host: io.github.pca.nexusport.NexusSkillHost?) = NexusResult.OK
 }
@@ -79,14 +86,14 @@ class NexusProviderTest {
             zoneFence = { if (zoneThrows) throw IllegalStateException("fence") else zone },
             askFence = { ask }, paused = { paused }, worn = { worn },
         )
-        return NexusProvider(l, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime }, debt = d)
+        return NexusProvider(l, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime }, debt = d, directDispatch = true)
     }
 
     @Test fun aSettingChangeCallsRefreshFeaturesAndPushesTheMask() = runTest {
         host = HudHost.NEXUS
         var sw = NexusSwitches()
         val gates = PcaNexusGates({ true }, { false }, { false }, { false }, { true })
-        val p = NexusProvider(link, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime }, switches = { sw })
+        val p = NexusProvider(link, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime }, switches = { sw }, directDispatch = true)
         p.refresh()
         assertEquals(0, port.features) // everything off by default: no TTS, no STT, no assist, no skills
         sw = NexusSwitches(voice = true, tts = true, skills = true)
@@ -168,7 +175,7 @@ class NexusProviderTest {
         lateinit var p: NexusProvider
         // the provenance read is where the show is "in flight": a Forget lands there, after the first gate check and before the draw
         val tripping = PcaNexusGates(sourcesLive = { p.trip(TripReason.FORGET); true }, zoneFence = { false }, askFence = { false }, paused = { false }, worn = { true })
-        p = NexusProvider(link, { host }, tripping, actions, backgroundScope)
+        p = NexusProvider(link, { host }, tripping, actions, backgroundScope, directDispatch = true)
         p.refresh(); port.shown.clear()
         assertEquals(Outcome.Dropped(DropReason.TRIPPED), p.show(nudge))
         assertTrue("nothing was drawn", port.shown.isEmpty())
@@ -185,7 +192,7 @@ class NexusProviderTest {
         assertEquals("a MODE_OFF trip asks for the wipe", true, port.forgets >= 1)
         assertEquals(0, port.features)
         assertEquals("still bound: the wipe is not accepted yet", 0, link.unbinds)
-        port.registered?.onForgetAccepted()
+        port.ack()
         advanceTimeBy(1_500)
         assertEquals(1, link.unbinds)
         assertFalse(p.bound.value)
@@ -203,7 +210,7 @@ class NexusProviderTest {
     @Test fun anUninstalledOrForeignBridgeIsReportedNotRetried() = runTest {
         host = HudHost.NEXUS
         val refusing = FakeLink(port, BridgeLink.Bind.REFUSED)
-        val p = NexusProvider(refusing, { host }, PcaNexusGates({ true }, { false }, { false }, { false }, { true }), actions, backgroundScope)
+        val p = NexusProvider(refusing, { host }, PcaNexusGates({ true }, { false }, { false }, { false }, { true }), actions, backgroundScope, directDispatch = true)
         p.refresh(); p.refresh()
         assertEquals(BridgeLink.Bind.REFUSED, p.bind.value)
         assertEquals(2, refusing.binds) // asked again only on the next refresh (a start or a switch), never in a loop
@@ -262,7 +269,7 @@ class NexusProviderTest {
         assertTrue("the debt is recorded", debt.wipeOwed()); assertEquals(0, port.forgets)
         link.connected!!(port)                     // the service restarted: the same binding reconnects
         assertEquals("the owed wipe goes out on connect", 1, port.forgets)
-        port.registered?.onForgetAccepted()
+        port.ack()
         assertFalse("settled by the acknowledgement", debt.wipeOwed())
     }
 
@@ -278,7 +285,7 @@ class NexusProviderTest {
         assertEquals("a retry bound it again, only for the wipe", 2, link.binds)
         assertTrue(port.forgets > first)
         assertEquals("nothing but the wipe", null, p.show(nudge))
-        port.registered?.onForgetAccepted()
+        port.ack()
         advanceTimeBy(2_000)
         assertFalse(debt.wipeOwed())
         assertEquals("unbound after the acknowledgement", 2, link.unbinds)
@@ -300,9 +307,31 @@ class NexusProviderTest {
         assertTrue(store2.wipeOwed())
         val p2 = provider(store2, link2); p2.refresh()
         assertEquals(1, link2.binds); assertEquals("the wipe is sent on provider start", 1, port2.forgets)
-        port2.registered?.onForgetAccepted()
+        port2.ack()
         assertFalse(store2.wipeOwed()); assertFalse(NexusHostStore(prefs).wipeOwed())
         assertFalse("no stored debt, nothing else bound at start", prefs.all.containsKey("wipe_owed"))
+    }
+
+    @Test fun aFailedBindDoesNotEndTheAutomaticDebtRetries() = runTest {
+        debt.owe()
+        val refusing = FakeLink(port, BridgeLink.Bind.REFUSED)
+        val p = provider(debt, refusing); p.refresh()
+        assertEquals(1, refusing.binds)
+        advanceTimeBy(31_000); testScheduler.runCurrent()
+        assertEquals("retried after the first wait", 2, refusing.binds)
+        advanceTimeBy(61_000); testScheduler.runCurrent()
+        assertEquals("and again after the doubled wait", 3, refusing.binds)
+    }
+
+    @Test fun aLateAcknowledgementOfAnOlderWipeLeavesTheNewerDebtStanding() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh(); p.show(nudge)
+        p.trip(TripReason.FORGET); val a = port.forgetGen
+        p.show(nudge); p.trip(TripReason.FORGET)
+        port.registered?.onForgetAcceptedAt(a)
+        assertTrue(debt.wipeOwed())
+        port.ack()
+        assertFalse(debt.wipeOwed())
     }
 
     @Test fun nothingIsOwedAndNothingBindsWhenNexusWasNeverUsed() = runTest {

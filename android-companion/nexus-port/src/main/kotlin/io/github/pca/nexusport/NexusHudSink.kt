@@ -2,6 +2,7 @@ package io.github.pca.nexusport
 
 import android.os.IBinder
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.EnumMap
@@ -37,20 +38,33 @@ class NexusHudSink internal constructor(
     private val asks: NexusAskHandler? = null,
     private val skills: NexusSkillProvider? = null,
     private val skillTimeoutMs: Long = NexusLimits.SKILL_HOST_TIMEOUT_MS,
-    /** A history wipe the phone still owes the hub from before (persisted across disconnects and restarts by the phone): sent on connect and on every tick until acknowledged. */
+    /** A history wipe the phone still owes the hub from before (used when no [wipeLedger] is given). */
     wipeOwedAtStart: Boolean = false,
-    /** The hub accepted the history wipe (called outside the sink's lock, once per acknowledgement). */
+    /** The hub accepted a history wipe (called outside the sink's lock, once per acknowledgement, after the ledger settled what it covers). */
     private val onForgetAcked: () -> Unit = {},
+    /** The persisted wipe debt (generations). Default: in memory. */
+    wipeLedger: WipeLedger? = null,
+    /** Where binder calls run. Default: inline (tests); [connect] passes the threaded one. */
+    private val dispatcher: NexusDispatcher = NexusDispatcher.direct(),
 ) {
-    private class Handle(val slot: Slot, val sources: Set<String>, val pauseGated: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>) {
+    private class Handle(val slot: Slot, val sources: Set<String>, val pauseGated: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>, val seq: Long, val prev: Handle?) {
         val used = HashSet<String>()
         var withdrawing = false
     }
 
+    private class HideReq(var bound: Long)
+
+    private class ShowOp(val epoch: Long, val pass: NexusPass, val cmd: NexusCommand, val speech: String?, val h: Handle, val sh: Handle?, val pauseGated: Boolean, val done: CompletableDeferred<Outcome>)
+
+    private val ledger: WipeLedger = wipeLedger ?: MemoryWipeLedger(wipeOwedAtStart)
     private val lock = Any()
     private val handles = EnumMap<Slot, Handle>(Slot::class.java)
-    private var epoch = 0L
-    private var forgetOwed = wipeOwedAtStart
+    private val pendingHide = EnumMap<Slot, HideReq>(Slot::class.java)
+    private var forgetQueued = false
+    @Volatile private var epoch = 0L
+    private var seq = 0L
+    /** Dispatcher thread only: the last transport call timed out. */
+    private var lastTimedOut = false
 
     private class Ask(val id: String, val expiresAt: Long) { var transcribed = false }
     private var ask: Ask? = null
@@ -64,7 +78,9 @@ class NexusHudSink internal constructor(
 
     fun liveSlots(): Set<Slot> = synchronized(lock) { handles.keys.toSet() }
 
-    fun forgetOwed(): Boolean = synchronized(lock) { forgetOwed }
+    fun forgetOwed(): Boolean = try { ledger.owed() } catch (_: Exception) { true }
+
+    internal fun wipeGeneration(): Long = try { ledger.generation() } catch (_: Exception) { 0L }
 
     // ---- show --------------------------------------------------------------------------------------------
 
@@ -80,25 +96,27 @@ class NexusHudSink internal constructor(
             val live = try { gates.sourcesLive(event.sources) } catch (c: CancellationException) { throw c } catch (_: Exception) { return dropped(DropReason.GATE_ERROR) }
             if (!live) return dropped(DropReason.PROVENANCE)
         }
-        // FINAL admission and dispatch are ONE step: the sink lock (a trip waits), then the fences' locks (a hold waits), the gates read last, then the transport calls. No suspension in between.
-        synchronized(lock) {
-            if (epoch != start) return dropped(DropReason.TRIPPED)
-            return dispatch(event, mapped, pass)
-        }
+        // FINAL admission is ONE cheap step: the sink lock (a trip waits for it, never for a binder call), then the fences' locks (a hold waits), the gates read last, then the item is only ENQUEUED.
+        // The binder call runs later on the dispatcher thread outside every lock, after a last ticket check.
+        val done = CompletableDeferred<Outcome>()
+        val early = synchronized(lock) { if (epoch != start) dropped(DropReason.TRIPPED) else admit(event, mapped, pass, done) }
+        return early ?: done.await()
     }
 
-    /** Lock held. The gates are read and the transport called inside the pass (the fences' locks); the ask is over either way. */
-    private fun dispatch(event: HudEvent, mapped: Mapped, pass: NexusPass): Outcome {
+    /** Lock held. A drop to report now, or null when the show was queued (its result completes [done]). The ask is over either way. */
+    private fun admit(event: HudEvent, mapped: Mapped, pass: NexusPass, done: CompletableDeferred<Outcome>): Outcome? {
         var block: DropReason? = null
-        val out = try {
-            pass.act { block = syncBlock(event.pauseGated()); block.let { b -> if (b == null) commit(event, mapped) else Outcome.Dropped(b) } }
+        var queued = true
+        val ran = try {
+            pass.act { block = syncBlock(event.pauseGated()); if (block != null) false else { queued = enqueueShow(event, mapped, pass, done); true } }
         } catch (_: Exception) {
             consumeAsk(event)
             return dropped(DropReason.GATE_ERROR)
         }
         consumeAsk(event)
         block?.let { return dropped(it) }
-        return out ?: dropped(DropReason.ZONE_HELD)
+        if (ran == null) return dropped(DropReason.ZONE_HELD)
+        return if (queued) null else dropped(DropReason.TRANSPORT)
     }
 
     /** Lock held. The answer of the pending Nexus ask (or its refusal) was handled: the ask is over. */
@@ -106,39 +124,112 @@ class NexusHudSink internal constructor(
         if (event is HudEvent.AskAnswer && ask?.id == event.ref) ask = null
     }
 
-    /** Short fixed-text notice, synchronous (inbound events are not suspend). Same gates as [show]. */
+    /** Short fixed-text notice, synchronous (inbound events are not suspend); fire and forget. Same gates as [show]. */
     private fun showNow(event: HudEvent): Outcome {
         val mapped = HudMapper.map(event) ?: return dropped(DropReason.UNSUPPORTED)
         val pass = try { gates.pass() } catch (_: Exception) { return dropped(DropReason.GATE_ERROR) }
-        synchronized(lock) { return dispatch(event, mapped, pass) }
+        synchronized(lock) { return admit(event, mapped, pass, CompletableDeferred()) ?: Outcome.Shown(false) }
     }
 
-    /** Lock held. */
-    private fun commit(event: HudEvent, mapped: Mapped): Outcome {
+    /** Lock held. Registers the handles up front (a trip then hides them even if the call is in flight) and queues the show. False = the queue is full. */
+    private fun enqueueShow(event: HudEvent, mapped: Mapped, pass: NexusPass, done: CompletableDeferred<Outcome>): Boolean {
         val cmd = mapped.command
         val now = clock()
-        val r = transport.show(cmd)
+        val h = Handle(cmd.slot, event.sources, event.pauseGated(), event.ref, now + cmd.ttlMs, cmd.actions.map { it.id }.toSet(), ++seq, handles[cmd.slot])
+        val speech = mapped.speech?.takeIf { safeConfig().let { c -> c.enabled && c.ttsEnabled } }
+        val sh = if (speech != null) Handle(Slot.SPEECH, event.sources, event.pauseGated(), event.ref, now + NexusLimits.SPEECH_MAX_MS, emptySet(), ++seq, handles[Slot.SPEECH]) else null
+        handles[cmd.slot] = h
+        sh?.let { handles[Slot.SPEECH] = it }
+        val op = ShowOp(epoch, pass, cmd, speech, h, sh, event.pauseGated(), done)
+        val ok = dispatcher.submit(NexusDispatcher.Item(true, { runShow(op) }, { why -> dropShow(op, why) }))
+        if (!ok) { restoreLocked(sh); restoreLocked(h) }
+        return ok
+    }
+
+    /** Lock held. An unsent (or refused) show leaves the registry as it was. */
+    private fun restoreLocked(h: Handle?) {
+        if (h == null || handles[h.slot] !== h) return
+        val p = h.prev
+        if (p != null) handles[h.slot] = p else handles.remove(h.slot)
+    }
+
+    private fun dropShow(op: ShowOp, why: DropReason) {
+        synchronized(lock) { restoreLocked(op.sh); restoreLocked(op.h) }
+        log("nexus dropped reason=${why.name}")
+        op.done.complete(Outcome.Dropped(why, if (why == DropReason.TRANSPORT) NexusResult.ERROR else NexusResult.OK))
+    }
+
+    /** True while the ticket the show was admitted with is still good: no trip since, the fences open, the synchronous gates open. The LAST step before a binder call; no lock is held across the call that follows. */
+    private fun stillValid(epochAtAdmission: Long, pass: NexusPass, pauseGated: Boolean): Boolean {
+        if (epoch != epochAtAdmission) return false
+        return try { pass.act { syncBlock(pauseGated) == null } == true && epoch == epochAtAdmission } catch (_: Exception) { false }
+    }
+
+    /** Dispatcher thread. */
+    private fun runShow(op: ShowOp) {
+        if (!stillValid(op.epoch, op.pass, op.pauseGated)) { dropShow(op, DropReason.TRIPPED); return }
+        if (!dispatcher.healthy()) { dropShow(op, DropReason.TRANSPORT); return }
+        try { ledger.noteShown() } catch (_: Exception) { log("nexus wipe record failed") }
+        val cmd = op.cmd
+        val r = callT { transport.show(cmd, op.epoch) }
         if (r != NexusResult.OK) {
+            // A timeout may still draw the notice later: keep the handle (unhealthy() marked it withdrawing, so the retry hides it).
+            if (!lastTimedOut) synchronized(lock) { restoreLocked(op.sh); restoreLocked(op.h) }
             log("nexus show refused slot=${cmd.slot.name} code=${NexusResult.name(r)}")
-            return Outcome.Dropped(DropReason.TRANSPORT, r)
+            op.done.complete(if (r == NexusResult.STALE) Outcome.Dropped(DropReason.TRIPPED) else Outcome.Dropped(DropReason.TRANSPORT, r))
+            return
         }
-        handles[cmd.slot] = Handle(cmd.slot, event.sources, event.pauseGated(), event.ref, now + cmd.ttlMs, cmd.actions.map { it.id }.toSet())
         log("nexus shown slot=${cmd.slot.name}")
         var spoken = false
-        val speech = mapped.speech
-        if (speech != null && safeConfig().let { it.enabled && it.ttsEnabled }) {
-            transport.setFeatures(safeConfig().featureMask())
-            val sr = transport.speak(speech)
-            if (sr == NexusResult.OK) {
-                handles[Slot.SPEECH] = Handle(Slot.SPEECH, event.sources, event.pauseGated(), event.ref, now + NexusLimits.SPEECH_MAX_MS, emptySet())
-                spoken = true
-                log("nexus shown slot=SPEECH")
-            } else {
-                log("nexus speech refused code=${NexusResult.name(sr)}")
-            }
+        val speech = op.speech
+        if (speech != null) {
+            if (safeConfig().let { it.enabled && it.ttsEnabled } && stillValid(op.epoch, op.pass, op.pauseGated)) {
+                callT { transport.setFeatures(safeConfig().featureMask()) }
+                val sr = callT { transport.speak(speech, op.epoch) }
+                if (sr == NexusResult.OK) { spoken = true; log("nexus shown slot=SPEECH") }
+                else {
+                    log("nexus speech refused code=${NexusResult.name(sr)}")
+                    if (!lastTimedOut) synchronized(lock) { restoreLocked(op.sh) }
+                }
+            } else synchronized(lock) { restoreLocked(op.sh) }
         }
-        return Outcome.Shown(spoken)
+        op.done.complete(Outcome.Shown(spoken))
     }
+
+    /** Dispatcher thread (or inline). One transport call, outside every lock, with the hard timeout. A timeout or an exception is the bridge being unhealthy; the result is then ERROR. */
+    private fun callT(block: () -> Int): Int {
+        if (!dispatcher.healthy()) { lastTimedOut = false; return NexusResult.ERROR }     // backing off: no call is made, nothing is forgotten (hides and the wipe are retried by the ticks)
+        val r = dispatcher.call(block)
+        lastTimedOut = r == null
+        if (r == null) { unhealthy(); return NexusResult.ERROR }
+        if (dispatcher.markOk()) submitRaw(false) { callT { transport.setFeatures(safeConfig().featureMask()) } }
+        return r
+    }
+
+    /** The bridge did not answer in time (or threw): trip, drop what is pending, owe a wipe, back off. Nothing here waits for the bridge. */
+    private fun unhealthy() {
+        dispatcher.markFailure()
+        var cancelled: String? = null
+        val pending: List<NexusDispatcher.Item>
+        val e: Long
+        synchronized(lock) {
+            e = ++epoch
+            cancelled = cancelAskLocked()
+            for (h in handles.values) h.withdrawing = true
+            pending = dispatcher.takeGuarded()
+            log("nexus bridge unhealthy")
+        }
+        pending.forEach { it.discard(DropReason.TRANSPORT) }
+        owe()
+        dispatcher.async { transport.tripped(e) }
+        cancelled?.let { notifyRefused(it, AskRefusal.CANCELLED) }
+    }
+
+    /** Records a new wipe debt generation (persisted before returning). Never throws. */
+    private fun owe(): Long = try { ledger.owe() } catch (_: Exception) { log("nexus wipe record failed"); wipeGeneration() }
+
+    /** Queues a transport call that is not a show (never discarded by a trip). [callT] makes no call while the bridge is backing off. */
+    private fun submitRaw(urgent: Boolean, body: () -> Unit): Boolean = dispatcher.submit(NexusDispatcher.Item(false, body), urgent)
 
     // ---- gates -------------------------------------------------------------------------------------------
 
@@ -171,49 +262,67 @@ class NexusHudSink internal constructor(
 
     // ---- withdraw ----------------------------------------------------------------------------------------
 
-    /** Lock held. True = the handle is gone. */
-    private fun withdrawLocked(slot: Slot): Boolean {
-        val h = handles[slot] ?: return true
-        val r = when (slot) {
-            Slot.SPEECH -> transport.stopSpeech()
-            Slot.LISTEN -> transport.stopListening()
-            else -> transport.hide(slot)
+    /** Lock held. Asks for the slot to be hidden: the handle is marked withdrawing and a hide is queued (urgent); it leaves the registry when the bridge says it is gone. Never calls the bridge. */
+    private fun withdrawLocked(slot: Slot) {
+        val h = handles[slot] ?: return
+        h.withdrawing = true
+        enqueueHideLocked(slot)
+    }
+
+    /** Lock held. One pending hide per slot: a second request only raises its bound (every handle admitted up to now goes). */
+    private fun enqueueHideLocked(slot: Slot) {
+        val req = pendingHide[slot]
+        if (req != null) { req.bound = seq; return }
+        pendingHide[slot] = HideReq(seq)
+        if (!submitRaw(true) { runHide(slot) }) pendingHide.remove(slot)     // queue full: the handle stays withdrawing, the next tick asks again
+    }
+
+    private fun runHide(slot: Slot) {
+        val bound = synchronized(lock) { pendingHide.remove(slot)?.bound } ?: return
+        val r = callT {
+            when (slot) {
+                Slot.SPEECH -> transport.stopSpeech()
+                Slot.LISTEN -> transport.stopListening()
+                else -> transport.hide(slot)
+            }
         }
-        if (NexusResult.hideMustRetry(r)) {
-            h.withdrawing = true
-            log("nexus withdraw retry slot=${slot.name} code=${NexusResult.name(r)}")
-            return false
+        synchronized(lock) {
+            val c = handles[slot] ?: return
+            if (c.seq > bound) return                     // admitted after this hide was asked for: not ours
+            if (!lastTimedOut && !NexusResult.hideMustRetry(r)) handles.remove(slot)
+            else { c.withdrawing = true; log("nexus withdraw retry slot=${slot.name} code=${NexusResult.name(r)}") }
         }
-        handles.remove(slot)
-        return true
     }
 
     private fun withdrawAllLocked(): Int {
-        var left = 0
-        for (slot in handles.keys.toList()) if (!withdrawLocked(slot)) left++
-        return left
+        for (slot in handles.keys.toList()) withdrawLocked(slot)
+        return handles.size
     }
 
     /**
-     * A close event: a zone hold, Forget, Delete all, pause, mode off or not worn. Hides every live handle and stops the speech NOW (synchronously), and ends every show still in flight. Call it from the same
-     * place that closes PCA's own HUD. Never throws.
+     * A close event: a zone hold, Forget, Delete all, pause, mode off or not worn. Never calls the bridge and never waits for it: it bumps the epoch (every show still queued is discarded unsent and a call already in
+     * flight is hidden again by the hide queued right behind it), queues the hides, the listening stop and, for Forget, Delete all and mode off, the history wipe of a NEW debt generation, and tells the bridge the epoch
+     * on its own thread (the bridge drops a late show). Call it from the same place that closes PCA's own HUD. Never throws.
      */
     fun trip(reason: TripReason) {
+        val wipe = reason == TripReason.FORGET || reason == TripReason.DELETE_ALL || reason == TripReason.MODE_OFF
+        if (wipe) owe()                  // persisted FIRST, whatever happens to the bridge
         val cancelled: String?
+        val pending: List<NexusDispatcher.Item>
+        val e: Long
         synchronized(lock) {
-            epoch++
+            e = ++epoch
             lastTrip = reason
             cancelled = cancelAskLocked()
-            val hadListen = Slot.LISTEN in handles
+            pending = dispatcher.takeGuarded()
+            pending.forEach { it.discard(DropReason.TRIPPED) }
             val left = withdrawAllLocked()
-            if (!hadListen) transport.stopListening()     // a session may be opening (authorized, no handle yet): it must not outlive the trip
+            submitRaw(true) { callT { transport.stopListening() } }     // a session may be opening (authorized, no handle yet): it must not outlive the trip
             log("nexus trip reason=${reason.name} left=${left}")
-            if (reason == TripReason.FORGET || reason == TripReason.DELETE_ALL || reason == TripReason.MODE_OFF) {
-                forgetOwed = true
-                sendForgetLocked()
-            }
-            if (reason == TripReason.MODE_OFF) transport.setFeatures(NexusFeatures.NONE)
+            if (wipe) enqueueForgetLocked()
+            if (reason == TripReason.MODE_OFF) submitRaw(true) { callT { transport.setFeatures(NexusFeatures.NONE) } }
         }
+        dispatcher.async { transport.tripped(e) }
         cancelled?.let { notifyRefused(it, refusalFor(reason)) }
     }
 
@@ -248,8 +357,17 @@ class NexusHudSink internal constructor(
         try { asks?.refused(id, why) } catch (c: CancellationException) { throw c } catch (_: Exception) { log("nexus ask handler failed") }
     }
 
-    private fun sendForgetLocked() {
-        val r = transport.forgetHistory()
+    /** Lock held. One queued wipe request at most; it carries the newest generation when it runs. */
+    private fun enqueueForgetLocked() {
+        if (forgetQueued) return
+        forgetQueued = true
+        if (!submitRaw(true) { runForget() }) forgetQueued = false
+    }
+
+    private fun runForget() {
+        synchronized(lock) { forgetQueued = false }
+        val g = try { if (ledger.owed()) ledger.generation() else return } catch (_: Exception) { return }
+        val r = callT { transport.forgetHistory(g) }
         log("nexus forget history code=${NexusResult.name(r)}")
     }
 
@@ -261,10 +379,10 @@ class NexusHudSink internal constructor(
         val now = clock()
         val snapshot = synchronized(lock) {
             for (h in handles.values.toList()) {
-                if (h.withdrawing) withdrawLocked(h.slot)
+                if (h.withdrawing) enqueueHideLocked(h.slot)
                 else if (now >= h.expiresAt) { if (h.slot == Slot.LISTEN) withdrawLocked(h.slot) else handles.remove(h.slot) }
             }
-            if (forgetOwed) sendForgetLocked()
+            if (forgetOwed()) enqueueForgetLocked()
             handles.values.toList()
         }
         val askGone = synchronized(lock) {
@@ -283,19 +401,34 @@ class NexusHudSink internal constructor(
         }
     }
 
-    /** The bridge process is back (or new): it holds nothing, and whatever the old one drew is unknown. Hide every slot we can and re-push the switches. */
+    /** The bridge process is back (or new): it holds nothing, and whatever the old one drew is unknown. Hide every slot we can and re-push the switches. Queued, never waits for the bridge. */
     fun onBridgeConnected() {
+        val pending: List<NexusDispatcher.Item>
         synchronized(lock) {
             epoch++
-            handles.clear()
+            handles.clear(); pendingHide.clear()
             ask = null
-            for (s in listOf(Slot.NOTICE, Slot.PIN)) transport.hide(s)
-            transport.stopSpeech()
-            transport.stopListening()
-            transport.setFeatures(safeConfig().featureMask())
-            transport.setSkillHost(skills != null || asks != null)     // the host also answers `authorizeListen` for the assist ask
-            if (forgetOwed) sendForgetLocked()
+            pending = dispatcher.takeGuarded()
+            pending.forEach { it.discard(DropReason.TRIPPED) }
+            submitRaw(true) { callT { transport.hide(Slot.NOTICE) }; callT { transport.hide(Slot.PIN) } }
+            submitRaw(true) { callT { transport.stopSpeech() } }
+            submitRaw(true) { callT { transport.stopListening() } }
+            submitRaw(true) { callT { transport.setFeatures(safeConfig().featureMask()) } }
+            submitRaw(true) { callT { transport.setSkillHost(skills != null || asks != null) } }     // the host also answers `authorizeListen` for the assist ask
+            if (forgetOwed()) enqueueForgetLocked()
         }
+        dispatcher.markOk()
+    }
+
+    /** Hands the sink's inbound events to the bridge (queued: a hung bridge cannot block the connecting thread), then [onBridgeConnected]. */
+    internal fun attach() {
+        submitRaw(true) { callT { transport.setEvents(events) } }
+        onBridgeConnected()
+    }
+
+    /** The provider lets go of this sink: stops the dispatcher; whatever was queued is discarded unsent. */
+    fun close() {
+        dispatcher.close().forEach { it.discard(DropReason.TRIPPED) }
     }
 
     /**
@@ -307,7 +440,7 @@ class NexusHudSink internal constructor(
         synchronized(lock) {
             val cfg = safeConfig()
             if (!cfg.askEnabled()) { cancelled = cancelAskLocked(); withdrawLocked(Slot.LISTEN) }
-            transport.setFeatures(cfg.featureMask())
+            submitRaw(false) { callT { transport.setFeatures(safeConfig().featureMask()) } }
         }
         cancelled?.let { notifyRefused(it, AskRefusal.DISABLED) }
     }
@@ -349,8 +482,9 @@ class NexusHudSink internal constructor(
         }
 
         override fun onSpeechDone() { synchronized(lock) { handles.remove(Slot.SPEECH) } }
-        override fun onForgetAccepted() {
-            synchronized(lock) { forgetOwed = false }
+        override fun onForgetAccepted(generation: Long) {
+            // An acknowledgement settles the debt only up to the generation its request carried: a late one for an older wipe never clears a newer debt.
+            try { ledger.settle(generation) } catch (_: Exception) { log("nexus wipe ack failed") }
             try { onForgetAcked() } catch (_: Exception) { log("nexus wipe ack failed") }
         }
 
@@ -370,12 +504,12 @@ class NexusHudSink internal constructor(
                 val id = "ask-${++askCounter}"
                 val block = if (safeConfig().askEnabled()) syncBlock(true) else DropReason.MODE_OFF
                 if (block != null) {
-                    transport.stopListening()
+                    submitRaw(true) { callT { transport.stopListening() } }
                     refusal = id to refusalFor(block)
                 } else {
                     superseded = cancelAskLocked()
                     ask = Ask(id, clock() + NexusLimits.ASK_MAX_MS)
-                    handles[Slot.LISTEN] = Handle(Slot.LISTEN, emptySet(), false, id, clock() + NexusLimits.LISTEN_MAX_MS, emptySet())
+                    handles[Slot.LISTEN] = Handle(Slot.LISTEN, emptySet(), false, id, clock() + NexusLimits.LISTEN_MAX_MS, emptySet(), ++seq, null)
                     log("nexus listening started")
                 }
             }
@@ -482,12 +616,16 @@ class NexusHudSink internal constructor(
         fun connect(
             binder: IBinder, gates: NexusGates, config: () -> NexusConfig, actions: NexusActionHandler, log: (String) -> Unit = {},
             asks: NexusAskHandler? = null, skills: NexusSkillProvider? = null,
-            wipeOwed: Boolean = false, onForgetAcked: () -> Unit = {},
+            ledger: WipeLedger = MemoryWipeLedger(), onForgetAcked: () -> Unit = {},
+            /** Hard timeout of ONE binder call. */
+            callTimeoutMs: Long = NexusLimits.CALL_TIMEOUT_MS,
+            /** Tests only: run every transport call on the caller's thread, without a timeout. */
+            direct: Boolean = false,
         ): NexusHudSink {
             val t = AidlNexusTransport.from(binder)
-            val sink = NexusHudSink(t, gates, config, actions, log = log, asks = asks, skills = skills, wipeOwedAtStart = wipeOwed, onForgetAcked = onForgetAcked)
-            t.setEvents(sink.events)
-            sink.onBridgeConnected()
+            val d = if (direct) NexusDispatcher.direct() else NexusDispatcher.threaded(callTimeoutMs)
+            val sink = NexusHudSink(t, gates, config, actions, log = log, asks = asks, skills = skills, onForgetAcked = onForgetAcked, wipeLedger = ledger, dispatcher = d)
+            sink.attach()
             return sink
         }
     }
