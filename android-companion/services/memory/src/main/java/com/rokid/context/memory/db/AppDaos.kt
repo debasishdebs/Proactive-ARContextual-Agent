@@ -44,6 +44,9 @@ interface PauseDao {
     /** Pause zones: `zone:` intervals that overlap [fromMs, toMs) (open ones included): the capture of a photo that took time, or a clock-rollback-widened frame time. */
     @Query("SELECT COUNT(*) FROM pause_interval WHERE pauseId LIKE 'zone:%' AND startMs < :toMs AND (effectiveEndMs IS NULL OR effectiveEndMs > :fromMs)")
     suspend fun countZoneOverlapping(fromMs: Long, toMs: Long): Int
+    /** The intervals (open ones included) that overlap [fromMs, toMs), oldest first: the hour chips of the broken-down view. `zone:` ids are privacy zones, anything else a manual or glasses pause. */
+    @Query("SELECT * FROM pause_interval WHERE startMs < :toMs AND (effectiveEndMs IS NULL OR effectiveEndMs > :fromMs) ORDER BY startMs ASC, pauseId ASC")
+    suspend fun overlapping(fromMs: Long, toMs: Long): List<PauseIntervalEntity>
     @Query("DELETE FROM pause_interval WHERE effectiveEndMs IS NOT NULL AND effectiveEndMs < :before")
     suspend fun pruneEndedBefore(before: Long)
     @Query("SELECT * FROM pause_interval ORDER BY startMs ASC") suspend fun intervals(): List<PauseIntervalEntity>
