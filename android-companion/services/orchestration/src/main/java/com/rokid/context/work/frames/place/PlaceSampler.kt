@@ -39,7 +39,7 @@ data class PlaceMemoryRequest(
 )
 
 /**
- * The durable record of place memories that may exist without a card: marked BEFORE the commit, cleared once the attempt ended with its card published (the memory stays) or the memory
+ * The durable record of place memories that may exist without a card (they are written HIDDEN and stay unreadable until the card is out): marked BEFORE the commit, cleared once the attempt ended with its card published (the memory stays) or the memory
  * was taken back. Whatever is still marked (a rollback that failed, a process death in between) is deleted by the next sweep.
  */
 interface PlaceMemoryLedger {
@@ -105,6 +105,13 @@ class PlaceSampler(
     /** THE zone fence: the attempt runs in its cancellable job and every side effect goes through it. */
     private val fence: ZoneFence = ZoneFence(),
     private val ledger: PlaceMemoryLedger = InMemoryPlaceLedger(),
+    /**
+     * Makes the memory of [frameId] readable (it is written hidden, see [PlaceMemory.save]) once its card is out; false = it stays hidden and marked, and recovery deletes it.
+     * Asked with the wipe generation of the attempt.
+     */
+    private val reveal: suspend (frameId: String, generation: Long) -> Boolean = { _, _ -> true },
+    /** A take-back gave up for now (the mark stays): schedules the independent recovery ([PlaceRecovery]); the hidden memory is not readable meanwhile. */
+    private val onRollbackFailed: () -> Unit = {},
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
@@ -152,6 +159,7 @@ class PlaceSampler(
             try { deleteMemory(frameId); ledger.clear(frameId); return true } catch (c: CancellationException) { if (c !is ZoneFenced) throw c } catch (_: Exception) { }
             if (n < ROLLBACK_TRIES - 1) delay(ROLLBACK_RETRY_MS)
         }
+        try { onRollbackFailed() } catch (_: Exception) { }
         return false
     }
 
@@ -227,8 +235,17 @@ class PlaceSampler(
             keep = true
             return PlaceOutcome.MATCHED
         } finally {
-            withContext(NonCancellable) { if (keep) ledger.clear(frameId) else rollback(frameId, gen) }
+            withContext(NonCancellable) { if (keep) show(frameId, gen) else rollback(frameId, gen) }
         }
+    }
+
+    /**
+     * The card is out: the memory (written hidden) becomes readable and the mark is cleared. If that fails the mark stays and the memory stays hidden, so it is taken back by recovery
+     * rather than left in an unknown state.
+     */
+    private suspend fun show(frameId: String, gen: Long) {
+        val shown = try { reveal(frameId, gen) } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
+        if (shown) ledger.clear(frameId) else try { onRollbackFailed() } catch (_: Exception) { }
     }
 
     /** Takes back the memory of a photo whose card was not (or may not be) shown because a zone, a Forget or a wipe came first. Never skipped by cancellation; a failure stays marked for [sweep]. */
