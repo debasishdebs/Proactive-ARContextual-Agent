@@ -65,6 +65,9 @@ class PlacePack(
 
     suspend fun areas(): List<AreaEntity> = dao.areas()
 
+    /** Read-only lookup by id (v3.0 shadow loop: where a recalled place is, for the zone check). */
+    suspend fun placesByIds(ids: List<String>): List<PlaceEntity> = chunked(ids) { dao.byIds(it) }
+
     /** What is in the pack, for the budget screen: pinned (user pins and pinned places), seeded (not pinned) and fetched (neither), and the bytes. */
     suspend fun stats(): PackStats = PackStats(dao.pinnedCount(), dao.seededCount(), dao.fetchedCount(), dao.totalBytes(), budgetBytes)
 

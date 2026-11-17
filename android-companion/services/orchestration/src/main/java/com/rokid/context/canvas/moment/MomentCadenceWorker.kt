@@ -7,6 +7,7 @@ import com.rokid.context.canvas.outbox.OutboxTriggers
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.orchestration.nudge.NudgeTrigger
+import com.rokid.context.orchestration.proactive.ProactiveTrigger
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -29,6 +30,9 @@ class MomentCadenceWorker(ctx: Context, params: WorkerParameters) : CoroutineWor
             // Nudge flow triggers (v0.9.8 slice C), each a no-op unless the published Nudge flow is rooted at it: a Scene was stored, then the schedule
             if (scenes != null && scenes.stored > 0) for (t in listOf(NodeTypes.TRIGGER_SCENE, NodeTypes.TRIGGER_SIGNAL)) NudgeTrigger.onEvent(applicationContext, t)
             try { NudgeTrigger.tickSchedule(applicationContext) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "cadence schedule check failed (${e.javaClass.simpleName})") }
+            // v3.0 proactive loop (shadow): one more existing-hook call, a no-op while the Suggestions switch is off; it never throws
+            ProactiveTrigger.tick(applicationContext)
+            if (scenes != null && scenes.stored > 0) ProactiveTrigger.onMomentEnd(applicationContext)
             try { DeriveTriggers.get(applicationContext).runIfDue(now) } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i(TAG, "cadence derive failed (${e.javaClass.simpleName})") /* the derive step is optional: its fields stay missing and the next due run retries */ }
             return Result.success()
         } catch (c: CancellationException) {

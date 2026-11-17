@@ -16,7 +16,9 @@ import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 class Leases {
     enum class Kind { ASK, NUDGE, CANVAS_RUN, DERIVE, CANVAS_SAVE, RESUMMARIZE, REANSWER,
         /** The derived-signal try-it (v1.2): a read-only preview over imported-trace seconds; it commits nothing, it only verifies before showing. */
-        TRY_IT }
+        TRY_IT,
+        /** v3.0 proactive loop (shadow): reads place memories, pins and marks; a would-show commits through it, a Forget revokes it. */
+        PROACTIVE }
 
     private val lock = Any()
     private val open = LinkedHashSet<Lease>()
