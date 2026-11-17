@@ -269,7 +269,10 @@ class AskActionsTest {
             com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_1")
             """{"answer":"Milk is almost empty.","sources":["rokid_mem_1"],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""
         }
-        val r = AskActions.ask(ctx, "milk?") as AskOutcome.Answered
+        val out = AskActions.ask(ctx, "milk?")
+        // forgetV2 (M4): the executor revokes the read lease of the flow inside its transaction (the legacy service never revoked: the gate caller did), so the ask is fenced and nothing is saved
+        if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on) { assertTrue(out is AskOutcome.Failed); return@runBlocking }
+        val r = out as AskOutcome.Answered
         val ask = MemoryGraph.get(ctx).asks.byId(r.askId)!!
         assertTrue(ask.redacted)
         assertEquals(com.rokid.context.memory.forget.ForgetService.REDACTED, ask.answer)

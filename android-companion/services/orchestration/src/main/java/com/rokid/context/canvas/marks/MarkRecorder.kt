@@ -67,6 +67,8 @@ class MarkRecorder(
     private val phonePhoto: PhonePhotoRequester? = null,
     /** v0.9.7 slice D: a phone call is active right now (the existing call detection); a mark made then carries the `call` tag in its provenance. */
     private val callActive: () -> Boolean = { false },
+    /** Forget lifecycle M4 (flag forgetV2): the mark undo through the `ForgetExecutor` (production: `ForgetExecutor.deleteMarks(db, ids)`). Null = the legacy DAO calls. */
+    private val deleteMarks: (suspend (List<String>) -> Unit)? = null,
 ) {
     private val lock = Mutex()
     private class Listen(val startAt: Long, var bound: String? = null, val glasses: Boolean = true)
@@ -162,9 +164,13 @@ class MarkRecorder(
         if (frame != null && !forgetPhoto(frame)) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
         // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
         DataOpGate.shared.delete {
-            // Forget lifecycle M3: a read lease on the mark (a run or derive over it) is revoked before the delete
-            DataOpGate.shared.leases.revoke(com.rokid.context.memory.forget.lifecycle.Leases.marks(listOf(target, "$target:i")))
-            dao.deleteLabel(target); dao.deleteLabel("$target:i")
+            val viaExecutor = deleteMarks
+            if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on && viaExecutor != null) viaExecutor(listOf(target, "$target:i")) // forgetV2: the executor re-plans, revokes the leases and deletes in one transaction
+            else {
+                // Forget lifecycle M3: a read lease on the mark (a run or derive over it) is revoked before the delete
+                DataOpGate.shared.leases.revoke(com.rokid.context.memory.forget.lifecycle.Leases.marks(listOf(target, "$target:i")))
+                dao.deleteLabel(target); dao.deleteLabel("$target:i")
+            }
         }
         l?.atMs?.let(onChanged)
     }

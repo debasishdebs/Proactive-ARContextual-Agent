@@ -99,7 +99,7 @@ object MemoryWipe {
         MemoryGraph.markLegacyImportDone(context)
         AskPhotoPolicy.set(context, false) // Delete all withdraws the consent to send photos with questions (like image intent); re-enabling is one tap
         generation.incrementAndGet()
-        com.rokid.context.orchestration.forget.LeaseRevocation.all("delete all") // M3: Delete all revokes every read lease (the generation check is the second line)
+        if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) com.rokid.context.orchestration.forget.LeaseRevocation.all("delete all") // M3: Delete all revokes every read lease (the generation check is the second line); with forgetV2 the executor revokes in `wipeMemory`
         val wipedAt = System.currentTimeMillis()
         val wipedElapsed = SystemClock.elapsedRealtime()
         // Fix round 2 I2: every file in the inbox when the fence is marked is pre-wipe, whatever its stamp says.
@@ -111,7 +111,7 @@ object MemoryWipe {
             QueueRuntimeStore.clearAll(context) // bumps the generation again, under the queue lock (fix round 2 N1)
             val wipe = db.wipeDao()
             val paths = wipe.framePaths()
-            val proposals = wipe.wipeMemory()
+            val proposals = if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on) com.rokid.context.memory.forget.lifecycle.ForgetExecutor.wipeMemory(db, DataOpGate.shared.leases) else wipe.wipeMemory()
             com.rokid.context.orchestration.forget.ForgetActions.removals.incrementAndGet() // committed: an open canvas page reads again
             // P7xP8 I1: as Forget does (ForgetActions.apply), an armed reminder alarm and a posted notification still
             // hold the redacted text: cancel them for every proposal the wipe saw.

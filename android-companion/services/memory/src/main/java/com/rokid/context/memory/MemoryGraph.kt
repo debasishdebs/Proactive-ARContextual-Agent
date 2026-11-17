@@ -31,7 +31,11 @@ class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredC
          * mode for a database that does not exist yet (ContextApp passes the legacy AppConfig flag); later changes go
          * through [DbEncryption.request] and apply at the next process start.
          */
-        fun get(context: Context, encryptionRequested: () -> Boolean = { false }): MemoryGraph =
+        fun get(context: Context, encryptionRequested: () -> Boolean = { false }): MemoryGraph {
+            com.rokid.context.memory.forget.lifecycle.ForgetV2.install(context) // Forget lifecycle M4: the flag reader, once per process; OFF unless the developer flag is set
+            return getInstance(context, encryptionRequested)
+        }
+        private fun getInstance(context: Context, encryptionRequested: () -> Boolean): MemoryGraph =
             instance ?: synchronized(this) {
                 instance ?: run {
                     // Test guard (inert on a device): a JVM unit test must never build the production (SQLCipher) database. Reaching here means the test set no

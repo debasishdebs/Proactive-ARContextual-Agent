@@ -36,6 +36,7 @@ object MarkGraph {
                     send = { ref -> com.rokid.context.phone.hub.HubGraph.get(ctx).requestMarkPhoto(ref) },
                 ),
                 callActive = com.rokid.context.phone.hub.HubGraph::callActive,
+                deleteMarks = { ids -> com.rokid.context.memory.forget.lifecycle.ForgetExecutor.deleteMarks(MemoryGraph.get(ctx).db, ids) }, // forgetV2 only
             )
         }.also { recorder = it }
     }

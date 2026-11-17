@@ -212,7 +212,8 @@ object ForgetActions {
 
     private suspend fun runLocked(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref?, op: suspend (ForgetService) -> ForgetService.Result): Outcome {
         // Forget lifecycle M3: the read leases that reach what this Forget touches are revoked BEFORE the delete (no new lease can open, we hold the gate); an unplanned scope revokes them all
-        try {
+        // (with forgetV2 the executor re-plans and revokes inside its own transaction: no call here)
+        if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) try {
             if (shadowRoot != null) LeaseRevocation.before(MemoryGraph.get(context).db) { it.plan(setOf(shadowRoot), com.rokid.context.memory.forget.lifecycle.Policy.User) } else LeaseRevocation.all("scoped")
         } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) { LeaseRevocation.all("no graph") }
         val shadow = if (shadowRoot != null) ForgetShadow.before(context, shadowRoot) else null // Forget lifecycle M2: reads only, off by default (DeveloperFlags), never affects the Forget
