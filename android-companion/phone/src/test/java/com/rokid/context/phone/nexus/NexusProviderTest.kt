@@ -36,7 +36,9 @@ private class FakePort : NexusPort.Stub() {
     var registered: NexusPortCallback? = null
     var showCode = NexusResult.OK
     override fun apiVersion() = 1
-    override fun setCallback(callback: NexusPortCallback?) { registered = callback }
+    var token = 0L
+    override fun setCallback(callback: NexusPortCallback?) { registered = callback; if (callback != null) { token = 0x5EED0000L + (++registrations); callback.onConnected(token) } }
+    var registrations = 0L
     override fun setFeatures(mask: Int): Int { features = mask; return NexusResult.OK }
     override fun show(slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?): Int { if (showCode == NexusResult.OK) shown += slot; return showCode }
     override fun hide(slot: Int): Int { hidden += slot; return NexusResult.OK }
@@ -47,7 +49,8 @@ private class FakePort : NexusPort.Stub() {
     override fun speakAt(epoch: Long, text: String?) = NexusResult.OK
     override fun tripAt(epoch: Long) = NexusResult.OK
     override fun forgetHistoryAt(generation: Long): Int { forgets++; forgetGen = generation; return NexusResult.OK }
-    override fun beginSession(session: Long) = NexusResult.OK
+    override fun beginSession(session: Long) = NexusResult.UNSUPPORTED
+    override fun beginSessionWith(session: Long, token: Long) = if (token == this.token) NexusResult.OK else NexusResult.STALE
     override fun showIn(session: Long, epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?) = show(slot, title, text, ttlMs, wake, actionIds, actionLabels)
     override fun speakIn(session: Long, epoch: Long, text: String?) = NexusResult.OK
     override fun tripIn(session: Long, epoch: Long) = NexusResult.OK

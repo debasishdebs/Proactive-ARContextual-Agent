@@ -51,7 +51,7 @@ class NexusPortService : Service() {
         override fun setCallback(callback: NexusPortCallback?) = guard {
             val r = BridgeHost.renderer
             if (callback == null) { r.events = null; return@guard }
-            r.resetEpoch()
+            val token = r.resetEpoch()
             r.events = object : BridgeEvents {
                 override fun onAction(slot: Int, actionId: String) { runCatching { callback.onAction(slot, actionId) } }
                 override fun onSpeechDone() { runCatching { callback.onSpeechDone() } }
@@ -63,6 +63,8 @@ class NexusPortService : Service() {
             }
             // PCA's process died: nothing may stay on the glasses on its behalf.
             runCatching { callback.asBinder().linkToDeath({ BridgeHost.renderer.hideAll(); BridgeHost.renderer.setFeatures(0); BridgeHost.renderer.events = null; BridgeHost.skillHost = null; BridgeHost.listenAuth = null }, 0) }
+            // The token goes ONLY to the callback that registered: it is what lets this phone connection (and no older one) adopt its session.
+            runCatching { callback.onConnected(token) }
             Unit
         }
 
@@ -80,7 +82,9 @@ class NexusPortService : Service() {
         override fun tripAt(epoch: Long): Int = guard { BridgeHost.renderer.tripAt(epoch) }
         override fun forgetHistoryAt(generation: Long): Int = guard { BridgeHost.renderer.forgetHistoryAt(generation) }
 
-        override fun beginSession(session: Long): Int = guard { BridgeHost.renderer.beginSession(session) }
+        /** Legacy, tokenless: refused (fail closed); a connection is adopted only through [beginSessionWith]. */
+        override fun beginSession(session: Long): Int = guard { NexusResult.UNSUPPORTED }
+        override fun beginSessionWith(session: Long, token: Long): Int = guard { BridgeHost.renderer.beginSession(session, token) }
         override fun showIn(session: Long, epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?): Int = guard {
             BridgeHost.renderer.showIn(session, epoch, slot, title, text, ttlMs, wake, actionIds?.toList().orEmpty(), actionLabels?.toList().orEmpty())
         }

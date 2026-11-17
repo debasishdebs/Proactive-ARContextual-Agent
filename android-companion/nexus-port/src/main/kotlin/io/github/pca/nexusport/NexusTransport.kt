@@ -55,6 +55,7 @@ internal class AidlNexusTransport(private val port: NexusPort) : NexusTransport 
         override fun onListening(active: Boolean) { events?.onListening(active) }
         override fun onAskTranscript(text: String?) { if (text != null) events?.onAskTranscript(text) }
         override fun onAskFailed(reason: Int) { events?.onAskFailed(reason) }
+        override fun onConnected(token: Long) { if (token != 0L) { connToken = token; tokenLatch.countDown() } }
     }
 
     private val skillHost = object : NexusSkillHost.Stub() {
@@ -71,11 +72,18 @@ internal class AidlNexusTransport(private val port: NexusPort) : NexusTransport 
     /** This connection's session id (random 64 bit, never 0), one per transport = one per connect. Every show, speech, trip and wipe request carries it (v2 r4 P1-3). */
     internal val session: Long = run { val r = java.security.SecureRandom(); var s: Long; do { s = r.nextLong() } while (s == 0L); s }
     @Volatile private var sessionOpen = false
+    /** The connection token the bridge delivers to the callback just registered (v2 r5 P1). Without it no session is adopted: an older bridge never sends it (fail closed). */
+    @Volatile private var connToken = 0L
+    @Volatile private var tokenLatch = java.util.concurrent.CountDownLatch(1)
+    internal var tokenWaitMs = 2_000L
 
     /** The bridge learns the session once (idempotent there); an older bridge has no such call: it throws, the caller sees ERROR, fail closed. */
     private fun ensureSession(): Boolean {
         if (sessionOpen) return true
-        if (port.beginSession(session) != NexusResult.OK) return false
+        if (connToken == 0L) { try { tokenLatch.await(tokenWaitMs, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { Thread.currentThread().interrupt() } }
+        val t = connToken
+        if (t == 0L) return false
+        if (port.beginSessionWith(session, t) != NexusResult.OK) return false
         sessionOpen = true
         return true
     }
@@ -85,6 +93,7 @@ internal class AidlNexusTransport(private val port: NexusPort) : NexusTransport 
 
     override fun setEvents(events: NexusEvents?) = call {
         callback.events = events
+        connToken = 0L; tokenLatch = java.util.concurrent.CountDownLatch(1)
         port.setCallback(if (events == null) null else callback)
         if (events != null) { sessionOpen = false; ensureSession() }
         NexusResult.OK

@@ -50,4 +50,7 @@ interface NexusPort {
     int tripIn(long session, long epoch);
     /** [forgetHistoryAt] carrying the session. */
     int forgetHistoryIn(long session, long generation);
+    // ---- appended in the v2 r5 fix (additive). The legacy [beginSession] is refused (UNSUPPORTED) by a new bridge: adopting a session needs the token delivered to the registering callback. ----
+    /** Opens the phone's session for the connection whose [token] arrived in [NexusPortCallback.onConnected]. Accepted only for the CURRENT connection while it is unclaimed (idempotent for the same pair); a delayed call of an old connection gets STALE. */
+    int beginSessionWith(long session, long token);
 }
