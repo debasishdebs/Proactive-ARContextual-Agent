@@ -20,5 +20,8 @@ fun ListViewRoute(kind: ListKind, ids: List<String>, scope: ListScope?, deps: Ph
         ListViewModel(kind, ids, scope, activityData(deps), deps.zone, deps::today, createSavedStateHandle())
     }
     vm.openPreview = { ref -> nav.navigate(previewMoment(listOf(ref), PreviewMode.OPEN).route) }
-    ListScreen(vm.source, onBack = back, onMessage = { Toast.makeText(app, it, Toast.LENGTH_SHORT).show() })
+    val breakdown = vm.breakdown?.let { b ->
+        BreakdownUi(b.tree, vm.view, vm::setView, BreakdownActions(vm::toggleDay, vm::toggleHour, vm::previousPage, vm::nextPage))
+    }
+    ListScreen(vm.source, onBack = back, onMessage = { Toast.makeText(app, it, Toast.LENGTH_SHORT).show() }, breakdown = breakdown)
 }
