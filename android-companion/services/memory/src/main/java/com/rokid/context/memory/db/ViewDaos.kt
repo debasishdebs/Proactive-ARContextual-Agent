@@ -25,6 +25,9 @@ interface FrameViewDao {
     @Query("SELECT * FROM frame WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<FrameEntity>
 }
 
+/** A visible memory with the time it is SHOWN at on the broken-down view (its photo's time, else `createdAt`): the keyset key of [MemoryViewDao.momentPageIn]. */
+data class MomentRow(@androidx.room.Embedded val memory: MemoryEntity, val shownAt: Long)
+
 @Dao
 abstract class MemoryViewDao : DerivedStaleDao() {
     @Query("SELECT * FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState = 'OK' ORDER BY createdAt DESC")
@@ -42,11 +45,11 @@ abstract class MemoryViewDao : DerivedStaleDao() {
      * hour `[hFromMs, hToMs)` is tested on the display time. Newest first, ties by id DESC. The rows whose display time falls before the day ("Earlier photos") are `hFromMs = Long.MIN_VALUE, hToMs = dayFromMs`.
      */
     @Query(
-        "SELECT m.* FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= :dayFromMs AND m.createdAt < :dayToMs AND m.reviewState = 'OK' " +
+        "SELECT m.*, COALESCE(f.ts, m.createdAt) AS shownAt FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= :dayFromMs AND m.createdAt < :dayToMs AND m.reviewState = 'OK' " +
             "AND COALESCE(f.ts, m.createdAt) >= :hFromMs AND COALESCE(f.ts, m.createdAt) < :hToMs " +
             "AND (COALESCE(f.ts, m.createdAt) < :cKey OR (COALESCE(f.ts, m.createdAt) = :cKey AND m.id < :cId)) ORDER BY COALESCE(f.ts, m.createdAt) DESC, m.id DESC LIMIT :n",
     )
-    abstract suspend fun momentPageIn(dayFromMs: Long, dayToMs: Long, hFromMs: Long, hToMs: Long, cKey: Long, cId: String, n: Int): List<MemoryEntity>
+    abstract suspend fun momentPageIn(dayFromMs: Long, dayToMs: Long, hFromMs: Long, hToMs: Long, cKey: Long, cId: String, n: Int): List<MomentRow>
 
     /** The display time of every visible memory whose `createdAt` is in the day: the hour counts of the broken-down view (bucketed in Kotlin, so a DST day is right). */
     @Query("SELECT COALESCE(f.ts, m.createdAt) FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= :dayFromMs AND m.createdAt < :dayToMs AND m.reviewState = 'OK'")

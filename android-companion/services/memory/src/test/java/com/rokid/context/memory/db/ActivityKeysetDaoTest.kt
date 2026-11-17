@@ -94,10 +94,11 @@ class ActivityKeysetDaoTest {
         d.insertIgnore(memory("hidden", at = 2_000, review = ReviewState.NEEDS_REVIEW))
         val times = v.visibleMomentTimes(1_000, 3_000).sorted()
         assertEquals(listOf(50L, 1_500L, 2_500L, 2_500L), times)
-        val hourHigh = walk(1, 2_000, 3_000, { it: MemoryEntity -> it.createdAt }, { it.id }) { k, i, n -> v.momentPageIn(1_000, 3_000, 2_000, 3_000, k, i, n) }
-        assertEquals(listOf("plain2", "plain"), hourHigh.map { it.id })
-        assertEquals(listOf("withFrame"), v.momentPageIn(1_000, 3_000, 1_000, 2_000, 2_000, "", 10).map { it.id })
-        assertEquals("earlier group", listOf("old"), v.momentPageIn(1_000, 3_000, Long.MIN_VALUE, 1_000, 1_000, "", 10).map { it.id })
+        val hourHigh = walk(1, 2_000, 3_000, { it: MomentRow -> it.shownAt }, { it.memory.id }) { k, i, n -> v.momentPageIn(1_000, 3_000, 2_000, 3_000, k, i, n) }
+        assertEquals(listOf("plain2", "plain"), hourHigh.map { it.memory.id })
+        assertEquals(listOf(1_500L), v.momentPageIn(1_000, 3_000, 1_000, 2_000, 2_000, "", 10).map { it.shownAt })
+        assertEquals(listOf("withFrame"), v.momentPageIn(1_000, 3_000, 1_000, 2_000, 2_000, "", 10).map { it.memory.id })
+        assertEquals("earlier group", listOf("old"), v.momentPageIn(1_000, 3_000, Long.MIN_VALUE, 1_000, 1_000, "", 10).map { it.memory.id })
         assertEquals(times.size, v.momentPageIn(1_000, 3_000, Long.MIN_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, "", 10).size)
     }
 

@@ -68,7 +68,7 @@ class ActivityViewModelTest {
         graph.asks.upsert(Fixtures.ask("a0", Fixtures.at(TODAY.minusDays(1), 9)))
         graph.nudges.addIgnore(Fixtures.nudge("n1", Fixtures.at(TODAY, 9)))
         val data = com.rokid.context.phone.ui.preview.RepoActivityData(graph.timeline, graph.asks, graph.nudges, graph.marks, { Fixtures.ZONE })
-        fun ids(kind: LK, p: Period) = runBlocking { data.idsIn(kind, PeriodWindow.of(p, TODAY).millis(Fixtures.ZONE)) }
+        fun ids(kind: LK, p: Period) = runBlocking { PeriodWindow.of(p, TODAY).millis(Fixtures.ZONE).let { r -> data.page(kind, r, com.rokid.context.memory.Cursor.head(r), 100).ids } }
         assertEquals(listOf("f1"), ids(LK.FRAMES, Period.TODAY)); assertEquals(listOf("m1"), ids(LK.MEMORIES, Period.TODAY))
         assertEquals(listOf("a1"), ids(LK.ANSWERS, Period.TODAY)); assertEquals(listOf("n1"), ids(LK.NUDGES, Period.TODAY))
         assertEquals("the week starts on Monday: Sunday's answer is not in it", listOf("a1"), ids(LK.ANSWERS, Period.WEEK))

@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.preview
 
+import com.rokid.context.memory.Cursor
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
@@ -70,6 +71,9 @@ fun previewMoment(ids: List<String>, how: PreviewMode = PreviewMode.OPEN, config
     return PreviewDestination.Items(kind, refs.filter { it.kind == kind.ref }.map { it.id })
 }
 
+/** One page of a list: the item [ids], the keyset [cursors] (one per id) and the [data] holding the rows already read (pass it to the summary factory: no per-row read). */
+class ActivityPage(val ids: List<String>, val cursors: List<Cursor>, val data: ActivityData)
+
 /** What the Activity page's items are read from (production: [RepoActivityData]). Each call takes ids of its own kind; an unknown id is simply missing from the result. Reads ids and rows only: a photo's bytes are never read here. */
 interface ActivityData {
     suspend fun memories(ids: List<String>): List<MemoryEntity>
@@ -79,8 +83,11 @@ interface ActivityData {
     suspend fun nudges(ids: List<String>): List<NudgeEntity>
     /** The photos of [date], oldest first. */
     suspend fun dayFrames(date: LocalDate): List<FrameEntity>
-    /** The ids of every item of [kind] in [range] (epoch ms), newest first: what a period's list opens over, so its route never carries them. */
-    suspend fun idsIn(kind: ListKind, range: LongRange): List<String> = emptyList()
+    /**
+     * One keyset page (at most [n]) of [kind] in [range] (epoch ms), newest first, strictly after [after] (`Cursor.head(range)` for the first): what a period's list opens over, so its route never carries ids.
+     * The page carries the data it was read with ([ActivityPage.data]), so its summaries need no second read. Nothing here caps the list: the caller asks for the next page.
+     */
+    suspend fun page(kind: ListKind, range: LongRange, after: Cursor, n: Int): ActivityPage = ActivityPage(emptyList(), emptyList(), this)
     /** Emits when the item [ref] names, or something it cites, changes (a Forget, a redaction, a Trust): the previewer then reads it again. The first emission is the current state. Nothing by default. */
     fun changes(ref: PreviewRef): Flow<Unit> = emptyFlow()
     /** Codex r21: emits after any write to the tables a [kind] list shows (a Forget, a retention delete, Delete all, a redaction), so the list reads again. Nothing by default. */

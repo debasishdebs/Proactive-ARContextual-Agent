@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.list
 
+import com.rokid.context.memory.Cursor
 import com.rokid.context.phone.ui.preview.ActivityData
 import com.rokid.context.phone.ui.preview.PreviewCtx
 import com.rokid.context.phone.ui.preview.PreviewRef
@@ -54,7 +55,7 @@ fun listView(kind: ListKind, ids: List<String>): String = Routes.list(kind, ids)
 
 /**
  * The common list's rows for a kind. One source for every kind: its rows are the kind's [com.rokid.context.phone.ui.preview.Previewable] summaries, newest first; a tap calls [onPreview] with the item's [PreviewRef] string.
- * Its items are [ids] (a small set) or, with a [scope], every item of the kind in that period, resolved here newest first and read [PAGE] at a time ("Show more").
+ * Its items are [ids] (a small set) or, with a [scope], every item of the kind in that period, read newest first, [PAGE] rows a keyset page ("Show more").
  */
 class RecordListSource(
     private val kind: ListKind,
@@ -74,16 +75,27 @@ class RecordListSource(
     override val changes = data.listChanges(kind)
 
     private var shown = pageSize
-    private var total = 0
-    override val hasMore get() = total > shown
+    private var more = false
+    override val hasMore get() = more
     override fun showMore() { shown += pageSize }
 
     override suspend fun load(): List<ListItem> {
-        val every = if (scope != null) data.idsIn(kind, scope.millis(zone())) else ids
-        total = every.size
-        return if (every.isEmpty()) emptyList() else Previewables.factory(kind).load(every.take(shown), PreviewCtx(data, zone(), today())).map { it.summary() }
+        if (scope == null) {
+            more = ids.size > shown
+            return if (ids.isEmpty()) emptyList() else Previewables.factory(kind).load(ids.take(shown), PreviewCtx(data, zone(), today())).map { it.summary() }
+        }
+        // A period: keyset pages of at most [pageSize] rows until one row more than [shown] is read (that row only says "there is more"); no read of every id of the period.
+        val range = scope.millis(zone()); val out = mutableListOf<ListItem>(); var after = Cursor.head(range)
+        while (out.size <= shown) {
+            val page = data.page(kind, range, after, minOf(pageSize, shown + 1 - out.size))
+            if (page.ids.isEmpty()) break
+            out += Previewables.factory(kind).load(page.ids, PreviewCtx(page.data, zone(), today())).map { it.summary() }
+            after = page.cursors.last()
+        }
+        more = out.size > shown
+        return out.take(shown)
     }
     override fun actionFor(item: ListItem) = ItemAction { onPreview(PreviewRef.of(kind.ref, item.id)); ActionResult.Silent }
 
-    companion object { const val PAGE = 200 }
+    companion object { const val PAGE = 100 }
 }
