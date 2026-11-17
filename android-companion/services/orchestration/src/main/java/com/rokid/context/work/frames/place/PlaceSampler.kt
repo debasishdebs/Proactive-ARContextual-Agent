@@ -55,7 +55,7 @@ class InMemoryPlaceLedger : PlaceMemoryLedger {
     override fun pending(): Set<String> = ids.toSet()
 }
 
-enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED }
+enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED, NOT_ADMITTED }
 
 /**
  * Process-wide single-flight and spacing state shared by every [PlaceSampler] (the hub makes a new one at each restart): one run at a time, one model call per [PlaceSampler.MIN_CALL_GAP_MS],
@@ -72,7 +72,7 @@ class PlaceFlight {
  * Place Guide matching (spec 2026-11-16 §B4), hooked after a frame is stored and committed. Runs only for a DWELL photo, only while Place Guide is on, and never while a pause zone is
  * active or approaching ([zoneBlocked], which fails closed: when it is true nothing is read, fetched or sent). A candidate list comes from the place pack for a fresh fix
  * (<= [MAX_FIX_AGE_MS], accuracy <= [MAX_FIX_ACCURACY_M]); none means no upload. Online, ONE [match] call sends the photo and the numbered names and kinds (no summaries); a choice outside the
- * set is a contract failure and counts as NONE. Offline or on a failed call, a fallback card shows the single nearest place within [NEARBY_M] with "nearby · not checked". The card text is
+ * set is a contract failure and counts as NONE. Offline or after a GENUINE failed call (provider or network; never a power/thermal/policy denial, an invalid reply, NONE or low confidence: G1), a fallback card shows the single nearest place within [NEARBY_M] with "nearby · not checked". The card text is
  * built from the pack ([PlaceCards]); the model only picks a number.
  *
  * Fences like the intent sampler: the source switch, the pipeline, the wipe [generation] and the forget tombstone are checked at admission and again after the call. [admit] (the shared
@@ -202,14 +202,19 @@ class PlaceSampler(
         if (online && !callOk) return PlaceOutcome.RATE_LIMITED
         flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now)
         stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
-        if (!callOk || !admit()) return fallback(hits, f.frameId, gen, cardEpoch, ticket)
+        if (!callOk) return fallback(hits, f.frameId, gen, cardEpoch, ticket) // offline: the only no-call fallback (G1)
+        // G1 (ruling 2026-11-17): a power, thermal or policy denial is NOT a failure of the match and never becomes a nearby identification: no call, no card.
+        if (!admit()) return PlaceOutcome.NOT_ADMITTED
         flight.lastCallAt = elapsed()
         val lines = hits.mapIndexed { i, h -> "${i + 1}. ${h.first.name} | ${h.first.kind.replace('_', ' ')}" }
         if (!ticket.isOpen()) return PlaceOutcome.ZONE // the last check; nothing suspends between it and the call, which the fence's job cancels if the zone comes later
-        val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+        // G1: only a GENUINE call failure (the provider or the network failed) may fall back to the nearby card; a policy denial, a forgotten photo or an invalid reply is no identification.
+        var genuineFailure = false
+        val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); null }
         flight.lastCallAt = elapsed() // the permit wait and the call are over: the gap runs from here, not from the start of the attempt
         if (stopped(gen, ticket, f.frameId) != null) return PlaceOutcome.DROPPED
-        if (res == null || !res.delivered) return fallback(hits, f.frameId, gen, cardEpoch, ticket)
+        if (res == null) return if (genuineFailure) fallback(hits, f.frameId, gen, cardEpoch, ticket) else PlaceOutcome.FAILED
+        if (!res.delivered) return PlaceOutcome.FAILED // the photo was not proven to have reached the model: not a photo match, not a nearby guess either
         val choice = res.output.choice
         if (choice.equals(NONE, ignoreCase = true)) return PlaceOutcome.NONE
         val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: return PlaceOutcome.CONTRACT
@@ -273,6 +278,10 @@ class PlaceSampler(
         return PlaceOutcome.NEARBY
     }
 
+    /** A provider or network failure (transient, auth, rejected): the only thing that may show the "nearby · not checked" card online. Policy (NOT_SET), invalid output and anything unknown do not. */
+    private fun isGenuineCallFailure(e: Exception): Boolean =
+        e is java.io.IOException || (e is com.rokid.context.ai.ModelCallException && e.kind in GENUINE_KINDS)
+
     private fun gap(p: PlaceEntity, centreM: Double) = (centreM - p.radiusM).coerceAtLeast(0.0)
 
     private fun remember(id: String) { handled.addLast(id); while (handled.size > HANDLED_MAX) handled.removeFirst() }
@@ -289,6 +298,7 @@ class PlaceSampler(
         const val MAX_LIST = 16
         const val MIN_CONFIDENCE = 0.5f
         const val NONE = "NONE"
+        private val GENUINE_KINDS = setOf(com.rokid.context.ai.FailureKind.TRANSIENT, com.rokid.context.ai.FailureKind.AUTH, com.rokid.context.ai.FailureKind.REJECTED)
         internal const val ROLLBACK_TRIES = 3
         internal const val ROLLBACK_RETRY_MS = 200L
         private const val HANDLED_MAX = 32

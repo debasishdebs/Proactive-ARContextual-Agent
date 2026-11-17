@@ -32,6 +32,8 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.AnswerService
+import com.rokid.context.orchestration.AskActions
+import com.rokid.context.orchestration.AskZoneBlockedException
 import com.rokid.context.orchestration.EmbeddingWorker
 import com.rokid.context.orchestration.ExtractFollowUp
 import com.rokid.context.orchestration.ExtractPhoto
@@ -391,6 +393,10 @@ class QueueDrainWorker(
             // extracting them as USER would only run up budget debt. Only a young ask extracts first (review M6).
             val young = System.currentTimeMillis() - job.originalEnqueuedAtEpochMs <= KeyframePipeline.ASK_WINDOW_MS
             AnswerService.forApp(applicationContext, extractFirst = young).answerOrThrow(query, source = "queue", askId = "ask_queue_${job.id}", generation = generation)
+        } catch (e: AskZoneBlockedException) {
+            // Z1: a queued ask is never auto-retried in a pause zone: the job ends here, with a trace; the user taps Ask again.
+            PipelineRecords.upsertTrace(applicationContext, job.id, "ASK_ZONE_PAUSED", AskActions.ZONE_PAUSED)
+            return
         } catch (e: NoMemoriesException) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "CONTEXT_TEMP_UNAVAILABLE", "No trusted memory found; queue status can be checked from Queue card")
             throw e

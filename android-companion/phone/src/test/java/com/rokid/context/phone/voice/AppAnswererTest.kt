@@ -69,4 +69,28 @@ class AppAnswererTest {
         val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", photoFrameId = "f1", photoAtMs = old) }, answerText = { "On the desk." }, zone = { zone }, now = { now })
         assertEquals("Photo Fri 14:02", (a.answer("keys?", VoiceSource.GLASSES) as AnswerResult.Answered).photoLabel)
     }
+
+    /** Z1: the refusal reaches the HUD, the voice reply and the phone as the same plain text. */
+    @Test fun aPauseZoneRefusalIsShownEverywhere() = runBlocking {
+        assertEquals("Paused: you're in a pause zone", AskActions.ZONE_PAUSED)
+        assertEquals(AnswerResult.Failed(AskActions.ZONE_PAUSED, AskActions.ZONE_PAUSED), answerer(AskOutcome.Failed(AskActions.ZONE_PAUSED)).answer("q", VoiceSource.GLASSES))
+    }
+
+    /** Z1: an answer saved before a zone began is not delivered to the glasses (HUD or voice): the refusal goes out instead. */
+    @Test fun aWithheldOrBlockedAnswerIsNotDeliveredToTheGlasses() = runBlocking {
+        val refused = AnswerResult.Failed(AskActions.ZONE_PAUSED, AskActions.ZONE_PAUSED)
+        assertEquals(refused, answerer(AskOutcome.Answered("a1", deliveryWithheld = true)).answer("q", VoiceSource.GLASSES))
+        val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1") }, answerText = { "Milk." }, deliveryBlocked = { true })
+        assertEquals(refused, a.answer("q", VoiceSource.GLASSES))
+        assertEquals(refused, a.answer("q", VoiceSource.PHONE))
+    }
+
+    @Test fun theChatMirrorIsWithheldInAZone() {
+        val mirrored = mutableListOf<String>()
+        mirrorTypedAnswer(AskOutcome.Answered("a1", deliveryWithheld = true)) { mirrored += it }
+        mirrorTypedAnswer(AskOutcome.Answered("a2"), blocked = { true }) { mirrored += it }
+        assertEquals(emptyList<String>(), mirrored)
+        mirrorTypedAnswer(AskOutcome.Answered("a3"), blocked = { false }) { mirrored += it }
+        assertEquals(listOf("a3"), mirrored)
+    }
 }

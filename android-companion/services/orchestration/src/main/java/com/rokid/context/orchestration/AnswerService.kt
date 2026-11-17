@@ -38,6 +38,7 @@ import com.rokid.context.work.frames.FramePhotos
 import com.rokid.context.work.frames.recall.PhotoHit
 import com.rokid.context.work.frames.recall.PhotoRecall
 import java.time.ZoneId
+import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -123,6 +124,8 @@ class AnswerService(
      * service's own runner and retriever (the normal text-call gates); a test passes its own.
      */
     private val llmWindows: WindowResolver? = null,
+    /** Z1: the pause-zone fence. Refuses the model call and the delivery while a zone is active; [AskZoneGuard.None] = no fence (tests of the pure parts). */
+    private val zoneGuard: AskZoneGuard = AskZoneGuard.None,
 ) {
     /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
     data class Retrieved(
@@ -271,6 +274,8 @@ class AnswerService(
         answerOrThrow(question, source, nowMs)
     } catch (c: CancellationException) {
         throw c
+    } catch (e: AskZoneBlockedException) {
+        AskOutcome.Failed(AskActions.ZONE_PAUSED) // Z1: never an answer, never retried; the user taps Ask again after leaving the zone
     } catch (e: EmptyQuestionException) {
         AskOutcome.Failed(AskActions.EMPTY_QUESTION)
     } catch (e: NoMemoriesException) {
@@ -298,8 +303,9 @@ class AnswerService(
     ): AskOutcome.Answered {
         val q = AskText.collapse(question).take(MAX_QUESTION)
         if (q.isEmpty()) throw EmptyQuestionException()
+        zoneGuard.check() // Z1 point 0: nothing starts in a zone (the backlog extraction below is a model call too)
         try {
-            beforeRetrieve()
+            zoned { beforeRetrieve() }
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
@@ -307,7 +313,8 @@ class AnswerService(
         }
         val lease = com.rokid.context.orchestration.DataOpGate.shared.lease(com.rokid.context.memory.forget.lifecycle.Leases.Kind.ASK, emptyList(), generation)
         try {
-            val r = retrieveWithFlow(q, nowMs)
+            zoneGuard.check() // Z1 point 1
+            val r = zoned { retrieveWithFlow(q, nowMs) }
             lease.extend(com.rokid.context.memory.forget.lifecycle.Leases.refsOf(r.ids + r.fenceIds)) // what this answer reads: a Forget that reaches it revokes the lease
             // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
             if (r.memories.isEmpty() && r.photos.isEmpty() && !ActionTriggers.matches(q)) {
@@ -316,14 +323,16 @@ class AnswerService(
             }
             // Codex r10: recalled photos carry their refs; the router re-checks them live inside the call's permit (a photo forgotten meanwhile fails the ask
             // unsent, PhotoForgottenException; it is never re-asked as text).
-            val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
+            zoneGuard.check() // Z1 point 2: the last step before the dispatch (the call itself is cancelled by [zoned] if a zone comes later)
+            val out = zoned { runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER,
                 // codex r12: everything stored the prompt carries (memories, photo lines, history dependencies) is re-checked live by the router inside the permit
-                sources = r.sources, liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput
+                sources = r.sources, liveness = com.rokid.context.work.frames.FrameLiveness.forGraph(memory, generation))).output as AnswerOutput }
             val text = AskText.collapse(out.answer).take(MAX_ANSWER)
             if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
             val id = askId ?: "ask_${UUID.randomUUID()}"
             var redacted = false
             testBeforeCommit?.invoke()
+            zoneGuard.check() // Z1 point 3: a zone entered while the model answered: the reply is dropped unsaved (it was built from stored text)
             lease.extend(com.rokid.context.memory.forget.lifecycle.Leases.refsOf(out.sources))
             // M3: the ask commits THROUGH its read lease: revoked by a Forget (or Delete all) while the model answered, nothing is written. checkLive = false keeps the redacted-row rule below as it was.
             val saved = (lease.commit(memory.db, checkLive = false) {
@@ -342,6 +351,8 @@ class AnswerService(
             } as? com.rokid.context.memory.forget.lifecycle.Leases.Commit.Committed)?.value == true
             if (!saved) throw NoMemoriesException()
             if (redacted) return AskOutcome.Answered(id)
+            // Z1 point 4: the answer is saved (the phone may browse it), but a zone entered since: nothing goes to the glasses, no proposal is taken in, no route.
+            if (zoneGuard.blocked()) return AskOutcome.Answered(id, deliveryWithheld = true, notice = AskActions.ZONE_DELIVERY_WITHHELD)
             val photo = firstCitedPhoto(r, out.sources)
             // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
             // The ask is saved: a failing intake must not fail it (nor make a queue job retry it). Cancellation still propagates.
@@ -359,6 +370,18 @@ class AnswerService(
             return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second, route = routeOf(r.target, source, id, nowMs), notice = AskActions.semanticNotice(r.semanticOff))
         } finally {
             lease.close()
+        }
+    }
+
+    /**
+     * Z1: runs [block] while watching the zone: if the zone fence closes meanwhile the work is cancelled and [AskZoneBlockedException] is thrown (a poll, so a state flip without a fence callback is seen too).
+     * No guard (or one that never blocks) costs one idle child.
+     */
+    private suspend fun <T> zoned(block: suspend () -> T): T {
+        if (zoneGuard === AskZoneGuard.None) return block()
+        return kotlinx.coroutines.coroutineScope {
+            val watcher = launch { while (true) { kotlinx.coroutines.delay(zonePollMs); if (zoneGuard.blocked()) throw AskZoneBlockedException() } }
+            try { block() } finally { watcher.cancel() }
         }
     }
 
@@ -409,6 +432,8 @@ class AnswerService(
         private const val MAX_QUESTION = 500
         private const val MAX_ANSWER = 2_000
         private const val ASK_EXTRACT_TIMEOUT_MS = 30_000L
+        /** Z1: how often an in-flight call re-asks the zone guard (test seam). */
+        @Volatile internal var zonePollMs = 100L
 
         /**
          * The privacy gate of Ask photos: the user's switch (off by default), the pipeline not paused, not inside quiet hours (unknown quiet hours count as
@@ -461,6 +486,7 @@ class AnswerService(
                 },
                 photoImages = { ids -> FramePhotos.load(context, ids).photos.associate { it.frameId to it.image } },
                 beforeRetrieve = { if (extractFirst) kotlinx.coroutines.withTimeoutOrNull(ASK_EXTRACT_TIMEOUT_MS) { com.rokid.context.work.frames.KeyframeGraph.get(context).pipeline.extractForAsk() } },
+                zoneGuard = AskZoneFence.also { it.install(context) },
                 onNoMatch = { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context)) com.rokid.context.work.OrchestrationScheduler(context).enqueueFrameIngestIfIdle() },
             )
         }

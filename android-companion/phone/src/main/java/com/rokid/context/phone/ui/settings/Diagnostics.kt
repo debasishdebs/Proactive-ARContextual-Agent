@@ -317,6 +317,9 @@ fun DiagnosticsScreen(
     /** v0.9.7 B: the developer sensor recording rate in Hz (0 = off); the row shows only with [developerMode]. */
     sensorRecHz: Int = 0,
     onSensorRecHz: (Int) -> Unit = {},
+    /** Z1: Ask is refused (and its answer is not delivered to the glasses) while a pause zone is active or the location is uncertain. Default ON; shown only with [developerMode]. */
+    askZoneFence: Boolean = true,
+    onAskZoneFence: (Boolean) -> Unit = {},
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
     onMarkSuspect: (String) -> Unit = {},
     onMarkAllSuspects: () -> Unit = {},
@@ -408,6 +411,13 @@ fun DiagnosticsScreen(
             if (developerMode) {
                 Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val rates = listOf(0) + com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Pause zones also pause Ask", style = MaterialTheme.typography.titleSmall)
+                            Text("On (safer): inside, near or unsure about a pause zone, Ask answers \"Paused\" and nothing is sent to the glasses. Browsing on the phone still works.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = askZoneFence, onCheckedChange = onAskZoneFence, modifier = Modifier.testTag("ask_zone_fence_switch"))
+                    }
                     ChoiceRow("Record raw glasses sensors", rates.map { if (it == 0) "Off" else "$it Hz" }, rates.indexOf(sensorRecHz).coerceAtLeast(0), { onSensorRecHz(rates[it]) }, tag = "sensor_rec_rate")
                     if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")
                     ChoiceRow("Keep canvas pairing", CanvasSessionCopy.HOURS.map { CanvasSessionCopy.label(it) }, CanvasSessionCopy.HOURS.indexOf(devSessionHours).coerceAtLeast(0), { onDevSessionHours(CanvasSessionCopy.HOURS[it]) }, tag = "dev_session_hours")
