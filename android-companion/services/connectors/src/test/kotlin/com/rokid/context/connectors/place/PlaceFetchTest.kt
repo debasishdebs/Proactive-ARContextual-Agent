@@ -121,11 +121,25 @@ class PlaceFetchTest {
         assertFalse("Q5" in PlaceCellSource.MONUMENT_CLASSES)
     }
 
+    /** The ids and English labels as wikidata.org returned them on 2026-11-17 (wbgetentities, props=labels): a wrong id from memory cannot come back. */
+    @Test fun monumentClassIdsAreTheOnesVerifiedAgainstWikidata() {
+        val verified = mapOf(
+            "Q4989906" to "monument", "Q44539" to "temple", "Q842402" to "Hindu temple", "Q5393308" to "Buddhist temple", "Q180987" to "stupa", "Q12539846" to "dagoba",
+            "Q57821" to "fortification", "Q1785071" to "fort", "Q16560" to "palace", "Q10500763" to "prison museum", "Q839954" to "archaeological site", "Q5003624" to "memorial",
+            "Q16970" to "church building", "Q2977" to "cathedral", "Q32815" to "mosque", "Q39715" to "lighthouse", "Q358" to "heritage site", "Q1081138" to "historic site", "Q33506" to "museum",
+        )
+        assertEquals(verified.keys, PlaceCellSource.MONUMENT_CLASSES.keys)
+        assertEquals(PlaceKinds.PRISON_MUSEUM, PlaceCellSource.MONUMENT_CLASSES["Q10500763"])
+        assertFalse("Q40357 is a plain prison", "Q40357" in PlaceCellSource.MONUMENT_CLASSES)
+        assertFalse("Q160742 is an abbey", "Q160742" in PlaceCellSource.MONUMENT_CLASSES)
+    }
+
     @Test fun httpIsHttpsOnlyAndRateLimited() = runTest {
         val h = UrlConnectionPlaceHttp()
         assertFailsWith<IllegalArgumentException> { h.get("http://example.invalid/") }
         assertEquals("a=1&b=x%20y".replace("%20", "+"), formEncode(linkedMapOf("a" to "1", "b" to "x y")))
         assertTrue(UrlConnectionPlaceHttp.DEFAULT_USER_AGENT.contains("ProactiveContextAgent") && !UrlConnectionPlaceHttp.DEFAULT_USER_AGENT.contains("@"))
+        assertEquals("ProactiveContextAgent/1.1 (https://github.com/; contact: see repository)", UrlConnectionPlaceHttp.DEFAULT_USER_AGENT)
         val pauses = mutableListOf<Long>(); var t = 1_000L
         val limited = UrlConnectionPlaceHttp(minGapMs = 400, clock = { t }, pause = { pauses += it; t += it })
         // no network: both calls fail at connect, but the second must have waited out the gap first

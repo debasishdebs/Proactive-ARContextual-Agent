@@ -72,23 +72,27 @@ class PlaceCellSource(
     companion object {
         /**
          * Wikidata classes (P31) a place may have to enter the pack: monument, temple, stupa, fort, palace, prison, archaeological site, memorial, church, mosque, lighthouse,
-         * heritage and historic sites, museum. A person (Q5) is in no entry. The Q-ids are from memory of the Wikidata ontology: verify against wikidata.org before the trip.
+         * heritage and historic sites, museum. A person (Q5) is in no entry.
+         *
+         * VERIFIED 2026-11-17 against wikidata.org (`wbgetentities`, props=labels, en): every id below has the English label in its line comment. Two ids from memory were WRONG and are fixed:
+         * Q160742 is "abbey" (not a temple) and Q40357 is "prison" (a plain prison is not a place; the class "prison museum" is Q10500763). Q5393308 (Buddhist temple) and Q12539846 (dagoba)
+         * were added. The match is on P31 only, with no subclass walk: an item whose P31 is a subclass of one of these is not kept.
          */
         val MONUMENT_CLASSES: Map<String, String> = mapOf(
-            "Q4989906" to PlaceKinds.MONUMENT,
-            "Q44539" to PlaceKinds.TEMPLE, "Q842402" to PlaceKinds.TEMPLE, "Q160742" to PlaceKinds.TEMPLE,
-            "Q180987" to PlaceKinds.STUPA,
-            "Q57821" to PlaceKinds.FORT, "Q1785071" to PlaceKinds.FORT,
-            "Q16560" to PlaceKinds.PALACE,
-            "Q40357" to PlaceKinds.PRISON_MUSEUM,
-            "Q839954" to PlaceKinds.ARCHAEOLOGICAL_SITE,
-            "Q5003624" to PlaceKinds.MEMORIAL,
-            "Q16970" to PlaceKinds.CHURCH, "Q2977" to PlaceKinds.CHURCH,
-            "Q32815" to PlaceKinds.MOSQUE,
-            "Q39715" to PlaceKinds.LIGHTHOUSE,
-            "Q358" to PlaceKinds.HERITAGE_BUILDING,
-            "Q1081138" to PlaceKinds.HISTORIC_SITE,
-            "Q33506" to PlaceKinds.MUSEUM,
+            "Q4989906" to PlaceKinds.MONUMENT, // monument
+            "Q44539" to PlaceKinds.TEMPLE, "Q842402" to PlaceKinds.TEMPLE, "Q5393308" to PlaceKinds.TEMPLE, // temple, Hindu temple, Buddhist temple
+            "Q180987" to PlaceKinds.STUPA, "Q12539846" to PlaceKinds.STUPA, // stupa, dagoba
+            "Q57821" to PlaceKinds.FORT, "Q1785071" to PlaceKinds.FORT, // fortification, fort
+            "Q16560" to PlaceKinds.PALACE, // palace
+            "Q10500763" to PlaceKinds.PRISON_MUSEUM, // prison museum
+            "Q839954" to PlaceKinds.ARCHAEOLOGICAL_SITE, // archaeological site
+            "Q5003624" to PlaceKinds.MEMORIAL, // memorial
+            "Q16970" to PlaceKinds.CHURCH, "Q2977" to PlaceKinds.CHURCH, // church building, cathedral
+            "Q32815" to PlaceKinds.MOSQUE, // mosque
+            "Q39715" to PlaceKinds.LIGHTHOUSE, // lighthouse
+            "Q358" to PlaceKinds.HERITAGE_BUILDING, // heritage site
+            "Q1081138" to PlaceKinds.HISTORIC_SITE, // historic site
+            "Q33506" to PlaceKinds.MUSEUM, // museum
         )
 
         /** The OSM tag combinations that make an object a place: historic, heritage and tourism=attraction|museum|viewpoint, named. */
