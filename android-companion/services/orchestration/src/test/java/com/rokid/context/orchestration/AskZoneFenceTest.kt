@@ -11,6 +11,7 @@ import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.memory.place.ZoneFence
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -177,6 +178,7 @@ class AskZoneFenceTest {
     /** Codex z1 r1 P1-1: a new process whose controller has not judged: the persisted protect flag refuses, with a model call never made, until the controller says clear. */
     @Test fun aColdStartWithAPersistedProtectFlagRefusesUntilTheControllerJudged() = runBlocking {
         ctx.getSharedPreferences(AskZoneFence.ZONE_STATE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(AskZoneFence.PROTECT_KEY, true).commit()
+        ctx.getSharedPreferences(AskZoneFence.ZONES_PREFS, Context.MODE_PRIVATE).edit().putString(AskZoneFence.ZONES_KEY, """[{"id":"b"}]""").commit() // a flag with a zone to protect
         AskZoneFence.install(ctx)
         assertTrue(AskZoneFence.blocked())
         assertEquals(AskOutcome.Failed(AskActions.ZONE_PAUSED), service(AskZoneFence).answer("milk?", "phone_typed"))
@@ -221,6 +223,39 @@ class AskZoneFenceTest {
         assertEquals(1, fired); assertTrue(AskZoneFence.blocked()); assertFalse(t.isOpen())
         AskZoneFence.protect(active = false, judged = true)
         assertFalse(AskZoneFence.blocked()); assertFalse("a ticket taken before the zone stays closed", t.isOpen())
+    }
+
+    /** Codex z1 r10 P1-2: a startup read that was suspended while the controller judged clear is discarded: it must not re-hold the fence from an outdated result. */
+    @Test fun aLateStartupReadAfterTheControllerClearedDoesNotReHold() = runBlocking {
+        ctx.getSharedPreferences(AskZoneFence.ZONES_PREFS, Context.MODE_PRIVATE).edit().putString(AskZoneFence.ZONES_KEY, """[{"id":"b"}]""").commit()
+        AskZoneFence.install(ctx)
+        val gate = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        AskZoneFence.liveRecordsReader = { gate.await() }
+        val j = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch { AskZoneFence.prepare() }
+        kotlinx.coroutines.delay(50)
+        AskZoneFence.protect(active = false, judged = true)
+        assertFalse(AskZoneFence.blocked())
+        gate.complete(true) // the stale result: a live record was read before the controller judged
+        j.join()
+        assertFalse("the late result did not re-hold", AskZoneFence.blocked()); assertFalse(AskZoneFence.fence.held)
+        AskZoneFence.liveRecordsReader = { error("judged: never read again") }
+        AskZoneFence.prepare()
+    }
+
+    /** A world with no enabled zone and no live zone record never leaves Ask blocked, even with a stale persisted flag and no controller (location supervision is off). Idempotent: repeated prepares agree. */
+    @Test fun aWorldWithNoZonesNeverLeavesAskBlocked() = runBlocking {
+        ctx.getSharedPreferences(AskZoneFence.ZONE_STATE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(AskZoneFence.PROTECT_KEY, true).commit()
+        ctx.getSharedPreferences(AskZoneFence.ZONES_PREFS, Context.MODE_PRIVATE).edit().putString(AskZoneFence.ZONES_KEY, """[{"id":"a","enabled":false}]""").commit()
+        AskZoneFence.install(ctx)
+        assertTrue("held at startup by the stale flag", AskZoneFence.blocked())
+        AskZoneFence.liveRecordsReader = { false }
+        repeat(2) { AskZoneFence.prepare(); assertFalse("round $it", AskZoneFence.blocked()) }
+        assertTrue(service(AskZoneFence).answer("milk?", "phone_typed") is AskOutcome.Answered)
+        // a zone record that appears later holds it again (idempotent re-reconcile)
+        AskZoneFence.liveRecordsReader = { true }
+        AskZoneFence.prepare(); assertTrue(AskZoneFence.blocked())
+        AskZoneFence.liveRecordsReader = { false }
+        AskZoneFence.prepare(); assertFalse(AskZoneFence.blocked())
     }
 
     @Test fun theSwitchDefaultsOn() { assertTrue(AskZoneFence.isEnabled(ctx)); AskZoneFence.setEnabled(ctx, false); assertFalse(AskZoneFence.isEnabled(ctx)); AskZoneFence.setEnabled(ctx, true) }

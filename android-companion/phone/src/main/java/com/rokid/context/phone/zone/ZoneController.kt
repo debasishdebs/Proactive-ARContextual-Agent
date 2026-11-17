@@ -118,11 +118,28 @@ class ZoneController(
      */
     fun beginRestart() { ready = false; raise() }
 
-    /** [onProtect] and [onState] together; persists the flag when it changes (an unjudged or active state is stored at once; a clear one only when judged). */
+    /**
+     * [onProtect] and [onState] together. FENCE FIRST (Codex z1 r10 P1-1): an active state reaches Ask's fence (which holds it and cancels its dispatch and delivery) before anything is persisted; the persisted
+     * flag is a durability copy for the next process, never the gate. A clear state is persisted first and reaches the fence only when it is stored (a failed store keeps it held; the next reconcile retries).
+     */
     private fun protect(active: Boolean, judged: Boolean = ready) {
         onProtect(active)
-        if (active || judged) { if (persistedProtect != active) { persistedProtect = active; stateStore?.saveProtect(active) } }
-        onState(active, judged)
+        val st = stateStore
+        if (active) {
+            onState(true, judged)
+            if (persistedProtect != true) { if (st == null || st.saveProtect(true)) persistedProtect = true }
+        } else if (!judged) {
+            onState(false, false)
+        } else {
+            val stored = persistedProtect == false || st == null || st.saveProtect(false)
+            if (stored) { persistedProtect = false; onState(false, true) } else { log("zone protect flag not stored"); onState(true, true) }
+        }
+    }
+
+    /** Closes the fences at once when the zones read approached, entered or fail-closed, BEFORE the disk writes of a fix or a zone edit. */
+    private fun fenceFirst() {
+        val ev = evaluator.evaluate(elapsed())
+        if (store.corrupt || ev.inside.isNotEmpty() || ev.overall >= ZoneState.APPROACH || enforcing) protect(true)
     }
     private var persistedProtect: Boolean? = null
 
@@ -150,6 +167,7 @@ class ZoneController(
     suspend fun onFix(fix: ZoneFix) = locked {
         ClockGuard.observe(wall())
         if (evaluator.onFix(fix, elapsed())) {
+            fenceFirst()
             val ev = evaluator.evaluate(elapsed())
             val fixWall = (wall() - (elapsed() - fix.timeMs).coerceAtLeast(0L))
             for (st in ev.zones) {
@@ -232,6 +250,7 @@ class ZoneController(
 
     private suspend fun changed() {
         evaluator.setZones(store.zones(), elapsed())
+        fenceFirst()
         val ids = store.zones().map { it.id }.toSet()
         if (memo.keys.retainAll(ids)) memoDirty = true
         // A zone that did not exist before has no past to protect: its history starts now. (A zone with no memo that did exist is UNKNOWN: see [startOf].)
