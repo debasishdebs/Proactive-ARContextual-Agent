@@ -80,7 +80,9 @@ import com.rokid.context.core.ui.components.IconChip
 import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
+import com.rokid.context.phone.ui.list.paging.TreePane
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 private enum class SortOrder { AZ, ZA }
@@ -104,6 +106,8 @@ fun ListScreen(
     onSelectionChange: (Set<String>) -> Unit = {},
     /** Shown between the title bar and the search field (notes, switches, banners). */
     header: @Composable () -> Unit = {},
+    /** The List | By time toggle and the broken-down pane (a period's Moments only); null = the plain list. */
+    breakdown: BreakdownUi? = null,
 ) {
     val scope = rememberCoroutineScope()
 
@@ -119,6 +123,9 @@ fun ListScreen(
     var selected by rememberSaveable(saver = SelectionSaver) { mutableStateOf(initiallySelected) }
     val pane by (paged?.pane ?: remember { MutableStateFlow(ListPane()) }).collectAsState()
     val listState = rememberLazyListState()
+    val mode by (breakdown?.view ?: remember { MutableStateFlow(ListViewMode.LIST) }).collectAsState()
+    val showTree = breakdown != null && mode == ListViewMode.BREAKDOWN
+    val tree by (breakdown?.tree ?: remember { MutableStateFlow(TreePane()) }).collectAsState()
 
     if (paged == null) {
         LaunchedEffect(source, reloadKey) { items = source.load() }
@@ -199,10 +206,12 @@ fun ListScreen(
                 }
             }
             header()
-            SearchBar(query, source.searchHint) { query = it }
+            if (breakdown != null) ViewToggle(mode, breakdown.setView)
+            if (!showTree) SearchBar(query, source.searchHint) { query = it }
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
+                    showTree -> BreakdownPane(tree, breakdown!!.actions, onRow, source.emptyText)
                     itemsNow == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PcColors.Mint) }
                     visible.isEmpty() -> EmptyState(if (itemsNow!!.isEmpty()) source.emptyText else "No matches")
                     else -> Box(Modifier.fillMaxSize()) {
@@ -275,6 +284,17 @@ fun ListScreen(
         }
 
         progress?.let { ProgressOverlay(it) }
+    }
+}
+
+/** What the screen needs to show the broken-down view (built from a [ListViewModel]). */
+class BreakdownUi(val tree: StateFlow<TreePane>, val view: StateFlow<ListViewMode>, val setView: (ListViewMode) -> Unit, val actions: BreakdownActions)
+
+@Composable
+private fun ViewToggle(mode: ListViewMode, onChange: (ListViewMode) -> Unit) {
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.testTag("list_view_list")) { StatusChip("List", mode == ListViewMode.LIST) { onChange(ListViewMode.LIST) } }
+        Box(Modifier.testTag("list_view_tree")) { StatusChip("By time", mode == ListViewMode.BREAKDOWN) { onChange(ListViewMode.BREAKDOWN) } }
     }
 }
 

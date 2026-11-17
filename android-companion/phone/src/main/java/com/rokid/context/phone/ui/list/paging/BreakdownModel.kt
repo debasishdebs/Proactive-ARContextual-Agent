@@ -77,9 +77,10 @@ class BreakdownModel(
         if (open.remove(key) == null) {
             val node = dayEntries[day].orEmpty().filterIsInstance<HourNode>().firstOrNull { it.startMs == startMs } ?: return@withLock
             val pager = pagerFor(DayBucket.bounds(day, zone()), node)
-            pager.open(node.count)
             open[key] = pager
             while (open.size > MAX_OPEN_HOURS) open.remove(open.keys.first())
+            rebuild(reloadDays = false) // the hour shows at once, its rows as skeletons of the known count
+            pager.open(node.count)
         }
         rebuild(reloadDays = false); save()
     }
@@ -117,7 +118,7 @@ class BreakdownModel(
         // Pagers of hours that no longer exist (a zone change, a forgotten hour) close; the rest re-read their page.
         open.keys.toList().forEach { k ->
             val node = entries[k.day]?.filterIsInstance<HourNode>()?.firstOrNull { it.startMs == k.startMs }
-            if (node == null) open.remove(k) else if (reloadDays || !open.getValue(k).state.value.loaded) open.getValue(k).refresh(node.count)
+            if (node == null) open.remove(k) else if (reloadDays && open.getValue(k).state.value.loaded) open.getValue(k).refresh(node.count)
         }
         _tree.value = TreePane(days.map { d -> dayNode(d, counts[d] ?: 0, now, entries[d]) }, loaded = true)
     }
@@ -128,7 +129,11 @@ class BreakdownModel(
         val withPages = hours?.map { e ->
             if (e !is HourNode) e else {
                 val p = open[HourKey(d, e.startMs)]?.state?.value
-                if (p == null) e else e.copy(expanded = true, page = p.page, pages = p.pages, rows = p.rows.mapNotNull { it.item })
+                when {
+                    p == null -> e
+                    !p.loaded -> e.copy(expanded = true, pages = (e.count + HourPager.PAGE_SIZE - 1) / HourPager.PAGE_SIZE, rows = null)
+                    else -> e.copy(expanded = true, page = p.page, pages = p.pages, rows = p.rows.mapNotNull { it.item })
+                }
             }
         }
         return DayNode(d, DayHourTree.dayTitle(d, now, count), count, expanded, if (expanded) withPages else null)
