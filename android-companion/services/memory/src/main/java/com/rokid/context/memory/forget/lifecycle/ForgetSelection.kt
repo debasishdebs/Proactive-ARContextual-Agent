@@ -24,11 +24,11 @@ class SelectionPreview(
 
 /** The rules shared by the preview and the executor, so a confirmed token means exactly what the delete does ("preview == delete"). */
 object ForgetSelection {
-    private const val PLAN_VERSION = 1
+    private const val PLAN_VERSION = 2
 
     /** The hash of the roots and the whole plan (every node with its fate). A different selection, or a changed plan (a new memory, a new answer), is a different hash. */
     fun hashOf(roots: Set<Ref>, plan: ForgetPlan): String {
-        val text = "v=$PLAN_VERSION;roots=" + roots.map { it.toString() }.sorted().joinToString(",") + ";plan=" + plan.render()
+        val text = "v=$PLAN_VERSION;roots=" + roots.map { it.toString() }.sorted().joinToString(",") + ";plan=" + plan.renderWithContent()
         return MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).take(8).joinToString("") { "%02x".format(it) }
     }
 

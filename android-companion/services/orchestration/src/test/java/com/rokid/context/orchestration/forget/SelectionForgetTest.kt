@@ -100,6 +100,26 @@ class SelectionForgetTest {
         assertTrue(dao.memories(listOf("m1")).isEmpty())
     }
 
+    @Test fun aMemoryUpdatedInPlaceUnderTheSameIdIsNotDeletedWithoutAFreshPreview() = runBlocking<Unit> {
+        world()
+        val preview = ForgetActions.previewSelection(ctx, roots)!!
+        graph.db.memoryDao().insert(mem("m1", "f1", text = "EDITED-AFTER-PREVIEW")) // same id, same dependencies, new text
+        assertEquals(ForgetActions.Outcome.CONTENT_CHANGED, ForgetActions.forgetSelectionOutcome(ctx, roots, preview.token(false)))
+        assertEquals("nothing was deleted", "EDITED-AFTER-PREVIEW", dao.memories(listOf("m1")).single().text); assertNotNull(dao.frame("f2")); assertEquals(1, graph.db.momentDao().marksByIds(listOf("l1")).size)
+        val again = ForgetActions.previewSelection(ctx, roots)!!
+        assertTrue(again.planHash != preview.planHash)
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetSelectionOutcome(ctx, roots, again.token(false)))
+        assertTrue(dao.memories(listOf("m1")).isEmpty())
+    }
+
+    @Test fun unchangedContentStillConfirmsAfterTheRowWasRewrittenWithTheSameText() = runBlocking<Unit> {
+        world()
+        val preview = ForgetActions.previewSelection(ctx, roots)!!
+        graph.db.memoryDao().insert(mem("m1", "f1")) // an identical rewrite: the same content
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetSelectionOutcome(ctx, roots, preview.token(false)))
+        assertTrue(dao.memories(listOf("m1")).isEmpty())
+    }
+
     @Test fun aLargeSelectionNeedsTheAcknowledgementAndWithoutItNothingIsDeleted() = runBlocking<Unit> {
         val many = (1..SelectionLimits.ACK_ABOVE + 1).map { "b$it" }
         many.forEach { graph.db.memoryDao().insert(mem(it, null)) }
