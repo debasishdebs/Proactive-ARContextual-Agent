@@ -60,6 +60,15 @@ object OrderRules {
         }
     }
 
+    private val DEVICES = Regex("\\b(stove|oven|burner|hob|gas|kettle|iron|heater|geyser|fan|ac|tap|door|window|gate|lock|lights?|lamp|switch|plug|appliance|cooker|induction)\\b")
+    private val STATES = Regex("\\b(on|off|open|opened|closed?|locked|unlocked|lit|left|leave|turn(ed)?|switch(ed)?|shut|forget|forgot)\\b")
+
+    /** The default Ask plan (no `rag.order` node): a state / safety question ("did I turn off the stove", "are the lights on", "is the door closed"): the [STATE_WORDS] phrases, or a device word together with a state word. */
+    fun isStateQuestion(question: String, phrases: List<String> = com.rokid.context.ai.canvas.OrderParams.STATE_WORDS.split(',').map { it.trim() }): Boolean {
+        val q = question.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ")
+        return matches(q, phrases) || (DEVICES.containsMatchIn(q) && STATES.containsMatchIn(q))
+    }
+
     private fun multiDay(w: TimeWindow?) = w != null && !w.nightly && w.toMs - w.fromMs >= MULTI_DAY_MS
 
     /** The candidates that count as relevant: the top [RELEVANT_POOL] by fused score with `fused >= floor * top`; a semantic-only score is flat, so there the floor applies to the min-max range of that pool. */

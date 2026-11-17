@@ -18,6 +18,7 @@ import com.rokid.context.model.ModelImageInput
 import com.rokid.context.orchestration.retrieval.OrderRules
 import com.rokid.context.orchestration.retrieval.TimeWindow
 import com.rokid.context.orchestration.retrieval.TimeWindowRules
+import com.rokid.context.orchestration.retrieval.WindowRelevance
 import com.rokid.context.work.frames.recall.PhotoHit
 import com.rokid.context.work.frames.recall.PhotoRecall
 import java.time.Instant
@@ -51,6 +52,8 @@ sealed interface RagSource {
         val order: com.rokid.context.ai.canvas.OrderSpec? = null,
         /** How far the window widens when nothing in it is relevant (the `rag.window` node): NONE, DAY or DAY_THEN_ALL. */
         val widen: String = "DAY_THEN_ALL",
+        /** The built-in Ask plan (no `rag.order` node): a state / safety question ([OrderRules.isStateQuestion]) lists its relevant memories newest first, so the latest state is never cut by top-k. Plan bytes are unchanged. */
+        val stateNewest: Boolean = false,
     ) : RagSource
     /**
      * The photo store (image vectors; words or a vector query), behind the photo gate. [notAfterMs]: the cutoff (the debug view's, S34) and [windowMs] (only photos of the last [windowMs]) both go into
@@ -173,10 +176,10 @@ class RagCore(
     /** Decrypted in memory only (`FramePhotos.load`); a missing key = unreadable photo, which is skipped. */
     private val photoImages: suspend (frameIds: List<String>) -> Map<String, ModelImageInput> = { emptyMap() },
     /**
-     * Whether a window's result is good enough to stop widening (spec section 4: "a hit passes the relevance floor"). The floor itself is the canvas
-     * ordering package's (section 5); until then any hit counts. A seam, so that package changes one lambda.
+     * Whether a window's result is good enough to stop widening (spec section 4: "a hit passes the relevance floor"): the question, the date phrase it
+     * named, and the window's result. Default [WindowRelevance.relevant]: a hit alone is not enough (an unrelated vector match must not hide the relevant memory outside the window).
      */
-    private val windowRelevant: (com.rokid.context.memory.retrieval.RetrievalResult) -> Boolean = { it.hits.isNotEmpty() },
+    private val windowRelevant: (String, String?, com.rokid.context.memory.retrieval.RetrievalResult) -> Boolean = WindowRelevance::relevant,
 ) {
     /**
      * Runs every [sources] entry against [query] with [params]. Whatever a source returns is fenced (a memory or photo that was forgotten is dropped)
@@ -281,7 +284,9 @@ class RagCore(
     private suspend fun memoryStore(q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long): MemoryStoreResult {
         val asked = src.window
         // Spec section 5: the question's words pick an ordering; a row that needs many candidates asks the retriever for a bigger pool.
-        val decision = src.order?.let { OrderRules.decide(q, it, asked) }?.takeUnless { it.isNoop }
+        val stateDefault = src.order == null && src.stateNewest && OrderRules.isStateQuestion(q)
+        val spec = src.order ?: if (stateDefault) com.rokid.context.ai.canvas.OrderSpec() else null
+        val decision = (if (stateDefault) OrderRules.Decision(OrderRules.Row.STATE, "NEWEST", "TOP_K") else src.order?.let { OrderRules.decide(q, it, asked) })?.takeUnless { it.isNoop }
         val pool = if (decision == null || decision.ignoreRelevance) params.poolSize else maxOf(params.poolSize ?: 0, ORDER_POOL)
         // Spec section 4: the window, then a day wider, then no window (`rag.window` can shorten this). The first step with a relevant result wins; the last step always does.
         val steps: List<TimeWindow?> = if (asked == null) listOf(null) else buildList {
@@ -294,7 +299,7 @@ class RagCore(
         for ((i, w) in steps.withIndex()) {
             step = i
             r = retriever?.retrieveWindowed(q, s, nowMs, pool, src.notAfterMs, w?.let { EventWindow(it.fromMs, it.toMs) })
-            if (w == null || (r != null && windowRelevant(r))) break
+            if (w == null || (r != null && windowRelevant(q, asked?.phrase, r))) break
         }
         val fallback = r == null || r.hits.isEmpty()
         // No hits: the newest trusted memories, under the same minConfidence and top-k the retriever applies.
@@ -303,7 +308,7 @@ class RagCore(
         val used = if (asked == null || fallback) null else steps[step]
         return MemoryStoreResult(
             fence(poolAll), fallback, r, if (asked == null) null else windowNote(asked, if (fallback) null else steps[step], step), used,
-            decision, src.order, asked, s.topK, s.minConfidence,
+            decision, spec, asked, s.topK, s.minConfidence,
         )
     }
 
