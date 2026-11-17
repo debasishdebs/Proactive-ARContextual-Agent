@@ -52,6 +52,6 @@ out.signalsTry = qa('.expr-try-out li').map((l) => l.textContent); out.signalsSt
 out.signalsWrites = window.__reqs.filter((r) => /^(PUT|DELETE) \/api\/signals/.test(r)).length;
 qa('button').find((b) => b.textContent === 'Back').click(); await sleep(500);
 out.signalsListAgain = qa('main strong').map((e) => e.textContent);
-} catch (e) { out.signalsErr = String(e && e.stack || e).slice(0, 300); }
+} catch (e) { out.signalsErr = String(e && e.stack || e).slice(0, 300); errors.push(out.signalsErr); }
 out.errors = errors;
 document.getElementById('out').textContent = JSON.stringify(out, null, 1); document.title = 'DONE';
