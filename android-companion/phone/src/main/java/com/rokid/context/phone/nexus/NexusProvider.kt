@@ -139,6 +139,10 @@ class NexusProvider(
     private val lock = Any()
     @Volatile private var sink: NexusHudSink? = null
     private var wanted = false
+    /** The connection was lost and not restored since (the bound service may be gone for good); cleared only by a connection. */
+    private var dead = false
+    /** The bridge was connected and then lost; the rebind retries go on (backoff) until it is connected again or Nexus is no longer the host. */
+    private var lost = false
     private var stopping = false
     private var stoppingSince = 0L
     private var tickJob: Job? = null
@@ -156,17 +160,24 @@ class NexusProvider(
     /** The last [NexusResult] code a HUD call ended with (null = none yet): the evidence of the settings screen. */
     val lastCode: StateFlow<Int?> = _lastCode
 
+    /** A history wipe is still owed to the hub (the stored flag; read on demand by the settings screen). */
+    fun wipeOwed(): Boolean = try { debt.wipeOwed() } catch (_: Exception) { true }
+
     fun liveSlots(): Set<Slot> = sink?.liveSlots() ?: emptySet()
 
     /** Brings the connection in line with the host choice and the wipe debt. Idempotent; call it after a switch, at start and when the app comes to the front. */
     fun refresh() {
         synchronized(lock) {
             try { debt.reconcile(host() != HudHost.NEXUS) } catch (_: Exception) { log("nexus wipe record failed") }
+            if (host() != HudHost.NEXUS) lost = false
             if (host() == HudHost.NEXUS) {
                 stopping = false
                 watchJob?.cancel(); watchJob = null
-                if (!wanted) { bindLocked(); if (!wanted && debt.wipeOwed()) scheduleRetryLocked() }
+                // Nexus is the host and nothing is bound (first start, or the bridge died, B1 of smoke 3): try now; after a loss keep trying with the backoff.
+                releaseDeadLocked()
+                if (!wanted) { bindLocked(); if ((!wanted && debt.wipeOwed()) || lost) scheduleRetryLocked() }   // after a loss also while the fresh bind has not connected yet (a watchdog; a connection cancels it)
             } else if (wanted && !stopping) {
+                lost = false; dead = false
                 debt.owe()   // switching Nexus off is a MODE_OFF: the hub's history must be wiped, connected or not
                 val s = sink
                 if (s == null) { link.unbind(); wanted = false; _bound.value = false; scheduleRetryLocked() }
@@ -185,6 +196,11 @@ class NexusProvider(
                 if (wanted) { startWatchLocked(); log("nexus wipe retry bound") } else { stopping = false; scheduleRetryLocked() }     // a failed bind must not end the automatic retries
             }
         }
+    }
+
+    /** Lock held. A lost connection that did not come back: let go of the dead binding so the next bind is a fresh one. */
+    private fun releaseDeadLocked() {
+        if (wanted && dead && sink == null && !stopping) { try { link.unbind() } catch (_: Exception) { }; wanted = false }
     }
 
     /** Lock held. Verifies the signer, then binds; [wanted] follows the result. */
@@ -212,7 +228,12 @@ class NexusProvider(
                 NexusHudSink.connect(binder, gates, ::config, actions, log, asks = asks, skills = skills, ledger = debt, onForgetAcked = ::onWipeAcked, direct = directDispatch)
             } catch (_: Exception) { log("nexus connect failed"); null }
             _bound.value = sink != null
-            if (sink != null) startTick()
+            if (sink != null) {
+                dead = false; lost = false
+                startTick()
+                // A healthy connection ends the backoff, unless a wipe is still owed (its own retry cadence goes on).
+                if (!debt.wipeOwed()) { retryDelay = retryBaseMs; retryJob?.cancel(); retryJob = null }
+            }
         }
     }
 
@@ -263,7 +284,16 @@ class NexusProvider(
 
     private fun onGone() {
         // The wipe debt is stored, not held by the sink: a lost connection owes nothing new and forgets nothing.
-        synchronized(lock) { closeSinkLocked(); sink = null; _bound.value = false; tickJob?.cancel(); tickJob = null }
+        synchronized(lock) {
+            closeSinkLocked(); sink = null; _bound.value = false; tickJob?.cancel(); tickJob = null
+            // B1 (smoke 3): the bridge process died (force-stop, kill) while Nexus is the host or a wipe is owed. Android may still restart a bound service by itself (the binding stays, `wanted` stays), but a force-stop
+            // drops the binding for good. So a retry is scheduled with the SAME backoff as the wipe retries (30 s, 60 s, 120 s ... up to the cap): when it fires and nothing reconnected, the dead binding is released and the
+            // bridge is bound afresh. One delayed job at most: no loop, no spin. While a stop is in progress its own watch decides (it unbinds and schedules the retry).
+            if (!stopping && wanted) {
+                dead = true; lost = true
+                if (host() == HudHost.NEXUS || debt.wipeOwed()) scheduleRetryLocked()
+            }
+        }
         log("nexus bridge gone")
     }
 
@@ -308,6 +338,7 @@ class NexusProvider(
             delay(d)
             synchronized(lock) { retryJob = null }
             if (debt.wipeOwed()) { log("nexus wipe retry"); refresh() }
+            else if (host() == HudHost.NEXUS) { log("nexus rebind retry"); refresh() }
         }
     }
 

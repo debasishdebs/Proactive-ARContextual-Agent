@@ -71,4 +71,17 @@ class NexusStatusTest {
         val manifest = java.io.File("src/main/AndroidManifest.xml").readText()
         for (p in listOf(NexusPackages.BRIDGE, NexusPackages.HUB, NexusPackages.ROKID_CODER)) assertTrue(p, "<package android:name=\"$p\" />" in manifest)
     }
+
+    // B2 (smoke 3): an owed history cleanup is visible, plainly, with the reason and no content.
+    @Test fun anOwedCleanupSaysSoAndWhy() {
+        assertEquals("Cleanup of Nexus notification history is pending: it will run when the bridge is reachable.", NexusStatus.WIPE_PENDING)
+        for (st in NexusState.entries) {
+            val n = NexusStatus.wipeNotice(st)
+            assertTrue(n.startsWith(NexusStatus.WIPE_PENDING)); assertTrue(NexusStatus.wipeWhy(st).length > 20)
+            assertTrue("no digits, no content: $n", n.none { it.isDigit() })
+        }
+        assertTrue("not trusted" in NexusStatus.wipeWhy(NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED))
+        assertTrue("not installed" in NexusStatus.wipeWhy(NexusState.BRIDGE_NOT_INSTALLED))
+        assertTrue("not approved" in NexusStatus.wipeWhy(NexusState.PENDING_APPROVAL))
+    }
 }

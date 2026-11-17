@@ -323,6 +323,89 @@ class NexusProviderTest {
         assertEquals("and again after the doubled wait", 3, refusing.binds)
     }
 
+    // ---- B1 (smoke 3): the bridge dies (force-stop) while Nexus is the host ----
+
+    @Test fun aDeadBridgeIsReboundWithTheBackoffWhileNexusIsTheHost() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh()
+        assertEquals(1, link.binds); assertTrue(p.bound.value)
+        link.deferConnect = true
+        link.gone!!()                                  // force-stop: the binding is gone and nothing restarts it
+        assertFalse(p.bound.value); assertEquals(1, link.binds)
+        advanceTimeBy(29_000); assertEquals("nothing before the first wait", 1, link.binds)
+        advanceTimeBy(2_000); testScheduler.runCurrent()
+        assertEquals("first rebind after 30 s, on a fresh binding", 2, link.binds); assertEquals(1, link.unbinds)
+        link.gone!!()                                  // it dies again before it ever connected
+        advanceTimeBy(31_000); testScheduler.runCurrent(); assertEquals("the wait doubled: nothing at 30 s", 2, link.binds)
+        advanceTimeBy(30_000); testScheduler.runCurrent(); assertEquals("second rebind after 60 s", 3, link.binds)
+        link.gone!!()
+        advanceTimeBy(100_000); assertEquals(3, link.binds)
+        advanceTimeBy(30_000); testScheduler.runCurrent(); assertEquals("third after the doubled 120 s wait", 4, link.binds)
+        link.connected!!(port)                         // back for good
+        assertTrue(p.bound.value)
+        advanceTimeBy(1_000_000); assertEquals("a connected bridge is not rebound again", 4, link.binds)
+    }
+
+    @Test fun theRebindBackoffIsCappedAndNeverSpins() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh()
+        link.deferConnect = true
+        link.gone!!()
+        advanceTimeBy(3_600_000); testScheduler.runCurrent()      // one hour with a bridge that never comes back
+        // 30, 60, 120, 240, 480, 900 (cap), then every 900 s: well under 20 attempts, a delayed job each time and no loop in between
+        val attempts = link.binds - 1
+        assertTrue("attempts=$attempts", attempts in 5..12)
+        // each lost binding is released before the fresh one
+        assertEquals(attempts, link.unbinds)
+    }
+
+    @Test fun aFailedRebindKeepsTryingAfterALoss() = runTest {
+        host = HudHost.NEXUS
+        val flaky = object : BridgeLink {
+            var binds = 0; var cb: ((IBinder) -> Unit)? = null; var goneCb: (() -> Unit)? = null; var result = BridgeLink.Bind.BOUND
+            override fun bind(onConnected: (IBinder) -> Unit, onGone: () -> Unit): BridgeLink.Bind { binds++; cb = onConnected; goneCb = onGone; if (binds == 1) onConnected(port); return result }
+            override fun unbind() = Unit
+        }
+        val p = provider(l = flaky); p.refresh()
+        flaky.result = BridgeLink.Bind.NOT_INSTALLED
+        flaky.goneCb!!()
+        advanceTimeBy(31_000); testScheduler.runCurrent(); assertEquals(2, flaky.binds)
+        advanceTimeBy(61_000); testScheduler.runCurrent(); assertEquals("still trying after a failed rebind", 3, flaky.binds)
+    }
+
+    @Test fun anAppComingToTheFrontRebindsADeadBridgeAtOnce() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh()
+        link.deferConnect = true
+        link.gone!!()
+        p.refresh()
+        assertEquals(2, link.binds)
+    }
+
+    @Test fun noRebindOnceTheHostIsPcaAndNothingIsOwed() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh()
+        link.deferConnect = true
+        link.gone!!()
+        host = HudHost.PCA; p.refresh()                // MODE_OFF: the debt is recorded, the dead binding released
+        link.deferConnect = false
+        debt.settle()                                  // the hub acknowledged (or nothing was ever shown): nothing owed
+        val before = link.binds
+        advanceTimeBy(3_600_000); testScheduler.runCurrent()
+        assertTrue("no unowed rebind after a host switch (at most the one wipe retry before settling)", link.binds - before <= 0)
+    }
+
+    @Test fun aDeadBridgeWithAWipeOwedIsReboundEvenAfterTheHostLeftNexus() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh()
+        link.deferConnect = true
+        link.gone!!()
+        p.trip(TripReason.FORGET)                      // owed while the bridge is dead
+        host = HudHost.PCA; p.refresh()
+        advanceTimeBy(300_000); testScheduler.runCurrent()
+        assertTrue("the wipe retry binds it again", link.binds >= 2)
+    }
+
     @Test fun aLateAcknowledgementOfAnOlderWipeLeavesTheNewerDebtStanding() = runTest {
         host = HudHost.NEXUS
         val p = provider(); p.refresh(); p.show(nudge)

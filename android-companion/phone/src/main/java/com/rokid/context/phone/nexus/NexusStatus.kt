@@ -100,6 +100,24 @@ object NexusStatus {
         NexusState.LINK_BUSY -> "Another app holds the glasses link (PCA's own glasses app, or Rokid-Coder). Nexus and Rokid-Coder run one at a time. Close the other one, then try again. PCA does not take over by itself."
     }
 
+    /** The history cleanup PCA owes Nexus has not been acknowledged yet (B2, smoke 3). No count of notices and no content: only that it is owed. */
+    const val WIPE_PENDING = "Cleanup of Nexus notification history is pending: it will run when the bridge is reachable."
+
+    /** Why the owed cleanup cannot run right now, from the state alone (plain words, nothing from the notices). */
+    fun wipeWhy(s: NexusState): String = when (s) {
+        NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED -> "The bridge is not trusted, so PCA does not talk to it."
+        NexusState.BRIDGE_NOT_INSTALLED -> "The bridge is not installed."
+        NexusState.BRIDGE_REFUSED -> "Android did not let PCA connect to the bridge."
+        NexusState.HUB_NOT_INSTALLED -> "Rokid Nexus is not installed."
+        NexusState.PENDING_APPROVAL -> "The bridge is not approved in Rokid Nexus yet."
+        NexusState.CAPABILITY_DENIED -> "Rokid Nexus denied the bridge something it needs."
+        NexusState.HUB_STOPPED, NexusState.LINK_BUSY -> "The Rokid Nexus hub is not reachable right now."
+        NexusState.OFF, NexusState.WAITING, NexusState.APPROVED -> "The bridge is not connected right now, or Rokid Nexus has not approved it yet."
+    }
+
+    /** Both lines of the notice, in the order the screen shows them. */
+    fun wipeNotice(s: NexusState): String = WIPE_PENDING + " " + wipeWhy(s)
+
     /** Shown when Rokid-Coder is installed, whatever the state. */
     const val ROKID_CODER_NOTE = "Rokid-Coder is installed. Rokid-Coder and Nexus use the same glasses link, so run one at a time: close the one you are not using. PCA never takes the link from either by itself."
 

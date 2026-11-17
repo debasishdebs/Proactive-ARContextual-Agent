@@ -32,7 +32,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
 /** What the screen shows. */
-data class NexusUiState(val host: HudHost = HudHost.PCA, val installed: NexusInstalled = NexusInstalled(false, false, false), val state: NexusState = NexusState.BRIDGE_NOT_INSTALLED, val switches: NexusSwitches = NexusSwitches())
+data class NexusUiState(val host: HudHost = HudHost.PCA, val installed: NexusInstalled = NexusInstalled(false, false, false), val state: NexusState = NexusState.BRIDGE_NOT_INSTALLED, val switches: NexusSwitches = NexusSwitches(),
+    /** A history cleanup is owed to Nexus and has not been acknowledged (a stored flag; no count of notices, no content). */
+    val wipeOwed: Boolean = false)
 
 /** What the screen needs (production: [AndroidNexusControl]; tests: a fake). */
 interface NexusControl {
@@ -48,16 +50,17 @@ class AndroidNexusControl(private val app: Context) : NexusControl {
     private val store = NexusHostStore.of(app)
     private val probe = NexusProbe(app.packageManager, app.packageName)
     private val installed = MutableStateFlow(probe.installed())
+    private val rechecks = MutableStateFlow(0)
 
     // Collected only while the screen shows it (WhileSubscribed): no timer or collector runs otherwise.
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
-    override val state: StateFlow<NexusUiState> = combine(store.host, store.switches, installed, NexusGraph.evidence) { h, sw, inst, ev ->
-        NexusUiState(h, inst, NexusStatus.of(NexusInputs(inst, h == HudHost.NEXUS, ev.bindRefused, ev.bound, ev.lastCode, ev.pcaLinkUp, ev.bridgeUntrusted)), sw)
-    }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), NexusUiState(store.current(), installed.value, NexusStatus.of(NexusInputs(installed.value, store.current() == HudHost.NEXUS)), store.switchesNow()))
+    override val state: StateFlow<NexusUiState> = combine(store.host, store.switches, installed, NexusGraph.evidence, rechecks) { h, sw, inst, ev, _ ->
+        NexusUiState(h, inst, NexusStatus.of(NexusInputs(inst, h == HudHost.NEXUS, ev.bindRefused, ev.bound, ev.lastCode, ev.pcaLinkUp, ev.bridgeUntrusted)), sw, store.wipeOwed())
+    }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), NexusUiState(store.current(), installed.value, NexusStatus.of(NexusInputs(installed.value, store.current() == HudHost.NEXUS)), store.switchesNow(), store.wipeOwed()))
 
     override fun setHost(h: HudHost) { store.set(h) }
     override fun setSwitches(s: NexusSwitches) { store.setSwitches(s) }
-    override fun recheck() { installed.value = probe.installed() }
+    override fun recheck() { installed.value = probe.installed(); rechecks.value++ }
 }
 
 object NexusSettingsModel {
@@ -68,6 +71,8 @@ object NexusSettingsModel {
     const val TTS_NOTE = "Nexus reads PCA's answers aloud. Off by default."
     const val SKILLS_TITLE = "Skills"
     const val SKILLS_NOTE = "Lets the Nexus Assistant check capture status, pause, resume and mark a moment. It never reads your memories. Resume never ends a pause near a protected area. Off by default."
+    /** Least privilege (smoke 3 N4): the bridge declares speech and assistant next to surfaces, and Rokid Nexus offers all of them pre-selected. */
+    const val HUB_GRANT_NOTE = "Approving the bridge in Rokid Nexus (Settings, Plugin access) can also grant speech to text, text to speech and \"Replace the glasses assistant\" at the hub: they are pre-selected there. PCA keeps them unused until you switch them on here. To grant less, untick them in Nexus before you tap Allow."
     const val UNAVAILABLE = "Install the PCA Nexus bridge and Rokid Nexus first. PCA never installs them for you."
     fun hostOptions(): List<String> = listOf(NexusStatus.HOST_PCA, NexusStatus.HOST_NEXUS)
     /** Nexus can be chosen only when both apps are there (leaving it is always allowed). */
@@ -100,11 +105,13 @@ fun NexusScreen(state: NexusUiState, onHost: (HudHost) -> Unit, onRecheck: () ->
                 SwitchRow(NexusSettingsModel.VOICE_TITLE, NexusSettingsModel.VOICE_NOTE, state.switches.voice, { onSwitches(state.switches.copy(voice = it)) }, tag = "nexus_voice_switch")
                 SwitchRow(NexusSettingsModel.TTS_TITLE, NexusSettingsModel.TTS_NOTE, state.switches.tts, { onSwitches(state.switches.copy(tts = it)) }, tag = "nexus_tts_switch")
                 SwitchRow(NexusSettingsModel.SKILLS_TITLE, NexusSettingsModel.SKILLS_NOTE, state.switches.skills, { onSwitches(state.switches.copy(skills = it)) }, tag = "nexus_skills_switch")
+                NoticeText(NexusSettingsModel.HUB_GRANT_NOTE, tag = "nexus_hub_grant_note")
             }
         }
         item {
             SettingsCard {
                 Text(NexusStatus.title(state.state), style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("nexus_state_title"))
+                if (state.wipeOwed) NoticeText(NexusStatus.wipeNotice(state.state), error = true, tag = "nexus_wipe_pending")
                 NoticeText(NexusStatus.detail(state.state), error = state.state == NexusState.CAPABILITY_DENIED || state.state == NexusState.BRIDGE_REFUSED || state.state == NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED, tag = "nexus_state_detail")
                 if (state.installed.rokidCoder) NoticeText(NexusStatus.ROKID_CODER_NOTE, tag = "nexus_rc_note")
                 SecondaryAction("Check again", onRecheck, tag = "nexus_recheck")

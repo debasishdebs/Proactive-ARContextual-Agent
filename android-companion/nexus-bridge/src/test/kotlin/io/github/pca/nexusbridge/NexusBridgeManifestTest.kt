@@ -75,4 +75,13 @@ class NexusBridgeManifestTest {
         val settings = module.parentFile!!.resolve("settings.gradle.kts").readText()
         assertTrue(Regex("""jitpack\.io"\)\s*content \{ includeGroup\("com\.github\.Anezium\.Rokid-Nexus"\) \}""").containsMatchIn(settings))
     }
+
+    /** Decision (option b): the manifest declares surfaces + voice because Nexus has no way to change a descriptor at runtime; the README must say so and how to grant less. */
+    @Test fun theLeastPrivilegeDecisionIsDocumented() {
+        val readme = module.resolve("README.md").readText()
+        assertTrue("Least privilege" in readme && "untick" in readme && "Speech to text" in readme)
+        val svc = doc.getElementsByTagName("service").els().single { it.name() == ".BridgeNexusService" }
+        val caps = svc.getElementsByTagName("meta-data").els().single { it.name() == "com.anezium.rokidbus.plugin.CAPABILITIES" }.getAttributeNS(A, "value").split(",").toSet()
+        assertEquals(setOf("surfaces", "stt", "tts", "assistant"), caps, "changing the declared set returns the plugin to Pending in the hub: a deliberate decision, update the README with it")
+    }
 }

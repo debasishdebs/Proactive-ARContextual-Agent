@@ -63,6 +63,19 @@ License: the Nexus SDK is Apache License 2.0, (c) 2026 Anezium (it also carries 
 The merged APK also gets `io.github.pca.nexusbridge.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, a self-defined signature permission that AndroidX adds. No INTERNET, storage, location, Bluetooth, camera, microphone or notification permission.
 T5/T6 add NO permission (no microphone: Nexus owns audio) and one `<meta-data>` (the skills catalog). The PCA phone app declares `<uses-permission BIND_NEXUS_PORT/>` and a `<queries>` entry for `io.github.pca.nexusbridge` (T7); the phone-side ask and skills added NO manifest permission.
 
+## Least privilege: what approving in the hub grants (decision, smoke 3 N4)
+
+The manifest declares `surfaces,stt,tts,assistant` (+ the skills catalog). Findings from the upstream SDK (`docs/PLUGIN_SDK.md` sections 2, 3.3 and 4; `PluginPermissionsActivity`, `PluginGrantStore`, v0.27.0):
+
+- The descriptor is static manifest metadata read by the hub when it scans packages. There is no API to change it at runtime, and a plugin cannot have two states of one ID. Changing the declared set of an installed plugin returns it to Pending (`PluginGrantStore.stateFor` compares requested capabilities), so a "turn voice on" toggle that rewrites the descriptor would force a fresh hub approval each time and would need a second plugin component or a second APK with its own ID.
+- BUT the hub already offers a per-capability choice: Plugin access lists one switch per requested capability (Show on your glasses, Speech to text, Text to speech, Replace the glasses assistant), all pre-selected, and "Allow on glasses" approves only the ticked ones; the switches also apply live afterwards. A capability that is not granted answers `CAPABILITY_NOT_GRANTED`, which PCA already maps to "Capability denied".
+
+Decision: option (b), the smallest safe one. The manifest keeps the four capabilities (no descriptor churn, no second APK, no Pending reset, NexusBridgeManifestTest pins it). Instead:
+
+1. PCA's Rokid Nexus screen and the device checklist say plainly that approving the plugin in the hub can grant voice capabilities at the hub level (pre-selected) while PCA's switches keep them unused, and how to grant less: untick Speech to text, Text to speech and Replace the glasses assistant in Nexus > Settings > Plugin access BEFORE tapping Allow on glasses, and tick them later (live) only when switching Nexus voice or Speak answers on in PCA. Unticked, those features read "Capability denied" in PCA, as expected.
+2. The bridge guard is already in place and now asserted (`AssistAskBridgeTest.aHubGrantAloneNeverOpensSttOrTts`, `BridgeRendererTest`): with no PCA switch the mask is 0, `speak` answers `DISABLED`, `assistOpened` opens no speech session and the assist takeover is released (`setAssistantTakeover(false)`); STT needs the `STT` and `ASSIST` bits, TTS needs the `TTS` bit, and a trip clears them.
+3. Revisit with a separate user-installed voice variant only if a hub release lets a plugin change or narrow its own requested set without a Pending reset.
+
 ## Remove it
 
 PCA works without it. Android Settings, Apps, "PCA Nexus bridge", Uninstall. Nothing is stored in the bridge. In Nexus, Settings, Plugin access, you can also deny it first.
