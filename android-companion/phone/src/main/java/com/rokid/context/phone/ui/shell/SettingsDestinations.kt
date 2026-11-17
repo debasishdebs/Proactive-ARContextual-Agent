@@ -391,7 +391,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_PRIVACY_ZONES) { ZonesRoute(s, back) }
     composable(Routes.SETTINGS_PLACE_GUIDE) {
         val app = LocalContext.current.applicationContext
-        com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back)
+        com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back, changingConfigurations = rememberIsChangingConfigurations())
     }
     composable(Routes.SETTINGS_SOURCES) {
         val activity = LocalContext.current.findActivity()
@@ -422,4 +422,13 @@ private fun CanvasDeveloperGate(back: () -> Unit, content: @androidx.compose.run
     val app = LocalContext.current.applicationContext
     val devOn by DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle()
     if (devOn) content(remember { CanvasGraph.host(app) }) else LaunchedEffect(Unit) { back() }
+}
+
+/** True while the host activity is being recreated (rotation): a disposal then is not "leaving the screen". */
+@androidx.compose.runtime.Composable
+private fun rememberIsChangingConfigurations(): () -> Boolean {
+    var ctx: android.content.Context = androidx.compose.ui.platform.LocalContext.current
+    while (ctx is android.content.ContextWrapper && ctx !is android.app.Activity) ctx = ctx.baseContext
+    val activity = ctx as? android.app.Activity
+    return { activity?.isChangingConfigurations == true }
 }
