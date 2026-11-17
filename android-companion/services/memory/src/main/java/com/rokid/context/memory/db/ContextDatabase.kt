@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -343,5 +343,15 @@ val MIGRATION_15_16: Migration = object : Migration(15, 16) {
         db.execSQL("ALTER TABLE `memory` ADD COLUMN `imageDelivered` INTEGER DEFAULT NULL")
         db.execSQL("ALTER TABLE `memory` ADD COLUMN `reviewFlaggedAt` INTEGER DEFAULT NULL")
         db.execSQL("ALTER TABLE `canvas_run_item` ADD COLUMN `imageDelivered` INTEGER DEFAULT NULL")
+    }
+}
+
+/**
+ * v16 -> v17 (user ruling 2026-11-17, the only schema change of the Forget lifecycle M5): `ask.sourceStates`, the JSON source states of an answer (ids only: cited, history, state). Additive: one nullable
+ * column, no row is touched (every existing ask reads null: "written before v17", the legacy matching applies).
+ */
+val MIGRATION_16_17: Migration = object : Migration(16, 17) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `ask` ADD COLUMN `sourceStates` TEXT DEFAULT NULL")
     }
 }

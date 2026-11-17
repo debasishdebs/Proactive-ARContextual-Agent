@@ -55,6 +55,11 @@ data class AskEntity(
     val rating: Int?,
     val source: String,
     val redacted: Boolean,
+    /**
+     * v17 (Forget lifecycle M5, user ruling 2026-11-17): the JSON source states (ids only, see [com.rokid.context.memory.forget.AskSourceStates]): what the answer cited, which earlier answers or nudges it
+     * used, and whether a Forget removed a source. Null on every row written before v17 and for developer eval asks. Written always; read only with the OFF-by-default `forgetV2` flag (and by the UI state it sets).
+     */
+    val sourceStates: String? = null,
 )
 
 @Entity(tableName = "nudge", indices = [Index("ts"), Index("hash")])

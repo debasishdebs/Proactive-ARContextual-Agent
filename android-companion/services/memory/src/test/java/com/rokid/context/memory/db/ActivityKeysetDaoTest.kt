@@ -114,7 +114,7 @@ class ActivityKeysetDaoTest {
         assertEquals(listOf("a", "b", "c", "d", "e"), all.map { it.labelId })
     }
 
-    @Test fun theDatabaseVersionStaysAtSixteen() {
-        assertEquals("pagination adds queries only: no migration", 16, db.openHelper.readableDatabase.version)
+    @Test fun theDatabaseVersionIsSeventeen() {
+        assertEquals("pagination adds queries only; the one migration since v16 is the ruled v17 (ask.sourceStates, Forget M5)", 17, db.openHelper.readableDatabase.version)
     }
 }
