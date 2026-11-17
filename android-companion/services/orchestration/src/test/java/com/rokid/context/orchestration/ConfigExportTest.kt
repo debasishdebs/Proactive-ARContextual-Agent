@@ -107,6 +107,19 @@ class ConfigExportTest {
         assertTrue("prompts" in root)
     }
 
+    /** Place Guide v2: the user's pinned places are user configuration like the pause zones: in the settings export; the pack, its switch and its budget are not. */
+    @Test fun pinnedPlacesAreExportedLikeZonesAndThePackSwitchIsNot() = runBlocking<Unit> {
+        val pin = com.rokid.context.memory.place.UserPlace(com.rokid.context.memory.place.UserPlace.newId(), "Mirror Wall", com.rokid.context.memory.place.PlaceKinds.ARCHAEOLOGICAL_SITE, 7.957, 80.759, 60, null, "Polished wall.")
+        assertTrue(com.rokid.context.memory.place.UserPinStore(prefs(com.rokid.context.memory.place.UserPinStore.PREFS)).write(listOf(pin)))
+        prefs("place_guide").edit().putBoolean("enabled", true).putInt("budgetMb", 200).commit()
+        assertTrue("place_pins" in ConfigExport.PREFS_FILES); assertFalse("place_guide" in ConfigExport.PREFS_FILES)
+        val root = Json.parseToJsonElement(ConfigExport.write(ctx, ai, nowMs = 8).readText()).jsonObject
+        val p = root["preferences"]!!.jsonObject
+        assertTrue("Mirror Wall" in p["place_pins"].toString() && "Polished wall." in p["place_pins"].toString())
+        assertFalse("place_guide" in p)
+        prefs(com.rokid.context.memory.place.UserPinStore.PREFS).edit().clear().commit(); prefs("place_guide").edit().clear().commit()
+    }
+
     /** Wave B: the context hub's state (my-car addresses, the LiveFit digest) never enters the settings export. */
     @Test fun ctxHubStateIsNotExported() {
         assertFalse("ctx_hub_state" in ConfigExport.PREFS_FILES)
