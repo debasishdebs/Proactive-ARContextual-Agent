@@ -35,7 +35,7 @@
             android:exported="true"
             android:permission="io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT" />
 
-        <!-- The Nexus plugin. Capabilities are DECLARED; the wearer approves each in Nexus -> Settings -> Plugin access, and PCA keeps TTS/STT/assist OFF until the user switches them on. -->
+        <!-- The Nexus plugin. Capabilities are DECLARED; the wearer approves each in Nexus -> Settings -> Plugin access (one switch per capability, all pre-selected: untick the voice ones to grant less), and PCA keeps TTS/STT/assist OFF until the user switches them on. See README "Least privilege". -->
         <service
             android:name=".BridgeNexusService"
             android:exported="true"

@@ -51,6 +51,22 @@ class NexusSettingsScreenTest {
         }
     }
 
+    @Test fun anOwedCleanupIsShownWithItsReasonOnlyWhileOwed() {
+        var state by mutableStateOf(NexusUiState(HudHost.PCA, NexusInstalled(false, true, false, bridgeUntrusted = true), NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED, wipeOwed = true))
+        compose.setContent { PcTheme { NexusScreen(state, {}, {}, {}) } }
+        compose.onNodeWithTag("nexus_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("nexus_wipe_pending"))
+        compose.onNodeWithTag("nexus_wipe_pending").assertTextEquals(NexusStatus.wipeNotice(NexusState.BRIDGE_NOT_INSTALLED_UNTRUSTED))
+        state = state.copy(wipeOwed = false); compose.waitForIdle()
+        compose.onNodeWithTag("nexus_wipe_pending").assertDoesNotExist()
+    }
+
+    @Test fun theHubGrantNoteSaysApprovingCanGrantVoiceWhilePcaKeepsItUnused() {
+        show(NexusUiState(HudHost.PCA, NexusInstalled(true, true, false), NexusState.OFF))
+        compose.onNodeWithTag("nexus_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("nexus_hub_grant_note"))
+        compose.onNodeWithTag("nexus_hub_grant_note").assertTextEquals(com.rokid.context.phone.ui.settings.nexus.NexusSettingsModel.HUB_GRANT_NOTE)
+        assertTrue("PCA keeps them unused until you switch them on here" in com.rokid.context.phone.ui.settings.nexus.NexusSettingsModel.HUB_GRANT_NOTE)
+    }
+
     @Test fun rokidCoderGetsItsOneAtATimeNoteOnlyWhenInstalled() {
         show(NexusUiState(HudHost.PCA, NexusInstalled(true, true, true), NexusState.OFF))
         compose.onNodeWithTag("nexus_settings").performScrollToNode(hasText(NexusStatus.ROKID_CODER_NOTE))

@@ -41,6 +41,21 @@ class AssistAskBridgeTest {
         r.setFeatures(NexusFeatures.NONE); assertEquals(false, bus.takeover)
     }
 
+    // Least privilege (smoke 3 N4): the hub may have granted stt, tts and assistant (the manifest declares them), but the bridge opens NO speech session and speaks NOTHING until PCA's own switch sets the bit.
+    @Test fun aHubGrantAloneNeverOpensSttOrTts() {
+        // mask NONE is the state of a fresh bridge and of every "switch off": nothing speaks, nothing listens, the takeover is released
+        assertEquals(NexusResult.DISABLED, r.speak("x"))
+        r.assistOpened()
+        assertTrue("listen" !in bus.calls && "speak" !in bus.calls && bus.listen == null)
+        r.setFeatures(NexusFeatures.SKILLS)          // skills on does not open voice either
+        assertEquals(NexusResult.DISABLED, r.speak("x")); r.assistOpened()
+        assertTrue("listen" !in bus.calls && "speak" !in bus.calls)
+        r.setFeatures(NexusFeatures.TTS)             // TTS switch on: speech out only, still no listening
+        r.assistOpened(); assertTrue("listen" !in bus.calls)
+        r.setFeatures(ASK)                           // voice switch on: listening allowed, speaking still not
+        assertEquals(NexusResult.DISABLED, r.speak("x")); assertTrue("speak" !in bus.calls)
+    }
+
     @Test fun aFinalTranscriptIsRelayedOnceAndThenTheSessionEnds() {
         r.setFeatures(ASK)
         r.assistOpened()
