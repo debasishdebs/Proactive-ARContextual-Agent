@@ -59,6 +59,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class CanvasRunnerTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val app = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var dao: CanvasDao
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

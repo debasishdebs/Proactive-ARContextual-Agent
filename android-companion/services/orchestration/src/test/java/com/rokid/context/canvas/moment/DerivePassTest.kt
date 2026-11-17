@@ -34,6 +34,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class DerivePassTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val fx = MomentFixture(db)
     private val moments = MomentBuilder(db, enabled = { true }, clock = { 5 })

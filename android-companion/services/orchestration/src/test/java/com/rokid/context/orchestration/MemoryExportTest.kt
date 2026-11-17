@@ -25,6 +25,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class MemoryExportTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     @Before fun setUp() { MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)) }
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }

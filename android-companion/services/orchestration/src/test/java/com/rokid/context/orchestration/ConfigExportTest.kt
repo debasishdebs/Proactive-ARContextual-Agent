@@ -33,6 +33,7 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class ConfigExportTest {
+    @get:org.junit.Rule val freshGate = com.rokid.context.FreshDataOpGateRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val vault = InMemoryKeyVault()
     private lateinit var ai: AiGraph
