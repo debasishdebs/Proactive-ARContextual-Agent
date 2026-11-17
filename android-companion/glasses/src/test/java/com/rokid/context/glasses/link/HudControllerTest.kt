@@ -1,6 +1,11 @@
 package com.rokid.context.glasses.link
 
 import com.rokid.context.core.hud.render.HudConnection
+import com.rokid.context.core.log.Level
+import com.rokid.context.core.log.Line
+import com.rokid.context.core.log.LogSink
+import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.log.Route
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
@@ -37,6 +42,20 @@ private typealias CS = com.rokid.context.core.model.context.ContextState
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class HudControllerTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
+
+    /**
+     * PcLog is process-wide and its sink survives from whichever test ran before (GlassesLoggingTest installs a recorder; with none installed the lines wait in PcLog's ring and ShadowLog stays empty), so the
+     * logging tests here depended on test order. Every test starts from a clean logger with a sink that writes to android.util.Log (which Robolectric records in ShadowLog), and leaves a clean one.
+     */
+    @org.junit.Before fun installLogBridge() {
+        PcLog.testOnlyResetNeverCallFromProduction()
+        PcLog.setDiagnostic(true)
+        check(PcLog.install(object : LogSink {
+            override fun emit(line: Line, route: Route) { if (route.logcat) android.util.Log.println(when (line.level) { Level.D -> android.util.Log.DEBUG; Level.I -> android.util.Log.INFO; Level.W -> android.util.Log.WARN; Level.E -> android.util.Log.ERROR }, line.tag, line.msg) }
+        }))
+    }
+
+    @org.junit.After fun removeLogBridge() { PcLog.testOnlyResetNeverCallFromProduction() }
     private val bridge = FakeBridge()
     private var now = 1_000L
     private fun hello() = Hello(glassesBatteryPct = 80, bufferSize = 2, glassesNowMs = now, pauses = emptyList())
