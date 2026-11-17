@@ -39,8 +39,8 @@ object Fixtures {
 
     fun ask(
         id: String, ts: Long, question: String = "Where are my keys?", answer: String = "On the hallway shelf.",
-        sources: String = "[]", rating: Int? = null, redacted: Boolean = false,
-    ) = AskEntity(id, ts, question, answer, sources, rating, "phone_typed", redacted)
+        sources: String = "[]", rating: Int? = null, redacted: Boolean = false, sourceStates: String? = null,
+    ) = AskEntity(id, ts, question, answer, sources, rating, "phone_typed", redacted, sourceStates)
 
     fun nudge(id: String, ts: Long, text: String = "Milk looked almost empty", why: String = "Seen in the fridge at 09:41") =
         NudgeEntity(id, ts, text, why, "[]", 1, "h_$id", "phone", false)

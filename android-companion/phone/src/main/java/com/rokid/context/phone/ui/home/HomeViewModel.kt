@@ -56,6 +56,8 @@ class HomeViewModel(
     private val limitedMode: LimitedModeControl = LimitedModeControl.None,
     /** v0.9.7 slice D: the shared text backend, called with the chat text before any model call; null = every text is a plain ask. This class has no command logic of its own. */
     private val utterance: Utterance? = null,
+    /** M5: "Ask again" on an answer whose source was forgotten: the user's tap runs its stored question through the normal Ask path (never automatic). */
+    private val askAgainOf: suspend (String) -> AskOutcome = { AskOutcome.Failed(AskActions.FAILED) },
 ) : ViewModel() {
     private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null, val reply: String? = null)
 
@@ -120,6 +122,25 @@ class HomeViewModel(
                 }
             } catch (c: CancellationException) {
                 local.update { it.copy(asking = false) } // Phase 2 carry: never left "asking" after a cancel
+                throw c
+            } catch (e: Exception) {
+                local.update { it.copy(asking = false, error = AskActions.FAILED) }
+            }
+        }
+    }
+
+    /** M5: the user tapped "Ask again" on [askId]; a new answer row is saved by the normal path, the old row says it was asked again. Plain text only, never through the command handler (a command is not run twice). */
+    fun askAgain(askId: String) {
+        if (local.value.asking) return
+        local.update { it.copy(asking = true, error = null, reply = null) }
+        viewModelScope.launch {
+            try {
+                when (val r = askAgainOf(askId)) {
+                    is AskOutcome.Answered -> local.update { it.copy(asking = false, lastAskId = r.askId, reply = r.notice) }
+                    is AskOutcome.Failed -> local.update { it.copy(asking = false, error = r.message) }
+                }
+            } catch (c: CancellationException) {
+                local.update { it.copy(asking = false) }
                 throw c
             } catch (e: Exception) {
                 local.update { it.copy(asking = false, error = AskActions.FAILED) }

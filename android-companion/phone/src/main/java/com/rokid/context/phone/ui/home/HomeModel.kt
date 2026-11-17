@@ -1,6 +1,7 @@
 package com.rokid.context.phone.ui.home
 
 import com.rokid.context.memory.db.AskEntity
+import com.rokid.context.memory.forget.AskSourceStates
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.phone.ui.status.StatusUi
@@ -17,7 +18,11 @@ sealed interface FeedItem {
     val atMs: Long
     val timeLabel: String
 
-    data class Ask(override val id: String, override val atMs: Long, override val timeLabel: String, val question: String, val answer: String, val redacted: Boolean) : FeedItem
+    data class Ask(override val id: String, override val atMs: Long, override val timeLabel: String, val question: String, val answer: String, val redacted: Boolean,
+        /** M5 (forgetV2): a source of the answer was forgotten; the question stays, the answer is gone, "Ask again" is offered (never automatic). */
+        val forgotten: Boolean = false,
+        /** The user already asked it again (no second button). */
+        val askedAgain: Boolean = false) : FeedItem
     data class Nudge(override val id: String, override val atMs: Long, override val timeLabel: String, val text: String, val why: String, val redacted: Boolean) : FeedItem
 }
 
@@ -31,7 +36,7 @@ object Feed {
         return if (t.toLocalDate() == today) TIME.format(t) else DATE.format(t)
     }
 
-    fun ask(a: AskEntity, today: LocalDate, zone: ZoneId) = FeedItem.Ask(a.id, a.ts, label(a.ts, today, zone), a.question, a.answer, a.redacted)
+    fun ask(a: AskEntity, today: LocalDate, zone: ZoneId) = FeedItem.Ask(a.id, a.ts, label(a.ts, today, zone), a.question, a.answer, a.redacted, AskSourceStates.isForgotten(a), AskSourceStates.isReasked(a))
     fun nudge(n: NudgeEntity, today: LocalDate, zone: ZoneId) = FeedItem.Nudge(n.id, n.ts, label(n.ts, today, zone), n.text, n.why, n.redacted)
 
     fun build(asks: List<AskEntity>, nudges: List<NudgeEntity>, today: LocalDate, zone: ZoneId, limit: Int = 30): List<FeedItem> =
