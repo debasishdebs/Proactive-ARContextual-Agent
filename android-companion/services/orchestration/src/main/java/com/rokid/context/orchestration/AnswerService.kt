@@ -21,6 +21,7 @@ import com.rokid.context.memory.ProposalOrigin
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.memory.forget.AskSourceStates
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 import com.rokid.context.memory.retrieval.MemoryRetriever
 import com.rokid.context.memory.retrieval.RetrievalMode
@@ -133,6 +134,8 @@ class AnswerService(
         val target: String = "caller",
         /** Why semantic search did not run for this ask (null = it ran, or lexical was chosen). */
         val semanticOff: com.rokid.context.memory.retrieval.SemanticOff? = null,
+        /** M5 (design A2): the earlier nudges (`nudge:<id>`) whose text the prompt carried; recorded in the ask's source states, never sent to the model. */
+        val historyRefs: Set<String> = emptySet(),
     ) {
         val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
 
@@ -199,7 +202,7 @@ class AnswerService(
                 retrievedMemories = PromptComposer.dataBlock("memories", listOfNotNull(c.windowNote) + c.memoryLines + c.photoLines + c.recentLines + c.history),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
-            c.memories + c.recent, c.photos, c.images, c.imageEndpointId, c.historyIds, semanticOff = c.semanticOff,
+            c.memories + c.recent, c.photos, c.images, c.imageEndpointId, c.historyIds, semanticOff = c.semanticOff, historyRefs = c.historyRefs,
         )
     }
 
@@ -330,8 +333,10 @@ class AnswerService(
                 if (verdict == com.rokid.context.provenance.ProvenanceGate.Verdict.Denied(com.rokid.context.provenance.ProvenanceGate.Reason.WIPED)) return@commit false
                 redacted = verdict != com.rokid.context.provenance.ProvenanceGate.Verdict.Live
                 memory.asks.add(
-                    if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
-                    else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds + r.ids) /* codex r15: every input, cited or not, is a dependency */, null, source, false),
+                    if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true,
+                        sourceStates = if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on && source != AskSourceStates.EVAL_SOURCE) AskSourceStates.forgotten() else null) // forgetV2: a source forgotten while the model answered is the same state as one forgotten later
+                    else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds + r.ids) /* codex r15: every input, cited or not, is a dependency (the forgetV2 rules read the source states instead) */, null, source, false,
+                        sourceStates = if (source != AskSourceStates.EVAL_SOURCE) AskSourceStates.live(out.sources, r.historyRefs) else null /* M5: cited ids + history items, ids only; an eval ask is unaffected */),
                 )
                 true
             } as? com.rokid.context.memory.forget.lifecycle.Leases.Commit.Committed)?.value == true

@@ -16,7 +16,7 @@ object DesignDivergence {
         Entry("SCENE_REBUILD_VS_DROP", "A Scene that loses some Moments is REBUILT.",
             "A Scene with surviving Moments shrinks (its derived fields hidden, audit rows written); a Scene with none left is dropped whole.", "momentScopeSpans"),
         Entry("ASK_NUDGE_REDACTED_IN_PLACE", "A1 / N1: an answer is rebuilt by re-answering from the survivors; a hit nudge is deleted.",
-            "Asks and nudges that cite or depend on a forgotten, invalidated or photo-cited id are redacted in place (the question stays); their proposals are expired and scrubbed.", "forgetFact"),
+            "Flag OFF (v1): asks and nudges that cite or depend on a forgotten, invalidated or photo-cited id are redacted in place (the question stays); their proposals are expired and scrubbed. RULED 2026-11-17 and built in M5 for the flag ON only: no automatic re-answer (the answer becomes \"Answered from a forgotten fact\" with an Ask again button, only CITED sources and history items count, a hit nudge is erased); pinned by the `on` expectation of the same golden.", "forgetFact"),
         Entry("MULTI_PHOTO_CASCADE", "A memory that cites several photos is rebuilt from the surviving ones.",
             "Forgetting one photo of a multi-photo memory deletes the memory and so locks and cascades to its OTHER photo too.", "forgetFarPhotoCitedByAMultiPhotoFact"),
         Entry("REPLAY_SWEEP_INVALIDATION", "Replays and sweeps are RunResult nodes of the plan.",

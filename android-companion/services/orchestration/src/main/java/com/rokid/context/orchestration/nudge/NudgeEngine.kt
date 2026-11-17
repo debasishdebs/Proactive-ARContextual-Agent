@@ -132,7 +132,7 @@ class NudgeEngine(
                 if (com.rokid.context.provenance.ProvenanceGate.forGraph(memory).check(prepared.inputIds + prepared.fenceIds + out.sourceIds, com.rokid.context.orchestration.MemoryWipe.generation.get()) != com.rokid.context.provenance.ProvenanceGate.Verdict.Live) return@commit false
                 memory.nudges.addIgnore(
                     NudgeEntity(
-                        id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encodeWithDeps(out.sourceIds, prepared.fenceIds + prepared.inputIds), // codex r15: every input is a dependency
+                        id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encodeWithDeps(out.sourceIds, prepared.fenceIds + prepared.inputIds + (if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on) prepared.historyRefs else emptySet())), // codex r15: every input is a dependency (N1: any of them erases the nudge); forgetV2: the earlier nudges it showed are named too (A2)
                         priority = out.priority, hash = NudgeGates.hash(text), shownOn = route.shownOn, redacted = false,
                     ),
                 )

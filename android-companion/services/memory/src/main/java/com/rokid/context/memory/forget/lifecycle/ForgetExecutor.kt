@@ -165,9 +165,11 @@ class ForgetExecutor internal constructor(
         val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
         val cited = forgotten + invalidated + extraCited + goneCites
         val tx = PlanTx(db)
-        val asks = AnswerFamily.citing(cited, tx); val nudges = NudgeFamily.citing(cited, tx)
+        val v2Rules = ForgetV2.on // M5: A1 (answers by their cited ids, "Answered from a forgotten fact"), A2 (history items), N1 (a hit nudge is erased); off = v1 redaction in place
+        val reached = AskRules.reach(cited, tx, v2Rules)
+        val asks = reached.asks; val nudges = reached.nudges
         AnswerFamily.selfDelete(asks.toSet(), Fate.REBUILD, c)
-        NudgeFamily.selfDelete(nudges.toSet(), Fate.REBUILD, c)
+        NudgeFamily.selfDelete(nudges.toSet(), if (v2Rules) Fate.ERASE else Fate.REBUILD, c)
         val redactedProposals = ProposalFamily.expireAndScrub(c, asks + nudges, scrubAccepted)
         PhotoFamily.deleteVectors(uncited, c)
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }

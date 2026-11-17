@@ -1,6 +1,7 @@
 package com.rokid.context.memory.forget.lifecycle
 
 import com.rokid.context.memory.db.MomentPartKind
+import com.rokid.context.memory.forget.AskSourceStates
 import com.rokid.context.memory.forget.ForgetService
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 
@@ -197,12 +198,24 @@ internal object AnswerFamily : ForgetFamily {
     override val family = Family.ANSWER
     override val tables = listOf("ask")
     override val selfDeletes = true
-    /** REBUILD (v1: redacted in place, the question stays; the v2 rules A1 are M5): the answer and its sources are cleared. */
-    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.REBUILD) { "v1 redacts an answer in place" }; ids.forEach { ctx.db.forgetDao().redactAsk(it, ForgetService.REDACTED) } }
-    /** The asks (not yet redacted) whose sources, or `dependsOn` ids, meet [cited]: exactly the match `ForgetService.cascade` redacts by. */
-    suspend fun citing(cited: Set<String>, tx: PlanTx): List<String> {
+    /**
+     * REBUILD. v1 (flag off): redacted in place, the question stays, the answer and its sources are cleared. `forgetV2` on (M5, A1): the same erasure, and the source state becomes SOURCE_FORGOTTEN ("Answered from a
+     * forgotten fact", the question stays, the row offers "Ask again"; there is NO automatic re-answer). A developer eval ask keeps the v1 redaction.
+     */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
+        require(fate == Fate.REBUILD) { "an answer is rebuilt (redacted in place), never erased as a dependent" }
+        val dao = ctx.db.forgetDao()
+        if (!ForgetV2.on) { ids.forEach { dao.redactAsk(it, ForgetService.REDACTED) }; return }
+        val eval = ids.chunked(500).flatMap { ctx.db.askDao().byIds(it) }.filter { it.source == AskSourceStates.EVAL_SOURCE }.map { it.id }.toSet()
+        ids.forEach { if (it in eval) dao.redactAsk(it, ForgetService.REDACTED) else dao.redactAskForgotten(it, ForgetService.REDACTED, AskSourceStates.forgotten()) }
+    }
+    /** The asks (not yet redacted) hit by [cited]. v1: whose sources, or `dependsOn` ids, meet it (exactly the match `ForgetService.cascade` redacts by). `forgetV2` on (A1, A2): whose CITED ids or history items meet it. */
+    suspend fun citing(cited: Set<String>, tx: PlanTx, v2: Boolean = false): List<String> {
         val dao = tx.db.forgetDao()
-        return cited.flatMap { dao.asksCiting(ForgetService.likeFor(it)) }.distinctBy { it.id }.filter { a -> ForgetService.parseIds(a.sourcesJson).any { it in cited } }.map { it.id }
+        val byJson = cited.flatMap { dao.asksCiting(ForgetService.likeFor(it)) }.distinctBy { it.id }
+        if (!v2) return byJson.filter { a -> ForgetService.parseIds(a.sourcesJson).any { it in cited } }.map { it.id }
+        val byStates = cited.flatMap { dao.asksCitingStates(ForgetService.likeFor(it)) }
+        return (byJson + byStates).distinctBy { it.id }.filter { a -> AskSourceStates.dependenciesV2(a).any { it in cited } }.map { it.id }
     }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> = ProposalFamily.of(ids, tx).map { Edge(family, Ref(Family.PROPOSAL, it), EdgeKind.ORIGIN) }
 }
@@ -212,12 +225,38 @@ internal object NudgeFamily : ForgetFamily {
     override val family = Family.NUDGE
     override val tables = listOf("nudge")
     override val selfDeletes = true
-    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.REBUILD) { "v1 redacts a nudge in place" }; ids.forEach { ctx.db.forgetDao().redactNudge(it, ForgetService.REDACTED) } }
+    /** REBUILD (v1): redacted in place. ERASE (`forgetV2`, N1): the row is deleted (a nudge is time-bound; regenerating it would show a stale one). */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
+        require(fate == Fate.REBUILD || fate == Fate.ERASE) { "a nudge is redacted (v1) or erased (N1)" }
+        val dao = ctx.db.forgetDao()
+        ids.forEach { if (fate == Fate.ERASE) dao.deleteNudge(it) else dao.redactNudge(it, ForgetService.REDACTED) }
+    }
     suspend fun citing(cited: Set<String>, tx: PlanTx): List<String> {
         val dao = tx.db.forgetDao()
         return cited.flatMap { dao.nudgesCiting(ForgetService.likeFor(it)) }.distinctBy { it.id }.filter { n -> ForgetService.parseIds(n.sourceIdsJson).any { it in cited } }.map { it.id }
     }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> = ProposalFamily.of(ids, tx).map { Edge(family, Ref(Family.PROPOSAL, it), EdgeKind.ORIGIN) }
+}
+
+/**
+ * The answers and nudges one Forget reaches from the ids it removed ([cited]). The ONE rule shared by the planner (preview, plan hash) and the executor (delete), so preview == delete.
+ * v1 (flag off): one pass, every ask or nudge whose stored ids meet [cited]. `forgetV2` on: answers by their CITED ids and history items (A1, A2), nudges by any dependency (N1: ERASE), and the items
+ * reached are themselves history, so the answers that used a reached answer or nudge follow (A2), to a fixpoint.
+ */
+internal object AskRules {
+    class Reach(val asks: List<String>, val nudges: List<String>)
+
+    suspend fun reach(cited: Set<String>, tx: PlanTx, v2: Boolean, skipAsks: Set<String> = emptySet(), skipNudges: Set<String> = emptySet()): Reach {
+        if (!v2) return Reach(AnswerFamily.citing(cited, tx).filter { it !in skipAsks }, NudgeFamily.citing(cited, tx).filter { it !in skipNudges })
+        val seenAsks = LinkedHashSet<String>(); val seenNudges = LinkedHashSet<String>()
+        var frontier = cited
+        while (frontier.isNotEmpty()) {
+            val a = AnswerFamily.citing(frontier, tx, v2 = true).filter { it !in skipAsks && seenAsks.add(it) }
+            val n = NudgeFamily.citing(frontier, tx).filter { it !in skipNudges && seenNudges.add(it) }
+            frontier = (a.map { AskSourceStates.ASK_PREFIX + it } + n.map { AskSourceStates.NUDGE_PREFIX + it }).toSet()
+        }
+        return Reach(seenAsks.toList(), seenNudges.toList())
+    }
 }
 
 /** Proposals and their action log: they come from an ask or a nudge (their origin), so they follow it. */
