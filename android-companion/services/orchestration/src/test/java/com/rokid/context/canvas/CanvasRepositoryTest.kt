@@ -44,14 +44,14 @@ class CanvasRepositoryTest {
     @Test fun builtInsSeededAndRefreshed() = runBlocking<Unit> {
         repo.ensureBuiltIns()
         val all = repo.list()
-        assertEquals(setOf("live-extract", "intent-draft", "default-capture", "starter-capture-extract", "starter-moment-summary", "starter-watch-motion", "default-query", "default-nudge"), all.map { it.id }.toSet())
+        assertEquals(setOf("live-extract", "intent-draft", "default-capture", "starter-capture-extract", "starter-moment-summary", "starter-watch-motion", "default-query", "default-nudge", "dated-query"), all.map { it.id }.toSet())
         assertTrue(all.all { it.builtIn && it.draftRev == 0 })
         val intent = PipelineJson.decode(repo.get("intent-draft")!!.draftJson).getOrThrow()
         assertTrue(PipelineJson.encode(intent).contains("SEED for VISION_EXTRACT"))
         // overwritten each call: a changed seed shows up, and nothing is duplicated
         val again = CanvasRepository(dao, { "NEW SEED" }, { now++ }, { "x" })
         again.ensureBuiltIns()
-        assertEquals(8, again.list().size)
+        assertEquals(9, again.list().size)
         assertTrue(again.get("intent-draft")!!.draftJson.contains("NEW SEED"))
         assertFalse(again.get("intent-draft")!!.draftJson.contains("SEED for"))
     }

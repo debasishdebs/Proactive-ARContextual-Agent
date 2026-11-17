@@ -89,6 +89,12 @@ object DefaultSchemas {
         {"type":"object","properties":{"choice":{"type":"string","maxLength":8},"confidence":{"type":"number"},"box":{"type":"array","maxItems":4,"items":{"type":"number"}}},"required":["choice","confidence"],"additionalProperties":false}
     """.trimIndent()
 
+    /** TIME_ANCHOR (retrieval quality section 3): a window kind and local times, or none. Short strings only. */
+    private val TIME = """
+        {"type":"object","properties":{"kind":{"type":"string","enum":["date","range","event","none"]},"from":{"type":"string","maxLength":16},"to":{"type":"string","maxLength":16},
+          "event":{"type":"string","maxLength":80},"label":{"type":"string","maxLength":60}},"required":["kind"],"additionalProperties":false}
+    """.trimIndent()
+
     private val SUMMARY = """
         {"type":"object","properties":{"summary":{"type":"string","minLength":1,"maxLength":1000},
           "events":{"type":"array","items":{"type":"string"}},"entities":{"type":"array","items":{"type":"string"}},
@@ -125,6 +131,7 @@ object DefaultSchemas {
         PromptKey.CLUSTER_SUMMARY -> CLUSTER_FACTS
         PromptKey.INTENT_CLASSIFY -> INTENT
         PromptKey.PLACE_MATCH -> PLACE
+        PromptKey.TIME_ANCHOR -> TIME
         PromptKey.EXPLICIT_REMEMBER -> FACTS
         PromptKey.SUMMARIZE -> SUMMARY
         PromptKey.CRITIC -> CRITIC

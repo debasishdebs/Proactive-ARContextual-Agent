@@ -38,6 +38,12 @@ data class ExtractOutput(
  */
 data class PlaceMatchOutput(val choice: String, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
 
+/**
+ * A TIME_ANCHOR result: [kind] is `date`, `range`, `event` or `none`; [from] and [to] are local `yyyy-MM-ddTHH:mm` texts (the caller parses and validates them: an unparsable or
+ * implausible value is no window); [event] and [label] are short texts the caller may not show to the model unchecked.
+ */
+data class TimeAnchorOutput(val kind: String, val from: String, val to: String, val event: String, val label: String, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
+
 /** An INTENT_CLASSIFY result: [label] (unknown names are OTHER) and [confidence] clamped to 0..1. */
 data class IntentOutput(val label: com.rokid.context.core.model.context.IntentLabel, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
 data class SummaryOutput(

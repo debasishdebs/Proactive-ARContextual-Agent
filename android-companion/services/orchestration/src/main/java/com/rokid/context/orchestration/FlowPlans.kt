@@ -14,7 +14,7 @@ fun interface FlowPlans {
 
 /** The sources a plan reads for an Ask (the built-in plan gives exactly the memory store and the photo store; a recent window or nudge history is opt-in). */
 internal fun FlowPlan.askSources(window: com.rokid.context.orchestration.retrieval.TimeWindow? = null): List<RagSource> = listOfNotNull(
-    RagSource.MemoryStore(window = window).takeIf { memories }, RagSource.PhotoStore().takeIf { photos },
+    RagSource.MemoryStore(window = window, order = order, widen = this.window?.widen ?: "DAY_THEN_ALL").takeIf { memories }, RagSource.PhotoStore().takeIf { photos },
     RagSource.RecentWindow(recentWindowMin * 60_000L).takeIf { recent }, RagSource.NudgeHistory(historyWindowMin * 60_000L).takeIf { history },
 )
 

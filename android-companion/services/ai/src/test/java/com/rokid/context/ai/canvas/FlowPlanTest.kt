@@ -25,6 +25,54 @@ class FlowPlanTest {
         assertTrue(DefaultPipelines.all.containsAll(listOf(DefaultPipelines.DEFAULT_QUERY, DefaultPipelines.DEFAULT_NUDGE)))
     }
 
+    @Test fun theDefaultQueryHashIsPinnedAndTheNewNodesAreNotInIt() {
+        // Retrieval quality RQ2: rag.window and rag.order are new types; rag.retrieve and embed.text keep their type@version, so the Default Query bytes do not move.
+        assertEquals("0a73634c06fe5411", sha(PipelineJson.encode(query)))
+        assertTrue(query.nodes.none { it.type == NodeTypes.RAG_WINDOW || it.type == NodeTypes.RAG_ORDER })
+        assertEquals(null, plan(query).window); assertEquals(null, plan(query).order)
+    }
+
+    private fun sha(s: String) = java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
+
+    @Test fun theDatedQueryCompilesWithWindowAndOrderSpecs() {
+        val p = DefaultPipelines.datedQuery()
+        assertEquals(emptyList<String>(), PipelineValidator.validate(p))
+        val c = plan(p)
+        assertEquals(WindowSpec(rules = true, llmFallback = false, widen = "DAY_THEN_ALL"), c.window)
+        val o = c.order!!
+        assertEquals(listOf("stayed up", "awake", "go to bed", "went to bed", "went to sleep"), o.words["night"])
+        assertEquals(listOf("previous", "the time before", "before that"), o.words["previous"])
+        assertEquals(2, o.perDay); assertEquals(31, o.maxDays); assertEquals(8_000, o.maxChars); assertEquals("RELEVANCE", o.defaultOrder)
+        // everything but the two optional steps is the default plan
+        assertEquals(FlowPlan.BUILT_IN_QUERY, c.copy(window = null, order = null))
+        assertTrue(PipelineHash.of(p) != PipelineHash.of(query))
+    }
+
+    @Test fun windowAndOrderParamsAreCheckedAndReachThePlan() {
+        val p = DefaultPipelines.datedQuery()
+        val w = with(p, "window", buildJsonObject { put("rules", false); put("llmFallback", true); put("widen", "DAY") })
+        assertEquals(WindowSpec(false, true, "DAY"), plan(w).window)
+        assertEquals(listOf("node window: widen must be one of NONE, DAY, DAY_THEN_ALL"), PipelineValidator.validate(with(p, "window", buildJsonObject { put("widen", "WEEK") })))
+        val o = with(p, "order", buildJsonObject { put("latestWords", "newest, most recent"); put("countWords", ""); put("perDay", 3); put("relevanceFloor", 0.7) })
+        assertEquals(listOf("newest", "most recent"), plan(o).order!!.words["latest"]); assertEquals(emptyList<String>(), plan(o).order!!.words["count"]!!)
+        assertEquals(3, plan(o).order!!.perDay); assertEquals(0.7, plan(o).order!!.relevanceFloor, 0.0)
+        assertTrue(PipelineValidator.validate(with(p, "order", buildJsonObject { put("perDay", 9) })).isNotEmpty())
+    }
+
+    @Test fun theOptionalNodesMustSitWhereTheSpecPutsThem() {
+        val p = DefaultPipelines.datedQuery()
+        // order before retrieve, or a window after embed: not the chain of a Query
+        val bad = p.copy(edges = listOf(
+            PipelineEdge("utterance", "embed"), PipelineEdge("embed", "window"), PipelineEdge("window", "retrieve"), PipelineEdge("retrieve", "order"), PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver"),
+        ))
+        assertTrue(PipelineValidator.validate(bad).isNotEmpty())
+        // only one of the two is fine, and a Nudge refuses both
+        val onlyOrder = p.copy(nodes = p.nodes.filter { it.id != "window" }, edges = listOf(PipelineEdge("utterance", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "order"), PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver")))
+        assertEquals(emptyList<String>(), PipelineValidator.validate(onlyOrder)); assertEquals(null, plan(onlyOrder).window); assertTrue(plan(onlyOrder).order != null)
+        val nudgeWithOrder = nudge.copy(nodes = nudge.nodes + PipelineNode("order", NodeTypes.RAG_ORDER, "Order", JsonObject(emptyMap())), edges = listOf(PipelineEdge("trigger", "retrieve"), PipelineEdge("retrieve", "order"), PipelineEdge("order", "nudge"), PipelineEdge("nudge", "gates"), PipelineEdge("gates", "deliver")))
+        assertTrue(PipelineValidator.validate(nudgeWithOrder).isNotEmpty())
+    }
+
     @Test fun theHashSurvivesEncodeAndDecode() {
         for (p in listOf(query, nudge)) assertEquals(PipelineHash.of(p), PipelineHash.of(PipelineJson.decode(PipelineJson.encode(p)).getOrThrow()))
     }

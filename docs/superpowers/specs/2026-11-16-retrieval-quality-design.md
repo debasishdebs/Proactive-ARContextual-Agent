@@ -219,3 +219,13 @@ Release gate: on the eval set, `dated-query` beats `default-query` with no new w
 2. Which endpoint should the LLM fallback use: the ANSWER binding (cloud, which already receives the question), or a new role that can be bound on-device? And should it be on by default?
 3. After midnight and before 06:00, should "today" and "tonight" mean the night that is still going on, as proposed in §3?
 4. Event anchors ("when the guest came", "after breakfast") cost a second retrieval pass. Should they be in v1, or deferred, with such questions answered without a window?
+
+## 13. Note on section 8 (flat semantic scores), found by reading code, 2026-11-17
+
+No measurement was run; this is what the code alone says. The M0-M6 plan above stays the way to confirm it.
+
+- **The shift halves the spread, it does not create it.** `MemoryRetriever.retrieveNow` maps a cosine `c` to `(c + 1) / 2`. A raw spread of 0.58-0.64 shows as 0.79-0.82. In `SEMANTIC` mode that shifted value is the score (then times recency), and nothing normalises it. In `HYBRID` the weighted fusion min-max normalises each list, so only SEMANTIC mode shows the flat numbers. The order of hits is the same either way; absolute thresholds on the semantic score are meaningless.
+- **The embedder path matches the Nomic recipe.** `EmbeddingSpec.kt:69` gives `search_document: ` and `search_query: `, and `embedQuery` is the only query entry (`SemanticRetriever.kt`). I found no missing prefix. A transform bug (M3) is not indicated by the code.
+- **The query is the whole question.** The date words and the question words are embedded with the topic ("Where did I see the soccer ball on 12 Nov?"). Nomic cosines are anisotropic (unrelated pairs sit near 0.5), so a few filler words move every score together and the topic words do little. This is the most likely cause of flat scores and of q12/q13/q14 failing: T10 (condense the query) is the first thing to test, then M2 (z-score fusion).
+- **q13 was asked before the index pause (01:22, the pause began 11:35)**, so a coverage effect is unlikely for it; confirm that 12 Nov is embedded (M0) before blaming the query.
+- **What RQ2 did about it:** the `rag.order` relevance floor reads the min-max range of the pool when only the semantic score ran (`OrderRules.relevant`), so a flat score no longer makes every hit "relevant". No retrieval scoring was changed.

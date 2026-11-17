@@ -18,7 +18,9 @@ object DefaultPipelines {
     const val STARTER_WATCH_MOTION = "starter-watch-motion"
     const val DEFAULT_QUERY = "default-query"
     const val DEFAULT_NUDGE = "default-nudge"
-    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER, STARTER_MOMENT_SUMMARY, STARTER_WATCH_MOTION, DEFAULT_QUERY, DEFAULT_NUDGE)
+    /** Retrieval quality (spec section 5): the Query with the time window and ordering nodes on, for A/B against [DEFAULT_QUERY]. A different pipeline; the Default Query is unchanged. */
+    const val DATED_QUERY = "dated-query"
+    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER, STARTER_MOMENT_SUMMARY, STARTER_WATCH_MOTION, DEFAULT_QUERY, DEFAULT_NUDGE, DATED_QUERY)
 
     private val none = JsonObject(emptyMap())
     private val livePrompt = buildJsonObject { putJsonObject("prompt") { put("source", "live") } }
@@ -187,6 +189,27 @@ object DefaultPipelines {
             PipelineNode("deliver", NodeTypes.OUT_DELIVER, "Answer to the caller", buildJsonObject { put("target", "caller") }),
         ),
         edges = listOf(PipelineEdge("utterance", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "answer"), PipelineEdge("answer", "deliver")),
+    )
+
+    /**
+     * The Default Query with the two retrieval-quality nodes: `rag.window` (date words, a day of widening, then all dates; the model fallback stays off) and `rag.order`
+     * (last / previous / first / count words, one hit per day over several days). Clone it to switch the model fallback on or change the keywords.
+     */
+    fun datedQuery(): Pipeline = Pipeline(
+        PipelineJson.SCHEMA_V2, DATED_QUERY, "Dated Query (Ask with time windows)",
+        nodes = listOf(
+            PipelineNode("utterance", NodeTypes.INPUT_UTTERANCE, "Utterance", none),
+            PipelineNode("window", NodeTypes.RAG_WINDOW, "Time window", none),
+            PipelineNode("embed", NodeTypes.EMBED_TEXT, "Embed text", none),
+            PipelineNode("retrieve", NodeTypes.RAG_RETRIEVE, "Memories and photos", buildJsonObject { put("memories", true); put("photos", true) }),
+            PipelineNode("order", NodeTypes.RAG_ORDER, "Order and select", none),
+            PipelineNode("answer", NodeTypes.PROMPT, "Answer", flowPrompt("ANSWER")),
+            PipelineNode("deliver", NodeTypes.OUT_DELIVER, "Answer to the caller", buildJsonObject { put("target", "caller") }),
+        ),
+        edges = listOf(
+            PipelineEdge("utterance", "window"), PipelineEdge("window", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "order"),
+            PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver"),
+        ),
     )
 
     /** Nudge as it is today: after a summarizer pass, the last 6 h of memories and the last 24 h of nudges, the live NUDGE prompt, the gates, shown by the verbosity setting. Compiles to [FlowPlan.BUILT_IN_NUDGE]. */
