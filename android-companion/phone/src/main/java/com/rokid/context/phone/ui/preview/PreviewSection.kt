@@ -76,6 +76,8 @@ data class PreviewHost(
     val cancelEdit: () -> Unit = {},
     /** Opens another item by its [PreviewRef.raw] (a cited memory or photo, "Open this day's photos"). */
     val open: (String) -> Unit = {},
+    /** M5: "Ask again" on the answer on screen (its source was forgotten): runs the stored question through the normal Ask path. Never automatic. */
+    val askAgain: () -> Unit = {},
     /** Rates the answer on screen (true = helpful). */
     val rate: (Boolean) -> Unit = {},
     /** "More photos": the photo search on a question. */
@@ -126,6 +128,13 @@ sealed interface PreviewSection {
     /** The answer's thumbs. [rating] is 1, -1 or null; the choice is shown at once and sent through [PreviewHost.rate]. */
     data class RatingSection(val rating: Int?) : PreviewSection {
         @Composable override fun Content(host: PreviewHost) = RatingContent(this, host)
+    }
+
+    /**
+     * M5 (forgetV2): the answer whose source was forgotten. The question is shown above it; this block says so and offers "Ask again" (gone once [askedAgain]). Nothing runs by itself.
+     */
+    data class ForgottenAnswerSection(val question: String, val askedAgain: Boolean) : PreviewSection {
+        @Composable override fun Content(host: PreviewHost) = ForgottenAnswerContent(this, host)
     }
 
     /** The live action card (proposal, confirm, undo) of the item [originId]. */
@@ -226,6 +235,18 @@ private fun RatingContent(s: PreviewSection.RatingSection, host: PreviewHost) {
         IconButton(onClick = { rating = -1; host.rate(false) }, modifier = Modifier.semantics { selected = rating == -1 }) {
             Icon(if (rating == -1) Icons.Rounded.ThumbDown else Icons.Outlined.ThumbDown, contentDescription = "Not helpful", tint = PcColors.ChipCoral.second)
         }
+    }
+}
+
+@Composable
+private fun ForgottenAnswerContent(s: PreviewSection.ForgottenAnswerSection, host: PreviewHost) {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().testTag("preview_forgotten_answer")) {
+        SectionLabel("Answer")
+        Text(
+            if (s.askedAgain) com.rokid.context.phone.ui.home.ANSWER_ASKED_AGAIN else com.rokid.context.phone.ui.home.ANSWER_FROM_FORGOTTEN,
+            style = MaterialTheme.typography.bodyLarge, color = PcColors.Ink, modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+        )
+        if (!s.askedAgain) com.rokid.context.phone.ui.home.AskAgainButton(s.question, host.askAgain, Modifier.testTag("preview_ask_again"))
     }
 }
 

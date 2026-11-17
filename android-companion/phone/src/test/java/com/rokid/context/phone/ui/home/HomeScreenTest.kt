@@ -44,11 +44,29 @@ class HomeScreenTest {
     private var banner: BannerAction? = null
     private val nudges = mutableListOf<String>()
 
+    private val askedAgain = mutableListOf<String>()
     private fun show(state: HomeUiState) = compose.setContent {
-        PcTheme { HomeScreen(state, onQuestionChange = {}, onAsk = { asked += it }, onOpenAsk = { opened += it }, onTogglePause = { pauses++ }, onBannerAction = { banner = it }, onOpenNudge = { nudges += it }) }
+        PcTheme { HomeScreen(state, onQuestionChange = {}, onAsk = { asked += it }, onOpenAsk = { opened += it }, onTogglePause = { pauses++ }, onBannerAction = { banner = it }, onOpenNudge = { nudges += it }, onAskAgain = { askedAgain += it }) }
     }
 
     private val live = StatusUi("Capturing · next 4:12", live = true, paused = false, batteryPct = 82, banner = null)
+
+    /** M5 (forgetV2): the feed card of an answer whose source was forgotten: the question stays, the answer text is gone, "Ask again" is the user's own tap. */
+    @Test fun aForgottenSourceAnswerShowsTheStateAndAskAgain() {
+        show(HomeUiState(status = live, feed = listOf(FeedItem.Ask("a7", 1, "08:15", "Where are my keys?", "Removed \u2014 a source was forgotten", redacted = true, forgotten = true))))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("You asked \u201cWhere are my keys?\u201d"))
+        compose.onNodeWithText("You asked \u201cWhere are my keys?\u201d").assertIsDisplayed()
+        compose.onNodeWithText("Answered from a forgotten fact").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Ask again: Where are my keys?").performClick()
+        assertEquals(listOf("a7"), askedAgain); assertEquals("nothing was asked by itself", emptyList<String>(), asked)
+    }
+
+    @Test fun anAnswerAskedAgainHasNoButton() {
+        show(HomeUiState(status = live, feed = listOf(FeedItem.Ask("a8", 1, "08:15", "Where are my keys?", "x", redacted = true, forgotten = true, askedAgain = true))))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Answered from a forgotten fact", substring = true))
+        compose.onNodeWithText("Answered from a forgotten fact \u2014 asked again").assertIsDisplayed()
+        compose.onNodeWithTag("ask_again_a8").assertDoesNotExist()
+    }
 
     @Test fun homeShowsPhotosTodayCount() {
         show(HomeUiState(status = live, photosToday = 3))

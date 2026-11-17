@@ -8,12 +8,15 @@ import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.memory.forget.AskSourceStates
 import com.rokid.context.memory.forget.ForgetTarget
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 import com.rokid.context.orchestration.AskSources
 import com.rokid.context.phone.ui.list.ListItem
 import com.rokid.context.phone.ui.memory.MemoryDetailModel
+import com.rokid.context.phone.ui.home.ANSWER_FROM_FORGOTTEN
 import com.rokid.context.phone.ui.home.REDACTED_NUDGE
+import com.rokid.context.phone.ui.preview.PreviewSection.ForgottenAnswerSection
 import com.rokid.context.phone.ui.preview.PreviewSection.AudioSection
 import com.rokid.context.phone.ui.preview.PreviewSection.ProposalSection
 import com.rokid.context.phone.ui.preview.PreviewSection.RatingSection
@@ -48,10 +51,12 @@ class Cited(private val ids: List<String>, private val memories: Map<String, Mem
 /** An answer: the question, the answer with its rating, the action card, and what it was based on (each source opens its own previewer). A redacted answer shows its words only. Nothing here forgets. */
 class AnswerPreview(private val a: AskEntity, private val cited: Cited, private val ctx: PreviewCtx) : Previewable {
     override val id get() = a.id
-    override fun summary() = ListItem(a.id, a.question, subtitle = ctx.at(a.ts), icon = Icons.Outlined.ChatBubbleOutline)
+    private val forgotten = AskSourceStates.isForgotten(a)
+    /** The Activity list line: an answer whose source was forgotten says so in its subtitle (the question stays, the answer is gone). */
+    override fun summary() = ListItem(a.id, a.question, subtitle = if (forgotten) "${ctx.at(a.ts)} · $ANSWER_FROM_FORGOTTEN" else ctx.at(a.ts), icon = Icons.Outlined.ChatBubbleOutline)
     override fun sections() = listOfNotNull(
         TextSection("You asked · ${ctx.full(a.ts)}", a.question),
-        TextSection("Answer", a.answer),
+        if (forgotten) ForgottenAnswerSection(a.question, AskSourceStates.isReasked(a)) else TextSection("Answer", a.answer),
         RatingSection(a.rating).takeIf { !a.redacted },
         ProposalSection(a.id),
         SourcesSection("Based on", cited.items, cited.missing, moreQuery = a.question).takeIf { !a.redacted },

@@ -4,6 +4,7 @@ import android.content.Context
 import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.AskActions
+import com.rokid.context.orchestration.AskOutcome
 import com.rokid.context.orchestration.PrefsIndexClock
 import com.rokid.context.phone.ui.banner.IndexState
 import com.rokid.context.phone.ui.home.AskService
@@ -43,6 +44,8 @@ class PhoneDeps(
     val onboarding: OnboardingStore,
     val askService: AskService,
     val rateAsk: suspend (String, Boolean) -> Boolean,
+    /** M5: "Ask again" on an answer whose source was forgotten: its stored question through the normal typed Ask (a new answer row; the old one is marked asked again). Never automatic. */
+    val askAgain: suspend (String) -> AskOutcome = { AskOutcome.Failed("Couldn't answer that \u2014 try again") },
     val diagnostics: DiagnosticsActions,
     val queues: QueueActions,
     val settings: SettingsDeps,
@@ -94,6 +97,7 @@ class PhoneDeps(
                 // Typed asks are mirrored to the HUD (spec §2.4) without being spoken, when the answer's DeliveryRoute puts it on the glasses.
                 askService = AskService { q -> AskActions.ask(app, q).also { r -> com.rokid.context.phone.voice.mirrorTypedAnswer(r) { voice.mirrorTyped(it) } } },
                 rateAsk = { id, up -> AskActions.rate(app, id, up) },
+                askAgain = { id -> com.rokid.context.orchestration.forget.ReanswerWorker.reask(app, id) { q -> AskActions.ask(app, q).also { r -> com.rokid.context.phone.voice.mirrorTypedAnswer(r) { voice.mirrorTyped(it) } } } },
                 diagnostics = SchedulerDiagnosticsActions(scheduler),
                 queues = LegacyQueueActions(app, scheduler),
                 settings = SettingsDeps.create(app),

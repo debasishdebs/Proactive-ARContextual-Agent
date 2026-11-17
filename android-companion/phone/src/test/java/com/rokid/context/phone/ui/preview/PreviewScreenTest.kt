@@ -347,6 +347,29 @@ class PreviewScreenTest {
         compose.onAllNodesWithText("Typed note").assertCountEquals(0)
     }
 
+    /** M5 (forgetV2): an answer whose source was forgotten keeps its question, says so, offers Ask again (its own tap, never automatic) and shows no rating, sources or answer text. */
+    private fun forgottenAnswer(id: String, states: String) = FakeActivityData(asks = listOf(Fixtures.ask(id, t, question = "Where are my keys?", answer = "Removed \u2014 a source was forgotten", redacted = true, sourceStates = states)))
+        .let { d -> runBlocking { AnswerPreview.load(listOf(id), PreviewCtx(d, Fixtures.ZONE, TODAY, withDay = true)).single() } }
+
+    @Test fun aForgottenSourceAnswerKeepsItsQuestionAndOffersAskAgain() {
+        var again = 0
+        val item = forgottenAnswer("a3", com.rokid.context.memory.forget.AskSourceStates.forgotten())
+        assertEquals("the Activity list line says so", true, item.summary().subtitle!!.endsWith("Answered from a forgotten fact"))
+        show(item) { it.copy(askAgain = { again++ }) }
+        compose.onAllNodesWithText("Where are my keys?").assertCountEquals(1)
+        compose.onNodeWithText("Answered from a forgotten fact").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Ask again: Where are my keys?").performScrollTo().performClick()
+        assertEquals(1, again)
+        compose.onNodeWithContentDescription("Helpful").assertDoesNotExist(); compose.onNodeWithTag("more_photos").assertDoesNotExist()
+        compose.onAllNodesWithText("Removed \u2014 a source was forgotten").assertCountEquals(0)
+    }
+
+    @Test fun anAnswerAskedAgainShowsNoSecondButton() {
+        show(forgottenAnswer("a4", com.rokid.context.memory.forget.AskSourceStates.reasked("a9")))
+        compose.onNodeWithText("Answered from a forgotten fact \u2014 asked again").assertIsDisplayed()
+        compose.onNodeWithTag("preview_ask_again").assertDoesNotExist()
+    }
+
     // Nudge ------------------------------------------------------------------------------------------------------------------------------------------------------
 
     @Test fun aNudgeShowsTextWhyLiveSourcesOnlyAndTheActionCard() {

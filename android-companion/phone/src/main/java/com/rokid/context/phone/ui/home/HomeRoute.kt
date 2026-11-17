@@ -27,7 +27,7 @@ import com.rokid.context.phone.ui.preview.previewMoment
 /** Home's wiring (moved from Destinations.kt in Phase 7 Stream 0; Stream C owns it from here). Phase 7 C4: a nudge card opens its detail. */
 @Composable
 fun HomeRoute(deps: PhoneDeps, nav: NavController, onBanner: (BannerAction, (BannerAction) -> Unit) -> Unit) {
-    val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice, batterySaver = deps.batterySaver, limitedMode = deps.limitedMode, utterance = deps.utterance) }
+    val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice, batterySaver = deps.batterySaver, limitedMode = deps.limitedMode, utterance = deps.utterance, askAgainOf = deps.askAgain) }
     androidx.lifecycle.compose.LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.onResume() }
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current.findActivity()
@@ -47,6 +47,7 @@ fun HomeRoute(deps: PhoneDeps, nav: NavController, onBanner: (BannerAction, (Ban
             runCatching { activity?.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", activity.packageName, null))) }
         },
         onLeave = vm::onLeave,
+        onAskAgain = vm::askAgain,
         onOpenNudge = { nav.navigate(previewMoment(listOf(PreviewRef.of(RefKind.NUDGE, it))).route) },
         onDismissLimited = vm::dismissLimited,
     )

@@ -44,6 +44,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,6 +65,17 @@ import com.rokid.context.phone.ui.actions.ProposalCard
 /** A nudge whose source was forgotten (Forget redacts the row; its text is never shown). */
 const val REDACTED_NUDGE = "Removed \u2014 a source was forgotten"
 
+/** M5: an answer whose source was forgotten (the question is kept, the answer is erased). Shown with a button, never re-answered by itself. */
+const val ANSWER_FROM_FORGOTTEN = "Answered from a forgotten fact"
+const val ANSWER_ASKED_AGAIN = "Answered from a forgotten fact \u2014 asked again"
+const val ASK_AGAIN = "Ask again"
+
+/** The Ask again button: its own accessibility label names the question, so a screen reader does not hear "Ask again" six times with no context. */
+@Composable
+fun AskAgainButton(question: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    androidx.compose.material3.TextButton(onClick = onClick, modifier = modifier.semantics { contentDescription = "$ASK_AGAIN: $question" }) { Text(ASK_AGAIN) }
+}
+
 /** Home, Ask-first (spec §2.4, mock phone-home.html option B). Stateless. */
 @Composable
 fun HomeScreen(
@@ -81,6 +94,8 @@ fun HomeScreen(
      * the task to the background (Android 12+), so the composition is not disposed and the ViewModel is not cleared.
      */
     onLeave: () -> Unit = {},
+    /** M5: "Ask again" on an answer whose source was forgotten. */
+    onAskAgain: (String) -> Unit = {},
     /** A nudge card opens its detail (`nudge/{id}`); a redacted one is not tappable. */
     onOpenNudge: (String) -> Unit = {},
     /** G3: closes the limited-mode banner ("Review" opens the app's system settings, where its permissions are). */
@@ -137,7 +152,8 @@ fun HomeScreen(
             when (item) {
                 is FeedItem.Ask -> FeedCard(
                     icon = Icons.Outlined.ChatBubbleOutline, colors = PcColors.ChipSky, meta = item.timeLabel,
-                    title = "You asked “${item.question}”", body = item.answer, onClick = { onOpenAsk(item.id) },
+                    title = "You asked “${item.question}”", body = if (item.forgotten) (if (item.askedAgain) ANSWER_ASKED_AGAIN else ANSWER_FROM_FORGOTTEN) else item.answer, onClick = { onOpenAsk(item.id) },
+                    footer = if (item.forgotten && !item.askedAgain) ({ AskAgainButton(item.question, { onAskAgain(item.id) }, Modifier.testTag("ask_again_${item.id}")) }) else null,
                 )
                 is FeedItem.Nudge -> FeedCard(
                     icon = Icons.Outlined.Lightbulb, colors = PcColors.ChipAmber, meta = "Heads up · ${item.timeLabel}",
