@@ -261,7 +261,7 @@ object HubGraph {
             motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,
             applyToCapture = { com.rokid.context.phone.context.ContextSourceSettings.of(app).applyToCapture },
             phoneInstall = install, onPlanAck = { ack -> sender.onAck(ack); com.rokid.context.phone.canvas.PlanGraph.feedAck(ack) }, onTraceChunk = traceIntake::onChunk,
-            onMark = { m, a -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onMark(m, a) },
+            onMark = { m, a -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onMark(m, a).also { handled -> if (handled && m.undo == null) com.rokid.context.phone.nexus.NexusGraph.onMarkSaved("mk:" + m.epoch + ":" + m.seq) } },
             onMarkPhoto = { r -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onPhotoResult(r) },
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
@@ -271,7 +271,11 @@ object HubGraph {
             zoneEnforce = { com.rokid.context.phone.zone.ZoneGraph.get(app).enforcing },
             // Every hub start and recovery judges the zones again from "nothing known" (not only the graph's construction): see ZoneController.start.
             zoneStart = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.beginRestart(); scope.launch { z.start() } } },
+            // v2.0 (Rokid Nexus, opt-in, default PCA): who draws the cards, and the stop hook that withdraws them from Nexus.
+            hudHost = { com.rokid.context.phone.nexus.NexusHostStore.of(app).current() },
+            onStopped = com.rokid.context.phone.nexus.NexusGraph::onHubStopped,
         ).also { hubRef.set(it) }.also { hub ->
+            com.rokid.context.phone.nexus.NexusGraph.attach(app, scope, hub) // binds to nothing until the user picks Nexus as the HUD host
             // Pause zones: the zones are judged at every hub start (Hub.start -> zoneStart); here also ask for fixes only while zones exist, under the hub's own foreground location type.
             com.rokid.context.phone.zone.ZoneGraph.get(app).let { zones ->
                 scope.launch { zones.start() } // and at the graph's construction too (the map UI and "Capture now" can run before the hub does)

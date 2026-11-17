@@ -338,7 +338,7 @@ internal object ConfigFamily : ForgetFamily {
     override val tables = listOf(
         "endpoint", "role_binding", "prompt", "prompt_version", "pause_record", "pause_interval", "shopping_item", "note", "canvas_pipeline", "canvas_pipeline_version", "canvas_publish",
     )
-    override val prefs = listOf("pause_zones", "pause_zone_state")
+    override val prefs = listOf("pause_zones", "pause_zone_state", "nexus_host")
 }
 
 /** Fences, counters and the cleanup outbox: control data a deletion CREATES, no user content. */

@@ -289,7 +289,15 @@ data class HudSettings(
      * push, so it ends with the first push that omits it. Absent (an old phone) = false. Old glasses ignore it.
      */
     val zoneEnforce: Boolean = false,
+    /**
+     * v2.0 (Rokid Nexus), additive: who draws the HUD popups and cards. Absent on the wire (an old phone) = [HudHost.PCA]; an unknown value decodes to PCA too (coerceInputValues).
+     * The phone sends NEXUS only when the user chose it (default PCA). A glasses build that knows it draws no popups or cards while it is NEXUS (the phone hands them to Nexus instead); an old glasses build ignores it. PROTOCOL_VERSION stays 1.
+     */
+    val hudHost: HudHost = HudHost.PCA,
 )
+
+/** Who draws the HUD popups and cards: PCA's own glasses app (default) or the Rokid Nexus bridge (opt-in, one host at a time). */
+@Serializable enum class HudHost { PCA, NEXUS }
 
 /** The recording rates the phone offers (Hz); the sensors run at 50 Hz and more in the classifier's FULL mode, so these are inside their real capability. */
 val SENSOR_REC_PRESETS_HZ: List<Int> = listOf(5, 10, 25)

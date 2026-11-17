@@ -110,6 +110,8 @@ class HubTest {
         placeCards: kotlinx.coroutines.flow.StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
         placeClear: () -> Unit = {},
         zoneApproach: () -> Boolean = { false },
+        hudHost: () -> com.rokid.context.core.model.HudHost = { com.rokid.context.core.model.HudHost.PCA },
+        onStopped: () -> Unit = {},
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -121,7 +123,7 @@ class HubTest {
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
             reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
-            placeCards = placeCards, placeClear = placeClear, zoneApproach = zoneApproach,
+            placeCards = placeCards, placeClear = placeClear, zoneApproach = zoneApproach, hudHost = hudHost, onStopped = onStopped,
         )
             .also { if (start) { it.start(userInitiated = true); runCurrent() } }
     }
@@ -1217,6 +1219,42 @@ class HubTest {
         link.emitReady(); runCurrent()
         link.emit(GlassesEvent.Cmd(com.rokid.context.core.model.Command.ListenStart)); runCurrent()
         assertEquals(listOf(now), starts)
+    }
+
+    // ---- v2.0 T7: HUD host ----
+
+    @Test fun theHudHostDefaultsToPcaOnTheWire() = runTest {
+        val link = FakeGlassesLink()
+        hub(link); link.emitReady(); runCurrent()
+        assertEquals(com.rokid.context.core.model.HudHost.PCA, (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.hudHost)
+    }
+
+    @Test fun theChosenHostIsReadAtEveryPushAndASwitchPushesAtOnce() = runTest {
+        val link = FakeGlassesLink(); var host = com.rokid.context.core.model.HudHost.PCA
+        val h = hub(link, hudHost = { host })
+        link.emitReady(); runCurrent()
+        host = com.rokid.context.core.model.HudHost.NEXUS
+        h.updateSettings { it }; runCurrent()
+        assertEquals(com.rokid.context.core.model.HudHost.NEXUS, (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.hudHost)
+        assertEquals(1, com.rokid.context.core.model.PROTOCOL_VERSION)
+    }
+
+    @Test fun theStopHookRunsWhenTheHubStops() = runTest {
+        val link = FakeGlassesLink(); var stopped = 0
+        val h = hub(link, onStopped = { stopped++ })
+        h.stop()
+        assertEquals(1, stopped)
+    }
+
+    @Test fun aHostOfNexusDropsAnswerAndNudgeOverlaysButKeepsPcasOwnInputOverlays() {
+        val nexus = com.rokid.context.core.model.HudHost.NEXUS; val pca = com.rokid.context.core.model.HudHost.PCA
+        val answer = com.rokid.context.core.model.Overlay.Answer("q", "a", speaking = false, askId = "a1")
+        val nudge = com.rokid.context.core.model.Overlay.Nudge("heads up")
+        val listening = com.rokid.context.core.model.Overlay.Listening("hel")
+        val toast = com.rokid.context.core.model.Overlay.Toast("undo", undoProposalId = "p1")
+        assertEquals(null, Hub.forHost(answer, nexus)); assertEquals(null, Hub.forHost(nudge, nexus))
+        assertEquals(listening, Hub.forHost(listening, nexus)); assertEquals(toast, Hub.forHost(toast, nexus)); assertEquals(null, Hub.forHost(null, nexus))
+        assertEquals(answer, Hub.forHost(answer, pca)); assertEquals(nudge, Hub.forHost(nudge, pca))
     }
 
     @Test fun newPhoneSendsPlanAwareTrue() = runTest {

@@ -41,6 +41,7 @@ object ZoneGraph {
             onState = { active, judged ->
                 com.rokid.context.orchestration.AskZoneFence.protect(active, judged)
                 if (active) com.rokid.context.phone.voice.VoiceGraph.onZoneStarted() // withdraw an answer already on the glasses/phone card, stop its speech
+                if (active) com.rokid.context.phone.nexus.NexusGraph.trip(io.github.pca.nexusport.TripReason.ZONE_HOLD) // v2.0: withdraw everything Rokid Nexus shows (no-op unless Nexus is the HUD host)
             },
         )
     }
