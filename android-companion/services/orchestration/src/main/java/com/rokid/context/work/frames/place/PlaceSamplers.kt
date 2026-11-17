@@ -68,7 +68,7 @@ object PlaceSamplers {
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
             candidates = { lat, lon, up -> withContext(Dispatchers.IO) { PlaceGraph.readyPack(app).candidates(lat, lon, up) } },
             match = { id, lines -> matchCall(app, id, lines, zoneBlocked, currentZoneTicket()) },
-            saveMemory = { PlaceMemory.save(app, it, pending = true) }, reveal = { id, gen -> PlaceMemory.reveal(app, id, gen) }, onRollbackFailed = { PlaceRecovery.ensure(app) }, onCard = onCard, clock = System::currentTimeMillis,
+            saveMemory = { PlaceMemory.save(app, it, pending = true) }, reveal = { id, gen -> PlaceMemory.reveal(app, id, gen).also { if (it) com.rokid.context.orchestration.proactive.ProactiveTrigger.onPlaceArrival(app) } }, onRollbackFailed = { PlaceRecovery.ensure(app) }, onCard = onCard, clock = System::currentTimeMillis,
             elapsed = android.os.SystemClock::elapsedRealtime, cards = PlaceGraph.port, deleteMemory = { PlaceMemory.delete(app, it) },
             enabled = { PlaceGuideSettings.of(app).enabled }, zoneBlocked = zoneBlocked, networkUp = keyframes::networkUp,
             admit = keyframes::admitBackgroundCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },

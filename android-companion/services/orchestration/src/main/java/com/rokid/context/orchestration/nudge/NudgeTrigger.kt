@@ -41,6 +41,7 @@ object NudgeTrigger {
     fun onEvent(context: Context, trigger: String) {
         val app = context.applicationContext
         scope.launch {
+            if (trigger == NodeTypes.TRIGGER_MOMENT || trigger == NodeTypes.TRIGGER_SCENE) com.rokid.context.orchestration.proactive.ProactiveTrigger.onMomentEnd(app) // v3.0 shadow loop: no-op while its switch is off
             try { fire(app, trigger) } catch (e: Exception) { PcLog.i("NudgeTrigger", "trigger not scheduled: ${SafeLog.describe(e)}") }
         }
     }
