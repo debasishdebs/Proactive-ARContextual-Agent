@@ -34,6 +34,9 @@ class ZoneFence(
     val held: Boolean get() = synchronized(lock) { heldValue }
     fun epoch(): Long = synchronized(lock) { epochValue }
 
+    /** True while the fence is held or its second opinion says blocked: nothing derived from a photo may leave or be kept for an attempt that asks now (the provenance gate's zone check). */
+    fun blocked(): Boolean = synchronized(lock) { heldValue || extraBlocked() }
+
     /** True while an attempt begun at [epoch] may still act. */
     fun open(epoch: Long): Boolean = synchronized(lock) { openLocked(epoch) }
 

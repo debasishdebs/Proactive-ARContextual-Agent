@@ -154,7 +154,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
                 if (now != sources.map { it.id }.toSet() || dao.memories(listOf(old.id)).isEmpty()) return@commit false
                 // codex r17: the rebuilt summary inherits every photo its sources cite or carry (the shared rule), fenced here with the write
                 val inherited = com.rokid.context.orchestration.ExtractSave.inheritedFrames(db, sources.map { it.id })
-                if (inherited.toList().chunked(CHUNK).any { dao.tombstoned(it).isNotEmpty() }) return@commit false
+                if (com.rokid.context.provenance.ProvenanceGate(db).check(com.rokid.context.model.PayloadSources.frames(inherited), generation) != com.rokid.context.provenance.ProvenanceGate.Verdict.Live) return@commit false
                 val tags = out.entities.map { it.replace(TextHygiene.SEPARATORS, " ").trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.take(5).joinToString(" ")
                 val confidence = minOf(out.confidence, sources.maxOf { it.confidence }).coerceIn(0.0, 1.0)
                 db.memoryDao().insert(

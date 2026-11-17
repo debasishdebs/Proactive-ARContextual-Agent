@@ -284,10 +284,11 @@ class AnswerService(
             lease.extend(com.rokid.context.memory.forget.lifecycle.Leases.refsOf(out.sources))
             // M3: the ask commits THROUGH its read lease: revoked by a Forget (or Delete all) while the model answered, nothing is written. checkLive = false keeps the redacted-row rule below as it was.
             val saved = (lease.commit(memory.db, checkLive = false) {
-                if (MemoryWipe.generation.get() != generation) return@commit false
                 // Phase 7 Forget fence (Stream F fix round 1 I1): a memory in the prompt or cited was forgotten while the
-                // model answered, so the reply may hold forgotten text: store it redacted, with no sources and no proposal.
-                redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + r.fenceIds + out.sources)
+                // model answered, so the reply may hold forgotten text: store it redacted, with no sources and no proposal. One gate: a wipe writes nothing, a forgotten source redacts.
+                val verdict = com.rokid.context.provenance.ProvenanceGate.forGraph(memory).check(r.ids + r.fenceIds + out.sources, generation)
+                if (verdict == com.rokid.context.provenance.ProvenanceGate.Verdict.Denied(com.rokid.context.provenance.ProvenanceGate.Reason.WIPED)) return@commit false
+                redacted = verdict != com.rokid.context.provenance.ProvenanceGate.Verdict.Live
                 memory.asks.add(
                     if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
                     else AskEntity(id, nowMs, q, text, AskSources.encodeWithDeps(out.sources, r.fenceIds + r.ids) /* codex r15: every input, cited or not, is a dependency */, null, source, false),
@@ -348,7 +349,7 @@ class AnswerService(
         val memories = r.memories.associateBy { it.id }
         // The fence ran at the commit; a Forget can land between it and here, so the moment is checked again (only a time could leak, but none does).
         suspend fun live(frameId: String, memoryId: String? = null) =
-            com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, setOfNotNull(PHOTO_CITE_PREFIX + frameId, memoryId))
+            com.rokid.context.provenance.ProvenanceGate.forGraph(memory).allLive(setOfNotNull(PHOTO_CITE_PREFIX + frameId, memoryId))
         for (id in cited) {
             val cite = cites[id]
             if (cite != null) { if (cite.stored && cite.ts != null && live(cite.frameId)) return cite.frameId to cite.ts; continue }

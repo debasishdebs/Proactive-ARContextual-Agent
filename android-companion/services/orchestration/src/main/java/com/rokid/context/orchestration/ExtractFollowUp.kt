@@ -85,7 +85,7 @@ object ExtractFollowUp {
      * does not wake the nudge engine either (the night BACKFILL path keeps today's behaviour: true).
      */
     suspend fun afterSave(context: Context, generation: Long, saved: List<SavedMemory>, trusted: Boolean, confidence: Double, personaSnapshot: String, nudge: Boolean = true, reprocessNudge: Boolean = true): Result {
-        if (saved.isEmpty() || MemoryWipe.generation.get() != generation) return Result.SKIPPED
+        if (saved.isEmpty() || com.rokid.context.provenance.ProvenanceGate.forApp(context).check(com.rokid.context.model.PayloadSources.NONE, generation) != com.rokid.context.provenance.ProvenanceGate.Verdict.Live) return Result.SKIPPED
         EmbeddingWorker.enqueue(context)
         if (trusted) {
             if (nudge) NudgeTrigger.afterSummarizerPass(context) // never after a night / backfill save: its memories are about old photos
