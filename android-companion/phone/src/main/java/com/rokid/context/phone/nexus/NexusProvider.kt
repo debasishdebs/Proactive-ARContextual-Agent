@@ -20,6 +20,8 @@ import io.github.pca.nexusport.PackageSignerSource
 import io.github.pca.nexusport.PcaSignerTrust
 import io.github.pca.nexusport.SignerSource
 import io.github.pca.nexusport.Slot
+import io.github.pca.nexusport.WipeLedger
+import io.github.pca.nexusport.MemoryWipeLedger
 import io.github.pca.nexusport.TripReason
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -48,18 +50,22 @@ interface BridgeLink {
     fun trusted(): Boolean = true
 }
 
-/** The history wipe PCA owes the Nexus hub, kept until the hub acknowledges it (persisted by [NexusHostStore]; in memory in tests). */
-interface WipeDebt {
-    fun wipeOwed(): Boolean
-    fun owe()
-    fun settle()
+/**
+ * The history wipe PCA owes the Nexus hub, kept until the hub acknowledges it (persisted by [NexusHostStore]; in memory in tests). A GENERATION counter (Codex v2 r2 P1-3) correlates acknowledgements: each new debt bumps it, a
+ * wipe request carries the generation it covers and [settle] clears the debt only up to that generation.
+ */
+interface WipeDebt : WipeLedger {
+    fun wipeOwed(): Boolean = owed()
+    /** The debt is paid up to the newest generation (tests and callers that know nothing newer was incurred). */
+    fun settle() = settle(Long.MAX_VALUE)
+    /**
+     * Provider start (Codex v2 r2 P1-4): when the host is PCA and a notice may have been shown to Nexus since the last acknowledged wipe (a persisted marker written BEFORE the first notice of a generation is sent), a wipe
+     * is owed, whatever the process died before recording.
+     */
+    fun reconcile(hostIsPca: Boolean) = Unit
 }
 
-class MemoryWipeDebt(private var owed: Boolean = false) : WipeDebt {
-    override fun wipeOwed() = owed
-    override fun owe() { owed = true }
-    override fun settle() { owed = false }
-}
+class MemoryWipeDebt(owed: Boolean = false) : MemoryWipeLedger(owed), WipeDebt
 
 /** The real link: an explicit bind to the bridge's service (signature permission BIND_NEXUS_PORT; an unrelated key makes Android refuse it). Never starts anything else. */
 class ServiceBridgeLink(
@@ -127,6 +133,8 @@ class NexusProvider(
     private val debt: WipeDebt = MemoryWipeDebt(),
     private val retryBaseMs: Long = 30_000L,
     private val retryMaxMs: Long = 900_000L,
+    /** Tests only: the sink runs its transport calls on the caller's thread (no dispatcher thread, no timeout). */
+    private val directDispatch: Boolean = false,
 ) : HudShow {
     private val lock = Any()
     @Volatile private var sink: NexusHudSink? = null
@@ -153,10 +161,11 @@ class NexusProvider(
     /** Brings the connection in line with the host choice and the wipe debt. Idempotent; call it after a switch, at start and when the app comes to the front. */
     fun refresh() {
         synchronized(lock) {
+            try { debt.reconcile(host() != HudHost.NEXUS) } catch (_: Exception) { log("nexus wipe record failed") }
             if (host() == HudHost.NEXUS) {
                 stopping = false
                 watchJob?.cancel(); watchJob = null
-                if (!wanted) bindLocked()
+                if (!wanted) { bindLocked(); if (!wanted && debt.wipeOwed()) scheduleRetryLocked() }
             } else if (wanted && !stopping) {
                 debt.owe()   // switching Nexus off is a MODE_OFF: the hub's history must be wiped, connected or not
                 val s = sink
@@ -173,7 +182,7 @@ class NexusProvider(
                 stopping = true
                 stoppingSince = clock()
                 bindLocked()
-                if (wanted) { startWatchLocked(); log("nexus wipe retry bound") } else stopping = false
+                if (wanted) { startWatchLocked(); log("nexus wipe retry bound") } else { stopping = false; scheduleRetryLocked() }     // a failed bind must not end the automatic retries
             }
         }
     }
@@ -200,7 +209,7 @@ class NexusProvider(
             // Re-verified on EVERY connection (a reconnect after the package was replaced is a new process): nothing is handed to the binder before this passes.
             if (!safeTrusted()) { untrustedLocked(); return }
             sink = try {
-                NexusHudSink.connect(binder, gates, ::config, actions, log, asks = asks, skills = skills, wipeOwed = debt.wipeOwed(), onForgetAcked = ::onWipeAcked)
+                NexusHudSink.connect(binder, gates, ::config, actions, log, asks = asks, skills = skills, ledger = debt, onForgetAcked = ::onWipeAcked, direct = directDispatch)
             } catch (_: Exception) { log("nexus connect failed"); null }
             _bound.value = sink != null
             if (sink != null) startTick()
@@ -210,6 +219,7 @@ class NexusProvider(
     /** Lock held. The package behind the bridge's name is not (or no longer) signed like PCA: let go of it, say so, keep nothing connected. */
     private fun untrustedLocked() {
         try { link.unbind() } catch (_: Exception) { }
+        closeSinkLocked()
         sink = null; tickJob?.cancel(); tickJob = null; watchJob?.cancel(); watchJob = null
         wanted = false; stopping = false; _bound.value = false
         _bind.value = BridgeLink.Bind.UNTRUSTED
@@ -226,11 +236,13 @@ class NexusProvider(
         }
     }
 
-    /** The hub accepted the history wipe: the debt is paid unless a newer one was incurred meanwhile. */
+    /** Lock held. Stops the sink's dispatcher thread (what it still had queued is discarded unsent). */
+    private fun closeSinkLocked() { try { sink?.close() } catch (_: Exception) { } }
+
+    /** The hub accepted a history wipe. The sink already settled the ledger up to the generation of that request (a late acknowledgement of an older wipe leaves a newer debt standing); here only the retry follows. */
     private fun onWipeAcked() {
         synchronized(lock) {
-            if (sink?.forgetOwed() == true) return
-            debt.settle()
+            if (debt.wipeOwed()) return
             retryDelay = retryBaseMs
             retryJob?.cancel(); retryJob = null
         }
@@ -251,7 +263,7 @@ class NexusProvider(
 
     private fun onGone() {
         // The wipe debt is stored, not held by the sink: a lost connection owes nothing new and forgets nothing.
-        synchronized(lock) { sink = null; _bound.value = false; tickJob?.cancel(); tickJob = null }
+        synchronized(lock) { closeSinkLocked(); sink = null; _bound.value = false; tickJob?.cancel(); tickJob = null }
         log("nexus bridge gone")
     }
 
@@ -281,7 +293,7 @@ class NexusProvider(
         if (!stopping) return false
         val owed = debt.wipeOwed()
         if (owed && clock() - stoppingSince < teardownMaxMs) return false
-        link.unbind(); sink = null; wanted = false; stopping = false; _bound.value = false; tickJob?.cancel(); tickJob = null; watchJob = null
+        link.unbind(); closeSinkLocked(); sink = null; wanted = false; stopping = false; _bound.value = false; tickJob?.cancel(); tickJob = null; watchJob = null
         log("nexus unbound")
         if (owed) scheduleRetryLocked()   // NOT dropped: the debt is stored and the next attempt comes with a longer wait
         true

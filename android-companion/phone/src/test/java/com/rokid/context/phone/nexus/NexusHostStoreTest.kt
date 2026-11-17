@@ -54,8 +54,65 @@ class NexusHostStoreTest {
         val s = NexusHostStore(prefs)
         assertFalse(s.wipeOwed()); assertTrue(prefs.all.isEmpty())
         s.owe(); assertTrue(s.wipeOwed()); assertTrue(NexusHostStore(prefs).wipeOwed())
-        s.settle(); assertFalse(NexusHostStore(prefs).wipeOwed()); assertTrue(prefs.all.isEmpty())
+        s.settle(); assertFalse(NexusHostStore(prefs).wipeOwed()); assertEquals(setOf("wipe_gen"), prefs.all.keys)
         prefs.edit().putString("wipe_owed", "x").commit()
         assertTrue("an unreadable flag counts as owed", NexusHostStore(prefs).wipeOwed())
+    }
+
+    // ---- Codex v2 r2 P1-3: generations ----
+
+    @Test fun aLateAcknowledgementOfAnOlderGenerationNeverClearsANewerDebt() {
+        val s = NexusHostStore(prefs)
+        val a = s.owe()                      // wipe A requested
+        val b = s.owe()                      // notice B, Forget B: a newer debt
+        assertTrue(b > a)
+        s.settle(a)                          // the delayed acknowledgement of A
+        assertTrue(s.wipeOwed()); assertTrue("also after a restart", NexusHostStore(prefs).wipeOwed())
+        s.settle(b)
+        assertFalse(NexusHostStore(prefs).wipeOwed())
+        assertEquals("the generation never goes back", b, NexusHostStore(prefs).generation())
+    }
+
+    // ---- Codex v2 r2 P1-4: the host switch and the debt are one commit ----
+
+    @Test fun leavingNexusWritesTheHostAndTheOwedWipeInOneCommit() {
+        val s = NexusHostStore(prefs)
+        assertTrue(s.set(HudHost.NEXUS)); assertFalse("choosing Nexus owes nothing", s.wipeOwed())
+        var commits = 0
+        val counting = object : android.content.SharedPreferences by prefs {
+            override fun edit(): android.content.SharedPreferences.Editor {
+                val e = prefs.edit()
+                return object : android.content.SharedPreferences.Editor by e {
+                    override fun putString(k: String?, v: String?) = apply { e.putString(k, v) }
+                    override fun putBoolean(k: String?, v: Boolean) = apply { e.putBoolean(k, v) }
+                    override fun putLong(k: String?, v: Long) = apply { e.putLong(k, v) }
+                    override fun remove(k: String?) = apply { e.remove(k) }
+                    override fun commit(): Boolean { commits++; return e.commit() }
+                }
+            }
+        }
+        val s2 = NexusHostStore(counting)
+        assertTrue(s2.set(HudHost.PCA))
+        assertEquals("one commit carries host and debt", 1, commits)
+        val after = NexusHostStore(prefs)                       // a process that died right after the commit
+        assertEquals(HudHost.PCA, after.current()); assertTrue("the owed wipe is there", after.wipeOwed())
+    }
+
+    @Test fun aNoticeMarkedShownIsOwedAtStartWhenTheHostIsPcaAndAnAckOfALaterWipeClearsTheMarker() {
+        val s = NexusHostStore(prefs)
+        s.noteShown()
+        val restarted = NexusHostStore(prefs)                    // the host flipped to PCA, the process died before any debt was recorded
+        assertFalse(restarted.wipeOwed())
+        restarted.reconcile(hostIsPca = false); assertFalse("Nexus is the host: nothing owed yet", restarted.wipeOwed())
+        restarted.reconcile(hostIsPca = true)
+        assertTrue(restarted.wipeOwed())
+        restarted.settle(restarted.generation())
+        assertFalse(restarted.wipeOwed()); assertFalse(prefs.contains("shown_gen"))
+        restarted.reconcile(hostIsPca = true); assertFalse("paid and nothing shown since", restarted.wipeOwed())
+    }
+
+    @Test fun nothingShownMeansNothingOwedAtStart() {
+        val s = NexusHostStore(prefs); s.reconcile(hostIsPca = true)
+        assertFalse(s.wipeOwed()); assertTrue(prefs.all.isEmpty())
     }
 }

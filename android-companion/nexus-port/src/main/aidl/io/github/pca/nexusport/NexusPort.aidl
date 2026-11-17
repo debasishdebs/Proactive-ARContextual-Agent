@@ -30,4 +30,13 @@ interface NexusPort {
     int stopListening();
     /** Registers the phone's skill host (T6), or null to clear it. The bridge answers skill calls ONLY through it; with none set every skill call fails with the domain code `unavailable`. */
     int setSkillHost(NexusSkillHost host);
+    // ---- appended in the v2 r2 fix (additive: older transaction ids unchanged; PROTOCOL_VERSION stays 1) ----
+    /** [show] stamped with the phone's trip epoch: the bridge drops it (STALE) when it was told of a later trip ([tripAt]), also when the trip lands while the show is drawn (it is hidden again). */
+    int showAt(long epoch, int slot, String title, String text, long ttlMs, boolean wake, in String[] actionIds, in String[] actionLabels);
+    /** [speak] stamped with the phone's trip epoch (same rule as [showAt]). */
+    int speakAt(long epoch, String text);
+    /** The phone tells the bridge the latest trip epoch (monotonic max). Cheap and non-blocking in the bridge: it only records it. */
+    int tripAt(long epoch);
+    /** [forgetHistory] carrying the debt generation it covers; the bridge reports it back in [NexusPortCallback.onForgetAcceptedAt]. */
+    int forgetHistoryAt(long generation);
 }
