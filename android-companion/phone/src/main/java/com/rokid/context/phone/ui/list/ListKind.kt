@@ -1,6 +1,10 @@
 package com.rokid.context.phone.ui.list
 
+import androidx.lifecycle.SavedStateHandle
 import com.rokid.context.memory.Cursor
+import com.rokid.context.phone.ui.list.paging.KeysetPager
+import com.rokid.context.phone.ui.list.paging.PageSource
+import com.rokid.context.phone.ui.list.paging.PagerAnchor
 import com.rokid.context.phone.ui.preview.ActivityData
 import com.rokid.context.phone.ui.preview.PreviewCtx
 import com.rokid.context.phone.ui.preview.PreviewRef
@@ -9,6 +13,13 @@ import com.rokid.context.phone.ui.preview.RefKind
 import com.rokid.context.phone.ui.activity.Period
 import com.rokid.context.phone.ui.activity.PeriodWindow
 import com.rokid.context.phone.ui.shell.Routes
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -53,9 +64,13 @@ fun listView(kind: ListKind, period: Period, anchor: LocalDate): String = Routes
 /** THE entry point for a small set: the route of the common list of [kind] over [ids] (raw ids of that kind). Rows call previewMoment on tap. An empty [ids] shows the kind's empty state. */
 fun listView(kind: ListKind, ids: List<String>): String = Routes.list(kind, ids)
 
+/** One loaded row: its summary ([item] is null when the row vanished between the page and its summary: it still keeps its place in the paging) and its keyset cursor. */
+class PagedRow(val cursor: Cursor, val id: String, val item: ListItem?)
+
 /**
  * The common list's rows for a kind. One source for every kind: its rows are the kind's [com.rokid.context.phone.ui.preview.Previewable] summaries, newest first; a tap calls [onPreview] with the item's [PreviewRef] string.
- * Its items are [ids] (a small set) or, with a [scope], every item of the kind in that period, read newest first, [PAGE] rows a keyset page ("Show more").
+ * Its items are [ids] (a small set: read in one go, "Show more" per [PAGE]) or, with a [scope], every item of the kind in that period, read a keyset page of [PAGE] rows at a time by a
+ * [KeysetPager] (activity pagination: no cap, a window of ten pages). A scoped source is a [PagedListSource]: start it with [startIn] and keep it in a ViewModel.
  */
 class RecordListSource(
     private val kind: ListKind,
@@ -66,7 +81,7 @@ class RecordListSource(
     private val onPreview: (String) -> Unit,
     private val scope: ListScope? = null,
     private val pageSize: Int = PAGE,
-) : ListSource {
+) : PagedListSource {
     override val title = kind.title
     override val searchHint = kind.searchHint
     override val emptyText = kind.empty
@@ -74,28 +89,80 @@ class RecordListSource(
     /** Codex r21: re-read when a Forget, a retention delete, Delete all or a redaction changes what the rows show. */
     override val changes = data.listChanges(kind)
 
+    // ---- A small set of ids -------------------------------------------------------------------------------------------------------------------------
     private var shown = pageSize
     private var more = false
-    override val hasMore get() = more
-    override fun showMore() { shown += pageSize }
+    override val hasMore get() = if (scope == null) more else pane.value.hasMore
+    override fun showMore() { if (scope == null) shown += pageSize else loadMore() }
 
     override suspend fun load(): List<ListItem> {
-        if (scope == null) {
-            more = ids.size > shown
-            return if (ids.isEmpty()) emptyList() else Previewables.factory(kind).load(ids.take(shown), PreviewCtx(data, zone(), today())).map { it.summary() }
-        }
-        // A period: keyset pages of at most [pageSize] rows until one row more than [shown] is read (that row only says "there is more"); no read of every id of the period.
-        val range = scope.millis(zone()); val out = mutableListOf<ListItem>(); var after = Cursor.head(range)
-        while (out.size <= shown) {
-            val page = data.page(kind, range, after, minOf(pageSize, shown + 1 - out.size))
-            if (page.ids.isEmpty()) break
-            out += Previewables.factory(kind).load(page.ids, PreviewCtx(page.data, zone(), today())).map { it.summary() }
-            after = page.cursors.last()
-        }
-        more = out.size > shown
-        return out.take(shown)
+        more = ids.size > shown
+        return if (ids.isEmpty()) emptyList() else Previewables.factory(kind).load(ids.take(shown), PreviewCtx(data, zone(), today())).map { it.summary() }
     }
+
+    // ---- A period: keyset pages ---------------------------------------------------------------------------------------------------------------------
+    private val rows = object : PageSource<PagedRow> {
+        override suspend fun page(range: LongRange, after: Cursor, n: Int): List<PagedRow> {
+            val p = data.page(kind, range, after, n)
+            if (p.ids.isEmpty()) return emptyList()
+            val byId = Previewables.factory(kind).load(p.ids, PreviewCtx(p.data, zone(), today())).map { it.summary() }.associateBy { it.id }
+            return p.ids.mapIndexed { i, id -> PagedRow(p.cursors[i], id, byId[id]) }
+        }
+        override fun cursorOf(t: PagedRow) = t.cursor
+        override fun compare(a: Cursor, b: Cursor) = if (kind == ListKind.MARKS) Cursor.MARKS.compare(a, b) else Cursor.NEWEST_FIRST.compare(a, b)
+        override val changes get() = data.listChanges(kind)
+    }
+    private val pager: KeysetPager<PagedRow>? by lazy { scope?.let { KeysetPager(rows, it.millis(zone()), pageSize) } }
+    private val busy = MutableStateFlow(false)
+    private val failure = MutableStateFlow<String?>(null)
+    private val restore = MutableStateFlow<String?>(null)
+    private var saved: SavedStateHandle? = null
+    private var job: CoroutineScope? = null
+
+    private val paneOut = MutableStateFlow(ListPane(loaded = scope == null))
+    override val pane: StateFlow<ListPane> get() = paneOut
+    override val restoreTarget: StateFlow<String?> get() = restore
+    override fun consumeRestore() { restore.value = null }
+
+    /** Starts the paging in [scope] (a ViewModel's): the first page, or a restore from [saved] after a process death, then a refresh after every debounced change. */
+    fun startIn(scope: CoroutineScope, saved: SavedStateHandle? = null) {
+        val p = pager ?: return
+        if (job != null) return
+        job = scope; this.saved = saved
+        scope.launch { combine(p.state, busy, failure) { s, b, e -> ListPane(s.rows.mapNotNull { it.item }, s.headDropped, s.hasMore, b, s.newCount, s.loaded, e) }.collect { paneOut.value = it } }
+        val anchor = saved?.get<String>(KEY_ANCHOR)?.let(::parseAnchor)
+        guarded(scope) { if (anchor != null) { val i = p.restore(anchor); restore.value = p.state.value.rows.getOrNull(i)?.id } else p.loadFirst() }
+        scope.launch { p.refreshSignals.collect { guarded(this) { p.refresh() } } }
+    }
+
+    private fun guarded(scope: CoroutineScope, block: suspend () -> Unit) {
+        scope.launch {
+            busy.value = true
+            try { block(); failure.value = null } catch (e: CancellationException) { throw e } catch (e: Exception) { failure.value = "Couldn't load this list" } finally { busy.value = false }
+        }
+    }
+    override fun loadMore() { val s = job ?: return; val p = pager ?: return; if (!busy.value && p.state.value.hasMore) guarded(s) { p.loadMore() } }
+    override fun showNewer() { val s = job ?: return; val p = pager ?: return; guarded(s) { p.showNewer(); restore.value = null } }
+    override fun clearNew() { pager?.clearNew() }
+    override fun retry() { val s = job ?: return; val p = pager ?: return; guarded(s) { if (p.state.value.loaded) p.refresh() else p.loadFirst() } }
+    override fun onFirstVisible(id: String?) {
+        val p = pager ?: return
+        val cursor = id?.let { want -> p.state.value.rows.firstOrNull { it.item?.id == want }?.cursor }
+        saved?.set(KEY_ANCHOR, formatAnchor(p.anchor(cursor)))
+    }
+
     override fun actionFor(item: ListItem) = ItemAction { onPreview(PreviewRef.of(kind.ref, item.id)); ActionResult.Silent }
 
-    companion object { const val PAGE = 100 }
+    companion object {
+        const val PAGE = 100
+        const val KEY_ANCHOR = "list.anchor"
+        /** `windowKey|windowId|visibleKey|visibleId`; ids never hold `|`... a row id is a UUID or a number, and an empty id is the head. */
+        fun formatAnchor(a: PagerAnchor) = "${a.windowAfter.key}|${a.windowAfter.id}|${a.firstVisible?.key ?: ""}|${a.firstVisible?.id ?: ""}"
+        fun parseAnchor(raw: String): PagerAnchor? {
+            val f = raw.split('|'); if (f.size != 4) return null
+            val wk = f[0].toLongOrNull() ?: return null
+            val vk = f[2].toLongOrNull()
+            return PagerAnchor(Cursor(wk, f[1]), vk?.let { Cursor(it, f[3]) })
+        }
+    }
 }
