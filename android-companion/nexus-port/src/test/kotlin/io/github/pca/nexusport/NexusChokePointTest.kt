@@ -58,10 +58,12 @@ class NexusChokePointTest {
 
     /** The reviewed phone-side provider files (T7/T8) and the one fence hook that calls it. Adding a file here is a reviewed decision. */
     private val PHONE_REVIEWED = setOf(
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusAsk.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusFeeder.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusGatesAdapter.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusGraph.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusProvider.kt",
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusSkills.kt",
         "phone/src/main/java/com/rokid/context/phone/nexus/NexusStatus.kt",
         "phone/src/main/java/com/rokid/context/phone/zone/ZoneGraph.kt",
     )
