@@ -9,6 +9,8 @@ import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
  * a family or a preference file of the privacy surface is not registered, so a later task cannot add storage and forget to decide who deletes it. Names only: this holds no data.
  * The `dependents` of a family are the typed downstream edges of the EXISTING queries (design 2.2); the planner (M2) and, from M4, the executor read them.
  */
+private const val CHUNK = 500
+
 object Families {
     val ALL: List<ForgetFamily> = listOf(
         PhotoFamily, MemoryFamily, MomentFamily, SceneFamily, DerivedFieldFamily, MarkFamily, TraceFamily, RunResultFamily,
@@ -25,6 +27,19 @@ object Families {
 internal object PhotoFamily : ForgetFamily {
     override val family = Family.PHOTO
     override val tables = listOf("frame", "frame_meta", "frame_vector", "frame_state", "frame_source", "frame_cluster", "forget_tombstone")
+    override val selfDeletes = true
+    /** The extraction lock: a tombstoned photo is never extracted again. */
+    suspend fun lock(ids: Collection<String>, ctx: DeleteCtx) { ids.forEach { ctx.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity(it, ctx.now)) } }
+    /** The image vectors of [ids] (a photo no surviving memory cites any more). */
+    suspend fun deleteVectors(ids: Collection<String>, ctx: DeleteCtx) { ids.toList().chunked(CHUNK).forEach { ctx.db.forgetDao().deleteFrameVectorsFor(it) } }
+    /** Retention expiry: only the `frame` row goes; its metadata, vector, state and sources stay (the photo is a described moment). */
+    suspend fun expireRows(ids: Collection<String>, ctx: DeleteCtx) { ids.forEach { ctx.db.forgetDao().deleteFrame(it) } }
+    /** ERASE: the frame row with its sources, vector, metadata and state (the tombstone is written by [lock]). Never a REBUILD or DROP. */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
+        require(fate == Fate.ERASE) { "a photo is only erased" }
+        val dao = ctx.db.forgetDao()
+        for (id in ids) { dao.deleteFrame(id); listOf(id).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) } }
+    }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> {
         val fd = tx.db.forgetDao(); val md = tx.db.momentDao(); val out = ArrayList<Edge>()
         tx.chunked(ids) { md.memoryIdsOfFrames(it) }.forEach { out += Edge(family, Ref(Family.MEMORY, it), EdgeKind.ORIGIN) }
@@ -42,6 +57,16 @@ internal object PhotoFamily : ForgetFamily {
 internal object MemoryFamily : ForgetFamily {
     override val family = Family.MEMORY
     override val tables = listOf("memory", "memory_fts", "memory_source", "memory_vector", "embedding_space", "summary_trace")
+    override val selfDeletes = true
+    /** ERASE: rows, vectors in every space, every edge touching them (the FTS triggers follow). REBUILD: INVALIDATED (hidden from feeds and retrieval) and without vectors; the re-summarise worker rebuilds them. */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
+        val dao = ctx.db.forgetDao()
+        when (fate) {
+            Fate.ERASE -> ids.toList().chunked(CHUNK).forEach { c -> dao.deleteFrameSourcesFor(c); dao.deleteEdgesFrom(c); dao.deleteEdgesTo(c); dao.deleteVectorsFor(c); dao.deleteMemories(c) }
+            Fate.REBUILD -> ids.toList().chunked(CHUNK).forEach { c -> dao.invalidate(c); dao.deleteVectorsFor(c) }
+            Fate.DROP -> throw UnsupportedOperationException("a memory is erased or rebuilt")
+        }
+    }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> {
         val fd = tx.db.forgetDao(); val md = tx.db.momentDao(); val out = ArrayList<Edge>()
         tx.chunked(ids) { fd.childrenOf(it) }.forEach { out += Edge(family, Ref(Family.MEMORY, it), EdgeKind.DERIVED_FROM) }
@@ -56,6 +81,17 @@ internal object MemoryFamily : ForgetFamily {
 internal object MomentFamily : ForgetFamily {
     override val family = Family.MOMENT
     override val tables = listOf("moment", "moment_part", "moment_sensor", "moment_tombstone", "moment_trace_dep")
+    override val selfDeletes = true
+    /** DROP: the stored Moments with their parts, trace deps, sensor rows, audit and derived fields; the Scenes that held them shrink (their derived fields hidden). */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.DROP) { "a Moment is a rebuildable projection" }; ctx.db.momentDao().remove(ids.toList()) }
+    /** Source-to-projection cleanup: every stored Moment holding one of these deleted sources goes. Returns the Moment ids removed. */
+    suspend fun dropHolding(ctx: DeleteCtx, frames: Collection<String>, memories: Collection<String>, labels: Collection<String> = emptyList()): List<String> = ctx.db.momentDao().dropHolding(frames, memories, labels)
+    suspend fun dropBetween(ctx: DeleteCtx, fromMs: Long, toMs: Long): List<String> = ctx.db.momentDao().dropBetween(fromMs, toMs)
+    /** The Moments that hold a hidden fact elsewhere survive: their text copy is blanked and their derived fields are marked stale. */
+    suspend fun blankAndStale(ctx: DeleteCtx, momentIds: Collection<String>, hiddenMemories: Set<String>) {
+        momentIds.toList().chunked(CHUNK).forEach { ctx.db.momentDao().blankText(it) }
+        ctx.db.canvasSlice3Dao().staleMomentsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), hiddenMemories, step = "forget")
+    }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> {
         val out = ArrayList<Edge>()
         tx.chunked(ids) { tx.db.sceneDao().sceneIdsHoldingMoments(it) }.forEach { out += Edge(family, Ref(Family.SCENE, it), EdgeKind.MEMBER) }
@@ -69,6 +105,9 @@ internal object MomentFamily : ForgetFamily {
 internal object SceneFamily : ForgetFamily {
     override val family = Family.SCENE
     override val tables = listOf("scene", "scene_part")
+    override val selfDeletes = true
+    /** DROP: the Scenes with their parts, audit and derived fields (a Scene a Forget names goes whole). */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.DROP) { "a Scene is a rebuildable grouping" }; ctx.db.sceneDao().remove(ids.toList()) }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> {
         val out = ArrayList<Edge>()
         DerivedFieldFamily.objectsWithRows("SCENE", ids, tx).forEach { out += Edge(family, Ref(Family.DERIVED_FIELD, "SCENE:$it"), EdgeKind.ORIGIN) }
@@ -96,6 +135,17 @@ internal object DerivedFieldFamily : ForgetFamily {
 internal object MarkFamily : ForgetFamily {
     override val family = Family.MARK
     override val tables = listOf("canvas_label")
+    override val selfDeletes = true
+    /** ERASE: each mark (and the results computed under it, `labelRev`, the stale Moments holding it, the pruned claims), one by one as the mark undo always did. */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.ERASE) { "a mark is erased" }; val s3 = ctx.db.canvasSlice3Dao(); ids.forEach { s3.deleteLabel(it) } }
+    /** The marks a range or scope Forget found that no earlier step deleted: rows and claims, then one `labelRev` bump, and the run rows that list them in their lineage. */
+    suspend fun deleteFound(ctx: DeleteCtx, found: Collection<String>, lineageOf: Collection<String>) {
+        val md = ctx.db.momentDao(); val s3 = ctx.db.canvasSlice3Dao()
+        val stray = found.toList().chunked(CHUNK).flatMap { md.labelIdsAmong(it) }
+        stray.chunked(CHUNK).forEach { md.deleteLabels(it) }
+        if (stray.isNotEmpty()) s3.bumpLabelRev()
+        if (lineageOf.isNotEmpty()) s3.deleteRunRowsOfLabels(lineageOf)
+    }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> {
         val out = ArrayList<Edge>()
         tx.chunked(ids) { tx.db.momentDao().momentIdsHolding(listOf(MomentPartKind.MARK), it) }.forEach { out += Edge(family, Ref(Family.MOMENT, it), EdgeKind.MEMBER) }
@@ -109,12 +159,27 @@ internal object MarkFamily : ForgetFamily {
 internal object TraceFamily : ForgetFamily {
     override val family = Family.TRACE
     override val tables = listOf("canvas_trace", "canvas_trace_event", "canvas_calibration")
+    override val selfDeletes = true
+    /** ERASE of time ranges: a trace is reached by its time, so each id is a range `"<fromMs>..<toMs>"`. */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
+        require(fate == Fate.ERASE) { "a trace is erased" }
+        ids.forEach { r -> val (a, b) = r.split("..").map { it.toLong() }; eraseRange(ctx, a, b) }
+    }
+    /** The durable range fence, the traces overlapping it tombstoned, the sensor rows, the marks inside it, `labelRev`, the helper jobs voided, the results that read any of it invalidated. */
+    suspend fun eraseRange(ctx: DeleteCtx, fromMs: Long, toMs: Long) = ctx.db.canvasSlice3Dao().forgetRangeTx(fromMs, toMs, ctx.now)
 }
 
 /** Regenerable run results (the canvas runs, their items, scores and live traces, replays, sweeps, helper jobs). Ref id: the ROW KEY (a photo id, `moment:<id>`, `scene:<id>`). */
 internal object RunResultFamily : ForgetFamily {
     override val family = Family.RUN_RESULT
     override val tables = listOf("canvas_run", "canvas_run_item", "canvas_score", "canvas_live_trace", "canvas_replay", "canvas_sweep", "canvas_helper_job")
+    override val selfDeletes = true
+    /** DROP: the run rows (items, scores, live traces) of [ids] as row keys; the next run recreates them. */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.DROP) { "a run result is regenerable" }; if (ids.isNotEmpty()) ctx.db.canvasDao().deleteCanvasOutputsForFrames(ids.toList()) }
+    /** The marks of the photos, the results that read them and the helper jobs that carry them (slice 3a). */
+    suspend fun dropSliceOutputs(ctx: DeleteCtx, frameIds: List<String>) = ctx.db.canvasSlice3Dao().deleteSliceOutputsForFrames(frameIds, ctx.now)
+    /** A photo that is only LOCKED (outside the planned spans) keeps itself, but the stored outputs and DONE helper results of it may carry the forgotten fact's text. */
+    suspend fun scrubLocked(ctx: DeleteCtx, frames: List<String>) { ctx.db.canvasDao().deleteCanvasOutputsForFrames(frames); ctx.db.canvasSlice3Dao().scrubOutputsOfLockedFrames(frames, ctx.now) }
 
     /** The row keys with a stored result among [keys], plus the batch peers that share a provider call with them (the cascade is batch-wide on purpose). */
     suspend fun keysOf(keys: Set<String>, tx: PlanTx): Set<String> {
@@ -131,6 +196,9 @@ internal object RunResultFamily : ForgetFamily {
 internal object AnswerFamily : ForgetFamily {
     override val family = Family.ANSWER
     override val tables = listOf("ask")
+    override val selfDeletes = true
+    /** REBUILD (v1: redacted in place, the question stays; the v2 rules A1 are M5): the answer and its sources are cleared. */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.REBUILD) { "v1 redacts an answer in place" }; ids.forEach { ctx.db.forgetDao().redactAsk(it, ForgetService.REDACTED) } }
     /** The asks (not yet redacted) whose sources, or `dependsOn` ids, meet [cited]: exactly the match `ForgetService.cascade` redacts by. */
     suspend fun citing(cited: Set<String>, tx: PlanTx): List<String> {
         val dao = tx.db.forgetDao()
@@ -143,6 +211,8 @@ internal object AnswerFamily : ForgetFamily {
 internal object NudgeFamily : ForgetFamily {
     override val family = Family.NUDGE
     override val tables = listOf("nudge")
+    override val selfDeletes = true
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.REBUILD) { "v1 redacts a nudge in place" }; ids.forEach { ctx.db.forgetDao().redactNudge(it, ForgetService.REDACTED) } }
     suspend fun citing(cited: Set<String>, tx: PlanTx): List<String> {
         val dao = tx.db.forgetDao()
         return cited.flatMap { dao.nudgesCiting(ForgetService.likeFor(it)) }.distinctBy { it.id }.filter { n -> ForgetService.parseIds(n.sourceIdsJson).any { it in cited } }.map { it.id }
@@ -154,6 +224,21 @@ internal object NudgeFamily : ForgetFamily {
 internal object ProposalFamily : ForgetFamily {
     override val family = Family.PROPOSAL
     override val tables = listOf("proposal", "action_log")
+    override val selfDeletes = true
+    /** REBUILD of the proposals of the origins [ids] (asks and nudges that were redacted): PENDING expires, params and log details are scrubbed. */
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.REBUILD); expireAndScrub(ctx, ids.toList(), scrubAccepted = true) }
+    /** Returns the ids of the proposals whose notifications and alarms must go. Retention ([scrubAccepted] false) leaves the accepted ones (EXECUTING, EXECUTED) as they are. */
+    suspend fun expireAndScrub(ctx: DeleteCtx, origins: List<String>, scrubAccepted: Boolean): List<String> {
+        if (origins.isEmpty()) return emptyList()
+        ctx.proposals.expireForOrigins(origins, ctx.now)
+        val actions = ctx.db.actionDao()
+        return if (scrubAccepted) {
+            origins.chunked(CHUNK).flatMap { actions.allIdsForOrigins(it) }.also { _ -> origins.chunked(CHUNK).forEach { c -> actions.scrubLogsForOrigins(c); actions.scrubParamsForOrigins(c, ForgetService.REDACTED_PARAMS) } }
+        } else {
+            origins.chunked(CHUNK).flatMap { actions.idsForOriginsExcept(it, ACCEPTED) }.also { ids -> ids.chunked(CHUNK).forEach { c -> actions.scrubLogs(c); actions.scrubParams(c, ForgetService.REDACTED_PARAMS) } }
+        }
+    }
+    private val ACCEPTED = listOf(com.rokid.context.memory.ProposalState.EXECUTING.name, com.rokid.context.memory.ProposalState.EXECUTED.name)
     /** The proposals of the origins [originIds] (any state). */
     suspend fun of(originIds: Collection<String>, tx: PlanTx): List<String> = tx.chunked(originIds) { tx.db.actionDao().allIdsForOrigins(it) }
 }

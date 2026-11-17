@@ -135,7 +135,8 @@ class ScopedForget(
             val r = service.notifying {
                 db.withTransaction {
                     if (expectedHash != null && singleCounts(plan).planHash != expectedHash) throw ForgetContentChanged()
-                    if (plan.factId != null) service.forgetFactsTx(listOf(plan.factId)) else service.forgetMomentTx(plan.frameId!!)
+                    if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on) { if (plan.factId != null) service.executor.forgetFacts(listOf(plan.factId)) else service.executor.forgetPhoto(plan.frameId!!) } // M4: the one executor
+                    else if (plan.factId != null) service.forgetFactsTx(listOf(plan.factId)) else service.forgetMomentTx(plan.frameId!!)
                 }
             }
             return Done(plan, r, emptyList(), emptyList())

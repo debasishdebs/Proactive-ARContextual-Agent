@@ -3,6 +3,7 @@ package com.rokid.context.memory.forget
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.forget.lifecycle.ForgetV2
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -18,14 +19,27 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class GoldenDeleteSetTest {
-    private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
-    private val w = GoldenWorld(db)
-    @After fun close() = db.close()
+    private lateinit var w: GoldenWorld
+    @After fun close() { ForgetV2.testOverride = null }
 
+    /**
+     * M4: every path runs the SAME golden set twice on a fresh world, with `forgetV2` OFF (the legacy code) and ON (the [com.rokid.context.memory.forget.lifecycle.ForgetExecutor]): the executor must delete exactly
+     * what v1 deletes. The message names the mode, so a failure says which path diverged.
+     */
     private fun golden(expected: String, op: suspend () -> Unit) = runBlocking {
-        w.seed()
-        assertEquals(expected.trimIndent().trim(), w.deltaOf(op).render())
+        for (v2 in listOf(false, true)) {
+            ForgetV2.testOverride = v2
+            val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
+            try {
+                w = GoldenWorld(db)
+                w.seed()
+                assertEquals("forgetV2=$v2", expected.trimIndent().trim(), w.deltaOf(op).render())
+            } finally { db.close() }
+        }
     }
+
+    /** The mark undo of `MarkRecorder`: the executor with the flag ON, the DAO calls it always made with the flag OFF. */
+    private suspend fun undoMark(id: String) { if (ForgetV2.on) com.rokid.context.memory.forget.lifecycle.ForgetExecutor.deleteMarks(w.db, listOf(id, "$id:i")) else { w.db.canvasSlice3Dao().deleteLabel(id); w.db.canvasSlice3Dao().deleteLabel("$id:i") } }
 
     @Test fun forgetFact() = golden("""
             deleted canvas_label: mkLinked, mkNear, mkNear:i
@@ -133,7 +147,7 @@ class GoldenDeleteSetTest {
             changed canvas_meta: labelRev
             changed object_derived: MOMENT|68f6baa4|SUMMARY
             added object_audit: MOMENT|68f6baa4|2, MOMENT|68f6baa4|3, MOMENT|68f6baa4|4, SCENE|sNear|1
-        """) { w.db.canvasSlice3Dao().deleteLabel("mkNear"); w.db.canvasSlice3Dao().deleteLabel("mkNear:i") }
+        """) { undoMark("mkNear") }
     @Test fun rangeForget() = golden("""
             deleted canvas_label: mkFar, mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
