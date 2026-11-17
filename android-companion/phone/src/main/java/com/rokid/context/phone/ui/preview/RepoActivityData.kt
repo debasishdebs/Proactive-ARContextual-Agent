@@ -38,6 +38,8 @@ class RepoActivityData(
     private val nudgeById: (String) -> Flow<NudgeEntity?> = { id -> nudges.observe(id) },
     /** Room's change signal over some tables (null: lists never re-read; tests without a database). */
     private val tableChanges: ((Array<String>) -> Flow<Unit>)? = null,
+    /** The pause intervals overlapping `[from, to)` (production: `PauseDao.overlapping`); none when null. */
+    private val pauseIntervals: (suspend (Long, Long) -> List<com.rokid.context.memory.db.PauseIntervalEntity>)? = null,
 ) : ActivityData {
     override suspend fun memories(ids: List<String>): List<MemoryEntity> = timeline.memoriesByIds(ids)
     override suspend fun frames(ids: List<String>): List<FrameEntity> = timeline.framesByIds(ids)
@@ -47,7 +49,20 @@ class RepoActivityData(
 
     override suspend fun dayFrames(date: LocalDate): List<FrameEntity> = timeline.framesIn(DayBucket.bounds(date, zone())).first()
 
-    private val pages = ActivityPages(timeline, asks, nudges, marks)
+    private val pages = ActivityPages(timeline, asks, nudges, marks, pauseIntervals)
+
+    override suspend fun momentTimes(day: LongRange): List<Long> = pages.momentTimes(day)
+    override suspend fun momentHourPage(day: LongRange, hour: LongRange, after: Cursor, n: Int): ActivityPage =
+        pages.momentsOfHour(day, hour, after, n).let { r -> ActivityPage(r.map { it.memory.id }, r.map(Cursor::of), PrefilledActivityData(this, memories = r.map { it.memory })) }
+    override fun times(kind: ListKind, range: LongRange): Flow<List<Long>> = when (kind) {
+        ListKind.MOMENTS, ListKind.MEMORIES -> timeline.visibleMemoryTimesIn(range)
+        ListKind.FRAMES -> timeline.frameTimesIn(range)
+        ListKind.ANSWERS -> asks.timesIn(range)
+        ListKind.NUDGES -> nudges.timesIn(range)
+        ListKind.MARKS -> emptyFlow()
+    }
+    override suspend fun pauses(range: LongRange): List<PauseSpan> =
+        pages.pausesIn(range).map { PauseSpan(it.startMs, it.effectiveEndMs, it.pauseId.startsWith("zone:")) }
 
     /** One keyset page; the rows read are handed on in [ActivityPage.data] so the summary build reads nothing more (no N+1). */
     override suspend fun page(kind: ListKind, range: LongRange, after: Cursor, n: Int): ActivityPage = when (kind) {
@@ -72,7 +87,8 @@ class RepoActivityData(
     /** The tables each list's rows and their summaries are read from (a row cites memories and photos). */
     override fun listChanges(kind: ListKind): Flow<Unit> = tableChanges?.invoke(when (kind) {
         ListKind.FRAMES -> arrayOf("frame", "frame_meta")
-        ListKind.MEMORIES, ListKind.MOMENTS -> arrayOf("memory", "frame_source", "frame", "moment")
+        ListKind.MEMORIES -> arrayOf("memory", "frame_source", "frame", "moment")
+        ListKind.MOMENTS -> arrayOf("memory", "frame_source", "frame", "moment", "pause_interval")
         ListKind.ANSWERS -> arrayOf("ask", "memory")
         ListKind.NUDGES -> arrayOf("nudge", "memory")
         ListKind.MARKS -> arrayOf("canvas_label", "frame", "frame_meta", "moment")
@@ -93,4 +109,4 @@ class RepoActivityData(
 
 /** Production [ActivityData] over the app's repositories (the previewer and the lists share it). */
 fun activityData(deps: PhoneDeps) = RepoActivityData(deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.memory.marks, deps.zone, nudgeById = { deps.memory.db.nudgeGateDao().observe(it) },
-    tableChanges = { t -> deps.memory.db.tableChanges(*t) })
+    tableChanges = { t -> deps.memory.db.tableChanges(*t) }, pauseIntervals = { from, to -> deps.memory.db.pauseDao().overlapping(from, to) })

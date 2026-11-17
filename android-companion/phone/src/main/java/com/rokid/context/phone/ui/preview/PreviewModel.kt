@@ -71,6 +71,9 @@ fun previewMoment(ids: List<String>, how: PreviewMode = PreviewMode.OPEN, config
     return PreviewDestination.Items(kind, refs.filter { it.kind == kind.ref }.map { it.id })
 }
 
+/** A pause as the broken-down view shows it: when it ran ([endMs] null = still on) and whether it is a privacy zone. Nothing else (no zone name, no place). */
+data class PauseSpan(val startMs: Long, val endMs: Long?, val privacyZone: Boolean)
+
 /** One page of a list: the item [ids], the keyset [cursors] (one per id) and the [data] holding the rows already read (pass it to the summary factory: no per-row read). */
 class ActivityPage(val ids: List<String>, val cursors: List<Cursor>, val data: ActivityData)
 
@@ -88,6 +91,14 @@ interface ActivityData {
      * The page carries the data it was read with ([ActivityPage.data]), so its summaries need no second read. Nothing here caps the list: the caller asks for the next page.
      */
     suspend fun page(kind: ListKind, range: LongRange, after: Cursor, n: Int): ActivityPage = ActivityPage(emptyList(), emptyList(), this)
+    /** The display time (a memory's photo time, else `createdAt`) of every visible memory created in [day]: the hour counts of the broken-down view. */
+    suspend fun momentTimes(day: LongRange): List<Long> = emptyList()
+    /** One keyset page of the memories of [day] shown within [hour] (`Long.MIN_VALUE..dayStart-1` is the "Earlier photos" group), with the rows it read. Cursor keys are display times. */
+    suspend fun momentHourPage(day: LongRange, hour: LongRange, after: Cursor, n: Int): ActivityPage = ActivityPage(emptyList(), emptyList(), this)
+    /** The times of every item of [kind] in [range]: the day counts of the broken-down view, live (the same filter as the Activity tiles). Nothing by default. */
+    fun times(kind: ListKind, range: LongRange): Flow<List<Long>> = emptyFlow()
+    /** The pauses that overlap [range] (a manual or glasses pause, or a privacy zone); never carries a zone's name or place. */
+    suspend fun pauses(range: LongRange): List<PauseSpan> = emptyList()
     /** Emits when the item [ref] names, or something it cites, changes (a Forget, a redaction, a Trust): the previewer then reads it again. The first emission is the current state. Nothing by default. */
     fun changes(ref: PreviewRef): Flow<Unit> = emptyFlow()
     /** Codex r21: emits after any write to the tables a [kind] list shows (a Forget, a retention delete, Delete all, a redaction), so the list reads again. Nothing by default. */

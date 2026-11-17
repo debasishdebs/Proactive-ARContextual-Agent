@@ -6,6 +6,7 @@ import com.rokid.context.phone.ui.list.paging.KeysetPager
 import com.rokid.context.phone.ui.list.paging.PageSource
 import com.rokid.context.phone.ui.list.paging.PagerAnchor
 import com.rokid.context.phone.ui.preview.ActivityData
+import com.rokid.context.phone.ui.preview.ActivityPage
 import com.rokid.context.phone.ui.preview.PreviewCtx
 import com.rokid.context.phone.ui.preview.PreviewRef
 import com.rokid.context.phone.ui.preview.Previewables
@@ -102,15 +103,16 @@ class RecordListSource(
 
     // ---- A period: keyset pages ---------------------------------------------------------------------------------------------------------------------
     private val rows = object : PageSource<PagedRow> {
-        override suspend fun page(range: LongRange, after: Cursor, n: Int): List<PagedRow> {
-            val p = data.page(kind, range, after, n)
-            if (p.ids.isEmpty()) return emptyList()
-            val byId = Previewables.factory(kind).load(p.ids, PreviewCtx(p.data, zone(), today())).map { it.summary() }.associateBy { it.id }
-            return p.ids.mapIndexed { i, id -> PagedRow(p.cursors[i], id, byId[id]) }
-        }
+        override suspend fun page(range: LongRange, after: Cursor, n: Int): List<PagedRow> = summarize(data.page(kind, range, after, n))
         override fun cursorOf(t: PagedRow) = t.cursor
         override fun compare(a: Cursor, b: Cursor) = if (kind == ListKind.MARKS) Cursor.MARKS.compare(a, b) else Cursor.NEWEST_FIRST.compare(a, b)
         override val changes get() = data.listChanges(kind)
+    }
+    /** The summaries of one page (its rows were read with it: no per-row read). A row that vanished meanwhile keeps its place with a null item. */
+    suspend fun summarize(p: ActivityPage): List<PagedRow> {
+        if (p.ids.isEmpty()) return emptyList()
+        val byId = Previewables.factory(kind).load(p.ids, PreviewCtx(p.data, zone(), today())).map { it.summary() }.associateBy { it.id }
+        return p.ids.mapIndexed { i, id -> PagedRow(p.cursors[i], id, byId[id]) }
     }
     private val pager: KeysetPager<PagedRow>? by lazy { scope?.let { KeysetPager(rows, it.millis(zone()), pageSize) } }
     private val busy = MutableStateFlow(false)
