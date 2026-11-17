@@ -41,5 +41,17 @@ out.enlarge = qa('.thumbwrap button').map((b) => b.textContent).filter((t) => t 
 out.reqs = window.__reqs.filter((r) => r.includes('/api/frames/') && (r.includes('thumb') || r.includes('image')));
 out.noAuth = window.__reqs.filter((r) => r.includes('NO AUTH')).length;
 out.queryToken = window.__reqs.filter((r) => /token/.test(r.split(' ')[1] || '')).length;
+try {
+// signals page: list, edit, try on recent data (one POST, no PUT), back
+location.hash = '#/signals'; await sleep(900);
+out.signalsList = q('main') ? qa('main h2, main strong').map((e) => e.textContent) : [];
+qa('button').find((b) => b.textContent === 'Edit').click(); await sleep(500);
+const win = q('select[aria-label=Window]'); win.value = '1800'; win.dispatchEvent(new Event('change'));
+qa('button').find((b) => b.textContent === 'Run').click(); await sleep(600);
+out.signalsTry = qa('.expr-try-out li').map((l) => l.textContent); out.signalsStrip = qa('svg.expr-strip path').length; out.signalsTryBody = window.__bodies.filter((b) => b.path === '/api/signals/try').map((b) => b.seconds);
+out.signalsWrites = window.__reqs.filter((r) => /^(PUT|DELETE) \/api\/signals/.test(r)).length;
+qa('button').find((b) => b.textContent === 'Back').click(); await sleep(500);
+out.signalsListAgain = qa('main strong').map((e) => e.textContent);
+} catch (e) { out.signalsErr = String(e && e.stack || e).slice(0, 300); }
 out.errors = errors;
 document.getElementById('out').textContent = JSON.stringify(out, null, 1); document.title = 'DONE';
