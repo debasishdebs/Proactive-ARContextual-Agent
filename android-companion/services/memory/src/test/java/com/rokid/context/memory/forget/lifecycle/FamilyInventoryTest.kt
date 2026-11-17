@@ -66,11 +66,11 @@ class FamilyInventoryTest {
     }
 
     @Test fun pauseZonePrefsAreNeverDeletedByAForgetOrDeleteAll() {
-        listOf("pause_zones", "pause_zone_state", "place_guide").forEach { name ->
+        listOf("pause_zones", "pause_zone_state", "place_guide", "place_pins").forEach { name ->
             assertEquals("$name is kept by Delete all", DeletionGraph.Fate.KEPT, DeletionGraph.PREFS.single { it.name == name }.fate)
             assertTrue("$name is owned by a family that no Forget reaches", Families.ALL.single { name in it.prefs }.family in setOf(Family.CONFIG, Family.PLACE_PACK))
         }
-        assertTrue("never in the wiped list", DeletionGraph.wipedPrefs.none { it in setOf("pause_zones", "pause_zone_state", "place_guide") })
+        assertTrue("never in the wiped list", DeletionGraph.wipedPrefs.none { it in setOf("pause_zones", "pause_zone_state", "place_guide", "place_pins") })
     }
 
     @Test fun aPlaceMemoryIsAMemoryAndItsFrameSourceRowIsThePhotos() {
