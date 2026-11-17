@@ -19,7 +19,10 @@ import com.rokid.context.phone.ui.preview.PreviewSection.SourcesSection
 import com.rokid.context.phone.ui.preview.PreviewSection.StatusSection
 import com.rokid.context.phone.ui.preview.PreviewSection.TextSection
 import com.rokid.context.phone.ui.shell.Routes
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -219,13 +222,14 @@ class PreviewMomentTest {
         assertTrue(route.length < 60)
         val scope = com.rokid.context.phone.ui.list.ListScope.parse("MONTH:2026-10-12")!!
         val src = RecordListSource(ListKind.FRAMES, emptyList(), data, { Fixtures.ZONE }, { TODAY }, {}, scope = scope)
-        assertEquals(100, src.load().size); assertTrue(src.hasMore)
-        src.showMore()
-        assertEquals(200, src.load().size)
-        assertEquals("pages of at most 100 are read; one row more only says there is more", listOf(100, 1), readIds.take(2)); assertTrue(readIds.all { it <= 100 })
-        repeat(200) { src.showMore() }
-        assertEquals(20_000, src.load().size)
-        assertEquals(false, src.hasMore)
+        val pagerScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        src.startIn(pagerScope)
+        withTimeout(5_000) { src.pane.first { it.loaded } }
+        assertEquals(100, src.pane.value.rows.size); assertTrue(src.pane.value.hasMore)
+        repeat(3) { val n = src.pane.value.rows.size; src.loadMore(); withTimeout(5_000) { src.pane.first { it.rows.size > n } } }
+        assertEquals(400, src.pane.value.rows.size)
+        assertEquals("only the shown pages are ever read, 100 a page", listOf(100, 100, 100, 100), readIds.toList())
+        pagerScope.cancel()
         assertEquals(null, com.rokid.context.phone.ui.list.ListScope.parse("junk")); assertEquals(null, com.rokid.context.phone.ui.list.ListScope.parse("WEEK:nope"))
     }
 }

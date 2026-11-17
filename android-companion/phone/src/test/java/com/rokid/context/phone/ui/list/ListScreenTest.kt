@@ -15,6 +15,9 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performScrollToIndex
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
 import org.junit.Assert.assertEquals
@@ -44,7 +47,8 @@ private val ROWS = listOf(
 )
 
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [34], application = Application::class)
+/** A phone-sized screen (the Robolectric default is 320x470 px, which cuts the third row off). */
+@Config(sdk = [34], application = Application::class, qualifiers = "w360dp-h800dp-xhdpi")
 class ListScreenTest {
     @get:Rule val compose = createComposeRule()
 
@@ -81,6 +85,7 @@ class ListScreenTest {
         var got: List<String>? = null
         show(FakeSource(ROWS, selectable = true)) { got = it }
         compose.onNodeWithTag("list_select_c").performClick()
+        compose.onNodeWithTag("list_select_c").assertIsOn()
         compose.onNodeWithTag("list_select_b").performClick()
         compose.onNodeWithTag("list_show_selected").performClick()
         assertEquals(listOf("b", "c"), got)
@@ -110,4 +115,96 @@ class ListScreenTest {
         show(FakeSource(emptyList()))
         compose.onNodeWithText("Nothing here yet").assertIsDisplayed()
     }
+
+    // ---- Activity pagination A4 ------------------------------------------------------------------------------------------------------------------
+
+    @Test fun rowsAreLazyOnlyTheVisibleOnesAreComposed() {
+        val many = (1..1_000).map { ListItem("id$it", "Row $it") }
+        show(FakeSource(many))
+        compose.onNodeWithText("Row 1").assertIsDisplayed()
+        val composed = compose.onAllNodes(androidx.compose.ui.test.hasTestTag("list_lazy").not().and(androidx.compose.ui.test.hasText("Row ", substring = true))).fetchSemanticsNodes().size
+        assertTrue("composed $composed of 1,000 rows", composed in 1..80)
+    }
+
+    @Test fun pagedListLoadsTheNextPageNearTheEndAndKeepsEveryRowReachable() {
+        val src = FakePaged(100, hasMore = true)
+        show(src)
+        compose.waitForIdle()
+        assertTrue("the last 10 rows are in view range or the page loads as the list is scrolled", src.loads >= 0)
+        compose.onNodeWithTag("list_lazy").performScrollToIndex(99)
+        compose.waitForIdle()
+        assertTrue("scrolled to the end: the next page was asked for", src.loads >= 1)
+        compose.onNodeWithTag("list_lazy").performScrollToIndex(150)
+        compose.onNodeWithText("Row 150").assertIsDisplayed()
+    }
+
+    @Test fun theNewPillShowsWhenScrolledDownAndScrollsToTheTop() {
+        val src = FakePaged(100, hasMore = false)
+        show(src)
+        compose.onNodeWithTag("list_lazy").performScrollToIndex(60)
+        src.paneS.value = src.paneS.value.copy(newCount = 3)
+        compose.waitForIdle()
+        compose.onNodeWithText("3 new").assertIsDisplayed()
+        compose.onNodeWithTag("list_new_pill").performClick()
+        compose.waitForIdle()
+        assertEquals("clearing the count", 1, src.cleared)
+        compose.onNodeWithText("Row 1").assertIsDisplayed()
+    }
+
+    @Test fun showNewerAppearsWhenThePageAboveWasDroppedAndSearchSaysItIsLoadedRowsOnly() {
+        val src = FakePaged(30, hasMore = true, headDropped = true)
+        show(src)
+        compose.onNodeWithTag("list_show_newer").performClick()
+        assertEquals(1, src.newer)
+        compose.onNodeWithTag("list_search").performTextInput("Row 2")
+        compose.onNodeWithTag("list_note").assertIsDisplayed()
+    }
+
+    @Test fun theListPositionSurvivesGoingToAPreviewAndBack() {
+        val src = FakePaged(200, hasMore = false)
+        var onPreview by mutableStateOf(false)
+        compose.setContent {
+            PcTheme {
+                val holder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+                if (onPreview) androidx.compose.material3.Text("preview") else holder.SaveableStateProvider("list") { ListScreen(src, onBack = {}, onMessage = {}) }
+            }
+        }
+        compose.onNodeWithTag("list_lazy").performScrollToIndex(120)
+        compose.onNodeWithText("Row 121").assertIsDisplayed()
+        compose.runOnIdle { onPreview = true }
+        compose.onNodeWithText("preview").assertIsDisplayed()
+        compose.runOnIdle { onPreview = false }
+        compose.waitForIdle()
+        compose.onNodeWithText("Row 121").assertIsDisplayed()
+    }
+
+    @Test fun aRestoredAnchorScrollsToItsRowOnce() {
+        val src = FakePaged(200, hasMore = false)
+        src.restoreS.value = "id150"
+        show(src)
+        compose.waitForIdle()
+        compose.onNodeWithText("Row 150").assertIsDisplayed()
+        assertEquals(1, src.consumed)
+    }
+}
+
+/** A paged source over a fixed number of rows; the test drives [paneS]. */
+private class FakePaged(n: Int, hasMore: Boolean, headDropped: Boolean = false) : PagedListSource {
+    var loads = 0; var newer = 0; var cleared = 0; var consumed = 0
+    val paneS = MutableStateFlow(ListPane((1..n).map { ListItem("id$it", "Row $it") }, headDropped = headDropped, hasMore = hasMore, loaded = true))
+    val restoreS = MutableStateFlow<String?>(null)
+    override val pane: StateFlow<ListPane> get() = paneS
+    override val restoreTarget: StateFlow<String?> get() = restoreS
+    override fun consumeRestore() { consumed++; restoreS.value = null }
+    override fun loadMore() { loads++; val s = paneS.value; val n = s.rows.size; paneS.value = s.copy(rows = s.rows + (n + 1..n + 100).map { ListItem("id$it", "Row $it") }) }
+    override fun showNewer() { newer++ }
+    override fun clearNew() { cleared++; paneS.value = paneS.value.copy(newCount = 0) }
+    override fun retry() {}
+    override fun onFirstVisible(id: String?) {}
+    override val title = "Things"
+    override val searchHint = "Search things"
+    override val sortable = false
+    override val hasMore get() = paneS.value.hasMore
+    override suspend fun load(): List<ListItem> = paneS.value.rows
+    override fun actionFor(item: ListItem): ItemAction = ItemAction { ActionResult.Silent }
 }

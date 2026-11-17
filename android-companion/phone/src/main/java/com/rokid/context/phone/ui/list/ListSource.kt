@@ -4,6 +4,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 
 /** One row in the generic list screen (ported from LiveFit `ui/list`). Sources map their domain objects onto this. */
@@ -76,4 +77,34 @@ interface ListSource {
     fun actionFor(item: ListItem): ItemAction?
     /** Extra actions in the row's overflow menu; empty shows no menu. */
     fun moreActionsFor(item: ListItem): List<NamedAction> = emptyList()
+}
+
+/** What a paged list shows right now (activity pagination A4). [rows] are the summaries of the loaded window; [error] is a short fixed text (never a user's content). */
+data class ListPane(
+    val rows: List<ListItem> = emptyList(),
+    /** Pages above the first loaded row were let go: "Show newer" reads them back. */
+    val headDropped: Boolean = false,
+    val hasMore: Boolean = false,
+    val loading: Boolean = false,
+    /** Rows that arrived above the first row while the user was further down ("N new"). */
+    val newCount: Int = 0,
+    val loaded: Boolean = false,
+    val error: String? = null,
+)
+
+/**
+ * A [ListSource] whose rows are read a keyset page at a time and kept by its owner (the [ListViewModel]), so a preview and back, or a process death, keeps the pages and the position. The screen reads [pane]
+ * instead of calling [load]; it asks for the next page near the end ([loadMore]) and tells the source what it looks at ([onFirstVisible]).
+ */
+interface PagedListSource : ListSource {
+    val pane: StateFlow<ListPane>
+    /** The row id to scroll to once, after a restore (null when none). The screen calls [consumeRestore] when it has scrolled there. */
+    val restoreTarget: StateFlow<String?>
+    fun consumeRestore()
+    fun loadMore()
+    fun showNewer()
+    fun clearNew()
+    fun retry()
+    /** The id of the first row the user sees: the position that survives process death. */
+    fun onFirstVisible(id: String?)
 }

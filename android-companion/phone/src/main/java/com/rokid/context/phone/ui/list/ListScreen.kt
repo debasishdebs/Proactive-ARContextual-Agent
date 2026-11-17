@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -51,6 +53,9 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -75,6 +80,7 @@ import com.rokid.context.core.ui.components.IconChip
 import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 private enum class SortOrder { AZ, ZA }
@@ -101,6 +107,7 @@ fun ListScreen(
 ) {
     val scope = rememberCoroutineScope()
 
+    val paged = source as? PagedListSource
     var items by remember(source) { mutableStateOf<List<ListItem>?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     var sort by remember { mutableStateOf(SortOrder.AZ) }
@@ -110,17 +117,22 @@ fun ListScreen(
     var progress by remember { mutableStateOf<Progress?>(null) }
     var reloadKey by remember { mutableIntStateOf(0) }
     var selected by rememberSaveable(saver = SelectionSaver) { mutableStateOf(initiallySelected) }
+    val pane by (paged?.pane ?: remember { MutableStateFlow(ListPane()) }).collectAsState()
+    val listState = rememberLazyListState()
 
-    LaunchedEffect(source, reloadKey) { items = source.load() }
-    LaunchedEffect(source) { source.changes.collect { reloadKey++ } }
-    // Reload when returning to the screen (another screen may have changed what the rows show).
-    val lifecycle = LocalLifecycleOwner.current
-    DisposableEffect(lifecycle) {
-        var first = true
-        val observer = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) { if (first) first = false else reloadKey++ } }
-        lifecycle.lifecycle.addObserver(observer)
-        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    if (paged == null) {
+        LaunchedEffect(source, reloadKey) { items = source.load() }
+        LaunchedEffect(source) { source.changes.collect { reloadKey++ } }
+        // Reload when returning to the screen (another screen may have changed what the rows show). A paged list needs no reload: its pager follows the change signal.
+        val lifecycle = LocalLifecycleOwner.current
+        DisposableEffect(lifecycle) {
+            var first = true
+            val observer = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME) { if (first) first = false else reloadKey++ } }
+            lifecycle.lifecycle.addObserver(observer)
+            onDispose { lifecycle.lifecycle.removeObserver(observer) }
+        }
     }
+    val itemsNow: List<ListItem>? = if (paged != null) (if (pane.loaded) pane.rows else null) else items
     val grouped = source.statusLabels.isNotEmpty()
     val runAction: (ListItem, ItemAction) -> Unit = { item, action ->
         if (action.blocking) progress = Progress(item.title, null, action.onCancel)
@@ -134,7 +146,7 @@ fun ListScreen(
                 is ActionResult.Scheduled -> onMessage(result.message)
                 is ActionResult.Failed -> onMessage(result.message)
             }
-            reloadKey++
+            if (paged == null) reloadKey++ else paged.retry()
         }
     }
     val start: (ListItem, ItemAction) -> Unit = { row, action -> if (action.confirmTitle == null) runAction(row, action) else confirming = row to action }
@@ -144,7 +156,7 @@ fun ListScreen(
         onSelectionChange(selected)
     }
 
-    val visible = items.orEmpty()
+    val visible = itemsNow.orEmpty()
         .filter { query.isBlank() || it.title.contains(query, true) || (it.subtitle?.contains(query, true) == true) }
         .filter { statusFilter == null || it.status == statusFilter }
         .let { list -> if (!source.sortable) list else if (sort == SortOrder.AZ) list.sortedBy { it.title.lowercase() } else list.sortedByDescending { it.title.lowercase() } }
@@ -152,6 +164,26 @@ fun ListScreen(
     val others = visible - installed.toSet()
     val rowSelection = if (source.selectable) RowSelection(selected, toggle) else null
     val rowActions = RowActions(onRow, start)
+    val entries = buildEntries(installed, others, grouped, source.doneSection, source.actionSection, paged != null && pane.headDropped, paged != null && pane.loading && pane.hasMore, source.hasMore, query.isNotBlank() && paged != null)
+
+    // Paged list: ask for the next page when the last 10 rows come into view; remember the first visible row (it survives process death); scroll to the restored row once.
+    if (paged != null) {
+        LaunchedEffect(paged, listState, entries) {
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last -> if (last >= entries.size - AUTO_LOAD_AHEAD) paged.loadMore() }
+        }
+        LaunchedEffect(paged, listState, entries) {
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull { (it.key as? String)?.startsWith(ROW_KEY) == true }?.key as? String }
+                .collect { key -> paged.onFirstVisible(key?.removePrefix(ROW_KEY)) }
+        }
+        val target by paged.restoreTarget.collectAsState()
+        LaunchedEffect(target, entries) {
+            val id = target ?: return@LaunchedEffect
+            val at = entries.indexOfFirst { it.key == "$ROW_KEY$id" }
+            if (at >= 0) { listState.scrollToItem(at); paged.consumeRestore() }
+        }
+        val atTop by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 } }
+        LaunchedEffect(atTop, pane.newCount) { if (atTop && pane.newCount > 0) paged.clearNew() }
+    }
 
     Box(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag("list_screen")) {
         Column(Modifier.fillMaxSize()) {
@@ -171,19 +203,29 @@ fun ListScreen(
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    items == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PcColors.Mint) }
-                    visible.isEmpty() -> EmptyState(if (items!!.isEmpty()) source.emptyText else "No matches")
-                    else -> LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
-                        if (installed.isNotEmpty()) {
-                            item { GroupLabel(source.doneSection, installed.size) }
-                            item { RowsCard(installed, source, rowSelection, rowActions) }
+                    itemsNow == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PcColors.Mint) }
+                    visible.isEmpty() -> EmptyState(if (itemsNow!!.isEmpty()) source.emptyText else "No matches")
+                    else -> Box(Modifier.fillMaxSize()) {
+                        LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 32.dp), modifier = Modifier.testTag("list_lazy")) {
+                            items(entries, key = { it.key }) { e ->
+                                when (e) {
+                                    is Entry.Group -> if (e.label.isEmpty()) Spacer(Modifier.height(12.dp)) else GroupLabel(e.label, e.count)
+                                    is Entry.Note -> Text(e.text, style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp).testTag("list_note"))
+                                    is Entry.Row -> RowCard(e.index, e.count) { ItemRow(e.item, source, rowSelection, rowActions) }
+                                    Entry.ShowNewer -> TextButton(onClick = { paged?.showNewer() }, modifier = Modifier.padding(horizontal = 8.dp).testTag("list_show_newer")) { Text("Show newer") }
+                                    Entry.Skeleton -> Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().height(SKELETON_HEIGHT).clip(RoundedCornerShape(16.dp)).background(PcColors.Line).testTag("list_skeleton"))
+                                    Entry.ShowMore -> TextButton(onClick = { source.showMore(); if (paged == null) reloadKey++ }, modifier = Modifier.padding(horizontal = 8.dp).testTag("list_show_more")) { Text("Show more") }
+                                }
+                            }
                         }
-                        if (others.isNotEmpty()) {
-                            item { if (grouped) GroupLabel(source.actionSection, others.size) else Spacer(Modifier.height(12.dp)) }
-                            item { RowsCard(others, source, rowSelection, rowActions) }
+                        if (paged != null && pane.newCount > 0 && listState.firstVisibleItemIndex > 0) {
+                            TextButton(
+                                onClick = { paged.clearNew(); scope.launch { listState.animateScrollToItem(0) } },
+                                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp).clip(RoundedCornerShape(20.dp)).background(PcColors.Mint).testTag("list_new_pill"),
+                            ) { Text("${pane.newCount} new", color = PcColors.Surface) }
                         }
-                        if (source.hasMore) item {
-                            TextButton(onClick = { source.showMore(); reloadKey++ }, modifier = Modifier.padding(horizontal = 8.dp).testTag("list_show_more")) { Text("Show more") }
+                        if (paged != null && pane.error != null) {
+                            TextButton(onClick = { paged.retry() }, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp).testTag("list_retry")) { Text("${pane.error}. Retry") }
                         }
                     }
                 }
@@ -194,7 +236,7 @@ fun ListScreen(
                 Box(Modifier.fillMaxWidth().background(PcColors.Surface).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp)) {
                     GradientButton(
                         source.selectLabel(n),
-                        onClick = { onOpenSelected(items.orEmpty().map { it.id }.filter { it in selected }) },
+                        onClick = { onOpenSelected(itemsNow.orEmpty().map { it.id }.filter { it in selected }) },
                         modifier = Modifier.fillMaxWidth().testTag("list_show_selected"),
                         enabled = n >= 1,
                     )
@@ -270,16 +312,42 @@ private fun GroupLabel(text: String, count: Int) {
     }
 }
 
-@Composable
-private fun RowsCard(rows: List<ListItem>, source: ListSource, selection: RowSelection?, actions: RowActions) {
-    SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
-        Column {
-            rows.forEachIndexed { i, item ->
-                ItemRow(item, source, selection, actions)
-                if (i < rows.lastIndex) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(1.dp).background(PcColors.Line))
-            }
-        }
+private const val ROW_KEY = "r:"
+private const val AUTO_LOAD_AHEAD = 10
+private val SKELETON_HEIGHT = 56.dp
+
+/** One lazy item of the list: its [key] is stable, so a row keeps its place while rows are inserted above it. */
+private sealed interface Entry {
+    val key: String
+    data class Group(val label: String, val count: Int) : Entry { override val key get() = "g:$label" }
+    data class Note(val text: String) : Entry { override val key get() = "note" }
+    data class Row(val item: ListItem, val index: Int, val count: Int) : Entry { override val key get() = "$ROW_KEY${item.id}" }
+    data object ShowNewer : Entry { override val key get() = "show_newer" }
+    data object Skeleton : Entry { override val key get() = "skeleton" }
+    data object ShowMore : Entry { override val key get() = "show_more" }
+}
+
+private fun buildEntries(
+    installed: List<ListItem>, others: List<ListItem>, grouped: Boolean, doneSection: String, actionSection: String,
+    showNewer: Boolean, skeleton: Boolean, showMore: Boolean, searching: Boolean,
+): List<Entry> = buildList {
+    if (showNewer) add(Entry.ShowNewer)
+    if (searching) add(Entry.Note("Searching the loaded rows"))
+    if (installed.isNotEmpty()) { add(Entry.Group(doneSection, installed.size)); installed.forEachIndexed { i, r -> add(Entry.Row(r, i, installed.size)) } }
+    if (others.isNotEmpty()) {
+        add(Entry.Group(if (grouped) actionSection else "", others.size))
+        others.forEachIndexed { i, r -> add(Entry.Row(r, i, others.size)) }
     }
+    if (skeleton) add(Entry.Skeleton)
+    if (showMore) add(Entry.ShowMore)
+}
+
+/** One row of a lazy list, drawn as a slice of the old rows card: the first row rounds its top, the last its bottom. */
+@Composable
+private fun RowCard(index: Int, count: Int, content: @Composable () -> Unit) {
+    val r = 20.dp
+    val shape = RoundedCornerShape(topStart = if (index == 0) r else 0.dp, topEnd = if (index == 0) r else 0.dp, bottomStart = if (index == count - 1) r else 0.dp, bottomEnd = if (index == count - 1) r else 0.dp)
+    Box(Modifier.padding(horizontal = 16.dp).fillMaxWidth().background(PcColors.Surface, shape).border(1.dp, PcColors.Line, shape)) { content() }
 }
 
 @Composable
