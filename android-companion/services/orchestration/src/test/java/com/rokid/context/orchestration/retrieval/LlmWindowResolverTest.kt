@@ -109,4 +109,19 @@ class LlmWindowResolverTest {
         assertEquals(40, LlmWindowResolver.safe("x".repeat(100))!!.length)
         assertNull(LlmWindowResolver.safe("<>\"\n"))
     }
+
+    @Test fun theCachedInterpretationIsRecomputedAgainstTheClockAndTheAnchor() = runBlocking<Unit> {
+        var calls = 0
+        var episode = ms("2026-11-16T08:00:00") to ms("2026-11-16T08:30:00")
+        val r = resolver(anchor = { episode }) { calls++; out("event", event = "breakfast") }
+        val q = "What happened after breakfast?"
+        val at9 = r.resolve(q, ms("2026-11-16T09:00:00"), zone)!!
+        val at11 = r.resolve(q, ms("2026-11-16T11:00:00"), zone)!!
+        assertEquals(1, calls)
+        assertEquals(ms("2026-11-16T08:30:00"), at9.fromMs); assertEquals(ms("2026-11-16T09:00:00"), at9.toMs)
+        assertEquals(ms("2026-11-16T08:30:00"), at11.fromMs); assertEquals(ms("2026-11-16T11:00:00"), at11.toMs) // the window grew with the clock
+        episode = ms("2026-11-16T10:00:00") to ms("2026-11-16T10:20:00") // a newly captured breakfast moves the anchor
+        assertEquals(ms("2026-11-16T10:20:00"), r.resolve(q, ms("2026-11-16T11:00:00"), zone)!!.fromMs)
+        assertEquals(1, calls)
+    }
 }

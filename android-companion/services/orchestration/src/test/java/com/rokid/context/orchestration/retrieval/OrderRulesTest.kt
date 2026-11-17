@@ -11,6 +11,7 @@ import java.io.File
 import java.time.LocalDateTime
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -144,7 +145,9 @@ class OrderRulesTest {
         val prev = OrderRules.pick(OrderRules.decide("the previous time", spec, null), c, spec, 8, zone, 5_000) { 100 }
         assertEquals(listOf("k2", "k1", "old"), ids(prev)) // the newest episode (k3, k4) is left out
         assertTrue(prev!!.note.contains("left out"))
-        assertNull(OrderRules.pick(OrderRules.decide("the previous time", spec, null), listOf(cand("only", "2026-11-15T20:00:00")), spec, 8, zone, 5_000) { 100 }) // nothing before it: the caller keeps its order
+        val none = OrderRules.pick(OrderRules.decide("the previous time", spec, null), listOf(cand("only", "2026-11-15T20:00:00")), spec, 8, zone, 5_000) { 100 }
+        assertTrue(ids(none).isEmpty()) // nothing before it: an explicit empty selection, never the newest again
+        assertTrue(none!!.note, none.note.contains("no earlier occurrence"))
         val first = OrderRules.pick(OrderRules.decide("when did I first see my keys", spec, null), c, spec, 8, zone, 5_000) { 100 }
         assertEquals(listOf("old", "k1", "k2", "k3", "k4"), ids(first))
         assertNull(OrderRules.pick(OrderRules.decide("when did I last see my keys", spec, null), emptyList(), spec, 8, zone, 5_000) { 100 })
@@ -199,5 +202,14 @@ class OrderRulesTest {
         // the canvas default words and the rows tested here are the same strings
         assertNotNull(FlowPlan.BUILT_IN_QUERY)
         assertEquals(listOf("last", "latest", "most recent", "where are my", "where is my"), words(OrderParams.LATEST_WORDS))
+    }
+
+    @Test fun stateQuestionNeedsADeviceAndAStatePredicate() {
+        for (q in listOf("Did I turn off the stove?", "Did I switch off the chulha after cooking?", "Did I close the main door?", "Is the door closed?", "Are the lights on?", "Did I leave the gas on",
+            "did i lock the door", "Is the stove on or off?", "Was the main door locked?", "Is the kettle plugged in?", "Is the lamp lit?", "Did I leave the iron switched on?", "Is the window open?", "Is the door unlocked?"))
+            assertTrue(q, OrderRules.isStateQuestion(q))
+        for (q in listOf("What did the sign on the door say?", "What is my flat number?", "Where are my keys hanging?", "What lights are around my TV unit?", "Where did we burst the crackers?",
+            "Where are my car keys?", "What is on the window sill?", "Who was at the door?", "What did I mark this morning?", "What did I put on the switch board label?"))
+            assertFalse(q, OrderRules.isStateQuestion(q))
     }
 }
