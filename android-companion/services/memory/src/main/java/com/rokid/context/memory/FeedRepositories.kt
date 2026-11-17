@@ -39,6 +39,10 @@ class TimelineRepository(private val frames: FrameViewDao, private val memories:
     /** One page of a day's visible memories shown in [hour] (display time: the frame's time, else `createdAt`); [day] bounds `createdAt`. */
     suspend fun momentPage(day: LongRange, hour: LongRange, after: Cursor, n: Int): List<MomentRow> = memories.momentPageIn(day.first, day.last + 1, hour.first, hour.last + 1, after.key, after.id, n)
     suspend fun momentTimes(day: LongRange): List<Long> = memories.visibleMomentTimes(day.first, day.last + 1)
+    /** Ids only, at most [limit] (multi-select): the photos / visible memories of [range], and the memories shown in [hour] of a [day]. */
+    suspend fun frameIdsIn(range: LongRange, limit: Int): List<String> = frames.idsIn(range.first, range.last + 1, limit)
+    suspend fun visibleMemoryIdsIn(range: LongRange, limit: Int): List<String> = memories.visibleIdsIn(range.first, range.last + 1, limit)
+    suspend fun momentIdsOfHour(day: LongRange, hour: LongRange, limit: Int): List<String> = memories.momentIdsIn(day.first, day.last + 1, hour.first, hour.last + 1, limit)
     fun recentTraces(limit: Int): Flow<List<SummaryTraceEntity>> = traces.observeRecent(limit)
 
     private companion object { const val MAX_IN = 900 }

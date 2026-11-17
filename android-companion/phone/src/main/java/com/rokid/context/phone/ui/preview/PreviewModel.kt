@@ -95,6 +95,13 @@ interface ActivityData {
     suspend fun momentTimes(day: LongRange): List<Long> = emptyList()
     /** One keyset page of the memories of [day] shown within [hour] (`Long.MIN_VALUE..dayStart-1` is the "Earlier photos" group), with the rows it read. Cursor keys are display times. */
     suspend fun momentHourPage(day: LongRange, hour: LongRange, after: Cursor, n: Int): ActivityPage = ActivityPage(emptyList(), emptyList(), this)
+    /**
+     * Ids only (multi-select, ruling P2), newest first, at most [limit]: every row of [kind] in [range] (epoch ms, both ends inclusive) with the SAME filter as [page] and the tile counts. For a Moments or Memories list the range is
+     * the memories' creation time (what the day counts use). Nothing by default; answers and nudges are not resolved (they have no single-item Forget).
+     */
+    suspend fun idsIn(kind: ListKind, range: LongRange, limit: Int): List<String> = emptyList()
+    /** Ids only: the memories [momentHourPage] lists for the same [day] and [hour], at most [limit]. */
+    suspend fun momentIdsOfHour(day: LongRange, hour: LongRange, limit: Int): List<String> = emptyList()
     /** The times of every item of [kind] in [range]: the day counts of the broken-down view, live (the same filter as the Activity tiles). Nothing by default. */
     fun times(kind: ListKind, range: LongRange): Flow<List<Long>> = emptyFlow()
     /** The pauses that overlap [range] (a manual or glasses pause, or a privacy zone); never carries a zone's name or place. */
