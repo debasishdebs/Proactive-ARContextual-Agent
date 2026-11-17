@@ -102,6 +102,8 @@ object AskZoneFence : AskZoneGuard {
         } catch (e: Exception) { true }
     }
 
+    private fun noEnabledZones(a: Context): Boolean = try { !zonesMayBeInForce(a.getSharedPreferences(ZONES_PREFS, Context.MODE_PRIVATE).getString(ZONES_KEY, null)) } catch (e: Exception) { false }
+
     /** Any stored zone that is not switched off, or a list that cannot be parsed. */
     internal fun zonesMayBeInForce(raw: String?): Boolean {
         if (raw.isNullOrBlank()) return false
@@ -116,8 +118,14 @@ object AskZoneFence : AskZoneGuard {
      * controller's decisions: a result that began before the latest [protect] is discarded (a late read must not re-hold what the controller cleared). No enabled zone and no live zone record = nothing to protect.
      */
     override suspend fun prepare() {
-        if (judged) return
         val a = app ?: return
+        if (judged) {
+            // Judged and clear but still held (a failed store of the clear flag, Codex z1 r11 A P1): with no enabled zone there is nothing to protect, so keep reconciling and release; the controller's active word wins.
+            if (!controllerActive && fence.held) synchronized(lock) {
+                if (judged && !controllerActive && fence.held && noEnabledZones(a)) fence.release()
+            }
+            return
+        }
         val gen = decision
         val live: Boolean? = try {
             liveRecordsReader?.invoke(a) ?: run {

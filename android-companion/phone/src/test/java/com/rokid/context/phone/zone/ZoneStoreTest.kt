@@ -64,6 +64,7 @@ class FailingPrefs(private val d: android.content.SharedPreferences, @Volatile v
         return object : android.content.SharedPreferences.Editor by e {
             override fun putString(k: String?, v: String?) = apply { e.putString(k, v) }
             override fun putLong(k: String?, v: Long) = apply { e.putLong(k, v) }
+            override fun putBoolean(k: String?, v: Boolean) = apply { e.putBoolean(k, v) }
             /** Like Android: the value reaches the in-memory map even when the disk write fails. */
             override fun commit(): Boolean { val ok = e.commit(); return ok && !fail }
         }

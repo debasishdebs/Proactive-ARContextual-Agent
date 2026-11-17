@@ -126,4 +126,46 @@ class ZoneR3Test {
         assertTrue(s.zones().single().enabled)
         assertTrue(s.write(listOf(zone.copy(enabled = false)))); assertFalse(s.zones().single().enabled)
     }
+
+    // Codex z1 r11 A P1: a persistent prefs-write failure of the protect flag must not lock Ask out outside zones.
+    private fun withStates(states: MutableList<Pair<Boolean, Boolean>>) = ZoneController(ZoneStore(storePrefs), sink, notes, elapsed = { el }, wall = { wall }, stateStore = ZoneStateStore(statePrefs), onState = { a, j -> states += a to j })
+
+    @Test fun aPersistentFlagWriteFailureWithNoZonesDoesNotHoldAsk() = runTest {
+        statePrefs.fail = true
+        val states = ArrayList<Pair<Boolean, Boolean>>()
+        val k = withStates(states)
+        assertEquals("judged and clear at construction", false to true, states.last())
+        k.start(); repeat(3) { k.tick() }
+        assertTrue("never held: ${states}", states.none { it.first })
+        // the persist is still retried: once the write works, the flag is stored
+        statePrefs.fail = false; k.tick()
+        assertEquals(false to true, states.last())
+        assertFalse(statePrefs.getBoolean(ZoneStateStore.PROTECT, true))
+    }
+
+    @Test fun aFlagWriteFailureWhileEnteringAZoneStaysBlocked() = runTest {
+        assertTrue(ZoneStore(storePrefs).write(listOf(zone)))
+        statePrefs.fail = true
+        val states = ArrayList<Pair<Boolean, Boolean>>()
+        val k = withStates(states); k.start()
+        repeat(4) { k.at(0.0) }
+        assertEquals("inside: held", true to true, states.last())
+        repeat(6) { k.tick(); assertEquals("still held (round $it)", true to true, states.last()) }
+    }
+
+    /** Zones exist and read OUTSIDE with a fresh fix, the clear flag cannot be stored: held for CLEAR_STORE_RETRIES reconciles (conservative), then released on the controller's own judgement; the persist is still retried. */
+    @Test fun aClearThatCannotBeStoredInAWorldWithZonesIsBoundedNotALockout() = runTest {
+        assertTrue(ZoneStore(storePrefs).write(listOf(zone)))
+        statePrefs.fail = true
+        val states = ArrayList<Pair<Boolean, Boolean>>()
+        val k = withStates(states); k.start()
+        k.at2(5_000.0)
+        assertEquals("first failed store of the clear: still held", true to true, states.last())
+        var released = -1
+        for (i in 1..8) { k.at(5_000.0); if (!states.last().first) { released = i; break } }
+        assertTrue("released within a bounded number of reconciles (was $released)", released in 1..5)
+        statePrefs.fail = false; k.at(5_000.0)
+        assertEquals(false to true, states.last())
+        assertFalse(statePrefs.getBoolean(ZoneStateStore.PROTECT, true))
+    }
 }
