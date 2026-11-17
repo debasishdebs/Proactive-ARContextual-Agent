@@ -311,9 +311,45 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             // a Moment that survives but holds a deleted mark (or, in a scoped Forget, a hidden fact) has its derived fields hidden, and in the scoped case its text copy blanked
             val holdingMarks = tx.chunked(deletedMarks) { md.momentIdsHolding(listOf(MomentPartKind.MARK), it) }.filter { it !in droppedMoments }
             DerivedFieldFamily.freshObjects("MOMENT", holdingMarks, tx).forEach { put(Ref(Family.DERIVED_FIELD, "MOMENT:$it"), Fate.REBUILD) }
-            return ForgetPlan(nodes)
+            return ForgetPlan(nodes, revisionsOf(nodes.keys))
         }
     }
+
+    /**
+     * A stable fingerprint of the CONTENT of each affected row (text and revision columns, a photo's tombstone state, a mark's text and photo state, a Moment's / Scene's revisions and derived fields), hashed to hex, never a text.
+     * It is what makes the confirmation token cover content: a row updated in place under the same id is a different token. A row that is gone fingerprints as `gone`.
+     */
+    private suspend fun revisionsOf(refs: Collection<Ref>): Map<Ref, String> {
+        val out = HashMap<Ref, String>()
+        suspend fun fill(family: Family, sql: (String) -> String, cols: Int, idOf: (Ref) -> String? = { it.id }) {
+            val byId = refs.filter { it.family == family }.mapNotNull { r -> idOf(r)?.let { it to r } }.toMap()
+            if (byId.isEmpty()) return
+            val seen = HashSet<String>()
+            tx.chunked(byId.keys) { c ->
+                tx.rows(sql(c.joinToString(",") { "?" }), c) { cur -> cur.getString(0) to (1..cols).joinToString("\u0001") { i -> if (cur.isNull(i)) "\u0000" else cur.getString(i) } }
+            }.forEach { (id, text) -> seen += id; byId[id]?.let { out[it] = fingerprint(text) } }
+            byId.forEach { (id, r) -> if (id !in seen) out[r] = "gone" }
+        }
+        fill(Family.MEMORY, { "SELECT id, text, type, tags, tier, confidence, reviewState, trusted, derived, searchText, imageDelivered, reviewFlaggedAt, frameId FROM memory WHERE id IN ($it)" }, 12)
+        fill(Family.PHOTO, { "SELECT f.id, f.ts, f.path, f.source, f.payload, f.placeLabel, f.phash, (SELECT COUNT(*) FROM forget_tombstone t WHERE t.frameId = f.id), (SELECT markRef FROM frame_meta m WHERE m.frameId = f.id) FROM frame f WHERE f.id IN ($it)" }, 8)
+        fill(Family.MARK, { "SELECT labelId, kind, source, name, atMs, frameId, traceId, provenance, deletionCounter, photo FROM canvas_label WHERE labelId IN ($it)" }, 9)
+        fill(Family.MOMENT, { "SELECT momentId, buildRev, contentRev, contentHash, text, transcript, errorReason FROM moment WHERE momentId IN ($it)" }, 6) { r -> r.id.takeUnless { it.contains(':') } }
+        fill(Family.SCENE, { "SELECT sceneId, buildRev, membershipRev, startMs, endMs, activity FROM scene WHERE sceneId IN ($it)" }, 5)
+        fill(Family.ANSWER, { "SELECT id, question, answer, sourcesJson, redacted FROM ask WHERE id IN ($it)" }, 4)
+        fill(Family.NUDGE, { "SELECT id, text, why, sourceIdsJson, redacted FROM nudge WHERE id IN ($it)" }, 4)
+        fill(Family.PROPOSAL, { "SELECT id, paramsJson, state, originId FROM proposal WHERE id IN ($it)" }, 3)
+        // derived fields: ref id is `KIND:objectId`
+        refs.filter { it.family == Family.DERIVED_FIELD }.forEach { r ->
+            val i = r.id.indexOf(':'); if (i <= 0) return@forEach
+            val rows = tx.rows("SELECT field, value, ref, builtRev, staleSince FROM object_derived WHERE objectKind = ? AND objectId = ? ORDER BY field", listOf(r.id.substring(0, i), r.id.substring(i + 1))) { c ->
+                (0..4).joinToString("\u0001") { k -> if (c.isNull(k)) "\u0000" else c.getString(k) }
+            }
+            out[r] = if (rows.isEmpty()) "gone" else fingerprint(rows.joinToString("\u0002"))
+        }
+        return out
+    }
+
+    private fun fingerprint(text: String): String = java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8)).take(8).joinToString("") { "%02x".format(it) }
 
     private companion object {
         val ACCEPTED = listOf(com.rokid.context.memory.ProposalState.EXECUTING.name, com.rokid.context.memory.ProposalState.EXECUTED.name)

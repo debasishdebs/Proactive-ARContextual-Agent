@@ -154,4 +154,16 @@ class RagCoreOrderTest {
         assertEquals(2, service(WindowResolver { _, _, _ -> throw IllegalStateException("down") }).retrieve("Did I burst crackers on Diwali?", now, on).memories.size)
         assertNull(null)
     }
+
+    @Test fun theTimeAnchorCallIsFencedByThePauseZoneLikeEveryOtherAskDispatch() = runBlocking<Unit> {
+        val calls = AtomicInteger()
+        val llm = WindowResolver { _, _, _ -> calls.incrementAndGet(); null }
+        val blocked = AnswerService(MemoryGraph.get(ctx), AiGraph.get(ctx).runner, AiGraph.get(ctx).retriever, { RetrievalSettings(mode = RetrievalMode.LEXICAL) }, zone = { zone }, llmWindows = llm, zoneGuard = AskZoneGuard { true })
+        val on = FlowPlan.BUILT_IN_QUERY.copy(window = WindowSpec(llmFallback = true))
+        try { blocked.retrieve("Did I burst crackers on Diwali?", now, on); org.junit.Assert.fail("expected AskZoneBlockedException") } catch (_: AskZoneBlockedException) { }
+        assertEquals("the model fallback was never reached", 0, calls.get())
+        blocked.retrieve("What crackers were there on 1 Nov?", now, on) // the rules read it: no TIME_ANCHOR call, so nothing to fence
+        val open = AnswerService(MemoryGraph.get(ctx), AiGraph.get(ctx).runner, AiGraph.get(ctx).retriever, { RetrievalSettings(mode = RetrievalMode.LEXICAL) }, zone = { zone }, llmWindows = llm, zoneGuard = AskZoneGuard { false })
+        open.retrieve("Did I burst crackers on Diwali?", now, on); assertEquals(1, calls.get())
+    }
 }

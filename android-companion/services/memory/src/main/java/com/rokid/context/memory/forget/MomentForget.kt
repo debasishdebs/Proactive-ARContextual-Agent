@@ -149,6 +149,7 @@ class MomentForget(
             "sideEffects" to plan.nodes.keys.filter { com.rokid.context.memory.forget.lifecycle.SideEffectRefs.isSideEffect(it) }.map { it.toString() },
             "rebuiltPhotos" to plan.refs(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, com.rokid.context.memory.forget.lifecycle.Fate.REBUILD),
             "scenesRebuilt" to plan.refs(com.rokid.context.memory.forget.lifecycle.Family.SCENE, com.rokid.context.memory.forget.lifecycle.Fate.REBUILD),
+            "content" to plan.revisions.map { "${it.key}=${it.value}" }, // what each affected row says NOW: a row updated in place under the same id is a different token
         ) + e.membership.mapKeys { "scene:" + it.key },
     )
 

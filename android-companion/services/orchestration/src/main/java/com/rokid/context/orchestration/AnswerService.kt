@@ -159,8 +159,8 @@ class AnswerService(
         try {
             val byRules = if (spec != null && !spec.rules) null else windows.resolve(q, nowMs, zone())
             // The model is asked only when the plan allows it and the rules found nothing; it gets the question text and the date, never a memory.
-            byRules ?: if (spec?.llmFallback == true) (llmWindows ?: defaultLlmWindows).resolve(q, nowMs, zone()) else null
-        } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            byRules ?: if (spec?.llmFallback == true) { zoneGuard.check(); (llmWindows ?: defaultLlmWindows).resolve(q, nowMs, zone()) } else null // the TIME_ANCHOR call is an Ask dispatch: the pause-zone check first, like every other one
+        } catch (c: CancellationException) { throw c } catch (z: AskZoneBlockedException) { throw z } catch (e: Exception) {
             PcLog.i(TAG, "time window unavailable (${e.javaClass.simpleName})"); null
         }
 
