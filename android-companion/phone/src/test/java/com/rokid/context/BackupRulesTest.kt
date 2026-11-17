@@ -58,6 +58,8 @@ class BackupRulesTest {
         "frame_adoption", "space_retired_at", "image_read_attempts", "night_index",
         // Pause zones: this phone's recent state (see backup_rules.xml).
         "pause_zone_state",
+        // User-pinned places (exact coordinates, names, notes): private, never in an automatic backup or transfer; only the explicit settings export carries them (P1 review).
+        com.rokid.context.memory.place.UserPinStore.PREFS,
         // Place Guide: the on/off switch is per-device (default off after a restore).
         com.rokid.context.work.frames.place.PlaceGuideSettings.PREFS,
         // v0.9.9 final fixes: the hub restart ladder is device state (when this phone last tried to start its hub): never restored.
@@ -122,8 +124,6 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS,
         // Pause zones: user configuration (ids, names, boxes, buffers; no DB ids), restored and exported. The per-install record counter is harmless after a restore.
         com.rokid.context.phone.zone.ZoneStore.PREFS,
-        // User-pinned places (Place Guide v2): user configuration like the zones, restored and exported. places.db (their copy for the matcher) is excluded and rebuilt from this list at start.
-        com.rokid.context.memory.place.UserPinStore.PREFS,
     )
 
     /**
@@ -314,7 +314,10 @@ class BackupRulesTest {
         // The only place-named prefs file in the export is the user's pins (user configuration); the pack, its switch and its budget are never exported.
         assertEquals(listOf("place_pins"), com.rokid.context.orchestration.ConfigExport.PREFS_FILES.filter { it.contains("place", ignoreCase = true) })
         assertEquals("place_pins", com.rokid.context.memory.place.UserPinStore.PREFS)
-        assertTrue("the pins are restorable", "place_pins" in restorable)
-        for (section in allSections()) assertTrue("${section.tagName}: place_pins.xml is NOT excluded", "sharedpref:place_pins.xml" !in excludes(section))
+        assertFalse("the pins are not restorable from a backup", "place_pins" in restorable)
+        assertTrue("place_pins" in setupState)
+        for (section in allSections()) assertTrue("${section.tagName}: place_pins.xml IS excluded", "sharedpref:place_pins.xml" in excludes(section))
+        // pause_zones (boxes and names, no notes) stays restorable, as ruled earlier.
+        for (section in allSections()) assertTrue("${section.tagName}: pause_zones.xml stays backed up", "sharedpref:pause_zones.xml" !in excludes(section))
     }
 }

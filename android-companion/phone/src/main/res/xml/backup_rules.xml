@@ -17,11 +17,12 @@
     <exclude domain="database" path="context.db" />
     <exclude domain="database" path="context.db-wal" />
     <exclude domain="database" path="context.db-shm" />
-    <!-- Place pack (places.db, SQLCipher under the db_key that is itself excluded): public place text plus the recency of what was looked at. Never backed up or transferred. The user's pinned places live in place_pins.xml (user configuration, backed up and exported like pause_zones.xml) and are copied back into places.db at start. -->
+    <!-- Place pack (places.db, SQLCipher under the db_key that is itself excluded): public place text plus the recency of what was looked at. Never backed up or transferred. The user's pinned places live in place_pins.xml (exact coordinates, names and notes: private, so also excluded from every backup and transfer; kept by Delete all and carried only by the explicit settings export, which the user chooses to share). places.db is rebuilt from it at start. -->
     <exclude domain="database" path="places.db" />
     <exclude domain="database" path="places.db-wal" />
     <exclude domain="database" path="places.db-shm" />
     <exclude domain="database" path="places.db-journal" />
+    <exclude domain="sharedpref" path="place_pins.xml" />
     <!-- Copies of memory text outside the DB: frame JPEGs, the queue log, the legacy logs, the exports. -->
     <exclude domain="file" path="rokid_archive" />
     <exclude domain="file" path="rokid_inbox" />

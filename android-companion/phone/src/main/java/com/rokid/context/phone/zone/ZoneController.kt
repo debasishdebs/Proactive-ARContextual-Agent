@@ -166,6 +166,9 @@ class ZoneController(
     }
 
     /** Any enabled zone exists: location fixes are wanted (the service holds the location type for it). Cheap; safe from any thread. */
+    /** The stored zones for a geometric check (pins), or null when they cannot be read (unknown = blocked). */
+    fun zonesForCheck(): List<PauseZone>? = if (store.corrupt) null else store.zones()
+
     fun wantsLocation(): Boolean = store.zones().any { it.enabled }
 
     /** Loads the stored zones and reconciles the pause records with them (hub start, process start). Until the first fix every enabled zone reads INSIDE. */

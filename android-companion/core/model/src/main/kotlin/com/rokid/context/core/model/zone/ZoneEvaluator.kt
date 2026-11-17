@@ -167,6 +167,18 @@ class ZoneEvaluator {
             return haversineM(lat, lon, cLat, cLon)
         }
 
+        /**
+         * Pure geometry for "may something private be created at this point": true when ANY enabled zone is within its buffer + [APPROACH_MARGIN_M] of the point, the fix's accuracy (at most
+         * [ENTRY_CREDIT_CAP_M], unknown or negative = the cap) counting against the user. An enabled zone that is not valid is uncertain and blocks; [zones] null (unreadable) blocks.
+         */
+        fun blocksPoint(zones: List<PauseZone>?, lat: Double, lon: Double, accuracyM: Float): Boolean {
+            if (zones == null || !lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return true
+            val acc = if (accuracyM.isNaN() || accuracyM < 0f) ENTRY_CREDIT_CAP_M else min(accuracyM.toDouble(), ENTRY_CREDIT_CAP_M)
+            return zones.any { z ->
+                z.enabled && (!z.isValid() || max(0.0, distanceToBoxM(z, lat, lon) - acc) <= z.bufferM + APPROACH_MARGIN_M)
+            }
+        }
+
         fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
             val r = 6_371_000.0
             val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)

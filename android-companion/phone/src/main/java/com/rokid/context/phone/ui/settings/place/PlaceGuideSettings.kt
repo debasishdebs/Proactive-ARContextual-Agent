@@ -77,7 +77,7 @@ object PlaceGuideModel {
     val HYDERABAD = GeoBox(17.34, 78.38, 17.41, 78.52)
     const val SEED_NOTE = "Fetches place text (Wikipedia, Wikidata, OpenStreetMap) for the area while you are online. Only 5 km cell keys leave the phone, never your position."
     val BUDGET_CHOICES_MB: List<Int> = PlacePack.BUDGET_CHOICES_MB
-    const val PIN_NOTE = "Pins use your position right now (it is not stored or logged apart from the pin itself) and are refused inside or near a pause zone. The name and note are yours: they stay on this phone, and the note is the card text, labelled \"Your note\". Pins are kept by Delete all, are in the settings export, and are never evicted."
+    const val PIN_NOTE = "Pins use your position right now (it is not stored or logged apart from the pin itself) and are refused inside or near a pause zone. The name and note are yours: they stay on this phone (not in any backup or device transfer; only a settings export you make yourself contains them), and the note is the card text, labelled \"Your note\". Pins are kept by Delete all, are in the settings export, and are never evicted."
     const val CLEAR_NOTE = "Removes places that were fetched while you walked around. Seeded areas and your pins stay."
 
     fun mb(bytes: Long): String = String.format(java.util.Locale.ROOT, "%.1f MB", bytes / 1_048_576.0)
@@ -166,6 +166,8 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 
     fun updatePinDialog(f: (PinDialogState) -> PinDialogState) { _state.update { s -> s.copy(pinDialog = s.pinDialog?.let(f)?.copy(error = null)) } }
 
+    override fun onCleared() { control.pinning?.cancel(); super.onCleared() }
+
     fun cancelPin() { control.pinning?.cancel(); _state.update { it.copy(pinDialog = null) } }
 
     fun savePin() {
@@ -214,6 +216,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit) {
     val vm = viewModel { PlaceGuideViewModel(control) }
     val state by vm.state.collectAsStateWithLifecycle()
+    androidx.compose.runtime.DisposableEffect(vm) { onDispose { vm.cancelPin() } } // leaving the screen drops an unused position
     PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin))
 }
 
@@ -303,7 +306,7 @@ private fun PinDialog(d: PinDialogState, on: PlaceGuideActions) {
         title = { Text(if (d.editingId == null) "Pin a place here" else "Edit pin") },
         text = {
             androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextFieldRow("Name (stays on this phone)", d.name, { v -> on.updatePinDialog { it.copy(name = v) } }, tag = "pin_f_name")
+                TextFieldRow("Name (stays on this phone, never backed up)", d.name, { v -> on.updatePinDialog { it.copy(name = v) } }, tag = "pin_f_name")
                 ChoiceRow("Kind", PlacePinning.KINDS.map(PlaceGuideModel::kindLabel), d.kindIndex, { i -> on.updatePinDialog { it.copy(kindIndex = i) } }, tag = "pin_f_kind")
                 TextFieldRow("Radius (metres, 10 to 1500)", d.radius, { v -> on.updatePinDialog { it.copy(radius = v) } }, tag = "pin_f_radius", number = true)
                 if (d.editingId == null) ChoiceRow("Part of", listOf("No site") + d.parents.map { it.name }, d.parentIndex, { i -> on.updatePinDialog { it.copy(parentIndex = i) } }, tag = "pin_f_parent")

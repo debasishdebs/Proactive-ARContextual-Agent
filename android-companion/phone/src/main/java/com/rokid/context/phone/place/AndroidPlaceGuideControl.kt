@@ -14,6 +14,8 @@ class AndroidPlaceGuideControl(
     /** The pause-zone judgement: true while a zone is active, approached or unreadable (also true when the zone state is unknown). */
     private val zoneBlocked: suspend () -> Boolean = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || PlaceGraph.fence.blocked() ||
         com.rokid.context.phone.hub.HubPauses(com.rokid.context.memory.MemoryGraph.get(app).db.pauseDao()).zoneRecords().isNotEmpty() },
+    /** The stored zones for the pin's own geometric check; null = unreadable. */
+    private val zones: suspend () -> List<com.rokid.context.core.model.zone.PauseZone>? = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
     private val fixes: PlaceFixProvider = PlaceFixProvider.create(app) { com.rokid.context.phone.zone.ZoneGraph.peek() },
     private val changed: (Context) -> Unit,
 ) : PlaceGuideControl {
@@ -43,7 +45,7 @@ class AndroidPlaceGuideControl(
 
     override val pinning: PlacePinning by lazy {
         PlacePinning(
-            fix = { fixes.fresh() }, zoneBlocked = zoneBlocked,
+            fix = { fixes.fresh() }, zoneBlocked = zoneBlocked, zones = zones,
             nearby = { lat, lon -> PlaceGraph.readyPack(app).sitesNear(lat, lon) },
             load = { PlaceGraph.pins(app).pins() }, save = { PlaceGraph.savePins(app, it) },
             elapsed = android.os.SystemClock::elapsedRealtime, log = { com.rokid.context.core.log.PcLog.i("PcPlace", it) },

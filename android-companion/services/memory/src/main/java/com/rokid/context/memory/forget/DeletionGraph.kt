@@ -93,7 +93,7 @@ object DeletionGraph {
         k("mark_settings", "reserved: mark toggles (settings, not memory); not written yet"),
         k("pause_zones", "pause zones (the user's own places, radii and switches): a setting; NEVER deleted by a Forget or Delete all, and exported with the settings"),
         k("pause_zone_state", "the latched zone state, the last clear-fix time and the clock-rollback total of THIS phone: a setting, excluded from backup; never deleted by a Forget or Delete all"),
-        k("place_pins", "the user's pinned places (names, notes, positions: their own words): user configuration like the pause zones; NEVER deleted by a Forget or Delete all, exported with the settings and restorable from backup (places.db, their copy, is excluded and rebuilt from this list)"),
+        k("place_pins", "the user's pinned places (names, notes, positions: their own words): user configuration; NEVER deleted by a Forget or Delete all, carried only by the explicit settings export and EXCLUDED from backup, cloud backup and device transfer (exact positions and private notes; unlike pause_zones, which stays in backup; places.db, their copy, is excluded too and rebuilt from this list)"),
         k("place_guide", "the Place Guide switch (default off): a setting; Delete all leaves it, and a published card is withdrawn through the ForgetListener instead"),
     )
 

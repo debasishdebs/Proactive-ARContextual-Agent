@@ -39,7 +39,7 @@ class PlaceGuideModelTest {
         override suspend fun applyBudget(): Int { applied++; return 4 }
         override suspend fun clearFetched(): Int { cleared++; return 7 }
         override val pinning = PlacePinning(
-            fix = { PlaceFix(7.957, 80.759, 1_000, 10f) }, zoneBlocked = { zone },
+            fix = { PlaceFix(7.957, 80.759, 1_000, 10f) }, zoneBlocked = { zone }, zones = { emptyList() },
             nearby = { _, _ -> listOf(PlaceEntity("wd:Q1", null, "Sigiriya", PlaceKinds.ARCHAEOLOGICAL_SITE, 7.957, 80.759, 250, "s", "wikipedia:en", "x", 1, false, false, 0, 10)) },
             load = { stored }, save = { stored = it; true }, elapsed = { 5_000L },
         )
