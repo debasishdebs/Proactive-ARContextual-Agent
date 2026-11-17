@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The ONLY permissions of the bridge (NexusBridgeManifestTest pins this list). The two foreground-service ones are the SDK sample's: normal, install-time, no prompt, and the SDK
+         promotes the plugin service while a Nexus session is open. No INTERNET, no storage, no location, no Bluetooth, no notifications, no camera or microphone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Only PCA's phone app (same signing key) may bind NexusPort: signature level, defined here. -->
+    <permission
+        android:name="io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT"
+        android:protectionLevel="signature" />
+
+    <queries>
+        <intent>
+            <action android:name="com.anezium.rokidbus.action.HUB" />
+        </intent>
+    </queries>
+
+    <!-- Headless: NO activity with MAIN/LAUNCHER (NexusBridgeManifestTest). Nothing is persisted, so no backup. -->
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- Opened from Nexus Plugin access (SETTINGS_ACTIVITY) only. -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true" />
+
+        <!-- PCA phone app -> bridge. Exported but guarded by the signature permission; onBind also checks the caller's key. -->
+        <service
+            android:name=".NexusPortService"
+            android:exported="true"
+            android:permission="io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT" />
+
+        <!-- The Nexus plugin. Capabilities are DECLARED; the wearer approves each in Nexus -> Settings -> Plugin access, and PCA keeps TTS/STT/assist OFF until the user switches them on. -->
+        <service
+            android:name=".BridgeNexusService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="glasses-session" />
+            <intent-filter>
+                <action android:name="com.anezium.rokidbus.action.PLUGIN" />
+            </intent-filter>
+            <meta-data android:name="com.anezium.rokidbus.plugin.ID" android:value="pca" />
+            <meta-data android:name="com.anezium.rokidbus.plugin.DISPLAY_NAME" android:value="Proactive Context Agent" />
+            <meta-data android:name="com.anezium.rokidbus.plugin.API_VERSION" android:value="3" />
+            <meta-data android:name="com.anezium.rokidbus.plugin.CAPABILITIES" android:value="surfaces,stt,tts,assistant" />
+            <meta-data android:name="com.anezium.rokidbus.plugin.RECEIVE_PREFIXES" android:value="/plugin/pca,/system/plugin,/stt,/tts/started,/tts/done" />
+            <meta-data android:name="com.anezium.rokidbus.plugin.LAUNCHABLE" android:value="false" />
+            <meta-data android:name="com.anezium.rokidbus.plugin.SETTINGS_ACTIVITY" android:value=".SettingsActivity" />
+        </service>
+    </application>
+</manifest>

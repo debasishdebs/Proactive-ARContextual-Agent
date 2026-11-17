@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PCA Nexus bridge</string>
+    <string name="settings_title">Proactive Context Agent</string>
+    <string name="settings_state">Optional bridge. It only draws what the PCA phone app sends, and keeps nothing.</string>
+    <string name="settings_defaults">Voice (text to speech), speech to text and the assist button are OFF until you switch them on inside PCA.</string>
+    <string name="settings_remove_label">Remove this bridge</string>
+    <string name="settings_remove_hint">PCA keeps working without it. To remove it: Android Settings, Apps, PCA Nexus bridge, Uninstall. Nothing is stored here, so nothing is left behind.</string>
+</resources>

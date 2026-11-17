@@ -12,6 +12,11 @@ dependencyResolutionManagement {
         maven { url = uri("https://maven.rokid.com/repository/maven-public/") }
         google()
         mavenCentral()
+        // Rokid Nexus plugin SDK (v2.0 bridge, opt-in). Only this one group may come from JitPack; see nexus-bridge/README.md.
+        maven {
+            url = uri("https://jitpack.io")
+            content { includeGroup("com.github.Anezium.Rokid-Nexus") }
+        }
     }
 }
 
@@ -27,3 +32,5 @@ include(":services:orchestration")
 include(":services:glasses-link")
 include(":services:voice")
 include(":services:connectors")
+include(":nexus-port")
+include(":nexus-bridge")
