@@ -24,7 +24,8 @@ data class HourNode(
     val expanded: Boolean = false, val page: Int = 0, val pages: Int = 0, val rows: List<ListItem>? = null,
 ) : HourEntry
 data class DayNode(val date: LocalDate, val title: String, val count: Int, val expanded: Boolean, val hours: List<HourEntry>?)
-data class TreePane(val days: List<DayNode> = emptyList(), val loaded: Boolean = false)
+/** [focusDay] / [focusHourStart]: the most recently used open hour, what "Select this hour / day" of the menu means. */
+data class TreePane(val days: List<DayNode> = emptyList(), val loaded: Boolean = false, val focusDay: LocalDate? = null, val focusHourStart: Long? = null)
 
 /**
  * The pure model of the broken-down view (activity pagination A5): days newest first, hours of a day, folded quiet runs, pause chips. All in the zone's own hours (DST-safe: an hour slot is an instant

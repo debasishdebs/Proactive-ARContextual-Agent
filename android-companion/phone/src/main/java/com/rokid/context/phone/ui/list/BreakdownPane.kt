@@ -1,7 +1,14 @@
 package com.rokid.context.phone.ui.list
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material3.Checkbox
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import com.rokid.context.phone.ui.list.paging.HourNode as HourNodeT
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +52,9 @@ class BreakdownActions(
     val previousPage: (LocalDate, Long) -> Unit, val nextPage: (LocalDate, Long) -> Unit,
 )
 
+/** Select mode in the broken-down view: a moment's tap and hold, and the tap and hold of a day or an hour (their ids resolve kind-scoped, ruling P2). */
+class BreakdownPick(val row: RowPick, val selectDay: (LocalDate) -> Unit, val selectHour: (LocalDate, HourNodeT) -> Unit)
+
 private val ROW_SKELETON = 56.dp
 
 /** One lazy item of the pane; its key is stable, so an open hour keeps its place while counts change above it. */
@@ -83,17 +93,17 @@ private const val SKELETON_ROWS = 25
  * skeleton rows of the known count, so the scroll does not jump when the rows arrive.
  */
 @Composable
-fun BreakdownPane(tree: TreePane, actions: BreakdownActions, onRow: (ListItem) -> Unit, emptyText: String, modifier: Modifier = Modifier) {
+fun BreakdownPane(tree: TreePane, actions: BreakdownActions, onRow: (ListItem) -> Unit, emptyText: String, modifier: Modifier = Modifier, pick: BreakdownPick? = null) {
     val entries = flatten(tree)
     if (!tree.loaded) { Box(modifier.fillMaxSize()) { Text("Loading", color = PcColors.InkSoft, modifier = Modifier.padding(20.dp).testTag("bd_loading")) }; return }
     if (tree.days.isEmpty()) { Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(emptyText, color = PcColors.InkSoft, modifier = Modifier.testTag("bd_empty")) }; return }
     LazyColumn(modifier.fillMaxSize().testTag("bd_lazy"), contentPadding = PaddingValues(bottom = 32.dp)) {
         items(entries, key = { it.key }) { e ->
             when (e) {
-                is Bd.Day -> DayRow(e.node) { actions.toggleDay(e.node.date) }
+                is Bd.Day -> DayRow(e.node, pick?.let { p -> { p.selectDay(e.node.date) } }) { actions.toggleDay(e.node.date) }
                 is Bd.Quiet -> Text(e.run.label, style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(start = 32.dp, top = 4.dp, bottom = 4.dp).testTag("bd_quiet"))
-                is Bd.Hour -> HourRow(e.node) { actions.toggleHour(e.day, e.node.startMs) }
-                is Bd.Row -> MomentRow(e.item) { onRow(e.item) }
+                is Bd.Hour -> HourRow(e.node, pick?.let { p -> { p.selectHour(e.day, e.node) } }) { actions.toggleHour(e.day, e.node.startMs) }
+                is Bd.Row -> MomentRow(e.item, pick?.row) { onRow(e.item) }
                 is Bd.Skeleton -> Box(Modifier.padding(horizontal = 24.dp, vertical = 4.dp).fillMaxWidth().height(ROW_SKELETON).clip(RoundedCornerShape(14.dp)).background(PcColors.Line).testTag("bd_skeleton"))
                 is Bd.Pages -> PageControl(e.node, { actions.previousPage(e.day, e.node.startMs) }, { actions.nextPage(e.day, e.node.startMs) })
             }
@@ -102,9 +112,10 @@ fun BreakdownPane(tree: TreePane, actions: BreakdownActions, onRow: (ListItem) -
 }
 
 @Composable
-private fun DayRow(d: DayNode, onClick: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun DayRow(d: DayNode, onSelect: (() -> Unit)?, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 14.dp).testTag("bd_day_${d.date}"),
+        Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClickLabel = if (onSelect != null) "Select this day" else null, onLongClick = onSelect).padding(horizontal = 20.dp, vertical = 14.dp).testTag("bd_day_${d.date}"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(d.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
@@ -113,8 +124,9 @@ private fun DayRow(d: DayNode, onClick: () -> Unit) {
 }
 
 @Composable
-private fun HourRow(h: HourNode, onClick: () -> Unit) {
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 32.dp, end = 20.dp, top = 10.dp, bottom = 10.dp).testTag("bd_hour_${h.startMs}")) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun HourRow(h: HourNode, onSelect: (() -> Unit)?, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClickLabel = if (onSelect != null) "Select this hour" else null, onLongClick = onSelect).padding(start = 32.dp, end = 20.dp, top = 10.dp, bottom = 10.dp).testTag("bd_hour_${h.startMs}")) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(h.label, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
             // An hour that has only a pause shows its chip and no count.
@@ -131,11 +143,18 @@ private fun Chip(c: PauseChip) {
 }
 
 @Composable
-private fun MomentRow(item: ListItem, onClick: () -> Unit) {
-    SoftCard(Modifier.padding(horizontal = 24.dp, vertical = 3.dp).fillMaxWidth().testTag("bd_row_${item.id}"), onClick = onClick) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun MomentRow(item: ListItem, pick: RowPick?, onClick: () -> Unit) {
+    val picked = pick != null && pick.isSelected(item.id)
+    val a11y = if (pick == null) Modifier else Modifier.semantics(mergeDescendants = true) { if (pick.active) { selected = picked; stateDescription = if (picked) "Selected" else "Not selected" } }
+    // The card's own click would swallow the long press: with select mode the row is a combinedClickable box inside it.
+    SoftCard(Modifier.padding(horizontal = 24.dp, vertical = 3.dp).fillMaxWidth().testTag("bd_row_${item.id}"), onClick = if (pick == null) onClick else null) {
+        Row(Modifier.fillMaxWidth().then(a11y).then(if (pick == null) Modifier else Modifier.combinedClickable(onClick = onClick, onLongClickLabel = if (pick.active) "Toggle selection" else "Select", onLongClick = { if (pick.active) pick.toggle(item.id) else pick.enter(item.id) })), verticalAlignment = Alignment.CenterVertically) {
+        if (pick?.active == true) Checkbox(checked = picked, onCheckedChange = null, modifier = Modifier.padding(start = 8.dp).testTag("bd_pick_${item.id}"))
         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Text(item.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             item.subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
         }
     }
 }

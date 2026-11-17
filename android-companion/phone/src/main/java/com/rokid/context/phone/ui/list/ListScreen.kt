@@ -2,7 +2,9 @@ package com.rokid.context.phone.ui.list
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -69,6 +71,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import com.rokid.context.phone.ui.list.paging.ForgetStage
+import com.rokid.context.phone.ui.list.paging.SelectionController
+import com.rokid.context.phone.ui.list.paging.SelectionState
+import com.rokid.context.phone.ui.list.paging.SelectionText
+import com.rokid.context.phone.ui.list.paging.HourNode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -81,6 +94,7 @@ import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.list.paging.TreePane
+import com.rokid.context.memory.forget.lifecycle.Family
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -108,6 +122,8 @@ fun ListScreen(
     header: @Composable () -> Unit = {},
     /** The List | By time toggle and the broken-down pane (a period's Moments only); null = the plain list. */
     breakdown: BreakdownUi? = null,
+    /** Multi-select Forget (Activity pagination A7/A8). Null, or one whose [SelectionController.available] is false, hides all of it: no long-press, no checkbox, no menu. */
+    selection: SelectionController? = null,
 ) {
     val scope = rememberCoroutineScope()
 
@@ -126,6 +142,10 @@ fun ListScreen(
     val mode by (breakdown?.view ?: remember { MutableStateFlow(ListViewMode.LIST) }).collectAsState()
     val showTree = breakdown != null && mode == ListViewMode.BREAKDOWN
     val tree by (breakdown?.tree ?: remember { MutableStateFlow(TreePane()) }).collectAsState()
+    val selState by (selection?.state ?: remember { MutableStateFlow(SelectionState()) }).collectAsState()
+    val canSelect = selection != null && selection.available
+    val picking = canSelect && selState.selection.active
+    LaunchedEffect(selState.message) { selState.message?.let { onMessage(it); selection?.consumeMessage() } }
 
     if (paged == null) {
         LaunchedEffect(source, reloadKey) { items = source.load() }
@@ -157,7 +177,10 @@ fun ListScreen(
         }
     }
     val start: (ListItem, ItemAction) -> Unit = { row, action -> if (action.confirmTitle == null) runAction(row, action) else confirming = row to action }
-    val onRow: (ListItem) -> Unit = { row -> source.actionFor(row)?.let { start(row, it) } }
+    // In select mode a tap toggles the row instead of opening it.
+    val onRow: (ListItem) -> Unit = { row -> if (picking) selection?.toggle(row.id) else source.actionFor(row)?.let { start(row, it) } }
+    val chosen = remember(selState.selection.refs) { selState.selection.refs.mapTo(HashSet()) { it.id } } // one family per list: the ids name the refs
+    val pick: RowPick? = if (canSelect) RowPick(picking, { id -> id in chosen }, { id -> selection!!.enter(id) }, { id -> selection!!.toggle(id) }) else null
     val toggle: (ListItem) -> Unit = { row ->
         selected = if (row.id in selected) selected - row.id else selected + row.id
         onSelectionChange(selected)
@@ -198,6 +221,7 @@ fun ListScreen(
                 if (grouped) BadgedBox(badge = { if (statusFilter != null) Badge(containerColor = PcColors.Mint) }) {
                     IconButton(onClick = { showFilters = true }) { Icon(Icons.Rounded.FilterList, contentDescription = "Filter") }
                 }
+                if (canSelect) SelectionMenu(selection!!, selState, tree, showTree, itemsNow.orEmpty().map { it.id })
                 if (source.sortable) IconButton(onClick = { sort = if (sort == SortOrder.AZ) SortOrder.ZA else SortOrder.AZ }) {
                     Box(contentAlignment = Alignment.BottomEnd) {
                         Icon(Icons.Rounded.SortByAlpha, contentDescription = if (sort == SortOrder.AZ) "Sort, A to Z" else "Sort, Z to A")
@@ -206,12 +230,13 @@ fun ListScreen(
                 }
             }
             header()
+            if (picking) SelectionBar(selState.selection.size) { selection?.clear() }
             if (breakdown != null) ViewToggle(mode, breakdown.setView)
             if (!showTree) SearchBar(query, source.searchHint) { query = it }
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    showTree -> BreakdownPane(tree, breakdown!!.actions, onRow, source.emptyText)
+                    showTree -> BreakdownPane(tree, breakdown!!.actions, onRow, source.emptyText, pick = pick?.let { p -> BreakdownPick(p, { d -> selection!!.selectDay(d) }, { d, h -> selection!!.selectHour(d, h) }) })
                     itemsNow == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = PcColors.Mint) }
                     visible.isEmpty() -> EmptyState(if (itemsNow!!.isEmpty()) source.emptyText else "No matches")
                     else -> Box(Modifier.fillMaxSize()) {
@@ -220,7 +245,7 @@ fun ListScreen(
                                 when (e) {
                                     is Entry.Group -> if (e.label.isEmpty()) Spacer(Modifier.height(12.dp)) else GroupLabel(e.label, e.count)
                                     is Entry.Note -> Text(e.text, style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp).testTag("list_note"))
-                                    is Entry.Row -> RowCard(e.index, e.count) { ItemRow(e.item, source, rowSelection, rowActions) }
+                                    is Entry.Row -> RowCard(e.index, e.count) { ItemRow(e.item, source, rowSelection, rowActions, pick) }
                                     Entry.ShowNewer -> TextButton(onClick = { paged?.showNewer() }, modifier = Modifier.padding(horizontal = 8.dp).testTag("list_show_newer")) { Text("Show newer") }
                                     Entry.Skeleton -> Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().height(SKELETON_HEIGHT).clip(RoundedCornerShape(16.dp)).background(PcColors.Line).testTag("list_skeleton"))
                                     Entry.ShowMore -> TextButton(onClick = { source.showMore(); if (paged == null) reloadKey++ }, modifier = Modifier.padding(horizontal = 8.dp).testTag("list_show_more")) { Text("Show more") }
@@ -284,6 +309,7 @@ fun ListScreen(
         }
 
         progress?.let { ProgressOverlay(it) }
+        if (canSelect) SelectionDialogs(selState, selection!!)
     }
 }
 
@@ -371,11 +397,15 @@ private fun RowCard(index: Int, count: Int, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?, actions: RowActions) {
+private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?, actions: RowActions, pick: RowPick? = null) {
+    val picked = pick != null && pick.isSelected(item.id)
     Row(
-        Modifier.fillMaxWidth().padding(start = if (selection != null) 4.dp else 0.dp),
+        Modifier.fillMaxWidth().padding(start = if (selection != null || pick?.active == true) 4.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (pick?.active == true) {
+            Checkbox(checked = picked, onCheckedChange = null, colors = CheckboxDefaults.colors(checkedColor = PcColors.Mint), modifier = Modifier.padding(start = 8.dp).testTag("list_pick_${item.id}"))
+        }
         if (selection != null) {
             Checkbox(
                 checked = item.id in selection.selected,
@@ -385,7 +415,7 @@ private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?
             )
         }
         Row(
-            Modifier.weight(1f).clickable { actions.onRow(item) }.padding(horizontal = if (selection != null) 4.dp else 16.dp, vertical = 12.dp)
+            Modifier.weight(1f).rowClick(item, actions, pick, picked).padding(horizontal = if (selection != null) 4.dp else 16.dp, vertical = 12.dp)
                 .padding(end = if (selection != null) 12.dp else 0.dp).testTag("list_row_${item.id}"),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -495,5 +525,96 @@ private fun ProgressOverlay(p: Progress) {
                 TextButton(onClick = cancel, modifier = Modifier.testTag("list_progress_cancel")) { Text("Cancel", color = PcColors.MintDeep) }
             }
         }
+    }
+}
+
+/** What a row needs of select mode: [active] (taps toggle), whether an id is chosen, tap-and-hold ([enter]) and [toggle]. */
+class RowPick(val active: Boolean, val isSelected: (String) -> Boolean, val enter: (String) -> Unit, val toggle: (String) -> Unit)
+
+/** A row's tap and tap-and-hold. Without select mode it is the plain click; with it, a long press enters select mode and, once in it, a tap toggles. TalkBack hears "Select" for the long press and the selected state. */
+@OptIn(ExperimentalFoundationApi::class)
+private fun Modifier.rowClick(item: ListItem, actions: RowActions, pick: RowPick?, picked: Boolean): Modifier =
+    if (pick == null) clickable { actions.onRow(item) }
+    else combinedClickable(onClick = { actions.onRow(item) }, onLongClickLabel = if (pick.active) "Toggle selection" else "Select", onLongClick = { if (pick.active) pick.toggle(item.id) else pick.enter(item.id) })
+        .semantics(mergeDescendants = true) { if (pick.active) { selected = picked; stateDescription = if (picked) "Selected" else "Not selected" } }
+
+/** "N selected" with a Done button: a polite live region, so a screen reader announces the count as it changes. */
+@Composable
+private fun SelectionBar(count: Int, onDone: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(SelectionText.selected(count), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite }.testTag("sel_count"))
+        TextButton(onClick = onDone, modifier = Modifier.testTag("sel_done")) { Text("Done", color = PcColors.MintDeep) }
+    }
+}
+
+/** The top-right menu of select mode: Select this page / hour / day, Clear and Forget selected (N). It exists only when the feature is available. */
+@Composable
+private fun SelectionMenu(sel: SelectionController, st: SelectionState, tree: TreePane, showTree: Boolean, pageIds: List<String>) {
+    var open by remember { mutableStateOf(false) }
+    val n = st.selection.size
+    val focusDay = tree.focusDay?.let { d -> tree.days.firstOrNull { it.date == d } }
+    val focusHour = focusDay?.hours?.filterIsInstance<HourNode>()?.firstOrNull { it.startMs == tree.focusHourStart }
+    Box {
+        IconButton(onClick = { open = true }, modifier = Modifier.testTag("sel_menu")) { Icon(Icons.Rounded.MoreVert, contentDescription = "Selection menu") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            if (!showTree) DropdownMenuItem(text = { Text("Select this page") }, onClick = { open = false; sel.selectPage(pageIds) }, modifier = Modifier.testTag("sel_page"))
+            if (showTree && focusHour != null) DropdownMenuItem(text = { Text("Select this hour (${focusHour.count})") }, onClick = { open = false; sel.selectHour(focusDay.date, focusHour) }, modifier = Modifier.testTag("sel_hour"))
+            if (showTree && focusDay != null) DropdownMenuItem(text = { Text("Select this day (${focusDay.count})") }, onClick = { open = false; sel.selectDay(focusDay.date) }, modifier = Modifier.testTag("sel_day"))
+            if (n > 0) DropdownMenuItem(text = { Text("Clear") }, onClick = { open = false; sel.clear() }, modifier = Modifier.testTag("sel_clear"))
+            if (n > 0) DropdownMenuItem(
+                text = { Text(if (st.selection.overCeiling) "Forget selected ($n): select fewer" else "Forget selected ($n)") },
+                enabled = !st.selection.overCeiling, onClick = { open = false; sel.forgetSelected() }, modifier = Modifier.testTag("sel_forget"),
+            )
+        }
+    }
+}
+
+/** The planning and deleting overlay, the confirmation (with the dependency preview and, for a large one, the acknowledgement) and the refusal. */
+@Composable
+private fun SelectionDialogs(st: SelectionState, sel: SelectionController) {
+    when (val stage = st.stage) {
+        ForgetStage.Idle -> Unit
+        ForgetStage.Planning -> ProgressOverlay(Progress("Checking what this removes", null))
+        ForgetStage.Running -> ProgressOverlay(Progress("Forgetting ${st.selection.size} selected", null))
+        is ForgetStage.Refused -> AlertDialog(
+            onDismissRequest = { sel.dismiss() },
+            title = { Text("Select fewer") },
+            text = { Text(if (stage.reason == ForgetStage.Reason.CEILING) SelectionText.refusedCeiling(stage.count) else SelectionText.REFUSED_TOO_LARGE, modifier = Modifier.testTag("sel_refused")) },
+            confirmButton = { TextButton(onClick = { sel.dismiss() }, modifier = Modifier.testTag("sel_refused_ok")) { Text("OK", color = PcColors.MintDeep) } },
+            containerColor = PcColors.Surface,
+        )
+        is ForgetStage.Confirm -> {
+            val p = stage.preview
+            AlertDialog(
+                onDismissRequest = { sel.dismiss() },
+                title = { Text("Forget ${st.selection.size} selected?") },
+                text = {
+                    Column(Modifier.testTag("sel_confirm_text")) {
+                        if (stage.changed) Text(SelectionText.CHANGED, color = PcColors.MintDeep, modifier = Modifier.testTag("sel_changed"))
+                        Text("This cannot be undone. Forgetting these also affects:", modifier = Modifier.padding(top = 4.dp))
+                        previewLines(p).forEach { Text("\u2022 $it", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("sel_line")) }
+                        if (p.needsAck) Row(Modifier.padding(top = 12.dp).clickable { sel.acknowledge(!stage.acknowledged) }.semantics(mergeDescendants = true) { stateDescription = if (stage.acknowledged) "Checked" else "Not checked" }, verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = stage.acknowledged, onCheckedChange = null, modifier = Modifier.testTag("sel_ack"))
+                            Text(SelectionText.ack(p.nodes), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { sel.confirm() }, enabled = stage.canConfirm, modifier = Modifier.testTag("sel_confirm")) { Text("Forget", fontWeight = FontWeight.SemiBold, color = if (stage.canConfirm) PcColors.MintDeep else PcColors.InkSoft) } },
+                dismissButton = { TextButton(onClick = { sel.dismiss() }, modifier = Modifier.testTag("sel_cancel")) { Text("Cancel", color = PcColors.InkSoft) } },
+                containerColor = PcColors.Surface,
+            )
+        }
+    }
+}
+
+/** The dependency preview as plain lines: what the plan erases, rebuilds and drops, by family (counts only). */
+internal fun previewLines(p: com.rokid.context.memory.forget.lifecycle.SelectionPreview): List<String> {
+    val names = mapOf(
+        Family.PHOTO to "photos", Family.MEMORY to "memories", Family.MARK to "marks", Family.MOMENT to "moments", Family.SCENE to "scenes", Family.ANSWER to "answers", Family.NUDGE to "nudges",
+        Family.PROPOSAL to "proposals", Family.TRACE to "traces", Family.RUN_RESULT to "generated results", Family.DERIVED_FIELD to "derived texts",
+    )
+    return p.counts.entries.filter { it.value.total > 0 }.sortedBy { it.key.ordinal }.map { (f, c) ->
+        val parts = listOfNotNull(c.erase.takeIf { it > 0 }?.let { "$it removed" }, c.rebuild.takeIf { it > 0 }?.let { "$it rebuilt" }, c.drop.takeIf { it > 0 }?.let { "$it cleared" })
+        "${c.total} ${names[f] ?: f.token} (${parts.joinToString(", ")})"
     }
 }
