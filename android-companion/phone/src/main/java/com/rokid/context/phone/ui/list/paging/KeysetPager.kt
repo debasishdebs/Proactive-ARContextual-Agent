@@ -58,7 +58,7 @@ class KeysetPager<T>(
         if (!s.hasMore || s.rows.isEmpty()) return@withLock
         val after = source.cursorOf(s.rows.last())
         val page = source.page(range, after, pageSize)
-        var rows = s.rows + page; var headDropped = s.headDropped
+        var rows = distinctById(s.rows + page); var headDropped = s.headDropped
         if (page.isNotEmpty()) starts += after
         if (starts.size > windowPages) {
             dropped += starts.removeAt(0)
@@ -75,7 +75,10 @@ class KeysetPager<T>(
         if (!s.headDropped) return@withLock
         if (unknownAbove || dropped.isEmpty()) { reset(); return@withLock }
         val after = dropped.removeAt(dropped.lastIndex)
-        var rows = source.page(range, after, pageSize) + s.rows; var hasMore = s.hasMore
+        // Bounded by the retained window's first row: after a Forget the reloaded page reaches one row further down (the deleted row's slot), into rows the window already holds.
+        val firstKept = s.rows.firstOrNull()?.let(source::cursorOf)
+        val above = source.page(range, after, pageSize).let { p -> if (firstKept == null) p else p.takeWhile { source.compare(source.cursorOf(it), firstKept) < 0 } }
+        var rows = distinctById(above + s.rows); var hasMore = s.hasMore
         starts.add(0, after)
         if (starts.size > windowPages) {
             val lastStart = starts.removeAt(starts.lastIndex)
@@ -98,6 +101,9 @@ class KeysetPager<T>(
         setStarts(top, read.rows)
         _state.value = s.copy(rows = read.rows, hasMore = read.cutOff, newCount = s.newCount + newer)
     }
+
+    /** Every merge keeps one row per id (the list uses ids as lazy keys: a duplicate would crash it). */
+    private fun distinctById(rows: List<T>): List<T> = rows.distinctBy { source.cursorOf(it).id }
 
     private class Read<T>(val rows: List<T>, val cutOff: Boolean)
 

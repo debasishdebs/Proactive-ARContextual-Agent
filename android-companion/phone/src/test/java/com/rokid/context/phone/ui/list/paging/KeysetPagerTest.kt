@@ -51,6 +51,18 @@ class KeysetPagerTest {
         assertEquals(1_000, ids(p).toSet().size)
     }
 
+    @Test fun showNewerAfterAForgetInTheDroppedPageNeverDuplicatesARetainedRow() = runTest {
+        val src = source(1_300); val p = KeysetPager(src, range, pageSize = 100, windowPages = 10)
+        p.loadFirst(); repeat(10) { p.loadMore() } // 11 pages: page 1 (r1300..r1201) is dropped
+        assertTrue(p.state.value.headDropped)
+        src.rows.removeAll { it.id == "r1250" } // a row of the dropped page is forgotten: its reload reaches one row into the retained window
+        p.showNewer()
+        assertEquals("every id once (the list uses ids as lazy keys)", ids(p).size, ids(p).toSet().size)
+        assertEquals("r1300", ids(p).first()); assertFalse("r1250" in ids(p))
+        p.refresh(); p.showNewer()
+        assertEquals(ids(p).size, ids(p).toSet().size)
+    }
+
     @Test fun aRefreshIsOneQueryAndDeletedRowsVanishNewRowsAppearTheBottomStays() = runTest {
         val src = source(250); val p = KeysetPager(src, range, pageSize = 100)
         p.loadFirst(); p.loadMore()

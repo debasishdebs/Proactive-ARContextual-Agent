@@ -153,6 +153,30 @@ class SuspectSweepTest {
         assertEquals(1, calls.size); assertFalse(exists("old_a"))
     }
 
+    @Test fun aZoneThatClosesWhileTheCallWaitsForItsPermitBlocksTheUpload() = runBlocking {
+        suspect("a")
+        val base = object : com.rokid.context.model.PhotoLiveness {
+            override suspend fun <T> holdUploadSlot(block: suspend () -> T): T = block()
+            override suspend fun gone(ids: Set<String>) = com.rokid.context.model.GonePhotos(emptySet()) // the photo itself is live
+            override suspend fun goneMemories(ids: Set<String>): Set<String> = emptySet()
+            override suspend fun goneMarks(ids: Set<String>): Set<String> = emptySet()
+        }
+        var goneAtDispatch: Set<String>? = null
+        var goneBeforeWait: Set<String>? = null
+        val waiting = pipeline { ids, _, cls ->
+            calls += ids to cls
+            // what KeyframeExtract builds for the router, asked before and after the model-permit wait (the sweep's own pre-check saw no zone)
+            val live = com.rokid.context.work.frames.DispatchFence.wrap(base, kotlin.coroutines.coroutineContext, null)
+            goneBeforeWait = live.gone(ids.toSet()).ids
+            zone = true // the zone closes while the call waits for its permit
+            goneAtDispatch = live.gone(ids.toSet()).ids
+            ExtractOutcome.Failed("INVALID_OUTPUT")
+        }
+        sweep(waiting).run()
+        assertEquals(emptySet<String>(), goneBeforeWait)
+        assertEquals("the dispatch-time check sees the closed zone: the router drops the call, nothing uploads", setOf("a"), goneAtDispatch)
+    }
+
     @Test fun aFailedDescribeKeepsTheSuspectQueuedAndAskedAgainNextRun() = runBlocking {
         suspect("a")
         val failing = pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("INVALID_OUTPUT") }
