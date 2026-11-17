@@ -55,35 +55,49 @@ class ForgetExecutor internal constructor(
     private fun ctx(now: Long = clock()) = DeleteCtx(db, proposals, now) { f, s -> service.addPending(f, s) }
 
     /** Re-plans inside the transaction and revokes what the plan reaches. Never throws except cancellation: a planner failure revokes every lease. */
-    private suspend fun revoke(plan: suspend (ForgetPlanner) -> ForgetPlan): Int = try {
-        leases.revoke(plan(ForgetPlanner(db)))
+    private suspend fun revoke(plan: suspend (ForgetPlanner) -> ForgetPlan): ForgetPlan? = try {
+        plan(ForgetPlanner(db)).also { leases.revoke(it) }
     } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c
-    } catch (e: Exception) { leases.revokeAll() }
+    } catch (e: Exception) { leases.revokeAll(); null }
+
+    /**
+     * F3 (`forgetV2`, ruling 2026-11-17): the Scenes the [plan] says are REBUILT (they survive with the Moments that are left) lose their old derived text NOW (v1 only hid it); the derive pass writes it again from the survivors.
+     * A Scene that is empty or named is DROPPED by the v1 steps. No plan (the planner failed): every hidden Scene field is erased, fail closed.
+     */
+    private suspend fun rebuildScenes(c: DeleteCtx, plan: ForgetPlan?) {
+        if (!ForgetV2.on) return
+        if (plan == null) { c.db.sceneDao().eraseStaleSceneDerived(); return }
+        val ids = plan.refs(Family.SCENE, Fate.REBUILD)
+        if (ids.isNotEmpty()) SceneFamily.selfDelete(ids, Fate.REBUILD, c)
+    }
 
     // ---- fact, photo ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
     /** Forget fact for [ids] (`ForgetService.forgetFactsTx`). [top] false when a caller already re-planned in this transaction. */
-    internal suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, bounded: Set<String>? = null, top: Boolean = true): ForgetService.Result = db.withTransaction {
-        if (top) revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.User) }
-        cascade(ctx(), ids.distinct(), lockFrames, queueOutbox = queueOutbox, bounded = bounded)
+    internal suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, bounded: Set<String>? = null, top: Boolean = true, protectAll: Set<String>? = null): ForgetService.Result = db.withTransaction {
+        val plan = if (top) revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.User) } else null
+        val c = ctx()
+        cascade(c, ids.distinct(), lockFrames, queueOutbox = queueOutbox, bounded = bounded, protect = protectAll).also { if (top) rebuildScenes(c, plan) }
     }
 
     /** Forget moment (`ForgetService.forgetMomentTx`): the photo, its memories, cites, tombstone and canvas outputs. */
-    internal suspend fun forgetPhoto(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, top: Boolean = true): ForgetService.Result = db.withTransaction {
-        if (top) revoke { it.plan(setOf(Ref(Family.PHOTO, frameId)), Policy.User) }
+    internal suspend fun forgetPhoto(frameId: String, redactCites: Boolean = true, queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, top: Boolean = true, protectAll: Set<String>? = null): ForgetService.Result = db.withTransaction {
+        val plan = if (top) revoke { it.plan(setOf(Ref(Family.PHOTO, frameId)), Policy.User) } else null
         val c = ctx()
+        // F1 / F5 (`forgetV2`): the photos this Forget forgets; a photo a memory ALSO cites (carried or shared) is a survivor: never locked or deleted, described again alone
+        val protect = if (ForgetV2.on) (protectAll ?: setOf(frameId)) else null
         val radiusCascade = bounded == null
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
         // CARRIED memories (a batch mate's caption) are a provenance invalidation: their text and descendants go, but the photos THEY cite are never locked, tombstoned or deleted (v1; the design would REBUILD them)
         val carried = dao.carriedMemoryIdsOfFrame(frameId) - ids.toSet()
-        val invalidatedCarried = if (carried.isEmpty()) ForgetService.Result.EMPTY else cascade(c, carried, lockFrames = false, provenanceOnly = true, queueOutbox = false)
+        val invalidatedCarried = if (carried.isEmpty()) ForgetService.Result.EMPTY else cascade(c, carried, lockFrames = false, provenanceOnly = true, queueOutbox = false, protect = protect)
         if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
             dropCanvasOutputs(c, listOf(frameId), null, radiusCascade)
-            return@withTransaction cascade(c, emptyList(), lockFrames = true, extraCited = cites, bounded = bounded).with(invalidatedCarried)
+            return@withTransaction cascade(c, emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, protect = protect).with(invalidatedCarried).also { if (top) rebuildScenes(c, plan) }
         }
-        val r = cascade(c, ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded)
+        val r = cascade(c, ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded, protect = protect)
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         PhotoFamily.lock(listOf(frameId), c)
         MomentFamily.dropHolding(c, listOf(frameId), ids)
@@ -91,6 +105,7 @@ class ForgetExecutor internal constructor(
         PhotoFamily.selfDelete(setOf(frameId), Fate.ERASE, c)
         val files = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct()
         val out = r.copy(framesToDelete = files).with(invalidatedCarried)
+        if (top) rebuildScenes(c, plan)
         if (queueOutbox) queueCleanup(c, out.framesToDelete, wire, spans, phoneFilesOnly)
         out
     }
@@ -99,19 +114,21 @@ class ForgetExecutor internal constructor(
 
     /** Retention expiry of memories (`ForgetService.expireTx`): derived memories are left alone, accepted proposals keep their params, keyframes are kept. */
     internal suspend fun expire(ids: Collection<String>): ForgetService.Result = db.withTransaction {
-        revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.Retention) }
-        cascade(ctx(), ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true)
+        val plan = revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.Retention) }
+        val c = ctx()
+        cascade(c, ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true).also { rebuildScenes(c, plan) }
     }
 
     /** Row 8, suspect descriptions: the memories go, the photos never do (`ForgetService.removeDescriptions`). The plan used for the revocation is the user plan (a superset: fail closed). */
     internal suspend fun removeDescriptions(ids: Collection<String>): ForgetService.Result = db.withTransaction {
-        revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.User) }
-        cascade(ctx(), ids.distinct(), lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true)
+        val plan = revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.User) }
+        val c = ctx()
+        cascade(c, ids.distinct(), lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true).also { rebuildScenes(c, plan) }
     }
 
     /** Photo expiry (`ForgetService.expirePhotosTx`, Ruling 11): the frame row goes with a tombstone, everything described about it stays. */
     internal suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): ForgetService.Result = db.withTransaction {
-        revoke { it.plan(frameIds.map { id -> Ref(Family.PHOTO, id) }.toSet(), Policy.RetentionPhotos(requireLinked, recheckSkipped)) }
+        val plan = revoke { it.plan(frameIds.map { id -> Ref(Family.PHOTO, id) }.toSet(), Policy.RetentionPhotos(requireLinked, recheckSkipped)) }
         val c = ctx()
         val paths = mutableListOf<String>(); val expiredIds = mutableListOf<String>(); val expiredTimes = mutableListOf<Long>()
         for (id in frameIds.distinct()) {
@@ -126,6 +143,7 @@ class ForgetExecutor internal constructor(
         MomentFamily.dropHolding(c, expiredIds, emptyList()) // a Moment with no live photo is not a Moment
         val wire = expiredIds.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId } // frame_meta stays on expiry
         val spans = dropCanvasOutputs(c, expiredIds, expiredTimes)
+        rebuildScenes(c, plan)
         queueCleanup(c, paths, wire, spans, phoneFilesOnly = true) // routine retention is storage hygiene: phone files only
         ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expiredIds.size)
     }
@@ -143,13 +161,16 @@ class ForgetExecutor internal constructor(
     /** `ForgetService.cascade`: F (the memories), D (their descendants), the Moments holding them, the extraction lock, the redaction of what cited them. */
     private suspend fun cascade(
         c: DeleteCtx, ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(),
-        queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false,
+        queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false, protect: Set<String>? = null,
     ): ForgetService.Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return ForgetService.Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
         val citedFrames = (found.mapNotNull { it.frameId } + forgotten.toList().chunked(CHUNK).flatMap { dao.sourceFramesOf(it) }).distinct()
-        val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) citedFrames - citedFrames.chunked(CHUNK).flatMap { dao.keyframeIds(it) }.toSet() else citedFrames
+        // F1 / F5 (`forgetV2`, [protect] = the photos this Forget forgets): a cited photo that is NOT forgotten is a survivor, never locked, deleted or tombstoned
+        val forgottenFrames = if (protect == null) citedFrames else citedFrames.filter { it in protect }
+        val survivors = if (protect == null) emptyList() else citedFrames - forgottenFrames.toSet()
+        val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) forgottenFrames - forgottenFrames.chunked(CHUNK).flatMap { dao.keyframeIds(it) }.toSet() else forgottenFrames
         val invalidated = if (!invalidateDescendants) emptySet() else forgotten.chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() - forgotten
         MemoryFamily.selfDelete(forgotten, Fate.ERASE, c)
         MemoryFamily.selfDelete(invalidated, Fate.REBUILD, c)
@@ -160,6 +181,10 @@ class ForgetExecutor internal constructor(
         if (lockFrames) {
             PhotoFamily.lock(frames, c); spans = dropCanvasOutputs(c, inside, null, radiusCascade)
             if (bounded != null) { val outside = frames - inside.toSet(); if (outside.isNotEmpty()) RunResultFamily.scrubLocked(c, outside) }
+        }
+        if (survivors.isNotEmpty()) { // the stored outputs of a survivor may carry the forgotten text (scrubbed); one with no description left is described again, alone
+            RunResultFamily.scrubLocked(c, survivors)
+            PhotoFamily.requeueSolo(survivors, c)
         }
         val uncited = inside.filter { dao.remainingRefs(it) == 0 } // the photo goes only when no surviving memory cites it
         val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
@@ -206,7 +231,7 @@ class ForgetExecutor internal constructor(
         moments: MomentForget, now: Long, requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String>, byKey: Boolean, expectedHash: String?, guard: () -> Unit, testFault: (() -> Unit)?,
     ): MomentForget.Result = db.withTransaction {
         guard() // the caller's last authorization check, inside the deleting transaction
-        revoke { it.plan(emptySet(), Policy.Spans(spans, requestedSeconds, sceneIds, byKey)) }
+        val plan = revoke { it.plan(emptySet(), Policy.Spans(spans, requestedSeconds, sceneIds, byKey)) }
         val md = db.momentDao(); val s3 = db.canvasSlice3Dao(); val c = ctx(now) // [now] is the MomentForget's own clock reading, as in v1
         // 1. Fences first: the durable range, then a tombstone per requested second (and the start of every span: the recency marker of a long range).
         spans.forEach { s3.addMomentForgetRange(it.first, it.last) }
@@ -214,7 +239,7 @@ class ForgetExecutor internal constructor(
         // 2. Independent discovery, unioned with the projection.
         val found = moments.discover(requestedSeconds, spans, bounded = byKey)
         val frames = found.frames; val memories = found.memories; val labels = found.labels; val projected = found.projected
-        if (expectedHash != null && moments.hashOf(spans, found, moments.sceneEffect(found.moments, sceneIds)) != expectedHash.removeSuffix(MomentForget.ACK_SUFFIX)) throw ForgetContentChanged()
+        if (expectedHash != null && moments.currentHash(spans, found, moments.sceneEffect(found.moments, sceneIds), requestedSeconds, sceneIds, byKey) != expectedHash.removeSuffix(MomentForget.ACK_SUFFIX)) throw ForgetContentChanged()
         val closure = moments.closureOf(found, if (byKey) moments.sceneEffect(found.moments + found.projected, sceneIds) else null, sceneIds, byKey)
         if (closure.second.size > MomentForget.MAX_UNACKED_RESULTS && expectedHash?.endsWith(MomentForget.ACK_SUFFIX) != true) throw ForgetNeedsAck()
         RunResultFamily.selfDelete(closure.first, Fate.DROP, c)
@@ -222,8 +247,9 @@ class ForgetExecutor internal constructor(
         val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
         // 3. The cascades, in this transaction.
         var cascade = ForgetService.Result.EMPTY
-        for (f in frames) cascade = cascade.with(forgetPhoto(f, queueOutbox = false, bounded = if (byKey) frames else null, top = false))
-        if (memories.isNotEmpty()) cascade = cascade.with(forgetFacts(memories.toList(), queueOutbox = false, bounded = if (byKey) frames else null, top = false))
+        val protect = if (ForgetV2.on) frames else null // F1 / F5: only the photos of this Forget are forgotten; a photo a memory of the range also cites is rebuilt alone
+        for (f in frames) cascade = cascade.with(forgetPhoto(f, queueOutbox = false, bounded = if (byKey) frames else null, top = false, protectAll = protect))
+        if (memories.isNotEmpty()) cascade = cascade.with(forgetFacts(memories.toList(), queueOutbox = false, bounded = if (byKey) frames else null, top = false, protectAll = protect))
         var labelsDeleted = 0; var resultsInvalidated = 0
         spans.forEach { val o = TraceFamily.eraseRange(c, it.first, it.last); labelsDeleted += o.labelsDeleted; resultsInvalidated += o.resultsInvalidated }
         MarkFamily.deleteFound(c, labels, labels) // stray marks, then the run rows that list them as lineage tokens (`mf:<labelId>`)
@@ -240,6 +266,7 @@ class ForgetExecutor internal constructor(
             if (sceneIds.isNotEmpty()) SceneFamily.selfDelete(sceneIds.toSet(), Fate.DROP, c)
             RunResultFamily.selfDelete((sceneIds.map { "scene:$it" } + dropped.map { "moment:$it" }).toSet(), Fate.DROP, c)
         }
+        rebuildScenes(c, plan) // F3
         // 5. The durable cleanup, same transaction.
         val tombstonedTraces = liveTracesBefore - s3.forgettableTraces().map { it.traceId }.toSet()
         val inserted = CleanupOutbox.queue(md, now, cascade.framesToDelete, wire, tombstonedTraces, spans)

@@ -361,6 +361,33 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
     @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND labelRev != :labelRev") protected abstract suspend fun invalidateSweepsOfOtherLabelRev(labelRev: Long): Int
     @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND sweepId IN (SELECT sweepId FROM canvas_sweep WHERE invalidated = 1)") protected abstract suspend fun invalidateReplaysOfInvalidSweeps(): Int
 
+    // --- read-only PLANNING of what a Forget invalidates (Forget lifecycle F6, `forgetV2`: replays, sweeps and helper jobs are planned nodes, preview == delete). Same predicates as the writes above and below. ---
+    @Query("SELECT replayId FROM canvas_replay WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun replayIdsOfTrace(needle: String): List<String>
+    @Query("SELECT sweepId FROM canvas_sweep WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun sweepIdsOfTrace(needle: String): List<String>
+    @Query("SELECT replayId FROM canvas_replay WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun replayIdsInRange(fromMs: Long, toMs: Long): List<String>
+    @Query("SELECT sweepId FROM canvas_sweep WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun sweepIdsInRange(fromMs: Long, toMs: Long): List<String>
+    @Query("SELECT replayId FROM canvas_replay WHERE invalidated = 0") protected abstract suspend fun liveReplayIds(): List<String>
+    @Query("SELECT sweepId FROM canvas_sweep WHERE invalidated = 0") protected abstract suspend fun liveSweepIds(): List<String>
+    @Query("SELECT replayId FROM canvas_replay WHERE invalidated = 0 AND sweepId IN (SELECT sweepId FROM canvas_sweep WHERE invalidated = 1)") protected abstract suspend fun replayIdsOfInvalidSweeps(): List<String>
+    @Query("SELECT replayId FROM canvas_replay WHERE invalidated = 0 AND sweepId IN (:sweepIds)") protected abstract suspend fun replayIdsOfSweeps(sweepIds: List<String>): List<String>
+
+    /** The replays and sweeps [invalidateBySources] would invalidate with these arguments (ids only; reads, never writes). [labelsChanged]: a mark goes, `labelRev` moves, so every live result computed under the old one is invalid. */
+    open suspend fun plannedReplaySweepInvalidations(traceIds: Collection<String>, fromMs: Long?, toMs: Long?, labelsChanged: Boolean): Pair<Set<String>, Set<String>> {
+        val replays = LinkedHashSet<String>(); val sweeps = LinkedHashSet<String>()
+        traceIds.forEach { id -> val needle = TraceSources.needle(id); replays += replayIdsOfTrace(needle); sweeps += sweepIdsOfTrace(needle) }
+        if (fromMs != null && toMs != null) { replays += replayIdsInRange(fromMs, toMs); sweeps += sweepIdsInRange(fromMs, toMs) }
+        if (labelsChanged) { replays += liveReplayIds(); sweeps += liveSweepIds() }
+        sweeps.toList().chunked(500).forEach { replays += replayIdsOfSweeps(it) }
+        replays += replayIdsOfInvalidSweeps()
+        return replays to sweeps
+    }
+
+    /** The open helper jobs every Forget voids (`moveFrameForgetFence`: fail closed, also one awaiting its tap). */
+    open suspend fun plannedVoidedHelperJobs(): List<String> = openHelperJobIds()
+
+    /** The DONE helper jobs whose input carried one of [frameIds]: their result and ids are scrubbed ([scrubDoneJobsForFrames]). */
+    open suspend fun plannedScrubbedHelperJobs(frameIds: Collection<String>): List<String> = frameIds.flatMap { doneJobIdsCarrying(frameNeedle(it)) }.distinct()
+
     /**
      * Marks the replays and sweeps that read any of [traceIds], or whose source envelope overlaps `[fromMs, toMs]` (inclusive) or is unknown (no range: fail closed), or (with [labelRevChanged]) that
      * were computed under another `labelRev`, INVALIDATED with their results deleted; the replays of an invalidated sweep follow. One transaction. Returns the rows changed.

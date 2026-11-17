@@ -225,6 +225,13 @@ class KeyframePipeline(
 
     fun stop() { synchronized(this) { loop?.cancel(); loop = null } }
 
+    /**
+     * Forget lifecycle F1 / F5 (`forgetV2`): a photo a Forget queued to be rebuilt ([com.rokid.context.memory.db.ForgetDao.SOLO_REBUILD]) is described ALONE, so no other photo's content shares its model call. When one is among the
+     * candidates it is the whole batch; otherwise the batch is unchanged. Flag OFF: no row carries the marker, so nothing changes.
+     */
+    private fun soloFirst(rows: List<FrameStateEntity>): List<FrameStateEntity> =
+        rows.firstOrNull { it.lastError == com.rokid.context.memory.db.ForgetDao.SOLO_REBUILD }?.let { listOf(it) } ?: rows
+
     /** Abandoned claims back to PENDING, then wake the loop. */
     suspend fun recover(): Int { ensureStartRelease(); val n = FrameRecovery.run(states, clock(), clusters, ::signal); sweepFinalClusters(clock()); return n }
 
@@ -373,7 +380,7 @@ class KeyframePipeline(
         if (!user) shedBacklog(now)
 
         if (user) {
-            val rows = (states.askCandidates(sinceMs ?: Long.MIN_VALUE, MAX_BATCH) + states.newestClaimable(now, abandonBefore, sinceMs ?: Long.MIN_VALUE, 1, MAX_BATCH)).distinctBy { it.frameId }
+            val rows = soloFirst((states.askCandidates(sinceMs ?: Long.MIN_VALUE, MAX_BATCH) + states.newestClaimable(now, abandonBefore, sinceMs ?: Long.MIN_VALUE, 1, MAX_BATCH)).distinctBy { it.frameId })
             if (rows.isEmpty()) return Step.Idle(null)
             val infos = candidates(rows.map { it.frameId }, rows.associate { it.frameId to it.updatedAt }).let { c -> sinceMs?.let { s -> c.filter { it.ts >= s } } ?: c }
             val picked = infos.sortedByDescending { it.ts }.take(MAX_BATCH)
@@ -386,7 +393,7 @@ class KeyframePipeline(
         val captionsOk = power?.mayRunBackground(BackgroundWork.CAPTION_QUEUE) != false
         val aged = if (dwell.isEmpty() && captionsOk) states.captionQueued(MAX_BATCH).filter { now - it.updatedAt >= CAPTION_AGE_MS } else emptyList()
         if (aged.isNotEmpty()) captionStep(aged, now)?.let { return it }
-        val rows = (dwell + states.newestClaimable(now, abandonBefore, Long.MIN_VALUE, 0, MAX_BATCH)).distinctBy { it.frameId }
+        val rows = soloFirst((dwell + states.newestClaimable(now, abandonBefore, Long.MIN_VALUE, 0, MAX_BATCH)).distinctBy { it.frameId })
         if (rows.isNotEmpty()) {
             // Dwell keyframes first, then newest: the newest 3 of each kind cover any backlog size (review I4).
             val picked = candidates(rows.map { it.frameId }, rows.associate { it.frameId to it.updatedAt })

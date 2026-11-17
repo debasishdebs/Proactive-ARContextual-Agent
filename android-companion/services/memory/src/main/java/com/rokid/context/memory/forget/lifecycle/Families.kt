@@ -12,6 +12,12 @@ import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
  */
 private const val CHUNK = 500
 
+/** The ids of the F6 side-effect nodes of a plan (`forgetV2`): regenerable results and sensor rows a Forget invalidates, named by prefix inside their family. */
+internal object SideEffectRefs {
+    const val REPLAY = "replay:"; const val SWEEP = "sweep:"; const val JOB = "job:"; const val SENSOR = "sensor:"
+    fun isSideEffect(r: Ref) = (r.family == Family.RUN_RESULT && listOf(REPLAY, SWEEP, JOB).any { r.id.startsWith(it) }) || (r.family == Family.MOMENT && r.id.startsWith(SENSOR))
+}
+
 object Families {
     val ALL: List<ForgetFamily> = listOf(
         PhotoFamily, MemoryFamily, MomentFamily, SceneFamily, DerivedFieldFamily, MarkFamily, TraceFamily, RunResultFamily,
@@ -29,6 +35,11 @@ internal object PhotoFamily : ForgetFamily {
     override val family = Family.PHOTO
     override val tables = listOf("frame", "frame_meta", "frame_vector", "frame_state", "frame_source", "frame_cluster", "forget_tombstone")
     override val selfDeletes = true
+    /**
+     * F1 / F5 (`forgetV2`): the surviving photos whose memory was erased are described again, ONE AT A TIME, by the ordinary extraction pipeline ([com.rokid.context.memory.db.ForgetDao.requeueSolo]). Returns how many were queued.
+     * Call it AFTER the memories are deleted (a photo that another memory still cites is not queued).
+     */
+    suspend fun requeueSolo(ids: Collection<String>, ctx: DeleteCtx): Int = ids.toList().distinct().chunked(CHUNK).sumOf { ctx.db.forgetDao().requeueSolo(it, ctx.now) }
     /** The extraction lock: a tombstoned photo is never extracted again. */
     suspend fun lock(ids: Collection<String>, ctx: DeleteCtx) { ids.forEach { ctx.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity(it, ctx.now)) } }
     /** The image vectors of [ids] (a photo no surviving memory cites any more). */
@@ -108,7 +119,13 @@ internal object SceneFamily : ForgetFamily {
     override val tables = listOf("scene", "scene_part")
     override val selfDeletes = true
     /** DROP: the Scenes with their parts, audit and derived fields (a Scene a Forget names goes whole). */
-    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) { require(fate == Fate.DROP) { "a Scene is a rebuildable grouping" }; ctx.db.sceneDao().remove(ids.toList()) }
+    override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
+        when (fate) {
+            Fate.DROP -> ctx.db.sceneDao().remove(ids.toList())
+            Fate.REBUILD -> ctx.db.sceneDao().eraseDerived(ids) // F3 (`forgetV2`): the surviving Scene keeps its Moments, its old derived text is erased
+            Fate.ERASE -> throw UnsupportedOperationException("a Scene is rebuilt or dropped")
+        }
+    }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> {
         val out = ArrayList<Edge>()
         DerivedFieldFamily.objectsWithRows("SCENE", ids, tx).forEach { out += Edge(family, Ref(Family.DERIVED_FIELD, "SCENE:$it"), EdgeKind.ORIGIN) }
@@ -125,6 +142,10 @@ internal object DerivedFieldFamily : ForgetFamily {
     suspend fun objectsWithRows(kind: String, ids: Collection<String>, tx: PlanTx): List<String> = tx.chunked(ids) { c ->
         val q = c.joinToString(",") { "?" }
         tx.strings("SELECT objectId FROM object_derived WHERE objectKind = ? AND objectId IN ($q) UNION SELECT objectId FROM object_audit WHERE objectKind = ? AND objectId IN ($q)", listOf<Any>(kind) + c + listOf(kind) + c)
+    }
+    /** Objects of [kind] among [ids] that have ANY derived field row, fresh or hidden (the text of a hidden field is still stored). */
+    suspend fun objectsWithDerived(kind: String, ids: Collection<String>, tx: PlanTx): List<String> = tx.chunked(ids) { c ->
+        tx.strings("SELECT DISTINCT objectId FROM object_derived WHERE objectKind = ? AND objectId IN (${c.joinToString(",") { "?" }})", listOf<Any>(kind) + c)
     }
     /** Objects of [kind] among [ids] that have a FRESH derived field (a field a stale mark would hide). */
     suspend fun freshObjects(kind: String, ids: Collection<String>, tx: PlanTx): List<String> = tx.chunked(ids) { c ->

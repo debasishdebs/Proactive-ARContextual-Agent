@@ -88,6 +88,20 @@ abstract class ForgetDao {
     )
     abstract suspend fun pruneTombstones(beforeMs: Long, keep: List<String>): Int
 
+    /**
+     * Forget lifecycle F1 / F5 (`forgetV2` only, rulings 2026-11-17): a SURVIVING photo whose memory was erased (it was carried or shared with a forgotten photo) goes back to PENDING with the solo marker, so the
+     * ordinary extraction pipeline (with its provenance, power and pause gates) describes it ALONE. Only a photo that still has its `frame` row, is not tombstoned and has no memory left; never one being worked on.
+     */
+    @Query(
+        "UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = '" + SOLO_REBUILD + "', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND state IN ('EXTRACTED','FAILED','FAILED_FINAL') " +
+            "AND EXISTS (SELECT 1 FROM frame f WHERE f.id = frame_state.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId AND fs.role != 'CARRIED') " +
+            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId)",
+    )
+    abstract suspend fun requeueSolo(frameIds: List<String>, nowMs: Long): Int
+
     /** Memories (any review state) that still cite [frameId], via `memory.frameId` or `frame_source`. */
     @Query("SELECT (SELECT COUNT(*) FROM memory WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_source WHERE frameId = :frameId AND role != 'CARRIED')") abstract suspend fun remainingRefs(frameId: String): Int
     /** Codex r12: 1 when a memory still DESCRIBES [frameId] ([DESCRIBED_BY_EXTRACTION]), else 0: the expiry recheck of every deadline-based delete. */
@@ -262,6 +276,8 @@ abstract class ForgetDao {
     abstract suspend fun invalidatedDerived(limit: Int): List<MemoryEntity>
 
     companion object {
+        /** `frame_state.lastError` of a photo queued by a Forget to be described ALONE (F1 / F5): the extraction pipeline claims such a photo without any batch mate. */
+        const val SOLO_REBUILD = "solo_rebuild"
         /** A frame whose cluster is still being built, summarised or retried is never expired. */
         /**
          * Not a cluster representative: no CLUSTER_REP `frame_source` row, and not in its cluster's `repFrameIds` (the row goes with an expired
