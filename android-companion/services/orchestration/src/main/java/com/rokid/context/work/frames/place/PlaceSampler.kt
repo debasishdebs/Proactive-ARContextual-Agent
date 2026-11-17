@@ -4,6 +4,7 @@ import com.rokid.context.ai.contract.PlaceMatchOutput
 import com.rokid.context.memory.place.Geo
 import com.rokid.context.memory.place.PlaceCandidates
 import com.rokid.context.memory.place.PlaceEntity
+import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.memory.place.ZoneFence
 import com.rokid.context.memory.place.ZoneFenced
 import com.rokid.context.memory.place.ZoneTicket
@@ -195,8 +196,7 @@ class PlaceSampler(
         flight.lastAttempt?.let { a ->
             if (now - a.at in 0..DEDUPE_MS && Geo.distanceM(fx.lat, fx.lon, a.lat, a.lon) <= DEDUPE_M) return PlaceOutcome.DUPLICATE
         }
-        val hits = found.places.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) }
-            .sortedWith(compareBy({ gap(it.first, it.second) }, { it.second }, { it.first.id })).take(MAX_LIST)
+        val hits = cutKeepingPins(found.places.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) })
         // The spacing is judged NOW (after any lengthy fetch), against the end of the previous call, on the monotonic clock.
         val callOk = online && elapsed() - flight.lastCallAt >= MIN_CALL_GAP_MS
         if (online && !callOk) return PlaceOutcome.RATE_LIMITED
@@ -287,6 +287,19 @@ class PlaceSampler(
     private fun remember(id: String) { handled.addLast(id); while (handled.size > HANDLED_MAX) handled.removeFirst() }
 
     companion object {
+        /** The FINAL model list (after the sub-place expansion): nearest edge first, cut to [MAX_LIST], but the nearest [Geo.PIN_SLOTS] user pins always keep a place (they replace the farthest non-pins). */
+        internal fun cutKeepingPins(all: List<Pair<PlaceEntity, Double>>): List<Pair<PlaceEntity, Double>> {
+            val order = compareBy<Pair<PlaceEntity, Double>>({ (it.second - it.first.radiusM).coerceAtLeast(0.0) }, { it.second }, { it.first.id })
+            val sorted = all.sortedWith(order)
+            val head = sorted.take(MAX_LIST)
+            val pins = sorted.filter { UserPlace.isUserId(it.first.id) }.take(Geo.PIN_SLOTS)
+            val missing = pins.filter { p -> head.none { it.first.id == p.first.id } }
+            if (missing.isEmpty()) return head
+            val keep = head.toMutableList()
+            for (pin in missing) { val at = keep.indexOfLast { !UserPlace.isUserId(it.first.id) }; if (at >= 0) keep.removeAt(at) else break; keep += pin }
+            return keep.sortedWith(order)
+        }
+
         const val RECENT_MS = 90_000L
         const val SKEW_MS = 30_000L
         const val MAX_FIX_AGE_MS = 60_000L

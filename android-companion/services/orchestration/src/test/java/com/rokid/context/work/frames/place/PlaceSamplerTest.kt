@@ -2,6 +2,8 @@ package com.rokid.context.work.frames.place
 
 import com.rokid.context.ai.contract.PlaceMatchOutput
 import com.rokid.context.memory.place.CellOutcome
+import com.rokid.context.memory.place.Geo
+import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.memory.place.PlaceCandidates
 import com.rokid.context.memory.place.PlaceEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -294,5 +296,30 @@ class PlaceSamplerTest {
         assertTrue(long.length <= PlaceCards.LINE_MAX); assertTrue(long.endsWith("…"))
         assertEquals("Monument", PlaceCards.photo(place("wd:Q1", "X", summary = ""), "f").line)
         assertEquals("OpenStreetMap", PlaceCards.sourceLabel(place("osm:w1", "X").copy(source = "osm", fetchedAt = 0)))
+    }
+}
+
+/** Codex place v2 r1 P2: the reserved pin slots apply to the FINAL model list, after the sub-place expansion and the cut to 16. */
+class PlaceSamplerPinSlotsTest {
+    private val pinId = { n: Int -> "user:00000000-0000-0000-0000-%012d".format(n) }
+
+    @Test fun threeReservedPinsSurviveFiveRootsAndTwelveNearerChildren() {
+        // five public roots 100..140 m north, three pins 280..290 m away (farther), twelve public children of the roots standing right at the point (nearer than everything)
+        val roots = (1..5).map { place("wd:R$it", "Root $it", lat = north(100.0 + it * 10), radius = 50) }
+        val pins = (1..3).map { place(pinId(it), "Pin $it", lat = north(280.0 + it * 5), radius = 10, kind = "viewpoint") }
+        val children = (1..12).map { place("wd:C$it", "Child $it", lat = north(1.0 * it), radius = 50, parent = "wd:R${(it % 5) + 1}") }
+        val chosen = Geo.candidates(roots + pins, LAT, LON)
+        assertEquals("the pack keeps the pins in the 8", 3, chosen.count { UserPlace.isUserId(it.place.id) })
+        val expanded = Geo.expandSubPlaces(chosen.map { it.place }, children)
+        assertTrue(expanded.size > PlaceSampler.MAX_LIST)
+        val cut = PlaceSampler.cutKeepingPins(expanded.map { it to Geo.distanceM(LAT, LON, it.lat, it.lon) })
+        assertEquals(PlaceSampler.MAX_LIST, cut.size)
+        assertEquals("all three reserved pins are in the model list", setOf(pinId(1), pinId(2), pinId(3)), cut.map { it.first.id }.filter(UserPlace::isUserId).toSet())
+        assertEquals("the list stays nearest edge first", cut.map { it.first.id }, PlaceSampler.cutKeepingPins(cut).map { it.first.id })
+    }
+
+    @Test fun withNoPinsTheCutIsTheNearest16() {
+        val all = (1..20).map { place("wd:P$it", "P$it", lat = north(it * 5.0)) }
+        assertEquals(all.take(16).map { it.id }, PlaceSampler.cutKeepingPins(all.map { it to Geo.distanceM(LAT, LON, it.lat, it.lon) }).map { it.first.id })
     }
 }

@@ -287,4 +287,18 @@ class ZoneEvaluatorTest {
         assertFalse(zone.copy(bufferM = -1).isValid()); assertFalse(zone.copy(bufferM = PauseZone.MAX_BUFFER_M + 1).isValid()); assertFalse(zone.copy(south = Double.NaN).isValid())
         assertEquals(300, PauseZone.DEFAULT_BUFFER_M)
     }
+
+    @Test fun blocksPointJudgesTheGivenCoordinatesAgainstEveryEnabledZone() {
+        // zone box 10.0..10.01 / 20.0..20.01, buffer 300 m, approach band to 2300 m
+        assertTrue(ZoneEvaluator.blocksPoint(listOf(zone), 10.005, 20.005, 5f)) // inside
+        assertTrue(ZoneEvaluator.blocksPoint(listOf(zone), 10.0 - 2_000.0 / m, 20.005, 5f)) // 2 km south: in the approach band
+        assertFalse(ZoneEvaluator.blocksPoint(listOf(zone), 10.0 - 2_600.0 / m, 20.005, 5f))
+        assertTrue(ZoneEvaluator.blocksPoint(listOf(zone), 10.0 - 2_600.0 / m, 20.005, 400f), "a vague fix counts against the user")
+        assertFalse(ZoneEvaluator.blocksPoint(listOf(zone.copy(enabled = false)), 10.005, 20.005, 5f))
+        assertFalse(ZoneEvaluator.blocksPoint(emptyList(), 10.005, 20.005, 5f))
+        assertTrue(ZoneEvaluator.blocksPoint(null, 50.0, 50.0, 5f), "unreadable zones")
+        assertTrue(ZoneEvaluator.blocksPoint(listOf(zone.copy(name = "")), 50.0, 50.0, 5f), "an enabled invalid zone is uncertain")
+        assertTrue(ZoneEvaluator.blocksPoint(emptyList(), Double.NaN, 50.0, 5f), "an unreadable fix")
+        assertFalse(ZoneEvaluator.blocksPoint(listOf(zone), 11.0, 21.0, Float.NaN), "unknown accuracy only widens by the cap")
+    }
 }

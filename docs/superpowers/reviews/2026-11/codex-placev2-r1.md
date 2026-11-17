@@ -1,0 +1,15 @@
+- **P1 — Precise pins enter automatic backups.** [Backup rules](/Users/debasishkanhar/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/res/xml/data_extraction_rules.xml:19) exclude `places.db`, but leave `place_pins.xml` eligible in legacy backup, cloud backup, and device transfer. It contains exact coordinates, names, and notes, despite the UI’s “stay on this phone” promise. Exclude it from all three sections; retain the explicit settings export. The existing pause-zone precedent does not justify silently uploading private notes. [Android backup behavior](https://developer.android.com/identity/data/autobackup).
+
+- **P1 — Pin coordinates are never judged against zones.** [Pinning checks](/Users/debasishkanhar/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/work/frames/place/PlacePinning.kt:61) consult the controller’s existing state. An on-demand fix can locate the user inside a zone while the controller still reports an earlier OUTSIDE judgment: `PlaceFixProvider` returns that fix without feeding it to the controller. Both checks can pass and persist an inside-zone pin. Judge the actual draft coordinates against enabled zones before accepting them.
+
+- **P1 — Concurrent mutations can lose saved changes.** [Edit/delete](/Users/debasishkanhar/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/work/frames/place/PlacePinning.kt:87) independently load and replace the whole list; the UI launches overlapping IO jobs. A pending deletion can overwrite a subsequently saved edit with its older snapshot. `UserPinStore` synchronization does not cover this transaction. Serialize read–modify–persist–mirror under one shared lock.
+
+- **P2 — Three-minute retention is not enforced.** [Draft expiry](/Users/debasishkanhar/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/work/frames/place/PlacePinning.kt:73) is checked only on Save. Leaving the dialog open retains coordinates indefinitely. Clear the draft on timeout and lifecycle disposal.
+
+- **P2 — Reserved pins can disappear before matching.** [Sampler truncation](/Users/debasishkanhar/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/work/frames/place/PlaceSampler.kt:198) re-sorts expanded candidates and takes 16. Five public roots plus twelve nearer children displace all three reserved pins. Apply reservation to the final model list.
+
+Otherwise, inspected paths preserve pins through eviction, fetches, restore reconstruction, and Delete all; namespaces prevent fetch collisions. PLACE_MATCH sends names/kinds only; no pin content appeared in inspected logs or notifications. The UA contains no personal data.
+
+Static review and backup XML checks completed; Gradle tests were not run in the read-only sandbox.
+
+NOT READY

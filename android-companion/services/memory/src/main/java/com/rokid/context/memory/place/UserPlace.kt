@@ -53,9 +53,9 @@ data class UserPlace(
 }
 
 /**
- * The user's pinned places: a small JSON list in its own prefs file (`place_pins`), the SOURCE OF TRUTH for the pins. User configuration like the pause zones: kept by Delete all, included in the
- * settings export (`ConfigExport.PREFS_FILES`) and in backup. `places.db` holds a copy of each pin (so the matcher finds it with the rest of the pack); that database is excluded from backup and
- * is rebuilt from this list ([PlacePack.replaceUserPlaces]) at every start, so a restore brings the pins back. A stored list that cannot be read is [corrupt]: it is never overwritten by [write]
+ * The user's pinned places: a small JSON list in its own prefs file (`place_pins`), the SOURCE OF TRUTH for the pins. User configuration: kept by Delete all, included in the
+ * explicit settings export (`ConfigExport.PREFS_FILES`) but EXCLUDED from backup, cloud backup and device transfer (exact positions and notes are private). `places.db` holds a copy of each pin (so the matcher finds it with the rest of the pack); that database is excluded from backup and
+ * is rebuilt from this list ([PlacePack.replaceUserPlaces]) at every start; a restore does NOT bring the pins back (only importing the settings export does). A stored list that cannot be read is [corrupt]: it is never overwritten by [write]
  * and the pack keeps its copies.
  */
 class UserPinStore(private val prefs: SharedPreferences) {
@@ -82,7 +82,7 @@ class UserPinStore(private val prefs: SharedPreferences) {
     }
 
     companion object {
-        /** The prefs file: user configuration (restorable, exported, never deleted by Delete all). */
+        /** The prefs file: user configuration (exported on request, never in a backup or transfer, never deleted by Delete all). */
         const val PREFS = "place_pins"
         const val MAX_PINS = 200
         private const val KEY = "pins"

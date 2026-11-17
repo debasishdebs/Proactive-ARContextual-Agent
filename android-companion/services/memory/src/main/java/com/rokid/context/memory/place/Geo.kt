@@ -88,7 +88,8 @@ object Geo {
     /** A place is a candidate when the point is at most this far from its edge (spec §B4). */
     const val CANDIDATE_GAP_M = 300.0
     const val MAX_CANDIDATES = 8
-    private const val PIN_SLOTS = 3
+    /** How many of the user's nearest pins keep a place in any capped candidate list. */
+    const val PIN_SLOTS = 3
     private const val M_PER_DEG_LAT = 111_320.0
 
     fun distanceM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {

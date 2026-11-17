@@ -1,8 +1,12 @@
 package com.rokid.context.work.frames.place
 
+import com.rokid.context.core.model.zone.PauseZone
 import com.rokid.context.memory.place.PlaceEntity
 import com.rokid.context.memory.place.PlaceKinds
 import com.rokid.context.memory.place.UserPlace
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +20,9 @@ private const val LON = 80.759
 class PlacePinningTest {
     private var now = 1_000_000L
     private var zone = false
+    private var zoneList: List<PauseZone>? = emptyList()
+    private var timers = mutableListOf<Pair<Long, () -> Unit>>()
+    private var cancelled = 0
     private var fix: PlaceFix? = PlaceFix(LAT, LON, 2_000, 12f)
     private var stored = listOf<UserPlace>()
     private var saveOk = true
@@ -28,7 +35,7 @@ class PlacePinningTest {
     )
 
     private fun pinning() = PlacePinning(
-        fix = { fixCalls++; fix }, zoneBlocked = { zone }, nearby = { _, _ -> sites }, load = { stored }, save = { if (saveOk) { stored = it; true } else false },
+        fix = { fixCalls++; fix }, zoneBlocked = { zone }, zones = { zoneList }, schedule = { d, r -> timers += d to r; { cancelled++ } }, nearby = { _, _ -> sites }, load = { stored }, save = { if (saveOk) { stored = it; true } else false },
         elapsed = { now }, newId = { "user:00000000-0000-0000-0000-%012d".format(++ids) }, log = { logs += it },
     )
     private val form = PlacePinning.KINDS.let { PinForm("  Mirror   Wall ", PlaceKinds.ARCHAEOLOGICAL_SITE, 60, "wd:Q1", "Polished wall,\nold graffiti.") }
@@ -64,7 +71,7 @@ class PlacePinningTest {
 
     @Test fun aZoneThatClosesWhileTheFixIsBeingTakenRefusesAtOnce() = runBlocking {
         var calls = 0
-        val p = PlacePinning(fix = { zone = true; fix }, zoneBlocked = { calls++; zone }, nearby = { _, _ -> sites }, load = { stored }, save = { stored = it; true }, elapsed = { now })
+        val p = PlacePinning(fix = { zone = true; fix }, zoneBlocked = { calls++; zone }, zones = { emptyList() }, nearby = { _, _ -> sites }, load = { stored }, save = { stored = it; true }, elapsed = { now })
         assertEquals(PinRefusal.ZONE, (p.begin().exceptionOrNull() as PlacePinning.PinRefused).why)
         assertEquals(2, calls)
     }
@@ -136,5 +143,62 @@ class PlacePinningTest {
         assertEquals("Archaeological site", PlaceCards.photo(mine.copy(summary = ""), "f1").line)
         assertEquals("nearby card for a pin is name and distance only", "nearby · not checked", PlaceCards.nearby(mine, 30.0, "f1").sourceLabel)
         assertEquals("Wikipedia", PlaceCards.sourceLabel(mine.copy(source = "wikipedia:en", fetchedAt = 0)))
+    }
+
+    private fun zoneAt(lat: Double, lon: Double, buffer: Int = 300) = PauseZone("z1", "Home", lat - 0.001, lon - 0.001, lat + 0.001, lon + 0.001, buffer)
+
+    @Test fun anOnDemandFixInsideAZoneIsRefusedWhileTheControllerStillSaysOutside() = runBlocking {
+        zone = false; zoneList = listOf(zoneAt(LAT, LON))
+        val e = pinning().begin().exceptionOrNull() as PlacePinning.PinRefused
+        assertEquals(PinRefusal.ZONE, e.why); assertTrue(stored.isEmpty())
+    }
+
+    @Test fun aFixInTheApproachBandOrWithAVagueAccuracyNearAZoneIsRefusedAndAFarFixIsFine() = runBlocking {
+        zoneList = listOf(zoneAt(LAT + 0.015, LON)) // about 1.5 km north of the fix: inside the 300 m + 2 km band
+        assertEquals(PinRefusal.ZONE, (pinning().begin().exceptionOrNull() as PlacePinning.PinRefused).why)
+        zoneList = listOf(zoneAt(LAT + 0.05, LON)) // about 5.4 km away
+        assertTrue(pinning().begin().isSuccess)
+        zoneList = listOf(zoneAt(LAT + 0.05, LON).copy(enabled = false)); assertTrue("a disabled zone does not count", pinning().begin().isSuccess)
+        zoneList = listOf(zoneAt(LAT + 0.05, LON).copy(name = " ")); assertEquals("an enabled invalid zone is uncertain", PinRefusal.ZONE, (pinning().begin().exceptionOrNull() as PlacePinning.PinRefused).why)
+    }
+
+    @Test fun unreadableZonesRefuseAtDraftAndAtSave() = runBlocking {
+        zoneList = null
+        assertEquals(PinRefusal.ZONE, (pinning().begin().exceptionOrNull() as PlacePinning.PinRefused).why)
+        zoneList = emptyList()
+        val p = pinning(); p.begin().getOrThrow()
+        zoneList = null
+        assertEquals(PinRefusal.ZONE, (p.create(form) as PinResult.Refused).why); assertTrue(stored.isEmpty())
+    }
+
+    @Test fun aZoneDrawnOverTheDraftPositionBeforeSaveRefusesTheSaveWithTheFixCoordinates() = runBlocking {
+        val p = pinning(); p.begin().getOrThrow()
+        zoneList = listOf(zoneAt(LAT, LON)) // the controller is never asked to agree: only the geometry of the held fix
+        assertEquals(PinRefusal.ZONE, (p.create(form) as PinResult.Refused).why); assertTrue(stored.isEmpty())
+    }
+
+    @Test fun overlappingDeleteAndEditCannotOverwriteEachOther() = runBlocking {
+        val a = UserPlace("user:00000000-0000-0000-0000-00000000000a", "A", PlaceKinds.VIEWPOINT, LAT, LON, 60, null, "")
+        val b = a.copy(id = "user:00000000-0000-0000-0000-00000000000b", name = "B")
+        stored = listOf(a, b)
+        val slow = PlacePinning(fix = { fix }, zoneBlocked = { false }, zones = { emptyList() }, nearby = { _, _ -> sites }, load = { stored }, save = { delay(20); stored = it; true }, elapsed = { now })
+        val other = PlacePinning(fix = { fix }, zoneBlocked = { false }, zones = { emptyList() }, nearby = { _, _ -> sites }, load = { stored }, save = { delay(5); stored = it; true }, elapsed = { now })
+        val jobs = listOf(async { slow.delete(a.id) }, async { other.edit(b.id, PinForm("B2", PlaceKinds.VIEWPOINT, 70)) }, async { slow.edit(b.id, PinForm("B3", PlaceKinds.VIEWPOINT, 80)) })
+        jobs.awaitAll()
+        assertEquals("the deleted pin stays deleted and the edits did not resurrect it", listOf(b.id), stored.map { it.id })
+        assertTrue(stored.single().name in setOf("B2", "B3"))
+    }
+
+    @Test fun theDraftIsClearedWhenThreeMinutesPassWithoutASaveAndTheTimerIsCancelledWithIt() = runBlocking {
+        val p = pinning(); p.begin().getOrThrow()
+        assertTrue(p.hasDraft); assertEquals(PlacePinning.DRAFT_TTL_MS, timers.single().first)
+        timers.single().second() // the fake clock reaches three minutes
+        assertFalse("no coordinates are held any more", p.hasDraft)
+        assertEquals(PinRefusal.DRAFT_EXPIRED, (p.create(form) as PinResult.Refused).why)
+        // a stale timer never clears a newer draft
+        val q = pinning(); q.begin().getOrThrow(); val old = timers.last().second; q.begin().getOrThrow(); old(); assertTrue(q.hasDraft)
+        val before = cancelled; q.expire(); assertFalse(q.hasDraft); assertTrue("the timer is cancelled with the draft", cancelled > before)
+        val r = pinning(); r.begin().getOrThrow(); val c0 = cancelled; r.cancel(); assertFalse(r.hasDraft); assertTrue(cancelled > c0)
+        val s = pinning(); s.begin().getOrThrow(); val c1 = cancelled; s.create(form); assertTrue("a save cancels it too", cancelled > c1)
     }
 }

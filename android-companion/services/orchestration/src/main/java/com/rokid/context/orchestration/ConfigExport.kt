@@ -32,13 +32,13 @@ object ConfigExport {
     const val FILE_NAME = "proactive-context-settings.json"
     const val FORMAT = "proactive-context-settings"
 
-    /** BackupRulesTest's restorable files minus nudge_engine (a run gate, not a setting). */
+    /** BackupRulesTest's restorable files minus nudge_engine (a run gate, not a setting), plus place_pins (explicit export only, never backed up). */
     val PREFS_FILES = listOf(
         "hub_settings", "voice_settings", "retrieval_settings", "prompt_settings", "persona_settings", "context_sources",
         "action_settings", "memory_settings",
         // Pause zones (user configuration: ids, names, boxes, buffers). Delete all never touches this file.
         "pause_zones",
-        // User-pinned places (Place Guide v2: names, kinds, radii, positions, the user's own notes). User configuration like the zones: exported, restored, never deleted by Delete all.
+        // User-pinned places (Place Guide v2: names, kinds, radii, positions, the user's own notes). Exported only here (the user's own explicit export); excluded from backup and device transfer; never deleted by Delete all.
         "place_pins",
     )
 
