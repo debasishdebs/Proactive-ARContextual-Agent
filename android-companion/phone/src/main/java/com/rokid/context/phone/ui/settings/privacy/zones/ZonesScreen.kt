@@ -270,7 +270,14 @@ private fun MapButton(text: String, tag: String, onClick: () -> Unit) {
     TextButton(onClick, Modifier.testTag(tag)) { Text(text, style = MaterialTheme.typography.labelLarge) }
 }
 
-private fun DrawScope.drawGrid(v: MapViewport, tm: TextMeasurer) {
+/** drawText derives its max constraints from canvas size minus offset; off-canvas labels made them negative and crashed. Skip those, clamp the rest. */
+internal fun DrawScope.drawLabel(tm: TextMeasurer, text: String, at: Offset, style: TextStyle) {
+    val w = size.width - at.x; val h = size.height - at.y
+    if (!at.x.isFinite() || !at.y.isFinite() || w < 1f || h < 1f || at.x + 4096f < 0f) return
+    drawText(tm, text, at, style, size = Size(w, h))
+}
+
+internal fun DrawScope.drawGrid(v: MapViewport, tm: TextMeasurer) {
     val step = v.gridStepDeg()
     val tl = v.toLatLon(0f, 0f); val br = v.toLatLon(size.width, size.height)
     val label = TextStyle(fontSize = 10.sp, color = PcColors.InkSoft)
@@ -280,7 +287,7 @@ private fun DrawScope.drawGrid(v: MapViewport, tm: TextMeasurer) {
     while (lon <= br.lon && n++ < 200) {
         val x = v.toPx(v.centerLat, lon).x
         drawLine(PcColors.Line, Offset(x, 0f), Offset(x, size.height), 1f)
-        drawText(tm, degText(lon, decimals, "E", "W"), Offset(x + 2f, size.height - 14.sp.toPx()), label)
+        drawLabel(tm, degText(lon, decimals, "E", "W"), Offset(x + 2f, size.height - 14.sp.toPx()), label)
         lon += step
     }
     var lat = floor(br.lat / step) * step
@@ -288,19 +295,19 @@ private fun DrawScope.drawGrid(v: MapViewport, tm: TextMeasurer) {
     while (lat <= tl.lat && n++ < 200) {
         val y = v.toPx(lat, v.centerLon).y
         drawLine(PcColors.Line, Offset(0f, y), Offset(size.width, y), 1f)
-        drawText(tm, degText(lat, decimals, "N", "S"), Offset(2f, y + 1f), label)
+        drawLabel(tm, degText(lat, decimals, "N", "S"), Offset(2f, y + 1f), label)
         lat += step
     }
 }
 
 internal fun degText(v: Double, decimals: Int, pos: String, neg: String): String = String.format(java.util.Locale.US, "%.${decimals}f", abs(v)) + "°" + (if (v >= 0) pos else neg)
 
-private fun DrawScope.drawZone(v: MapViewport, z: PauseZone, tm: TextMeasurer, active: Boolean) {
+internal fun DrawScope.drawZone(v: MapViewport, z: PauseZone, tm: TextMeasurer, active: Boolean) {
     val c = if (active) ZoneRed else ZoneRed.copy(alpha = 0.4f)
     drawBox(v, MapViewport.ringOf(z), c.copy(alpha = 0.7f), filled = false, dashed = true)
     drawBox(v, doubleArrayOf(z.south, z.west, z.north, z.east), c, filled = true, dashed = false)
     val p = v.toPx(z.north, z.west)
-    drawText(tm, z.name, Offset(p.x + 4f, p.y + 2f), TextStyle(fontSize = 11.sp, color = Color(0xFF7A1010)))
+    drawLabel(tm, z.name, Offset(p.x + 4f, p.y + 2f), TextStyle(fontSize = 11.sp, color = Color(0xFF7A1010)))
 }
 
 private fun DrawScope.drawBox(v: MapViewport, b: DoubleArray, color: Color, filled: Boolean, dashed: Boolean) {
