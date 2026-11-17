@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
  * Inventory (pattern of ProvenanceChokePointTest): NexusHudSink is the ONLY path from PCA to Nexus. Fails when any main source anywhere in the repository
  *  - reaches the AIDL port (`NexusPort`, `NexusPort.Stub`, `INexusPort`) or the transport outside the sink's own file and the AIDL adapter;
  *  - imports the Nexus SDK (`com.anezium.rokidbus`) outside the bridge APK's Kotlin sources;
- *  - names the bridge package or `io.github.pca.nexusport` from a module that is not one of the two Nexus modules or the phone's single reviewed provider (none yet).
+ *  - names the bridge package or `io.github.pca.nexusport` from a module that is not one of the two Nexus modules or the phone's explicitly listed reviewed provider files (PHONE_REVIEWED).
  */
 class NexusChokePointTest {
     private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
@@ -24,7 +24,8 @@ class NexusChokePointTest {
         "nexus-bridge/src/main/kotlin/io/github/pca/nexusbridge/NexusPortService.kt", // the SERVER side of the port
     )
     private val PORT = Regex("""\b(NexusPort\b|NexusPort\.Stub|INexusPort|NexusPortCallback|AidlNexusTransport|NexusTransport\b)""")
-    private val SDK = Regex("""com\.anezium\.rokidbus""")
+    // the SDK is USED through imports; a package-name string (the phone detects the hub app by its id) is not SDK use
+    private val SDK = Regex("""(?m)^\s*import\s+com\.anezium\.rokidbus""")
 
     @Test fun onlyTheSinkTouchesThePortAndTheTransport() {
         val offenders = mainFiles().filter { rel(it) !in PORT_USERS }.filter { PORT.containsMatchIn(stripComments(it.readText())) }.map(::rel)
@@ -55,9 +56,18 @@ class NexusChokePointTest {
         assertEquals(listOf("nexus-bridge/build.gradle.kts"), builds)
     }
 
-    @Test fun noOtherModuleNamesTheNexusPackagesYet() {
-        // The phone-side provider (T7/T8) will add exactly one reviewed file here; until then no module outside the two Nexus modules may mention them.
-        val offenders = mainFiles().filter { !rel(it).startsWith("nexus-port/") && !rel(it).startsWith("nexus-bridge/") }
+    /** The reviewed phone-side provider files (T7/T8) and the one fence hook that calls it. Adding a file here is a reviewed decision. */
+    private val PHONE_REVIEWED = setOf(
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusFeeder.kt",
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusGatesAdapter.kt",
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusGraph.kt",
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusProvider.kt",
+        "phone/src/main/java/com/rokid/context/phone/nexus/NexusStatus.kt",
+        "phone/src/main/java/com/rokid/context/phone/zone/ZoneGraph.kt",
+    )
+
+    @Test fun onlyTheReviewedPhoneFilesNameTheNexusPackages() {
+        val offenders = mainFiles().filter { !rel(it).startsWith("nexus-port/") && !rel(it).startsWith("nexus-bridge/") && rel(it) !in PHONE_REVIEWED }
             .filter { Regex("""io\.github\.pca\.nexus""").containsMatchIn(stripComments(it.readText())) }.map(::rel)
         assertEquals(emptyList<String>(), offenders)
     }
