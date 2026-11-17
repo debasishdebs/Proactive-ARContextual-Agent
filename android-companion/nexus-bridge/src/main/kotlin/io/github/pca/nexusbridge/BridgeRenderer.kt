@@ -136,8 +136,15 @@ class BridgeRenderer(
     /** A new phone connection starts a new epoch counter. */
     fun resetEpoch() { latestTrip.set(0) }
 
-    /** Records the latest trip epoch (monotonic max). Never blocks. */
-    fun tripAt(epoch: Long): Int { latestTrip.accumulateAndGet(epoch) { a, b -> if (a > b) a else b }; return NexusResult.OK }
+    /**
+     * Records the latest trip epoch (monotonic max) BEFORE returning, so every later [showAt] / [speakAt] stamped with an older epoch is refused before anything is rendered or sent to Nexus, and invalidates the listening
+     * generation: a speech session that is being opened (authorized, no handle on the phone yet) is stopped and nothing it reports is relayed (r3 P1-1, P1-4).
+     */
+    fun tripAt(epoch: Long): Int {
+        latestTrip.accumulateAndGet(epoch) { a, b -> if (a > b) a else b }
+        stopListening()
+        return NexusResult.OK
+    }
 
     private fun stale(epoch: Long) = epoch < latestTrip.get()
 

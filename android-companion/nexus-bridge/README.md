@@ -66,3 +66,12 @@ T5/T6 add NO permission (no microphone: Nexus owns audio) and one `<meta-data>` 
 ## Remove it
 
 PCA works without it. Android Settings, Apps, "PCA Nexus bridge", Uninstall. Nothing is stored in the bridge. In Nexus, Settings, Plugin access, you can also deny it first.
+
+## Trip ordering, and the residual window (v2 r3)
+
+Privacy shutdown never depends on a remote call returning, and no content is sent after a trip beyond one small, bounded window.
+
+- `trip()` first closes the phone side (epoch bump; queued shows are discarded), then takes the delivery lease EXCLUSIVE for at most 250 ms (a content send holds it SHARED for its binder call), then delivers `tripAt(epoch)` on its own threads for at most 500 ms. The bridge records the epoch and invalidates the listening generation before returning; `showAt` / `speakAt` with an older epoch are refused BEFORE anything is rendered or sent to Nexus. If a wait times out the trip goes on anyway. `trip()` returns within 750 ms whatever the bridge does; a tick re-sends an unconfirmed epoch.
+- Content and privacy operations use separate lanes: a full content lane rejects shows, hides / stops / wipes never share it; a privacy operation the lane still rejects runs on a fresh thread. A withdrawn handle's queued show is cancelled and re-checked at execution.
+- A show that was in flight when the wipe was acknowledged re-owes the wipe (on the acknowledgement, and again when the call returns).
+- Accepted risk (residual window): a send that is already inside the binder when the trip lands (its epoch check done, the notice about to be drawn) can still draw. The bridge hides it again right after its draw, the phone hides the handle, and a wipe is owed. Maximum duration: the call timeout (2 s) plus, when the exclusive wait times out, the 250 ms wait. A hung call is declared unhealthy at the timeout; nothing further is sent during the backoff.
