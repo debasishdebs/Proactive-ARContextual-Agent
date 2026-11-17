@@ -35,14 +35,11 @@ class FrameLiveness(
     companion object {
         private const val MAX_IN = 500
 
-        /** Rows present and not tombstoned, read from [g]. */
-        fun forGraph(g: MemoryGraph, generation: Long = MemoryWipe.generation.get()) = FrameLiveness(generation, { ids ->
-            val list = ids.toList()
-            val present = list.chunked(MAX_IN).flatMap { g.frames.byIds(it) }.map { it.id }.toSet()
-            val locked = list.chunked(MAX_IN).flatMap { g.db.forgetDao().tombstoned(it) }.toSet()
-            present - locked
-        }, { ids -> com.rokid.context.memory.forget.ForgetFence.goneAmong(g.db, ids) },
-            { ids -> ids.filter { g.db.canvasSlice3Dao().label(it) == null }.toSet() })
+        /** Rows present and not tombstoned, read from [g]: the rules are the [com.rokid.context.provenance.ProvenanceGate]'s (one implementation for the image and the text choke point). */
+        fun forGraph(g: MemoryGraph, generation: Long = MemoryWipe.generation.get()): FrameLiveness {
+            val gate = com.rokid.context.provenance.ProvenanceGate.forGraph(g)
+            return FrameLiveness(generation, { ids -> ids - gate.goneFrames(ids) }, gate::goneMemories, gate::goneMarks)
+        }
 
         fun forApp(app: Context, generation: Long = MemoryWipe.generation.get()) = forGraph(MemoryGraph.get(app), generation)
     }

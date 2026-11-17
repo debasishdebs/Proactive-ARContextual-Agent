@@ -278,7 +278,7 @@ class RagCore(
      * text must not propagate); the sources of the ones kept end up in [RagContext.historyIds] so the caller's commit fence covers them.
      */
     private suspend fun nudgeHistory(sinceMs: Long): List<Pair<NudgeEntity, List<String>>> =
-        memory.db.nudgeGateDao().lastNudges(sinceMs).map { it to AskSources.parseAll(it.sourceIdsJson) }.filter { (_, ids) -> ForgetFence.allLive(memory.db, ids) }
+        memory.db.nudgeGateDao().lastNudges(sinceMs).map { it to AskSources.parseAll(it.sourceIdsJson) }.let { rows -> com.rokid.context.provenance.ProvenanceGate.forGraph(memory).liveFilter(rows) { it.second } }
 
     private suspend fun explicit(ids: List<String>): List<MemoryEntity> {
         val byId = ids.distinct().chunked(500).flatMap { memory.db.forgetDao().memories(it) }.filter { it.reviewState == ReviewState.OK }.associateBy { it.id }
@@ -287,10 +287,10 @@ class RagCore(
 
     /** The Forget fence for everything the core hands out: all live = untouched, else the forgotten ones are dropped one by one. */
     private suspend fun fence(found: List<MemoryEntity>): List<MemoryEntity> =
-        if (ForgetFence.allLive(memory.db, found.map { it.id })) found else found.filter { ForgetFence.allLive(memory.db, listOf(it.id)) }
+        com.rokid.context.provenance.ProvenanceGate.forGraph(memory).liveFilter(found) { listOf(it.id) }
 
     private suspend fun fenceCites(found: List<Pair<PhotoHit, String>>): List<Pair<PhotoHit, String>> =
-        if (ForgetFence.allLive(memory.db, found.map { it.second })) found else found.filter { ForgetFence.allLive(memory.db, listOf(it.second)) }
+        com.rokid.context.provenance.ProvenanceGate.forGraph(memory).liveFilter(found) { listOf(it.second) }
 
     private class PhotoPart(val lines: List<String> = emptyList(), val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(), val endpoint: String? = null)
 

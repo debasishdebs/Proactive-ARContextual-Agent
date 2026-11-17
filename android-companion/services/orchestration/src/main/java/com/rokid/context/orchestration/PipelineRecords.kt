@@ -137,20 +137,20 @@ object PipelineRecords {
         // Review I1: the Delete-all check and the insert share one transaction, and Delete all bumps the generation
         // before its own transaction, so a fact from work begun before the wipe can never land after it.
         return g.db.withTransaction {
-            if (MemoryWipe.generation.get() != generation) {
-                PcLog.i(TAG, "fact dropped: Delete all ran since this job started")
-                return@withTransaction false
-            }
-            // Forget fence: a fact extracted from a frame that was forgotten meanwhile (tombstoned) is never written.
+            // The provenance gate (one rule set for every text derived from a photo): wipe generation, tombstoned frames, forgotten source memories, in this transaction.
             val fence = (fenceFrameIds + listOfNotNull(frameId)).distinct()
-            if (fence.chunked(MAX_IN).any { g.db.forgetDao().tombstoned(it).isNotEmpty() }) {
-                PcLog.i(TAG, "fact dropped: its frame was forgotten")
-                return@withTransaction false
-            }
             val sources = sourceIds.distinct()
-            if (!com.rokid.context.memory.forget.ForgetFence.allLive(g.db, sources)) {
-                PcLog.i(TAG, "fact dropped: a source was forgotten since this job started")
-                return@withTransaction false
+            when (val v = com.rokid.context.provenance.ProvenanceGate.forGraph(g).check(com.rokid.context.model.PayloadSources.stored(fence, sources), generation)) {
+                is com.rokid.context.provenance.ProvenanceGate.Verdict.Denied -> {
+                    when (v.reason) {
+                        com.rokid.context.provenance.ProvenanceGate.Reason.WIPED -> PcLog.i(TAG, "fact dropped: Delete all ran since this job started")
+                        com.rokid.context.provenance.ProvenanceGate.Reason.PHOTO_GONE -> PcLog.i(TAG, "fact dropped: its frame was forgotten")
+                        com.rokid.context.provenance.ProvenanceGate.Reason.MEMORY_GONE -> PcLog.i(TAG, "fact dropped: a source was forgotten since this job started")
+                        else -> PcLog.i(TAG, "fact dropped: provenance not provable")
+                    }
+                    return@withTransaction false
+                }
+                com.rokid.context.provenance.ProvenanceGate.Verdict.Live -> Unit
             }
             g.memories.add(
             MemoryEntity(

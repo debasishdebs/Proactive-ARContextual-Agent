@@ -31,12 +31,8 @@ data class AskExportRow(val rowid: Long, val id: String, val ts: Long, val quest
 interface ExportDao {
     @Query(
         "SELECT m.rowid AS rowid, m.id, m.text, m.type, m.tags, m.tier, m.confidence, m.reviewState, m.createdAt, m.frameId, m.imageDelivered, m.reviewFlaggedAt FROM memory m " +
-            "WHERE m.rowid > :after AND m.reviewState = 'OK' " +
-            // not an orphan: photo retention deletes the `frame` row but keeps `frame_meta` (its memories are still exported); a Forget-removed frame has neither (one definition, shared with the one-time purge)
-            "AND NOT (${MemoryOrphan.SQL}) " +
-            // a derived memory needs at least one source memory that is not forgotten (stale-hidden otherwise)
-            "AND (m.derived = 0 OR NOT EXISTS (SELECT 1 FROM memory_source s WHERE s.memoryId = m.id) OR EXISTS (SELECT 1 FROM memory_source s JOIN memory m2 ON m2.id = s.sourceMemoryId " +
-            "WHERE s.memoryId = m.id AND m2.reviewState != 'INVALIDATED')) ORDER BY m.rowid LIMIT :limit",
+            "WHERE m.rowid > :after AND ${ProvenanceSql.LIVE_DERIVED} " +
+            "ORDER BY m.rowid LIMIT :limit",
     )
     suspend fun memoryPage(after: Long, limit: Int): List<MemoryExportRow>
 

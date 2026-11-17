@@ -129,7 +129,7 @@ class NudgeEngine(
             lease.extend(Leases.refsOf(out.sourceIds))
             // M3: the nudge commits THROUGH its read lease (revoked by a Forget while the model ran: no row); checkLive = false keeps the live check below as it was
             val live = (lease.commit(memory.db, checkLive = false) {
-                if (!ForgetFence.allLive(memory.db, prepared.inputIds + prepared.fenceIds + out.sourceIds)) return@commit false
+                if (com.rokid.context.provenance.ProvenanceGate.forGraph(memory).check(prepared.inputIds + prepared.fenceIds + out.sourceIds, com.rokid.context.orchestration.MemoryWipe.generation.get()) != com.rokid.context.provenance.ProvenanceGate.Verdict.Live) return@commit false
                 memory.nudges.addIgnore(
                     NudgeEntity(
                         id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encodeWithDeps(out.sourceIds, prepared.fenceIds + prepared.inputIds), // codex r15: every input is a dependency
@@ -156,7 +156,7 @@ class NudgeEngine(
 
     /** The trigger's photo, only while it is not forgotten (it was read just now; the commit fence checks it again). */
     private suspend fun triggerPhoto(now: Long): TriggerPhoto? = try {
-        triggers.images.photo(now)?.takeIf { com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, setOf(PHOTO_CITE_PREFIX + it.frameId)) }
+        triggers.images.photo(now)?.takeIf { com.rokid.context.provenance.ProvenanceGate.forGraph(memory).allLive(setOf(PHOTO_CITE_PREFIX + it.frameId)) }
     } catch (c: CancellationException) { throw c } catch (e: Exception) {
         PcLog.i(TAG, "trigger image failed (${e.javaClass.simpleName})"); null
     }

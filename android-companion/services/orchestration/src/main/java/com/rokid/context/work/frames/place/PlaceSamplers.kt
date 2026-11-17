@@ -139,7 +139,7 @@ object PlaceMemory {
     suspend fun reveal(app: Context, frameId: String, generation: Long): Boolean {
         val g = MemoryGraph.get(app)
         return g.db.withTransaction {
-            if (MemoryWipe.generation.get() != generation || g.db.forgetDao().tombstoned(listOf(frameId)).isNotEmpty()) return@withTransaction false
+            if (com.rokid.context.provenance.ProvenanceGate.forGraph(g).check(com.rokid.context.model.PayloadSources.frames(listOf(frameId)), generation) != com.rokid.context.provenance.ProvenanceGate.Verdict.Live) return@withTransaction false
             g.db.memoryViewDao().moveReviewState(idFor(frameId), ReviewState.INVALIDATED.name, ReviewState.OK.name) == 1
         }
     }
