@@ -61,6 +61,8 @@ class LogContentScanTest {
         // a boolean, a duration phrase or a fixed reason/phrase built in those classes; never memory text, captions, queries or photo content.
         "key", "role", "total", "pct", "waited", "spaceId", "model", "verb", "textTotal", "textTodo", "imagesTotal", "imagesTodo", "before", "prev", "textHave", "imageCounts", "unembeddable",
         "duration", "tail", "missingPhotos", "paused", "gate", "pendingRebuild", "rebuild", "waitS", "consecutive", "attemptNo",
+        // Row 8 (SuspectSweepWorker): counts only (descriptions removed, photos queued, suspects replaced).
+        "removedExpired", "queued", "replaced",
         "reps.values.sumOf { it.size }", "counts.closed.joinToString(\",\").ifEmpty { \"-\" }", "runCatching { l.isWearingCheckOn() }",
     )
     private val SAFE_PATTERNS = listOf(

@@ -307,6 +307,9 @@ fun DiagnosticsScreen(
     /** The Developer mode switch at the bottom: shows Settings > AI > Experiment canvas when on. */
     developerMode: Boolean = false,
     onDeveloperMode: (Boolean) -> Unit = {},
+    /** Roadmap row 7: how long a canvas pairing lasts (0 = Off: the normal 30 min / 12 h rules); one of [CanvasSessionCopy.HOURS]. Shown only with [developerMode]; any change ends every current session. */
+    devSessionHours: Int = 0,
+    onDevSessionHours: (Int) -> Unit = {},
     /** Debug builds with Developer mode on only (the caller passes null otherwise): the photo 256-vs-768 decision test. */
     onOpenPhotoDimTest: (() -> Unit)? = null,
     /** Wave B: the Context hub card (enum names and numbers only); null while no hub exists. */
@@ -407,6 +410,8 @@ fun DiagnosticsScreen(
                     val rates = listOf(0) + com.rokid.context.core.model.SENSOR_REC_PRESETS_HZ
                     ChoiceRow("Record raw glasses sensors", rates.map { if (it == 0) "Off" else "$it Hz" }, rates.indexOf(sensorRecHz).coerceAtLeast(0), { onSensorRecHz(rates[it]) }, tag = "sensor_rec_rate")
                     if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")
+                    ChoiceRow("Keep canvas pairing", CanvasSessionCopy.HOURS.map { CanvasSessionCopy.label(it) }, CanvasSessionCopy.HOURS.indexOf(devSessionHours).coerceAtLeast(0), { onDevSessionHours(CanvasSessionCopy.HOURS[it]) }, tag = "dev_session_hours")
+                    NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
                 }
             }
             if (onOpenPhotoDimTest != null) {
@@ -416,6 +421,14 @@ fun DiagnosticsScreen(
             }
         } }
     }
+}
+
+/** The copy of the developer canvas-session row (roadmap row 7). The values mirror `DeveloperModeStore.SESSION_HOURS`. */
+object CanvasSessionCopy {
+    val HOURS = listOf(0, 24, 72, 168)
+    fun label(h: Int) = when (h) { 0 -> "Off"; 24 -> "1 day"; 72 -> "3 days"; else -> "7 days" }
+    fun note(h: Int) = if (h == 0) "A browser pairing ends after 30 minutes without use, or 12 hours, or when the app restarts. Choosing a time ends every current pairing."
+    else "A browser paired from now on stays paired for ${label(h)} (also across an app restart) and ends sooner when you choose Off, turn Developer mode off or log out. Only a digest of the key is stored on this phone."
 }
 
 /** The copy of the developer sensor-recording row (v0.9.7 B). */

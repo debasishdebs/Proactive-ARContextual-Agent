@@ -326,6 +326,12 @@ class OrchestrationScheduler(
             .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresBatteryNotLow(true).build())
             .build()
         workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.NightIndexWorker.CATCH_UP_NAME, ExistingPeriodicWorkPolicy.KEEP, catchUp)
+        // Row 8: the suspect-description sweep (marked suspects: expired photo -> description removed, stored photo -> re-described). Charger + battery not low, backoff on a failed run.
+        val sweep = PeriodicWorkRequestBuilder<com.rokid.context.orchestration.forget.SuspectSweepWorker>(24, TimeUnit.HOURS)
+            .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresBatteryNotLow(true).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.MINUTES)
+            .build()
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.SuspectSweepWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, sweep)
     }
 
     /**
@@ -363,6 +369,7 @@ class OrchestrationScheduler(
         workManager.cancelUniqueWork(com.rokid.context.orchestration.EmbeddingWorker.NAME)
         workManager.cancelUniqueWork(com.rokid.context.orchestration.forget.NightIndexWorker.NAME) // it makes AI calls; resume re-ensures it
         workManager.cancelUniqueWork(com.rokid.context.orchestration.forget.NightIndexWorker.CATCH_UP_NAME)
+        workManager.cancelUniqueWork(com.rokid.context.orchestration.forget.SuspectSweepWorker.NAME) // AI calls too
         workManager.cancelAllWorkByTag(TAG_SUMMARIZER)
         workManager.cancelAllWorkByTag(TAG_FRAME_INGEST)
         workManager.cancelAllWorkByTag(TAG_CRITIC)

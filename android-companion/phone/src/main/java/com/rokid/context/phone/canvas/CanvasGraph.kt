@@ -362,7 +362,8 @@ class CanvasGraph(
         fun get(app: Context): CanvasGraph = instance ?: synchronized(this) { instance ?: build(app.applicationContext).also { instance = it } }
 
         private fun build(app: Context): CanvasGraph {
-            val auth = CanvasAuth(System::currentTimeMillis)
+            val dev = DeveloperModeStore.get(app)
+            val auth = CanvasAuth(System::currentTimeMillis, devLifetimeMs = dev::sessionLifetimeMs, vault = dev.vault)
             val port = PhoneLogging.canvasPort() // the gated core port, never the platform logger (always-on rule)
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> port.log(Level.W, TAG, "canvas task failed (${t.javaClass.simpleName})") })
             val ref = java.util.concurrent.atomic.AtomicReference<CanvasGraph>()

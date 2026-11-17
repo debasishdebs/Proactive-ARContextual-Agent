@@ -100,6 +100,8 @@ class CanvasBackendImpl(
     private val momentResolver: com.rokid.context.canvas.moment.MomentResolver = com.rokid.context.canvas.moment.MomentResolver(
         com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao(), MemoryGraph.get(app).db.momentDao()),
     ),
+    /** The one real Ask of `POST /api/ask/eval` (source `canvas_eval`); tests pass a service over their own graph. */
+    private val evalAsk: suspend (String) -> com.rokid.context.orchestration.AskOutcome = { q -> com.rokid.context.orchestration.AskActions.askFrom(app, q, com.rokid.context.orchestration.AskActions.EVAL_SOURCE) },
 ) : CanvasBackend {
     /** Scenes: the read-only executor behind `GET /api/scenes`. */
     private val sceneExec = com.rokid.context.canvas.moment.SceneInputExecutor(MemoryGraph.get(app).db)
@@ -166,6 +168,8 @@ class CanvasBackendImpl(
             extraExecutors: Map<String, NodeExecutor> = emptyMap(),
             /** 3b WP8: the ONE call-side logger the runner writes its count-only lines to (production: the gated core port). */
             log: com.rokid.context.canvas.helper.CanvasLogSink = com.rokid.context.phone.log.PhoneLogging.canvasPort(),
+            /** The eval Ask (see the constructor); null = the production path. */
+            evalAsk: (suspend (String) -> com.rokid.context.orchestration.AskOutcome)? = null,
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
@@ -183,7 +187,7 @@ class CanvasBackendImpl(
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos),
                     liveness = { gen -> com.rokid.context.work.frames.FrameLiveness.forApp(app, gen) })
             }
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, lazy { com.rokid.context.canvas.RetrieveDebug(answers(), live = { ids -> com.rokid.context.memory.forget.ForgetFence.liveIds(MemoryGraph.get(app).db, ids) }) }, thumbnailer, plans, helperJobs, momentResolver)
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, lazy { com.rokid.context.canvas.RetrieveDebug(answers(), live = { ids -> com.rokid.context.memory.forget.ForgetFence.liveIds(MemoryGraph.get(app).db, ids) }) }, thumbnailer, plans, helperJobs, momentResolver, evalAsk ?: { q -> com.rokid.context.orchestration.AskActions.askFrom(app, q, com.rokid.context.orchestration.AskActions.EVAL_SOURCE) })
         }
 
         /** The built-in executors plus [extra]; an extra executor never replaces a built-in node type. */
@@ -731,7 +735,7 @@ class CanvasBackendImpl(
         val generation = MemoryWipe.generation.get() // before the ask: a Delete all that lands at any point below means nothing is served
         val version = runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull()
         val started = android.os.SystemClock.elapsedRealtime()
-        val outcome = com.rokid.context.orchestration.AskActions.askFrom(app, question, com.rokid.context.orchestration.AskActions.EVAL_SOURCE)
+        val outcome = evalAsk(question)
         val latency = android.os.SystemClock.elapsedRealtime() - started
         if (outcome is com.rokid.context.orchestration.AskOutcome.Failed) return buildJsonObject {
             put("status", "failed"); put("answer", outcome.message); put("latencyMs", latency); put("appVersion", version); put("sources", JsonArray(emptyList()))
