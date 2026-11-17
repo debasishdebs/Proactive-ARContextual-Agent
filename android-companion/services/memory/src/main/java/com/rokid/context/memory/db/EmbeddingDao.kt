@@ -52,6 +52,12 @@ abstract class EmbeddingDao {
     /** [livePage] over the memories created at or before [notAfterMs] (S34). */
     @Query(LIVE_PAGE_UNTIL_SQL)
     abstract suspend fun livePageUntil(spaceId: String, afterRowid: Long, minConfidence: Double, notAfterMs: Long, limit: Int): List<VectorRow>
+    /** [livePage] over the memories whose event time is in `[fromMs, toMs)` and created at or before [notAfterMs] (Long.MAX_VALUE = none); applied before the top-k cut. */
+    @Query(LIVE_PAGE_WINDOW_SQL)
+    abstract suspend fun livePageWindow(spaceId: String, afterRowid: Long, minConfidence: Double, notAfterMs: Long, fromMs: Long, toMs: Long, limit: Int): List<VectorRow>
+    /** Which of [ids] have a vector in [spaceId] (retrieval-quality R4: a memory with no vector yet is lexical-only, not a weak semantic match). */
+    @Query("SELECT memoryId FROM memory_vector WHERE spaceId = :spaceId AND memoryId IN (:ids)")
+    abstract suspend fun embeddedAmong(spaceId: String, ids: List<String>): List<String>
     @Query("SELECT COUNT(*) FROM memory WHERE id = :id AND reviewState != 'INVALIDATED'") protected abstract suspend fun liveMemory(id: String): Int
     @Upsert abstract suspend fun putVector(v: MemoryVectorEntity)
 
@@ -254,6 +260,10 @@ abstract class EmbeddingDao {
     open suspend fun discard(spaceId: String) { deleteVectors(spaceId); deleteFrameVectors(spaceId); deleteSpace(spaceId) }
 
     companion object {
+        const val LIVE_PAGE_WINDOW_SQL = "SELECT v.rowid AS rowid, v.memoryId AS memoryId, v.blob AS blob FROM memory_vector v " +
+            "JOIN memory m ON m.id = v.memoryId LEFT JOIN frame_meta fm ON fm.frameId = m.frameId WHERE v.spaceId = :spaceId AND v.rowid > :afterRowid AND m.reviewState = 'OK' " +
+            "AND m.confidence >= :minConfidence AND m.createdAt <= :notAfterMs AND COALESCE(fm.capturedAtMs, m.createdAt) >= :fromMs " +
+            "AND COALESCE(fm.capturedAtMs, m.createdAt) < :toMs ORDER BY v.rowid LIMIT :limit"
         const val LIVE_PAGE_SQL = "SELECT v.rowid AS rowid, v.memoryId AS memoryId, v.blob AS blob FROM memory_vector v " +
             "JOIN memory m ON m.id = v.memoryId WHERE v.spaceId = :spaceId AND v.rowid > :afterRowid AND m.reviewState = 'OK' " +
             "AND m.confidence >= :minConfidence ORDER BY v.rowid LIMIT :limit"

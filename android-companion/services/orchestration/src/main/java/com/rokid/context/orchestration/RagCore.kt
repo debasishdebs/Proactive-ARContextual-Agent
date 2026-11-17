@@ -8,12 +8,15 @@ import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.forget.ForgetFence
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
+import com.rokid.context.memory.retrieval.EventWindow
 import com.rokid.context.memory.retrieval.FusionStrategy
 import com.rokid.context.memory.retrieval.MemoryRetriever
 import com.rokid.context.memory.retrieval.RetrievalMode
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.memory.retrieval.ScoredMemory
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.orchestration.retrieval.TimeWindow
+import com.rokid.context.orchestration.retrieval.TimeWindowRules
 import com.rokid.context.work.frames.recall.PhotoHit
 import com.rokid.context.work.frames.recall.PhotoRecall
 import java.time.Instant
@@ -38,8 +41,10 @@ class RagQuery(val text: String? = null, val vector: FloatArray? = null, val vec
  * Forget fence, photo gate and bounds inside the core, so a new wrapper cannot skip them.
  */
 sealed interface RagSource {
-    /** The memory store through the user's retrieval mode (lexical/semantic/hybrid), the newest trusted memories when nothing matches. [notAfterMs]: the Ask debug view's cutoff (S34), before the retriever's limits. Needs a text query. */
-    data class MemoryStore(val notAfterMs: Long? = null) : RagSource
+    /** The memory store through the user's retrieval mode (lexical/semantic/hybrid), the newest trusted memories when nothing matches. [notAfterMs]: the Ask debug view's cutoff (S34), before the retriever's limits. Needs a text query.
+     * [window] (retrieval-quality spec section 4): a soft filter on the memories' EVENT time (capture time, else when written). It is tried first, then a day wider,
+     * then dropped when nothing relevant is in it; [RagContext.windowNote] tells the answer model which step ran. Null = no filter, today's behaviour. */
+    data class MemoryStore(val notAfterMs: Long? = null, val window: TimeWindow? = null) : RagSource
     /**
      * The photo store (image vectors; words or a vector query), behind the photo gate. [notAfterMs]: the cutoff (the debug view's, S34) and [windowMs] (only photos of the last [windowMs]) both go into
      * the search and the selection, so they apply BEFORE top-k and the relevance margin (the caption fallback is not searched: captionK = 0).
@@ -125,6 +130,12 @@ data class RagContext(
     val hits: List<ScoredMemory> = emptyList(), val mode: RetrievalMode? = null, val semanticUnavailable: Boolean = false,
     /** Why semantic search did not run (set when [semanticUnavailable]); shown, never a silent degrade (2026-11-08). */
     val semanticOff: com.rokid.context.memory.retrieval.SemanticOff? = null,
+    /** The first line of the memories block when the ask had a time window (which window ran, widened, or dropped); null = no window. Counted in the char budget. */
+    val windowNote: String? = null,
+    /** The window the memories came from after widening; null = none asked, or dropped. */
+    val windowUsed: TimeWindow? = null,
+    /** The event time of each memory in [memories] (the photo's capture time, else when written), keyed by id. */
+    val eventTimes: Map<String, Long> = emptyMap(),
 ) {
     /** Everything the prompt rests on, including the sources of the historical nudges in [history]: a caller's commit fence covers all of it. */
     val ids: Set<String> get() = (memories + recent).map { it.id }.toSet() + photos.map { it.citeId } + historyIds
@@ -154,6 +165,11 @@ class RagCore(
     private val imageEndpointId: suspend () -> String? = { null },
     /** Decrypted in memory only (`FramePhotos.load`); a missing key = unreadable photo, which is skipped. */
     private val photoImages: suspend (frameIds: List<String>) -> Map<String, ModelImageInput> = { emptyMap() },
+    /**
+     * Whether a window's result is good enough to stop widening (spec section 4: "a hit passes the relevance floor"). The floor itself is the canvas
+     * ordering package's (section 5); until then any hit counts. A seam, so that package changes one lambda.
+     */
+    private val windowRelevant: (com.rokid.context.memory.retrieval.RetrievalResult) -> Boolean = { it.hits.isNotEmpty() },
 ) {
     /**
      * Runs every [sources] entry against [query] with [params]. Whatever a source returns is fenced (a memory or photo that was forgotten is dropped)
@@ -165,8 +181,15 @@ class RagCore(
         if (params.charBound == 0) return RagContext() // a zero bound is no context at all
         val s = params.over(settings())
         val photoSrc = sources.filterIsInstance<RagSource.PhotoStore>().firstOrNull()
+        // A windowed memory store runs first: the window that survives its widening is the one the photos are searched in (otherwise the order below is unchanged).
+        var store: MemoryStoreResult? = null
+        val windowedSrc = sources.filterIsInstance<RagSource.MemoryStore>().firstOrNull()?.takeIf { it.window != null && query.text != null }
+        if (windowedSrc != null) store = memoryStore(query.text!!, windowedSrc, s, params, nowMs)
+        val photoWin = store?.windowUsed
         val recalled = if (photoSrc == null) emptyList() else when {
             query.vector != null -> recalledByVector(query.vector, query.vectorSpace, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
+            query.text != null && photoSrc.windowMs == null && photoWin != null ->
+                recalledPhotos(query.text, nowMs, minOf(photoSrc.notAfterMs ?: Long.MAX_VALUE, photoWin.toMs - 1), photoWin.fromMs)
             query.text != null -> recalledPhotos(query.text, nowMs, photoSrc.notAfterMs, photoSrc.windowMs?.let { nowMs - it })
             else -> emptyList()
         }
@@ -174,20 +197,28 @@ class RagCore(
         var ctx = RagContext(photoLines = photoPart.lines, photos = photoPart.photos, images = photoPart.images, imageEndpointId = photoPart.endpoint)
         var left = params.charBound - photoPart.lines.sumOf { it.length + 1 }
         // Gather (the order of [sources] decides only which memories come first within a kind), then spend the one budget in the fixed order.
-        var store: MemoryStoreResult? = null
         val recentFound = mutableListOf<MemoryEntity>()
         var history: List<Pair<NudgeEntity, List<String>>>? = null
         for (src in sources) when (src) {
-            is RagSource.MemoryStore -> if (query.text != null && store == null) store = memoryStore(query.text, src, s, params, nowMs, ctx.photos.map { it.citeId }.toSet())
+            is RagSource.MemoryStore -> if (query.text != null && store == null) store = memoryStore(query.text, src, s, params, nowMs)
             is RagSource.RecentWindow -> recentFound += recent(nowMs, src.windowMs, params.recentCap)
             is RagSource.Explicit -> recentFound += explicit(src.memoryIds)
             is RagSource.NudgeHistory -> if (history == null) history = nudgeHistory(nowMs - src.windowMs)
             is RagSource.PhotoStore -> Unit
         }
         store?.let { m ->
-            val lines = AskText.bounded(m.pool.map(::line), left)
+            // A photo whose caption is already a retrieved memory is listed once, as the photo line.
+            val citeIds = ctx.photos.map { it.citeId }.toSet()
+            val pool = m.pool.filter { it.id !in citeIds }
+            val times = eventTimes(pool)
+            left -= m.note?.let { it.length + 1 } ?: 0
+            val lines = AskText.bounded(pool.map { line(it, times[it.id] ?: it.createdAt) }, left)
             left -= lines.sumOf { it.length + 1 }
-            ctx = ctx.copy(memories = m.pool.take(lines.size), memoryLines = lines, fallback = m.fallback, hits = m.result?.hits.orEmpty(), mode = m.result?.modeUsed, semanticUnavailable = m.result?.semanticUnavailable ?: false, semanticOff = m.result?.semanticOff)
+            ctx = ctx.copy(
+                memories = pool.take(lines.size), memoryLines = lines, fallback = m.fallback, hits = m.result?.hits.orEmpty(), mode = m.result?.modeUsed,
+                semanticUnavailable = m.result?.semanticUnavailable ?: false, semanticOff = m.result?.semanticOff,
+                windowNote = m.note, windowUsed = m.windowUsed, eventTimes = times,
+            )
         }
         if (recentFound.isNotEmpty()) {
             val fresh = recentFound.distinctBy { it.id }.take(params.recentCap)
@@ -203,16 +234,43 @@ class RagCore(
         return ctx
     }
 
-    private class MemoryStoreResult(val pool: List<MemoryEntity>, val fallback: Boolean, val result: com.rokid.context.memory.retrieval.RetrievalResult?)
+    private class MemoryStoreResult(
+        val pool: List<MemoryEntity>, val fallback: Boolean, val result: com.rokid.context.memory.retrieval.RetrievalResult?,
+        val note: String? = null, val windowUsed: TimeWindow? = null,
+    )
 
-    private suspend fun memoryStore(q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long, citeIds: Set<String>): MemoryStoreResult {
-        val r = retriever?.retrieve(q, s, nowMs, poolOverride = params.poolSize, notAfterMs = src.notAfterMs)
+    private suspend fun memoryStore(q: String, src: RagSource.MemoryStore, s: RetrievalSettings, params: RagParams, nowMs: Long): MemoryStoreResult {
+        val asked = src.window
+        // Spec section 4: the window, then a day wider, then no window. The first step with a relevant result wins; the last step always does.
+        val steps: List<TimeWindow?> = if (asked == null) listOf(null) else listOf(asked, TimeWindowRules.widened(asked, nowMs, zone()), null)
+        var r: com.rokid.context.memory.retrieval.RetrievalResult? = null
+        var step = 0
+        for ((i, w) in steps.withIndex()) {
+            if (w == null && i == 1) continue // the window could not grow
+            step = i
+            r = retriever?.retrieveWindowed(q, s, nowMs, params.poolSize, src.notAfterMs, w?.let { EventWindow(it.fromMs, it.toMs) })
+            if (w == null || (r != null && windowRelevant(r))) break
+        }
         val fallback = r == null || r.hits.isEmpty()
         // No hits: the newest trusted memories, under the same minConfidence and top-k the retriever applies.
         val poolAll = if (!fallback) r!!.hits.map { it.memory } else
             memory.memories.recent(30, src.notAfterMs).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
-        // A photo whose caption is already a retrieved memory is listed once, as the photo line.
-        return MemoryStoreResult(fence(poolAll).filter { it.id !in citeIds }, fallback, r)
+        val used = if (asked == null || fallback) null else steps[step]
+        return MemoryStoreResult(fence(poolAll), fallback, r, if (asked == null) null else windowNote(asked, if (fallback) null else steps[step], step), used)
+    }
+
+    /** The first line of the memories block (spec section 4). [used]: the window that ran (null = none, the memories are from other dates). Fixed words plus the window's own label and phrase. */
+    internal fun windowNote(asked: TimeWindow, used: TimeWindow?, step: Int): String = when {
+        used != null && step == 0 -> "note: time window ${used.label} (\"${asked.phrase}\"); the times on the memory lines are when they happened"
+        used != null -> "note: nothing matched \"${asked.phrase}\" (${asked.label}); widened to ${used.label}"
+        else -> "note: nothing matched the asked time (\"${asked.phrase}\"); these memories are from other dates"
+    }
+
+    /** The event time of each memory (the photo's capture time, else when it was written; spec section 4). A lookup that fails shows the write time. */
+    private suspend fun eventTimes(pool: List<MemoryEntity>): Map<String, Long> = try {
+        pool.map { it.id }.chunked(900).flatMap { memory.db.retrievalDao().eventTimes(it) }.associate { it.id to it.at }
+    } catch (c: CancellationException) { throw c } catch (e: Exception) {
+        PcLog.i(TAG, "event times unavailable (${e.javaClass.simpleName})"); emptyMap()
     }
 
     /**
@@ -332,8 +390,9 @@ class RagCore(
     /** The short form of a recent memory: `id=<id> · HH:mm · <text ≤ 300>`. */
     private fun recentLine(m: MemoryEntity): String = "id=${m.id} \u00b7 ${RECENT_TIME.withZone(zone()).format(Instant.ofEpochMilli(m.createdAt))} \u00b7 ${AskText.clip(AskText.collapse(m.text), MAX_RECENT_CHARS)}"
 
-    private fun line(m: MemoryEntity): String =
-        "id=${m.id} · ${TIME.withZone(zone()).format(Instant.ofEpochMilli(m.createdAt))} · confidence ${"%.2f".format(Locale.US, m.confidence)} · " +
+    /** [at] is the event time: when it happened (the photo's capture time), not when the memory was written. */
+    private fun line(m: MemoryEntity, at: Long): String =
+        "id=${m.id} · ${EVENT_TIME.withZone(zone()).format(Instant.ofEpochMilli(at))} · confidence ${"%.2f".format(Locale.US, m.confidence)} · " +
             "frame=${m.frameId ?: "none"} · ${AskText.clip(AskText.collapse(m.text), MAX_MEMORY_CHARS)}"
 
     companion object {
@@ -346,6 +405,8 @@ class RagCore(
         private const val MAX_PHOTO_CAPTION = 300
         internal const val IMAGE_NOTE = "note: image=N on a photo line is the Nth attached image"
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
+        /** `Tue 10 Nov 2026 21:10`: the weekday helps "last Tuesday" questions and the year keeps old memories unambiguous. */
+        private val EVENT_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM yyyy HH:mm", Locale.US)
 
         /** The production windowed words-to-photos search: [PhotoRecall.search] with both bounds, the Ask's budget and timeout. */
         fun photosWindowedFrom(context: Context): suspend (String, Long, Long?, Long) -> List<PhotoHit> = { q, _, notAfter, notBefore ->

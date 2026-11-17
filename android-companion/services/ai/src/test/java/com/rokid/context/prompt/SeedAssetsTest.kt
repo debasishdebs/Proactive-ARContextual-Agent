@@ -44,9 +44,21 @@ class SeedAssetsTest {
     @Test fun shippedAnswerDefaultIsPinnedAndThePreviousOneUpgrades() {
         val seeds = AssetPromptSeeds(ApplicationProvider.getApplicationContext())
         val current = PromptDefaults.fingerprint(seeds.template(PromptKey.ANSWER).trim(), com.rokid.context.ai.contract.DefaultSchemas.text(PromptKey.ANSWER))
-        assertEquals("ee96b07885414eccb3067b4f1623df27a5a6d00725a6bea33797d2c5dc8c1dc1", current)
+        assertEquals("81a974f69c5ab1cdbfa03c93cc5157b08c5c18d00a8d20c8c922bbcef0e4d2a4", current)
         assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.ANSWER).contains("4235a1301a8aad35e73715eef4331716edc854d90159cf64d2a7f0365b40e7a4"))
+        assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.ANSWER).contains("ee96b07885414eccb3067b4f1623df27a5a6d00725a6bea33797d2c5dc8c1dc1")) // the v1.0 seed (no {{now}}, no window note) upgrades
         assertEquals(false, PromptDefaults.PREVIOUS.getValue(PromptKey.ANSWER).contains(current))
+    }
+
+    /** Retrieval quality (spec section 6): the ANSWER seed knows today's date, the window note and the last-seen-state rule, and keeps the data and privacy rules. */
+    @Test fun answerSeedCarriesNowTheWindowNoteAndTheLastSeenRule() {
+        val t = AssetPromptSeeds(ApplicationProvider.getApplicationContext()).template(PromptKey.ANSWER)
+        assertEquals(true, t.contains("Now: {{now}}"))
+        assertEquals(true, t.contains("note line says which time window"))
+        assertEquals(true, t.contains("3a)") && t.contains("last state you saw with its time"))
+        assertEquals(true, t.contains("3b)") && t.contains("from other dates"))
+        assertEquals(true, t.contains("Only when nothing relevant was retrieved"))
+        assertEquals(emptySet<String>(), TemplateVariables.missing(PromptKey.ANSWER, t))
     }
 
     /** The VISION_EXTRACT default with the provenance contract is pinned; the pre-provenance one (seed + FACTS schema) upgrades. */
