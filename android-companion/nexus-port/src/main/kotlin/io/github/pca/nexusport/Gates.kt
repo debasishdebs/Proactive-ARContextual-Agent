@@ -19,6 +19,21 @@ interface NexusGates {
 
     /** The glasses are worn. False or unknown = false (fail closed). */
     fun worn(): Boolean
+
+    /**
+     * A pass for ONE delivery, taken BEFORE its first suspension (Place Guide's `ZoneFence.ticket()` pattern). [NexusPass.act] runs the transport calls under the fences' own locks with the zone check as the LAST step
+     * before them, so a zone hold or a trip that lands first wins and one that lands later waits for the call and then withdraws it. The default re-reads the two fences (a check-then-act with a gap); the phone's
+     * adapter overrides it with the real `ZoneFence.act(ticket)` of both fences. May throw (the sink fails closed).
+     */
+    fun pass(): NexusPass = object : NexusPass {
+        override fun <T : Any> act(block: () -> T): T? = if (zoneFenceBlocked() || askFenceBlocked()) null else block()
+    }
+}
+
+/** See [NexusGates.pass]. */
+interface NexusPass {
+    /** Runs [block] only while the fences are still open as they were when the pass was taken; null = not run (a fence closed, or is held). [block] must not suspend. Never runs [block] twice. */
+    fun <T : Any> act(block: () -> T): T?
 }
 
 /**

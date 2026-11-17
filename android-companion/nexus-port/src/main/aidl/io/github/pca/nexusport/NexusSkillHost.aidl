@@ -7,4 +7,9 @@ package io.github.pca.nexusport;
  */
 interface NexusSkillHost {
     String invoke(String opId);
+    /**
+     * Appended in the P1-2 fix (additive). SYNCHRONOUS: the bridge asks BEFORE it opens a Nexus speech session for an assist-button ask. True only while the ask switches are on and the phone's gates (mode, worn, zone
+     * fences, pause) are open; false otherwise. A bridge that cannot get an answer must not open the session.
+     */
+    boolean authorizeListen();
 }

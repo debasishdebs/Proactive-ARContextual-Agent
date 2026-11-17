@@ -73,7 +73,7 @@ class WithdrawTest {
         }
     }
 
-    @Test fun aPauseWithdrawsProactiveHandlesOnATickButNotAnAskedAnswer() = runBlocking<Unit> {
+    @Test fun aPauseWithdrawsProactiveHandlesAndAnswersOnATick() = runBlocking<Unit> {
         val s = sink()
         s.show(nudge())
         g.paused = true
@@ -82,7 +82,7 @@ class WithdrawTest {
         g.paused = false
         s.show(answer()); g.paused = true
         s.tick()
-        assertEquals(setOf(Slot.NOTICE), s.liveSlots())
+        assertEquals(emptySet(), s.liveSlots())      // P1-4: an answer (and its speech) is content too
     }
 
     @Test fun aSourceForgottenWhileShownIsWithdrawnOnTheNextTick() = runBlocking<Unit> {

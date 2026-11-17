@@ -61,6 +61,9 @@ class FakeGates : NexusGates {
     var sourcesGate: (suspend () -> Unit)? = null
     var provenanceCalls = 0
 
+    var passOverride: (() -> NexusPass)? = null
+    override fun pass(): NexusPass = passOverride?.invoke() ?: super.pass()
+
     private fun maybeThrow(name: String) { if (throwOn == name) throw IllegalStateException("gate $name") }
     override suspend fun sourcesLive(ids: Set<String>): Boolean { provenanceCalls++; maybeThrow("sources"); sourcesGate?.invoke(); return liveIds?.containsAll(ids) ?: true }
     override fun zoneFenceBlocked(): Boolean { maybeThrow("zone"); return zone }

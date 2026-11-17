@@ -61,12 +61,12 @@ class NexusHudSinkTest {
         assertTrue(t.calls.isEmpty())
     }
 
-    @Test fun aPauseDropsProactiveItemsOnlyAndAnAskedAnswerStillShows() = runBlocking<Unit> {
+    @Test fun aPauseDropsEveryContentItemButTheContentFreePinStillShows() = runBlocking<Unit> {
         g.paused = true
         val s = sink()
         dropped(s.show(nudge()), DropReason.PAUSED)
         dropped(s.show(HudEvent.PlaceCard("p", "t", "b", setOf("f"), 5_000)), DropReason.PAUSED)
-        assertIs<Outcome.Shown>(s.show(answer()))
+        dropped(s.show(answer()), DropReason.PAUSED)     // P1-4
         assertIs<Outcome.Shown>(s.show(HudEvent.CaptureState(HudEvent.CaptureState.State.PAUSED)))
     }
 

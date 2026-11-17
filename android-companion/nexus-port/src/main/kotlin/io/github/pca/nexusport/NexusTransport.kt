@@ -32,6 +32,8 @@ internal interface NexusEvents {
     fun onAskFailed(reason: Int)
     /** A skill call, answered on the binder thread of the bridge's worker (blocking is fine). Returns the [SkillWire] form. */
     fun invokeSkill(opId: String): String
+    /** The bridge asks before it opens a Nexus speech session; false = do not open it. Synchronous; the same gates as a delivery. */
+    fun authorizeListen(): Boolean
 }
 
 /** The AIDL implementation. A dead binder or any throw is [NexusResult.ERROR]; never an exception. */
@@ -54,6 +56,8 @@ internal class AidlNexusTransport(private val port: NexusPort) : NexusTransport 
             if (e == null || opId == null) return SkillWire.encode(SkillResult.Refused(SkillCodes.UNAVAILABLE))
             return try { e.invokeSkill(opId) } catch (_: RuntimeException) { SkillWire.encode(SkillResult.Refused(SkillCodes.FAILED)) }
         }
+
+        override fun authorizeListen(): Boolean = try { events?.authorizeListen() == true } catch (_: RuntimeException) { false }
     }
     private val events: NexusEvents? get() = callback.events
 

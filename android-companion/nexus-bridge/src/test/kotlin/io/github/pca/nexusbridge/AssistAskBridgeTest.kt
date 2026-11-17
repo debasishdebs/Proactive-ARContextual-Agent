@@ -24,7 +24,8 @@ class AssistAskBridgeTest {
     private val bus = FakeBus()
     private val ev = Ev()
     private val logs = mutableListOf<String>()
-    private val r = BridgeRenderer({ bus }, { logs += it }).also { it.events = ev }
+    private var auth: () -> Boolean = { true }
+    private val r = BridgeRenderer({ bus }, { logs += it }, { auth() }).also { it.events = ev }
     private val ASK = NexusFeatures.STT or NexusFeatures.ASSIST
     private val SECRET = "where is the red car parked"
 
@@ -105,5 +106,36 @@ class AssistAskBridgeTest {
         val l = bus.listen!!; l.onStarted(); l.onFinal(SECRET); l.onStopped(ListenStop.COMPLETED)
         assertTrue(logs.isNotEmpty())
         assertTrue(logs.none { "red car" in it || "parked" in it }, logs.toString())
+    }
+
+    // Codex v2 r1 P1-2: the phone's gates answer BEFORE any speech session is opened.
+    @Test fun noSpeechSessionIsOpenedUnlessThePhoneAuthorizes() {
+        r.setFeatures(ASK)
+        auth = { false }; r.assistOpened()
+        assertTrue("listen" !in bus.calls && bus.listen == null, "refused (zone, not worn, pause...): nothing opened")
+        auth = { throw IllegalStateException("binder") }; r.assistOpened()
+        assertTrue("listen" !in bus.calls, "a failing authorization is a no")
+        assertTrue(ev.log.isEmpty())
+        auth = { true }; r.assistOpened()
+        assertEquals(1, bus.calls.count { it == "listen" })
+    }
+
+    @Test fun authorizationIsAskedBeforeTheSessionOpens() {
+        r.setFeatures(ASK)
+        val order = mutableListOf<String>()
+        auth = { order += "authorize"; order += "calls=" + bus.calls.count { it == "listen" }; true }
+        r.assistOpened()
+        assertEquals(listOf("authorize", "calls=0"), order)
+        assertEquals(1, bus.calls.count { it == "listen" })
+    }
+
+    @Test fun aTripWhileTheSessionIsOpeningClosesIt() {
+        r.setFeatures(ASK)
+        auth = { r.stopListening(); true }          // the phone tripped after authorizing (or during): the session must not stay open
+        bus.calls.clear()
+        r.assistOpened()
+        assertTrue("listen" !in bus.calls, "a trip before the open ends the attempt")
+        val after = bus.calls.count { it == "stopListen" }
+        assertTrue(after >= 1)
     }
 }
