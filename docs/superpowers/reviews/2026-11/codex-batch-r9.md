@@ -1,0 +1,7 @@
+- **[P1] “Show newer” can crash after Forget** — [KeysetPager.kt:78](/Users/debasishkanhar/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/ui/list/paging/KeysetPager.kt:78), commit `5ec63287`. After loading 11 pages, delete a row from the dropped first page. Reloading that page now includes the first row already in the retained window; concatenation duplicates it, even after refresh. `ListScreen` uses row IDs as lazy keys, causing a duplicate-key crash. Bound the prepend by the retained window’s cursor and deduplicate.
+
+- **[P1] Sweep’s zone check does not survive waiting for model dispatch** — [SuspectSweepWorker.kt:115](/Users/debasishkanhar/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/forget/SuspectSweepWorker.kt:115), commit `88077023`. The zone check runs before extraction. If the privacy fence closes while extraction waits for a model permit, `KeyframeExtract` dispatches using `FrameLiveness`, which checks presence/tombstones/wipe but ignores zones. The photo can therefore upload while the fence is blocked. Carry zone enforcement into the dispatch-time liveness check.
+
+No additional P1 identified in token persistence/revocation, description removal, or the hub fixes. Validation was static review plus an in-memory reproduction of the pagination overlap; Android tests were not run in this read-only environment.
+
+NOT READY

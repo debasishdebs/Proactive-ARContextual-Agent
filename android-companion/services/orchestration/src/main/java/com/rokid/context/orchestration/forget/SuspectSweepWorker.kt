@@ -20,6 +20,8 @@ import com.rokid.context.work.budget.BackgroundWork
 import com.rokid.context.work.frames.KeyframeGraph
 import com.rokid.context.work.frames.KeyframePipeline
 import com.rokid.context.work.frames.place.PlaceGraph
+import com.rokid.context.work.frames.DispatchFence
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -112,7 +114,10 @@ internal class SuspectSweep(
             waiting = queued > 0 || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty()
             if (waiting) {
                 val before = db.frameStateDao().describedCount()
-                pipeline.drainCaptionQueue(drainMs, callClass, { bulkAllowed() && !zoneBlocked() && !captureBurst() }, maxCalls)
+                // the zone is re-asked at DISPATCH (inside the model permit, in the upload slot), not only before extraction: DispatchFence carries it into KeyframeExtract's liveness
+                withContext(DispatchFence { zoneBlocked() }) {
+                    pipeline.drainCaptionQueue(drainMs, callClass, { bulkAllowed() && !zoneBlocked() && !captureBurst() }, maxCalls)
+                }
                 described = (db.frameStateDao().describedCount() - before).coerceAtLeast(0)
                 // a describe that saved no memory is a failed attempt: cooldown 1, 2, 4, 8 days, then parked (the same rule as the night job)
                 db.frameStateDao().noteUncitedDescribed(clock())

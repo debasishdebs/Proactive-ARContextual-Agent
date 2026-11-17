@@ -1,5 +1,7 @@
 package com.rokid.context.work.frames
 
+import com.rokid.context.memory.place.ZoneTicket
+import com.rokid.context.memory.place.currentZoneTicket
 import android.content.Context
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.contract.ExtractOutput
@@ -27,6 +29,17 @@ import kotlin.coroutines.cancellation.CancellationException
  * One VISION_EXTRACT over up to 3 photos, saved and followed up (embeddings, critic). The pipeline's extractor and describe on demand's no-claim
  * path are the same code: only [claimId] (null = no claim CAS) and [idPrefix] (`rokid_kf_<claim>_` or `rokid_desc_<uuid>_`) differ.
  */
+/**
+ * Codex r9: a caller that checked a zone BEFORE extraction (the suspect sweep) adds this to its coroutine context so the check is repeated at DISPATCH: [wrap] puts the Place Guide's
+ * [ZoneFencedLiveness] around the extraction's liveness, so a zone that closes while the call waits for its model permit drops the upload (the router asks inside the permit, in the upload slot).
+ */
+internal class DispatchFence(val blocked: suspend () -> Boolean) : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
+    companion object Key : kotlin.coroutines.CoroutineContext.Key<DispatchFence> {
+        fun wrap(inner: com.rokid.context.model.PhotoLiveness, ctx: kotlin.coroutines.CoroutineContext, ticket: ZoneTicket?): com.rokid.context.model.PhotoLiveness =
+            ctx[Key]?.let { com.rokid.context.work.frames.place.ZoneFencedLiveness(inner, it.blocked, ticket) } ?: inner
+    }
+}
+
 internal object KeyframeExtract {
     /**
      * [claimId] non-null: the claim CAS for every sent frame runs inside the save transaction. Null: no claim (a frame in a state nobody owns).
@@ -49,7 +62,7 @@ internal object KeyframeExtract {
         if (photos.isEmpty()) return ExtractOutcome.Failed("unreadable", unreadable = loaded.gone, unseen = loaded.unseen)
         val ai = AiGraph.get(app)
         // Codex r10: the photos travel with their refs and this liveness; the router re-checks them inside every call's permit, under the upload slot.
-        val liveness = FrameLiveness.forApp(app, generation)
+        val liveness = DispatchFence.wrap(FrameLiveness.forApp(app, generation), kotlin.coroutines.coroutineContext, currentZoneTicket())
         val liveBatch = try {
             if (live == null) LiveBatch(ExtractSave.extract(ai.runner, photos, callClass, liveness), LiveEffects.None) else LiveExtract.batch(live, photos, callClass, liveness)
         } catch (c: CancellationException) {
