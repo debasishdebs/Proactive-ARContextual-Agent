@@ -71,6 +71,25 @@ class NexusProviderTest {
         return NexusProvider(link, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime })
     }
 
+    @Test fun aSettingChangeCallsRefreshFeaturesAndPushesTheMask() = runTest {
+        host = HudHost.NEXUS
+        var sw = NexusSwitches()
+        val gates = PcaNexusGates({ true }, { false }, { false }, { false }, { true })
+        val p = NexusProvider(link, { host }, gates, actions, backgroundScope, clock = { testScheduler.currentTime }, switches = { sw })
+        p.refresh()
+        assertEquals(0, port.features) // everything off by default: no TTS, no STT, no assist, no skills
+        sw = NexusSwitches(voice = true, tts = true, skills = true)
+        p.refreshFeatures()
+        val f = io.github.pca.nexusport.NexusConfig(enabled = true, ttsEnabled = true, sttEnabled = true, assistTakeover = true, skillsEnabled = true).featureMask()
+        assertTrue(f != 0); assertEquals(f, port.features)
+        sw = NexusSwitches(); p.refreshFeatures(); assertEquals(0, port.features)
+    }
+
+    @Test fun refreshFeaturesBeforeAnythingIsConnectedIsANoOp() = runTest {
+        provider().refreshFeatures()
+        assertEquals(-1, port.features)
+    }
+
     private val nudge = HudEvent.Nudge("n1", "Heads up", "Keys are on the shelf", setOf("m1"), ttlMs = 6_000)
     private val pin = HudEvent.CaptureState(HudEvent.CaptureState.State.CAPTURING)
 

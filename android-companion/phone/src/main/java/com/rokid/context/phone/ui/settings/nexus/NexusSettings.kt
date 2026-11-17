@@ -18,6 +18,8 @@ import com.rokid.context.phone.nexus.NexusInstalled
 import com.rokid.context.phone.nexus.NexusProbe
 import com.rokid.context.phone.nexus.NexusState
 import com.rokid.context.phone.nexus.NexusStatus
+import com.rokid.context.phone.nexus.NexusSwitches
+import com.rokid.context.phone.ui.settings.SwitchRow
 import com.rokid.context.phone.ui.settings.ChoiceRow
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SecondaryAction
@@ -30,12 +32,14 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
 /** What the screen shows. */
-data class NexusUiState(val host: HudHost = HudHost.PCA, val installed: NexusInstalled = NexusInstalled(false, false, false), val state: NexusState = NexusState.BRIDGE_NOT_INSTALLED)
+data class NexusUiState(val host: HudHost = HudHost.PCA, val installed: NexusInstalled = NexusInstalled(false, false, false), val state: NexusState = NexusState.BRIDGE_NOT_INSTALLED, val switches: NexusSwitches = NexusSwitches())
 
 /** What the screen needs (production: [AndroidNexusControl]; tests: a fake). */
 interface NexusControl {
     val state: StateFlow<NexusUiState>
     fun setHost(h: HudHost)
+    /** The three Nexus opt-ins (all OFF by default); the graph pushes the feature bits when they change. */
+    fun setSwitches(s: NexusSwitches)
     /** Reads which apps are installed again (they can change while the screen is open). */
     fun recheck()
 }
@@ -47,16 +51,23 @@ class AndroidNexusControl(private val app: Context) : NexusControl {
 
     // Collected only while the screen shows it (WhileSubscribed): no timer or collector runs otherwise.
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
-    override val state: StateFlow<NexusUiState> = combine(store.host, installed, NexusGraph.evidence) { h, inst, ev ->
-        NexusUiState(h, inst, NexusStatus.of(NexusInputs(inst, h == HudHost.NEXUS, ev.bindRefused, ev.bound, ev.lastCode, ev.pcaLinkUp)))
-    }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), NexusUiState(store.current(), installed.value, NexusStatus.of(NexusInputs(installed.value, store.current() == HudHost.NEXUS))))
+    override val state: StateFlow<NexusUiState> = combine(store.host, store.switches, installed, NexusGraph.evidence) { h, sw, inst, ev ->
+        NexusUiState(h, inst, NexusStatus.of(NexusInputs(inst, h == HudHost.NEXUS, ev.bindRefused, ev.bound, ev.lastCode, ev.pcaLinkUp)), sw)
+    }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), NexusUiState(store.current(), installed.value, NexusStatus.of(NexusInputs(installed.value, store.current() == HudHost.NEXUS)), store.switchesNow()))
 
     override fun setHost(h: HudHost) { store.set(h) }
+    override fun setSwitches(s: NexusSwitches) { store.setSwitches(s) }
     override fun recheck() { installed.value = probe.installed() }
 }
 
 object NexusSettingsModel {
     const val HOST_NOTE = "PCA's own glasses app draws the HUD by default. Rokid Nexus is optional and off until you choose it here. Switching withdraws everything from the old host."
+    const val VOICE_TITLE = "Nexus voice (assist button)"
+    const val VOICE_NOTE = "Lets the glasses' assist button ask PCA a question through Nexus speech. Off by default; PCA's own push-to-talk always works. Needs Rokid Nexus as the HUD host."
+    const val TTS_TITLE = "Speak answers (TTS)"
+    const val TTS_NOTE = "Nexus reads PCA's answers aloud. Off by default."
+    const val SKILLS_TITLE = "Skills"
+    const val SKILLS_NOTE = "Lets the Nexus Assistant check capture status, pause, resume and mark a moment. It never reads your memories. Resume never ends a pause near a protected area. Off by default."
     const val UNAVAILABLE = "Install the PCA Nexus bridge and Rokid Nexus first. PCA never installs them for you."
     fun hostOptions(): List<String> = listOf(NexusStatus.HOST_PCA, NexusStatus.HOST_NEXUS)
     /** Nexus can be chosen only when both apps are there (leaving it is always allowed). */
@@ -67,21 +78,28 @@ object NexusSettingsModel {
 fun NexusRoute(control: NexusControl, back: () -> Unit) {
     val state by control.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { control.recheck() }
-    NexusScreen(state, onHost = control::setHost, onRecheck = control::recheck, back = back)
+    NexusScreen(state, onHost = control::setHost, onRecheck = control::recheck, back = back, onSwitches = control::setSwitches)
 }
 
 @Composable
-fun NexusScreen(state: NexusUiState, onHost: (HudHost) -> Unit, onRecheck: () -> Unit, back: () -> Unit) {
+fun NexusScreen(state: NexusUiState, onHost: (HudHost) -> Unit, onRecheck: () -> Unit, back: () -> Unit, onSwitches: (NexusSwitches) -> Unit = {}) {
     SettingsPage("Rokid Nexus", back, tag = "nexus_settings") {
         item {
             SettingsCard {
                 ChoiceRow(
-                    "HUD host", NexusSettingsModel.hostOptions(), if (state.host == HudHost.NEXUS) 1 else 0,
+                    "Show cards in Nexus", NexusSettingsModel.hostOptions(), if (state.host == HudHost.NEXUS) 1 else 0,
                     { onHost(if (it == 1) HudHost.NEXUS else HudHost.PCA) }, tag = "nexus_host",
                     disabled = if (NexusSettingsModel.canChooseNexus(state.installed) || state.host == HudHost.NEXUS) emptySet() else setOf(1),
                     disabledReason = NexusSettingsModel.UNAVAILABLE,
                 )
                 NoticeText(NexusSettingsModel.HOST_NOTE, tag = "nexus_host_note")
+            }
+        }
+        item {
+            SettingsCard {
+                SwitchRow(NexusSettingsModel.VOICE_TITLE, NexusSettingsModel.VOICE_NOTE, state.switches.voice, { onSwitches(state.switches.copy(voice = it)) }, tag = "nexus_voice_switch")
+                SwitchRow(NexusSettingsModel.TTS_TITLE, NexusSettingsModel.TTS_NOTE, state.switches.tts, { onSwitches(state.switches.copy(tts = it)) }, tag = "nexus_tts_switch")
+                SwitchRow(NexusSettingsModel.SKILLS_TITLE, NexusSettingsModel.SKILLS_NOTE, state.switches.skills, { onSwitches(state.switches.copy(skills = it)) }, tag = "nexus_skills_switch")
             }
         }
         item {

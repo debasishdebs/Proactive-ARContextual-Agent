@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -44,6 +45,7 @@ class NexusSettingsScreenTest {
         for (st in NexusState.entries) {
             state = state.copy(state = st)
             compose.waitForIdle()
+            compose.onNodeWithTag("nexus_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("nexus_state_title"))
             compose.onNodeWithTag("nexus_state_title").assertTextEquals(NexusStatus.title(st))
             compose.onNodeWithTag("nexus_state_detail").assertTextEquals(NexusStatus.detail(st))
         }
@@ -76,6 +78,17 @@ class NexusSettingsScreenTest {
         show(NexusUiState(HudHost.PCA, NexusInstalled(true, true, false), NexusState.OFF)) { chosen += it }
         compose.onNodeWithTag("nexus_host").performClick(); compose.onNodeWithTag("nexus_host_1").performClick()
         assertEquals(listOf(HudHost.NEXUS), chosen)
+    }
+
+    @Test fun theThreeSwitchesAreOffByDefaultAndReportTheirChange() {
+        val got = mutableListOf<NexusSwitches>()
+        compose.setContent { PcTheme { NexusScreen(NexusUiState(HudHost.PCA, NexusInstalled(true, true, false), NexusState.OFF), {}, {}, {}, onSwitches = { got += it }) } }
+        for (tag in listOf("nexus_voice_switch", "nexus_tts_switch", "nexus_skills_switch")) {
+            compose.onNodeWithTag("nexus_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag(tag))
+            compose.onNodeWithTag(tag).assertIsOff().performClick()
+        }
+        assertEquals(listOf(NexusSwitches(voice = true), NexusSwitches(tts = true), NexusSwitches(skills = true)), got)
+        assertEquals(NexusSwitches(false, false, false), NexusUiState().switches)
     }
 
     @Test fun theSettingsRowIsHiddenOutsideDeveloperMode() {

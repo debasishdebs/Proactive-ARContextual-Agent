@@ -15,7 +15,9 @@ Design: `docs/superpowers/specs/2026-11-17-nexus-spike-and-v2-plan.md` (sections
 
 The transport is the thin `NexusTransport` / `NexusBusClient` pair. Option B (PCA traffic over the Nexus bus) replaces those, not the sink or the gates.
 
-## Assist-button ask (T5) and skills (T6): what the phone-side agent implements
+## Assist-button ask (T5) and skills (T6): what the phone implements (done: `phone/.../nexus/NexusAsk.kt`, `NexusSkills.kt`)
+
+Phone side (implemented): `PcaNexusAsk` runs the transcript through `AppAnswerer` over `AskActions.askFrom` (all its gates) and delivers only through `sink.show(AskAnswer(ref = askId, speak = <TTS switch>))`; an ask in a zone, while paused or not worn is refused before the backend and again before delivery. `PcaNexusSkills` maps the four ops onto the hub pause entry and the phone-origin mark path; `resume_capture` refuses with `pause_zone` during a zone pause. The three switches (`Settings > Rokid Nexus`: "Nexus voice (assist button)", "Speak answers (TTS)", "Skills") are ALL OFF by default, stored as keys `voice`, `tts`, `skills` in the existing `nexus_host` prefs file (excluded from backup, kept by Delete all); any change calls `NexusProvider.refreshFeatures()`.
 
 Both are additive to the port (`NexusPortVersion.CURRENT` stays 1; the new AIDL methods are appended, so old transaction ids do not move) and OFF by default. `NexusConfig` gained `skillsEnabled`; the ask needs
 `enabled && sttEnabled && assistTakeover` (`NexusConfig.askEnabled()`); `featureMask()` then pushes `STT|ASSIST`, and `SKILLS` when skills are on. PCA push-to-talk stays the Ask input path (ruling B-Q4).
@@ -59,7 +61,7 @@ License: the Nexus SDK is Apache License 2.0, (c) 2026 Anezium (it also carries 
 
 `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE` (normal, install-time, as in the SDK sample), plus a signature permission this app DEFINES, `io.github.pca.nexusbridge.permission.BIND_NEXUS_PORT`.
 The merged APK also gets `io.github.pca.nexusbridge.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, a self-defined signature permission that AndroidX adds. No INTERNET, storage, location, Bluetooth, camera, microphone or notification permission.
-T5/T6 add NO permission (no microphone: Nexus owns audio) and one `<meta-data>` (the skills catalog). The PCA phone app will need `<uses-permission BIND_NEXUS_PORT/>` and a `<queries>` entry for `io.github.pca.nexusbridge` when its provider is added (not done in this change: the phone is untouched).
+T5/T6 add NO permission (no microphone: Nexus owns audio) and one `<meta-data>` (the skills catalog). The PCA phone app declares `<uses-permission BIND_NEXUS_PORT/>` and a `<queries>` entry for `io.github.pca.nexusbridge` (T7); the phone-side ask and skills added NO manifest permission.
 
 ## Remove it
 

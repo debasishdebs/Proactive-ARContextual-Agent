@@ -14,6 +14,7 @@ import com.rokid.context.memory.forget.ForgetListeners
 import com.rokid.context.orchestration.AskSources
 import com.rokid.context.orchestration.AskZoneFence
 import com.rokid.context.phone.hub.Hub
+import com.rokid.context.phone.ui.status.asPauseHub
 import com.rokid.context.provenance.ProvenanceGate
 import com.rokid.context.work.frames.place.PlaceGraph
 import io.github.pca.nexusport.HudEvent
@@ -85,8 +86,31 @@ object NexusGraph {
             paused = { !hub.captureRunning() },
             worn = { hub.wornNow() == true || (hub.wornNow() == null && hub.wearEstimate.active.value) },
         )
-        val provider = NexusProvider(ServiceBridgeLink(app.applicationContext), store::current, gates, AppActions(app, scope), scope, log = { PcLog.i(TAG, it) })
         val popup = { hub.hudSettings.value.popupMs() }
+        // The assist-button ask: PCA's ONE text backend (AppAnswerer over AskActions.askFrom, all its gates), delivered only through the sink. Both are inert while their switch is off.
+        val answerer = com.rokid.context.phone.voice.AppAnswerer(
+            ask = { q, _ -> com.rokid.context.orchestration.AskActions.askFrom(app, q, com.rokid.context.orchestration.AskActions.TYPED_SOURCE) },
+            answerText = { id -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { MemoryGraph.get(app).asks.byId(id)?.takeUnless { it.redacted }?.answer } },
+            deliveryBlocked = AskZoneFence::blocked,
+        )
+        var providerRef: NexusProvider? = null // the ask handler delivers through the provider, which is built after it
+        val asks = PcaNexusAsk(
+            scope, gates, { q -> answerer.answer(q, com.rokid.context.voice.VoiceSource.PHONE) }, HudShow { e -> providerRef?.show(e) },
+            askSources = { id -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { MemoryGraph.get(app).asks.byId(id)?.takeIf { !it.redacted }?.let { AskSources.parseAll(it.sourcesJson).toSet() } } },
+            popupMs = popup, speak = { store.switchesNow().tts }, log = { PcLog.i(TAG, it) },
+        )
+        val skills = PcaNexusSkills(
+            gates,
+            com.rokid.context.phone.voice.HubCaptureControl({ com.rokid.context.phone.hub.HubGraph.get(app).asPauseHub { com.rokid.context.phone.hub.HubPauses(MemoryGraph.get(app).db.pauseDao()).stored() } }, log = { PcLog.i(TAG, it) }),
+            zonePaused = { com.rokid.context.phone.zone.ZoneHold.held || hub.activePauses.value.any { com.rokid.context.core.model.zone.ZonePause.isZoneRecord(it.pauseId) } },
+            paused = { !hub.captureRunning() },
+            stopped = { !hub.started },
+            mark = { com.rokid.context.phone.canvas.MarkGraph.recorder(app).applyVoice(listOf(VoiceMark.Mark(null)), glasses = false, nowMs = System.currentTimeMillis()) },
+            log = { PcLog.i(TAG, it) },
+        )
+        val provider = NexusProvider(ServiceBridgeLink(app.applicationContext), store::current, gates, AppActions(app, scope), scope, log = { PcLog.i(TAG, it) },
+            switches = store::switchesNow, asks = asks, skills = skills)
+        providerRef = provider
         val feeder = NexusFeeder(
             scope, provider, popupMs = popup,
             askSources = { id -> MemoryGraph.get(app).asks.byId(id)?.takeIf { !it.redacted }?.let { AskSources.parseAll(it.sourcesJson).toSet() } },
@@ -105,6 +129,8 @@ object NexusGraph {
             hub.updateSettings { it } // pushes `pc_settings.hudHost` and a fresh frame: the old host's cards go
         } }
         provider.refresh()
+        // Any switch change pushes the feature bits at once (turning the voice ask off stops an open listening).
+        scope.launch { store.switches.drop(1).collect { provider.refreshFeatures() } }
 
         scope.launch { var was = false; hub.activePauses.collect { p ->
             val now = p.isNotEmpty()
