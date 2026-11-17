@@ -47,6 +47,11 @@ private class FakePort : NexusPort.Stub() {
     override fun speakAt(epoch: Long, text: String?) = NexusResult.OK
     override fun tripAt(epoch: Long) = NexusResult.OK
     override fun forgetHistoryAt(generation: Long): Int { forgets++; forgetGen = generation; return NexusResult.OK }
+    override fun beginSession(session: Long) = NexusResult.OK
+    override fun showIn(session: Long, epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?) = show(slot, title, text, ttlMs, wake, actionIds, actionLabels)
+    override fun speakIn(session: Long, epoch: Long, text: String?) = NexusResult.OK
+    override fun tripIn(session: Long, epoch: Long) = NexusResult.OK
+    override fun forgetHistoryIn(session: Long, generation: Long) = forgetHistoryAt(generation)
     /** The hub accepts the newest wipe request. */
     fun ack() { registered?.onForgetAcceptedAt(forgetGen) }
     override fun stopListening() = NexusResult.OK

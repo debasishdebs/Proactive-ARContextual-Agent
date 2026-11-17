@@ -11,7 +11,7 @@ internal interface NexusTransport {
     /** Where the bridge's inbound events go (the sink). Null clears. */
     fun setEvents(events: NexusEvents?): Int
     fun setFeatures(mask: Int): Int
-    /** [epoch]: the sink's trip epoch at admission; the bridge drops the show when it knows of a later trip. */
+    /** [epoch]: the sink's trip epoch at admission; the bridge drops the show when it knows of a later trip. The result may carry [NexusResult.CREATED_HISTORY] (see [NexusResult.created]). */
     fun show(cmd: NexusCommand, epoch: Long): Int
     fun hide(slot: Slot): Int
     fun speak(text: String, epoch: Long): Int
@@ -68,20 +68,36 @@ internal class AidlNexusTransport(private val port: NexusPort) : NexusTransport 
     }
     private val events: NexusEvents? get() = callback.events
 
+    /** This connection's session id (random 64 bit, never 0), one per transport = one per connect. Every show, speech, trip and wipe request carries it (v2 r4 P1-3). */
+    internal val session: Long = run { val r = java.security.SecureRandom(); var s: Long; do { s = r.nextLong() } while (s == 0L); s }
+    @Volatile private var sessionOpen = false
+
+    /** The bridge learns the session once (idempotent there); an older bridge has no such call: it throws, the caller sees ERROR, fail closed. */
+    private fun ensureSession(): Boolean {
+        if (sessionOpen) return true
+        if (port.beginSession(session) != NexusResult.OK) return false
+        sessionOpen = true
+        return true
+    }
+
+    /** A call that carries the session; ERROR when the session could not be opened. A throw is reported as an unknown outcome (created). */
+    private inline fun callS(block: () -> Int): Int = try { if (ensureSession()) block() else NexusResult.ERROR } catch (_: RemoteException) { NexusResult.ERROR } catch (_: RuntimeException) { NexusResult.ERROR }
+
     override fun setEvents(events: NexusEvents?) = call {
         callback.events = events
         port.setCallback(if (events == null) null else callback)
+        if (events != null) { sessionOpen = false; ensureSession() }
         NexusResult.OK
     }
     override fun setFeatures(mask: Int) = call { port.setFeatures(mask) }
-    override fun show(cmd: NexusCommand, epoch: Long) = call {
-        port.showAt(epoch, cmd.slot.code, cmd.title, cmd.text, cmd.ttlMs, cmd.wake, cmd.actions.map { it.id }.toTypedArray(), cmd.actions.map { it.label }.toTypedArray())
+    override fun show(cmd: NexusCommand, epoch: Long) = callS {
+        port.showIn(session, epoch, cmd.slot.code, cmd.title, cmd.text, cmd.ttlMs, cmd.wake, cmd.actions.map { it.id }.toTypedArray(), cmd.actions.map { it.label }.toTypedArray())
     }
     override fun hide(slot: Slot) = call { port.hide(slot.code) }
-    override fun speak(text: String, epoch: Long) = call { port.speakAt(epoch, text) }
+    override fun speak(text: String, epoch: Long) = callS { port.speakIn(session, epoch, text) }
     override fun stopSpeech() = call { port.stopSpeech() }
-    override fun forgetHistory(generation: Long) = call { port.forgetHistoryAt(generation) }
-    override fun tripped(epoch: Long) = call { port.tripAt(epoch) }
+    override fun forgetHistory(generation: Long) = callS { port.forgetHistoryIn(session, generation) }
+    override fun tripped(epoch: Long) = callS { port.tripIn(session, epoch) }
     override fun stopListening() = call { port.stopListening() }
     override fun setSkillHost(on: Boolean) = call { port.setSkillHost(if (on) skillHost else null) }
 

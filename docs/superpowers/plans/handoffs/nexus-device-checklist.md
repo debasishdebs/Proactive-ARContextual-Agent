@@ -34,3 +34,4 @@ Safety rules for every step: phone backup first (`v17-upgrade-recovery.md`), no 
 - The coexistence status (hub stopped vs link busy) is a heuristic until S2.
 - `authorizeListen` is a blocking binder call with no timeout (a hung phone would stall the plugin thread): watch for it in step 12.
 - No Nexus code has run against a real hub yet beyond the emulator probe (install, approval, catalog, link-down).
+- Hung-hub residual window (v2 r4, observe at S2): a Binder call already inside a stuck Nexus hub cannot be interrupted by PCA. If the hub stalls (for example a slow link) while a notice is being sent and the user then pauses or enters a zone, that notice may still appear when the hub unblocks, however late, and is hidden by the bridge right after (and wiped by the owed history wipe). PCA only stops sending more. Note on the device whether any stall longer than 2 s happens at all, and how long the hub takes to unblock. This is a known limit, not a bound.

@@ -172,6 +172,12 @@ internal class NexusDispatcher private constructor(
     /** True when calls may be made: the bridge is healthy, or the backoff is over (the next call is the probe). */
     fun healthy(): Boolean = !down || System.nanoTime() - retryAtNanos >= 0
 
+    /** True from a timeout (or an error) until a call came back. */
+    fun isDown(): Boolean = down
+
+    /** Content may be sent only while the bridge is NOT marked unhealthy: after a timeout the backoff end alone is not enough, a probe (a privacy call) must have come back first (r4 P1-1). */
+    fun contentOk(): Boolean = inline || !down
+
     fun markFailure() {
         synchronized(qLock) {
             failures = (failures + 1).coerceAtMost(30)

@@ -34,6 +34,17 @@ object NexusResult {
     /** The show was stamped with a trip epoch older than the latest trip the bridge was told of: dropped bridge-side. */
     const val STALE = 10
 
+    /**
+     * Additive bit of the session-carrying show/speak results (v2 r4 P1-2): the hub call may have created a notice in the history (also when the result is [STALE] because the bridge hid it again right after the draw).
+     * A result without it is a confirmed "nothing was created". The low 16 bits are the code ([code]).
+     */
+    const val CREATED_HISTORY = 1 shl 16
+
+    fun code(raw: Int): Int = raw and (CREATED_HISTORY - 1)
+
+    /** True unless the bridge CONFIRMED that nothing reached the history: the flag, a plain OK (an older bridge reports no flag) and ERROR (a call that threw or never answered: unknown) all count as created. */
+    fun created(raw: Int): Boolean = raw and CREATED_HISTORY != 0 || code(raw) == OK || code(raw) == ERROR
+
     fun name(code: Int): String = when (code) {
         OK -> "OK"; BUSY -> "BUSY"; NOT_AVAILABLE -> "NOT_AVAILABLE"; NOT_REGISTERED -> "NOT_REGISTERED"; NOT_GRANTED -> "NOT_GRANTED"
         INVALID -> "INVALID"; RATE_LIMITED -> "RATE_LIMITED"; ERROR -> "ERROR"; DISABLED -> "DISABLED"; UNSUPPORTED -> "UNSUPPORTED"; STALE -> "STALE"
