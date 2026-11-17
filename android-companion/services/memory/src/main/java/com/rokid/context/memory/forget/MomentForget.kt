@@ -202,7 +202,7 @@ class MomentForget(
     private suspend fun run(requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String> = emptyList(), byKey: Boolean = false, expectedHash: String? = null, guard: () -> Unit = {}): Result {
         var counts = Result.EMPTY
         if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on) { // Forget lifecycle M4 (flag forgetV2, off by default): the one executor, same delete set
-            service.notifying { counts = service.executor.forgetSpans(this, requestedSeconds, spans, sceneIds, byKey, expectedHash, guard, testFaultBeforeCommit); counts.cascade }
+            service.notifying { counts = service.executor.forgetSpans(this, clock(), requestedSeconds, spans, sceneIds, byKey, expectedHash, guard, testFaultBeforeCommit); counts.cascade }
             return counts
         }
         service.notifying {

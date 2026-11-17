@@ -15,6 +15,8 @@ class DeletionOutboxInventoryTest {
     private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }.map { File(it, "src/main/java/com/rokid/context/memory") }.first { it.isDirectory }
     private val callPattern = Regex("""\b(forgetRangeTx|deleteSliceOutputsForFrames|deleteCanvasOutputsForFrames|deleteFrame)\(""")
     private val deleters = setOf("forget/ForgetService.kt", "forget/MomentForget.kt")
+    /** M4: the families' selfDelete primitives; their only caller, the ForgetExecutor, writes the outbox in the same transaction (asserted below). */
+    private val primitives = setOf("forget/lifecycle/Families.kt")
 
     private fun sources() = root.walkTopDown().filter { it.isFile && it.extension == "kt" }.map { it.relativeTo(root).path to it.readText() }.toList()
 
@@ -22,7 +24,8 @@ class DeletionOutboxInventoryTest {
 
     @Test fun everyProductionDeleterIsListedAndQueuesThroughTheOneHelper() {
         val found = sources().filter { (path, text) -> !path.startsWith("db/") && callPattern.containsMatchIn(text) }.map { it.first }.toSet()
-        assertEquals("a file that deletes through the cascades must be listed here AND queue its outbox rows", deleters, found)
+        assertEquals("a file that deletes through the cascades must be listed here AND queue its outbox rows", deleters + primitives, found)
+        assertTrue("the ForgetExecutor queues the outbox", sources().single { it.first == "forget/lifecycle/ForgetExecutor.kt" }.second.let { it.contains("CleanupOutbox.queue(") })
         for ((path, text) in sources().filter { it.first in deleters }) {
             assertTrue("$path must write the outbox through CleanupOutbox", text.contains("CleanupOutbox.queue(") || text.contains("queueCleanup("))
         }

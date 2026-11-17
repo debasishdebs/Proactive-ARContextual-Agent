@@ -20,7 +20,18 @@ import com.rokid.context.memory.moment.MomentId
  * from `DeveloperFlags.forgetV2` (the backup-excluded `pc_dev` preferences); a test sets [testOverride]. It is read once at the start of each Forget.
  */
 object ForgetV2 {
+    /** The Developer-mode preference file (`pc_dev`: excluded from backup and device transfer, never exported) and the key of the flag. `DeveloperFlags.forgetV2` reads and writes the same. */
+    const val PREFS = "pc_dev"
+    const val KEY = "forget_v2"
     @Volatile var provider: () -> Boolean = { false }
+    @Volatile private var app: android.content.Context? = null
+    /** Reads the flag from the preferences on every Forget (cheap: cached by the platform). Installed once by `MemoryGraph.get`; never throws, OFF on any failure. */
+    fun install(context: android.content.Context) {
+        val a = context.applicationContext ?: return
+        if (app === a) return
+        app = a
+        provider = { a.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getBoolean(KEY, false) }
+    }
     @Volatile var testOverride: Boolean? = null
     val on: Boolean get() = testOverride ?: runCatching { provider() }.getOrDefault(false)
 }
@@ -190,11 +201,11 @@ class ForgetExecutor internal constructor(
 
     /** `MomentForget.run`: the fences, the discovery, the closure of the run results, then the cascades and the projection, in ONE transaction. [testFault] runs after everything was written (a test throws there). */
     internal suspend fun forgetSpans(
-        moments: MomentForget, requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String>, byKey: Boolean, expectedHash: String?, guard: () -> Unit, testFault: (() -> Unit)?,
+        moments: MomentForget, now: Long, requestedSeconds: List<Long>, spans: List<LongRange>, sceneIds: List<String>, byKey: Boolean, expectedHash: String?, guard: () -> Unit, testFault: (() -> Unit)?,
     ): MomentForget.Result = db.withTransaction {
         guard() // the caller's last authorization check, inside the deleting transaction
         revoke { it.plan(emptySet(), Policy.Spans(spans, requestedSeconds, sceneIds, byKey)) }
-        val md = db.momentDao(); val s3 = db.canvasSlice3Dao(); val now = clock(); val c = ctx(now)
+        val md = db.momentDao(); val s3 = db.canvasSlice3Dao(); val c = ctx(now) // [now] is the MomentForget's own clock reading, as in v1
         // 1. Fences first: the durable range, then a tombstone per requested second (and the start of every span: the recency marker of a long range).
         spans.forEach { s3.addMomentForgetRange(it.first, it.last) }
         md.insertTombstones((requestedSeconds + spans.map { it.first / 1000 }).distinct().map { MomentTombstoneEntity(MomentId.format(it), now) })
@@ -237,6 +248,11 @@ class ForgetExecutor internal constructor(
     companion object {
         private const val CHUNK = 500
         /** The mark undo for callers that hold only the database (`MarkRecorder`): one transaction, re-plan, revoke, then the marks go. */
+        /**
+         * Delete all (`MemoryWipe`, allowlisted: it clears every table and the files): revokes EVERY read lease, then wipes the memory tables in one transaction. Returns the proposal ids whose alarms and notifications must go.
+         * [leases] is the registry of the gate that holds the exclusive side.
+         */
+        suspend fun wipeMemory(db: ContextDatabase, leases: Leases = Leases.shared): List<String> { leases.revokeAll(); return db.wipeDao().wipeMemory() }
         suspend fun deleteMarks(db: ContextDatabase, ids: List<String>) = ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)).executor.deleteMarks(ids)
     }
 }
