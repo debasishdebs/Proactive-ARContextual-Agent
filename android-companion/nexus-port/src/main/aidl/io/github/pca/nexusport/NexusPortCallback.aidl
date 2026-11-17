@@ -15,4 +15,7 @@ oneway interface NexusPortCallback {
     // ---- appended in the v2 r2 fix (additive) ----
     /** The hub accepted the history wipe requested with [generation] (see NexusPort.forgetHistoryAt). An acknowledgement settles the debt only up to that generation. */
     void onForgetAcceptedAt(long generation);
+    // ---- appended in the v2 r5 fix (additive; PROTOCOL_VERSION stays 1) ----
+    /** Delivered once, to the callback that was just registered: this connection's random 64-bit TOKEN (never 0). Only the holder can adopt a session ([NexusPort.beginSessionWith]). A bridge that never sends it leaves the phone without a session (fail closed). */
+    void onConnected(long token);
 }
