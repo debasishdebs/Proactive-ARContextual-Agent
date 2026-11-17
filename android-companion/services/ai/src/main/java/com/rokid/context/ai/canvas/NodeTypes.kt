@@ -115,6 +115,8 @@ object NodeTypes {
     /** Retrieval quality (spec sections 3-5): optional Query nodes; a plan without them keeps today's behaviour. Params in [WindowParams] and [OrderParams]. */
     const val RAG_WINDOW = "rag.window"
     const val RAG_ORDER = "rag.order"
+    /** Retrieval quality T10: an optional Query node; one cheap cached model call turns the question into a short English search query. Params in [CondenseParams]. */
+    const val RAG_CONDENSE = "rag.condense"
     const val GATE_NUDGE = "gate.nudge"
     const val OUT_DELIVER = "out.deliver"
     const val TRIGGER_SUMMARIZER = "trigger.summarizer_pass"
@@ -219,6 +221,7 @@ object NodeTypes {
         NodeType(t, label, emptySet(), PortType.TRIGGER, sinceSchema = 2, category = Category.INPUTS, short = t.substringAfter('.'), root = true, params = schema, family = Family.SOURCE)
     } + listOf(
         NodeType(RAG_WINDOW, "Time window", setOf(PortType.TEXT), PortType.TEXT, sinceSchema = 2, category = Category.MEMORY, short = "timewin", params = WindowParams.schema, family = Family.PROCESS),
+        NodeType(RAG_CONDENSE, "Condense query", setOf(PortType.TEXT), PortType.TEXT, sinceSchema = 2, category = Category.MEMORY, short = "condense", params = CondenseParams.schema, family = Family.PROCESS),
         NodeType(RAG_RETRIEVE, "Retrieve", setOf(PortType.TEXT, PortType.VECTOR, PortType.TRIGGER), PortType.RAG, sinceSchema = 2, category = Category.MEMORY, short = "rag",
             params = RagRetrieveParams.schema, family = Family.PROCESS),
         NodeType(RAG_ORDER, "Order and select", setOf(PortType.RAG), PortType.RAG, sinceSchema = 2, category = Category.MEMORY, short = "order", params = OrderParams.schema, family = Family.PROCESS),

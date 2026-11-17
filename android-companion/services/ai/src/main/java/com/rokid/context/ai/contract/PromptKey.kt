@@ -27,7 +27,9 @@ enum class PromptKey(val role: Role?, val label: String, val imageUse: ImageUse 
     /** Place Guide: one photo plus numbered candidate names in, a candidate number or NONE out ([PlaceMatchOutput]). Appended after [INTENT_CLASSIFY]. */
     PLACE_MATCH(Role.VISION_EXTRACT, "Place from a photo", ImageUse.REQUIRED),
     /** Retrieval quality (spec section 3): the question text and today's date in, a time window out ([TimeAnchorOutput]); never any memory. Appended after [PLACE_MATCH]. */
-    TIME_ANCHOR(Role.ANSWER, "Time words of a question");
+    TIME_ANCHOR(Role.ANSWER, "Time words of a question"),
+    /** Retrieval quality (spec section 10, T10): the question text and today's date in, a short English search query and the language out ([CondenseOutput]); never any memory. Appended after [TIME_ANCHOR]. */
+    CONDENSE_QUERY(Role.ANSWER, "Search words of a question");
 
     /** The input is the photo: no retry path ever drops it (see [ImageUse.REQUIRED]). */
     val requiresImage: Boolean get() = imageUse == ImageUse.REQUIRED

@@ -193,13 +193,14 @@ object DefaultPipelines {
 
     /**
      * The Default Query with the two retrieval-quality nodes: `rag.window` (date words, a day of widening, then all dates; the model fallback stays off) and `rag.order`
-     * (last / previous / first / count words, one hit per day over several days). Clone it to switch the model fallback on or change the keywords.
+     * (last / previous / first / count words, one hit per day over several days) and `rag.condense` (the search words of the question, translated to English for another language; one cheap cached model call). Clone it to switch the model fallback on or change the keywords.
      */
     fun datedQuery(): Pipeline = Pipeline(
         PipelineJson.SCHEMA_V2, DATED_QUERY, "Dated Query (Ask with time windows)",
         nodes = listOf(
             PipelineNode("utterance", NodeTypes.INPUT_UTTERANCE, "Utterance", none),
             PipelineNode("window", NodeTypes.RAG_WINDOW, "Time window", none),
+            PipelineNode("condense", NodeTypes.RAG_CONDENSE, "Condense query", none),
             PipelineNode("embed", NodeTypes.EMBED_TEXT, "Embed text", none),
             PipelineNode("retrieve", NodeTypes.RAG_RETRIEVE, "Memories and photos", buildJsonObject { put("memories", true); put("photos", true) }),
             PipelineNode("order", NodeTypes.RAG_ORDER, "Order and select", none),
@@ -207,7 +208,7 @@ object DefaultPipelines {
             PipelineNode("deliver", NodeTypes.OUT_DELIVER, "Answer to the caller", buildJsonObject { put("target", "caller") }),
         ),
         edges = listOf(
-            PipelineEdge("utterance", "window"), PipelineEdge("window", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "order"),
+            PipelineEdge("utterance", "window"), PipelineEdge("window", "condense"), PipelineEdge("condense", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "order"),
             PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver"),
         ),
     )

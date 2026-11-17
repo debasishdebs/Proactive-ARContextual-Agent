@@ -85,7 +85,7 @@ class AgentFlowsTest {
 
     @Test fun aiStepsAreTheNodesWithFacets() {
         val ask = AgentFlows.byId(AgentFlows.ASK)!!
-        assertEquals(listOf("when", "search", "answer"), ask.nodes.filter { it.isAiStep }.map { it.id })
+        assertEquals(listOf("when", "condense", "search", "answer"), ask.nodes.filter { it.isAiStep }.map { it.id })
         assertEquals(listOf(Facet.Retrieval, Facet.Model(Role.EMBED)), ask.nodes.first { it.id == "search" }.facets)
     }
 }

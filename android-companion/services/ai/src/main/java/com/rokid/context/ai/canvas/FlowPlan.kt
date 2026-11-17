@@ -73,6 +73,19 @@ object OrderParams {
     ))
 }
 
+/**
+ * `rag.condense` (retrieval quality T10): the search words of the question without date words, question words or pronouns, from one cheap cached model call (the question and today's date only,
+ * 3 s, a broken reply = the raw question). [translate]: a question in another language is also translated to English, and its own-language query stays as a second word search.
+ */
+object CondenseParams {
+    val schema = ParamSchema(listOf(
+        ParamSpec("translate", ParamKind.BOOL, label = "Translate other languages to English", default = JsonPrimitive(true)),
+    ))
+}
+
+/** The `rag.condense` choices a compiled plan carries; null on the plan = the question is searched as asked, no model call. */
+data class CondenseSpec(val translate: Boolean = true)
+
 /** The `rag.window` choices a compiled plan carries; null on the plan = the built-in behaviour (rules only, widen DAY_THEN_ALL, no model call). */
 data class WindowSpec(val rules: Boolean = true, val llmFallback: Boolean = false, val widen: String = "DAY_THEN_ALL")
 
@@ -126,6 +139,8 @@ data class FlowPlan(
     val window: WindowSpec? = null,
     /** The optional `rag.order` node of a Query (null = relevance order, top-k). */
     val order: OrderSpec? = null,
+    /** The optional `rag.condense` node of a Query (null = the whole question is the search query). */
+    val condense: CondenseSpec? = null,
 ) {
     data class Signal(val aggregate: WindowAggregate.Settings, val compare: NumberCompare.Settings)
 
@@ -146,7 +161,7 @@ data class FlowPlan(
         /** Today's Nudge: OK memories of the last 6 h and the nudges of the last 24 h; its own counts bound it. The trigger's image, when it gives one, joins (as today). Shown by the verbosity setting (`both`). */
         val BUILT_IN_NUDGE = FlowPlan(Kind.NUDGE, memories = false, photos = false, recent = true, history = true, imageQuery = true, recentWindowMin = 360, historyWindowMin = 1440, target = "both")
 
-        fun isFlowType(type: String) = type == NodeTypes.INPUT_UTTERANCE || type.startsWith("trigger.") || type == NodeTypes.RAG_RETRIEVE || type == NodeTypes.GATE_NUDGE || type == NodeTypes.OUT_DELIVER || type == NodeTypes.EMBED_TEXT || type == NodeTypes.RAG_WINDOW || type == NodeTypes.RAG_ORDER
+        fun isFlowType(type: String) = type == NodeTypes.INPUT_UTTERANCE || type.startsWith("trigger.") || type == NodeTypes.RAG_RETRIEVE || type == NodeTypes.GATE_NUDGE || type == NodeTypes.OUT_DELIVER || type == NodeTypes.EMBED_TEXT || type == NodeTypes.RAG_WINDOW || type == NodeTypes.RAG_ORDER || type == NodeTypes.RAG_CONDENSE
 
         fun isFlow(p: Pipeline) = p.nodes.any { isFlowType(it.type) }
 
@@ -158,7 +173,7 @@ data class FlowPlan(
 
         /** The ordered node types of each flow; `embed.text`, `rag.window` and `rag.order` are the optional Query steps. */
         private fun expected(kind: Kind, root: String): List<String> = when (kind) {
-            Kind.QUERY -> listOf(NodeTypes.INPUT_UTTERANCE, NodeTypes.RAG_WINDOW, NodeTypes.EMBED_TEXT, NodeTypes.RAG_RETRIEVE, NodeTypes.RAG_ORDER, NodeTypes.PROMPT, NodeTypes.OUT_DELIVER)
+            Kind.QUERY -> listOf(NodeTypes.INPUT_UTTERANCE, NodeTypes.RAG_WINDOW, NodeTypes.RAG_CONDENSE, NodeTypes.EMBED_TEXT, NodeTypes.RAG_RETRIEVE, NodeTypes.RAG_ORDER, NodeTypes.PROMPT, NodeTypes.OUT_DELIVER)
             Kind.NUDGE -> listOf(root, NodeTypes.RAG_RETRIEVE, NodeTypes.PROMPT, NodeTypes.GATE_NUDGE, NodeTypes.OUT_DELIVER)
         }
 
@@ -172,7 +187,7 @@ data class FlowPlan(
             if (roots.size != 1) return emptyList() // the generic root rule already says so
             val out = mutableListOf<Problem>()
             val want = expected(kind, roots[0].type).toMutableList()
-            if (kind == Kind.QUERY) for (optional in listOf(NodeTypes.EMBED_TEXT, NodeTypes.RAG_WINDOW, NodeTypes.RAG_ORDER)) if (p.nodes.none { it.type == optional }) want.remove(optional)
+            if (kind == Kind.QUERY) for (optional in listOf(NodeTypes.EMBED_TEXT, NodeTypes.RAG_WINDOW, NodeTypes.RAG_CONDENSE, NodeTypes.RAG_ORDER)) if (p.nodes.none { it.type == optional }) want.remove(optional)
             // walk the chain from the root; every node must be on it, once, in order
             val outs = p.edges.groupBy { it.from }
             val ins = p.edges.groupBy { it.to }
@@ -237,9 +252,10 @@ data class FlowPlan(
             fun flag(name: String, d: Boolean) = (rag[name] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: d
             fun int(name: String, d: Int) = (rag[name] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull ?: d
             val windowNode = if (kind == Kind.QUERY) p.nodes.firstOrNull { it.type == NodeTypes.RAG_WINDOW } else null
+            val condenseNode = if (kind == Kind.QUERY) p.nodes.firstOrNull { it.type == NodeTypes.RAG_CONDENSE } else null
             val orderNode = if (kind == Kind.QUERY) p.nodes.firstOrNull { it.type == NodeTypes.RAG_ORDER } else null
             val out = base.copy(
-                window = windowNode?.let { windowSpec(it.params) }, order = orderNode?.let { orderSpec(it.params) },
+                window = windowNode?.let { windowSpec(it.params) }, condense = condenseNode?.let { CondenseSpec((it.params["translate"] as? JsonPrimitive)?.takeIf { p -> !p.isString }?.booleanOrNull ?: true) }, order = orderNode?.let { orderSpec(it.params) },
                 memories = flag("memories", base.memories), photos = flag("photos", base.photos), recent = flag("recent", base.recent), history = flag("history", base.history),
                 imageQuery = flag("imageQuery", base.imageQuery), recentWindowMin = int("recentWindowMin", base.recentWindowMin), historyWindowMin = int("historyWindowMin", base.historyWindowMin),
                 rag = JsonObject(rag.filterKeys { it in RagRetrieveParams.ragNames }), target = target,

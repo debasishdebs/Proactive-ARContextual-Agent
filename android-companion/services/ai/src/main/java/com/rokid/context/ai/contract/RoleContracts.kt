@@ -60,6 +60,8 @@ object RoleContracts {
                 str(o, "kind").trim().lowercase().take(12), opt(o, "from").orEmpty().trim().take(20), opt(o, "to").orEmpty().trim().take(20),
                 opt(o, "event").orEmpty().trim().take(80), opt(o, "label").orEmpty().trim().take(60), extras(o, "kind", "from", "to", "event", "label"),
             )
+            // "query" is required; "lang" defaults to "". Nothing here is trusted: the caller bounds and sanitises both.
+            PromptKey.CONDENSE_QUERY -> CondenseOutput(str(o, "query").trim().take(120), opt(o, "lang").orEmpty().trim().lowercase().take(12), extras(o, "query", "lang"))
             PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->
                     val fo = f.jsonObject
@@ -110,6 +112,7 @@ object RoleContracts {
             is IntentOutput -> Unit
             is PlaceMatchOutput -> Unit
             is TimeAnchorOutput -> if (output.kind !in setOf("date", "range", "event", "none")) add("kind must be date, range, event or none")
+            is CondenseOutput -> Unit
             is SummaryOutput -> if (output.confidence !in 0.0..1.0) add("confidence must be 0–1")
             is CriticOutput -> Unit
             is AnswerOutput -> {
