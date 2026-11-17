@@ -58,3 +58,19 @@ Real glasses pairing/CXR, Bluetooth, camera capture, hub FGS start under a backg
 ## Cleanup
 
 Emulator stopped with `adb -s emulator-5554 emu kill`; `wm size/density` reset; no background processes left. Only this file was committed.
+
+## Addendum, 2026-11-17 (Bug 1 fixed, geo-fix investigation)
+
+Emulator only (`adb -s emulator-5554`), HEAD plus the fix, `:phone:assembleDebug`, `install -r`, location permission granted with `pm grant`.
+
+**Bug 1 fixed.** Cause: `drawText(measurer, text, topLeft)` without `size` derives max constraints as canvas size minus offset, so any label with its offset at or past the canvas edge (latitude labels at the bottom edge, longitude labels at the right edge, zone names near an edge) got a negative max and threw. Fix in `ZonesScreen.kt`: a `drawLabel` helper that skips labels with no room (remaining width or height under 1 px) and passes an explicit clamped `size`; `drawGrid`/`drawZone` use it (both now `internal` for tests).
+**Why the old test missed it.** `ZonesScreenTest` composes the screen under the compose test rule, which never runs the Canvas draw lambda (no frame is drawn, and the viewport is only set after layout), so `drawGrid` was never executed. New `ZonesDrawTest` runs the real `drawGrid`/`drawZone` through `CanvasDrawScope` with a real `TextMeasurer`, over 320x640, 1080x600, 60x20, 5x5 and 200x2000 canvases, with and without zones, and with viewports that put the zone and labels at the very edge. With the guard removed it fails (`maxHeight(-17)` / `maxHeight(-59) must be >= than minHeight(0)`); with it, it passes. `ui.settings.*` phone tests all pass.
+**On the emulator:** Settings > Privacy > Open pause zones renders (map, Draw a box, form), no FATAL. Added "Charminar" by typing S 17.3600, N 17.3630, W 78.4730, E 78.4760 and tapping Add zone; it appears in "Your zones".
+
+**Geo fix: not an app bug, an emulator behaviour plus the design cadence.** The fused provider on the emulator only has GPS updates when a GPS consumer is active, and the emulator boots with a default fix of 39.237,-123.150 (California).
+- Fresh start: zone present, no fix: `PcZone zone pause added state=INSIDE reason=NO_FIX`, app requests HIGH_ACCURACY every 10 s (`dumpsys location`: `gps provider request = ProviderRequest[@+10s0ms, HIGH_ACCURACY, WorkSource{... com.rokid.context}]`).
+- That first fix was the stale default (zone UI showed `Outside, 13332.0 km from the box`), so TripCadence dropped to BALANCED 5 min (gps request went OFF 14 s later). BALANCED does not use the GPS provider, so later `emu geo fix` calls updated the system gps last location (17.361598,78.474698) but no fix reached the app: this is what the smoke saw as "no transition".
+- After force-stop and relaunch (cadence HIGH again) and `emu geo fix 78.4747 17.3616`: the zone UI changed from `Outside, 13332.0 km` to `Inside: capture is paused` for both zones; Home shows Paused. Then `emu geo fix 78.60 17.50`: `Outside, 20.1 km from the box` and `PcZone zone pause ended n=2`.
+- Permission was needed (granted by `pm grant`); the foreground-only gate was satisfied while the app was visible.
+
+**Remains unverifiable here:** APPROACH (25 km / buffer + 2 km) transitions were not stepped through, background behaviour (foreground-only gate with the screen off / hub FGS location type), real GPS/fused behaviour, and the 5 min BALANCED path delivering real fixes (emulator network provider has no fix source). The "zone publish failed IllegalStateException" lines are the glasses sink with no link, as before.
