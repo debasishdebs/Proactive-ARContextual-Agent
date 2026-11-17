@@ -8,6 +8,7 @@ import { asksView, askView } from './asks.js';
 import { replayView } from './replayview.js';
 import { sweepView } from './paretoview.js';
 import { devicesView } from './devicesview.js';
+import { signalsView } from './signalsview.js';
 import { mergedView } from './mergedview.js';
 import { parseIds } from './mergedflow.js';
 
@@ -213,6 +214,7 @@ function renderNav() {
   nav.appendChild(h('a', { href: '#/asks' }, 'Asks'));
   nav.appendChild(h('a', { href: '#/replay' }, 'Replay'));
   nav.appendChild(h('a', { href: '#/sweep' }, 'Sweep'));
+  nav.appendChild(h('a', { href: '#/signals' }, 'Signals'));
   nav.appendChild(h('a', { href: '#/devices' }, 'Devices'));
   // "Live" shows only while an interpreter is published; the nav does not wait for the answer
   const slot = h('span', null);
@@ -251,6 +253,7 @@ async function route(force) {
     else if (parts[0] === 'live') await liveView(ctx, root);
     else if (parts[0] === 'replay') await replayView(ctx, root);
     else if (parts[0] === 'sweep') await sweepView(ctx, root);
+    else if (parts[0] === 'signals') await signalsView(ctx, root);
     else if (parts[0] === 'devices') await devicesView(ctx, root);
     else if (parts[0] === 'asks') await asksView(ctx, root);
     else if (parts[0] === 'ask' && parts[1]) await askView(ctx, root, parts[1]);

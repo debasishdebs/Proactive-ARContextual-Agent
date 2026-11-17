@@ -480,3 +480,22 @@ export function tryLines(r) {
   lines.push('result: ' + cellText(r.output) + (r.verdict ? ' (' + r.verdict + ' the picture)' : '') + (r.applied !== undefined ? ' (the row gets ' + r.applied + ')' : ''));
   return lines;
 }
+
+// ---- try it on recent data (POST /api/signals/try: the latest imported recording; raw numbers, ids and times only)
+export const realBody = (g, seconds) => ({ graph: g, seconds });
+const r3 = (x) => String(Math.round(x * 1000) / 1000);
+/** The reply as lines: a problem list, "unavailable" with its reason, or the source label, the summary and the counts with their denominators. */
+export function realSummary(r) {
+  if (!r || r.ok !== true) return ((r && r.problems) || ['The definition does not compile']).map(String);
+  if (r.available === false) return [r.message];
+  const m = r.summary; const w = r.window; const a = r.recording;
+  return [r.source + ': recorded ' + new Date(a.fromMs).toLocaleString() + ', ' + a.coverageSeconds + ' s covered. ' + r.output + '.',
+    (m.min === undefined ? '' : 'min ' + r3(m.min) + ' · max ' + r3(m.max) + ' · mean ' + r3(m.mean)) + (m.trueFrac === undefined ? '' : 'true ' + m.trueCount + ' of ' + m.valid + ' valid seconds (' + Math.round(m.trueFrac * 100) + ' %)'),
+    'valid ' + m.valid + ' · covered ' + w.covered + ' of ' + w.seconds + ' s · missing ' + w.missing + ' · warming ' + m.states.NOT_READY + ' · errors ' + (m.states.ERROR + m.states.DIV0) + ' · excluded by the zone rule ' + (w.excludedZoneHeld + w.excludedZoneUnknown)];
+}
+/** The SVG path of the points (a number: its value, a boolean: 1 or 0), broken wherever there was no value. */
+export function stripPath(points, w, ht) {
+  const ys = points.map((p) => (p.value !== undefined ? p.value : p.flag === undefined ? null : p.flag ? 1 : 0));
+  const v = ys.filter((y) => y !== null); const lo = Math.min(...v); const span = (Math.max(...v) - lo) || 1;
+  return ys.map((y, i) => (y === null ? '' : (i === 0 || ys[i - 1] === null ? 'M' : 'L') + Math.round((i * w) / Math.max(1, ys.length - 1)) + ' ' + Math.round(ht - ((y - lo) / span) * ht))).join('');
+}

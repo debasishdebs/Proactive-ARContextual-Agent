@@ -14,7 +14,7 @@ class CanvasAssetsTest {
         "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js",
         "editorlogic.js", "editorflow.js", "floweditor.js", "jsx-shim.js",
         "format.js", "diffview.js", "runlogic.js", "versions.js", "liveview.js", "asks.js",
-        "pareto.js", "replayview.js", "paretoview.js", "helperview.js", "devicesview.js", "exprgraph.js", "exprview.js", "compositeview.js",
+        "pareto.js", "replayview.js", "paretoview.js", "helperview.js", "devicesview.js", "signalsview.js", "exprgraph.js", "exprview.js", "compositeview.js",
     )
     private fun text(n: String) = File(dir, n).readText()
     private val js get() = names.filter { it.endsWith(".js") }
@@ -117,8 +117,18 @@ class CanvasAssetsTest {
 
     @Test fun jsUnderSizeBudget() {
         val lines = all.filter { it.name.endsWith(".js") }.sumOf { it.readText().lines().size }
-        assertEquals(true, lines <= 4708) // v0.9.8 Devices page: devicesview.js (+35 lines) and its route, nav link and import in app.js (+3; budget 4670 -> 4708, exactly the new total); v0.9.8 slice B: the flow publish mode (+2 lines: the MODES entry in format.js, the mode filter in versions.js; budget 4668 -> 4670, exactly the new total); v0.9.7 review fix G: momentStart in runlogic.js (+1 line, budget 4667 -> 4668, exactly the new total; the disclosure text fix F changed no line count); v0.9.6 Playground vs Run-and-Save: the run choices, the after-run dialogs and the run-page button (+35 lines: runlogic.js 4, views.js 31; budget 4632 -> 4667, exactly the new total, it had no spare line); 3d: the window tolerance field (+4 lines: mv in setNodeParam 3, the field and label 1, budget 4628 -> 4632, exactly the new total); composite phase C: the rate table cells as compact fields in compositeview.js (+14 lines, budget 4614 -> 4628: it had no spare line); E2b: window nodes, the Value default graph and clamp note, window meters and the try-it panel in the boxed editor (+74 lines, budget raised by 64 from 4550 because the old budget had 10 spare); 
+        assertEquals(true, lines <= 4777) // v1.2 row 2 Signals page + Try it on recent data: signalsview.js (new, 49 lines), realBody/realSummary/stripPath in exprgraph.js (+19), the import, route and nav link in app.js (+3), signalsview.js' blank end line counted (budget 4708 -> 4777, exactly the new total; the ~103 lines of the design were not all needed because the try panel lives in signalsview.js, not exprview.js); v0.9.8 Devices page: devicesview.js (+35 lines) and its route, nav link and import in app.js (+3; budget 4670 -> 4708, exactly the new total); v0.9.8 slice B: the flow publish mode (+2 lines: the MODES entry in format.js, the mode filter in versions.js; budget 4668 -> 4670, exactly the new total); v0.9.7 review fix G: momentStart in runlogic.js (+1 line, budget 4667 -> 4668, exactly the new total; the disclosure text fix F changed no line count); v0.9.6 Playground vs Run-and-Save: the run choices, the after-run dialogs and the run-page button (+35 lines: runlogic.js 4, views.js 31; budget 4632 -> 4667, exactly the new total, it had no spare line); 3d: the window tolerance field (+4 lines: mv in setNodeParam 3, the field and label 1, budget 4628 -> 4632, exactly the new total); composite phase C: the rate table cells as compact fields in compositeview.js (+14 lines, budget 4614 -> 4628: it had no spare line); E2b: window nodes, the Value default graph and clamp note, window meters and the try-it panel in the boxed editor (+74 lines, budget raised by 64 from 4550 because the old budget had 10 spare); 
         // the Scenes run page (scenesRunView, ~55 lines, budget raised by 50); merged view added mergedflow.js + mergedview.js (+~110 lines, budget raised by 100); composite nodes added compositeview.js (~130 lines) and X5 added the boxed expression editor (exprgraph.js + exprview.js, ~650 lines)
+    }
+
+    /** v1.2 row 2: the real-data try posts to /api/signals/try (read-only) and the page's only writes are the Save and Delete buttons on the derived routes, never the try path. */
+    @Test fun theTryItOnRecentDataPathNeverSaves() {
+        val v = text("signalsview.js")
+        assertTrue(v.contains("'POST', '/api/signals/try'"))
+        val run = v.substringAfter("const run = async").substringBefore("root.appendChild(h('h2'")
+        assertFalse(run.contains("'PUT'") || run.contains("'DELETE'") || run.contains("derived/"))
+        assertEquals(1, Regex("'PUT'").findAll(v).count()); assertEquals(1, Regex("'DELETE'").findAll(v).count())
+        assertTrue(v.contains("Raw expression output") || text("exprgraph.js").contains("r.output"))
     }
 
     @Test fun checkReadsLiveEditorValues() {

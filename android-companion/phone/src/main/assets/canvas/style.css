@@ -220,3 +220,5 @@ table.results td, table.results th { white-space: nowrap; }
 .merged-node .merged-node-body, .merged-chip { stroke: var(--pl); border-color: var(--pl); }
 .merged-node .merged-pill { fill: var(--pl); }
 .merged-node.composite .merged-node-body { stroke: var(--comp-line); }
+.expr-strip { display: block; max-width: 100%; margin-top: 0.5rem; border: 1px solid var(--line, #8884); }
+.expr-strip-line { stroke: currentColor; stroke-width: 1.5; }
