@@ -38,6 +38,8 @@ object ConfigExport {
         "action_settings", "memory_settings",
         // Pause zones (user configuration: ids, names, boxes, buffers). Delete all never touches this file.
         "pause_zones",
+        // User-pinned places (Place Guide v2: names, kinds, radii, positions, the user's own notes). User configuration like the zones: exported, restored, never deleted by Delete all.
+        "place_pins",
     )
 
     private val SECRET_NAME = Regex("(?i)(api[_-]?key|token|secret|password|passphrase|credential|auth)")

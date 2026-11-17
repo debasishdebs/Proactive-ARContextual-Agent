@@ -130,8 +130,8 @@ class PlaceFetchTest {
         )
         assertEquals(verified.keys, PlaceCellSource.MONUMENT_CLASSES.keys)
         assertEquals(PlaceKinds.PRISON_MUSEUM, PlaceCellSource.MONUMENT_CLASSES["Q10500763"])
-        assertFalse("Q40357 is a plain prison", "Q40357" in PlaceCellSource.MONUMENT_CLASSES)
-        assertFalse("Q160742 is an abbey", "Q160742" in PlaceCellSource.MONUMENT_CLASSES)
+        assertFalse("Q40357 is a plain prison") { "Q40357" in PlaceCellSource.MONUMENT_CLASSES }
+        assertFalse("Q160742 is an abbey") { "Q160742" in PlaceCellSource.MONUMENT_CLASSES }
     }
 
     @Test fun httpIsHttpsOnlyAndRateLimited() = runTest {
