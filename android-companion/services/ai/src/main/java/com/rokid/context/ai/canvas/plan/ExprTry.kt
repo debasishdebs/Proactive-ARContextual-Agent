@@ -66,15 +66,11 @@ object ExprTry {
         val age = body["ctxAgeS"]?.let { num(it)?.takeIf { a -> a >= 0 } ?: return bad("bad_value", "ctxAgeS is a number from 0 to 1000000.") } ?: 0.0
 
         val field = (body["field"] as? JsonPrimitive)?.content
-        val low = ExprLowering.lowerAll(listOf(ExprLowering.Entry("try", body["graph"], role, (body["row"] as? JsonPrimitive)?.content, field)), windowMinValidPct, cfg)
-        if (low.problems.isNotEmpty() || low.exprs.isEmpty()) return Outcome.Ok(buildJsonObject { put("ok", false); putJsonArray("problems") { low.problems.forEach { add(JsonPrimitive(it)) } } })
-        val checked = ExprProgram.parse(role, DerivedSignals.expand(body["graph"], cfg).graph).first!!.check(windowMinValidPct.coerceIn(WindowRing.MIN_VALID_PCT, 100))
-        val runner = ExprRunner.of(low.exprs) ?: return bad("bad_request", "The program cannot run.")
-
-        val read = (low.exprs[0]["s"] as JsonArray).map { it as JsonObject }.filter { (it["op"] as JsonPrimitive).content.let { op -> op == "sig" || op == "win" } }
-            .map { (it["name"] as JsonPrimitive).content }.filter { SignalCatalog.featureIndex(it) != null }.distinct()
-        val missing = read.filter { it !in series }
-        if (missing.isNotEmpty()) return bad("missing_signal", "Give a value for every signal the program reads.", missing)
+        val prep = prepare(body["graph"], role, (body["row"] as? JsonPrimitive)?.content, field, windowMinValidPct, cfg)
+        if (prep.problems.isNotEmpty()) return Outcome.Ok(buildJsonObject { put("ok", false); putJsonArray("problems") { prep.problems.forEach { add(JsonPrimitive(it)) } } })
+        val checked = prep.checked!!
+        val runner = prep.runner ?: return bad("bad_request", "The program cannot run.")
+        val read = prep.read
 
         val seconds = if (len > 0) len else maxOf(1, runner.windowHorizonS)
         val sig = ExprSignals()
@@ -101,6 +97,18 @@ object ExprTry {
             if (role == ExprRole.VALUE && out.kind == Probe.Kind.NUM && field != null) put("applied", if (field == "capPerMin") ExprValues.clampCap(out.num).toDouble() else ExprValues.clampGapMs(out.num) / 1000.0)
             if (role == ExprRole.GUARD) put("verdict", if (out.kind == Probe.Kind.BOOL && !out.flag) "drop" else "keep")
         })
+    }
+
+    /** One lowered, checked and runnable program, or its [problems] (shared by [ExprSeries]: there is one lowering and one runner, never a second evaluator). */
+    internal class Prepared(val problems: List<String>, val checked: ExprChecked?, val runner: ExprRunner?, val read: List<String>)
+
+    internal fun prepare(graph: JsonElement?, role: ExprRole, row: String?, field: String?, windowMinValidPct: Int, cfg: SignalConfig): Prepared {
+        val low = ExprLowering.lowerAll(listOf(ExprLowering.Entry("try", graph, role, row, field)), windowMinValidPct, cfg)
+        if (low.problems.isNotEmpty() || low.exprs.isEmpty()) return Prepared(low.problems.ifEmpty { listOf("The program cannot run.") }, null, null, emptyList())
+        val checked = ExprProgram.parse(role, DerivedSignals.expand(graph, cfg).graph).first!!.check(windowMinValidPct.coerceIn(WindowRing.MIN_VALID_PCT, 100))
+        val read = (low.exprs[0]["s"] as JsonArray).map { it as JsonObject }.filter { (it["op"] as JsonPrimitive).content.let { op -> op == "sig" || op == "win" } }
+            .map { (it["name"] as JsonPrimitive).content }.filter { SignalCatalog.featureIndex(it) != null }.distinct()
+        return Prepared(emptyList(), checked, ExprRunner.of(low.exprs), read)
     }
 
     private fun num(e: JsonElement?): Double? = (e as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull?.takeIf { it.isFinite() && Math.abs(it) <= MAX_ABS }
