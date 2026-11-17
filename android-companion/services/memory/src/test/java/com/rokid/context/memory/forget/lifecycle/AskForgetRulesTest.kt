@@ -20,7 +20,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * Forget lifecycle M5 (rulings 2026-11-17): A1 (an answer is hit by its CITED sources only and becomes "Answered from a forgotten fact": the question stays, the answer is erased, no automatic re-answer), A2 (a history
+ * Forget lifecycle M5 (rulings 2026-11-17): A1 (an answer is hit by ALL its stored dependencies, ruling F4: conservative, never citation-only, and becomes "Answered from a forgotten fact": the question stays, the answer is erased, no automatic re-answer), A2 (a history
  * item is a dependency), N1 (a hit nudge is erased). With the flag OFF the rows behave as v1 (every stored dependency redacts in place, the source states are never touched).
  */
 @RunWith(AndroidJUnit4::class)
@@ -49,18 +49,22 @@ class AskForgetRulesTest {
         ask("aHistory", listOf("mFar"), history = listOf("nudge:nCite")) // used the earlier nudge nCite (A2)
         ask("aEval", listOf("mFar"), deps = listOf("mA"), source = AskSourceStates.EVAL_SOURCE, states = null)
         ask("aFramed", listOf("frame:fA"))                        // cited the photo itself
+        ask("aUnrelated", listOf("mFar"))                         // supplied nothing that is forgotten
+        // a migrated v16 answer: no states, a nudge-history dependency stored only in dependsOn (it keeps its protection)
+        ask("aMigratedHistory", listOf("mFar"), deps = listOf("nudge:nCite"), states = null)
     }
 
-    @Test fun flagOnAnAnswerIsHitByItsCitedSourcesOnlyAndKeepsItsQuestion() = runBlocking {
+    @Test fun flagOnAnAnswerIsHitByEverySuppliedInputAndKeepsItsQuestion() = runBlocking {
         seed(); ForgetV2.testOverride = true
         w.service.forgetFact("mA")
         val hit = row("aCited")
         assertTrue(hit.redacted); assertEquals(ForgetService.REDACTED, hit.answer); assertEquals("[]", hit.sourcesJson)
         assertEquals("the question stays", "question aCited", hit.question)
         assertEquals(AskSourceStates.SOURCE_FORGOTTEN, AskSourceStates.parse(hit.sourceStates)?.state); assertTrue(AskSourceStates.isForgotten(hit)); assertFalse(AskSourceStates.isReasked(hit))
-        val kept = row("aRetrieved")
-        assertFalse("merely retrieved, never cited: untouched", kept.redacted); assertEquals("answer aRetrieved", kept.answer)
-        assertEquals(AskSourceStates.LIVE, AskSourceStates.parse(kept.sourceStates)?.state)
+        val dep = row("aRetrieved")
+        assertTrue("retrieved but not cited is STILL a dependency (F4)", dep.redacted); assertEquals(AskSourceStates.SOURCE_FORGOTTEN, AskSourceStates.parse(dep.sourceStates)?.state)
+        assertEquals("question aRetrieved", dep.question)
+        assertFalse("an answer that supplied nothing forgotten is untouched", row("aUnrelated").redacted)
     }
 
     @Test fun flagOffEveryStoredDependencyRedactsInPlaceAndTheStatesAreNeverTouched() = runBlocking {
@@ -89,7 +93,8 @@ class AskForgetRulesTest {
         seed(); ForgetV2.testOverride = true
         w.service.forgetFact("mA") // erases nCite (N1), so the answer that used it (A2) is hit by the item, not by a memory
         assertTrue(row("aHistory").redacted); assertTrue(AskSourceStates.isForgotten(row("aHistory")))
-        assertFalse(row("aRetrieved").redacted)
+        assertTrue("a v16 answer with the nudge only in dependsOn is protected too", row("aMigratedHistory").redacted); assertTrue(AskSourceStates.isForgotten(row("aMigratedHistory")))
+        assertFalse(row("aUnrelated").redacted)
     }
 
     @Test fun aPhotoCiteIsACitedSource() = runBlocking {
@@ -105,21 +110,21 @@ class AskForgetRulesTest {
         assertTrue("eval asks are unaffected by the new rules: v1 redaction", e.redacted); assertNull(e.sourceStates); assertFalse(AskSourceStates.isForgotten(e))
     }
 
-    @Test fun anAskWrittenBeforeV17HasNoStatesAndMatchesByItsCitedArrayOnly() = runBlocking {
+    @Test fun anAskWrittenBeforeV17HasNoStatesAndMatchesByItsStoredDependencies() = runBlocking {
         w.seed(); ForgetV2.testOverride = true
         ask("legacyCited", listOf("mA"), states = null); ask("legacyDep", listOf("mFar"), deps = listOf("mA"), states = null)
         w.service.forgetFact("mA")
         assertTrue(row("legacyCited").redacted); assertEquals(AskSourceStates.SOURCE_FORGOTTEN, AskSourceStates.parse(row("legacyCited").sourceStates)?.state)
-        assertFalse(row("legacyDep").redacted)
+        assertTrue("dependsOn keeps its protection after migration", row("legacyDep").redacted); assertEquals(AskSourceStates.SOURCE_FORGOTTEN, AskSourceStates.parse(row("legacyDep").sourceStates)?.state)
     }
 
     @Test fun thePlannerPreviewEqualsTheDeleteSetWithTheFlagOn() = runBlocking {
         seed(); ForgetV2.testOverride = true
         val plan = ForgetPlanner(db).plan(setOf(Ref(Family.MEMORY, "mA")), Policy.User)
         val planned = plan.refs(Family.ANSWER); val plannedNudges = plan.refs(Family.NUDGE, Fate.ERASE)
-        assertEquals(setOf("aCite", "aCited", "aHistory", "aEval"), planned) // aEval: a developer eval ask keeps the v1 rule
+        assertEquals(setOf("aCite", "aDep", "aCited", "aRetrieved", "aHistory", "aMigratedHistory", "aEval"), planned) // conservative (F4): the v1 asks plus the history ones; aEval keeps the v1 rule
         assertEquals(setOf("nCite"), plannedNudges); assertTrue(plan.refs(Family.NUDGE, Fate.REBUILD).isEmpty())
-        val all = listOf("aCite", "aDep", "aFrame", "aKeep", "aCited", "aRetrieved", "aHistory", "aEval", "aFramed")
+        val all = listOf("aCite", "aDep", "aFrame", "aKeep", "aCited", "aRetrieved", "aHistory", "aMigratedHistory", "aEval", "aFramed", "aUnrelated")
         w.service.forgetFact("mA")
         val redacted = db.askDao().byIds(all).filter { it.redacted }.map { it.id }.toSet()
         assertEquals("what the preview named is exactly what the delete redacted", planned, redacted)

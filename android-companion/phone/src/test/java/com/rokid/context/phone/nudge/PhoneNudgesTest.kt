@@ -62,6 +62,30 @@ class PhoneNudgesTest {
         assertNull(port.overlay.value)
     }
 
+    @Test fun deletingTheNewestNudgeClearsItsToastAndLeavesTheOlderSurvivor() = runTest {
+        val older = row("older", start - 5_000, "glance", text = "Older survivor")
+        val rows = MutableStateFlow(listOf(older))
+        val port = NudgePort(rows, backgroundScope, clock = { start + testScheduler.currentTime })
+        runCurrent()
+        rows.value = listOf(row("new", start + 1_000, "toast", text = "forgotten text"), older)
+        runCurrent()
+        assertEquals(Overlay.Nudge("forgotten text"), port.overlay.value)
+        rows.value = listOf(older) // N1 erased the owning row; the older glance nudge is the newest now
+        runCurrent()
+        assertNull("the toast of a deleted row is cleared at once", port.overlay.value)
+        assertEquals("Older survivor", port.latest.value?.text)
+        advanceTimeBy(10_000); runCurrent()
+        assertNull(port.overlay.value)
+    }
+
+    @Test fun aNewerNudgeStillReplacesTheToastItself() = runTest {
+        val rows = MutableStateFlow(emptyList<NudgeEntity>())
+        val port = NudgePort(rows, backgroundScope, clock = { start + testScheduler.currentTime })
+        rows.value = listOf(row("a", start + 1_000, "toast", text = "first")); runCurrent()
+        rows.value = listOf(row("b", start + 2_000, "glance", text = "second"), row("a", start + 1_000, "toast", text = "first")); runCurrent()
+        assertEquals("a newer row is not a disappeared owner", Overlay.Nudge("first"), port.overlay.value)
+    }
+
     @Test fun latestExpiresAfterSixHours() = runTest {
         val port = NudgePort(MutableStateFlow(listOf(row("n", start, "glance"))), backgroundScope, clock = { start + testScheduler.currentTime })
         runCurrent()

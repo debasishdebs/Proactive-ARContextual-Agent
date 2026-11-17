@@ -209,7 +209,7 @@ internal object AnswerFamily : ForgetFamily {
         val eval = ids.chunked(500).flatMap { ctx.db.askDao().byIds(it) }.filter { it.source == AskSourceStates.EVAL_SOURCE }.map { it.id }.toSet()
         ids.forEach { if (it in eval) dao.redactAsk(it, ForgetService.REDACTED) else dao.redactAskForgotten(it, ForgetService.REDACTED, AskSourceStates.forgotten()) }
     }
-    /** The asks (not yet redacted) hit by [cited]. v1: whose sources, or `dependsOn` ids, meet it (exactly the match `ForgetService.cascade` redacts by). `forgetV2` on (A1, A2): whose CITED ids or history items meet it. */
+    /** The asks (not yet redacted) hit by [cited]. v1: whose sources, or `dependsOn` ids, meet it (exactly the match `ForgetService.cascade` redacts by). `forgetV2` on (A1, A2, ruling F4): whose stored ids (cited and `dependsOn`), cited ids or history items meet it (conservative). */
     suspend fun citing(cited: Set<String>, tx: PlanTx, v2: Boolean = false): List<String> {
         val dao = tx.db.forgetDao()
         val byJson = cited.flatMap { dao.asksCiting(ForgetService.likeFor(it)) }.distinctBy { it.id }
@@ -240,7 +240,7 @@ internal object NudgeFamily : ForgetFamily {
 
 /**
  * The answers and nudges one Forget reaches from the ids it removed ([cited]). The ONE rule shared by the planner (preview, plan hash) and the executor (delete), so preview == delete.
- * v1 (flag off): one pass, every ask or nudge whose stored ids meet [cited]. `forgetV2` on: answers by their CITED ids and history items (A1, A2), nudges by any dependency (N1: ERASE), and the items
+ * v1 (flag off): one pass, every ask or nudge whose stored ids meet [cited]. `forgetV2` on: answers by ALL their stored dependencies (conservative, ruling F4) and history items (A1, A2), nudges by any dependency (N1: ERASE), and the items
  * reached are themselves history, so the answers that used a reached answer or nudge follow (A2), to a fixpoint.
  */
 internal object AskRules {

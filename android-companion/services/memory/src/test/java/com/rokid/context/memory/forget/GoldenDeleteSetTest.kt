@@ -25,11 +25,11 @@ class GoldenDeleteSetTest {
     /**
      * M4: every path runs the SAME golden set twice on a fresh world, with `forgetV2` OFF (the legacy code) and ON (the [com.rokid.context.memory.forget.lifecycle.ForgetExecutor]): the executor must delete exactly
      * what v1 deletes. The message names the mode, so a failure says which path diverged.
-     * [on]: M5 (rulings 2026-11-17), the ON-only expectation of a path whose ask / nudge fates changed: an answer is hit only by its CITED sources (A1: "Answered from a forgotten fact", the question stays) and a nudge
+     * [on]: M5 (rulings 2026-11-17), the ON-only expectation of a path whose ask / nudge fates changed: an answer is hit by ALL its stored dependencies (A1, conservative per proxy ruling F4: "Answered from a forgotten fact", the question stays) and a nudge
      * reached by any dependency is deleted (N1). Everything else equals [expected]; the OFF expectation is the v1 set and never changes.
      */
     private class V2Fates(
-        /** The asks that change with the flag ON (null: the same as OFF). The seeded asks have no source states (written before v17), so only their cited array counts: `aDep` cites `mFar`, it only depends on the invalidated `mD`. */
+        /** The asks that change with the flag ON (null: the same as OFF). The seeded asks have no source states (written before v17): their stored ids (cited and `dependsOn`) count, so `aDep` is hit exactly as with the flag OFF (ruling F4); null means the same ask set as OFF. */
         val askChanged: String?,
         /** The nudge(s) reached by a dependency: ERASED (a deleted row), no longer "changed" (redacted in place). */
         val nudgeErased: String,
@@ -85,7 +85,7 @@ class GoldenDeleteSetTest {
             added cleanup_outbox: 1, 2
             added forget_tombstone: fA
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
-        """, on = V2Fates("aCite", "nCite")) { w.service.forgetFact("mA") }
+        """, on = V2Fates(null, "nCite")) { w.service.forgetFact("mA") }
     @Test fun forgetPhoto() = golden("""
             deleted canvas_label: mkFar, mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -113,7 +113,7 @@ class GoldenDeleteSetTest {
             added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
             added cleanup_outbox: 1, 2, 3, 4, 5, 6, 8
             added forget_tombstone: fA, fFar
-        """, on = V2Fates("aCite, aFrame", "nCite")) { w.service.forgetMoment("fA") }
+        """, on = V2Fates(null, "nCite")) { w.service.forgetMoment("fA") }
     @Test fun forgetFarPhotoCitedByAMultiPhotoFact() = golden("""
             deleted canvas_label: mkFar, mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -194,7 +194,7 @@ class GoldenDeleteSetTest {
             added cleanup_outbox: 1, 2, 3, 4, 5, 6, 7, 8, 9
             added forget_tombstone: fA, fB, fFar
             added moment_tombstone: 68f6baa4, 68f6baa5
-        """, on = V2Fates("aCite, aFrame", "nCite")) { w.fx.forget.forgetRange(w.tA, w.tB) }
+        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetRange(w.tA, w.tB) }
     @Test fun momentForgetById() = golden("""
             deleted canvas_label: mkFar, mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -223,7 +223,7 @@ class GoldenDeleteSetTest {
             added cleanup_outbox: 1, 2, 3, 4, 5, 6
             added forget_tombstone: fA, fFar
             added moment_tombstone: 68f6baa4
-        """, on = V2Fates("aCite, aFrame", "nCite")) { w.fx.forget.forgetMoments(listOf(w.momA)) }
+        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetMoments(listOf(w.momA)) }
     @Test fun momentScopeSpans() = golden("""
             deleted canvas_label: mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -254,7 +254,7 @@ class GoldenDeleteSetTest {
             added forget_tombstone: fA, fFar
             added moment_tombstone: 68f6baa4
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
-        """, on = V2Fates("aCite, aFrame", "nCite")) { w.fx.forget.forgetSpans(listOf(w.tA..w.tA + 999)) }
+        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetSpans(listOf(w.tA..w.tA + 999)) }
     @Test fun sceneScopeSpans() = golden("""
             deleted canvas_label: mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -285,7 +285,7 @@ class GoldenDeleteSetTest {
             added forget_tombstone: fA, fB, fFar
             added moment_tombstone: 68f6baa4, 68f6baa5
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
-        """, on = V2Fates("aCite, aFrame", "nCite")) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
+        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
     @Test fun retentionExpireFact() = golden("""
             deleted memory: mA
             deleted memory_source: mD|mA

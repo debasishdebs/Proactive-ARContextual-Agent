@@ -43,7 +43,7 @@ object PhoneNudges {
 /**
  * [latest]: the newest nudge as a Glance one-liner (≤ 80 chars) when it was not phone-only and is ≤ 6 h old.
  * [overlay]: the HUD "HEADS UP" toast for 8 s, only for a `toast` (Max) nudge stored after this port started, so a
- * restart never replays one. A redacted row (Forget) clears both at once.
+ * restart never replays one. A redacted row (Forget) clears both at once, and so does the deletion of the row that owns the toast (N1).
  */
 class NudgePort(
     rows: Flow<List<NudgeEntity>>,
@@ -59,6 +59,8 @@ class NudgePort(
 
     private var toasted: String? = null
     private var toastJob: Job? = null
+    private var toastOwner: String? = null
+    private var toastOwnerTs: Long = 0L
     private var expiryJob: Job? = null
 
     init {
@@ -72,6 +74,8 @@ class NudgePort(
             toastJob?.cancel(); toast.value = null
             return
         }
+        // Forget N1 (forgetV2): the nudge that owns the toast was deleted and an OLDER surviving row is the newest now: its text must not stay on the glasses/phone (a newer nudge replaces it by the rule below).
+        if (toast.value != null && n.id != toastOwner && n.ts < toastOwnerTs) { toastJob?.cancel(); toast.value = null; toastOwner = null }
         val text = n.text.take(MAX_TEXT)
         val age = clock() - n.ts
         line.value = if (n.shownOn != "phone" && age <= MAX_AGE_MS) NudgeLine(text, n.ts) else null
@@ -80,6 +84,7 @@ class NudgePort(
             toasted = n.id
             val o = Overlay.Nudge(text)
             toast.value = o
+            toastOwner = n.id; toastOwnerTs = n.ts
             toastJob?.cancel()
             toastJob = scope.launch { delay(toastMs); if (toast.value === o) toast.value = null }
         }
