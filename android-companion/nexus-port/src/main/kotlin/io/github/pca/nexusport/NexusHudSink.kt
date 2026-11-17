@@ -49,6 +49,8 @@ class NexusHudSink internal constructor(
     wipeLedger: WipeLedger? = null,
     /** Where binder calls run. Default: inline (tests); [connect] passes the threaded one. */
     private val dispatcher: NexusDispatcher = NexusDispatcher.direct(),
+    /** How long a show whose binder call has not returned holds a wipe acknowledgement back (tests shorten it). The show stays tracked after that: when it returns, the wipe is re-owed (r4 P1-2). */
+    private val inFlightMaxNs: Long = IN_FLIGHT_MAX_NS,
 ) {
     private class Handle(val slot: Slot, val sources: Set<String>, val pauseGated: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>, val seq: Long, val prev: Handle?) {
         val used = HashSet<String>()
@@ -197,13 +199,17 @@ class NexusHudSink internal constructor(
 
     private fun wipeGenSafe(): Long = try { ledger.generation() } catch (_: Exception) { 0L }
 
-    /** Runs [send] with its wipe generation registered while the binder call is unfinished; a send that returns OK after a wipe covering that generation was acknowledged re-owes the wipe (r3 P1-3). */
+    /**
+     * Runs [send] with its wipe generation registered while the binder call is unfinished. A send that RETURNS after a wipe covering that generation was acknowledged re-owes the wipe unless the bridge confirmed that nothing was created
+     * (r3 P1-3, r4 P1-2): OK, a STALE the bridge hid again after the draw (it reports [NexusResult.CREATED_HISTORY]) and an unknown outcome all count. This runs however late the call returns: the 120 s cut-off only stops the acknowledgement
+     * from being held back, it never settles the debt past a show that is still unfinished.
+     */
     private fun trackedShow(startGen: Long, send: () -> Int): Int {
         val tok = Any()
         inFlightShows[tok] = InFlight(startGen, System.nanoTime())
         try {
             val x = send()
-            if (x == NexusResult.OK && ackedGen.get() > startGen) historyDirty()
+            if (NexusResult.created(x) && ackedGen.get() > startGen) historyDirty()
             return x
         } finally { inFlightShows.remove(tok) }
     }
@@ -219,14 +225,14 @@ class NexusHudSink internal constructor(
     private fun runShow(op: ShowOp) {
         if (!synchronized(lock) { registeredLocked(op.h) }) { dropShow(op, DropReason.TRIPPED); return }
         if (!stillValid(op.epoch, op.pass, op.pauseGated)) { dropShow(op, DropReason.TRIPPED); return }
-        if (!dispatcher.healthy()) { dropShow(op, DropReason.TRANSPORT); return }
+        if (!dispatcher.contentOk()) { dropShow(op, DropReason.TRANSPORT); return }
         val cmd = op.cmd
         var startGen = 0L
         // Everything is re-checked AFTER the delivery lease is held (no trip can complete between this check and the call), and the wipe record is persisted before the first notice of a generation is sent.
-        val r = callT({
+        val r = NexusResult.code(callT({
             if (!stillValid(op.epoch, op.pass, op.pauseGated) || !synchronized(lock) { registeredLocked(op.h) }) false
             else { try { ledger.noteShown() } catch (_: Exception) { log("nexus wipe record failed") }; startGen = wipeGenSafe(); true }
-        }) { trackedShow(startGen) { transport.show(cmd, op.epoch) } }
+        }) { trackedShow(startGen) { transport.show(cmd, op.epoch) } })
         if (r != NexusResult.OK) {
             // A timeout may still draw the notice later: keep the handle (unhealthy() marked it withdrawing, so the retry hides it).
             if (!lastTimedOut) synchronized(lock) { restoreLocked(op.sh); restoreLocked(op.h) }
@@ -242,7 +248,7 @@ class NexusHudSink internal constructor(
             val live = safeConfig().let { it.enabled && it.ttsEnabled }
             if (live) {
                 callT { transport.setFeatures(safeConfig().featureMask()) }
-                val sr = callT({ safeConfig().let { it.enabled && it.ttsEnabled } && stillValid(op.epoch, op.pass, op.pauseGated) && synchronized(lock) { registeredLocked(op.sh) }.also { speechGen = wipeGenSafe() } }) { trackedShow(speechGen) { transport.speak(speech, op.epoch) } }
+                val sr = NexusResult.code(callT({ safeConfig().let { it.enabled && it.ttsEnabled } && stillValid(op.epoch, op.pass, op.pauseGated) && synchronized(lock) { registeredLocked(op.sh) }.also { speechGen = wipeGenSafe() } }) { trackedShow(speechGen) { transport.speak(speech, op.epoch) } })
                 if (sr == NexusResult.OK) { spoken = true; log("nexus shown slot=SPEECH") }
                 else {
                     log("nexus speech refused code=${NexusResult.name(sr)}")
@@ -260,6 +266,7 @@ class NexusHudSink internal constructor(
     private fun callT(guard: (() -> Boolean)? = null, block: () -> Int): Int {
         if (!dispatcher.healthy()) { lastTimedOut = false; return NexusResult.ERROR }     // backing off: no call is made, nothing is forgotten (hides and the wipe are retried by the ticks)
         val leased = guard != null
+        if (leased && !dispatcher.contentOk()) { lastTimedOut = false; return NexusResult.ERROR }    // after a timeout no content goes out until a privacy call (the probe) came back
         if (leased && !dispatcher.acquireShared()) { lastTimedOut = false; return NexusResult.STALE }
         val r: Int?
         try {
@@ -496,6 +503,7 @@ class NexusHudSink internal constructor(
             handles.values.toList()
         }
         retryTripNotice()
+        probeBridge()
         val askGone = synchronized(lock) {
             val a = ask
             if (a == null) null
@@ -510,6 +518,11 @@ class NexusHudSink internal constructor(
             val live = block != null || if (h.sources.isEmpty()) true else try { gates.sourcesLive(h.sources) } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
             if (block != null || !live) synchronized(lock) { if (handles[h.slot] === h) withdrawLocked(h.slot) }
         }
+    }
+
+    /** After a timeout the bridge stays "unhealthy" for content until a call that is not content came back: once the backoff is over, one feature push is the probe (r4 P1-1). */
+    private fun probeBridge() {
+        if (dispatcher.isDown() && dispatcher.healthy()) queueFeatures()
     }
 
     /** The bridge has not confirmed the latest trip epoch: tell it again (background, one at a time). */
@@ -604,7 +617,7 @@ class NexusHudSink internal constructor(
             // An acknowledgement settles the debt only up to the generation its request carried: a late one for an older wipe never clears a newer debt.
             ackedGen.accumulateAndGet(generation) { a, b -> if (a > b) a else b }
             val now = System.nanoTime()
-            val late = inFlightShows.values.any { it.gen < generation && now - it.atNanos < IN_FLIGHT_MAX_NS }     // a show that began before this wipe was requested has not returned yet: it may create its notice after the wipe (r3 P1-3)
+            val late = inFlightShows.values.any { it.gen < generation && now - it.atNanos < inFlightMaxNs }     // a show that began before this wipe was requested has not returned yet: it may create its notice after the wipe (r3 P1-3)
             try { ledger.settle(generation) } catch (_: Exception) { log("nexus wipe ack failed") }
             if (late) { historyDirty(); return }
             try { onForgetAcked() } catch (_: Exception) { log("nexus wipe ack failed") }

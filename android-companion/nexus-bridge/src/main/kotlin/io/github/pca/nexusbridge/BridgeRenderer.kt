@@ -131,36 +131,84 @@ class BridgeRenderer(
 
     // ---- v2 r2 P1-1: trip epochs. The phone stamps every show and speech with its trip epoch and tells the bridge the latest trip; a late show after a trip is dropped here. ----
 
-    private val latestTrip = java.util.concurrent.atomic.AtomicLong(0)
+    /** One phone connection: its session id and the latest trip epoch it told. A renderer that survives a reconnect REPLACES the whole object, so a send that entered under the old one is stale when it returns (v2 r4 P1-3). */
+    private class Conn(val session: Long, val claimed: Boolean = false) { val trip = java.util.concurrent.atomic.AtomicLong(0) }
 
-    /** A new phone connection starts a new epoch counter. */
-    fun resetEpoch() { latestTrip.set(0) }
+    private val rnd = java.security.SecureRandom()
+    @Volatile private var conn = Conn(freshSession())
+
+    private fun freshSession(): Long { var s: Long; do { s = rnd.nextLong() } while (s == 0L); return s }
+
+    /** A new phone connection: a new bridge-side session (the phone's own arrives with [beginSession]) and a new epoch counter. Sends that entered before are stale from now on. */
+    fun resetEpoch() { synchronized(rnd) { conn = Conn(freshSession()) } }
 
     /**
-     * Records the latest trip epoch (monotonic max) BEFORE returning, so every later [showAt] / [speakAt] stamped with an older epoch is refused before anything is rendered or sent to Nexus, and invalidates the listening
-     * generation: a speech session that is being opened (authorized, no handle on the phone yet) is stopped and nothing it reports is relayed (r3 P1-1, P1-4).
+     * The phone's connection session. Idempotent for the same session (does not reset the epoch counter). It is adopted only by the connection that has not been claimed yet (the one [resetEpoch] made when the phone set its callback):
+     * a late call of an OLD connection can never replace the current one (STALE). 0 is invalid.
      */
-    fun tripAt(epoch: Long): Int {
-        latestTrip.accumulateAndGet(epoch) { a, b -> if (a > b) a else b }
+    fun beginSession(session: Long): Int {
+        if (session == 0L) return NexusResult.INVALID
+        synchronized(rnd) {
+            val c = conn
+            if (c.session == session) return NexusResult.OK
+            if (c.claimed) return NexusResult.STALE
+            conn = Conn(session, claimed = true)
+        }
+        return NexusResult.OK
+    }
+
+    private fun stale(c: Conn, epoch: Long) = conn !== c || epoch < c.trip.get()
+
+    private fun tripOn(c: Conn, epoch: Long): Int {
+        if (conn !== c) return NexusResult.STALE
+        c.trip.accumulateAndGet(epoch) { a, b -> if (a > b) a else b }
         stopListening()
         return NexusResult.OK
     }
 
-    private fun stale(epoch: Long) = epoch < latestTrip.get()
+    /** Records the latest trip epoch of the current connection (legacy, no session). */
+    fun tripAt(epoch: Long): Int = tripOn(conn, epoch)
 
-    /** [show] unless the phone tripped after this show was admitted; one that lands while the trip happens is hidden again. */
-    fun showAt(epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int {
-        if (stale(epoch)) { log("bridge show stale"); return NexusResult.STALE }
-        val r = show(slot, title, text, ttlMs, wake, ids, labels)
-        if (r == NexusResult.OK && stale(epoch)) { hide(slot); log("bridge show stale"); return NexusResult.STALE }
-        return r
+    /** [tripAt] for [session]: STALE when it is not the current connection. */
+    fun tripIn(session: Long, epoch: Long): Int { val c = conn; return if (c.session != session) NexusResult.STALE else tripOn(c, epoch) }
+
+    /**
+     * [show] unless the phone tripped after this show was admitted (or the connection changed); one that lands while the trip happens is hidden again. The check runs AGAIN right after the hub call returns (r4 P1-1): a
+     * call that was stuck inside the hub and resumes later is hidden then, never before it returns (nothing here can interrupt it).
+     */
+    fun showAt(epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int =
+        NexusResult.code(showOn(conn, epoch, slot, title, text, ttlMs, wake, ids, labels))
+
+    /** [showAt] carrying [session]. The result has [NexusResult.CREATED_HISTORY] when a notice may have reached the hub's history. */
+    fun showIn(session: Long, epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int {
+        val c = conn
+        if (c.session != session) { log("bridge show stale"); return NexusResult.STALE }
+        return showOn(c, epoch, slot, title, text, ttlMs, wake, ids, labels)
     }
 
-    fun speakAt(epoch: Long, text: String?): Int {
-        if (stale(epoch)) { log("bridge show stale"); return NexusResult.STALE }
+    private fun showOn(c: Conn, epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int {
+        if (stale(c, epoch)) { log("bridge show stale"); return NexusResult.STALE }
+        val r = show(slot, title, text, ttlMs, wake, ids, labels)
+        val made = r == NexusResult.OK || r == NexusResult.ERROR      // an error from the hub call may still have drawn: unknown counts as created
+        val flag = if (made) NexusResult.CREATED_HISTORY else 0
+        if (made && stale(c, epoch)) { hide(slot); log("bridge show stale"); return NexusResult.STALE or flag }
+        return r or flag
+    }
+
+    fun speakAt(epoch: Long, text: String?): Int = NexusResult.code(speakOn(conn, epoch, text))
+
+    fun speakIn(session: Long, epoch: Long, text: String?): Int {
+        val c = conn
+        if (c.session != session) { log("bridge show stale"); return NexusResult.STALE }
+        return speakOn(c, epoch, text)
+    }
+
+    private fun speakOn(c: Conn, epoch: Long, text: String?): Int {
+        if (stale(c, epoch)) { log("bridge show stale"); return NexusResult.STALE }
         val r = speak(text)
-        if (r == NexusResult.OK && stale(epoch)) { stopSpeech(); log("bridge show stale"); return NexusResult.STALE }
-        return r
+        val flag = if (r == NexusResult.OK || r == NexusResult.ERROR) NexusResult.CREATED_HISTORY else 0
+        if (flag != 0 && stale(c, epoch)) { stopSpeech(); log("bridge show stale"); return NexusResult.STALE or flag }
+        return r or flag
     }
 
     fun show(slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int {
@@ -212,6 +260,9 @@ class BridgeRenderer(
         val b = bus() ?: return quiet(NexusResult.NOT_REGISTERED)
         return b.forgetNotices { events?.onForgetAcceptedAt(generation) }
     }
+
+    /** [forgetHistoryAt] carrying [session]: STALE when it is not the current connection. */
+    fun forgetHistoryIn(session: Long, generation: Long): Int = if (conn.session != session) NexusResult.STALE else forgetHistoryAt(generation)
 
     /** PCA's process died, or it asked for everything off. Never throws. */
     fun hideAll() {

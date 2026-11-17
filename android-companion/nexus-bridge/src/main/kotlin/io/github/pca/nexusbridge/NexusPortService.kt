@@ -80,6 +80,14 @@ class NexusPortService : Service() {
         override fun tripAt(epoch: Long): Int = guard { BridgeHost.renderer.tripAt(epoch) }
         override fun forgetHistoryAt(generation: Long): Int = guard { BridgeHost.renderer.forgetHistoryAt(generation) }
 
+        override fun beginSession(session: Long): Int = guard { BridgeHost.renderer.beginSession(session) }
+        override fun showIn(session: Long, epoch: Long, slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, actionIds: Array<out String>?, actionLabels: Array<out String>?): Int = guard {
+            BridgeHost.renderer.showIn(session, epoch, slot, title, text, ttlMs, wake, actionIds?.toList().orEmpty(), actionLabels?.toList().orEmpty())
+        }
+        override fun speakIn(session: Long, epoch: Long, text: String?): Int = guard { BridgeHost.renderer.speakIn(session, epoch, text) }
+        override fun tripIn(session: Long, epoch: Long): Int = guard { BridgeHost.renderer.tripIn(session, epoch) }
+        override fun forgetHistoryIn(session: Long, generation: Long): Int = guard { BridgeHost.renderer.forgetHistoryIn(session, generation) }
+
         override fun hide(slot: Int): Int = guard { BridgeHost.renderer.hide(slot) }
         override fun speak(text: String?): Int = guard { BridgeHost.renderer.speak(text) }
         override fun stopSpeech(): Int = guard { BridgeHost.renderer.stopSpeech() }
