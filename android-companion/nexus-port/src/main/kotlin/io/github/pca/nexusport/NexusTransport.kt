@@ -16,13 +16,22 @@ internal interface NexusTransport {
     fun speak(text: String): Int
     fun stopSpeech(): Int
     fun forgetHistory(): Int
+    /** T5: stops the Nexus speech-to-text session of an assist-button ask. */
+    fun stopListening(): Int
+    /** T6: registers (true) or clears (false) the phone's skill host with the bridge. */
+    fun setSkillHost(on: Boolean): Int
 }
 
-/** Inbound from the bridge: carries ids and codes, never text. */
+/** Inbound from the bridge: ids and codes, plus the one assist-button transcript (never logged) and the skill call. */
 internal interface NexusEvents {
     fun onAction(slot: Int, actionId: String)
     fun onSpeechDone()
     fun onForgetAccepted()
+    fun onListening(active: Boolean)
+    fun onAskTranscript(text: String)
+    fun onAskFailed(reason: Int)
+    /** A skill call, answered on the binder thread of the bridge's worker (blocking is fine). Returns the [SkillWire] form. */
+    fun invokeSkill(opId: String): String
 }
 
 /** The AIDL implementation. A dead binder or any throw is [NexusResult.ERROR]; never an exception. */
@@ -34,7 +43,19 @@ internal class AidlNexusTransport(private val port: NexusPort) : NexusTransport 
         override fun onAction(slot: Int, actionId: String?) { if (actionId != null) events?.onAction(slot, actionId) }
         override fun onSpeechDone() { events?.onSpeechDone() }
         override fun onForgetAccepted() { events?.onForgetAccepted() }
+        override fun onListening(active: Boolean) { events?.onListening(active) }
+        override fun onAskTranscript(text: String?) { if (text != null) events?.onAskTranscript(text) }
+        override fun onAskFailed(reason: Int) { events?.onAskFailed(reason) }
     }
+
+    private val skillHost = object : NexusSkillHost.Stub() {
+        override fun invoke(opId: String?): String {
+            val e = events
+            if (e == null || opId == null) return SkillWire.encode(SkillResult.Refused(SkillCodes.UNAVAILABLE))
+            return try { e.invokeSkill(opId) } catch (_: RuntimeException) { SkillWire.encode(SkillResult.Refused(SkillCodes.FAILED)) }
+        }
+    }
+    private val events: NexusEvents? get() = callback.events
 
     override fun setEvents(events: NexusEvents?) = call {
         callback.events = events
@@ -49,6 +70,8 @@ internal class AidlNexusTransport(private val port: NexusPort) : NexusTransport 
     override fun speak(text: String) = call { port.speak(text) }
     override fun stopSpeech() = call { port.stopSpeech() }
     override fun forgetHistory() = call { port.forgetHistory() }
+    override fun stopListening() = call { port.stopListening() }
+    override fun setSkillHost(on: Boolean) = call { port.setSkillHost(if (on) skillHost else null) }
 
     companion object {
         fun from(binder: IBinder): AidlNexusTransport = AidlNexusTransport(NexusPort.Stub.asInterface(binder))

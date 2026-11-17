@@ -5,5 +5,7 @@ import android.util.Log
 /** Process-wide link between the two services: the port service (PCA side) and the Nexus plugin service (hub side). Holds no content. */
 object BridgeHost {
     @Volatile var bus: NexusBusClient? = null
+    @Volatile var skillHost: SkillHostClient? = null
     val renderer = BridgeRenderer(bus = { bus }, log = { Log.i("PCABRIDGE", it) })
+    val skills = SkillRouter(host = { skillHost }, features = { renderer.currentFeatures }, log = { Log.i("PCABRIDGE", it) })
 }

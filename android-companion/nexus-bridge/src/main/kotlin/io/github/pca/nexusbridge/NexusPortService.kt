@@ -9,7 +9,10 @@ import android.content.pm.PackageManager
 import android.os.Binder
 import android.os.IBinder
 import android.os.Process
+import android.os.RemoteException
 import io.github.pca.nexusport.NexusPort
+import io.github.pca.nexusport.NexusResult
+import io.github.pca.nexusport.NexusSkillHost
 import io.github.pca.nexusport.NexusPortCallback
 import io.github.pca.nexusport.NexusPortVersion
 
@@ -45,9 +48,12 @@ class NexusPortService : Service() {
                 override fun onAction(slot: Int, actionId: String) { runCatching { callback.onAction(slot, actionId) } }
                 override fun onSpeechDone() { runCatching { callback.onSpeechDone() } }
                 override fun onForgetAccepted() { runCatching { callback.onForgetAccepted() } }
+                override fun onListening(active: Boolean) { runCatching { callback.onListening(active) } }
+                override fun onAskTranscript(text: String) { runCatching { callback.onAskTranscript(text) } }
+                override fun onAskFailed(reason: Int) { runCatching { callback.onAskFailed(reason) } }
             }
             // PCA's process died: nothing may stay on the glasses on its behalf.
-            runCatching { callback.asBinder().linkToDeath({ BridgeHost.renderer.hideAll(); BridgeHost.renderer.setFeatures(0); BridgeHost.renderer.events = null }, 0) }
+            runCatching { callback.asBinder().linkToDeath({ BridgeHost.renderer.hideAll(); BridgeHost.renderer.setFeatures(0); BridgeHost.renderer.events = null; BridgeHost.skillHost = null }, 0) }
             Unit
         }
 
@@ -61,6 +67,14 @@ class NexusPortService : Service() {
         override fun speak(text: String?): Int = guard { BridgeHost.renderer.speak(text) }
         override fun stopSpeech(): Int = guard { BridgeHost.renderer.stopSpeech() }
         override fun forgetHistory(): Int = guard { BridgeHost.renderer.forgetHistory() }
+
+        override fun stopListening(): Int = guard { BridgeHost.renderer.stopListening() }
+
+        override fun setSkillHost(host: NexusSkillHost?): Int = guard {
+            if (host == null) { BridgeHost.skillHost = null; return@guard NexusResult.OK }
+            BridgeHost.skillHost = SkillHostClient { opId -> try { host.invoke(opId) } catch (_: RemoteException) { null } catch (_: RuntimeException) { null } }
+            NexusResult.OK
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -73,6 +87,7 @@ class NexusPortService : Service() {
         BridgeHost.renderer.hideAll()
         BridgeHost.renderer.setFeatures(0)
         BridgeHost.renderer.events = null
+        BridgeHost.skillHost = null
         if (pluginBound) { unbindService(keepPlugin); pluginBound = false }
         return false
     }

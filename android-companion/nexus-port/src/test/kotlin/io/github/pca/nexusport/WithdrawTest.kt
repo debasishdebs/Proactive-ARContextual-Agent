@@ -132,6 +132,41 @@ class WithdrawTest {
         assertEquals(0, s.liveHandles()); assertTrue(t.live.isEmpty())
     }
 
+    /** The same fuzz with the assist-button ask and the skills mixed in: a trip leaves no listening, no live ask, and a late answer of any earlier ask delivers nothing. */
+    @Test fun fuzzWithAsksAndSkillsLeavesNothingBehindAndDeliversNothingAfterATrip() = runBlocking<Unit> {
+        repeat(40) { seed ->
+            val rnd = Random(1000 + seed)
+            val tt = FakeNexusTransport().also { it.now = { now } }; val gg = FakeGates(); val aa = FakeAsks(); val sk = FakeSkills()
+            now = 0
+            val s = NexusHudSink(tt, gg, { ON_ASK.copy(ttsEnabled = true, skillsEnabled = true) }, FakeActions(), { now }, {}, aa, sk)
+            repeat(300) {
+                when (rnd.nextInt(13)) {
+                    0 -> s.show(nudge(src = setOf("m${rnd.nextInt(3)}")))
+                    1 -> s.show(answer(speak = rnd.nextBoolean()))
+                    2 -> s.events.onListening(true)
+                    3 -> s.events.onAskTranscript(if (rnd.nextInt(5) == 0) " " else "q${rnd.nextInt(9)}")
+                    4 -> s.events.onAskFailed(1 + rnd.nextInt(3))
+                    5 -> s.events.onListening(false)
+                    6 -> aa.asked.lastOrNull()?.let { s.show(HudEvent.AskAnswer(it.first, "a", emptyList(), setOf("m0"), 5_000, speak = rnd.nextBoolean())) }
+                    7 -> { val refusedBefore = aa.refused.size; s.trip(TripReason.entries[rnd.nextInt(TripReason.entries.size)])
+                        assertEquals(0, s.liveHandles(), "seed $seed"); assertTrue(tt.live.isEmpty(), "seed $seed")
+                        val shownBefore = tt.shown.size; val spokenBefore = tt.spoken.size
+                        // asks still open when the trip hit (the handler was told `refused`) can never be answered afterwards; an ask that was already answered is the phone's own business
+                        for (id in aa.refused.drop(refusedBefore).map { it.first }.distinct()) assertEquals(Outcome.Dropped(DropReason.TRIPPED), s.show(HudEvent.AskAnswer(id, "late", emptyList(), setOf("m0"), 5_000, speak = true)), "seed $seed")
+                        assertEquals(shownBefore, tt.shown.size, "seed $seed"); assertEquals(spokenBefore, tt.spoken.size, "seed $seed") }
+                    8 -> gg.zone = rnd.nextBoolean()
+                    9 -> gg.worn = rnd.nextInt(4) != 0
+                    10 -> { now += rnd.nextLong(0, 40_000); tt.expire(now); s.tick() }
+                    11 -> s.events.invokeSkill(SkillOp.entries[rnd.nextInt(4)].id)
+                    12 -> { gg.paused = rnd.nextBoolean(); s.refreshFeatures() }
+                }
+                assertTrue(s.liveSlots().containsAll(tt.live), "seed $seed: orphan ${tt.live - s.liveSlots()}")
+            }
+            s.trip(TripReason.DELETE_ALL)
+            assertEquals(0, s.liveHandles(), "seed $seed"); assertTrue(tt.live.isEmpty(), "seed $seed")
+        }
+    }
+
     /** Interleaved shows and trips, seeded: after every trip, and at the end, zero live handles in the sink AND on the fake glasses. */
     @Test fun fuzzInterleavedShowsAndTripsLeaveNoLiveHandle() = runBlocking<Unit> {
         repeat(40) { seed ->

@@ -40,6 +40,13 @@ internal class FakeNexusTransport : NexusTransport {
         return hideResult
     }
     override fun forgetHistory(): Int { calls += "forget"; forgets++; return NexusResult.OK }
+    var skillHost = false
+    override fun stopListening(): Int {
+        calls += "stopListen"
+        if (hideResult == NexusResult.OK) live -= Slot.LISTEN
+        return hideResult
+    }
+    override fun setSkillHost(on: Boolean): Int { calls += "skillHost:$on"; skillHost = on; return NexusResult.OK }
     fun count(prefix: String) = calls.count { it.startsWith(prefix) }
 }
 
@@ -62,6 +69,28 @@ class FakeGates : NexusGates {
     override fun worn(): Boolean { maybeThrow("worn"); return worn }
 }
 
+/** The phone's ask handler: records what it was asked and what it was told was cancelled. */
+class FakeAsks : NexusAskHandler {
+    val asked = mutableListOf<Pair<String, String>>()
+    val refused = mutableListOf<Pair<String, AskRefusal>>()
+    override fun ask(askId: String, text: String) { asked += askId to text }
+    override fun refused(askId: String, why: AskRefusal) { refused += askId to why }
+}
+
+/** The phone's skill provider: scripted results, optionally slow. */
+class FakeSkills : NexusSkillProvider {
+    val calls = mutableListOf<SkillOp>()
+    var result: (SkillOp) -> SkillResult = { SkillResult.Done(SkillState.CAPTURING) }
+    var hang = false
+    var boom = false
+    override suspend fun invoke(op: SkillOp): SkillResult {
+        calls += op
+        if (boom) throw IllegalStateException("provider")
+        if (hang) kotlinx.coroutines.awaitCancellation()
+        return result(op)
+    }
+}
+
 class FakeActions : NexusActionHandler {
     val marks = mutableListOf<String>()
     val mores = mutableListOf<String>()
@@ -70,6 +99,8 @@ class FakeActions : NexusActionHandler {
 }
 
 internal val ON = NexusConfig(enabled = true)
+internal val ON_ASK = NexusConfig(enabled = true, sttEnabled = true, assistTakeover = true)
+internal val ON_SKILLS = NexusConfig(enabled = true, skillsEnabled = true)
 internal val ON_TTS = NexusConfig(enabled = true, ttsEnabled = true)
 
 internal fun nudge(ref: String = "n1", src: Set<String> = setOf("m1"), body: String = "body", ttl: Long = 8_000) = HudEvent.Nudge(ref, "Title", body, src, ttl)

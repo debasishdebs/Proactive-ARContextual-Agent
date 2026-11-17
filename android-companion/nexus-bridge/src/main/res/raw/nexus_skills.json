@@ -1,0 +1,157 @@
+{
+ "version": 1,
+ "operations": [
+  {
+   "id": "status",
+   "version": 1,
+   "label": "Capture status",
+   "description": "Reports whether PCA is capturing, paused, paused near a private place, or stopped. Returns no memories, places or text.",
+   "examples": [
+    "Is PCA capturing?"
+   ],
+   "effect": "read",
+   "cancellable": false,
+   "deduplicates": true,
+   "requires": [],
+   "prerequisites": [],
+   "data": [
+    "status"
+   ],
+   "input": {
+    "type": "object",
+    "properties": {}
+   },
+   "output": {
+    "type": "object",
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "capturing",
+       "paused",
+       "zone_paused",
+       "stopped"
+      ]
+     }
+    },
+    "required": [
+     "state"
+    ]
+   }
+  },
+  {
+   "id": "pause_capture",
+   "version": 1,
+   "label": "Pause capture",
+   "description": "Pauses PCA's capture now. Returns the capture state afterwards.",
+   "examples": [
+    "Pause PCA capture"
+   ],
+   "effect": "action",
+   "cancellable": false,
+   "deduplicates": false,
+   "requires": [],
+   "prerequisites": [],
+   "data": [
+    "status"
+   ],
+   "input": {
+    "type": "object",
+    "properties": {}
+   },
+   "output": {
+    "type": "object",
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "capturing",
+       "paused",
+       "zone_paused",
+       "stopped"
+      ]
+     }
+    },
+    "required": [
+     "state"
+    ]
+   }
+  },
+  {
+   "id": "resume_capture",
+   "version": 1,
+   "label": "Resume capture",
+   "description": "Resumes PCA's capture. Refused while a pause zone is active. Returns the capture state afterwards.",
+   "examples": [
+    "Resume PCA capture"
+   ],
+   "effect": "action",
+   "cancellable": false,
+   "deduplicates": false,
+   "requires": [],
+   "prerequisites": [],
+   "data": [
+    "status"
+   ],
+   "input": {
+    "type": "object",
+    "properties": {}
+   },
+   "output": {
+    "type": "object",
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "capturing",
+       "paused",
+       "zone_paused",
+       "stopped"
+      ]
+     }
+    },
+    "required": [
+     "state"
+    ]
+   }
+  },
+  {
+   "id": "mark_moment",
+   "version": 1,
+   "label": "Mark a moment",
+   "description": "Saves a mark of the current moment through PCA's own mark path (refused near a private place or while paused). Returns the capture state afterwards, never the mark's content.",
+   "examples": [
+    "Mark this moment in PCA"
+   ],
+   "effect": "action",
+   "cancellable": false,
+   "deduplicates": false,
+   "requires": [],
+   "prerequisites": [],
+   "data": [
+    "status"
+   ],
+   "input": {
+    "type": "object",
+    "properties": {}
+   },
+   "output": {
+    "type": "object",
+    "properties": {
+     "state": {
+      "type": "string",
+      "enum": [
+       "capturing",
+       "paused",
+       "zone_paused",
+       "stopped"
+      ]
+     }
+    },
+    "required": [
+     "state"
+    ]
+   }
+  }
+ ]
+}

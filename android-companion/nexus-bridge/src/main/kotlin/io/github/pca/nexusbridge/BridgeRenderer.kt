@@ -1,5 +1,6 @@
 package io.github.pca.nexusbridge
 
+import io.github.pca.nexusport.AskFail
 import io.github.pca.nexusport.NexusAction
 import io.github.pca.nexusport.NexusFeatures
 import io.github.pca.nexusport.NexusLimits
@@ -11,6 +12,12 @@ interface BridgeEvents {
     fun onAction(slot: Int, actionId: String)
     fun onSpeechDone()
     fun onForgetAccepted()
+    /** T5: a Nexus speech session opened or ended. */
+    fun onListening(active: Boolean) = Unit
+    /** T5: the one final transcript (never logged). */
+    fun onAskTranscript(text: String) = Unit
+    /** T5: the session ended with no transcript ([io.github.pca.nexusport.AskFail] code). */
+    fun onAskFailed(reason: Int) = Unit
 }
 
 /**
@@ -20,6 +27,11 @@ interface BridgeEvents {
 class BridgeRenderer(private val bus: () -> NexusBusClient?, private val log: (String) -> Unit = {}) {
     @Volatile var events: BridgeEvents? = null
     @Volatile private var features = NexusFeatures.NONE
+    /** The feature bits PCA last set (0 until it sets any). The skill router reads it. */
+    val currentFeatures: Int get() = features
+    private val listenLock = Any()
+    private var listenGen = 0
+    private var finalSeen = false
 
     fun setFeatures(mask: Int): Int {
         if (mask and NexusFeatures.KNOWN.inv() != 0) return NexusResult.INVALID
@@ -27,7 +39,64 @@ class BridgeRenderer(private val bus: () -> NexusBusClient?, private val log: (S
         log("bridge features set tts=${mask and NexusFeatures.TTS != 0}")
         // The bridge also honours the switch on its own: all off hides everything, TTS off stops the voice.
         if (mask == NexusFeatures.NONE) hideAll() else if (mask and NexusFeatures.TTS == 0) bus()?.stopSpeech()
+        if (!askOn(mask)) stopListening()
+        applyTakeover()
         return NexusResult.OK
+    }
+
+    private fun askOn(mask: Int) = mask and NexusFeatures.STT != 0 && mask and NexusFeatures.ASSIST != 0
+
+    /** The hub's takeover switch follows PCA's: ON only when the user switched the ask on, OFF otherwise (the hub's own default is ON once the wearer approves `assistant`). Also call on registration. */
+    fun applyTakeover() {
+        val r = bus()?.setAssistTakeover(askOn(features)) ?: return
+        if (r != NexusResult.OK) log("bridge takeover refused code=${NexusResult.name(r)}")
+    }
+
+    // ---- T5: the assist-button ask. Nexus owns the microphone and the speech engine; the bridge only relays. ----
+
+    /** The hub opened this plugin with `AI_ASSIST`. Opens ONE speech session, only when PCA switched the ask on and its callback is set. Never retries. */
+    fun assistOpened() {
+        if (!askOn(features)) { log("bridge assist ignored reason=OFF"); return }
+        val ev = events
+        if (ev == null) { log("bridge assist ignored reason=NO_PCA"); return }
+        val b = bus()
+        if (b == null) { log("bridge assist ignored reason=NO_BUS"); return }
+        val gen: Int
+        synchronized(listenLock) {
+            gen = ++listenGen
+            finalSeen = false
+        }
+        b.stopListening()      // never two sessions
+        val r = b.startListening(object : ListenCallbacks {
+            override fun onStarted() { if (current(gen)) ev.onListening(true) }
+            override fun onFinal(text: String) {
+                synchronized(listenLock) { if (gen != listenGen || finalSeen) return; finalSeen = true }
+                ev.onAskTranscript(text)
+            }
+            override fun onStopped(reason: ListenStop) {
+                val seen: Boolean
+                synchronized(listenLock) { if (gen != listenGen) return; seen = finalSeen }
+                log("bridge listening ended reason=${reason.name}")
+                when {
+                    reason == ListenStop.DENIED_BUSY -> ev.onAskFailed(AskFail.DENIED_BUSY)
+                    reason == ListenStop.NO_SPEECH && !seen -> ev.onAskFailed(AskFail.NO_SPEECH)
+                    reason == ListenStop.FAILED && !seen -> ev.onAskFailed(AskFail.OTHER)
+                    else -> ev.onListening(false)
+                }
+            }
+        })
+        if (r != NexusResult.OK && current(gen)) {
+            log("bridge listening refused code=${NexusResult.name(r)}")
+            ev.onAskFailed(AskFail.OTHER)
+        }
+    }
+
+    private fun current(gen: Int) = synchronized(listenLock) { gen == listenGen }
+
+    /** PCA asked to stop (a trip), the ask was switched off, or PCA is gone: stops the Nexus session and ignores whatever it still reports. Idempotent. */
+    fun stopListening(): Int {
+        synchronized(listenLock) { listenGen++; finalSeen = true }
+        return bus()?.stopListening() ?: NexusResult.OK
     }
 
     fun show(slot: Int, title: String?, text: String?, ttlMs: Long, wake: Boolean, ids: List<String>, labels: List<String>): Int {
@@ -55,6 +124,7 @@ class BridgeRenderer(private val bus: () -> NexusBusClient?, private val log: (S
         Slot.NOTICE -> bus()?.hideNotice() ?: NexusResult.OK
         Slot.PIN -> bus()?.hidePin() ?: NexusResult.OK
         Slot.SPEECH -> bus()?.stopSpeech() ?: NexusResult.OK
+        Slot.LISTEN -> stopListening()
         Slot.ACTIVITY, Slot.SURFACE -> NexusResult.OK
         null -> NexusResult.INVALID
     }
@@ -75,6 +145,7 @@ class BridgeRenderer(private val bus: () -> NexusBusClient?, private val log: (S
 
     /** PCA's process died, or it asked for everything off. Never throws. */
     fun hideAll() {
+        stopListening()
         val b = bus() ?: return
         b.hideNotice(); b.hidePin(); b.stopSpeech()
         log("bridge hid all")

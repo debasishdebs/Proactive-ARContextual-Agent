@@ -50,7 +50,9 @@ class NexusBridgeManifestTest {
         assertEquals("false", meta["com.anezium.rokidbus.plugin.LAUNCHABLE"])
         assertEquals("pca", meta["com.anezium.rokidbus.plugin.ID"])
         assertEquals(listOf("com.anezium.rokidbus.action.PLUGIN"), svc.getElementsByTagName("action").els().map { it.name() })
-        assertFalse("com.anezium.rokidbus.plugin.SKILLS" in meta, "no skills catalog before T6")
+        // T6: the skills catalog is a resource reference (checked by SkillCatalogTest), and it is the ONLY metadata added since T1.
+        val skills = svc.getElementsByTagName("meta-data").els().single { it.name() == "com.anezium.rokidbus.plugin.SKILLS" }
+        assertEquals("@raw/nexus_skills", skills.getAttributeNS(A, "resource"))
     }
 
     @Test fun nothingIsBackedUpAndNoOtherComponents() {

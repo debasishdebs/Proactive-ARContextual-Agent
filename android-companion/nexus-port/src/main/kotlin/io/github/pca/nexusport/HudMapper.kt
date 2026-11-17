@@ -18,8 +18,17 @@ object HudMapper {
             speech = if (e.speak) clipText(e.answer, NexusLimits.SPEECH_CHARS).takeIf { it.isNotBlank() } else null,
         )
         is HudEvent.MarkConfirm -> Mapped(notice("Marked", markLine(e.reasonToken), null, e.ttlMs, false, listOf(NexusAction(DISMISS, "Dismiss"))))
+        is HudEvent.AskNotice -> Mapped(notice("Ask", askNoticeLine(e.kind), null, ASK_NOTICE_TTL_MS, false, listOf(NexusAction(DISMISS, "Dismiss"))))
         is HudEvent.CaptureState -> Mapped(pin(e.state))
         is HudEvent.Activity, is HudEvent.SurfaceCard -> null
+    }
+
+    const val ASK_NOTICE_TTL_MS = 4_000L
+
+    private fun askNoticeLine(k: HudEvent.AskNotice.Kind): String = when (k) {
+        HudEvent.AskNotice.Kind.BUSY -> "Microphone busy. Try again."
+        HudEvent.AskNotice.Kind.NO_SPEECH -> "Didn't catch that."
+        HudEvent.AskNotice.Kind.UNAVAILABLE -> "Voice ask unavailable."
     }
 
     fun clampNoticeTtl(ms: Long): Long = ms.coerceIn(NexusLimits.NOTICE_TTL_MIN_MS, NexusLimits.NOTICE_TTL_MAX_MS)

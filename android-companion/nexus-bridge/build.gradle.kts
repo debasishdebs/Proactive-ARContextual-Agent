@@ -37,4 +37,6 @@ dependencies {
     implementation("com.github.Anezium.Rokid-Nexus:bus-client:$nexusSdk")
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for the catalog validator test (the android.jar one is a stub on the JVM). Already in the Gradle cache.
+    testImplementation("org.json:json:20240303")
 }
