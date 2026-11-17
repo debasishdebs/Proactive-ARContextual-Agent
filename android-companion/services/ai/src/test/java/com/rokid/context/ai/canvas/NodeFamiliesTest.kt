@@ -14,7 +14,7 @@ class NodeFamiliesTest {
         val expected = mapOf(
             NodeTypes.INPUT_PHOTOS to Family.SOURCE, NodeTypes.INPUT_MOMENTS to Family.SOURCE, NodeTypes.INPUT_SCENES to Family.SOURCE,
             NodeTypes.INPUT_UTTERANCE to Family.SOURCE, NodeTypes.TRIGGER_SUMMARIZER to Family.SOURCE, NodeTypes.TRIGGER_MOMENT to Family.SOURCE, NodeTypes.TRIGGER_SCENE to Family.SOURCE,
-            NodeTypes.TRIGGER_SIGNAL to Family.SOURCE, NodeTypes.TRIGGER_SCHEDULE to Family.SOURCE, NodeTypes.EMBED_TEXT to Family.PROCESS, NodeTypes.RAG_RETRIEVE to Family.PROCESS, NodeTypes.RAG_WINDOW to Family.PROCESS, NodeTypes.RAG_ORDER to Family.PROCESS,
+            NodeTypes.TRIGGER_SIGNAL to Family.SOURCE, NodeTypes.TRIGGER_SCHEDULE to Family.SOURCE, NodeTypes.EMBED_TEXT to Family.PROCESS, NodeTypes.RAG_RETRIEVE to Family.PROCESS, NodeTypes.RAG_WINDOW to Family.PROCESS, NodeTypes.RAG_ORDER to Family.PROCESS, NodeTypes.RAG_CONDENSE to Family.PROCESS,
             NodeTypes.GATE_NUDGE to Family.CONDITION, NodeTypes.OUT_DELIVER to Family.OUTCOME,
             NodeTypes.SRC_WATCH_MOTION to Family.SOURCE, NodeTypes.IMU_HEAD_MOTION to Family.SOURCE, NodeTypes.IMU_SETTLE to Family.SOURCE, NodeTypes.HUB_CONTEXT to Family.SOURCE, NodeTypes.SIGNAL_IN to Family.SOURCE,
             NodeTypes.VISION_EXTRACT to Family.PROCESS, NodeTypes.PROMPT to Family.PROCESS, NodeTypes.SUMMARY to Family.PROCESS, NodeTypes.PROC_MOTION_MODEL to Family.PROCESS, NodeTypes.AGG_WINDOW to Family.AGGREGATE, NodeTypes.COMPARE to Family.CONDITION, NodeTypes.CRITIC to Family.PROCESS, NodeTypes.PY_FN to Family.PROCESS,

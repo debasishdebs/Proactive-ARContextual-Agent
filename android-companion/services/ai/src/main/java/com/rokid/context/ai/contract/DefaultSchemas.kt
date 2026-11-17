@@ -95,6 +95,11 @@ object DefaultSchemas {
           "event":{"type":"string","maxLength":80},"label":{"type":"string","maxLength":60}},"required":["kind"],"additionalProperties":false}
     """.trimIndent()
 
+    /** CONDENSE_QUERY (retrieval quality T10): a short English query and a language code. Short strings only. */
+    private val CONDENSE = """
+        {"type":"object","properties":{"query":{"type":"string","maxLength":120},"lang":{"type":"string","maxLength":12}},"required":["query"],"additionalProperties":false}
+    """.trimIndent()
+
     private val SUMMARY = """
         {"type":"object","properties":{"summary":{"type":"string","minLength":1,"maxLength":1000},
           "events":{"type":"array","items":{"type":"string"}},"entities":{"type":"array","items":{"type":"string"}},
@@ -132,6 +137,7 @@ object DefaultSchemas {
         PromptKey.INTENT_CLASSIFY -> INTENT
         PromptKey.PLACE_MATCH -> PLACE
         PromptKey.TIME_ANCHOR -> TIME
+        PromptKey.CONDENSE_QUERY -> CONDENSE
         PromptKey.EXPLICIT_REMEMBER -> FACTS
         PromptKey.SUMMARIZE -> SUMMARY
         PromptKey.CRITIC -> CRITIC

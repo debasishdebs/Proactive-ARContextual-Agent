@@ -19,6 +19,7 @@ val AskFlow = AgentFlow(
     nodes = listOf(
         FlowNode("question", "Question", NodeKind.INPUT),
         step("when", "Resolve time words", *role(PromptKey.TIME_ANCHOR)),
+        step("condense", "Condense the question (dated-query only)", *role(PromptKey.CONDENSE_QUERY)),
         step("search", "Search memories", Facet.Retrieval, Facet.Model(Role.EMBED)),
         step("answer", "Answer", *role(PromptKey.ANSWER)),
         FlowNode("shown", "Answer shown / spoken", NodeKind.OUTPUT),
@@ -26,7 +27,9 @@ val AskFlow = AgentFlow(
     ),
     edges = listOf(
         FlowEdge("question", "when", "no date found, fallback on"),
-        FlowEdge("when", "search"),
+        FlowEdge("when", "condense"),
+        FlowEdge("question", "condense", "only if the pipeline has the node"),
+        FlowEdge("condense", "search"),
         FlowEdge("question", "search"),
         FlowEdge("search", "answer"),
         FlowEdge("answer", "shown"),

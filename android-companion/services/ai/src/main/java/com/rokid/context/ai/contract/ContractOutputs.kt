@@ -44,6 +44,12 @@ data class PlaceMatchOutput(val choice: String, val confidence: Float, override 
  */
 data class TimeAnchorOutput(val kind: String, val from: String, val to: String, val event: String, val label: String, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
 
+/**
+ * A CONDENSE_QUERY result: [query] is the retrieval query (short English keywords, no date words, question words or pronouns) and [lang] the detected language code of the question
+ * (`en`, `hi`, ...; blank = unknown). The caller bounds and sanitises both; a blank [query] is no condensing.
+ */
+data class CondenseOutput(val query: String, val lang: String, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
+
 /** An INTENT_CLASSIFY result: [label] (unknown names are OTHER) and [confidence] clamped to 0..1. */
 data class IntentOutput(val label: com.rokid.context.core.model.context.IntentLabel, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
 data class SummaryOutput(

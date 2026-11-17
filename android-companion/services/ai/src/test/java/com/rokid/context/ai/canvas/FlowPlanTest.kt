@@ -28,8 +28,8 @@ class FlowPlanTest {
     @Test fun theDefaultQueryHashIsPinnedAndTheNewNodesAreNotInIt() {
         // Retrieval quality RQ2: rag.window and rag.order are new types; rag.retrieve and embed.text keep their type@version, so the Default Query bytes do not move.
         assertEquals("0a73634c06fe5411", sha(PipelineJson.encode(query)))
-        assertTrue(query.nodes.none { it.type == NodeTypes.RAG_WINDOW || it.type == NodeTypes.RAG_ORDER })
-        assertEquals(null, plan(query).window); assertEquals(null, plan(query).order)
+        assertTrue(query.nodes.none { it.type == NodeTypes.RAG_WINDOW || it.type == NodeTypes.RAG_ORDER || it.type == NodeTypes.RAG_CONDENSE })
+        assertEquals(null, plan(query).window); assertEquals(null, plan(query).order); assertEquals(null, plan(query).condense)
     }
 
     private fun sha(s: String) = java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
@@ -44,7 +44,8 @@ class FlowPlanTest {
         assertEquals(listOf("previous", "the time before", "before that"), o.words["previous"])
         assertEquals(2, o.perDay); assertEquals(31, o.maxDays); assertEquals(8_000, o.maxChars); assertEquals("RELEVANCE", o.defaultOrder)
         // everything but the two optional steps is the default plan
-        assertEquals(FlowPlan.BUILT_IN_QUERY, c.copy(window = null, order = null))
+        assertEquals(FlowPlan.BUILT_IN_QUERY, c.copy(window = null, order = null, condense = null))
+        assertEquals(CondenseSpec(translate = true), c.condense)
         assertTrue(PipelineHash.of(p) != PipelineHash.of(query))
     }
 
@@ -59,6 +60,23 @@ class FlowPlanTest {
         assertTrue(PipelineValidator.validate(with(p, "order", buildJsonObject { put("perDay", 9) })).isNotEmpty())
     }
 
+    @Test fun condenseIsOptInAndSitsBetweenWindowAndEmbed() {
+        val p = DefaultPipelines.datedQuery()
+        assertEquals(listOf("utterance", "window", "condense", "embed", "retrieve", "order", "answer", "deliver"), p.nodes.map { it.id })
+        assertEquals(CondenseSpec(false), plan(with(p, "condense", buildJsonObject { put("translate", false) })).condense)
+        assertTrue(PipelineValidator.validate(with(p, "condense", buildJsonObject { put("translate", "yes") })).isNotEmpty())
+        // without the node (Default Query, or the dated query minus it) there is no spec, so no model call
+        val without = p.copy(nodes = p.nodes.filter { it.id != "condense" }, edges = listOf(
+            PipelineEdge("utterance", "window"), PipelineEdge("window", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "order"), PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver")))
+        assertEquals(emptyList<String>(), PipelineValidator.validate(without)); assertEquals(null, plan(without).condense)
+        // after embed it is not the chain of a Query, and a Nudge refuses it
+        val late = p.copy(edges = listOf(PipelineEdge("utterance", "window"), PipelineEdge("window", "embed"), PipelineEdge("embed", "condense"), PipelineEdge("condense", "retrieve"),
+            PipelineEdge("retrieve", "order"), PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver")))
+        assertTrue(PipelineValidator.validate(late).isNotEmpty())
+        val nudgeWithCondense = nudge.copy(nodes = nudge.nodes + PipelineNode("condense", NodeTypes.RAG_CONDENSE, "Condense", JsonObject(emptyMap())), edges = nudge.edges + PipelineEdge("trigger", "condense"))
+        assertTrue(PipelineValidator.validate(nudgeWithCondense).isNotEmpty())
+    }
+
     @Test fun theOptionalNodesMustSitWhereTheSpecPutsThem() {
         val p = DefaultPipelines.datedQuery()
         // order before retrieve, or a window after embed: not the chain of a Query
@@ -67,7 +85,7 @@ class FlowPlanTest {
         ))
         assertTrue(PipelineValidator.validate(bad).isNotEmpty())
         // only one of the two is fine, and a Nudge refuses both
-        val onlyOrder = p.copy(nodes = p.nodes.filter { it.id != "window" }, edges = listOf(PipelineEdge("utterance", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "order"), PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver")))
+        val onlyOrder = p.copy(nodes = p.nodes.filter { it.id != "window" && it.id != "condense" }, edges = listOf(PipelineEdge("utterance", "embed"), PipelineEdge("embed", "retrieve"), PipelineEdge("retrieve", "order"), PipelineEdge("order", "answer"), PipelineEdge("answer", "deliver")))
         assertEquals(emptyList<String>(), PipelineValidator.validate(onlyOrder)); assertEquals(null, plan(onlyOrder).window); assertTrue(plan(onlyOrder).order != null)
         val nudgeWithOrder = nudge.copy(nodes = nudge.nodes + PipelineNode("order", NodeTypes.RAG_ORDER, "Order", JsonObject(emptyMap())), edges = listOf(PipelineEdge("trigger", "retrieve"), PipelineEdge("retrieve", "order"), PipelineEdge("order", "nudge"), PipelineEdge("nudge", "gates"), PipelineEdge("gates", "deliver")))
         assertTrue(PipelineValidator.validate(nudgeWithOrder).isNotEmpty())
