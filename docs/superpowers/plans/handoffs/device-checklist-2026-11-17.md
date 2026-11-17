@@ -2,6 +2,9 @@
 
 Everything below needs the real phone, glasses or watch, or a decision only the user can make. Nothing has been installed or pushed. Emulator results are in `docs/superpowers/reviews/2026-11/emulator-smoke-2026-11-17.md`.
 
+## A0. WATCH APK HAZARD (found in emulator smoke 2)
+`watch-debug.apk` has the SAME applicationId (`com.rokid.context`) as the phone app. Installing it on a phone REPLACES the phone app (same signature). Only ever `adb -s <watch serial> install` it on the watch. Always pass -s with the serial; never run install without -s when several devices are attached.
+
 ## A. Before any install (phone is on the eval build 394667e0, glasses 1.0.0, watch 1.0.0-rc1)
 1. Confirm no call is active (`adb shell dumpsys telephony.registry | grep mCallState` must be 0).
 2. Phone backup, procedure in `docs/superpowers/plans/handoffs/v17-upgrade-recovery.md` (force-stop first, tar with -wal/-shm, validate the tar, record sha256). Store under `~/Desktop/rokid/backups/`.
