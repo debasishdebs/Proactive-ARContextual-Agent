@@ -76,6 +76,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
         val namedScenes = LinkedHashSet<String>()
         val deletedMarks = LinkedHashSet<String>()
         val hiddenFromMemories = LinkedHashSet<String>() // invalidated memories whose holding Moments lose their text (scoped)
+        var scoped = false // a Moment / Scene scoped Forget: the Moments that hold a hidden fact elsewhere survive
         val radius = radiusMs()
         val fd = db.forgetDao(); val md = db.momentDao(); val sd = db.sceneDao(); val s3 = db.canvasSlice3Dao()
         /** `forgetV2` (read once per plan): F1 / F5 survivors, F3 Scene rebuild, F6 side effects. OFF: the v1 plan, byte for byte. */
@@ -204,6 +205,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             runResults(closure.first)
             val bounded = if (p.byKey) found.frames else null
             val protect = if (v2) found.frames else null
+            scoped = p.byKey
             for (f in found.frames) photo(f, bounded = bounded, protectAll = protect)
             if (found.memories.isNotEmpty()) cascade(found.memories.toList(), lockFrames = true, bounded = bounded, protect = protect)
             p.spans.forEach { range(it.first, it.last) }
@@ -285,6 +287,12 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
         /** The Scenes a removed Moment touched go when nothing is left of them, else they shrink; the Moments that survive but lose a hidden source lose their text copy. */
         suspend fun finish(): ForgetPlan {
             val scenes = LinkedHashSet<String>(touchedScenes); scenes += namedScenes
+            // F3 (`forgetV2`, scoped): a Moment that survives while it held an invalidated fact elsewhere has its derived fields erased and the Scenes holding it are REBUILT (the same set the executor erases)
+            if (v2 && scoped && hiddenFromMemories.isNotEmpty()) {
+                val remote = (tx.chunked(hiddenFromMemories) { md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }.distinct() - droppedMoments)
+                DerivedFieldFamily.objectsWithDerived("MOMENT", remote, tx).forEach { put(Ref(Family.DERIVED_FIELD, "MOMENT:$it"), Fate.DROP) }
+                scenes += tx.chunked(remote) { sd.sceneIdsHoldingMoments(it) }
+            }
             if (scenes.isNotEmpty()) {
                 val parts = tx.chunked(scenes) { sd.partsOf(it) }.groupBy { it.sceneId }
                 for (sceneId in scenes) {

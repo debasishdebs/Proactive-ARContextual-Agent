@@ -261,6 +261,7 @@ class ForgetExecutor internal constructor(
         if (byKey && cascade.invalidated.isNotEmpty()) { // derived facts elsewhere were hidden: the Moments that hold them survive, lose their text copy and rebuild
             val remote = cascade.invalidated.toList().chunked(CHUNK).flatMap { md.momentIdsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), it) }.distinct() - dropped
             MomentFamily.blankAndStale(c, remote, cascade.invalidated)
+            if (ForgetV2.on) MomentFamily.eraseDerivedHolding(c, remote) // F3: their derived text and their Scenes' are erased, not only hidden (the Scenes a Forget names are dropped below)
         }
         if (byKey) { // whole Scenes go, and the run rows of every Moment and Scene that went are deleted by their own key too
             if (sceneIds.isNotEmpty()) SceneFamily.selfDelete(sceneIds.toSet(), Fate.DROP, c)

@@ -70,12 +70,12 @@ internal object MemoryFamily : ForgetFamily {
     override val family = Family.MEMORY
     override val tables = listOf("memory", "memory_fts", "memory_source", "memory_vector", "embedding_space", "summary_trace")
     override val selfDeletes = true
-    /** ERASE: rows, vectors in every space, every edge touching them (the FTS triggers follow). REBUILD: INVALIDATED (hidden from feeds and retrieval) and without vectors; the re-summarise worker rebuilds them. */
+    /** ERASE: rows, vectors in every space, every edge touching them (the FTS triggers follow). REBUILD: INVALIDATED (hidden from feeds and retrieval), without vectors, and (`forgetV2`) without text, tags and search text; the re-summarise worker rebuilds them from the surviving sources. */
     override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
         val dao = ctx.db.forgetDao()
         when (fate) {
             Fate.ERASE -> ids.toList().chunked(CHUNK).forEach { c -> dao.deleteFrameSourcesFor(c); dao.deleteEdgesFrom(c); dao.deleteEdgesTo(c); dao.deleteVectorsFor(c); dao.deleteMemories(c) }
-            Fate.REBUILD -> ids.toList().chunked(CHUNK).forEach { c -> dao.invalidate(c); dao.deleteVectorsFor(c) }
+            Fate.REBUILD -> ids.toList().chunked(CHUNK).forEach { c -> dao.invalidate(c); dao.deleteVectorsFor(c); if (ForgetV2.on) dao.blankText(c) } // forgetV2: the text, tags, search text and FTS terms of the placeholder are erased too
             Fate.DROP -> throw UnsupportedOperationException("a memory is erased or rebuilt")
         }
     }
@@ -103,6 +103,13 @@ internal object MomentFamily : ForgetFamily {
     suspend fun blankAndStale(ctx: DeleteCtx, momentIds: Collection<String>, hiddenMemories: Set<String>) {
         momentIds.toList().chunked(CHUNK).forEach { ctx.db.momentDao().blankText(it) }
         ctx.db.canvasSlice3Dao().staleMomentsHolding(listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY), hiddenMemories, step = "forget")
+    }
+    /** F3 (`forgetV2`): the derived fields of the surviving Moments that held a hidden fact are ERASED (v1 only stales them), and so are those of the Scenes that hold them (they are rebuilt). */
+    suspend fun eraseDerivedHolding(ctx: DeleteCtx, momentIds: Collection<String>) {
+        if (momentIds.isEmpty()) return
+        ctx.db.momentDao().eraseDerived(momentIds)
+        val scenes = momentIds.toList().chunked(CHUNK).flatMap { ctx.db.sceneDao().sceneIdsHoldingMoments(it) }.distinct()
+        if (scenes.isNotEmpty()) SceneFamily.selfDelete(scenes.toSet(), Fate.REBUILD, ctx)
     }
     override suspend fun dependents(ids: Set<String>, tx: PlanTx): List<Edge> {
         val out = ArrayList<Edge>()

@@ -50,6 +50,8 @@ abstract class ForgetDao {
     @Query("DELETE FROM memory_source WHERE memoryId IN (:ids)") abstract suspend fun deleteEdgesFrom(ids: List<String>): Int
     @Query("DELETE FROM memory_source WHERE sourceMemoryId IN (:ids)") abstract suspend fun deleteEdgesTo(ids: List<String>): Int
     @Query("UPDATE memory SET reviewState = 'INVALIDATED' WHERE id IN (:ids)") abstract suspend fun invalidate(ids: List<String>): Int
+    /** `forgetV2` (F3 residue): an INVALIDATED derived memory is only a placeholder for the re-summarise worker (it reads the id, tier and creation time, never the text): its text, tags and search text (and so its FTS terms, via the triggers) are erased now. */
+    @Query("UPDATE memory SET text = '', tags = '', searchText = '' WHERE id IN (:ids)") abstract suspend fun blankText(ids: List<String>): Int
 
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertTombstone(t: ForgetTombstoneEntity): Long
     /** Those of [frameIds] that are wave-1+ keyframes (have a `frame_meta` row). */
