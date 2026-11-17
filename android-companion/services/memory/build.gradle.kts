@@ -15,6 +15,8 @@ android {
     // Test-only code shared by the JVM tests and the device tests (MigrationFixtureGuard): it must not ship in the app.
     sourceSets["test"].java.srcDir("src/sharedTest/java")
     sourceSets["androidTest"].java.srcDir("src/sharedTest/java")
+    // The exported Room schemas, for MigrationTestHelper on the device (EncryptedMigrationV16to17DeviceTest).
+    sourceSets["androidTest"].assets.srcDirs("$projectDir/schemas")
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
@@ -39,4 +41,5 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
 }

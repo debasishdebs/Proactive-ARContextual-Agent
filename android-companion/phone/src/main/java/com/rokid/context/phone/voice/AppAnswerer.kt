@@ -21,12 +21,13 @@ object HudAskText {
         AskActions.NO_MEMORIES -> "Nothing on that yet \u2014 I'll check your next photos"
         AskActions.AI_UNAVAILABLE -> "AI unavailable"
         AskActions.BATTERY_SAVER -> AskActions.BATTERY_SAVER
+        AskActions.ZONE_PAUSED -> AskActions.ZONE_PAUSED // Z1: the refusal, on the HUD and spoken
         else -> VoiceCopy.FAILED_HUD
     }
 
     fun forPhone(phoneMessage: String): String = when (phoneMessage) {
         AskActions.EMPTY_QUESTION -> VoiceCopy.COULDNT_HEAR_PHONE
-        AskActions.NO_MEMORIES, AskActions.AI_UNAVAILABLE, AskActions.FAILED, AskActions.BATTERY_SAVER -> phoneMessage
+        AskActions.NO_MEMORIES, AskActions.AI_UNAVAILABLE, AskActions.FAILED, AskActions.BATTERY_SAVER, AskActions.ZONE_PAUSED -> phoneMessage
         else -> AskActions.FAILED
     }
 }
@@ -43,9 +44,11 @@ class AppAnswerer(
     private val offNotice: suspend (proposalId: String) -> String? = { null },
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val now: () -> Long = System::currentTimeMillis,
+    /** Z1: true = a pause zone is active (or unsure) NOW: the answer, though saved, is not delivered to the glasses (HUD or voice); the refusal is shown instead. */
+    private val deliveryBlocked: () -> Boolean = { false },
 ) : Answerer {
     override suspend fun answer(question: String, source: VoiceSource): AnswerResult = when (val r = ask(question, source.askSource)) {
-        is AskOutcome.Answered -> {
+        is AskOutcome.Answered -> if (r.deliveryWithheld || deliveryBlocked()) AnswerResult.Failed(HudAskText.forFailure(AskActions.ZONE_PAUSED), HudAskText.forPhone(AskActions.ZONE_PAUSED)) else {
             val notice = r.proposalId?.let { offNotice(it) }
             // stored: the text was read from the ask's own row (an off notice comes from the proposal, which proves nothing about the ask row)
             (notice ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it, photoLabel = r.photoAtMs?.let(::photoLabel), route = r.route, stored = notice == null) }
@@ -73,6 +76,7 @@ class AppAnswerer(
  * The Home chat's delivery to the glasses HUD (v0.9.8 slice E): a typed ask's answer is mirrored when its [AskOutcome.Answered.route] puts it on the glasses
  * ([com.rokid.context.core.model.DeliveryRoute.mirrorsChatToHud]; no route = today's mirror), the same DeliveryRoute the voice pipeline follows. At most one mirror per answer.
  */
-fun mirrorTypedAnswer(outcome: AskOutcome, mirror: (askId: String) -> Unit) {
-    if (outcome is AskOutcome.Answered && (outcome.route?.mirrorsChatToHud ?: true)) mirror(outcome.askId)
+fun mirrorTypedAnswer(outcome: AskOutcome, blocked: () -> Boolean = { false }, mirror: (askId: String) -> Unit) {
+    // Z1: withheld while a pause zone is active (the answer stays readable on the phone)
+    if (outcome is AskOutcome.Answered && !outcome.deliveryWithheld && !blocked() && (outcome.route?.mirrorsChatToHud ?: true)) mirror(outcome.askId)
 }

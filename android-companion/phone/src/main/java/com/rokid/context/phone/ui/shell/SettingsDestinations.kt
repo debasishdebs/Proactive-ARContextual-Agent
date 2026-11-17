@@ -324,6 +324,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val dev = remember { DeveloperModeStore.get(app) }
         val devOn by dev.enabled.collectAsStateWithLifecycle()
         val devSessionHours by dev.sessionHours.collectAsStateWithLifecycle()
+        var askZoneFenceOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.AskZoneFence.isEnabled(app)) }
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
         var ctxTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -340,6 +341,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             developerMode = devOn,
             devSessionHours = devSessionHours,
             onDevSessionHours = { h -> dev.setSessionHours(h); CanvasGraph.get(app).revokeAll() }, // the new rule starts clean: every current pairing ends
+            askZoneFence = askZoneFenceOn, onAskZoneFence = { on -> com.rokid.context.orchestration.AskZoneFence.setEnabled(app, on); askZoneFenceOn = on },
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
             onSensorRecHz = { hz -> s.hud.update { it.copy(sensorRecHz = hz).normalized() } },
             contextHub = contextHub,

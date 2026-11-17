@@ -32,6 +32,8 @@ sealed interface AskOutcome {
         val route: com.rokid.context.core.model.DeliveryRoute? = null,
         /** 2026-11-08: a status line shown with the answer on the phone (never sent to the model, never stored): "Search used keyword matching: <reason>" (codex r9 P2-5: the search, never the answer's provenance). */
         val notice: String? = null,
+        /** Z1: a pause zone became active after the answer was saved: it stays on the phone, nothing is delivered to the glasses (HUD, voice, mirror). */
+        val deliveryWithheld: Boolean = false,
     ) : AskOutcome
     data class Failed(val message: String) : AskOutcome
 }
@@ -76,6 +78,10 @@ object AskActions {
     const val REVIEW_REASON = "User marked an answer unhelpful"
     /** G7 ruling (2026-10-15): Battery Saver pauses user asks too. Home shows it, and so does the HUD toast. */
     const val BATTERY_SAVER = "Battery Saver is on \u2014 asks are paused"
+    /** Z1: the refusal shown in Ask (phone), on the HUD and spoken, instead of an answer, while a pause zone is active, approached or uncertain. Never retried: the user asks again. */
+    const val ZONE_PAUSED = "Paused: you're in a pause zone"
+    /** Z1: the answer was saved on the phone but a zone began before it could go to the glasses. */
+    const val ZONE_DELIVERY_WITHHELD = "Not sent to the glasses: you're in a pause zone"
     const val SEARCH_FALLBACK_PREFIX = "Search used keyword matching: "
 
     /**

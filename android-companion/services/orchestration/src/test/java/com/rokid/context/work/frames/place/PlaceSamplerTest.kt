@@ -37,6 +37,7 @@ class PlaceSamplerTest {
     private var fix: PlaceFix? = PlaceFix(LAT, LON, 3_000, 10f)
     private var places: List<PlaceEntity> = listOf(place("wd:Q1", "Charminar"))
     private var reply: PlaceMatchResult? = PlaceMatchResult(PlaceMatchOutput("1", 0.86f), true)
+    private var thrown: Exception? = null
     private var saved = true
 
     private var fixCalls = 0
@@ -56,7 +57,7 @@ class PlaceSamplerTest {
     private fun sampler(scope: TestScope) = PlaceSampler(
         scope = scope, store = store, fix = { fixCalls++; fix },
         candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, CellOutcome.FRESH) },
-        match = { id, lines -> matchCalls += id to lines; reply },
+        match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online },
         admit = { admit }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
     )
@@ -204,9 +205,9 @@ class PlaceSamplerTest {
         assertEquals(listOf(PlaceOutcome.NONE, PlaceOutcome.LOW_CONFIDENCE), outcomes); assertTrue(cards.isEmpty() && memories.isEmpty())
     }
 
-    @Test fun aReplyWithoutDeliveryProofIsAFailureNotAPhotoMatch() = runTest {
+    @Test fun aReplyWithoutDeliveryProofIsAFailureNotAPhotoMatchNorANearbyGuess() = runTest {
         reply = PlaceMatchResult(PlaceMatchOutput("1", 0.99f), false); poke()
-        assertEquals(PlaceOutcome.NEARBY, outcomes.single()); assertEquals(PlaceConfidence.NEARBY, cards.single().confidence); assertTrue(memories.isEmpty())
+        assertEquals(PlaceOutcome.FAILED, outcomes.single()); assertTrue(cards.isEmpty()); assertTrue(memories.isEmpty())
     }
 
     @Test fun aMemoryThatCouldNotBeWrittenMeansNoCard() = runTest {
@@ -225,14 +226,34 @@ class PlaceSamplerTest {
         assertTrue(memories.isEmpty())
     }
 
-    @Test fun aFailedCallFallsBackTheSameWay() = runTest {
-        reply = null; poke()
+    @Test fun aGenuineProviderFailureFallsBackTheSameWay() = runTest {
+        thrown = com.rokid.context.ai.ModelCallException("down", retryable = true); poke()
         assertEquals(PlaceOutcome.NEARBY, outcomes.single()); assertEquals("nearby · not checked", cards.single().sourceLabel)
     }
 
-    @Test fun theThermalGateSkipsTheModelAndUsesTheFallback() = runTest {
+    @Test fun aNetworkFailureFallsBack() = runTest {
+        thrown = java.io.IOException("reset"); poke()
+        assertEquals(PlaceOutcome.NEARBY, outcomes.single())
+    }
+
+    @Test fun aPolicyDenialInTheRouterIsNeverANearbyIdentification() = runTest {
+        thrown = com.rokid.context.ai.ImagesUnsupportedException(); poke()
+        assertEquals(PlaceOutcome.FAILED, outcomes.single()); assertTrue(cards.isEmpty()); assertTrue(memories.isEmpty())
+    }
+
+    @Test fun anInvalidReplyOrAnUnknownExceptionIsNeverANearbyIdentification() = runTest {
+        thrown = com.rokid.context.ai.ModelCallException("bad", retryable = false, kind = com.rokid.context.ai.FailureKind.INVALID_OUTPUT); poke()
+        assertEquals(PlaceOutcome.FAILED, outcomes.single()); assertTrue(cards.isEmpty())
+    }
+
+    @Test fun aMatchWithNoResultIsNoCard() = runTest {
+        reply = null; poke()
+        assertEquals(PlaceOutcome.FAILED, outcomes.single()); assertTrue(cards.isEmpty())
+    }
+
+    @Test fun thePowerOrThermalGateMakesNoCallAndNoNearbyCard() = runTest {
         admit = false; poke()
-        assertEquals(0, matchCalls.size); assertEquals(PlaceConfidence.NEARBY, cards.single().confidence)
+        assertEquals(0, matchCalls.size); assertEquals(PlaceOutcome.NOT_ADMITTED, outcomes.single()); assertTrue(cards.isEmpty() && memories.isEmpty())
     }
 
     @Test fun noFallbackWhenTheNearestIsFarOrNotUnique() = runTest {

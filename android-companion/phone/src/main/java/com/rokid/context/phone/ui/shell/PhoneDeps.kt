@@ -95,9 +95,9 @@ class PhoneDeps(
                 pipeline = CapturePauses.control(app),
                 onboarding = OnboardingStore(app),
                 // Typed asks are mirrored to the HUD (spec §2.4) without being spoken, when the answer's DeliveryRoute puts it on the glasses.
-                askService = AskService { q -> AskActions.ask(app, q).also { r -> com.rokid.context.phone.voice.mirrorTypedAnswer(r) { voice.mirrorTyped(it) } } },
+                askService = AskService { q -> AskActions.ask(app, q).also { r -> com.rokid.context.phone.voice.mirrorTypedAnswer(r, com.rokid.context.orchestration.AskZoneFence::blocked) { voice.mirrorTyped(it) } } },
                 rateAsk = { id, up -> AskActions.rate(app, id, up) },
-                askAgain = { id -> com.rokid.context.orchestration.forget.ReanswerWorker.reask(app, id) { q -> AskActions.ask(app, q).also { r -> com.rokid.context.phone.voice.mirrorTypedAnswer(r) { voice.mirrorTyped(it) } } } },
+                askAgain = { id -> com.rokid.context.orchestration.forget.ReanswerWorker.reask(app, id) { q -> AskActions.ask(app, q).also { r -> com.rokid.context.phone.voice.mirrorTypedAnswer(r, com.rokid.context.orchestration.AskZoneFence::blocked) { voice.mirrorTyped(it) } } } },
                 diagnostics = SchedulerDiagnosticsActions(scheduler),
                 queues = LegacyQueueActions(app, scheduler),
                 settings = SettingsDeps.create(app),

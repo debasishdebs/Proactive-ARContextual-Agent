@@ -194,6 +194,8 @@ object HubGraph {
         com.rokid.context.work.frames.KeyframeGraph.placeSampler?.close()
         // The fence's synchronous second opinion, read at every check: the controller's own flags (the controller also holds the fence itself).
         com.rokid.context.work.frames.place.PlaceGraph.fence.extraBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } }
+        // Z1: Ask's zone fence reads the controller's flags (approach/enforcing include an unreadable zone list and ZoneHold); a read error is 'blocked' (AskZoneFence).
+        com.rokid.context.orchestration.AskZoneFence.extraBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } }
         val placeFixes = com.rokid.context.phone.place.PlaceFixProvider.create(app) { com.rokid.context.phone.zone.ZoneGraph.peek() }
         com.rokid.context.work.frames.KeyframeGraph.placeSampler = com.rokid.context.work.frames.place.PlaceSamplers.create(
             app, ctxScope, fix = placeFixes::fresh,

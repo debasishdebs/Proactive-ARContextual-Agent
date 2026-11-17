@@ -52,6 +52,7 @@ class VoiceGraph private constructor(private val app: Context) {
         AppAnswerer(
             ask = { q, source -> AskActions.askFrom(app, q, source) },
             answerText = { id -> withContext(Dispatchers.IO) { MemoryGraph.get(app).asks.byId(id)?.takeUnless { it.redacted }?.answer } },
+            deliveryBlocked = com.rokid.context.orchestration.AskZoneFence::blocked,
             offNotice = { id ->
                 withContext(Dispatchers.IO) {
                     MemoryGraph.get(app).proposals.byId(id)?.takeIf { it.state == com.rokid.context.memory.ProposalState.SUPPRESSED.name }
