@@ -1,6 +1,8 @@
 package com.rokid.context.phone.ui.preview
 
+import com.rokid.context.memory.ActivityPages
 import com.rokid.context.memory.AskRepository
+import com.rokid.context.memory.Cursor
 import com.rokid.context.memory.MarkRepository
 import com.rokid.context.memory.NudgeRepository
 import com.rokid.context.memory.TimelineRepository
@@ -29,28 +31,31 @@ import com.rokid.context.memory.DayBucket
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Production [ActivityData]: the existing read repositories, nothing new in the database. Answers and nudges are read from the most recent [RECENT] (there is no by-id read for them). */
+/** Production [ActivityData]: the read repositories and their keyset pages (activity pagination), no schema change. Every list read is one bounded page: nothing is capped at 1,000 or 200 any more. */
 class RepoActivityData(
     private val timeline: TimelineRepository, private val asks: AskRepository, private val nudges: NudgeRepository, private val marks: MarkRepository, private val zone: () -> ZoneId,
-    /** One nudge row by id, observed (not limited to the recent ones). */
-    private val nudgeById: (String) -> Flow<NudgeEntity?> = { id -> nudges.recent(RECENT).map { rows -> rows.firstOrNull { it.id == id } } },
+    /** One nudge row by id, observed. */
+    private val nudgeById: (String) -> Flow<NudgeEntity?> = { id -> nudges.observe(id) },
     /** Room's change signal over some tables (null: lists never re-read; tests without a database). */
     private val tableChanges: ((Array<String>) -> Flow<Unit>)? = null,
 ) : ActivityData {
     override suspend fun memories(ids: List<String>): List<MemoryEntity> = timeline.memoriesByIds(ids)
     override suspend fun frames(ids: List<String>): List<FrameEntity> = timeline.framesByIds(ids)
     override suspend fun marks(ids: List<String>): List<MarkRowUi> = MarkRows.rows(marks.byIds(ids), zone(), withDay = true)
-    override suspend fun asks(ids: List<String>): List<AskEntity> = ids.distinct().mapNotNull { asks.observe(it).first() }
-    override suspend fun nudges(ids: List<String>): List<NudgeEntity> = ids.distinct().mapNotNull { nudgeById(it).first() }
+    override suspend fun asks(ids: List<String>): List<AskEntity> = asks.byIds(ids)
+    override suspend fun nudges(ids: List<String>): List<NudgeEntity> = nudges.byIds(ids)
 
     override suspend fun dayFrames(date: LocalDate): List<FrameEntity> = timeline.framesIn(DayBucket.bounds(date, zone())).first()
 
-    override suspend fun idsIn(kind: ListKind, range: LongRange): List<String> = when (kind) {
-        ListKind.FRAMES -> timeline.framesIn(range).first().sortedByDescending { it.ts }.map { it.id }
-        ListKind.MEMORIES, ListKind.MOMENTS -> timeline.visibleMemoriesIn(range).first().sortedByDescending { it.createdAt }.map { it.id }
-        ListKind.ANSWERS -> asks.recent(RECENT).first().filter { it.ts in range }.map { it.id }
-        ListKind.NUDGES -> nudges.recent(RECENT).first().filter { it.ts in range }.map { it.id }
-        ListKind.MARKS -> MarkRows.rows(marks.marksIn(range).first(), zone(), withDay = true).sortedByDescending { it.atMs }.map { it.labelId }
+    private val pages = ActivityPages(timeline, asks, nudges, marks)
+
+    /** One keyset page; the rows read are handed on in [ActivityPage.data] so the summary build reads nothing more (no N+1). */
+    override suspend fun page(kind: ListKind, range: LongRange, after: Cursor, n: Int): ActivityPage = when (kind) {
+        ListKind.FRAMES -> pages.frames(range, after, n).let { r -> ActivityPage(r.map { it.id }, r.map(Cursor::of), PrefilledActivityData(this, frames = r)) }
+        ListKind.MEMORIES, ListKind.MOMENTS -> pages.memories(range, after, n).let { r -> ActivityPage(r.map { it.id }, r.map(Cursor::of), PrefilledActivityData(this, memories = r)) }
+        ListKind.ANSWERS -> pages.answers(range, after, n).let { r -> ActivityPage(r.map { it.id }, r.map(Cursor::of), PrefilledActivityData(this, asks = r)) }
+        ListKind.NUDGES -> pages.nudges(range, after, n).let { r -> ActivityPage(r.map { it.id }, r.map(Cursor::of), PrefilledActivityData(this, nudges = r)) }
+        ListKind.MARKS -> pages.marks(range, after, n).let { r -> ActivityPage(r.map { it.labelId }, r.map(Cursor::of), PrefilledActivityData(this, marks = MarkRows.rows(r, zone(), withDay = true))) }
     }
 
     /** The row itself and the memories it cites: a Forget or a redaction of either re-emits (the deleted detail screens observed the same). */
@@ -84,7 +89,6 @@ class RepoActivityData(
         return if (ids.isEmpty()) flowOf(Unit) else combine(ids.map { timeline.memory(it) }) { }
     }
 
-    companion object { const val RECENT = 1000 }
 }
 
 /** Production [ActivityData] over the app's repositories (the previewer and the lists share it). */

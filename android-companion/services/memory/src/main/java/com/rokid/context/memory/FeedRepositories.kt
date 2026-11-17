@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.FrameViewDao
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryViewDao
+import com.rokid.context.memory.db.MomentRow
 import com.rokid.context.memory.db.NudgeDao
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ProposalDao
@@ -32,6 +33,12 @@ class TimelineRepository(private val frames: FrameViewDao, private val memories:
     /** Chunked by [MAX_IN]: SQLite's bound-parameter limit is 999 on older devices. Empty input never queries. */
     suspend fun memoriesByIds(ids: List<String>): List<MemoryEntity> = ids.distinct().chunked(MAX_IN).flatMap { memories.byIds(it) }
     suspend fun framesByIds(ids: List<String>): List<FrameEntity> = ids.distinct().chunked(MAX_IN).flatMap { frames.byIds(it) }
+    /** Keyset pages (A2), newest first, strictly after [after] (the first page is `Cursor.head(range)`). */
+    suspend fun framePage(range: LongRange, after: Cursor, n: Int): List<FrameEntity> = frames.pageIn(range.first, range.last + 1, after.key, after.id, n)
+    suspend fun visibleMemoryPage(range: LongRange, after: Cursor, n: Int): List<MemoryEntity> = memories.visiblePageIn(range.first, range.last + 1, after.key, after.id, n)
+    /** One page of a day's visible memories shown in [hour] (display time: the frame's time, else `createdAt`); [day] bounds `createdAt`. */
+    suspend fun momentPage(day: LongRange, hour: LongRange, after: Cursor, n: Int): List<MomentRow> = memories.momentPageIn(day.first, day.last + 1, hour.first, hour.last + 1, after.key, after.id, n)
+    suspend fun momentTimes(day: LongRange): List<Long> = memories.visibleMomentTimes(day.first, day.last + 1)
     fun recentTraces(limit: Int): Flow<List<SummaryTraceEntity>> = traces.observeRecent(limit)
 
     private companion object { const val MAX_IN = 900 }
@@ -64,12 +71,21 @@ class AskRepository(private val dao: AskDao) {
     suspend fun complete(id: String, answer: String, sourcesJson: String): Boolean = dao.complete(id, answer, sourcesJson) > 0
     suspend fun byId(id: String): AskEntity? = dao.byId(id)
     fun observe(id: String): Flow<AskEntity?> = dao.observe(id).distinctUntilChanged()
+    /** The asks named by [ids], one query per chunk (no N+1). */
+    suspend fun byIds(ids: List<String>): List<AskEntity> = ids.distinct().chunked(MAX_IN).flatMap { dao.byIds(it) }
+    /** Keyset page (A2): newest first, a developer eval ask never listed. */
+    suspend fun page(range: LongRange, after: Cursor, n: Int): List<AskEntity> = dao.pageIn(range.first, range.last + 1, after.key, after.id, n)
+    private companion object { const val MAX_IN = 900 }
     fun recent(limit: Int): Flow<List<AskEntity>> = dao.observeRecent(limit).distinctUntilChanged()
     fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1).distinctUntilChanged()
     suspend fun setRating(id: String, rating: Int?): Boolean = dao.setRating(id, rating) > 0
 }
 
 class NudgeRepository(private val dao: NudgeDao) {
+    suspend fun byIds(ids: List<String>): List<NudgeEntity> = ids.distinct().chunked(MAX_IN).flatMap { dao.byIds(it) }
+    fun observe(id: String): Flow<NudgeEntity?> = dao.observe(id).distinctUntilChanged()
+    suspend fun page(range: LongRange, after: Cursor, n: Int): List<NudgeEntity> = dao.pageIn(range.first, range.last + 1, after.key, after.id, n)
+    private companion object { const val MAX_IN = 900 }
     suspend fun addIgnore(nudge: NudgeEntity): Boolean = dao.insertIgnore(nudge) != -1L
     fun recent(limit: Int): Flow<List<NudgeEntity>> = dao.observeRecent(limit).distinctUntilChanged()
     fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1).distinctUntilChanged()

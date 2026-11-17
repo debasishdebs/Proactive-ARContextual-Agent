@@ -208,19 +208,23 @@ class PreviewMomentTest {
             override suspend fun asks(ids: List<String>) = emptyList<AskEntity>()
             override suspend fun nudges(ids: List<String>) = emptyList<NudgeEntity>()
             override suspend fun dayFrames(date: LocalDate) = emptyList<FrameEntity>()
-            override suspend fun idsIn(kind: ListKind, range: LongRange) = big
+            override suspend fun page(kind: ListKind, range: LongRange, after: com.rokid.context.memory.Cursor, n: Int): ActivityPage {
+                val from = if (after.id.isEmpty()) 0 else big.indexOf(after.id) + 1
+                val ids = big.drop(from).take(n)
+                return ActivityPage(ids, ids.map { com.rokid.context.memory.Cursor(1, it) }, this)
+            }
         }
         val route = com.rokid.context.phone.ui.list.listView(ListKind.FRAMES, com.rokid.context.phone.ui.activity.Period.MONTH, TODAY)
         assertEquals("list/FRAMES?scope=MONTH%3A2026-10-12", route)
         assertTrue(route.length < 60)
         val scope = com.rokid.context.phone.ui.list.ListScope.parse("MONTH:2026-10-12")!!
         val src = RecordListSource(ListKind.FRAMES, emptyList(), data, { Fixtures.ZONE }, { TODAY }, {}, scope = scope)
-        assertEquals(200, src.load().size); assertTrue(src.hasMore)
+        assertEquals(100, src.load().size); assertTrue(src.hasMore)
         src.showMore()
-        assertEquals(400, src.load().size)
-        assertEquals("only the shown page is ever read", listOf(200, 400), readIds)
-        repeat(100) { src.showMore() }
-        src.load()
+        assertEquals(200, src.load().size)
+        assertEquals("pages of at most 100 are read; one row more only says there is more", listOf(100, 1), readIds.take(2)); assertTrue(readIds.all { it <= 100 })
+        repeat(200) { src.showMore() }
+        assertEquals(20_000, src.load().size)
         assertEquals(false, src.hasMore)
         assertEquals(null, com.rokid.context.phone.ui.list.ListScope.parse("junk")); assertEquals(null, com.rokid.context.phone.ui.list.ListScope.parse("WEEK:nope"))
     }
