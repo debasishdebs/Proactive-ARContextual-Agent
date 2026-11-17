@@ -23,6 +23,9 @@ fun interface CellSource {
     suspend fun fetchCell(cell: String): CellFetch
 }
 
+/** The pack as the budget screen shows it. [pinned] counts user pins; [seeded] and [fetched] exclude pinned rows. */
+data class PackStats(val pinned: Int, val seeded: Int, val fetched: Int, val bytes: Long, val budgetBytes: Long)
+
 enum class CellOutcome { FRESH, FETCHED, PARTIAL, OFFLINE, FAILED }
 
 /** What a glance asks for: the candidates (already expanded to sub-places) and how the cell stood. */
@@ -46,11 +49,13 @@ data class SeedResult(val cells: Int, val fetched: Int, val skipped: Int, val fa
 class PlacePack(
     private val db: PlacesDatabase,
     private val source: CellSource?,
-    private val budgetBytes: Long = DEFAULT_BUDGET_BYTES,
+    budgetBytes: Long = DEFAULT_BUDGET_BYTES,
     private val now: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
 ) {
     private val dao = db.dao()
+    /** The budget in bytes: [setBudget] changes it (the Place Guide screen offers 25/50/100/200 MB). */
+    @Volatile var budgetBytes: Long = budgetBytes.coerceAtLeast(MIN_BUDGET_BYTES); private set
     private val fetchLock = Mutex()
     /** Advanced by [deleteAll] before it takes [fetchLock]: a fetch that began earlier discards its answer instead of re-inserting what Delete all removed. */
     private val wipeEpoch = java.util.concurrent.atomic.AtomicLong(0)
@@ -59,6 +64,35 @@ class PlacePack(
     suspend fun size(): Pair<Int, Long> = dao.placeCount() to dao.totalBytes()
 
     suspend fun areas(): List<AreaEntity> = dao.areas()
+
+    /** What is in the pack, for the budget screen: pinned (user pins and pinned places), seeded (not pinned) and fetched (neither), and the bytes. */
+    suspend fun stats(): PackStats = PackStats(dao.pinnedCount(), dao.seededCount(), dao.fetchedCount(), dao.totalBytes(), budgetBytes)
+
+    /** Changes the budget and evicts least-recently-used FETCHED places at once until the pack fits (seeded and pinned stay even when that is not enough). Returns how many were evicted. */
+    suspend fun setBudget(bytes: Long): Int = fetchLock.withLock {
+        budgetBytes = bytes.coerceAtLeast(MIN_BUDGET_BYTES)
+        db.withTransaction { evictToBudget(keepIds = emptyList(), keepCell = "") }.also { log("budget set evicted=$it") }
+    }
+
+    /**
+     * Makes the user's pins (the [UserPinStore] list, the source of truth) the `user:` rows of the pack: new ones are inserted pinned, edited ones replaced (their recency kept), removed ones
+     * deleted. Nothing but `user:` rows is touched, and a fetch can never write one (see [fetchAndStore]).
+     */
+    suspend fun replaceUserPlaces(pins: List<UserPlace>) {
+        val good = pins.filter { it.isValid }.distinctBy { it.id }
+        db.withTransaction {
+            val old = dao.userPlaces().associateBy { it.id }
+            dao.putPlaces(good.map { it.toEntity(old[it.id]?.lastUsedDay ?: 0) })
+            eachChunk(old.keys.filter { k -> good.none { it.id == k } }) { dao.deletePlaces(it) }
+        }
+        log("user places synced count=${good.size}")
+    }
+
+    /**
+     * "Clear fetched places": removes the fetched places (not seeded, not pinned: user pins stay) and forgets the cells outside the seeded areas so those are fetched again. Recency is kept (unlike
+     * [deleteAll]). Returns how many places were removed.
+     */
+    suspend fun clearFetched(): Int = fetchLock.withLock { wipeEpoch.incrementAndGet(); db.withTransaction { clearFetchedLocked(resetRecency = false) } }
 
     /** Makes the cell fresh when it is not, and says how it stands. One fetch at a time. */
     suspend fun ensureCell(cell: String, networkUp: Boolean): CellOutcome {
@@ -85,6 +119,14 @@ class PlacePack(
         val all = if (hits.isEmpty()) hits else Geo.expandSubPlaces(hits, chunked(hits.map { it.id }) { dao.childrenOf(it) })
         if (all.isNotEmpty()) { val day = day(); eachChunk(all.map { it.id }) { dao.touch(it, day) } }
         return PlaceCandidates(all, outcome)
+    }
+
+    /** The pack places (never user pins) whose edge is within [maxGapM] of (lat, lon): the sites a new pin may hang under, nearest first, at most [limit]. Reads only; the position is not kept. */
+    suspend fun sitesNear(lat: Double, lon: Double, maxGapM: Double = 1_000.0, limit: Int = 12): List<PlaceEntity> {
+        val w = Geo.window(lat, lon, maxGapM + PlaceKinds.MAX_RADIUS_M)
+        return dao.inBox(w.south, w.north, w.west, w.east).asSequence().filter { !UserPlace.isUserId(it.id) && it.kind in PlaceKinds.ALL }
+            .map { it to Geo.distanceM(lat, lon, it.lat, it.lon) - it.radiusM }.filter { it.second <= maxGapM }
+            .sortedWith(compareBy({ it.second }, { it.first.id })).map { it.first }.take(limit).toList()
     }
 
     /**
@@ -127,15 +169,18 @@ class PlacePack(
     suspend fun deleteAll() {
         wipeEpoch.incrementAndGet() // outstanding fetches are invalidated at once (they cannot store), then the lock waits for them to end
         fetchLock.withLock {
-            db.withTransaction {
-                val removed = dao.deleteFetched()
-                dao.resetRecency()
-                val areas = dao.areas().map { it.box }
-                val stale = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b == null || areas.none { it.intersects(b) } }
-                eachChunk(stale) { dao.deleteCells(it) }
-                log("pack cleared removed=$removed cells=${stale.size}")
-            }
+            db.withTransaction { clearFetchedLocked(resetRecency = true) }
         }
+    }
+
+    private suspend fun clearFetchedLocked(resetRecency: Boolean): Int {
+        val removed = dao.deleteFetched()
+        if (resetRecency) dao.resetRecency()
+        val areas = dao.areas().map { it.box }
+        val stale = dao.cells().map { it.geohash5 }.filter { c -> val b = Geohash5.bounds(c); b == null || areas.none { it.intersects(b) } }
+        eachChunk(stale) { dao.deleteCells(it) }
+        log("pack cleared removed=$removed cells=${stale.size} recencyReset=$resetRecency")
+        return removed
     }
 
     private fun isFresh(c: CellEntity?): Boolean {
@@ -152,7 +197,7 @@ class PlacePack(
         }
         if (wipeEpoch.get() != epoch) { log("cell fetch dropped: Delete all ran"); return CellOutcome.FAILED }
         val t = now()
-        val clean = got.places.filter { it.kind in PlaceKinds.ALL && it.lat.isFinite() && it.lon.isFinite() && it.name.isNotBlank() }.distinctBy { it.id }
+        val clean = got.places.filter { !UserPlace.isUserId(it.id) && it.kind in PlaceKinds.ALL && it.lat.isFinite() && it.lon.isFinite() && it.name.isNotBlank() }.distinctBy { it.id }
         var evicted = 0
         db.withTransaction {
             if (wipeEpoch.get() != epoch) return@withTransaction
@@ -198,6 +243,9 @@ class PlacePack(
 
     companion object {
         const val DEFAULT_BUDGET_BYTES = 50L * 1024 * 1024
+        /** The budgets the screen offers (MB). */
+        val BUDGET_CHOICES_MB = listOf(25, 50, 100, 200)
+        const val MIN_BUDGET_BYTES = 1L
         const val DAY_MS = 86_400_000L
         const val FRESH_MS = 30 * DAY_MS
         const val PARTIAL_FRESH_MS = DAY_MS
