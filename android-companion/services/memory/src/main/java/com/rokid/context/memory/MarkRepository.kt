@@ -15,6 +15,8 @@ class MarkRepository(private val dao: MomentDao) {
 
     /** One keyset page of the marks in [range], newest first (then `labelId`), strictly after [after]; the first page is `Cursor.head(range)`. */
     suspend fun page(range: LongRange, after: Cursor, n: Int): List<MomentDao.MarkRow> = dao.marksPage(range.first, range.last + 1, after.key, after.id, n)
+    /** Ids only, at most [limit] (multi-select): the marks [page] lists in [range]. */
+    suspend fun idsIn(range: LongRange, limit: Int): List<String> = dao.markIdsIn(range.first, range.last + 1, limit)
 
     /** The marks named by [ids] (any day), newest first. Indexed by id (no scan of every mark); an unknown id is missing from the result. */
     suspend fun byIds(ids: Collection<String>): List<MomentDao.MarkRow> =

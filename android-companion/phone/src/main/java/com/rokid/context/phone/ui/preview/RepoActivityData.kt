@@ -54,6 +54,13 @@ class RepoActivityData(
     override suspend fun momentTimes(day: LongRange): List<Long> = pages.momentTimes(day)
     override suspend fun momentHourPage(day: LongRange, hour: LongRange, after: Cursor, n: Int): ActivityPage =
         pages.momentsOfHour(day, hour, after, n).let { r -> ActivityPage(r.map { it.memory.id }, r.map(Cursor::of), PrefilledActivityData(this, memories = r.map { it.memory })) }
+    override suspend fun idsIn(kind: ListKind, range: LongRange, limit: Int): List<String> = when (kind) {
+        ListKind.FRAMES -> pages.idsIn(ActivityPages.IdKind.FRAMES, range, limit)
+        ListKind.MEMORIES, ListKind.MOMENTS -> pages.idsIn(ActivityPages.IdKind.MEMORIES, range, limit)
+        ListKind.MARKS -> pages.idsIn(ActivityPages.IdKind.MARKS, range, limit)
+        ListKind.ANSWERS, ListKind.NUDGES -> emptyList()
+    }
+    override suspend fun momentIdsOfHour(day: LongRange, hour: LongRange, limit: Int): List<String> = pages.momentIdsOfHour(day, hour, limit)
     override fun times(kind: ListKind, range: LongRange): Flow<List<Long>> = when (kind) {
         ListKind.MOMENTS, ListKind.MEMORIES -> timeline.visibleMemoryTimesIn(range)
         ListKind.FRAMES -> timeline.frameTimesIn(range)

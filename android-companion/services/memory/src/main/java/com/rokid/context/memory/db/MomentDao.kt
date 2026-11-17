@@ -168,6 +168,10 @@ abstract class MomentDao : DerivedStaleDao() {
     )
     abstract suspend fun marksPage(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<MarkRow>
 
+    /** Ids only (activity multi-select, ruling P2): the labels [marksPage] lists in `[fromMs, toMs)` (same `kind = 'MOMENT'` filter), newest first, at most [n]. */
+    @Query("SELECT labelId FROM canvas_label WHERE kind = 'MOMENT' AND atMs >= :fromMs AND atMs < :toMs ORDER BY atMs DESC, labelId ASC LIMIT :n")
+    abstract suspend fun markIdsIn(fromMs: Long, toMs: Long, n: Int): List<String>
+
     /** The marks named by [ids] (any day): replaces a scan of every mark. Callers chunk [ids]. */
     @Query(
         "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance, l.frameId AS frameId, " +

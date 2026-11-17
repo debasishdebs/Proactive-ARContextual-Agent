@@ -47,6 +47,18 @@ class ActivityPages(
     suspend fun momentsOfHour(day: LongRange, hour: LongRange, after: Cursor, n: Int): List<MomentRow> = timeline.momentPage(day, hour, after, n)
     /** The display time of every visible memory of [day] (hour counts are bucketed by the caller in the zone's own hours). */
     suspend fun momentTimes(day: LongRange): List<Long> = timeline.momentTimes(day)
+    /**
+     * The ids of [kind]'s rows in [range] (ids only, no entity is read), newest first, at most [limit]: what "Select this day" resolves (multi-select, ruling P2). Same filter as the kind's pages and tile counts. Answers
+     * and nudges have no single-item Forget, so they are not resolved here (empty).
+     */
+    suspend fun idsIn(kind: IdKind, range: LongRange, limit: Int): List<String> = when (kind) {
+        IdKind.FRAMES -> timeline.frameIdsIn(range, limit)
+        IdKind.MEMORIES -> timeline.visibleMemoryIdsIn(range, limit)
+        IdKind.MARKS -> marks.idsIn(range, limit)
+    }
+    /** The ids of the memories [momentsOfHour] lists for one hour (ids only), at most [limit]. */
+    suspend fun momentIdsOfHour(day: LongRange, hour: LongRange, limit: Int): List<String> = timeline.momentIdsOfHour(day, hour, limit)
+    enum class IdKind { FRAMES, MEMORIES, MARKS }
     /** The pause intervals that overlap [range]; empty when no pause source is wired. */
     suspend fun pausesIn(range: LongRange): List<PauseIntervalEntity> = pauses?.invoke(range.first, range.last + 1).orEmpty()
 }

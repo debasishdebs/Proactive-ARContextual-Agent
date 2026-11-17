@@ -21,6 +21,10 @@ interface FrameViewDao {
     @Query("SELECT * FROM frame WHERE ts >= :fromMs AND ts < :toMs AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
     suspend fun pageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<FrameEntity>
 
+    /** Ids only (activity multi-select, ruling P2): the photos of `[fromMs, toMs)`, newest first, at most [n]. Same range and filter as [pageIn] and [observeTimes]. */
+    @Query("SELECT id FROM frame WHERE ts >= :fromMs AND ts < :toMs ORDER BY ts DESC, id DESC LIMIT :n")
+    suspend fun idsIn(fromMs: Long, toMs: Long, n: Int): List<String>
+
     @Query("SELECT * FROM frame WHERE id = :id") suspend fun byId(id: String): FrameEntity?
     @Query("SELECT * FROM frame WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<FrameEntity>
 }
@@ -54,6 +58,17 @@ abstract class MemoryViewDao : DerivedStaleDao() {
     /** The display time of every visible memory whose `createdAt` is in the day: the hour counts of the broken-down view (bucketed in Kotlin, so a DST day is right). */
     @Query("SELECT COALESCE(f.ts, m.createdAt) FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= :dayFromMs AND m.createdAt < :dayToMs AND m.reviewState = 'OK'")
     abstract suspend fun visibleMomentTimes(dayFromMs: Long, dayToMs: Long): List<Long>
+
+    /** Ids only (activity multi-select, ruling P2): the visible memories created in `[fromMs, toMs)`, newest first, at most [n]. Same filter as [visiblePageIn] and [observeVisibleTimes]. */
+    @Query("SELECT id FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState = 'OK' ORDER BY createdAt DESC, id DESC LIMIT :n")
+    abstract suspend fun visibleIdsIn(fromMs: Long, toMs: Long, n: Int): List<String>
+
+    /** Ids only: the memories [momentPageIn] would list for one hour (same predicate), at most [n]. */
+    @Query(
+        "SELECT m.id FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= :dayFromMs AND m.createdAt < :dayToMs AND m.reviewState = 'OK' " +
+            "AND COALESCE(f.ts, m.createdAt) >= :hFromMs AND COALESCE(f.ts, m.createdAt) < :hToMs ORDER BY COALESCE(f.ts, m.createdAt) DESC, m.id DESC LIMIT :n",
+    )
+    abstract suspend fun momentIdsIn(dayFromMs: Long, dayToMs: Long, hFromMs: Long, hToMs: Long, n: Int): List<String>
 
     @Query("SELECT * FROM memory WHERE reviewState = 'OK' ORDER BY createdAt DESC LIMIT :limit")
     abstract fun observeRecentVisible(limit: Int): Flow<List<MemoryEntity>>
