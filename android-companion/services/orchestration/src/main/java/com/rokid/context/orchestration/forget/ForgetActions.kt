@@ -239,6 +239,7 @@ object ForgetActions {
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }
         runCatching(onForgotten)
+        runCatching { com.rokid.context.work.frames.place.PlaceRecovery.kick(context) } // a place memory still marked is retried now
         if (!cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) {
             PcLog.w(TAG, "forget done, cached export not deleted")
             return Outcome.CACHE_CLEANUP_FAILED

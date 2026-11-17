@@ -336,6 +336,7 @@ class OrchestrationScheduler(
     fun ensureBackgroundWork() {
         runCatching { ensureRetention() }
         runCatching { ensureMomentCadence() }
+        runCatching { com.rokid.context.work.frames.place.PlaceRecovery.ensureIfPending(context) } // a place memory left hidden by a failed take-back is deleted without waiting for a frame
     }
 
     fun scheduleCritic() {

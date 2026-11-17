@@ -56,7 +56,7 @@ internal class ZoneFencedLiveness(
 
 /** The production wiring of [PlaceSampler]: the pack, the PLACE_MATCH call and the place memory. */
 object PlaceSamplers {
-    private val flight = PlaceFlight()
+    internal val flight = PlaceFlight()
 
     /** [fix] is the phone's fresh foreground fix; [zoneBlocked] is true while a pause zone is active, approaching or unreadable. */
     fun create(
@@ -68,7 +68,7 @@ object PlaceSamplers {
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
             candidates = { lat, lon, up -> withContext(Dispatchers.IO) { PlaceGraph.pack(app).candidates(lat, lon, up) } },
             match = { id, lines -> matchCall(app, id, lines, zoneBlocked, currentZoneTicket()) },
-            saveMemory = { PlaceMemory.save(app, it) }, onCard = onCard, clock = System::currentTimeMillis,
+            saveMemory = { PlaceMemory.save(app, it, pending = true) }, reveal = { id, gen -> PlaceMemory.reveal(app, id, gen) }, onRollbackFailed = { PlaceRecovery.ensure(app) }, onCard = onCard, clock = System::currentTimeMillis,
             elapsed = android.os.SystemClock::elapsedRealtime, cards = PlaceGraph.port, deleteMemory = { PlaceMemory.delete(app, it) },
             enabled = { PlaceGuideSettings.of(app).enabled }, zoneBlocked = zoneBlocked, networkUp = keyframes::networkUp,
             admit = keyframes::admitBackgroundCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
@@ -114,12 +114,12 @@ object PlaceMemory {
     }
 
     /** Writes the memory and its `frame_source` row in one transaction (so Forget of the photo cascades). False = nothing written (Delete all, or the photo was forgotten, since the match). */
-    suspend fun save(app: Context, r: PlaceMemoryRequest, now: Long = System.currentTimeMillis()): Boolean {
+    suspend fun save(app: Context, r: PlaceMemoryRequest, now: Long = System.currentTimeMillis(), pending: Boolean = false): Boolean {
         val db = MemoryGraph.get(app).db
         val id = idFor(r.frameId)
         return try { db.withTransaction {
             val ok = PipelineRecords.appendFact(
-                app, id, r.frameId, text(r.place.name, r.parentName, r.confidence), TYPE, tags(r.place, r.parentName), r.confidence.toDouble(), MemoryTier.LONG, ReviewState.OK,
+                app, id, r.frameId, text(r.place.name, r.parentName, r.confidence), TYPE, tags(r.place, r.parentName), r.confidence.toDouble(), MemoryTier.LONG, if (pending) ReviewState.INVALIDATED else ReviewState.OK,
                 createdAt = now, generation = r.generation, imageDelivered = r.delivered,
             )
             if (ok) {
@@ -130,6 +130,18 @@ object PlaceMemory {
             }
             ok
         } } catch (_: NotAllowed) { false }
+    }
+
+    /**
+     * Makes a memory written with `pending = true` readable (INVALIDATED -> OK), only once its card is out. INVALIDATED is the state every read path already excludes (retrieval, FTS search, Activity/Home
+     * lists, Ask, export, the embedding index and its vectors), so a committed memory whose rollback failed is never readable. Refused (false) after Delete all ([generation] moved) or when the photo was forgotten.
+     */
+    suspend fun reveal(app: Context, frameId: String, generation: Long): Boolean {
+        val g = MemoryGraph.get(app)
+        return g.db.withTransaction {
+            if (MemoryWipe.generation.get() != generation || g.db.forgetDao().tombstoned(listOf(frameId)).isNotEmpty()) return@withTransaction false
+            g.db.memoryViewDao().moveReviewState(idFor(frameId), ReviewState.INVALIDATED.name, ReviewState.OK.name) == 1
+        }
     }
 
     private class NotAllowed : RuntimeException()
