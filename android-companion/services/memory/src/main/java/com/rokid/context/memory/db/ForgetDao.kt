@@ -118,6 +118,20 @@ abstract class ForgetDao {
     /** Undo: clears exactly the marks made at [at]. */
     @Query("UPDATE memory SET reviewFlaggedAt = NULL WHERE reviewFlaggedAt = :at") abstract suspend fun unflag(at: Long): Int
 
+    // --- v1.1 row 8 (user ruling 2026-11-16): the night job over the suspects the user marked (no schema change: queries only) ------------------------
+    /** Marked suspects whose photo(s) are all gone (expired): their description is removed. Oldest first. */
+    @Query("SELECT a.id FROM memory a WHERE " + MARKED_SUSPECT + " AND NOT " + SUSPECT_PHOTO_STORED + " ORDER BY a.createdAt, a.id LIMIT :limit")
+    abstract suspend fun markedSuspectsExpired(limit: Int): List<String>
+    /** Marked suspects with at least one photo still stored: they are re-described. Oldest first. */
+    @Query("SELECT a.id FROM memory a WHERE " + MARKED_SUSPECT + " AND " + SUSPECT_PHOTO_STORED + " ORDER BY a.createdAt, a.id LIMIT :limit")
+    abstract suspend fun markedSuspectsStored(limit: Int): List<String>
+    /** The photos of [memoryId] that still have a `frame` row (memory.frameId plus its FACT / CLUSTER_REP sources). */
+    @Query("SELECT f.id FROM frame f WHERE f.id = (SELECT m.frameId FROM memory m WHERE m.id = :memoryId) OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = :memoryId AND fs.role IN ('FACT','CLUSTER_REP')) ORDER BY f.id")
+    abstract suspend fun storedPhotosOf(memoryId: String): List<String>
+    /** How many other memories describe [frameId] WITH proof the image reached the model (`imageDelivered = 1`), unmarked and not [selfId]. */
+    @Query("SELECT COUNT(*) FROM memory a WHERE a.id != :selfId AND a.imageDelivered = 1 AND " + DESCRIBES + " AND (a.frameId = :frameId OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = a.id AND fs.frameId = :frameId AND fs.role IN ('FACT','CLUSTER_REP')))")
+    abstract suspend fun describedWithProof(frameId: String, selfId: String): Int
+
     @Query("SELECT * FROM frame WHERE id = :id") abstract suspend fun frame(id: String): FrameEntity?
     @Query("DELETE FROM frame WHERE id = :id") abstract suspend fun deleteFrame(id: String): Int
 
@@ -273,6 +287,15 @@ abstract class ForgetDao {
             "AND a.id NOT GLOB 'rokid_cv_*' " +
             // opus r19: only while the described photo still exists (marking an expired photo's memory would change nothing)
             "AND EXISTS (SELECT 1 FROM frame f WHERE f.id = a.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = a.id AND fs.role IN ('FACT','CLUSTER_REP'))) "
+        /**
+         * Row 8: the suspects the user MARKED for review (the confirmation: nothing is removed or re-described unmarked). A pre-fix, delivery-unknown, OK, non-derived,
+         * non-canvas memory that describes a photo (memory.frameId or a FACT/CLUSTER_REP row), marked.
+         */
+        const val MARKED_SUSPECT = "a.imageDelivered IS NULL AND a.createdAt < 1794085517000 AND a.reviewFlaggedAt IS NOT NULL AND a.reviewState = 'OK' AND a.derived = 0 " +
+            "AND a.id NOT GLOB 'rokid_cv_*' " +
+            "AND (a.frameId IS NOT NULL OR EXISTS (SELECT 1 FROM frame_source fs0 WHERE fs0.memoryId = a.id AND fs0.role IN ('FACT','CLUSTER_REP'))) "
+        /** At least one photo this memory describes still has a `frame` row. */
+        const val SUSPECT_PHOTO_STORED = "EXISTS (SELECT 1 FROM frame f WHERE f.id = a.frameId OR f.id IN (SELECT fs.frameId FROM frame_source fs WHERE fs.memoryId = a.id AND fs.role IN ('FACT','CLUSTER_REP'))) "
         // Room v16 (user ruling 2026-11-10): a memory marked for review, or written without delivery proof (imageDelivered = 0), never describes;
         // unknown (null, every pre-v16 row) keeps the old behaviour so good old captions do not strand their photos
         const val DESCRIBES = "a.reviewState = 'OK' AND a.derived = 0 AND a.id NOT GLOB 'rokid_cv_*' AND a.reviewFlaggedAt IS NULL AND COALESCE(a.imageDelivered, 1) = 1"

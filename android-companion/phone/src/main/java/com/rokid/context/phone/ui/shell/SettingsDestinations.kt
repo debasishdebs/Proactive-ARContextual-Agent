@@ -323,6 +323,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val app = LocalContext.current.applicationContext
         val dev = remember { DeveloperModeStore.get(app) }
         val devOn by dev.enabled.collectAsStateWithLifecycle()
+        val devSessionHours by dev.sessionHours.collectAsStateWithLifecycle()
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
         var ctxTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -337,6 +338,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onMarkSuspect = vm::markSuspect, onMarkAllSuspects = vm::markAllSuspects, onUndoMark = vm::undoMark,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
             developerMode = devOn,
+            devSessionHours = devSessionHours,
+            onDevSessionHours = { h -> dev.setSessionHours(h); CanvasGraph.get(app).revokeAll() }, // the new rule starts clean: every current pairing ends
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
             onSensorRecHz = { hz -> s.hud.update { it.copy(sensorRecHz = hz).normalized() } },
             contextHub = contextHub,

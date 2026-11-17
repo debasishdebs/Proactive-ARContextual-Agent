@@ -327,4 +327,83 @@ class CanvasAuthTest {
         assertFalse("a session minted by a pairing that raced revokeAll must not authenticate", auth.check(token))
         assertEquals(0, auth.sessionCount())
     }
+
+    // ---- roadmap row 7 (b): the longer DEVELOPER session ----
+
+    private class MemVault : CanvasAuth.SessionVault {
+        var stored: List<CanvasAuth.StoredSession> = emptyList()
+        override fun read() = stored
+        override fun write(sessions: List<CanvasAuth.StoredSession>) { stored = sessions }
+    }
+    private val day = 24 * 3_600_000L
+    private fun devAuth(vault: MemVault, life: () -> Long, clock: () -> Long = { now }) = CanvasAuth(clock, devLifetimeMs = life, vault = vault)
+
+    @Test fun withoutALifetimeTheNormalRulesHoldAndNothingIsStored() {
+        val vault = MemVault(); val a = devAuth(vault, { 0L })
+        val t = token(a)
+        assertTrue(a.check(t)); assertTrue(vault.stored.isEmpty())
+        now += CanvasAuth.IDLE_MS
+        assertFalse(a.check(t))
+    }
+
+    @Test fun aDeveloperSessionOutlivesIdleAndTwelveHoursAndSurvivesARestartButNeverItsLifetime() {
+        val vault = MemVault(); val life = 3 * day
+        val a = devAuth(vault, { life })
+        val t = token(a)
+        assertEquals(1, vault.stored.size)
+        assertFalse("the token itself is never stored", vault.stored.single().let { it.digestHex.contains(t) || t.contains(it.digestHex) })
+        assertEquals(64, vault.stored.single().digestHex.length)
+        now += 13 * 3_600_000L // past the normal 30 min idle and 12 h maximum
+        assertTrue(a.check(t))
+        val restarted = devAuth(vault, { life }) // a new process: same vault
+        assertTrue("survives a restart", restarted.check(t))
+        assertFalse("another token is not accepted", restarted.check(t + "x"))
+        now += 3 * day // lifetime over
+        assertFalse(restarted.check(t)); assertTrue("the expired one is removed from the vault", vault.stored.isEmpty())
+    }
+
+    @Test fun theLifetimeIsCappedAtSevenDaysWhateverIsAskedOrStored() {
+        val vault = MemVault(); val a = devAuth(vault, { 30 * day })
+        val t = token(a)
+        assertEquals(CanvasAuth.MAX_DEV_LIFETIME_MS, vault.stored.single().lifeMs)
+        now += 7 * day
+        assertFalse(a.check(t))
+        // a tampered vault entry above the cap is ignored at load
+        val bad = MemVault().also { it.stored = listOf(CanvasAuth.StoredSession("a".repeat(64), now, 365 * day), CanvasAuth.StoredSession("zz", now, day), CanvasAuth.StoredSession("b".repeat(64), now + day, day)) }
+        assertEquals(0, devAuth(bad, { 7 * day }).sessionCount())
+    }
+
+    @Test fun switchingTheSettingOffOrLoweringItEndsTheLongSessionsAtOnce() {
+        val vault = MemVault(); var life = 3 * day
+        val a = devAuth(vault, { life })
+        val t = token(a)
+        now += 2 * day
+        life = day // lowered below the age
+        assertFalse(a.check(t)); assertTrue(vault.stored.isEmpty())
+        life = 3 * day; val t2 = token(a); life = 0L // Developer mode off / setting Off
+        assertFalse(a.check(t2)); assertTrue(vault.stored.isEmpty())
+    }
+
+    @Test fun logoutAndRevokeAllClearTheStoredDigests() {
+        val vault = MemVault(); val a = devAuth(vault, { day })
+        val t = token(a); assertEquals(1, vault.stored.size)
+        a.logout(t); assertTrue(vault.stored.isEmpty()); assertFalse(a.check(t))
+        val t2 = token(a); assertEquals(1, vault.stored.size)
+        a.revokeAll(); assertTrue(vault.stored.isEmpty()); assertFalse(devAuth(vault, { day }).check(t2))
+    }
+
+    @Test fun aWebViewTokenIsNeverALongSession() {
+        val vault = MemVault(); val a = devAuth(vault, { day })
+        val t = a.newWebViewToken()
+        assertTrue(vault.stored.isEmpty())
+        now += CanvasAuth.IDLE_MS
+        assertFalse(a.check(t))
+    }
+
+    @Test fun aClockThatWentBackEndsALongSession() {
+        val vault = MemVault(); var clock = now; val a = devAuth(vault, { day }, { clock })
+        val t = token(a)
+        clock -= 1_000
+        assertFalse(a.check(t))
+    }
 }

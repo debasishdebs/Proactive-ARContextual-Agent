@@ -104,6 +104,14 @@ class ForgetService(
      */
     suspend fun expire(ids: Collection<String>): Result = notifying { expireTx(ids) }
 
+    /**
+     * Row 8 (suspect descriptions): removes the marked suspect [ids] (their rows, vectors and edges; the derived summaries built on them are invalidated and rebuilt; asks and nudges that cited them are
+     * redacted). Never touches a photo: no tombstone, no JPEG or vector delete (keyframes are kept; the caller proved a replacement exists or the photo is already gone), accepted proposals keep their params.
+     */
+    suspend fun removeDescriptions(ids: Collection<String>): Result = notifying {
+        db.withTransaction { cascade(ids.distinct(), lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true) }
+    }
+
     private suspend fun expireTx(ids: Collection<String>): Result = db.withTransaction {
         cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true) // routine retention: phone files only
     }

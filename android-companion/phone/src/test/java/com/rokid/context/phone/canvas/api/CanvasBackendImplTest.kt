@@ -44,6 +44,7 @@ import com.rokid.context.phone.canvas.server.CanvasAuth
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -100,7 +101,7 @@ class CanvasBackendImplTest {
                 override suspend fun complete(request: ModelRequest): ModelReply {
                     requests += request
                     gate?.await()
-                    val text = if (request.prompt.contains("BEGIN_DATA question")) """{"answer":"In the fridge","sources":[],"proposedAction":null}""" else generate(request.prompt)
+                    val text = if (request.prompt.contains("BEGIN_DATA question")) """{"answer":"In the fridge","sources":$askSources,"proposedAction":null}""" else generate(request.prompt)
                     return ModelReply(text, 100, 10)
                 }
             }
@@ -109,11 +110,13 @@ class CanvasBackendImplTest {
     }
 
     private val requests = java.util.concurrent.CopyOnWriteArrayList<ModelRequest>()
+    @Volatile private var askSources = "[]"
+
     @Volatile private var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
-    private fun newBackend(photos: () -> AskDebugPhotos = AskPhotoBinding::current) = CanvasBackendImpl.create(
+    private fun newBackend(evalAsk: (suspend (String) -> com.rokid.context.orchestration.AskOutcome)? = null, photos: () -> AskDebugPhotos = AskPhotoBinding::current) = CanvasBackendImpl.create(
         app, ai, auth, { lan }, scope,
         answers = { AnswerService(MemoryGraph.get(app), ai.runner, ai.retriever, { RetrievalSettings(mode = RetrievalMode.LEXICAL, topK = 8) }) },
-        askPhotos = photos,
+        askPhotos = photos, evalAsk = evalAsk,
     )
 
     @After fun tearDown() {
@@ -1287,5 +1290,70 @@ class CanvasBackendImplTest {
         assertEquals(null, MemoryGraph.get(app).db.memoryViewDao().byId("rokid_cv_r2_0"))
         assertNull(backend.runProposal("nope"))
         assertTrue(runCatching { backend.saveRun("nope") }.exceptionOrNull() is NoSuchElementException)
+    }
+
+    // ---- roadmap row 7 (c): the ask/eval Forget race. Nothing derived from a forgotten memory persists, and the route's one-transaction final fence refuses the reply. ----
+
+    private suspend fun seedEvalMemory() {
+        MemoryGraph.get(app).memories.add(com.rokid.context.memory.legacy.LegacyImporter.toMemory("m1", "short_term", 0.9, System.currentTimeMillis() - 60_000L, "The keys are on the hook by the door"))
+        askSources = """["m1"]"""
+    }
+    private fun evalService() = AnswerService(MemoryGraph.get(app), ai.runner, ai.retriever, { RetrievalSettings(mode = RetrievalMode.LEXICAL, topK = 8) })
+    /** Every ask row of the database, eval rows included (the listings leave eval asks out): (source, redacted, answer). */
+    private fun allAsks(): List<Triple<String, Boolean, String>> {
+        val c = MemoryGraph.get(app).db.openHelper.readableDatabase.query("SELECT source, redacted, answer FROM ask")
+        return c.use { cur -> generateSequence { if (cur.moveToNext()) Triple(cur.getString(0), cur.getInt(1) != 0, cur.getString(2)) else null }.toList() }
+    }
+    private fun withDeveloperMode(block: () -> Unit) {
+        val dev = com.rokid.context.phone.canvas.DeveloperModeStore.get(app)
+        val was = dev.enabled.value
+        dev.set(true)
+        try { block() } finally { dev.set(was) }
+    }
+
+    @Test fun aFactForgottenWhileTheEvalAskIsAnsweringLeavesNoAnswerBehind() = withDeveloperMode {
+        runBlocking<Unit> {
+            bind(); seedEvalMemory()
+            val b = newBackend(evalAsk = { q -> evalService().answer(q, com.rokid.context.orchestration.AskActions.EVAL_SOURCE) })
+            gate = kotlinx.coroutines.CompletableDeferred()
+            val ask = kotlinx.coroutines.CoroutineScope(Dispatchers.Default).async { runCatching { b.askEval("where are my keys") } }
+            withTimeout(20_000) { while (requests.none { it.prompt.contains("BEGIN_DATA question") }) delay(20) } // the model call is in flight
+            val forget = kotlinx.coroutines.CoroutineScope(Dispatchers.IO).async { com.rokid.context.orchestration.forget.ForgetActions.forgetFactOutcome(app, "m1") }
+            delay(300); gate!!.complete(Unit)
+            assertEquals(com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE, withTimeout(20_000) { forget.await() })
+            val r = withTimeout(20_000) { ask.await() }
+            // The Forget started while the model answered and waits for the ask's lease, so either order is real: the Forget wins (the route refuses, nothing answered) or the ask commits first
+            // (the reply left before the Forget committed). Either way the stored state ends with no answer text.
+            if (r.isSuccess) assertEquals("answered before the Forget committed", "answered", r.getOrThrow()["status"]!!.jsonPrimitive.content)
+            else assertTrue("refused: ${r.exceptionOrNull()}", r.exceptionOrNull() is com.rokid.context.canvas.AskRedacted || r.exceptionOrNull() is NoSuchElementException)
+            // whatever row exists is the redacted shell: no answer text, no sources
+            assertTrue("rows=${allAsks()}", allAsks().all { it.second && !it.third.contains("In the fridge") })
+            assertEquals(0, com.rokid.context.orchestration.DataOpGate.shared.leases.openCount)
+        }
+    }
+
+    @Test fun aFactForgottenAfterTheEvalAskCommittedIsRefusedByTheFinalFence() = withDeveloperMode {
+        runBlocking<Unit> {
+            bind(); seedEvalMemory()
+            // the Forget lands between the committed ask row and the route's validating transaction (the seam's tail)
+            val b = newBackend(evalAsk = { q -> evalService().answer(q, com.rokid.context.orchestration.AskActions.EVAL_SOURCE).also { com.rokid.context.orchestration.forget.ForgetActions.forgetFactOutcome(app, "m1") } })
+            val err = runCatching { b.askEval("where are my keys") }.exceptionOrNull()
+            assertTrue("refused: $err", err is com.rokid.context.canvas.AskRedacted)
+            val rows = allAsks()
+            assertEquals(1, rows.size); assertEquals(com.rokid.context.orchestration.AskActions.EVAL_SOURCE, rows.single().first)
+            assertTrue("the stored row is redacted: $rows", rows.single().second && !rows.single().third.contains("In the fridge"))
+        }
+    }
+
+    @Test fun anEvalAskWithoutAForgetAnswersAndNeverShowsInTheAsksList() = withDeveloperMode {
+        runBlocking<Unit> {
+            bind(); seedEvalMemory()
+            MemoryGraph.get(app).asks.add(AskEntity("u1", 5, "my own ask", "its answer", "[]", null, "phone_typed", false))
+            val b = newBackend(evalAsk = { q -> evalService().answer(q, com.rokid.context.orchestration.AskActions.EVAL_SOURCE) })
+            val r = b.askEval("where are my keys")
+            assertEquals("answered", r["status"]!!.jsonPrimitive.content); assertEquals("In the fridge", r["answer"]!!.jsonPrimitive.content)
+            assertEquals(2, allAsks().size)
+            assertEquals("GET /api/asks lists the user's ask only", listOf("u1"), b.asks().map { it.jsonObject["id"]!!.jsonPrimitive.content })
+        }
     }
 }
