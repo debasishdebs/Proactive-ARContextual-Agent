@@ -32,6 +32,7 @@ Glasses:
 - Worn-test list from the handoff (voice mark + undo, double-tap pause/resume, pause/resume capture replies, glasses voice ask, camera-busy mark, Forget a marked photo, Activity taps, watch WALKING, 35-min X7/X10 gate, second M1 trace) and Task 38 (14-item device checklist), LIVE guards test (`tools/M1-RUN.md`).
 Watch: update to the v1.1 build (optional, protocol unchanged).
 Activity pagination: scroll to row 1,500 and the 100k timing check on the phone.
+Multi-select Forget (A7-A9, Developer only, needs `forgetV2` ON, default OFF): flag OFF shows no menu and a long press does nothing. With it ON on a COPY of the data or a throwaway profile: long-press a moment, select this hour / day, preview the dependency counts, acknowledge above 200, refuse above 5,000, then check the rows are gone and Ask shows "Answered from a forgotten fact". Time the ids-only day selection and the plan of 5,000 roots against the laptop numbers in `SelectionPerfTest` (Robolectric, 2026-11-17: ids-only read of 5,000 = 10 ms, plan of 5,000 roots = 541 ms, forget of 5,000 roots = 885 ms; plain memories, no descendants). Do not run it on the real data until the user rules.
 
 ## D. Chores
 - Move GitHub `main` to v1.x (ask first); rotate the credentials that were hard-coded in the kg repo.
