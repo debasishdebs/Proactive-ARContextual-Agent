@@ -70,7 +70,8 @@ object ExprTry {
         if (prep.problems.isNotEmpty()) return Outcome.Ok(buildJsonObject { put("ok", false); putJsonArray("problems") { prep.problems.forEach { add(JsonPrimitive(it)) } } })
         val checked = prep.checked!!
         val runner = prep.runner ?: return bad("bad_request", "The program cannot run.")
-        val read = prep.read
+        val missing = prep.read.filter { it !in series }
+        if (missing.isNotEmpty()) return bad("missing_signal", "Give a value for every signal the program reads.", missing)
 
         val seconds = if (len > 0) len else maxOf(1, runner.windowHorizonS)
         val sig = ExprSignals()

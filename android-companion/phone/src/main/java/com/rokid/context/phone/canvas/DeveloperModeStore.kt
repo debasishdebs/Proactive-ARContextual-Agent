@@ -41,6 +41,11 @@ class DeveloperModeStore(context: Context) {
         prefs.edit().apply { if (sessions.isEmpty()) remove(KEY_SESSIONS) else putString(KEY_SESSIONS, sessions.joinToString(";") { "${it.digestHex},${it.createdAt},${it.lifeMs}" }) }.apply()
     }
 
+    private val _signalTry = MutableStateFlow(prefs.getBoolean(KEY_SIGNAL_TRY, false))
+    /** v1.2 row 2: the derived-signal "try it on recent data" preview. OFF by default; it also needs Developer mode (the route checks both, on every call). */
+    val signalTryEnabled: StateFlow<Boolean> = _signalTry.asStateFlow()
+    fun setSignalTry(on: Boolean) { prefs.edit().putBoolean(KEY_SIGNAL_TRY, on).apply(); _signalTry.value = on }
+
     fun set(on: Boolean) {
         prefs.edit().putBoolean(KEY, on).apply()
         _enabled.value = on
@@ -49,6 +54,7 @@ class DeveloperModeStore(context: Context) {
     companion object {
         const val PREFS = "pc_dev"
         const val KEY = "developer_mode"
+        const val KEY_SIGNAL_TRY = "signal_try_enabled"
         const val KEY_SESSION_HOURS = "canvas_session_hours"
         const val KEY_SESSIONS = "canvas_sessions"
         /** The lifetimes a developer can choose: Off, 1, 3 or 7 days (7 days is the hard maximum, see `CanvasAuth.MAX_DEV_LIFETIME_MS`). */

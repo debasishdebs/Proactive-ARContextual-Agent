@@ -55,7 +55,7 @@ class CanvasApi(
         private val FRAME_ID = Regex("^(?!\\.)(?!.*\\.\\.)(?!.*\\.$)[A-Za-z0-9:_.-]{1,64}$")
         private val FROM = Regex("^[A-Za-z0-9:_-]{1,64}(@[0-9]{1,6})?$")
         private val VERSION = Regex("^[0-9]{1,6}$")
-        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile", "/api/plans/check", "/api/expr/try", "/api/retrieve/debug")
+        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile", "/api/plans/check", "/api/expr/try", "/api/signals/try", "/api/retrieve/debug")
         private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
         private val MOMENT_ID = Regex("^[0-9a-f]{8}$")
         private val SCENE_ID = Regex("^S[0-9a-f]{8}$")
