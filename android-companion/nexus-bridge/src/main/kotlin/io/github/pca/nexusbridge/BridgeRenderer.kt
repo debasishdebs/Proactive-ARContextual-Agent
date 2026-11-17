@@ -24,7 +24,12 @@ interface BridgeEvents {
  * The bridge's whole logic: a dumb renderer. It holds NO card text, no database and no log of content; it validates what the port hands it (a second line of defence behind the sink), draws it through
  * [NexusBusClient], and relays taps back. Voice is OFF until PCA sets the TTS bit with [setFeatures]; STT and the assist takeover have no code path here at all (T5). The initial feature mask is 0.
  */
-class BridgeRenderer(private val bus: () -> NexusBusClient?, private val log: (String) -> Unit = {}) {
+class BridgeRenderer(
+    private val bus: () -> NexusBusClient?,
+    private val log: (String) -> Unit = {},
+    /** Asks PCA's phone (synchronously) whether a Nexus speech session may open NOW. Default: no (fail closed). Called BEFORE any speech session is opened. */
+    private val authorizeListen: () -> Boolean = { false },
+) {
     @Volatile var events: BridgeEvents? = null
     @Volatile private var features = NexusFeatures.NONE
     /** The feature bits PCA last set (0 until it sets any). The skill router reads it. */
@@ -67,6 +72,9 @@ class BridgeRenderer(private val bus: () -> NexusBusClient?, private val log: (S
             finalSeen = false
         }
         b.stopListening()      // never two sessions
+        // PCA's gates (mode, worn, zone fences, PAUSE) answer BEFORE the microphone is opened; no answer, a throw or a no = no session.
+        val allowed = try { authorizeListen() } catch (_: Exception) { false }
+        if (!allowed || !current(gen)) { log("bridge assist ignored reason=NOT_AUTHORIZED"); return }
         val r = b.startListening(object : ListenCallbacks {
             override fun onStarted() { if (current(gen)) ev.onListening(true) }
             override fun onFinal(text: String) {
@@ -85,7 +93,8 @@ class BridgeRenderer(private val bus: () -> NexusBusClient?, private val log: (S
                 }
             }
         })
-        if (r != NexusResult.OK && current(gen)) {
+        if (!current(gen)) { b.stopListening(); return }      // a trip came while the session was opening: close it, whatever it reports
+        if (r != NexusResult.OK) {
             log("bridge listening refused code=${NexusResult.name(r)}")
             ev.onAskFailed(AskFail.OTHER)
         }

@@ -12,7 +12,7 @@ import java.util.EnumMap
  *  1. the user's Nexus switch is off (everything is OFF by default);
  *  2. the glasses are not worn;
  *  3. a pause-zone fence is held (ZoneFence or AskZoneFence): nothing is sent;
- *  4. PCA is paused (proactive items only: nudges and place cards);
+ *  4. PCA is paused (every item with content: nudges, place cards and ask answers with their speech; the content-free capture pin and ask notices still show);
  *  5. a source it was built from is forgotten, tombstoned or wiped (ProvenanceGate), or a Nudge/PlaceCard declares no source at all.
  * ANY error in a gate drops the item (fail closed). The checks run again, under the sink lock, immediately before the call (check-then-act), and a [trip] that ran in between wins ([DropReason.TRIPPED]).
  *
@@ -37,8 +37,12 @@ class NexusHudSink internal constructor(
     private val asks: NexusAskHandler? = null,
     private val skills: NexusSkillProvider? = null,
     private val skillTimeoutMs: Long = NexusLimits.SKILL_HOST_TIMEOUT_MS,
+    /** A history wipe the phone still owes the hub from before (persisted across disconnects and restarts by the phone): sent on connect and on every tick until acknowledged. */
+    wipeOwedAtStart: Boolean = false,
+    /** The hub accepted the history wipe (called outside the sink's lock, once per acknowledgement). */
+    private val onForgetAcked: () -> Unit = {},
 ) {
-    private class Handle(val slot: Slot, val sources: Set<String>, val proactive: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>) {
+    private class Handle(val slot: Slot, val sources: Set<String>, val pauseGated: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>) {
         val used = HashSet<String>()
         var withdrawing = false
     }
@@ -46,7 +50,7 @@ class NexusHudSink internal constructor(
     private val lock = Any()
     private val handles = EnumMap<Slot, Handle>(Slot::class.java)
     private var epoch = 0L
-    private var forgetOwed = false
+    private var forgetOwed = wipeOwedAtStart
 
     private class Ask(val id: String, val expiresAt: Long) { var transcribed = false }
     private var ask: Ask? = null
@@ -66,19 +70,35 @@ class NexusHudSink internal constructor(
 
     suspend fun show(event: HudEvent): Outcome {
         val mapped = HudMapper.map(event) ?: return dropped(DropReason.UNSUPPORTED)
+        // The pass is taken BEFORE the first suspension: a zone hold or trip from here on closes it and the delivery is dropped (the fence wins).
+        val pass = try { gates.pass() } catch (_: Exception) { return dropped(DropReason.GATE_ERROR) }
         val start = synchronized(lock) { if (event is HudEvent.AskAnswer && event.ref in cancelledAsks) return dropped(DropReason.TRIPPED); epoch }
-        syncBlock(event.proactive)?.let { return dropped(it) }
+        syncBlock(event.pauseGated())?.let { return dropped(it) }
         if (event.sources.isEmpty()) {
             if (event.requiresSources()) return dropped(DropReason.PROVENANCE)
         } else {
             val live = try { gates.sourcesLive(event.sources) } catch (c: CancellationException) { throw c } catch (_: Exception) { return dropped(DropReason.GATE_ERROR) }
             if (!live) return dropped(DropReason.PROVENANCE)
         }
+        // FINAL admission and dispatch are ONE step: the sink lock (a trip waits), then the fences' locks (a hold waits), the gates read last, then the transport calls. No suspension in between.
         synchronized(lock) {
             if (epoch != start) return dropped(DropReason.TRIPPED)
-            syncBlock(event.proactive)?.let { consumeAsk(event); return dropped(it) }
-            return commit(event, mapped).also { consumeAsk(event) }
+            return dispatch(event, mapped, pass)
         }
+    }
+
+    /** Lock held. The gates are read and the transport called inside the pass (the fences' locks); the ask is over either way. */
+    private fun dispatch(event: HudEvent, mapped: Mapped, pass: NexusPass): Outcome {
+        var block: DropReason? = null
+        val out = try {
+            pass.act { block = syncBlock(event.pauseGated()); block.let { b -> if (b == null) commit(event, mapped) else Outcome.Dropped(b) } }
+        } catch (_: Exception) {
+            consumeAsk(event)
+            return dropped(DropReason.GATE_ERROR)
+        }
+        consumeAsk(event)
+        block?.let { return dropped(it) }
+        return out ?: dropped(DropReason.ZONE_HELD)
     }
 
     /** Lock held. The answer of the pending Nexus ask (or its refusal) was handled: the ask is over. */
@@ -89,10 +109,8 @@ class NexusHudSink internal constructor(
     /** Short fixed-text notice, synchronous (inbound events are not suspend). Same gates as [show]. */
     private fun showNow(event: HudEvent): Outcome {
         val mapped = HudMapper.map(event) ?: return dropped(DropReason.UNSUPPORTED)
-        synchronized(lock) {
-            syncBlock(event.proactive)?.let { return dropped(it) }
-            return commit(event, mapped)
-        }
+        val pass = try { gates.pass() } catch (_: Exception) { return dropped(DropReason.GATE_ERROR) }
+        synchronized(lock) { return dispatch(event, mapped, pass) }
     }
 
     /** Lock held. */
@@ -104,7 +122,7 @@ class NexusHudSink internal constructor(
             log("nexus show refused slot=${cmd.slot.name} code=${NexusResult.name(r)}")
             return Outcome.Dropped(DropReason.TRANSPORT, r)
         }
-        handles[cmd.slot] = Handle(cmd.slot, event.sources, event.proactive, event.ref, now + cmd.ttlMs, cmd.actions.map { it.id }.toSet())
+        handles[cmd.slot] = Handle(cmd.slot, event.sources, event.pauseGated(), event.ref, now + cmd.ttlMs, cmd.actions.map { it.id }.toSet())
         log("nexus shown slot=${cmd.slot.name}")
         var spoken = false
         val speech = mapped.speech
@@ -112,7 +130,7 @@ class NexusHudSink internal constructor(
             transport.setFeatures(safeConfig().featureMask())
             val sr = transport.speak(speech)
             if (sr == NexusResult.OK) {
-                handles[Slot.SPEECH] = Handle(Slot.SPEECH, event.sources, event.proactive, event.ref, now + NexusLimits.SPEECH_MAX_MS, emptySet())
+                handles[Slot.SPEECH] = Handle(Slot.SPEECH, event.sources, event.pauseGated(), event.ref, now + NexusLimits.SPEECH_MAX_MS, emptySet())
                 spoken = true
                 log("nexus shown slot=SPEECH")
             } else {
@@ -127,19 +145,22 @@ class NexusHudSink internal constructor(
     private fun safeConfig(): NexusConfig = try { config() } catch (_: Exception) { NexusConfig() }
 
     /** The synchronous gates. A throw is a block. */
-    private fun syncBlock(proactive: Boolean): DropReason? {
+    private fun syncBlock(pauseGated: Boolean): DropReason? {
         if (!safeConfig().enabled) return DropReason.MODE_OFF
         return try {
             when {
                 !gates.worn() -> DropReason.NOT_WORN
                 gates.zoneFenceBlocked() || gates.askFenceBlocked() -> DropReason.ZONE_HELD
-                proactive && gates.paused() -> DropReason.PAUSED
+                pauseGated && gates.paused() -> DropReason.PAUSED
                 else -> null
             }
         } catch (_: Exception) {
             DropReason.GATE_ERROR
         }
     }
+
+    /** Pause gates every item that carries content: proactive items AND answers (an AskAnswer, and the speech built from it). Only the content-free state items (capture pin, ask notice, mark token) show while paused. */
+    private fun HudEvent.pauseGated() = proactive || this is HudEvent.AskAnswer
 
     private fun HudEvent.requiresSources() = this is HudEvent.Nudge || this is HudEvent.PlaceCard
 
@@ -183,7 +204,9 @@ class NexusHudSink internal constructor(
             epoch++
             lastTrip = reason
             cancelled = cancelAskLocked()
+            val hadListen = Slot.LISTEN in handles
             val left = withdrawAllLocked()
+            if (!hadListen) transport.stopListening()     // a session may be opening (authorized, no handle yet): it must not outlive the trip
             log("nexus trip reason=${reason.name} left=${left}")
             if (reason == TripReason.FORGET || reason == TripReason.DELETE_ALL || reason == TripReason.MODE_OFF) {
                 forgetOwed = true
@@ -248,13 +271,13 @@ class NexusHudSink internal constructor(
             val a = ask
             if (a == null) null
             else {
-                val block = syncBlock(false)
+                val block = syncBlock(true)
                 if (block != null || now >= a.expiresAt) { cancelAskLocked(); a.id to (block?.let(::refusalFor) ?: AskRefusal.CANCELLED) } else null
             }
         }
         askGone?.let { notifyRefused(it.first, it.second) }
         for (h in snapshot) {
-            val block = syncBlock(h.proactive)
+            val block = syncBlock(h.pauseGated)
             val live = block != null || if (h.sources.isEmpty()) true else try { gates.sourcesLive(h.sources) } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
             if (block != null || !live) synchronized(lock) { if (handles[h.slot] === h) withdrawLocked(h.slot) }
         }
@@ -270,7 +293,7 @@ class NexusHudSink internal constructor(
             transport.stopSpeech()
             transport.stopListening()
             transport.setFeatures(safeConfig().featureMask())
-            transport.setSkillHost(skills != null)
+            transport.setSkillHost(skills != null || asks != null)     // the host also answers `authorizeListen` for the assist ask
             if (forgetOwed) sendForgetLocked()
         }
     }
@@ -299,7 +322,7 @@ class NexusHudSink internal constructor(
                 val h = handles[s] ?: return
                 if (h.withdrawing || actionId !in h.actionIds || !h.used.add(actionId)) return
                 // Mark and More act on PCA data: they need the gates to still be open. Dismiss never does.
-                if (actionId != HudMapper.DISMISS && syncBlock(h.proactive) != null) { withdrawLocked(s); return }
+                if (actionId != HudMapper.DISMISS && syncBlock(h.pauseGated) != null) { withdrawLocked(s); return }
                 withdrawLocked(s)
                 if (actionId == HudMapper.MARK || actionId == HudMapper.MORE) ref = h.ref
             }
@@ -311,8 +334,25 @@ class NexusHudSink internal constructor(
             }
         }
 
+        /**
+         * The bridge asks BEFORE it opens a Nexus speech session (the microphone is Nexus's): only while the ask switches are on and every gate (mode, worn, zone fences, pause) is open, read last under the
+         * fences. Anything else, a throw included, is a no. Synchronous, on the binder thread of the bridge's worker.
+         */
+        override fun authorizeListen(): Boolean {
+            val pass = try { gates.pass() } catch (_: Exception) { log("nexus listen refused"); return false }
+            val ok = synchronized(lock) {
+                if (!safeConfig().askEnabled()) null
+                else try { pass.act { syncBlock(true) == null } } catch (_: Exception) { null }
+            }
+            if (ok == true) log("nexus listen authorized") else log("nexus listen refused")
+            return ok == true
+        }
+
         override fun onSpeechDone() { synchronized(lock) { handles.remove(Slot.SPEECH) } }
-        override fun onForgetAccepted() { synchronized(lock) { forgetOwed = false } }
+        override fun onForgetAccepted() {
+            synchronized(lock) { forgetOwed = false }
+            try { onForgetAcked() } catch (_: Exception) { log("nexus wipe ack failed") }
+        }
 
         // ---- T5: the assist-button ask --------------------------------------------------------------
 
@@ -328,7 +368,7 @@ class NexusHudSink internal constructor(
             var superseded: String? = null
             synchronized(lock) {
                 val id = "ask-${++askCounter}"
-                val block = if (safeConfig().askEnabled()) syncBlock(false) else DropReason.MODE_OFF
+                val block = if (safeConfig().askEnabled()) syncBlock(true) else DropReason.MODE_OFF
                 if (block != null) {
                     transport.stopListening()
                     refusal = id to refusalFor(block)
@@ -352,7 +392,7 @@ class NexusHudSink internal constructor(
                 if (a == null || a.transcribed) { log("nexus ask ignored reason=NO_ASK"); return }
                 handles.remove(Slot.LISTEN)
                 if (!safeConfig().askEnabled()) { cancelAskLocked(); refusal = a.id to AskRefusal.DISABLED; return@synchronized }
-                val block = syncBlock(false)
+                val block = syncBlock(true)
                 if (block != null) { cancelAskLocked(); refusal = a.id to refusalFor(block); return@synchronized }
                 if (text.isBlank()) { ask = null; notice = HudEvent.AskNotice.Kind.NO_SPEECH; return@synchronized }
                 a.transcribed = true
@@ -442,9 +482,10 @@ class NexusHudSink internal constructor(
         fun connect(
             binder: IBinder, gates: NexusGates, config: () -> NexusConfig, actions: NexusActionHandler, log: (String) -> Unit = {},
             asks: NexusAskHandler? = null, skills: NexusSkillProvider? = null,
+            wipeOwed: Boolean = false, onForgetAcked: () -> Unit = {},
         ): NexusHudSink {
             val t = AidlNexusTransport.from(binder)
-            val sink = NexusHudSink(t, gates, config, actions, log = log, asks = asks, skills = skills)
+            val sink = NexusHudSink(t, gates, config, actions, log = log, asks = asks, skills = skills, wipeOwedAtStart = wipeOwed, onForgetAcked = onForgetAcked)
             t.setEvents(sink.events)
             sink.onBridgeConnected()
             return sink

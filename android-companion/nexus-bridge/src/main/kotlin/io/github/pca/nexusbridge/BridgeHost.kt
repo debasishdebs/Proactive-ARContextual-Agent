@@ -6,6 +6,8 @@ import android.util.Log
 object BridgeHost {
     @Volatile var bus: NexusBusClient? = null
     @Volatile var skillHost: SkillHostClient? = null
-    val renderer = BridgeRenderer(bus = { bus }, log = { Log.i("PCABRIDGE", it) })
+    /** The phone's answer to "may a speech session open now?" (set with the skill host; null = no). */
+    @Volatile var listenAuth: (() -> Boolean)? = null
+    val renderer = BridgeRenderer(bus = { bus }, log = { Log.i("PCABRIDGE", it) }, authorizeListen = { listenAuth?.invoke() ?: false })
     val skills = SkillRouter(host = { skillHost }, features = { renderer.currentFeatures }, log = { Log.i("PCABRIDGE", it) })
 }
