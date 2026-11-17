@@ -1,0 +1,9 @@
+- **P1 — Forgotten text can survive in answers and exports.** [AskSourceStates.kt:60](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/memory/src/main/java/com/rokid/context/memory/forget/AskSourceStates.kt:60) ignores uncited prompt dependencies. An answer can repeat a forgotten input while citing another source and remain unchanged. Migrated v16 answers also lose protection for nudge-history dependencies stored only in `dependsOn`. Preserve conservative dependencies; local ruling F4 explicitly rejects citation-only narrowing.
+
+- **P1 — N1 deletion can leave forgotten text on the HUD.** [Families.kt:232](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/memory/src/main/java/com/rokid/context/memory/forget/lifecycle/Families.kt:232) deletes the newest nudge. If an older, surviving glance/phone nudge becomes the newest row, [PhoneNudges.kt:68](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/nudge/PhoneNudges.kt:68) retains the deleted nudge’s active toast until its eight-second timer expires. Clear the overlay when its owning row disappears.
+
+Migration inspection found an additive nullable column, both builders registered, and matching schema export. SQLCipher upgrade/reopen and backup recovery remain unverified; Gradle/device tests could not run in this read-only sandbox. Direct rollback to a v16 binary has no downgrade migration.
+
+No automatic re-answer entry point found; Ask again uses the normal leased, provenance-checked Ask path.
+
+NOT READY

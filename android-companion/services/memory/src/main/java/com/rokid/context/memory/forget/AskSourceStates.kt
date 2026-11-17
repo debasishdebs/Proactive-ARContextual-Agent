@@ -9,10 +9,10 @@ import org.json.JSONObject
  *
  *     {"v":1,"state":"LIVE","cited":["rokid_mem_1","frame:f1"],"history":["nudge:n7"]}
  *
- * - [cited] are the sources the answer named (design A1: only these are its dependencies with `forgetV2` on); every other input it merely retrieved is NOT a dependency then.
+ * - [cited] are the sources the answer named. With `forgetV2` on EVERY supplied input is still a dependency (ruling F4): `sourcesJson` also lists the uncited ones (`dependsOn`).
  * - [history] are the earlier answers (`ask:<id>`) and nudges (`nudge:<id>`) whose text was in its prompt (design A2: the item itself is the dependency, so forgetting it reaches this answer).
  * - [state] is LIVE, [SOURCE_FORGOTTEN] (a Forget removed a source: the answer text is erased, the question kept, the row offers "Ask again") or [REASKED] (the user asked again; [reaskedAs] is the new row).
- * A null or unreadable value means "written before v17": the legacy matching applies (the cited array of `sourcesJson`).
+ * A null or unreadable value means "written before v17": the stored `sourcesJson` ids (cited and `dependsOn`) are the dependencies.
  */
 object AskSourceStates {
     const val VERSION = 1
@@ -52,17 +52,14 @@ object AskSourceStates {
     fun isReasked(ask: AskEntity): Boolean = ask.redacted && parse(ask.sourceStates)?.state == REASKED
 
     /**
-     * What forgetting makes this answer rebuilt, with `forgetV2` on (design A1 and A2): its cited ids and its history items. A row with no states (written before v17) uses the CITED array of its
-     * `sourcesJson`, never its `dependsOn` (which holds every retrieved input). A developer eval ask keeps the v1 rule (all ids).
+     * What forgetting makes this answer rebuilt, with `forgetV2` on (design A1 and A2; proxy ruling F4, Codex M5 r1 P1): CONSERVATIVE, ALL supplied context. The ids stored in `sourcesJson` (the cited array AND the
+     * trailing `dependsOn` object: every retrieved input, nudge history included, so a migrated v16 answer keeps its protection), plus the state's cited ids and history items. Never narrowed to the citations:
+     * an uncited input can still have shaped the text.
      */
     fun dependenciesV2(ask: AskEntity): Set<String> {
-        if (ask.source == EVAL_SOURCE) return ForgetService.parseIds(ask.sourcesJson)
-        val s = parse(ask.sourceStates) ?: return citedArray(ask.sourcesJson)
-        return (s.cited + s.history).toSet()
+        val stored = ForgetService.parseIds(ask.sourcesJson)
+        if (ask.source == EVAL_SOURCE) return stored
+        val s = parse(ask.sourceStates) ?: return stored
+        return stored + s.cited + s.history
     }
-
-    private fun citedArray(sourcesJson: String): Set<String> = runCatching {
-        val a = JSONArray(sourcesJson)
-        (0 until a.length()).mapNotNull { (a.opt(it) as? String)?.trim()?.takeIf { s -> s.isNotEmpty() } }.toSet()
-    }.getOrDefault(emptySet())
 }
