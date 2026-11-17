@@ -7,12 +7,20 @@ import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.ReentrantReadWriteLock
 
 /**
- * The ONE place binder calls leave the sink from (Codex v2 r2 P1-1): privacy shutdown must never depend on a remote call returning. The sink admits under its lock and the fences' locks (cheap, atomic) and only ENQUEUES here;
- * a single worker thread takes the items in order and makes each transport call OUTSIDE every lock, on a pool thread, waiting at most [callTimeoutMs] (a hung bridge costs one pool thread, never a lock). A timeout or an
- * exception marks the bridge unhealthy: the sink trips, drops what is pending and owes a wipe; until the backoff ([backoffBaseMs] doubling up to [backoffMaxMs]) is over no further call is made, then one call probes.
- * [inline] (tests only) runs every item at once on the caller's thread and every call without a timeout. Never holds its own lock while running an item or a discard callback.
+ * The ONE place binder calls leave the sink from (Codex v2 r2 P1-1, r3 P1-1/P1-4): privacy shutdown must never depend on a remote call returning. The sink admits under its lock and the fences' locks (cheap, atomic) and only
+ * ENQUEUES here; a single worker thread takes the items in order and makes each transport call OUTSIDE every lock, on a pool thread, waiting at most [callTimeoutMs] (a hung bridge costs one pool thread, never a lock). A
+ * timeout or an exception marks the bridge unhealthy: the sink trips, drops what is pending and owes a wipe; until the backoff ([backoffBaseMs] doubling up to [backoffMaxMs]) is over no further call is made, then one call probes.
+ *
+ * Two lanes (r3 P1-4): CONTENT (guarded shows, capacity [maxQueue], a full lane REJECTS the new show) and PRIVACY (hides, stops, wipes, features, capacity [maxPrivacy], never touched by content and served first). A privacy
+ * submit that is still rejected is the caller's to run through [runFresh].
+ *
+ * The delivery lease (r3 P1-1): a content send holds the SHARED lease for the duration of its (timeout-bounded) binder call; a trip takes it EXCLUSIVE with a bounded wait ([exclusiveWaitMs]) so no send is in flight while the
+ * bridge learns the new epoch, and proceeds anyway when the wait times out (a hung send never blocks a trip). [tripCall] delivers the epoch on its own threads, never behind the content queue.
+ * [inline] (tests only) runs every item at once on the caller's thread, every call without a timeout and has no lease. Never holds its own lock while running an item or a discard callback.
  */
 internal class NexusDispatcher private constructor(
     private val inline: Boolean,
@@ -20,41 +28,44 @@ internal class NexusDispatcher private constructor(
     private val maxQueue: Int,
     private val backoffBaseMs: Long,
     private val backoffMaxMs: Long,
+    private val maxPrivacy: Int,
+    val exclusiveWaitMs: Long,
+    val tripTimeoutMs: Long,
+    val sharedWaitMs: Long,
 ) {
-    /** [guarded]: a show that a trip discards unsent. [run] executes it; [discard] completes it without running (given why). */
-    class Item(val guarded: Boolean, val run: () -> Unit, val discard: (DropReason) -> Unit = {})
+    /** [guarded] (content lane): a show that a trip discards unsent. [run] executes it; [discard] completes it without running (given why). [tag] identifies what a show was for (its handle), so a withdrawal can cancel it. */
+    class Item(val guarded: Boolean, val run: () -> Unit, val discard: (DropReason) -> Unit = {}, val tag: Any? = null)
 
     private val qLock = Object()
-    private val queue = ArrayDeque<Item>()
+    private val content = ArrayDeque<Item>()
+    private val privacy = ArrayDeque<Item>()
     private var worker: Thread? = null
     private var closed = false
     private val pool: ThreadPoolExecutor? = if (inline) null else ThreadPoolExecutor(0, MAX_STUCK, 3, TimeUnit.SECONDS, SynchronousQueue()) { r ->
         Thread(r, "pca-nexus-call").also { it.isDaemon = true }
     }
+    /** The trip epoch notice's own threads: never shared with content or privacy calls. */
+    private val tripPool: ThreadPoolExecutor? = if (inline) null else ThreadPoolExecutor(0, 2, 3, TimeUnit.SECONDS, SynchronousQueue()) { r ->
+        Thread(r, "pca-nexus-trip").also { it.isDaemon = true; it.priority = Thread.MAX_PRIORITY }
+    }
+    private val lease = ReentrantReadWriteLock(true)
+    private val fresh = AtomicInteger(0)
 
     @Volatile private var down = false
     @Volatile private var retryAtNanos = 0L
     private var failures = 0
 
-    /** Queues [item] (when [urgent] ahead of every guarded item, in order among the unguarded ones); false = the queue is full of unguarded items (a guarded one is evicted first). Never runs [item] under a lock of its own, never blocks. */
-    fun submit(item: Item, urgent: Boolean = false): Boolean {
+    /** Queues [item] on its lane. False = that lane is full (or the dispatcher is closed). Never runs [item] under a lock of its own, never blocks. */
+    fun submit(item: Item): Boolean {
         if (inline) { runItem(item); return true }
-        val evicted = ArrayList<Item>()
         var ok = true
         synchronized(qLock) {
-            if (closed) { ok = false; return@synchronized }
-            while (queue.size >= maxQueue) {
-                val g = queue.indexOfFirst { it.guarded }
-                if (g < 0) { ok = false; break }
-                evicted += queue.removeAt(g)
-            }
-            if (ok) {
-                if (urgent) { val i = queue.indexOfFirst { it.guarded }; if (i < 0) queue.addLast(item) else queue.add(i, item) } else queue.addLast(item)
-                if (worker == null) worker = Thread(::loop, "pca-nexus-dispatch").also { it.isDaemon = true; it.start() }
-                qLock.notifyAll()
-            }
+            val q = if (item.guarded) content else privacy
+            if (closed || q.size >= (if (item.guarded) maxQueue else maxPrivacy)) { ok = false; return@synchronized }
+            q.addLast(item)
+            if (worker == null) worker = Thread(::loop, "pca-nexus-dispatch").also { it.isDaemon = true; it.start() }
+            qLock.notifyAll()
         }
-        evicted.forEach { runDiscard(it, DropReason.TRANSPORT) }
         return ok
     }
 
@@ -62,20 +73,31 @@ internal class NexusDispatcher private constructor(
     fun takeGuarded(): List<Item> {
         if (inline) return emptyList()
         synchronized(qLock) {
-            val out = queue.filter { it.guarded }
-            queue.removeAll { it.guarded }
+            val out = content.toList()
+            content.clear()
             return out
         }
     }
 
-    fun pending(): Int = synchronized(qLock) { queue.size }
+    /** Removes the pending guarded items made for [tag] (a withdrawn handle) and returns them for the caller to discard. */
+    fun takeTagged(tag: Any): List<Item> {
+        if (inline) return emptyList()
+        synchronized(qLock) {
+            val out = content.filter { it.tag === tag }
+            content.removeAll { it.tag === tag }
+            return out
+        }
+    }
+
+    fun pending(): Int = synchronized(qLock) { content.size + privacy.size }
+    fun pendingContent(): Int = synchronized(qLock) { content.size }
 
     private fun loop() {
         while (true) {
             val item = synchronized(qLock) {
-                while (queue.isEmpty() && !closed) qLock.wait()
+                while (content.isEmpty() && privacy.isEmpty() && !closed) qLock.wait()
                 if (closed) return
-                queue.removeFirst()
+                if (privacy.isNotEmpty()) privacy.removeFirst() else content.removeFirst()
             }
             runItem(item)
         }
@@ -99,11 +121,53 @@ internal class NexusDispatcher private constructor(
         }
     }
 
-    /** Best effort on its own pool thread, never queued behind the worker (the trip epoch notice must overtake a slow call). Silently dropped when every pool thread is stuck. */
+    /** Best effort on its own pool thread, never queued behind the worker. Silently dropped when every pool thread is stuck. */
     fun async(block: () -> Unit) {
         if (pool == null) { try { block() } catch (_: Throwable) { }; return }
         try { pool.execute { try { block() } catch (_: Throwable) { } } } catch (_: RejectedExecutionException) { }
     }
+
+    /** The privacy fallback when a lane rejected an operation that must not be lost: [block] runs on a fresh daemon thread (at most [MAX_FRESH] at once; beyond that the next tick retries). */
+    fun runFresh(block: () -> Unit) {
+        if (inline) { try { block() } catch (_: Throwable) { }; return }
+        if (fresh.incrementAndGet() > MAX_FRESH) { fresh.decrementAndGet(); return }
+        try {
+            Thread({ try { block() } catch (_: Throwable) { } finally { fresh.decrementAndGet() } }, "pca-nexus-fresh").also { it.isDaemon = true }.start()
+        } catch (_: Throwable) { fresh.decrementAndGet() }
+    }
+
+    /** The trip epoch notice: its own threads, at most [tripTimeoutMs]. Returns the transport code, or null when it timed out, threw or no thread was free. */
+    fun tripCall(block: () -> Int): Int? {
+        if (tripPool == null) return try { block() } catch (_: Throwable) { null }
+        val f = try { tripPool.submit(Callable { block() }) } catch (_: RejectedExecutionException) { return null }
+        return try {
+            f.get(tripTimeoutMs, TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            f.cancel(true); null
+        } catch (_: ExecutionException) {
+            null
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt(); null
+        }
+    }
+
+    // ---- the delivery lease ----
+
+    /** A content send is about to make its binder call. False = a trip is closing the lease (or the wait ran out): the send is dropped. */
+    fun acquireShared(): Boolean {
+        if (inline) return true
+        return try { lease.readLock().tryLock(sharedWaitMs, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
+    }
+
+    fun releaseShared() { if (!inline) try { lease.readLock().unlock() } catch (_: IllegalMonitorStateException) { } }
+
+    /** A trip: waits at most [exclusiveWaitMs] for the sends in flight. True = held (no send is in flight); false = the wait ran out and the trip goes on without it. */
+    fun tryExclusive(): Boolean {
+        if (inline) return false
+        return try { lease.writeLock().tryLock(exclusiveWaitMs, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); false }
+    }
+
+    fun releaseExclusive() { if (!inline) try { lease.writeLock().unlock() } catch (_: IllegalMonitorStateException) { } }
 
     /** True when calls may be made: the bridge is healthy, or the backoff is over (the next call is the probe). */
     fun healthy(): Boolean = !down || System.nanoTime() - retryAtNanos >= 0
@@ -127,16 +191,23 @@ internal class NexusDispatcher private constructor(
     fun close(): List<Item> {
         if (inline) return emptyList()
         val rest: List<Item>
-        synchronized(qLock) { closed = true; rest = queue.toList(); queue.clear(); qLock.notifyAll() }
-        pool?.shutdown()
+        synchronized(qLock) { closed = true; rest = content.toList() + privacy.toList(); content.clear(); privacy.clear(); qLock.notifyAll() }
+        pool?.shutdown(); tripPool?.shutdown()
         return rest
     }
 
     companion object {
         private const val MAX_STUCK = 4
-        fun direct() = NexusDispatcher(true, 0, Int.MAX_VALUE, 0, 0)
-        fun threaded(callTimeoutMs: Long = 2_000, maxQueue: Int = 32, backoffBaseMs: Long = 1_000, backoffMaxMs: Long = 30_000) =
-            NexusDispatcher(false, callTimeoutMs, maxQueue, backoffBaseMs, backoffMaxMs)
+        private const val MAX_FRESH = 4
+        /** The bound a trip waits for sends in flight, and the bound of the epoch notice: a trip returns within the sum (750 ms) whatever the bridge does. */
+        const val EXCLUSIVE_WAIT_MS = 250L
+        const val TRIP_CALL_MS = 500L
+        const val SHARED_WAIT_MS = 1_000L
+        fun direct() = NexusDispatcher(true, 0, Int.MAX_VALUE, 0, 0, Int.MAX_VALUE, 0, 0, 0)
+        fun threaded(
+            callTimeoutMs: Long = 2_000, maxQueue: Int = 32, backoffBaseMs: Long = 1_000, backoffMaxMs: Long = 30_000,
+            maxPrivacy: Int = 64, exclusiveWaitMs: Long = EXCLUSIVE_WAIT_MS, tripTimeoutMs: Long = TRIP_CALL_MS, sharedWaitMs: Long = SHARED_WAIT_MS,
+        ) = NexusDispatcher(false, callTimeoutMs, maxQueue, backoffBaseMs, backoffMaxMs, maxPrivacy, exclusiveWaitMs, tripTimeoutMs, sharedWaitMs)
     }
 }
 

@@ -134,3 +134,51 @@ class TripRaceBridgeTest {
         assertEquals(listOf(7L), got)
     }
 }
+
+/** Codex v2 r3 P1-1 / P1-3 / P1-4, bridge side. */
+class TripEpochBridgeTest {
+    private class CountBus : NexusBusClient {
+        @Volatile var drawn = 0
+        @Volatile var listening = false
+        override fun showNotice(title: String, body: String, ttlMs: Long, wake: Boolean, actions: List<NexusAction>): Int { drawn++; return NexusResult.OK }
+        override fun hideNotice() = NexusResult.OK
+        override fun showPin(title: String, lines: List<String>, ttlMs: Long) = NexusResult.OK
+        override fun hidePin() = NexusResult.OK
+        override fun speak(text: String): Int { drawn++; return NexusResult.OK }
+        override fun stopSpeech() = NexusResult.OK
+        override fun forgetNotices(onAccepted: () -> Unit) = NexusResult.OK
+        override fun startListening(cb: ListenCallbacks): Int { listening = true; return NexusResult.OK }
+        override fun stopListening(): Int { listening = false; return NexusResult.OK }
+    }
+
+    private val ev = object : BridgeEvents {
+        override fun onAction(slot: Int, actionId: String) = Unit
+        override fun onSpeechDone() = Unit
+        override fun onForgetAccepted() = Unit
+    }
+
+    @Test fun aShowStampedWithAnOlderEpochIsRefusedBeforeAnythingIsRenderedOrSent() {
+        val bus = CountBus(); val r = BridgeRenderer({ bus }, {}, { false }).also { it.events = ev; it.setFeatures(NexusFeatures.TTS) }
+        assertEquals(NexusResult.OK, r.tripAt(5))
+        assertEquals(NexusResult.STALE, r.showAt(4, Slot.NOTICE.code, "T", "body", 8_000, false, emptyList(), emptyList()))
+        assertEquals(NexusResult.STALE, r.speakAt(4, "hello"))
+        assertEquals(0, bus.drawn, "nothing reached Nexus")
+        assertEquals(NexusResult.OK, r.showAt(5, Slot.NOTICE.code, "T", "body", 8_000, false, emptyList(), emptyList()))
+        assertEquals(1, bus.drawn)
+    }
+
+    @Test fun tripAtInvalidatesTheListeningGenerationSoASessionBeingOpenedNeverOpens() {
+        val bus = CountBus(); lateinit var r: BridgeRenderer
+        r = BridgeRenderer({ bus }, {}, { r.tripAt(9); true }).also { it.events = ev; it.setFeatures(NexusFeatures.STT or NexusFeatures.ASSIST) }
+        r.assistOpened()
+        assertFalse(bus.listening, "the trip landed during authorization: no session opens")
+    }
+
+    @Test fun tripAtStopsASessionThatIsOpen() {
+        val bus = CountBus(); val r = BridgeRenderer({ bus }, {}, { true }).also { it.events = ev; it.setFeatures(NexusFeatures.STT or NexusFeatures.ASSIST) }
+        r.assistOpened()
+        assertTrue(bus.listening)
+        r.tripAt(3)
+        assertFalse(bus.listening)
+    }
+}
