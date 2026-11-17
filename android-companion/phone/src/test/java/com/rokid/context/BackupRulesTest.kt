@@ -122,6 +122,8 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS,
         // Pause zones: user configuration (ids, names, boxes, buffers; no DB ids), restored and exported. The per-install record counter is harmless after a restore.
         com.rokid.context.phone.zone.ZoneStore.PREFS,
+        // User-pinned places (Place Guide v2): user configuration like the zones, restored and exported. places.db (their copy for the matcher) is excluded and rebuilt from this list at start.
+        com.rokid.context.memory.place.UserPinStore.PREFS,
     )
 
     /**
@@ -309,6 +311,10 @@ class BackupRulesTest {
             val ex = excludes(section)
             for (f in listOf("places.db", "places.db-wal", "places.db-shm", "places.db-journal")) assertTrue("${section.tagName}: $f", "database:$f" in ex)
         }
-        assertTrue(com.rokid.context.orchestration.ConfigExport.PREFS_FILES.none { it.contains("place", ignoreCase = true) })
+        // The only place-named prefs file in the export is the user's pins (user configuration); the pack, its switch and its budget are never exported.
+        assertEquals(listOf("place_pins"), com.rokid.context.orchestration.ConfigExport.PREFS_FILES.filter { it.contains("place", ignoreCase = true) })
+        assertEquals("place_pins", com.rokid.context.memory.place.UserPinStore.PREFS)
+        assertTrue("the pins are restorable", "place_pins" in restorable)
+        for (section in allSections()) assertTrue("${section.tagName}: place_pins.xml is NOT excluded", "sharedpref:place_pins.xml" !in excludes(section))
     }
 }
