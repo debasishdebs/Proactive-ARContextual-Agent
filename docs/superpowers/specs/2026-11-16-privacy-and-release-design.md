@@ -209,3 +209,18 @@ apksigner sign --ks ~/.android/debug.keystore --next-signer --ks ~/<signing dir>
 - Both builds are signed with the release key: the public one non-debuggable, a debuggable variant for the user's own devices so `run-as` backups keep working. A fresh start (needs an import for the export, which does not exist) is only considered at v2/v3 if the user wants it.
 - Signed release APKs may be published on GitHub; debug-signed ones never. Rokid-Coder's pattern: PKCS12 release key in GitHub Actions secrets, signer SHA-256 pinned in the build, CI draft release, manual publish.
 
+
+## Ratchet notes (ProvenanceChokePointTest, 2026-11-18)
+
+The ratchet went from 15 files / 28 raw reads to 6 files / 10. Migrated, behaviour unchanged (decisions and failure modes identical; `RatchetMigrationGoldenTest` holds the golden table):
+
+- Wipe-generation compares now call `ProvenanceGate.isWiped(generation)` (no database in hand) or `gate.wiped(generation)`: OrchestrationScheduler, QueueRuntimeStore, ResummarizeWorker (x2), LiveExtract (x2 wipe parts), ExtractSave, ClusterSave (x2), CanvasBackendImpl (x2 wipe parts).
+- Tombstone reads now call `gate.goneFrames(ids, requirePresent = false)` (the same `forgetDao().tombstoned` query, chunked at 500): ExtractSave, QueueDrainWorker, ClusterSave.liveFrames, PipelineRecords.existing, IntentSamplers, PlaceSamplers. `goneFrames` does not catch, so a failing read still throws out of the caller's transaction exactly as before (fail closed by rollback / exception, never "live"). `gate.check()` was deliberately NOT used at these sites: it turns an exception into `UNCHECKABLE` (a refusal) where these sites propagated the exception, and ExtractSave maps a wipe and a tombstone to two different results.
+
+Kept, because the site's own rule differs from the gate's:
+
+- `CanvasDao.tombstonedAmong` (CanvasBackendImpl x2, AskDebug x2, CanvasRunner, LiveExtract): these are counts over the canvas DAO, a seam the canvas tests replace with fakes and that has no database handle; CanvasRunner also fences `labelsMissing` in the same condition. Same query as the gate's, different access path.
+- `ForgetFence.liveIds` / `allLive` in CanvasBackendImpl (retrieve debug, ask snapshot): the gate's `liveIds`/`allLive` swallow a database error into "nothing live"/"not live"; these sites let the exception propagate (the whole call fails, a different response than a redacted answer). Migrating would change the failure mode.
+- `MomentDao.tombstonedAmong` (DaoMomentSource, MomentBuilder): MOMENT tombstones (second-ids), not photo tombstones; the gate has no moment rule.
+
+Not done: making the raw helpers uncallable for new code (`internal` does not cross the memory/orchestration module boundary, an opt-in annotation would need an `@OptIn` at every test and DAO caller). The ChokePointTest ratchet remains the guard.
