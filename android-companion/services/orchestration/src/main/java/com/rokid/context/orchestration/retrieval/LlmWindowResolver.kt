@@ -8,6 +8,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.util.Locale
+import java.util.Optional
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
@@ -15,7 +16,7 @@ import kotlinx.coroutines.withTimeout
  * Retrieval-quality spec section 3, the LLM fallback: asked ONLY when the rules found no window but the question still holds a time cue ("on Diwali", "while the guest
  * was over", "after breakfast"). The model sees the question text and today's date and nothing else, never a memory ([ask] is built that way by the caller, through the
  * normal text-call gates). Strict contract: any problem (an invalid reply, a bad range, a timeout, an exception) is NO window, never a guess. One call per (question,
- * local date): a valid answer (a window or none) and a contract failure are cached; a timeout or a transport error is not, so the next ask may try again.
+ * local date): the model's interpretation (or its contract failure) is cached, the window bounds are recomputed on every call; a timeout or a transport error is not, so the next ask may try again.
  *
  * [ask]: the single model call (null = the reply broke its contract; may throw). [anchor]: for `kind=event`, the capture time span of the memories matching the event words,
  * as one episode `(start, end)` (null = none found); it reads times only and gives the model nothing.
@@ -25,8 +26,8 @@ class LlmWindowResolver(
     private val anchor: suspend (event: String, nowMs: Long) -> Pair<Long, Long>? = { _, _ -> null },
     private val timeoutMs: Long = TIMEOUT_MS,
 ) : WindowResolver {
-    private val cache = object : LinkedHashMap<String, TimeWindow?>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, TimeWindow?>?) = size > CACHE_SIZE
+    private val cache = object : LinkedHashMap<String, TimeAnchorOutput?>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, TimeAnchorOutput?>?) = size > CACHE_SIZE
     }
 
     /** How many model calls this resolver has made (tests, and the "one cheap call" budget check). */
@@ -36,7 +37,9 @@ class LlmWindowResolver(
     override suspend fun resolve(question: String, nowMs: Long, zone: ZoneId): TimeWindow? {
         if (!hasCue(question)) return null
         val key = question.trim().lowercase(Locale.ROOT) + "|" + Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
-        synchronized(cache) { if (cache.containsKey(key)) return cache[key] }
+        // The cache holds the model's INTERPRETATION (kind, dates, event words); the bounds (clip to now) and the event anchor are recomputed on every call, so a window never freezes.
+        val cached = synchronized(cache) { if (cache.containsKey(key)) Optional.ofNullable(cache[key]) else null }
+        if (cached != null) return cached.orElse(null)?.let { toWindow(it, question, nowMs, zone) }
         calls++
         val out = try {
             withTimeout(timeoutMs) { ask(question, nowMs, zone) }
@@ -47,9 +50,8 @@ class LlmWindowResolver(
         } catch (_: Exception) {
             return null
         }
-        val w = out?.let { toWindow(it, question, nowMs, zone) }
-        synchronized(cache) { cache[key] = w }
-        return w
+        synchronized(cache) { cache[key] = out }
+        return out?.let { toWindow(it, question, nowMs, zone) }
     }
 
     private suspend fun toWindow(o: TimeAnchorOutput, question: String, nowMs: Long, zone: ZoneId): TimeWindow? = when (o.kind) {

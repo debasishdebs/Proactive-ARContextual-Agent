@@ -60,13 +60,15 @@ object OrderRules {
         }
     }
 
-    private val DEVICES = Regex("\\b(stove|oven|burner|hob|gas|kettle|iron|heater|geyser|fan|ac|tap|door|window|gate|lock|lights?|lamp|switch|plug|appliance|cooker|induction)\\b")
-    private val STATES = Regex("\\b(on|off|open|opened|closed?|locked|unlocked|lit|left|leave|turn(ed)?|switch(ed)?|shut|forget|forgot)\\b")
+    private val DEVICES = Regex("\\b(stove|oven|burner|hob|gas|kettle|iron|heater|geyser|fan|ac|tap|door|window|gate|lock|lights?|lamp|switch|plug|appliance|cooker|induction|chulha)\\b")
+    // A predicate about a device's state. "on" counts only when it ends the clause or is followed by "or off" / a conjunction, never as a preposition ("the sign on the door").
+    private val PREDICATE = Regex("\\b(off|open(?:ed)?|closed?|shut|locked|unlocked|lit|plugged in|unplugged|(?:turn(?:ed)?|switch(?:ed)?|put|left|leave|keep|kept)\\s+(?:\\w+\\s+){0,3}?on)\\b|\\bon(?=\\s*(?:[?.!,]|$|or\\b|and\\b|still\\b|now\\b|right\\b|when\\b))")
+    private val ASKS_STATE = Regex("^(?:did|do|does|is|are|was|were|has|have|had|am|should|can|could|will|what(?:'s| is| was)? (?:the )?(?:state|status)|which|how)\\b|\\b(?:state|status|forgot|forget)\\b")
 
-    /** The default Ask plan (no `rag.order` node): a state / safety question ("did I turn off the stove", "are the lights on", "is the door closed"): the [STATE_WORDS] phrases, or a device word together with a state word. */
+    /** The default Ask plan (no `rag.order` node): a state / safety question ("did I turn off the stove", "are the lights on", "is the door closed"): the [STATE_WORDS] phrases, or a device noun together with a state predicate in a question about the current or last state ("What did the sign on the door say?" is not one). */
     fun isStateQuestion(question: String, phrases: List<String> = com.rokid.context.ai.canvas.OrderParams.STATE_WORDS.split(',').map { it.trim() }): Boolean {
-        val q = question.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ")
-        return matches(q, phrases) || (DEVICES.containsMatchIn(q) && STATES.containsMatchIn(q))
+        val q = question.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ").trim()
+        return matches(q, phrases) || (DEVICES.containsMatchIn(q) && PREDICATE.containsMatchIn(q) && ASKS_STATE.containsMatchIn(q))
     }
 
     private fun multiDay(w: TimeWindow?) = w != null && !w.nightly && w.toMs - w.fromMs >= MULTI_DAY_MS
@@ -107,7 +109,7 @@ object OrderRules {
     private fun topK(d: Decision, relevant: List<Cand>, topK: Int): Picked? = when (d.order) {
         "NEWEST" -> {
             val eps = episodes(relevant.sortedByDescending { it.at })
-            if (eps.size <= d.offset) null else {
+            if (eps.size <= d.offset) Picked(emptyList(), false, "there is no earlier occurrence than the latest one, so nothing is listed; do not offer the latest as the previous one") else {
                 val items = eps.drop(d.offset).take(3).flatten().take(NEWEST_LIMIT)
                 val skipped = if (d.offset > 0) "the latest occurrence was left out because the question asks for the one before it; " else ""
                 Picked(items, false, "${skipped}memories are listed newest first, so the first line is the latest relevant one")

@@ -215,8 +215,8 @@ class FlowViewTest {
         val byId = all.associateBy { it.id }
         assertEquals(10, byId.getValue("capture").aiSteps)
         assertEquals(listOf(Role.VISION_EXTRACT, Role.CRITIC, Role.SUMMARIZE, Role.EMBED, Role.EXPLICIT_REMEMBER), byId.getValue("capture").roles)
-        assertEquals(2, byId.getValue("ask").aiSteps)
-        assertEquals(listOf(Role.EMBED, Role.ANSWER), byId.getValue("ask").roles)
+        assertEquals(3, byId.getValue("ask").aiSteps) // Resolve time words (TIME_ANCHOR, answer role), Search memories, Answer
+        assertEquals(listOf(Role.ANSWER, Role.EMBED), byId.getValue("ask").roles) // node order: Resolve time words (answer role) comes first
         assertEquals(1, byId.getValue("nudge").aiSteps)
         assertEquals(listOf(Role.NUDGE), byId.getValue("nudge").roles)
     }
