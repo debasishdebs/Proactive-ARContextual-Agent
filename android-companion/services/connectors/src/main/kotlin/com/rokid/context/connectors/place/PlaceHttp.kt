@@ -95,7 +95,10 @@ class UrlConnectionPlaceHttp(
     }
 
     companion object {
-        /** Wikimedia asks for a name and a way to reach the operator; set a contact URL here before wider use. No personal data. */
-        const val DEFAULT_USER_AGENT = "ProactiveContextAgent/1.0 (personal non-commercial trip app; Android; place guide, 5 km cell lookups only)"
+        /**
+         * Wikimedia asks for an app name, a version and a way to reach the operator: the repository is the contact. No personal data (no email, no name). The URL is a placeholder until the
+         * repository is public: replace `https://github.com/` with the repository URL then.
+         */
+        const val DEFAULT_USER_AGENT = "ProactiveContextAgent/1.1 (https://github.com/; contact: see repository)"
     }
 }
