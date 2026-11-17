@@ -88,6 +88,7 @@ object Geo {
     /** A place is a candidate when the point is at most this far from its edge (spec §B4). */
     const val CANDIDATE_GAP_M = 300.0
     const val MAX_CANDIDATES = 8
+    private const val PIN_SLOTS = 3
     private const val M_PER_DEG_LAT = 111_320.0
 
     fun distanceM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
@@ -108,12 +109,20 @@ object Geo {
      * The places whose `distance - radiusM <= gapM` from the point, nearest edge first (ties by distance, then id), at most [limit]. People are never places in the pack
      * (their kind is not in [PlaceKinds.ALL]) and are refused here too.
      */
-    fun candidates(places: List<PlaceEntity>, lat: Double, lon: Double, gapM: Double = CANDIDATE_GAP_M, limit: Int = MAX_CANDIDATES): List<PlaceHit> =
-        places.asSequence().filter { it.kind in PlaceKinds.ALL }
+    fun candidates(places: List<PlaceEntity>, lat: Double, lon: Double, gapM: Double = CANDIDATE_GAP_M, limit: Int = MAX_CANDIDATES): List<PlaceHit> {
+        val sorted = places.asSequence().filter { it.kind in PlaceKinds.ALL }
             .map { PlaceHit(it, distanceM(lat, lon, it.lat, it.lon)) }
             .filter { it.gapM <= gapM }
             .sortedWith(compareBy<PlaceHit> { it.gapM }.thenBy { it.distanceM }.thenBy { it.place.id })
-            .take(limit).toList()
+            .toList()
+        val head = sorted.take(limit)
+        // The user pinned these on purpose: up to [PIN_SLOTS] of the nearest pins within reach keep a place in the list even when more than [limit] pack places are nearer.
+        val missing = sorted.drop(limit).filter { UserPlace.isUserId(it.place.id) }.take(PIN_SLOTS)
+        if (missing.isEmpty()) return head
+        val keep = head.toMutableList()
+        for (pin in missing) { val at = keep.indexOfLast { !UserPlace.isUserId(it.place.id) }; if (at >= 0) keep.removeAt(at) else break; keep += pin }
+        return keep.sortedWith(compareBy<PlaceHit> { it.gapM }.thenBy { it.distanceM }.thenBy { it.place.id })
+    }
 
     /** Site to sub-place expansion: the chosen places first, then the [children] whose parent was chosen (each once). */
     fun expandSubPlaces(chosen: List<PlaceEntity>, children: List<PlaceEntity>): List<PlaceEntity> {
