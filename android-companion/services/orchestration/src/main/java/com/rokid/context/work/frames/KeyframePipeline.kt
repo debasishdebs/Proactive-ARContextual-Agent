@@ -227,10 +227,9 @@ class KeyframePipeline(
 
     /**
      * Forget lifecycle F1 / F5 (`forgetV2`): a photo a Forget queued to be rebuilt ([com.rokid.context.memory.db.ForgetDao.SOLO_REBUILD]) is described ALONE, so no other photo's content shares its model call. When one is among the
-     * candidates it is the whole batch; otherwise the batch is unchanged. Flag OFF: no row carries the marker, so nothing changes.
+     * candidates it is the whole batch; otherwise the batch is unchanged. Flag OFF: a marker that a Forget wrote while the flag was ON (it is persisted) is IGNORED, so batching is exactly v1 again after ON to OFF.
      */
-    private fun soloFirst(rows: List<FrameStateEntity>): List<FrameStateEntity> =
-        rows.firstOrNull { it.lastError == com.rokid.context.memory.db.ForgetDao.SOLO_REBUILD }?.let { listOf(it) } ?: rows
+    private fun soloFirst(rows: List<FrameStateEntity>): List<FrameStateEntity> = soloBatch(rows, com.rokid.context.memory.forget.lifecycle.ForgetV2.on)
 
     /** Abandoned claims back to PENDING, then wake the loop. */
     suspend fun recover(): Int { ensureStartRelease(); val n = FrameRecovery.run(states, clock(), clusters, ::signal); sweepFinalClusters(clock()); return n }
@@ -632,6 +631,9 @@ class KeyframePipeline(
 
     companion object {
         private const val TAG = "KeyframePipeline"
+        /** [soloFirst] with the flag as a parameter (tests). */
+        internal fun soloBatch(rows: List<FrameStateEntity>, v2: Boolean): List<FrameStateEntity> =
+            if (!v2) rows else rows.firstOrNull { it.lastError == com.rokid.context.memory.db.ForgetDao.SOLO_REBUILD }?.let { listOf(it) } ?: rows
         /** Count-only audit log tag (ids, counts, class names; never captions, text or paths). */
         private const val PIPE_TAG = "PcPipeline"
         const val MAX_BATCH = 3

@@ -225,4 +225,33 @@ class ForgetStage2Test {
         val queued = db.frameStateDao().byIds(listOf("pY", "pB")).filter { it.lastError == ForgetDao.SOLO_REBUILD }.map { it.frameId }.toSet()
         assertEquals(plan.refs(Family.PHOTO, Fate.REBUILD), queued)
     }
+
+    // ---- r2 P1-2: the descendants of an erased caption keep no text -----------------------------------------------------------------------------------------------------------------------
+
+    private suspend fun seedDescendant() {
+        mixedWorld()
+        db.memoryDao().insert(com.rokid.context.memory.db.MemoryEntity("mSum", null, "zebracrossing summary", "summary", "zebracrossing tag", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 7, true, "zebracrossing summary zebracrossing tag"))
+        w.fx.derivedFrom("mSum", "mB")
+    }
+    private suspend fun ftsHits() = scalar("SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH 'zebracrossing'")
+
+    @Test fun r2DescendantsOfAnErasedCaptionKeepNoTextTagsSearchTextOrFtsTerms() = runBlocking {
+        ForgetV2.testOverride = true
+        seedDescendant(); assertEquals("indexed before", 1L, ftsHits())
+        w.service.forgetMoment("pX")
+        val m = db.forgetDao().memories(listOf("mSum")).single()
+        assertEquals(com.rokid.context.memory.db.ReviewState.INVALIDATED, m.reviewState)
+        assertEquals("", m.text); assertEquals("", m.tags); assertEquals("", m.searchText)
+        assertEquals("the forgotten term is not searchable", 0L, ftsHits())
+        assertEquals("the placeholder keeps what the re-summarise worker reads", 7L, m.createdAt); assertTrue(m.derived)
+        assertEquals("and has no vectors", 0L, scalar("SELECT COUNT(*) FROM memory_vector WHERE memoryId = 'mSum'"))
+    }
+
+    @Test fun r2FlagOffStillKeepsTheHiddenTextAsV1() = runBlocking {
+        ForgetV2.testOverride = false
+        seedDescendant()
+        w.service.forgetMoment("pX")
+        val m = db.forgetDao().memories(listOf("mSum")).single()
+        assertEquals(com.rokid.context.memory.db.ReviewState.INVALIDATED, m.reviewState); assertEquals("zebracrossing summary", m.text)
+    }
 }

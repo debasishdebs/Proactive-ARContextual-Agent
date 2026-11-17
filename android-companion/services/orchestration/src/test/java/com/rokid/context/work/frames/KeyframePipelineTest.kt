@@ -103,13 +103,27 @@ class KeyframePipelineTest {
 
     @Test fun aPhotoQueuedByAForgetIsDescribedAloneAndTheRestBatchAsBefore() = runBlocking {
         // Forget lifecycle F1 / F5 (forgetV2): the survivor of a mixed memory goes back to PENDING with the solo marker; no other photo shares its call
-        for (i in 1..5) seed("f$i", i * 1000L)
-        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'solo_rebuild' WHERE frameId = 'f4'")
-        val p = pipeline()
-        assertEquals(1, p.drainOnce())
-        assertEquals(listOf("f4"), calls.single().first)
-        assertEquals(3, p.drainOnce())
-        assertEquals(listOf("f5", "f3", "f2"), calls[1].first)
+        com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = true
+        try {
+            for (i in 1..5) seed("f$i", i * 1000L)
+            db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'solo_rebuild' WHERE frameId = 'f4'")
+            val p = pipeline()
+            assertEquals(1, p.drainOnce())
+            assertEquals(listOf("f4"), calls.single().first)
+            assertEquals(3, p.drainOnce())
+            assertEquals(listOf("f5", "f3", "f2"), calls[1].first)
+        } finally { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null }
+    }
+
+    @Test fun aSoloMarkerLeftByForgetV2IsIgnoredWhenTheFlagIsOffAgain() = runBlocking {
+        com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = false
+        try {
+            for (i in 1..5) seed("f$i", i * 1000L)
+            db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'solo_rebuild' WHERE frameId = 'f4'")
+            val p = pipeline()
+            assertEquals(3, p.drainOnce())
+            assertEquals("v1 batching: the marker changes nothing", listOf("f5", "f4", "f3"), calls.single().first)
+        } finally { com.rokid.context.memory.forget.lifecycle.ForgetV2.testOverride = null }
     }
 
     @Test fun backlogDrainsInOrderUnderBudget() = runBlocking {
