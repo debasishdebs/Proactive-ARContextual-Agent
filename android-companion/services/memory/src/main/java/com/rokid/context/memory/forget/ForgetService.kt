@@ -95,6 +95,19 @@ class ForgetService(
      * Forget fact for [ids] (retention passes chunks). A frame's JPEG is listed only when no memory points at it any
      * more; its row is kept (with the tombstone) so the frame is never extracted again.
      */
+    /** Multi-select Forget (activity pagination A8): what [roots] would do, read only. Same plan, same hash as [forgetSelection]. */
+    suspend fun previewSelection(roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>): com.rokid.context.memory.forget.lifecycle.SelectionPreview =
+        com.rokid.context.memory.forget.lifecycle.ForgetSelection.preview(db, roots)
+
+    /**
+     * Multi-select Forget (activity pagination A8, proxy ruling P2): exists ONLY behind `forgetV2` (the planner and the executor are the one path); off, it fails closed and nothing is deleted. [token] is the preview's
+     * [com.rokid.context.memory.forget.lifecycle.SelectionPreview.token]. Throws [ForgetContentChanged], [ForgetNeedsAck] or [ForgetTooLarge] with nothing deleted.
+     */
+    suspend fun forgetSelection(roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>, token: String): Result = notifying {
+        check(v2) { "multi-select Forget needs forgetV2" }
+        executor.forgetSelection(roots, token)
+    }
+
     suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { if (v2) executor.forgetFacts(ids, lockFrames) else forgetFactsTx(ids, lockFrames) }
 
     internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, bounded: Set<String>? = null): Result = db.withTransaction {

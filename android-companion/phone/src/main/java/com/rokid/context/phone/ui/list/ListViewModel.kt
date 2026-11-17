@@ -4,6 +4,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.phone.ui.list.paging.BreakdownModel
+import com.rokid.context.phone.ui.list.paging.SelectionController
+import com.rokid.context.phone.ui.list.paging.SelectionForgetPort
+import com.rokid.context.phone.ui.list.paging.SelectionResolver
 import com.rokid.context.phone.ui.list.paging.StateStore
 import com.rokid.context.phone.ui.preview.ActivityData
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +38,16 @@ class ListViewModel(
             override fun set(key: String, value: String) { saved[key] = value }
         })
     } else null
+
+    /**
+     * Set by the route on every composition: the Forget behind multi-select (null while `DeveloperFlags.forgetV2` is OFF, the default). With none, the selection does not exist: no long-press, no menu, no checkboxes.
+     * The selection itself is a set of refs kept in [selection] (saved), so paging, collapsing and view switches never change it.
+     */
+    @Volatile var forgetPort: SelectionForgetPort? = null
+    val selection = SelectionController(kind, SelectionResolver(kind, data, zone), { forgetPort }, object : StateStore {
+        override fun get(key: String) = saved.get<String>(key)
+        override fun set(key: String, value: String) { saved[key] = value }
+    }, viewModelScope, onForgotten = { source.retry() })
 
     private val _view = MutableStateFlow(if (breakdown != null && saved.get<String>(KEY_VIEW) == ListViewMode.BREAKDOWN.name) ListViewMode.BREAKDOWN else ListViewMode.LIST)
     val view: StateFlow<ListViewMode> get() = _view

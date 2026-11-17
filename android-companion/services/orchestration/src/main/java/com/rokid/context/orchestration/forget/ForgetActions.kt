@@ -100,6 +100,30 @@ object ForgetActions {
     }
 
     /**
+     * What a multi-select Forget (Activity, activity pagination A8, proxy ruling P2) would do, for the confirmation: the planner's own plan of [roots] as a user Forget (read only, no gate), as counts per family plus the
+     * token that confirms exactly this set. Null when `forgetV2` is OFF (the feature does not exist then) or the plan could not be made. Never logs an id.
+     */
+    suspend fun previewSelection(context: Context, roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>): com.rokid.context.memory.forget.lifecycle.SelectionPreview? = withContext(Dispatchers.IO) {
+        try {
+            val graph = MemoryGraph.get(context) // installs the flag reader
+            if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) return@withContext null
+            ForgetService(graph.db, graph.proposals).previewSelection(roots)
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e
+        } catch (e: Exception) { PcLog.w(TAG, "selection preview failed: ${SafeLog.describe(e)}"); null }
+    }
+
+    /**
+     * The multi-select Forget of [roots], confirmed with [token] (the preview's `token(acknowledged)`): the same gate, typed outcomes and post-commit cleanup as every Forget, one planner and one executor. With `forgetV2` OFF
+     * nothing runs ([Outcome.FAILED]). [Outcome.CONTENT_CHANGED] = the set differs from the previewed one, or a large selection was confirmed without its acknowledgement: nothing deleted, preview again.
+     * [Outcome.TOO_LARGE] = above 5,000 roots or plan nodes: select fewer.
+     */
+    suspend fun forgetSelectionOutcome(context: Context, roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>, token: String, onForgotten: () -> Unit = {}): Outcome {
+        runCatching { MemoryGraph.get(context) } // installs the flag reader
+        if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) { PcLog.w(TAG, "selection forget not run: forgetV2 is off"); return Outcome.FAILED }
+        return run(context, onForgotten, LoggedScope.SELECTION) { it.forgetSelection(roots, token) }
+    }
+
+    /**
      * Set once by the phone at start-up (the hub refresh). Background passes (retention) call it after removing data,
      * so the next StateFrame drops it. The Memory detail route passes its own [onForgotten] as well.
      */
@@ -112,7 +136,7 @@ object ForgetActions {
     @Volatile var asksRedacted: (List<String>) -> Unit = {}
 
     /** The scope a Forget's milestone line names (a fixed token: FACT and PHOTO for the single-item Forgets, MOMENT/SCENE for the scoped engine, RANGE for a time range). */
-    enum class LoggedScope { FACT, PHOTO, MOMENT, SCENE, RANGE }
+    enum class LoggedScope { FACT, PHOTO, MOMENT, SCENE, RANGE, SELECTION }
 
     /**
      * rc1 fix: ONE milestone line per committed Forget (reaches `pca.log` with diagnostics off), scope and counts only: never an id, a path or any text.

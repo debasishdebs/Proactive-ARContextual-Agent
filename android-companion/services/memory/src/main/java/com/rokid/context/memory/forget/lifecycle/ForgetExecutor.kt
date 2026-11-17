@@ -9,6 +9,7 @@ import com.rokid.context.memory.db.MomentTombstoneEntity
 import com.rokid.context.memory.forget.CleanupOutbox
 import com.rokid.context.memory.forget.ForgetContentChanged
 import com.rokid.context.memory.forget.ForgetNeedsAck
+import com.rokid.context.memory.forget.ForgetTooLarge
 import com.rokid.context.memory.forget.ForgetRadius
 import com.rokid.context.memory.forget.ForgetService
 import com.rokid.context.memory.forget.MomentForget
@@ -108,6 +109,35 @@ class ForgetExecutor internal constructor(
         if (top) rebuildScenes(c, plan)
         if (queueOutbox) queueCleanup(c, out.framesToDelete, wire, spans, phoneFilesOnly)
         out
+    }
+
+    // ---- multi-select (activity pagination A8, ruling P2) ----------------------------------------------------------------------------------------------------------------------------------
+
+    /**
+     * The multi-select Forget of [roots] (photos, memories, marks), in ONE transaction: re-plan as a user Forget, refuse a selection or closure above [SelectionLimits.REFUSE_ABOVE] ([ForgetTooLarge]), check the
+     * confirmed [token] against the plan just taken ([ForgetContentChanged] when anything differs: nothing was deleted), require the acknowledgement of a large one ([ForgetNeedsAck]), revoke the read leases the plan
+     * reaches, then run the single-item cascades in the planner's own order (memories, photos, marks) so what is deleted is what the plan named. Everything below is the v1 / v2 step code, not a copy of it.
+     */
+    internal suspend fun forgetSelection(roots: Set<Ref>, token: String): ForgetService.Result {
+        if (roots.size > SelectionLimits.REFUSE_ABOVE) throw ForgetTooLarge()
+        return db.withTransaction {
+            val plan = try { ForgetPlanner(db).plan(roots, Policy.User) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c
+            } catch (e: ForgetTooLarge) { throw e
+            } catch (e: Exception) { leases.revokeAll(); throw IllegalStateException("plan failed") } // fail closed: nothing is deleted
+            if (ForgetSelection.tooLarge(roots, plan)) throw ForgetTooLarge()
+            if (token.removeSuffix(SelectionLimits.ACK_SUFFIX) != ForgetSelection.hashOf(roots, plan)) throw ForgetContentChanged()
+            if (ForgetSelection.needsAck(roots, plan) && !token.endsWith(SelectionLimits.ACK_SUFFIX)) throw ForgetNeedsAck()
+            leases.revoke(plan)
+            val c = ctx()
+            var out = ForgetService.Result.EMPTY
+            val memories = roots.filter { it.family == Family.MEMORY }.map { it.id }.distinct()
+            if (memories.isNotEmpty()) out = out.with(forgetFacts(memories, top = false))
+            for (f in roots.filter { it.family == Family.PHOTO }.map { it.id }.distinct()) out = out.with(forgetPhoto(f, top = false))
+            val marks = roots.filter { it.family == Family.MARK }.map { it.id }.distinct()
+            if (marks.isNotEmpty()) MarkFamily.selfDelete(marks.toSet(), Fate.ERASE, c)
+            rebuildScenes(c, plan) // F3
+            out
+        }
     }
 
     // ---- retention --------------------------------------------------------------------------------------------------------------------------------------------------------------------------

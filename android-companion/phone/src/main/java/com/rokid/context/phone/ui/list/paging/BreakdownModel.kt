@@ -120,7 +120,7 @@ class BreakdownModel(
             val node = entries[k.day]?.filterIsInstance<HourNode>()?.firstOrNull { it.startMs == k.startMs }
             if (node == null) open.remove(k) else if (reloadDays && open.getValue(k).state.value.loaded) open.getValue(k).refresh(node.count)
         }
-        _tree.value = TreePane(days.map { d -> dayNode(d, counts[d] ?: 0, now, entries[d]) }, loaded = true)
+        _tree.value = TreePane(days.map { d -> dayNode(d, counts[d] ?: 0, now, entries[d]) }, loaded = true, focusDay = open.keys.lastOrNull()?.day, focusHourStart = open.keys.lastOrNull()?.startMs)
     }
     private var initDone = false
 
