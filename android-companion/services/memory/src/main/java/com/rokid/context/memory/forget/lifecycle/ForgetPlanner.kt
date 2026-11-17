@@ -18,8 +18,9 @@ import com.rokid.context.memory.moment.MomentId
  * It mirrors the CURRENT paths (v1 parity), step by step and in the same order, because the old code is order dependent (a photo deleted earlier in the same Forget has no capture time left for the radius, a memory
  * deleted earlier is no longer found). The edges come from the families' [ForgetFamily.dependents] (the existing queries).
  *
- * NOT planned yet (M4 prerequisites, listed in the M2 report): the invalidation of replays and sweeps, helper jobs (voided and scrubbed), `moment_sensor` rows purged by a time range of a Moment that survives, and the
- * fences and counters a Forget writes (tombstones are planned as the photo, the rest is control data of the executor).
+ * With `forgetV2` on (rulings 2026-11-17) the plan ALSO names: the survivors of a multi-photo or carried memory (F1, F5: PHOTO REBUILD, never locked), the Scenes rebuilt with their derived text erased (F3) and the
+ * replays, sweeps, helper jobs and `moment_sensor` rows a Forget invalidates (F6: RUN_RESULT `replay:` `sweep:` `job:` and MOMENT `sensor:` nodes). With the flag OFF the plan is the v1 plan. The fences and counters a Forget
+ * writes stay control data of the executor (tombstones are planned as the photo).
  */
 class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () -> Long = { ForgetRadius.ms() }) {
     private val tx = PlanTx(db)
@@ -76,20 +77,26 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
         val deletedMarks = LinkedHashSet<String>()
         val hiddenFromMemories = LinkedHashSet<String>() // invalidated memories whose holding Moments lose their text (scoped)
         val radius = radiusMs()
-        val fd = db.forgetDao(); val md = db.momentDao(); val sd = db.sceneDao()
+        val fd = db.forgetDao(); val md = db.momentDao(); val sd = db.sceneDao(); val s3 = db.canvasSlice3Dao()
+        /** `forgetV2` (read once per plan): F1 / F5 survivors, F3 Scene rebuild, F6 side effects. OFF: the v1 plan, byte for byte. */
+        val v2 = ForgetV2.on
+        private var fenceDone = false
 
         fun put(ref: Ref, fate: Fate) { val old = nodes[ref]; if (old == null || fate.ordinal < old.ordinal) nodes[ref] = fate }
 
         /** `ForgetService.cascade`. */
         suspend fun cascade(
             ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false,
-            extraCited: Set<String> = emptySet(), provenanceOnly: Boolean = false, bounded: Set<String>? = null,
+            extraCited: Set<String> = emptySet(), provenanceOnly: Boolean = false, bounded: Set<String>? = null, protect: Set<String>? = null,
         ) {
             val found = tx.chunked(ids) { fd.memories(it) }.filter { it.id !in goneMemories }
             if (found.isEmpty() && extraCited.isEmpty()) return
             val forgotten = found.map { it.id }.toSet()
             val citedFrames = (found.mapNotNull { it.frameId } + tx.chunked(forgotten) { fd.sourceFramesOf(it) }).distinct()
-            val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) citedFrames - tx.chunked(citedFrames) { fd.keyframeIds(it) }.toSet() else citedFrames
+            // F1 / F5 (`forgetV2`, [protect] = the photos this Forget forgets): a cited photo that is NOT forgotten survives (never locked or deleted) and is rebuilt from its own pixels
+            val forgottenFrames = if (protect == null) citedFrames else citedFrames.filter { it in protect }
+            val survivors = if (protect == null) emptyList() else citedFrames - forgottenFrames.toSet()
+            val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) forgottenFrames - tx.chunked(forgottenFrames) { fd.keyframeIds(it) }.toSet() else forgottenFrames
             val invalidated = if (!invalidateDescendants) emptySet() else descendants(forgotten) - forgotten
             forgotten.forEach { put(Ref(Family.MEMORY, it), Fate.ERASE) }
             invalidated.forEach { put(Ref(Family.MEMORY, it), Fate.REBUILD) }
@@ -100,8 +107,9 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             if (lockFrames) {
                 frames.forEach { put(Ref(Family.PHOTO, it), Fate.ERASE) }
                 dropCanvasOutputs(inside, null, radiusCascade = bounded == null)
-                if (bounded != null) runResults((frames - inside.toSet()).toSet())
+                if (bounded != null) { val outside = (frames - inside.toSet()).toSet(); runResults(outside); fence(outside) }
             }
+            if (survivors.isNotEmpty()) survivorsRebuilt(survivors)
             val uncited = inside.filter { f -> fd.memoryIdsOfFrame(f).none { it !in goneMemories } }
             val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
             val cited = forgotten + invalidated + extraCited + goneCites
@@ -111,6 +119,27 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             asks.forEach { put(Ref(Family.ANSWER, it), Fate.REBUILD) }
             nudges.forEach { put(Ref(Family.NUDGE, it), if (v2Rules) Fate.ERASE else Fate.REBUILD) }
             proposals(asks + nudges, scrubAccepted)
+        }
+
+        /** F1 / F5: the survivors' stored outputs are scrubbed (they may carry the forgotten text) and a survivor with no description left is queued to be rebuilt alone. */
+        private suspend fun survivorsRebuilt(survivors: List<String>) {
+            runResults(survivors.toSet()); fence(survivors)
+            survivors.filter { f -> fd.memoryIdsOfFrame(f).none { it !in goneMemories } }.forEach { put(Ref(Family.PHOTO, it), Fate.REBUILD) }
+        }
+
+        /** F6: every Forget moves the frame-Forget fence (the open helper jobs are voided) and scrubs the DONE helper jobs that carried [frameIds]. */
+        private suspend fun fence(frameIds: Collection<String>) {
+            if (!v2) return
+            if (!fenceDone) { fenceDone = true; s3.plannedVoidedHelperJobs().forEach { put(Ref(Family.RUN_RESULT, SideEffectRefs.JOB + it), Fate.DROP) } }
+            if (frameIds.isNotEmpty()) s3.plannedScrubbedHelperJobs(frameIds).forEach { put(Ref(Family.RUN_RESULT, SideEffectRefs.JOB + it), Fate.DROP) }
+        }
+
+        /** F6: the replays and sweeps `invalidateBySources` would invalidate. */
+        private suspend fun invalidations(traceIds: Collection<String>, from: Long?, to: Long?, labelsChanged: Boolean) {
+            if (!v2) return
+            val (replays, sweeps) = s3.plannedReplaySweepInvalidations(traceIds, from, to, labelsChanged)
+            replays.forEach { put(Ref(Family.RUN_RESULT, SideEffectRefs.REPLAY + it), Fate.DROP) }
+            sweeps.forEach { put(Ref(Family.RUN_RESULT, SideEffectRefs.SWEEP + it), Fate.DROP) }
         }
 
         /** The proposals of the redacted origins that change: PENDING ones expire, and params are scrubbed (retention keeps the accepted ones). */
@@ -133,19 +162,20 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
         }
 
         /** `ForgetService.forgetMomentTx`. */
-        suspend fun photo(frameId: String, redactCites: Boolean = true, bounded: Set<String>? = null) {
+        suspend fun photo(frameId: String, redactCites: Boolean = true, bounded: Set<String>? = null, protectAll: Set<String>? = null) {
+            val protect = if (v2) (protectAll ?: setOf(frameId)) else null
             val radiusCascade = bounded == null
             val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
             val frame = if (frameId in goneFrames) null else fd.frame(frameId)
             val ids = fd.memoryIdsOfFrame(frameId).filter { it !in goneMemories }
             val carried = fd.carriedMemoryIdsOfFrame(frameId).filter { it !in goneMemories } - ids.toSet()
-            if (carried.isNotEmpty()) cascade(carried, lockFrames = false, provenanceOnly = true)
+            if (carried.isNotEmpty()) cascade(carried, lockFrames = false, provenanceOnly = true, protect = protect)
             if (frame == null && ids.isEmpty() && (frameId in goneFrames || fd.photoRowCount(frameId) == 0)) {
                 dropCanvasOutputs(listOf(frameId), null, radiusCascade)
-                cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded)
+                cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, protect = protect)
                 return
             }
-            cascade(ids, lockFrames = true, extraCited = cites, bounded = bounded)
+            cascade(ids, lockFrames = true, extraCited = cites, bounded = bounded, protect = protect)
             put(Ref(Family.PHOTO, frameId), Fate.ERASE)
             dropHolding(listOf(frameId), ids)
             dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts), radiusCascade)
@@ -173,8 +203,9 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             val closure = moments.closureOf(found, effect, p.sceneIds, p.byKey)
             runResults(closure.first)
             val bounded = if (p.byKey) found.frames else null
-            for (f in found.frames) photo(f, bounded = bounded)
-            if (found.memories.isNotEmpty()) cascade(found.memories.toList(), lockFrames = true, bounded = bounded)
+            val protect = if (v2) found.frames else null
+            for (f in found.frames) photo(f, bounded = bounded, protectAll = protect)
+            if (found.memories.isNotEmpty()) cascade(found.memories.toList(), lockFrames = true, bounded = bounded, protect = protect)
             p.spans.forEach { range(it.first, it.last) }
             marks(found.labels.toList())
             val labelRows = found.labels.toList()
@@ -192,8 +223,14 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
 
         /** `CanvasSlice3Dao.forgetRangeTx`: the traces overlapping the range, the marks inside it. (The Moments of the range go through [dropBetween].) */
         private suspend fun range(from: Long, to: Long) {
-            db.canvasSlice3Dao().forgettableTraces().filter { Ref(Family.TRACE, it.traceId) !in nodes && TraceClock.overlaps(it, from, to) }.forEach { put(Ref(Family.TRACE, it.traceId), Fate.ERASE) }
-            marks(md.labelIdsBetween(from, to))
+            val traces = s3.forgettableTraces().filter { Ref(Family.TRACE, it.traceId) !in nodes && TraceClock.overlaps(it, from, to) }
+            traces.forEach { put(Ref(Family.TRACE, it.traceId), Fate.ERASE) }
+            val labels = md.labelIdsBetween(from, to)
+            marks(labels)
+            if (v2) { // F6: the replays and sweeps that read the range, the helper jobs the fence voids, the sensor rows of the range
+                fence(emptyList()); invalidations(traces.map { it.traceId }, from, to, labels.isNotEmpty())
+                s3.plannedSensorPurge(from, to, traces.map { it.traceId }).forEach { put(Ref(Family.MOMENT, SideEffectRefs.SENSOR + it), Fate.DROP) }
+            }
         }
 
         /** The marks that exist among [ids] go, with the run rows that list them in their lineage. */
@@ -201,6 +238,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             val live = tx.chunked(ids) { md.labelIdsAmong(it) }.filter { it !in deletedMarks }
             if (live.isEmpty()) return
             live.forEach { put(Ref(Family.MARK, it), Fate.ERASE) }
+            invalidations(emptyList(), null, null, labelsChanged = true) // F6: `labelRev` moves, the results computed under the old one are invalid
             deletedMarks += live
             MarkFamily.dependents(live.toSet(), tx).filter { it.kind == EdgeKind.LINEAGE }.forEach { put(it.to, Fate.DROP) }
         }
@@ -211,6 +249,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             val spans = (if (radiusCascade) capturedAt else emptyList()).map { (it - radius)..(it + radius) }.let(CanvasSlice3Dao::mergeRanges)
             spans.forEach { range(it.first, it.last); dropBetween(it.first, it.last) }
             runResults(frameIds.toSet())
+            if (frameIds.isNotEmpty()) fence(frameIds)
             marks(tx.chunked(frameIds) { md.labelIdsLinkedToFrames(it) }) // the labels of the photos (`deleteSliceOutputsForFrames`)
         }
 
@@ -255,7 +294,9 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
                         DerivedFieldFamily.objectsWithRows("SCENE", listOf(sceneId), tx).forEach { put(Ref(Family.DERIVED_FIELD, "SCENE:$it"), Fate.DROP) }
                     } else {
                         put(Ref(Family.SCENE, sceneId), Fate.REBUILD)
-                        DerivedFieldFamily.freshObjects("SCENE", listOf(sceneId), tx).forEach { put(Ref(Family.DERIVED_FIELD, "SCENE:$it"), Fate.REBUILD) }
+                        // F3 (`forgetV2`): the surviving Scene is rebuilt from its surviving Moments and its old derived text is ERASED; v1 only hides the fresh fields
+                        if (v2) DerivedFieldFamily.objectsWithDerived("SCENE", listOf(sceneId), tx).forEach { put(Ref(Family.DERIVED_FIELD, "SCENE:$it"), Fate.DROP) }
+                        else DerivedFieldFamily.freshObjects("SCENE", listOf(sceneId), tx).forEach { put(Ref(Family.DERIVED_FIELD, "SCENE:$it"), Fate.REBUILD) }
                     }
                 }
             }

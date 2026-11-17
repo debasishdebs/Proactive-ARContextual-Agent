@@ -43,14 +43,15 @@ class GoldenDeleteSetTest {
         }
     }
 
-    private fun golden(expected: String, on: V2Fates? = null, op: suspend () -> Unit) = runBlocking {
+    /** [onFull]: the COMPLETE ON expectation of a path the Stage 2 rulings (F1, F3, F5, F6, 2026-11-17) change beyond the ask and nudge fates; the OFF expectation never changes. */
+    private fun golden(expected: String, on: V2Fates? = null, onFull: String? = null, op: suspend () -> Unit) = runBlocking {
         for (v2 in listOf(false, true)) {
             ForgetV2.testOverride = v2
             val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
             try {
                 w = GoldenWorld(db)
                 w.seed()
-                val want = (if (v2 && on != null) on.apply(expected) else expected).trimIndent().trim(); val got = w.deltaOf(op).render()
+                val want = (if (v2 && onFull != null) onFull else if (v2 && on != null) on.apply(expected) else expected).trimIndent().trim(); val got = w.deltaOf(op).render()
                 if (want != got) throw AssertionError("forgetV2=$v2 delete set differs.\n--- expected\n$want\n--- actual\n$got") // the whole set, not JUnit's abbreviated diff
             } finally { db.close() }
         }
@@ -113,7 +114,36 @@ class GoldenDeleteSetTest {
             added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
             added cleanup_outbox: 1, 2, 3, 4, 5, 6, 8
             added forget_tombstone: fA, fFar
-        """, on = V2Fates(null, "nCite")) { w.service.forgetMoment("fA") }
+        """, on = V2Fates(null, "nCite"), onFull = """
+            deleted canvas_label: mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fA
+            deleted frame_meta: fA
+            deleted frame_source: mBatch|fA, mMulti|fA, mMulti|fFar, mPlace|fA
+            deleted memory: mA, mBatch, mMulti, mPlace
+            deleted memory_source: mD|mA
+            deleted moment: 68f6baa4, 68f6baa5
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
+            deleted nudge: nCite
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep, aFrame
+            changed canvas_meta: labelRev
+            changed canvas_trace: trNear
+            changed memory: mD
+            changed proposal: pAsk, pNudge
+            changed scene: sMixed
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
+            added cleanup_outbox: 1, 2, 3, 4, 6
+            added forget_tombstone: fA
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """) { w.service.forgetMoment("fA") }
     @Test fun forgetFarPhotoCitedByAMultiPhotoFact() = golden("""
             deleted canvas_label: mkFar, mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -136,7 +166,28 @@ class GoldenDeleteSetTest {
             added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
             added cleanup_outbox: 1, 2, 3, 4, 5, 6, 8
             added forget_tombstone: fA, fFar
-        """, on = V2Fates(null, "nKeep")) { w.service.forgetMoment("fFar") }
+        """, on = V2Fates(null, "nKeep"), onFull = """
+            deleted canvas_label: mkFar
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fFar
+            deleted frame_meta: fFar
+            deleted frame_source: mMulti|fA, mMulti|fFar
+            deleted memory: mFar, mMulti
+            deleted moment: 68f6c5f8
+            deleted moment_part: 68f6c5f8|FRAME|fFar, 68f6c5f8|MEMORY|mFar
+            deleted nudge: nKeep
+            deleted scene_part: sMixed|MOMENT|68f6c5f8
+            changed ask: aDep, aKeep
+            changed canvas_meta: labelRev
+            changed canvas_trace: trFar
+            changed scene: sMixed
+            added canvas_meta: forgetRanges, frame_forget_rev
+            added cleanup_outbox: 1, 2, 3, 4, 6
+            added forget_tombstone: fFar
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """) { w.service.forgetMoment("fFar") }
     @Test fun forgetBatchPhoto() = golden("""
             deleted canvas_label: mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n
@@ -194,7 +245,37 @@ class GoldenDeleteSetTest {
             added cleanup_outbox: 1, 2, 3, 4, 5, 6, 7, 8, 9
             added forget_tombstone: fA, fB, fFar
             added moment_tombstone: 68f6baa4, 68f6baa5
-        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetRange(w.tA, w.tB) }
+        """, on = V2Fates(null, "nCite"), onFull = """
+            deleted canvas_label: mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fA, fB
+            deleted frame_meta: fA, fB
+            deleted frame_source: mBatch|fA, mMulti|fA, mMulti|fFar, mPlace|fA
+            deleted memory: mA, mBatch, mMulti, mPlace
+            deleted memory_source: mD|mA
+            deleted moment: 68f6baa4, 68f6baa5
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
+            deleted nudge: nCite
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep, aFrame
+            changed canvas_meta: labelRev
+            changed canvas_trace: trNear
+            changed memory: mD
+            changed proposal: pAsk, pNudge
+            changed scene: sMixed
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, momentForgetRanges, scene_seq_floor
+            added cleanup_outbox: 1, 2, 3, 4, 5, 6, 7, 8
+            added forget_tombstone: fA, fB
+            added moment_tombstone: 68f6baa4, 68f6baa5
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """) { w.fx.forget.forgetRange(w.tA, w.tB) }
     @Test fun momentForgetById() = golden("""
             deleted canvas_label: mkFar, mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -223,7 +304,37 @@ class GoldenDeleteSetTest {
             added cleanup_outbox: 1, 2, 3, 4, 5, 6
             added forget_tombstone: fA, fFar
             added moment_tombstone: 68f6baa4
-        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetMoments(listOf(w.momA)) }
+        """, on = V2Fates(null, "nCite"), onFull = """
+            deleted canvas_label: mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fA
+            deleted frame_meta: fA
+            deleted frame_source: mBatch|fA, mMulti|fA, mMulti|fFar, mPlace|fA
+            deleted memory: mA, mBatch, mMulti, mPlace
+            deleted memory_source: mD|mA
+            deleted moment: 68f6baa4, 68f6baa5
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
+            deleted nudge: nCite
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep, aFrame
+            changed canvas_meta: labelRev
+            changed canvas_trace: trNear
+            changed memory: mD
+            changed proposal: pAsk, pNudge
+            changed scene: sMixed
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, momentForgetRanges, scene_seq_floor
+            added cleanup_outbox: 1, 2, 3, 4, 5
+            added forget_tombstone: fA
+            added moment_tombstone: 68f6baa4
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """) { w.fx.forget.forgetMoments(listOf(w.momA)) }
     @Test fun momentScopeSpans() = golden("""
             deleted canvas_label: mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -254,7 +365,37 @@ class GoldenDeleteSetTest {
             added forget_tombstone: fA, fFar
             added moment_tombstone: 68f6baa4
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
-        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetSpans(listOf(w.tA..w.tA + 999)) }
+        """, on = V2Fates(null, "nCite"), onFull = """
+            deleted canvas_label: mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fA
+            deleted frame_meta: fA
+            deleted frame_source: mBatch|fA, mMulti|fA, mMulti|fFar, mPlace|fA
+            deleted memory: mA, mBatch, mMulti, mPlace
+            deleted memory_source: mD|mA
+            deleted moment: 68f6baa4, 68f6baa5
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
+            deleted nudge: nCite
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep, aFrame
+            changed canvas_meta: labelRev
+            changed canvas_trace: trNear
+            changed memory: mD
+            changed proposal: pAsk, pNudge
+            changed scene: sMixed
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, momentForgetRanges, scene_seq_floor
+            added cleanup_outbox: 1, 2, 3, 4, 5
+            added forget_tombstone: fA
+            added moment_tombstone: 68f6baa4
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """) { w.fx.forget.forgetSpans(listOf(w.tA..w.tA + 999)) }
     @Test fun sceneScopeSpans() = golden("""
             deleted canvas_label: mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
@@ -285,7 +426,37 @@ class GoldenDeleteSetTest {
             added forget_tombstone: fA, fB, fFar
             added moment_tombstone: 68f6baa4, 68f6baa5
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
-        """, on = V2Fates(null, "nCite")) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
+        """, on = V2Fates(null, "nCite"), onFull = """
+            deleted canvas_label: mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fA, fB
+            deleted frame_meta: fA, fB
+            deleted frame_source: mBatch|fA, mMulti|fA, mMulti|fFar, mPlace|fA
+            deleted memory: mA, mBatch, mMulti, mPlace
+            deleted memory_source: mD|mA
+            deleted moment: 68f6baa4, 68f6baa5
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
+            deleted nudge: nCite
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep, aFrame
+            changed canvas_meta: labelRev
+            changed canvas_trace: trNear
+            changed memory: mD
+            changed proposal: pAsk, pNudge
+            changed scene: sMixed
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, momentForgetRanges, scene_seq_floor
+            added cleanup_outbox: 1, 2, 3, 4, 5, 6, 7, 8
+            added forget_tombstone: fA, fB
+            added moment_tombstone: 68f6baa4, 68f6baa5
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
     @Test fun retentionExpireFact() = golden("""
             deleted memory: mA
             deleted memory_source: mD|mA

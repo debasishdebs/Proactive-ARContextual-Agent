@@ -76,16 +76,22 @@ class MomentForget(
         /** The token that confirms a Forget WITH the acknowledgement of a large closure ([needsAck]); equals [planHash] when none is needed. */
         val ackHash: String = "",
         /** The set is too connected to forget in one step (depth or node cap): nothing can be deleted by this scope. */
-        val tooLarge: Boolean = false)
+        val tooLarge: Boolean = false,
+        /** `forgetV2` only (F6): the replays, sweeps, helper jobs and sensor rows this Forget invalidates, and the surviving photos (F1, F5) it queues to be described again alone. Both are part of [planHash]. */
+        val sideEffects: Int = 0, val rebuiltPhotos: Int = 0)
     suspend fun preview(spans: List<LongRange>, sceneIds: Collection<String> = emptyList()): Counts {
         val merged = wholeSeconds(spans)
         if (merged.isEmpty()) return Counts(0, 0, 0, 0, 0, 0)
         return try { db.withTransaction {
             val d = discover(secondsOf(merged), merged, bounded = true)
             val e = sceneEffect(d.moments, sceneIds); val peers = peersOf(d, sceneEffect(d.moments + d.projected, sceneIds))
-            val hash = hashOf(merged, d, e); val big = peers.size > MAX_UNACKED_RESULTS
+            val v2 = com.rokid.context.memory.forget.lifecycle.ForgetV2.on
+            val sceneIdList = sceneIds.toList().distinct()
+            val plan = if (v2) planV2(merged, secondsOf(merged), sceneIdList, true) else null
+            val hash = if (plan != null) hashOfV2(merged, d, e, plan) else hashOf(merged, d, e); val big = peers.size > MAX_UNACKED_RESULTS
             Counts(d.frames.size, d.memories.size, d.labels.size, d.moments.size, e.removed.size, e.shrunk.size, hash, outside = d.outsideFrames.size + d.descendants.size, peerResults = peers.size,
-                needsAck = big, ackHash = if (big) hash + ACK_SUFFIX else hash)
+                needsAck = big, ackHash = if (big) hash + ACK_SUFFIX else hash,
+                sideEffects = plan?.nodes?.keys?.count { com.rokid.context.memory.forget.lifecycle.SideEffectRefs.isSideEffect(it) } ?: 0, rebuiltPhotos = plan?.refs(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, com.rokid.context.memory.forget.lifecycle.Fate.REBUILD)?.size ?: 0)
         } } catch (e: ForgetTooLarge) { Counts(0, 0, 0, 0, 0, 0, tooLarge = true) }
     }
 
@@ -128,6 +134,27 @@ class MomentForget(
         ForgetScope.MOMENT, spans,
         mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants) + e.membership.mapKeys { "scene:" + it.key }, // the FULL membership of every affected Scene
     )
+
+    private suspend fun planV2(spans: List<LongRange>, requestedSeconds: List<Long>, sceneIds: List<String>, byKey: Boolean) =
+        com.rokid.context.memory.forget.lifecycle.ForgetPlanner(db).plan(emptySet(), com.rokid.context.memory.forget.lifecycle.Policy.Spans(spans, requestedSeconds, sceneIds, byKey))
+
+    /**
+     * The `forgetV2` hash (F6, ruling 2026-11-17): the v1 sections PLUS the plan's side effects (replays, sweeps, helper jobs, sensor rows), the photos rebuilt alone (F1, F5) and the Scenes rebuilt (F3), and a plan version.
+     * The version makes EVERY confirmation token of the v1 hash invalid: the user must preview again and acknowledge the larger plan. Ids only; the delete recomputes it from the same plan, so preview == delete.
+     */
+    internal fun hashOfV2(spans: List<LongRange>, d: Found, e: SceneEffect, plan: com.rokid.context.memory.forget.lifecycle.ForgetPlan): String = ForgetPlanHash.of(
+        ForgetScope.MOMENT, spans,
+        mapOf("frames" to d.frames, "memories" to d.memories, "marks" to d.labels, "moments" to d.moments, "scenesRemoved" to e.removed, "scenesShrunk" to e.shrunk, "outsideFrames" to d.outsideFrames, "descendants" to d.descendants,
+            "planV" to listOf("2"),
+            "sideEffects" to plan.nodes.keys.filter { com.rokid.context.memory.forget.lifecycle.SideEffectRefs.isSideEffect(it) }.map { it.toString() },
+            "rebuiltPhotos" to plan.refs(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, com.rokid.context.memory.forget.lifecycle.Fate.REBUILD),
+            "scenesRebuilt" to plan.refs(com.rokid.context.memory.forget.lifecycle.Family.SCENE, com.rokid.context.memory.forget.lifecycle.Fate.REBUILD),
+        ) + e.membership.mapKeys { "scene:" + it.key },
+    )
+
+    /** The hash the delete compares with the confirmed token: v1 with the flag OFF, the plan hash with it ON. */
+    internal suspend fun currentHash(spans: List<LongRange>, d: Found, e: SceneEffect, requestedSeconds: List<Long>, sceneIds: List<String>, byKey: Boolean): String =
+        if (com.rokid.context.memory.forget.lifecycle.ForgetV2.on) hashOfV2(spans, d, e, planV2(spans, requestedSeconds, sceneIds, byKey)) else hashOf(spans, d, e)
 
     internal fun wholeSeconds(spans: List<LongRange>): List<LongRange> = mergeSpans(spans.filter { it.last >= 0 && it.last >= it.first }.map {
         val lo = Math.floorDiv(maxOf(it.first, 0L), 1000L).coerceAtMost(MomentId.MAX_SECOND); val hi = Math.floorDiv(it.last, 1000L).coerceAtMost(MomentId.MAX_SECOND)

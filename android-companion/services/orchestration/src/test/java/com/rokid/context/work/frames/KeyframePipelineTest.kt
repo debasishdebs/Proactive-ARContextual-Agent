@@ -101,6 +101,17 @@ class KeyframePipelineTest {
         assertEquals(listOf("f7", "f6", "f5", "f4", "f3", "f2", "f1"), calls.flatMap { it.first })
     }
 
+    @Test fun aPhotoQueuedByAForgetIsDescribedAloneAndTheRestBatchAsBefore() = runBlocking {
+        // Forget lifecycle F1 / F5 (forgetV2): the survivor of a mixed memory goes back to PENDING with the solo marker; no other photo shares its call
+        for (i in 1..5) seed("f$i", i * 1000L)
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'solo_rebuild' WHERE frameId = 'f4'")
+        val p = pipeline()
+        assertEquals(1, p.drainOnce())
+        assertEquals(listOf("f4"), calls.single().first)
+        assertEquals(3, p.drainOnce())
+        assertEquals(listOf("f5", "f3", "f2"), calls[1].first)
+    }
+
     @Test fun backlogDrainsInOrderUnderBudget() = runBlocking {
         // Real time, a short period: the third batch has to wait for a token (burst 2).
         val budget = CallBudget(System::currentTimeMillis, { 200L })

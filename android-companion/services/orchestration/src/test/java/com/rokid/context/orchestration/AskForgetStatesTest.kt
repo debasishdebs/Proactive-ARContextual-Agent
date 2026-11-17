@@ -62,11 +62,18 @@ class AskForgetStatesTest {
         assertFalse(a.sourceStates!!.contains("milk") || a.sourceStates!!.contains("Milk"))
     }
 
-    @Test fun flagOnForgettingAnUncitedInputKeepsTheAnswerAndForgettingTheCitedOneErasesItButKeepsTheQuestion() = runBlocking {
+    @Test fun flagOnForgettingAnUncitedInputAlsoErasesTheAnswerButKeepsTheQuestion() = runBlocking {
         ForgetV2.testOverride = true
         val id = askMilk()
-        forget("rokid_mem_2")
-        assertFalse("retrieved but never cited: the answer stays", graph().asks.byId(id)!!.redacted)
+        forget("rokid_mem_2") // retrieved, never cited: still a dependency (proxy ruling F4, conservative)
+        val a = graph().asks.byId(id)!!
+        assertTrue(a.redacted); assertEquals(ForgetService.REDACTED, a.answer); assertEquals("milk?", a.question)
+        assertTrue(AskSourceStates.isForgotten(a))
+    }
+
+    @Test fun flagOnForgettingTheCitedInputErasesTheAnswerButKeepsTheQuestion() = runBlocking {
+        ForgetV2.testOverride = true
+        val id = askMilk()
         forget("rokid_mem_1")
         val a = graph().asks.byId(id)!!
         assertTrue(a.redacted); assertEquals(ForgetService.REDACTED, a.answer); assertEquals("milk?", a.question)

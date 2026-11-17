@@ -66,6 +66,14 @@ abstract class DerivedStaleDao {
         return moments.size
     }
 
+    /** The Moments whose sensor rows [purgeSensorBetween] / [purgeSensorOfTrace] would delete (read only; Forget lifecycle F6 plans them). */
+    suspend fun plannedSensorPurge(fromMs: Long?, toMs: Long?, traceIds: Collection<String>): Set<String> {
+        val out = LinkedHashSet<String>()
+        traceIds.forEach { out += sensorMomentsOfTrace(it) }
+        if (fromMs != null && toMs != null && toMs >= fromMs && toMs >= 0) out += sensorMomentsBetween(Math.floorDiv(maxOf(fromMs, 0L), 1000L), Math.floorDiv(toMs, 1000L))
+        return out
+    }
+
     /** Forget of the phone-clock interval `[fromMs, toMs]`: the sensor rows of its seconds go whichever trace they came from (a row whose trace row is missing is found by its second). */
     suspend fun purgeSensorBetween(fromMs: Long, toMs: Long, now: Long, step: String): Int {
         if (toMs < 0 || toMs < fromMs) return 0

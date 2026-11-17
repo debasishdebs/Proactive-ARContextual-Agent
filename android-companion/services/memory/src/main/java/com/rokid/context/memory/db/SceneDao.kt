@@ -35,4 +35,13 @@ abstract class SceneDao : DerivedStaleDao() {
 
     /** Removes these Scenes with their parts, audit rows and derived fields (an object goes with everything that hangs on it). */
     @Transaction open suspend fun remove(ids: Collection<String>) = ids.toList().chunked(500).forEach { deleteParts(it); purgeScenes(it) }
+
+    /**
+     * Forget lifecycle F3 (`forgetV2`): a Scene that lost Moments is REBUILT from the surviving ones: its derived fields (SUMMARY, CAPTION, EMBEDDING) were built from a part that is gone, so the rows (and the old text in
+     * them) are ERASED now, not just hidden. The Scene and its surviving parts stay; the derive pass writes the fields again from the survivors.
+     */
+    @Transaction open suspend fun eraseDerived(ids: Collection<String>) = ids.toList().chunked(500).forEach { deleteSceneDerived(it) }
+
+    /** Fail-closed fallback of F3 when a plan could not be built: every HIDDEN Scene field (its text is still stored) is erased too. Regenerable by the derive pass. */
+    @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND staleSince IS NOT NULL") abstract suspend fun eraseStaleSceneDerived(): Int
 }
