@@ -182,6 +182,25 @@ class HudPresenterTest {
         assertNull(p.present(frame(place), Verbosity.MEDIUM, HudNav(), null, 20_000).overlay, "the same card does not come back on the next heartbeat")
     }
 
+    // Codex v3.1 r4 P1-2: the glasses enforce a phone-set hard cap on their own clock (the phone may be dead); fail closed on nonsense.
+    private fun capped(ms: Long?) = Overlay.Nudge("Golconda: x", com.rokid.context.core.model.PlaceCardInfo("Golconda", "x", "Suggestion", false, id = "sg_1", maxShowMs = ms))
+
+    @Test fun aCappedSuggestionCardEndsAtItsCapOnTheGlassesClockWithNoFurtherFrames() {
+        val c = capped(4_000); val p = HudPresenter()
+        assertEquals(c, p.present(frame(c), Verbosity.MEDIUM, HudNav(), null, 1_000).overlay)
+        assertEquals(c, p.present(frame(c), Verbosity.MEDIUM, HudNav(), null, 4_999).overlay)
+        assertNull(p.present(frame(c), Verbosity.MEDIUM, HudNav(), null, 5_000).overlay, "the cap, not the 12 s")
+        assertNull(p.present(frame(c), Verbosity.MEDIUM, HudNav(), null, 6_000).overlay, "stays gone")
+    }
+
+    @Test fun aCapNeverExtendsTheTwelveSecondsAndAZeroOrNegativeCapShowsNothing() {
+        assertNull(HudPresenter().present(frame(capped(0)), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
+        assertNull(HudPresenter().present(frame(capped(-5)), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
+        val long = capped(Long.MAX_VALUE); val p = HudPresenter()
+        assertEquals(long, p.present(frame(long), Verbosity.MEDIUM, HudNav(), null, 1_000).overlay)
+        assertNull(p.present(frame(long), Verbosity.MEDIUM, HudNav(), null, 13_000).overlay)
+    }
+
     @Test fun headMotionOnsetAfterTwoAndAHalfSecondsDismissesTheCard() {
         val p = HudPresenter()
         p.onMotion(com.rokid.context.core.model.MotionState.STILL, 0)
