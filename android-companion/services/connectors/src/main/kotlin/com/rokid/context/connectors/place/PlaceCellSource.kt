@@ -31,9 +31,11 @@ class PlaceCellSource(
 
         val kept = LinkedHashMap<String, FetchedPlace>()
         val hasPart = HashMap<String, List<String>>()
+        var rejected = 0
         for (p in pages) {
             val q = p.qid ?: continue
-            val ent = entities[q] ?: continue
+            val ent = entities[q] ?: run { rejected++; null } ?: continue
+            if (ent.p31Malformed) { rejected++; continue } // unreadable classification is not absence: person exclusion cannot be checked, so not even a curated QID is admitted
             if (ent.classes.any { it in PERSON_CLASSES }) continue // people are never candidates, not even for a curated QID
             val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
@@ -66,7 +68,7 @@ class PlaceCellSource(
             }
         }
         val out = kept.values.toList() + osmPlaces.filter { it.id !in kept }
-        log("cell parsed hits=${hits.size} pages=${pages.size} kept=${kept.size} osm=${osmPlaces.size}")
+        log("cell parsed hits=${hits.size} pages=${pages.size} kept=${kept.size} osm=${osmPlaces.size} rejected=$rejected")
         return CellFetch(out, complete)
     }
 

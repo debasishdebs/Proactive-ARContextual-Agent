@@ -28,10 +28,10 @@ class AndroidPlaceGuideControl(
         get() = settings.budgetMb
         set(v) { settings.budgetMb = v }
 
-    override suspend fun seed(box: GeoBox): Result<String> = runCatching {
+    override suspend fun seed(box: GeoBox): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {
         val id = String.format(Locale.ROOT, "seed:%.3f,%.3f,%.3f,%.3f", box.south, box.west, box.north, box.east)
         val r = PlaceGraph.readyPack(app).seedArea(id, box)
-        com.rokid.context.phone.ui.settings.place.PlaceGuideModel.seedMessage(r)
+        com.rokid.context.phone.ui.settings.place.PlaceGuideModel.seedOutcome(r)
     }
 
     override suspend fun summary(): String {

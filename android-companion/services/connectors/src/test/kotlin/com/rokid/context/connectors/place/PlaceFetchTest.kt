@@ -272,6 +272,36 @@ class PlaceFetchTest {
         assertEquals(mapOf("wd:Q944175" to PlaceKinds.HISTORIC_SITE), got)
     }
 
+    /** Real parser output (Wikidata JSON) through PlaceCellSource: absent P31 admits a curated QID only; malformed P31 rejects even a curated one; a person class rejects. */
+    private suspend fun parsedCell(json: String, logs: MutableList<String> = mutableListOf()): Map<String, String> {
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Sigiriya", 7.957, 80.76))
+            override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Sigiriya", "x.", "Q272153", null, null))
+        }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>) = WikidataHttpSource.parse(json) }
+        return PlaceCellSource(wiki, wd, null) { logs += it }.fetchCell(Geohash5.encode(7.957, 80.76)).places.associate { it.id to it.kind }
+    }
+    private fun item(claims: String) = """{"entities":{"Q272153":{"claims":$claims}}}"""
+    private fun p31(vararg ids: String) = """{"P31":[${ids.joinToString(",") { """{"mainsnak":{"snaktype":"value","datavalue":{"value":{"id":"$it"}}}}""" }}]}"""
+
+    @Test fun parsedAbsentP31AdmitsACuratedQidButMalformedP31DoesNot() = runTest {
+        assertEquals(setOf("wd:Q272153"), parsedCell(item("""{"P625":[]}""")).keys) // key absent
+        assertEquals(setOf("wd:Q272153"), parsedCell(item("""{"P31":[]}""")).keys) // empty list
+        assertEquals(setOf("wd:Q272153"), parsedCell(item("[]")).keys) // Wikidata's empty claims
+        for (bad in listOf("""{"P31":{}}""", """{"P31":"Q5"}""", """{"P31":[1,"x",null]}""", """{"P31":[{"mainsnak":{}}]}""", """{"P31":[{"mainsnak":{"snaktype":"value","datavalue":{"value":{"id":5}}}}]}""")) {
+            val logs = mutableListOf<String>()
+            assertEquals(emptyMap<String, String>(), parsedCell(item(bad), logs), bad)
+            assertTrue(logs.any { it.endsWith("kept=0 osm=0 rejected=1") }, bad)
+        }
+        assertEquals(emptyMap<String, String>(), parsedCell(item(""""unreadable"""")))
+        assertEquals(setOf("wd:Q272153"), parsedCell(item("""{"P31":[{"mainsnak":{"snaktype":"somevalue"}}]}""")).keys) // unknown value is not damage
+    }
+
+    @Test fun parsedPersonClassIsRejectedAndAValidClassIsKept() = runTest {
+        assertEquals(emptyMap<String, String>(), parsedCell(item(p31("Q5"))))
+        assertEquals(mapOf("wd:Q272153" to PlaceKinds.ARCHAEOLOGICAL_SITE), parsedCell(item(p31("Q839954"))))
+    }
+
     /** A geosearch hit always carries coordinates, so "no coordinates" means no usable item: a curated QID whose Wikidata entity did not come back (or has no page) is never stored. */
     @Test fun aCuratedQidWithoutAWikidataEntityOrPageIsRejected() = runTest {
         val wiki = object : WikipediaSource {

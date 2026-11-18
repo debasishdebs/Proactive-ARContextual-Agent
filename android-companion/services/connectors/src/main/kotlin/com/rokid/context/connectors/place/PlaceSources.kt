@@ -21,8 +21,8 @@ data class WikiHit(val pageId: Long, val title: String, val lat: Double, val lon
 /** One article after the extracts call: its 3-sentence plain intro, its Wikidata item and its own coordinate when it has one. */
 data class WikiPage(val pageId: Long, val title: String, val extract: String, val qid: String?, val lat: Double?, val lon: Double?)
 
-/** The parts of a Wikidata item the pack needs: classes (P31), part of (P361), has part (P527) and the coordinate (P625). */
-data class WikidataEntity(val qid: String, val classes: Set<String>, val partOf: List<String>, val hasPart: List<String>, val lat: Double?, val lon: Double?)
+/** The parts of a Wikidata item the pack needs: classes (P31; [p31Malformed] = P31 or the claims were present but unreadable, which is not the same as absent), part of (P361), has part (P527) and the coordinate (P625). */
+data class WikidataEntity(val qid: String, val classes: Set<String>, val partOf: List<String>, val hasPart: List<String>, val lat: Double?, val lon: Double?, val p31Malformed: Boolean = false)
 
 /** One Overpass element, a node, way or relation, with its tags. [radiusM] comes from the box of a way or relation. */
 data class OsmElement(val type: String, val id: Long, val lat: Double, val lon: Double, val radiusM: Int?, val tags: Map<String, String>) {
@@ -103,13 +103,26 @@ class WikidataHttpSource(private val http: PlaceHttp, private val host: String =
     companion object {
         const val BATCH = 50
 
+        /** Absent (no key, or an empty list) is fine; present must be a list of statements each with a readable value id (somevalue/novalue snaks carry none and are fine). */
+        private fun p31Malformed(p31: JsonElement?): Boolean {
+            if (p31 == null) return false
+            val a = p31.arr() ?: return true
+            return a.any { st ->
+                val snak = st.obj()?.get("mainsnak").obj() ?: return@any true
+                if (snak["snaktype"].str().let { it == "somevalue" || it == "novalue" }) false
+                else snak["datavalue"].obj()?.get("value").obj()?.get("id").str() == null
+            }
+        }
+
         fun parse(body: String): Map<String, WikidataEntity> {
             val entities = placeJson.parseToJsonElement(body).obj()?.get("entities").obj() ?: return emptyMap()
             return entities.entries.mapNotNull { (qid, v) ->
-                val claims = v.obj()?.get("claims").obj() ?: return@mapNotNull null
+                val rawClaims = v.obj()?.get("claims")
+                // Wikidata sends an item with no claims as an empty ARRAY: that is absence, not damage. Any other non-object claims value is unreadable and drops the entity.
+                val claims = rawClaims.obj() ?: if (rawClaims.arr()?.isEmpty() == true) JsonObject(emptyMap()) else return@mapNotNull null // unreadable claims: no entity, so the caller rejects the item
                 fun ids(p: String) = claims[p].arr().orEmpty().mapNotNull { it.obj()?.get("mainsnak").obj()?.get("datavalue").obj()?.get("value").obj()?.get("id").str() }
                 val coord = claims["P625"].arr()?.firstNotNullOfOrNull { it.obj()?.get("mainsnak").obj()?.get("datavalue").obj()?.get("value").obj() }
-                qid to WikidataEntity(qid, ids("P31").toSet(), ids("P361"), ids("P527"), coord?.get("latitude").dbl(), coord?.get("longitude").dbl())
+                qid to WikidataEntity(qid, ids("P31").toSet(), ids("P361"), ids("P527"), coord?.get("latitude").dbl(), coord?.get("longitude").dbl(), p31Malformed = p31Malformed(claims["P31"]))
             }.toMap()
         }
     }

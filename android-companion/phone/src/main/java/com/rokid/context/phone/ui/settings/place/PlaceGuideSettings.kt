@@ -65,10 +65,13 @@ data class SeedPreset(val id: String, val name: String, val boxes: List<GeoBox>,
     companion object { const val APPROXIMATE = "Approximate: UNVERIFIED." }
 }
 
+/** One box's seed answer: the screen text and how many cells still failed after the retry (0 = nothing to retry). */
+data class SeedOutcome(val message: String, val failedCells: Int = 0)
+
 /** What the screen needs from the pack and the switch (production: [PlaceGraph], [PlaceGuideSettings]; tests: fakes). */
 interface PlaceGuideControl {
     var enabled: Boolean
-    suspend fun seed(box: GeoBox): Result<String>
+    suspend fun seed(box: GeoBox): Result<SeedOutcome>
     suspend fun summary(): String
     /** The pack's counts and bytes (null = unavailable). */
     suspend fun stats(): PackStats? = null
@@ -120,6 +123,8 @@ object PlaceGuideModel {
         return "$counts ${r.places} places in the pack.$tail"
     }
 
+    fun seedOutcome(r: com.rokid.context.memory.place.SeedResult) = SeedOutcome(seedMessage(r), r.failed)
+
     fun mb(bytes: Long): String = String.format(java.util.Locale.ROOT, "%.1f MB", bytes / 1_048_576.0)
     fun kindLabel(kind: String): String = kind.replace('_', ' ').replaceFirstChar { it.uppercase() }
 
@@ -155,25 +160,32 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
         viewModelScope.launch(work) {
             val r = control.seed(box)
-            _state.update { it.copy(seeding = false, message = r.getOrElse { "Could not fetch places. Check the connection and try again." }, messageIsError = r.isFailure) }
+            _state.update { it.copy(seeding = false, message = r.fold({ o -> o.message }, { "Could not fetch places. Check the connection and try again." }), messageIsError = r.isFailure) }
             refreshSummary()
         }
     }
 
-    /** Seeds a preset's boxes one after the other (never in parallel: Wikipedia's rate limit), stopping at the first failure. */
+    /** Seeds a preset's boxes one after the other (never in parallel: Wikipedia's rate limit), stopping at the first failure or the first box with cells that failed after the retry. */
     fun seedPreset(preset: SeedPreset) {
         if (_state.value.seeding) return
         _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
         viewModelScope.launch(work) {
             val msgs = ArrayList<String>()
             var failure: Throwable? = null
-            for (box in preset.boxes) {
+            var stoppedAt = 0 // 1-based box where a cell still failed after its retry
+            for ((i, box) in preset.boxes.withIndex()) {
                 val r = control.seed(box)
-                r.onSuccess { msgs += it }.onFailure { failure = it }
-                if (failure != null) break
+                r.onSuccess { msgs += it.message; if (it.failedCells > 0) stoppedAt = i + 1 }.onFailure { failure = it }
+                if (failure != null || stoppedAt > 0) break
             }
-            val text = if (failure != null) "Could not fetch places. Check the connection and try again." else if (msgs.size == 1) msgs[0] else msgs.withIndex().joinToString(" ") { "Part ${it.index + 1} of ${msgs.size}: ${it.value}" }
-            _state.update { it.copy(seeding = false, message = text, messageIsError = failure != null) }
+            val n = preset.boxes.size
+            val text = when {
+                failure != null -> "Could not fetch places. Check the connection and try again."
+                stoppedAt > 0 -> "Stopped at box $stoppedAt of $n: some cells failed after a retry (the server may be rate limiting). ${msgs.last()} Tap seed again to retry."
+                msgs.size == 1 -> msgs[0]
+                else -> msgs.withIndex().joinToString(" ") { "Part ${it.index + 1} of ${msgs.size}: ${it.value}" }
+            }
+            _state.update { it.copy(seeding = false, message = text, messageIsError = failure != null || stoppedAt > 0) }
             refreshSummary()
         }
     }
