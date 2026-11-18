@@ -423,7 +423,7 @@ unverified_exit() { # label reason : the install HAPPENED but the log verificati
   echo "INSTALL DONE BUT NOT VERIFIED ($1: $2). Do NOT treat this as a success: verification is incomplete and the remaining steps were not run." >&2
   echo "Manual check (read the output yourself, nothing is printed here):" >&2
   echo "  adb -s $3 shell pidof $4" >&2
-  echo "  adb -s $3 logcat -d -b all -v threadtime -v epoch | grep -E 'FATAL EXCEPTION|Process: $4|SQLiteException|not a database|no such (table|column)|migration'" >&2
+  echo "  adb -s $3 logcat -d -b main -v threadtime -v epoch | grep -E 'FATAL EXCEPTION|Process: $4|SQLiteException|not a database|no such (table|column)|migration'" >&2
   echo "  adb -s $3 logcat -d | grep -iE \"Migration didn.t|SQLiteException|not a database|SQLCipher|Room\"" >&2
   echo "  then open the app and do the v17-upgrade-recovery.md section 3 checks." >&2
   exit 3
@@ -438,10 +438,37 @@ verify_fail() { # label reason : verification FAILED (exit 3)
   exit 3
 }
 
+SCAN_BUFFERS="main system crash"
+buf_covered() { # serial buffer t0 file : 0 if the buffer's own retained log provably covers (t0 - 3 s), else 1 with BUF_WHY set
+  local s="$1" bf="$2" t0="$3" f="$4" g cap used oldest
+  BUF_WHY=""
+  # logcat -g -b <buf> real format (emulator, 2026-11-18): "main: ring buffer is 2 MiB (790 KiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B"
+  # units B/KiB/MiB/GiB are truncated by logd, so the consumed size is taken at its UPPER bound (value + 1 unit) and must stay under 90 % of the capacity to count as "never wrapped"
+  g="$(A "$s" logcat -g -b "$bf" 2>/dev/null | tr -d '\r' | awk -v b="$bf" '
+    function bytes(n, u) { if (u == "B") return n; if (u == "KiB") return n * 1024; if (u == "MiB") return n * 1048576; if (u == "GiB") return n * 1073741824; return -1 }
+    function unit(u) { if (u == "B") return 1; if (u == "KiB") return 1024; if (u == "MiB") return 1048576; return 1073741824 }
+    index($0, b ": ring buffer is ") == 1 {
+      if (match($0, /ring buffer is [0-9]+ (B|KiB|MiB|GiB) \([0-9]+ (B|KiB|MiB|GiB) consumed/)) {
+        t = substr($0, RSTART, RLENGTH); gsub(/[^0-9A-Za-z ]/, " ", t); split(t, w, " ")
+        # w: ring buffer is CAP CAPU consumedvalue consumedunit consumed
+        c = bytes(w[4], w[5]); u = bytes(w[6], w[7]) + unit(w[7])
+        if (c > 0 && u >= 0) { print c, u; exit }
+      } }')" || g=""
+  set -- $g
+  cap="${1-}"; used="${2-}"
+  case "$cap$used" in ''|*[!0-9]*) cap=""; used="" ;; esac
+  if [ -n "$cap" ] && [ -n "$used" ] && [ $((used * 10)) -lt $((cap * 9)) ]; then return 0; fi
+  # wrapped / nearly full / sizes unparseable: the buffer's OWN oldest line must be at or before (install start - 3 s)
+  oldest="$(awk '$1 ~ /^[0-9]+\.[0-9]+$/ { v = $1 + 0; if (n == 0 || v < m) m = v; n++ } END { if (n > 0) printf "%d\n", m }' "$f" 2>/dev/null)" || oldest=""
+  case "$oldest" in ''|*[!0-9]*) BUF_WHY="buffer full or size unknown and no parseable line"; return 1 ;; esac
+  [ "$oldest" -le $((t0 - 3)) ] && return 0
+  BUF_WHY="buffer wrapped or size unknown; its oldest line is newer than the install start"; return 1
+}
+
 scan_logs() { # serial pkg label
   local s="$1" pkg="$2" label="$3" pid0 pid1 comp lines pq
   local snap="$TMP/logcat-snap-$label.txt" pidf="$TMP/logcat-pid-$label.txt" scanf="$TMP/logcat-scan-$label.txt"
-  local cand="$TMP/logcat-cand-$label.txt" gst=0 real benign npids win="$TMP/logcat-win-$label.txt" t0 oldest
+  local cand="$TMP/logcat-cand-$label.txt" gst=0 real benign npids win="$TMP/logcat-win-$label.txt" t0 bf
   pq="${pkg//./\\.}"
   # ORDER OF EVALUATION: every line is classified on its own. A line with ANY real-failure signature is FAIL, whatever else it says.
   # Only a line that matches the allow-list AND no real signature counts as benign. The allow-list never subtracts anything.
@@ -459,20 +486,29 @@ scan_logs() { # serial pkg label
     *) A "$s" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || fail "$label: no launcher activity for $pkg" ;; esac
   pid0="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid0=""
   sleep "$SCAN_SECS" || fail "$label: sleep failed"
-  # ONE consistent snapshot of the all-buffer; everything below is filtered from this single capture.
-  A "$s" logcat -d -b all -v threadtime -v epoch > "$snap" 2>/dev/null || unverified_exit "$label" "logcat retrieval failed" "$s" "$pkg"
+  # ONE snapshot PER relevant buffer (main, system, crash), taken in this same step; everything below is filtered from these captures.
+  # Android prunes each buffer independently, so coverage is proven PER BUFFER (never from the minimum timestamp across buffers).
+  : > "$snap"
+  for bf in $SCAN_BUFFERS; do
+    A "$s" logcat -d -b "$bf" -v threadtime -v epoch > "$snap.$bf.raw" 2>/dev/null || unverified_exit "$label" "log buffer $bf cannot be read (logcat retrieval failed)" "$s" "$pkg"
+  done
   pid1="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid1=""
   say "$label: pid_before='${pid0}' pid_after='${pid1}' running=$([ -n "$pid1" ] && echo yes || echo NO)"
+  t0="${INSTALL_T0-}"
+  case "$t0" in ''|*[!0-9]*) unverified_exit "$label" "install start time unknown (cannot prove the log covers the install window)" "$s" "$pkg" ;; esac
+  for bf in $SCAN_BUFFERS; do
+    # a genuinely unprefixed continuation line inherits the previous record's timestamp/pid/tid (never dropped); separators and blank lines are dropped
+    tr -d '\r' < "$snap.$bf.raw" | awk '
+      /^ *[0-9]+\.[0-9]+ +[0-9]+ +[0-9]+ / { ts = $1; pid = $2; tid = $3; have = 1; print; next }
+      /^--------- / || /^[[:space:]]*$/ { next }
+      have { printf "%s %s %s E cont: %s\n", ts, pid, tid, $0 }' > "$snap.$bf" 2>/dev/null || unverified_exit "$label" "cannot normalise the $bf log" "$s" "$pkg"
+    buf_covered "$s" "$bf" "$t0" "$snap.$bf" || unverified_exit "$label" "log buffer $bf does not cover the install window ($BUF_WHY): check logcat manually / increase the buffer with logcat -G 16M before the install" "$s" "$pkg"
+    cat "$snap.$bf" >> "$snap"
+  done
   lines="$(wc -l < "$snap")" || unverified_exit "$label" "cannot measure the log" "$s" "$pkg"
   lines="${lines//[[:space:]]/}"
   case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the log" "$s" "$pkg" ;; esac
   [ "$lines" -ge 5 ] || unverified_exit "$label" "logcat returned empty/short output ($lines lines) while the app is running" "$s" "$pkg"
-  # coverage: the oldest retained line must be at or before (install start - 2 s), else early failures may have been overwritten (buffer wrap) => UNVERIFIED
-  t0="${INSTALL_T0-}"
-  case "$t0" in ''|*[!0-9]*) unverified_exit "$label" "install start time unknown (cannot prove the log covers the install window)" "$s" "$pkg" ;; esac
-  oldest="$(awk '$1 ~ /^[0-9]+\.[0-9]+$/ { v = $1 + 0; if (n == 0 || v < m) m = v; n++ } END { if (n > 0) printf "%d\n", m }' "$snap" 2>/dev/null)" || oldest=""
-  case "$oldest" in ''|*[!0-9]*) unverified_exit "$label" "no parseable timestamp in the log: log buffer coverage cannot be proven: check logcat manually / increase the buffer with logcat -G 16M before the install" "$s" "$pkg" ;; esac
-  [ "$oldest" -le $((t0 - 2)) ] || unverified_exit "$label" "log buffer does not cover the install window: check logcat manually / increase the buffer with logcat -G 16M before the install" "$s" "$pkg"
   awk -v t="$((t0 - 2))" '$1 ~ /^[0-9]+\.[0-9]+$/ && $1 + 0 >= t' "$snap" > "$win" 2>/dev/null || unverified_exit "$label" "cannot window the snapshot" "$s" "$pkg"
   # restart / crash-loop detection: never CLEAN
   [ -n "$pid0" ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (no pid before the window)"
@@ -531,7 +567,12 @@ sl() { # post-install log verification fixture: FX_SNAP = the single snapshot (t
       *resolve-activity*) printf 'com.x/.Main\n' ;;
       *"am start"*|*monkey*) return 0 ;;
       *pidof*) local n; n="$(wc -l < "$FXDIR/pidn")"; n="${n//[[:space:]]/}"; echo x >> "$FXDIR/pidn"; if [ "$n" = 0 ]; then printf '%b' "${FX_PID0-4242}"; else printf '%b' "${FX_PID1-4242}"; fi ;;
-      *"logcat -d -b all -v threadtime"*) printf '%b' "$FX_SNAP"; return "${FX_SNAPR:-0}" ;;
+      "logcat -g -b main") printf '%b' "${FX_GMAIN-garbage unparseable\n}" ;;
+      "logcat -g -b system") printf '%b' "${FX_GSYS-system: ring buffer is 2 MiB (678 KiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n}" ;;
+      "logcat -g -b crash") printf '%b' "${FX_GCRASH-crash: ring buffer is 2 MiB (0 B consumed, 0 B readable), max entry is 5120 B, max payload is 4068 B\n}" ;;
+      "logcat -d -b main -v threadtime -v epoch") printf '%b' "$FX_SNAP"; return "${FX_SNAPR:-0}" ;;
+      "logcat -d -b system -v threadtime -v epoch") printf '%b' "${FX_SNAPSYS-}"; return "${FX_SNAPSYSR:-0}" ;;
+      "logcat -d -b crash -v threadtime -v epoch") printf '%b' "${FX_SNAPCRASH-}"; return "${FX_SNAPCRASHR:-0}" ;;
       *logcat*) echo "UNEXPECTED second logcat snapshot" >&2; return 99 ;;
       *) return 0 ;; esac; }
   scan_logs emulator-5554 com.x phone
@@ -683,13 +724,42 @@ SIGS
   FX_SNAP="$(mk '1000|no such table: foo in com.x.other')"; fx "pkg: other-pid SQL error mentioning only com.x.other is not counted" ok sl
   FX_SNAP="$(mk '1000|no such table: foo (com.x)')"; fx "pkg: other-pid SQL error naming the exact package => FAIL" rc3 sl
   FX_SNAP="$(mk '999|SQLiteCantOpenDatabaseException: code 14')"; fx "pkg: other-pid signature without the package is not counted" ok sl
-  # log coverage (buffer wrap): the oldest retained line must be at or before install start - 2 s
+  # log coverage (buffer wrap): the each relevant buffer's own oldest line must be at or before install start - 3 s (see buf_covered)
   FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line newer than the install start (clean tail) => UNVERIFIED exit 3" rc3 sl
-  FX_SNAP="$(TS=1793999998 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line exactly install start - 2 s => CLEAN" ok sl
+  FX_SNAP="$(TS=1793999997 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line exactly install start - 3 s => CLEAN" ok sl
   FX_SNAP="$(TS=1793999999 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line 1 s before the install start => UNVERIFIED" rc3 sl
   FX_SNAP="$(mk)"; fx "coverage: window covered => CLEAN" ok sl
   FX_SNAP="$(for i in 0 1 2 3 4 5 6; do printf 'no-timestamp  4242  4242 E Tag: line %s\n' "$i"; done)"; fx "coverage: unparseable timestamps => UNVERIFIED exit 3" rc3 sl
   FX_SNAP="$(mk)"; FX_T0=''; fx "coverage: install start time unknown => UNVERIFIED exit 3" rc3 sl; FX_T0=1794000000
+  # per-buffer coverage (Android prunes each buffer on its own; real "logcat -g" lines captured on the emulator 2026-11-18)
+  GREAL='main: ring buffer is 2 MiB (790 KiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n'
+  GWRAP='main: ring buffer is 2 MiB (2 MiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n'
+  GNEAR='main: ring buffer is 2 MiB (1 MiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n'
+  FX_SNAPSYS="$(TS=1793990000 tl 1 'old line in the quiet system buffer')"
+  FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN="$GWRAP"; fx "coverage/buf: quiet buffer holds an OLD line, wrapped main has only a newer tail => UNVERIFIED exit 3" rc3 sl
+  FX_GMAIN="$GNEAR"; fx "coverage/buf: main 1 MiB of 2 MiB (truncated unit, upper bound not under 90 %) is treated as possibly wrapped => UNVERIFIED" rc3 sl
+  FX_GMAIN="$GREAL"; fx "coverage/buf: main never wrapped (real -g line), newer tail only => covered, CLEAN" ok sl
+  FX_GMAIN="main: ring buffer is 16 MiB (790 KiB consumed, 1 MiB readable), max\n"; fx "coverage/buf: 16 MiB capacity with 790 KiB consumed => covered" ok sl
+  FX_SNAP="$(mk)"; FX_GMAIN="$GWRAP"; fx "coverage/buf: wrapped main whose oldest line predates the start => covered, CLEAN" ok sl
+  FX_SNAP="$(TS=1793999998 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN="$GWRAP"; fx "coverage/buf: wrapped main, oldest only start - 2 s (margin is 3 s) => UNVERIFIED" rc3 sl
+  FX_SNAP="$(TS=1793999997 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage/buf: wrapped main, oldest start - 3 s => covered" ok sl
+  FX_SNAP="$(TS=1793999996 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN='total garbage\n'; fx "coverage/buf: unparseable -g falls back to the timestamp rule (covered)" ok sl
+  FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN='total garbage\n'; fx "coverage/buf: unparseable -g falls back to the timestamp rule (newer tail => UNVERIFIED)" rc3 sl
+  FX_GMAIN='main: ring buffer is 2 PiB (1 B consumed\n'; fx "coverage/buf: unknown unit => fallback => UNVERIFIED" rc3 sl
+  FX_SNAP="$(mk)"; FX_GMAIN='total garbage\n'; FX_GSYS='system: ring buffer is 2 MiB (2 MiB consumed, 1 MiB readable)\n'; FX_SNAPSYS=''; fx "coverage/buf: wrapped EMPTY system buffer => UNVERIFIED" rc3 sl
+  FX_GSYS='garbage\n'; fx "coverage/buf: unparseable -g and empty system buffer => UNVERIFIED" rc3 sl
+  unset FX_GSYS; FX_GCRASH='crash: ring buffer is 2 MiB (2 MiB consumed, 1 MiB readable)\n'; fx "coverage/buf: wrapped empty crash buffer => UNVERIFIED" rc3 sl
+  unset FX_GCRASH; FX_SNAPSYSR=9; fx "coverage/buf: system buffer cannot be read => UNVERIFIED exit 3" rc3 sl; unset FX_SNAPSYSR
+  FX_SNAPCRASHR=9; fx "coverage/buf: crash buffer cannot be read => UNVERIFIED exit 3" rc3 sl; unset FX_SNAPCRASHR
+  FX_SNAPSYS="$(TS=1793990000 tl 1 'old system line'; tl 1000 'ActivityManager: ANR in com.x (com.x/.Main)')"; fx "coverage/buf: a signature found in the system buffer => FAIL exit 3" rc3 sl
+  FX_SNAPSYS=''; FX_SNAPCRASH="$(tl 4242 'FATAL EXCEPTION: main')"; fx "coverage/buf: a signature found in the crash buffer => FAIL exit 3" rc3 sl; unset FX_SNAPCRASH
+  FX_SNAP="$(mk)
+	at android.database.sqlite.SQLiteException.foo(X.java:1)"; fx "continuation: genuinely unprefixed line with SQLiteException inherits the previous pid => FAIL exit 3" rc3 sl
+  FX_SNAP="$(mk '999|foo')
+	at SQLiteException.bar(X.java:1)"; fx "continuation: unprefixed SQLiteException after another pid's record is not the app's => clean" ok sl
+  FX_SNAP="$(mk)
+	at com.x.Fine.call(X.java:1)"; fx "continuation: harmless unprefixed line after an app record => clean" ok sl
+  unset FX_GMAIN FX_GSYS FX_GCRASH FX_SNAPSYS FX_SNAPCRASH
   # restart race (mocked adb: pid sampled before the window, snapshot taken once, pid sampled after)
   FX_SNAP="$(mk)"; FX_PID0='4242\n'; FX_PID1='5555\n'; fx "restart: PID changed => FAIL exit 3" rc3 sl
   FX_PID0=''; FX_PID1='4242\n'; fx "restart: PID absent before the window => FAIL exit 3" rc3 sl
