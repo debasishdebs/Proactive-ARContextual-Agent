@@ -26,6 +26,7 @@
     <!-- v3.0 proactive loop (shadow): the Suggestions switches are per-device consent and the shadow store holds place keys and source ids (encrypted, Keystore-bound): never backed up or transferred; Delete all clears both. -->
     <exclude domain="sharedpref" path="proactive_settings.xml" />
     <exclude domain="sharedpref" path="proactive_shadow.xml" />
+    <exclude domain="sharedpref" path="proactive_dismiss_marker.xml" />
     <!-- Copies of memory text outside the DB: frame JPEGs, the queue log, the legacy logs, the exports. -->
     <exclude domain="file" path="rokid_archive" />
     <exclude domain="file" path="rokid_inbox" />

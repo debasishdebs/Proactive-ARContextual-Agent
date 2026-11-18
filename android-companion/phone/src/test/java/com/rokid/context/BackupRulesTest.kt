@@ -66,6 +66,8 @@ class BackupRulesTest {
         com.rokid.context.memory.place.UserPinStore.PREFS,
         // Place Guide: the on/off switch is per-device (default off after a restore).
         com.rokid.context.work.frames.place.PlaceGuideSettings.PREFS,
+        // v3.1 r3: the failed-dismissal marker (one timestamp): device state, never restored.
+        com.rokid.context.orchestration.proactive.PrefsSuggestionStore.MARKER_PREFS,
         // Rokid Nexus (v2.0): the HUD host choice is per-device consent: PCA's own glasses app again after a restore.
         com.rokid.context.phone.nexus.NexusHostStore.PREFS,
         // v0.9.9 final fixes: the hub restart ladder is device state (when this phone last tried to start its hub): never restored.
