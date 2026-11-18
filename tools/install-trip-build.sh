@@ -408,6 +408,9 @@ install_apk() { # serial apk role (phone|glasses|watch): the role must match the
   pre_install_guard "$role" "$s"
   call_guard "before $role install" || die "call active or state unknown"
   [ "$BACKUP_VALID" = 1 ] || fail "internal check: no validated backup, refusing to install"
+  A "$s" logcat -G 16M >/dev/null 2>&1 || say "$role: note: could not enlarge the log buffer (logcat -G 16M, best effort); the log coverage check below decides"
+  INSTALL_T0="$(A "$s" shell date +%s 2>/dev/null | tr -d '\r' | tail -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || INSTALL_T0=""
+  case "$INSTALL_T0" in ''|*[!0-9]*) fail "$role: cannot read the device clock (date +%s) before the install; refusing (log verification needs the install start time)" ;; esac
   PHASE=installing
   # shellcheck disable=SC2086
   out="$(A "$s" install $flags "$apk" 2>&1 | tr -d '\r' | tail -n 1)" || out="adb failure"
@@ -420,42 +423,57 @@ unverified_exit() { # label reason : the install HAPPENED but the log verificati
   echo "INSTALL DONE BUT NOT VERIFIED ($1: $2). Do NOT treat this as a success: verification is incomplete and the remaining steps were not run." >&2
   echo "Manual check (read the output yourself, nothing is printed here):" >&2
   echo "  adb -s $3 shell pidof $4" >&2
-  echo "  adb -s $3 logcat -d -b all -v threadtime | grep -E 'FATAL EXCEPTION|Process: $4|SQLiteException|not a database|no such (table|column)|migration'" >&2
+  echo "  adb -s $3 logcat -d -b all -v threadtime -v epoch | grep -E 'FATAL EXCEPTION|Process: $4|SQLiteException|not a database|no such (table|column)|migration'" >&2
   echo "  adb -s $3 logcat -d | grep -iE \"Migration didn.t|SQLiteException|not a database|SQLCipher|Room\"" >&2
   echo "  then open the app and do the v17-upgrade-recovery.md section 3 checks." >&2
   exit 3
 }
 
-verify_fail() { # label reason detail : verification FAILED (exit 3, glasses step never runs)
-  echo "phone install done but verification FAILED: glasses NOT installed: inspect logcat, do NOT restore from the backup unless the app fails to open its data ($1: $2)" >&2
+verify_fail() { # label reason : verification FAILED (exit 3)
+  if [ "$1" = glasses ]; then
+    echo "glasses installed but verification FAILED: inspect logcat on the glasses (the phone was already verified; the optional watch step was NOT run) ($1: $2)" >&2
+  else
+    echo "phone install done but verification FAILED: glasses NOT installed: inspect logcat, do NOT restore from the backup unless the app fails to open its data ($1: $2)" >&2
+  fi
   exit 3
 }
 
 scan_logs() { # serial pkg label
   local s="$1" pkg="$2" label="$3" pid0 pid1 comp lines pq
   local snap="$TMP/logcat-snap-$label.txt" pidf="$TMP/logcat-pid-$label.txt" scanf="$TMP/logcat-scan-$label.txt"
-  local cand="$TMP/logcat-cand-$label.txt" gst=0 real benign npids
+  local cand="$TMP/logcat-cand-$label.txt" gst=0 real benign npids win="$TMP/logcat-win-$label.txt" t0 oldest
   pq="${pkg//./\\.}"
   # ORDER OF EVALUATION: every line is classified on its own. A line with ANY real-failure signature is FAIL, whatever else it says.
   # Only a line that matches the allow-list AND no real signature counts as benign. The allow-list never subtracts anything.
-  local rre="FATAL EXCEPTION|Process: ${pq}[,: ]|SQLiteException|SQLiteDatabaseCorruptException|SQLiteDiskIOException|SQLiteFullException|file is not a database|SQLITE_NOTADB|Migration didn.t properly handle|A migration from [0-9]+ to [0-9]+ was required but not found|Room cannot verify the data integrity|no such column|no such table|duplicate column|IllegalStateException.*(Room|openHelper|[Dd]atabase)|Cannot open database|Unable to open database|database disk image is malformed|ANR in ${pq}|Application Not Responding"
+  local pb="(^|[^A-Za-z0-9_.])${pq}([^A-Za-z0-9_.]|\$)" core rre rnp
+  core="FATAL EXCEPTION|SQLite[A-Za-z]*Exception|file is not a database|SQLITE_NOTADB|SQLITE_CANTOPEN|Could not open database|code 14([^0-9]|\$)|Migration didn.t properly handle|A migration from [0-9]+ to [0-9]+ was required but not found|Room cannot verify the data integrity|no such column|no such table|duplicate column|IllegalStateException.*(Room|openHelper|[Dd]atabase)|Cannot open database|Unable to open database|database disk image is malformed"
+  # app-pid lines: any core signature, the crash header, ANR with this package as the SUBJECT, or a bare ANR text (the line is the app's own)
+  rre="${core}|Process: ${pq}[,: ]|ANR in ${pq}([^A-Za-z0-9_.]|\$)|Application Not Responding"
+  # lines of other pids (system_server etc.): the package boundary match is required AND a signature; ANR only with the package as the subject
+  rnp="${core}|Process: ${pq}[,: ]|ANR in ${pq}([^A-Za-z0-9_.]|\$)|Application Not Responding: ${pq}([^A-Za-z0-9_.]|\$)"
   local are="sqlcipher_mlock|Long monitor contention"
-  say "STEP verify $label: clear logcat, launch $pkg, sample pid, wait ${SCAN_SECS}s, take ONE logcat snapshot, re-sample pid, report CLEAN / BENIGN-ONLY / FAIL"
+  say "STEP verify $label: (logcat is NOT cleared) launch $pkg, sample pid, wait ${SCAN_SECS}s, take ONE logcat snapshot, re-sample pid, report CLEAN / BENIGN-ONLY / FAIL"
   [ "$GO" = 1 ] || return 0
-  A "$s" logcat -c >/dev/null 2>&1 || fail "$label: cannot clear logcat"
   comp="$(A "$s" shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null | tr -d '\r' | tail -n 1)" || comp=""
   case "$comp" in "$pkg"/*) A "$s" shell am start -n "$comp" >/dev/null 2>&1 || fail "$label: could not launch $comp" ;;
     *) A "$s" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || fail "$label: no launcher activity for $pkg" ;; esac
   pid0="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid0=""
   sleep "$SCAN_SECS" || fail "$label: sleep failed"
   # ONE consistent snapshot of the all-buffer; everything below is filtered from this single capture.
-  A "$s" logcat -d -b all -v threadtime > "$snap" 2>/dev/null || unverified_exit "$label" "logcat retrieval failed" "$s" "$pkg"
+  A "$s" logcat -d -b all -v threadtime -v epoch > "$snap" 2>/dev/null || unverified_exit "$label" "logcat retrieval failed" "$s" "$pkg"
   pid1="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid1=""
   say "$label: pid_before='${pid0}' pid_after='${pid1}' running=$([ -n "$pid1" ] && echo yes || echo NO)"
   lines="$(wc -l < "$snap")" || unverified_exit "$label" "cannot measure the log" "$s" "$pkg"
   lines="${lines//[[:space:]]/}"
   case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the log" "$s" "$pkg" ;; esac
   [ "$lines" -ge 5 ] || unverified_exit "$label" "logcat returned empty/short output ($lines lines) while the app is running" "$s" "$pkg"
+  # coverage: the oldest retained line must be at or before (install start - 2 s), else early failures may have been overwritten (buffer wrap) => UNVERIFIED
+  t0="${INSTALL_T0-}"
+  case "$t0" in ''|*[!0-9]*) unverified_exit "$label" "install start time unknown (cannot prove the log covers the install window)" "$s" "$pkg" ;; esac
+  oldest="$(awk '$1 ~ /^[0-9]+\.[0-9]+$/ { v = $1 + 0; if (n == 0 || v < m) m = v; n++ } END { if (n > 0) printf "%d\n", m }' "$snap" 2>/dev/null)" || oldest=""
+  case "$oldest" in ''|*[!0-9]*) unverified_exit "$label" "no parseable timestamp in the log: log buffer coverage cannot be proven: check logcat manually / increase the buffer with logcat -G 16M before the install" "$s" "$pkg" ;; esac
+  [ "$oldest" -le $((t0 - 2)) ] || unverified_exit "$label" "log buffer does not cover the install window: check logcat manually / increase the buffer with logcat -G 16M before the install" "$s" "$pkg"
+  awk -v t="$((t0 - 2))" '$1 ~ /^[0-9]+\.[0-9]+$/ && $1 + 0 >= t' "$snap" > "$win" 2>/dev/null || unverified_exit "$label" "cannot window the snapshot" "$s" "$pkg"
   # restart / crash-loop detection: never CLEAN
   [ -n "$pid0" ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (no pid before the window)"
   [ -n "$pid1" ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (app not running after the snapshot)"
@@ -463,22 +481,25 @@ scan_logs() { # serial pkg label
   [ "$pid0" = "$pid1" ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (pid $pid0 -> $pid1)"
   # every pid the snapshot shows for this package (process start / crash header / death / kill lines) plus the sampled one
   npids="$( { printf '%s\n' "$pid1"
-      sed -n -E -e "s/.*Start proc ([0-9]+):${pq}[\\/ ].*/\\1/p" -e "s/.*Process: ${pq}, PID: ([0-9]+).*/\\1/p" -e "s/.*Process ${pq} \\(pid ([0-9]+)\\).*/\\1/p" -e "s/.*Killing ([0-9]+):${pq}[\\/ ].*/\\1/p" "$snap"; } | sort -u | grep -c . )" || verify_fail "$label" "cannot enumerate pids in the snapshot"
+      sed -n -E -e "s/.*Start proc ([0-9]+):${pq}[\\/ ].*/\\1/p" -e "s/.*Process: ${pq}, PID: ([0-9]+).*/\\1/p" -e "s/.*Process ${pq} \\(pid ([0-9]+)\\).*/\\1/p" -e "s/.*Killing ([0-9]+):${pq}[\\/ ].*/\\1/p" "$win"; } | sort -u | grep -c . )" || verify_fail "$label" "cannot enumerate pids in the snapshot"
   [ "${npids//[[:space:]]/}" = 1 ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (${npids//[[:space:]]/} pids for $pkg in the snapshot)"
-  # scan set = lines of the app pid (threadtime field 3) + any line naming the package (crash headers, ANR lines from system_server)
-  awk -v p="$pid1" '$3 == p' "$snap" > "$pidf" 2>/dev/null || unverified_exit "$label" "cannot filter the snapshot by pid" "$s" "$pkg"
-  gst=0; grep -F -e "$pkg" "$snap" > "$scanf.pkg" 2>/dev/null || gst=$?
+  # scan set = lines of the app pid (epoch/threadtime field 2) + other-pid lines with a real package-boundary match (crash headers, ANR lines from system_server)
+  awk -v p="$pid1" '$2 == p' "$win" > "$pidf" 2>/dev/null || unverified_exit "$label" "cannot filter the snapshot by pid" "$s" "$pkg"
+  gst=0; grep -E -e "$pb" "$win" > "$scanf.pkg" 2>/dev/null || gst=$?
   [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while filtering by package" "$s" "$pkg"
   cat "$pidf" "$scanf.pkg" | sort -u > "$scanf" || unverified_exit "$label" "cannot build the scan set" "$s" "$pkg"
   lines="$(wc -l < "$pidf")" || unverified_exit "$label" "cannot measure the per-process log" "$s" "$pkg"
   lines="${lines//[[:space:]]/}"
   case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the per-process log" "$s" "$pkg" ;; esac
   [ "$lines" -ge 1 ] || unverified_exit "$label" "per-process log is empty while the app is running" "$s" "$pkg"
-  gst=0; grep -E -e "$rre" "$scanf" > "$cand" 2>/dev/null || gst=$?
+  gst=0; grep -E -e "$rre" "$pidf" > "$cand.a" 2>/dev/null || gst=$?
   [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while matching error signatures" "$s" "$pkg"
+  gst=0; grep -E -e "$rnp" "$scanf.pkg" > "$cand.b" 2>/dev/null || gst=$?
+  [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while matching error signatures" "$s" "$pkg"
+  cat "$cand.a" "$cand.b" | sort -u > "$cand" || unverified_exit "$label" "cannot merge the candidates" "$s" "$pkg"
   real="$(count_matches -E "$cand" '.')" || unverified_exit "$label" "grep error while counting real error lines" "$s" "$pkg"
-  # benign = allow-listed AND no real signature (classified per line)
-  gst=0; grep -v -E -e "$rre" "$scanf" 2>/dev/null | grep -c -E -e "$are" > "$cand.n" || gst=$?
+  # benign = allow-listed AND no real signature (classified per line, same set rules)
+  gst=0; { grep -v -E -e "$rre" "$pidf"; grep -v -E -e "$rnp" "$scanf.pkg"; } 2>/dev/null | sort -u | grep -c -E -e "$are" > "$cand.n" || gst=$?
   benign="$(cat "$cand.n" 2>/dev/null)"
   case "$benign" in ''|*[!0-9]*) unverified_exit "$label" "grep error while counting allow-listed lines" "$s" "$pkg" ;; esac
   say "$label log scan: pid=$pid1 real_error_count=$real benign_allowlisted_count=$benign"
@@ -499,12 +520,12 @@ cg() { PHONE=emulator-5554; SELFTEST=0; A() { printf '%b' "$FX_OUT"; return "${F
 cgo() { PHONE=emulator-5554; SELFTEST=1; A() { printf 'mCallState=0\n'; }; PCA_SELFTEST_CALLSTATE="$FX_OVR"; call_guard fx; }
 cgo_real() { PHONE=R58XXXX; SELFTEST=0; A() { printf 'mCallState=2\n'; }; PCA_SELFTEST_CALLSTATE=0; call_guard fx; }
 stp() { PHONE=emulator-5554; RETRY_SLEEP=0; A() { case "$*" in *force-stop*) printf '%b' "$FX_FS";; *pidof*) printf '%b' "$FX_PID"; return "${FX_RC:-0}";; esac; }; stop_app; }
-mk() { # extra 'pid|text' lines on top of 6 clean lines of the app pid 4242
-  local i x; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done; for x in "$@"; do tl "${x%%|*}" "${x#*|}"; done
+mk() { # one OLD line (before the install start: proves buffer coverage) + extra 'pid|text' lines on top of 6 clean lines of the app pid 4242
+  local i x; TS=1793999990 tl 1 "old line before the install"; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done; for x in "$@"; do tl "${x%%|*}" "${x#*|}"; done
 }
-tl() { printf '11-18 10:00:00.000  %s  %s E Tag: %s\n' "$1" "$1" "$2"; } # threadtime line: pid text
+tl() { printf '%s.000  %s  %s E Tag: %s\n' "${TS:-1794000010}" "$1" "$1" "$2"; } # threadtime+epoch line: pid text (device install start in the fixtures = 1794000000)
 sl() { # post-install log verification fixture: FX_SNAP = the single snapshot (threadtime), FX_SNAPR = its status, FX_PIDS = pidof outputs in call order (before|after)
-  PHONE=emulator-5554; GO=1; SCAN_SECS=0; TMP="$FXDIR"; : > "$FXDIR/pidn"
+  PHONE=emulator-5554; GO=1; SCAN_SECS=0; TMP="$FXDIR"; INSTALL_T0="${FX_T0-1794000000}"; : > "$FXDIR/pidn"
   A() { shift; case "$*" in
       "logcat -c") return 0 ;;
       *resolve-activity*) printf 'com.x/.Main\n' ;;
@@ -556,7 +577,7 @@ run_fixtures() {
   FXDIR="$(mktemp -d "${TMPDIR:-/tmp}/install-trip-fx.XXXXXX")" || die "no temp dir for fixtures"
   say "fixtures (no adb, no device):"
   local ok='mCallState=0\n'
-  export FX_SNAP FX_SNAPR FX_PID0 FX_PID1 FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
+  export FX_T0 FX_SNAP FX_SNAPR FX_PID0 FX_PID1 FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
   FX_RC=0
   FX_OUT="  mCallState=0\n  mCallState=0\n";            fx "call guard: all slots 0 passes" ok cg
   FX_OUT='mCallState=0junk\n';                          fx "call guard: mCallState=0junk" refuse cg
@@ -604,12 +625,12 @@ run_fixtures() {
   FX_SNAPR=7; fx "logs: snapshot logcat fails (rc 7)" refuse sl; FX_SNAPR=0
   FX_SNAP=''; fx "logs: snapshot returns nothing => UNVERIFIED exit 3" rc3 sl
   FX_SNAP="$(tl 4242 a; tl 4242 b)"; fx "logs: snapshot too short => UNVERIFIED exit 3" rc3 sl
-  FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 999 other; done)"; fx "logs: no line of the app pid => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(TS=1793999990 tl 1 old; for i in 1 2 3 4 5 6; do tl 999 other; done)"; fx "logs: no line of the app pid => UNVERIFIED exit 3" rc3 sl
   FX_SNAP="$(mk '4242|FATAL EXCEPTION: main' '4242|Process: com.x, PID: 4242')"; fx "logs: FATAL EXCEPTION for the app => FAIL exit 3" rc3 sl
   FX_SNAP="$(mk '99|FATAL EXCEPTION: main' '99|Process: com.other, PID: 99')"; fx "logs: FATAL EXCEPTION for another package/pid not counted" ok sl
   FX_SNAP="$(mk '4242|Migration didn t work')"; fx "logs: loose 'Migration didn t' without signature is not an error" ok sl
   FX_SNAP="$(mk '4242|net.zetetic SQLCipher failure' '4242|Room init ok')"; fx "logs: bare SQLCipher / Room words are not errors" ok sl
-  FX_SNAP="$(for i in $(seq 1 17); do tl 4242 'sqlcipher_mlock errno=12'; tl 4242 'Long monitor contention with owner x'; done)"; fx "logs: 34 noise lines => BENIGN-ONLY success" ok sl
+  FX_SNAP="$(TS=1793999990 tl 1 old; for i in $(seq 1 17); do tl 4242 'sqlcipher_mlock errno=12'; tl 4242 'Long monitor contention with owner x'; done)"; fx "logs: 34 noise lines => BENIGN-ONLY success" ok sl
   FX_SNAP="${FX_SNAP}
 $(tl 4242 'E net.zetetic.database.sqlcipher.SQLiteException: Cannot open database')"; fx "logs: noise + one real error (mixed) => FAIL exit 3" rc3 sl
   # one fixture per real signature (each must be FAIL exit 3)
@@ -642,10 +663,31 @@ Unable to open database file
 database disk image is malformed
 ANR in com.x (com.x/.Main)
 Application Not Responding
+android.database.sqlite.SQLiteCantOpenDatabaseException: unknown error (code 14 SQLITE_CANTOPEN): Could not open database
+android.database.sqlite.SQLiteConstraintException: UNIQUE constraint failed
+android.database.sqlite.SQLiteMisuseException: bad parameter
+SQLITE_CANTOPEN
+Could not open database
+unknown error (code 14)
 SIGS
   FX_SNAP="$(mk '4242|Process: com.x, PID: 4242')"; fx "logs: Process: <pkg> crash header => FAIL" rc3 sl
   FX_SNAP="$(mk '1000|ANR in com.x (com.x/.Main)')"; fx "logs: ANR line from system_server (other pid) => FAIL" rc3 sl
   FX_SNAP="$(mk '4242|E sqlcipher_mlock errno=12 SQLiteException: file is not a database')"; fx "logs: allow-listed text on a real-signature line is NOT subtracted => FAIL" rc3 sl
+  # package boundary / subject-aware ANR (non-app-pid lines need the package boundary AND a signature)
+  FX_SNAP="$(mk '1000|Application Not Responding: com.other; waiting on com.x')"; fx "pkg: ANR of another app 'waiting on <pkg>' is not counted" ok sl
+  FX_SNAP="$(mk '1000|ANR in com.x.other (com.x.other/.Main)')"; fx "pkg: ANR in com.x.other is not counted" ok sl
+  FX_SNAP="$(mk '1000|ANR in com.x (com.x/.Main)')"; fx "pkg: ANR in com.x (...) => FAIL" rc3 sl
+  FX_SNAP="$(mk '1000|Application Not Responding: com.x (pid 4242)')"; fx "pkg: Application Not Responding: com.x => FAIL" rc3 sl
+  FX_SNAP="$(mk '1000|no such table: foo in com.x.other')"; fx "pkg: other-pid SQL error mentioning only com.x.other is not counted" ok sl
+  FX_SNAP="$(mk '1000|no such table: foo (com.x)')"; fx "pkg: other-pid SQL error naming the exact package => FAIL" rc3 sl
+  FX_SNAP="$(mk '999|SQLiteCantOpenDatabaseException: code 14')"; fx "pkg: other-pid signature without the package is not counted" ok sl
+  # log coverage (buffer wrap): the oldest retained line must be at or before install start - 2 s
+  FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line newer than the install start (clean tail) => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(TS=1793999998 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line exactly install start - 2 s => CLEAN" ok sl
+  FX_SNAP="$(TS=1793999999 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line 1 s before the install start => UNVERIFIED" rc3 sl
+  FX_SNAP="$(mk)"; fx "coverage: window covered => CLEAN" ok sl
+  FX_SNAP="$(for i in 0 1 2 3 4 5 6; do printf 'no-timestamp  4242  4242 E Tag: line %s\n' "$i"; done)"; fx "coverage: unparseable timestamps => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(mk)"; FX_T0=''; fx "coverage: install start time unknown => UNVERIFIED exit 3" rc3 sl; FX_T0=1794000000
   # restart race (mocked adb: pid sampled before the window, snapshot taken once, pid sampled after)
   FX_SNAP="$(mk)"; FX_PID0='4242\n'; FX_PID1='5555\n'; fx "restart: PID changed => FAIL exit 3" rc3 sl
   FX_PID0=''; FX_PID1='4242\n'; fx "restart: PID absent before the window => FAIL exit 3" rc3 sl
