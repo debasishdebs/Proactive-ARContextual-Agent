@@ -712,8 +712,7 @@ class Hub(
         val shownAt = suggestionCards.value?.takeIf { it.card.id == cardId }?.atMs
         val early = shownAt != null && clock() - shownAt < PlaceCardInfo.SHOW_MS - SUGGESTION_EXPIRY_SLACK_MS
         if (!suggestionClearIf(cardId)) return
-        PcLog.i(TAG, if (early) "suggestion card dismissed on glasses" else "suggestion card expired on glasses")
-        if (early) onSuggestionDismissed(cardId)
+        if (early) { PcLog.i(TAG, "suggestion card dismissed on glasses"); onSuggestionDismissed(cardId) } else PcLog.i(TAG, "suggestion card expired on glasses")
     }
 
     /** The suggestion card as a [Overlay.Nudge] carrying [PlaceCardInfo] (text "title: line" for an older glasses build), or null. Never while a pause zone is approached or enforced (defence in depth; the delivery gate refused too). */
