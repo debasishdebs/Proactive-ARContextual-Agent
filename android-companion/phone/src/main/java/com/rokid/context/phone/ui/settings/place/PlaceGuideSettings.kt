@@ -54,6 +54,17 @@ data class PlaceGuideUiState(
     val pins: List<UserPlace> = emptyList(), val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
 )
 
+/**
+ * A named seed area for a trip: one or more [boxes] (seeded one after the other), its distinct 5 km cell count shown before seeding, and the short label that says the box is approximate.
+ * [help] is the only rule text the app shows ("Check local photography rules."): the rules themselves are in docs/ only.
+ */
+data class SeedPreset(val id: String, val name: String, val boxes: List<GeoBox>, val help: String = "") {
+    val cellCount: Int get() = boxes.flatMap { Geohash5.cellsCovering(it) }.toSet().size
+    val buttonLabel: String get() = "Seed $name ($cellCount cells)"
+    val note: String get() = if (help.isEmpty()) APPROXIMATE else "$APPROXIMATE $help"
+    companion object { const val APPROXIMATE = "Approximate: UNVERIFIED." }
+}
+
 /** What the screen needs from the pack and the switch (production: [PlaceGraph], [PlaceGuideSettings]; tests: fakes). */
 interface PlaceGuideControl {
     var enabled: Boolean
@@ -73,10 +84,26 @@ interface PlaceGuideControl {
 }
 
 object PlaceGuideModel {
+    const val SRI_LANKA_HELP = "Check local photography rules."
     /** Charminar and Golconda (Hyderabad): about 11 km by 15 km, about a dozen 5 km cells. */
     val HYDERABAD = GeoBox(17.34, 78.38, 17.41, 78.52)
     /** Ramoji Film City (23 Nov), 17.2543 N 78.6808 E (Wikidata Q1786944), plus or minus 0.01 degree: one 5 km cell (tepfn), outside [HYDERABAD]. */
     val RAMOJI = GeoBox(17.2443, 78.6708, 17.2643, 78.6908)
+    /**
+     * Trip seed presets (2026-11-18). EVERY box is approximate: UNVERIFIED on the ground. Each is the bounding box of the sites' Wikidata P625 coordinates (read back from wikidata.org on
+     * 2026-11-18, ids in the comments) plus 0.01 degree, rounded outward to 3 decimals. That is tighter than the planned 0.05 to 0.1 degree: one 5 km cell is about 0.044 degree, a 0.1 degree
+     * box already touches 9 to 16 cells, and a seed of a dozen cells is what Wikipedia's rate limit (HTTP 429) tolerates in about 2 minutes. A preset with distant sites has two boxes,
+     * seeded one after the other. Coverage: docs/superpowers/reviews/2026-11/trip-seed-coverage-2026-11-18.md.
+     */
+    val GANGTOK = SeedPreset("gangtok", "Gangtok and surroundings", listOf(GeoBox(27.278, 88.551, 27.361, 88.638))) // Gangtok Q186141, Enchey Q5375417, Do-drul Chorten Q5285886, Rumtek Q1546234, Banjhakri Falls Q23038925
+    val DARJEELING = SeedPreset("darjeeling", "Darjeeling", listOf(GeoBox(27.001, 88.237, 27.059, 88.274), GeoBox(26.984, 88.275, 27.005, 88.296))) // Darjeeling Q169997, Batasia Loop Q4868648, Ghum Monastery Q3320284, Happy Valley Q5653142, Peace Pagoda Q7157413, station Q24949017; Tiger Hill Q16901632
+    val WEST_SIKKIM = SeedPreset("west_sikkim", "Pelling/Yuksom (West Sikkim)", listOf(GeoBox(27.29, 88.223, 27.315, 88.263), GeoBox(27.359, 88.198, 27.384, 88.233))) // Pelling Q7161579, Pemayangtse Q7161856; Yuksom Q839046, Khecheopalri Q3214979
+    val SIGIRIYA = SeedPreset("sigiriya", "Sri Lanka: Sigiriya/Dambulla", listOf(GeoBox(7.946, 80.749, 7.967, 80.77), GeoBox(7.846, 80.638, 7.867, 80.659)), SRI_LANKA_HELP) // Sigiriya Q272153; Dambulla cave temple Q45690
+    val ANURADHAPURA = SeedPreset("anuradhapura", "Sri Lanka: Anuradhapura", listOf(GeoBox(8.325, 80.386, 8.362, 80.421)), SRI_LANKA_HELP) // Anuradhapura Q5724, Ruwanwelisaya Q3534755, Jetavanaramaya Q1961579, Sri Maha Bodhi Q944175
+    val POLONNARUWA = SeedPreset("polonnaruwa", "Sri Lanka: Polonnaruwa", listOf(GeoBox(7.923, 80.99, 7.976, 81.015)), SRI_LANKA_HELP) // Polonnaruwa Q394443, Gal Vihara Q5517744, Vatadage Q7225955
+    val KANDY = SeedPreset("kandy", "Sri Lanka: Kandy", listOf(GeoBox(7.261, 80.585, 7.304, 80.652)), SRI_LANKA_HELP) // Kandy Q203197, Temple of the Tooth Q289175, Peradeniya botanical garden Q3119056
+    val GALLE = SeedPreset("galle", "Sri Lanka: Galle and south coast", listOf(GeoBox(6.017, 80.207, 6.038, 80.228), GeoBox(5.935, 80.419, 5.985, 80.47)), SRI_LANKA_HELP) // Galle Fort Q2507050; Weligama Q3534843, Mirissa Q1345652
+    val TRIP_PRESETS: List<SeedPreset> = listOf(GANGTOK, DARJEELING, WEST_SIKKIM, SIGIRIYA, ANURADHAPURA, POLONNARUWA, KANDY, GALLE)
     const val SEED_NOTE = "Fetches place text (Wikipedia, Wikidata, OpenStreetMap) for the area while you are online. Only 5 km cell keys leave the phone, never your position."
     val BUDGET_CHOICES_MB: List<Int> = PlacePack.BUDGET_CHOICES_MB
     const val PIN_NOTE = "Pins use your position right now (it is not stored or logged apart from the pin itself) and are refused inside or near a pause zone. The name and note are yours: they stay on this phone (not in any backup or device transfer; only a settings export you make yourself contains them), and the note is the card text, labelled \"Your note\". Pins are kept by Delete all, are in the settings export, and are never evicted."
@@ -129,6 +156,24 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         viewModelScope.launch(work) {
             val r = control.seed(box)
             _state.update { it.copy(seeding = false, message = r.getOrElse { "Could not fetch places. Check the connection and try again." }, messageIsError = r.isFailure) }
+            refreshSummary()
+        }
+    }
+
+    /** Seeds a preset's boxes one after the other (never in parallel: Wikipedia's rate limit), stopping at the first failure. */
+    fun seedPreset(preset: SeedPreset) {
+        if (_state.value.seeding) return
+        _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
+        viewModelScope.launch(work) {
+            val msgs = ArrayList<String>()
+            var failure: Throwable? = null
+            for (box in preset.boxes) {
+                val r = control.seed(box)
+                r.onSuccess { msgs += it }.onFailure { failure = it }
+                if (failure != null) break
+            }
+            val text = if (failure != null) "Could not fetch places. Check the connection and try again." else if (msgs.size == 1) msgs[0] else msgs.withIndex().joinToString(" ") { "Part ${it.index + 1} of ${msgs.size}: ${it.value}" }
+            _state.update { it.copy(seeding = false, message = text, messageIsError = failure != null) }
             refreshSummary()
         }
     }
@@ -231,7 +276,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     val state by vm.state.collectAsStateWithLifecycle()
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset))
 }
 
 /** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */
@@ -241,6 +286,7 @@ class PlaceGuideActions(
     val setBudget: (Int) -> Unit = {}, val askClear: () -> Unit = {}, val confirmClear: () -> Unit = {}, val cancelClear: () -> Unit = {},
     val beginPin: () -> Unit = {}, val editPin: (String) -> Unit = {}, val deletePin: (String) -> Unit = {},
     val updatePinDialog: ((PinDialogState) -> PinDialogState) -> Unit = {}, val savePin: () -> Unit = {}, val cancelPin: () -> Unit = {},
+    val seedPreset: (SeedPreset) -> Unit = {},
 )
 
 @Composable
@@ -303,6 +349,10 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 PrimaryAction("Seed this area", { onSeed(PlaceGuideModel.parseBox(s, w, n, e)) }, tag = "seed_area", enabled = !state.seeding)
                 SecondaryAction("Seed Hyderabad (Charminar, Golconda)", { onSeed(PlaceGuideModel.HYDERABAD) }, tag = "seed_hyderabad", enabled = !state.seeding)
                 SecondaryAction("Seed Ramoji Film City (23 Nov)", { onSeed(PlaceGuideModel.RAMOJI) }, tag = "seed_ramoji", enabled = !state.seeding)
+                for (p in PlaceGuideModel.TRIP_PRESETS) {
+                    SecondaryAction(p.buttonLabel, { on.seedPreset(p) }, tag = "seed_preset_${p.id}", enabled = !state.seeding)
+                    NoticeText(p.note, tag = "seed_preset_note_${p.id}")
+                }
                 state.message?.let { NoticeText(it, error = state.messageIsError, tag = "place_guide_message") }
             }
         }
