@@ -188,8 +188,6 @@ enum class PlaceSide {
         const val SHOW_MS = 12_000L
         /** A head-motion onset dismisses a card only once it has been up this long. */
         const val MOTION_DISMISS_AFTER_MS = 2_500L
-        /** v3.1 r6 P1-2: a suggestion card is not shown at all when the phone cannot convert the quiet-hours boundary to the glasses' clock (offset unknown) and the boundary is this close. */
-        const val UNKNOWN_OFFSET_REFUSE_MS = 15_000L
     }
 }
 

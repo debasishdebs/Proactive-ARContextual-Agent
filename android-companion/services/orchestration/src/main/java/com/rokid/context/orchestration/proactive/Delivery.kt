@@ -362,7 +362,7 @@ class SuggestionActions(
      */
     private fun dismissalLine(s: SuggestionStore, r: SuggestionRecord) {
         val ok = try { s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED)) } catch (x: Exception) { false }
-        if (!ok) PcLog.i(TAG, if (s.failClosed()) "dismissal not stored: delivery closed for this process" else "dismissal not stored: held in memory")
+        if (!ok) { if (s.failClosed()) PcLog.i(TAG, "dismissal not stored: delivery closed for this process") else PcLog.i(TAG, "dismissal not stored: held in memory") }
     }
 
     private fun act(id: String, a: FeedbackAction, withdraw: Boolean): Boolean {

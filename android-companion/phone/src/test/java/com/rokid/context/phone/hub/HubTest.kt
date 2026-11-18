@@ -45,6 +45,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
@@ -998,15 +999,30 @@ class HubTest {
         holder.show(sgCard.copy(quietInMs = 3_600_000)); advanceTimeBy(300); assertNull("far from the boundary: no duration cap", (link.lastFrame().overlay as Overlay.Nudge).place!!.maxShowMs)
     }
 
-    @Test fun anUnknownClockOffsetFailsClosedForACardWithinFifteenSecondsOfTheBoundary() = runTest {
+    /** Codex v3.1 r6 P1-1: no usable offset: a quiet-bounded card is never drawn, whatever its distance from the boundary (a late draw could cross it). */
+    @Test fun anUnknownClockOffsetDrawsNoQuietBoundedSuggestionCard() = runTest {
         val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }
         suggestionHub(link, holder); link.emitReady(); runCurrent(); advanceTimeBy(300); link.sent.clear() // no hello: no offset
-        holder.show(sgCard.copy(quietInMs = 14_000)); advanceTimeBy(300)
-        var p = (link.lastFrame().overlay as Overlay.Nudge).place!!
-        assertEquals("not drawn", 0L, p.limitMs()); assertNull("no deadline can be computed", p.hideAtMs)
-        holder.show(sgCard.copy(quietInMs = 60_000)); advanceTimeBy(300)
-        p = (link.lastFrame().overlay as Overlay.Nudge).place!!
-        assertEquals("a boundary a minute away: the plain 12 s card", 12_000L, p.limitMs()); assertNull(p.hideAtMs)
+        for (inMs in listOf(14_000L, 60_000L, 3_600_000L)) {
+            holder.show(sgCard.copy(quietInMs = inMs)); advanceTimeBy(300)
+            val p = (link.lastFrame().overlay as Overlay.Nudge).place!!
+            assertEquals("quietInMs=$inMs: not drawn", 0L, p.limitMs()); assertNull("no deadline can be computed", p.hideAtMs)
+        }
+        holder.show(sgCard.copy(quietInMs = null, quietAtMs = null)); advanceTimeBy(300)
+        assertEquals("a card with no quiet boundary is the plain 12 s card", 12_000L, (link.lastFrame().overlay as Overlay.Nudge).place!!.limitMs())
+    }
+
+    /** Codex v3.1 r6 P1-2: a new hello with a changed glasses clock must not reuse the deadline converted with the old offset. */
+    @Test fun aChangedGlassesClockAtANewHelloRecomputesTheCachedDeadline() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }
+        suggestionHub(link, holder); link.emitReady(); runCurrent(); link.emit(hello(glassesNowMs = now + 500)); runCurrent(); advanceTimeBy(300); link.sent.clear()
+        holder.show(sgCard.copy(quietInMs = 3_600_000)); advanceTimeBy(300)
+        val first = (link.lastFrame().overlay as Overlay.Nudge).place!!.hideAtMs
+        assertEquals(holder.card.value!!.atMs + 3_600_000 + 500 - 3_000, first)
+        link.emit(hello(glassesNowMs = now + testScheduler.currentTime + 100_500)); runCurrent(); advanceTimeBy(1_000) // the glasses clock jumped ~100 s forward (offset +100 s): a new measurement
+        val second = (link.lastFrame().overlay as Overlay.Nudge).place!!.hideAtMs
+        assertNotEquals("the old converted deadline is not reused", first, second)
+        assertTrue("the new one follows the new offset", second!! > first!! + 90_000)
     }
 
     @Test fun aSuggestionCardExpiresAfterTwelveSecondsWithoutFeedback() = runTest {
