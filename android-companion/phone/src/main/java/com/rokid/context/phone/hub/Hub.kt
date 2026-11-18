@@ -701,7 +701,7 @@ class Hub(
         if (c != null) {
             PcLog.i(TAG, "suggestion card up")
             val id = c.card.id
-            suggestionExpiry = scope.launch { delay(PlaceCardInfo.SHOW_MS); suggestionClearIf(id) } // expiry is NOT a dismissal: no feedback
+            suggestionExpiry = scope.launch { delay(suggestionCapMs(c.card.quietInMs)); suggestionClearIf(id) } // expiry is NOT a dismissal: no feedback
         }
         broadcaster.markDirty()
     }
@@ -717,11 +717,14 @@ class Hub(
         if (early) { PcLog.i(TAG, "suggestion card dismissed on glasses"); onSuggestionDismissed(cardId) } else PcLog.i(TAG, "suggestion card expired on glasses")
     }
 
+    /** v3.1 r5 P1-2: the card's life: [PlaceCardInfo.SHOW_MS], cut to end [SUGGESTION_QUIET_MARGIN_MS] before the next quiet-hours start (0 = never drawn). */
+    private fun suggestionCapMs(quietInMs: Long?): Long = minOf(PlaceCardInfo.SHOW_MS, quietInMs?.minus(SUGGESTION_QUIET_MARGIN_MS) ?: PlaceCardInfo.SHOW_MS).coerceAtLeast(0L)
+
     /** The suggestion card as a [Overlay.Nudge] carrying [PlaceCardInfo] (text "title: line" for an older glasses build), or null. Never while a pause zone is approached or enforced (defence in depth; the delivery gate refused too). */
     fun suggestionOverlay(): Overlay? {
         val c = suggestionCards.value?.card ?: return null
         if (zoneApproach() || zoneEnforce()) return null
-        return Overlay.Nudge("${c.title}: ${c.line}", PlaceCardInfo(c.title, c.line, "Suggestion \u00b7 ${c.sourceLabel}", nearby = false, id = c.id, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide())))
+        return Overlay.Nudge("${c.title}: ${c.line}", PlaceCardInfo(c.title, c.line, "Suggestion \u00b7 ${c.sourceLabel}", nearby = false, id = c.id, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide()), maxShowMs = suggestionCapMs(c.quietInMs).takeIf { it < PlaceCardInfo.SHOW_MS }))
     }
 
     private fun overlay(): Overlay? {
@@ -783,6 +786,8 @@ class Hub(
         const val SUGGESTION_ID_PREFIX = "sg_"
         /** A dismissal this close to the 12 s expiry is the expiry (the glasses' own timer), not the wearer. */
         const val SUGGESTION_EXPIRY_SLACK_MS = 1_500L
+        /** The glasses start their own clock a link-latency after the phone: the card ends this long before the quiet-hours start. */
+        const val SUGGESTION_QUIET_MARGIN_MS = 3_000L
         /** How long a withdrawn ask stays in the frames' `withdrawnAskIds`: six heartbeats, so a glasses app that reconnects within it still hears it. */
         const val WITHDRAWN_HINT_MS = 60_000L
         const val WITHDRAWN_MAX = 20

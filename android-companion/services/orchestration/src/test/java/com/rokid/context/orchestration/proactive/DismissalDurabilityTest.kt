@@ -45,6 +45,37 @@ class DismissalDurabilityTest {
         } as SharedPreferences
     }
 
+    /** The ledger file whose commit() fails the next [n] times (Codex v3.1 r4 P1-3). */
+    private fun failing(n: Int): SharedPreferences {
+        var left = n
+        val cl = SharedPreferences::class.java.classLoader
+        return java.lang.reflect.Proxy.newProxyInstance(cl, arrayOf(SharedPreferences::class.java)) { _, m, a ->
+            if (m.name == "edit") {
+                val real = disk.edit()
+                java.lang.reflect.Proxy.newProxyInstance(cl, arrayOf(SharedPreferences.Editor::class.java)) { p, em, ea ->
+                    when (em.name) { "commit" -> if (left > 0) { left--; false } else real.commit(); "apply" -> { real.apply(); null }; else -> { em.invoke(real, *(ea ?: emptyArray())); p } }
+                }
+            } else m.invoke(disk, *(a ?: emptyArray()))
+        } as SharedPreferences
+    }
+
+    @Test fun aTransientLedgerFailureIsRetriedAndTheDismissalBecomesDurable() {
+        val s = PrefsSuggestionStore(failing(2), marker)
+        assertTrue("a later attempt writes it", s.appendLedger(dismissal(1)))
+        assertEquals(1, DeliveryLedger.decode(disk.getString(PrefsSuggestionStore.LEDGER, null)).count { it.kind == LedgerKind.DISMISSED }); assertTrue("no marker left", marker.all.isEmpty())
+    }
+
+    @Test fun whenEveryWriteFailsAndThereIsNoMarkerStoreTheDismissalAndTheKeyStayHeldInMemory() {
+        val s = PrefsSuggestionStore(failing(Int.MAX_VALUE), null) // production can have no marker store at all
+        for (i in 1..5) assertFalse(s.appendLedger(dismissal(i)))
+        assertTrue("five held in memory: delivery stays paused", paused(s))
+        assertFalse("the feedback write fails too", s.recordFeedback(FeedbackAction.DISMISS, "f2:k", ProactiveFamily.PLACE_RECALL, now))
+        assertTrue("the key rests from memory: never re-shown", FeedbackMath.blocked("f2:k", s.feedback(), now + min))
+        for (i in 6..400) s.appendLedger(dismissal(i))
+        assertTrue("held lines are bounded but the newest is kept", s.ledger().any { it.ts == now + 400 * min })
+        s.clearAll(); assertFalse("Delete all drops the memory too", FeedbackMath.blocked("f2:k", s.feedback(), now + min))
+    }
+
     private fun dismissal(i: Int) = LedgerEntry(now + i * min, ProactiveFamily.PLACE_RECALL, LedgerKind.DISMISSED)
     private fun paused(s: SuggestionStore) = DeliveryLedger.pausedUntil(s.ledger()) > now + 10 * min
 

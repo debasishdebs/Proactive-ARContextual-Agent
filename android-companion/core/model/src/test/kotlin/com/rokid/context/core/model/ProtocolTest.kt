@@ -452,6 +452,23 @@ class ProtocolTest {
         assertEquals(1, PROTOCOL_VERSION)
     }
 
+    // Codex v3.1 r4 P1-2: maxShowMs is additive and optional; an old glasses build ignores it, an old phone's card has none; PROTOCOL_VERSION stays 1.
+    // the card as an older build knows it (no maxShowMs)
+    @Serializable private data class OldCard(val title: String, val line: String, val source: String, val nearby: Boolean = false, val id: String? = null)
+    @Serializable private data class OldNudge(val text: String, val place: OldCard? = null)
+
+    @Test fun theGlassesDeadlineFieldIsAdditiveAndIgnoredByAnOldDecoder() {
+        val o = Overlay.Nudge("Golconda: x", PlaceCardInfo("Golconda", "x", "Suggestion", id = "sg_1", maxShowMs = 4_000))
+        val json = Wire.encode<Overlay>(o)
+        assertTrue(json.contains("\"maxShowMs\":4000"))
+        assertEquals(o, assertIs<Decoded.Ok<StateFrame>>(Wire.decode<StateFrame>(Wire.encode(frame(o)))).value.overlay)
+        assertEquals("sg_1", Wire.json.decodeFromString<OldNudge>(json).place!!.id)
+        assertEquals(null, assertIs<Overlay.Nudge>(Wire.json.decodeFromString<Overlay>("""{"kind":"nudge","text":"x: y","place":{"title":"x","line":"y","source":"s"}}""")).place!!.maxShowMs)
+        assertFalse(Wire.encode<Overlay>(Overlay.Nudge("a: b", PlaceCardInfo("a", "b", "s"))).contains("maxShowMs"))
+        assertEquals(12_000L, PlaceCardInfo("a", "b", "s").limitMs()); assertEquals(0L, PlaceCardInfo("a", "b", "s", maxShowMs = -1).limitMs()); assertEquals(12_000L, PlaceCardInfo("a", "b", "s", maxShowMs = 99_999).limitMs())
+        assertEquals(1, PROTOCOL_VERSION)
+    }
+
     // v3.1: a delivered suggestion rides the SAME additive place-card fields (no new wire field; PROTOCOL_VERSION stays 1), both ways.
     @Test fun aSuggestionCardRoundTripsAndOldPeersInteroperate() {
         val o = Overlay.Nudge("Golconda: last visit 12 Nov.", PlaceCardInfo("Golconda", "last visit 12 Nov.", "Suggestion \u00b7 from 2 items \u00b7 12 Nov", nearby = false, id = "sg_0d9f"))

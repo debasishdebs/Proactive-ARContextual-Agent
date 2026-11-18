@@ -480,4 +480,37 @@ class DeliveryTest {
         assertEquals("kept in memory", 5, s.ledger().size); assertTrue(DeliveryLedger.pausedUntil(s.ledger()) > now)
         s.clearAll(); assertTrue(s.ledger().isEmpty())
     }
+
+    // ---- Codex v3.1 r4 P1-1: quiet hours re-checked AT the publication; a boundary crossed after it withdraws at once ------------------------------------------
+
+    private fun nightHud() = NudgeHud(QuietHours(22 * 60, 7 * 60), Verbosity.MEDIUM, zone)
+    private val beforeBoundary get() = now + 10 * 3_600_000L - 1_000L // 21:59:59
+    private val afterBoundary get() = now + 10 * 3_600_000L + 1_000L // 22:00:01
+
+    @Test fun aBoundaryCrossedBetweenTheClaimAndThePublicationShowsNothing() = runBlocking {
+        wantHud = true; hud = nightHud(); clockMs = beforeBoundary; val r = committed()
+        val d = delivery(); d.testBetweenClaimAndPublish = { clockMs = afterBoundary } // the persistence took long enough to cross 22:00
+        val out = d.deliver(r.id, beforeBoundary)
+        assertEquals(Gate.QUIET_HOURS, out[Surface.HUD]); assertTrue("nothing reached the HUD", surfaces.hud.isEmpty())
+    }
+
+    @Test fun aBoundaryCrossedRightAfterThePublicationWithdrawsImmediately() = runBlocking {
+        wantHud = true; hud = nightHud(); clockMs = beforeBoundary; val r = committed()
+        val shown = ArrayList<DeliveredCard>(); val gone = ArrayList<String>()
+        val s = object : SuggestionSurfaces { override fun showHud(card: DeliveredCard): Boolean { shown += card; clockMs = afterBoundary; return true }; override fun withdraw(ids: Collection<String>) { gone += ids } }
+        val mem = MemoryGraph.get(ctx); val g = gen()
+        val watch = QuietBoundaryWatch({ _, _ -> AutoCloseable { } }, { })
+        val d = ProactiveDelivery(mem.db, ProvenanceGate.forGraph(mem), store, { rr, t -> g.render(rr, t) }, seams(), ::wanted, { s }, gate, clock = { clockMs }, publications = pubs, quietWatch = watch)
+        val out = d.deliver(r.id, beforeBoundary)
+        assertEquals(1, shown.size); assertEquals(Gate.WITHDRAWN, out[Surface.HUD]); assertEquals(listOf(r.id), gone); assertTrue(pubs.isWithdrawn(r.id))
+        assertEquals("the cap handed to the surface: 1 s to the boundary", 1_000L, shown.single().quietInMs)
+    }
+
+    @Test fun armingInsideAnActiveQuietWindowFiresAtOnceInsteadOfSchedulingTomorrow() {
+        val sched = ArrayList<Long>(); var fired = 0
+        val w = QuietBoundaryWatch({ dl, _ -> sched += dl; AutoCloseable { } }, { fired++ })
+        w.arm(nightHud(), afterBoundary)
+        assertEquals(1, fired); assertTrue(sched.isEmpty()); assertFalse(w.isArmed())
+        w.arm(nightHud(), now); assertEquals("outside the window: scheduled, not fired", 1, fired); assertEquals(1, sched.size)
+    }
 }

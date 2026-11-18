@@ -986,6 +986,17 @@ class HubTest {
         assertEquals(1, link.lastFrame().v)
     }
 
+    @Test fun aSuggestionCardNearTheQuietBoundaryCarriesAGlassesCapAndTheHubClearsItThen() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val dismissed = ArrayList<String>()
+        suggestionHub(link, holder, dismissed); link.emitReady(); runCurrent(); advanceTimeBy(300); link.sent.clear()
+        holder.show(sgCard.copy(quietInMs = 8_000)); advanceTimeBy(300)
+        val o = link.lastFrame().overlay as Overlay.Nudge
+        assertEquals("5 s: the boundary minus the 3 s margin", 5_000L, o.place!!.maxShowMs); assertEquals(1, link.lastFrame().v)
+        advanceTimeBy(5_500); assertNull("the phone clears at the cap too", holder.card.value); assertTrue(dismissed.isEmpty())
+        holder.show(sgCard.copy(quietInMs = 1_000)); advanceTimeBy(300); assertEquals("inside the margin: 0 = the glasses draw nothing", 0L, (link.lastFrame().overlay as? Overlay.Nudge)?.place?.maxShowMs ?: 0L)
+        holder.show(sgCard.copy(quietInMs = 3_600_000)); advanceTimeBy(300); assertNull("far from the boundary: no field", (link.lastFrame().overlay as Overlay.Nudge).place!!.maxShowMs)
+    }
+
     @Test fun aSuggestionCardExpiresAfterTwelveSecondsWithoutFeedback() = runTest {
         val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val dismissed = ArrayList<String>()
         suggestionHub(link, holder, dismissed); link.emitReady(); runCurrent()
