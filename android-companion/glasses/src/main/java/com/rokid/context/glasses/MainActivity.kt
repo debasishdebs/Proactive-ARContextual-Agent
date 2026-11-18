@@ -251,9 +251,13 @@ class MainActivity : ComponentActivity() {
         if (o is Overlay.Nudge && o.place != null && (controller.settings.value.verbosity == com.rokid.context.core.model.Verbosity.SILENT || runtime.pauses.zoneActive())) return
         val pm = getSystemService(PowerManager::class.java)
         if (!PopupGate.show(o, pm?.isInteractive ?: true, com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied()).nudges)) { runtime.screenWakes.onNudgeSkipped(); return }
+        // v3.1 r6 P1-1/2: a place card lives for what is left of its cap and absolute deadline AT THIS DRAW (not 12 s flat); nothing is drawn when that is 0 or less (the same rule as the HudPresenter).
+        val isPlace = o is Overlay.Nudge && o.place != null
+        val popMs = PopupOverlay.showMs(o!!, System.currentTimeMillis(), controller.settings.value.popupMs())
+        if (isPlace && popMs <= 0L) return
         PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let {
             runtime.screenWakes.onOurUi()
-            runtime.popup.show(it, if (o is Overlay.Nudge && o.place != null) PlaceCardInfo.SHOW_MS else controller.settings.value.popupMs())
+            runtime.popup.show(it, popMs)
             if (o is Overlay.Nudge && o.place != null) placePopup.show(o.place!!, it, System.currentTimeMillis()) else placePopup.gone()
         }
     }
@@ -308,7 +312,7 @@ class MainActivity : ComponentActivity() {
         }
         val todayRows = frame?.today?.size ?: 0
         LaunchedEffect(settings.verbosity, todayRows) { nav = nav.reconcile(pagesFor(settings.verbosity), todayRows) }
-        val view = presenter.present(frame, settings.verbosity, nav, local, now, recording, zoneActive = runtime.pauses.zoneActive())
+        val view = presenter.present(frame, settings.verbosity, nav, local, now, recording, zoneActive = runtime.pauses.zoneActive(), wallMs = System.currentTimeMillis())
         // Place Guide PG3: a card that leaves the screen (12 s, motion, zone, level) tells the phone, which then drops its copy; a replacing card is untouched (the phone matches the card instance id, the title for an older phone).
         val placeCard = (view.overlay as? Overlay.Nudge)?.place
         LaunchedEffect(placeCard) {
@@ -363,7 +367,7 @@ class MainActivity : ComponentActivity() {
         for (input in inputs) {
             val now = System.currentTimeMillis()
             val recording = runtime.listening.value
-            val view = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, recording, zoneActive = runtime.pauses.zoneActive())
+            val view = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, recording, zoneActive = runtime.pauses.zoneActive(), wallMs = System.currentTimeMillis())
             val shown = view.overlay
             confirm.onConfirm(shown as? Overlay.Confirm)
             highlightYes = confirm.highlightYes

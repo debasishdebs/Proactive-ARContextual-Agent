@@ -30,7 +30,9 @@ internal fun ProactiveSeams.commitFenced(ticket: com.rokid.context.memory.place.
 /** A card as a live surface draws it. Built from the LIVE sources by the template at the moment of delivery; never stored. [sources] are the ids the Nexus sink checks again (memory ids, `frame:` cites, mark ids). */
 data class DeliveredCard(val id: String, val title: String, val line: String, val sourceLabel: String, val sources: Set<String>,
     /** Time from publication to the next quiet-hours start (null = no window): the glasses' hard cap is derived from it (v3.1 r5 P1-2). Set at the moment of publication. */
-    val quietInMs: Long? = null)
+    val quietInMs: Long? = null,
+    /** v3.1 r6 P1-2: the same boundary as an ABSOLUTE phone wall-clock instant (epoch ms; null = no window). The phone converts it to the glasses' clock with its measured offset. */
+    val quietAtMs: Long? = null)
 
 /**
  * The live surfaces a delivered suggestion can reach besides the phone feed (which is derived from the store: a delivered, not withdrawn record IS the feed card). Every call is synchronous, cheap and never throws;
@@ -160,6 +162,7 @@ class ProactiveDelivery(
         if (stored == null || publications.isWithdrawn(record.id)) return all(Gate.WITHDRAWN, pending)
         if (seams.zoneGuard.blocked()) return all(Gate.ZONE, pending)
         if (pausedNow()) return all(Gate.PAUSE, pending)
+        if (store.failClosed()) return all(Gate.DISMISS_PAUSE, pending) // r6 P1-3: a dismissal could not be stored anywhere: nothing is delivered for the rest of this process
         if (localMidnight(nowMs, hud) != localMidnight(entryMs, hud)) return all(Gate.COMMIT, pending) // the day turned during the reads: the nudge count is stale
         if (record.key in store.never() || FeedbackMath.blocked(record.key, store.feedback(), nowMs)) return all(Gate.FEEDBACK, pending)
         val budgetGate = budget.check(record.key, record.family, BudgetState(live.filter { it.id != record.id }, globalToday, seams.globalCap(), store.ledger()), hud, nowMs)
@@ -206,7 +209,8 @@ class ProactiveDelivery(
             // v3.1 r5 P1-1: quiet hours judged AGAIN at the moment of publication on a fresh clock (the persistence above may have crossed the boundary); fail closed when the host is unreadable
             val now = clock(); val hud = try { seams.hud() } catch (e: Exception) { null }
             if (hud == null || quiet(hud, now)) { quietHit = true; false } else {
-                val live = card.copy(quietInMs = hud.quietHours?.let { q -> QuietBoundaryWatch.nextQuietStart(q, now, hud.zone)?.minus(now) })
+                val boundary = hud.quietHours?.let { q -> QuietBoundaryWatch.nextQuietStart(q, now, hud.zone) }
+                val live = card.copy(quietInMs = boundary?.minus(now), quietAtMs = boundary)
                 shown = when (s) { Surface.PHONE -> true; Surface.HUD -> surfaces().showHud(live); Surface.NEXUS -> surfaces().showNexus(live) }
                 shown
             }
@@ -248,7 +252,7 @@ class ProactiveDelivery(
     private fun publishCheck(id: String, surface: Surface): Boolean {
         if (!wanted(surface) || publications.isWithdrawn(id)) return false
         val hud = seams.hud() ?: return false
-        if (seams.zoneGuard.blocked() || pausedNow() || quiet(hud, clock())) return false
+        if (seams.zoneGuard.blocked() || pausedNow() || quiet(hud, clock()) || store.failClosed()) return false
         if (surface != Surface.PHONE && !seams.worn()) return false
         val nexus = seams.nexusHost()
         if (surface == Surface.HUD && (nexus || hud.verbosity == Verbosity.SILENT)) return false
@@ -344,7 +348,7 @@ class SuggestionActions(
     fun never(id: String): Boolean {
         val s = store(); val r = s.records().firstOrNull { it.id == id } ?: return false
         publications.withdraw(listOf(id))
-        s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED)) // write-ahead (r3 P1-3): the dismissal is durable (or its marker is) before anything else
+        dismissalLine(s, r) // write-ahead (r3 P1-3): the dismissal is durable (or its marker is) before anything else
         val ok = s.addNever(r.key)
         s.recordFeedback(FeedbackAction.NEVER, r.key, r.family, clock())
         withdraw(id)
@@ -352,10 +356,19 @@ class SuggestionActions(
     }
     fun thumb(id: String, up: Boolean): Boolean = act(id, if (up) FeedbackAction.UP else FeedbackAction.DOWN, withdraw = false)
 
+    /**
+     * r6 P1-3: the dismissal line. A failed write is held in memory by the store (this process stays paused); when not even a marker could be written the store also closes delivery for the rest of the process
+     * ([SuggestionStore.failClosed]). The card is withdrawn either way (the wearer dismissed it). A restart after such a total failure cannot recover the pause: nothing was stored (unavoidable without storage).
+     */
+    private fun dismissalLine(s: SuggestionStore, r: SuggestionRecord) {
+        val ok = try { s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED)) } catch (x: Exception) { false }
+        if (!ok) PcLog.i(TAG, if (s.failClosed()) "dismissal not stored: delivery closed for this process" else "dismissal not stored: held in memory")
+    }
+
     private fun act(id: String, a: FeedbackAction, withdraw: Boolean): Boolean {
         val s = store(); val r = s.records().firstOrNull { it.id == id } ?: return false
         if (withdraw) publications.withdraw(listOf(id))
-        if (a == FeedbackAction.DISMISS) s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED)) // write-ahead (r3 P1-3): durable, or fail closed with a marker, BEFORE the card is withdrawn
+        if (a == FeedbackAction.DISMISS) dismissalLine(s, r) // write-ahead (r3 P1-3): durable, or fail closed with a marker, BEFORE the card is withdrawn
         val ok = s.recordFeedback(a, r.key, r.family, clock())
         if (withdraw) withdraw(id)
         return ok

@@ -27,6 +27,8 @@ data class HudView(val page: HudPage?, val overlay: Overlay?)
 class HudPresenter {
     private var shown: Overlay? = null
     private var shownAtMs = 0L
+    /** v3.1 r6 P1-2: a place card's lifetime fixed at its FIRST DRAW from its absolute deadline (null = the plain [limitMs]). */
+    private var shownLimitMs: Long? = null
     private var dismissed: Overlay? = null
     /** The last Answer the wearer dismissed, without its undo (BUG-R2-5): the undo coming or going does not revive it. */
     private var dismissedAnswer: Overlay.Answer? = null
@@ -62,18 +64,18 @@ class HudPresenter {
      * an undo outranks it (the phone refused or ended the ask); a Confirm waits under it (votes need it on screen, final
      * review I1) and local toasts wait too.
      */
-    fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long, recording: Boolean = false, zoneActive: Boolean = false): HudView {
+    fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long, recording: Boolean = false, zoneActive: Boolean = false, wallMs: Long? = null): HudView {
         val pages = pagesFor(verbosity)
         val page = if (pages.isEmpty()) null else nav.page.takeIf { it in pages } ?: HudPage.GLANCE
         // Place Guide defence in depth: never a place card while a pause zone is active, whatever the phone sent.
         val phone = visibleOf(frame?.overlay)?.takeIf { allowed(it, verbosity) && !(zoneActive && it.isPlace()) }
-        if (phone != shown) { shown = phone; shownAtMs = nowMs; held = null }
+        if (phone != shown) { shown = phone; shownAtMs = nowMs; held = null; shownLimitMs = (phone as? Overlay.Nudge)?.place?.let { c -> wallMs?.let { c.remainingMs(it) } } }
         // Head-motion onset (after the card has been up at least 2.5 s) dismisses it through the ordinary dismissal: the same card never returns.
-        if (phone != null && phone.isPlace() && MotionOnset.dismisses(motion.lastOnsetAtMs, shownAtMs, nowMs)) { dismiss(phone); shown = null; return present(frame, verbosity, nav, local, nowMs, recording, zoneActive) }
+        if (phone != null && phone.isPlace() && MotionOnset.dismisses(motion.lastOnsetAtMs, shownAtMs, nowMs)) { dismiss(phone); shown = null; return present(frame, verbosity, nav, local, nowMs, recording, zoneActive, wallMs) }
         // Final review I1: a live Confirm hidden under the glasses' Listening is held; its window restarts when it shows.
         if (recording && phone is Overlay.Confirm && held == null && nowMs - shownAtMs < limitMs(phone)) held = phone
         if (held != null && !recording) { shownAtMs = nowMs; held = null }
-        val phoneVisible = phone?.takeIf { nowMs - shownAtMs < limitMs(it) }
+        val phoneVisible = phone?.takeIf { nowMs - shownAtMs < (shownLimitMs?.takeIf { _ -> it.isPlace() } ?: limitMs(it)) }
         val localVisible = when (local) {
             is LocalOverlay.Toast -> Overlay.Toast(local.text).takeIf { nowMs - local.atMs < TOAST_MS }
             is LocalOverlay.Splash -> Overlay.PausedSplash.takeIf { nowMs - local.atMs < SPLASH_MS }

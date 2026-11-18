@@ -4,6 +4,7 @@ import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Health
 import com.rokid.context.core.model.HudPage
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.core.model.PlaceCardInfo
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Verbosity
 import kotlin.test.Test
@@ -246,5 +247,15 @@ class HudPresenterTest {
 
     @Test fun aPlainNudgeStillNeedsMax() {
         assertNull(HudPresenter().present(frame(nudge), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
+    }
+
+    // v3.1 r6 P1-2: the deadline is fixed at the FIRST DRAW from the glasses' wall clock
+    @Test fun aDelayedFirstDrawOfACardWithADeadlineShowsOnlyWhatIsLeft() {
+        val card = Overlay.Nudge("a: b", PlaceCardInfo("a", "b", "s", maxShowMs = 7_000, hideAtMs = 1_000_000))
+        val p = HudPresenter()
+        assertEquals(card, p.present(frame(card), Verbosity.MEDIUM, HudNav(), null, 10_000, wallMs = 998_000).overlay)
+        assertEquals(card, p.present(frame(card), Verbosity.MEDIUM, HudNav(), null, 11_999, wallMs = 999_999).overlay)
+        assertNull(p.present(frame(card), Verbosity.MEDIUM, HudNav(), null, 12_000, wallMs = 1_000_000).overlay, "2 s after the late first draw it is gone, not 7")
+        assertNull(HudPresenter().present(frame(card), Verbosity.MEDIUM, HudNav(), null, 0, wallMs = 1_000_001).overlay, "first drawn after the boundary: never")
     }
 }

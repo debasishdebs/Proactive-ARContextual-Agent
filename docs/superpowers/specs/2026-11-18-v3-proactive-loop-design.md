@@ -157,3 +157,8 @@ Totals: v3.0 ≈ 46 Ah, v3.1 ≈ 14 Ah, v3.2 ≈ 9 Ah, v3.3 ≈ 10 Ah, v3.4 ≈ 
 8. Shadow: **7 worn days of shadow before delivery is switched on**, or ship F2 delivery straight away?
 9. LLM nudges: **coexist with a shared cap and source-overlap dedupe**, or turn the built-in LLM nudge off when Suggestions is on?
 10. Driving: **no HUD while in a vehicle episode, F1 on the phone only**, or drop everything while driving?
+
+## v3.1 r6 addendum (Codex r5 P1s)
+
+- Glasses card lifetime: `PlaceCardInfo.hideAtMs` (additive, optional; PROTOCOL_VERSION stays 1) is an absolute quiet-hours deadline in the GLASSES wall clock. The glasses hold no clock offset; the phone converts the boundary with its hello-measured offset (the one it uses for pauses), minus a 3 s slack. The glasses evaluate `remainingMs(now)` at the first draw (pop-up and HUD), clamped to 0..12 s; 0 draws nothing. `maxShowMs` stays as the duration fallback. Offset unknown: fail closed, a boundary within 15 s means the card is not drawn.
+- Dismissal durability: when the ledger write, the marker file and the marker fallback ALL fail, the store sets a process-lifetime fail-closed flag (never reset, not even by Delete all): no suggestion is delivered for the rest of the process, the in-memory hold stays, and a full hold trips the flag instead of silently dropping the oldest. A restart after such a total storage failure CANNOT recover the pause: nothing was written (unavoidable without storage).
