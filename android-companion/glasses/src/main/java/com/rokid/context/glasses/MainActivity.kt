@@ -253,7 +253,7 @@ class MainActivity : ComponentActivity() {
         if (!PopupGate.show(o, pm?.isInteractive ?: true, com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied()).nudges)) { runtime.screenWakes.onNudgeSkipped(); return }
         // v3.1 r6 P1-1/2: a place card lives for what is left of its cap and absolute deadline AT THIS DRAW (not 12 s flat); nothing is drawn when that is 0 or less (the same rule as the HudPresenter).
         val isPlace = o is Overlay.Nudge && o.place != null
-        val popMs = PopupOverlay.showMs(o!!, System.currentTimeMillis(), controller.settings.value.popupMs())
+        val popMs = PopupOverlay.showMs(o, System.currentTimeMillis(), controller.settings.value.popupMs())
         if (isPlace && popMs <= 0L) return
         PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let {
             runtime.screenWakes.onOurUi()

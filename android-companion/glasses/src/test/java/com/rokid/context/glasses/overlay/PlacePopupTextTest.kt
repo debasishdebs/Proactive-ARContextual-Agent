@@ -30,5 +30,7 @@ class PlacePopupTextTest {
         assertEquals("drawn 5 s late: only 2 s left, not 7", 2_000L, PopupOverlay.showMs(c, 998_000, 8_000))
         assertEquals("at the boundary: nothing", 0L, PopupOverlay.showMs(c, 1_000_000, 8_000)); assertEquals("after it: nothing", 0L, PopupOverlay.showMs(c, 1_050_000, 8_000))
     }
+    /** The r6 NPE: onPhoneOverlay is called with null when the phone's overlay clears; it must not throw (it leaked into the next Robolectric test as UncaughtExceptionsBeforeTest). */
+    @Test fun aClearedOverlayIsNotAnNpe() = assertEquals(8_000L, PopupOverlay.showMs(null, 0, 8_000))
     @Test fun aPlainNudgeKeepsTheUserPopupTime() = assertEquals(8_000L, PopupOverlay.showMs(Overlay.Nudge("Leave now"), 0, 8_000))
 }

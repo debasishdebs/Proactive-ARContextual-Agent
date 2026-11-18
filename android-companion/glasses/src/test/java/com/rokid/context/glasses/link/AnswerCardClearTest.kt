@@ -3,6 +3,11 @@ package com.rokid.context.glasses.link
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.log.Level
+import com.rokid.context.core.log.Line
+import com.rokid.context.core.log.LogSink
+import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.log.Route
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Health
@@ -36,7 +41,16 @@ class AnswerCardClearTest {
     private var seq = 1L
     private val answer = Overlay.Answer("where did I keep my shoes", "Shoes are on the floor.", speaking = true, askId = "ask_1")
 
-    @Before fun clearLogs() = ShadowLog.clear()
+    /** PcLog is process-wide: with no sink installed the milestone lines wait in its ring and ShadowLog stays empty, so these tests depended on which test ran before (found when Gradle ran this class first). Same bridge as HudControllerTest. */
+    @Before fun installLogBridge() {
+        PcLog.testOnlyResetNeverCallFromProduction()
+        PcLog.setDiagnostic(true)
+        check(PcLog.install(object : LogSink {
+            override fun emit(line: Line, route: Route) { if (route.logcat) android.util.Log.println(when (line.level) { Level.D -> android.util.Log.DEBUG; Level.I -> android.util.Log.INFO; Level.W -> android.util.Log.WARN; Level.E -> android.util.Log.ERROR }, line.tag, line.msg) }
+        }))
+        ShadowLog.clear()
+    }
+    @org.junit.After fun removeLogBridge() { PcLog.testOnlyResetNeverCallFromProduction() }
 
     /** The answer-card lines (milestones: an I line, so logcat carries them as well as the file). */
     private fun milestones() = ShadowLog.getLogs().filter { it.tag == HudController.TAG && it.msg.startsWith("answer card cleared") }.map { it.msg }

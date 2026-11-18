@@ -73,7 +73,7 @@ class PopupOverlay(private val context: Context, private val windowManager: Wind
          * v3.1 r6 P1-1/2: how long a minimised pop-up for [o] may show if it is drawn at [glassesNowMs]: a place card gets what is left of its cap and absolute deadline at THIS draw
          * ([com.rokid.context.core.model.PlaceCardInfo.remainingMs]; 0 = draw nothing, the same rule as the HudPresenter); any other overlay gets [defaultMs].
          */
-        fun showMs(o: Overlay, glassesNowMs: Long, defaultMs: Long): Long = (o as? Overlay.Nudge)?.place?.remainingMs(glassesNowMs) ?: defaultMs
+        fun showMs(o: Overlay?, glassesNowMs: Long, defaultMs: Long): Long = (o as? Overlay.Nudge)?.place?.remainingMs(glassesNowMs) ?: defaultMs
 
         const val TAG = "PcGlasses"
         const val WINDOW_TITLE = "PcPopup"
