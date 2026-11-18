@@ -152,3 +152,9 @@ Total ≈ 15 Sd across 9 working days. **Cut line if late**: the hub fix and pau
 8. Release-key rotation after Sri Lanka (1.3.0).
 Build constraint: Gradle runs one build at a time on this laptop (it was swapping), so writing code can be parallel but building and testing is serial.
 
+
+## B2: card placement (left / centre / right)
+
+Settings > Place Guide > Card position (Developer mode only; read by the hub only while Developer mode is on, else CENTRE). Carried as the additive optional `PlaceCardInfo.side` ("LEFT" or "RIGHT"; absent = CENTRE, so the default frame is byte-for-byte the pre-B2 frame). PROTOCOL_VERSION stays 1: an older glasses build ignores the field, a new one reads absent or unknown as CENTRE. Layout math: `PlaceCardLayout` (core:hud), pure and unit-tested. The glasses display read with read-only adb on 2026-11-18 is 480x640 px at 240 dpi (240x320 dp).
+
+**The visible area / field of view was NOT measured.** The margins (24 dp) and the side width (60 percent of the display, clamped inside it) are conservative guesses; the final side offsets must be tuned worn. Only the HUD card honours the side; the minimised pop-up (PopupOverlay) is unchanged.

@@ -49,7 +49,7 @@ import kotlinx.coroutines.launch
 data class PinDialogState(val editingId: String? = null, val parents: List<ParentChoice> = emptyList(), val name: String = "", val kindIndex: Int = 0, val radius: String = UserPlace.DEFAULT_RADIUS_M.toString(), val parentIndex: Int = 0, val note: String = "", val error: String? = null)
 
 data class PlaceGuideUiState(
-    val enabled: Boolean = false, val seeding: Boolean = false, val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
+    val enabled: Boolean = false, val cardSide: com.rokid.context.core.model.PlaceSide = com.rokid.context.core.model.PlaceSide.CENTRE, val developerMode: Boolean = false, val seeding: Boolean = false, val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
     val stats: PackStats? = null, val budgetMb: Int = 50, val confirmClear: Boolean = false,
     val pins: List<UserPlace> = emptyList(), val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
 )
@@ -75,6 +75,10 @@ interface PlaceGuideControl {
     suspend fun summary(): String
     /** The pack's counts and bytes (null = unavailable). */
     suspend fun stats(): PackStats? = null
+    /** HUD card position (B2). Not on the wire unless changed from CENTRE. */
+    var cardSide: com.rokid.context.core.model.PlaceSide
+        get() = com.rokid.context.core.model.PlaceSide.CENTRE
+        set(@Suppress("UNUSED_PARAMETER") v) {}
     var budgetMb: Int
         get() = 50
         set(@Suppress("UNUSED_PARAMETER") v) {}
@@ -136,6 +140,9 @@ object PlaceGuideModel {
         PinRefusal.NOT_STORED -> "The pin could not be saved."
     }
 
+    val SIDE_LABELS = listOf("Left", "Centre", "Right")
+    const val SIDE_NOTE = "Where the card sits on the glasses. The visible area of the glasses was not measured: the margins are cautious and the side must be tuned while worn."
+
     const val ZONE_NOTE = "Place cards stay off whenever a pause zone is active or you are near one."
 
     /** "south, west, north, east" in degrees; null when not four numbers or not a valid box. */
@@ -146,11 +153,14 @@ object PlaceGuideModel {
     }
 }
 
-class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO) : ViewModel() {
-    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, budgetMb = control.budgetMb))
+class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false) : ViewModel() {
+    private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb))
     val state: StateFlow<PlaceGuideUiState> = _state
 
     init { refreshSummary() }
+
+    /** Where the glasses HUD shows the place card; only offered in Developer mode. */
+    fun setCardSide(side: com.rokid.context.core.model.PlaceSide) { control.cardSide = side; _state.update { it.copy(cardSide = side) } }
 
     fun setEnabled(on: Boolean) { control.enabled = on; _state.update { it.copy(enabled = on) } }
 
@@ -283,12 +293,12 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 }
 
 @Composable
-fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }) {
-    val vm = viewModel { PlaceGuideViewModel(control) }
+fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }, developerMode: Boolean = false) {
+    val vm = viewModel { PlaceGuideViewModel(control, developerMode = developerMode) }
     val state by vm.state.collectAsStateWithLifecycle()
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide))
 }
 
 /** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */
@@ -299,6 +309,7 @@ class PlaceGuideActions(
     val beginPin: () -> Unit = {}, val editPin: (String) -> Unit = {}, val deletePin: (String) -> Unit = {},
     val updatePinDialog: ((PinDialogState) -> PinDialogState) -> Unit = {}, val savePin: () -> Unit = {}, val cancelPin: () -> Unit = {},
     val seedPreset: (SeedPreset) -> Unit = {},
+    val setCardSide: (com.rokid.context.core.model.PlaceSide) -> Unit = {},
 )
 
 @Composable
@@ -310,6 +321,13 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 SwitchRow("Place Guide", "Names the monument you are looking at after you pause on it", state.enabled, onEnabled, tag = "place_guide_switch")
                 NoticeText(PlaceGuideModel.ZONE_NOTE, tag = "place_guide_zone_note")
                 if (state.packSummary.isNotEmpty()) NoticeText(state.packSummary, tag = "place_guide_pack")
+            }
+        }
+        if (state.developerMode) item {
+            SettingsCard {
+                Text("Card position (Developer)", style = MaterialTheme.typography.titleMedium)
+                ChoiceRow("Position", PlaceGuideModel.SIDE_LABELS, state.cardSide.ordinal, { on.setCardSide(com.rokid.context.core.model.PlaceSide.entries[it]) }, tag = "place_card_side")
+                NoticeText(PlaceGuideModel.SIDE_NOTE, tag = "place_card_side_note")
             }
         }
         item {

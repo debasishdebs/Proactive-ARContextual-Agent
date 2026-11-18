@@ -141,11 +141,27 @@ sealed interface Overlay {
     @Serializable @SerialName("toast") data class Toast(val text: String, val undoProposalId: String? = null) : Overlay
 }
 
+/** Where the Place Guide card sits on the glasses HUD (B2). Default [CENTRE] (the layout before B2). */
+enum class PlaceSide {
+    LEFT, CENTRE, RIGHT;
+    companion object {
+        /** Wire value for a side: null for [CENTRE] (nothing is sent), else the name. */
+        fun toWire(side: PlaceSide): String? = if (side == CENTRE) null else side.name
+        /** A wire value back to a side; null, blank or an unknown value is [CENTRE] (never fails). */
+        fun parse(wire: String?): PlaceSide = entries.firstOrNull { it.name == wire } ?: CENTRE
+    }
+}
+
 /** Place Guide card on the wire (PG3). [line] is at most 140 chars, built from the place pack; [nearby] = only the nearest place, not checked against the photo. */
 @Serializable data class PlaceCardInfo(
     val title: String, val line: String, val source: String, val nearby: Boolean = false,
     /** Additive: this card instance (the phone numbers every published card); null from an old phone. A dismissal names it so a later card with the same title is never cleared by it. */
     val id: String? = null,
+    /**
+     * Additive, optional (B2, PROTOCOL_VERSION stays 1): where the HUD card sits, a [PlaceSide] name ("LEFT" or "RIGHT"). Null = the centre, the layout before B2; the phone sends null for CENTRE so the
+     * default frame is byte-for-byte unchanged. An older glasses build ignores it (ignoreUnknownKeys); a new one reads it with [PlaceSide.parse] (absent or unknown = CENTRE).
+     */
+    val side: String? = null,
 ) {
     companion object {
         /** How long the glasses show a card; the phone clears its copy at the same time. */

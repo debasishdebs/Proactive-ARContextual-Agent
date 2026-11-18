@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +24,8 @@ import com.rokid.context.core.hud.Label
 import com.rokid.context.core.hud.OutlinedBox
 import com.rokid.context.core.hud.Scaled
 import com.rokid.context.core.model.HudPage
+import com.rokid.context.core.model.Overlay
+import com.rokid.context.core.model.PlaceSide
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.StateFrame
 
@@ -76,7 +80,14 @@ fun HudRoot(m: HudModel) {
             }
         }
         val overlay = m.view.overlay
-        if (overlay != null) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)) { OverlayView(overlay, m.confirmHighlightYes, m.recording) }
+        val placeSide = (overlay as? Overlay.Nudge)?.place?.let { PlaceSide.parse(it.side) } ?: PlaceSide.CENTRE
+        if (overlay != null && placeSide == PlaceSide.CENTRE) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)) { OverlayView(overlay, m.confirmHighlightYes, m.recording) }
+        else if (overlay != null) BoxWithConstraints(Modifier.fillMaxSize()) {
+            // B2: a LEFT or RIGHT place card; the geometry is PlaceCardLayout (unmeasured FOV: tune worn)
+            val box = PlaceCardLayout.compute(placeSide, maxWidth.value)
+            val edge = if (box.side == PlaceSide.LEFT) Modifier.align(Alignment.BottomStart).padding(start = box.insetDp.dp) else Modifier.align(Alignment.BottomEnd).padding(end = box.insetDp.dp)
+            Box(edge.padding(bottom = 24.dp).let { mod -> box.widthDp?.let { mod.width(it.dp) } ?: mod }, contentAlignment = if (box.side == PlaceSide.LEFT) Alignment.TopStart else Alignment.TopEnd) { OverlayView(overlay, m.confirmHighlightYes, m.recording) }
+        }
     }
 }
 

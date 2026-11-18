@@ -24,6 +24,10 @@ class AndroidPlaceGuideControl(
         get() = settings.enabled
         set(v) { settings.enabled = v; changed(app) }
 
+    override var cardSide: com.rokid.context.core.model.PlaceSide
+        get() = settings.cardSide
+        set(v) { settings.cardSide = v }
+
     override var budgetMb: Int
         get() = settings.budgetMb
         set(v) { settings.budgetMb = v }

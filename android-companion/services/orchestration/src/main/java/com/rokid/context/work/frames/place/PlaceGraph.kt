@@ -93,6 +93,11 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         get() = prefs.getInt(BUDGET_KEY, DEFAULT_BUDGET_MB).takeIf { it in PlacePack.BUDGET_CHOICES_MB } ?: DEFAULT_BUDGET_MB
         set(v) { if (v in PlacePack.BUDGET_CHOICES_MB) prefs.edit().putInt(BUDGET_KEY, v).apply() }
 
+    /** B2: where the glasses HUD shows the place card ([com.rokid.context.core.model.PlaceSide.CENTRE] by default; the setting lives in Developer mode). A stored unknown value reads as CENTRE. */
+    var cardSide: com.rokid.context.core.model.PlaceSide
+        get() = com.rokid.context.core.model.PlaceSide.parse(prefs.getString(SIDE_KEY, null))
+        set(v) { prefs.edit().putString(SIDE_KEY, v.name).apply() }
+
     var enabled: Boolean
         get() = prefs.getBoolean(KEY, false)
         set(v) { prefs.edit().putBoolean(KEY, v).apply(); if (!v) PlaceGraph.fence.trip() }
@@ -101,6 +106,7 @@ class PlaceGuideSettings private constructor(private val prefs: android.content.
         const val PREFS = "place_guide"
         private const val KEY = "enabled"
         private const val BUDGET_KEY = "budgetMb"
+        private const val SIDE_KEY = "cardSide"
         const val DEFAULT_BUDGET_MB = 50
         fun of(context: Context) = PlaceGuideSettings(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
         fun over(prefs: android.content.SharedPreferences) = PlaceGuideSettings(prefs)

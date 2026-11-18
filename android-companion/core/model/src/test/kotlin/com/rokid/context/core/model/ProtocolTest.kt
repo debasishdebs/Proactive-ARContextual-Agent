@@ -394,6 +394,32 @@ class ProtocolTest {
         assertEquals("Charminar: A monument.", Wire.json.decodeFromString<LegacyNudge>(json).text)
     }
 
+    // B2: the card side is an additive optional field of PlaceCardInfo; PROTOCOL_VERSION stays 1.
+    @Serializable private data class OldPlaceCard(val title: String, val line: String, val source: String, val nearby: Boolean = false, val id: String? = null)
+    @Serializable private data class OldPlaceNudge(val text: String, val place: OldPlaceCard? = null)
+
+    @Test fun placeSideRoundTripsAndCentreSendsNothing() {
+        assertEquals(1, PROTOCOL_VERSION)
+        for (side in PlaceSide.entries) {
+            val o = Overlay.Nudge("A: b", PlaceCardInfo("A", "b", "s", id = "c1", side = PlaceSide.toWire(side)))
+            val back = assertIs<Decoded.Ok<StateFrame>>(Wire.decode<StateFrame>(Wire.encode(frame(o)))).value.overlay as Overlay.Nudge
+            assertEquals(side, PlaceSide.parse(back.place!!.side))
+        }
+        val centre = Wire.encode<Overlay>(Overlay.Nudge("A: b", PlaceCardInfo("A", "b", "s", id = "c1", side = PlaceSide.toWire(PlaceSide.CENTRE))))
+        assertFalse(centre.contains("side")) // byte-for-byte the pre-B2 frame
+        assertEquals(Wire.encode<Overlay>(Overlay.Nudge("A: b", PlaceCardInfo("A", "b", "s", id = "c1"))), centre)
+        assertTrue(Wire.encode<Overlay>(Overlay.Nudge("A: b", PlaceCardInfo("A", "b", "s", side = "LEFT"))).contains("\"side\":\"LEFT\""))
+    }
+
+    @Test fun anOldGlassesDecoderIgnoresSideAndANewOneDefaultsToCentre() {
+        val withSide = Wire.encode<Overlay>(Overlay.Nudge("A: b", PlaceCardInfo("A", "b", "s", id = "c1", side = "RIGHT")))
+        val old = Wire.json.decodeFromString<OldPlaceNudge>(withSide) // an older build's PlaceCardInfo has no `side`
+        assertEquals("c1", old.place!!.id); assertEquals("A: b", old.text)
+        val absent = Wire.json.decodeFromString<Overlay>("""{"kind":"nudge","text":"A: b","place":{"title":"A","line":"b","source":"s"}}""") as Overlay.Nudge
+        assertEquals(null, absent.place!!.side); assertEquals(PlaceSide.CENTRE, PlaceSide.parse(absent.place!!.side))
+        assertEquals(PlaceSide.CENTRE, PlaceSide.parse("UP")); assertEquals(PlaceSide.CENTRE, PlaceSide.parse(""))
+    }
+
     @Test fun anOldPhoneNudgeHasNoPlace() {
         val n = assertIs<Overlay.Nudge>(Wire.json.decodeFromString<Overlay>("""{"kind":"nudge","text":"Leave in 10 min"}"""))
         assertEquals(null, n.place); assertEquals(Overlay.Nudge("Leave in 10 min"), n)
