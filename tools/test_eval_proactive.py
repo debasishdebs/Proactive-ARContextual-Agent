@@ -52,6 +52,20 @@ class Metrics(unittest.TestCase):
         self.assertIn("RESULT: PASS", ev.report(ev.score([day([card("a")], {"a": "useful"})])))
 
 
+class Delivery(unittest.TestCase):
+    def test_counters_are_reported_but_never_a_bar(self):
+        d = day([card("a")], {"a": "useful"}, ["a"])
+        d["resp"]["delivery"] = {"delivered": {"phone": 2, "hud": 1}, "dropped": {"wear": 3}, "feedback": {"dismiss": 1}}
+        m = ev.score([d])
+        self.assertEqual({"phone": 2, "hud": 1}, m["delivery"]["delivered"]); self.assertTrue(all(m["pass"].values()), m)
+        text = ev.report(m)
+        self.assertIn("delivered hud=1 phone=2 | dropped wear=3 | feedback dismiss=1", text); self.assertIn("RESULT: PASS", text)
+
+    def test_an_older_phone_without_the_field_reports_none(self):
+        m = ev.score([day([card("a")], {"a": "useful"})])
+        self.assertEqual({"delivered": {}, "dropped": {}, "feedback": {}}, m["delivery"]); self.assertIn("delivered none | dropped none | feedback none", ev.report(m))
+
+
 class Files(unittest.TestCase):
     def test_load_day_and_bad_verdict(self):
         with tempfile.TemporaryDirectory() as d:

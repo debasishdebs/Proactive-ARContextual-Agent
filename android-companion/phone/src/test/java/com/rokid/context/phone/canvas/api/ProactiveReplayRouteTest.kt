@@ -63,6 +63,14 @@ class ProactiveReplayRouteTest {
         assertTrue(o["notReplayed"]!!.jsonArray.map { it.jsonPrimitive.content }.containsAll(listOf("PAUSE", "ZONE", "WEAR", "DRIVING")))
     }
 
+    @Test fun theAnswerReportsTheDeliveryCountersAndNothingElseOfTheStore() {
+        val r = ProactiveReplayRoute(dev, flag, { d, s, e -> impl(d, s, e) }, 30_000, counters = { mapOf("deliver_phone" to 2, "deliver_hud" to 1, "drop_delivery_wear" to 3, "fb_dismiss" to 1, "runs" to 9, "would_show" to 4) })
+        val d = obj(post("""{"day":"2026-11-18"}""", r))["delivery"]!!.jsonObject
+        assertEquals(setOf("delivered", "dropped", "feedback"), d.keys)
+        assertEquals(mapOf("hud" to "1", "phone" to "2"), d["delivered"]!!.jsonObject.mapValues { it.value.jsonPrimitive.content }); assertEquals("3", d["dropped"]!!.jsonObject["wear"]!!.jsonPrimitive.content); assertEquals("1", d["feedback"]!!.jsonObject["dismiss"]!!.jsonPrimitive.content)
+        assertTrue("an older caller's default is empty", obj(post("""{"day":"2026-11-18"}"""))["delivery"]!!.jsonObject["delivered"]!!.jsonObject.isEmpty())
+    }
+
     @Test fun validation() {
         for (b in listOf("{}", """{"day":"yesterday"}""", """{"day":"2026-13-45"}""", """{"day":"2026-11-18","stepMin":4}""", """{"day":"2026-11-18","stepMin":61}""", """{"day":"2026-11-18","stepMin":"15"}""",
             """{"day":"2026-11-18","events":{}}""", """{"day":"2026-11-18","events":[{"atMs":1,"trigger":"nope"}]}""", """{"day":"2026-11-18","events":[{"trigger":"tick"}]}""", "[1]", "not json"))

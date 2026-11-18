@@ -136,6 +136,15 @@ def would_show(resp):
     return out
 
 
+def delivery_counters(days):
+    """The delivery counters the phone reported with its LAST replay answer (counts only; the replay itself delivers nothing): {"delivered": {...}, "dropped": {...}, "feedback": {...}}."""
+    for e in reversed(days):
+        d = (e.get("resp") or {}).get("delivery")
+        if isinstance(d, dict):
+            return {k: {n: int(v) for n, v in (d.get(k) or {}).items()} for k in ("delivered", "dropped", "feedback")}
+    return {"delivered": {}, "dropped": {}, "feedback": {}}
+
+
 def p95(xs):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(0.95 * len(xs)))] if xs else 0.0
@@ -168,6 +177,7 @@ def score(days):
         "days": len(days), "shown": shown, "labelled": labelled, "unlabelled": unlabelled,
         "useful_rate": (useful / labelled) if labelled else None, "harmful": harmful + false_claims, "false_claim_wording": false_claims,
         "recall": (expect_hit / expect_n) if expect_n else None, "max_shown_per_day": max(per_day) if per_day else 0, "p95_step_ms": p95(step_ms),
+        "delivery": delivery_counters(days),
     }
     m["pass"] = {
         "useful_rate": m["useful_rate"] is not None and m["useful_rate"] >= BAR["useful_rate"],
@@ -186,6 +196,9 @@ def report(m, base=None):
             ("p95 step time ms (<= 300, day time / steps)", f(m["p95_step_ms"]), m["pass"]["p95_step_ms"])]
     lines = ["days=%d shown=%d labelled=%d unlabelled=%d" % (m["days"], m["shown"], m["labelled"], m["unlabelled"])]
     lines += ["  %-46s %-8s %s" % (n, v, "ok" if ok else "FAIL") for n, v, ok in rows]
+    dc = m.get("delivery") or {}
+    fmt = lambda d: " ".join("%s=%d" % kv for kv in sorted(d.items())) or "none"
+    lines.append("  delivery counters (info only, not a bar): delivered %s | dropped %s | feedback %s" % (fmt(dc.get("delivered", {})), fmt(dc.get("dropped", {})), fmt(dc.get("feedback", {}))))
     if base:
         for k in ("useful_rate", "recall", "harmful", "max_shown_per_day", "p95_step_ms"):
             if base.get(k) != m.get(k):
