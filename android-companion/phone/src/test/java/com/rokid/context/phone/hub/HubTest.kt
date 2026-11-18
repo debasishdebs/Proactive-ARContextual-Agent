@@ -993,6 +993,49 @@ class HubTest {
         advanceTimeBy(1_500); assertNull(holder.card.value); assertNull(link.lastFrame().overlay); assertTrue("expiry is not a dismissal", dismissed.isEmpty())
     }
 
+    /** Codex v3.1 r3 P1-2: driving closing or the quiet-hours boundary withdraws the displayed card from the glasses overlay (overlay = null), Nexus and the feed's close event, with no Home collecting. */
+    private fun withdrawalWiring(holder: SuggestionHudHolder, nexusAll: IntArray, body: () -> Unit) {
+        val savedS = com.rokid.context.orchestration.proactive.ProactiveEnvironment.surfaces; val savedD = com.rokid.context.orchestration.proactive.SuggestionGateEvents.dispatch
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.surfaces = PhoneSuggestionSurfaces(holder, { false }, {}, { nexusAll[0]++ })
+        com.rokid.context.orchestration.proactive.SuggestionGateEvents.dispatch = { it() }
+        com.rokid.context.orchestration.proactive.SuggestionWithdrawal.install()
+        try { body() } finally {
+            com.rokid.context.orchestration.proactive.SuggestionWithdrawal.uninstall(); com.rokid.context.orchestration.proactive.SuggestionGateEvents.dispatch = savedD
+            com.rokid.context.orchestration.proactive.ProactiveEnvironment.surfaces = savedS
+        }
+    }
+
+    @Test fun drivingStartingWithdrawsAPublishedSuggestionFromTheGlassesNexusAndTheFeed() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val nexusAll = intArrayOf(0)
+        suggestionHub(link, holder); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        holder.show(sgCard); advanceTimeBy(300); assertNotNull(link.lastFrame().overlay)
+        withdrawalWiring(holder, nexusAll) {
+            var t = 10_000_000_000L; val tracker = com.rokid.context.orchestration.proactive.DrivingTracker { t }
+            repeat(70) { tracker.heartbeat(false); t += 10_000 }
+            tracker.calm(com.rokid.context.orchestration.proactive.CalmSource.PHONE_STEPS, com.rokid.context.orchestration.proactive.Calm.WALKING); tracker.calm(com.rokid.context.orchestration.proactive.CalmSource.PHONE_ACTIVITY, com.rokid.context.orchestration.proactive.Calm.STILL)
+            val closes = com.rokid.context.orchestration.proactive.SuggestionGateEvents.closes.value
+            tracker.vehicle(0)
+            assertEquals("Nexus: withdraw-all", 1, nexusAll[0]); assertNull("HUD holder cleared", holder.card.value)
+            assertTrue("the Home feed re-derives", com.rokid.context.orchestration.proactive.SuggestionGateEvents.closes.value > closes)
+        }
+        advanceTimeBy(300); assertNull("the glasses overlay is gone (overlay = null)", link.lastFrame().overlay)
+    }
+
+    @Test fun theQuietHoursBoundaryWithdrawsAPublishedSuggestionFromEverySurface() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val nexusAll = intArrayOf(0)
+        suggestionHub(link, holder); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        holder.show(sgCard); advanceTimeBy(300); assertNotNull(link.lastFrame().overlay)
+        withdrawalWiring(holder, nexusAll) {
+            var task: (() -> Unit)? = null
+            val watch = com.rokid.context.orchestration.proactive.QuietBoundaryWatch({ _, tk -> task = tk; AutoCloseable { } })
+            val zone = java.time.ZoneId.of("UTC")
+            watch.arm(com.rokid.context.orchestration.nudge.NudgeHud(com.rokid.context.core.model.QuietHours(22 * 60, 7 * 60), com.rokid.context.core.model.Verbosity.MEDIUM, zone), java.time.LocalDateTime.of(2026, 11, 18, 21, 59).atZone(zone).toInstant().toEpochMilli())
+            assertNotNull("armed while a card is displayed", task); task!!.invoke() // 22:00 crossed
+            assertEquals(1, nexusAll[0]); assertNull(holder.card.value)
+        }
+        advanceTimeBy(300); assertNull(link.lastFrame().overlay)
+    }
+
     @Test fun aHeadMotionDismissalIsTheWearersDismissalAndTheGlassesOwnExpiryIsNot() = runTest {
         val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val dismissed = ArrayList<String>()
         suggestionHub(link, holder, dismissed); link.emitReady(); runCurrent()

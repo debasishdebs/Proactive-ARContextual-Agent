@@ -118,6 +118,17 @@ class DeliveryTest {
         assertEquals("the lease is closed", 0, leases.openCount)
     }
 
+    @Test fun aPublicationArmsTheQuietBoundaryWatchAndADroppedDeliveryDoesNot() = runBlocking {
+        hud = NudgeHud(QuietHours(22 * 60, 7 * 60), Verbosity.MEDIUM, zone)
+        val armed = ArrayList<Long>(); val watch = QuietBoundaryWatch({ d, _ -> armed += d; AutoCloseable { } })
+        val mem = MemoryGraph.get(ctx); val g = gen()
+        fun d() = ProactiveDelivery(mem.db, ProvenanceGate.forGraph(mem), store, { r, t -> g.render(r, t) }, seams(), ::wanted, { surfaces }, gate, clock = { clockMs }, publications = pubs, quietWatch = watch)
+        val r = committed()
+        driving = true; d().deliver(r.id, now); assertTrue("dropped by driving: nothing displayed, nothing armed", armed.isEmpty())
+        driving = false; assertEquals(Gate.DELIVERED, d().deliver(r.id, now)[Surface.PHONE])
+        assertEquals("armed once, for 22:00 (10 h after noon) plus the margin", listOf(10 * 3_600_000L + 50L), armed)
+    }
+
     @Test fun theHudCardIsATemplateOfTheLiveSourcesWithASourceLabel() = runBlocking {
         wantHud = true; val r = committed()
         val out = delivery().deliver(r.id, now)

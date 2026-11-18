@@ -52,7 +52,7 @@ class NexusHudSink internal constructor(
     /** How long a show whose binder call has not returned holds a wipe acknowledgement back (tests shorten it). The show stays tracked after that: when it returns, the wipe is re-owed (r4 P1-2). */
     private val inFlightMaxNs: Long = IN_FLIGHT_MAX_NS,
 ) {
-    private class Handle(val slot: Slot, val sources: Set<String>, val pauseGated: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>, val seq: Long, val prev: Handle?) {
+    private class Handle(val slot: Slot, val sources: Set<String>, val pauseGated: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>, val seq: Long, val prev: Handle?, val gate: SuggestionGate? = null) {
         val used = HashSet<String>()
         var withdrawing = false
     }
@@ -155,9 +155,9 @@ class NexusHudSink internal constructor(
     private fun enqueueShow(event: HudEvent, mapped: Mapped, pass: NexusPass, done: CompletableDeferred<Outcome>): Boolean {
         val cmd = mapped.command
         val now = clock()
-        val h = Handle(cmd.slot, event.sources, event.pauseGated(), event.ref, now + cmd.ttlMs, cmd.actions.map { it.id }.toSet(), ++seq, handles[cmd.slot])
+        val h = Handle(cmd.slot, event.sources, event.pauseGated(), event.ref, now + cmd.ttlMs, cmd.actions.map { it.id }.toSet(), ++seq, handles[cmd.slot], event.suggestionGate)
         val speech = mapped.speech?.takeIf { safeConfig().let { c -> c.enabled && c.ttsEnabled } }
-        val sh = if (speech != null) Handle(Slot.SPEECH, event.sources, event.pauseGated(), event.ref, now + NexusLimits.SPEECH_MAX_MS, emptySet(), ++seq, handles[Slot.SPEECH]) else null
+        val sh = if (speech != null) Handle(Slot.SPEECH, event.sources, event.pauseGated(), event.ref, now + NexusLimits.SPEECH_MAX_MS, emptySet(), ++seq, handles[Slot.SPEECH], event.suggestionGate) else null
         handles[cmd.slot] = h
         sh?.let { handles[Slot.SPEECH] = it }
         val op = ShowOp(epoch, pass, cmd, speech, h, sh, event.pauseGated(), done, event.suggestionGate)
@@ -525,7 +525,7 @@ class NexusHudSink internal constructor(
         }
         askGone?.let { notifyRefused(it.first, it.second) }
         for (h in snapshot) {
-            val block = syncBlock(h.pauseGated)
+            val block = syncBlock(h.pauseGated) ?: if (!gateOpen(h.gate)) DropReason.SUGGESTION_GATE else null // v3.1 r3 P1-2: an already-published suggestion handle carries its gate (driving, quiet hours, switches, withdrawn): it hides here when the gate closed
             val live = block != null || if (h.sources.isEmpty()) true else try { gates.sourcesLive(h.sources) } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
             if (block != null || !live) synchronized(lock) { if (handles[h.slot] === h) withdrawLocked(h.slot) }
         }

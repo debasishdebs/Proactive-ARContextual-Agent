@@ -55,6 +55,7 @@ class ContextApp : Application() {
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.nudgeCap = { runCatching { com.rokid.context.connectors.sources.SourcesGraph.get(this).settings.nudgesPerDay.value }.getOrDefault(0) }
         // v3.1 delivery (every switch OFF by default): the live surfaces (HUD overlay through the hub, Nexus through its feeder and sink) and who the HUD host is.
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.nexusHost = { runCatching { com.rokid.context.phone.nexus.NexusHostStore.of(this).current() == com.rokid.context.core.model.HudHost.NEXUS }.getOrDefault(false) }
+        com.rokid.context.orchestration.proactive.SuggestionWithdrawal.install() // v3.1 r3: driving closes / quiet hours begin withdraw every displayed suggestion (HUD holder, Nexus) even when Home is absent
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.surfaces = com.rokid.context.phone.hub.PhoneSuggestionSurfaces(com.rokid.context.phone.hub.SuggestionHud.holder,
             nexus = com.rokid.context.phone.nexus.NexusGraph::suggestion, withdrawNexus = com.rokid.context.phone.nexus.NexusGraph::withdrawSuggestions, withdrawAllNexus = com.rokid.context.phone.nexus.NexusGraph::withdrawAllSuggestions)
         // v0.9.8 D: delivery and the voice surfaces read the user's device capabilities (mic and display) from Settings; unset = everything on.
