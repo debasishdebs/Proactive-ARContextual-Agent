@@ -13,6 +13,20 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 
+/** How [commitFenced] ended. */
+internal enum class FenceOutcome { RAN, ZONE, DRIVING }
+
+/**
+ * v3.1 r3 P1-1: THE lock order, zone fence -> driving commit monitor -> store lock, in one place. The zone fence (when there is a [ticket]) is taken FIRST, the driving commit fence INSIDE it, [write] inside both. Everything that reads
+ * the driving state without writing ([DrivingSignal.blocks], [DrivingSignal.assess], [DrivingSignal.version]) is lock-free, so the Nexus sink (which holds the fences) never waits for the monitor.
+ */
+internal fun ProactiveSeams.commitFenced(ticket: com.rokid.context.memory.place.ZoneTicket?, expectedVersion: Long, write: () -> Unit): FenceOutcome {
+    var outcome = FenceOutcome.DRIVING
+    val inner = { if (drivingCommit(expectedVersion, write)) outcome = FenceOutcome.RAN }
+    if (ticket != null) { if (ticket.fence.act(ticket) { inner() } == null) return FenceOutcome.ZONE } else inner()
+    return outcome
+}
+
 /** A card as a live surface draws it. Built from the LIVE sources by the template at the moment of delivery; never stored. [sources] are the ids the Nexus sink checks again (memory ids, `frame:` cites, mark ids). */
 data class DeliveredCard(val id: String, val title: String, val line: String, val sourceLabel: String, val sources: Set<String>)
 
@@ -59,6 +73,8 @@ class ProactiveDelivery(
     private val generation: () -> Long = { MemoryWipe.generation.get() },
     /** The claim -> publish -> withdrawn state machine every withdrawal path also goes through. */
     private val publications: SuggestionPublications = SuggestionPublications.shared,
+    /** Armed after every publication: the next quiet-hours start withdraws what is displayed (process-wide in production). */
+    private val quietWatch: QuietBoundaryWatch = QuietBoundaryWatch.shared,
 ) {
     /** Test seam: runs after the last suspending read and before the final step (a gate "closing between the engine commit and delivery"). */
     @Volatile internal var testBeforeFinal: (suspend () -> Unit)? = null
@@ -112,8 +128,7 @@ class ProactiveDelivery(
                 // ---- final step: no suspension from here on ----
                 var verdicts: Map<Surface, Gate> = all(Gate.COMMIT, pending)
                 val write = { verdicts = finalStep(record, delivered, pending, nowMs, globalToday) }
-                val ran = seams.drivingCommit(dv) { if (ticket != null) { if (ticket.fence.act(ticket) { write() } == null) verdicts = all(Gate.ZONE, pending) } else write() }
-                if (ran) verdicts else all(Gate.DRIVING, pending)
+                when (seams.commitFenced(ticket, dv, write)) { FenceOutcome.RAN -> verdicts; FenceOutcome.ZONE -> all(Gate.ZONE, pending); FenceOutcome.DRIVING -> all(Gate.DRIVING, pending) }
             }
             val verdicts = when (val r = lease.commit(db, checkLive = true, block = block)) {
                 is Leases.Commit.Committed -> r.value
@@ -188,6 +203,7 @@ class ProactiveDelivery(
             shown = when (s) { Surface.PHONE -> true; Surface.HUD -> surfaces().showHud(card); Surface.NEXUS -> surfaces().showNexus(card) }
             shown
         }
+        if (ran) try { quietWatch.arm(seams.hud(), clock()) } catch (e: Exception) { } // a card is displayed: watch for the next quiet-hours boundary
         return when { ran -> Gate.DELIVERED; publications.isWithdrawn(record.id) -> Gate.WITHDRAWN; shown || publications.isLive(claim) -> Gate.COMMIT; else -> Gate.SURFACE_OFF }
     }
 
@@ -204,14 +220,13 @@ class ProactiveDelivery(
             val dv = seams.drivingVersion()
             var ok = false
             val check = { ok = publishCheck(recordId, surface) }
-            val ran = seams.drivingCommit(dv) { if (ticket != null) { if (ticket.fence.act(ticket) { check() } == null) ok = false } else check() }
-            ran && ok
+            seams.commitFenced(ticket, dv, check) == FenceOutcome.RAN && ok
         } catch (c: CancellationException) { throw c } catch (e: Exception) { false }
     }
 
     /**
      * The SYNCHRONOUS publish gate the Nexus sink asks INSIDE its final admission (its fence pass, the last step before the transport work is queued; and again right before the call), Codex v3.1 r2 P1-1. Everything again,
-     * as of now: driving (UNKNOWN is driving; read directly, no fence is taken here because the sink already holds its own locks), the master and the Nexus switch, pause, zone, quiet hours with a fresh clock, worn, the host,
+     * as of now: driving (UNKNOWN is driving; read LOCK-FREE from the tracker's published snapshot: the sink already holds the zone fences, and no driving monitor may be taken under them), the master and the Nexus switch, pause, zone, quiet hours with a fresh clock, worn, the host,
      * stored, delivered there and not withdrawn. A throw is a drop.
      */
     fun publishableNow(recordId: String, surface: Surface): Boolean = try { !seams.driving() && publishCheck(recordId, surface) } catch (e: Exception) { false }
@@ -266,8 +281,7 @@ class ProactiveDelivery(
                 testBeforeFinal?.invoke()
                 var out: List<FeedCard> = emptyList()
                 val write = { out = feedFinal(ok, nowMs) }
-                val ran = seams.drivingCommit(dv) { if (ticket != null) { if (ticket.fence.act(ticket) { write() } == null) out = emptyList() } else write() }
-                if (ran) out else emptyList()
+                if (seams.commitFenced(ticket, dv, write) == FenceOutcome.RAN) out else emptyList()
             }
             return when (val r = lease.commit(db, checkLive = true, block = block)) {
                 is Leases.Commit.Committed -> r.value
@@ -316,9 +330,9 @@ class SuggestionActions(
     fun never(id: String): Boolean {
         val s = store(); val r = s.records().firstOrNull { it.id == id } ?: return false
         publications.withdraw(listOf(id))
+        s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED)) // write-ahead (r3 P1-3): the dismissal is durable (or its marker is) before anything else
         val ok = s.addNever(r.key)
         s.recordFeedback(FeedbackAction.NEVER, r.key, r.family, clock())
-        s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED))
         withdraw(id)
         return ok
     }
@@ -327,8 +341,8 @@ class SuggestionActions(
     private fun act(id: String, a: FeedbackAction, withdraw: Boolean): Boolean {
         val s = store(); val r = s.records().firstOrNull { it.id == id } ?: return false
         if (withdraw) publications.withdraw(listOf(id))
+        if (a == FeedbackAction.DISMISS) s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED)) // write-ahead (r3 P1-3): durable, or fail closed with a marker, BEFORE the card is withdrawn
         val ok = s.recordFeedback(a, r.key, r.family, clock())
-        if (a == FeedbackAction.DISMISS) s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED))
         if (withdraw) withdraw(id)
         return ok
     }
