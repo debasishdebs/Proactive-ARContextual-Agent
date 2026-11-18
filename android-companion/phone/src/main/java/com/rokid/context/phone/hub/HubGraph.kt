@@ -267,7 +267,7 @@ object HubGraph {
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
-            placeCards = com.rokid.context.work.frames.place.PlaceGraph.port.card, placeClear = com.rokid.context.work.frames.place.PlaceGraph.port::clear, placeSide = { if (devMode.value) com.rokid.context.work.frames.place.PlaceGuideSettings.of(app).cardSide else com.rokid.context.core.model.PlaceSide.CENTRE }, placeClearIf = com.rokid.context.work.frames.place.PlaceGraph.port::clearIf,
+            placeCards = com.rokid.context.work.frames.place.PlaceGraph.port.card, placeClear = com.rokid.context.work.frames.place.PlaceGraph.port::clear, placeSide = { Hub.gatedPlaceSide(devMode.value) { com.rokid.context.work.frames.place.PlaceGuideSettings.of(app).cardSide } }, placeClearIf = com.rokid.context.work.frames.place.PlaceGraph.port::clearIf,
             suggestionCards = SuggestionHud.holder.card, suggestionClearIf = SuggestionHud.holder::clearIf,
             onSuggestionDismissed = { id -> scope.launch(Dispatchers.IO) { runCatching { com.rokid.context.orchestration.proactive.ProactiveGraph.actions(app).dismiss(id) } } },
             zoneApproach = { com.rokid.context.phone.zone.ZoneGraph.get(app).approach },
