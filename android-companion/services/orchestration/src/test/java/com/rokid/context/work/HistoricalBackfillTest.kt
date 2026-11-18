@@ -29,7 +29,10 @@ class HistoricalBackfillTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
 
     @Before fun setUp() {
-        WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
+        // The backfill also enqueues the QueueDrainWorker, whose legacy backstop claims PENDING frames (manual runs ignore the grace; PENDING -> EXTRACTING). The test WorkManager runs
+        // it eagerly on another thread, racing the assertions below (seen as EXTRACTING 1 run in 4). Park every WorkManager executor: jobs are enqueued and counted, never run here.
+        val parked = java.util.concurrent.Executor { }
+        WorkManagerTestInitHelper.initializeTestWorkManager(ctx, androidx.work.Configuration.Builder().setExecutor(parked).setTaskExecutor(parked).build())
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         QueueRuntimeStore.clearAll(ctx)
         // The backfill signals the real keyframe pipeline (Dispatchers.Default), which would legitimately claim a requeued PENDING frame
