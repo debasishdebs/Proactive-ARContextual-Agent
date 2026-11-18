@@ -15,6 +15,21 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapUi
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapViewModel
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapWords
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.MapMode
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.PmTilesReader
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileCache
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileMath
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import android.graphics.BitmapFactory
+import kotlin.math.roundToInt
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -105,18 +120,39 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit) {
     LaunchedEffect(state.requestPermission) {
         if (state.requestPermission) { vm.permissionPromptShown(); launcher.launch(LOCATION_PERMISSIONS) }
     }
-    ZonesScreen(state, ZonesCallbacks.of(vm, back))
+    val offline = deps.offlineMap?.let { make -> remember { make() } }
+    if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back)); return }
+    val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
+    val mapUi by mapVm.ui.collectAsStateWithLifecycle()
+    val reader by mapVm.reader.collectAsStateWithLifecycle()
+    val link = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.link(u.toString()) }
+    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.importCopy(u.toString()) }
+    val panel = OfflineMapPanel(mapUi, reader, { link.launch(PICK_TYPES) }, { import.launch(PICK_TYPES) }, mapVm::remove, mapVm::dismissMessage)
+    ZonesScreen(state, ZonesCallbacks.of(vm, back), panel)
 }
+
+/** A PMTiles file has no registered MIME type, so the picker is not narrowed. */
+private val PICK_TYPES = arrayOf("*/*")
+
+/** What the zones screen needs to offer the offline map (null where the build has none). [reader] is the open archive, null for the plain grid. */
+class OfflineMapPanel(
+    val ui: OfflineMapUi,
+    val reader: PmTilesReader?,
+    val chooseLink: () -> Unit,
+    val chooseImport: () -> Unit,
+    val remove: () -> Unit,
+    val dismiss: () -> Unit,
+)
 
 private val LOCATION_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
 @Composable
-fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks) {
+fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null) {
     SettingsPage("Pause zones", on.back, tag = "zones_screen") {
         item {
             SettingsCard {
-                Text("Capture pauses inside a red box and in the ring around it. The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
-                ZoneMap(state, on)
+                Text("Capture pauses inside a red box and in the ring around it. " + if (offline?.reader != null) "The map is drawn from your offline file." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+                ZoneMap(state, on, offline?.reader)
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = !state.protectedMode)
                 }
@@ -132,6 +168,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks) {
             }
         }
         state.message?.let { m -> item { SettingsCard { NoticeText(m, error = state.messageIsError, tag = "zone_message"); SecondaryAction("Dismiss", on.dismissMessage, tag = "zone_message_dismiss") } } }
+        offline?.let { p -> item { OfflineMapCard(p) } }
         item { NewZoneCard(state, on) }
         item {
             SettingsCard {
@@ -158,6 +195,27 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks) {
             confirmButton = { TextButton(on.confirmDelete, Modifier.testTag("zone_delete_confirm")) { Text("Delete") } },
             dismissButton = { TextButton(on.cancelDelete, Modifier.testTag("zone_delete_cancel")) { Text("Keep") } },
         )
+    }
+}
+
+@Composable
+private fun OfflineMapCard(p: OfflineMapPanel) {
+    val u = p.ui
+    SettingsCard {
+        Text("Offline map", style = MaterialTheme.typography.titleMedium)
+        val sel = u.selection
+        if (sel == null) NoticeText(OfflineMapWords.NONE, tag = "offline_none")
+        else {
+            val where = if (sel.mode == MapMode.IMPORTED) "Copied into the app (private, not backed up)" else "Read in place from where you keep it (read-only)"
+            Text(sel.name.ifBlank { "Map file" }, style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("offline_name"))
+            NoticeText(where + (u.sizeBytes?.takeIf { it > 0 }?.let { " · " + OfflineMapWords.size(it) } ?: "") + if (u.ready) " · zoom ${u.minZoom} to ${u.maxZoom}" else "", tag = "offline_where")
+        }
+        if (u.busy) NoticeText("Working...", tag = "offline_busy")
+        u.message?.let { m -> NoticeText(m, error = u.messageIsError, tag = "offline_message"); SecondaryAction("Dismiss", p.dismiss, tag = "offline_message_dismiss") }
+        PrimaryAction("Choose a .pmtiles file", p.chooseLink, tag = "offline_choose", enabled = !u.busy)
+        SecondaryAction("Import (copy) into the app", p.chooseImport, tag = "offline_import", enabled = !u.busy)
+        if (sel != null) SecondaryAction(if (sel.mode == MapMode.IMPORTED) "Delete the copy" else "Stop using this file", p.remove, tag = "offline_remove", enabled = !u.busy)
+        NoticeText("Choose reads the file where it is, with no storage permission. Import copies it into the app only if you ask. The app never fetches map tiles from the internet.", tag = "offline_note")
     }
 }
 
@@ -211,7 +269,7 @@ private fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
 
 /** The tile-less map: plain background, a latitude/longitude grid, red boxes with their buffer ring, the draft box and (only with a fresh fix) a blue dot for the user. */
 @Composable
-private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks) {
+private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
@@ -225,6 +283,15 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks) {
         val boxes = zones.map { MapViewport.ringOf(it) }.ifEmpty { state.you?.let { listOf(MapViewport.grown(it.lat, it.lon, it.lat, it.lon, 2_000.0)) } ?: emptyList() }
         vp = MapViewport.fit(boxes, size.width, size.height)
     }
+    val cache = remember(reader) { reader?.let { r -> TileCache<ImageBitmap> { k -> r.tile(k.z, k.x, k.y)?.let { b -> BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap() } } } }
+    var loaded by remember(cache) { mutableStateOf(0) }
+    val zoom = vp?.let { v -> reader?.let { TileMath.zoomFor(v.ppd, it.minZoom, it.maxZoom) } }
+    val wanted = if (vp != null && zoom != null) TileMath.visible(vp!!, zoom) else emptyList()
+    LaunchedEffect(cache, wanted) {
+        val c = cache ?: return@LaunchedEffect
+        if (wanted.isNotEmpty() && withContext(Dispatchers.IO) { c.ensure(wanted) }) loaded++
+    }
+    val attribution = remember(reader) { reader?.attribution() }
     val summary = "Map with ${zones.size} pause zone" + (if (zones.size == 1) "" else "s") + if (state.you != null) " and your position" else ""
     Box(
         Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, PcColors.Line, RoundedCornerShape(12.dp))
@@ -251,13 +318,21 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks) {
                 },
         ) {
             val v = vp ?: return@Canvas
-            drawGrid(v, measurer)
+            var painted = false
+            if (cache != null && loaded >= 0) for (k in wanted) {
+                val img = cache.peek(k) ?: continue
+                val r = TileMath.screenRect(v, k)
+                drawImage(img, dstOffset = IntOffset(r[0].roundToInt(), r[1].roundToInt()), dstSize = IntSize(r[2].roundToInt() + 1, r[3].roundToInt() + 1))
+                painted = true
+            }
+            if (!painted) drawGrid(v, measurer)
             for (r in state.rows) drawZone(v, r.zone, measurer, active = r.zone.enabled)
             state.draft.box()?.let { drawBox(v, it, ZoneRed, filled = false, dashed = true) }
             val a = dragA; val b = dragB
             if (a != null && b != null) drawRect(ZoneRed, Offset(min(a.x, b.x), min(a.y, b.y)), Size(abs(a.x - b.x), abs(a.y - b.y)), style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))))
             state.you?.let { y -> val p = v.toPx(y.lat, y.lon); drawCircle(Color.White, 9.dp.toPx(), Offset(p.x, p.y)); drawCircle(PcColors.Sky, 6.dp.toPx(), Offset(p.x, p.y)) }
         }
+        attribution?.let { a -> Text(a, style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft, modifier = Modifier.align(Alignment.BottomEnd).background(Color.White.copy(alpha = 0.7f)).padding(horizontal = 4.dp).testTag("zone_map_attribution")) }
         Row(Modifier.align(Alignment.TopEnd).padding(4.dp)) {
             MapButton("+", "zone_zoom_in") { vp = vp?.zoomed(1.6) }
             MapButton("-", "zone_zoom_out") { vp = vp?.zoomed(1 / 1.6) }

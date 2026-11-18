@@ -28,6 +28,8 @@ class BackupRulesTest {
         "file:photo-eval",
         // Always-on logging LGC2: files/logs (pca.log, pca.log.1) is a per-install diagnostic record: never backed up or transferred.
         "file:logs",
+        // Offline map: an imported private copy of the user's own PMTiles file (large; the user re-imports it).
+        "file:${com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapViewModel.IMPORT_DIR}",
     ) + secretBaks + memoryCopies + slice3aFiles.map { "file:$it" } +
         // Final pass 10: the dev-mode trace staging folder under the app's EXTERNAL files dir (raw sensor traces, readable by adb): never backed up or transferred.
         "external:${com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR}" + setupState.map { "sharedpref:$it.xml" }
@@ -58,6 +60,8 @@ class BackupRulesTest {
         "frame_adoption", "space_retired_at", "image_read_attempts", "night_index",
         // Pause zones: this phone's recent state (see backup_rules.xml).
         "pause_zone_state",
+        // Offline map: the saved choice holds a document URI whose read grant does not survive a restore: never restored.
+        com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapStore.PREFS,
         // User-pinned places (exact coordinates, names, notes): private, never in an automatic backup or transfer; only the explicit settings export carries them (P1 review).
         com.rokid.context.memory.place.UserPinStore.PREFS,
         // Place Guide: the on/off switch is per-device (default off after a restore).
