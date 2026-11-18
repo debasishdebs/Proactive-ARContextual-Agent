@@ -39,7 +39,7 @@ class PinDialogRotationTest {
     class Ctl : PlaceGuideControl {
         override var enabled = false
         var stored = listOf<UserPlace>()
-        override suspend fun seed(box: GeoBox): Result<String> = Result.success("")
+        override suspend fun seed(box: GeoBox): Result<SeedOutcome> = Result.success(SeedOutcome(""))
         override suspend fun summary() = ""
         override val pinning = PlacePinning(
             fix = { PlaceFix(7.957, 80.759, 1_000, 10f) }, zoneBlocked = { false }, zones = { emptyList() },

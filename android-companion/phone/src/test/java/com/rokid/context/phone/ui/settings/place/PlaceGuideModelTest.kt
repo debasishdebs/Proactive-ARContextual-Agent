@@ -44,7 +44,13 @@ class PlaceGuideModelTest {
             nearby = { _, _ -> listOf(PlaceEntity("wd:Q1", null, "Sigiriya", PlaceKinds.ARCHAEOLOGICAL_SITE, 7.957, 80.759, 250, "s", "wikipedia:en", "x", 1, false, false, 0, 10)) },
             load = { stored }, save = { stored = it; true }, elapsed = { 5_000L },
         )
-        override suspend fun seed(box: GeoBox): Result<String> { seeded += box; return if (fail) Result.failure(RuntimeException("x")) else Result.success("Seeded 12 cells, 80 places in the pack.") }
+        /** The production mapping (AndroidPlaceGuideControl: seedArea's SeedResult through PlaceGuideModel.seedOutcome); [failedCells] > 0 fakes a source that kept answering 429. */
+        var failedCells = 0
+        override suspend fun seed(box: GeoBox): Result<SeedOutcome> {
+            seeded += box
+            if (fail) return Result.failure(RuntimeException("x"))
+            return Result.success(PlaceGuideModel.seedOutcome(com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 12 - failedCells, skipped = 0, failed = failedCells, places = 80, retried = failedCells)))
+        }
         override suspend fun summary() = "80 places in the pack (40 KB)"
     }
 
@@ -135,6 +141,17 @@ class PlaceGuideModelTest {
         val c = Control().also { it.fail = true }; val vm = PlaceGuideViewModel(c, d)
         vm.seedPreset(PlaceGuideModel.GALLE); d.scheduler.advanceUntilIdle()
         assertEquals(1, c.seeded.size); assertTrue(vm.state.value.messageIsError); assertFalse(vm.state.value.seeding)
+    }
+
+    @Test fun aPresetStopsWhenCellsFailAfterTheRetryAndSaysHowToRetry() = runTest(d) {
+        val c = Control().also { it.failedCells = 2 }; val vm = PlaceGuideViewModel(c, d)
+        vm.seedPreset(PlaceGuideModel.SIGIRIYA); d.scheduler.advanceUntilIdle()
+        assertEquals(1, c.seeded.size) // the second box was never requested
+        val s = vm.state.value
+        assertTrue(s.messageIsError); assertFalse(s.seeding)
+        assertTrue(s.message!!, s.message!!.startsWith("Stopped at box 1 of 2")); assertTrue(s.message!!.contains("Tap seed again to retry"))
+        assertEquals(2, PlaceGuideModel.seedOutcome(com.rokid.context.memory.place.SeedResult(12, 10, 0, 2, 5)).failedCells)
+        assertEquals(0, PlaceGuideModel.seedOutcome(com.rokid.context.memory.place.SeedResult(12, 12, 0, 0, 5, partial = 3)).failedCells) // OSM-less cells do not stop a preset
     }
 
     @Test fun theSeedMessageSaysCellsOkPartialAndFailed() {
