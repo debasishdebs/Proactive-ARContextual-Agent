@@ -15,7 +15,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.orchestration.proactive.InMemorySuggestionStore
+import com.rokid.context.orchestration.proactive.ProactiveDelivery
 import com.rokid.context.orchestration.proactive.ProactiveFamily
+import com.rokid.context.orchestration.proactive.SuggestionPublications
 import com.rokid.context.orchestration.proactive.ProactiveSettings
 import com.rokid.context.orchestration.proactive.Surface
 import com.rokid.context.orchestration.proactive.SuggestionActions
@@ -55,8 +57,11 @@ class SuggestionFeedTest {
         settings = ProactiveSettings(app.getSharedPreferences("test_feed_settings", Context.MODE_PRIVATE).also { it.edit().clear().commit() })
     }
 
-    private fun feed(render: suspend (SuggestionRecord, Long) -> RenderedCard? = { _, _ -> card }) =
-        AndroidSuggestionFeed(app, { store }, settings, render, SuggestionActions({ store }, { surfaces }, { ts }), { ZoneId.of("Asia/Kolkata") }, { ts })
+    /** The gates live in `ProactiveDelivery.phoneFeed` (DeliveryTest); here the seam answers like it: the delivered, not withdrawn records of the store with the card, or nothing while a gate is closed. */
+    private var gateOpen = true
+    private fun feed(render: suspend (SuggestionRecord, Long) -> RenderedCard? = { _, _ -> card }, ticks: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit)) =
+        AndroidSuggestionFeed(app, { store }, settings, { now -> if (!gateOpen) emptyList() else store.records().filter { Surface.PHONE.token in it.delivered }.mapNotNull { r -> render(r, now)?.let { ProactiveDelivery.FeedCard(r, it) } } },
+            SuggestionActions({ store }, { surfaces }, { ts }, SuggestionPublications()), { ZoneId.of("Asia/Kolkata") }, { ts }, ticks)
 
     private fun items(f: AndroidSuggestionFeed, until: (List<SuggestionCardUi>) -> Boolean): List<SuggestionCardUi> = runBlocking { withTimeout(10_000) { f.items.first(until) } }
     private fun on() { settings.setMaster(true); settings.setDeliver(Surface.PHONE, true) }
@@ -88,6 +93,14 @@ class SuggestionFeedTest {
         f.never("a"); assertEquals(setOf("f2:a"), store.never())
         f.snooze("b"); assertTrue(store.feedback().keys["f2:b"]!!.snoozeUntilMs > ts)
         assertEquals(listOf("c"), items(f) { it.size == 1 }.map { it.id })
+    }
+    @Test fun aClosedGateRendersNothingAndClearsTheRenderedState() {
+        on(); store.add(rec("a"))
+        val tick = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(replay = 1); tick.tryEmit(Unit)
+        val f = feed(ticks = tick); items(f) { it.size == 1 }
+        gateOpen = false; tick.tryEmit(Unit) // a pause or a zone hold: no store change, only the next render
+        assertTrue("no previously delivered text stays", items(f) { it.isEmpty() }.isEmpty())
+        gateOpen = true; tick.tryEmit(Unit); items(f) { it.size == 1 }
     }
     @Test fun theBuildFeedMergesSuggestionsByTimeWithItsOwnKind() {
         val c = SuggestionCardUi("s", ts, "Golconda", "last visit 12 Nov.", "from 2 items", com.rokid.context.phone.ui.settings.suggestions.WhyUi("Place recall", "t", emptyList(), emptyList()))
