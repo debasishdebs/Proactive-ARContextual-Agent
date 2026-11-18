@@ -22,6 +22,11 @@ class ProactiveSeams(
     val enabled: () -> Boolean = { false },
     /** Any HubPauses record (user, quiet hours, auto-stop, `zone:`) or Battery Saver. A throw counts as paused. */
     val paused: suspend () -> Boolean = { true },
+    /**
+     * v3.1 r1: the pause state read WITHOUT suspending, for the delivery's final step INSIDE the fences (a pause committed after the fences were taken). Production: the hub's live pause set and Battery Saver; a throw is
+     * a pause. The default says "not paused" only because [paused] (fail-closed) is always read first.
+     */
+    val pausedNow: () -> Boolean = { false },
     /** `AskZoneFence` in production (fails closed itself). */
     val zoneGuard: AskZoneGuard = AskZoneGuard { true },
     val worn: () -> Boolean = { false },
@@ -101,7 +106,7 @@ class ProactiveEngine(
         val generated = generators.map { it.generate(nowMs, seams.anchorBlocked) }
         val candidates = generated.flatMap { it.candidates }
         if (candidates.isEmpty()) return stop(if (generated.sumOf { it.zoneDropped } > 0) Gate.ZONE_ANCHOR else Gate.NO_CANDIDATES, dry)
-        val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap())      // 4
+        val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap(), store.ledger())      // 4
         val never = store.never()
         val fb = store.feedback()
         val reports = ArrayList<CandidateReport>()
@@ -170,7 +175,7 @@ class ProactiveEngine(
         }
         val hud = seams.hud() ?: return Gate.OFF
         if (try { seams.anchorBlocked(c.anchorKey) } catch (e: CancellationException) { throw e } catch (e: Exception) { true }) return Gate.ZONE_ANCHOR
-        val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap())
+        val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap(), store.ledger())
         budget.check(c, state, hud, nowMs).takeIf { it != Gate.WOULD_SHOW }?.let { return it }
         if (c.key in store.never() || FeedbackMath.blocked(c.key, store.feedback(), nowMs)) return Gate.FEEDBACK
         return null

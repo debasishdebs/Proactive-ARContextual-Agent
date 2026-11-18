@@ -52,4 +52,37 @@ class RankerBudgetTest {
         // yesterday's records do not count against today's cap
         assertEquals(Gate.WOULD_SHOW, check(cand("f2:new"), listOf(rec("k1", noon - 30 * 3_600_000L), rec("k2", noon - 29 * 3_600_000L), rec("k3", noon - 28 * 3_600_000L))))
     }
+
+    // ---- v3.1 r1 P1-5: the ledger, not the retained records, is the consumption ----------------------------------------------------------------------
+
+    private fun led(at: Long, kind: LedgerKind = LedgerKind.DELIVERED) = LedgerEntry(at, ProactiveFamily.PLACE_RECALL, kind)
+    private fun checkL(c: Candidate, ledger: List<LedgerEntry>, now: Long = noon, recs: List<SuggestionRecord> = emptyList()) = budget.check(c, BudgetState(recs, 0, 6, ledger), hud, now)
+
+    @Test fun deliveredLedgerLinesCountEvenThoughTheRecordsWereDismissed() {
+        val three = listOf(led(noon - 4 * 3_600_000L), led(noon - 3 * 3_600_000L), led(noon - 2 * 3_600_000L))
+        assertEquals(Gate.CAP_REACHED, checkL(cand("f2:other-place"), three))
+        assertEquals(Gate.FAMILY_MAX, checkL(cand("f2:p3"), three.take(2)))
+        assertEquals(Gate.SHOWN_GAP, checkL(cand("f2:p4"), listOf(led(noon - 10 * 60_000L))))
+        assertEquals(Gate.WOULD_SHOW, checkL(cand("f2:p4"), listOf(led(noon - 31 * 60_000L))))
+        assertEquals("a delivered record is counted once (by the ledger)", Gate.WOULD_SHOW, checkL(cand("f2:p5"), listOf(led(noon - 4 * 3_600_000L)), recs = listOf(rec("f2:x", noon - 4 * 3_600_000L).copy(delivered = setOf("phone")))))
+        assertEquals("a retained would-show that was never delivered still counts", Gate.SHOWN_GAP, checkL(cand("f2:p6"), emptyList(), recs = listOf(rec("f2:y", noon - 5 * 60_000L))))
+    }
+
+    @Test fun fiveDismissalsInADayPauseDeliveryForADayFromTheFifth() {
+        val d = (0 until 5).map { led(noon - 10 * 3_600_000L + it * 3_600_000L, LedgerKind.DISMISSED) } // the fifth at noon - 6 h
+        assertEquals(Gate.DISMISS_PAUSE, checkL(cand("f2:n"), d, now = noon))
+        assertEquals(noon - 6 * 3_600_000L + 24 * 3_600_000L, DeliveryLedger.pausedUntil(d))
+        val open = hud.copy(quietHours = null); val end = noon + 18 * 3_600_000L
+        assertEquals(Gate.DISMISS_PAUSE, budget.check(cand("f2:n"), BudgetState(emptyList(), 0, 6, d), open, end - 1))
+        assertEquals("the pause ends 24 h after the fifth", Gate.WOULD_SHOW, budget.check(cand("f2:n"), BudgetState(emptyList(), 0, 6, d), open, end))
+        assertEquals(Gate.WOULD_SHOW, checkL(cand("f2:n"), d.take(4), now = noon))
+        val spread = (0 until 5).map { led(noon - 50 * 3_600_000L + it * 7 * 3_600_000L, LedgerKind.DISMISSED) } // five, but not inside one day
+        assertEquals(0L, DeliveryLedger.pausedUntil(spread))
+    }
+
+    @Test fun theLedgerIsPrunedAfter48HoursAndBounded() {
+        val old = led(noon - 49 * 3_600_000L); val fresh = led(noon - 47 * 3_600_000L)
+        assertEquals(listOf(fresh), DeliveryLedger.prune(listOf(old, fresh), noon))
+        assertEquals(DeliveryLedger.MAX_ENTRIES, DeliveryLedger.prune((0 until 900).map { led(noon - it * 1_000L) }, noon).size)
+    }
 }

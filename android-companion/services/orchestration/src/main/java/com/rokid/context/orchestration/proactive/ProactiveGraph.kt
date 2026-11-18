@@ -34,6 +34,8 @@ object ProactiveEnvironment {
     @Volatile var nudgeCap: () -> Int = { 0 }
     /** v3.1: Rokid Nexus is the user's HUD host. */
     @Volatile var nexusHost: () -> Boolean = { false }
+    /** v3.1 r1: the pause set read without suspending (the hub's live set and Battery Saver); the default is paused (fail closed). */
+    @Volatile var pausedNow: () -> Boolean = { true }
     /** v3.1: the live surfaces (HUD overlay, Nexus notice). The default shows nothing. */
     @Volatile var surfaces: SuggestionSurfaces = SuggestionSurfaces.None
 }
@@ -83,6 +85,7 @@ object ProactiveGraph {
         val dead = ids.map { SourceIds.pin(it) }.toSet()
         val st = store(a)
         val ids = st.records().filter { r -> r.sourceIds.any { it in dead } }.map { it.id }
+        SuggestionPublications.shared.withdraw(ids) // first: a delivery between its claim and its publication loses
         st.withdrawWhere { r -> r.sourceIds.any { it in dead } }
         if (ids.isNotEmpty()) try { ProactiveEnvironment.surfaces.withdraw(ids) } catch (e: Exception) { /* its own expiry and gates close it */ }
     }
@@ -103,6 +106,7 @@ object ProactiveGraph {
         val mem = MemoryGraph.get(a)
         return ProactiveSeams(
             enabled = { ProactiveSettings.of(a).let { it.active() && storageAvailable(a) } },
+            pausedNow = { ProactiveEnvironment.pausedNow() },
             paused = { mem.db.pauseDao().countCovering(System.currentTimeMillis()) > 0 || BatterySaver.isOn(a) },
             zoneGuard = AskZoneFence,
             worn = { ProactiveEnvironment.worn() },
@@ -153,6 +157,9 @@ object ProactiveGraph {
     }
 
     fun liveness(app: Context) = SourceLiveness(ProvenanceGate.forGraph(MemoryGraph.get(app))) { runCatching { pins(app).map { it.id }.toSet() }.getOrNull() }
+
+    /** The delivered suggestions counted since [sinceMs] by the LLM nudge gates (read-only; 0 when the store cannot be read). Never opens a different store than the loop's. */
+    fun deliveredSince(app: Context, sinceMs: Long): Int = try { DeliveryLedger.deliveredSince(store(app).ledger(), sinceMs) } catch (e: Exception) { 0 }
 
     /** The Forget / Delete all hook, registered once at start-up. */
     fun forgetListener(app: Context): ForgetListener {

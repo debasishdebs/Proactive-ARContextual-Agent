@@ -25,13 +25,14 @@ class NudgeGatesTest {
     private val zone = ZoneId.of("Asia/Kolkata")
     private val hud = NudgeHud(QuietHours(22 * 60, 7 * 60), Verbosity.MEDIUM, zone)
     private var cap = 6
+    private var delivered = 0
     private lateinit var gates: NudgeGates
 
     private fun at(d: Int, h: Int, m: Int = 0) = LocalDateTime.of(2026, 10, d, h, m).atZone(zone).toInstant().toEpochMilli()
 
     @Before fun setUp() {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
-        gates = NudgeGates(MemoryGraph.get(ctx).db.nudgeGateDao(), { 0L }) { cap }
+        gates = NudgeGates(MemoryGraph.get(ctx).db.nudgeGateDao(), { 0L }, { delivered }) { cap }
     }
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
@@ -79,5 +80,16 @@ class NudgeGatesTest {
     @Test fun capZeroIsOff() = runBlocking {
         cap = 0
         assertEquals(Gate.OFF, gates.check("anything", hud, at(12, 23)))
+    }
+
+    /** v3.1 r1 P1-5: delivered Suggestions (the ledger) share the daily cap and the gap with the nudges. */
+    @Test fun deliveredSuggestionsCountAgainstTheDailyCapAndTheGap() = runBlocking {
+        val open = hud.copy(quietHours = null)
+        cap = 3; stored("n1", at(13, 9), "one"); delivered = 1
+        assertEquals(Gate.PASS, gates.check("new", open, at(13, 12)))
+        delivered = 2; assertEquals(Gate.CAP_REACHED, gates.check("new", open, at(13, 12)))
+        delivered = 0; assertEquals(Gate.PASS, gates.check("new", open, at(13, 12)))
+        val gapped = NudgeGates(MemoryGraph.get(ctx).db.nudgeGateDao(), { 30 * 60_000L }, { since -> if (since <= at(13, 11, 50)) 1 else 0 }) { 6 }
+        assertEquals(Gate.SHOWN_GAP, gapped.check("new", open, at(13, 12)))
     }
 }

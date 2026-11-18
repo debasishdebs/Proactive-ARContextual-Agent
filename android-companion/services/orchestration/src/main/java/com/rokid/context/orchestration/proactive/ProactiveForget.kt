@@ -27,11 +27,12 @@ class ProactiveForgetListener(
     private val onDeleteAll: () -> Unit = {},
     /** v3.1: the live surfaces (HUD overlay, Nexus notice). The phone feed follows the store, so removing a record from it also removes the card and its rendered text. */
     private val surfaces: () -> SuggestionSurfaces = { SuggestionSurfaces.None },
+    private val publications: SuggestionPublications = SuggestionPublications.shared,
 ) : ForgetListener {
     override suspend fun onUserForget() { sweep() }
     override suspend fun onFramesForgotten(frameIds: List<String>) { sweep() }
     override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { sweep() }
-    override suspend fun onDeleteAll() { store().clearAll(); safe { surfaces().withdrawAll() }; onDeleteAll.invoke() }
+    override suspend fun onDeleteAll() { publications.withdrawAll(); publications.withdraw(store().records().map { it.id }); store().clearAll(); safe { surfaces().withdrawAll() }; onDeleteAll.invoke() }
 
     private inline fun safe(f: () -> Unit) { try { f() } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) { /* a surface that cannot be told is closed by its own gates and its 12 s expiry */ } }
 
@@ -41,9 +42,11 @@ class ProactiveForgetListener(
         if (all.isEmpty()) return 0
         val before = s.records()
         val dead = try { liveness().dead(all) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) {
+            publications.withdraw(before.map { it.id })
             val n = s.withdrawWhere { true }; safe { surfaces().withdraw(before.map { it.id }) }; return n
         }
         if (dead.isEmpty()) return 0
+        publications.withdraw(before.filter { r -> r.sourceIds.any { it in dead } }.map { it.id }) // first: a delivery between its claim and its publication loses
         val n = s.withdrawWhere { r -> r.sourceIds.any { it in dead } }
         safe { surfaces().withdraw(before.filter { r -> r.sourceIds.any { it in dead } }.map { it.id }) } // the HUD overlay and the Nexus notice go too, at once
         return n

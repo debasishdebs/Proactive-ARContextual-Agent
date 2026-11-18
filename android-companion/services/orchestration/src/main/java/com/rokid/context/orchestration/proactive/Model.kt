@@ -85,6 +85,8 @@ enum class Surface(val token: String) { PHONE("phone"), HUD("hud"), NEXUS("nexus
 /** Every reason a candidate or a run stops, as a fixed token (counters and replay verdicts). */
 enum class Gate {
     SWITCH, PAUSE, ZONE, ZONE_ANCHOR, THRESHOLD, OFF, QUIET_HOURS, CAP_REACHED, GLOBAL_CAP, FAMILY_MAX, SHOWN_GAP, COOLDOWN, FEEDBACK, LEASE, WEAR, DRIVING, PROVENANCE, COMMIT, ERROR, NO_CANDIDATES, NOT_PICKED, WOULD_SHOW,
+    /** v3.1 r1: five dismissals within 24 h pause delivery for 24 h. */
+    DISMISS_PAUSE,
     /** v3.1 delivery: the surface switch is off, the record was already shown there, or it was withdrawn (dismissed, forgotten) before delivery. */
     SURFACE_OFF, ALREADY_DELIVERED, WITHDRAWN, DELIVERED,
 }
