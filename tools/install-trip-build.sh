@@ -134,8 +134,11 @@ stop_app() {
 
 parse_call_states() { # stdin: dumpsys text. 0 only if >=1 mCallState lines, EVERY one strictly 'mCallState=0'
   local n=0 line re='^[[:space:]]*mCallState=([0-9]+)[[:space:]]*$'
+  # Newer Android adds e.g. 'mCallStateLists={}': a different key with an EMPTY value is not a call state. Non-empty stays a refusal.
+  local empty_re='^[[:space:]]*mCallState[A-Za-z_][A-Za-z0-9_]*=(\{\}|\[\])[[:space:]]*$'
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in *mCallState*) ;; *) continue ;; esac
+    if [[ "$line" =~ $empty_re ]]; then continue; fi
     if [[ "$line" =~ $re ]]; then
       [ "${BASH_REMATCH[1]}" = 0 ] || return 1
       n=$((n + 1))
@@ -635,6 +638,10 @@ run_fixtures() {
   FX_OUT='mCallState=1\n';                              fx "call guard: ringing" refuse cg
   FX_OUT='';                                            fx "call guard: empty output" refuse cg
   FX_OUT='nothing here\n';                              fx "call guard: no mCallState at all" refuse cg
+  FX_OUT="  mCallState=0\n  mCallStateLists={}\n  mCallState=0\n"; fx "call guard: empty mCallStateLists={} is ignored" ok cg
+  FX_OUT="  mCallStateLists={}\n";                      fx "call guard: only mCallStateLists={} (no real state) refuses" refuse cg
+  FX_OUT="  mCallState=0\n  mCallStateLists={0=2}\n";   fx "call guard: non-empty mCallStateLists refuses" refuse cg
+  FX_OUT="  mCallState=0\n  mCallStateLists=[]x\n";    fx "call guard: junk after empty list refuses" refuse cg
   FX_OUT=$ok; FX_RC=1;                                  fx "call guard: adb failure with idle-looking output" refuse cg
   FX_RC=0
   FX_OVR=2; fx "call guard: self-test override 2 refuses" refuse cgo
