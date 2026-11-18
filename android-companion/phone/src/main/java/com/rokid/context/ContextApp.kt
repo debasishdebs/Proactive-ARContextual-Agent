@@ -36,6 +36,15 @@ class ContextApp : Application() {
         com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.ui.settings.capture.SignalConfigStore.wipeListener(this)) // Delete all removes the user's signal configuration
         com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).config.value }
         com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).history }
+        // v3.0 proactive loop (SHADOW MODE, switches OFF by default): the seams only the phone knows, and the Forget / Delete all hook that withdraws records whose sources are gone. Every default fails closed.
+        com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.orchestration.proactive.ProactiveGraph.forgetListener(this))
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.worn = { runCatching { com.rokid.context.phone.hub.HubGraph.get(this).wornNow() == true }.getOrDefault(false) }
+        // no vehicle-episode accessor exists yet (the intent sampler's episode is private to the opt-in car source): while that source is on the state is uncertain, so the loop drops (ruling 10); T14 wires the episode
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.driving = { runCatching { com.rokid.context.phone.context.ContextSourceSettings.of(this).enabled(com.rokid.context.phone.context.CarSource.ID) }.getOrDefault(true) }
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.zones = {
+            runCatching { com.rokid.context.phone.zone.ZoneStore(getSharedPreferences(com.rokid.context.phone.zone.ZoneStore.PREFS, MODE_PRIVATE)).let { st -> val z = st.zones(); if (st.corrupt) null else z } }.getOrNull()
+        }
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.nudgeCap = { runCatching { com.rokid.context.connectors.sources.SourcesGraph.get(this).settings.nudgesPerDay.value }.getOrDefault(0) }
         // v0.9.8 D: delivery and the voice surfaces read the user's device capabilities (mic and display) from Settings; unset = everything on.
         com.rokid.context.orchestration.DeliveryEnvironment.capabilities = { com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(this).capabilities.value }
         // The photo Forget radius follows Settings > Capture > Forget (default 10 s); the Forget path reads it once per Forget through ForgetRadius.ms().

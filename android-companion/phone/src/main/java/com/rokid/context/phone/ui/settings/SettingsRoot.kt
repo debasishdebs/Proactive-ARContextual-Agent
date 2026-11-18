@@ -106,6 +106,7 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
             SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", "Pause, quiet hours", Routes.SETTINGS_PRIVACY),
         ) + if (developerMode) listOf(
             SettingRow(Icons.Outlined.Search, PcColors.ChipMint, "Place Guide", "Monument cards, seed an area", Routes.SETTINGS_PLACE_GUIDE),
+            SettingRow(Icons.Outlined.AutoAwesome, PcColors.ChipViolet, "Suggestions (shadow)", "Off. Only logs what it would suggest", Routes.SETTINGS_SUGGESTIONS),
         ) else emptyList(),
         "AI" to listOf(
             SettingRow(Icons.Outlined.AccountTree, PcColors.ChipViolet, "Agent flows", "See and tune each step of every agent", Routes.SETTINGS_FLOWS),
