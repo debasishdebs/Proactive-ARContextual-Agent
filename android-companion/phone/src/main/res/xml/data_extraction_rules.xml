@@ -25,6 +25,7 @@
         <!-- v3.0 proactive loop (shadow): the Suggestions switches are per-device consent and the shadow store holds place keys and source ids (encrypted, Keystore-bound): never backed up or transferred; Delete all clears both. -->
         <exclude domain="sharedpref" path="proactive_settings.xml" />
         <exclude domain="sharedpref" path="proactive_shadow.xml" />
+        <exclude domain="sharedpref" path="proactive_dismiss_marker.xml" />
         <exclude domain="file" path="rokid_archive" />
         <exclude domain="file" path="rokid_inbox" />
         <exclude domain="file" path="queue_runtime.log" />
@@ -117,6 +118,7 @@
         <!-- v3.0 proactive loop (shadow): the Suggestions switches are per-device consent and the shadow store holds place keys and source ids (encrypted, Keystore-bound): never backed up or transferred; Delete all clears both. -->
         <exclude domain="sharedpref" path="proactive_settings.xml" />
         <exclude domain="sharedpref" path="proactive_shadow.xml" />
+        <exclude domain="sharedpref" path="proactive_dismiss_marker.xml" />
         <exclude domain="file" path="rokid_archive" />
         <exclude domain="file" path="rokid_inbox" />
         <exclude domain="file" path="queue_runtime.log" />

@@ -63,7 +63,7 @@ object ProactiveGraph {
         store ?: run {
             val a = app.applicationContext
             val s: SuggestionStore = try {
-                PrefsSuggestionStore(openEncryptedPrefs(a))
+                PrefsSuggestionStore(openEncryptedPrefs(a), try { a.getSharedPreferences(PrefsSuggestionStore.MARKER_PREFS, Context.MODE_PRIVATE) } catch (e: Exception) { null })
             } catch (e: Exception) {
                 PcLog.i(TAG, "shadow store unavailable (${e.javaClass.simpleName}); recording disabled")
                 ProactiveSettings.of(a).markStorageUnavailable()

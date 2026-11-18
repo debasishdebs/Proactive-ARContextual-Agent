@@ -41,6 +41,7 @@ object MemoryWipe {
     /** v3.0 proactive loop (shadow): the Suggestions switches and the encrypted would-show / never-list / counter store (ids and tokens only). Delete all clears both (ruling 6); the in-memory copies by a `ForgetListener`. */
     const val PROACTIVE_SETTINGS_PREFS = "proactive_settings"
     const val PROACTIVE_SHADOW_PREFS = "proactive_shadow"
+    const val PROACTIVE_DISMISS_MARKER_PREFS = "proactive_dismiss_marker"
 
     /** Clears one of [WIPED_PREFS]; the plan state keeps only its generation counter. */
     fun clearWipedPrefs(prefs: android.content.SharedPreferences, name: String): Boolean {
@@ -51,7 +52,7 @@ object MemoryWipe {
     }
 
     /** The prefs Delete all clears (a test pins it to [com.rokid.context.memory.forget.DeletionGraph.wipedPrefs]). */
-    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS, MemoryExport.CLEANUP_PREFS, SIGNAL_CONFIG_PREFS, PROACTIVE_SETTINGS_PREFS, PROACTIVE_SHADOW_PREFS)
+    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS, MemoryExport.CLEANUP_PREFS, SIGNAL_CONFIG_PREFS, PROACTIVE_SETTINGS_PREFS, PROACTIVE_SHADOW_PREFS, PROACTIVE_DISMISS_MARKER_PREFS)
 
     /**
      * Bumped first by every Delete all. A writer that read it before its work began (a queue job before its claim, an

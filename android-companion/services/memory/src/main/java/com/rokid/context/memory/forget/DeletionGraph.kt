@@ -91,6 +91,7 @@ object DeletionGraph {
         w("export_cleanup", "a boolean and a counter: a cached memory export could not be deleted by a Forget and its retry is due (no user data; Delete all empties the export folder itself and clears the mark)"),
         w("proactive_settings", "v3.0 Suggestions switches (master, place recall, replay flag), all OFF by default: a setting, but per-device consent, so Delete all resets it to OFF (ruling 2026-11-18 #6). Excluded from backup and transfer"),
         w("proactive_shadow", "v3.0 shadow-mode store (ENCRYPTED prefs): would-show suggestions as source ids and fixed tokens (no text), the never-suggest list, counters. Place keys and ids are sensitive: a Forget withdraws records whose sources are gone, Delete all clears everything including the never list (ruling #6). Excluded from backup and transfer"),
+        w("proactive_dismiss_marker", "v3.1 r3: one timestamp (plain prefs, no ids, no text): a suggestion dismissal whose ledger write failed or was in flight; a new process pauses delivery for 24 h from it. Delete all clears it. Excluded from backup and transfer"),
         k("deletion_epoch", "the persisted deletion epoch (install id, counter, wipedAtMs): it IS the fence and holds no user data"),
         k("mark_settings", "reserved: mark toggles (settings, not memory); not written yet"),
         k("pause_zones", "pause zones (the user's own places, radii and switches): a setting; NEVER deleted by a Forget or Delete all, and exported with the settings"),
