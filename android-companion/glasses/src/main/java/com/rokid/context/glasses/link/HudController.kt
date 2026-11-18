@@ -409,7 +409,7 @@ class HudController(
     fun sendPlanAck(a: com.rokid.context.core.model.CapturePlanAck): Boolean = _sessionOpen.value && bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(a)) == 0
 
     /** `pc_motion_hint`: the glasses classifier state for the phone's hub, only while the session is open. */
-    fun sendMotionHint(h: MotionHint): Boolean = _sessionOpen.value && bridge.send(Channels.MOTION_HINT, Wire.encode(h)) == 0
+    fun sendMotionHint(h: MotionHint): Boolean = _sessionOpen.value && bridge.send(Channels.MOTION_HINT, Wire.encode(h.copy(sessionStartMs = phoneSessionStartMs))) == 0
 
     /** `pc_user_exit`: the wearer exited the app on purpose; the phone must not reopen it. */
     fun sendUserExit(): Boolean = bridge.send(Channels.USER_EXIT, Wire.encode(UserExit())) == 0

@@ -39,8 +39,10 @@ class ContextApp : Application() {
         // v3.0 proactive loop (SHADOW MODE, switches OFF by default): the seams only the phone knows, and the Forget / Delete all hook that withdraws records whose sources are gone. Every default fails closed.
         com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.orchestration.proactive.ProactiveGraph.forgetListener(this))
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.worn = { runCatching { com.rokid.context.phone.hub.HubGraph.get(this).wornNow() == true }.getOrDefault(false) }
-        // v3.0 T14 / ruling 10: the driving state comes from signals the context hub already collects (see DrivingSignal): NOT_DRIVING only on a fresh still / walking / slow reading with no vehicle suspicion for 10 min; DRIVING and UNKNOWN both drop. Read fresh at every gate and again at commit; a throw is a drop.
+        // v3.0 T14 / ruling 10: the driving state comes from signals the context hub already collects (see DrivingSignal): NOT_DRIVING only on two independent fresh calm readings (one of them moving) with no vehicle suspicion for 10 min, on a monotonic clock; the decision and the write are one atomic step; DRIVING and UNKNOWN both drop. Read fresh at every gate and again at commit; a throw is a drop.
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.driving = { com.rokid.context.orchestration.proactive.DrivingSignal.blocks() }
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingVersion = { com.rokid.context.orchestration.proactive.DrivingSignal.version() }
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingCommit = { v, w -> com.rokid.context.orchestration.proactive.DrivingSignal.commitIfNotDriving(v, w) }
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment = { com.rokid.context.orchestration.proactive.DrivingSignal.assess() }
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingSignalAvailable = true
         // a pin deleted or edited in Settings withdraws the suggestions built from it at once (it is no Forget event)

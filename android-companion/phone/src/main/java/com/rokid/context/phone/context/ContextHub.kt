@@ -42,6 +42,8 @@ class ContextHub(
     /** v3.0 T14: every evidence this hub accepted, and every evaluation (the hub is alive). Must not block; a throw is swallowed. */
     private val onAccepted: (Evidence) -> Unit = {},
     private val onEvaluated: (ContextDecision) -> Unit = {},
+    /** Codex v3 r3 P1-1: a MONOTONIC clock, only for the age of a glasses hint (the wall clock can jump). */
+    private val mono: () -> Long = android.os.SystemClock::elapsedRealtime,
 ) : EvidenceSink {
     private sealed interface Cmd {
         class Ev(val e: Evidence, val sourceId: String?, val gen: Int) : Cmd
@@ -167,7 +169,14 @@ class ContextHub(
         rebuild(); publish(clock())
     }
 
-    fun onMotionHint(h: MotionHint) { GlassesClassifierStatus.report(h.classifierHash); accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m)) }
+    private val hintAge = GlassesHintAge()
+
+    /** The hint is stamped with the receipt time for fusion (as before); how old it really was goes along separately (null = unknown: never fresh calm evidence). */
+    fun onMotionHint(h: MotionHint) {
+        GlassesClassifierStatus.report(h.classifierHash)
+        val age = try { hintAge.observe(h.sessionStartMs, h.atMs, mono()) } catch (e: Exception) { null }
+        accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m, age))
+    }
 
     private suspend fun runActor() {
         for (c in inbox) {

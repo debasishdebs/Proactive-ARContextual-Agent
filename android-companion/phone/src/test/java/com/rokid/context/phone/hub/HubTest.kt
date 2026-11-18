@@ -196,6 +196,18 @@ class HubTest {
         assertEquals(listOf(h), got)
     }
 
+    // Codex v3 r3 P1-1: a hint of another glasses session is never calm evidence (its session is stripped), one of this session or of an old glasses build passes as is
+    @Test fun aMotionHintOfAnotherSessionLosesItsSession() = runTest {
+        val link = FakeGlassesLink(); val got = ArrayList<MotionHint>()
+        hub(link, onMotionHint = { got += it })
+        link.emitReady(); runCurrent()
+        link.emit(GlassesEvent.MotionHintReceived(MotionHint(MotionState.STILL, 5, stillFrac5m = 0.9f, sessionStartMs = now - 1)))
+        link.emit(GlassesEvent.MotionHintReceived(MotionHint(MotionState.STILL, 6, stillFrac5m = 0.9f, sessionStartMs = now)))
+        link.emit(GlassesEvent.MotionHintReceived(MotionHint(MotionState.STILL, 7, stillFrac5m = 0.9f)))
+        runCurrent()
+        assertEquals(listOf(0L, now, 0L), got.map { it.sessionStartMs })
+    }
+
     @Test fun contextLifecycleFollowsHubStartAndStop() = runTest {
         var starts = 0; var stops = 0
         val h = hub(FakeGlassesLink(), ctxStart = { starts++ }, ctxStop = { stops++ })

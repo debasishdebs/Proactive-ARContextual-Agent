@@ -444,6 +444,19 @@ class HudControllerTest {
         assertEquals(1, bridge.sent.count { it.first == Channels.MOTION_HINT })
     }
 
+    @Test fun aMotionHintCarriesThePhoneSessionItKnows() = runTest {
+        val c = controller()
+        bridge.phone(Channels.STATE, state())
+        val h = com.rokid.context.core.model.MotionHint(state = com.rokid.context.core.model.MotionState.WALKING, atMs = 5)
+        assertTrue(c.sendMotionHint(h))
+        val sent0 = Wire.decode<com.rokid.context.core.model.MotionHint>(bridge.sent.last { it.first == Channels.MOTION_HINT }.second.single()) as com.rokid.context.core.model.Decoded.Ok
+        assertEquals(0L, sent0.value.sessionStartMs)
+        bridge.phone(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = true, atMs = 2_000, sessionStartMs = 1_500)))
+        assertTrue(c.sendMotionHint(h))
+        val sent = Wire.decode<com.rokid.context.core.model.MotionHint>(bridge.sent.last { it.first == Channels.MOTION_HINT }.second.single()) as com.rokid.context.core.model.Decoded.Ok
+        assertEquals(1_500L, sent.value.sessionStartMs)
+    }
+
     // ---- slice 3a Task 11: the plan channel ----
 
     private fun planMsg(gen: Long = 1, atMs: Long = 5, sessionStartMs: Long = 0) =

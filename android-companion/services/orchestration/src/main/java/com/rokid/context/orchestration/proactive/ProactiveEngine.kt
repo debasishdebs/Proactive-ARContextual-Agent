@@ -27,6 +27,13 @@ class ProactiveSeams(
     val worn: () -> Boolean = { false },
     /** A vehicle episode (ruling 10: drop everything while driving, no backlog). */
     val driving: () -> Boolean = { true },
+    /** The driving tracker's version: read BEFORE [driving] is evaluated (Codex v3 r3 P1-2). */
+    val drivingVersion: () -> Long = { 0L },
+    /**
+     * The commit fence: runs [write] atomically with the driving decision, only if the version is still the one read and the state is NOT_DRIVING; false = not written.
+     * [write] does not suspend. The default (tests, replay) re-reads [driving] right before the write.
+     */
+    val drivingCommit: (expectedVersion: Long, write: () -> Unit) -> Boolean = { _, write -> if (driving()) false else { write(); true } },
     val hud: () -> NudgeHud? = { null },
     /** The user's "Nudges per day" (0 = off) and what the nudge table already holds since [Long]. */
     val globalCap: () -> Int = { 0 },
@@ -106,11 +113,13 @@ class ProactiveEngine(
             reports += CandidateReport(c, score, verdict)
         }
         val (c, score) = chosen ?: return stop(reports.first().verdict, dry, reports)
+        var drivingVersion = 0L
         val lease = try { gate.lease(Leases.Kind.PROACTIVE) } catch (e: DataOpGate.LeaseBlocked) { return stop(Gate.LEASE, dry, reports.withVerdict(c, Gate.LEASE)) } // 6
         try {
             lease.extend(SourceIds.refs(c.sourceIds))
             if (!dry) {
                 if (!seams.worn()) return stop(Gate.WEAR, dry, reports.withVerdict(c, Gate.WEAR))                       // 8
+                drivingVersion = seams.drivingVersion() // before the state is read: an update after this point changes the version
                 if (seams.driving()) return stop(Gate.DRIVING, dry, reports.withVerdict(c, Gate.DRIVING))
             }
             testBeforeCommit?.invoke()
@@ -123,8 +132,11 @@ class ProactiveEngine(
                     provenance.goneMarks(SourceIds.marks(c.sourceIds).toSet()).isNotEmpty() -> Gate.PROVENANCE
                     !seams.pinsLive(SourceIds.pins(c.sourceIds)) -> Gate.PROVENANCE
                     else -> {
-                        val ok = if (ticket != null) ticket.fence.act(ticket) { store.add(record) } else store.add(record)         // 9
-                        when (ok) { null -> Gate.ZONE; false -> Gate.COMMIT; else -> Gate.WOULD_SHOW }
+                        // 9: the driving decision and the write are one step under the tracker's lock (a vehicle accepted during the reads above changes the version), no suspension after it
+                        var ok: Boolean? = false
+                        val write = { ok = if (ticket != null) ticket.fence.act(ticket) { store.add(record) } else store.add(record) }
+                        val ran = if (dry) { write(); true } else seams.drivingCommit(drivingVersion, write)
+                        if (!ran) Gate.DRIVING else when (ok) { null -> Gate.ZONE; false -> Gate.COMMIT; else -> Gate.WOULD_SHOW }
                     }
                 }
             }

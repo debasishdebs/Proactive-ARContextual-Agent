@@ -65,6 +65,8 @@ object Channels {
     val classifierHash: String? = null,
     /** v1.0 wear fallback, additive: true = the glasses estimate "not worn (estimated)" ([WearEstimate]); false = no estimate; null = an old glasses build (never a guess). */
     val wearEst: Boolean? = null,
+    /** v3.0 driving signal (Codex v3 r3 P1-1), additive: the phone's `sessionStartMs` the glasses know when sending ([atMs] is the glasses' own elapsedRealtime, never comparable to the phone's clock); 0 = unknown / an old glasses build. A hint of another session is not calm evidence. */
+    val sessionStartMs: Long = 0L,
 )
 
 /** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
