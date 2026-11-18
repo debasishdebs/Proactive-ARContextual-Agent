@@ -91,6 +91,8 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.PREFS,
         // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
         com.rokid.context.orchestration.AskPhotoPolicy.PREFS,
+        // v3.0 proactive loop (shadow): the Suggestions switches (per-device consent, OFF after a restore) and the ENCRYPTED shadow store (place keys, source ids, never list): never backed up or transferred.
+        com.rokid.context.orchestration.proactive.ProactiveSettings.PREFS, com.rokid.context.orchestration.proactive.PrefsSuggestionStore.PREFS,
     ) + slice3aPrefs
 
     /**
@@ -196,7 +198,7 @@ class BackupRulesTest {
                     else Regex("""const val $arg = "([^"]+)"""").find(src)?.groupValues?.get(1) ?: error("${f.name}: can't resolve $arg")
                 }
             }.toSet()
-        assertEquals(setOf("endpoint_keys", "db_key", "app_config_secret"), names)
+        assertEquals(setOf("endpoint_keys", "db_key", "app_config_secret", "proactive_shadow"), names)
         val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
             listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
         for (section in sections) for (n in names) assertTrue("${section.tagName}: $n.xml", "sharedpref:$n.xml" in excludes(section))
@@ -220,6 +222,16 @@ class BackupRulesTest {
         val unruled = names - keysAndMarkers - setupState - restorable
         assertEquals("prefs files with no backup ruling", emptySet<String>(), unruled)
         assertTrue("a file is both restorable and excluded", (restorable intersect (setupState + keysAndMarkers)).isEmpty())
+    }
+
+    /** v3.0 shadow loop (ruling 2026-11-18): the switches and the ENCRYPTED shadow store (place keys, source ids, the never list) are in no backup, cloud backup or device transfer. */
+    @Test fun theSuggestionsPrefsAreExcludedFromEveryBackupSection() {
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+            listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+        assertEquals("proactive_settings", com.rokid.context.orchestration.proactive.ProactiveSettings.PREFS)
+        assertEquals("proactive_shadow", com.rokid.context.orchestration.proactive.PrefsSuggestionStore.PREFS)
+        for (section in sections) for (n in listOf("proactive_settings", "proactive_shadow")) assertTrue("${section.tagName}: $n.xml", "sharedpref:$n.xml" in excludes(section))
+        assertTrue("never restorable", restorable.none { it.startsWith("proactive_") })
     }
 
     @Test fun secretBakFilesAreExcludedFromEveryBackupSection() {
