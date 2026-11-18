@@ -32,7 +32,7 @@ interface ByteSource : Closeable {
 class ArrayByteSource(private val data: ByteArray) : ByteSource {
     override val size: Long get() = data.size.toLong()
     override fun read(offset: Long, length: Int): ByteArray {
-        if (offset < 0 || length < 0 || offset + length > data.size) throw PmTilesException(PmTilesException.Reason.CORRUPT)
+        if (offset < 0 || length < 0 || offset > data.size || length > data.size - offset) throw PmTilesException(PmTilesException.Reason.CORRUPT)
         return data.copyOfRange(offset.toInt(), offset.toInt() + length)
     }
     override fun close() {}
@@ -80,7 +80,8 @@ data class PmHeader(
 
         private fun comp(v: Int) = Compression.entries.firstOrNull { it.code == v } ?: Compression.UNKNOWN
         const val MAX_ZOOM = 26
-        const val MAX_DIR_BYTES = 8L shl 20
+        /** Hard caps: a directory inflates to at most 4 MiB and lists at most 100k entries (the file is untrusted). */
+        const val MAX_DIR_BYTES = 4L shl 20
     }
 }
 
@@ -110,34 +111,50 @@ object PmTiles {
         return acc + d
     }
 
-    /** Parses one decompressed directory. Throws CORRUPT on a truncated or absurd one. */
-    fun parseDirectory(raw: ByteArray): List<DirEntry> {
+    const val MAX_ENTRIES = 100_000
+    private const val MIN_BYTES_PER_ENTRY = 4
+
+    /**
+     * Parses one decompressed directory. Throws CORRUPT on a truncated or absurd one. Fails closed: the entry count must fit both [maxEntries]
+     * and the byte length (each entry needs at least 4 varint bytes, one per column); all four columns are walked and validated BEFORE any array
+     * is allocated, so a lying count costs a scan, never memory. [onAlloc] is told the byte size of the arrays just before they are allocated (a test seam).
+     */
+    fun parseDirectory(raw: ByteArray, maxEntries: Int = MAX_ENTRIES, onAlloc: (Long) -> Unit = {}): List<DirEntry> {
+        fun corrupt(): Nothing = throw PmTilesException(PmTilesException.Reason.CORRUPT)
         var pos = 0
         fun varint(): Long {
             var result = 0L; var shift = 0
             while (true) {
-                if (pos >= raw.size || shift > 63) throw PmTilesException(PmTilesException.Reason.CORRUPT)
+                if (pos >= raw.size || shift > 63) corrupt()
                 val b = raw[pos++].toInt() and 0xFF
                 result = result or ((b and 0x7F).toLong() shl shift)
                 if (b < 0x80) break
                 shift += 7
             }
-            if (result < 0) throw PmTilesException(PmTilesException.Reason.CORRUPT)
+            if (result < 0) corrupt()
             return result
         }
         val n = varint()
-        if (n > raw.size) throw PmTilesException(PmTilesException.Reason.CORRUPT) // at least one byte per entry in each of the four columns
+        if (n > maxEntries || n * MIN_BYTES_PER_ENTRY > raw.size - pos) corrupt()
         val count = n.toInt()
+        // pass 1: validate every varint in the four columns without storing anything
+        val start = pos
+        repeat(count * 4) { varint() }
+        if (pos != raw.size) corrupt() // trailing bytes: not a directory this app wrote or knows
+        onAlloc(count.toLong() * (8 + 4 + 4 + 8))
         val ids = LongArray(count); val runs = IntArray(count); val lens = IntArray(count); val offs = LongArray(count)
+        pos = start
         var last = 0L
-        for (i in 0 until count) { last += varint(); ids[i] = last }
-        for (i in 0 until count) runs[i] = varint().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        for (i in 0 until count) lens[i] = varint().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        for (i in 0 until count) {
-            val v = varint()
-            offs[i] = if (v == 0L && i > 0) offs[i - 1] + lens[i - 1] else v - 1
-            if (offs[i] < 0) throw PmTilesException(PmTilesException.Reason.CORRUPT)
-        }
+        try {
+            for (i in 0 until count) { last = Math.addExact(last, varint()); ids[i] = last }
+            for (i in 0 until count) runs[i] = varint().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            for (i in 0 until count) lens[i] = varint().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            for (i in 0 until count) {
+                val v = varint()
+                offs[i] = if (v == 0L && i > 0) Math.addExact(offs[i - 1], lens[i - 1].toLong()) else v - 1
+                if (offs[i] < 0) corrupt()
+            }
+        } catch (e: ArithmeticException) { corrupt() }
         return List(count) { DirEntry(ids[it], offs[it], lens[it], runs[it]) }
     }
 
@@ -158,17 +175,19 @@ object PmTiles {
     }
 
     /** Decompresses [data] (gzip or none), refusing to expand past [limit] bytes (a damaged or hostile archive). */
-    fun inflate(data: ByteArray, how: Compression, limit: Int): ByteArray {
+    fun inflate(data: ByteArray, how: Compression, limit: Int, maxRatio: Int = 0): ByteArray {
         if (how == Compression.NONE) { if (data.size > limit) throw PmTilesException(PmTilesException.Reason.CORRUPT); return data }
         if (how != Compression.GZIP) throw PmTilesException(PmTilesException.Reason.UNSUPPORTED_COMPRESSION)
         try {
             GZIPInputStream(ByteArrayInputStream(data)).use { gz ->
-                val out = ByteArrayOutputStream(maxOf(32, data.size * 2))
+                val out = ByteArrayOutputStream((data.size.toLong() * 2).coerceIn(32L, minOf(limit.toLong(), 1L shl 20)).toInt())
                 val buf = ByteArray(8192)
+                // a counting stream: stop at the byte cap, and at a decompression ratio no honest directory reaches
+                val cap = if (maxRatio > 0) minOf(limit.toLong(), maxOf(64L shl 10, data.size.toLong() * maxRatio)) else limit.toLong()
                 while (true) {
                     val r = gz.read(buf)
                     if (r < 0) break
-                    if (out.size() + r > limit) throw PmTilesException(PmTilesException.Reason.CORRUPT)
+                    if (out.size().toLong() + r > cap) throw PmTilesException(PmTilesException.Reason.CORRUPT)
                     out.write(buf, 0, r)
                 }
                 return out.toByteArray()
@@ -182,9 +201,8 @@ object PmTiles {
  * [tile] returns the tile's image bytes (PNG/JPEG/WebP), or null when the archive has no such tile. Thread-safe: reads are positional and the small directory cache is locked.
  */
 class PmTilesReader private constructor(private val src: ByteSource, val header: PmHeader, private val root: List<DirEntry>) : Closeable {
-    private val leaves = object : LinkedHashMap<Long, List<DirEntry>>(16, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<Long, List<DirEntry>>) = size > MAX_LEAVES
-    }
+    private val leaves = LinkedHashMap<Long, List<DirEntry>>(16, 0.75f, true)
+    private var leafBytes = 0L // the leaf-directory cache is bounded by estimated bytes, not just count
 
     val minZoom: Int get() = header.minZoom
     val maxZoom: Int get() = header.maxZoom
@@ -193,14 +211,16 @@ class PmTilesReader private constructor(private val src: ByteSource, val header:
         if (z < header.minZoom || z > header.maxZoom) return null
         val id = PmTiles.tileId(z, x, y)
         var dir = root
+        val seen = HashSet<Long>()
         for (depth in 0..MAX_DEPTH) {
             val e = PmTiles.find(dir, id) ?: return null
             if (e.runLength > 0) {
-                if (e.length <= 0 || e.length > MAX_TILE_BYTES || e.offset + e.length > header.dataLength) throw PmTilesException(PmTilesException.Reason.CORRUPT)
+                if (e.length <= 0 || e.length > MAX_TILE_BYTES || e.offset > header.dataLength - e.length) throw PmTilesException(PmTilesException.Reason.CORRUPT)
                 val raw = src.read(header.dataOffset + e.offset, e.length)
                 return PmTiles.inflate(raw, header.tileCompression, MAX_TILE_BYTES)
             }
-            if (e.length <= 0 || e.length > PmHeader.MAX_DIR_BYTES || e.offset + e.length > header.leafLength) throw PmTilesException(PmTilesException.Reason.CORRUPT)
+            if (e.length <= 0 || e.length > PmHeader.MAX_DIR_BYTES || e.offset > header.leafLength - e.length) throw PmTilesException(PmTilesException.Reason.CORRUPT)
+            if (!seen.add(e.offset)) throw PmTilesException(PmTilesException.Reason.CORRUPT) // a leaf that leads back to itself
             dir = leaf(e)
         }
         throw PmTilesException(PmTilesException.Reason.CORRUPT)
@@ -208,8 +228,18 @@ class PmTilesReader private constructor(private val src: ByteSource, val header:
 
     private fun leaf(e: DirEntry): List<DirEntry> {
         synchronized(leaves) { leaves[e.offset]?.let { return it } }
-        val parsed = PmTiles.parseDirectory(PmTiles.inflate(src.read(header.leafOffset + e.offset, e.length), header.internalCompression, DIR_INFLATE_LIMIT))
-        synchronized(leaves) { leaves[e.offset] = parsed }
+        val parsed = PmTiles.parseDirectory(PmTiles.inflate(src.read(header.leafOffset + e.offset, e.length), header.internalCompression, DIR_INFLATE_LIMIT, DIR_MAX_RATIO))
+        synchronized(leaves) {
+            leaves[e.offset] = parsed
+            leafBytes += parsed.size.toLong() * ENTRY_BYTES
+            val it = leaves.entries.iterator()
+            while (leafBytes > MAX_LEAF_CACHE_BYTES && leaves.size > 1 && it.hasNext()) {
+                val old = it.next()
+                if (old.key == e.offset) continue
+                leafBytes -= old.value.size.toLong() * ENTRY_BYTES
+                it.remove()
+            }
+        }
         return parsed
     }
 
@@ -228,19 +258,22 @@ class PmTilesReader private constructor(private val src: ByteSource, val header:
 
     companion object {
         private const val MAX_DEPTH = 3
-        private const val MAX_LEAVES = 32
-        const val MAX_TILE_BYTES = 4 shl 20
-        private const val DIR_INFLATE_LIMIT = 32 shl 20
+        private const val MAX_LEAF_CACHE_BYTES = 16L shl 20
+        private const val ENTRY_BYTES = 40L
+        const val MAX_TILE_BYTES = 2 shl 20
+        private const val DIR_INFLATE_LIMIT = 4 shl 20
+        private const val DIR_MAX_RATIO = 1000
 
         /** Opens [src]; on any failure the source is closed and a [PmTilesException] says why. */
         fun open(src: ByteSource): PmTilesReader {
             try {
                 if (src.size < PmHeader.SIZE) throw PmTilesException(PmTilesException.Reason.NOT_PMTILES)
                 val header = PmHeader.parse(src.read(0, PmHeader.SIZE), src.size)
-                val rootRaw = PmTiles.inflate(src.read(header.rootOffset, header.rootLength.toInt()), header.internalCompression, DIR_INFLATE_LIMIT)
+                val rootRaw = PmTiles.inflate(src.read(header.rootOffset, header.rootLength.toInt()), header.internalCompression, DIR_INFLATE_LIMIT, DIR_MAX_RATIO)
                 return PmTilesReader(src, header, PmTiles.parseDirectory(rootRaw))
             } catch (e: PmTilesException) { runCatching { src.close() }; throw e }
             catch (e: IOException) { runCatching { src.close() }; throw PmTilesException(PmTilesException.Reason.UNREADABLE) }
+            catch (e: OutOfMemoryError) { runCatching { src.close() }; throw PmTilesException(PmTilesException.Reason.UNREADABLE) }
             catch (e: RuntimeException) { runCatching { src.close() }; throw PmTilesException(PmTilesException.Reason.CORRUPT) }
         }
     }
