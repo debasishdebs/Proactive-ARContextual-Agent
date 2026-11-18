@@ -70,6 +70,13 @@ class SuggestionsControlTest {
 
     @Test fun theDrivingNoticeAndStorageStateAreInTheState() {
         val c = control()
-        assertEquals(false, c.state.value.drivingKnown); assertEquals(false, c.state.value.storageUnavailable)
+        assertEquals(SuggestionsModel.DRIVING_UNKNOWN, c.state.value.drivingLine); assertEquals(false, c.state.value.storageUnavailable)
+        val prior = com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment
+        try {
+            com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment = { com.rokid.context.orchestration.proactive.DrivingAssessment(com.rokid.context.orchestration.proactive.DrivingState.NOT_DRIVING, "Not driving: walking for 3 min") }
+            assertEquals("Not driving: walking for 3 min", SuggestionsModel.drivingLine())
+            com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment = { throw IllegalStateException("x") }
+            assertEquals("a failing read is the fail-closed unknown", SuggestionsModel.DRIVING_UNKNOWN, SuggestionsModel.drivingLine())
+        } finally { com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment = prior }
     }
 }

@@ -39,10 +39,10 @@ class ContextApp : Application() {
         // v3.0 proactive loop (SHADOW MODE, switches OFF by default): the seams only the phone knows, and the Forget / Delete all hook that withdraws records whose sources are gone. Every default fails closed.
         com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.orchestration.proactive.ProactiveGraph.forgetListener(this))
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.worn = { runCatching { com.rokid.context.phone.hub.HubGraph.get(this).wornNow() == true }.getOrDefault(false) }
-        // Codex v3 r1 P1-1: there is NO reliable vehicle-episode signal on the phone yet (the car source being OFF means "no signal", not "not driving"; the glasses' motion classifier is not reachable here), so the state is UNKNOWN
-        // and ruling 10 says unknown drops: every would-show is suppressed and shadow mode records nothing until a real signal is wired (it then sets drivingSignalAvailable). The Suggestions screen says so plainly.
-        com.rokid.context.orchestration.proactive.ProactiveEnvironment.driving = { true }
-        com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingSignalAvailable = false
+        // v3.0 T14 / ruling 10: the driving state comes from signals the context hub already collects (see DrivingSignal): NOT_DRIVING only on a fresh still / walking / slow reading with no vehicle suspicion for 10 min; DRIVING and UNKNOWN both drop. Read fresh at every gate and again at commit; a throw is a drop.
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.driving = { com.rokid.context.orchestration.proactive.DrivingSignal.blocks() }
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment = { com.rokid.context.orchestration.proactive.DrivingSignal.assess() }
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingSignalAvailable = true
         // a pin deleted or edited in Settings withdraws the suggestions built from it at once (it is no Forget event)
         com.rokid.context.orchestration.proactive.ProactiveGraph.registerPinHook(this)
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.zones = {

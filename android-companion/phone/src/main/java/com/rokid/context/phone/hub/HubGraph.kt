@@ -152,6 +152,7 @@ object HubGraph {
         val ctxHub = com.rokid.context.phone.context.ContextHub(
             ctxScope, com.rokid.context.phone.context.ContextSourceSettings.of(app), ctxRegistry,
             log = { PcLog.i("PcCtx", it) },
+            onAccepted = com.rokid.context.phone.context.DrivingFeed::accepted, onEvaluated = com.rokid.context.phone.context.DrivingFeed::evaluated, // v3.0 T14: the driving signal reads what the hub already has
             overrides = com.rokid.context.phone.ui.settings.capture.FusionSettingsStore.get(app).overrides, // v0.9.7 B: the user's fusion thresholds, applied without a restart
             // the ring is emptied when the watch source goes off: the canvas run rows that carry its values go with it (Delete all already wipes them)
             onWatchOff = { ctxScope.launch { runCatching { com.rokid.context.canvas.WatchRowCleanup.deleteUntilDone(MemoryGraph.get(app).db.canvasDao()) } } },

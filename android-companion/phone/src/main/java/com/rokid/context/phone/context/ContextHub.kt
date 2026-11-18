@@ -39,6 +39,9 @@ class ContextHub(
     private val log: (String) -> Unit = {},
     /** Called (on the hub's actor, must not block) after the watch source was switched off and its ring emptied: whatever else holds the values it gave must drop them too. */
     private val onWatchOff: () -> Unit = {},
+    /** v3.0 T14: every evidence this hub accepted, and every evaluation (the hub is alive). Must not block; a throw is swallowed. */
+    private val onAccepted: (Evidence) -> Unit = {},
+    private val onEvaluated: (ContextDecision) -> Unit = {},
 ) : EvidenceSink {
     private sealed interface Cmd {
         class Ev(val e: Evidence, val sourceId: String?, val gen: Int) : Cmd
@@ -196,6 +199,7 @@ class ContextHub(
         if (src != null && running[src] == null) return
         if (c.sourceId != null && running[c.sourceId] != c.gen) return
         fusion.onEvidence(c.e)
+        safe(Unit) { onAccepted(c.e) }
         (c.e as? Evidence.WatchMotion)?.let { watchRing.add(WatchSample(it.atMs, it.state, it.confidence)) }
         retain(c.e)
         stats.count(c.e)
@@ -284,6 +288,7 @@ class ContextHub(
         stats.addStateTime(_decision.value.state, now - lastEvalAt); lastEvalAt = now
         if (d.state != committed) { committed = d.state; stats.onChange() }
         _decision.value = d
+        safe(Unit) { onEvaluated(d) }
         applySpeed(settings.enabled("phone_speed") && d.vehicleSuspected)
 
         val force = forcePublish; forcePublish = false
