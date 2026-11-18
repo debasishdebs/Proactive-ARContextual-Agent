@@ -2,7 +2,7 @@
 
 Status: DRAFT, not exercised. Planned for after Sri Lanka (1.3.0 lineage). Design: `docs/superpowers/specs/2026-11-16-privacy-and-release-design.md` (B2). Rehearsal evidence: `docs/superpowers/reviews/2026-11/key-rotation-rehearsal-2026-11-18.md`.
 
-Rules: PKCS12 release key in GitHub Actions secrets, signer SHA-256 pinned in `release/signer-sha256.txt`, CI builds a DRAFT release, publication is manual. No debug-signed APK ever goes on GitHub. Never commit key material (`.jks`, `.keystore`, `.p12`, `.pem`, lineage files are all kept out of the repo).
+Rules: PKCS12 release key in the secrets of the GitHub Environment `release` (NOT repository secrets), signer SHA-256 pinned in `release/signer-sha256.txt`, CI builds a DRAFT release, publication is manual. No debug-signed APK ever goes on GitHub. Never commit key material (`.jks`, `.keystore`, `.p12`, `.pem`, lineage files are all kept out of the repo).
 
 ## One-time key and lineage (on your machine, outside the repo)
 
@@ -16,16 +16,22 @@ apksigner rotate --out pca.lineage \
 `debug.keystore` is a copy of `~/<private backup dir>/keys/debug.keystore`. Keep `release.jks`, its password and a second backup somewhere safe and offline: losing the key means no more updates for installed apps.
 
 1. Put the new certificate SHA-256 (64 hex) in `release/signer-sha256.txt` and commit it.
-2. Create the repository secrets (names only here):
-   - `PCA_RELEASE_KEYSTORE_B64` = `base64 < release.jks`
-   - `PCA_RELEASE_KEYSTORE_PASSWORD`
-   - `PCA_RELEASE_KEY_ALIAS` (`pca`)
-   - `PCA_LINEAGE_B64` = `base64 < pca.lineage`
-3. Rehearse the CI signing form once on an emulator. The workflow uses one signer (the new key) plus `--lineage pca.lineage --rotation-min-sdk-version 28`, because CI never holds the debug key. The rehearsal verified the two-signer form (`--ks debug.keystore ... --next-signer --ks release.jks ... --lineage ... --rotation-min-sdk-version 28`); the single-signer form was NOT run. Check that `adb install -r` over a debug-signed build succeeds and `dumpsys package` lists past signatures `[debug, release]`.
+2. Create the GitHub Environment (repository owner, Settings > Environments) named `release`:
+   - Required reviewers: the user (the sign job waits for approval).
+   - Deployment branches and tags: restrict to `main` and the tag pattern `v*` (the workflow additionally enforces `^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$` and that the commit is reachable from `main`). Also protect `main` and add a tag ruleset for `v*`.
+   - Put the secrets in that ENVIRONMENT, not in repository secrets (repository secrets are readable by any workflow code a write collaborator can run). Names only here:
+     - `PCA_RELEASE_KEYSTORE_B64` = `base64 < release.jks`
+     - `PCA_RELEASE_KEYSTORE_PASSWORD`
+     - `PCA_RELEASE_KEY_ALIAS` (`pca`)
+     - `PCA_LINEAGE_B64` = `base64 < pca.lineage`
+3. Rehearse the CI signing form on an emulator before the first real release (checklist, none done yet):
+   - [ ] The CI form is UNREHEARSED. It signs with one signer (the new key) and v3 only: `--lineage pca.lineage --rotation-min-sdk-version 28 --v1-signing-enabled false --v2-signing-enabled false --v3-signing-enabled true --v4-signing-enabled false --debuggable-apk-permitted false`. The earlier rehearsal (`key-rotation-rehearsal-2026-11-18.md`) used the two-signer v1/v2/v3 form (`--ks debug.keystore ... --next-signer --ks release.jks ... --lineage ... --rotation-min-sdk-version 28`), so it does NOT cover this form. It needs its own emulator rehearsal.
+   - [ ] `adb install -r` of the CI-form APK over a debug-signed build succeeds with data preserved, and `dumpsys package` lists past signatures `[debug, release]` (API 28+ only; pre-28 cannot use a lineage).
+   - [ ] `release/verify-release.sh` passes on the CI-form APK.
 
 ## Run
 
-Push a `v*` tag or run the workflow manually (input `tag`, optional `with_bridge`). It checks the pin and that versionCode rose over the previous `v*` tag, builds `:phone` and `:glasses` release (and optionally `:nexus-bridge`), signs, verifies (one signer equal to the pin, not the debug key, v3 present, no v3.1 block, not debuggable), writes `SHA256SUMS` and `PROVENANCE.txt`, and creates a DRAFT release. You publish it by hand.
+Push a tag matching `^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$` or run the workflow manually from `main` (input `tag`, optional `with_bridge`). Two jobs: `build` (no secrets, `contents: read`) checks the versionCode rose over the numerically previous valid `v*` tag, builds `:phone` and `:glasses` release (and optionally `:nexus-bridge`) unsigned and uploads them. `sign` (environment `release`, needs reviewer approval, `contents: write`) first checks the commit is an ancestor of `origin/main`, downloads the build artifacts (it never rebuilds), checks the pin, signs, verifies with `release/verify-release.sh` (one signer equal to the pin, not the debug key, v3 present, no v3.1 block, not debuggable; any tool failure or empty output fails), writes `SHA256SUMS` and `PROVENANCE.txt`, and creates a DRAFT release. You publish it by hand.
 
 ## Verify a downloaded APK
 
@@ -34,7 +40,11 @@ sha256sum -c SHA256SUMS
 BUILD_TOOLS=$ANDROID_HOME/build-tools/36.0.0 release/verify-release.sh pca-phone-1.3.0.apk com.rokid.context
 ```
 
-It is read-only: not debuggable (aapt2 dump badging), signer SHA-256 equals the pin, v3 present and no v3.1 block, prints package and versionCode. apksigner does not print the lineage; confirm it on a device (past signatures below).
+Fixture self-tests with fake tools: `release/test-verify-release.sh`. It is read-only and fails closed (missing or failing aapt2/apksigner or empty output is a failure): not debuggable (aapt2 dump badging), signer SHA-256 equals the pin, v3 present and no v3.1 block, prints package and versionCode. apksigner does not print the lineage; confirm it on a device (past signatures below).
+
+## Supply chain
+
+Actions are pinned to full commit SHAs (tag in a comment, resolved with `git ls-remote`); runner `ubuntu-24.04`; JDK Temurin `17.0.13`. `gradle/actions/setup-gradle` is deliberately not used (SHA could not be resolved), so there is no restored Gradle cache. The Gradle wrapper still downloads Gradle: consider `distributionSha256Sum` in `gradle-wrapper.properties`.
 
 ## Rotation procedure
 

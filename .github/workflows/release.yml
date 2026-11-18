@@ -1,15 +1,19 @@
 name: Release
 
 # DRAFT of the PCA release-signing pipeline (planned for after Sri Lanka, 1.3.0 lineage). Not yet exercised.
-# Builds the RELEASE variants, signs them with the release key (+ rotation lineage), checks the signer against
-# the pin in release/signer-sha256.txt, and creates a DRAFT GitHub release. Publishing is always manual.
-# Never debug-signed. Setup and secrets: release/README.md.
+# Two jobs with a protected signing boundary (release/README.md):
+#   build: NO secrets, contents: read. Builds the UNSIGNED release APKs from the checked-out ref, uploads them.
+#   sign:  environment "release" (required reviewers, deployment branch/tag rules, the secrets live THERE).
+#          Before any secret is touched it checks the tag format and that the commit is reachable from the protected
+#          default branch (main). It downloads build's artifacts (never rebuilds with secrets present), signs, verifies
+#          with release/verify-release.sh, and creates a DRAFT GitHub release. Publishing is always manual.
+# Never debug-signed. The CI single-signer signing form is UNREHEARSED (see release/README.md).
 
 on:
   push:
     tags:
-      - "v*"
-  workflow_dispatch:
+      - "v*" # glob only; the exact format is enforced by the TAG_RE check in both jobs
+  workflow_dispatch: # only honoured on the default branch (job-level if below)
     inputs:
       tag:
         description: "Release tag the draft is created for (e.g. v1.3.0). The tag is only created when you publish the draft."
@@ -19,8 +23,7 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write # creating the DRAFT release; nothing else is granted
+permissions: {} # least privilege by default; each job grants what it needs
 
 concurrency:
   group: release-${{ github.ref }}-${{ inputs.tag }}
@@ -28,64 +31,161 @@ concurrency:
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
+  TAG_RE: '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'
   BUILD_TOOLS_VERSION: "36.0.0"
+  WITH_BRIDGE: ${{ inputs.with_bridge && 'true' || 'false' }}
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  build:
+    # dispatch only from main; tag pushes are checked again (format + reachability from main) in the sign job
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04 # pinned runner image, not ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
-      - name: Check out (full history, for the previous tag)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: true
-
-      - name: Locate build-tools and check the pin is filled in
+      - name: Validate the tag format (fail closed)
         run: |
           set -euo pipefail
-          bt="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
-          [ -x "$bt/apksigner" ] || yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$BUILD_TOOLS_VERSION" > /dev/null
-          echo "BT=$bt" >> "$GITHUB_ENV"
-          pin=$(grep -v '^[[:space:]]*#' release/signer-sha256.txt | tr -d '[:space:]' | tr 'A-F' 'a-f')
-          printf '%s' "$pin" | grep -Eq '^[0-9a-f]{64}$' || { echo "::error::release/signer-sha256.txt is still a placeholder"; exit 1; }
-          echo "PIN=$pin" >> "$GITHUB_ENV"
+          grep -Eq "$TAG_RE" <<<"$TAG" || { echo "::error::tag '$TAG' does not match $TAG_RE"; exit 1; }
+
+      # actions/checkout v4.4.0 (resolved with git ls-remote 2026-11-18)
+      - name: Check out (full history, for the previous tag)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # actions/setup-java v4.9.1 (resolved with git ls-remote 2026-11-18). Exact Temurin patch version pinned.
+      - name: Set up JDK 17
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: "17.0.13"
+
+      # No gradle/actions/setup-gradle: its commit SHA could not be resolved under the read-only actions/* ls-remote
+      # allowance, so it is not used (no restored build cache either). The Gradle wrapper provides Gradle itself.
 
       - name: Fail if versionCode is not greater than the previous tag's
         run: |
           set -euo pipefail
           vc() { sed -n 's/^[[:space:]]*versionCode = \([0-9]*\).*/\1/p' | head -n1; }
-          prev=$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -n1 || true)
-          if [ -z "$prev" ]; then echo "No previous v* tag: versionCode check skipped (first release)."; exit 0; fi
-          mods="phone glasses"; [ "${{ inputs.with_bridge }}" = "true" ] && mods="$mods nexus-bridge"
+          # sort key: zero-padded numeric core, then 1 for a release / 0+suffix for a pre-release, so v1.10.0 > v1.9.0
+          # and v1.3.0-rc.1 < v1.3.0.
+          key() {
+            local t=${1#v} core pre
+            core=${t%%-*}; pre=""; [ "$core" != "$t" ] && pre=${t#*-}
+            IFS=. read -r a b c <<<"$core"
+            a=$((10#$a)); b=$((10#$b)); c=$((10#$c))
+            if [ -z "$pre" ]; then printf '%08d%08d%08d1' "$a" "$b" "$c"; else printf '%08d%08d%08d0%s' "$a" "$b" "$c" "$pre"; fi
+          }
+          valid=$(git tag --list 'v*' --sort=-v:refname | grep -E "$TAG_RE" || true)
+          others=$(grep -Fvx -- "$TAG" <<<"$valid" || true)
+          tk=$(key "$TAG"); prev=""; pk=""
+          while IFS= read -r t; do
+            [ -n "$t" ] || continue
+            k=$(key "$t")
+            if [[ "$k" < "$tk" ]] && { [ -z "$prev" ] || [[ "$k" > "$pk" ]]; }; then prev=$t; pk=$k; fi
+          done <<<"$others"
+          if [ -z "$prev" ]; then echo "No previous v* tag below $TAG: versionCode check skipped (first release)."; exit 0; fi
+          echo "previous tag: $prev"
+          mods="phone glasses"; [ "$WITH_BRIDGE" = "true" ] && mods="$mods nexus-bridge"
           for m in $mods; do
             now=$(vc < "android-companion/$m/build.gradle.kts")
             before=$(git show "$prev:android-companion/$m/build.gradle.kts" | vc)
+            [[ "$now" =~ ^[0-9]+$ && "$before" =~ ^[0-9]+$ ]] || { echo "::error::$m: cannot read versionCode (now='$now' before='$before')"; exit 1; }
             echo "$m: versionCode $now (previous tag $prev: $before)"
             [ "$now" -gt "$before" ] || { echo "::error::$m versionCode $now is not greater than $before at $prev"; exit 1; }
           done
 
       # Release variants only. The unsigned APKs come out of AGP; no signingConfig is set in Gradle, so the debug
-      # key is never applied.
+      # key is never applied. No secrets exist in this job.
       - name: Build the release variants (unsigned)
         working-directory: android-companion
         run: |
           set -euo pipefail
           tasks=":phone:assembleRelease :glasses:assembleRelease"
-          [ "${{ inputs.with_bridge }}" = "true" ] && tasks="$tasks :nexus-bridge:assembleRelease"
+          [ "$WITH_BRIDGE" = "true" ] && tasks="$tasks :nexus-bridge:assembleRelease"
           ./gradlew --no-daemon $tasks
+
+      - name: Collect the unsigned APKs
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/unsigned"; mkdir -p "$d"
+          pick() { # <module> -> copies the single *.apk of that module's release output
+            mapfile -t f < <(find "android-companion/$1/build/outputs/apk/release" -maxdepth 1 -type f -name '*.apk')
+            [ "${#f[@]}" -eq 1 ] || { echo "::error::expected one apk for $1, found ${#f[@]}"; exit 1; }
+            cp -- "${f[0]}" "$d/$1.apk"
+          }
+          pick phone; pick glasses
+          [ "$WITH_BRIDGE" = "true" ] && pick nexus-bridge
+          printf '%s\n' "$GITHUB_SHA" > "$d/BUILD_SHA.txt"
+          ls -l "$d"
+
+      # actions/upload-artifact v4.6.2 (resolved with git ls-remote 2026-11-18)
+      - name: Upload the unsigned APKs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned-apks
+          path: ${{ runner.temp }}/unsigned/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # Protected boundary: the repository owner creates the Environment "release" with required reviewers and
+    # deployment branch/tag restrictions; the signing secrets live in that ENVIRONMENT (release/README.md).
+    environment: release
+    permissions:
+      contents: write # creating the DRAFT release; only in this job
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate the tag format (fail closed)
+        run: |
+          set -euo pipefail
+          grep -Eq "$TAG_RE" <<<"$TAG" || { echo "::error::tag '$TAG' does not match $TAG_RE"; exit 1; }
+
+      # actions/checkout v4.4.0 (resolved with git ls-remote 2026-11-18). Credentials persist for the main fetch below.
+      - name: Check out (full history)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      # Runs BEFORE any step that references a secret. Secrets are only exposed to the steps that name them.
+      - name: Require the commit to be reachable from protected main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_SHA is not reachable from origin/main; refusing to sign"; exit 1; }
+
+      # actions/download-artifact v4.3.0 (resolved with git ls-remote 2026-11-18)
+      - name: Download the unsigned APKs from the build job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: unsigned-apks
+          path: ${{ runner.temp }}/unsigned
+
+      - name: Check the artifacts belong to this commit; locate build-tools; check the pin
+        run: |
+          set -euo pipefail
+          u="$RUNNER_TEMP/unsigned"
+          [ "$(cat "$u/BUILD_SHA.txt")" = "$GITHUB_SHA" ] || { echo "::error::artifacts were not built from $GITHUB_SHA"; exit 1; }
+          for m in phone glasses; do [ -f "$u/$m.apk" ] || { echo "::error::missing $m.apk"; exit 1; }; done
+          if [ "$WITH_BRIDGE" = "true" ]; then [ -f "$u/nexus-bridge.apk" ] || { echo "::error::missing nexus-bridge.apk"; exit 1; }; fi
+          bt="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION"
+          [ -x "$bt/apksigner" ] || yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$BUILD_TOOLS_VERSION" > /dev/null
+          for t in apksigner aapt2 zipalign; do [ -x "$bt/$t" ] || { echo "::error::$bt/$t missing"; exit 1; }; done
+          echo "BT=$bt" >> "$GITHUB_ENV"
+          pin=$(grep -v '^[[:space:]]*#' release/signer-sha256.txt | tr -d '[:space:]' | tr 'A-F' 'a-f')
+          grep -Eq '^[0-9a-f]{64}$' <<<"$pin" || { echo "::error::release/signer-sha256.txt is still a placeholder"; exit 1; }
+          echo "PIN=$pin" >> "$GITHUB_ENV"
 
       - name: Decode the release key and lineage outside the checkout
         env:
@@ -102,48 +202,36 @@ jobs:
           printf '%s' "$KS_B64" | base64 --decode > "$RUNNER_TEMP/pca-release.p12"
           printf '%s' "$LINEAGE_B64" | base64 --decode > "$RUNNER_TEMP/pca.lineage"
 
-      # Single signer = the NEW key, with the lineage whose tail is that key. The rehearsal signed with the debug key
-      # as first signer and --next-signer for the release key; CI never holds the debug key, so this is the lineage-only
-      # form. Rehearse THIS form once on an emulator before the first real release (release/README.md).
-      - name: Sign, verify, and pin-check
+      # Single signer = the NEW key, with the lineage whose tail is that key, v3 only (v1/v2 would need the OLDEST
+      # signer's private key, which CI never holds; every project minSdk is >= 28). UNREHEARSED: the rehearsal used the
+      # two-signer v1/v2/v3 form. This exact form needs its own emulator rehearsal before the first real release
+      # (release/README.md checklist). Not claimed as verified.
+      - name: Sign, then verify with release/verify-release.sh
         env:
           KS_PASS: ${{ secrets.PCA_RELEASE_KEYSTORE_PASSWORD }}
           KS_ALIAS: ${{ secrets.PCA_RELEASE_KEY_ALIAS }}
         run: |
           set -euo pipefail
-          out="$RUNNER_TEMP/signed"; mkdir -p "$out"
-          sign() { # <unsigned apk> <final name>
-            "$BT/zipalign" -c -P 16 4 "$1" || "$BT/zipalign" -c 4 "$1"
+          u="$RUNNER_TEMP/unsigned"; out="$RUNNER_TEMP/signed"; mkdir -p "$out"
+          sign() { # <module> <final name>
+            "$BT/zipalign" -c -P 16 4 "$u/$1.apk" || "$BT/zipalign" -c 4 "$u/$1.apk"
             "$BT/apksigner" sign \
               --ks "$RUNNER_TEMP/pca-release.p12" --ks-key-alias "$KS_ALIAS" --ks-pass env:KS_PASS \
               --lineage "$RUNNER_TEMP/pca.lineage" --rotation-min-sdk-version 28 \
-              --out "$out/$2" "$1"
-          }
-          pick() { # <dir> -> the single *.apk in it
-            mapfile -t f < <(find "$1" -maxdepth 1 -type f -name '*.apk')
-            [ "${#f[@]}" -eq 1 ] || { echo "::error::expected one apk in $1, found ${#f[@]}" >&2; exit 1; }
-            printf '%s' "${f[0]}"
+              --v1-signing-enabled false --v2-signing-enabled false --v3-signing-enabled true --v4-signing-enabled false \
+              --debuggable-apk-permitted false \
+              --out "$out/$2" "$u/$1.apk"
           }
           v="${TAG#v}"
-          sign "$(pick android-companion/phone/build/outputs/apk/release)" "pca-phone-$v.apk"
-          sign "$(pick android-companion/glasses/build/outputs/apk/release)" "pca-glasses-$v.apk"
-          if [ "${{ inputs.with_bridge }}" = "true" ]; then
-            sign "$(pick android-companion/nexus-bridge/build/outputs/apk/release)" "pca-nexus-bridge-$v.apk"
-          fi
-          for apk in "$out"/*.apk; do
-            "$BT/apksigner" verify -v --print-certs "$apk" > "$RUNNER_TEMP/certs.txt"
-            digests=$(sed -n 's/^Signer #[0-9]* certificate SHA-256 digest: //p' "$RUNNER_TEMP/certs.txt" | tr 'A-F' 'a-f')
-            [ "$(printf '%s\n' "$digests" | grep -c .)" = 1 ] || { echo "::error::$apk: not exactly one signer"; exit 1; }
-            [ "$digests" = "$PIN" ] || { echo "::error::$apk is not signed by the pinned release key"; exit 1; }
-            case "$digests" in 61a831*) echo "::error::$apk is signed by the debug key"; exit 1 ;; esac
-            grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true' "$RUNNER_TEMP/certs.txt" || { echo "::error::$apk has no v3 signature"; exit 1; }
-            if grep -q 'Verified using v3.1 scheme (APK Signature Scheme v3.1): true' "$RUNNER_TEMP/certs.txt"; then
-              echo "::error::$apk has a v3.1 block (missing --rotation-min-sdk-version)"; exit 1
-            fi
-            if "$BT/aapt2" dump badging "$apk" | grep -q 'application-debuggable'; then
-              echo "::error::$apk is debuggable"; exit 1
-            fi
-            echo "$apk ok: $("$BT/aapt2" dump badging "$apk" | sed -n "s/^package: \(name='[^']*' versionCode='[0-9]*'\).*/\1/p")"
+          sign phone "pca-phone-$v.apk"
+          sign glasses "pca-glasses-$v.apk"
+          if [ "$WITH_BRIDGE" = "true" ]; then sign nexus-bridge "pca-nexus-bridge-$v.apk"; fi
+          shopt -s nullglob
+          apks=("$out"/*.apk)
+          [ "${#apks[@]}" -ge 2 ] || { echo "::error::expected at least two signed APKs, found ${#apks[@]}"; exit 1; }
+          for apk in "${apks[@]}"; do
+            # pin match, exactly one signer, not the debug key, v3 present, no v3.1, not debuggable; fails closed on any tool error
+            BUILD_TOOLS="$BT" release/verify-release.sh "$apk"
           done
           echo "OUT=$out" >> "$GITHUB_ENV"
 
