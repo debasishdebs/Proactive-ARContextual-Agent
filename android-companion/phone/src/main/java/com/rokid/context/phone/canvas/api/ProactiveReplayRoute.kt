@@ -40,6 +40,8 @@ class ProactiveReplayRoute(
     private val flag: StateFlow<Boolean>,
     private val replay: suspend (day: LocalDate, stepMin: Int, extra: List<ReplayStep>) -> List<ReplayStepResult>,
     private val deadlineMs: Long = DEADLINE_MS,
+    /** v3.1: the store's plain counters, read only to report the DELIVERY counters (`deliver_*`, `drop_delivery_*`, `fb_*`) next to the replay. The replay itself delivers nothing. */
+    private val counters: () -> Map<String, Int> = { emptyMap() },
 ) {
     private val running = Mutex()
 
@@ -117,6 +119,13 @@ class ProactiveReplayRoute(
             }
         }
         put("wouldShow", steps.sumOf { s -> s.candidates.count { it.verdict == Gate.WOULD_SHOW } })
+        // v3.1: what the live loop did on this phone so far (counts only; the replay is a dry run and never delivers)
+        val c = runCatching { counters() }.getOrDefault(emptyMap())
+        put("delivery", buildJsonObject {
+            put("delivered", buildJsonObject { c.filterKeys { it.startsWith("deliver_") }.toSortedMap().forEach { (k, v) -> put(k.removePrefix("deliver_"), v) } })
+            put("dropped", buildJsonObject { c.filterKeys { it.startsWith("drop_delivery_") }.toSortedMap().forEach { (k, v) -> put(k.removePrefix("drop_delivery_"), v) } })
+            put("feedback", buildJsonObject { c.filterKeys { it.startsWith("fb_") }.toSortedMap().forEach { (k, v) -> put(k.removePrefix("fb_"), v) } })
+        })
     }
 
     companion object {

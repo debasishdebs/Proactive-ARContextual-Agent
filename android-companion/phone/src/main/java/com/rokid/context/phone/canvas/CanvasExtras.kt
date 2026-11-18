@@ -54,7 +54,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 proactiveReplay = DeveloperModeStore.get(app).let { dev ->
                     com.rokid.context.phone.canvas.api.ProactiveReplayRoute(dev.enabled, com.rokid.context.orchestration.proactive.ProactiveSettings.of(app).replay, replay = { day, step, extra ->
                         com.rokid.context.orchestration.proactive.ProactiveGraph.replayer(app).replay(day, step, extra)
-                    })
+                    }, counters = { if (com.rokid.context.orchestration.proactive.ProactiveGraph.storageAvailable(app)) com.rokid.context.orchestration.proactive.ProactiveGraph.store(app).counters() else emptyMap() })
                 },
                 signalTry = DeveloperModeStore.get(app).let { dev ->
                     com.rokid.context.phone.canvas.api.SignalTry(
