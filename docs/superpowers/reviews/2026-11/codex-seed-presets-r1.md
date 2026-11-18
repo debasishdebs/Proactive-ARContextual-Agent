@@ -1,0 +1,9 @@
+- **P2 — Malformed P31 data bypasses curated-item validation.** [PlaceCellSource.kt:37–38](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/connectors/src/main/kotlin/com/rokid/context/connectors/place/PlaceCellSource.kt:37): the [parser](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/connectors/src/main/kotlin/com/rokid/context/connectors/place/PlaceSources.kt:110) silently converts invalid P31 shapes or unreadable claims into an empty class set. For example, `{"entities":{"Q272153":{"claims":{"P31":{}}}}}` passes the new curated fallback using Wikipedia coordinates. This treats malformed classification as valid absence and cannot enforce person exclusion when classification is unreadable. Reject malformed P31 data while preserving support for genuinely absent P31, and add parser-to-candidate tests.
+
+- **P2 — Presets continue after rate-limit failures despite promising to stop.** [PlaceGuideSettings.kt:171–173](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/ui/settings/place/PlaceGuideSettings.kt:171): production `control.seed()` returns `Result.success(message)` even when `seedArea()` reports failed cells after its retry. Consequently, sustained HTTP 429 failures in the first box still trigger requests for the next box, and `messageIsError` remains false. Preserve the structured seed outcome and stop on failed cells. The new failure test only exercises `Result.failure`, missing production behaviour.
+
+No P1 findings. Explicit person classes are rejected before both allowlists. HTTP timeouts, response-size caps, request spacing, and the existing retry remain unchanged. Neither commit adds permissions, schema changes, or logs. Preset UI text explicitly says “Approximate: UNVERIFIED.”
+
+Static review of both `git show` diffs and surrounding code; tests were not run in the read-only sandbox.
+
+READY
