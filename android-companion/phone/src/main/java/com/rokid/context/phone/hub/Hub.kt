@@ -123,6 +123,10 @@ class Hub(
     private val placeClear: () -> Unit = {},
     /** Clears the card only if it is still the instance [cardId]; false = a different (newer) card or none, nothing cleared. Atomic in production (PlaceCardHolder.clearIf). */
     private val placeClearIf: (cardId: String) -> Boolean = { id -> if (placeCards.value?.cardId == id) { placeClear(); true } else false },
+    /** v3.1: the delivered suggestion card (the same wire overlay as a place card, id `sg_...`); [suggestionClearIf] drops it by id; [onSuggestionDismissed] = the wearer dismissed it by head motion (feedback + withdraw everywhere). */
+    private val suggestionCards: StateFlow<SuggestionHudHolder.Shown?> = MutableStateFlow(null),
+    private val suggestionClearIf: (id: String) -> Boolean = { false },
+    private val onSuggestionDismissed: (id: String) -> Unit = {},
     /** v2.0 T7: who draws the HUD cards (the Rokid Nexus opt-in choice, default PCA's glasses app). Read at every settings push (`HudSettings.hudHost`) and every frame; never stored with the HUD settings. */
     private val hudHost: () -> com.rokid.context.core.model.HudHost = { com.rokid.context.core.model.HudHost.PCA },
     /** v2.0: the hub stopped (the Nexus bridge hides everything it shows). */
@@ -192,6 +196,7 @@ class Hub(
             // Place Guide PG3: a new card re-broadcasts at once and starts its 12 s life; a cleared card re-broadcasts so the glasses drop it. The card that already exists when the hub (re)starts is
             // NOT skipped: its expiry is scheduled too (a card must never outlive its 12 s because the hub restarted under it).
             scope.launch { placeCards.collect { c -> onPlaceCard(c) } },
+            scope.launch { suggestionCards.collect { c -> onSuggestionCard(c) } },
             // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
             scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
             // LGC4P: Developer mode on/off republishes the settings at once (diagRecord) and restarts (on) or ends (off) the control re-send.
@@ -670,6 +675,7 @@ class Hub(
      * the same title; without it (an older glasses build) the title decides, as before.
      */
     private fun onPlaceDismissed(title: String, cardId: String?) {
+        if (cardId != null && cardId.startsWith(SUGGESTION_ID_PREFIX)) { onSuggestionDismissedOnGlasses(cardId); return }
         if (cardId != null) { if (placeClearIf(cardId)) PcLog.i(TAG, "place card dismissed on glasses"); return }
         val c = placeCards.value ?: return
         if (c.title == title) { PcLog.i(TAG, "place card dismissed on glasses"); placeClear() }
@@ -686,6 +692,37 @@ class Hub(
         return Overlay.Nudge("${c.title}: ${c.line}", info)
     }
 
+    private var suggestionExpiry: Job? = null
+
+    private fun onSuggestionCard(c: SuggestionHudHolder.Shown?) {
+        suggestionExpiry?.cancel(); suggestionExpiry = null
+        if (c != null) {
+            PcLog.i(TAG, "suggestion card up")
+            val id = c.card.id
+            suggestionExpiry = scope.launch { delay(PlaceCardInfo.SHOW_MS); suggestionClearIf(id) } // expiry is NOT a dismissal: no feedback
+        }
+        broadcaster.markDirty()
+    }
+
+    /**
+     * The glasses dismissed a suggestion card. Within the card's life (a head-motion onset after 2.5 s, before the 12 s expiry) it is the wearer's dismissal: feedback and withdrawal from every surface. The glasses' own
+     * expiry reports the same command at about 12 s; that only clears the card.
+     */
+    private fun onSuggestionDismissedOnGlasses(cardId: String) {
+        val shownAt = suggestionCards.value?.takeIf { it.card.id == cardId }?.atMs
+        val early = shownAt != null && clock() - shownAt < PlaceCardInfo.SHOW_MS - SUGGESTION_EXPIRY_SLACK_MS
+        if (!suggestionClearIf(cardId)) return
+        PcLog.i(TAG, if (early) "suggestion card dismissed on glasses" else "suggestion card expired on glasses")
+        if (early) onSuggestionDismissed(cardId)
+    }
+
+    /** The suggestion card as a [Overlay.Nudge] carrying [PlaceCardInfo] (text "title: line" for an older glasses build), or null. Never while a pause zone is approached or enforced (defence in depth; the delivery gate refused too). */
+    fun suggestionOverlay(): Overlay? {
+        val c = suggestionCards.value?.card ?: return null
+        if (zoneApproach() || zoneEnforce()) return null
+        return Overlay.Nudge("${c.title}: ${c.line}", PlaceCardInfo(c.title, c.line, "Suggestion \u00b7 ${c.sourceLabel}", nearby = false, id = c.id))
+    }
+
     private fun overlay(): Overlay? {
         // rc1 fix: never a frame of an Answer a Forget withdrew, even if the voice side has not cleared it yet
         // Codex z1 r1 P1-3: the final zone filter of the answer overlay, read at frame time: no Answer (stored text) is ever sent to the glasses while a zone is approached, entered or unreadable
@@ -693,7 +730,7 @@ class Hub(
         // PG3 maps the place card (PlaceGraph.port.card) onto an additive wire overlay and passes it here; until then no place overlay exists on the wire.
         // v2.0 T7: each component is filtered BEFORE the precedence rule, so an undo toast still shows when the answer it belongs to is drawn by Nexus.
         val host = hudHost()
-        return pickOverlay(forHost(v, host), actions.overlay.value, minimisedHint ?: forHost(nudges.overlay.value, host), place = forHost(placeOverlay(), host))
+        return pickOverlay(forHost(v, host), actions.overlay.value, minimisedHint ?: forHost(nudges.overlay.value, host), place = forHost(placeOverlay(), host) ?: forHost(suggestionOverlay(), host))
     }
 
     /** Ask ids a committed Forget redacted or deleted, with the phone time they were withdrawn (newest last); bounded by [WITHDRAWN_MAX] and [WITHDRAWN_HINT_MS]. */
@@ -741,6 +778,10 @@ class Hub(
             return actions ?: voice ?: (place ?: nudge)
         }
         const val HELLO_REQUEST_MIN_INTERVAL_MS = 10_000L
+        /** A suggestion card's id (`sg_<uuid>`, the record id) on the wire's PlaceCardInfo.id. */
+        const val SUGGESTION_ID_PREFIX = "sg_"
+        /** A dismissal this close to the 12 s expiry is the expiry (the glasses' own timer), not the wearer. */
+        const val SUGGESTION_EXPIRY_SLACK_MS = 1_500L
         /** How long a withdrawn ask stays in the frames' `withdrawnAskIds`: six heartbeats, so a glasses app that reconnects within it still hears it. */
         const val WITHDRAWN_HINT_MS = 60_000L
         const val WITHDRAWN_MAX = 20

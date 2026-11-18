@@ -268,6 +268,8 @@ object HubGraph {
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
             placeCards = com.rokid.context.work.frames.place.PlaceGraph.port.card, placeClear = com.rokid.context.work.frames.place.PlaceGraph.port::clear, placeClearIf = com.rokid.context.work.frames.place.PlaceGraph.port::clearIf,
+            suggestionCards = SuggestionHud.holder.card, suggestionClearIf = SuggestionHud.holder::clearIf,
+            onSuggestionDismissed = { id -> scope.launch(Dispatchers.IO) { runCatching { com.rokid.context.orchestration.proactive.ProactiveGraph.actions(app).dismiss(id) } } },
             zoneApproach = { com.rokid.context.phone.zone.ZoneGraph.get(app).approach },
             zoneEnforce = { com.rokid.context.phone.zone.ZoneGraph.get(app).enforcing },
             // Every hub start and recovery judges the zones again from "nothing known" (not only the graph's construction): see ZoneController.start.
