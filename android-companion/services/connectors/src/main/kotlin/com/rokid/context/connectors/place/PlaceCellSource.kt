@@ -72,7 +72,7 @@ class PlaceCellSource(
     companion object {
         /**
          * Wikidata classes (P31) a place may have to enter the pack: monument, temple, stupa, fort, palace, prison, archaeological site, memorial, church, mosque, lighthouse,
-         * heritage and historic sites, museum. A person (Q5) is in no entry.
+         * heritage and historic sites, museum (and, since 2026-11-18, tomb, art museum, national museum, theme park). A person (Q5) is in no entry.
          *
          * VERIFIED 2026-11-17 against wikidata.org (`wbgetentities`, props=labels, en): every id below has the English label in its line comment. Two ids from memory were WRONG and are fixed:
          * Q160742 is "abbey" (not a temple) and Q40357 is "prison" (a plain prison is not a place; the class "prison museum" is Q10500763). Q5393308 (Buddhist temple) and Q12539846 (dagoba)
@@ -93,6 +93,10 @@ class PlaceCellSource(
             "Q358" to PlaceKinds.HERITAGE_BUILDING, // heritage site
             "Q1081138" to PlaceKinds.HISTORIC_SITE, // historic site
             "Q33506" to PlaceKinds.MUSEUM, // museum
+            // Added 2026-11-18 after the Hyderabad coverage check (docs/superpowers/reviews/2026-11/hyderabad-seed-coverage-2026-11-18.md), each id read back from wikidata.org (English label):
+            "Q381885" to PlaceKinds.TOMB, // tomb: the P31 of "Qutb Shahi tombs" (Q7273006)
+            "Q207694" to PlaceKinds.MUSEUM, "Q17431399" to PlaceKinds.MUSEUM, // art museum, national museum: the P31 of "Salar Jung Museum" (Q1864572)
+            "Q2416723" to PlaceKinds.ATTRACTION, // theme park: the P31 of "Ramoji Film City" (Q1786944), with film studio (Q375336), which is not admitted
         )
 
         /** The OSM tag combinations that make an object a place: historic, heritage and tourism=attraction|museum|viewpoint, named. */

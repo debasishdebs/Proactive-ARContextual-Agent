@@ -31,7 +31,7 @@ class AndroidPlaceGuideControl(
     override suspend fun seed(box: GeoBox): Result<String> = runCatching {
         val id = String.format(Locale.ROOT, "seed:%.3f,%.3f,%.3f,%.3f", box.south, box.west, box.north, box.east)
         val r = PlaceGraph.readyPack(app).seedArea(id, box)
-        if (r.complete) "Seeded ${r.cells} cells, ${r.places} places in the pack." else "Seeded ${r.cells - r.failed} of ${r.cells} cells; ${r.failed} failed. Try again when online."
+        com.rokid.context.phone.ui.settings.place.PlaceGuideModel.seedMessage(r)
     }
 
     override suspend fun summary(): String {

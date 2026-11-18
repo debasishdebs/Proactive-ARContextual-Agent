@@ -127,6 +127,8 @@ class PlaceFetchTest {
             "Q4989906" to "monument", "Q44539" to "temple", "Q842402" to "Hindu temple", "Q5393308" to "Buddhist temple", "Q180987" to "stupa", "Q12539846" to "dagoba",
             "Q57821" to "fortification", "Q1785071" to "fort", "Q16560" to "palace", "Q10500763" to "prison museum", "Q839954" to "archaeological site", "Q5003624" to "memorial",
             "Q16970" to "church building", "Q2977" to "cathedral", "Q32815" to "mosque", "Q39715" to "lighthouse", "Q358" to "heritage site", "Q1081138" to "historic site", "Q33506" to "museum",
+            // read back from wikidata.org on 2026-11-18 (coverage check): the P31 of Qutb Shahi tombs, Salar Jung Museum and Ramoji Film City
+            "Q381885" to "tomb", "Q207694" to "art museum", "Q17431399" to "national museum", "Q2416723" to "theme park",
         )
         assertEquals(verified.keys, PlaceCellSource.MONUMENT_CLASSES.keys)
         assertEquals(PlaceKinds.PRISON_MUSEUM, PlaceCellSource.MONUMENT_CLASSES["Q10500763"])
@@ -171,5 +173,75 @@ class PlaceFetchTest {
         val fence = com.rokid.context.memory.place.ZoneFence(); fence.hold()
         val r = runCatching { kotlinx.coroutines.runBlocking { kotlinx.coroutines.withContext(fence.ticket()) { UrlConnectionPlaceHttp().get("https://invalid.invalid/x") } } }
         assertTrue(r.exceptionOrNull() is com.rokid.context.memory.place.ZoneFenced)
+    }
+
+    /** Hyderabad coverage check 2026-11-18: these three were returned by the geosearch but dropped by the class allowlist; their real P31 values are kept now. */
+    @Test fun qutbShahiTombsSalarJungMuseumAndRamojiFilmCityAreKept() = runTest {
+        val cell = Geohash5.encode(17.3713, 78.4804)
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Qutb Shahi tombs", 17.3947, 78.3956), WikiHit(2, "Salar Jung Museum", 17.3713, 78.4804), WikiHit(3, "Ramoji Film City", 17.2543, 78.6808), WikiHit(4, "Charminar Assembly constituency", 17.36, 78.47))
+            override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Qutb Shahi tombs", "Tombs.", "Q7273006", null, null), WikiPage(2, "Salar Jung Museum", "Museum.", "Q1864572", null, null), WikiPage(3, "Ramoji Film City", "Studio.", "Q1786944", null, null), WikiPage(4, "Charminar Assembly constituency", "Seat.", "Q5086502", 17.36, 78.47))
+        }
+        val wd = object : WikidataSource {
+            override suspend fun entities(ids: List<String>) = mapOf(
+                "Q7273006" to WikidataEntity("Q7273006", setOf("Q381885"), emptyList(), emptyList(), 17.3947, 78.3956),
+                "Q1864572" to WikidataEntity("Q1864572", setOf("Q207694", "Q17431399"), emptyList(), emptyList(), 17.3713, 78.4804),
+                "Q1786944" to WikidataEntity("Q1786944", setOf("Q375336", "Q2416723"), emptyList(), emptyList(), 17.2543, 78.6808),
+                "Q5086502" to WikidataEntity("Q5086502", setOf("Q54375514"), emptyList(), emptyList(), null, null),
+            )
+        }
+        val got = PlaceCellSource(wiki, wd, null).fetchCell(cell)
+        assertEquals(mapOf("wd:Q7273006" to PlaceKinds.TOMB, "wd:Q1864572" to PlaceKinds.MUSEUM, "wd:Q1786944" to PlaceKinds.ATTRACTION), got.places.associate { it.id to it.kind })
+    }
+
+    private class Mirror(val answer: suspend () -> List<OsmElement>) : OverpassSource {
+        var calls = 0
+        override suspend fun elements(box: com.rokid.context.memory.place.GeoBox): List<OsmElement> { calls++; return answer() }
+    }
+    private val someBox = com.rokid.context.memory.place.GeoBox(17.0, 78.0, 17.04, 78.04)
+    private val el = OsmElement("node", 1, 17.0, 78.0, null, mapOf("name" to "x", "historic" to "monument"))
+
+    @Test fun mirrorsAreTriedInOrderUntilOneAnswers() = runTest {
+        val a = Mirror { throw PlaceHttpException(504) }; val b = Mirror { listOf(el) }; val c = Mirror { error("not reached") }
+        val waits = mutableListOf<Long>(); val logs = mutableListOf<String>()
+        val src = OverpassMirrorSource(listOf(a, b, c), pause = { waits += it }, log = { logs += it })
+        assertEquals(listOf(el), src.elements(someBox))
+        assertEquals(listOf(1, 1, 0), listOf(a.calls, b.calls, c.calls))
+        assertEquals(listOf(2_000L), waits) // backed off before the second mirror
+        assertEquals(listOf("overpass mirror failed idx=0 cls=PlaceHttpException"), logs)
+    }
+
+    @Test fun aHangingMirrorTimesOutAndTheNextOneIsUsed() = runTest {
+        val a = Mirror { kotlinx.coroutines.delay(1_000_000); emptyList() }; val b = Mirror { listOf(el) }
+        val src = OverpassMirrorSource(listOf(a, b), perEndpointTimeoutMs = 5_000, pause = {})
+        assertEquals(listOf(el), src.elements(someBox))
+        assertEquals(5_000L, testScheduler.currentTime)
+    }
+
+    @Test fun allMirrorsFailingThrowsOnceThenCoolsDownWithoutAskingAgainAndProbesAfterwards() = runTest {
+        var now = 1_000L
+        val ms = List(3) { Mirror { throw IOException("down") } }
+        val logs = mutableListOf<String>()
+        val src = OverpassMirrorSource(ms, cooldownMs = 180_000, clock = { now }, pause = {}, log = { logs += it })
+        assertFailsWith<IOException> { src.elements(someBox) }
+        assertEquals(listOf(1, 1, 1), ms.map { it.calls })
+        assertTrue("overpass all mirrors failed n=3" in logs)
+        now += 60_000
+        assertFailsWith<IOException> { src.elements(someBox) }
+        assertEquals(listOf(1, 1, 1), ms.map { it.calls }) // cooling down: nothing was asked
+        now += 130_000
+        assertFailsWith<IOException> { src.elements(someBox) }
+        assertEquals(listOf(2, 2, 2), ms.map { it.calls })
+        assertTrue(logs.none { "http" in it.lowercase() || "17." in it })
+    }
+
+    @Test fun allMirrorsDownMakesTheCellPartialButKeepsWikipediaAndWikidata() = runTest {
+        val h = FixtureHttp("golconda")
+        val down = OverpassMirrorSource(OverpassMirrorSource.DEFAULT_ENDPOINTS.map { OverpassHttpSource(object : PlaceHttp by h { override suspend fun postForm(url: String, form: Map<String, String>): String { h.posts += url to form; throw IOException("down") } }, it) }, pause = {})
+        val got = PlaceCellSource(WikipediaHttpSource(h), WikidataHttpSource(h), down).fetchCell(golcondaCell)
+        assertFalse(got.complete)
+        assertEquals(3, got.places.size)
+        assertEquals(OverpassMirrorSource.DEFAULT_ENDPOINTS, h.posts.map { it.first })
+        assertEquals(listOf("overpass-api.de", "overpass.kumi.systems", "overpass.private.coffee"), OverpassMirrorSource.DEFAULT_ENDPOINTS.map { java.net.URL(it).host })
     }
 }
