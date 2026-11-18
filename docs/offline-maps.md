@@ -32,12 +32,48 @@ Check the result: `pmtiles show region.pmtiles` must report tile type `png`, `jp
 
 Tile licences: do not bulk-download from `tile.openstreetmap.org` (it breaks the OSM tile policy). Use a source whose terms allow offline use, and keep its attribution in the archive metadata.
 
-Suggested regions (bboxes are rough and UNVERIFIED; check them on the map): Hyderabad `78.2,17.2,78.7,17.6`; Sikkim and Darjeeling `88.0,26.9,89.0,28.2`; Sri Lanka sites per the Place Guide spec.
+Suggested regions: see the trip how-to below. All bboxes in this file are rough and UNVERIFIED; check them on the map.
 
-## Size guidance (estimates from the roadmap spec, not measured)
+## Remaining trips: Sikkim/Darjeeling and Sri Lanka (UNVERIFIED: bboxes, sizes and commands are approximate, none were run or measured here)
 
-256 px raster tiles are about 20 KB each. Andaman-sized areas (about 400 km2) at z10-16 are about 1,450 tiles (about 30 MB); z17 adds about 85 MB. Sri Lanka's cultural-triangle and south-coast sites (about 750 km2) at z10-16 are about 55 MB, plus the whole island at z0-13 for about 70 MB. Prefer maxzoom 16 unless you need street detail.
+Bbox order is `west,south,east,north` (longitude first).
+
+| Trip | Approx bbox (UNVERIFIED) | Suggested zoom | Rough size (UNVERIFIED) |
+| --- | --- | --- | --- |
+| Sikkim / Darjeeling | `88.0,26.9,88.9,28.2` (about 88.0-88.9 E, 26.9-28.2 N) | z8-15 (z16 only for a few town boxes) | tens of MB at z8-14; z15 can add a few hundred MB over an area this size (mountainous, but the bbox is about 100 x 145 km) |
+| Sri Lanka, whole island | `79.5,5.9,81.9,9.9` (about 79.5-81.9 E, 5.9-9.9 N) | z0-12 for the island | roughly 70 MB at z0-13 per the roadmap estimate below; not measured |
+| Sri Lanka, site clusters | one small bbox per site cluster | z10-16 | roughly 55 MB for the cultural-triangle and south-coast sites per the roadmap estimate; not measured |
+
+Guidance:
+- Tile count grows about 4x per zoom level, so size does too. If a file is too big, lower `--maxzoom` by one before shrinking the bbox. The reader accepts zoom up to 26, but z17+ is rarely worth it for pause zones.
+- A pause zone is a box plus a buffer ring, so z13-15 is enough to see which streets or compound a zone covers. Use a tight second extract at z16 only for the few places you really need.
+- Do not build one huge file for both trips. Make one `.pmtiles` per trip and pick the right one in Settings before travelling; this keeps each file small and well inside the reader caps.
+- Extract commands follow the recipe above, for example (replace the source):
+  ```
+  pmtiles extract <source-raster-archive>.pmtiles sikkim-darjeeling.pmtiles --bbox=88.0,26.9,88.9,28.2 --maxzoom=15
+  pmtiles extract <source-raster-archive>.pmtiles sri-lanka.pmtiles --bbox=79.5,5.9,81.9,9.9 --maxzoom=12
+  pmtiles show sikkim-darjeeling.pmtiles   # tile type must be png/jpeg/webp, compression gzip/none
+  ```
+- Roadmap size basis (not measured): 256 px raster tiles are about 20 KB each; Andaman-sized areas (about 400 km2) at z10-16 are about 1,450 tiles (about 30 MB); z17 adds about 85 MB.
+
+### Loading it on the phone
+
+1. Copy the file to the phone (USB, AirDrop-style transfer or cloud drive). Do it before the install freeze and before leaving connectivity.
+2. Open Settings > Privacy > Pause zones, then the Offline map section.
+3. Tap **Choose a .pmtiles file** (read-only grant, no copy) or **Import (copy) into the app** (app-private copy; shown size; "Delete the copy" removes it). Prefer Import for a trip so the file survives a cloud-drive or SD-card change.
+4. Open the map: tiles should appear under the zone boxes and rings. If a plain message appears instead (vector, brotli, zstd, v1/v2, or a cap below), rebuild the file.
+
+### What the map shows without tiles
+
+With no file selected, or a refused/damaged file, the map falls back to the plain grid: your zone boxes, buffer rings and your position are still drawn, just without a street background. Individual tiles that are missing or fail to decode (for example outside the extract's bbox or zoom range) are left empty over the grid. Nothing is fetched from the network.
+
+### Check locally (no legal claims made here)
+
+- Sri Lanka: check locally what the photography rules are at the sites you plan to visit (temples, archaeological sites, military or government areas) before using the glasses camera.
+- Sikkim/Darjeeling: check locally for border-area restrictions and any permit requirements near the border regions before the trip.
 
 ## Hostile-file limits (fail closed)
 
 The archive is untrusted. Directories inflate to at most 4 MiB (counting stream, plus a 1000:1 ratio cap) and list at most 100k entries (count must also fit bytes/4; all columns are validated before any array is allocated). Header offsets and lengths must lie inside the file. Leaf recursion is at most 3 deep and a leaf that revisits itself is refused. A tile is at most 2 MiB compressed and 2 MiB inflated; it is decoded after a bounds-only read and subsampled to at most 16 megapixels. The leaf-directory cache and the decoded-tile cache are each bounded to 16 MiB; an out-of-memory during one tile decode leaves that tile absent (plain grid).
+
+Quoted from `PmTiles.kt` (read 2026-11-18): `MAX_DIR_BYTES = 4L shl 20` (4 MiB), `MAX_ENTRIES = 100_000`, `DIR_MAX_RATIO = 1000`, `MAX_DEPTH = 3`, `MAX_TILE_BYTES = 2 shl 20` (2 MiB), `MAX_LEAF_CACHE_BYTES = 16L shl 20`, `MAX_ZOOM = 26`, metadata at most 1 MiB. There is no cap on total file size in these constants, but keep each trip file to a few hundred MB at most for the phone.
