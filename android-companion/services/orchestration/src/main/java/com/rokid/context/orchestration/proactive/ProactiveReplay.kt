@@ -28,6 +28,7 @@ class ProactiveReplayer(
     private val generator: PlaceRecallGenerator,
     private val seams: () -> ProactiveSeams,
     private val never: () -> Set<String> = { emptySet() },
+    private val feedback: () -> FeedbackState = { FeedbackState.EMPTY },
     private val zone: () -> ZoneId = { ZoneId.systemDefault() },
     private val gate: DataOpGate = DataOpGate.shared,
 ) {
@@ -55,6 +56,7 @@ class ProactiveReplayer(
             hud = { hud ?: base.hud() }, globalCap = base.globalCap, globalToday = base.globalToday, anchorBlocked = base.anchorBlocked, pinsLive = base.pinsLive)
         val sim = InMemorySuggestionStore()
         never().forEach { sim.addNever(it) } // the real never list is read, never written
+        sim.seedFeedback(feedback()) // so is the feedback (a dismissed or snoozed key replays as FEEDBACK)
         val engine = ProactiveEngine(db, provenance, sim, listOf<CandidateGenerator>(generator), replaySeams, gate)
         val editedPins = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val pinHook: (Set<String>) -> Unit = { editedPins += it }

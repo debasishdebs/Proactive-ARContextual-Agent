@@ -19,24 +19,33 @@ class SourceLiveness(private val provenance: ProvenanceGate, private val pinIds:
 /**
  * Per-suggestion Forget linkage (design 2.4, ruling 6). Any user Forget, a photo or range forget and retention expiry withdraw every record that cites a source that is no longer live, so a forgotten place memory,
  * pin or mark cannot come back as a suggestion; when liveness cannot be read, every record is withdrawn (fail closed; the never list stays). Delete all clears the store (records, the never list, counters) and
- * resets the switches. Nothing is delivered in v3.0, so there is no live surface to withdraw.
+ * resets the switches. A withdrawn record is also taken off every live surface (v3.1).
  */
 class ProactiveForgetListener(
     private val store: () -> SuggestionStore,
     private val liveness: () -> SourceLiveness,
     private val onDeleteAll: () -> Unit = {},
+    /** v3.1: the live surfaces (HUD overlay, Nexus notice). The phone feed follows the store, so removing a record from it also removes the card and its rendered text. */
+    private val surfaces: () -> SuggestionSurfaces = { SuggestionSurfaces.None },
 ) : ForgetListener {
     override suspend fun onUserForget() { sweep() }
     override suspend fun onFramesForgotten(frameIds: List<String>) { sweep() }
     override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { sweep() }
-    override suspend fun onDeleteAll() { store().clearAll(); onDeleteAll.invoke() }
+    override suspend fun onDeleteAll() { store().clearAll(); safe { surfaces().withdrawAll() }; onDeleteAll.invoke() }
+
+    private inline fun safe(f: () -> Unit) { try { f() } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) { /* a surface that cannot be told is closed by its own gates and its 12 s expiry */ } }
 
     suspend fun sweep(): Int {
         val s = store()
         val all = s.records().flatMap { it.sourceIds }.toSet()
         if (all.isEmpty()) return 0
-        val dead = try { liveness().dead(all) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) { return s.withdrawWhere { true } }
+        val before = s.records()
+        val dead = try { liveness().dead(all) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (e: Exception) {
+            val n = s.withdrawWhere { true }; safe { surfaces().withdraw(before.map { it.id }) }; return n
+        }
         if (dead.isEmpty()) return 0
-        return s.withdrawWhere { r -> r.sourceIds.any { it in dead } }
+        val n = s.withdrawWhere { r -> r.sourceIds.any { it in dead } }
+        safe { surfaces().withdraw(before.filter { r -> r.sourceIds.any { it in dead } }.map { it.id }) } // the HUD overlay and the Nexus notice go too, at once
+        return n
     }
 }

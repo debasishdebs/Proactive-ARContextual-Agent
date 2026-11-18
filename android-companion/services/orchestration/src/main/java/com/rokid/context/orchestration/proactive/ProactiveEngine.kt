@@ -35,6 +35,8 @@ class ProactiveSeams(
      */
     val drivingCommit: (expectedVersion: Long, write: () -> Unit) -> Boolean = { _, write -> if (driving()) false else { write(); true } },
     val hud: () -> NudgeHud? = { null },
+    /** v3.1: Rokid Nexus is the user's HUD host (the Nexus surface needs it; the PCA glasses HUD needs the opposite). The default is "no". */
+    val nexusHost: () -> Boolean = { false },
     /** The user's "Nudges per day" (0 = off) and what the nudge table already holds since [Long]. */
     val globalCap: () -> Int = { 0 },
     val globalToday: suspend (sinceMs: Long) -> Int = { Int.MAX_VALUE },
@@ -101,13 +103,14 @@ class ProactiveEngine(
         if (candidates.isEmpty()) return stop(if (generated.sumOf { it.zoneDropped } > 0) Gate.ZONE_ANCHOR else Gate.NO_CANDIDATES, dry)
         val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap())      // 4
         val never = store.never()
+        val fb = store.feedback()
         val reports = ArrayList<CandidateReport>()
         var chosen: Pair<Candidate, Double>? = null
-        for ((c, score) in ProactiveRanker.rank(candidates, nowMs)) {
+        for ((c, score) in ProactiveRanker.rank(candidates, nowMs) { FeedbackMath.multiplier(it.key, it.family, fb, nowMs) }) {
             if (chosen != null) { reports += CandidateReport(c, score, Gate.NOT_PICKED); continue }
             val verdict = when {
                 score < ProactiveRanker.THRESHOLD -> Gate.THRESHOLD
-                else -> budget.check(c, state, hud, nowMs).takeIf { it != Gate.WOULD_SHOW } ?: if (c.key in never) Gate.FEEDBACK else Gate.WOULD_SHOW // 4, 5
+                else -> budget.check(c, state, hud, nowMs).takeIf { it != Gate.WOULD_SHOW } ?: if (c.key in never || FeedbackMath.blocked(c.key, fb, nowMs)) Gate.FEEDBACK else Gate.WOULD_SHOW // 4, 5
             }
             if (verdict == Gate.WOULD_SHOW) chosen = c to score
             reports += CandidateReport(c, score, verdict)
@@ -169,7 +172,7 @@ class ProactiveEngine(
         if (try { seams.anchorBlocked(c.anchorKey) } catch (e: CancellationException) { throw e } catch (e: Exception) { true }) return Gate.ZONE_ANCHOR
         val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap())
         budget.check(c, state, hud, nowMs).takeIf { it != Gate.WOULD_SHOW }?.let { return it }
-        if (c.key in store.never()) return Gate.FEEDBACK
+        if (c.key in store.never() || FeedbackMath.blocked(c.key, store.feedback(), nowMs)) return Gate.FEEDBACK
         return null
     }
 

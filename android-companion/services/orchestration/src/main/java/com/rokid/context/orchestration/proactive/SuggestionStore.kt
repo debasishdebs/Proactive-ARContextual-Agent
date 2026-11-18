@@ -27,8 +27,17 @@ interface SuggestionStore {
     fun removeNever(key: String)
     fun counters(): Map<String, Int>
     fun bump(counter: String)
-    /** Delete all (ruling 6): records, the never list and the counters. */
+    /** Delete all (ruling 6): records, the never list, the feedback counters and the counters. */
     fun clearAll()
+
+    /** v3.1: atomically marks the record delivered to [surface]. True only for the call that set it (at most once per record and surface); false = already delivered, or the record is gone. */
+    fun markDelivered(id: String, surface: Surface): Boolean
+    /** v3.1: the feedback counters (plain, bounded). */
+    fun feedback(): FeedbackState
+    /** Applies [action] to the counters; also bumps the plain counter `fb_<action>`. False = not stored. */
+    fun recordFeedback(action: FeedbackAction, key: String, family: ProactiveFamily, nowMs: Long): Boolean
+    /** "Reset learning": clears the feedback counters (the never list has its own button). */
+    fun resetFeedback()
 
     companion object {
         const val MAX_RECORDS = 100
@@ -59,7 +68,17 @@ class InMemorySuggestionStore : SuggestionStore {
     override fun removeNever(key: String) { synchronized(lock) { nevers -= key }; changed() }
     override fun counters(): Map<String, Int> = synchronized(lock) { counts.toMap() }
     override fun bump(counter: String) { synchronized(lock) { counts[counter] = (counts[counter] ?: 0) + 1 } }
-    override fun clearAll() { synchronized(lock) { rows.clear(); nevers.clear(); counts.clear() }; changed() }
+    private var fb = FeedbackState.EMPTY
+    override fun clearAll() { synchronized(lock) { rows.clear(); nevers.clear(); counts.clear(); fb = FeedbackState.EMPTY }; changed() }
+    override fun markDelivered(id: String, surface: Surface): Boolean = synchronized(lock) {
+        val i = rows.indexOfFirst { it.id == id }
+        if (i < 0 || surface.token in rows[i].delivered) false else { rows[i] = rows[i].copy(delivered = rows[i].delivered + surface.token); true }
+    }.also { if (it) changed() }
+    override fun feedback(): FeedbackState = synchronized(lock) { fb }
+    override fun recordFeedback(action: FeedbackAction, key: String, family: ProactiveFamily, nowMs: Long): Boolean { synchronized(lock) { fb = fb.after(action, key, family, nowMs); counts["fb_" + action.token] = (counts["fb_" + action.token] ?: 0) + 1 }; changed(); return true }
+    override fun resetFeedback() { synchronized(lock) { fb = FeedbackState.EMPTY }; changed() }
+    /** Tests and the replay: the feedback of another store. */
+    fun seedFeedback(s: FeedbackState) { synchronized(lock) { fb = s } }
 }
 
 internal object BoundedRows {
@@ -115,6 +134,18 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
     override fun counters(): Map<String, Int> = synchronized(lock) { readCounters() }
     override fun bump(counter: String) { synchronized(lock) { val c = readCounters(); c[counter] = (c[counter] ?: 0) + 1; try { prefs.edit().putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (_: Exception) { } } }
     override fun clearAll() { synchronized(lock) { try { prefs.edit().clear().commit() } catch (_: Exception) { } }; changed() }
+    override fun markDelivered(id: String, surface: Surface): Boolean = synchronized(lock) {
+        val rows = readRows()
+        val i = rows.indexOfFirst { it.id == id }
+        if (i < 0 || surface.token in rows[i].delivered) false else { rows[i] = rows[i].copy(delivered = rows[i].delivered + surface.token); writeRows(rows) }
+    }.also { if (it) changed() }
+    override fun feedback(): FeedbackState = synchronized(lock) { FeedbackState.fromJson(try { prefs.getString(FB, null) } catch (e: Exception) { null }) }
+    override fun recordFeedback(action: FeedbackAction, key: String, family: ProactiveFamily, nowMs: Long): Boolean = synchronized(lock) {
+        val next = FeedbackState.fromJson(try { prefs.getString(FB, null) } catch (e: Exception) { null }).after(action, key, family, nowMs)
+        val c = readCounters(); c["fb_" + action.token] = (c["fb_" + action.token] ?: 0) + 1
+        try { prefs.edit().putString(FB, next.toJson()).putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (e: Exception) { false }
+    }.also { changed() }
+    override fun resetFeedback() { synchronized(lock) { try { prefs.edit().remove(FB).commit() } catch (_: Exception) { } }; changed() }
 
     companion object {
         /** The prefs file (a Delete-all-wiped, backup-excluded file; production opens it encrypted). */
@@ -122,15 +153,17 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
         private const val ROWS = "rows"
         private const val NEVER = "never"
         private const val COUNTS = "counts"
+        private const val FB = "fb"
 
         internal fun encode(r: SuggestionRecord) = JSONObject().put("id", r.id).put("ts", r.ts).put("key", r.key).put("fam", r.family.token).put("trg", r.trigger.token).put("score", r.score)
-            .put("anchor", r.anchorKey).put("src", JSONArray(r.sourceIds)).put("why", JSONArray(r.factors))
+            .put("anchor", r.anchorKey).put("src", JSONArray(r.sourceIds)).put("why", JSONArray(r.factors)).put("dlv", JSONArray(r.delivered.toList()))
 
         internal fun decode(o: JSONObject): SuggestionRecord? {
             val fam = ProactiveFamily.entries.firstOrNull { it.token == o.optString("fam") } ?: return null
             val trg = TriggerKind.of(o.optString("trg")) ?: return null
             val src = o.getJSONArray("src"); val why = o.getJSONArray("why")
-            return SuggestionRecord(o.getString("id"), o.getLong("ts"), o.getString("key"), fam, trg, o.getDouble("score"), o.getString("anchor"), (0 until src.length()).map { src.getString(it) }, (0 until why.length()).map { why.getString(it) })
+            return SuggestionRecord(o.getString("id"), o.getLong("ts"), o.getString("key"), fam, trg, o.getDouble("score"), o.getString("anchor"), (0 until src.length()).map { src.getString(it) }, (0 until why.length()).map { why.getString(it) },
+                o.optJSONArray("dlv")?.let { d -> (0 until d.length()).map { d.getString(it) }.filter { t -> Surface.of(t) != null }.toSet() } ?: emptySet())
         }
     }
 }
@@ -151,4 +184,8 @@ object UnavailableSuggestionStore : SuggestionStore {
     override fun counters(): Map<String, Int> = emptyMap()
     override fun bump(counter: String) {}
     override fun clearAll() {}
+    override fun markDelivered(id: String, surface: Surface) = false
+    override fun feedback() = FeedbackState.EMPTY
+    override fun recordFeedback(action: FeedbackAction, key: String, family: ProactiveFamily, nowMs: Long) = false
+    override fun resetFeedback() {}
 }

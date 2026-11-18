@@ -42,12 +42,14 @@ object ProactiveTrigger {
     }
 }
 
-/** One shadow run (never retried: success always). The engine's own gates decide everything; the worker only builds it. */
+/** One run, then (v3.1) the delivery stage for a would-show (never retried: success always). The engine's own gates decide everything; the worker only builds it. */
 class ProactiveWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val kind = TriggerKind.of(inputData.getString(ProactiveTrigger.KEY_TRIGGER)) ?: return Result.success()
         try {
-            ProactiveGraph.engine(applicationContext).run(kind)
+            val run = ProactiveGraph.engine(applicationContext).run(kind)
+            // v3.1: delivery is its own stage AFTER the commit, tried once now (a gate that is closed drops it; there is no backlog). With every delivery switch off it does nothing at all.
+            run.record?.let { ProactiveGraph.delivery(applicationContext).deliver(it.id) }
         } catch (c: CancellationException) { throw c } catch (e: Exception) { PcLog.i("PcProactive", "proactive worker failed (${e.javaClass.simpleName})") }
         return Result.success()
     }
