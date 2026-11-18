@@ -81,11 +81,25 @@ Consequence: for Rumtek-like sites the Wikipedia/Wikidata path now works; the pl
 | Ghum station | Q60181073 | Ghum railway station | Q55488 | 27.009, 88.254 | heritage_building | curated, now kept |
 | Rumtek, Pidurangala | | | | | | already covered by classes, not curated |
 | Mirissa, Weligama | | | | | | settlements, deliberately skipped |
-| Jetavanaramaya | Q1961579 | (P31 stupa Q180987, P625 8.352, 80.404) | | | | NOT curated: class already admitted, but the Wikipedia page has no coordinates, so geosearch never returns it |
-| Ritigala | Q19719626 | (P31 mountain Q8502, P625 8.109, 80.656) | | | | NOT curated: Wikipedia page has no coordinates, unreachable |
+| Jetavanaramaya | Q1961579 | Jetavanaramaya | Q180987 stupa | 8.351667, 80.403611 | stupa | curated in version 2 (2026-11-19), found through the verified-coordinate table below |
+| Ritigala | Q19719626 | Ritigala | Q8502 mountain | 8.108611, 80.656111 | archaeological_site | curated in version 2 (2026-11-19), found through the verified-coordinate table below; still outside every preset (cell tc3q5) |
 | "Ban Jhakri Falls", "Tsomgo Lake", "Happy Valley" by name | | | | | | `wbsearchentities` gave no hit for those spellings; the ids above come from the 2026-11-18 coverage run and were re-read by id |
 
-Discovery limit (documented, flow NOT changed): the app finds candidates by Wikipedia geosearch of the cell box first, then enriches with Wikidata by the QIDs of the returned pages. A Wikidata item with P625 but no Wikipedia coordinates (Jetavanaramaya, Ritigala) is never a candidate, curated or not; only the Overpass extras (OSM tags) can add such places. Curation helps only items whose Wikipedia page is geotagged. Unverified: whether each curated place's English Wikipedia page is geotagged (Tsomgo is outside the presets anyway); the live pack was not re-seeded here.
+## Verified-coordinate extras (B7, 2026-11-19)
+
+`PlaceCellSource.VERIFIED_COORDINATES` (version 1) closes the discovery gap for curated places whose Wikipedia page has no coordinates. Re-read from wikidata.org on 2026-11-19 (`wbgetentities`, labels en, claims; one request at a time, 4 s apart; one HTTP 429 on Ghum, retried after the wait) and checked against English Wikipedia `prop=coordinates` the same day:
+
+| QID | Label | P31 | P625 (stored) | English Wikipedia coordinates |
+|---|---|---|---|---|
+| Q1961579 | Jetavanaramaya | Q180987 stupa | 8.351667, 80.403611 | none |
+| Q19719626 | Ritigala | Q8502 mountain | 8.108611, 80.656111 | none |
+| Q60181073 | Ghum railway station | Q55488 | 27.008643, 88.254223 | none |
+
+Skipped (not in the table): the other 10 curated QIDs (Q272153, Q16901632, Q4868648, Q23038925, Q3214979, Q944175, Q5653142, Q542864, Q5285886, Q24949017). Their Wikidata P625 reads back fine, but their Wikipedia pages carry coordinates, so geosearch already returns them and a second path would only duplicate. Nothing was skipped for lack of verification.
+
+Behaviour: after geosearch, a table entry whose stored coordinate lies inside the cell and which geosearch did not return is added to the existing Wikidata batch (same request, no new endpoint) and passes the same gates: unreadable P31 rejects, a person class rejects, the kind is the P31 class or the curated kind, same default radius, same cell. The coordinate and name come from the table, never from the response; an entity that does not come back is dropped. Source is `wikidata`, ref `wd:Q...`, summary empty (no Wikipedia page). Rate limits unchanged (same sequential requests, 429 handled by the existing HTTP layer). No new log lines. Pinned by `verifiedCoordinateTableIsPinned` and five behaviour tests in `PlaceFetchTest`. Curated version is now 2 (Q1961579, Q19719626 added). Ritigala remains outside every preset (needs a typed box).
+
+Discovery limit (superseded for the three table entries above; otherwise unchanged): the app finds candidates by Wikipedia geosearch of the cell box first, then enriches with Wikidata by the QIDs of the returned pages. A Wikidata item with P625 but no Wikipedia coordinates (Jetavanaramaya, Ritigala) is never a candidate, curated or not; only the Overpass extras (OSM tags) can add such places. Curation helps only items whose Wikipedia page is geotagged. Unverified: whether each curated place's English Wikipedia page is geotagged (Tsomgo is outside the presets anyway); the live pack was not re-seeded here.
 
 ## Sri Lanka cultural rules (UNVERIFIED, from spec section E; docs only, NOT app text)
 
