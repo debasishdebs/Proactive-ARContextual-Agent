@@ -409,7 +409,8 @@ install_apk() { # serial apk role (phone|glasses|watch): the role must match the
   call_guard "before $role install" || die "call active or state unknown"
   [ "$BACKUP_VALID" = 1 ] || fail "internal check: no validated backup, refusing to install"
   A "$s" logcat -G 16M >/dev/null 2>&1 || say "$role: note: could not enlarge the log buffer (logcat -G 16M, best effort); the log coverage check below decides"
-  INSTALL_T0="$(A "$s" shell date +%s 2>/dev/null | tr -d '\r' | tail -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || INSTALL_T0=""
+  INSTALL_T0=""; INSTALL_UP0=""
+  if clock_read "$s"; then INSTALL_T0="$CLK_DATE"; INSTALL_UP0="$CLK_UP"; fi
   case "$INSTALL_T0" in ''|*[!0-9]*) fail "$role: cannot read the device clock (date +%s) before the install; refusing (log verification needs the install start time)" ;; esac
   PHASE=installing
   # shellcheck disable=SC2086
@@ -417,6 +418,17 @@ install_apk() { # serial apk role (phone|glasses|watch): the role must match the
   [ "$out" = Success ] || fail "$role install result: $out"
   PHASE=installed
   say "$role install: Success"
+}
+
+clock_read() { # serial : sets CLK_DATE (epoch s) and CLK_UP (uptime s, integer part) from ONE adb call; returns 1 unless both are plain numbers
+  local out
+  CLK_DATE=""; CLK_UP=""
+  out="$(A "$1" shell 'date +%s; cat /proc/uptime' 2>/dev/null | tr -d '\r')" || return 1
+  CLK_DATE="$(printf '%s\n' "$out" | awk 'NR == 1 { gsub(/[[:space:]]/, ""); print }')"
+  CLK_UP="$(printf '%s\n' "$out" | awk 'NR == 2 && $1 ~ /^[0-9]+(\.[0-9]+)?$/ { split($1, a, "."); print a[1] }')"
+  case "$CLK_DATE" in ''|*[!0-9]*) return 1 ;; esac
+  case "$CLK_UP" in ''|*[!0-9]*) return 1 ;; esac
+  return 0
 }
 
 unverified_exit() { # label reason : the install HAPPENED but the log verification is incomplete. Never declares success (exit 3).
@@ -442,7 +454,7 @@ SCAN_BUFFERS="main system crash"
 buf_covered() { # raw normalised t0 : 0 if the buffer provably holds everything logged since (t0 - 3 s), else 1 with BUF_WHY set
   local raw="$1" f="$2" t0="$3" nrec oldest
   BUF_WHY=""
-  # Sound FIFO argument (logd prunes oldest-first): (1) a buffer with ZERO records cannot have lost anything logged after the install start
+  # FIFO argument, CONDITIONAL on logd pruning oldest-first (chatty can prune newer records of noisy UIDs, and buffers can be cleared externally: see "What the scan cannot prove" in INSTALL-TRIP-BUILD.md): (1) a buffer with ZERO records cannot have lost anything logged after the install start
   # (a pruned newer record would imply newer ones are present); (2) otherwise, if its oldest retained record is at or before (t0 - 3 s), nothing newer was pruned.
   nrec="$(awk '!/^--------- / && !/^[[:space:]]*$/ { n++ } END { print n + 0 }' "$raw" 2>/dev/null)" || nrec=""
   case "$nrec" in ''|*[!0-9]*) BUF_WHY="cannot count the buffer records"; return 1 ;; esac
@@ -456,7 +468,7 @@ buf_covered() { # raw normalised t0 : 0 if the buffer provably holds everything 
 scan_logs() { # serial pkg label
   local s="$1" pkg="$2" label="$3" pid0 pid1 comp lines pq
   local snap="$TMP/logcat-snap-$label.txt" pidf="$TMP/logcat-pid-$label.txt" scanf="$TMP/logcat-scan-$label.txt"
-  local cand="$TMP/logcat-cand-$label.txt" gst=0 real benign npids win="$TMP/logcat-win-$label.txt" t0 bf
+  local clk_d cand="$TMP/logcat-cand-$label.txt" gst=0 real benign npids win="$TMP/logcat-win-$label.txt" t0 bf
   pq="${pkg//./\\.}"
   # ORDER OF EVALUATION: every line is classified on its own. A line with ANY real-failure signature is FAIL, whatever else it says.
   # Only a line that matches the allow-list AND no real signature counts as benign. The allow-list never subtracts anything.
@@ -481,6 +493,7 @@ scan_logs() { # serial pkg label
     A "$s" logcat -d -b "$bf" -v threadtime -v epoch > "$snap.$bf.raw" 2>/dev/null || unverified_exit "$label" "log buffer $bf cannot be read (logcat retrieval failed)" "$s" "$pkg"
   done
   pid1="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid1=""
+  CLK1_OK=0; clock_read "$s" && CLK1_OK=1; CLK1_DATE="$CLK_DATE"; CLK1_UP="$CLK_UP"
   say "$label: pid_before='${pid0}' pid_after='${pid1}' running=$([ -n "$pid1" ] && echo yes || echo NO)"
   t0="${INSTALL_T0-}"
   case "$t0" in ''|*[!0-9]*) unverified_exit "$label" "install start time unknown (cannot prove the log covers the install window)" "$s" "$pkg" ;; esac
@@ -490,7 +503,7 @@ scan_logs() { # serial pkg label
       /^ *[0-9]+\.[0-9]+ +[0-9]+ +[0-9]+ / { ts = $1; pid = $2; tid = $3; have = 1; print; next }
       /^--------- / || /^[[:space:]]*$/ { next }
       have { printf "%s %s %s E cont: %s\n", ts, pid, tid, $0 }' > "$snap.$bf" 2>/dev/null || unverified_exit "$label" "cannot normalise the $bf log" "$s" "$pkg"
-    buf_covered "$snap.$bf.raw" "$snap.$bf" "$t0" || unverified_exit "$label" "log buffer $bf does not cover the install window ($BUF_WHY): run adb logcat -G 16M before the install and check logcat manually" "$s" "$pkg"
+    buf_covered "$snap.$bf.raw" "$snap.$bf" "$t0" || unverified_exit "$label" "log buffer $bf does not cover the install window ($BUF_WHY): the device keeps too little log history for the install window: close noisy apps, do the manual post-install checks (docs/superpowers/plans/handoffs/v17-upgrade-recovery.md section 3 / trip-install-checklist section 4), optionally start a continuous capture BEFORE installing: adb -s $s logcat -b all -v threadtime -v epoch > ~/Desktop/rokid/backups/logcat-<tag>.txt, then re-run; the glasses step was NOT executed" "$s" "$pkg"
     cat "$snap.$bf" >> "$snap"
   done
   lines="$(wc -l < "$snap")" || unverified_exit "$label" "cannot measure the log" "$s" "$pkg"
@@ -528,6 +541,15 @@ scan_logs() { # serial pkg label
   case "$benign" in ''|*[!0-9]*) unverified_exit "$label" "grep error while counting allow-listed lines" "$s" "$pkg" ;; esac
   say "$label log scan: pid=$pid1 real_error_count=$real benign_allowlisted_count=$benign"
   [ "$real" = 0 ] || verify_fail "$label" "real_errors=$real"
+  # chatty summaries of the app (logd collapsed duplicate lines or pruned/expired app lines): the retained log is incomplete => never CLEAN/BENIGN
+  gst=0; grep -E -e 'chatty.*(identical|expire)' "$win" > "$cand.c" 2>/dev/null || gst=$?
+  [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while looking for chatty summaries" "$s" "$pkg"
+  { awk -v p="$pid1" '$2 == p' "$cand.c"; grep -E -e "$pb" "$cand.c"; } 2>/dev/null | sort -u > "$cand.d" || true
+  [ ! -s "$cand.d" ] || unverified_exit "$label" "logd collapsed or pruned app lines during the window: verify manually" "$s" "$pkg"
+  # clock discontinuity: wall clock delta must match the monotonic uptime delta over the install+scan window (fail closed)
+  { [ "$CLK1_OK" = 1 ] && case "${INSTALL_UP0-}" in ''|*[!0-9]*) false ;; *) true ;; esac; } || unverified_exit "$label" "device clock changed during the window (cannot read date/uptime before and after: cannot prove the clock was continuous)" "$s" "$pkg"
+  clk_d=$(( (CLK1_DATE - t0) - (CLK1_UP - INSTALL_UP0) )); [ "$clk_d" -ge 0 ] || clk_d=$(( -clk_d ))
+  [ "$clk_d" -le 5 ] || unverified_exit "$label" "device clock changed during the window (wall clock moved $((CLK1_DATE - t0)) s, uptime $((CLK1_UP - INSTALL_UP0)) s)" "$s" "$pkg"
   if [ "$benign" != 0 ]; then say "$label log scan: BENIGN-ONLY (note: $benign allow-listed noise lines without any error signature: sqlcipher_mlock / Long monitor contention; install continues)"
   else say "$label log scan: CLEAN"; fi
 }
@@ -549,9 +571,10 @@ mk() { # one OLD line (before the install start: proves buffer coverage) + extra
 }
 tl() { printf '%s.000  %s  %s E Tag: %s\n' "${TS:-1794000010}" "$1" "$1" "$2"; } # threadtime+epoch line: pid text (device install start in the fixtures = 1794000000)
 sl() { # post-install log verification fixture: FX_SNAP = the single snapshot (threadtime), FX_SNAPR = its status, FX_PIDS = pidof outputs in call order (before|after)
-  PHONE=emulator-5554; GO=1; SCAN_SECS=0; TMP="$FXDIR"; INSTALL_T0="${FX_T0-1794000000}"; : > "$FXDIR/pidn"
+  PHONE=emulator-5554; GO=1; SCAN_SECS=0; TMP="$FXDIR"; INSTALL_T0="${FX_T0-1794000000}"; INSTALL_UP0="${FX_UP0-5000}"; : > "$FXDIR/pidn"
   A() { shift; case "$*" in
       "logcat -c") return 0 ;;
+      *proc/uptime*) printf '%b' "${FX_CLK1-1794000060\n5060.40 9999.0\n}"; return "${FX_CLK1R:-0}" ;;
       *resolve-activity*) printf 'com.x/.Main\n' ;;
       *"am start"*|*monkey*) return 0 ;;
       *pidof*) local n; n="$(wc -l < "$FXDIR/pidn")"; n="${n//[[:space:]]/}"; echo x >> "$FXDIR/pidn"; if [ "$n" = 0 ]; then printf '%b' "${FX_PID0-4242}"; else printf '%b' "${FX_PID1-4242}"; fi ;;
@@ -709,6 +732,20 @@ SIGS
   FX_SNAP="$(mk '1000|no such table: foo in com.x.other')"; fx "pkg: other-pid SQL error mentioning only com.x.other is not counted" ok sl
   FX_SNAP="$(mk '1000|no such table: foo (com.x)')"; fx "pkg: other-pid SQL error naming the exact package => FAIL" rc3 sl
   FX_SNAP="$(mk '999|SQLiteCantOpenDatabaseException: code 14')"; fx "pkg: other-pid signature without the package is not counted" ok sl
+  # chatty summaries and clock continuity
+  FX_SNAP="$(mk '4242|chatty: uid=10123(com.x) com.x identical 8 lines')"; fx "chatty: app-pid identical line => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(mk '1000|chatty : uid=10123(com.x) expire 12 lines')"; fx "chatty: other-pid expire line naming the app => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(mk '1000|chatty : uid=10555(com.x.other) com.x.other identical 8 lines')"; fx "chatty: unrelated package summary is ignored => CLEAN" ok sl
+  FX_SNAP="$(mk)"; FX_CLK1='1794000060\n5060.40 9999.0\n'; fx "clock: equal deltas => CLEAN" ok sl
+  FX_CLK1='1794000063\n5060.40 9999.0\n'; fx "clock: delta differs by 3 s (within 5 s) => CLEAN" ok sl
+  FX_CLK1='1794003600\n5060.40 9999.0\n'; fx "clock: wall clock jumped forward => UNVERIFIED exit 3" rc3 sl
+  FX_CLK1='1793990000\n5060.40 9999.0\n'; fx "clock: wall clock jumped back => UNVERIFIED exit 3" rc3 sl
+  FX_CLK1='garbage\n5060.40 9999.0\n'; fx "clock: unreadable date after => UNVERIFIED exit 3" rc3 sl
+  FX_CLK1='1794000060\nnope\n'; fx "clock: unreadable uptime after => UNVERIFIED exit 3" rc3 sl
+  FX_CLK1=''; fx "clock: empty clock read after => UNVERIFIED exit 3" rc3 sl
+  FX_CLK1='1794000060\n5060.40 9999.0\n'; FX_CLK1R=1; fx "clock: adb failure on the clock read => UNVERIFIED exit 3" rc3 sl; unset FX_CLK1R
+  FX_UP0=''; fx "clock: uptime before the install unknown => UNVERIFIED exit 3" rc3 sl; unset FX_UP0 FX_CLK1
+  FX_SNAP="$(mk '1000|Process com.x (pid 4242) FATAL EXCEPTION')"; FX_CLK1='1794003600\n5060.40 9999.0\n'; fx "clock: a real signature still FAILs (exit 3) when the clock also moved" rc3 sl; unset FX_CLK1
   # log coverage (buffer wrap): each relevant buffer's own oldest line must be at or before install start - 3 s (see buf_covered)
   FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line newer than the install start (clean tail) => UNVERIFIED exit 3" rc3 sl
   FX_SNAP="$(TS=1793999997 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line exactly install start - 3 s => CLEAN" ok sl
