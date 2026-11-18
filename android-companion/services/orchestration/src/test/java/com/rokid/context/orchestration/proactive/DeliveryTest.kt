@@ -1,6 +1,7 @@
 package com.rokid.context.orchestration.proactive
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.QuietHours
@@ -80,7 +81,7 @@ class DeliveryTest {
     private fun gen() = PlaceRecallGenerator(history) { zone }
 
     private fun engine(): ProactiveEngine { val mem = MemoryGraph.get(ctx); return ProactiveEngine(mem.db, ProvenanceGate.forGraph(mem), store, listOf(gen()), seams(), gate, clock = { now }) }
-    private fun delivery(): ProactiveDelivery { val mem = MemoryGraph.get(ctx); val g = gen(); return ProactiveDelivery(mem.db, ProvenanceGate.forGraph(mem), store, { r, t -> g.render(r, t) }, seams(), ::wanted, { surfaces }, gate, clock = { clockMs }, publications = pubs) }
+    private fun delivery(st: SuggestionStore = store): ProactiveDelivery { val mem = MemoryGraph.get(ctx); val g = gen(); return ProactiveDelivery(mem.db, ProvenanceGate.forGraph(mem), st, { r, t -> g.render(r, t) }, seams(), ::wanted, { surfaces }, gate, clock = { clockMs }, publications = pubs) }
 
     private fun committed(): SuggestionRecord = runBlocking { val run = engine().run(TriggerKind.PLACE_ARRIVAL); assertEquals(Gate.WOULD_SHOW, run.gate); run.record!! }
     private fun assertDropped(g: Gate, out: Map<Surface, Gate>, vararg s: Surface) {
@@ -391,5 +392,81 @@ class DeliveryTest {
         s.resetFeedback(); s.withdrawWhere { true }; assertEquals(1, s.ledger().size)
         assertEquals(setOf("ldg"), prefs.all.keys); assertFalse("ids, text and keys are not in it", prefs.getString("ldg", "")!!.contains("f2:") || prefs.getString("ldg", "")!!.contains("sg_"))
         s.clearAll(); assertTrue(s.ledger().isEmpty()); assertTrue(prefs.all.isEmpty())
+    }
+
+    // ---- r2 P1-1: the SYNCHRONOUS gate the Nexus sink asks inside its final admission ------------------------------------------------------------------------------
+
+    @Test fun drivingBecomingActiveAfterPublishableButBeforeTheSinkFinalStepDropsIt() {
+        val r = nexusDelivered()
+        assertTrue(publishable(r)); assertTrue("the sink's final step while still calm", delivery().publishableNow(r.id, Surface.NEXUS))
+        driving = true // the sink suspended for provenance meanwhile
+        assertFalse(delivery().publishableNow(r.id, Surface.NEXUS))
+    }
+    @Test fun theSynchronousGateEvaluatesTheFullSuggestionGateSet() {
+        val r = nexusDelivered(); val d = delivery()
+        val closers = mapOf<String, Pair<() -> Unit, () -> Unit>>(
+            "driving or unknown" to ({ driving = true } to { driving = false }), "master" to ({ enabled = false } to { enabled = true }), "nexus switch" to ({ wantNexus = false } to { wantNexus = true }),
+            "pause" to ({ pausedFlag = true } to { pausedFlag = false }), "zone" to ({ guard = AskZoneGuard { true } } to { guard = AskZoneGuard { false } }), "not worn" to ({ worn = false } to { worn = true }),
+            "host" to ({ nexusHost = false } to { nexusHost = true }), "quiet hours, fresh clock" to ({ hud = NudgeHud(QuietHours(12 * 60 + 30, 14 * 60), Verbosity.MEDIUM, zone); clockMs = now + 40 * 60_000L } to { hud = NudgeHud(null, Verbosity.MEDIUM, zone); clockMs = now }),
+            "a throwing seam" to ({ hud = null } to { hud = NudgeHud(null, Verbosity.MEDIUM, zone) }),
+        )
+        assertTrue(d.publishableNow(r.id, Surface.NEXUS))
+        for ((name, c) in closers) { c.first(); assertFalse("closed: $name", d.publishableNow(r.id, Surface.NEXUS)); c.second(); assertTrue("reopened: $name", d.publishableNow(r.id, Surface.NEXUS)) }
+        pubs.withdraw(listOf(r.id)); assertFalse("withdrawn", d.publishableNow(r.id, Surface.NEXUS))
+        assertFalse("unknown record", d.publishableNow("sg_nope", Surface.NEXUS))
+    }
+
+    // ---- r2 P1-3: the ledger line is written BEFORE the claim; no line = no delivery ----------------------------------------------------------------------------------
+
+    private class LedgerFailStore(val inner: InMemorySuggestionStore) : SuggestionStore by inner {
+        var failAppend = false; var failConfirm = false
+        override fun appendLedger(e: LedgerEntry) = if (failAppend) false else inner.appendLedger(e)
+        override fun confirmLedger(e: LedgerEntry) = if (failConfirm) false else inner.confirmLedger(e)
+    }
+
+    @Test fun aLedgerAppendFailureMeansNoDeliveryAtAll() = runBlocking {
+        wantHud = true; val fs = LedgerFailStore(store); val r = committed(); fs.failAppend = true
+        val out = delivery(fs).deliver(r.id, now)
+        assertDropped(Gate.COMMIT, out, Surface.PHONE, Surface.HUD); assertTrue(store.ledger().isEmpty()); assertTrue("not marked delivered", store.records().single().delivered.isEmpty())
+        fs.failAppend = false; assertEquals("the same record delivers once the write works", Gate.DELIVERED, delivery(fs).deliver(r.id, now)[Surface.PHONE])
+        assertEquals(listOf(LedgerKind.DELIVERED), store.ledger().map { it.kind })
+    }
+    @Test fun theLedgerLineIsWrittenBeforeTheClaimAndConfirmedAfter() = runBlocking {
+        val r = committed(); val d = delivery()
+        d.testAfterReserve = { assertEquals(listOf(LedgerKind.RESERVED), store.ledger().map { it.kind }); assertTrue("not claimed yet", store.records().single().delivered.isEmpty()) }
+        assertEquals(Gate.DELIVERED, d.deliver(r.id, now)[Surface.PHONE]); assertEquals(listOf(LedgerKind.DELIVERED), store.ledger().map { it.kind })
+    }
+    @Test fun aDeathBetweenTheReservationAndTheClaimStillCountsTheBudget() = runBlocking {
+        wantHud = true; val r = committed(); val d = delivery(); d.testAfterReserve = { throw IllegalStateException("process died") }
+        assertEquals(Gate.ERROR, d.deliver(r.id, now)[Surface.PHONE]); assertTrue("nothing claimed or shown", store.records().single().delivered.isEmpty() && surfaces.hud.isEmpty())
+        assertEquals(listOf(LedgerKind.RESERVED), store.ledger().map { it.kind }); assertEquals("a reserved line is consumption", 1, DeliveryLedger.deliveredSince(store.ledger(), now - 1))
+        store.withdraw(r.id); store.add(r.copy(id = "sg_next", key = "f2:other", ts = now + 5 * 60_000L, delivered = emptySet()))
+        assertEquals("the gap sees the reserved line", Gate.SHOWN_GAP, delivery().deliver("sg_next", now + 5 * 60_000L)[Surface.PHONE])
+    }
+    @Test fun aFailedPublicationKeepsTheReservationAndABadConfirmStaysReserved() = runBlocking {
+        wantPhone = false; wantHud = true; surfaces.accept = false; val r = committed()
+        assertEquals(Gate.COMMIT, delivery().deliver(r.id, now)[Surface.HUD]); assertEquals("conservative: the budget stays consumed", listOf(LedgerKind.RESERVED), store.ledger().map { it.kind })
+        wantPhone = true; wantHud = false; store.withdraw(r.id); val fs = LedgerFailStore(store); fs.failConfirm = true; store.clearAll()
+        val r2 = committed(); assertEquals(Gate.DELIVERED, delivery(fs).deliver(r2.id, now)[Surface.PHONE]); assertEquals(listOf(LedgerKind.RESERVED), store.ledger().map { it.kind }); assertEquals(1, DeliveryLedger.deliveredSince(store.ledger(), now - 1))
+    }
+    @Test fun reservedLinesAreCountedByEveryBudgetAndSurviveAReopenOfThePrefs() {
+        val prefs = ctx.getSharedPreferences("test_ledger_reserved", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
+        val e = LedgerEntry(now, ProactiveFamily.PLACE_RECALL, LedgerKind.RESERVED)
+        assertTrue(PrefsSuggestionStore(prefs).appendLedger(e)); val reopened = PrefsSuggestionStore(prefs) // a new process
+        assertEquals(listOf(e), reopened.ledger()); assertEquals(1, DeliveryLedger.deliveredSince(reopened.ledger(), now - 1)); assertEquals(1, DeliveryLedger.delivered(reopened.ledger()).size)
+        assertTrue(reopened.confirmLedger(e)); assertEquals(listOf(LedgerKind.DELIVERED), reopened.ledger().map { it.kind }); assertFalse("no second RESERVED to confirm", reopened.confirmLedger(e))
+        assertTrue(reopened.appendLedger(e)); assertTrue(reopened.releaseLedger(e)); assertEquals(1, reopened.ledger().size)
+    }
+    @Test fun aDismissalThatCannotBePersistedStillPausesDelivery() {
+        val prefs = ctx.getSharedPreferences("test_ledger_fail", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
+        val cl = SharedPreferences::class.java.classLoader
+        val failing = java.lang.reflect.Proxy.newProxyInstance(cl, arrayOf(SharedPreferences::class.java)) { _, m, a ->
+            if (m.name == "edit") java.lang.reflect.Proxy.newProxyInstance(cl, arrayOf(SharedPreferences.Editor::class.java)) { p, em, _ -> if (em.name == "commit") false else p } else m.invoke(prefs, *(a ?: emptyArray()))
+        } as SharedPreferences
+        val s = PrefsSuggestionStore(failing)
+        assertFalse("a reservation that cannot be written is no delivery", s.appendLedger(LedgerEntry(now, ProactiveFamily.PLACE_RECALL, LedgerKind.RESERVED))); assertTrue(s.ledger().isEmpty())
+        for (i in 1..5) assertFalse(s.appendLedger(LedgerEntry(now + i * 60_000L, ProactiveFamily.PLACE_RECALL, LedgerKind.DISMISSED)))
+        assertEquals("kept in memory", 5, s.ledger().size); assertTrue(DeliveryLedger.pausedUntil(s.ledger()) > now)
+        s.clearAll(); assertTrue(s.ledger().isEmpty())
     }
 }

@@ -118,7 +118,13 @@ data class NexusCommand(
 enum class TripReason { ZONE_HOLD, FORGET, DELETE_ALL, PAUSE, MODE_OFF, NOT_WORN, LINK_LOST }
 
 /** Why an item was not shown. Fixed tokens for logs. */
-enum class DropReason { MODE_OFF, NOT_WORN, ZONE_HELD, PAUSED, PROVENANCE, GATE_ERROR, TRIPPED, UNSUPPORTED, TRANSPORT }
+/**
+ * v3.1 r2 P1-1: the suggestion's own final gate (driving incl. unknown, its switches, pause, zone, quiet hours, worn, withdrawn state), supplied by the phone with the event. The sink asks it INSIDE its final admission
+ * (the last step before the transport work is queued) and again right before the call. SYNCHRONOUS and cheap (it runs under the sink's and the fences' locks); false or a throw drops the event.
+ */
+fun interface SuggestionGate { fun open(): Boolean }
+
+enum class DropReason { MODE_OFF, NOT_WORN, ZONE_HELD, PAUSED, PROVENANCE, GATE_ERROR, TRIPPED, UNSUPPORTED, TRANSPORT, SUGGESTION_GATE }
 
 sealed interface Outcome {
     /** Shown. [spoken]: the speech line was sent too. */

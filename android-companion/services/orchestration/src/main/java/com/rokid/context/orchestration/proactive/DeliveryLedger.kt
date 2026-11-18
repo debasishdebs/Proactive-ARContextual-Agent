@@ -1,7 +1,10 @@
 package com.rokid.context.orchestration.proactive
 
 /** What a ledger line records: a suggestion that reached a surface, or a dismissal ("dismiss" or "never") by the user. */
-enum class LedgerKind(val token: String) { DELIVERED("d"), DISMISSED("x");
+enum class LedgerKind(val token: String) {
+    DELIVERED("d"), DISMISSED("x"),
+    /** v3.1 r2: written BEFORE a delivery claims and publishes (budget reserved first); becomes [DELIVERED] when the delivery is confirmed. It counts as consumption exactly like [DELIVERED], also after a process death between the phases. */
+    RESERVED("r");
     companion object { fun of(token: String?): LedgerKind? = entries.firstOrNull { it.token == token } }
 }
 
@@ -26,10 +29,25 @@ object DeliveryLedger {
         return entries.filter { ref - it.ts <= KEEP_MS }.sortedBy { it.ts }.takeLast(MAX_ENTRIES)
     }
 
-    fun delivered(entries: List<LedgerEntry>) = entries.filter { it.kind == LedgerKind.DELIVERED }
+    /** True for the kinds that consume budget: delivered, and reserved (a delivery that was started; conservative if it never finished). */
+    fun consumes(e: LedgerEntry) = e.kind == LedgerKind.DELIVERED || e.kind == LedgerKind.RESERVED
+
+    fun delivered(entries: List<LedgerEntry>) = entries.filter(::consumes)
+
+    /** [e] (a RESERVED line) becomes DELIVERED; null = no such line. */
+    fun confirmed(entries: List<LedgerEntry>, e: LedgerEntry): List<LedgerEntry>? {
+        val i = entries.indexOfFirst { it == e }
+        return if (i < 0) null else entries.toMutableList().also { it[i] = e.copy(kind = LedgerKind.DELIVERED) }
+    }
+
+    /** One line equal to [e] removed; null = no such line. */
+    fun released(entries: List<LedgerEntry>, e: LedgerEntry): List<LedgerEntry>? {
+        val i = entries.indexOfFirst { it == e }
+        return if (i < 0) null else entries.toMutableList().also { it.removeAt(i) }
+    }
 
     /** How many suggestions were delivered at or after [sinceMs] (what the nudge gates add to their own counts). */
-    fun deliveredSince(entries: List<LedgerEntry>, sinceMs: Long): Int = entries.count { it.kind == LedgerKind.DELIVERED && it.ts >= sinceMs }
+    fun deliveredSince(entries: List<LedgerEntry>, sinceMs: Long): Int = entries.count { consumes(it) && it.ts >= sinceMs }
 
     /** The time until which delivery is paused by dismissals (0 = not paused): the latest "fifth dismissal within 24 h" plus 24 h. */
     fun pausedUntil(entries: List<LedgerEntry>): Long {

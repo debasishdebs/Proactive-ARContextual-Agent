@@ -27,6 +27,7 @@ import com.rokid.context.orchestration.proactive.TriggerKind
 import com.rokid.context.orchestration.proactive.generators.RenderedCard
 import com.rokid.context.orchestration.proactive.generators.RenderedSource
 import com.rokid.context.phone.ui.status.StatusUi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -59,9 +60,9 @@ class SuggestionFeedTest {
 
     /** The gates live in `ProactiveDelivery.phoneFeed` (DeliveryTest); here the seam answers like it: the delivered, not withdrawn records of the store with the card, or nothing while a gate is closed. */
     private var gateOpen = true
-    private fun feed(render: suspend (SuggestionRecord, Long) -> RenderedCard? = { _, _ -> card }, ticks: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit)) =
-        AndroidSuggestionFeed(app, { store }, settings, { now -> if (!gateOpen) emptyList() else store.records().filter { Surface.PHONE.token in it.delivered }.mapNotNull { r -> render(r, now)?.let { ProactiveDelivery.FeedCard(r, it) } } },
-            SuggestionActions({ store }, { surfaces }, { ts }, SuggestionPublications()), { ZoneId.of("Asia/Kolkata") }, { ts }, ticks)
+    private fun feed(render: suspend (SuggestionRecord, Long) -> RenderedCard? = { _, _ -> card }, ticks: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit), events: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.emptyFlow(), cards: (suspend (Long) -> List<ProactiveDelivery.FeedCard>)? = null) =
+        AndroidSuggestionFeed(app, { store }, settings, cards ?: { now -> if (!gateOpen) emptyList() else store.records().filter { Surface.PHONE.token in it.delivered }.mapNotNull { r -> render(r, now)?.let { ProactiveDelivery.FeedCard(r, it) } } },
+            SuggestionActions({ store }, { surfaces }, { ts }, SuggestionPublications()), { ZoneId.of("Asia/Kolkata") }, { ts }, ticks, events)
 
     private fun items(f: AndroidSuggestionFeed, until: (List<SuggestionCardUi>) -> Boolean): List<SuggestionCardUi> = runBlocking { withTimeout(10_000) { f.items.first(until) } }
     private fun on() { settings.setMaster(true); settings.setDeliver(Surface.PHONE, true) }
@@ -102,6 +103,52 @@ class SuggestionFeedTest {
         assertTrue("no previously delivered text stays", items(f) { it.isEmpty() }.isEmpty())
         gateOpen = true; tick.tryEmit(Unit); items(f) { it.size == 1 }
     }
+    // ---- Codex v3.1 r2 P1-2: gate-CLOSE events clear the rendered card at once, not on the 10 s tick -------------------------------------------------------------
+
+    /** Collects what Home would render, on a thread of its own; [events] are the fake zone / pause / driving close flows. */
+    private fun closeClearsAtOnce(trigger: (kotlinx.coroutines.flow.MutableSharedFlow<Unit>) -> Unit) {
+        on(); store.add(rec("a"))
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+        val never = kotlinx.coroutines.flow.flow<Unit> { emit(Unit); kotlinx.coroutines.awaitCancellation() } // the backstop tick never fires again: only the event can clear
+        val slow = java.util.concurrent.CountDownLatch(1) // the re-derive itself is slow (a lease, provenance): the card must already be gone while it runs
+        var closed = false
+        val f = feed(ticks = never, events = events, cards = { now -> if (closed) { slow.await(5, java.util.concurrent.TimeUnit.SECONDS); emptyList() } else store.records().filter { Surface.PHONE.token in it.delivered }.mapNotNull { r -> ProactiveDelivery.FeedCard(r, card) } })
+        val seen = java.util.concurrent.LinkedBlockingQueue<List<SuggestionCardUi>>()
+        val job = kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Default) { f.items.collect { seen.put(it) } }
+        try {
+            assertEquals(1, seen.poll(10, java.util.concurrent.TimeUnit.SECONDS)!!.size)
+            Thread.sleep(300); seen.clear() // the initial derivations (store, backstop) have settled
+            closed = true; trigger(events)
+            assertTrue("cleared before the re-derive finished (it is still blocked)", seen.poll(10, java.util.concurrent.TimeUnit.SECONDS)!!.isEmpty())
+        } finally { slow.countDown(); job.cancel() }
+    }
+    @Test fun enteringAZoneClearsTheCardInTheSamePass() = closeClearsAtOnce { assertTrue(it.tryEmit(Unit)) }
+    @Test fun aPauseClearsTheCardInTheSamePass() = closeClearsAtOnce { assertTrue(it.tryEmit(Unit)) }
+    @Test fun drivingStartingClearsTheCardInTheSamePass() = closeClearsAtOnce { assertTrue(it.tryEmit(Unit)) }
+
+    @Test fun theProductionEventSourcesAreWired() {
+        val seen = java.util.concurrent.LinkedBlockingQueue<Unit>()
+        val job = kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Default) { AndroidSuggestionFeed.defaultGateEvents({ null }).collect { seen.put(it) } }
+        try {
+            Thread.sleep(300)
+            com.rokid.context.orchestration.proactive.SuggestionGateEvents.closed(); assertTrue("zone/pause close", seen.poll(5, java.util.concurrent.TimeUnit.SECONDS) != null)
+            var clock = 0L; val t = com.rokid.context.orchestration.proactive.DrivingTracker { clock }; var fired = 0; t.onBlocking = { fired++ }
+            while (clock <= 11 * 60_000L) { t.heartbeat(false); clock += 30_000L }
+            t.calm(com.rokid.context.orchestration.proactive.CalmSource.PHONE_ACTIVITY, com.rokid.context.orchestration.proactive.Calm.WALKING); t.calm(com.rokid.context.orchestration.proactive.CalmSource.PHONE_STEPS, com.rokid.context.orchestration.proactive.Calm.STILL)
+            assertEquals(com.rokid.context.orchestration.proactive.DrivingState.NOT_DRIVING, t.assess().state); assertEquals("no transition to blocking yet", 0, fired)
+            t.vehicle(); assertEquals("NOT_DRIVING -> DRIVING fires the close event", 1, fired); t.vehicle(); assertEquals("only the transition", 1, fired)
+        } finally { job.cancel() }
+    }
+
+    @Test fun theQuietHoursBoundaryIsTheNextWindowStart() {
+        val z = ZoneId.of("Asia/Kolkata"); val q = com.rokid.context.core.model.QuietHours(22 * 60, 6 * 60)
+        val noon = java.time.LocalDateTime.of(2026, 11, 18, 12, 0).atZone(z).toInstant().toEpochMilli()
+        assertEquals(java.time.LocalDateTime.of(2026, 11, 18, 22, 0).atZone(z).toInstant().toEpochMilli(), AndroidSuggestionFeed.nextQuietStart(q, noon, z))
+        val late = java.time.LocalDateTime.of(2026, 11, 18, 23, 0).atZone(z).toInstant().toEpochMilli()
+        assertEquals(java.time.LocalDateTime.of(2026, 11, 19, 22, 0).atZone(z).toInstant().toEpochMilli(), AndroidSuggestionFeed.nextQuietStart(q, late, z))
+        assertEquals(null, AndroidSuggestionFeed.nextQuietStart(com.rokid.context.core.model.QuietHours(60, 60), noon, z))
+    }
+
     @Test fun theBuildFeedMergesSuggestionsByTimeWithItsOwnKind() {
         val c = SuggestionCardUi("s", ts, "Golconda", "last visit 12 Nov.", "from 2 items", com.rokid.context.phone.ui.settings.suggestions.WhyUi("Place recall", "t", emptyList(), emptyList()))
         val out = Feed.build(emptyList(), emptyList(), java.time.LocalDate.of(2026, 11, 18), ZoneId.of("Asia/Kolkata"), suggestions = listOf(c))

@@ -88,6 +88,7 @@ object AskZoneFence : AskZoneGuard {
         decision++; controllerActive = active; startupClear = false
         if (judged) { this.judged = true; recordsBlock = false }
         if (active) { if (!fence.held) fence.hold() } else if (this.judged) fence.release()
+        if (active) com.rokid.context.orchestration.proactive.SuggestionGateEvents.closed() // v3.1 r2: the Home feed clears at once
     }
 
     /** True while the persisted facts say a zone may be in force and the controller has not judged yet. Cheap (preference reads), synchronous, fail closed. */

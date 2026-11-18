@@ -5,6 +5,7 @@ import com.rokid.context.work.frames.place.PlaceCard
 import com.rokid.context.work.frames.place.PlaceConfidence
 import io.github.pca.nexusport.HudEvent
 import io.github.pca.nexusport.Slot
+import io.github.pca.nexusport.SuggestionGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -34,6 +35,11 @@ class NexusFeeder(
      * a fresh clock, worn, still stored and not withdrawn). False = dropped. Production: `ProactiveDelivery.publishable`. The default drops (fail closed).
      */
     private val suggestionGate: suspend (id: String) -> Boolean = { false },
+    /**
+     * v3.1 r2 P1-1: the SAME gate set as a SYNCHRONOUS callback that travels with the event: the sink asks it inside its final admission (the last step before the transport work is queued) and again right before the call,
+     * so a driving state, a switch, quiet hours, a pause or a withdrawal that landed while the sink suspended for provenance still wins. Production: `ProactiveDelivery.publishableNow`. The default drops (fail closed).
+     */
+    private val suggestionFinalGate: (id: String) -> Boolean = { false },
     /** Takes one suggestion off Nexus by ref (the provider's withdraw); used when a withdrawal landed while the coroutine was between its gate and the show. */
     private val withdrawOut: (id: String) -> Unit = {},
 ) {
@@ -85,7 +91,7 @@ class NexusFeeder(
                 if (cancelled(c.id)) return@launch
                 if (!suggestionGate(c.id)) { log("nexus suggestion dropped"); return@launch }
                 if (cancelled(c.id)) return@launch
-                out.show(HudEvent.Nudge(ref = c.id, title = "Suggestion", body = "${c.title}: ${c.line}\n${c.sourceLabel}", sources = c.sources, ttlMs = popupMs()))
+                out.show(HudEvent.Nudge(ref = c.id, title = "Suggestion", body = "${c.title}: ${c.line}\n${c.sourceLabel}", sources = c.sources, ttlMs = popupMs(), gate = SuggestionGate { !cancelled(c.id) && suggestionFinalGate(c.id) }))
                 if (cancelled(c.id)) withdrawOut(c.id) // a withdrawal landed between the last check and the show: take it off again
             } catch (e: CancellationException) { throw e } catch (_: Exception) { log("nexus feed failed") }
         }
