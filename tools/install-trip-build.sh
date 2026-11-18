@@ -4,7 +4,7 @@
 #        [--allow-emulator] [--allow-downgrade] [--accept-unverified-signature [--i-understand-no-signature-check]]
 #   tools/install-trip-build.sh --self-test --phone emulator-5554 --apks <dir> [--go]    (emulator only, phone only; runs the fixtures first)
 #   tools/install-trip-build.sh --fixtures                                                (refusal fixtures only, no device, no adb)
-# Exit codes: 2 = REFUSED, 3 = installed but NOT verified, other nonzero = failure, 0 = success.
+# Exit codes: 2 = REFUSED, 3 = installed but NOT verified or log scan FAILED (glasses not installed), other nonzero = failure, 0 = success.
 # Serial aliases: every serial is resolved to a device identity (hardware serial + android_id + model + fingerprint); all must differ, re-checked before every install.
 # FAIL CLOSED: any uncertainty refuses (exit 2) unless a clearly named override flag is passed (and it is printed).
 # Serials are never auto-detected and every adb call carries -s (only `adb devices` has none). Never uninstalls, never `pm clear`,
@@ -429,9 +429,12 @@ unverified_exit() { # label reason : the install HAPPENED but the log verificati
 scan_logs() { # serial pkg label
   local s="$1" pkg="$2" label="$3" pid comp fatal mig lines
   local allf="$TMP/logcat-all-$label.txt" pidf="$TMP/logcat-pid-$label.txt"
-  local fre="FATAL EXCEPTION|Process: ${pkg}[,: ]"
-  local mre="Migration didn.t|SQLiteException|not a database|SQLCipher|IllegalStateException.*room|room.*(error|exception)"
-  say "STEP verify $label: clear logcat, launch $pkg, wait ${SCAN_SECS}s, report counts of FATAL / Migration / Room / SQLCipher errors"
+  # REAL failures only, anchored on error signatures, evaluated on the app's own pid log (logcat --pid). The bare words SQLCipher/Room are NOT signatures.
+  local fre="Process: ${pkg}[,: ]"
+  local rre="FATAL EXCEPTION|AndroidRuntime|net\\.zetetic\\.database\\.sqlcipher\\.SQLiteException|SQLiteDatabaseCorruptException|file is not a database|SQLITE_NOTADB|Migration didn.t properly handle|IllegalStateException: Room|Room cannot verify the data integrity|Cannot open database|android\\.database\\.sqlite\\.SQLiteException"
+  local are="sqlcipher_mlock|Long monitor contention"   # known benign noise, subtracted from the real-error count
+  local cand="$TMP/logcat-cand-$label.txt" realf="$TMP/logcat-real-$label.txt" gst=0 real benign
+  say "STEP verify $label: clear logcat, launch $pkg, wait ${SCAN_SECS}s, report CLEAN / BENIGN-ONLY / FAIL from real error signatures"
   [ "$GO" = 1 ] || return 0
   A "$s" logcat -c >/dev/null 2>&1 || fail "$label: cannot clear logcat"
   comp="$(A "$s" shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null | tr -d '\r' | tail -n 1)" || comp=""
@@ -454,10 +457,19 @@ scan_logs() { # serial pkg label
   case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the per-process log" "$s" "$pkg" ;; esac
   [ "$lines" -ge 1 ] || unverified_exit "$label" "per-process logcat is empty while the app is running" "$s" "$pkg"
   fatal="$(count_matches -E "$allf" "$fre")" || unverified_exit "$label" "grep error while counting FATAL lines" "$s" "$pkg"
-  mig="$(count_matches -iE "$pidf" "$mre")" || unverified_exit "$label" "grep error while counting Migration/Room lines" "$s" "$pkg"
-  say "$label log scan: running=yes fatal_count=$fatal migration_room_sqlcipher_error_count=$mig"
-  [ "$fatal" = 0 ] || fail "$label: $fatal FATAL lines"
-  [ "$mig" = 0 ] || fail "$label: $mig Migration/Room/SQLCipher error lines"
+  gst=0; grep -E -e "$rre" "$pidf" > "$cand" 2>/dev/null || gst=$?
+  [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while matching error signatures" "$s" "$pkg"
+  gst=0; grep -v -E -e "$are" "$cand" > "$realf" 2>/dev/null || gst=$?
+  [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while subtracting the allow-list" "$s" "$pkg"
+  real="$(count_matches -E "$realf" '.')" || unverified_exit "$label" "grep error while counting real error lines" "$s" "$pkg"
+  benign="$(count_matches -E "$pidf" "$are")" || unverified_exit "$label" "grep error while counting allow-listed lines" "$s" "$pkg"
+  say "$label log scan: running=yes fatal_count=$fatal real_error_count=$real benign_allowlisted_count=$benign"
+  if [ "$fatal" != 0 ] || [ "$real" != 0 ]; then
+    echo "phone install done but verification FAILED: glasses NOT installed: inspect logcat, do NOT restore from the backup unless the app fails to open its data ($label: fatal=$fatal real_errors=$real)" >&2
+    exit 3
+  fi
+  if [ "$benign" != 0 ]; then say "$label log scan: BENIGN-ONLY (note: $benign allow-listed noise lines: sqlcipher_mlock / Long monitor contention; not errors, install continues)"
+  else say "$label log scan: CLEAN"; fi
 }
 
 # ---------- refusal fixtures (function-level overrides, no adb, no device) ----------
@@ -465,7 +477,7 @@ FX_PASS=0 FX_FAIL=0
 fx() { # name want(ok|refuse) fn : runs fn in a subshell
   local name="$1" want="$2" fn="$3" rc=0
   ( "$fn" ) >/dev/null 2>&1 || rc=$?
-  if { [ "$want" = ok ] && [ "$rc" = 0 ]; } || { [ "$want" = refuse ] && [ "$rc" != 0 ]; }; then FX_PASS=$((FX_PASS + 1)); echo "  fixture ok      : $name"
+  if { [ "$want" = ok ] && [ "$rc" = 0 ]; } || { [ "$want" = refuse ] && [ "$rc" != 0 ]; } || { [ "$want" = rc3 ] && [ "$rc" = 3 ]; }; then FX_PASS=$((FX_PASS + 1)); echo "  fixture ok      : $name"
   else FX_FAIL=$((FX_FAIL + 1)); echo "  FIXTURE FAILED  : $name (wanted $want, rc=$rc)"; fi
 }
 cg() { PHONE=emulator-5554; SELFTEST=0; A() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; call_guard fx; }
@@ -576,10 +588,17 @@ run_fixtures() {
   FX_LPR=0; FX_LA=''; fx "logs: all-buffer logcat returns nothing" refuse sl
   FX_LA='l1\nl2\n'; fx "logs: all-buffer logcat too short" refuse sl
   FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LP=''; fx "logs: per-pid logcat returns nothing" refuse sl
-  FX_LP='p1\n'; FX_LA='l1\nAndroidRuntime: FATAL EXCEPTION: main\nl3\nl4\nl5\nl6\n'; fx "logs: FATAL EXCEPTION match refuses" refuse sl
-  FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LP='p1\nMigration didn t work\n'; fx "logs: Migration match refuses" refuse sl
-  FX_LP='p1\nnet.zetetic SQLCipher failure\n'; fx "logs: SQLCipher match refuses" refuse sl
-  FX_LP='p1\nroom error here\n'; fx "logs: Room error match refuses" refuse sl
+  FX_LP='p1\n'; FX_LA='l1\nAndroidRuntime: FATAL EXCEPTION: main\nAndroidRuntime: Process: com.x, PID: 4242\nl5\nl6\n'; fx "logs: FATAL EXCEPTION for the app => FAIL exit 3" rc3 sl
+  FX_LA='l1\nAndroidRuntime: FATAL EXCEPTION: main\nAndroidRuntime: Process: com.other, PID: 99\nl5\nl6\n'; fx "logs: FATAL EXCEPTION for another package not counted" ok sl
+  FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LP='p1\nMigration didn t work\n'; fx "logs: loose 'Migration didn t' without signature is not an error" ok sl
+  FX_LP='p1\nRoom: Migration didn'"'"'t properly handle: foo\n'; fx "logs: Migration didn't properly handle => FAIL exit 3" rc3 sl
+  FX_LP='p1\nnet.zetetic SQLCipher failure\n'; fx "logs: bare SQLCipher word is not an error" ok sl
+  FX_LP='p1\nE SQLiteLog: net.zetetic.database.sqlcipher.SQLiteDatabaseCorruptException: file is not a database\n'; fx "logs: SQLiteDatabaseCorruptException => FAIL exit 3" rc3 sl
+  FX_LP='p1\nIllegalStateException: Room cannot verify the data integrity\n'; fx "logs: Room integrity error => FAIL exit 3" rc3 sl
+  FX_LP="$(for i in $(seq 1 17); do printf 'W sqlcipher_mlock errno=12\\n'; printf 'I Long monitor contention with owner x\\n'; done)"; fx "logs: 34 noise lines => BENIGN-ONLY success" ok sl
+  FX_LP="${FX_LP}E net.zetetic.database.sqlcipher.SQLiteException: Cannot open database\\n"; fx "logs: noise + one real error (mixed) => FAIL exit 3" rc3 sl
+  FX_LP='p1\nE sqlcipher_mlock errno=12 SQLiteException: file is not a database\n'; fx "logs: allow-listed text on a real-signature line is subtracted" ok sl
+  FX_LP='p1\np2\n'; FX_LAR=7; fx "logs: UNVERIFIED (logcat failure) exit 3" rc3 sl; FX_LAR=0
   FX_LP='p1\np2\n'; fx "logs: grep error (status 2) is not 'no matches'" refuse sl_grepfail
   FX_PIDOUT=''; fx "logs: app not running" refuse sl
   FX_PIDOUT='4242\n'; fx "logs: clean again after the refusals" ok sl
