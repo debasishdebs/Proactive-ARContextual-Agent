@@ -69,9 +69,9 @@ class ProactiveDelivery(
                 Surface.entries.filter(wanted).associateWith { Gate.ERROR }
             }
         }
-        var ok = 0; var dropped = 0
-        for ((s, g) in out) if (g == Gate.DELIVERED) { ok++; store.bump("deliver_" + s.token) } else { dropped++; store.bump("drop_delivery_" + g.name.lowercase()) }
-        PcLog.i(TAG, "proactive delivery ok=$ok dropped=$dropped")
+        var ok = 0; var failed = 0
+        for ((s, g) in out) if (g == Gate.DELIVERED) { ok++; store.bump("deliver_" + s.token) } else { failed++; store.bump("drop_delivery_" + g.name.lowercase()) }
+        PcLog.i(TAG, "proactive delivery ok=$ok failed=$failed")
         return out
     }
 
