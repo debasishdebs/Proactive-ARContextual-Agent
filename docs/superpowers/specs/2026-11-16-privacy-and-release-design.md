@@ -109,7 +109,7 @@ The watch module has no DEBUG branches.
 
 - An update must be signed by the installed certificate or by a certificate that rotation lineage approves for it. Otherwise it fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`.
 - An accepted update keeps the UID, so the Keystore-held SQLCipher key and the database survive. The Keystore part is **UNVERIFIED** on-device, so the checklist verifies it.
-- APK Signature Scheme v3 (API 28+) supports rotation. Since build-tools 33, apksigner applies rotation only from API 33 by default (the v3.1 block). **Our devices run below 33** (glasses targetSdk 32; check each device with `getprop ro.build.version.sdk`), so we must pass `--rotation-min-sdk-version 28` (**UNVERIFIED**, check the flag name against the installed build-tools' `apksigner help sign`).
+- APK Signature Scheme v3 (API 28+) supports rotation. Since build-tools 33, apksigner applies rotation only from API 33 by default (the v3.1 block). **Our devices run below 33** (glasses targetSdk 32; check each device with `getprop ro.build.version.sdk`), so we must pass `--rotation-min-sdk-version 28`. **Verified 2026-11-18** with build-tools 36.0.0 on an API 34 emulator (see `docs/superpowers/reviews/2026-11/key-rotation-rehearsal-2026-11-18.md`): the flag name is right, and the rotated APK installed with `install -r` over the debug-signed one keeping the data directory, the encrypted database and the zones. Without the flag the API 24-32 block is signed by the old key only. Not yet tested on a real device below API 33.
 
 **Lineage, once (done by the user, offline):**
 
