@@ -21,8 +21,10 @@ object ProactiveEnvironment {
     @Volatile var worn: () -> Boolean = { false }
     /** A vehicle episode is under way, or cannot be told (ruling 10: unknown is DRIVING, so nothing is recorded). */
     @Volatile var driving: () -> Boolean = { true }
-    /** True only when [driving] is backed by a real vehicle signal. No such signal exists in v3.0 shadow, so the Suggestions screen says that nothing is recorded until one does. */
+    /** True only when [driving] is backed by the real signal ([DrivingSignal]); the default is the fail-closed UNKNOWN. */
     @Volatile var drivingSignalAvailable: Boolean = false
+    /** The state with its plain reason, for the Suggestions screen. */
+    @Volatile var drivingAssessment: () -> DrivingAssessment = { DrivingAssessment(DrivingState.UNKNOWN, "Unknown: no recent motion data: suggestions are paused") }
     /** The user's pause zones; null = unreadable (everything is blocked). */
     @Volatile var zones: () -> List<PauseZone>? = { null }
     /** The nudge cap ("Nudges per day"; 0 = off). */

@@ -55,8 +55,8 @@ data class ShadowRowUi(val id: String, val key: String, val ts: Long, val text: 
 data class SuggestionsUiState(
     val master: Boolean = false, val placeRecall: Boolean = true, val replay: Boolean = false,
     val rows: List<ShadowRowUi> = emptyList(), val neverCount: Int = 0, val counters: List<Pair<String, Int>> = emptyList(),
-    /** False until a real vehicle signal exists: unknown counts as driving (ruling 10), so nothing is recorded. */
-    val drivingKnown: Boolean = false,
+    /** The live driving state in plain words (ruling 10: only "Not driving" lets the loop record; unknown and driving pause it). */
+    val drivingLine: String = SuggestionsModel.DRIVING_UNKNOWN,
     /** The encrypted store could not be opened: recording is disabled. */
     val storageUnavailable: Boolean = false,
 )
@@ -85,7 +85,10 @@ object SuggestionsModel {
     const val REPLAY_TITLE = "Developer replay"
     const val REPLAY_NOTE = "Lets a laptop replay a day over your stored data (POST /api/proactive/replay). Read-only; needs Developer mode."
     const val EMPTY = "Nothing would have been suggested yet."
-    const val DRIVING_UNKNOWN = "PCA cannot yet tell whether you are driving, and treats that as driving. Until it can, shadow mode records nothing."
+    const val DRIVING_UNKNOWN = "Unknown: no recent motion data: suggestions are paused"
+
+    /** The live driving line; a failing read is the fail-closed unknown. */
+    fun drivingLine(): String = try { ProactiveEnvironment.drivingAssessment().reason } catch (e: Exception) { DRIVING_UNKNOWN }
     const val STORAGE_DOWN = "Secure storage is unavailable, so Suggestions are off and nothing is recorded. Restart the app to try again."
 
     fun triggerWords(t: TriggerKind): String = when (t) {
@@ -133,7 +136,7 @@ class AndroidSuggestionsControl(
     private val settings = ProactiveSettings.of(app)
     private val generation = java.util.concurrent.atomic.AtomicLong()
     private val publish = Any()
-    private val ui = MutableStateFlow(SuggestionsUiState(settings.master.value, settings.placeRecall.value, settings.replay.value, drivingKnown = ProactiveEnvironment.drivingSignalAvailable, storageUnavailable = settings.storageUnavailable.value))
+    private val ui = MutableStateFlow(SuggestionsUiState(settings.master.value, settings.placeRecall.value, settings.replay.value, drivingLine = SuggestionsModel.drivingLine(), storageUnavailable = settings.storageUnavailable.value))
     override val state: StateFlow<SuggestionsUiState> = ui.asStateFlow()
 
     init {
@@ -169,7 +172,7 @@ class AndroidSuggestionsControl(
                 if (g != generation.get()) return@launch // overtaken by a newer refresh or by a change signal: never republish
                 val live = s.records().map { it.id }.toSet() // and the rows must still have their records at the moment of publishing
                 ui.value = SuggestionsUiState(settings.master.value, settings.placeRecall.value, settings.replay.value, rows.filter { it.id in live }, s.never().size,
-                    s.counters().toList().sortedBy { it.first }.map { SuggestionsModel.counterLabel(it.first) to it.second }, ProactiveEnvironment.drivingSignalAvailable, settings.storageUnavailable.value)
+                    s.counters().toList().sortedBy { it.first }.map { SuggestionsModel.counterLabel(it.first) to it.second }, SuggestionsModel.drivingLine(), settings.storageUnavailable.value)
             }
         }
     }
@@ -195,7 +198,7 @@ fun SuggestionsScreen(
             SettingsCard {
                 SwitchRow(SuggestionsModel.MASTER_TITLE, SuggestionsModel.MASTER_NOTE, state.master, onMaster, tag = "suggestions_master", enabled = !state.storageUnavailable)
                 NoticeText(SuggestionsModel.SAFETY, tag = "suggestions_safety")
-                if (!state.drivingKnown) NoticeText(SuggestionsModel.DRIVING_UNKNOWN, tag = "suggestions_driving_unknown")
+                NoticeText(state.drivingLine, tag = "suggestions_driving")
                 if (state.storageUnavailable) NoticeText(SuggestionsModel.STORAGE_DOWN, tag = "suggestions_storage_down")
             }
         }

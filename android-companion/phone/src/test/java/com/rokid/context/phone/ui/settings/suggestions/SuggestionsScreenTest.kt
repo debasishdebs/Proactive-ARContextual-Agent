@@ -63,14 +63,14 @@ class SuggestionsScreenTest {
         assertTrue("clicking asks for ON", master)
     }
 
-    @Test fun theScreenSaysPlainlyThatUnknownDrivingMeansNothingIsRecordedAndWhenStorageIsDown() {
+    @Test fun theScreenShowsTheLiveDrivingLineAndWhenStorageIsDown() {
         var state by androidx.compose.runtime.mutableStateOf(SuggestionsUiState())
         compose.setContent { PcTheme { SuggestionsScreen(state, {}, {}, {}, {}, {}, {}, {}) } }
-        compose.onNodeWithTag("suggestions_driving_unknown").assertTextContains("records nothing", substring = true)
-        compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_driving_unknown"))
+        compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_driving"))
+        compose.onNodeWithTag("suggestions_driving").assertTextContains("suggestions are paused", substring = true)
         compose.onAllNodes(hasTestTag("suggestions_storage_down")).assertCountEquals(0)
-        state = SuggestionsUiState(drivingKnown = true, storageUnavailable = true)
-        compose.onAllNodes(hasTestTag("suggestions_driving_unknown")).assertCountEquals(0)
+        state = SuggestionsUiState(drivingLine = "Not driving: walking for 3 min", storageUnavailable = true)
+        compose.onNodeWithTag("suggestions_driving").assertTextEquals("Not driving: walking for 3 min")
         compose.onNodeWithTag("suggestions_storage_down").assertTextContains("nothing is recorded", substring = true)
     }
 

@@ -29,6 +29,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -182,6 +183,28 @@ class ProactiveEngineTest {
         assertTrue(ProactiveEnvironment.driving()); assertEquals(false, ProactiveEnvironment.drivingSignalAvailable)
         driving = ProactiveEnvironment.driving()
         assertNothingRecorded(Gate.DRIVING, engine().run(TriggerKind.TICK))
+    }
+
+    @Test fun theRealDrivingSignalGatesWouldShows() = runBlocking {
+        var t = 1_000_000_000L
+        val tr = DrivingTracker { t }
+        driving = true
+        fun gateNow(): Boolean { driving = tr.assess().blocks; return driving }
+        // process start, no data: UNKNOWN drops
+        assertTrue(gateNow()); assertNothingRecorded(Gate.DRIVING, engine().run(TriggerKind.TICK))
+        // 10 minutes of heartbeats, then a fresh walking reading: NOT_DRIVING, the would-show is recorded
+        repeat(61) { tr.heartbeat(false); t += 10_000 }
+        tr.calm(t, Calm.WALKING)
+        assertFalse(gateNow()); assertEquals(Gate.WOULD_SHOW, engine().run(TriggerKind.TICK).gate)
+    }
+
+    @Test fun aVehicleAppearingBeforeTheCommitDropsThroughTheRealSignal() {
+        var t = 1_000_000_000L
+        val tr = DrivingTracker { t }
+        repeat(61) { tr.heartbeat(false); t += 10_000 }
+        tr.calm(t, Calm.STILL)
+        driving = false
+        flipBeforeCommit(Gate.DRIVING) { tr.vehicle(t); driving = tr.assess().blocks }
     }
 
     @Test fun theBudgetIsSharedAndSerialised() = runBlocking {
