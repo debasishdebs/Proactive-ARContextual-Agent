@@ -18,6 +18,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import java.time.ZoneId
 
@@ -93,6 +94,9 @@ class GraphCardSource(
             ActionsUi.build(p, code, undoRemainingMs(p.id), zone(), warn)
         }
     }.flowOn(work)
+        // Lifecycle guard: the card outlives the database for a moment when it is closed under a live composition (reset, forget-all, test teardown);
+        // a closed pool ends the observation quietly (no card) instead of crashing the collector.
+        .catch { e -> if (e is IllegalStateException && e.message?.contains("closed") == true) emit(null) else throw e }
 
     override suspend fun respond(proposalId: String, yes: Boolean): Resolve = engine.respond(proposalId, yes, ActionsUi.PHONE)
     override suspend fun undo(proposalId: String): Boolean = engine.undo(proposalId, ActionsUi.PHONE)
