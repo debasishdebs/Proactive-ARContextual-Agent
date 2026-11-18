@@ -142,9 +142,8 @@ class ProactiveEngine(
                     else -> {
                         // 9: the driving decision and the write are one step under the tracker's lock (a vehicle accepted during the reads above changes the version), no suspension after it
                         var ok: Boolean? = false
-                        val write = { ok = if (ticket != null) ticket.fence.act(ticket) { store.add(record) } else store.add(record) }
-                        val ran = if (dry) { write(); true } else seams.drivingCommit(drivingVersion, write)
-                        if (!ran) Gate.DRIVING else when (ok) { null -> Gate.ZONE; false -> Gate.COMMIT; else -> Gate.WOULD_SHOW }
+                        if (dry) { ok = if (ticket != null) ticket.fence.act(ticket) { store.add(record) } else store.add(record); when (ok) { null -> Gate.ZONE; false -> Gate.COMMIT; else -> Gate.WOULD_SHOW } }
+                        else when (seams.commitFenced(ticket, drivingVersion) { ok = store.add(record) }) { FenceOutcome.DRIVING -> Gate.DRIVING; FenceOutcome.ZONE -> Gate.ZONE; FenceOutcome.RAN -> if (ok == true) Gate.WOULD_SHOW else Gate.COMMIT }
                     }
                 }
             }
