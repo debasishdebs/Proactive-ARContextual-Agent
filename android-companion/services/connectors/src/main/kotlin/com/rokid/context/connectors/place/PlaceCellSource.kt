@@ -132,22 +132,22 @@ class PlaceCellSource(
         )
 
         /** Version of [CURATED_LANDMARK_QIDS]; raise it with every change to the set. */
-        const val CURATED_LANDMARKS_VERSION = 2
+        const val CURATED_LANDMARKS_VERSION = 3
 
         /** Version of [VERIFIED_COORDINATES]; raise it with every change to the table. */
-        const val VERIFIED_COORDINATES_VERSION = 1
+        const val VERIFIED_COORDINATES_VERSION = 2
 
         /**
-         * VERIFIED_COORDINATES (version 1, 2026-11-19): curated QIDs that Wikipedia geosearch cannot return because the English Wikipedia page carries no coordinates (checked with
+         * VERIFIED_COORDINATES (version 2, 2026-11-19): curated QIDs that Wikipedia geosearch cannot return because the English Wikipedia page carries no coordinates (checked with
          * prop=coordinates on 2026-11-19). Each row was read back from wikidata.org on 2026-11-19 (wbgetentities, labels en, claims P31 and P625), one request at a time; label, P31, P625:
-         * Q1961579 "Jetavanaramaya", P31 stupa Q180987, (8.351667, 80.403611); Q19719626 "Ritigala", P31 mountain Q8502, (8.108611, 80.656111);
-         * Q60181073 "Ghum railway station", P31 railway station Q55488, (27.008643, 88.254223) (HTTP 429 once, retried after Retry-After).
+         * Q1961579 "Jetavanaramaya", P31 stupa Q180987, (8.351667, 80.403611);
+         * Q60181073 "Ghum railway station", P31 railway station Q55488, (27.008643, 88.254223) (HTTP 429 once, retried after a wait).
+         * Ritigala (Q19719626) is deliberately NOT seeded: its verified Wikidata point (8.108611, 80.656111) is the mountain, ~1.2 km from the monastic ruins (about 8.11858, 80.65929), and no monastery-specific item was verified (removed in version 2).
          * The other curated QIDs have Wikipedia coordinates, so geosearch finds them and they are not listed. A cell fetch adds the places of this table whose coordinate lies inside the cell and
          * which geosearch did not return, through the same person, class and curated gating; the coordinate used is THIS table's, never the response's. Every key must be in [CURATED_LANDMARK_QIDS].
          */
         val VERIFIED_COORDINATES: Map<String, VerifiedCoordinate> = mapOf(
             "Q1961579" to VerifiedCoordinate("Jetavanaramaya", 8.351667, 80.403611),
-            "Q19719626" to VerifiedCoordinate("Ritigala", 8.108611, 80.656111),
             "Q60181073" to VerifiedCoordinate("Ghum railway station", 27.008643, 88.254223),
         )
 
@@ -168,9 +168,9 @@ class PlaceCellSource(
             "Q5285886" to PlaceKinds.STUPA, // "Do-drul Chorten" (27.313, 88.605), no P31 at all: Gangtok stupa
             "Q24949017" to PlaceKinds.HERITAGE_BUILDING, // "Darjeeling railway station" (27.038, 88.263), P31 railway station: Darjeeling Himalayan Railway terminus
             "Q60181073" to PlaceKinds.HERITAGE_BUILDING, // "Ghum railway station" (27.009, 88.254), P31 railway station: highest station of the Darjeeling Himalayan Railway
-            // Added in version 2 (2026-11-19), read back from wikidata.org; both are found through VERIFIED_COORDINATES, as their Wikipedia pages have no coordinates:
+            // Added in version 2 (2026-11-19), read back from wikidata.org; Q1961579 is found through VERIFIED_COORDINATES, as their Wikipedia pages have no coordinates:
             "Q1961579" to PlaceKinds.STUPA, // "Jetavanaramaya" (8.352, 80.404), P31 stupa (also in MONUMENT_CLASSES): Anuradhapura
-            "Q19719626" to PlaceKinds.ARCHAEOLOGICAL_SITE, // "Ritigala" (8.109, 80.656), P31 mountain: Ritigala forest monastery ruins
+        // Version 3 (2026-11-19): Q19719626 "Ritigala" removed again (its point is the mountain, not the ruins; see VERIFIED_COORDINATES).
         )
 
         /** The OSM tag combinations that make an object a place: historic, heritage and tourism=attraction|museum|viewpoint, named. */
