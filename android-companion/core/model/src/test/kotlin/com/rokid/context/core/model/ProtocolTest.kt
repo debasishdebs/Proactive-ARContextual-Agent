@@ -425,4 +425,19 @@ class ProtocolTest {
         assertEquals("Charminar", Wire.json.decodeFromString<LegacyDismiss>(Wire.encode<Command>(Command.DismissPlace("Charminar", "pc7"))).title)
         assertEquals(1, PROTOCOL_VERSION)
     }
+
+    // v3.1: a delivered suggestion rides the SAME additive place-card fields (no new wire field; PROTOCOL_VERSION stays 1), both ways.
+    @Test fun aSuggestionCardRoundTripsAndOldPeersInteroperate() {
+        val o = Overlay.Nudge("Golconda: last visit 12 Nov.", PlaceCardInfo("Golconda", "last visit 12 Nov.", "Suggestion \u00b7 from 2 items \u00b7 12 Nov", nearby = false, id = "sg_0d9f"))
+        assertEquals(o, assertIs<Decoded.Ok<StateFrame>>(Wire.decode<StateFrame>(Wire.encode(frame(o)))).value.overlay)
+        // an older glasses build (before place cards) decodes only `text`: it shows the ordinary nudge text, never breaks
+        assertEquals("Golconda: last visit 12 Nov.", Wire.json.decodeFromString<LegacyNudge>(Wire.encode<Overlay>(o)).text)
+        // a current glasses build's dismissal of it names the card by its id; an older phone's decoder keeps working
+        val e = CommandEnvelope(command = Command.DismissPlace("Golconda", "sg_0d9f"))
+        assertEquals(e, assertIs<Decoded.Ok<CommandEnvelope>>(Wire.decode<CommandEnvelope>(Wire.encode(e))).value)
+        assertEquals("Golconda", Wire.json.decodeFromString<LegacyDismiss>(Wire.encode<Command>(e.command)).title)
+        // an older phone sends no suggestion at all: a plain nudge still decodes, with no place
+        assertEquals(null, assertIs<Overlay.Nudge>(Wire.json.decodeFromString<Overlay>("""{"kind":"nudge","text":"Leave in 10 min"}""")).place)
+        assertEquals(1, PROTOCOL_VERSION)
+    }
 }

@@ -109,6 +109,9 @@ class HubTest {
         inFront: () -> Boolean = { false },
         placeCards: kotlinx.coroutines.flow.StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
         placeClear: () -> Unit = {},
+        suggestionCards: kotlinx.coroutines.flow.StateFlow<SuggestionHudHolder.Shown?> = MutableStateFlow(null),
+        suggestionClearIf: (String) -> Boolean = { false },
+        onSuggestionDismissed: (String) -> Unit = {},
         zoneApproach: () -> Boolean = { false },
         hudHost: () -> com.rokid.context.core.model.HudHost = { com.rokid.context.core.model.HudHost.PCA },
         onStopped: () -> Unit = {},
@@ -123,7 +126,7 @@ class HubTest {
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
             reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
-            placeCards = placeCards, placeClear = placeClear, zoneApproach = zoneApproach, hudHost = hudHost, onStopped = onStopped,
+            placeCards = placeCards, placeClear = placeClear, suggestionCards = suggestionCards, suggestionClearIf = suggestionClearIf, onSuggestionDismissed = onSuggestionDismissed, zoneApproach = zoneApproach, hudHost = hudHost, onStopped = onStopped,
         )
             .also { if (start) { it.start(userInitiated = true); runCurrent() } }
     }
@@ -965,6 +968,61 @@ class HubTest {
         hub(link, placeCards = cards, zoneApproach = { true }); link.emitReady(); runCurrent()
         cards.value = placeCard; advanceTimeBy(300)
         assertNull(link.lastFrame().overlay)
+    }
+
+    // ---- v3.1: the suggestion card rides the SAME additive overlay as a place card (PROTOCOL_VERSION stays 1) ----
+
+    private val sgCard = com.rokid.context.orchestration.proactive.DeliveredCard("sg_1", "Golconda", "last visit 12 Nov.", "from 2 items \u00b7 12 Nov", setOf("m1"))
+    private fun kotlinx.coroutines.test.TestScope.suggestionHub(link: FakeGlassesLink, holder: SuggestionHudHolder, dismissed: MutableList<String> = ArrayList(), zone: () -> Boolean = { false }, host: () -> com.rokid.context.core.model.HudHost = { com.rokid.context.core.model.HudHost.PCA }) =
+        hub(link, clock = { now + testScheduler.currentTime }, suggestionCards = holder.card, suggestionClearIf = holder::clearIf, onSuggestionDismissed = { dismissed += it }, zoneApproach = zone, hudHost = host)
+
+    @Test fun aSuggestionCardIsBroadcastAsAPlaceShapedNudgeWithASuggestionSource() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }
+        suggestionHub(link, holder); link.emitReady(); runCurrent(); advanceTimeBy(300); link.sent.clear()
+        holder.show(sgCard); advanceTimeBy(300)
+        val o = link.lastFrame().overlay as Overlay.Nudge
+        assertEquals("Golconda: last visit 12 Nov.", o.text) // an older glasses build shows this text
+        assertEquals(com.rokid.context.core.model.PlaceCardInfo("Golconda", "last visit 12 Nov.", "Suggestion \u00b7 from 2 items \u00b7 12 Nov", nearby = false, id = "sg_1"), o.place)
+        assertEquals(1, link.lastFrame().v)
+    }
+
+    @Test fun aSuggestionCardExpiresAfterTwelveSecondsWithoutFeedback() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val dismissed = ArrayList<String>()
+        suggestionHub(link, holder, dismissed); link.emitReady(); runCurrent()
+        holder.show(sgCard); advanceTimeBy(11_000); assertNotNull(link.lastFrame().overlay)
+        advanceTimeBy(1_500); assertNull(holder.card.value); assertNull(link.lastFrame().overlay); assertTrue("expiry is not a dismissal", dismissed.isEmpty())
+    }
+
+    @Test fun aHeadMotionDismissalIsTheWearersDismissalAndTheGlassesOwnExpiryIsNot() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val dismissed = ArrayList<String>()
+        suggestionHub(link, holder, dismissed); link.emitReady(); runCurrent()
+        holder.show(sgCard); advanceTimeBy(4_000)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Golconda", "sg_1"))); runCurrent()
+        assertNull(holder.card.value); assertEquals(listOf("sg_1"), dismissed)
+        holder.show(sgCard.copy(id = "sg_2")); advanceTimeBy(11_800)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Golconda", "sg_2"))); runCurrent()
+        assertEquals("a dismissal at the 12 s mark is the expiry", listOf("sg_1"), dismissed)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Golconda", "sg_1"))); runCurrent()
+        assertEquals("a repeated dismissal of a card that is gone does nothing", listOf("sg_1"), dismissed)
+    }
+
+    @Test fun noSuggestionCardOnTheWireDuringAZoneOrWhileNexusDraws() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; var zone = true
+        suggestionHub(link, holder, zone = { zone }); link.emitReady(); runCurrent()
+        holder.show(sgCard); advanceTimeBy(300); assertNull(link.lastFrame().overlay)
+        zone = false; holder.clear(); holder.show(sgCard); advanceTimeBy(300); assertNotNull(link.lastFrame().overlay)
+        val link2 = FakeGlassesLink(); val h2 = SuggestionHudHolder { now + testScheduler.currentTime }
+        suggestionHub(link2, h2, host = { com.rokid.context.core.model.HudHost.NEXUS }); link2.emitReady(); runCurrent()
+        h2.show(sgCard); advanceTimeBy(300); assertNull("Nexus draws it, never the PCA glasses as well", link2.lastFrame().overlay)
+    }
+
+    @Test fun aPlaceCardWinsOverASuggestionCardAndAWithdrawalClearsTheSuggestionAtOnce() = runTest {
+        val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }; val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards, suggestionCards = holder.card, suggestionClearIf = holder::clearIf); link.emitReady(); runCurrent()
+        holder.show(sgCard); advanceTimeBy(300); assertEquals("sg_1", (link.lastFrame().overlay as Overlay.Nudge).place!!.id)
+        cards.value = placeCard; advanceTimeBy(300); assertEquals("Charminar", (link.lastFrame().overlay as Overlay.Nudge).place!!.title)
+        cards.value = null; advanceTimeBy(300); assertEquals("sg_1", (link.lastFrame().overlay as Overlay.Nudge).place!!.id)
+        holder.clearIf("sg_1"); advanceTimeBy(300); assertNull(link.lastFrame().overlay)
     }
 
     /** Codex z1 r1 P1-3: the final zone filter of the answer overlay: an Answer already queued is never framed while a zone is approached or entered, and a zone that starts withdraws it from the next frame. */
