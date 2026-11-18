@@ -57,6 +57,21 @@ class NexusFeeder(
         send(HudEvent.Nudge(ref = n.id, title = "Heads up", body = n.text, sources = n.sources, ttlMs = popupMs()))
     }
 
+    private val suggestionIds = java.util.LinkedHashSet<String>()
+
+    /**
+     * A delivered suggestion (v3.1), as a Nexus notice through the sink's gates (it re-runs sources live, zone fences, pause and not-worn). Returns false when it was already sent. Title is a fixed word; the body is
+     * the template line and the sources label. Logs: literal only.
+     */
+    fun suggestion(c: com.rokid.context.orchestration.proactive.DeliveredCard): Boolean {
+        synchronized(suggestionIds) { if (!suggestionIds.add(c.id)) return false; while (suggestionIds.size > 16) suggestionIds.remove(suggestionIds.first()) }
+        send(HudEvent.Nudge(ref = c.id, title = "Suggestion", body = "${c.title}: ${c.line}\n${c.sourceLabel}", sources = c.sources, ttlMs = popupMs()))
+        return true
+    }
+
+    /** The ids of the suggestions sent (bounded), for a withdrawal of all of them. */
+    fun suggestionRefs(): List<String> = synchronized(suggestionIds) { suggestionIds.toList() }
+
     /** The answer card on PCA's voice overlay. Only an answer of a stored ask (it has an ask id to read its sources from) is sent. */
     fun answer(o: Overlay?) {
         val a = o as? Overlay.Answer ?: return
@@ -96,7 +111,7 @@ class NexusFeeder(
     fun startPolling(everyMs: Long = POLL_MS) = scope.launch { while (isActive) { delay(everyMs); pollPin() } }
 
     /** The host was switched away or the hub stopped: forget what was sent, so a later switch back shows the next card. */
-    fun reset() { lastCard = null; lastNudge = null; lastAsk = null; wantedPin = null }
+    fun reset() { lastCard = null; lastNudge = null; lastAsk = null; wantedPin = null; synchronized(suggestionIds) { suggestionIds.clear() } }
 
     companion object {
         const val POLL_MS = 15_000L

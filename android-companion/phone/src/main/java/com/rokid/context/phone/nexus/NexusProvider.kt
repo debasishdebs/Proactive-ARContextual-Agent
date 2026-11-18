@@ -342,6 +342,9 @@ class NexusProvider(
         }
     }
 
+    /** v3.1: takes the notice of [ref] off Nexus (a suggestion dismissed or forgotten elsewhere). No-op while nothing is connected. */
+    fun withdraw(ref: String) { val s = sink ?: return; try { s.withdraw(ref) } catch (_: Exception) { log("nexus withdraw failed") } }
+
     /**
      * A close event. Hides everything on Nexus at once (and asks for the history wipe on Forget, Delete all and mode off). Safe from any thread. The wipe debt is recorded FIRST, connected or not (the bridge may be
      * down, mid-reconnect or about to be unbound); the sink sends it now when it can and the provider sends it again on the next bind until the hub acknowledges.

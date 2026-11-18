@@ -67,4 +67,7 @@ interface NexusActionHandler {
 
     /** More: open the phone app on the item. */
     fun more(ref: String)
+
+    /** Dismiss (v3.1): the user dismissed the notice on Nexus; PCA may withdraw the same item from its other surfaces. Default: nothing. */
+    fun dismiss(ref: String) {}
 }

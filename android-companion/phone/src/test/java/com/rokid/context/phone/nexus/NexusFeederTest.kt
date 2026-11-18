@@ -80,4 +80,12 @@ class NexusFeederTest {
         val f = NexusFeeder(backgroundScope, { throw IllegalStateException("x") }, { 6_000 }, { null }, { false })
         f.nudge(NexusNudge("n1", "t", emptySet())); runCurrent()
     }
+
+    @Test fun aSuggestionIsSentOnceAsANudgeWithItsSourcesAndTheTemplateBody() = runTest {
+        val f = feeder(); val c = com.rokid.context.orchestration.proactive.DeliveredCard("sg_1", "Golconda", "last visit 12 Nov.", "from 2 items \u00b7 12 Nov", setOf("m1", "frame:f1"))
+        assertTrue(f.suggestion(c)); assertTrue(!f.suggestion(c)); runCurrent()
+        val e = sent.single() as HudEvent.Nudge
+        assertEquals("Suggestion", e.title); assertEquals("sg_1", e.ref); assertEquals(setOf("m1", "frame:f1"), e.sources); assertEquals("Golconda: last visit 12 Nov.\nfrom 2 items \u00b7 12 Nov", e.body)
+        assertEquals(listOf("sg_1"), f.suggestionRefs()); f.reset(); assertTrue(f.suggestionRefs().isEmpty())
+    }
 }
