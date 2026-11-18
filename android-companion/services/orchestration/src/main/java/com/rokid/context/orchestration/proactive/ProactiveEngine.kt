@@ -92,8 +92,7 @@ class ProactiveEngine(
         val generated = generators.map { it.generate(nowMs, seams.anchorBlocked) }
         val candidates = generated.flatMap { it.candidates }
         if (candidates.isEmpty()) return stop(if (generated.sumOf { it.zoneDropped } > 0) Gate.ZONE_ANCHOR else Gate.NO_CANDIDATES, dry)
-        val midnight = Instant.ofEpochMilli(nowMs).atZone(hud.zone).toLocalDate().atStartOfDay(hud.zone).toInstant().toEpochMilli()
-        val state = BudgetState(store.records(), seams.globalToday(midnight), seams.globalCap())      // 4
+        val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap())      // 4
         val never = store.never()
         val reports = ArrayList<CandidateReport>()
         var chosen: Pair<Candidate, Double>? = null
@@ -117,7 +116,9 @@ class ProactiveEngine(
             testBeforeCommit?.invoke()
             val record = SuggestionRecord("sg_" + UUID.randomUUID(), nowMs, c.key, c.family, trigger, score, c.anchorKey, c.sourceIds, com.rokid.context.orchestration.proactive.generators.PlaceRecallGenerator.factors(c))
             val block: suspend () -> Gate = {
+                val closed = revalidate(c, nowMs, dry) // every gate again, after the last suspension and right before the write
                 when {
+                    closed != null -> closed
                     provenance.check(SourceIds.provenance(c.sourceIds), gen) != ProvenanceGate.Verdict.Live -> Gate.PROVENANCE      // 7
                     provenance.goneMarks(SourceIds.marks(c.sourceIds).toSet()).isNotEmpty() -> Gate.PROVENANCE
                     !seams.pinsLive(SourceIds.pins(c.sourceIds)) -> Gate.PROVENANCE
@@ -138,6 +139,29 @@ class ProactiveEngine(
             lease.close()
         }
     }
+
+    /**
+     * The gates again, as of the moment of the write (a run suspends for generation, budget reads and the lease; any of them may have closed since): master and family switch, pause (and Battery Saver), the zone
+     * (live fence and the place itself), worn, driving, quiet hours, the budget and the never list. A throw is a drop. The replay (dry) skips only the live-state gates. The lease, provenance and the zone ticket are
+     * checked by the commit block itself.
+     */
+    private suspend fun revalidate(c: Candidate, nowMs: Long, dry: Boolean): Gate? {
+        if (!dry) {
+            if (!seams.enabled()) return Gate.SWITCH
+            if (try { seams.paused() } catch (e: CancellationException) { throw e } catch (e: Exception) { true }) return Gate.PAUSE
+            if (seams.zoneGuard.blocked()) return Gate.ZONE
+            if (!seams.worn()) return Gate.WEAR
+            if (seams.driving()) return Gate.DRIVING
+        }
+        val hud = seams.hud() ?: return Gate.OFF
+        if (try { seams.anchorBlocked(c.anchorKey) } catch (e: CancellationException) { throw e } catch (e: Exception) { true }) return Gate.ZONE_ANCHOR
+        val state = BudgetState(store.records(), seams.globalToday(localMidnight(nowMs, hud)), seams.globalCap())
+        budget.check(c, state, hud, nowMs).takeIf { it != Gate.WOULD_SHOW }?.let { return it }
+        if (c.key in store.never()) return Gate.FEEDBACK
+        return null
+    }
+
+    private fun localMidnight(nowMs: Long, hud: NudgeHud): Long = Instant.ofEpochMilli(nowMs).atZone(hud.zone).toLocalDate().atStartOfDay(hud.zone).toInstant().toEpochMilli()
 
     private fun List<CandidateReport>.withVerdict(c: Candidate, g: Gate) = map { if (it.candidate === c) it.copy(verdict = g) else it }
 

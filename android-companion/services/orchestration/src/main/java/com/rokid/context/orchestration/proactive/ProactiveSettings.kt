@@ -17,16 +17,22 @@ class ProactiveSettings(private val prefs: SharedPreferences) {
     val master: StateFlow<Boolean> = _master.asStateFlow()
     val placeRecall: StateFlow<Boolean> = _f2.asStateFlow()
     val replay: StateFlow<Boolean> = _replay.asStateFlow()
+    private val _storageDown = MutableStateFlow(false)
+    /** The encrypted store could not be opened this process: the loop is OFF and cannot be switched on (fail closed; see [ProactiveGraph.store]). */
+    val storageUnavailable: StateFlow<Boolean> = _storageDown.asStateFlow()
 
     private fun read(k: String, d: Boolean) = try { prefs.getBoolean(k, d) } catch (e: Exception) { false }
     private fun write(k: String, v: Boolean) { try { prefs.edit().putBoolean(k, v).commit() } catch (_: Exception) { } }
 
-    fun setMaster(on: Boolean) { write(MASTER, on); _master.value = on }
+    fun setMaster(on: Boolean) { val v = on && !_storageDown.value; write(MASTER, v); _master.value = v }
+
+    /** The persisted history (Never list, budget, cooldown) cannot be read: force the master switch OFF, on disk too, and refuse to turn it on until the process restarts. */
+    fun markStorageUnavailable() { _storageDown.value = true; write(MASTER, false); _master.value = false }
     fun setPlaceRecall(on: Boolean) { write(F2, on); _f2.value = on }
     fun setReplay(on: Boolean) { write(REPLAY, on); _replay.value = on }
 
     /** The loop runs only with the master switch AND the family switch on. */
-    fun active(): Boolean = _master.value && _f2.value
+    fun active(): Boolean = _master.value && _f2.value && !_storageDown.value
 
     /** Delete all: back to the defaults (everything OFF), also on disk. */
     fun reset() {
@@ -43,6 +49,6 @@ class ProactiveSettings(private val prefs: SharedPreferences) {
         fun of(context: Context): ProactiveSettings = instance ?: synchronized(this) {
             instance ?: ProactiveSettings(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)).also { instance = it }
         }
-        internal fun resetForTests() { instance = null }
+        /** Tests only (also used from the phone module). */ fun resetForTests() { instance = null }
     }
 }

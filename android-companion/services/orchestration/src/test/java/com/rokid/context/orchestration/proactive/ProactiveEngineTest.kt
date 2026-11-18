@@ -84,7 +84,7 @@ class ProactiveEngineTest {
         val run = engine().run(TriggerKind.PLACE_ARRIVAL)
         assertEquals(Gate.WOULD_SHOW, run.gate)
         val r = store.records().single()
-        assertEquals(run.record, r); assertEquals("f2:wd:Q1", r.key); assertEquals(listOf("mem:m_old"), r.sourceIds); assertEquals(TriggerKind.PLACE_ARRIVAL, r.trigger)
+        assertEquals(run.record, r); assertEquals("f2:wd:Q1", r.key); assertEquals(listOf("mem:m_old", "mem:m_now"), r.sourceIds); assertEquals(TriggerKind.PLACE_ARRIVAL, r.trigger)
         assertTrue(r.factors.containsAll(listOf("arrived", "visits=1")))
         assertEquals(1, store.counters()["would_show"]); assertEquals(0, MemoryGraph.get(ctx).db.nudgeGateDao().countSince(0))
         assertEquals("the lease is closed", 0, leases.openCount)
@@ -147,6 +147,41 @@ class ProactiveEngineTest {
         val e = engine()
         e.testBeforeCommit = { fence.hold() }
         assertNothingRecorded(Gate.ZONE, e.run(TriggerKind.TICK))
+    }
+
+    // Codex v3 r1 P1-2: every gate is re-read after the last suspension, right before the write
+    private fun flipBeforeCommit(g: Gate, flip: () -> Unit) = runBlocking {
+        val e = engine(); e.testBeforeCommit = { flip() }
+        assertNothingRecorded(g, e.run(TriggerKind.TICK))
+        assertEquals("the lease is closed", 0, leases.openCount)
+    }
+    @Test fun masterOrFamilySwitchOffBeforeTheCommit() = flipBeforeCommit(Gate.SWITCH) { enabled = false }
+    @Test fun pauseBeforeTheCommit() = flipBeforeCommit(Gate.PAUSE) { paused = true }
+    @Test fun aThrowingPauseCheckBeforeTheCommit() = flipBeforeCommit(Gate.PAUSE) { throwPause = true }
+    @Test fun takenOffBeforeTheCommit() = flipBeforeCommit(Gate.WEAR) { worn = false }
+    @Test fun drivingBeforeTheCommit() = flipBeforeCommit(Gate.DRIVING) { driving = true }
+    @Test fun quietHoursStartingBeforeTheCommit() = flipBeforeCommit(Gate.QUIET_HOURS) { hud = NudgeHud(QuietHours(11 * 60, 13 * 60), Verbosity.MEDIUM, zone) }
+    @Test fun noHudSettingsBeforeTheCommit() = flipBeforeCommit(Gate.OFF) { hud = null }
+    @Test fun theGlobalCapReachedBeforeTheCommit() = flipBeforeCommit(Gate.GLOBAL_CAP) { cap = 3; nudgesToday = 3 }
+    @Test fun aNeverEntryAddedBeforeTheCommit() = flipBeforeCommit(Gate.FEEDBACK) { store.addNever("f2:wd:Q1") }
+    @Test fun aZoneAroundThePlaceBeforeTheCommit() = flipBeforeCommit(Gate.ZONE_ANCHOR) { anchorBlocked = true }
+    @Test fun theLiveZoneGuardBeforeTheCommit() { var on = false; guard = AskZoneGuard { on }; flipBeforeCommit(Gate.ZONE) { on = true } }
+    @Test fun aPinGoneBeforeTheCommit() {
+        val pin = "user:00000000-0000-0000-0000-000000000001"
+        history.visits = listOf(visit("m_now", now - 60_000, pin), visit("m_old", now - 6 * DAY, pin)); history.pins = listOf(PinInfo(pin, "Golconda", ""))
+        flipBeforeCommit(Gate.PROVENANCE) { pinsLive = false }
+    }
+    @Test fun aSecondRecordInTheGapBeforeTheCommit() = runBlocking {
+        val e = engine(); e.testBeforeCommit = { store.add(SuggestionRecord("sg_other", now - 60_000, "f2:other", ProactiveFamily.PLACE_RECALL, TriggerKind.TICK, 0.7, "wd:Q9", listOf("mem:x"), emptyList())) }
+        val run = e.run(TriggerKind.TICK)
+        assertEquals(Gate.SHOWN_GAP, run.gate); assertEquals(listOf("sg_other"), store.records().map { it.id })
+    }
+
+    @Test fun anUnknownVehicleStateDropsEverything() = runBlocking {
+        // the defaults of the app wiring: no vehicle signal, so driving() is true (ruling 10) and the loop records nothing
+        assertTrue(ProactiveEnvironment.driving()); assertEquals(false, ProactiveEnvironment.drivingSignalAvailable)
+        driving = ProactiveEnvironment.driving()
+        assertNothingRecorded(Gate.DRIVING, engine().run(TriggerKind.TICK))
     }
 
     @Test fun theBudgetIsSharedAndSerialised() = runBlocking {

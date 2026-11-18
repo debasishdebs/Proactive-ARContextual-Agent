@@ -40,10 +40,10 @@ class ProactiveReplayTest {
     }
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
-    private fun replayer(): ProactiveReplayer {
+    private fun replayer(gate: com.rokid.context.orchestration.DataOpGate = com.rokid.context.orchestration.DataOpGate.shared): ProactiveReplayer {
         val mem = MemoryGraph.get(ctx)
         val seams = { ProactiveSeams(hud = { NudgeHud(null, Verbosity.MEDIUM, zone) }, globalCap = { 6 }, globalToday = { 0 }, anchorBlocked = { false }, pinsLive = { true }) }
-        return ProactiveReplayer(mem.db, ProvenanceGate.forGraph(mem), PlaceRecallGenerator(history) { zone }, seams, never = { real.never() }, zone = { zone })
+        return ProactiveReplayer(mem.db, ProvenanceGate.forGraph(mem), PlaceRecallGenerator(history) { zone }, seams, never = { real.never() }, zone = { zone }, gate = gate)
     }
 
     @Test fun aDayIsAWalkOfStepsAndTheBudgetIsSimulatedAcrossThem() = runBlocking {
@@ -52,7 +52,7 @@ class ProactiveReplayTest {
         assertEquals("one would-show; the next step is held by the 30 minute gap", 1, shown.size)
         assertEquals(noon, shown.single().atMs)
         val c = shown.single().candidates.single()
-        assertEquals("f2:wd:Q1", c.key); assertTrue(c.text!!.startsWith("Golconda: last visit ")); assertEquals(listOf("mem:m_old"), c.sourceIds)
+        assertEquals("f2:wd:Q1", c.key); assertTrue(c.text!!.startsWith("Golconda: last visit ")); assertEquals(listOf("mem:m_old", "mem:m_now"), c.sourceIds)
         assertEquals(Gate.SHOWN_GAP, rows.first { it.atMs == noon + 15 * 60_000L }.candidates.single().verdict)
         assertEquals(96, replayer().steps(LocalDate.of(2026, 11, 18), 15, emptyList()).size)
     }
@@ -71,6 +71,37 @@ class ProactiveReplayTest {
         real.addNever("f2:wd:Q1")
         val rows = replayer().replay(LocalDate.of(2026, 11, 18), 15, emptyList())
         assertTrue(rows.none { r -> r.candidates.any { it.verdict == Gate.WOULD_SHOW } }); assertTrue(rows.any { r -> r.candidates.any { it.verdict == Gate.FEEDBACK } })
+    }
+
+    @Test fun aForgetDuringLaterStepsRevokesTheReplayLeaseAndNothingIsReturned() = runBlocking {
+        val leases = com.rokid.context.memory.forget.lifecycle.Leases()
+        val r = replayer(com.rokid.context.orchestration.DataOpGate(waitMs = 50, leases = leases))
+        r.testAfterStep = { i -> if (i == 60) leases.revoke(listOf(com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.MEMORY, "m_old"))) }
+        assertTrue("an earlier would-show is not returned after a later Forget", r.replay(LocalDate.of(2026, 11, 18), 15, emptyList()).isEmpty())
+        assertEquals("the one lease is closed", 0, leases.openCount)
+    }
+
+    @Test fun aSourceGoneAtTheEndIsDroppedFromTheAnswerEvenWhenUnselected() = runBlocking {
+        val r = replayer()
+        r.testAfterStep = { i -> if (i == 95) MemoryGraph.get(ctx).memories.deleteByIds(listOf("m_old")) }
+        val rows = r.replay(LocalDate.of(2026, 11, 18), 15, emptyList())
+        assertTrue("no candidate (selected, held or unselected) cites the forgotten memory", rows.all { s -> s.candidates.none { "mem:m_old" in it.sourceIds || it.text != null } })
+    }
+
+    @Test fun anEditedPinDuringTheReplayDropsItsCandidates() = runBlocking {
+        val pin = "user:00000000-0000-0000-0000-000000000001"
+        history.visits = history.visits.map { it.copy(placeKey = pin) }; history.pins = listOf(com.rokid.context.orchestration.proactive.generators.PinInfo(pin, "Golconda", "old note"))
+        val pins = com.rokid.context.memory.place.UserPinStore(ctx.getSharedPreferences("replay_pin_test", Context.MODE_PRIVATE))
+        fun place(note: String) = com.rokid.context.memory.place.UserPlace(pin, "Golconda", com.rokid.context.memory.place.PlaceKinds.FORT, 17.0, 78.0, note = note)
+        assertTrue(pins.write(listOf(place("old note"))))
+        val untouched = replayer().replay(LocalDate.of(2026, 11, 18), 15, emptyList())
+        assertTrue("with the pin as it was, the would-show is returned with its note", untouched.any { s -> s.candidates.any { it.text?.contains("old note") == true } })
+        val r = replayer()
+        r.testAfterStep = { i -> if (i == 60) assertTrue(pins.write(listOf(place("new note")))) }
+        val rows = r.replay(LocalDate.of(2026, 11, 18), 15, emptyList())
+        assertTrue("the text built from the old note is not returned", rows.all { s -> s.candidates.none { "pin:$pin" in it.sourceIds } })
+        ctx.getSharedPreferences("replay_pin_test", Context.MODE_PRIVATE).edit().clear().commit()
+        Unit
     }
 
     @Test fun extraEventsAreStepsOfTheirOwn() {

@@ -22,7 +22,7 @@ class PlaceRecallGeneratorTest {
         val h = FakeHistory(listOf(visit("now", "wd:Q1", "Golconda", now - 60_000), visit("old1", "wd:Q1", "Golconda", now - 6 * DAY), visit("old2", "wd:Q1", "Golconda", now - 20 * DAY)))
         val c = run(h).candidates.single()
         assertEquals("f2:wd:Q1", c.key); assertEquals(2, c.facts.earlierVisits); assertEquals(now - 6 * DAY, c.facts.lastVisitMs)
-        assertEquals(listOf("mem:old1", "frame:f_old1"), c.sourceIds)
+        assertEquals("every earlier visit, then the arrival", listOf("mem:old1", "frame:f_old1", "mem:old2", "frame:f_old2", "mem:now", "frame:f_now"), c.sourceIds)
         assertTrue(Templates.placeRecall(c.facts, zone).startsWith("Golconda: last visit "))
     }
 
@@ -34,7 +34,7 @@ class PlaceRecallGeneratorTest {
 
     @Test fun theParentSiteVisitCounts() = runBlocking {
         val h = FakeHistory(listOf(visit("now", "wd:Q2", "Bala Hissar", now - 1_000, parent = "Golconda"), visit("site", "wd:Q1", "Golconda", now - 9 * DAY)))
-        assertEquals(listOf("mem:site", "frame:f_site"), run(h).candidates.single().sourceIds)
+        assertEquals(listOf("mem:site", "frame:f_site", "mem:now", "frame:f_now"), run(h).candidates.single().sourceIds)
     }
 
     @Test fun pinNoteAndMarksAreSources() = runBlocking {
@@ -45,6 +45,15 @@ class PlaceRecallGeneratorTest {
         assertEquals("sunset call from the rock", c.facts.note); assertEquals(1, c.facts.markCount)
         assertTrue(Templates.placeRecall(c.facts, zone).contains("Your note: “sunset call from the rock”"))
         assertTrue(c.confidence > 0.9)
+    }
+
+    @Test fun everySourceTheTextAndCountsDependOnIsADependency() = runBlocking {
+        val pin = "user:00000000-0000-0000-0000-000000000001"
+        val h = FakeHistory(
+            listOf(visit("now", pin, "Lion's Paw", now - 1_000), visit("o1", pin, "Lion's Paw", now - 3 * DAY), visit("o2", pin, "Lion's Paw", now - 9 * DAY), visit("o3", pin, "Lion's Paw", now - 30 * DAY)),
+            listOf(PinInfo(pin, "Lion's Paw", "")), listOf(MarkInfo("mk1", "f_o1", now - 3 * DAY), MarkInfo("mk2", "f_o3", now - 30 * DAY), MarkInfo("mk3", "f_o3", now - 29 * DAY)))
+        val src = run(h).candidates.single().sourceIds
+        for (id in listOf("mem:now", "mem:o1", "mem:o2", "mem:o3", "pin:$pin", "mark:mk1", "mark:mk2", "mark:mk3", "frame:f_now", "frame:f_o2")) assertTrue("$id is a dependency", id in src)
     }
 
     @Test fun aPlaceInsideAZoneIsDroppedAndFailsClosed() = runBlocking {

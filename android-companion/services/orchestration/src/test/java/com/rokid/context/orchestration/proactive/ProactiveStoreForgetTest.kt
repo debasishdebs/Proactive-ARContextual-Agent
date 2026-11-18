@@ -89,6 +89,24 @@ class ProactiveStoreForgetTest {
         assertEquals(listOf("ok"), s.records().map { it.id })
     }
 
+    @Test fun forgettingAnyOneOfTheDerivedSourcesWithdrawsTheRecord() = runBlocking {
+        var n = 0
+        // a record citing the last visit, another counted visit, the arrival memory, a pin (note possibly blank) and a mark; [kill] makes exactly one of them gone
+        fun withdrawn(kill: String?): Boolean = runBlocking {
+            val k = n++
+            val last = "last$k"; val other = "other$k"; val arrival = "arr$k"; val mark = "mk$k"
+            place(last); place(other); place(arrival)
+            val livePins = if (kill == "pin") emptySet() else setOf("user:p")
+            when (kill) { "last" -> MemoryGraph.get(ctx).memories.deleteByIds(listOf(last)); "other" -> MemoryGraph.get(ctx).memories.deleteByIds(listOf(other)); "arrival" -> MemoryGraph.get(ctx).memories.deleteByIds(listOf(arrival)) }
+            val s = InMemorySuggestionStore()
+            s.add(rec("a", "mem:$last", "mem:$other", "mem:$arrival", "pin:user:p", *(if (kill == "mark") arrayOf("mark:$mark") else emptyArray())))
+            listener(s, pins = { livePins }).onUserForget()
+            s.records().isEmpty()
+        }
+        assertFalse("nothing gone: kept", withdrawn(null))
+        for (what in listOf("last", "other", "arrival", "pin", "mark")) assertTrue("forgetting $what withdraws", withdrawn(what))
+    }
+
     @Test fun anUnreadableLivenessWithdrawsEverythingButKeepsTheNeverList() = runBlocking {
         place("m1")
         val s = InMemorySuggestionStore(); s.add(rec("a", "mem:m1")); s.addNever("f2:k")

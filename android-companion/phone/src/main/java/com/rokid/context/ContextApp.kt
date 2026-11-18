@@ -39,8 +39,12 @@ class ContextApp : Application() {
         // v3.0 proactive loop (SHADOW MODE, switches OFF by default): the seams only the phone knows, and the Forget / Delete all hook that withdraws records whose sources are gone. Every default fails closed.
         com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.orchestration.proactive.ProactiveGraph.forgetListener(this))
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.worn = { runCatching { com.rokid.context.phone.hub.HubGraph.get(this).wornNow() == true }.getOrDefault(false) }
-        // no vehicle-episode accessor exists yet (the intent sampler's episode is private to the opt-in car source): while that source is on the state is uncertain, so the loop drops (ruling 10); T14 wires the episode
-        com.rokid.context.orchestration.proactive.ProactiveEnvironment.driving = { runCatching { com.rokid.context.phone.context.ContextSourceSettings.of(this).enabled(com.rokid.context.phone.context.CarSource.ID) }.getOrDefault(true) }
+        // Codex v3 r1 P1-1: there is NO reliable vehicle-episode signal on the phone yet (the car source being OFF means "no signal", not "not driving"; the glasses' motion classifier is not reachable here), so the state is UNKNOWN
+        // and ruling 10 says unknown drops: every would-show is suppressed and shadow mode records nothing until a real signal is wired (it then sets drivingSignalAvailable). The Suggestions screen says so plainly.
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.driving = { true }
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingSignalAvailable = false
+        // a pin deleted or edited in Settings withdraws the suggestions built from it at once (it is no Forget event)
+        com.rokid.context.orchestration.proactive.ProactiveGraph.registerPinHook(this)
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.zones = {
             runCatching { com.rokid.context.phone.zone.ZoneStore(getSharedPreferences(com.rokid.context.phone.zone.ZoneStore.PREFS, MODE_PRIVATE)).let { st -> val z = st.zones(); if (st.corrupt) null else z } }.getOrNull()
         }

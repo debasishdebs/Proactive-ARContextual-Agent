@@ -89,6 +89,8 @@ class ProactiveReplayRoute(
             PcLog.i("proactive_replay", "replay done steps=$n")
             return HttpResponse.json(200, answer(day, stepMin, result, stepsRun = 1_440 / stepMin + extra.size, elapsedMs = (System.nanoTime() - started) / 1_000_000))
         } catch (e: CancellationException) { throw e
+        } catch (e: com.rokid.context.orchestration.DataOpGate.LeaseBlocked) {
+            PcLog.i("proactive_replay", "replay blocked by a delete"); return HttpResponse.error(503, "busy", "A delete is running, try again.")
         } catch (e: Throwable) {
             PcLog.i("proactive_replay", "replay failed (${e.javaClass.simpleName})")
             return HttpResponse.error(500, "internal", "Something went wrong.")

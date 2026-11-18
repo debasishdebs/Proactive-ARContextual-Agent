@@ -1,6 +1,9 @@
 package com.rokid.context.orchestration.proactive
 
 import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -10,6 +13,8 @@ import org.json.JSONObject
  * Delete all purge it. All methods are synchronous, thread-safe and never throw: a store that cannot write answers false ("nothing recorded"), which the engine treats as a drop.
  */
 interface SuggestionStore {
+    /** A monotonic version that moves on every change to the records or the never list (add, withdraw, never, Delete all): what a screen observes to drop rendered text the moment its record goes. */
+    val changes: StateFlow<Long>
     /** Records a would-show. False = not stored (full write failure). */
     fun add(r: SuggestionRecord): Boolean
     /** Newest first. */
@@ -33,6 +38,9 @@ interface SuggestionStore {
 }
 
 class InMemorySuggestionStore : SuggestionStore {
+    private val version = MutableStateFlow(0L)
+    override val changes: StateFlow<Long> = version.asStateFlow()
+    private fun changed() { version.value = version.value + 1 }
     private val lock = Any()
     private val rows = ArrayList<SuggestionRecord>()
     private val nevers = LinkedHashSet<String>()
@@ -43,15 +51,15 @@ class InMemorySuggestionStore : SuggestionStore {
         rows.add(0, r)
         BoundedRows.trim(rows, r.ts)
         true
-    }
+    }.also { changed() }
     override fun records(): List<SuggestionRecord> = synchronized(lock) { rows.toList() }
-    override fun withdrawWhere(predicate: (SuggestionRecord) -> Boolean): Int = synchronized(lock) { val n = rows.size; rows.removeAll(predicate); n - rows.size }
+    override fun withdrawWhere(predicate: (SuggestionRecord) -> Boolean): Int = synchronized(lock) { val n = rows.size; rows.removeAll(predicate); n - rows.size }.also { if (it > 0) changed() }
     override fun never(): Set<String> = synchronized(lock) { nevers.toSet() }
-    override fun addNever(key: String): Boolean = synchronized(lock) { if (nevers.size >= SuggestionStore.MAX_NEVER && key !in nevers) false else { nevers += key; true } }
-    override fun removeNever(key: String) { synchronized(lock) { nevers -= key } }
+    override fun addNever(key: String): Boolean = synchronized(lock) { if (nevers.size >= SuggestionStore.MAX_NEVER && key !in nevers) false else { nevers += key; true } }.also { changed() }
+    override fun removeNever(key: String) { synchronized(lock) { nevers -= key }; changed() }
     override fun counters(): Map<String, Int> = synchronized(lock) { counts.toMap() }
     override fun bump(counter: String) { synchronized(lock) { counts[counter] = (counts[counter] ?: 0) + 1 } }
-    override fun clearAll() { synchronized(lock) { rows.clear(); nevers.clear(); counts.clear() } }
+    override fun clearAll() { synchronized(lock) { rows.clear(); nevers.clear(); counts.clear() }; changed() }
 }
 
 internal object BoundedRows {
@@ -68,6 +76,9 @@ internal object BoundedRows {
  * wiped by Delete all. Writes are committed synchronously; a failed commit rolls the in-memory copy back, so what [records] says is what is on disk.
  */
 class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionStore {
+    private val version = MutableStateFlow(0L)
+    override val changes: StateFlow<Long> = version.asStateFlow()
+    private fun changed() { version.value = version.value + 1 }
     private val lock = Any()
 
     private fun readRows(): MutableList<SuggestionRecord> = try {
@@ -85,13 +96,13 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
         val rows = readRows().apply { removeAll { it.id == r.id }; add(0, r) }
         BoundedRows.trim(rows, r.ts)
         writeRows(rows)
-    }
+    }.also { changed() }
     override fun records(): List<SuggestionRecord> = synchronized(lock) { readRows() }
     override fun withdrawWhere(predicate: (SuggestionRecord) -> Boolean): Int = synchronized(lock) {
         val rows = readRows(); val n = rows.size
         rows.removeAll(predicate)
         if (rows.size == n) 0 else if (writeRows(rows)) n - rows.size else 0
-    }
+    }.also { if (it > 0) changed() }
     override fun never(): Set<String> = synchronized(lock) { readNever() }
     override fun addNever(key: String): Boolean = synchronized(lock) {
         val s = readNever()
@@ -99,11 +110,11 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
         if (s.size >= SuggestionStore.MAX_NEVER) return false
         s += key
         try { prefs.edit().putString(NEVER, JSONArray(s.toList()).toString()).commit() } catch (e: Exception) { false }
-    }
-    override fun removeNever(key: String) { synchronized(lock) { val s = readNever(); if (s.remove(key)) try { prefs.edit().putString(NEVER, JSONArray(s.toList()).toString()).commit() } catch (_: Exception) { } } }
+    }.also { changed() }
+    override fun removeNever(key: String) { synchronized(lock) { val s = readNever(); if (s.remove(key)) try { prefs.edit().putString(NEVER, JSONArray(s.toList()).toString()).commit() } catch (_: Exception) { } }; changed() }
     override fun counters(): Map<String, Int> = synchronized(lock) { readCounters() }
     override fun bump(counter: String) { synchronized(lock) { val c = readCounters(); c[counter] = (c[counter] ?: 0) + 1; try { prefs.edit().putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (_: Exception) { } } }
-    override fun clearAll() { synchronized(lock) { try { prefs.edit().clear().commit() } catch (_: Exception) { } } }
+    override fun clearAll() { synchronized(lock) { try { prefs.edit().clear().commit() } catch (_: Exception) { } }; changed() }
 
     companion object {
         /** The prefs file (a Delete-all-wiped, backup-excluded file; production opens it encrypted). */
@@ -122,4 +133,22 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
             return SuggestionRecord(o.getString("id"), o.getLong("ts"), o.getString("key"), fam, trg, o.getDouble("score"), o.getString("anchor"), (0 until src.length()).map { src.getString(it) }, (0 until why.length()).map { why.getString(it) })
         }
     }
+}
+
+/**
+ * What the process store is when the encrypted file cannot be opened (a Keystore failure): it holds NOTHING and refuses every write. It is not an empty history: the persisted Never list, budget and cooldown
+ * are unknown, so the loop is switched off ([ProactiveSettings.markStorageUnavailable]) instead of running without them.
+ */
+object UnavailableSuggestionStore : SuggestionStore {
+    private val none = MutableStateFlow(0L).asStateFlow()
+    override val changes: StateFlow<Long> = none
+    override fun add(r: SuggestionRecord) = false
+    override fun records(): List<SuggestionRecord> = emptyList()
+    override fun withdrawWhere(predicate: (SuggestionRecord) -> Boolean) = 0
+    override fun never(): Set<String> = emptySet()
+    override fun addNever(key: String) = false
+    override fun removeNever(key: String) {}
+    override fun counters(): Map<String, Int> = emptyMap()
+    override fun bump(counter: String) {}
+    override fun clearAll() {}
 }

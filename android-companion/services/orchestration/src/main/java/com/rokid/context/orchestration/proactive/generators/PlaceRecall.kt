@@ -55,10 +55,13 @@ class PlaceRecallGenerator(private val source: PlaceHistorySource, private val z
             val pin = pins[key]?.takeIf { it.note.isNotBlank() }
             val recent = earlier.take(RECENT_VISITS)
             val marks = source.marksOnFrames(recent.mapNotNull { it.frameId }).sortedByDescending { it.atMs }
+            // EVERY source the text and the counts depend on: all earlier visits (the count and the last date), the arrival memory, the pin (also one with a blank note: its note is what is shown), all marks counted
             val sources = buildList {
                 add(SourceIds.mem(last.memoryId)); last.frameId?.let { add(SourceIds.frame(it)) }
-                pin?.let { add(SourceIds.pin(it.id)) }
-                marks.firstOrNull()?.let { add(SourceIds.mark(it.id)) }
+                for (v in earlier) { add(SourceIds.mem(v.memoryId)); v.frameId?.let { add(SourceIds.frame(it)) } }
+                add(SourceIds.mem(here.memoryId)); here.frameId?.let { add(SourceIds.frame(it)) }
+                pins[key]?.let { add(SourceIds.pin(it.id)) }
+                marks.forEach { add(SourceIds.mark(it.id)) }
             }.distinct()
             val conf = (0.5 + 0.4 * last.confidence.coerceIn(0.0, 1.0) + (if (pin != null) 0.1 else 0.0) + (if (marks.isNotEmpty()) 0.05 else 0.0)).coerceAtMost(1.0)
             out += Candidate("f2:$key", ProactiveFamily.PLACE_RECALL, key, sources, PlaceFacts(here.placeName, last.tsMs, earlier.size, pin?.note, marks.size), conf, here.tsMs)
@@ -69,14 +72,14 @@ class PlaceRecallGenerator(private val source: PlaceHistorySource, private val z
     /** The card of a stored record, rebuilt from the LIVE sources; null when any of them is gone (a Forget, a deleted pin): nothing is shown from a half-gone record. */
     suspend fun render(r: SuggestionRecord, nowMs: Long): RenderedCard? {
         val visits = source.visits(nowMs, MAX_VISITS)
-        val mem = SourceIds.memories(r.sourceIds).map { id -> visits.firstOrNull { it.memoryId == id } ?: return null }
+        val mem = SourceIds.memories(r.sourceIds).distinct().map { id -> visits.firstOrNull { it.memoryId == id } ?: return null }
         val last = mem.firstOrNull() ?: return null
         val pin = SourceIds.pins(r.sourceIds).firstOrNull()?.let { id -> source.pins().firstOrNull { it.id == id } ?: return null }
         val markIds = SourceIds.marks(r.sourceIds)
-        val marks = if (markIds.isEmpty()) emptyList() else source.marksOnFrames(visits.filter { it.placeKey == last.placeKey }.mapNotNull { it.frameId }).filter { it.id in markIds }.also { if (it.size != markIds.size) return null }
+        val marks = if (markIds.isEmpty()) emptyList() else source.marksOnFrames(SourceIds.frames(r.sourceIds)).filter { it.id in markIds }.also { if (it.map { m -> m.id }.toSet().size != markIds.toSet().size) return null }
         val facts = PlaceFacts(last.placeName, last.tsMs, r.factors.firstNotNullOfOrNull { it.removePrefix("visits=").takeIf { s -> s != it }?.toIntOrNull() } ?: 1, pin?.note, r.factors.firstNotNullOfOrNull { it.removePrefix("marks=").takeIf { s -> s != it }?.toIntOrNull() } ?: marks.size)
         val z = zone()
-        val srcs = mem.map { RenderedSource("memory", it.tsMs) } + listOfNotNull(pin?.let { RenderedSource("pin", null) }) + marks.map { RenderedSource("mark", it.atMs) }
+        val srcs = mem.map { RenderedSource("memory", it.tsMs) } + listOfNotNull(pin?.takeIf { it.note.isNotBlank() }?.let { RenderedSource("pin", null) }) + marks.map { RenderedSource("mark", it.atMs) }
         return RenderedCard(Templates.placeRecall(facts, z), Templates.sourceLabel(srcs.size, last.tsMs, z), srcs)
     }
 
