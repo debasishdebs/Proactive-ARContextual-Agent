@@ -4,6 +4,8 @@
 #        [--allow-emulator] [--allow-downgrade] [--accept-unverified-signature [--i-understand-no-signature-check]]
 #   tools/install-trip-build.sh --self-test --phone emulator-5554 --apks <dir> [--go]    (emulator only, phone only; runs the fixtures first)
 #   tools/install-trip-build.sh --fixtures                                                (refusal fixtures only, no device, no adb)
+# Exit codes: 2 = REFUSED, 3 = installed but NOT verified, other nonzero = failure, 0 = success.
+# Serial aliases: every serial is resolved to a device identity (hardware serial + android_id + model + fingerprint); all must differ, re-checked before every install.
 # FAIL CLOSED: any uncertainty refuses (exit 2) unless a clearly named override flag is passed (and it is printed).
 # Serials are never auto-detected and every adb call carries -s (only `adb devices` has none). Never uninstalls, never `pm clear`,
 # never kills any process on the host. Prints counts, hashes and statuses only: no logcat line, token or pairing code.
@@ -35,7 +37,7 @@ cleanup() {
   if [ -n "$FXDIR" ] && [ -d "$FXDIR" ]; then rm -rf "$FXDIR"; fi; FXDIR=""
   return 0
 }
-usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 is_emu() { case "$1" in emulator-*) return 0 ;; *) return 1 ;; esac; }
 # A <serial> args... : the ONLY way adb is called with a device
@@ -194,6 +196,77 @@ apk_cert() { # apk -> validated cert SHA-256, or return 1
 inst_vc() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | sed -n 1p; }
 inst_vn() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionName=//p' | sed -n 1p; }
 
+# ---------- device identity (serial aliases: USB serial vs wireless adb-<serial>-<suffix>._adb-tls-connect._tcp or ip:port) ----------
+ID_PHONE="" ID_GLASSES="" ID_WATCH="" N_PHONE="" N_GLASSES="" N_WATCH=""
+bad_idval() { # value -> 0 if empty/unknown/placeholder (unusable as identity)
+  local v; v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" || return 0
+  case "$v" in ''|unknown|null|'(null)'|none|undefined|*error*|*'not found'*|*'no such'*|*denied*) return 0 ;; esac
+  [[ "$v" =~ ^[0:-]+$ ]] && return 0
+  return 1
+}
+dev_prop() { # serial cmd... -> trimmed single-line output, return 1 on adb failure
+  local s="$1" v; shift
+  v="$(A "$s" shell "$@" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/^ *//;s/ *$//')" || return 1
+  printf '%s\n' "$v"
+}
+dev_ident() { # serial -> prints "serialno|android_id|model|fingerprint"; returns 1 (reason on stderr) if it cannot be determined. FAIL CLOSED.
+  local s="$1" ser aid model fp
+  ser="$(dev_prop "$s" getprop ro.serialno)" || ser=""
+  if bad_idval "$ser"; then ser="$(dev_prop "$s" getprop ro.boot.serialno)" || ser=""; fi
+  aid="$(dev_prop "$s" settings get secure android_id)" || aid=""
+  model="$(dev_prop "$s" getprop ro.product.model)" || model=""
+  fp="$(dev_prop "$s" getprop ro.build.fingerprint)" || fp=""
+  if bad_idval "$ser"; then echo "no usable hardware serial (ro.serialno / ro.boot.serialno) from '$s'" >&2; return 1; fi
+  if bad_idval "$aid"; then echo "no usable android_id from '$s'" >&2; return 1; fi
+  if bad_idval "$model" || bad_idval "$fp"; then echo "no usable model/fingerprint from '$s'" >&2; return 1; fi
+  case "$ser$aid$model$fp" in *'|'*) echo "identity of '$s' contains the separator" >&2; return 1 ;; esac
+  printf '%s|%s|%s|%s\n' "$ser" "$aid" "$model" "$fp"
+}
+id_alias() { # idA idB -> 0 if they are the same physical device (equal hardware serial OR equal android_id OR equal whole identity)
+  local a1 a2 b1 b2
+  [ "$1" = "$2" ] && return 0
+  IFS='|' read -r a1 a2 _ <<<"$1"; IFS='|' read -r b1 b2 _ <<<"$2"
+  [ "$a1" = "$b1" ] && return 0
+  [ "$a2" = "$b2" ] && return 0
+  return 1
+}
+pair_check() { # labelA serialA idA labelB serialB idB
+  if id_alias "$3" "$6"; then
+    die "serials '$2' ($1) and '$5' ($4) are the SAME physical device (adb aliases: USB serial vs wireless endpoint). watch-debug.apk has the SAME applicationId ($PHONE_PKG) as the phone app and would REPLACE it. Use ONE serial per physical device"
+  fi
+}
+isolation_check() { # label : resolve phone/glasses/watch identities into N_*, require them pairwise different. Refuses on any doubt.
+  local why
+  N_PHONE="" N_GLASSES="" N_WATCH=""
+  N_PHONE="$(dev_ident "$PHONE" 2>&1)" || die "cannot determine the device identity of the phone serial '$PHONE' ($1): $N_PHONE. Refusing (fail closed)"
+  if [ -n "$GLASSES" ]; then N_GLASSES="$(dev_ident "$GLASSES" 2>&1)" || die "cannot determine the device identity of the glasses serial '$GLASSES' ($1): $N_GLASSES. Refusing (fail closed)"; fi
+  if [ -n "$WATCH" ]; then N_WATCH="$(dev_ident "$WATCH" 2>&1)" || die "cannot determine the device identity of the watch serial '$WATCH' ($1): $N_WATCH. Refusing (fail closed)"; fi
+  [ -z "$GLASSES" ] || pair_check phone "$PHONE" "$N_PHONE" glasses "$GLASSES" "$N_GLASSES"
+  [ -z "$WATCH" ] || pair_check phone "$PHONE" "$N_PHONE" watch "$WATCH" "$N_WATCH"
+  { [ -z "$WATCH" ] || [ -z "$GLASSES" ]; } || pair_check glasses "$GLASSES" "$N_GLASSES" watch "$WATCH" "$N_WATCH"
+  why="$1"; say "device identity ($why): all supplied serials are distinct physical devices"
+}
+watch_check() { # serial : the target must be a watch (and, via isolation_check, not the phone)
+  local s="$1" chars feat
+  chars="$(dev_prop "$s" getprop ro.build.characteristics)" || chars=""
+  feat="$(dev_prop "$s" pm list features)" || feat=""
+  case "$chars" in *watch*) return 0 ;; esac
+  case "$feat" in *android.hardware.type.watch*) return 0 ;; esac
+  die "watch serial '$s' is not a watch (ro.build.characteristics='$chars', no android.hardware.type.watch). watch-debug.apk shares applicationId $PHONE_PKG with the phone app and would REPLACE the phone app on a phone. Refusing"
+}
+pre_install_guard() { # role serial : re-resolve ALL identities right before an install step, compare with the preflight baseline
+  local role="$1" s="$2"
+  isolation_check "before $role install"
+  [ "$N_PHONE" = "$ID_PHONE" ] || die "identity of the phone serial changed since preflight: refusing before the $role install"
+  [ -z "$GLASSES" ] || [ "$N_GLASSES" = "$ID_GLASSES" ] || die "identity of the glasses serial changed since preflight: refusing before the $role install"
+  [ -z "$WATCH" ] || [ "$N_WATCH" = "$ID_WATCH" ] || die "identity of the watch serial changed since preflight: refusing before the $role install"
+  if [ "$role" = watch ]; then watch_check "$s"; fi
+}
+note_endpoint() { # serial : notice for wireless-style serials
+  case "$1" in *:*|*_adb-tls*) echo "NOTICE: '$1' is a wireless/endpoint-style serial; one physical device can appear under several serials, so device identities are resolved and compared before every install." ;; esac
+  return 0
+}
+
 # ---------- argument rules ----------
 validate_args() {
   local s
@@ -223,6 +296,7 @@ validate_args() {
       if [ -n "$s" ] && ! is_emu "$s"; then die "--accept-unverified-signature with --go on a non-emulator serial ($s) also needs --i-understand-no-signature-check"; fi
     done
   fi
+  for s in "$PHONE" "$GLASSES" "$WATCH"; do [ -z "$s" ] || note_endpoint "$s"; done
   [ -n "$TAG" ] || TAG="trip-$(date +%Y%m%d-%H%M)"
   case "$TAG" in *[!A-Za-z0-9._-]*) die "tag may only contain letters, digits . _ -" ;; esac
   return 0
@@ -331,6 +405,7 @@ install_apk() { # serial apk role (phone|glasses|watch): the role must match the
   if [ "$ALLOW_DOWN" = 1 ]; then flags="-r -d"; fi
   say "STEP install $role: adb -s $s install $flags $(basename "$apk")"
   [ "$GO" = 1 ] || return 0
+  pre_install_guard "$role" "$s"
   call_guard "before $role install" || die "call active or state unknown"
   [ "$BACKUP_VALID" = 1 ] || fail "internal check: no validated backup, refusing to install"
   PHASE=installing
@@ -409,6 +484,27 @@ sl() { # post-install log verification fixture: FX_LA/FX_LAR = all-buffer log + 
       *) return 0 ;; esac; }
   scan_logs emulator-5554 com.x phone
 }
+fxdev() { # name ser aid model fp chars
+  eval "FXI_$1_ser=\"\$2\" FXI_$1_aid=\"\$3\" FXI_$1_model=\"\$4\" FXI_$1_fp=\"\$5\" FXI_$1_chars=\"\$6\""
+}
+fx_adb() { # mock adb: A <name> shell ...
+  local k="$1"; shift
+  eval "case \"\$*\" in
+    'shell getprop ro.serialno') printf '%s\\n' \"\${FXI_${k}_ser-}\" ;;
+    'shell getprop ro.boot.serialno') printf '%s\\n' \"\${FXI_${k}_bser-}\" ;;
+    'shell settings get secure android_id') printf '%s\\n' \"\${FXI_${k}_aid-}\" ;;
+    'shell getprop ro.product.model') printf '%s\\n' \"\${FXI_${k}_model-}\" ;;
+    'shell getprop ro.build.fingerprint') printf '%s\\n' \"\${FXI_${k}_fp-}\" ;;
+    'shell getprop ro.build.characteristics') printf '%s\\n' \"\${FXI_${k}_chars-}\" ;;
+    'shell pm list features') printf '%s\\n' \"\${FXI_${k}_feat-}\" ;;
+    *) return 1 ;; esac"
+}
+iso() { A() { fx_adb "$@"; }; PHONE=phn GLASSES=gls WATCH="${FX_W-}"; isolation_check fx; }
+iso_base() { iso; ID_PHONE="$N_PHONE" ID_GLASSES="$N_GLASSES" ID_WATCH="$N_WATCH"; }
+iso_changed() { iso_base; FXI_gls_aid=changedid0001; pre_install_guard glasses gls; }
+iso_unchanged() { iso_base; pre_install_guard glasses gls; }
+iso_watch_install() { FX_W=wch; iso_base; pre_install_guard watch wch; }
+iso_alias_late() { iso_base; FXI_gls_ser="${FXI_phn_ser}"; FXI_gls_aid="${FXI_phn_aid}"; pre_install_guard glasses gls; }
 sl_sedfail() { sed() { return 1; }; stp; }
 sl_awkfail() { awk() { return 1; }; stp; }
 sl_grepfail() { grep() { return 2; }; sl; }
@@ -518,6 +614,33 @@ run_fixtures() {
   FX_UND=1; fx "args: both override flags + --go on real devices ok" ok va
   FX_ACC=0; FX_UND=1; fx "args: second flag alone refused" refuse va
   FX_UND=0; FX_GO=1; FX_PHONE=emulator-5554; FX_GL=R59YYYY; FX_AE=0; fx "args: emulator --go without --allow-emulator" refuse va
+  fxdev phn PHSER1234 aid0000phone0001 PixelX fp/phone/1 phone; fxdev gls GLSER5678 aid0000glass0002 Glasses fp/glasses/1 ''
+  fxdev wch WCSER9999 aid0000watch0003 Watch1 fp/watch/1 watch; FXI_wch_feat=android.hardware.type.watch; FX_W=
+  fx "identity: distinct phone and glasses pass" ok iso
+  FX_W=wch; fx "identity: distinct phone, glasses and watch pass" ok iso
+  fxdev wal PHSER1234 aid0000phone0001 PixelX fp/phone/1 phone
+  FX_W=wal; fx "identity: watch serial is an alias of the phone (same identity) refuses" refuse iso
+  fxdev wal PHSER1234 aid0000other9999 PixelX fp/phone/1 phone; fx "identity: alias via equal hardware serial refuses" refuse iso
+  fxdev wal OTHERSER12 aid0000phone0001 PixelX fp/phone/1 phone; fx "identity: alias via equal android_id refuses" refuse iso
+  FX_W=
+  FXI_gls_ser=PHSER1234; FXI_gls_aid=aid0000phone0001; fx "identity: glasses aliases the phone refuses" refuse iso
+  FXI_gls_ser=GLSER5678; FXI_gls_aid=aid0000glass0002
+  FXI_phn_ser=''; fx "identity: empty hardware serial refuses" refuse iso
+  FXI_phn_ser=unknown; fx "identity: 'unknown' serial refuses" refuse iso
+  FXI_phn_ser=PHSER1234; FXI_phn_aid=null; fx "identity: android_id 'null' refuses" refuse iso
+  FXI_phn_aid=''; fx "identity: empty android_id refuses" refuse iso
+  FXI_phn_aid=aid0000phone0001; FXI_phn_fp=''; fx "identity: empty fingerprint refuses" refuse iso
+  FXI_phn_fp=fp/phone/1; FXI_phn_ser=''; FXI_phn_bser=BOOTSER77; fx "identity: ro.boot.serialno fallback passes" ok iso
+  FXI_phn_ser=PHSER1234; FXI_phn_bser=
+  fx "identity: unchanged between preflight and install passes" ok iso_unchanged
+  fx "identity: changes between preflight and install refuses" refuse iso_changed
+  fx "identity: becomes an alias of the phone before install refuses" refuse iso_alias_late
+  fx "watch: real watch distinct from the phone installs" ok iso_watch_install
+  FXI_wch_chars=phone; FXI_wch_feat=; fx "watch: target is not a watch refuses" refuse iso_watch_install
+  FXI_wch_chars=nosdcard,watch; fx "watch: ro.build.characteristics with watch passes" ok iso_watch_install
+  FXI_wch_chars=; FXI_wch_feat=android.hardware.type.watch; fx "watch: pm features with watch passes" ok iso_watch_install
+  FXI_wch_chars=phone; FXI_wch_feat=; fx "watch: no watch markers refuses" refuse iso_watch_install
+  FXI_wch_chars=watch
   say "fixtures: $FX_PASS passed, $FX_FAIL failed"
   [ "$FX_FAIL" = 0 ]
 }
@@ -572,6 +695,9 @@ for s in "$PHONE" "$GLASSES" "$WATCH"; do
   if [ -n "$s" ] && ! printf '%s\n' "$DEVS" | grep -qx -- "$s"; then die "serial '$s' is not listed (state device) in 'adb devices'"; fi
 done
 
+isolation_check preflight
+ID_PHONE="$N_PHONE" ID_GLASSES="$N_GLASSES" ID_WATCH="$N_WATCH"
+if [ -n "$WATCH" ]; then watch_check "$WATCH"; fi
 say "mode: $([ "$GO" = 1 ] && echo GO || echo DRY-RUN) tag=$TAG self-test=$SELFTEST"
 say "phone=$PHONE glasses=${GLASSES:-none} watch=${WATCH:-none}"
 check_apk "$APKS/phone-debug.apk" "$PHONE_PKG" phone; PHONE_VC="$APK_VC"
