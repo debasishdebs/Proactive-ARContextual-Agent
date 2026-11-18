@@ -21,45 +21,38 @@ class DrivingFeedTest {
     private fun beats(ms: Long) { var n = 0L; while (n < ms) { DrivingFeed.evaluated(ContextDecision(ContextState.UNKNOWN, 0f, w, emptySet(), null, ContextState.UNKNOWN, false), tr); adv(10_000); n += 10_000 } }
     private fun feed(e: Evidence) = DrivingFeed.accepted(e, tr, w)
     private fun s() = tr.assess().state
-    private fun glasses(st: MotionState, frac: Float, age: Long?) = Evidence.GlassesMotion(w, st, frac, age)
+    private fun glasses(st: MotionState, frac: Float) = Evidence.GlassesMotion(w, st, frac)
+    private val oneSource = "Unknown: no recent motion data: suggestions are paused"
 
-    @Test fun glassesWalkingAloneIsOneSourceSoUnknown() {
-        beats(600_000); feed(glasses(MotionState.WALKING, 0.1f, 0)); assertEquals(DrivingState.UNKNOWN, s())
-        assertEquals("Unknown: only one motion source: suggestions are paused", tr.assess().reason)
-    }
-    @Test fun aGlassesStillHintAloneStaysUnknown() {
-        beats(600_000); feed(glasses(MotionState.STILL, 0.95f, 0)); assertEquals(DrivingState.UNKNOWN, s())
-        assertEquals("Unknown: only one motion source: suggestions are paused", tr.assess().reason)
-    }
-    @Test fun aStillHintPlusPhoneStepsIsNotDriving() {
-        beats(600_000); feed(glasses(MotionState.STILL, 0.95f, 0)); feed(Evidence.Steps(w, 90)); assertEquals(DrivingState.NOT_DRIVING, s())
-    }
-    @Test fun glassesStillNeedsCoverage() {
-        beats(600_000); feed(Evidence.Steps(w, 90))
-        feed(glasses(MotionState.STILL, 0.5f, 0)); assertEquals(DrivingState.UNKNOWN, s())
-        feed(glasses(MotionState.STILL, -1f, 0)); assertEquals(DrivingState.UNKNOWN, s())
-        feed(glasses(MotionState.STILL, 0.9f, 0)); assertEquals(DrivingState.NOT_DRIVING, s())
-    }
-    @Test fun aGlassesCalmHintOfUnknownAgeIsNeverCalm() {
-        beats(600_000); feed(Evidence.Steps(w, 90))
-        feed(glasses(MotionState.STILL, 0.95f, null)); feed(glasses(MotionState.WALKING, 0f, null)); assertEquals(DrivingState.UNKNOWN, s())
-    }
-    @Test fun aDelayedGlassesHintIsBackdatedByItsAge() {
-        beats(600_000); feed(Evidence.Steps(w, 90))
-        feed(glasses(MotionState.WALKING, 0f, 150_000)); assertEquals("already 150 s old: stale", DrivingState.UNKNOWN, s())
-        feed(glasses(MotionState.WALKING, 0f, 100_000)); assertEquals(DrivingState.NOT_DRIVING, s())
-        adv(30_000); feed(Evidence.Steps(w, 90)); assertEquals("the glasses reading aged out", DrivingState.UNKNOWN, s())
-    }
-    @Test fun aVehicleHintUsesReceiptTimeWhateverItsAge() {
+    @Test fun aLoneGlassesStillOrWalkingHintIsUnknown() {
         beats(600_000)
-        feed(glasses(MotionState.VEHICLE, 0f, null)); assertEquals(DrivingState.DRIVING, s())
+        feed(glasses(MotionState.STILL, 0.95f)); feed(glasses(MotionState.WALKING, 0.1f)); assertEquals(DrivingState.UNKNOWN, s())
+        assertEquals(oneSource, tr.assess().reason)
+    }
+    @Test fun glassesHintsNeverCountAsCalmEvenWithOnePhoneSource() {
+        beats(600_000); feed(Evidence.Steps(w, 90))
+        feed(glasses(MotionState.STILL, 0.95f)); feed(glasses(MotionState.WALKING, 0f)); assertEquals(DrivingState.UNKNOWN, s())
+        assertEquals("Unknown: calm evidence needs two phone motion sources: suggestions are paused", tr.assess().reason)
+    }
+    @Test fun aStreamDelayedFiveMinutesNeverYieldsCalm() {
+        beats(600_000); feed(Evidence.Steps(w, 90))
+        repeat(10) { feed(glasses(MotionState.STILL, 0.99f)); feed(glasses(MotionState.WALKING, 0f)); adv(10_000); feed(Evidence.Steps(w, 90)) }
+        assertEquals(DrivingState.UNKNOWN, s())
+    }
+    @Test fun twoPhoneSourcesStillGiveNotDrivingWithGlassesHintsAround() {
+        beats(600_000); feed(glasses(MotionState.STILL, 0.95f)); feed(Evidence.Steps(w, 90)); feed(Evidence.ActivityTransition(w, PhoneActivity.STILL, true))
+        assertEquals(DrivingState.NOT_DRIVING, s())
+    }
+    @Test fun aGlassesVehicleHintStillBlocksAtReceiptTime() {
+        beats(600_000); feed(Evidence.Steps(w, 90)); feed(Evidence.ActivityTransition(w, PhoneActivity.STILL, true)); assertEquals(DrivingState.NOT_DRIVING, s())
+        feed(glasses(MotionState.VEHICLE, 0f)); assertEquals(DrivingState.DRIVING, s())
     }
     @Test fun headMovingAndUnknownSayNothing() {
-        beats(600_000); feed(glasses(MotionState.HEAD_MOVING, 0.9f, 0)); feed(glasses(MotionState.UNKNOWN, 0.9f, 0)); feed(Evidence.Steps(w, 90)); assertEquals(DrivingState.UNKNOWN, s())
+        beats(600_000); feed(glasses(MotionState.HEAD_MOVING, 0.9f)); feed(glasses(MotionState.UNKNOWN, 0.9f)); feed(Evidence.Steps(w, 90)); assertEquals(DrivingState.UNKNOWN, s())
     }
     @Test fun everyVehicleKindIsDriving() {
         val all = listOf<Evidence>(
-            glasses(MotionState.VEHICLE, 0f, 0), Evidence.ActivityTransition(w, PhoneActivity.IN_VEHICLE, true),
+            glasses(MotionState.VEHICLE, 0f), Evidence.ActivityTransition(w, PhoneActivity.IN_VEHICLE, true),
             Evidence.CarLink(w, CarLinkKind.ANDROID_AUTO, true), Evidence.CarLink(w, CarLinkKind.MY_CAR_BT, true), Evidence.CarLink(w, CarLinkKind.CAR_CLASS_BT, true),
             Evidence.WatchMotion(w, WatchState.IN_VEHICLE, 0.9f), Evidence.Speed(w, 30f, true), Evidence.Airplane(w, true),
         )

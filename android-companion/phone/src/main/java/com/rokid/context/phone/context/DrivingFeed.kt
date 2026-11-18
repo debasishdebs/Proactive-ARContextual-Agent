@@ -17,8 +17,8 @@ import com.rokid.context.orchestration.proactive.DrivingTracker
  * the kind and age of a reading is used, never a coordinate (the speed source emits km/h only). Anything not listed says nothing.
  *
  * Ages (Codex v3 r3): a reading's age is the phone's wall time now minus its stamp (the source stamped it a moment ago on the same clock), never a time the tracker
- * would have to compare with its monotonic clock. A calm reading stamped in the future is ignored (a vehicle one counts as now). The glasses hint carries its own measured
- * age ([Evidence.GlassesMotion.ageMs]): unknown means never calm, and only a vehicle hint may use receipt time. Each source counts once; NOT_DRIVING needs two.
+ * would have to compare with its monotonic clock. A calm reading stamped in the future is ignored (a vehicle one counts as now). A glasses hint is never calm evidence (shown in the debug line as
+ * 'glasses hint (not used as calm evidence)'); only a vehicle hint counts, at receipt time. Each phone source counts once; NOT_DRIVING needs two.
  */
 object DrivingFeed {
     private const val FUTURE_SLACK_MS = 5_000L
@@ -29,12 +29,8 @@ object DrivingFeed {
         val calmAge: Long? = if (raw < -FUTURE_SLACK_MS) null else vehicleAge
         fun calm(source: CalmSource, kind: Calm) { calmAge?.let { t.calm(source, kind, it) } }
         when (e) {
-            is Evidence.GlassesMotion -> when (e.state) {
-                MotionState.WALKING -> e.ageMs?.let { t.calm(CalmSource.GLASSES, Calm.WALKING, it) }
-                MotionState.STILL -> if (e.stillFrac5m >= DrivingTracker.STILL_FRAC) e.ageMs?.let { t.calm(CalmSource.GLASSES, Calm.STILL, it) }
-                MotionState.VEHICLE -> t.vehicle(e.ageMs ?: 0)
-                else -> {}
-            }
+            // A glasses stamp is its own clock: age cannot be proven without a real clock sync, so a glasses hint is vehicle evidence only (receipt time), never calm.
+            is Evidence.GlassesMotion -> if (e.state == MotionState.VEHICLE) t.vehicle(vehicleAge)
             is Evidence.ActivityTransition -> if (e.enter) when (e.activity) {
                 PhoneActivity.IN_VEHICLE -> t.vehicle(vehicleAge)
                 PhoneActivity.STILL -> calm(CalmSource.PHONE_ACTIVITY, Calm.STILL)

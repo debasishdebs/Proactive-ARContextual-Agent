@@ -169,13 +169,10 @@ class ContextHub(
         rebuild(); publish(clock())
     }
 
-    private val hintAge = GlassesHintAge()
-
-    /** The hint is stamped with the receipt time for fusion (as before); how old it really was goes along separately (null = unknown: never fresh calm evidence). */
+    /** The hint is stamped with the receipt time for fusion; the driving signal uses it as vehicle evidence only, never as calm evidence. */
     fun onMotionHint(h: MotionHint) {
         GlassesClassifierStatus.report(h.classifierHash)
-        val age = try { hintAge.observe(h.sessionStartMs, h.atMs, mono()) } catch (e: Exception) { null }
-        accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m, age))
+        accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m))
     }
 
     private suspend fun runActor() {

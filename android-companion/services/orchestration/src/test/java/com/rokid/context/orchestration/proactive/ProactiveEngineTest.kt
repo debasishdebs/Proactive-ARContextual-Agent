@@ -188,7 +188,7 @@ class ProactiveEngineTest {
     private fun calmTracker(t: () -> Long, advance: (Long) -> Unit): DrivingTracker {
         val tr = DrivingTracker { t() }
         repeat(61) { tr.heartbeat(false); advance(10_000) }
-        tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING); tr.calm(CalmSource.GLASSES, Calm.STILL)
+        tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL)
         return tr
     }
     private fun engineWith(tr: DrivingTracker): ProactiveEngine {
@@ -205,7 +205,7 @@ class ProactiveEngineTest {
         val tr = DrivingTracker { t }
         assertNothingRecorded(Gate.DRIVING, engineWith(tr).run(TriggerKind.TICK)) // process start, no data: UNKNOWN drops
         repeat(61) { tr.heartbeat(false); t += 10_000 }
-        tr.calm(CalmSource.GLASSES, Calm.STILL)
+        tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL)
         assertNothingRecorded(Gate.DRIVING, engineWith(tr).run(TriggerKind.TICK)) // one source is not enough
         tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
         assertEquals(Gate.WOULD_SHOW, engineWith(tr).run(TriggerKind.TICK).gate)

@@ -17,7 +17,7 @@ class DrivingSignalTest {
     /** Hub observed continuously for [ms], a heartbeat every 10 s. */
     private fun monitor(ms: Long, suspected: Boolean = false) { var n = 0L; while (n < ms) { tr.heartbeat(suspected); tick(10_000); n += 10_000 } }
     private fun state() = tr.assess().state
-    private fun twoCalm() { tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING); tr.calm(CalmSource.GLASSES, Calm.STILL) }
+    private fun twoCalm() { tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL) }
 
     @Test fun processStartWithNoDataIsUnknownAndBlocks() {
         val a = tr.assess()
@@ -32,16 +32,16 @@ class DrivingSignalTest {
 
     @Test fun oneSourceAloneIsNeverNotDriving() {
         monitor(10 * min)
-        for ((s, k) in listOf(CalmSource.GLASSES to Calm.STILL, CalmSource.GLASSES to Calm.WALKING, CalmSource.PHONE_STEPS to Calm.WALKING, CalmSource.SPEED to Calm.SLOW, CalmSource.WATCH to Calm.WALKING)) {
+        for ((s, k) in listOf(CalmSource.PHONE_ACTIVITY to Calm.STILL, CalmSource.PHONE_ACTIVITY to Calm.WALKING, CalmSource.PHONE_STEPS to Calm.WALKING, CalmSource.SPEED to Calm.SLOW, CalmSource.WATCH to Calm.WALKING)) {
             val x = DrivingTracker { t }; repeat(61) { x.heartbeat(false); tick(10_000) }
             x.calm(s, k)
-            assertEquals("$s $k", "Unknown: only one motion source: suggestions are paused", x.assess().reason)
+            assertEquals("$s $k", "Unknown: calm evidence needs two phone motion sources: suggestions are paused", x.assess().reason)
             assertTrue(x.assess().blocks)
         }
     }
 
     @Test fun theSameSourceRepeatedIsStillOneSource() {
-        monitor(10 * min); tr.calm(CalmSource.GLASSES, Calm.WALKING); tr.calm(CalmSource.GLASSES, Calm.STILL); tr.calm(CalmSource.GLASSES, Calm.WALKING)
+        monitor(10 * min); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.WALKING); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.WALKING)
         assertEquals(DrivingState.UNKNOWN, state())
     }
 
@@ -53,7 +53,7 @@ class DrivingSignalTest {
     }
 
     @Test fun aStillHintPlusStepsAndSlowSpeedPlusWatchBothQualify() {
-        monitor(10 * min); tr.calm(CalmSource.GLASSES, Calm.STILL); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
+        monitor(10 * min); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
         assertEquals(DrivingState.NOT_DRIVING, state())
         val x = DrivingTracker { t }; repeat(61) { x.heartbeat(false); tick(10_000) }
         x.speed(1.0f); x.calm(CalmSource.WATCH, Calm.WALKING)
@@ -61,11 +61,11 @@ class DrivingSignalTest {
     }
 
     @Test fun onlyStillReadingsFromTwoSourcesProveNothing() {
-        monitor(10 * min); tr.calm(CalmSource.GLASSES, Calm.STILL); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL)
+        monitor(10 * min); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL); tr.calm(CalmSource.WATCH, Calm.STILL)
         assertEquals("Unknown: only still readings: suggestions are paused", tr.assess().reason)
     }
 
-    @Test fun aMidSpeedSaysNothing() { monitor(10 * min); tr.speed(4f); tr.calm(CalmSource.GLASSES, Calm.STILL); assertEquals(DrivingState.UNKNOWN, state()) }
+    @Test fun aMidSpeedSaysNothing() { monitor(10 * min); tr.speed(4f); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL); assertEquals(DrivingState.UNKNOWN, state()) }
 
     @Test fun staleCalmDataIsUnknown() {
         monitor(10 * min); twoCalm()
@@ -74,16 +74,16 @@ class DrivingSignalTest {
     }
 
     @Test fun oneSourceGoingStaleLeavesOneSource() {
-        monitor(10 * min); tr.calm(CalmSource.GLASSES, Calm.STILL); monitor(90_000); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
+        monitor(10 * min); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL); monitor(90_000); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
         assertEquals(DrivingState.NOT_DRIVING, state())
-        monitor(40_000); assertEquals("the still reading is 130 s old", "Unknown: only one motion source: suggestions are paused", tr.assess().reason)
+        monitor(40_000); assertEquals("the still reading is 130 s old", "Unknown: calm evidence needs two phone motion sources: suggestions are paused", tr.assess().reason)
     }
 
     @Test fun aReadingWithAnAgeIsBackdated() {
-        monitor(10 * min); tr.calm(CalmSource.GLASSES, Calm.STILL, ageMs = 119_000); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
+        monitor(10 * min); tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL, ageMs = 119_000); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
         assertEquals(DrivingState.NOT_DRIVING, state())
         tick(2_000); assertEquals(DrivingState.UNKNOWN, state())
-        tr.calm(CalmSource.GLASSES, Calm.STILL, ageMs = 121_000); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING, ageMs = 121_000)
+        tr.calm(CalmSource.PHONE_ACTIVITY, Calm.STILL, ageMs = 121_000); tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING, ageMs = 121_000)
         assertEquals("already stale on arrival", DrivingState.UNKNOWN, state())
     }
 
