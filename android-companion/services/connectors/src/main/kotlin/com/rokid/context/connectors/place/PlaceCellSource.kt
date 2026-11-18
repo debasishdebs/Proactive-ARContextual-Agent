@@ -8,6 +8,9 @@ import com.rokid.context.memory.place.PlaceKinds
 import com.rokid.context.memory.place.zoneCheck
 import kotlinx.coroutines.CancellationException
 
+/** A verified coordinate for a curated place whose Wikipedia page has none. */
+data class VerifiedCoordinate(val name: String, val lat: Double, val lon: Double)
+
 /**
  * The real [CellSource]: one 5 km cell from Wikipedia geosearch + extracts, Wikidata classes and hierarchy, and Overpass joined on `wikidata`. Only the cell key is the input; the
  * three sources are asked for the cell's box, never for a position. People are never candidates: an article is kept only when Wikidata says its class is in [MONUMENT_CLASSES].
@@ -26,7 +29,10 @@ class PlaceCellSource(
         val hits = wikipedia.geosearch(box)
         val pages = hits.map { it.pageId }.distinct().chunked(WikipediaHttpSource.EXTRACT_BATCH).flatMap { zoneCheck(); wikipedia.pages(it) }
         val hitById = hits.associateBy { it.pageId }
-        val qids = pages.mapNotNull { it.qid }.distinct()
+        val pageQids = pages.mapNotNull { it.qid }.toSet()
+        // Verified-coordinate extras (see VERIFIED_COORDINATES): curated places with no Wikipedia coordinates, whose stored coordinate is inside this cell and which geosearch did not return.
+        val extras = VERIFIED_COORDINATES.filter { (q, c) -> q !in pageQids && q in CURATED_LANDMARK_QIDS && box.contains(c.lat, c.lon) }
+        val qids = (pages.mapNotNull { it.qid } + extras.keys).distinct()
         val entities = qids.chunked(WikidataHttpSource.BATCH).fold(emptyMap<String, WikidataEntity>()) { acc, ids -> zoneCheck(); acc + wikidata.entities(ids) }
 
         val kept = LinkedHashMap<String, FetchedPlace>()
@@ -41,6 +47,15 @@ class PlaceCellSource(
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
             val lon = ent.lon ?: p.lon ?: hitById[p.pageId]?.lon ?: continue
             kept["wd:$q"] = FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, p.title, kind, lat, lon, PlaceKinds.defaultRadiusM(kind), p.extract, "wikipedia:en", "page:${p.pageId}")
+            if (ent.hasPart.isNotEmpty()) hasPart[q] = ent.hasPart
+        }
+        for ((q, c) in extras) {
+            val ent = entities[q] ?: run { rejected++; null } ?: continue
+            if (ent.p31Malformed) { rejected++; continue }
+            if (ent.classes.any { it in PERSON_CLASSES }) continue
+            val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
+            // Coordinates come from the verified table only; the entity's own P625 is never used for these.
+            kept.putIfAbsent("wd:$q", FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, c.name, kind, c.lat, c.lon, PlaceKinds.defaultRadiusM(kind), "", "wikidata", "wd:$q"))
             if (ent.hasPart.isNotEmpty()) hasPart[q] = ent.hasPart
         }
         // P527 (has part) gives a sub-place its parent when the sub-place does not name one itself (P361).
@@ -117,7 +132,24 @@ class PlaceCellSource(
         )
 
         /** Version of [CURATED_LANDMARK_QIDS]; raise it with every change to the set. */
-        const val CURATED_LANDMARKS_VERSION = 1
+        const val CURATED_LANDMARKS_VERSION = 2
+
+        /** Version of [VERIFIED_COORDINATES]; raise it with every change to the table. */
+        const val VERIFIED_COORDINATES_VERSION = 1
+
+        /**
+         * VERIFIED_COORDINATES (version 1, 2026-11-19): curated QIDs that Wikipedia geosearch cannot return because the English Wikipedia page carries no coordinates (checked with
+         * prop=coordinates on 2026-11-19). Each row was read back from wikidata.org on 2026-11-19 (wbgetentities, labels en, claims P31 and P625), one request at a time; label, P31, P625:
+         * Q1961579 "Jetavanaramaya", P31 stupa Q180987, (8.351667, 80.403611); Q19719626 "Ritigala", P31 mountain Q8502, (8.108611, 80.656111);
+         * Q60181073 "Ghum railway station", P31 railway station Q55488, (27.008643, 88.254223) (HTTP 429 once, retried after Retry-After).
+         * The other curated QIDs have Wikipedia coordinates, so geosearch finds them and they are not listed. A cell fetch adds the places of this table whose coordinate lies inside the cell and
+         * which geosearch did not return, through the same person, class and curated gating; the coordinate used is THIS table's, never the response's. Every key must be in [CURATED_LANDMARK_QIDS].
+         */
+        val VERIFIED_COORDINATES: Map<String, VerifiedCoordinate> = mapOf(
+            "Q1961579" to VerifiedCoordinate("Jetavanaramaya", 8.351667, 80.403611),
+            "Q19719626" to VerifiedCoordinate("Ritigala", 8.108611, 80.656111),
+            "Q60181073" to VerifiedCoordinate("Ghum railway station", 27.008643, 88.254223),
+        )
 
         /**
          * CURATED_LANDMARK_QIDS (version 1, 2026-11-18): individual landmarks admitted by Wikidata item id although their P31 class is NOT in [MONUMENT_CLASSES] (and must not be, as a general class).
@@ -136,6 +168,9 @@ class PlaceCellSource(
             "Q5285886" to PlaceKinds.STUPA, // "Do-drul Chorten" (27.313, 88.605), no P31 at all: Gangtok stupa
             "Q24949017" to PlaceKinds.HERITAGE_BUILDING, // "Darjeeling railway station" (27.038, 88.263), P31 railway station: Darjeeling Himalayan Railway terminus
             "Q60181073" to PlaceKinds.HERITAGE_BUILDING, // "Ghum railway station" (27.009, 88.254), P31 railway station: highest station of the Darjeeling Himalayan Railway
+            // Added in version 2 (2026-11-19), read back from wikidata.org; both are found through VERIFIED_COORDINATES, as their Wikipedia pages have no coordinates:
+            "Q1961579" to PlaceKinds.STUPA, // "Jetavanaramaya" (8.352, 80.404), P31 stupa (also in MONUMENT_CLASSES): Anuradhapura
+            "Q19719626" to PlaceKinds.ARCHAEOLOGICAL_SITE, // "Ritigala" (8.109, 80.656), P31 mountain: Ritigala forest monastery ruins
         )
 
         /** The OSM tag combinations that make an object a place: historic, heritage and tourism=attraction|museum|viewpoint, named. */

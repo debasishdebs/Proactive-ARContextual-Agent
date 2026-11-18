@@ -234,10 +234,10 @@ class PlaceFetchTest {
         val verified = mapOf(
             "Q272153" to "Sigiriya", "Q16901632" to "Tiger Hill, Darjeeling", "Q4868648" to "Batasia Loop", "Q23038925" to "Banjhakri falls and park", "Q3214979" to "Khecheopalri Lake",
             "Q944175" to "Sri Maha Bodhi", "Q5653142" to "Happy Valley Tea Estate", "Q542864" to "Lake Tsongmo", "Q5285886" to "Do-drul Chorten", "Q24949017" to "Darjeeling railway station",
-            "Q60181073" to "Ghum railway station",
+            "Q60181073" to "Ghum railway station", "Q1961579" to "Jetavanaramaya", "Q19719626" to "Ritigala",
         )
         assertEquals(verified.keys, PlaceCellSource.CURATED_LANDMARK_QIDS.keys)
-        assertEquals(1, PlaceCellSource.CURATED_LANDMARKS_VERSION)
+        assertEquals(2, PlaceCellSource.CURATED_LANDMARKS_VERSION)
         assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.values.all { it in PlaceKinds.ALL })
         assertEquals(setOf("Q5", "Q15632617", "Q95074", "Q21070568"), PlaceCellSource.PERSON_CLASSES)
         assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.keys.none { it in PlaceCellSource.MONUMENT_CLASSES })
@@ -310,6 +310,78 @@ class PlaceFetchTest {
         }
         val wd = object : WikidataSource { override suspend fun entities(ids: List<String>) = emptyMap<String, WikidataEntity>() }
         assertEquals(0, PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(7.957, 80.76)).places.size)
+    }
+
+    // ---- Verified-coordinate extras (curated places whose Wikipedia page has no coordinates) ----
+
+    @Test fun verifiedCoordinateTableIsPinned() {
+        val t = PlaceCellSource.VERIFIED_COORDINATES
+        assertEquals(1, PlaceCellSource.VERIFIED_COORDINATES_VERSION)
+        assertEquals(setOf("Q1961579", "Q19719626", "Q60181073"), t.keys)
+        assertEquals(VerifiedCoordinate("Jetavanaramaya", 8.351667, 80.403611), t["Q1961579"])
+        assertEquals(VerifiedCoordinate("Ritigala", 8.108611, 80.656111), t["Q19719626"])
+        assertEquals(VerifiedCoordinate("Ghum railway station", 27.008643, 88.254223), t["Q60181073"])
+        assertTrue(t.keys.all { it in PlaceCellSource.CURATED_LANDMARK_QIDS })
+        assertTrue(t.values.all { it.lat in -90.0..90.0 && it.lon in -180.0..180.0 })
+    }
+
+    /** No geosearch hits at all; the Wikidata response is [json] parsed by the real parser. Returns id to (kind, lat, lon, name) and the ids Wikidata was asked for. */
+    private suspend fun extrasCell(cell: String, json: String, asked: MutableList<String> = mutableListOf()): Map<String, List<Any>> {
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = emptyList<WikiHit>()
+            override suspend fun pages(pageIds: List<Long>) = emptyList<WikiPage>()
+        }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>): Map<String, WikidataEntity> { asked += ids; return WikidataHttpSource.parse(json) } }
+        return PlaceCellSource(wiki, wd, null).fetchCell(cell).places.associate { it.id to listOf(it.kind, it.lat, it.lon, it.name, it.source) }
+    }
+    private fun entity(q: String, claims: String, lat: Double = 1.0, lon: Double = 2.0) =
+        """{"entities":{"$q":{"claims":{${claims.let { if (it.isEmpty()) "" else "$it," }}"P625":[{"mainsnak":{"snaktype":"value","datavalue":{"value":{"latitude":$lat,"longitude":$lon}}}}]}}}}"""
+    private fun p31c(vararg ids: String) = """"P31":[${ids.joinToString(",") { """{"mainsnak":{"snaktype":"value","datavalue":{"value":{"id":"$it"}}}}""" }}]"""
+
+    @Test fun aTableEntryInsideTheCellIsAdmittedWithTheTableCoordinateNotTheResponses() = runTest {
+        val asked = mutableListOf<String>()
+        val got = extrasCell(Geohash5.encode(8.3517, 80.4036), entity("Q1961579", p31c("Q180987"), 9.9, 99.9), asked)
+        assertEquals(listOf("Q1961579"), asked)
+        assertEquals(setOf("wd:Q1961579"), got.keys)
+        assertEquals(listOf("stupa", 8.351667, 80.403611, "Jetavanaramaya", "wikidata"), got["wd:Q1961579"])
+    }
+
+    @Test fun aTableEntryOutsideTheCellIsNeitherAskedNorAdmitted() = runTest {
+        val asked = mutableListOf<String>()
+        val got = extrasCell(Geohash5.encode(7.957, 80.76), entity("Q1961579", p31c("Q180987")), asked) // Sigiriya cell
+        assertTrue(got.isEmpty()); assertTrue(asked.isEmpty())
+    }
+
+    @Test fun aPersonClassIsRejectedEvenWithATableEntry() = runTest {
+        val got = extrasCell(Geohash5.encode(8.1086, 80.6561), entity("Q19719626", p31c("Q5", "Q8502")))
+        assertTrue(got.isEmpty())
+    }
+
+    @Test fun anEntryWithoutP31IsAdmittedLikeACuratedQidAndMountainClassNeedsTheCuratedKind() = runTest {
+        val got = extrasCell(Geohash5.encode(8.1086, 80.6561), entity("Q19719626", ""))
+        assertEquals("archaeological_site", got["wd:Q19719626"]?.first())
+        val withClass = extrasCell(Geohash5.encode(8.1086, 80.6561), entity("Q19719626", p31c("Q8502")))
+        assertEquals("archaeological_site", withClass["wd:Q19719626"]?.first())
+    }
+
+    @Test fun aMalformedOrMissingResponseRejectsTheEntry() = runTest {
+        val cell = Geohash5.encode(8.3517, 80.4036)
+        assertTrue(extrasCell(cell, """{"entities":{"Q1961579":{"claims":"junk"}}}""").isEmpty()) // unreadable claims
+        assertTrue(extrasCell(cell, """{"entities":{"Q1961579":{"claims":{"P31":"junk"}}}}""").isEmpty()) // malformed P31
+        assertTrue(extrasCell(cell, "{}").isEmpty()) // no entities
+        assertTrue(extrasCell(cell, """{"entities":{"Q999":{"claims":[]}}}""").isEmpty()) // another item than the one asked for
+    }
+
+    @Test fun aPlaceGeosearchAlreadyReturnedIsNotDuplicatedOrAskedForTwice() = runTest {
+        val asked = mutableListOf<String>()
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Jetavanaramaya", 8.35, 80.40))
+            override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Jetavanaramaya", "A stupa.", "Q1961579", 8.35, 80.40))
+        }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>): Map<String, WikidataEntity> { asked += ids; return WikidataHttpSource.parse(entity("Q1961579", p31c("Q180987"))) } }
+        val places = PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(8.3517, 80.4036)).places
+        assertEquals(listOf("Q1961579"), asked)
+        assertEquals(1, places.size); assertEquals("wikipedia:en", places.single().source)
     }
 
     private class Mirror(val answer: suspend () -> List<OsmElement>) : OverpassSource {
