@@ -1,29 +1,443 @@
 #!/usr/bin/env bash
 # SAFE install helper for the trip build (bash 3.2 compatible). DRY-RUN BY DEFAULT: real actions only with --go.
 #   tools/install-trip-build.sh --phone <serial> --glasses <serial> [--watch <serial>] --apks <dir> [--tag <tag>] [--go]
-#        [--allow-emulator] [--allow-downgrade]
-#   tools/install-trip-build.sh --self-test --phone emulator-5554 --apks <dir> [--go]    (emulator only, phone only)
+#        [--allow-emulator] [--allow-downgrade] [--accept-unverified-signature [--i-understand-no-signature-check]]
+#   tools/install-trip-build.sh --self-test --phone emulator-5554 --apks <dir> [--go]    (emulator only, phone only; runs the fixtures first)
+#   tools/install-trip-build.sh --fixtures                                                (refusal fixtures only, no device, no adb)
+# FAIL CLOSED: any uncertainty refuses (exit 2) unless a clearly named override flag is passed (and it is printed).
 # Serials are never auto-detected and every adb call carries -s (only `adb devices` has none). Never uninstalls, never `pm clear`,
 # never kills any process on the host. Prints counts, hashes and statuses only: no logcat line, token or pairing code.
+# DRY-RUN writes nothing (no temp dir, no file) and pulls nothing; it skips the signature pull ("signature check will run with --go").
 # Procedure source: docs/superpowers/plans/handoffs/v17-upgrade-recovery.md. See tools/INSTALL-TRIP-BUILD.md.
-set -u
+set -Eeuo pipefail
+umask 077
 
 PHONE_PKG=com.rokid.context
 GLASSES_PKG=com.rokid.context.glasses
 WATCH_PKG=com.rokid.context        # same applicationId as the phone app: hazard, see device-checklist A0
 BACKUP_DIR="${PCA_BACKUP_DIR:-$HOME/Desktop/rokid/backups}"
 SCAN_SECS="${PCA_SCAN_SECS:-60}"
+RETRY_SLEEP="${PCA_RETRY_SLEEP:-1}"
 
 PHONE="" GLASSES="" WATCH="" APKS="" TAG="" GO=0 ALLOW_EMU=0 ALLOW_DOWN=0 SELFTEST=0 PLAIN_OK=0
-TMP=""
-BACKUP_TAR="" PREV_APK=""
+ACCEPT_UNSIG=0 UNDERSTAND_NOSIG=0 FIXTURES=0
+TMP="" FXDIR=""
+BACKUP_TAR="" PREV_APK="" BACKUP_VALID=0
+PHASE=preflight    # preflight | backup | installing | installed
+APK_VC="" REMOTE_OUT="" REMOTE_RC=""
+ADB="" APKSIGNER="" AAPT="" APKANALYZER="" DEVS=""
 
-die()  { echo "REFUSED: $*" >&2; cleanup; exit 2; }
+die()  { echo "REFUSED: $*" >&2; exit 2; }
+fail() { echo "FAILED: $*" >&2; exit 1; }
 say()  { echo "$*"; }
-cleanup() { [ -n "$TMP" ] && [ -d "$TMP" ] && rm -rf "$TMP"; TMP=""; }
+cleanup() {
+  if [ -n "$TMP" ] && [ -d "$TMP" ]; then rm -rf "$TMP"; fi; TMP=""
+  if [ -n "$FXDIR" ] && [ -d "$FXDIR" ]; then rm -rf "$FXDIR"; fi; FXDIR=""
+  return 0
+}
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+is_emu() { case "$1" in emulator-*) return 0 ;; *) return 1 ;; esac; }
+# A <serial> args... : the ONLY way adb is called with a device
+A() { local s="$1"; shift; "$ADB" -s "$s" "$@"; }
 
+print_guidance() {
+  if [ "$BACKUP_VALID" = 1 ] && { [ "$PHASE" = installing ] || [ "$PHASE" = installed ]; }; then
+    cat >&2 <<RB
+--- FAILED AFTER THE INSTALL STEP STARTED (phase=$PHASE). The validated backup exists. Restore steps (docs/superpowers/plans/handoffs/v17-upgrade-recovery.md section 4) ---
+ NON-DESTRUCTIVE FIRST: every step below copies or moves, nothing is deleted; quarantine the current state BEFORE replacing anything.
+ Never uninstall, never pm clear. Not during a call. Only restore if the app fails the section 3 checks.
+ 1. adb -s $PHONE shell am force-stop $PHONE_PKG   (confirm: adb -s $PHONE shell pidof $PHONE_PKG prints nothing)
+ 2. Preserve the broken state first: adb -s $PHONE exec-out run-as $PHONE_PKG tar c . > $BACKUP_DIR/pca-phone-broken-$TAG.tar  (then tar tf it)
+    and on-device quarantine copy: adb -s $PHONE shell run-as $PHONE_PKG sh -c 'mkdir -p quarantine-$TAG && cp -p databases/context.db* quarantine-$TAG/ && cp -p shared_prefs/db_key.xml quarantine-$TAG/'
+ 3. Move (never delete) the live databases/context.db* into quarantine-$TAG/replaced/, then:
+    cat $BACKUP_TAR | adb -s $PHONE shell run-as $PHONE_PKG tar x
+    adb -s $PHONE install -r ${PREV_APK:-<previous phone apk, same signature>}
+ 4. Open the app and run the section 3 checks. If it still fails: stop, delete nothing, ask for help.
+ Glasses: adb -s <glasses> install -r <old 1.0.0 glasses apk> (staged in $BACKUP_DIR/apks-v100-*).
+RB
+  elif [ "$BACKUP_VALID" = 1 ]; then
+    echo "No change was made to the phone: leave phone data untouched (phase=$PHASE). The backup $BACKUP_TAR is complete and validated but is NOT needed. The app may have been force-stopped: just reopen it." >&2
+  else
+    echo "No change was made to the phone: leave phone data untouched; the backup (if any) is incomplete/unvalidated, do not restore from it (phase=$PHASE). The app may have been force-stopped: just reopen it." >&2
+  fi
+}
+on_exit() {
+  local rc=$?
+  trap - EXIT
+  if [ "$rc" -ne 0 ] && [ "$FIXTURES" = 0 ]; then echo "exit status $rc, phase=$PHASE" >&2; print_guidance; fi
+  cleanup
+  exit "$rc"
+}
+trap 'echo "ERROR: unexpected failure at line $LINENO (phase=$PHASE)" >&2' ERR
+trap on_exit EXIT
+
+# ---------- checked helpers ----------
+hash_cmd() { # file -> raw "digest  name" line (overridable by fixtures)
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1"
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"
+  else return 1; fi
+}
+sha256_of() { # file -> prints a validated 64-hex digest; returns 1 on any failure
+  local out d re='^[0-9a-f]{64}$'
+  out="$(hash_cmd "$1")" || return 1
+  d="${out%% *}"
+  [[ "$d" =~ $re ]] || return 1
+  printf '%s\n' "$d"
+}
+fsize() { local n; n="$(stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null)" || return 1; case "$n" in ''|*[!0-9]*) return 1 ;; esac; printf '%s\n' "$n"; }
+
+remote_rc() { # serial cmd -> sets REMOTE_OUT, REMOTE_RC from a marker; returns 1 on adb/transport failure or missing marker
+  local raw last
+  REMOTE_OUT=""; REMOTE_RC=""
+  raw="$(A "$1" shell "$2; echo __PCA_RC=\$?" 2>&1)" || return 1
+  raw="$(printf '%s\n' "$raw" | tr -d '\r')"
+  last="$(printf '%s\n' "$raw" | tail -n 1)"
+  case "$last" in __PCA_RC=[0-9]*) ;; *) return 1 ;; esac
+  REMOTE_RC="${last#__PCA_RC=}"
+  case "$REMOTE_RC" in *[!0-9]*) return 1 ;; esac
+  REMOTE_OUT="$(printf '%s\n' "$raw" | sed '$d')"
+  return 0
+}
+
+stop_app() { # force-stop and PROVE the process is gone; any uncertainty returns 1
+  local i re='^[0-9]+([[:space:]]+[0-9]+)*$'
+  for i in 1 2 3 4 5; do
+    remote_rc "$PHONE" "am force-stop $PHONE_PKG" || { echo "REFUSED: force-stop could not be confirmed (adb failure)" >&2; return 1; }
+    [ "$REMOTE_RC" = 0 ] || { echo "REFUSED: am force-stop exited $REMOTE_RC" >&2; return 1; }
+    sleep "$RETRY_SLEEP"
+    remote_rc "$PHONE" "pidof $PHONE_PKG" || { echo "REFUSED: cannot query the process state (adb/transport failure)" >&2; return 1; }
+    if [ "$REMOTE_RC" = 1 ] && [ -z "$REMOTE_OUT" ]; then say "app process confirmed gone (pidof: no process)"; return 0; fi
+    if [ "$REMOTE_RC" = 0 ] && [[ "$REMOTE_OUT" =~ $re ]]; then continue; fi
+    echo "REFUSED: unexpected pidof result (exit $REMOTE_RC)" >&2; return 1
+  done
+  echo "REFUSED: $PHONE_PKG still running after force-stop retries" >&2; return 1
+}
+
+parse_call_states() { # stdin: dumpsys text. 0 only if >=1 mCallState lines, EVERY one strictly 'mCallState=0'
+  local n=0 line re='^[[:space:]]*mCallState=([0-9]+)[[:space:]]*$'
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *mCallState*) ;; *) continue ;; esac
+    if [[ "$line" =~ $re ]]; then
+      [ "${BASH_REMATCH[1]}" = 0 ] || return 1
+      n=$((n + 1))
+    else return 1; fi
+  done
+  [ "$n" -ge 1 ]
+}
+call_guard() { # $1 = label
+  local raw=""
+  if [ "$SELFTEST" = 1 ] && is_emu "$PHONE" && [ -n "${PCA_SELFTEST_CALLSTATE:-}" ]; then
+    raw="mCallState=$PCA_SELFTEST_CALLSTATE"
+  else
+    raw="$(A "$PHONE" shell dumpsys telephony.registry 2>/dev/null)" || { echo "REFUSED: 'dumpsys telephony.registry' failed on the phone ($1)" >&2; return 1; }
+  fi
+  raw="$(printf '%s\n' "$raw" | tr -d '\r')"
+  if parse_call_states <<<"$raw"; then say "call guard ($1): every mCallState is 0"
+  else echo "REFUSED: a call is active, or mCallState is missing/unparseable/inconsistent on the phone ($1)" >&2; return 1; fi
+}
+
+free_kb() { # dir -> free KB of the filesystem holding dir (nearest existing ancestor)
+  local d="$1" n
+  while [ ! -d "$d" ] && [ "$d" != / ] && [ "$d" != . ]; do d="$(dirname "$d")"; done
+  n="$(df -Pk "$d" | awk 'NR==2{print $4}')" || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$n"
+}
+disk_check() { # app data size via run-as du, host free space for BACKUP_DIR and TMPDIR must be >= 3x
+  local line kb need f d re='^([0-9]+)[[:space:]]+\.$'
+  remote_rc "$PHONE" "run-as $PHONE_PKG du -sk ." || { echo "REFUSED: cannot estimate the app data size (adb/run-as failure)" >&2; return 1; }
+  [ "$REMOTE_RC" = 0 ] || { echo "REFUSED: run-as du exited $REMOTE_RC (is the installed build debuggable?)" >&2; return 1; }
+  line="$(printf '%s\n' "$REMOTE_OUT" | tail -n 1)"
+  [[ "$line" =~ $re ]] || { echo "REFUSED: unparseable du output" >&2; return 1; }
+  kb="${BASH_REMATCH[1]}"; need=$((kb * 3))
+  for d in "$BACKUP_DIR" "${TMPDIR:-/tmp}"; do
+    f="$(free_kb "$d")" || { echo "REFUSED: cannot read free disk space for $d" >&2; return 1; }
+    [ "$f" -ge "$need" ] || { echo "REFUSED: only ${f} KB free for $d, need >= 3x app data (${need} KB)" >&2; return 1; }
+  done
+  say "disk preflight: app data ~${kb} KB, host free >= ${need} KB (3x) for backup dir and temp dir"
+}
+
+# ---------- APK helpers ----------
+apk_pkg() { # package name
+  if [ -n "$AAPT" ]; then "$AAPT" dump badging "$1" 2>/dev/null | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | sed -n 1p
+  else "$APKANALYZER" manifest application-id "$1" 2>/dev/null | sed -n 1p; fi
+}
+apk_vc() { # versionCode
+  if [ -n "$AAPT" ]; then "$AAPT" dump badging "$1" 2>/dev/null | sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p" | sed -n 1p
+  else "$APKANALYZER" manifest version-code "$1" 2>/dev/null | sed -n 1p; fi
+}
+apk_cert() { # apk -> validated cert SHA-256, or return 1
+  local out d re='^[0-9a-f]{64}$'
+  [ -n "$APKSIGNER" ] || return 1
+  out="$("$APKSIGNER" verify --print-certs "$1" 2>/dev/null)" || return 1
+  d="$(printf '%s\n' "$out" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | sed -n 1p)"
+  [[ "$d" =~ $re ]] || return 1
+  printf '%s\n' "$d"
+}
+inst_vc() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | sed -n 1p; }
+inst_vn() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionName=//p' | sed -n 1p; }
+
+# ---------- argument rules ----------
+validate_args() {
+  local s
+  [ "$PLAIN_OK" = 0 ] || [ "$SELFTEST" = 1 ] || die "--allow-plaintext-db is only valid with --self-test"
+  if [ -n "${PCA_SELFTEST_CALLSTATE:-}" ] && { [ "$SELFTEST" = 0 ] || ! is_emu "$PHONE"; }; then die "PCA_SELFTEST_CALLSTATE is only honoured with --self-test on an emulator-* serial"; fi
+  [ -n "$PHONE" ] || die "--phone <serial> is required (no auto-detect)"
+  [ -n "$APKS" ] || die "--apks <dir> is required"
+  [ -d "$APKS" ] || die "APK folder not found: $APKS"
+  if [ "$SELFTEST" = 1 ]; then
+    [ -z "$WATCH" ] || die "--self-test is phone-only: no --watch"
+    is_emu "$PHONE" || die "--self-test accepts only an emulator-* serial (hard refuse on any other serial)"
+    if [ -n "$GLASSES" ] && ! is_emu "$GLASSES"; then die "--self-test accepts only emulator-* serials"; fi
+    ALLOW_EMU=1
+  else
+    [ -n "$GLASSES" ] || die "--glasses <serial> is required (no auto-detect)"
+  fi
+  if [ -n "$GLASSES" ] && [ "$PHONE" = "$GLASSES" ]; then die "phone and glasses serials are equal"; fi
+  if [ -n "$WATCH" ] && { [ "$WATCH" = "$PHONE" ] || [ "$WATCH" = "$GLASSES" ]; }; then die "watch serial equals the phone or glasses serial (watch-debug.apk would REPLACE that app)"; fi
+  if [ "$GO" = 1 ] && [ "$ALLOW_EMU" = 0 ]; then
+    for s in "$PHONE" "$GLASSES" "$WATCH"; do
+      if [ -n "$s" ] && is_emu "$s"; then die "serial $s looks like an emulator: add --allow-emulator to run --go on it"; fi
+    done
+  fi
+  if [ "$UNDERSTAND_NOSIG" = 1 ] && [ "$ACCEPT_UNSIG" = 0 ]; then die "--i-understand-no-signature-check only makes sense with --accept-unverified-signature"; fi
+  if [ "$ACCEPT_UNSIG" = 1 ] && [ "$GO" = 1 ] && [ "$UNDERSTAND_NOSIG" = 0 ]; then
+    for s in "$PHONE" "$GLASSES" "$WATCH"; do
+      if [ -n "$s" ] && ! is_emu "$s"; then die "--accept-unverified-signature with --go on a non-emulator serial ($s) also needs --i-understand-no-signature-check"; fi
+    done
+  fi
+  [ -n "$TAG" ] || TAG="trip-$(date +%Y%m%d-%H%M)"
+  case "$TAG" in *[!A-Za-z0-9._-]*) die "tag may only contain letters, digits . _ -" ;; esac
+  return 0
+}
+
+# ---------- signature ----------
+unverified() { # label reason : refuses unless the explicit override was given (then prints it prominently)
+  if [ "$ACCEPT_UNSIG" = 1 ]; then
+    echo "!!!!! WARNING: $1: SIGNATURE NOT VERIFIED ($2). Continuing ONLY because --accept-unverified-signature was passed. A different signature makes the encrypted DB unreadable. !!!!!"
+    return 0
+  fi
+  die "$1: cannot verify the signature ($2). Refusing. (Override, NOT recommended: --accept-unverified-signature)"
+}
+sig_check() { # serial pkg newapk label
+  local s="$1" pkg="$2" apk="$3" label="$4" path want have
+  if [ -z "$APKSIGNER" ]; then unverified "$label" "apksigner not found"; return 0; fi
+  want="$(apk_cert "$apk")" || want=""
+  if [ -z "$want" ]; then unverified "$label" "cannot read the signing certificate of the new APK"; return 0; fi
+  if [ "$GO" = 0 ]; then say "$label: signature check will run with --go (dry-run pulls nothing)"; return 0; fi
+  path="$(A "$s" shell pm path "$pkg" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p' | sed -n 1p)" || path=""
+  if [ -z "$path" ]; then unverified "$label" "installed APK path unknown"; return 0; fi
+  if ! A "$s" pull "$path" "$TMP/installed-$label.apk" >/dev/null 2>&1; then unverified "$label" "pull of the installed APK failed"; return 0; fi
+  have="$(apk_cert "$TMP/installed-$label.apk")" || have=""
+  if [ -z "$have" ]; then unverified "$label" "cannot read the installed APK certificate"; return 0; fi
+  [ "$have" = "$want" ] || die "$label: signing certificate differs (installed ${have:0:8}... vs new ${want:0:8}...); a different signature makes the encrypted DB unreadable (no override)"
+  say "$label: signature matches installed (SHA-256 ${want:0:8}...)"
+  return 0
+}
+
+# ---------- preflight ----------
+check_apk() { # file pkg label -> sets APK_VC
+  local f="$1" pkg="$2" label="$3" p h
+  [ -f "$f" ] || die "$label APK missing: $f"
+  p="$(apk_pkg "$f")" || p=""
+  [ "$p" = "$pkg" ] || die "$label APK package is '$p', expected '$pkg'"
+  APK_VC="$(apk_vc "$f")" || APK_VC=""
+  case "$APK_VC" in ''|*[!0-9]*) die "cannot read versionCode of $f" ;; esac
+  h="$(sha256_of "$f")" || die "cannot compute a valid SHA-256 of $f"
+  say "$label: $(basename "$f") package=$p versionCode=$APK_VC sha256=$h"
+}
+check_installed() { # serial pkg apk label : version (no downgrade) + signature
+  local s="$1" pkg="$2" apk="$3" label="$4" ivc ivn
+  ivc="$(inst_vc "$s" "$pkg")" || ivc=""
+  [ -n "$ivc" ] || die "$label: $pkg is not installed on $s (this helper only upgrades; never first-installs)"
+  ivn="$(inst_vn "$s" "$pkg")" || ivn=""
+  say "$label: installed versionName=$ivn versionCode=$ivc -> new versionCode=$APK_VC"
+  if [ "$ivc" -gt "$APK_VC" ] && [ "$ALLOW_DOWN" = 0 ]; then die "$label: downgrade ($ivc > $APK_VC); --allow-downgrade is NOT recommended (Room refuses older schemas)"; fi
+  sig_check "$s" "$pkg" "$apk" "$label"
+  if [ "$GO" = 1 ] && [ "$label" = phone ] && [ -f "$TMP/installed-phone.apk" ]; then cp "$TMP/installed-phone.apk" "$TMP/prev-phone.apk" || fail "cannot copy the installed phone APK"; fi
+  return 0
+}
+
+# ---------- steps ----------
+do_backup() {
+  local t n sz db bytes h ph apksha vn vc
+  BACKUP_TAR="$BACKUP_DIR/pca-phone-pre-$TAG.tar"; PREV_APK="$BACKUP_DIR/pca-phone-pre-$TAG.apk"
+  say "STEP backup: force-stop $PHONE_PKG (verified gone), tar c . via run-as -> $BACKUP_TAR (0600; validated with tar -t, listing, size, header, sha256)"
+  [ "$GO" = 1 ] || return 0
+  PHASE=backup
+  if [ "$PLAIN_OK" = 1 ]; then is_emu "$PHONE" || die "--allow-plaintext-db on a non-emulator serial"; fi
+  [ ! -e "$BACKUP_TAR" ] || fail "backup file already exists: $BACKUP_TAR (pick another --tag)"
+  mkdir -p "$BACKUP_DIR" || fail "cannot create $BACKUP_DIR"
+  call_guard backup || die "call active or state unknown"
+  stop_app || die "cannot confirm the app is stopped; backup not taken"
+  A "$PHONE" exec-out run-as "$PHONE_PKG" tar c . > "$BACKUP_TAR" 2>"$TMP/tar.err" || fail "run-as tar failed (is the installed build debuggable?)"
+  chmod 600 "$BACKUP_TAR" || fail "cannot chmod 600 $BACKUP_TAR"
+  t="$TMP/bk"; mkdir -p "$t" || fail "cannot create temp dir"
+  tar tf "$BACKUP_TAR" > "$TMP/list.txt" 2>/dev/null || fail "backup validation: tar -t could not read the archive to its end"
+  grep -Eq '(^|/)databases/context\.db$' "$TMP/list.txt" || fail "backup validation: databases/context.db missing from the tar"
+  grep -Eq '(^|/)shared_prefs/db_key\.xml$' "$TMP/list.txt" || [ "$PLAIN_OK" = 1 ] || fail "backup validation: shared_prefs/db_key.xml missing from the tar"
+  n="$(grep -cE 'context\.db-(wal|shm)$' "$TMP/list.txt" || true)"
+  bytes="$(fsize "$BACKUP_TAR")" || fail "cannot stat the backup tar"
+  [ "$bytes" -ge 8192 ] || fail "backup validation: tar is only a few KB (failed snapshot)"
+  tar xf "$BACKUP_TAR" -C "$t" ./databases/context.db 2>/dev/null || tar xf "$BACKUP_TAR" -C "$t" databases/context.db 2>/dev/null || fail "backup validation: cannot extract context.db"
+  db="$t/databases/context.db"
+  sz="$(fsize "$db")" || fail "backup validation: cannot stat context.db"
+  if [ "$sz" -le 0 ]; then fail "backup validation: context.db is empty"; fi
+  if [ $((sz % 4096)) -ne 0 ] && [ "$PLAIN_OK" = 0 ]; then fail "backup validation: context.db size $sz is not a multiple of 4096"; fi
+  if [ "$(head -c 15 "$db")" = "SQLite format 3" ] && [ "$PLAIN_OK" = 0 ]; then fail "backup validation: context.db has a plaintext header (bad snapshot or unencrypted install)"; fi
+  h="$(sha256_of "$BACKUP_TAR")" || fail "backup validation: cannot compute a valid SHA-256 of the tar"
+  say "backup OK: $BACKUP_TAR bytes=$bytes entries=$(wc -l < "$TMP/list.txt" | tr -d ' ') wal/shm=$n context.db=$sz sha256=$h"
+  if [ -f "$TMP/prev-phone.apk" ]; then
+    cp "$TMP/prev-phone.apk" "$PREV_APK" || fail "cannot write $PREV_APK"
+    chmod 600 "$PREV_APK" || fail "cannot chmod 600 $PREV_APK"
+    ph="$(sha256_of "$PREV_APK")" || fail "cannot hash $PREV_APK"
+    say "previous phone APK kept: $PREV_APK sha256=$ph"
+  fi
+  apksha="$(sha256_of "$APKS/phone-debug.apk")" || fail "cannot hash the new phone APK"
+  vn="$(inst_vn "$PHONE" "$PHONE_PKG")" || vn=""
+  vc="$(inst_vc "$PHONE" "$PHONE_PKG")" || vc=""
+  [ -n "$vc" ] || fail "cannot read the installed versionCode for the metadata"
+  { echo "tag=$TAG"; echo "tar_sha256=$h"; echo "installed_before: versionName=$vn versionCode=$vc"; echo "new_apk_sha256=$apksha"; } > "$BACKUP_DIR/pca-phone-pre-$TAG.notes.txt" || fail "cannot write the backup metadata"
+  chmod 600 "$BACKUP_DIR/pca-phone-pre-$TAG.notes.txt" || fail "cannot chmod 600 the metadata"
+  BACKUP_VALID=1
+}
+
+install_apk() { # serial apk role (phone|glasses|watch): the role must match the serial
+  local s="$1" apk="$2" role="$3" flags="-r" out
+  case "$role" in
+    phone) [ "$s" = "$PHONE" ] && [ "$(basename "$apk")" = phone-debug.apk ] || fail "internal check: wrong serial/apk pairing for phone" ;;
+    glasses) [ "$s" = "$GLASSES" ] && [ "$s" != "$PHONE" ] && [ "$(basename "$apk")" = glasses-debug.apk ] || fail "internal check: wrong serial/apk pairing for glasses" ;;
+    watch) [ "$s" = "$WATCH" ] && [ "$s" != "$PHONE" ] && [ "$s" != "$GLASSES" ] && [ "$(basename "$apk")" = watch-debug.apk ] || fail "internal check: watch APK may only go to the watch serial" ;;
+  esac
+  if [ "$ALLOW_DOWN" = 1 ]; then flags="-r -d"; fi
+  say "STEP install $role: adb -s $s install $flags $(basename "$apk")"
+  [ "$GO" = 1 ] || return 0
+  call_guard "before $role install" || die "call active or state unknown"
+  [ "$BACKUP_VALID" = 1 ] || fail "internal check: no validated backup, refusing to install"
+  PHASE=installing
+  # shellcheck disable=SC2086
+  out="$(A "$s" install $flags "$apk" 2>&1 | tr -d '\r' | tail -n 1)" || out="adb failure"
+  [ "$out" = Success ] || fail "$role install result: $out"
+  PHASE=installed
+  say "$role install: Success"
+}
+
+scan_logs() { # serial pkg label
+  local s="$1" pkg="$2" label="$3" pid fatal mig comp
+  say "STEP verify $label: clear logcat, launch $pkg, wait ${SCAN_SECS}s, report counts of FATAL / Migration / Room errors"
+  [ "$GO" = 1 ] || return 0
+  A "$s" logcat -c >/dev/null 2>&1 || fail "$label: cannot clear logcat"
+  comp="$(A "$s" shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null | tr -d '\r' | tail -n 1)" || comp=""
+  case "$comp" in "$pkg"/*) A "$s" shell am start -n "$comp" >/dev/null 2>&1 || fail "$label: could not launch $comp" ;;
+    *) A "$s" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || fail "$label: no launcher activity for $pkg" ;; esac
+  sleep "$SCAN_SECS"
+  pid="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | awk '{print $1}')" || pid=""
+  fatal="$(A "$s" logcat -d -b all 2>/dev/null | grep -cE "FATAL EXCEPTION|Process: ${pkg}[,: ]" || true)"
+  if [ -n "$pid" ]; then
+    mig="$(A "$s" logcat -d --pid="$pid" 2>/dev/null | grep -ciE "Migration didn.t|SQLiteException|not a database|IllegalStateException.*room|room.*(error|exception)" || true)"
+  else mig="n/a"; fi
+  say "$label log scan: running=$([ -n "$pid" ] && echo yes || echo NO) fatal_count=$fatal migration_room_error_count=$mig"
+  [ -n "$pid" ] || fail "$label: app is not running after ${SCAN_SECS}s"
+  [ "$fatal" = 0 ] || fail "$label: $fatal FATAL lines"
+  [ "$mig" = 0 ] || fail "$label: $mig Migration/Room error lines"
+}
+
+# ---------- refusal fixtures (function-level overrides, no adb, no device) ----------
+FX_PASS=0 FX_FAIL=0
+fx() { # name want(ok|refuse) fn : runs fn in a subshell
+  local name="$1" want="$2" fn="$3" rc=0
+  ( "$fn" ) >/dev/null 2>&1 || rc=$?
+  if { [ "$want" = ok ] && [ "$rc" = 0 ]; } || { [ "$want" = refuse ] && [ "$rc" != 0 ]; }; then FX_PASS=$((FX_PASS + 1)); echo "  fixture ok      : $name"
+  else FX_FAIL=$((FX_FAIL + 1)); echo "  FIXTURE FAILED  : $name (wanted $want, rc=$rc)"; fi
+}
+cg() { PHONE=emulator-5554; SELFTEST=0; A() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; call_guard fx; }
+cgo() { PHONE=emulator-5554; SELFTEST=1; A() { printf 'mCallState=0\n'; }; PCA_SELFTEST_CALLSTATE="$FX_OVR"; call_guard fx; }
+cgo_real() { PHONE=R58XXXX; SELFTEST=0; A() { printf 'mCallState=2\n'; }; PCA_SELFTEST_CALLSTATE=0; call_guard fx; }
+stp() { PHONE=emulator-5554; RETRY_SLEEP=0; A() { case "$*" in *force-stop*) printf '%b' "$FX_FS";; *pidof*) printf '%b' "$FX_PID"; return "${FX_RC:-0}";; esac; }; stop_app; }
+sha_fx() { hash_cmd() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; sha256_of x; }
+dsk() { PHONE=emulator-5554; BACKUP_DIR="$FXDIR/b"; A() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; free_kb() { printf '%s\n' "$FX_FREE"; }; disk_check; }
+sg() { # signature fixture
+  PHONE=emulator-5554; TMP="$FXDIR"; GO="${FX_GO:-1}"; APKSIGNER="${FX_SIGNER-/x/apksigner}"; ACCEPT_UNSIG="${FX_ACC:-0}"
+  apk_cert() { case "$1" in *installed*) printf '%s' "$FX_HAVE";; *) printf '%s' "$FX_WANT";; esac; [ -n "$FX_WANT" ] || return 1; }
+  A() { echo called >> "$FXDIR/adbcalls"; case "$*" in *"shell pm path"*) printf 'package:/data/app/x/base.apk\n' ;; *pull*) return "${FX_PULL:-0}" ;; esac; }
+  sig_check emulator-5554 com.x /new.apk phone
+}
+va() { # arg-rule fixture
+  PHONE="${FX_PHONE-emulator-5554}"; GLASSES="${FX_GL-}"; WATCH=""; APKS="$FXDIR"; TAG=t; GO="${FX_GO:-0}"; SELFTEST="${FX_ST:-0}"; PLAIN_OK="${FX_PL:-0}"
+  ACCEPT_UNSIG="${FX_ACC:-0}"; UNDERSTAND_NOSIG="${FX_UND:-0}"; ALLOW_EMU="${FX_AE:-0}"
+  if [ -n "${FX_ENV-}" ]; then PCA_SELFTEST_CALLSTATE="$FX_ENV"; else unset PCA_SELFTEST_CALLSTATE; fi
+  validate_args
+}
+run_fixtures() {
+  FXDIR="$(mktemp -d "${TMPDIR:-/tmp}/install-trip-fx.XXXXXX")" || die "no temp dir for fixtures"
+  say "fixtures (no adb, no device):"
+  local ok='mCallState=0\n'
+  export FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
+  FX_RC=0
+  FX_OUT="  mCallState=0\n  mCallState=0\n";            fx "call guard: all slots 0 passes" ok cg
+  FX_OUT='mCallState=0junk\n';                          fx "call guard: mCallState=0junk" refuse cg
+  FX_OUT='  mCallState=0 mCallState=2\n';               fx "call guard: '0 mCallState=2' on one line" refuse cg
+  FX_OUT='mCallState=0\nmCallState=2\n';                fx "call guard: differing values" refuse cg
+  FX_OUT='mCallState=1\n';                              fx "call guard: ringing" refuse cg
+  FX_OUT='';                                            fx "call guard: empty output" refuse cg
+  FX_OUT='nothing here\n';                              fx "call guard: no mCallState at all" refuse cg
+  FX_OUT=$ok; FX_RC=1;                                  fx "call guard: adb failure with idle-looking output" refuse cg
+  FX_RC=0
+  FX_OVR=2; fx "call guard: self-test override 2 refuses" refuse cgo
+  FX_OVR=0; fx "call guard: self-test override 0 passes" ok cgo
+  FX_OVR='0junk'; fx "call guard: self-test override 0junk refuses" refuse cgo
+  fx "call guard: override ignored on a non-emulator" refuse cgo_real
+  FX_FS='__PCA_RC=0\n'; FX_PID='__PCA_RC=1\n'; FX_RC=0;       fx "stop: pidof exit 1 + empty = gone" ok stp
+  FX_PID='1234\n__PCA_RC=0\n';                                 fx "stop: process still running after retries" refuse stp
+  FX_PID='';  FX_RC=1;                                         fx "stop: pidof adb/transport failure" refuse stp
+  FX_PID='error: device offline\n'; FX_RC=1;                   fx "stop: pidof transport error text, no marker" refuse stp
+  FX_PID='error: closed\n__PCA_RC=1\n'; FX_RC=0;               fx "stop: pidof exit 1 but non-empty output" refuse stp
+  FX_PID='__PCA_RC=127\n';                                     fx "stop: pidof exit 127" refuse stp
+  FX_FS='__PCA_RC=1\n'; FX_PID='__PCA_RC=1\n';                 fx "stop: force-stop failed" refuse stp
+  FX_FS='';                                                    fx "stop: force-stop no marker" refuse stp
+  FX_RC=0
+  FX_OUT="$(printf '0123456789abcdef%.0s' 1 2 3 4)  x\n";      fx "sha256: valid digest" ok sha_fx
+  FX_OUT='garbage  x\n';                                       fx "sha256: junk digest" refuse sha_fx
+  FX_OUT='abc123  x\n';                                        fx "sha256: short digest" refuse sha_fx
+  FX_OUT='';                                                   fx "sha256: empty output" refuse sha_fx
+  FX_OUT="$(printf '0123456789abcdef%.0s' 1 2 3 4)  x\n"; FX_RC=1; fx "sha256: tool failure with a valid-looking digest" refuse sha_fx
+  FX_RC=0
+  FX_OUT='4096\t.\n__PCA_RC=0\n'; FX_FREE=100000;              fx "disk: enough space" ok dsk
+  FX_FREE=12000;                                               fx "disk: free < 3x data" refuse dsk
+  FX_FREE=12287;                                               fx "disk: free just under 3x" refuse dsk
+  FX_OUT='junk\n__PCA_RC=0\n'; FX_FREE=100000;                 fx "disk: unparseable du" refuse dsk
+  FX_OUT='4096\t.\n__PCA_RC=1\n';                              fx "disk: du exit 1" refuse dsk
+  FX_OUT='';                                                   fx "disk: du no output" refuse dsk
+  FX_OUT='4096\t.\n__PCA_RC=0\n'; FX_RC=1;                     fx "disk: adb failure" refuse dsk
+  FX_RC=0
+  FX_GO=1; FX_ACC=0; FX_SIGNER=/x/apksigner; FX_WANT=aa; FX_HAVE=aa; FX_PULL=0
+  fx "signature: match passes" ok sg
+  FX_SIGNER='';                                                fx "signature: apksigner missing" refuse sg
+  FX_SIGNER=/x/apksigner; FX_PULL=1;                           fx "signature: installed APK pull fails" refuse sg
+  FX_PULL=0; FX_HAVE='';                                       fx "signature: installed cert unreadable" refuse sg
+  FX_HAVE=aa; FX_WANT='';                                      fx "signature: new cert unreadable" refuse sg
+  FX_WANT=aa; FX_HAVE=bb;                                      fx "signature: certificate mismatch" refuse sg
+  FX_ACC=1; FX_HAVE=bb;                                        fx "signature: mismatch is NOT overridable" refuse sg
+  FX_HAVE=''; FX_PULL=1; FX_SIGNER='';                         fx "signature: override accepts missing apksigner" ok sg
+  FX_GO=0; FX_ACC=0; FX_SIGNER=/x/apksigner; FX_HAVE=aa; FX_WANT=aa; FX_PULL=0; rm -f "$FXDIR/adbcalls"
+  fx "signature: dry-run passes" ok sg
+  if [ -e "$FXDIR/adbcalls" ]; then FX_FAIL=$((FX_FAIL + 1)); echo "  FIXTURE FAILED  : dry-run made adb calls"; else FX_PASS=$((FX_PASS + 1)); echo "  fixture ok      : dry-run pulls nothing, no adb call"; fi
+  FX_GO=1; FX_ACC=0; FX_PHONE=R58XXXX; FX_GL=R59YYYY; FX_ST=0; FX_PL=0; FX_UND=0; FX_AE=0; FX_ENV=
+  fx "args: real serials without --go ok" ok va
+  FX_ST=1; fx "args: --self-test on a real serial hard-refused" refuse va
+  FX_ST=0; FX_PL=1; fx "args: --allow-plaintext-db without --self-test" refuse va
+  FX_PL=0; FX_PHONE=emulator-5554; FX_ST=1; FX_PL=1; FX_GL=; fx "args: self-test + plaintext on emulator ok" ok va
+  FX_ST=0; FX_PL=0; FX_PHONE=R58XXXX; FX_GL=R59YYYY; FX_ENV=0; fx "args: PCA_SELFTEST_CALLSTATE on a real serial" refuse va
+  FX_ENV=; FX_ACC=1; FX_UND=0; fx "args: --accept-unverified-signature + --go on real devices needs the second flag" refuse va
+  FX_UND=1; fx "args: both override flags + --go on real devices ok" ok va
+  FX_ACC=0; FX_UND=1; fx "args: second flag alone refused" refuse va
+  FX_UND=0; FX_GO=1; FX_PHONE=emulator-5554; FX_GL=R59YYYY; FX_AE=0; fx "args: emulator --go without --allow-emulator" refuse va
+  say "fixtures: $FX_PASS passed, $FX_FAIL failed"
+  [ "$FX_FAIL" = 0 ]
+}
+
+# ---------- main ----------
 while [ $# -gt 0 ]; do
   case "$1" in
     --phone) PHONE="${2:-}"; shift 2 ;;
@@ -36,131 +450,42 @@ while [ $# -gt 0 ]; do
     --allow-downgrade) ALLOW_DOWN=1; shift ;;
     --self-test) SELFTEST=1; shift ;;
     --allow-plaintext-db) PLAIN_OK=1; shift ;;
+    --accept-unverified-signature) ACCEPT_UNSIG=1; shift ;;
+    --i-understand-no-signature-check) UNDERSTAND_NOSIG=1; shift ;;
+    --fixtures) FIXTURES=1; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
-is_emu() { case "$1" in emulator-*) return 0 ;; *) return 1 ;; esac; }
-
-# ---------- argument rules ----------
-[ "$PLAIN_OK" = 0 ] || [ "$SELFTEST" = 1 ] || die "--allow-plaintext-db is only valid with --self-test"
-[ -n "$PHONE" ] || die "--phone <serial> is required (no auto-detect)"
-[ -n "$APKS" ] || die "--apks <dir> is required"
-[ -d "$APKS" ] || die "APK folder not found: $APKS"
-if [ "$SELFTEST" = 1 ]; then
-  [ -z "$WATCH" ] || die "--self-test is phone-only: no --watch"
-  is_emu "$PHONE" || die "--self-test accepts only an emulator-* serial"
-  { [ -z "$GLASSES" ] || is_emu "$GLASSES"; } || die "--self-test accepts only emulator-* serials"
-  ALLOW_EMU=1
-else
-  [ -n "$GLASSES" ] || die "--glasses <serial> is required (no auto-detect)"
+if [ "$FIXTURES" = 1 ]; then
+  run_fixtures || exit 1
+  exit 0
 fi
-[ -z "$GLASSES" ] || [ "$PHONE" != "$GLASSES" ] || die "phone and glasses serials are equal"
-[ -z "$WATCH" ] || { [ "$WATCH" != "$PHONE" ] && [ "$WATCH" != "$GLASSES" ]; } || die "watch serial equals the phone or glasses serial (watch-debug.apk would REPLACE that app)"
-if [ "$GO" = 1 ] && [ "$ALLOW_EMU" = 0 ]; then
-  for s in "$PHONE" "$GLASSES" "$WATCH"; do
-    [ -n "$s" ] && is_emu "$s" && die "serial $s looks like an emulator: add --allow-emulator to run --go on it"
-  done
-fi
-[ -n "$TAG" ] || TAG="trip-$(date +%Y%m%d-%H%M)"
-case "$TAG" in *[!A-Za-z0-9._-]*) die "tag may only contain letters, digits . _ -" ;; esac
 
-# ---------- tools ----------
+validate_args
+if [ "$ACCEPT_UNSIG" = 1 ]; then echo "!!!!! --accept-unverified-signature IS ACTIVE: signature problems will NOT stop this run !!!!!"; fi
+
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
 ADB="${ADB:-}"
-[ -n "$ADB" ] || { [ -x "$SDK/platform-tools/adb" ] && ADB="$SDK/platform-tools/adb"; }
-[ -n "$ADB" ] || ADB="$(command -v adb || true)"
-[ -n "$ADB" ] && [ -x "$ADB" ] || die "adb not found (set ADB or ANDROID_HOME)"
+if [ -z "$ADB" ] && [ -x "$SDK/platform-tools/adb" ]; then ADB="$SDK/platform-tools/adb"; fi
+if [ -z "$ADB" ]; then ADB="$(command -v adb || true)"; fi
+if [ -z "$ADB" ] || [ ! -x "$ADB" ]; then die "adb not found (set ADB or ANDROID_HOME)"; fi
 BT=""
-if [ -d "$SDK/build-tools" ]; then BT="$(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -V | tail -1)"; BT="${BT%/}"; fi
-AAPT=""; [ -n "$BT" ] && [ -x "$BT/aapt2" ] && AAPT="$BT/aapt2"; [ -z "$AAPT" ] && [ -n "$BT" ] && [ -x "$BT/aapt" ] && AAPT="$BT/aapt"
-[ -n "$AAPT" ] || AAPT="$(command -v aapt2 || command -v aapt || true)"
-APKSIGNER=""; [ -n "$BT" ] && [ -x "$BT/apksigner" ] && APKSIGNER="$BT/apksigner"; [ -z "$APKSIGNER" ] && APKSIGNER="$(command -v apksigner || true)"
+if [ -d "$SDK/build-tools" ]; then BT="$(ls -d "$SDK"/build-tools/*/ 2>/dev/null | sort -V | tail -n 1 || true)"; BT="${BT%/}"; fi
+if [ -n "$BT" ] && [ -x "$BT/aapt2" ]; then AAPT="$BT/aapt2"; elif [ -n "$BT" ] && [ -x "$BT/aapt" ]; then AAPT="$BT/aapt"; fi
+if [ -z "$AAPT" ]; then AAPT="$(command -v aapt2 || command -v aapt || true)"; fi
+if [ -n "$BT" ] && [ -x "$BT/apksigner" ]; then APKSIGNER="$BT/apksigner"; else APKSIGNER="$(command -v apksigner || true)"; fi
 APKANALYZER="$(command -v apkanalyzer || true)"
-[ -n "$AAPT" ] || [ -n "$APKANALYZER" ] || die "neither aapt/aapt2 nor apkanalyzer found: cannot verify package names"
+if [ -z "$AAPT" ] && [ -z "$APKANALYZER" ]; then die "neither aapt/aapt2 nor apkanalyzer found: cannot verify package names"; fi
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/install-trip.XXXXXX")" || die "no temp dir"
-trap 'cleanup' EXIT
+if [ "$SELFTEST" = 1 ]; then run_fixtures || fail "refusal fixtures failed"; cleanup; fi
+if [ "$GO" = 1 ]; then TMP="$(mktemp -d "${TMPDIR:-/tmp}/install-trip.XXXXXX")" || die "no temp dir"; fi
 
-# A <serial> args... : the ONLY way adb is called with a device
-A() { local s="$1"; shift; "$ADB" -s "$s" "$@"; }
-
-print_rollback() {
-  cat >&2 <<RB
---- ROLLBACK (if the failure came before the phone install step, nothing changed on the phone except a force-stop) (docs/superpowers/plans/handoffs/v17-upgrade-recovery.md section 4) ---
- Never uninstall, never pm clear. Not during a call.
- 1. adb -s $PHONE shell am force-stop $PHONE_PKG   (confirm: adb -s $PHONE shell pidof $PHONE_PKG prints nothing)
- 2. Preserve the broken state first: adb -s $PHONE exec-out run-as $PHONE_PKG tar c . > $BACKUP_DIR/pca-phone-broken-$TAG.tar  (then tar tf it)
-    and on-device: adb -s $PHONE shell run-as $PHONE_PKG sh -c 'mkdir -p quarantine-$TAG && cp -p databases/context.db* quarantine-$TAG/ && cp -p shared_prefs/db_key.xml quarantine-$TAG/'
- 3. Move (never delete) the live databases/context.db* into quarantine-$TAG/replaced/, then:
-    cat ${BACKUP_TAR:-$BACKUP_DIR/pca-phone-pre-$TAG.tar} | adb -s $PHONE shell run-as $PHONE_PKG tar x
-    adb -s $PHONE install -r ${PREV_APK:-<previous phone apk, same signature>}
- 4. Open the app and run the section 3 checks. If it still fails: stop, delete nothing, ask for help.
- Glasses: adb -s <glasses> install -r <old 1.0.0 glasses apk> (staged in $BACKUP_DIR/apks-v100-*).
-RB
-}
-fail() { echo "FAILED: $*" >&2; print_rollback; cleanup; exit 1; }
-
-# ---------- APK helpers ----------
-sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
-apk_pkg() { # package name
-  if [ -n "$AAPT" ]; then "$AAPT" dump badging "$1" 2>/dev/null | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -1
-  else "$APKANALYZER" manifest application-id "$1" 2>/dev/null | head -1; fi
-}
-apk_vc() { # versionCode
-  if [ -n "$AAPT" ]; then "$AAPT" dump badging "$1" 2>/dev/null | sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p" | head -1
-  else "$APKANALYZER" manifest version-code "$1" 2>/dev/null | head -1; fi
-}
-apk_cert() { [ -n "$APKSIGNER" ] && "$APKSIGNER" verify --print-certs "$1" 2>/dev/null | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1; }
-inst_vc() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | head -1; }
-inst_vn() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionName=//p' | head -1; }
-
-# ---------- device presence ----------
-DEVS="$("$ADB" devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}')"
-has_dev() { echo "$DEVS" | grep -qx -- "$1"; }
+DEVS="$("$ADB" devices 2>/dev/null | tr -d '\r' | awk 'NR>1 && $2=="device"{print $1}')" || DEVS=""
 for s in "$PHONE" "$GLASSES" "$WATCH"; do
-  [ -z "$s" ] || has_dev "$s" || die "serial '$s' is not listed (state device) in 'adb devices'"
+  if [ -n "$s" ] && ! printf '%s\n' "$DEVS" | grep -qx -- "$s"; then die "serial '$s' is not listed (state device) in 'adb devices'"; fi
 done
-
-# ---------- call guard ----------
-call_guard() { # $1 = label
-  local out bad
-  if [ "$SELFTEST" = 1 ] && [ -n "${PCA_SELFTEST_CALLSTATE:-}" ]; then out="mCallState=$PCA_SELFTEST_CALLSTATE"
-  else out="$(A "$PHONE" shell dumpsys telephony.registry 2>/dev/null | tr -d '\r' | grep mCallState)"; fi
-  [ -n "$out" ] || { echo "REFUSED: cannot read mCallState on the phone ($1)" >&2; return 1; }
-  bad="$(echo "$out" | grep -v 'mCallState=0' | wc -l | tr -d ' ')"
-  if [ "$bad" != 0 ]; then echo "REFUSED: a call is active or state unknown on the phone ($1)" >&2; return 1; fi
-  say "call guard ($1): mCallState=0 on all slots"
-}
-
-# ---------- preflight ----------
-check_apk() { # file pkg label -> sets APK_VC
-  local f="$1" pkg="$2" label="$3" p
-  [ -f "$f" ] || die "$label APK missing: $f"
-  p="$(apk_pkg "$f")"; [ "$p" = "$pkg" ] || die "$label APK package is '$p', expected '$pkg'"
-  APK_VC="$(apk_vc "$f")"; case "$APK_VC" in ''|*[!0-9]*) die "cannot read versionCode of $f" ;; esac
-  say "$label: $(basename "$f") package=$p versionCode=$APK_VC sha256=$(sha256_of "$f")"
-}
-check_installed() { # serial pkg apk label : version (no downgrade) + signature
-  local s="$1" pkg="$2" apk="$3" label="$4" ivc path want have
-  ivc="$(inst_vc "$s" "$pkg")"
-  [ -n "$ivc" ] || die "$label: $pkg is not installed on $s (this helper only upgrades; never first-installs)"
-  say "$label: installed versionName=$(inst_vn "$s" "$pkg") versionCode=$ivc -> new versionCode=$APK_VC"
-  if [ "$ivc" -gt "$APK_VC" ] && [ "$ALLOW_DOWN" = 0 ]; then die "$label: downgrade ($ivc > $APK_VC); --allow-downgrade is NOT recommended (Room refuses older schemas)"; fi
-  path="$(A "$s" shell pm path "$pkg" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p' | head -1)"
-  want="$(apk_cert "$apk")"
-  if [ -n "$path" ] && [ -n "$want" ] && A "$s" pull "$path" "$TMP/installed-$label.apk" >/dev/null 2>&1; then
-    have="$(apk_cert "$TMP/installed-$label.apk")"
-    [ -n "$have" ] || { say "WARNING: $label: could not read the installed signature: signature NOT verified"; return 0; }
-    [ "$have" = "$want" ] || die "$label: signing certificate differs (installed ${have%????????????????????????????????????????????????????????} vs new ${want%????????????????????????????????????????????????????????}); a different signature makes the encrypted DB unreadable"
-    say "$label: signature matches installed (SHA-256 ${want%????????????????????????????????????????????????????????}...)"
-    [ "$label" = phone ] && cp "$TMP/installed-phone.apk" "$TMP/prev-phone.apk"
-  else
-    say "WARNING: $label: signature NOT verified (apksigner missing or installed APK not pullable)"
-  fi
-  return 0
-}
 
 say "mode: $([ "$GO" = 1 ] && echo GO || echo DRY-RUN) tag=$TAG self-test=$SELFTEST"
 say "phone=$PHONE glasses=${GLASSES:-none} watch=${WATCH:-none}"
@@ -175,80 +500,15 @@ if [ -n "$WATCH" ]; then
   check_installed "$WATCH" "$WATCH_PKG" "$APKS/watch-debug.apk" watch
   say "watch: watch-debug.apk shares applicationId $WATCH_PKG with the phone app; it will be installed ONLY to $WATCH"
 fi
-call_guard preflight || { cleanup; exit 2; }
-
-# ---------- steps ----------
-do_backup() {
-  local t i pid n; BACKUP_TAR="$BACKUP_DIR/pca-phone-pre-$TAG.tar"; PREV_APK="$BACKUP_DIR/pca-phone-pre-$TAG.apk"
-  say "STEP backup: force-stop $PHONE_PKG, tar c . via run-as -> $BACKUP_TAR (validated with tar -t, listing, size, header, sha256)"
-  [ "$GO" = 1 ] || return 0
-  [ ! -e "$BACKUP_TAR" ] || fail "backup file already exists: $BACKUP_TAR (pick another --tag)"
-  mkdir -p "$BACKUP_DIR" || fail "cannot create $BACKUP_DIR"
-  call_guard backup || fail "call active"
-  for i in 1 2 3; do
-    A "$PHONE" shell am force-stop "$PHONE_PKG" >/dev/null 2>&1; sleep 1
-    pid="$(A "$PHONE" shell pidof "$PHONE_PKG" 2>/dev/null | tr -d '\r')"; [ -z "$pid" ] && break
-  done
-  [ -z "$pid" ] || fail "app still running after force-stop; backup not taken"
-  A "$PHONE" exec-out run-as "$PHONE_PKG" tar c . > "$BACKUP_TAR" 2>"$TMP/tar.err" || fail "run-as tar failed (is the installed build debuggable?)"
-  t="$TMP/bk"; mkdir -p "$t"
-  tar tf "$BACKUP_TAR" > "$TMP/list.txt" 2>/dev/null || fail "backup validation: tar -t could not read the archive to its end"
-  grep -Eq '(^|/)databases/context\.db$' "$TMP/list.txt" || fail "backup validation: databases/context.db missing from the tar"
-  grep -Eq '(^|/)shared_prefs/db_key\.xml$' "$TMP/list.txt" || [ "$PLAIN_OK" = 1 ] || fail "backup validation: shared_prefs/db_key.xml missing from the tar"
-  n="$(grep -cE 'context\.db-(wal|shm)$' "$TMP/list.txt" || true)"
-  [ "$(stat -f%z "$BACKUP_TAR" 2>/dev/null || stat -c%s "$BACKUP_TAR")" -ge 8192 ] || fail "backup validation: tar is only a few KB (failed snapshot)"
-  tar xf "$BACKUP_TAR" -C "$t" ./databases/context.db 2>/dev/null || tar xf "$BACKUP_TAR" -C "$t" databases/context.db 2>/dev/null || fail "backup validation: cannot extract context.db"
-  local db="$t/databases/context.db" sz
-  sz="$(stat -f%z "$db" 2>/dev/null || stat -c%s "$db")"
-  [ "$sz" -gt 0 ] && { [ $((sz % 4096)) -eq 0 ] || [ "$PLAIN_OK" = 1 ]; } || fail "backup validation: context.db size $sz is not a multiple of 4096"
-  [ "$(head -c 15 "$db")" != "SQLite format 3" ] || [ "$PLAIN_OK" = 1 ] || fail "backup validation: context.db has a plaintext header (bad snapshot or unencrypted install)"
-  say "backup OK: $BACKUP_TAR bytes=$(stat -f%z "$BACKUP_TAR" 2>/dev/null || stat -c%s "$BACKUP_TAR") entries=$(wc -l < "$TMP/list.txt" | tr -d ' ') wal/shm=$n context.db=$sz sha256=$(sha256_of "$BACKUP_TAR")"
-  [ -f "$TMP/prev-phone.apk" ] && cp "$TMP/prev-phone.apk" "$PREV_APK" && say "previous phone APK kept: $PREV_APK sha256=$(sha256_of "$PREV_APK")"
-  { echo "tag=$TAG"; echo "tar_sha256=$(sha256_of "$BACKUP_TAR")"; echo "installed_before: versionName=$(inst_vn "$PHONE" "$PHONE_PKG") versionCode=$(inst_vc "$PHONE" "$PHONE_PKG")"; echo "new_apk_sha256=$(sha256_of "$APKS/phone-debug.apk")"; } > "$BACKUP_DIR/pca-phone-pre-$TAG.notes.txt"
-}
-
-install_apk() { # serial apk role (phone|glasses|watch): the role must match the serial
-  local s="$1" apk="$2" role="$3" flags="-r" out
-  case "$role" in
-    phone) [ "$s" = "$PHONE" ] && [ "$(basename "$apk")" = phone-debug.apk ] || fail "internal check: wrong serial/apk pairing for phone" ;;
-    glasses) [ "$s" = "$GLASSES" ] && [ "$s" != "$PHONE" ] && [ "$(basename "$apk")" = glasses-debug.apk ] || fail "internal check: wrong serial/apk pairing for glasses" ;;
-    watch) [ "$s" = "$WATCH" ] && [ "$s" != "$PHONE" ] && [ "$s" != "$GLASSES" ] && [ "$(basename "$apk")" = watch-debug.apk ] || fail "internal check: watch APK may only go to the watch serial" ;;
-  esac
-  [ "$ALLOW_DOWN" = 1 ] && flags="-r -d"
-  say "STEP install $role: adb -s $s install $flags $(basename "$apk")"
-  [ "$GO" = 1 ] || return 0
-  call_guard "before $role install" || fail "call active"
-  # shellcheck disable=SC2086
-  out="$(A "$s" install $flags "$apk" 2>&1 | tr -d '\r' | tail -1)"
-  [ "$out" = Success ] || fail "$role install result: $out"
-  say "$role install: Success"
-}
-
-scan_logs() { # serial pkg label
-  local s="$1" pkg="$2" label="$3" pid fatal mig comp
-  say "STEP verify $label: clear logcat, launch $pkg, wait ${SCAN_SECS}s, report counts of FATAL / Migration / Room errors"
-  [ "$GO" = 1 ] || return 0
-  A "$s" logcat -c >/dev/null 2>&1
-  comp="$(A "$s" shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null | tr -d '\r' | tail -1)"
-  case "$comp" in "$pkg"/*) A "$s" shell am start -n "$comp" >/dev/null 2>&1 || fail "$label: could not launch $comp" ;;
-    *) A "$s" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || fail "$label: no launcher activity for $pkg" ;; esac
-  sleep "$SCAN_SECS"
-  pid="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
-  fatal="$(A "$s" logcat -d -b all 2>/dev/null | grep -cE "FATAL EXCEPTION|Process: ${pkg}[,: ]" || true)"
-  if [ -n "$pid" ]; then
-    mig="$(A "$s" logcat -d --pid="$pid" 2>/dev/null | grep -ciE "Migration didn.t|SQLiteException|not a database|IllegalStateException.*room|room.*(error|exception)" || true)"
-  else mig="n/a"; fi
-  say "$label log scan: running=$([ -n "$pid" ] && echo yes || echo NO) fatal_count=$fatal migration_room_error_count=$mig"
-  [ -n "$pid" ] || fail "$label: app is not running after ${SCAN_SECS}s"
-  [ "$fatal" = 0 ] || fail "$label: $fatal FATAL lines"
-  [ "$mig" = 0 ] || fail "$label: $mig Migration/Room error lines"
-}
+call_guard preflight || die "call guard"
+disk_check || die "disk preflight"
 
 do_backup
 install_apk "$PHONE" "$APKS/phone-debug.apk" phone
 scan_logs "$PHONE" "$PHONE_PKG" phone
 if [ "$GO" = 1 ]; then
-  nvc="$(inst_vc "$PHONE" "$PHONE_PKG")"; [ "$nvc" = "$PHONE_VC" ] || fail "phone installed versionCode is '$nvc', expected $PHONE_VC"
+  nvc="$(inst_vc "$PHONE" "$PHONE_PKG")" || nvc=""
+  [ "$nvc" = "$PHONE_VC" ] || fail "phone installed versionCode is '$nvc', expected $PHONE_VC"
   say "phone verified: installed versionCode=$nvc"
 fi
 if [ -n "$GLASSES" ]; then
@@ -257,8 +517,8 @@ if [ -n "$GLASSES" ]; then
 fi
 if [ -n "$WATCH" ]; then
   install_apk "$WATCH" "$APKS/watch-debug.apk" watch
-  [ "$GO" = 1 ] && say "watch verified: installed versionCode=$(inst_vc "$WATCH" "$WATCH_PKG")"
+  if [ "$GO" = 1 ]; then say "watch verified: installed versionCode=$(inst_vc "$WATCH" "$WATCH_PKG")"; fi
 fi
 if [ "$GO" = 1 ]; then say "DONE. Backup: $BACKUP_TAR (keep until the trip is over). Open the app and do the manual checks (v17-upgrade-recovery.md section 3)."
-else say "DRY-RUN complete: nothing was changed. Re-run with --go to execute."; fi
+else say "DRY-RUN complete: nothing was changed or written. Re-run with --go to execute."; fi
 exit 0
