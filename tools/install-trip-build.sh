@@ -439,30 +439,18 @@ verify_fail() { # label reason : verification FAILED (exit 3)
 }
 
 SCAN_BUFFERS="main system crash"
-buf_covered() { # serial buffer t0 file : 0 if the buffer's own retained log provably covers (t0 - 3 s), else 1 with BUF_WHY set
-  local s="$1" bf="$2" t0="$3" f="$4" g cap used oldest
+buf_covered() { # raw normalised t0 : 0 if the buffer provably holds everything logged since (t0 - 3 s), else 1 with BUF_WHY set
+  local raw="$1" f="$2" t0="$3" nrec oldest
   BUF_WHY=""
-  # logcat -g -b <buf> real format (emulator, 2026-11-18): "main: ring buffer is 2 MiB (790 KiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B"
-  # units B/KiB/MiB/GiB are truncated by logd, so the consumed size is taken at its UPPER bound (value + 1 unit) and must stay under 90 % of the capacity to count as "never wrapped"
-  g="$(A "$s" logcat -g -b "$bf" 2>/dev/null | tr -d '\r' | awk -v b="$bf" '
-    function bytes(n, u) { if (u == "B") return n; if (u == "KiB") return n * 1024; if (u == "MiB") return n * 1048576; if (u == "GiB") return n * 1073741824; return -1 }
-    function unit(u) { if (u == "B") return 1; if (u == "KiB") return 1024; if (u == "MiB") return 1048576; return 1073741824 }
-    index($0, b ": ring buffer is ") == 1 {
-      if (match($0, /ring buffer is [0-9]+ (B|KiB|MiB|GiB) \([0-9]+ (B|KiB|MiB|GiB) consumed/)) {
-        t = substr($0, RSTART, RLENGTH); gsub(/[^0-9A-Za-z ]/, " ", t); split(t, w, " ")
-        # w: ring buffer is CAP CAPU consumedvalue consumedunit consumed
-        c = bytes(w[4], w[5]); u = bytes(w[6], w[7]) + unit(w[7])
-        if (c > 0 && u >= 0) { print c, u; exit }
-      } }')" || g=""
-  set -- $g
-  cap="${1-}"; used="${2-}"
-  case "$cap$used" in ''|*[!0-9]*) cap=""; used="" ;; esac
-  if [ -n "$cap" ] && [ -n "$used" ] && [ $((used * 10)) -lt $((cap * 9)) ]; then return 0; fi
-  # wrapped / nearly full / sizes unparseable: the buffer's OWN oldest line must be at or before (install start - 3 s)
+  # Sound FIFO argument (logd prunes oldest-first): (1) a buffer with ZERO records cannot have lost anything logged after the install start
+  # (a pruned newer record would imply newer ones are present); (2) otherwise, if its oldest retained record is at or before (t0 - 3 s), nothing newer was pruned.
+  nrec="$(awk '!/^--------- / && !/^[[:space:]]*$/ { n++ } END { print n + 0 }' "$raw" 2>/dev/null)" || nrec=""
+  case "$nrec" in ''|*[!0-9]*) BUF_WHY="cannot count the buffer records"; return 1 ;; esac
+  [ "$nrec" = 0 ] && return 0
   oldest="$(awk '$1 ~ /^[0-9]+\.[0-9]+$/ { v = $1 + 0; if (n == 0 || v < m) m = v; n++ } END { if (n > 0) printf "%d\n", m }' "$f" 2>/dev/null)" || oldest=""
-  case "$oldest" in ''|*[!0-9]*) BUF_WHY="buffer full or size unknown and no parseable line"; return 1 ;; esac
+  case "$oldest" in ''|*[!0-9]*) BUF_WHY="no parseable timestamp in the oldest record"; return 1 ;; esac
   [ "$oldest" -le $((t0 - 3)) ] && return 0
-  BUF_WHY="buffer wrapped or size unknown; its oldest line is newer than the install start"; return 1
+  BUF_WHY="its oldest retained record is newer than the install start, so earlier records may have been pruned"; return 1
 }
 
 scan_logs() { # serial pkg label
@@ -502,7 +490,7 @@ scan_logs() { # serial pkg label
       /^ *[0-9]+\.[0-9]+ +[0-9]+ +[0-9]+ / { ts = $1; pid = $2; tid = $3; have = 1; print; next }
       /^--------- / || /^[[:space:]]*$/ { next }
       have { printf "%s %s %s E cont: %s\n", ts, pid, tid, $0 }' > "$snap.$bf" 2>/dev/null || unverified_exit "$label" "cannot normalise the $bf log" "$s" "$pkg"
-    buf_covered "$s" "$bf" "$t0" "$snap.$bf" || unverified_exit "$label" "log buffer $bf does not cover the install window ($BUF_WHY): check logcat manually / increase the buffer with logcat -G 16M before the install" "$s" "$pkg"
+    buf_covered "$snap.$bf.raw" "$snap.$bf" "$t0" || unverified_exit "$label" "log buffer $bf does not cover the install window ($BUF_WHY): run adb logcat -G 16M before the install and check logcat manually" "$s" "$pkg"
     cat "$snap.$bf" >> "$snap"
   done
   lines="$(wc -l < "$snap")" || unverified_exit "$label" "cannot measure the log" "$s" "$pkg"
@@ -567,9 +555,6 @@ sl() { # post-install log verification fixture: FX_SNAP = the single snapshot (t
       *resolve-activity*) printf 'com.x/.Main\n' ;;
       *"am start"*|*monkey*) return 0 ;;
       *pidof*) local n; n="$(wc -l < "$FXDIR/pidn")"; n="${n//[[:space:]]/}"; echo x >> "$FXDIR/pidn"; if [ "$n" = 0 ]; then printf '%b' "${FX_PID0-4242}"; else printf '%b' "${FX_PID1-4242}"; fi ;;
-      "logcat -g -b main") printf '%b' "${FX_GMAIN-garbage unparseable\n}" ;;
-      "logcat -g -b system") printf '%b' "${FX_GSYS-system: ring buffer is 2 MiB (678 KiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n}" ;;
-      "logcat -g -b crash") printf '%b' "${FX_GCRASH-crash: ring buffer is 2 MiB (0 B consumed, 0 B readable), max entry is 5120 B, max payload is 4068 B\n}" ;;
       "logcat -d -b main -v threadtime -v epoch") printf '%b' "$FX_SNAP"; return "${FX_SNAPR:-0}" ;;
       "logcat -d -b system -v threadtime -v epoch") printf '%b' "${FX_SNAPSYS-}"; return "${FX_SNAPSYSR:-0}" ;;
       "logcat -d -b crash -v threadtime -v epoch") printf '%b' "${FX_SNAPCRASH-}"; return "${FX_SNAPCRASHR:-0}" ;;
@@ -724,32 +709,28 @@ SIGS
   FX_SNAP="$(mk '1000|no such table: foo in com.x.other')"; fx "pkg: other-pid SQL error mentioning only com.x.other is not counted" ok sl
   FX_SNAP="$(mk '1000|no such table: foo (com.x)')"; fx "pkg: other-pid SQL error naming the exact package => FAIL" rc3 sl
   FX_SNAP="$(mk '999|SQLiteCantOpenDatabaseException: code 14')"; fx "pkg: other-pid signature without the package is not counted" ok sl
-  # log coverage (buffer wrap): the each relevant buffer's own oldest line must be at or before install start - 3 s (see buf_covered)
+  # log coverage (buffer wrap): each relevant buffer's own oldest line must be at or before install start - 3 s (see buf_covered)
   FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line newer than the install start (clean tail) => UNVERIFIED exit 3" rc3 sl
   FX_SNAP="$(TS=1793999997 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line exactly install start - 3 s => CLEAN" ok sl
   FX_SNAP="$(TS=1793999999 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage: oldest line 1 s before the install start => UNVERIFIED" rc3 sl
   FX_SNAP="$(mk)"; fx "coverage: window covered => CLEAN" ok sl
   FX_SNAP="$(for i in 0 1 2 3 4 5 6; do printf 'no-timestamp  4242  4242 E Tag: line %s\n' "$i"; done)"; fx "coverage: unparseable timestamps => UNVERIFIED exit 3" rc3 sl
   FX_SNAP="$(mk)"; FX_T0=''; fx "coverage: install start time unknown => UNVERIFIED exit 3" rc3 sl; FX_T0=1794000000
-  # per-buffer coverage (Android prunes each buffer on its own; real "logcat -g" lines captured on the emulator 2026-11-18)
-  GREAL='main: ring buffer is 2 MiB (790 KiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n'
-  GWRAP='main: ring buffer is 2 MiB (2 MiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n'
-  GNEAR='main: ring buffer is 2 MiB (1 MiB consumed, 1 MiB readable), max entry is 5120 B, max payload is 4068 B\n'
-  FX_SNAPSYS="$(TS=1793990000 tl 1 'old line in the quiet system buffer')"
-  FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN="$GWRAP"; fx "coverage/buf: quiet buffer holds an OLD line, wrapped main has only a newer tail => UNVERIFIED exit 3" rc3 sl
-  FX_GMAIN="$GNEAR"; fx "coverage/buf: main 1 MiB of 2 MiB (truncated unit, upper bound not under 90 %) is treated as possibly wrapped => UNVERIFIED" rc3 sl
-  FX_GMAIN="$GREAL"; fx "coverage/buf: main never wrapped (real -g line), newer tail only => covered, CLEAN" ok sl
-  FX_GMAIN="main: ring buffer is 16 MiB (790 KiB consumed, 1 MiB readable), max\n"; fx "coverage/buf: 16 MiB capacity with 790 KiB consumed => covered" ok sl
-  FX_SNAP="$(mk)"; FX_GMAIN="$GWRAP"; fx "coverage/buf: wrapped main whose oldest line predates the start => covered, CLEAN" ok sl
-  FX_SNAP="$(TS=1793999998 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN="$GWRAP"; fx "coverage/buf: wrapped main, oldest only start - 2 s (margin is 3 s) => UNVERIFIED" rc3 sl
-  FX_SNAP="$(TS=1793999997 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; fx "coverage/buf: wrapped main, oldest start - 3 s => covered" ok sl
-  FX_SNAP="$(TS=1793999996 tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN='total garbage\n'; fx "coverage/buf: unparseable -g falls back to the timestamp rule (covered)" ok sl
-  FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done)"; FX_GMAIN='total garbage\n'; fx "coverage/buf: unparseable -g falls back to the timestamp rule (newer tail => UNVERIFIED)" rc3 sl
-  FX_GMAIN='main: ring buffer is 2 PiB (1 B consumed\n'; fx "coverage/buf: unknown unit => fallback => UNVERIFIED" rc3 sl
-  FX_SNAP="$(mk)"; FX_GMAIN='total garbage\n'; FX_GSYS='system: ring buffer is 2 MiB (2 MiB consumed, 1 MiB readable)\n'; FX_SNAPSYS=''; fx "coverage/buf: wrapped EMPTY system buffer => UNVERIFIED" rc3 sl
-  FX_GSYS='garbage\n'; fx "coverage/buf: unparseable -g and empty system buffer => UNVERIFIED" rc3 sl
-  unset FX_GSYS; FX_GCRASH='crash: ring buffer is 2 MiB (2 MiB consumed, 1 MiB readable)\n'; fx "coverage/buf: wrapped empty crash buffer => UNVERIFIED" rc3 sl
-  unset FX_GCRASH; FX_SNAPSYSR=9; fx "coverage/buf: system buffer cannot be read => UNVERIFIED exit 3" rc3 sl; unset FX_SNAPSYSR
+  # per-buffer coverage, FIFO rule (Android prunes each buffer on its own, oldest first)
+  old() { TS="$1" tl 1 edge; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done; }
+  tail6() { for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done; }
+  FX_SNAPSYS=''; FX_SNAPCRASH=''
+  FX_SNAP="$(tail6)"; fx "coverage/buf: Codex mock (16 MiB, 12 MiB consumed, oldest retained after start, healthy tail) => UNVERIFIED" rc3 sl
+  FX_SNAP="$(mk)"; fx "coverage/buf: empty system and crash buffers => covered, CLEAN" ok sl
+  FX_SNAPCRASH="$(TS=1793990000 tl 1 'one old quiet line')"; fx "coverage/buf: quiet crash buffer with one old line => covered" ok sl
+  FX_SNAPCRASH=''; FX_SNAP="$(old 1700000000)"; fx "coverage/buf: main wrapped, oldest far older than the start => covered" ok sl
+  FX_SNAP="$(old 1793999998)"; fx "coverage/buf: main oldest 2 s before the start (margin 3 s) => UNVERIFIED" rc3 sl
+  FX_SNAP="$(old 1793999997)"; fx "coverage/buf: main oldest start - 3 s => covered" ok sl
+  FX_SNAP="$(mk)"; FX_SNAPSYS="$(tail6)"; fx "coverage/buf: system oldest newer than the start (main fine) => UNVERIFIED" rc3 sl
+  FX_SNAPSYS=''; FX_SNAPCRASH="$(tl 4242 'newer crash line')"; fx "coverage/buf: crash oldest newer than the start => UNVERIFIED" rc3 sl
+  FX_SNAPCRASH=''; FX_SNAP="$(mk)"; FX_SNAPSYS="$(printf 'garbage first line\n')"; fx "coverage/buf: unparseable first timestamp (non-empty system buffer) => UNVERIFIED" rc3 sl
+  FX_SNAPSYS=''
+  FX_SNAPSYSR=9; fx "coverage/buf: system buffer cannot be read => UNVERIFIED exit 3" rc3 sl; unset FX_SNAPSYSR
   FX_SNAPCRASHR=9; fx "coverage/buf: crash buffer cannot be read => UNVERIFIED exit 3" rc3 sl; unset FX_SNAPCRASHR
   FX_SNAPSYS="$(TS=1793990000 tl 1 'old system line'; tl 1000 'ActivityManager: ANR in com.x (com.x/.Main)')"; fx "coverage/buf: a signature found in the system buffer => FAIL exit 3" rc3 sl
   FX_SNAPSYS=''; FX_SNAPCRASH="$(tl 4242 'FATAL EXCEPTION: main')"; fx "coverage/buf: a signature found in the crash buffer => FAIL exit 3" rc3 sl; unset FX_SNAPCRASH
@@ -759,7 +740,7 @@ SIGS
 	at SQLiteException.bar(X.java:1)"; fx "continuation: unprefixed SQLiteException after another pid's record is not the app's => clean" ok sl
   FX_SNAP="$(mk)
 	at com.x.Fine.call(X.java:1)"; fx "continuation: harmless unprefixed line after an app record => clean" ok sl
-  unset FX_GMAIN FX_GSYS FX_GCRASH FX_SNAPSYS FX_SNAPCRASH
+  unset FX_SNAPSYS FX_SNAPCRASH
   # restart race (mocked adb: pid sampled before the window, snapshot taken once, pid sampled after)
   FX_SNAP="$(mk)"; FX_PID0='4242\n'; FX_PID1='5555\n'; fx "restart: PID changed => FAIL exit 3" rc3 sl
   FX_PID0=''; FX_PID1='4242\n'; fx "restart: PID absent before the window => FAIL exit 3" rc3 sl
