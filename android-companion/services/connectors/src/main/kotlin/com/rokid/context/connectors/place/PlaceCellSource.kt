@@ -34,7 +34,8 @@ class PlaceCellSource(
         for (p in pages) {
             val q = p.qid ?: continue
             val ent = entities[q] ?: continue
-            val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: continue
+            if (ent.classes.any { it in PERSON_CLASSES }) continue // people are never candidates, not even for a curated QID
+            val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
             val lon = ent.lon ?: p.lon ?: hitById[p.pageId]?.lon ?: continue
             kept["wd:$q"] = FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, p.title, kind, lat, lon, PlaceKinds.defaultRadiusM(kind), p.extract, "wikipedia:en", "page:${p.pageId}")
@@ -103,6 +104,36 @@ class PlaceCellSource(
             "Q1456873" to PlaceKinds.STUPA, // peace pagoda (a Buddhist stupa): Darjeeling Peace Pagoda
             "Q109607" to PlaceKinds.ARCHAEOLOGICAL_SITE, // ruins: Polonnaruwa Vatadage
             "Q167346" to PlaceKinds.ATTRACTION, // botanical garden: Royal Botanic Gardens, Peradeniya
+        )
+
+        /** Wikidata classes that make an item a person or character: such an item is rejected even when its QID is curated. Labels read back from wikidata.org on 2026-11-18. */
+        val PERSON_CLASSES: Set<String> = setOf(
+            "Q5", // human
+            "Q15632617", // fictional human
+            "Q95074", // character
+            "Q21070568", // human whose existence is disputed
+        )
+
+        /** Version of [CURATED_LANDMARK_QIDS]; raise it with every change to the set. */
+        const val CURATED_LANDMARKS_VERSION = 1
+
+        /**
+         * CURATED_LANDMARK_QIDS (version 1, 2026-11-18): individual landmarks admitted by Wikidata item id although their P31 class is NOT in [MONUMENT_CLASSES] (and must not be, as a general class).
+         * An item is admitted when its P31 is allowlisted OR its QID is here; it still needs P625 or page coordinates and is never a person ([PERSON_CLASSES]). Only items that Wikipedia geosearch can
+         * return can enter (the discovery flow is unchanged). Each id was read back from wikidata.org on 2026-11-18 (wbgetentities, labels en, claims P31 and P625); label, P31 and why:
+         */
+        val CURATED_LANDMARK_QIDS: Map<String, String> = mapOf(
+            "Q272153" to PlaceKinds.ARCHAEOLOGICAL_SITE, // "Sigiriya" (7.957, 80.760), P31 human settlement Q486972: the rock fortress page, a headline Sri Lanka site
+            "Q16901632" to PlaceKinds.VIEWPOINT, // "Tiger Hill, Darjeeling" (26.995, 88.285), P31 geographical feature + mountain: the Darjeeling sunrise viewpoint
+            "Q4868648" to PlaceKinds.ATTRACTION, // "Batasia Loop" (27.017, 88.247), P31 horseshoe curve: Darjeeling Himalayan Railway loop and war memorial park
+            "Q23038925" to PlaceKinds.ATTRACTION, // "Banjhakri falls and park" (27.351, 88.604), P31 waterfall: Gangtok Banjhakri Falls and Energy Park
+            "Q3214979" to PlaceKinds.ATTRACTION, // "Khecheopalri Lake" (27.373, 88.208), P31 lake: sacred lake, West Sikkim
+            "Q944175" to PlaceKinds.HISTORIC_SITE, // "Sri Maha Bodhi" (8.345, 80.397), P31 remarkable tree: Jaya Sri Maha Bodhi, Anuradhapura, the sacred fig
+            "Q5653142" to PlaceKinds.ATTRACTION, // "Happy Valley Tea Estate" (27.048, 88.251), P31 tea plantation + settlement: the Darjeeling visitor tea estate
+            "Q542864" to PlaceKinds.ATTRACTION, // "Lake Tsongmo" (27.375, 88.764), P31 glacial lake: Tsomgo (Changu) Lake, East Sikkim
+            "Q5285886" to PlaceKinds.STUPA, // "Do-drul Chorten" (27.313, 88.605), no P31 at all: Gangtok stupa
+            "Q24949017" to PlaceKinds.HERITAGE_BUILDING, // "Darjeeling railway station" (27.038, 88.263), P31 railway station: Darjeeling Himalayan Railway terminus
+            "Q60181073" to PlaceKinds.HERITAGE_BUILDING, // "Ghum railway station" (27.009, 88.254), P31 railway station: highest station of the Darjeeling Himalayan Railway
         )
 
         /** The OSM tag combinations that make an object a place: historic, heritage and tourism=attraction|museum|viewpoint, named. */

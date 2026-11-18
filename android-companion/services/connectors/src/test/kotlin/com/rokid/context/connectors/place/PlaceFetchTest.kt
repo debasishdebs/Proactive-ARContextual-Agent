@@ -203,7 +203,7 @@ class PlaceFetchTest {
         assertEquals(mapOf("wd:Q7273006" to PlaceKinds.TOMB, "wd:Q1864572" to PlaceKinds.MUSEUM, "wd:Q1786944" to PlaceKinds.ATTRACTION), got.places.associate { it.id to it.kind })
     }
 
-    /** Trip coverage check 2026-11-18 (real P31 values from wikidata.org): monasteries, peace pagoda, ruins and botanical garden are kept; lake, waterfall, tea plantation, settlement, a person and a business stay out. */
+    /** Trip coverage check 2026-11-18 (real P31 values from wikidata.org): monasteries, peace pagoda, ruins and botanical garden are kept; lake, waterfall, tea plantation, settlement and a person stay out unless their QID is curated (see the curated tests; the ids here are NOT curated). */
     @Test fun tripSitesAreKeptAndNonMonumentClassesAreNot() = runTest {
         val rows = listOf(
             Triple("Rumtek Monastery", "Q1546234", setOf("Q844619", "Q54074585")) to PlaceKinds.TEMPLE,
@@ -212,10 +212,10 @@ class PlaceFetchTest {
             Triple("Peace Pagoda, Darjeeling", "Q7157413", setOf("Q1456873")) to PlaceKinds.STUPA,
             Triple("Polonnaruwa Vatadage", "Q7225955", setOf("Q109607")) to PlaceKinds.ARCHAEOLOGICAL_SITE,
             Triple("Royal Botanic Gardens, Peradeniya", "Q3119056", setOf("Q167346")) to PlaceKinds.ATTRACTION,
-            Triple("Khecheopalri Lake", "Q3214979", setOf("Q23397")) to null,
-            Triple("Banjhakri Falls and Energy Park", "Q23038925", setOf("Q34038")) to null,
-            Triple("Happy Valley Tea Estate", "Q5653142", setOf("Q70780172", "Q56436498")) to null,
-            Triple("Sigiriya (settlement)", "Q272153", setOf("Q486972")) to null,
+            Triple("Some other lake", "Q9999981", setOf("Q23397")) to null,
+            Triple("Some other waterfall", "Q9999982", setOf("Q34038")) to null,
+            Triple("Some other tea estate", "Q9999983", setOf("Q70780172", "Q56436498")) to null,
+            Triple("Some other settlement", "Q9999984", setOf("Q486972")) to null,
             Triple("Some Lama", "Q9999991", setOf("Q5")) to null,
         )
         val wiki = object : WikipediaSource {
@@ -227,6 +227,59 @@ class PlaceFetchTest {
         }
         val got = PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(27.3, 88.6)).places.associate { it.id to it.kind }
         assertEquals(rows.filter { it.second != null }.associate { "wd:${it.first.second}" to it.second!! }, got)
+    }
+
+    /** Curated landmark allowlist (version 1): ids and English labels as wikidata.org returned them on 2026-11-18. */
+    @Test fun curatedLandmarkIdsAreTheOnesVerifiedAgainstWikidata() {
+        val verified = mapOf(
+            "Q272153" to "Sigiriya", "Q16901632" to "Tiger Hill, Darjeeling", "Q4868648" to "Batasia Loop", "Q23038925" to "Banjhakri falls and park", "Q3214979" to "Khecheopalri Lake",
+            "Q944175" to "Sri Maha Bodhi", "Q5653142" to "Happy Valley Tea Estate", "Q542864" to "Lake Tsongmo", "Q5285886" to "Do-drul Chorten", "Q24949017" to "Darjeeling railway station",
+            "Q60181073" to "Ghum railway station",
+        )
+        assertEquals(verified.keys, PlaceCellSource.CURATED_LANDMARK_QIDS.keys)
+        assertEquals(1, PlaceCellSource.CURATED_LANDMARKS_VERSION)
+        assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.values.all { it in PlaceKinds.ALL })
+        assertEquals(setOf("Q5", "Q15632617", "Q95074", "Q21070568"), PlaceCellSource.PERSON_CLASSES)
+        assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.keys.none { it in PlaceCellSource.MONUMENT_CLASSES })
+    }
+
+    private suspend fun curatedCell(rows: List<Triple<String, Set<String>, Pair<Double, Double>?>>): Map<String, String> {
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = rows.mapIndexed { i, r -> WikiHit(i + 1L, r.first, 27.3, 88.6) }
+            override suspend fun pages(pageIds: List<Long>) = rows.mapIndexed { i, r -> WikiPage(i + 1L, r.first, "x.", r.first, null, null) }.filter { it.pageId in pageIds }
+        }
+        val wd = object : WikidataSource {
+            override suspend fun entities(ids: List<String>) = rows.associate { it.first to WikidataEntity(it.first, it.second, emptyList(), emptyList(), it.third?.first, it.third?.second) }
+        }
+        return PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(27.3, 88.6)).places.associate { it.id to it.kind }
+    }
+
+    @Test fun curatedQidIsAdmittedAndTheSameClassWithoutTheQidIsNot() = runTest {
+        val at = 27.3 to 88.6
+        val got = curatedCell(listOf(
+            Triple("Q3214979", setOf("Q23397"), at), // Khecheopalri Lake: curated lake
+            Triple("Q1111111", setOf("Q23397"), at), // another lake: not curated
+            Triple("Q4868648", setOf("Q1395089"), at), // Batasia Loop
+            Triple("Q5285886", emptySet(), at), // Do-drul Chorten, no P31
+            Triple("Q2222222", emptySet(), at), // no P31, not curated
+        ))
+        assertEquals(mapOf("wd:Q3214979" to PlaceKinds.ATTRACTION, "wd:Q4868648" to PlaceKinds.ATTRACTION, "wd:Q5285886" to PlaceKinds.STUPA), got)
+    }
+
+    @Test fun aPersonIsRejectedEvenWhenItsQidIsCurated() = runTest {
+        val at = 27.3 to 88.6
+        val got = curatedCell(listOf(Triple("Q272153", setOf("Q5"), at), Triple("Q16901632", setOf("Q15632617", "Q618123"), at), Triple("Q944175", setOf("Q811534"), at)))
+        assertEquals(mapOf("wd:Q944175" to PlaceKinds.HISTORIC_SITE), got)
+    }
+
+    /** A geosearch hit always carries coordinates, so "no coordinates" means no usable item: a curated QID whose Wikidata entity did not come back (or has no page) is never stored. */
+    @Test fun aCuratedQidWithoutAWikidataEntityOrPageIsRejected() = runTest {
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Sigiriya", 7.957, 80.76), WikiHit(2, "Tiger Hill", 26.99, 88.28))
+            override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Sigiriya", "x.", "Q272153", null, null), WikiPage(2, "Tiger Hill", "x.", null, null, null))
+        }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>) = emptyMap<String, WikidataEntity>() }
+        assertEquals(0, PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(7.957, 80.76)).places.size)
     }
 
     private class Mirror(val answer: suspend () -> List<OsmElement>) : OverpassSource {
