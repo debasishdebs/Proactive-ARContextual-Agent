@@ -72,23 +72,9 @@ jobs:
         run: |
           set -euo pipefail
           vc() { sed -n 's/^[[:space:]]*versionCode = \([0-9]*\).*/\1/p' | head -n1; }
-          # sort key: zero-padded numeric core, then 1 for a release / 0+suffix for a pre-release, so v1.10.0 > v1.9.0
-          # and v1.3.0-rc.1 < v1.3.0.
-          key() {
-            local t=${1#v} core pre
-            core=${t%%-*}; pre=""; [ "$core" != "$t" ] && pre=${t#*-}
-            IFS=. read -r a b c <<<"$core"
-            a=$((10#$a)); b=$((10#$b)); c=$((10#$c))
-            if [ -z "$pre" ]; then printf '%08d%08d%08d1' "$a" "$b" "$c"; else printf '%08d%08d%08d0%s' "$a" "$b" "$c" "$pre"; fi
-          }
-          valid=$(git tag --list 'v*' --sort=-v:refname | grep -E "$TAG_RE" || true)
-          others=$(grep -Fvx -- "$TAG" <<<"$valid" || true)
-          tk=$(key "$TAG"); prev=""; pk=""
-          while IFS= read -r t; do
-            [ -n "$t" ] || continue
-            k=$(key "$t")
-            if [[ "$k" < "$tk" ]] && { [ -z "$prev" ] || [[ "$k" > "$pk" ]]; }; then prev=$t; pk=$k; fi
-          done <<<"$others"
+          # Semver ordering lives in release/prev-tag.sh (tested by release/test-prev-tag.sh): numeric core, a
+          # prerelease below its release, rc.10 > rc.2. An invalid $TAG fails closed; invalid listed tags are ignored.
+          prev=$(git tag --list 'v*' | release/prev-tag.sh prev "$TAG")
           if [ -z "$prev" ]; then echo "No previous v* tag below $TAG: versionCode check skipped (first release)."; exit 0; fi
           echo "previous tag: $prev"
           mods="phone glasses"; [ "$WITH_BRIDGE" = "true" ] && mods="$mods nexus-bridge"
@@ -99,6 +85,12 @@ jobs:
             echo "$m: versionCode $now (previous tag $prev: $before)"
             [ "$now" -gt "$before" ] || { echo "::error::$m versionCode $now is not greater than $before at $prev"; exit 1; }
           done
+
+      - name: Verify the Gradle wrapper JAR against the reviewed hash
+        run: |
+          set -euo pipefail
+          # A wrapper change must also be a reviewed change to release/gradle-wrapper-jar.sha256.
+          sha256sum -c release/gradle-wrapper-jar.sha256
 
       # Release variants only. The unsigned APKs come out of AGP; no signingConfig is set in Gradle, so the debug
       # key is never applied. No secrets exist in this job.
@@ -157,6 +149,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Runs BEFORE any step that references a secret (and before the main-ancestry check).
+      - name: Reject an existing tag that does not point at the built commit
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            tc=$(git rev-parse "refs/tags/$TAG^{commit}")
+            [ "$tc" = "$GITHUB_SHA" ] || { echo "::error::tag $TAG points at $tc, not the built commit $GITHUB_SHA; refusing to sign"; exit 1; }
+          fi
+
       # Runs BEFORE any step that references a secret. Secrets are only exposed to the steps that name them.
       - name: Require the commit to be reachable from protected main
         run: |
@@ -164,6 +166,12 @@ jobs:
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
             || { echo "::error::$GITHUB_SHA is not reachable from origin/main; refusing to sign"; exit 1; }
+
+      - name: Verify (again) the Gradle wrapper JAR against the reviewed hash
+        run: |
+          set -euo pipefail
+          # A wrapper change must also be a reviewed change to release/gradle-wrapper-jar.sha256.
+          sha256sum -c release/gradle-wrapper-jar.sha256
 
       # actions/download-artifact v4.3.0 (resolved with git ls-remote 2026-11-18)
       - name: Download the unsigned APKs from the build job
