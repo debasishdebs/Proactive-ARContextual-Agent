@@ -786,6 +786,10 @@ class Hub(
     }
 
     companion object {
+        /** B2: the stored Place Guide side applies only with Developer mode on; otherwise CENTRE (nothing extra on the wire). The stored value is not even read when off. */
+        fun gatedPlaceSide(devMode: Boolean, stored: () -> com.rokid.context.core.model.PlaceSide): com.rokid.context.core.model.PlaceSide =
+            if (devMode) stored() else com.rokid.context.core.model.PlaceSide.CENTRE
+
         /**
          * v2.0 T7: while Rokid Nexus draws the cards, no frame carries an answer, nudge or place-card overlay (an older glasses build, which does not know `hudHost`, would otherwise draw them a second time).
          * PCA's own input overlays (listening, confirm, toasts, the pause splash) stay. The default host changes nothing.

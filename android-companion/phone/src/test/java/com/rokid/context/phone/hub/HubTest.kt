@@ -110,6 +110,7 @@ class HubTest {
         inFront: () -> Boolean = { false },
         placeCards: kotlinx.coroutines.flow.StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
         placeClear: () -> Unit = {},
+        placeSide: () -> com.rokid.context.core.model.PlaceSide = { com.rokid.context.core.model.PlaceSide.CENTRE },
         suggestionCards: kotlinx.coroutines.flow.StateFlow<SuggestionHudHolder.Shown?> = MutableStateFlow(null),
         suggestionClearIf: (String) -> Boolean = { false },
         onSuggestionDismissed: (String) -> Unit = {},
@@ -127,7 +128,7 @@ class HubTest {
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
             reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
-            placeCards = placeCards, placeClear = placeClear, suggestionCards = suggestionCards, suggestionClearIf = suggestionClearIf, onSuggestionDismissed = onSuggestionDismissed, zoneApproach = zoneApproach, hudHost = hudHost, onStopped = onStopped,
+            placeCards = placeCards, placeClear = placeClear, placeSide = placeSide, suggestionCards = suggestionCards, suggestionClearIf = suggestionClearIf, onSuggestionDismissed = onSuggestionDismissed, zoneApproach = zoneApproach, hudHost = hudHost, onStopped = onStopped,
         )
             .also { if (start) { it.start(userInitiated = true); runCurrent() } }
     }
@@ -969,6 +970,46 @@ class HubTest {
         hub(link, placeCards = cards, zoneApproach = { true }); link.emitReady(); runCurrent()
         cards.value = placeCard; advanceTimeBy(300)
         assertNull(link.lastFrame().overlay)
+    }
+
+    // ---- B2: the place / suggestion overlay carries the Place Guide card side (null for CENTRE, so the default frame is unchanged) ----
+
+    private fun gated(dev: Boolean, stored: com.rokid.context.core.model.PlaceSide) = { Hub.gatedPlaceSide(dev) { stored } }
+
+    private fun TestScope.placeSideOf(side: () -> com.rokid.context.core.model.PlaceSide): Pair<String?, String> {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null)
+        hub(link, placeCards = cards, placeSide = side); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        cards.value = placeCard; advanceTimeBy(300)
+        return (link.lastFrame().overlay as Overlay.Nudge).place!!.side to link.lastOn(Channels.STATE)
+    }
+
+    @Test fun placeCardCarriesLeftAndRightWithDeveloperModeOn() = runTest {
+        assertEquals("LEFT", placeSideOf(gated(true, com.rokid.context.core.model.PlaceSide.LEFT)).first)
+        assertEquals("RIGHT", placeSideOf(gated(true, com.rokid.context.core.model.PlaceSide.RIGHT)).first)
+    }
+
+    @Test fun placeCardCentreSendsNullAndNoSideKeyOnTheWire() = runTest {
+        val (side, raw) = placeSideOf(gated(true, com.rokid.context.core.model.PlaceSide.CENTRE))
+        assertNull(side); assertTrue("the default frame is byte-identical: no side key", !raw.contains("\"side\""))
+        assertTrue("a LEFT frame does carry it", placeSideOf(gated(true, com.rokid.context.core.model.PlaceSide.LEFT)).second.contains("\"side\":\"LEFT\""))
+    }
+
+    @Test fun developerModeOffSendsNullEvenIfLeftIsStoredAndNeverReadsIt() = runTest {
+        var read = false
+        val (side, raw) = placeSideOf { Hub.gatedPlaceSide(false) { read = true; com.rokid.context.core.model.PlaceSide.LEFT } }
+        assertNull(side); assertTrue(!raw.contains("\"side\"")); assertTrue("the stored value is not read", !read)
+        assertNull(placeSideOf(gated(false, com.rokid.context.core.model.PlaceSide.RIGHT)).first)
+    }
+
+    @Test fun theSuggestionOverlayCarriesTheSideToo() = runTest {
+        for ((side, wire) in listOf(com.rokid.context.core.model.PlaceSide.LEFT to "LEFT", com.rokid.context.core.model.PlaceSide.RIGHT to "RIGHT", com.rokid.context.core.model.PlaceSide.CENTRE to null)) {
+            val link = FakeGlassesLink(); val holder = SuggestionHudHolder { now + testScheduler.currentTime }
+            hub(link, clock = { now + testScheduler.currentTime }, suggestionCards = holder.card, suggestionClearIf = holder::clearIf, placeSide = { side })
+            link.emitReady(); runCurrent(); advanceTimeBy(300)
+            holder.show(sgCard); advanceTimeBy(300)
+            assertEquals(wire, (link.lastFrame().overlay as Overlay.Nudge).place!!.side)
+            assertEquals(wire != null, link.lastOn(Channels.STATE).contains("\"side\""))
+        }
     }
 
     // ---- v3.1: the suggestion card rides the SAME additive overlay as a place card (PROTOCOL_VERSION stays 1) ----
