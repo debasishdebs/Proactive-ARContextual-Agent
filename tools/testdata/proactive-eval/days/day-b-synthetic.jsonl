@@ -1,0 +1,5 @@
+# Synthetic: a day with two arrivals; the second card was not useful.
+{"kind": "day", "day": "2026-11-19", "stepMin": 15}
+{"kind": "expect", "key": "f2:wd:Q2"}
+{"kind": "label", "key": "f2:wd:Q2", "verdict": "useful"}
+{"kind": "label", "key": "f2:wd:Q3", "verdict": "not_useful"}

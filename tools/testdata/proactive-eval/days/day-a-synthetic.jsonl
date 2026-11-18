@@ -1,0 +1,4 @@
+# Synthetic example (placeholder place ids). Real day files hold your own place keys: keep them out of the repo.
+{"kind": "day", "day": "2026-11-18", "stepMin": 15, "events": [{"atMs": 1795000000000, "trigger": "place_arrival"}]}
+{"kind": "expect", "key": "f2:wd:Q1"}
+{"kind": "label", "key": "f2:wd:Q1", "verdict": "useful"}
