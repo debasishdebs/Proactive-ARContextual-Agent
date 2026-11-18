@@ -86,6 +86,57 @@ class PlaceGuideModelTest {
         assertEquals(listOf(ramoji), c.seeded)
     }
 
+    /** Site coordinates as Wikidata P625 returned them on 2026-11-18 (the same table as the coverage report): every preset box must contain its sites. */
+    @Test fun everyTripPresetBoxContainsItsSitesAndStaysAFewCells() {
+        val sites = mapOf(
+            PlaceGuideModel.GANGTOK to listOf(27.33 to 88.62, 27.34055556 to 88.6275, 27.312777777778 to 88.604722222222, 27.288611111111 to 88.561388888889, 27.35083333 to 88.60361111),
+            PlaceGuideModel.DARJEELING to listOf(27.0375 to 88.263, 27.016666666667 to 88.247222222222, 27.01166667 to 88.25027778, 27.04829 to 88.25142, 27.02756 to 88.259, 26.99484 to 88.28542),
+            PlaceGuideModel.WEST_SIKKIM to listOf(27.3 to 88.233333333333, 27.304444444444 to 88.252777777778, 27.369166666667 to 88.222222222222, 27.373333333333 to 88.208333333333),
+            PlaceGuideModel.SIGIRIYA to listOf(7.9569444444444 to 80.759722222222, 7.856563 to 80.6483403),
+            PlaceGuideModel.ANURADHAPURA to listOf(8.335 to 80.410833333333, 8.35 to 80.3964, 8.351667 to 80.403611, 8.3447222222222 to 80.396666666667),
+            PlaceGuideModel.POLONNARUWA to listOf(7.9333333333333 to 81.0, 7.96588 to 81.00497, 7.94722222 to 81.00111111),
+            PlaceGuideModel.KANDY to listOf(7.293055555555555 to 80.635, 7.293611111111 to 80.641388888889, 7.27111 to 80.5956),
+            PlaceGuideModel.GALLE to listOf(6.02747 to 80.21711, 5.975 to 80.429722222222, 5.945607 to 80.459765),
+        )
+        assertEquals(PlaceGuideModel.TRIP_PRESETS.toSet(), sites.keys)
+        for ((preset, pts) in sites) {
+            assertTrue(preset.name, preset.boxes.all { it.valid })
+            for ((lat, lon) in pts) assertTrue("${preset.name} $lat,$lon", preset.boxes.any { it.contains(lat, lon) })
+            assertTrue("${preset.name} has ${preset.cellCount} cells", preset.cellCount in 1..9)
+            assertEquals(preset.boxes.flatMap { Geohash5.cellsCovering(it) }.toSet().size, preset.cellCount)
+            assertTrue(preset.buttonLabel.contains("${preset.cellCount} cells"))
+            assertTrue(preset.note.startsWith("Approximate: UNVERIFIED."))
+        }
+        assertEquals(listOf(9, 5, 8, 6, 4, 4, 6, 8), PlaceGuideModel.TRIP_PRESETS.map { it.cellCount })
+        assertEquals(PlaceGuideModel.TRIP_PRESETS.map { it.id }.toSet().size, PlaceGuideModel.TRIP_PRESETS.size)
+    }
+
+    @Test fun onlyTheSriLankaPresetsCarryTheShortPhotographyHelpAndNoRuleTextIsInTheApp() {
+        for (p in PlaceGuideModel.TRIP_PRESETS) {
+            val sl = p.name.startsWith("Sri Lanka")
+            assertEquals(p.name, sl, p.help == "Check local photography rules.")
+            assertEquals(sl, p.note.endsWith("Check local photography rules."))
+            for (w in listOf("fresco", "drone", "back to", "fee", "offence")) assertFalse("${p.name} $w", p.note.contains(w, ignoreCase = true))
+        }
+    }
+
+    @Test fun aTwoBoxPresetSeedsItsBoxesOneAfterTheOtherAndSaysSo() = runTest(d) {
+        val c = Control(); val vm = PlaceGuideViewModel(c, d)
+        vm.seedPreset(PlaceGuideModel.SIGIRIYA); d.scheduler.advanceUntilIdle()
+        assertEquals(PlaceGuideModel.SIGIRIYA.boxes, c.seeded)
+        assertFalse(vm.state.value.seeding)
+        assertTrue(vm.state.value.message!!.startsWith("Part 1 of 2: ")); assertTrue(vm.state.value.message!!.contains("Part 2 of 2: "))
+        val one = Control(); val vm1 = PlaceGuideViewModel(one, d)
+        vm1.seedPreset(PlaceGuideModel.KANDY); d.scheduler.advanceUntilIdle()
+        assertEquals(PlaceGuideModel.KANDY.boxes, one.seeded); assertFalse(vm1.state.value.message!!.startsWith("Part"))
+    }
+
+    @Test fun aFailingPresetStopsAtTheFirstBoxAndShowsAnError() = runTest(d) {
+        val c = Control().also { it.fail = true }; val vm = PlaceGuideViewModel(c, d)
+        vm.seedPreset(PlaceGuideModel.GALLE); d.scheduler.advanceUntilIdle()
+        assertEquals(1, c.seeded.size); assertTrue(vm.state.value.messageIsError); assertFalse(vm.state.value.seeding)
+    }
+
     @Test fun theSeedMessageSaysCellsOkPartialAndFailed() {
         val clean = com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 12, skipped = 0, failed = 0, places = 40)
         assertEquals("Cells: 12 ok, 0 seeded without OSM extras, 0 failed. 40 places in the pack.", PlaceGuideModel.seedMessage(clean))
