@@ -3,7 +3,7 @@
 Nothing is installed yet. Phone = eval build 394667e0, glasses = 1.0.0, watch = 1.0.0-rc1. The install helper is `tools/install-trip-build.sh` (Codex READY at e1337bea; emulator-tested only). Rollback and backup details: `v17-upgrade-recovery.md`. Full device checks: `device-checklist-2026-11-17.md`.
 
 ## 0. Decide / confirm first (5 minutes)
-- [ ] Build to install: the FINAL verified folder `~/Desktop/rokid/backups/apks-v110-ab61395f/` (git ab61395f; do not use an older folder). Production code differs from `apks-v110-4f110dca` (later: offline map tiles, Suggestions shadow/delivery code, all OFF by default).
+- [ ] Build to install: the FINAL verified folder `~/Desktop/rokid/backups/apks-v110-f1dcf1fb/` (git f1dcf1fb; do not use an older folder). Production code differs from `apks-v110-4f110dca` (later: offline map tiles, Suggestions shadow/delivery code, all OFF by default).
 - [ ] What is ON in this build: hub restart fix, pause zones (you add zones), Place Guide (OFF until you switch it on), Ask date-window/last-state fixes, Activity pagination, Ask zone fence (ON). What is OFF: forgetV2 and multi-select Forget, Nexus bridge, Try-it, Suggestions (all switches).
 - [ ] Room v17 migration (adds `ask.sourceStates`) runs on first phone launch. It was verified on the emulator (encrypted v16 -> v17). A phone backup is mandatory; there is no downgrade (a v16 binary cannot open a v17 DB: rollback = restore the backup + reinstall the same-signature APK).
 - [ ] Watch: skip for the trip (the watch APK shares the phone's applicationId; installing it on the wrong serial replaces the phone app).
@@ -17,13 +17,13 @@ Nothing is installed yet. Phone = eval build 394667e0, glasses = 1.0.0, watch = 
 ## 2. Dry run (changes nothing: no backup, no pull, no install)
 ```
 cd ~/Desktop/rokid/proactive-context-agent
-tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-ab61395f
+tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-f1dcf1fb
 ```
 Read the output: device identities distinct, APK package names correct, versionCode not a downgrade, call state 0, the exact backup path, the install order. Anything that says REFUSED: stop and tell Claude.
 
 ## 3. Real run (only with the user's explicit go)
 ```
-tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-ab61395f --go
+tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-f1dcf1fb --go
 ```
 Order enforced by the script: preflight -> phone backup (force-stop, tar incl. -wal/-shm, validate, sha256) -> phone install (`install -r`, never uninstall) -> 60 s log scan (FATAL / Migration / Room / SQLCipher counts) -> glasses install -> log scan. Exit 0 = installed and verified, exit 3 = installed but NOT verified (do the manual checks below), exit 2 = refused (nothing changed), other = failure (follow the printed rollback steps; never uninstall the phone app).
 
@@ -40,7 +40,7 @@ Glasses:
 - [ ] Connect/disconnect the case: the hub recovers within a few minutes (Settings > Diagnostics logs), and the glasses are not re-launched during a call.
 
 ## 5. Place Guide prep for 22 Nov (needs internet, before leaving the house)
-- [ ] Settings > Place Guide (Developer mode on): leave the switch OFF while seeding. Seed this area: Hyderabad preset (Charminar/Golconda; 17.34-17.41 N, 78.38-78.52 E). Check the pack size and count shown.
+- [ ] Settings > Place Guide (Developer mode on): leave the switch OFF while seeding. Seed this area: Hyderabad preset (Charminar/Golconda/Qutb Shahi Tombs/Salar Jung; 17.34-17.41 N, 78.38-78.52 E), then also tap 'Seed Ramoji Film City (23 Nov)'. Check the result line: cells ok / seeded without OSM extras / failed (retried) and the places count; a partial or failed cell: tap seed again (retries those cells).
 - [ ] Pin Golconda sub-places you care about with 'Pin a place here' ON SITE (needs a fresh fix; pins stay on the phone and are never backed up).
 - [ ] Switch Place Guide ON only when you are at the first monument; the card shows at MEDIUM/MAX HUD level; offline it shows name + distance 'nearby, not checked'.
 - [ ] Confirm zones: remove any test zones; add a zone only where you must not capture (Jarawa preset is not relevant to this trip).
