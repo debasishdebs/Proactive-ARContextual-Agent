@@ -1,6 +1,10 @@
 package com.rokid.context.connectors.place
 
 import com.rokid.context.memory.place.GeoBox
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -138,5 +142,54 @@ class OverpassHttpSource(private val http: PlaceHttp, private val endpoint: Stri
                 val tags = o["tags"].obj()?.entries?.mapNotNull { (k, v) -> v.str()?.let { k to it } }?.toMap().orEmpty()
                 OsmElement(type, id, lat, lon, radius, tags)
             }
+    }
+}
+
+/**
+ * Overpass through a list of public mirrors, tried in order. Each attempt has its own timeout ([perEndpointTimeoutMs]); between attempts the fetcher backs off ([backoffMs] times the
+ * attempt number). When every mirror failed the call throws one [java.io.IOException] and the caller (PlaceCellSource) makes the cell PARTIAL: Wikipedia and Wikidata results are
+ * kept and the cell is retried later. After such a failure the mirrors are not tried again for [cooldownMs], so a seed of many cells does not wait out every timeout on every cell
+ * (the next cell after the cool-down probes them again). Logs carry the mirror's index and the exception class only: no URL, no position.
+ */
+class OverpassMirrorSource(
+    private val mirrors: List<OverpassSource>,
+    private val perEndpointTimeoutMs: Long = 30_000,
+    private val backoffMs: Long = 2_000,
+    private val cooldownMs: Long = 180_000,
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val pause: suspend (Long) -> Unit = { delay(it) },
+    private val log: (String) -> Unit = {},
+) : OverpassSource {
+    private var allFailedAt: Long? = null
+
+    override suspend fun elements(box: GeoBox): List<OsmElement> {
+        val down = allFailedAt
+        if (down != null && clock() - down in 0 until cooldownMs) throw java.io.IOException("overpass mirrors cooling down")
+        for ((i, m) in mirrors.withIndex()) {
+            if (i > 0) pause(backoffMs * i)
+            try {
+                val r = withTimeout(perEndpointTimeoutMs) { m.elements(box) }
+                allFailedAt = null
+                return r
+            } catch (e: TimeoutCancellationException) {
+                log("overpass mirror failed idx=$i cls=timeout")
+            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                log("overpass mirror failed idx=$i cls=${e.javaClass.simpleName}")
+            }
+        }
+        allFailedAt = clock()
+        log("overpass all mirrors failed n=${mirrors.size}")
+        throw java.io.IOException("all overpass mirrors failed")
+    }
+
+    companion object {
+        /** The public instances, in the order tried. Public data only; no key. */
+        val DEFAULT_ENDPOINTS = listOf(
+            "https://overpass-api.de/api/interpreter",
+            "https://overpass.kumi.systems/api/interpreter",
+            "https://overpass.private.coffee/api/interpreter",
+        )
+
+        fun default(http: PlaceHttp, log: (String) -> Unit = {}) = OverpassMirrorSource(DEFAULT_ENDPOINTS.map { OverpassHttpSource(http, it) }, log = log)
     }
 }

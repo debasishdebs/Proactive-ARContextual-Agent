@@ -1,7 +1,7 @@
 package com.rokid.context.work.frames.place
 
 import android.content.Context
-import com.rokid.context.connectors.place.OverpassHttpSource
+import com.rokid.context.connectors.place.OverpassMirrorSource
 import com.rokid.context.connectors.place.PlaceCellSource
 import com.rokid.context.connectors.place.UrlConnectionPlaceHttp
 import com.rokid.context.connectors.place.WikidataHttpSource
@@ -67,7 +67,7 @@ object PlaceGraph {
 
     private fun build(app: Context): PlacePack {
         val http = UrlConnectionPlaceHttp()
-        val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassHttpSource(http), log = { PcLog.i(TAG, it) }) // counts and class names only
+        val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassMirrorSource.default(http) { PcLog.i(TAG, it) }, log = { PcLog.i(TAG, it) }) // counts and class names only
         return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) })
     }
 

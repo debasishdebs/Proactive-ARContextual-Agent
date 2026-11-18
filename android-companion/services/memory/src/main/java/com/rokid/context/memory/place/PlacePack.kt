@@ -31,7 +31,12 @@ enum class CellOutcome { FRESH, FETCHED, PARTIAL, OFFLINE, FAILED }
 /** What a glance asks for: the candidates (already expanded to sub-places) and how the cell stood. */
 data class PlaceCandidates(val places: List<PlaceEntity>, val outcome: CellOutcome)
 
-data class SeedResult(val cells: Int, val fetched: Int, val skipped: Int, val failed: Int, val places: Int) {
+/**
+ * What a seed did. [fetched] = [ok] + [partial] (cells stored); [partial] cells were stored without OSM extras (Overpass did not answer) and are fetched again by the next seed or
+ * after a day; [failed] cells stored nothing even after the one retry; [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
+ */
+data class SeedResult(val cells: Int, val fetched: Int, val skipped: Int, val failed: Int, val places: Int, val partial: Int = 0, val retried: Int = 0) {
+    val ok: Int get() = fetched - partial
     val complete: Boolean get() = failed == 0
 }
 
@@ -52,6 +57,8 @@ class PlacePack(
     budgetBytes: Long = DEFAULT_BUDGET_BYTES,
     private val now: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
+    /** The wait before the seed's retry pass (the public servers answer 429 when asked too fast); tests pass a no-op. */
+    private val pause: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
 ) {
     private val dao = db.dao()
     /** The budget in bytes: [setBudget] changes it (the Place Guide screen offers 25/50/100/200 MB). */
@@ -141,23 +148,37 @@ class PlacePack(
         val src = source
         if (cells.isEmpty() || cells.size > MAX_SEED_CELLS || src == null) { log("seed refused cells=${cells.size}"); return SeedResult(cells.size, 0, 0, if (src == null) cells.size else 0, 0) }
         dao.putArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
-        var fetched = 0; var skipped = 0; var failed = 0; var done = 0
+        var fetched = 0; var skipped = 0; var partial = 0; var done = 0
+        val failedCells = ArrayList<String>()
+        suspend fun seedOne(cell: String): CellOutcome = fetchLock.withLock {
+            // A PARTIAL cell (stored without OSM extras) is not "fresh" for a seed: seeding again tries it again.
+            val c = dao.cell(cell)
+            if (c?.status == CELL_OK && isFresh(c)) CellOutcome.FRESH else fetchAndStore(cell, src, seeded = true)
+        }
+        fun count(outcome: CellOutcome): Boolean = when (outcome) {
+            CellOutcome.FETCHED -> { fetched++; true }
+            CellOutcome.PARTIAL -> { fetched++; partial++; true }
+            else -> false
+        }
         for (cell in cells) {
             val box = Geohash5.bounds(cell)!!
-            val outcome = fetchLock.withLock {
-                if (isFresh(dao.cell(cell))) CellOutcome.FRESH else fetchAndStore(cell, src, seeded = true)
-            }
-            when (outcome) {
-                CellOutcome.FRESH -> { skipped++; dao.markSeeded(box.south, box.north, box.west, box.east) }
-                CellOutcome.FETCHED, CellOutcome.PARTIAL -> fetched++
-                else -> failed++
-            }
+            val outcome = seedOne(cell)
+            if (outcome == CellOutcome.FRESH) { skipped++; dao.markSeeded(box.south, box.north, box.west, box.east) }
+            else if (!count(outcome)) failedCells += cell
             onProgress(++done, cells.size)
+        }
+        // A failed cell gets one more try after the others (a rate limit or a blip has usually passed by then).
+        val retried = failedCells.size
+        var failed = 0
+        if (failedCells.isNotEmpty()) {
+            pause(RETRY_BACKOFF_MS)
+            for (cell in failedCells) if (!count(seedOne(cell))) failed++
+            log("seed retry cells=$retried recovered=${retried - failed}")
         }
         dao.putArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0) AREA_DONE else AREA_PARTIAL))
         val n = dao.placeCount()
-        log("seed done cells=${cells.size} fetched=$fetched skipped=$skipped failed=$failed places=$n")
-        return SeedResult(cells.size, fetched, skipped, failed, n)
+        log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial skipped=$skipped failed=$failed fetched=$fetched places=$n")
+        return SeedResult(cells.size, fetched, skipped, failed, n, partial, retried)
     }
 
     /** Forgets a seeded area (the user deleted the blue zone). Its places stay until evicted: they are ordinary fetched places from now on. */
@@ -255,6 +276,8 @@ class PlacePack(
         const val SUMMARY_MAX = 400
         const val NAME_MAX = 160
         const val MAX_SEED_CELLS = 4_000
+        /** The wait before a seed retries its failed cells once. */
+        const val RETRY_BACKOFF_MS = 5_000L
         private const val EVICT_BATCH = 200
         private const val SQL_CHUNK = 500
 

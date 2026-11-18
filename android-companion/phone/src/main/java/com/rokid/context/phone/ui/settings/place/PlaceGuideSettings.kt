@@ -75,10 +75,23 @@ interface PlaceGuideControl {
 object PlaceGuideModel {
     /** Charminar and Golconda (Hyderabad): about 11 km by 15 km, about a dozen 5 km cells. */
     val HYDERABAD = GeoBox(17.34, 78.38, 17.41, 78.52)
+    /** Ramoji Film City (23 Nov), 17.2543 N 78.6808 E (Wikidata Q1786944), plus or minus 0.01 degree: one 5 km cell (tepfn), outside [HYDERABAD]. */
+    val RAMOJI = GeoBox(17.2443, 78.6708, 17.2643, 78.6908)
     const val SEED_NOTE = "Fetches place text (Wikipedia, Wikidata, OpenStreetMap) for the area while you are online. Only 5 km cell keys leave the phone, never your position."
     val BUDGET_CHOICES_MB: List<Int> = PlacePack.BUDGET_CHOICES_MB
     const val PIN_NOTE = "Pins use your position right now (it is not stored or logged apart from the pin itself) and are refused inside or near a pause zone. The name and note are yours: they stay on this phone (not in any backup or device transfer; only a settings export you make yourself contains them), and the note is the card text, labelled \"Your note\". Pins are kept by Delete all, are in the settings export, and are never evicted."
     const val CLEAR_NOTE = "Removes places that were fetched while you walked around. Seeded areas and your pins stay."
+
+    /** The seed's answer as the screen says it: cells ok, seeded without OSM extras (Overpass did not answer) and failed (after one retry), then the pack size. */
+    fun seedMessage(r: com.rokid.context.memory.place.SeedResult): String {
+        val counts = "Cells: ${r.ok + r.skipped} ok, ${r.partial} seeded without OSM extras, ${r.failed} failed" + if (r.retried > 0) " (${r.retried} retried once)." else "."
+        val tail = when {
+            r.failed > 0 -> " Try again when online."
+            r.partial > 0 -> " Seed again later to add the OSM extras."
+            else -> ""
+        }
+        return "$counts ${r.places} places in the pack.$tail"
+    }
 
     fun mb(bytes: Long): String = String.format(java.util.Locale.ROOT, "%.1f MB", bytes / 1_048_576.0)
     fun kindLabel(kind: String): String = kind.replace('_', ' ').replaceFirstChar { it.uppercase() }
@@ -289,6 +302,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 }
                 PrimaryAction("Seed this area", { onSeed(PlaceGuideModel.parseBox(s, w, n, e)) }, tag = "seed_area", enabled = !state.seeding)
                 SecondaryAction("Seed Hyderabad (Charminar, Golconda)", { onSeed(PlaceGuideModel.HYDERABAD) }, tag = "seed_hyderabad", enabled = !state.seeding)
+                SecondaryAction("Seed Ramoji Film City (23 Nov)", { onSeed(PlaceGuideModel.RAMOJI) }, tag = "seed_ramoji", enabled = !state.seeding)
                 state.message?.let { NoticeText(it, error = state.messageIsError, tag = "place_guide_message") }
             }
         }

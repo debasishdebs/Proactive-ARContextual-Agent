@@ -1,6 +1,7 @@
 package com.rokid.context.phone.ui.settings.place
 
 import com.rokid.context.memory.place.GeoBox
+import com.rokid.context.memory.place.Geohash5
 import com.rokid.context.memory.place.PackStats
 import com.rokid.context.memory.place.PlaceEntity
 import com.rokid.context.memory.place.PlaceKinds
@@ -73,6 +74,25 @@ class PlaceGuideModelTest {
         assertTrue(PlaceGuideModel.HYDERABAD.contains(17.3616, 78.4747)); assertTrue(PlaceGuideModel.HYDERABAD.contains(17.3833, 78.4011))
         assertNotNull(vm.state.value.message); assertFalse(vm.state.value.messageIsError); assertFalse(vm.state.value.seeding)
         assertEquals("80 places in the pack (40 KB)", vm.state.value.packSummary)
+    }
+
+    @Test fun theRamojiPresetIsOneCellOutsideTheHyderabadBoxAroundTheRealCoordinate() = runTest(d) {
+        val ramoji = PlaceGuideModel.RAMOJI
+        assertTrue(ramoji.valid); assertTrue(ramoji.contains(17.2543, 78.6808))
+        assertFalse(PlaceGuideModel.HYDERABAD.intersects(ramoji))
+        assertEquals(listOf("tepfn"), Geohash5.cellsCovering(ramoji))
+        val c = Control(); val vm = PlaceGuideViewModel(c, d)
+        vm.seed(ramoji); d.scheduler.advanceUntilIdle()
+        assertEquals(listOf(ramoji), c.seeded)
+    }
+
+    @Test fun theSeedMessageSaysCellsOkPartialAndFailed() {
+        val clean = com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 12, skipped = 0, failed = 0, places = 40)
+        assertEquals("Cells: 12 ok, 0 seeded without OSM extras, 0 failed. 40 places in the pack.", PlaceGuideModel.seedMessage(clean))
+        val osmDown = com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 12, skipped = 0, failed = 0, places = 40, partial = 12)
+        assertEquals("Cells: 0 ok, 12 seeded without OSM extras, 0 failed. 40 places in the pack. Seed again later to add the OSM extras.", PlaceGuideModel.seedMessage(osmDown))
+        val mixed = com.rokid.context.memory.place.SeedResult(cells = 12, fetched = 11, skipped = 0, failed = 1, places = 40, partial = 10, retried = 1)
+        assertEquals("Cells: 1 ok, 10 seeded without OSM extras, 1 failed (1 retried once). 40 places in the pack. Try again when online.", PlaceGuideModel.seedMessage(mixed))
     }
 
     @Test fun aFailedSeedShowsAnErrorAndFreesTheButton() = runTest(d) {

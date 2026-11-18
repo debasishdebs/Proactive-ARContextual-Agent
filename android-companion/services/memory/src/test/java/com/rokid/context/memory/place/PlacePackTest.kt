@@ -37,12 +37,13 @@ class PlacePackTest {
     private lateinit var db: PlacesDatabase
     private var t = 100 * DAY
     private val logs = mutableListOf<String>()
+    private val pauses = mutableListOf<Long>()
     private val cell = Geohash5.encode(CHARMINAR_LAT, CHARMINAR_LON)
 
     @Before fun open() { db = PlacesDatabase.inMemory(ApplicationProvider.getApplicationContext()) }
     @After fun close() = db.close()
 
-    private fun pack(src: CellSource?, budget: Long = PlacePack.DEFAULT_BUDGET_BYTES) = PlacePack(db, src, budget, { t }, { logs += it })
+    private fun pack(src: CellSource?, budget: Long = PlacePack.DEFAULT_BUDGET_BYTES) = PlacePack(db, src, budget, { t }, { logs += it }, { pauses += it })
     private fun <T> run(b: suspend () -> T): T = runBlocking { b() }
 
     @Test fun cacheAsideFetchesOnceThenServesFreshThenRefetchesAfter30Days() = run {
@@ -168,8 +169,50 @@ class PlacePackTest {
         val r = pack(src).seedArea("z", box)
         assertEquals(1, r.failed); assertFalse(r.complete)
         assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
-        assertEquals(cells, src.asked)
+        assertEquals(cells + cells.first(), src.asked) // the failed cell was tried once more after the others
+        assertEquals(listOf(PlacePack.RETRY_BACKOFF_MS), pauses); assertEquals(1, r.retried); assertEquals(cells.size - 1, r.ok)
         assertEquals(0, pack(null).seedArea("z", box).fetched)
+    }
+
+    private fun seedPlace(c: String) = fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01)
+
+    @Test fun aCellThatFailsOnceIsRetriedAfterTheOthersAndRecovers() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box)
+        var flaky = true
+        val src = FakeSource { c -> if (c == cells.first() && flaky) { flaky = false; throw IOException("429") } else CellFetch(listOf(seedPlace(c))) }
+        val r = pack(src).seedArea("z", box)
+        assertEquals(0, r.failed); assertTrue(r.complete); assertEquals(1, r.retried); assertEquals(cells.size, r.ok); assertEquals(0, r.partial)
+        assertEquals(cells + cells.first(), src.asked)
+        assertEquals(AREA_DONE, db.dao().areas().single().status)
+        assertEquals(cells.size, db.dao().placeCount())
+        assertTrue(logs.any { it == "seed retry cells=1 recovered=1" })
+    }
+
+    @Test fun partialCellsAreCountedStoredWithTheMarkerAndRetriedByTheNextSeed() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val cells = Geohash5.cellsCovering(box)
+        var osmUp = false
+        val src = FakeSource { c -> CellFetch(listOf(seedPlace(c)), complete = osmUp || c != cells.first()) }
+        val p = pack(src)
+        val r = p.seedArea("z", box)
+        assertEquals(1, r.partial); assertEquals(cells.size - 1, r.ok); assertEquals(0, r.failed); assertEquals(cells.size, r.fetched); assertTrue(r.complete)
+        assertEquals(0, r.retried); assertTrue(pauses.isEmpty())
+        assertEquals(CELL_PARTIAL, db.dao().cell(cells.first())!!.status)
+        assertEquals(CELL_OK, db.dao().cell(cells.last())!!.status)
+        assertEquals(cells.size, db.dao().placeCount()) // Wikipedia/Wikidata places were stored
+        assertTrue(logs.any { it.startsWith("seed done cells=${cells.size} ok=${cells.size - 1} partial=1 skipped=0 failed=0") })
+        osmUp = true
+        val again = p.seedArea("z", box) // only the partial cell is asked again, at once (not only after a day)
+        assertEquals(cells + cells.first(), src.asked)
+        assertEquals(0, again.partial); assertEquals(cells.size - 1, again.skipped); assertEquals(1, again.ok)
+        assertEquals(CELL_OK, db.dao().cell(cells.first())!!.status)
+    }
+
+    @Test fun logsCarryCountsOnlyNeverCoordinatesOrNames() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        pack(FakeSource { c -> if (c == Geohash5.cellsCovering(box).first()) throw IOException("x") else CellFetch(listOf(seedPlace(c)), complete = false) }).seedArea("z", box)
+        assertTrue(logs.toString(), logs.none { Regex("""\d+\.\d{3}""").containsMatchIn(it) || "wd:" in it || ":p" in it })
     }
 
     @Test fun deleteAllClearsFetchedAndRecencyButKeepsSeededAreasAndPinned() = run {
