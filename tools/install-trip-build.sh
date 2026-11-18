@@ -21,7 +21,7 @@ RETRY_SLEEP="${PCA_RETRY_SLEEP:-1}"
 
 PHONE="" GLASSES="" WATCH="" APKS="" TAG="" GO=0 ALLOW_EMU=0 ALLOW_DOWN=0 SELFTEST=0 PLAIN_OK=0
 ACCEPT_UNSIG=0 UNDERSTAND_NOSIG=0 FIXTURES=0
-TMP="" FXDIR=""
+TMP="" FXDIR="" WATCH_VC="" wvc=""
 BACKUP_TAR="" PREV_APK="" BACKUP_VALID=0
 PHASE=preflight    # preflight | backup | installing | installed
 APK_VC="" REMOTE_OUT="" REMOTE_RC=""
@@ -85,31 +85,47 @@ sha256_of() { # file -> prints a validated 64-hex digest; returns 1 on any failu
   [[ "$d" =~ $re ]] || return 1
   printf '%s\n' "$d"
 }
+count_matches() { # grep-flags file regex -> prints a count; grep status 1 (no match) = 0, status >=2 (error) = return 2
+  local n gst=0
+  n="$(trap - ERR; grep -c"${1#-}" -e "$3" "$2" 2>/dev/null)" || gst=$?
+  if [ "$gst" -gt 1 ]; then return 2; fi
+  case "$n" in ''|*[!0-9]*) return 2 ;; esac
+  printf '%s\n' "$n"
+}
 fsize() { local n; n="$(stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null)" || return 1; case "$n" in ''|*[!0-9]*) return 1 ;; esac; printf '%s\n' "$n"; }
 
-remote_rc() { # serial cmd -> sets REMOTE_OUT, REMOTE_RC from a marker; returns 1 on adb/transport failure or missing marker
-  local raw last
+remote_rc() { # serial cmd -> sets REMOTE_OUT, REMOTE_RC from EXACTLY ONE well-formed trailing marker.
+  # returns 0 ok | 1 adb/transport failure | 2 parse failure or absent/duplicated/malformed marker. Every step is checked (callers run us in || contexts, where set -e is off).
+  local raw cleaned last body cnt gst re='^__PCA_RC=([0-9]+)$'
   REMOTE_OUT=""; REMOTE_RC=""
   raw="$(A "$1" shell "$2; echo __PCA_RC=\$?" 2>&1)" || return 1
-  raw="$(printf '%s\n' "$raw" | tr -d '\r')"
-  last="$(printf '%s\n' "$raw" | tail -n 1)"
-  case "$last" in __PCA_RC=[0-9]*) ;; *) return 1 ;; esac
-  REMOTE_RC="${last#__PCA_RC=}"
-  case "$REMOTE_RC" in *[!0-9]*) return 1 ;; esac
-  REMOTE_OUT="$(printf '%s\n' "$raw" | sed '$d')"
+  cleaned="$(printf '%s\n' "$raw" | tr -d '\r')" || return 2
+  gst=0; cnt="$(printf '%s\n' "$cleaned" | grep -c '__PCA_RC=')" || gst=$?
+  if [ "$gst" -gt 1 ]; then return 2; fi
+  case "$cnt" in ''|*[!0-9]*) return 2 ;; esac
+  [ "$cnt" = 1 ] || return 2
+  last="$(printf '%s\n' "$cleaned" | tail -n 1)" || return 2
+  [[ "$last" =~ $re ]] || return 2
+  body="$(printf '%s\n' "$cleaned" | sed '$d')" || return 2
+  REMOTE_RC="${BASH_REMATCH[1]}"
+  REMOTE_OUT="$body"
   return 0
 }
 
-stop_app() { # force-stop and PROVE the process is gone; any uncertainty returns 1
-  local i re='^[0-9]+([[:space:]]+[0-9]+)*$'
+# stop_app statuses: 0 = process CONFIRMED gone (single well-formed marker, pidof remote status 1, empty pid list)
+#                    1 = still running after retries | 2 = uncertain (adb/parse/marker/unexpected result). Callers must refuse on anything but 0.
+stop_app() {
+  local i st re='^[0-9]+([[:space:]]+[0-9]+)*$'
   for i in 1 2 3 4 5; do
-    remote_rc "$PHONE" "am force-stop $PHONE_PKG" || { echo "REFUSED: force-stop could not be confirmed (adb failure)" >&2; return 1; }
-    [ "$REMOTE_RC" = 0 ] || { echo "REFUSED: am force-stop exited $REMOTE_RC" >&2; return 1; }
-    sleep "$RETRY_SLEEP"
-    remote_rc "$PHONE" "pidof $PHONE_PKG" || { echo "REFUSED: cannot query the process state (adb/transport failure)" >&2; return 1; }
+    st=0; remote_rc "$PHONE" "am force-stop $PHONE_PKG" || st=$?
+    if [ "$st" != 0 ]; then echo "REFUSED: force-stop could not be confirmed (remote_rc status $st)" >&2; return 2; fi
+    if [ "$REMOTE_RC" != 0 ]; then echo "REFUSED: am force-stop exited $REMOTE_RC" >&2; return 2; fi
+    sleep "$RETRY_SLEEP" || return 2
+    st=0; remote_rc "$PHONE" "pidof $PHONE_PKG" || st=$?
+    if [ "$st" != 0 ]; then echo "REFUSED: cannot query the process state (remote_rc status $st)" >&2; return 2; fi
     if [ "$REMOTE_RC" = 1 ] && [ -z "$REMOTE_OUT" ]; then say "app process confirmed gone (pidof: no process)"; return 0; fi
     if [ "$REMOTE_RC" = 0 ] && [[ "$REMOTE_OUT" =~ $re ]]; then continue; fi
-    echo "REFUSED: unexpected pidof result (exit $REMOTE_RC)" >&2; return 1
+    echo "REFUSED: unexpected pidof result (exit $REMOTE_RC)" >&2; return 2
   done
   echo "REFUSED: $PHONE_PKG still running after force-stop retries" >&2; return 1
 }
@@ -132,14 +148,14 @@ call_guard() { # $1 = label
   else
     raw="$(A "$PHONE" shell dumpsys telephony.registry 2>/dev/null)" || { echo "REFUSED: 'dumpsys telephony.registry' failed on the phone ($1)" >&2; return 1; }
   fi
-  raw="$(printf '%s\n' "$raw" | tr -d '\r')"
+  raw="$(printf '%s\n' "$raw" | tr -d '\r')" || { echo "REFUSED: cannot normalise the call state output ($1)" >&2; return 1; }
   if parse_call_states <<<"$raw"; then say "call guard ($1): every mCallState is 0"
   else echo "REFUSED: a call is active, or mCallState is missing/unparseable/inconsistent on the phone ($1)" >&2; return 1; fi
 }
 
 free_kb() { # dir -> free KB of the filesystem holding dir (nearest existing ancestor)
   local d="$1" n
-  while [ ! -d "$d" ] && [ "$d" != / ] && [ "$d" != . ]; do d="$(dirname "$d")"; done
+  while [ ! -d "$d" ] && [ "$d" != / ] && [ "$d" != . ]; do d="$(dirname "$d")" || return 1; done
   n="$(df -Pk "$d" | awk 'NR==2{print $4}')" || return 1
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$n"
@@ -148,7 +164,7 @@ disk_check() { # app data size via run-as du, host free space for BACKUP_DIR and
   local line kb need f d re='^([0-9]+)[[:space:]]+\.$'
   remote_rc "$PHONE" "run-as $PHONE_PKG du -sk ." || { echo "REFUSED: cannot estimate the app data size (adb/run-as failure)" >&2; return 1; }
   [ "$REMOTE_RC" = 0 ] || { echo "REFUSED: run-as du exited $REMOTE_RC (is the installed build debuggable?)" >&2; return 1; }
-  line="$(printf '%s\n' "$REMOTE_OUT" | tail -n 1)"
+  line="$(printf '%s\n' "$REMOTE_OUT" | tail -n 1)" || { echo "REFUSED: cannot read the du output" >&2; return 1; }
   [[ "$line" =~ $re ]] || { echo "REFUSED: unparseable du output" >&2; return 1; }
   kb="${BASH_REMATCH[1]}"; need=$((kb * 3))
   for d in "$BACKUP_DIR" "${TMPDIR:-/tmp}"; do
@@ -171,7 +187,7 @@ apk_cert() { # apk -> validated cert SHA-256, or return 1
   local out d re='^[0-9a-f]{64}$'
   [ -n "$APKSIGNER" ] || return 1
   out="$("$APKSIGNER" verify --print-certs "$1" 2>/dev/null)" || return 1
-  d="$(printf '%s\n' "$out" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | sed -n 1p)"
+  d="$(printf '%s\n' "$out" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | sed -n 1p)" || return 1
   [[ "$d" =~ $re ]] || return 1
   printf '%s\n' "$d"
 }
@@ -261,7 +277,7 @@ check_installed() { # serial pkg apk label : version (no downgrade) + signature
 
 # ---------- steps ----------
 do_backup() {
-  local t n sz db bytes h ph apksha vn vc
+  local t n sz db bytes h ph apksha vn vc stop_st hdr
   BACKUP_TAR="$BACKUP_DIR/pca-phone-pre-$TAG.tar"; PREV_APK="$BACKUP_DIR/pca-phone-pre-$TAG.apk"
   say "STEP backup: force-stop $PHONE_PKG (verified gone), tar c . via run-as -> $BACKUP_TAR (0600; validated with tar -t, listing, size, header, sha256)"
   [ "$GO" = 1 ] || return 0
@@ -270,14 +286,15 @@ do_backup() {
   [ ! -e "$BACKUP_TAR" ] || fail "backup file already exists: $BACKUP_TAR (pick another --tag)"
   mkdir -p "$BACKUP_DIR" || fail "cannot create $BACKUP_DIR"
   call_guard backup || die "call active or state unknown"
-  stop_app || die "cannot confirm the app is stopped; backup not taken"
+  stop_st=0; stop_app || stop_st=$?
+  [ "$stop_st" = 0 ] || die "cannot confirm the app is stopped (stop_app status $stop_st); backup not taken"
   A "$PHONE" exec-out run-as "$PHONE_PKG" tar c . > "$BACKUP_TAR" 2>"$TMP/tar.err" || fail "run-as tar failed (is the installed build debuggable?)"
   chmod 600 "$BACKUP_TAR" || fail "cannot chmod 600 $BACKUP_TAR"
   t="$TMP/bk"; mkdir -p "$t" || fail "cannot create temp dir"
   tar tf "$BACKUP_TAR" > "$TMP/list.txt" 2>/dev/null || fail "backup validation: tar -t could not read the archive to its end"
   grep -Eq '(^|/)databases/context\.db$' "$TMP/list.txt" || fail "backup validation: databases/context.db missing from the tar"
   grep -Eq '(^|/)shared_prefs/db_key\.xml$' "$TMP/list.txt" || [ "$PLAIN_OK" = 1 ] || fail "backup validation: shared_prefs/db_key.xml missing from the tar"
-  n="$(grep -cE 'context\.db-(wal|shm)$' "$TMP/list.txt" || true)"
+  n="$(count_matches -E "$TMP/list.txt" 'context\.db-(wal|shm)$')" || fail "backup validation: cannot count wal/shm entries"
   bytes="$(fsize "$BACKUP_TAR")" || fail "cannot stat the backup tar"
   [ "$bytes" -ge 8192 ] || fail "backup validation: tar is only a few KB (failed snapshot)"
   tar xf "$BACKUP_TAR" -C "$t" ./databases/context.db 2>/dev/null || tar xf "$BACKUP_TAR" -C "$t" databases/context.db 2>/dev/null || fail "backup validation: cannot extract context.db"
@@ -285,7 +302,8 @@ do_backup() {
   sz="$(fsize "$db")" || fail "backup validation: cannot stat context.db"
   if [ "$sz" -le 0 ]; then fail "backup validation: context.db is empty"; fi
   if [ $((sz % 4096)) -ne 0 ] && [ "$PLAIN_OK" = 0 ]; then fail "backup validation: context.db size $sz is not a multiple of 4096"; fi
-  if [ "$(head -c 15 "$db")" = "SQLite format 3" ] && [ "$PLAIN_OK" = 0 ]; then fail "backup validation: context.db has a plaintext header (bad snapshot or unencrypted install)"; fi
+  hdr="$(head -c 15 "$db")" || fail "backup validation: cannot read the context.db header"
+  if [ "$hdr" = "SQLite format 3" ] && [ "$PLAIN_OK" = 0 ]; then fail "backup validation: context.db has a plaintext header (bad snapshot or unencrypted install)"; fi
   h="$(sha256_of "$BACKUP_TAR")" || fail "backup validation: cannot compute a valid SHA-256 of the tar"
   say "backup OK: $BACKUP_TAR bytes=$bytes entries=$(wc -l < "$TMP/list.txt" | tr -d ' ') wal/shm=$n context.db=$sz sha256=$h"
   if [ -f "$TMP/prev-phone.apk" ]; then
@@ -323,24 +341,48 @@ install_apk() { # serial apk role (phone|glasses|watch): the role must match the
   say "$role install: Success"
 }
 
+unverified_exit() { # label reason : the install HAPPENED but the log verification is incomplete. Never declares success (exit 3).
+  echo "INSTALL DONE BUT NOT VERIFIED ($1: $2). Do NOT treat this as a success: verification is incomplete and the remaining steps were not run." >&2
+  echo "Manual check (read the output yourself, nothing is printed here):" >&2
+  echo "  adb -s $3 shell pidof $4" >&2
+  echo "  adb -s $3 logcat -d -b all | grep -E 'FATAL EXCEPTION|Process: $4'" >&2
+  echo "  adb -s $3 logcat -d | grep -iE \"Migration didn.t|SQLiteException|not a database|SQLCipher|Room\"" >&2
+  echo "  then open the app and do the v17-upgrade-recovery.md section 3 checks." >&2
+  exit 3
+}
+
 scan_logs() { # serial pkg label
-  local s="$1" pkg="$2" label="$3" pid fatal mig comp
-  say "STEP verify $label: clear logcat, launch $pkg, wait ${SCAN_SECS}s, report counts of FATAL / Migration / Room errors"
+  local s="$1" pkg="$2" label="$3" pid comp fatal mig lines
+  local allf="$TMP/logcat-all-$label.txt" pidf="$TMP/logcat-pid-$label.txt"
+  local fre="FATAL EXCEPTION|Process: ${pkg}[,: ]"
+  local mre="Migration didn.t|SQLiteException|not a database|SQLCipher|IllegalStateException.*room|room.*(error|exception)"
+  say "STEP verify $label: clear logcat, launch $pkg, wait ${SCAN_SECS}s, report counts of FATAL / Migration / Room / SQLCipher errors"
   [ "$GO" = 1 ] || return 0
   A "$s" logcat -c >/dev/null 2>&1 || fail "$label: cannot clear logcat"
   comp="$(A "$s" shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null | tr -d '\r' | tail -n 1)" || comp=""
   case "$comp" in "$pkg"/*) A "$s" shell am start -n "$comp" >/dev/null 2>&1 || fail "$label: could not launch $comp" ;;
     *) A "$s" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || fail "$label: no launcher activity for $pkg" ;; esac
-  sleep "$SCAN_SECS"
+  sleep "$SCAN_SECS" || fail "$label: sleep failed"
   pid="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | awk '{print $1}')" || pid=""
-  fatal="$(A "$s" logcat -d -b all 2>/dev/null | grep -cE "FATAL EXCEPTION|Process: ${pkg}[,: ]" || true)"
-  if [ -n "$pid" ]; then
-    mig="$(A "$s" logcat -d --pid="$pid" 2>/dev/null | grep -ciE "Migration didn.t|SQLiteException|not a database|IllegalStateException.*room|room.*(error|exception)" || true)"
-  else mig="n/a"; fi
-  say "$label log scan: running=$([ -n "$pid" ] && echo yes || echo NO) fatal_count=$fatal migration_room_error_count=$mig"
+  say "$label: running=$([ -n "$pid" ] && echo yes || echo NO)"
   [ -n "$pid" ] || fail "$label: app is not running after ${SCAN_SECS}s"
+  case "$pid" in *[!0-9]*) unverified_exit "$label" "unparseable pid" "$s" "$pkg" ;; esac
+  # 1) retrieve (explicit status), 2) sanity (non-empty / long enough), 3) count (grep status 1 = no match, status 2 = error)
+  A "$s" logcat -d -b all > "$allf" 2>/dev/null || unverified_exit "$label" "logcat retrieval failed" "$s" "$pkg"
+  lines="$(wc -l < "$allf")" || unverified_exit "$label" "cannot measure the log" "$s" "$pkg"
+  lines="${lines//[[:space:]]/}"
+  case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the log" "$s" "$pkg" ;; esac
+  [ "$lines" -ge 5 ] || unverified_exit "$label" "logcat returned empty/short output ($lines lines) while the app is running" "$s" "$pkg"
+  A "$s" logcat -d --pid="$pid" > "$pidf" 2>/dev/null || unverified_exit "$label" "per-process logcat retrieval failed" "$s" "$pkg"
+  lines="$(wc -l < "$pidf")" || unverified_exit "$label" "cannot measure the per-process log" "$s" "$pkg"
+  lines="${lines//[[:space:]]/}"
+  case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the per-process log" "$s" "$pkg" ;; esac
+  [ "$lines" -ge 1 ] || unverified_exit "$label" "per-process logcat is empty while the app is running" "$s" "$pkg"
+  fatal="$(count_matches -E "$allf" "$fre")" || unverified_exit "$label" "grep error while counting FATAL lines" "$s" "$pkg"
+  mig="$(count_matches -iE "$pidf" "$mre")" || unverified_exit "$label" "grep error while counting Migration/Room lines" "$s" "$pkg"
+  say "$label log scan: running=yes fatal_count=$fatal migration_room_sqlcipher_error_count=$mig"
   [ "$fatal" = 0 ] || fail "$label: $fatal FATAL lines"
-  [ "$mig" = 0 ] || fail "$label: $mig Migration/Room error lines"
+  [ "$mig" = 0 ] || fail "$label: $mig Migration/Room/SQLCipher error lines"
 }
 
 # ---------- refusal fixtures (function-level overrides, no adb, no device) ----------
@@ -355,6 +397,21 @@ cg() { PHONE=emulator-5554; SELFTEST=0; A() { printf '%b' "$FX_OUT"; return "${F
 cgo() { PHONE=emulator-5554; SELFTEST=1; A() { printf 'mCallState=0\n'; }; PCA_SELFTEST_CALLSTATE="$FX_OVR"; call_guard fx; }
 cgo_real() { PHONE=R58XXXX; SELFTEST=0; A() { printf 'mCallState=2\n'; }; PCA_SELFTEST_CALLSTATE=0; call_guard fx; }
 stp() { PHONE=emulator-5554; RETRY_SLEEP=0; A() { case "$*" in *force-stop*) printf '%b' "$FX_FS";; *pidof*) printf '%b' "$FX_PID"; return "${FX_RC:-0}";; esac; }; stop_app; }
+sl() { # post-install log verification fixture: FX_LA/FX_LAR = all-buffer log + status, FX_LP/FX_LPR = per-pid log + status, FX_PIDOUT = pidof output
+  PHONE=emulator-5554; GO=1; SCAN_SECS=0; TMP="$FXDIR"
+  A() { shift; case "$*" in
+      "logcat -c") return 0 ;;
+      *resolve-activity*) printf 'com.x/.Main\n' ;;
+      *"am start"*|*monkey*) return 0 ;;
+      *pidof*) printf '%b' "$FX_PIDOUT" ;;
+      *"logcat -d -b all"*) printf '%b' "$FX_LA"; return "${FX_LAR:-0}" ;;
+      *"logcat -d --pid"*) printf '%b' "$FX_LP"; return "${FX_LPR:-0}" ;;
+      *) return 0 ;; esac; }
+  scan_logs emulator-5554 com.x phone
+}
+sl_sedfail() { sed() { return 1; }; stp; }
+sl_awkfail() { awk() { return 1; }; stp; }
+sl_grepfail() { grep() { return 2; }; sl; }
 sha_fx() { hash_cmd() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; sha256_of x; }
 dsk() { PHONE=emulator-5554; BACKUP_DIR="$FXDIR/b"; A() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; free_kb() { printf '%s\n' "$FX_FREE"; }; disk_check; }
 sg() { # signature fixture
@@ -373,7 +430,7 @@ run_fixtures() {
   FXDIR="$(mktemp -d "${TMPDIR:-/tmp}/install-trip-fx.XXXXXX")" || die "no temp dir for fixtures"
   say "fixtures (no adb, no device):"
   local ok='mCallState=0\n'
-  export FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
+  export FX_LA FX_LAR FX_LP FX_LP FX_LPR FX_PIDOUT FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
   FX_RC=0
   FX_OUT="  mCallState=0\n  mCallState=0\n";            fx "call guard: all slots 0 passes" ok cg
   FX_OUT='mCallState=0junk\n';                          fx "call guard: mCallState=0junk" refuse cg
@@ -396,12 +453,40 @@ run_fixtures() {
   FX_PID='__PCA_RC=127\n';                                     fx "stop: pidof exit 127" refuse stp
   FX_FS='__PCA_RC=1\n'; FX_PID='__PCA_RC=1\n';                 fx "stop: force-stop failed" refuse stp
   FX_FS='';                                                    fx "stop: force-stop no marker" refuse stp
-  FX_RC=0
+  FX_FS='__PCA_RC=0\n'; FX_PID='diag: warning text\n__PCA_RC=1\n'; FX_RC=0; fx "stop: diagnostic text + marker, status 1 (not provably empty)" refuse stp
+  FX_PID='__PCA_RC=1\n__PCA_RC=1\n';                          fx "stop: duplicate markers" refuse stp
+  FX_PID='__PCA_RC=0\n__PCA_RC=1\n';                          fx "stop: conflicting duplicate markers" refuse stp
+  FX_PID='__PCA_RC=1\r\n';                                    fx "stop: CRLF + single marker = gone" ok stp
+  FX_PID='1234\r\n__PCA_RC=0\r\n';                           fx "stop: CRLF, rc=0 with a pid" refuse stp
+  FX_PID='5678\n__PCA_RC=0\n';                                fx "stop: rc=0 with a pid" refuse stp
+  FX_PID='no marker at all\n';                                fx "stop: no marker" refuse stp
+  FX_PID='__PCA_RC=\n';                                        fx "stop: empty marker value" refuse stp
+  FX_PID='__PCA_RC=1 trailing\n';                              fx "stop: marker with trailing junk" refuse stp
+  FX_PID='__PCA_RC=1\nafter\n';                                fx "stop: marker not last" refuse stp
+  FX_PID='diag\n__PCA_RC=1\n';                                 fx "stop: sed mocked to fail (diag + marker 1)" refuse sl_sedfail
+  FX_PID='__PCA_RC=1\n';                                       fx "stop: sed mocked to fail (clean marker 1)" refuse sl_sedfail
+  FX_PID='diag\n__PCA_RC=1\n';                                 fx "stop: awk mocked to fail (diag + marker 1)" refuse sl_awkfail
+  FX_PID='__PCA_RC=1\n';                                       fx "stop: awk mocked to fail does not break a clean proof" ok sl_awkfail
+  FX_PID='__PCA_RC=1\n'; FX_RC=0
   FX_OUT="$(printf '0123456789abcdef%.0s' 1 2 3 4)  x\n";      fx "sha256: valid digest" ok sha_fx
   FX_OUT='garbage  x\n';                                       fx "sha256: junk digest" refuse sha_fx
   FX_OUT='abc123  x\n';                                        fx "sha256: short digest" refuse sha_fx
   FX_OUT='';                                                   fx "sha256: empty output" refuse sha_fx
   FX_OUT="$(printf '0123456789abcdef%.0s' 1 2 3 4)  x\n"; FX_RC=1; fx "sha256: tool failure with a valid-looking digest" refuse sha_fx
+  FX_RC=0; FX_PIDOUT='4242\n'; FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LAR=0; FX_LP='p1\np2\n'; FX_LPR=0
+  fx "logs: clean text passes" ok sl
+  FX_LAR=7; fx "logs: all-buffer logcat fails (rc 7)" refuse sl
+  FX_LAR=0; FX_LPR=7; fx "logs: per-pid logcat fails (rc 7)" refuse sl
+  FX_LPR=0; FX_LA=''; fx "logs: all-buffer logcat returns nothing" refuse sl
+  FX_LA='l1\nl2\n'; fx "logs: all-buffer logcat too short" refuse sl
+  FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LP=''; fx "logs: per-pid logcat returns nothing" refuse sl
+  FX_LP='p1\n'; FX_LA='l1\nAndroidRuntime: FATAL EXCEPTION: main\nl3\nl4\nl5\nl6\n'; fx "logs: FATAL EXCEPTION match refuses" refuse sl
+  FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LP='p1\nMigration didn t work\n'; fx "logs: Migration match refuses" refuse sl
+  FX_LP='p1\nnet.zetetic SQLCipher failure\n'; fx "logs: SQLCipher match refuses" refuse sl
+  FX_LP='p1\nroom error here\n'; fx "logs: Room error match refuses" refuse sl
+  FX_LP='p1\np2\n'; fx "logs: grep error (status 2) is not 'no matches'" refuse sl_grepfail
+  FX_PIDOUT=''; fx "logs: app not running" refuse sl
+  FX_PIDOUT='4242\n'; fx "logs: clean again after the refusals" ok sl
   FX_RC=0
   FX_OUT='4096\t.\n__PCA_RC=0\n'; FX_FREE=100000;              fx "disk: enough space" ok dsk
   FX_FREE=12000;                                               fx "disk: free < 3x data" refuse dsk
@@ -496,7 +581,7 @@ if [ -n "$GLASSES" ]; then
   check_installed "$GLASSES" "$GLASSES_PKG" "$APKS/glasses-debug.apk" glasses
 fi
 if [ -n "$WATCH" ]; then
-  check_apk "$APKS/watch-debug.apk" "$WATCH_PKG" watch
+  check_apk "$APKS/watch-debug.apk" "$WATCH_PKG" watch; WATCH_VC="$APK_VC"
   check_installed "$WATCH" "$WATCH_PKG" "$APKS/watch-debug.apk" watch
   say "watch: watch-debug.apk shares applicationId $WATCH_PKG with the phone app; it will be installed ONLY to $WATCH"
 fi
@@ -517,7 +602,11 @@ if [ -n "$GLASSES" ]; then
 fi
 if [ -n "$WATCH" ]; then
   install_apk "$WATCH" "$APKS/watch-debug.apk" watch
-  if [ "$GO" = 1 ]; then say "watch verified: installed versionCode=$(inst_vc "$WATCH" "$WATCH_PKG")"; fi
+  if [ "$GO" = 1 ]; then
+    wvc="$(inst_vc "$WATCH" "$WATCH_PKG")" || wvc=""
+    [ "$wvc" = "$WATCH_VC" ] || fail "watch installed versionCode is '$wvc', expected $WATCH_VC"
+    say "watch verified: installed versionCode=$wvc"
+  fi
 fi
 if [ "$GO" = 1 ]; then say "DONE. Backup: $BACKUP_TAR (keep until the trip is over). Open the app and do the manual checks (v17-upgrade-recovery.md section 3)."
 else say "DRY-RUN complete: nothing was changed or written. Re-run with --go to execute."; fi
