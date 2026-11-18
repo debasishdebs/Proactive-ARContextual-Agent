@@ -375,6 +375,14 @@ class NexusHudSink internal constructor(
         enqueueHideLocked(slot)
     }
 
+    /** Withdraws the notice of [ref] (v3.1: a suggestion dismissed or forgotten on another surface). Only the notice slot, only when [ref] is on it; every other item stays. Never calls the bridge; never throws. */
+    fun withdraw(ref: String) {
+        synchronized(lock) {
+            var c: Handle? = handles[Slot.NOTICE]
+            while (c != null) { if (c.ref == ref) { withdrawLocked(Slot.NOTICE); return }; c = c.prev }
+        }
+    }
+
     /** Lock held. One pending hide per slot: a second request only raises its bound (every handle admitted up to now goes). */
     private fun enqueueHideLocked(slot: Slot) {
         val req = pendingHide[slot]
@@ -588,11 +596,11 @@ class NexusHudSink internal constructor(
                 // Mark and More act on PCA data: they need the gates to still be open. Dismiss never does.
                 if (actionId != HudMapper.DISMISS && syncBlock(h.pauseGated) != null) { withdrawLocked(s); return }
                 withdrawLocked(s)
-                if (actionId == HudMapper.MARK || actionId == HudMapper.MORE) ref = h.ref
+                if (actionId == HudMapper.MARK || actionId == HudMapper.MORE || actionId == HudMapper.DISMISS) ref = h.ref
             }
             val r = ref ?: return
             try {
-                if (actionId == HudMapper.MARK) actions.mark(r) else actions.more(r)
+                when (actionId) { HudMapper.MARK -> actions.mark(r); HudMapper.DISMISS -> actions.dismiss(r); else -> actions.more(r) }
             } catch (_: Exception) {
                 log("nexus action failed")
             }

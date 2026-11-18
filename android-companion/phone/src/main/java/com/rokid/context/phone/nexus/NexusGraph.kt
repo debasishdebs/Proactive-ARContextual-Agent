@@ -56,6 +56,14 @@ object NexusGraph {
         r.feeder.capture(HudEvent.CaptureState.State.STOPPED)
     }
 
+    /** v3.1: a delivered suggestion goes to Nexus (only called while Nexus is the host; the sink's gates apply as they are). False = Nexus is not running or it was already sent. */
+    fun suggestion(card: com.rokid.context.orchestration.proactive.DeliveredCard): Boolean = runtime?.feeder?.suggestion(card) ?: false
+
+    /** v3.1: takes suggestions off Nexus by record id (dismissed or forgotten elsewhere). */
+    fun withdrawSuggestions(ids: Collection<String>) { val p = runtime?.provider ?: return; ids.forEach { p.withdraw(it) } }
+
+    fun withdrawAllSuggestions() { val r = runtime ?: return; withdrawSuggestions(r.feeder.suggestionRefs()) }
+
     /** The recorder accepted a tap mark from the glasses. */
     fun onMarkSaved(ref: String) { runtime?.feeder?.markSaved(ref) }
 
@@ -166,6 +174,12 @@ object NexusGraph {
                 try { com.rokid.context.phone.canvas.MarkGraph.recorder(app).applyVoice(listOf(VoiceMark.Mark(null)), glasses = false, nowMs = System.currentTimeMillis()) }
                 catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "nexus mark failed (${e.javaClass.simpleName})") }
             }
+        }
+
+        /** A suggestion dismissed on Nexus is dismissed everywhere (feedback written, withdrawn from every other surface). Another kind of notice is none of its business. */
+        override fun dismiss(ref: String) {
+            if (!ref.startsWith(com.rokid.context.phone.hub.Hub.SUGGESTION_ID_PREFIX)) return
+            scope.launch { try { com.rokid.context.orchestration.proactive.ProactiveGraph.actions(app).dismiss(ref) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "nexus dismiss failed (${e.javaClass.simpleName})") } }
         }
 
         /** Opens PCA. Best effort: Android may refuse a background start. */
