@@ -78,13 +78,26 @@ class UserPinStore(private val prefs: SharedPreferences) {
         pins() // refresh [bad]
         if (bad) return false
         if (pins.any { !it.isValid } || pins.distinctBy { it.id }.size != pins.size || pins.size > MAX_PINS) return false
-        return try { prefs.edit().putString(KEY, encode(pins)).commit() } catch (e: Exception) { false }
+        val before = try { parse(prefs.getString(KEY, null) ?: "[]").associateBy { it.id } } catch (e: Exception) { emptyMap() }
+        val ok = try { prefs.edit().putString(KEY, encode(pins)).commit() } catch (e: Exception) { false }
+        if (ok) {
+            val after = pins.associateBy { it.id }
+            // removed or edited pins (ids only): anything derived from them must be withdrawn at once
+            val changed = before.filter { (id, old) -> after[id] != old }.keys
+            if (changed.isNotEmpty()) notifyChanged(changed)
+        }
+        return ok
     }
 
     companion object {
         /** The prefs file: user configuration (exported on request, never in a backup or transfer, never deleted by Delete all). */
         const val PREFS = "place_pins"
         const val MAX_PINS = 200
+        private val listeners = java.util.concurrent.CopyOnWriteArrayList<(Set<String>) -> Unit>()
+        /** v3.0: called (on the writer's thread, after a successful commit) with the ids of pins that were deleted or edited. Never throws into the writer. */
+        fun addChangeListener(l: (Set<String>) -> Unit) { if (l !in listeners) listeners += l }
+        fun removeChangeListener(l: (Set<String>) -> Unit) { listeners -= l }
+        private fun notifyChanged(ids: Set<String>) { for (l in listeners) try { l(ids) } catch (_: Exception) { } }
         private const val KEY = "pins"
 
         fun encode(pins: List<UserPlace>): String = JSONArray().also { a ->

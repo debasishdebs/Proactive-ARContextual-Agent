@@ -1,6 +1,8 @@
 package com.rokid.context.phone.ui.settings.suggestions
 
 import android.app.Application
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertCountEquals
@@ -59,6 +61,17 @@ class SuggestionsScreenTest {
         compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_master"))
         compose.onNodeWithTag("suggestions_master").performClick()
         assertTrue("clicking asks for ON", master)
+    }
+
+    @Test fun theScreenSaysPlainlyThatUnknownDrivingMeansNothingIsRecordedAndWhenStorageIsDown() {
+        var state by androidx.compose.runtime.mutableStateOf(SuggestionsUiState())
+        compose.setContent { PcTheme { SuggestionsScreen(state, {}, {}, {}, {}, {}, {}, {}) } }
+        compose.onNodeWithTag("suggestions_driving_unknown").assertTextContains("records nothing", substring = true)
+        compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_driving_unknown"))
+        compose.onAllNodes(hasTestTag("suggestions_storage_down")).assertCountEquals(0)
+        state = SuggestionsUiState(drivingKnown = true, storageUnavailable = true)
+        compose.onAllNodes(hasTestTag("suggestions_driving_unknown")).assertCountEquals(0)
+        compose.onNodeWithTag("suggestions_storage_down").assertTextContains("nothing is recorded", substring = true)
     }
 
     @Test fun theLogShowsTextSourcesAndCountersAndWhyOpensTheSheetWithNever() {

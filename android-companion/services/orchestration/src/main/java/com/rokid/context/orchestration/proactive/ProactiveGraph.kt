@@ -19,8 +19,10 @@ import com.rokid.context.provenance.ProvenanceGate
 /** What only the phone app knows; every default fails closed (see [ProactiveSeams]). Set once at start-up (`ContextApp`). */
 object ProactiveEnvironment {
     @Volatile var worn: () -> Boolean = { false }
-    /** A vehicle episode is under way, or cannot be told. */
+    /** A vehicle episode is under way, or cannot be told (ruling 10: unknown is DRIVING, so nothing is recorded). */
     @Volatile var driving: () -> Boolean = { true }
+    /** True only when [driving] is backed by a real vehicle signal. No such signal exists in v3.0 shadow, so the Suggestions screen says that nothing is recorded until one does. */
+    @Volatile var drivingSignalAvailable: Boolean = false
     /** The user's pause zones; null = unreadable (everything is blocked). */
     @Volatile var zones: () -> List<PauseZone>? = { null }
     /** The nudge cap ("Nudges per day"; 0 = off). */
@@ -33,22 +35,48 @@ object ProactiveGraph {
     private const val ENC_PREFS = "proactive_shadow"
     @Volatile private var store: SuggestionStore? = null
 
+    /** Opens the encrypted prefs; tests replace it to simulate a Keystore failure. */
+    @Volatile internal var openEncryptedPrefs: (Context) -> android.content.SharedPreferences = { a ->
+        EncryptedSharedPreferences.create(
+            a, ENC_PREFS, MasterKey.Builder(a).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    }
+
     /**
-     * The process store: the encrypted prefs file ([ENC_PREFS], app-private, backup-excluded, wiped by Delete all). If the Keystore cannot be opened the store stays in MEMORY for this process (nothing is
-     * written in the clear), which fails safe: a restart then starts empty.
+     * The process store: the encrypted prefs file ([ENC_PREFS], app-private, backup-excluded, wiped by Delete all). If the Keystore cannot be opened the persisted Never list, budget and cooldown are UNKNOWN, so
+     * recording is DISABLED for this process (fail closed): the master switch is forced off and cannot be turned on, and the store is [UnavailableSuggestionStore] (it refuses every write). Never an empty
+     * in-memory store that would forget what the user said never to suggest.
      */
     fun store(app: Context): SuggestionStore = store ?: synchronized(this) {
         store ?: run {
             val a = app.applicationContext
-            val s = try {
-                PrefsSuggestionStore(EncryptedSharedPreferences.create(
-                    a, ENC_PREFS, MasterKey.Builder(a).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-                ))
-            } catch (e: Exception) { PcLog.i(TAG, "shadow store not encrypted (${e.javaClass.simpleName}); memory only"); InMemorySuggestionStore() }
+            val s: SuggestionStore = try {
+                PrefsSuggestionStore(openEncryptedPrefs(a))
+            } catch (e: Exception) {
+                PcLog.i(TAG, "shadow store unavailable (${e.javaClass.simpleName}); recording disabled")
+                ProactiveSettings.of(a).markStorageUnavailable()
+                UnavailableSuggestionStore
+            }
             s.also { store = it }
         }
     }
+
+    /** False when the store could not be opened (recording is disabled and the screen says so). Opens the store when it has not been yet. */
+    fun storageAvailable(app: Context): Boolean = store(app) !== UnavailableSuggestionStore
+
+    private val pinListener: (Set<String>) -> Unit = { ids -> pinsChanged(ids) }
+    @Volatile private var pinApp: Context? = null
+
+    /** A pin was deleted or edited (UserPinStore): withdraw every record that cites it, at once, from the writer's thread. */
+    private fun pinsChanged(ids: Set<String>) {
+        val a = pinApp ?: return
+        val dead = ids.map { SourceIds.pin(it) }.toSet()
+        store(a).withdrawWhere { r -> r.sourceIds.any { it in dead } }
+    }
+
+    /** Registered once at start-up (`ContextApp`). */
+    fun registerPinHook(app: Context) { pinApp = app.applicationContext; UserPinStore.addChangeListener(pinListener) }
 
     fun pins(app: Context): List<UserPlaceView> = UserPinStore(app.applicationContext.getSharedPreferences(UserPinStore.PREFS, Context.MODE_PRIVATE)).let { st -> st.pins().map { UserPlaceView(it.id, it.name, it.note, it.lat, it.lon) } }
 
@@ -62,7 +90,7 @@ object ProactiveGraph {
         val a = app.applicationContext
         val mem = MemoryGraph.get(a)
         return ProactiveSeams(
-            enabled = { ProactiveSettings.of(a).active() },
+            enabled = { ProactiveSettings.of(a).let { it.active() && storageAvailable(a) } },
             paused = { mem.db.pauseDao().countCovering(System.currentTimeMillis()) > 0 || BatterySaver.isOn(a) },
             zoneGuard = AskZoneFence,
             worn = { ProactiveEnvironment.worn() },
@@ -94,7 +122,7 @@ object ProactiveGraph {
 
     fun replayer(app: Context): ProactiveReplayer {
         val mem = MemoryGraph.get(app)
-        return ProactiveReplayer(mem.db, ProvenanceGate.forGraph(mem), generator(app), { seams(app) }, never = { store(app).never() })
+        return ProactiveReplayer(mem.db, ProvenanceGate.forGraph(mem), generator(app), { seams(app) }, never = { if (storageAvailable(app)) store(app).never() else throw IllegalStateException("storage unavailable") })
     }
 
     fun liveness(app: Context) = SourceLiveness(ProvenanceGate.forGraph(MemoryGraph.get(app))) { runCatching { pins(app).map { it.id }.toSet() }.getOrNull() }
@@ -105,5 +133,5 @@ object ProactiveGraph {
         return ProactiveForgetListener({ store(a) }, { liveness(a) }, { ProactiveSettings.of(a).reset() })
     }
 
-    internal fun resetForTests() { store = null }
+    internal fun resetForTests() { store = null; UserPinStore.removeChangeListener(pinListener); pinApp = null }
 }
