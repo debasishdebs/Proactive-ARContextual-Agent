@@ -62,6 +62,31 @@ Q844619 vihara, Q54074585 Tibetan Buddhist monastery (kind temple); Q1456873 pea
 
 Consequence: for Rumtek-like sites the Wikipedia/Wikidata path now works; the places in the NOT kept rows above rely on the Overpass extras (OSM `tourism=attraction|viewpoint`, `historic=*`), which could not be checked from this Mac.
 
+## Curated individual-landmark allowlist, version 1 (2026-11-18)
+
+`PlaceCellSource.CURATED_LANDMARK_QIDS` (version `CURATED_LANDMARKS_VERSION` = 1): an item is admitted when its P31 is in `MONUMENT_CLASSES` OR its QID is in the curated set. Items whose P31 includes a person class (`PERSON_CLASSES`: human Q5, fictional human Q15632617, character Q95074, human whose existence is disputed Q21070568) are rejected even for a curated QID; coordinates are still required. Each id, label, P31 and P625 below was read back from wikidata.org on 2026-11-18 (`wbgetentities`, labels en, claims; found with `wbsearchentities`; requests one at a time, 3 s apart, no 429 seen). Pinned by `curatedLandmarkIdsAreTheOnesVerifiedAgainstWikidata`; behaviour by `curatedQidIsAdmittedAndTheSameClassWithoutTheQidIsNot`, `aPersonIsRejectedEvenWhenItsQidIsCurated`, `aCuratedQidWithoutAWikidataEntityOrPageIsRejected`.
+
+| Place | QID | Wikidata label | P31 | P625 | Kind | Status |
+|---|---|---|---|---|---|---|
+| Sigiriya (rock fortress) | Q272153 | Sigiriya | Q486972 human settlement | 7.957, 80.760 | archaeological_site | curated, now kept |
+| Tiger Hill | Q16901632 | Tiger Hill, Darjeeling | Q618123, Q8502 | 26.995, 88.285 | viewpoint | curated, now kept |
+| Batasia Loop | Q4868648 | Batasia Loop | Q1395089 horseshoe curve | 27.017, 88.247 | attraction | curated, now kept |
+| Banjhakri Falls | Q23038925 | Banjhakri falls and park | Q34038 waterfall | 27.351, 88.604 | attraction | curated, now kept |
+| Khecheopalri Lake | Q3214979 | Khecheopalri Lake | Q23397 lake | 27.373, 88.208 | attraction | curated, now kept |
+| Sri Maha Bodhi (Jaya Sri Maha Bodhi) | Q944175 | Sri Maha Bodhi | Q811534 remarkable tree | 8.345, 80.397 | historic_site | curated, now kept |
+| Happy Valley Tea Estate | Q5653142 | Happy Valley Tea Estate | Q70780172, Q56436498 | 27.048, 88.251 | attraction | curated, now kept |
+| Tsomgo Lake | Q542864 | Lake Tsongmo | Q211302 glacial lake | 27.375, 88.764 | attraction | curated; still outside every preset (cell tuz5e) |
+| Do Drul Chorten | Q5285886 | Do-drul Chorten | none | 27.313, 88.605 | stupa | curated, now kept |
+| Darjeeling station | Q24949017 | Darjeeling railway station | Q55488, Q22808404 | 27.038, 88.263 | heritage_building | curated, now kept |
+| Ghum station | Q60181073 | Ghum railway station | Q55488 | 27.009, 88.254 | heritage_building | curated, now kept |
+| Rumtek, Pidurangala | | | | | | already covered by classes, not curated |
+| Mirissa, Weligama | | | | | | settlements, deliberately skipped |
+| Jetavanaramaya | Q1961579 | (P31 stupa Q180987, P625 8.352, 80.404) | | | | NOT curated: class already admitted, but the Wikipedia page has no coordinates, so geosearch never returns it |
+| Ritigala | Q19719626 | (P31 mountain Q8502, P625 8.109, 80.656) | | | | NOT curated: Wikipedia page has no coordinates, unreachable |
+| "Ban Jhakri Falls", "Tsomgo Lake", "Happy Valley" by name | | | | | | `wbsearchentities` gave no hit for those spellings; the ids above come from the 2026-11-18 coverage run and were re-read by id |
+
+Discovery limit (documented, flow NOT changed): the app finds candidates by Wikipedia geosearch of the cell box first, then enriches with Wikidata by the QIDs of the returned pages. A Wikidata item with P625 but no Wikipedia coordinates (Jetavanaramaya, Ritigala) is never a candidate, curated or not; only the Overpass extras (OSM tags) can add such places. Curation helps only items whose Wikipedia page is geotagged. Unverified: whether each curated place's English Wikipedia page is geotagged (Tsomgo is outside the presets anyway); the live pack was not re-seeded here.
+
 ## Sri Lanka cultural rules (UNVERIFIED, from spec section E; docs only, NOT app text)
 
 - Sigiriya: photography of the frescoes is restricted.
