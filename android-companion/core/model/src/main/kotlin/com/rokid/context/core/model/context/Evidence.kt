@@ -7,8 +7,8 @@ import kotlinx.serialization.Serializable
 sealed interface Evidence {
     val atMs: Long
 
-    /** [ageMs]: how long before receipt the glasses observed this (monotonic, session-checked); null = unknown, which is never fresh calm evidence. */
-    data class GlassesMotion(override val atMs: Long, val state: MotionState, val stillFrac5m: Float, val ageMs: Long? = null) : Evidence
+    /** A glasses hint is vehicle evidence only (receipt time); a glasses clock cannot prove absolute age, so it is never calm evidence for NOT_DRIVING. */
+    data class GlassesMotion(override val atMs: Long, val state: MotionState, val stillFrac5m: Float) : Evidence
     data class ActivityTransition(override val atMs: Long, val activity: PhoneActivity, val enter: Boolean) : Evidence
     data class Steps(override val atMs: Long, val stepsPerMin: Int) : Evidence
     data class Speed(override val atMs: Long, val kmh: Float, val precise: Boolean) : Evidence

@@ -12,7 +12,7 @@ data class DrivingAssessment(val state: DrivingState, val reason: String) {
 enum class Calm(val words: String) { STILL("still"), WALKING("walking"), SLOW("moving slowly") }
 
 /** Which independent source gave a calm reading. NOT_DRIVING needs two different ones (Codex v3 r3 P2). */
-enum class CalmSource { GLASSES, PHONE_ACTIVITY, PHONE_STEPS, SPEED, WATCH }
+enum class CalmSource { PHONE_ACTIVITY, PHONE_STEPS, SPEED, WATCH }
 
 /** A MONOTONIC millisecond clock (production: `SystemClock.elapsedRealtime`). The tracker never reads the wall clock (Codex v3 r3 P1-3). */
 fun interface Clock { fun elapsedMs(): Long }
@@ -22,8 +22,8 @@ fun interface Clock { fun elapsedMs(): Long }
  * decision). Memory only, counts and times only: no coordinates, no raw readings. Every window is measured on a monotonic [Clock], so a wall-clock
  * jump (forward or back) never shortens protection. Readings come in as an AGE (how long ago the thing was observed), never as a wall time.
  *
- * - DRIVING: a vehicle was suspected or seen (vehicle activity / car link / watch or glasses vehicle / speed >= [FAST_MPS]) within [VEHICLE_WINDOW_MS].
- * - NOT_DRIVING: at least TWO different [CalmSource]s gave a FRESH ([FRESH_MS]) calm reading, at least one of them a moving one (walking / slow: a seated
+ * - DRIVING: a vehicle was suspected or seen (vehicle activity / car link / watch or glasses vehicle hint / speed >= [FAST_MPS]) within [VEHICLE_WINDOW_MS].
+ * - NOT_DRIVING: at least TWO different PHONE-side [CalmSource]s (the glasses' clock cannot prove absolute age, so a glasses hint is never calm evidence) gave a FRESH ([FRESH_MS]) calm reading, at least one of them a moving one (walking / slow: a seated
  *   driver is still, so still readings alone prove nothing), AND no vehicle suspicion in the last [VEHICLE_WINDOW_MS] AND the hub has been observed
  *   continuously for at least [VEHICLE_WINDOW_MS] (so the absence of suspicion is actually known).
  * - UNKNOWN otherwise (no data, one source, stale data, tracking only just started or not running). A vehicle always wins over a calm reading.
@@ -98,7 +98,7 @@ class DrivingTracker(private val clock: Clock = Clock { android.os.SystemClock.e
         if (fresh.isEmpty()) return unknown("no recent motion data")
         if (beat == null || since == null || now - beat > BEAT_GAP_MS || now < beat) return unknown("motion tracking is not running")
         if (now - since < VEHICLE_WINDOW_MS) return unknown("motion tracking only just started")
-        if (fresh.size < 2) return unknown("only one motion source")
+        if (fresh.size < 2) return unknown("calm evidence needs two phone motion sources")
         val kinds = fresh.values.map { it.second }.toSet()
         if (kinds.all { it == Calm.STILL }) return unknown("only still readings")
         return DrivingAssessment(DrivingState.NOT_DRIVING, "Not driving: ${fresh.size} motion sources agree (${kinds.sortedBy { it.ordinal }.joinToString(" and ") { it.words }})")
@@ -115,8 +115,6 @@ class DrivingTracker(private val clock: Clock = Clock { android.os.SystemClock.e
         /** About 25 km/h, the fusion's own "fast" threshold, and about 7 m/s as ruled. */
         const val FAST_MPS = 7f
         const val SLOW_MPS = 2f
-        /** The glasses' share of the last five minutes spent still that counts as "enough coverage". */
-        const val STILL_FRAC = 0.85f
     }
 }
 

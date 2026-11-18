@@ -69,8 +69,8 @@ class SuggestionsScreenTest {
         compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_driving"))
         compose.onNodeWithTag("suggestions_driving").assertTextContains("suggestions are paused", substring = true)
         compose.onAllNodes(hasTestTag("suggestions_storage_down")).assertCountEquals(0)
-        state = SuggestionsUiState(drivingLine = "Unknown: only one motion source: suggestions are paused", storageUnavailable = true)
-        compose.onNodeWithTag("suggestions_driving").assertTextEquals("Unknown: only one motion source: suggestions are paused")
+        state = SuggestionsUiState(drivingLine = "Unknown: calm evidence needs two phone motion sources: suggestions are paused", storageUnavailable = true)
+        compose.onNodeWithTag("suggestions_driving").assertTextEquals("Unknown: calm evidence needs two phone motion sources: suggestions are paused")
         compose.onNodeWithTag("suggestions_storage_down").assertTextContains("nothing is recorded", substring = true)
     }
 
