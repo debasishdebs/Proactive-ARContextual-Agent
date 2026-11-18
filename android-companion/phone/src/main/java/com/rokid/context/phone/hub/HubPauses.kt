@@ -52,7 +52,7 @@ class HubPauses(
     }
 
     /** Union: most restrictive wins (null end beats any end, else the later end); a resumed id is never resurrected. */
-    suspend fun add(record: PauseRecord) = dao.addMerged(record.toEntity(), record.isActiveAt(now()), now())
+    suspend fun add(record: PauseRecord) { dao.addMerged(record.toEntity(), record.isActiveAt(now()), now()); com.rokid.context.orchestration.proactive.SuggestionGateEvents.closed() } // v3.1 r2: the Home feed re-derives at once (a pause is no store change)
 
     suspend fun union(records: List<PauseRecord>) = records.forEach { add(it) }
 

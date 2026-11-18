@@ -43,6 +43,10 @@ class DrivingTracker(private val clock: Clock = Clock { android.os.SystemClock.e
 
     /** The hub is alive and just evaluated: [suspected] is its fused "a vehicle is suspected" flag. */
     @Synchronized fun heartbeat(suspected: Boolean) {
+        val was = assessLocked().state
+        try { heartbeatLocked(suspected) } finally { notifyIfBlocking(was) }
+    }
+    private fun heartbeatLocked(suspected: Boolean) {
         ver++
         val now = clock.elapsedMs()
         val b = lastBeat
@@ -53,6 +57,10 @@ class DrivingTracker(private val clock: Clock = Clock { android.os.SystemClock.e
 
     /** Any vehicle evidence, observed [ageMs] ago (a negative age counts as now). */
     @Synchronized fun vehicle(ageMs: Long = 0) {
+        val was = assessLocked().state
+        try { vehicleLocked(ageMs) } finally { notifyIfBlocking(was) }
+    }
+    private fun vehicleLocked(ageMs: Long) {
         ver++
         val at = clock.elapsedMs() - ageMs.coerceAtLeast(0)
         lastVehicleAt = maxOf(lastVehicleAt ?: Long.MIN_VALUE, at)
@@ -67,11 +75,19 @@ class DrivingTracker(private val clock: Clock = Clock { android.os.SystemClock.e
 
     /** A calm reading from [source], observed [ageMs] ago (a negative age counts as now). Only the newest reading of a source is kept. */
     @Synchronized fun calm(source: CalmSource, kind: Calm, ageMs: Long = 0) {
+        val was = assessLocked().state
+        try { calmLocked(source, kind, ageMs) } finally { notifyIfBlocking(was) }
+    }
+    private fun calmLocked(source: CalmSource, kind: Calm, ageMs: Long) {
         ver++
         val at = clock.elapsedMs() - ageMs.coerceAtLeast(0)
         val old = calm[source]
         if (old == null || at >= old.first) calm[source] = at to kind
     }
+
+    /** v3.1 r2: called (under the tracker's lock: keep it cheap and non-blocking) when an update moved the state from NOT_DRIVING to DRIVING or UNKNOWN. The default tells the suggestion surfaces to re-derive at once. */
+    @Volatile var onBlocking: () -> Unit = { SuggestionGateEvents.closed() }
+    private fun notifyIfBlocking(was: DrivingState) { if (was == DrivingState.NOT_DRIVING && assessLocked().state != DrivingState.NOT_DRIVING) try { onBlocking() } catch (_: Exception) { } }
 
     @Synchronized fun assess(): DrivingAssessment = assessLocked()
 

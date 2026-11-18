@@ -126,6 +126,7 @@ object NexusGraph {
             pinLive = { provider.liveSlots().hasPin() },
             log = { PcLog.i(TAG, it) },
             suggestionGate = { id -> com.rokid.context.orchestration.proactive.ProactiveGraph.delivery(app).publishable(id, com.rokid.context.orchestration.proactive.Surface.NEXUS) },
+            suggestionFinalGate = { id -> com.rokid.context.orchestration.proactive.ProactiveGraph.delivery(app).publishableNow(id, com.rokid.context.orchestration.proactive.Surface.NEXUS) },
             withdrawOut = { id -> provider.withdraw(id) },
         )
         runtime = Runtime(provider, feeder, store)

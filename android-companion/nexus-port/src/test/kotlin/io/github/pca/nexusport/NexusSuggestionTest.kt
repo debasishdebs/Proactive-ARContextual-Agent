@@ -39,4 +39,31 @@ class NexusSuggestionTest {
         s.withdraw("sg_9"); assertEquals(0, s.liveHandles()); assertTrue("hide:NOTICE" in t.calls)
         s.withdraw("sg_9") // nothing left: no error
     }
+
+    // ---- Codex v3.1 r2 P1-1: the suggestion's own gate runs inside the sink's FINAL admission ---------------------------------------------------------------------
+
+    private fun gated(ref: String = "sg_1", gate: SuggestionGate) = sg(ref).copy(gate = gate)
+
+    @Test fun anOpenGateShowsAndAClosedOrThrowingGateDropsBeforeAnythingIsQueued() = runBlocking<Unit> {
+        assertIs<Outcome.Shown>(sink().show(gated { true })); t.calls.clear()
+        assertEquals(DropReason.SUGGESTION_GATE, assertIs<Outcome.Dropped>(sink().show(gated("sg_2") { false })).reason)
+        assertEquals(DropReason.SUGGESTION_GATE, assertIs<Outcome.Dropped>(sink().show(gated("sg_3") { throw IllegalStateException("boom") })).reason)
+        assertTrue(t.calls.isEmpty(), "nothing was sent")
+    }
+
+    @Test fun drivingBecomingActiveWhileTheSinkSuspendsForProvenanceDropsTheShow() = runBlocking<Unit> {
+        var driving = false
+        g.sourcesGate = { driving = true } // publishable() was true; driving starts during the provenance read
+        assertEquals(DropReason.SUGGESTION_GATE, assertIs<Outcome.Dropped>(sink().show(gated { !driving })).reason)
+        assertTrue(t.calls.isEmpty()); assertEquals(0, sink().liveHandles())
+    }
+
+    @Test fun theGateIsAskedAgainRightBeforeTheTransportCall() = runBlocking<Unit> {
+        var asked = 0
+        val o = sink().show(gated { asked++; asked == 1 }) // open at the admission, closed by the time the dispatcher is about to call
+        assertEquals(DropReason.TRIPPED, assertIs<Outcome.Dropped>(o).reason)
+        assertTrue(asked >= 2, "asked at the admission and again before the call"); assertTrue(t.calls.none { it == "show:NOTICE" }, "nothing was sent")
+    }
+
+    @Test fun anEventWithoutAGateIsUntouched() = runBlocking<Unit> { assertIs<Outcome.Shown>(sink().show(sg())) }
 }

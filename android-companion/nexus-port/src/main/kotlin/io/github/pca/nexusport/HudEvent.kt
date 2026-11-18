@@ -11,8 +11,14 @@ sealed interface HudEvent {
     /** An id of PCA's own (nudge id, ask id) handed back with an action; never text. */
     val ref: String
 
-    data class Nudge(override val ref: String, val title: String, val body: String, override val sources: Set<String>, val ttlMs: Long, val wake: Boolean = false) : HudEvent {
+    /** The event's own final gate, if it carries one (see [SuggestionGate]). */
+    val suggestionGate: SuggestionGate? get() = null
+
+    data class Nudge(override val ref: String, val title: String, val body: String, override val sources: Set<String>, val ttlMs: Long, val wake: Boolean = false,
+        /** v3.1 r2: set for a proactive suggestion: asked by the sink at its final admission and again before the call. Null = the sink's own gates only. */
+        val gate: SuggestionGate? = null) : HudEvent {
         override val proactive get() = true
+        override val suggestionGate: SuggestionGate? get() = gate
     }
 
     data class PlaceCard(override val ref: String, val title: String, val body: String, override val sources: Set<String>, val ttlMs: Long, val wake: Boolean = false) : HudEvent {

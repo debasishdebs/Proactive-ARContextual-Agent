@@ -42,6 +42,10 @@ interface SuggestionStore {
     fun ledger(): List<LedgerEntry> = emptyList()
     /** Appends one line (then prunes). False = not stored. */
     fun appendLedger(e: LedgerEntry): Boolean = false
+    /** v3.1 r2: turns the RESERVED line [e] into DELIVERED. False = not stored (the line stays RESERVED, which counts the same: conservative). */
+    fun confirmLedger(e: LedgerEntry): Boolean = false
+    /** v3.1 r2: removes the RESERVED line [e] (nothing was shown). False = not stored (the line stays and counts: conservative). */
+    fun releaseLedger(e: LedgerEntry): Boolean = false
 
     companion object {
         const val MAX_RECORDS = 100
@@ -76,6 +80,8 @@ class InMemorySuggestionStore : SuggestionStore {
     private var ledgerRows = emptyList<LedgerEntry>()
     override fun ledger(): List<LedgerEntry> = synchronized(lock) { ledgerRows }
     override fun appendLedger(e: LedgerEntry): Boolean { synchronized(lock) { ledgerRows = DeliveryLedger.prune(ledgerRows + e, e.ts) }; return true }
+    override fun confirmLedger(e: LedgerEntry): Boolean = synchronized(lock) { DeliveryLedger.confirmed(ledgerRows, e)?.let { ledgerRows = it; true } ?: false }
+    override fun releaseLedger(e: LedgerEntry): Boolean = synchronized(lock) { DeliveryLedger.released(ledgerRows, e)?.let { ledgerRows = it; true } ?: false }
     override fun clearAll() { synchronized(lock) { rows.clear(); nevers.clear(); counts.clear(); fb = FeedbackState.EMPTY; ledgerRows = emptyList() }; changed() }
     override fun markDelivered(id: String, surface: Surface): Boolean = synchronized(lock) {
         val i = rows.indexOfFirst { it.id == id }
@@ -140,7 +146,7 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
     override fun removeNever(key: String) { synchronized(lock) { val s = readNever(); if (s.remove(key)) try { prefs.edit().putString(NEVER, JSONArray(s.toList()).toString()).commit() } catch (_: Exception) { } }; changed() }
     override fun counters(): Map<String, Int> = synchronized(lock) { readCounters() }
     override fun bump(counter: String) { synchronized(lock) { val c = readCounters(); c[counter] = (c[counter] ?: 0) + 1; try { prefs.edit().putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (_: Exception) { } } }
-    override fun clearAll() { synchronized(lock) { try { prefs.edit().clear().commit() } catch (_: Exception) { } }; changed() }
+    override fun clearAll() { synchronized(lock) { unsaved.clear(); try { prefs.edit().clear().commit() } catch (_: Exception) { } }; changed() }
     override fun markDelivered(id: String, surface: Surface): Boolean = synchronized(lock) {
         val rows = readRows()
         val i = rows.indexOfFirst { it.id == id }
@@ -153,11 +159,18 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
         try { prefs.edit().putString(FB, next.toJson()).putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (e: Exception) { false }
     }.also { changed() }
     override fun resetFeedback() { synchronized(lock) { try { prefs.edit().remove(FB).commit() } catch (_: Exception) { } }; changed() }
-    override fun ledger(): List<LedgerEntry> = synchronized(lock) { DeliveryLedger.decode(try { prefs.getString(LEDGER, null) } catch (e: Exception) { null }) }
+    /** Dismissal lines whose write failed: kept in memory so the five-dismissals pause still holds for this process (a lost dismissal must not reopen delivery). RESERVED lines never go here: a failed reservation is no delivery. */
+    private val unsaved = ArrayList<LedgerEntry>()
+    private fun readLedger(): List<LedgerEntry> = DeliveryLedger.decode(try { prefs.getString(LEDGER, null) } catch (x: Exception) { null })
+    private fun writeLedger(l: List<LedgerEntry>): Boolean = try { prefs.edit().putString(LEDGER, DeliveryLedger.encode(l)).commit() } catch (x: Exception) { false }
+    override fun ledger(): List<LedgerEntry> = synchronized(lock) { (readLedger() + unsaved).sortedBy { it.ts } }
     override fun appendLedger(e: LedgerEntry): Boolean = synchronized(lock) {
-        val next = DeliveryLedger.prune(DeliveryLedger.decode(try { prefs.getString(LEDGER, null) } catch (x: Exception) { null }) + e, e.ts)
-        try { prefs.edit().putString(LEDGER, DeliveryLedger.encode(next)).commit() } catch (x: Exception) { false }
+        val ok = writeLedger(DeliveryLedger.prune(readLedger() + unsaved + e, e.ts))
+        if (ok) unsaved.clear() else if (e.kind == LedgerKind.DISMISSED && unsaved.size < DeliveryLedger.MAX_ENTRIES) unsaved += e
+        ok
     }
+    override fun confirmLedger(e: LedgerEntry): Boolean = synchronized(lock) { DeliveryLedger.confirmed(readLedger(), e)?.let { writeLedger(it) } ?: false }
+    override fun releaseLedger(e: LedgerEntry): Boolean = synchronized(lock) { DeliveryLedger.released(readLedger(), e)?.let { writeLedger(it) } ?: false }
 
     companion object {
         /** The prefs file (a Delete-all-wiped, backup-excluded file; production opens it encrypted). */

@@ -44,7 +44,7 @@ class ProactiveBudget(
         val midnight = Instant.ofEpochMilli(nowMs).atZone(hud.zone).toLocalDate().atStartOfDay(hud.zone).toInstant().toEpochMilli()
         if (DeliveryLedger.pausedUntil(state.ledger) > nowMs) return Gate.DISMISS_PAUSE
         // consumption = the ledger (delivered, whatever became of the record) + the retained would-shows that were never delivered
-        val events = state.ledger.filter { it.kind == LedgerKind.DELIVERED }.map { it.ts to it.family } + state.records.filter { it.delivered.isEmpty() }.map { it.ts to it.family }
+        val events = state.ledger.filter(DeliveryLedger::consumes).map { it.ts to it.family } + state.records.filter { it.delivered.isEmpty() }.map { it.ts to it.family }
         val today = events.filter { it.first >= midnight && it.first <= nowMs }
         if (today.size >= capPerDay) return Gate.CAP_REACHED
         if (today.size + state.globalToday >= state.globalCap) return Gate.GLOBAL_CAP

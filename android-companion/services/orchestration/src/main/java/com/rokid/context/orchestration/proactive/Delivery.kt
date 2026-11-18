@@ -66,6 +66,8 @@ class ProactiveDelivery(
     @Volatile internal var testInFence: (() -> Unit)? = null
     /** Test seam: runs between a surface's claim and its publication (a withdrawal landing in between). */
     @Volatile internal var testBetweenClaimAndPublish: (() -> Unit)? = null
+    /** Test seam: runs between the ledger reservation and the claims (a process death in between: a throw here). */
+    @Volatile internal var testAfterReserve: (() -> Unit)? = null
 
     suspend fun deliver(recordId: String, nowMs: Long = clock()): Map<Surface, Gate> {
         if (Surface.entries.none(wanted)) return emptyMap() // every switch off: nothing happens, nothing is counted
@@ -149,17 +151,32 @@ class ProactiveDelivery(
         val nexus = seams.nexusHost()
         val first = stored.delivered.isEmpty()
         val out = LinkedHashMap<Surface, Gate>()
+        val ready = ArrayList<Surface>()
         for (s in pending) {
-            out[s] = when {
+            val g = when {
                 !wanted(s) -> Gate.SURFACE_OFF
                 s != Surface.PHONE && !worn -> Gate.WEAR
                 s == Surface.HUD && (nexus || hud.verbosity == Verbosity.SILENT) -> Gate.SURFACE_OFF
                 s == Surface.NEXUS && !nexus -> Gate.SURFACE_OFF
-                else -> claimAndPublish(record, s, card)
+                else -> null
             }
+            if (g != null) out[s] = g else ready += s
         }
-        if (first && out.values.any { it == Gate.DELIVERED }) store.appendLedger(LedgerEntry(nowMs, record.family, LedgerKind.DELIVERED)) // consumption outlives the record
-        return out
+        // Codex v3.1 r2 P1-3: the budget is RESERVED first (a RESERVED ledger line, counted like a delivered one), then the surfaces claim and publish, then the line is confirmed. A failed reservation is NO delivery (fail closed);
+        // a publication that fails keeps the line (conservative) unless nothing was claimed at all; a death between the phases leaves a RESERVED line that every budget still counts.
+        var reserved: LedgerEntry? = null
+        if (first && ready.isNotEmpty()) {
+            val e = LedgerEntry(nowMs, record.family, LedgerKind.RESERVED)
+            if (!(try { store.appendLedger(e) } catch (x: Exception) { false })) { PcLog.i(TAG, "proactive ledger reserve failed"); store.bump("drop_ledger_reserve"); ready.forEach { out[it] = Gate.COMMIT }; return pending.associateWith { out[it] ?: Gate.COMMIT } }
+            reserved = e
+            testAfterReserve?.invoke()
+        }
+        for (s in ready) out[s] = claimAndPublish(record, s, card)
+        if (reserved != null) {
+            if (out.values.any { it == Gate.DELIVERED }) { if (!store.confirmLedger(reserved)) store.bump("ledger_confirm_failed") } // stays RESERVED: counts the same
+            else if (ready.all { out[it] == Gate.WITHDRAWN || out[it] == Gate.ALREADY_DELIVERED || out[it] == Gate.SURFACE_OFF } && store.records().firstOrNull { it.id == record.id }?.delivered?.isEmpty() != false) store.releaseLedger(reserved) // nothing was claimed or shown
+        }
+        return pending.associateWith { out[it] ?: Gate.COMMIT }
     }
 
     private fun claimAndPublish(record: SuggestionRecord, s: Surface, card: DeliveredCard): Gate {
@@ -191,6 +208,13 @@ class ProactiveDelivery(
             ran && ok
         } catch (c: CancellationException) { throw c } catch (e: Exception) { false }
     }
+
+    /**
+     * The SYNCHRONOUS publish gate the Nexus sink asks INSIDE its final admission (its fence pass, the last step before the transport work is queued; and again right before the call), Codex v3.1 r2 P1-1. Everything again,
+     * as of now: driving (UNKNOWN is driving; read directly, no fence is taken here because the sink already holds its own locks), the master and the Nexus switch, pause, zone, quiet hours with a fresh clock, worn, the host,
+     * stored, delivered there and not withdrawn. A throw is a drop.
+     */
+    fun publishableNow(recordId: String, surface: Surface): Boolean = try { !seams.driving() && publishCheck(recordId, surface) } catch (e: Exception) { false }
 
     private fun publishCheck(id: String, surface: Surface): Boolean {
         if (!wanted(surface) || publications.isWithdrawn(id)) return false

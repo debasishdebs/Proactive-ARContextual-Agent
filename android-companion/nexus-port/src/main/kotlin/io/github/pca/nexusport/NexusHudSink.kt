@@ -59,7 +59,7 @@ class NexusHudSink internal constructor(
 
     private class HideReq(var bound: Long)
 
-    private class ShowOp(val epoch: Long, val pass: NexusPass, val cmd: NexusCommand, val speech: String?, val h: Handle, val sh: Handle?, val pauseGated: Boolean, val done: CompletableDeferred<Outcome>)
+    private class ShowOp(val epoch: Long, val pass: NexusPass, val cmd: NexusCommand, val speech: String?, val h: Handle, val sh: Handle?, val pauseGated: Boolean, val done: CompletableDeferred<Outcome>, val gate: SuggestionGate? = null)
 
     private val ledger: WipeLedger = wipeLedger ?: MemoryWipeLedger(wipeOwedAtStart)
     private val lock = Any()
@@ -128,7 +128,7 @@ class NexusHudSink internal constructor(
         var block: DropReason? = null
         var queued = true
         val ran = try {
-            pass.act { block = syncBlock(event.pauseGated()); if (block != null) false else { queued = enqueueShow(event, mapped, pass, done); true } }
+            pass.act { block = syncBlock(event.pauseGated()) ?: if (!gateOpen(event.suggestionGate)) DropReason.SUGGESTION_GATE else null; if (block != null) false else { queued = enqueueShow(event, mapped, pass, done); true } }
         } catch (_: Exception) {
             consumeAsk(event)
             return dropped(DropReason.GATE_ERROR)
@@ -160,7 +160,7 @@ class NexusHudSink internal constructor(
         val sh = if (speech != null) Handle(Slot.SPEECH, event.sources, event.pauseGated(), event.ref, now + NexusLimits.SPEECH_MAX_MS, emptySet(), ++seq, handles[Slot.SPEECH]) else null
         handles[cmd.slot] = h
         sh?.let { handles[Slot.SPEECH] = it }
-        val op = ShowOp(epoch, pass, cmd, speech, h, sh, event.pauseGated(), done)
+        val op = ShowOp(epoch, pass, cmd, speech, h, sh, event.pauseGated(), done, event.suggestionGate)
         val ok = dispatcher.submit(NexusDispatcher.Item(true, { runShow(op) }, { why -> dropShow(op, why) }, h))
         if (!ok) { restoreLocked(sh); restoreLocked(h) }
         return ok
@@ -180,10 +180,13 @@ class NexusHudSink internal constructor(
     }
 
     /** True while the ticket the show was admitted with is still good: no trip since, the fences open, the synchronous gates open. The LAST step before a binder call; no lock is held across the call that follows. */
-    private fun stillValid(epochAtAdmission: Long, pass: NexusPass, pauseGated: Boolean): Boolean {
+    private fun stillValid(epochAtAdmission: Long, pass: NexusPass, pauseGated: Boolean, gate: SuggestionGate? = null): Boolean {
         if (epoch != epochAtAdmission) return false
-        return try { pass.act { syncBlock(pauseGated) == null } == true && epoch == epochAtAdmission } catch (_: Exception) { false }
+        return try { pass.act { syncBlock(pauseGated) == null && gateOpen(gate) } == true && epoch == epochAtAdmission } catch (_: Exception) { false }
     }
+
+    /** The event's own gate (v3.1 r2): none = open; a throw = closed. */
+    private fun gateOpen(g: SuggestionGate?): Boolean = g == null || try { g.open() } catch (_: Exception) { false }
 
     /** Lock held. True while [h] is still registered and neither it nor a newer handle of its slot was withdrawn: a withdrawn handle's show is never drawn (r3 P1-2). */
     private fun registeredLocked(h: Handle?): Boolean {
@@ -224,13 +227,13 @@ class NexusHudSink internal constructor(
     /** Dispatcher thread. */
     private fun runShow(op: ShowOp) {
         if (!synchronized(lock) { registeredLocked(op.h) }) { dropShow(op, DropReason.TRIPPED); return }
-        if (!stillValid(op.epoch, op.pass, op.pauseGated)) { dropShow(op, DropReason.TRIPPED); return }
+        if (!stillValid(op.epoch, op.pass, op.pauseGated, op.gate)) { dropShow(op, DropReason.TRIPPED); return }
         if (!dispatcher.contentOk()) { dropShow(op, DropReason.TRANSPORT); return }
         val cmd = op.cmd
         var startGen = 0L
         // Everything is re-checked AFTER the delivery lease is held (no trip can complete between this check and the call), and the wipe record is persisted before the first notice of a generation is sent.
         val r = NexusResult.code(callT({
-            if (!stillValid(op.epoch, op.pass, op.pauseGated) || !synchronized(lock) { registeredLocked(op.h) }) false
+            if (!stillValid(op.epoch, op.pass, op.pauseGated, op.gate) || !synchronized(lock) { registeredLocked(op.h) }) false
             else { try { ledger.noteShown() } catch (_: Exception) { log("nexus wipe record failed") }; startGen = wipeGenSafe(); true }
         }) { trackedShow(startGen) { transport.show(cmd, op.epoch) } })
         if (r != NexusResult.OK) {
@@ -248,7 +251,7 @@ class NexusHudSink internal constructor(
             val live = safeConfig().let { it.enabled && it.ttsEnabled }
             if (live) {
                 callT { transport.setFeatures(safeConfig().featureMask()) }
-                val sr = NexusResult.code(callT({ safeConfig().let { it.enabled && it.ttsEnabled } && stillValid(op.epoch, op.pass, op.pauseGated) && synchronized(lock) { registeredLocked(op.sh) }.also { speechGen = wipeGenSafe() } }) { trackedShow(speechGen) { transport.speak(speech, op.epoch) } })
+                val sr = NexusResult.code(callT({ safeConfig().let { it.enabled && it.ttsEnabled } && stillValid(op.epoch, op.pass, op.pauseGated, op.gate) && synchronized(lock) { registeredLocked(op.sh) }.also { speechGen = wipeGenSafe() } }) { trackedShow(speechGen) { transport.speak(speech, op.epoch) } })
                 if (sr == NexusResult.OK) { spoken = true; log("nexus shown slot=SPEECH") }
                 else {
                     log("nexus speech refused code=${NexusResult.name(sr)}")

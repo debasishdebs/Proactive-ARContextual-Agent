@@ -20,11 +20,12 @@ class NexusFeederTest {
     private var pinLive = false
     private var asks: Map<String, Set<String>?> = emptyMap()
     private var gate: suspend (String) -> Boolean = { true }
+    private var finalGate: (String) -> Boolean = { true }
     private val withdrawnOut = mutableListOf<String>()
     private val sg = com.rokid.context.orchestration.proactive.DeliveredCard("sg_1", "Golconda", "last visit 12 Nov.", "from 2 items", setOf("m1"))
 
     private fun kotlinx.coroutines.test.TestScope.feeder() =
-        NexusFeeder(backgroundScope, out, popupMs = { 6_000 }, askSources = { asks[it] }, pinLive = { pinLive }, clock = { testScheduler.currentTime }, suggestionGate = { gate(it) }, withdrawOut = { withdrawnOut += it })
+        NexusFeeder(backgroundScope, out, popupMs = { 6_000 }, askSources = { asks[it] }, pinLive = { pinLive }, clock = { testScheduler.currentTime }, suggestionGate = { gate(it) }, suggestionFinalGate = { finalGate(it) }, withdrawOut = { withdrawnOut += it })
 
     private val card = PlaceCard("p1", "Charminar", "A 16th century monument.", "Wikipedia · fetched 12 Nov", PlaceConfidence.PHOTO, frameId = "f9", cardId = "pc1")
 
@@ -119,5 +120,22 @@ class NexusFeederTest {
     @Test fun aWithdrawalAfterTheShowIsTheProvidersJobAndResetCancelsWhatIsQueued() = runTest {
         val f = feeder(); f.suggestion(sg); runCurrent(); assertEquals(1, sent.size)
         f.suggestion(sg.copy(id = "sg_2")); f.reset(); runCurrent(); assertEquals("reset withdrew the queued one", 1, sent.size)
+    }
+
+    // ---- Codex v3.1 r2 P1-1: the event carries the SYNCHRONOUS final gate for the sink -------------------------------------------------------------------------------
+
+    @Test fun theSuggestionEventCarriesTheFinalGateThePhoneSupplies() = runTest {
+        val f = feeder(); f.suggestion(sg); runCurrent()
+        val g = (sent.single() as HudEvent.Nudge).gate!!
+        assertTrue(g.open()); finalGate = { false }; assertTrue("driving became active after the enqueue: the sink's ask now says no", !g.open())
+        finalGate = { throw IllegalStateException("x") }; assertTrue(runCatching { g.open() }.isFailure) // the sink maps a throw to a drop
+    }
+    @Test fun aWithdrawalClosesTheCarriedGateToo() = runTest {
+        val f = feeder(); f.suggestion(sg); runCurrent(); val g = (sent.single() as HudEvent.Nudge).gate!!
+        assertTrue(g.open()); f.cancelSuggestions(listOf("sg_1")); assertTrue(!g.open())
+    }
+    @Test fun theDefaultFinalGateFailsClosed() = runTest {
+        val f = NexusFeeder(backgroundScope, out, popupMs = { 6_000 }, askSources = { null }, pinLive = { false }, suggestionGate = { true }); f.suggestion(sg); runCurrent()
+        assertTrue(!(sent.single() as HudEvent.Nudge).gate!!.open())
     }
 }
