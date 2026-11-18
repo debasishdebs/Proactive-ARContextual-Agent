@@ -121,6 +121,8 @@ class Hub(
     /** Place Guide PG3: the newest place card (PlaceGraph.port.card) and the way to drop it. Never stored; it expires after [PlaceCardInfo.SHOW_MS]. */
     private val placeCards: StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
     private val placeClear: () -> Unit = {},
+    /** B2: where the place card sits on the glasses HUD (Settings > Place Guide, Developer mode). CENTRE (the default) sends nothing extra. */
+    private val placeSide: () -> com.rokid.context.core.model.PlaceSide = { com.rokid.context.core.model.PlaceSide.CENTRE },
     /** Clears the card only if it is still the instance [cardId]; false = a different (newer) card or none, nothing cleared. Atomic in production (PlaceCardHolder.clearIf). */
     private val placeClearIf: (cardId: String) -> Boolean = { id -> if (placeCards.value?.cardId == id) { placeClear(); true } else false },
     /** v3.1: the delivered suggestion card (the same wire overlay as a place card, id `sg_...`); [suggestionClearIf] drops it by id; [onSuggestionDismissed] = the wearer dismissed it by head motion (feedback + withdraw everywhere). */
@@ -688,7 +690,7 @@ class Hub(
     fun placeOverlay(): Overlay? {
         val c = placeCards.value ?: return null
         if (zoneApproach() || zoneEnforce()) return null
-        val info = PlaceCardInfo(c.title, c.line, c.sourceLabel, nearby = c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.NEARBY, id = c.cardId.ifEmpty { null })
+        val info = PlaceCardInfo(c.title, c.line, c.sourceLabel, nearby = c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.NEARBY, id = c.cardId.ifEmpty { null }, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide()))
         return Overlay.Nudge("${c.title}: ${c.line}", info)
     }
 
@@ -719,7 +721,7 @@ class Hub(
     fun suggestionOverlay(): Overlay? {
         val c = suggestionCards.value?.card ?: return null
         if (zoneApproach() || zoneEnforce()) return null
-        return Overlay.Nudge("${c.title}: ${c.line}", PlaceCardInfo(c.title, c.line, "Suggestion \u00b7 ${c.sourceLabel}", nearby = false, id = c.id))
+        return Overlay.Nudge("${c.title}: ${c.line}", PlaceCardInfo(c.title, c.line, "Suggestion \u00b7 ${c.sourceLabel}", nearby = false, id = c.id, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide())))
     }
 
     private fun overlay(): Overlay? {
