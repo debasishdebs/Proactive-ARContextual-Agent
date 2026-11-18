@@ -420,55 +420,70 @@ unverified_exit() { # label reason : the install HAPPENED but the log verificati
   echo "INSTALL DONE BUT NOT VERIFIED ($1: $2). Do NOT treat this as a success: verification is incomplete and the remaining steps were not run." >&2
   echo "Manual check (read the output yourself, nothing is printed here):" >&2
   echo "  adb -s $3 shell pidof $4" >&2
-  echo "  adb -s $3 logcat -d -b all | grep -E 'FATAL EXCEPTION|Process: $4'" >&2
+  echo "  adb -s $3 logcat -d -b all -v threadtime | grep -E 'FATAL EXCEPTION|Process: $4|SQLiteException|not a database|no such (table|column)|migration'" >&2
   echo "  adb -s $3 logcat -d | grep -iE \"Migration didn.t|SQLiteException|not a database|SQLCipher|Room\"" >&2
   echo "  then open the app and do the v17-upgrade-recovery.md section 3 checks." >&2
   exit 3
 }
 
+verify_fail() { # label reason detail : verification FAILED (exit 3, glasses step never runs)
+  echo "phone install done but verification FAILED: glasses NOT installed: inspect logcat, do NOT restore from the backup unless the app fails to open its data ($1: $2)" >&2
+  exit 3
+}
+
 scan_logs() { # serial pkg label
-  local s="$1" pkg="$2" label="$3" pid comp fatal mig lines
-  local allf="$TMP/logcat-all-$label.txt" pidf="$TMP/logcat-pid-$label.txt"
-  # REAL failures only, anchored on error signatures, evaluated on the app's own pid log (logcat --pid). The bare words SQLCipher/Room are NOT signatures.
-  local fre="Process: ${pkg}[,: ]"
-  local rre="FATAL EXCEPTION|AndroidRuntime|net\\.zetetic\\.database\\.sqlcipher\\.SQLiteException|SQLiteDatabaseCorruptException|file is not a database|SQLITE_NOTADB|Migration didn.t properly handle|IllegalStateException: Room|Room cannot verify the data integrity|Cannot open database|android\\.database\\.sqlite\\.SQLiteException"
-  local are="sqlcipher_mlock|Long monitor contention"   # known benign noise, subtracted from the real-error count
-  local cand="$TMP/logcat-cand-$label.txt" realf="$TMP/logcat-real-$label.txt" gst=0 real benign
-  say "STEP verify $label: clear logcat, launch $pkg, wait ${SCAN_SECS}s, report CLEAN / BENIGN-ONLY / FAIL from real error signatures"
+  local s="$1" pkg="$2" label="$3" pid0 pid1 comp lines pq
+  local snap="$TMP/logcat-snap-$label.txt" pidf="$TMP/logcat-pid-$label.txt" scanf="$TMP/logcat-scan-$label.txt"
+  local cand="$TMP/logcat-cand-$label.txt" gst=0 real benign npids
+  pq="${pkg//./\\.}"
+  # ORDER OF EVALUATION: every line is classified on its own. A line with ANY real-failure signature is FAIL, whatever else it says.
+  # Only a line that matches the allow-list AND no real signature counts as benign. The allow-list never subtracts anything.
+  local rre="FATAL EXCEPTION|Process: ${pq}[,: ]|SQLiteException|SQLiteDatabaseCorruptException|SQLiteDiskIOException|SQLiteFullException|file is not a database|SQLITE_NOTADB|Migration didn.t properly handle|A migration from [0-9]+ to [0-9]+ was required but not found|Room cannot verify the data integrity|no such column|no such table|duplicate column|IllegalStateException.*(Room|openHelper|[Dd]atabase)|Cannot open database|Unable to open database|database disk image is malformed|ANR in ${pq}|Application Not Responding"
+  local are="sqlcipher_mlock|Long monitor contention"
+  say "STEP verify $label: clear logcat, launch $pkg, sample pid, wait ${SCAN_SECS}s, take ONE logcat snapshot, re-sample pid, report CLEAN / BENIGN-ONLY / FAIL"
   [ "$GO" = 1 ] || return 0
   A "$s" logcat -c >/dev/null 2>&1 || fail "$label: cannot clear logcat"
   comp="$(A "$s" shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null | tr -d '\r' | tail -n 1)" || comp=""
   case "$comp" in "$pkg"/*) A "$s" shell am start -n "$comp" >/dev/null 2>&1 || fail "$label: could not launch $comp" ;;
     *) A "$s" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || fail "$label: no launcher activity for $pkg" ;; esac
+  pid0="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid0=""
   sleep "$SCAN_SECS" || fail "$label: sleep failed"
-  pid="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | awk '{print $1}')" || pid=""
-  say "$label: running=$([ -n "$pid" ] && echo yes || echo NO)"
-  [ -n "$pid" ] || fail "$label: app is not running after ${SCAN_SECS}s"
-  case "$pid" in *[!0-9]*) unverified_exit "$label" "unparseable pid" "$s" "$pkg" ;; esac
-  # 1) retrieve (explicit status), 2) sanity (non-empty / long enough), 3) count (grep status 1 = no match, status 2 = error)
-  A "$s" logcat -d -b all > "$allf" 2>/dev/null || unverified_exit "$label" "logcat retrieval failed" "$s" "$pkg"
-  lines="$(wc -l < "$allf")" || unverified_exit "$label" "cannot measure the log" "$s" "$pkg"
+  # ONE consistent snapshot of the all-buffer; everything below is filtered from this single capture.
+  A "$s" logcat -d -b all -v threadtime > "$snap" 2>/dev/null || unverified_exit "$label" "logcat retrieval failed" "$s" "$pkg"
+  pid1="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid1=""
+  say "$label: pid_before='${pid0}' pid_after='${pid1}' running=$([ -n "$pid1" ] && echo yes || echo NO)"
+  lines="$(wc -l < "$snap")" || unverified_exit "$label" "cannot measure the log" "$s" "$pkg"
   lines="${lines//[[:space:]]/}"
   case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the log" "$s" "$pkg" ;; esac
   [ "$lines" -ge 5 ] || unverified_exit "$label" "logcat returned empty/short output ($lines lines) while the app is running" "$s" "$pkg"
-  A "$s" logcat -d --pid="$pid" > "$pidf" 2>/dev/null || unverified_exit "$label" "per-process logcat retrieval failed" "$s" "$pkg"
+  # restart / crash-loop detection: never CLEAN
+  [ -n "$pid0" ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (no pid before the window)"
+  [ -n "$pid1" ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (app not running after the snapshot)"
+  case "$pid0$pid1" in *[!0-9]*) verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (more than one or unparseable pid: '$pid0' / '$pid1')" ;; esac
+  [ "$pid0" = "$pid1" ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (pid $pid0 -> $pid1)"
+  # every pid the snapshot shows for this package (process start / crash header / death / kill lines) plus the sampled one
+  npids="$( { printf '%s\n' "$pid1"
+      sed -n -E -e "s/.*Start proc ([0-9]+):${pq}[\\/ ].*/\\1/p" -e "s/.*Process: ${pq}, PID: ([0-9]+).*/\\1/p" -e "s/.*Process ${pq} \\(pid ([0-9]+)\\).*/\\1/p" -e "s/.*Killing ([0-9]+):${pq}[\\/ ].*/\\1/p" "$snap"; } | sort -u | grep -c . )" || verify_fail "$label" "cannot enumerate pids in the snapshot"
+  [ "${npids//[[:space:]]/}" = 1 ] || verify_fail "$label" "app restarted during the ${SCAN_SECS} s window (${npids//[[:space:]]/} pids for $pkg in the snapshot)"
+  # scan set = lines of the app pid (threadtime field 3) + any line naming the package (crash headers, ANR lines from system_server)
+  awk -v p="$pid1" '$3 == p' "$snap" > "$pidf" 2>/dev/null || unverified_exit "$label" "cannot filter the snapshot by pid" "$s" "$pkg"
+  gst=0; grep -F -e "$pkg" "$snap" > "$scanf.pkg" 2>/dev/null || gst=$?
+  [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while filtering by package" "$s" "$pkg"
+  cat "$pidf" "$scanf.pkg" | sort -u > "$scanf" || unverified_exit "$label" "cannot build the scan set" "$s" "$pkg"
   lines="$(wc -l < "$pidf")" || unverified_exit "$label" "cannot measure the per-process log" "$s" "$pkg"
   lines="${lines//[[:space:]]/}"
   case "$lines" in ''|*[!0-9]*) unverified_exit "$label" "cannot measure the per-process log" "$s" "$pkg" ;; esac
-  [ "$lines" -ge 1 ] || unverified_exit "$label" "per-process logcat is empty while the app is running" "$s" "$pkg"
-  fatal="$(count_matches -E "$allf" "$fre")" || unverified_exit "$label" "grep error while counting FATAL lines" "$s" "$pkg"
-  gst=0; grep -E -e "$rre" "$pidf" > "$cand" 2>/dev/null || gst=$?
+  [ "$lines" -ge 1 ] || unverified_exit "$label" "per-process log is empty while the app is running" "$s" "$pkg"
+  gst=0; grep -E -e "$rre" "$scanf" > "$cand" 2>/dev/null || gst=$?
   [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while matching error signatures" "$s" "$pkg"
-  gst=0; grep -v -E -e "$are" "$cand" > "$realf" 2>/dev/null || gst=$?
-  [ "$gst" -le 1 ] || unverified_exit "$label" "grep error while subtracting the allow-list" "$s" "$pkg"
-  real="$(count_matches -E "$realf" '.')" || unverified_exit "$label" "grep error while counting real error lines" "$s" "$pkg"
-  benign="$(count_matches -E "$pidf" "$are")" || unverified_exit "$label" "grep error while counting allow-listed lines" "$s" "$pkg"
-  say "$label log scan: running=yes fatal_count=$fatal real_error_count=$real benign_allowlisted_count=$benign"
-  if [ "$fatal" != 0 ] || [ "$real" != 0 ]; then
-    echo "phone install done but verification FAILED: glasses NOT installed: inspect logcat, do NOT restore from the backup unless the app fails to open its data ($label: fatal=$fatal real_errors=$real)" >&2
-    exit 3
-  fi
-  if [ "$benign" != 0 ]; then say "$label log scan: BENIGN-ONLY (note: $benign allow-listed noise lines: sqlcipher_mlock / Long monitor contention; not errors, install continues)"
+  real="$(count_matches -E "$cand" '.')" || unverified_exit "$label" "grep error while counting real error lines" "$s" "$pkg"
+  # benign = allow-listed AND no real signature (classified per line)
+  gst=0; grep -v -E -e "$rre" "$scanf" 2>/dev/null | grep -c -E -e "$are" > "$cand.n" || gst=$?
+  benign="$(cat "$cand.n" 2>/dev/null)"
+  case "$benign" in ''|*[!0-9]*) unverified_exit "$label" "grep error while counting allow-listed lines" "$s" "$pkg" ;; esac
+  say "$label log scan: pid=$pid1 real_error_count=$real benign_allowlisted_count=$benign"
+  [ "$real" = 0 ] || verify_fail "$label" "real_errors=$real"
+  if [ "$benign" != 0 ]; then say "$label log scan: BENIGN-ONLY (note: $benign allow-listed noise lines without any error signature: sqlcipher_mlock / Long monitor contention; install continues)"
   else say "$label log scan: CLEAN"; fi
 }
 
@@ -484,15 +499,19 @@ cg() { PHONE=emulator-5554; SELFTEST=0; A() { printf '%b' "$FX_OUT"; return "${F
 cgo() { PHONE=emulator-5554; SELFTEST=1; A() { printf 'mCallState=0\n'; }; PCA_SELFTEST_CALLSTATE="$FX_OVR"; call_guard fx; }
 cgo_real() { PHONE=R58XXXX; SELFTEST=0; A() { printf 'mCallState=2\n'; }; PCA_SELFTEST_CALLSTATE=0; call_guard fx; }
 stp() { PHONE=emulator-5554; RETRY_SLEEP=0; A() { case "$*" in *force-stop*) printf '%b' "$FX_FS";; *pidof*) printf '%b' "$FX_PID"; return "${FX_RC:-0}";; esac; }; stop_app; }
-sl() { # post-install log verification fixture: FX_LA/FX_LAR = all-buffer log + status, FX_LP/FX_LPR = per-pid log + status, FX_PIDOUT = pidof output
-  PHONE=emulator-5554; GO=1; SCAN_SECS=0; TMP="$FXDIR"
+mk() { # extra 'pid|text' lines on top of 6 clean lines of the app pid 4242
+  local i x; for i in 1 2 3 4 5 6; do tl 4242 "app line $i"; done; for x in "$@"; do tl "${x%%|*}" "${x#*|}"; done
+}
+tl() { printf '11-18 10:00:00.000  %s  %s E Tag: %s\n' "$1" "$1" "$2"; } # threadtime line: pid text
+sl() { # post-install log verification fixture: FX_SNAP = the single snapshot (threadtime), FX_SNAPR = its status, FX_PIDS = pidof outputs in call order (before|after)
+  PHONE=emulator-5554; GO=1; SCAN_SECS=0; TMP="$FXDIR"; : > "$FXDIR/pidn"
   A() { shift; case "$*" in
       "logcat -c") return 0 ;;
       *resolve-activity*) printf 'com.x/.Main\n' ;;
       *"am start"*|*monkey*) return 0 ;;
-      *pidof*) printf '%b' "$FX_PIDOUT" ;;
-      *"logcat -d -b all"*) printf '%b' "$FX_LA"; return "${FX_LAR:-0}" ;;
-      *"logcat -d --pid"*) printf '%b' "$FX_LP"; return "${FX_LPR:-0}" ;;
+      *pidof*) local n; n="$(wc -l < "$FXDIR/pidn")"; n="${n//[[:space:]]/}"; echo x >> "$FXDIR/pidn"; if [ "$n" = 0 ]; then printf '%b' "${FX_PID0-4242}"; else printf '%b' "${FX_PID1-4242}"; fi ;;
+      *"logcat -d -b all -v threadtime"*) printf '%b' "$FX_SNAP"; return "${FX_SNAPR:-0}" ;;
+      *logcat*) echo "UNEXPECTED second logcat snapshot" >&2; return 99 ;;
       *) return 0 ;; esac; }
   scan_logs emulator-5554 com.x phone
 }
@@ -519,7 +538,6 @@ iso_watch_install() { FX_W=wch; iso_base; pre_install_guard watch wch; }
 iso_alias_late() { iso_base; FXI_gls_ser="${FXI_phn_ser}"; FXI_gls_aid="${FXI_phn_aid}"; pre_install_guard glasses gls; }
 sl_sedfail() { sed() { return 1; }; stp; }
 sl_awkfail() { awk() { return 1; }; stp; }
-sl_grepfail() { grep() { return 2; }; sl; }
 sha_fx() { hash_cmd() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; sha256_of x; }
 dsk() { PHONE=emulator-5554; BACKUP_DIR="$FXDIR/b"; A() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; free_kb() { printf '%s\n' "$FX_FREE"; }; disk_check; }
 sg() { # signature fixture
@@ -538,7 +556,7 @@ run_fixtures() {
   FXDIR="$(mktemp -d "${TMPDIR:-/tmp}/install-trip-fx.XXXXXX")" || die "no temp dir for fixtures"
   say "fixtures (no adb, no device):"
   local ok='mCallState=0\n'
-  export FX_LA FX_LAR FX_LP FX_LP FX_LPR FX_PIDOUT FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
+  export FX_SNAP FX_SNAPR FX_PID0 FX_PID1 FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
   FX_RC=0
   FX_OUT="  mCallState=0\n  mCallState=0\n";            fx "call guard: all slots 0 passes" ok cg
   FX_OUT='mCallState=0junk\n';                          fx "call guard: mCallState=0junk" refuse cg
@@ -581,27 +599,62 @@ run_fixtures() {
   FX_OUT='abc123  x\n';                                        fx "sha256: short digest" refuse sha_fx
   FX_OUT='';                                                   fx "sha256: empty output" refuse sha_fx
   FX_OUT="$(printf '0123456789abcdef%.0s' 1 2 3 4)  x\n"; FX_RC=1; fx "sha256: tool failure with a valid-looking digest" refuse sha_fx
-  FX_RC=0; FX_PIDOUT='4242\n'; FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LAR=0; FX_LP='p1\np2\n'; FX_LPR=0
+  FX_RC=0; FX_PID0='4242\n'; FX_PID1='4242\n'; FX_SNAPR=0; FX_SNAP="$(mk)"
   fx "logs: clean text passes" ok sl
-  FX_LAR=7; fx "logs: all-buffer logcat fails (rc 7)" refuse sl
-  FX_LAR=0; FX_LPR=7; fx "logs: per-pid logcat fails (rc 7)" refuse sl
-  FX_LPR=0; FX_LA=''; fx "logs: all-buffer logcat returns nothing" refuse sl
-  FX_LA='l1\nl2\n'; fx "logs: all-buffer logcat too short" refuse sl
-  FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LP=''; fx "logs: per-pid logcat returns nothing" refuse sl
-  FX_LP='p1\n'; FX_LA='l1\nAndroidRuntime: FATAL EXCEPTION: main\nAndroidRuntime: Process: com.x, PID: 4242\nl5\nl6\n'; fx "logs: FATAL EXCEPTION for the app => FAIL exit 3" rc3 sl
-  FX_LA='l1\nAndroidRuntime: FATAL EXCEPTION: main\nAndroidRuntime: Process: com.other, PID: 99\nl5\nl6\n'; fx "logs: FATAL EXCEPTION for another package not counted" ok sl
-  FX_LA='l1\nl2\nl3\nl4\nl5\nl6\n'; FX_LP='p1\nMigration didn t work\n'; fx "logs: loose 'Migration didn t' without signature is not an error" ok sl
-  FX_LP='p1\nRoom: Migration didn'"'"'t properly handle: foo\n'; fx "logs: Migration didn't properly handle => FAIL exit 3" rc3 sl
-  FX_LP='p1\nnet.zetetic SQLCipher failure\n'; fx "logs: bare SQLCipher word is not an error" ok sl
-  FX_LP='p1\nE SQLiteLog: net.zetetic.database.sqlcipher.SQLiteDatabaseCorruptException: file is not a database\n'; fx "logs: SQLiteDatabaseCorruptException => FAIL exit 3" rc3 sl
-  FX_LP='p1\nIllegalStateException: Room cannot verify the data integrity\n'; fx "logs: Room integrity error => FAIL exit 3" rc3 sl
-  FX_LP="$(for i in $(seq 1 17); do printf 'W sqlcipher_mlock errno=12\\n'; printf 'I Long monitor contention with owner x\\n'; done)"; fx "logs: 34 noise lines => BENIGN-ONLY success" ok sl
-  FX_LP="${FX_LP}E net.zetetic.database.sqlcipher.SQLiteException: Cannot open database\\n"; fx "logs: noise + one real error (mixed) => FAIL exit 3" rc3 sl
-  FX_LP='p1\nE sqlcipher_mlock errno=12 SQLiteException: file is not a database\n'; fx "logs: allow-listed text on a real-signature line is subtracted" ok sl
-  FX_LP='p1\np2\n'; FX_LAR=7; fx "logs: UNVERIFIED (logcat failure) exit 3" rc3 sl; FX_LAR=0
-  FX_LP='p1\np2\n'; fx "logs: grep error (status 2) is not 'no matches'" refuse sl_grepfail
-  FX_PIDOUT=''; fx "logs: app not running" refuse sl
-  FX_PIDOUT='4242\n'; fx "logs: clean again after the refusals" ok sl
+  FX_SNAPR=7; fx "logs: snapshot logcat fails (rc 7)" refuse sl; FX_SNAPR=0
+  FX_SNAP=''; fx "logs: snapshot returns nothing => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(tl 4242 a; tl 4242 b)"; fx "logs: snapshot too short => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(for i in 1 2 3 4 5 6; do tl 999 other; done)"; fx "logs: no line of the app pid => UNVERIFIED exit 3" rc3 sl
+  FX_SNAP="$(mk '4242|FATAL EXCEPTION: main' '4242|Process: com.x, PID: 4242')"; fx "logs: FATAL EXCEPTION for the app => FAIL exit 3" rc3 sl
+  FX_SNAP="$(mk '99|FATAL EXCEPTION: main' '99|Process: com.other, PID: 99')"; fx "logs: FATAL EXCEPTION for another package/pid not counted" ok sl
+  FX_SNAP="$(mk '4242|Migration didn t work')"; fx "logs: loose 'Migration didn t' without signature is not an error" ok sl
+  FX_SNAP="$(mk '4242|net.zetetic SQLCipher failure' '4242|Room init ok')"; fx "logs: bare SQLCipher / Room words are not errors" ok sl
+  FX_SNAP="$(for i in $(seq 1 17); do tl 4242 'sqlcipher_mlock errno=12'; tl 4242 'Long monitor contention with owner x'; done)"; fx "logs: 34 noise lines => BENIGN-ONLY success" ok sl
+  FX_SNAP="${FX_SNAP}
+$(tl 4242 'E net.zetetic.database.sqlcipher.SQLiteException: Cannot open database')"; fx "logs: noise + one real error (mixed) => FAIL exit 3" rc3 sl
+  # one fixture per real signature (each must be FAIL exit 3)
+  while IFS= read -r sig; do
+    [ -n "$sig" ] || continue
+    FX_SNAP="$(mk "4242|$sig")"; fx "logs: signature => FAIL: $sig" rc3 sl
+    FX_SNAP="$(mk "4242|E sqlcipher_mlock errno=12 $sig")"; fx "logs: signature + allow-listed text on one line => FAIL: $sig" rc3 sl
+  done <<'SIGS'
+FATAL EXCEPTION: main
+android.database.sqlite.SQLiteException: near "x": syntax error
+net.sqlcipher.database.SQLiteException: bad
+net.zetetic.database.sqlcipher.SQLiteException: bad
+SQLiteException: file is not a database
+android.database.sqlite.SQLiteDatabaseCorruptException: corrupt
+android.database.sqlite.SQLiteDiskIOException: disk I/O error
+android.database.sqlite.SQLiteFullException: database or disk is full
+file is not a database
+SQLITE_NOTADB (26)
+Room: Migration didn't properly handle: foo
+java.lang.IllegalStateException: A migration from 17 to 18 was required but not found.
+Room cannot verify the data integrity. Looks like you've changed schema
+no such column: foo
+no such table: bar
+duplicate column name: baz
+java.lang.IllegalStateException: Room database not initialized
+java.lang.IllegalStateException: openHelper is closed
+java.lang.IllegalStateException: database is closed
+Cannot open database
+Unable to open database file
+database disk image is malformed
+ANR in com.x (com.x/.Main)
+Application Not Responding
+SIGS
+  FX_SNAP="$(mk '4242|Process: com.x, PID: 4242')"; fx "logs: Process: <pkg> crash header => FAIL" rc3 sl
+  FX_SNAP="$(mk '1000|ANR in com.x (com.x/.Main)')"; fx "logs: ANR line from system_server (other pid) => FAIL" rc3 sl
+  FX_SNAP="$(mk '4242|E sqlcipher_mlock errno=12 SQLiteException: file is not a database')"; fx "logs: allow-listed text on a real-signature line is NOT subtracted => FAIL" rc3 sl
+  # restart race (mocked adb: pid sampled before the window, snapshot taken once, pid sampled after)
+  FX_SNAP="$(mk)"; FX_PID0='4242\n'; FX_PID1='5555\n'; fx "restart: PID changed => FAIL exit 3" rc3 sl
+  FX_PID0=''; FX_PID1='4242\n'; fx "restart: PID absent before the window => FAIL exit 3" rc3 sl
+  FX_PID0='4242\n'; FX_PID1=''; fx "restart: PID absent after the snapshot (crash after snapshot / not running) => FAIL exit 3" rc3 sl
+  FX_PID0='4242 4343\n'; FX_PID1='4242 4343\n'; fx "restart: two PIDs from pidof => FAIL exit 3" rc3 sl
+  FX_PID0='4242\n'; FX_PID1='4242\n'; FX_SNAP="$(mk '1000|Start proc 3131:com.x/u0a1 for activity' '1000|Process com.x (pid 3131) has died')"; fx "restart: two PIDs for the package in the snapshot => FAIL exit 3" rc3 sl
+  FX_SNAP="$(mk '1000|Start proc 4242:com.x/u0a1 for activity')"; fx "restart: single PID start line is fine" ok sl
+  FX_SNAP="$(mk)"; fx "restart: clean again after the failures" ok sl
+  grep() { return 2; }; fx "logs: grep error (status 2) is not 'no matches'" refuse sl; unset -f grep
   FX_RC=0
   FX_OUT='4096\t.\n__PCA_RC=0\n'; FX_FREE=100000;              fx "disk: enough space" ok dsk
   FX_FREE=12000;                                               fx "disk: free < 3x data" refuse dsk
