@@ -442,6 +442,12 @@ class DeliveryTest {
         fs.failAppend = false; assertEquals("the same record delivers once the write works", Gate.DELIVERED, delivery(fs).deliver(r.id, now)[Surface.PHONE])
         assertEquals(listOf(LedgerKind.DELIVERED), store.ledger().map { it.kind })
     }
+    @Test fun aStoreThatFailedClosedDeliversNothingAndPublishesNothing() = runBlocking {
+        wantHud = true; val r = committed(); val closed = object : SuggestionStore by store { override fun failClosed() = true }
+        val d = delivery(closed); val out = d.deliver(r.id, now)
+        assertTrue("nothing delivered: ${out}", out.values.none { it == Gate.DELIVERED }); assertTrue(store.records().single().delivered.isEmpty())
+        assertFalse("and a queued surface's final check refuses too", d.publishableNow(r.id, Surface.NEXUS))
+    }
     @Test fun theLedgerLineIsWrittenBeforeTheClaimAndConfirmedAfter() = runBlocking {
         val r = committed(); val d = delivery()
         d.testAfterReserve = { assertEquals(listOf(LedgerKind.RESERVED), store.ledger().map { it.kind }); assertTrue("not claimed yet", store.records().single().delivered.isEmpty()) }
@@ -477,8 +483,8 @@ class DeliveryTest {
         val s = PrefsSuggestionStore(failing)
         assertFalse("a reservation that cannot be written is no delivery", s.appendLedger(LedgerEntry(now, ProactiveFamily.PLACE_RECALL, LedgerKind.RESERVED))); assertTrue(s.ledger().isEmpty())
         for (i in 1..5) assertFalse(s.appendLedger(LedgerEntry(now + i * 60_000L, ProactiveFamily.PLACE_RECALL, LedgerKind.DISMISSED)))
-        assertEquals("kept in memory", 5, s.ledger().size); assertTrue(DeliveryLedger.pausedUntil(s.ledger()) > now)
-        s.clearAll(); assertTrue(s.ledger().isEmpty())
+        assertEquals("kept in memory", 5, s.ledger().count { it.ts < now + 3_600_000L }); assertTrue(DeliveryLedger.pausedUntil(s.ledger()) > now); assertTrue("r6: no marker store at all = closed for the process", s.failClosed())
+        s.clearAll(); assertTrue("only the fail-closed pause remains", s.ledger().none { it.ts < now + 3_600_000L })
     }
 
     // ---- Codex v3.1 r4 P1-1: quiet hours re-checked AT the publication; a boundary crossed after it withdraws at once ------------------------------------------

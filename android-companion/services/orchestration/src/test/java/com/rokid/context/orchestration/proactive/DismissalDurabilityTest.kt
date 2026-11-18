@@ -76,6 +76,36 @@ class DismissalDurabilityTest {
         s.clearAll(); assertFalse("Delete all drops the memory too", FeedbackMath.blocked("f2:k", s.feedback(), now + min))
     }
 
+    @Test fun whenTheMarkerAndTheLedgerBothFailDeliveryIsClosedForTheRestOfTheProcess() {
+        val s = PrefsSuggestionStore(failing(Int.MAX_VALUE), null)
+        assertFalse(s.failClosed())
+        for (i in 1..4) assertFalse(s.appendLedger(dismissal(i)))
+        assertTrue("even four unstored dismissals with no marker anywhere cannot survive a restart: closed", s.failClosed())
+        assertTrue("every ledger reader (the ranker gate) sees a pause far past any clock", DeliveryLedger.pausedUntil(s.ledger()) > now + 365 * 24 * 60 * min)
+        s.clearAll(); assertTrue("Delete all does not reopen it: the storage is still broken", s.failClosed())
+    }
+    @Test fun aWorkingMarkerKeepsDeliveryOpenEvenWhenTheLedgerWriteFails() {
+        val s = PrefsSuggestionStore(flaky(), marker)
+        for (i in 1..4) assertTrue(s.appendLedger(dismissal(i)))
+        failWrites = true
+        assertFalse(s.appendLedger(dismissal(5))); assertFalse("the marker holds it: restart-safe, not failed closed", s.failClosed())
+    }
+    @Test fun fourDurableDismissalsPlusAFailedFifthWithNoMarkerFailClosedAndTheFifthIsNotDropped() {
+        val s = PrefsSuggestionStore(failing(0), null)
+        for (i in 1..4) assertTrue(s.appendLedger(dismissal(i)))
+        failWrites = false
+        val bad = PrefsSuggestionStore(failing(Int.MAX_VALUE), null) // same files, now every write fails
+        assertFalse(bad.appendLedger(dismissal(5)))
+        assertTrue("the failed fifth stops delivery for this process", bad.failClosed()); assertTrue("and is still held in memory", bad.ledger().any { it.ts == now + 5 * min })
+    }
+    @Test fun aFullInMemoryHoldTripsFailClosedInsteadOfSilentlyDroppingTheOldest() {
+        val s = PrefsSuggestionStore(failing(Int.MAX_VALUE), marker) // the marker works, only the ledger fails
+        for (i in 1..DeliveryLedger.MAX_ENTRIES) s.appendLedger(dismissal(i))
+        assertFalse(s.failClosed())
+        s.appendLedger(dismissal(DeliveryLedger.MAX_ENTRIES + 1))
+        assertTrue("one more than the hold can keep: closed, not silently trimmed", s.failClosed()); assertTrue("the newest is kept", s.ledger().any { it.ts == now + (DeliveryLedger.MAX_ENTRIES + 1) * min })
+    }
+
     private fun dismissal(i: Int) = LedgerEntry(now + i * min, ProactiveFamily.PLACE_RECALL, LedgerKind.DISMISSED)
     private fun paused(s: SuggestionStore) = DeliveryLedger.pausedUntil(s.ledger()) > now + 10 * min
 

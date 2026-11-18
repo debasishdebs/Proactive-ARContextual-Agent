@@ -457,6 +457,23 @@ class ProtocolTest {
     @Serializable private data class OldCard(val title: String, val line: String, val source: String, val nearby: Boolean = false, val id: String? = null)
     @Serializable private data class OldNudge(val text: String, val place: OldCard? = null)
 
+    @Test fun theAbsoluteDeadlineIsEvaluatedAtDrawTimeAndClamped() {
+        val c = PlaceCardInfo("a", "b", "s", maxShowMs = 7_000, hideAtMs = 1_000_000)
+        assertEquals(7_000L, c.remainingMs(993_000)); assertEquals(2_000L, c.remainingMs(998_000), "a late draw has less left")
+        assertEquals(0L, c.remainingMs(1_000_000), "zero at the boundary"); assertEquals(0L, c.remainingMs(1_500_000), "negative after it")
+        assertEquals(12_000L, PlaceCardInfo("a", "b", "s", hideAtMs = 9_000_000).remainingMs(0), "a far deadline never lifts the 12 s")
+        assertEquals(4_000L, PlaceCardInfo("a", "b", "s", maxShowMs = 4_000).remainingMs(123), "no deadline = the cap")
+        assertEquals(0L, PlaceCardInfo("a", "b", "s", maxShowMs = 0, hideAtMs = 9_000_000).remainingMs(0), "a zero cap beats a far deadline")
+    }
+    @Test fun theDeadlineFieldIsAdditiveAndIgnoredByAnOldDecoder() {
+        val o = Overlay.Nudge("a: b", PlaceCardInfo("a", "b", "s", id = "sg_1", hideAtMs = 1_234_567))
+        val json = Wire.encode<Overlay>(o)
+        assertTrue(json.contains("\"hideAtMs\":1234567"))
+        assertEquals(o, assertIs<Decoded.Ok<StateFrame>>(Wire.decode<StateFrame>(Wire.encode(frame(o)))).value.overlay)
+        assertEquals("sg_1", Wire.json.decodeFromString<OldNudge>(json).place!!.id)
+        assertEquals(null, assertIs<Overlay.Nudge>(Wire.json.decodeFromString<Overlay>("""{"kind":"nudge","text":"x: y","place":{"title":"x","line":"y","source":"s"}}""")).place!!.hideAtMs)
+        assertFalse(Wire.encode<Overlay>(Overlay.Nudge("a: b", PlaceCardInfo("a", "b", "s"))).contains("hideAtMs")); assertEquals(1, PROTOCOL_VERSION)
+    }
     @Test fun theGlassesDeadlineFieldIsAdditiveAndIgnoredByAnOldDecoder() {
         val o = Overlay.Nudge("Golconda: x", PlaceCardInfo("Golconda", "x", "Suggestion", id = "sg_1", maxShowMs = 4_000))
         val json = Wire.encode<Overlay>(o)

@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import com.rokid.context.core.log.PcLog
 
 /**
  * Where would-show suggestions, the "never suggest this" list and the shadow counters live (ruling 2026-11-18: hold Room v18; a storage interface with a memory implementation and an encrypted,
@@ -42,6 +43,11 @@ interface SuggestionStore {
     fun ledger(): List<LedgerEntry> = emptyList()
     /** Appends one line (then prunes). False = not stored. */
     fun appendLedger(e: LedgerEntry): Boolean = false
+    /**
+     * v3.1 r6 P1-3: true once a dismissal could be kept NOWHERE durable (ledger, marker file and marker fallback all failed) or the held-in-memory dismissals overflowed. Process-lifetime and never reset: every delivery
+     * is refused for the rest of the process. A restart after such a total storage failure CANNOT recover the pause (nothing was written; unavoidable without storage), so this flag only guarantees that THIS process stays silent.
+     */
+    fun failClosed(): Boolean = false
     /** v3.1 r2: turns the RESERVED line [e] into DELIVERED. False = not stored (the line stays RESERVED, which counts the same: conservative). */
     fun confirmLedger(e: LedgerEntry): Boolean = false
     /** v3.1 r2: removes the RESERVED line [e] (nothing was shown). False = not stored (the line stays and counts: conservative). */
@@ -210,13 +216,26 @@ class PrefsSuggestionStore(
         if (writeLedger(DeliveryLedger.prune(readLedger() + unsaved, ref))) { unsaved.clear(); clearPending() }
     }
 
-    override fun ledger(): List<LedgerEntry> = synchronized(lock) { flushUnsaved(); (readLedger() + unsaved + inheritedLines()).sortedBy { it.ts } }
+    /** r6 P1-3: see [SuggestionStore.failClosed]. Set once, never cleared (not even by Delete all: the storage is still broken). */
+    @Volatile private var tripped = false
+    override fun failClosed(): Boolean = tripped
+    private fun trip(why: String) { if (!tripped) { tripped = true; PcLog.i("PcProactive", "proactive delivery fail-closed: $why") } }
+    /** While tripped, five far-future dismissal lines keep every ledger reader (the ranker's gate) paused too. */
+    private fun failClosedLines(): List<LedgerEntry> = if (!tripped) emptyList() else List(DeliveryLedger.DISMISS_LIMIT) { LedgerEntry(FAIL_CLOSED_TS, ProactiveFamily.entries.first(), LedgerKind.DISMISSED) }
+
+    override fun ledger(): List<LedgerEntry> = synchronized(lock) { flushUnsaved(); (readLedger() + unsaved + inheritedLines() + failClosedLines()).sortedBy { it.ts } }
     override fun appendLedger(e: LedgerEntry): Boolean = synchronized(lock) {
         // write-ahead: durable BEFORE the card is acknowledged as dismissed. If neither the marker nor the ledger can be written (below) the dismissal is still held in memory: suppression stays for this process
-        if (e.kind == LedgerKind.DISMISSED) markPending(e.ts)
+        val marked = if (e.kind == LedgerKind.DISMISSED) markPending(e.ts) else true
         val ok = if (e.kind == LedgerKind.DISMISSED) retry { writeLedger(DeliveryLedger.prune(readLedger() + unsaved + e, e.ts)) } else writeLedger(DeliveryLedger.prune(readLedger() + unsaved + e, e.ts))
         if (ok) { unsaved.clear(); clearPending(); if (inheritedTs > 0L && e.ts - inheritedTs >= DeliveryLedger.DISMISS_PAUSE_MS) { inheritedTs = 0L; try { marker?.edit()?.remove(MARK_TS)?.commit() } catch (_: Exception) { } } }
-        else if (e.kind == LedgerKind.DISMISSED) { if (unsaved.size >= DeliveryLedger.MAX_ENTRIES) unsaved.removeAt(0); unsaved += e } // never drop the newest: keep suppressing
+        else if (e.kind == LedgerKind.DISMISSED) {
+            // r6 P1-3: neither the ledger nor ANY marker holds this dismissal: a restart would lose the pause (unrecoverable without storage). Stop delivering for the rest of this process; the in-memory hold stays.
+            if (!marked) trip("dismissal unstored")
+            // a full in-memory hold is not silently trimmed either: the oldest held line goes only after delivery is closed for the process (the newest is always kept)
+            if (unsaved.size >= DeliveryLedger.MAX_ENTRIES) { trip("held dismissals full"); unsaved.removeAt(0) }
+            unsaved += e
+        }
         ok
     }
     override fun confirmLedger(e: LedgerEntry): Boolean = synchronized(lock) { flushUnsaved(); DeliveryLedger.confirmed(readLedger(), e)?.let { writeLedger(it) } ?: false }
@@ -237,6 +256,7 @@ class PrefsSuggestionStore(
         private const val MARK_TS = "lost"
         private const val MARK_FALLBACK = "pending_mark"
         private const val WRITE_ATTEMPTS = 3
+        private const val FAIL_CLOSED_TS = Long.MAX_VALUE / 4
 
         internal fun encode(r: SuggestionRecord) = JSONObject().put("id", r.id).put("ts", r.ts).put("key", r.key).put("fam", r.family.token).put("trg", r.trigger.token).put("score", r.score)
             .put("anchor", r.anchorKey).put("src", JSONArray(r.sourceIds)).put("why", JSONArray(r.factors)).put("dlv", JSONArray(r.delivered.toList()))

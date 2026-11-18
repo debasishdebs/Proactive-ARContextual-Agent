@@ -167,7 +167,19 @@ enum class PlaceSide {
      * it for a suggestion card so it ends at the next quiet-hours start even if the phone link or process dies. Null from an old phone or for a place card = [SHOW_MS]. An older glasses build ignores it.
      */
     val maxShowMs: Long? = null,
+    /**
+     * Additive (v3.1 r6 P1-2): an ABSOLUTE deadline, in the GLASSES' wall clock (epoch ms), after which the card must not be drawn (the next quiet-hours start). The glasses hold no phone/glasses offset of their own: the PHONE
+     * owns the measured offset (`ClockOffset.fromHello`, the same one it converts pauses with) and sends the boundary already converted. The glasses evaluate it at the FIRST DRAW ([remainingMs]), not at publication, so a
+     * delayed broadcast, delivery or render cannot outlive the boundary. Null = no boundary known (or an old phone); an older glasses build ignores it. [maxShowMs] stays as the duration fallback.
+     */
+    val hideAtMs: Long? = null,
 ) {
+    /**
+     * How long the glasses may show this card if they draw it at [glassesNowMs] (their wall clock): [limitMs] cut to the absolute [hideAtMs] when one is carried, clamped to 0..[SHOW_MS]. 0 = draw nothing.
+     * [glassesNowMs] must be read at the moment of drawing.
+     */
+    fun remainingMs(glassesNowMs: Long): Long = hideAtMs?.let { minOf(limitMs(), it - glassesNowMs) }?.coerceIn(0L, SHOW_MS) ?: limitMs()
+
     /** The glasses' hard lifetime of this card: the cap (fail closed: never above [SHOW_MS], never below 0). */
     fun limitMs(): Long = minOf(SHOW_MS, maxShowMs ?: SHOW_MS).coerceAtLeast(0L)
 
@@ -176,6 +188,8 @@ enum class PlaceSide {
         const val SHOW_MS = 12_000L
         /** A head-motion onset dismisses a card only once it has been up this long. */
         const val MOTION_DISMISS_AFTER_MS = 2_500L
+        /** v3.1 r6 P1-2: a suggestion card is not shown at all when the phone cannot convert the quiet-hours boundary to the glasses' clock (offset unknown) and the boundary is this close. */
+        const val UNKNOWN_OFFSET_REFUSE_MS = 15_000L
     }
 }
 

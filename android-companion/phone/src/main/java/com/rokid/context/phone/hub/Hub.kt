@@ -722,9 +722,34 @@ class Hub(
 
     /** The suggestion card as a [Overlay.Nudge] carrying [PlaceCardInfo] (text "title: line" for an older glasses build), or null. Never while a pause zone is approached or enforced (defence in depth; the delivery gate refused too). */
     fun suggestionOverlay(): Overlay? {
-        val c = suggestionCards.value?.card ?: return null
+        val shown = suggestionCards.value ?: return null
+        val c = shown.card
         if (zoneApproach() || zoneEnforce()) return null
-        return Overlay.Nudge("${c.title}: ${c.line}", PlaceCardInfo(c.title, c.line, "Suggestion \u00b7 ${c.sourceLabel}", nearby = false, id = c.id, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide()), maxShowMs = suggestionCapMs(c.quietInMs).takeIf { it < PlaceCardInfo.SHOW_MS }))
+        val d = suggestionDeadline(shown)
+        return Overlay.Nudge("${c.title}: ${c.line}", PlaceCardInfo(c.title, c.line, "Suggestion \u00b7 ${c.sourceLabel}", nearby = false, id = c.id, side = com.rokid.context.core.model.PlaceSide.toWire(placeSide()), maxShowMs = d.maxShowMs, hideAtMs = d.hideAtMs))
+    }
+
+    private class SuggestionDeadline(val id: String, val atMs: Long, val maxShowMs: Long?, val hideAtMs: Long?)
+    private var deadlineCache: SuggestionDeadline? = null
+
+    /**
+     * v3.1 r6 P1-2: the card's deadline, decided ONCE per card (so the frame stays byte-stable and the glasses do not re-show it). The quiet-hours boundary is an absolute phone instant; the glasses hold no clock offset, so the
+     * phone converts it with the hello-measured offset (the one it converts pauses with) minus [SUGGESTION_QUIET_MARGIN_MS] of slack and sends it as [PlaceCardInfo.hideAtMs]; the glasses compare it with their own clock at the
+     * first draw. [PlaceCardInfo.maxShowMs] stays as a duration fallback (an older glasses build ignores both). Offset unknown: fail closed, a boundary within [PlaceCardInfo.UNKNOWN_OFFSET_REFUSE_MS] means the card is not drawn (0).
+     */
+    private fun suggestionDeadline(s: SuggestionHudHolder.Shown): SuggestionDeadline {
+        deadlineCache?.takeIf { it.id == s.card.id && it.atMs == s.atMs }?.let { return it }
+        val boundary = s.card.quietAtMs ?: s.card.quietInMs?.plus(s.atMs)
+        val dur = suggestionCapMs(s.card.quietInMs).takeIf { it < PlaceCardInfo.SHOW_MS }
+        val off = offset
+        val d = when {
+            boundary == null -> SuggestionDeadline(s.card.id, s.atMs, dur, null)
+            off != null -> SuggestionDeadline(s.card.id, s.atMs, dur, boundary + off.glassesMinusPhoneMs - SUGGESTION_QUIET_MARGIN_MS)
+            boundary - clock() < PlaceCardInfo.UNKNOWN_OFFSET_REFUSE_MS -> SuggestionDeadline(s.card.id, s.atMs, 0L, null)
+            else -> SuggestionDeadline(s.card.id, s.atMs, dur, null)
+        }
+        deadlineCache = d
+        return d
     }
 
     private fun overlay(): Overlay? {
