@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
@@ -37,6 +38,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,6 +81,7 @@ fun AskAgainButton(question: String, onClick: () -> Unit, modifier: Modifier = M
 }
 
 /** Home, Ask-first (spec §2.4, mock phone-home.html option B). Stateless. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     state: HomeUiState,
@@ -100,7 +105,10 @@ fun HomeScreen(
     onOpenNudge: (String) -> Unit = {},
     /** G3: closes the limited-mode banner ("Review" opens the app's system settings, where its permissions are). */
     onDismissLimited: () -> Unit = {},
+    /** v3.1: what the buttons on a suggestion card do. */
+    onSuggestion: SuggestionActionsUi = SuggestionActionsUi.None,
 ) {
+    var whyId by remember { mutableStateOf<String?>(null) }
     val leave by rememberUpdatedState(onLeave)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
@@ -155,6 +163,11 @@ fun HomeScreen(
                     title = "You asked “${item.question}”", body = if (item.forgotten) (if (item.askedAgain) ANSWER_ASKED_AGAIN else ANSWER_FROM_FORGOTTEN) else item.answer, onClick = { onOpenAsk(item.id) },
                     footer = if (item.forgotten && !item.askedAgain) ({ AskAgainButton(item.question, { onAskAgain(item.id) }, Modifier.testTag("ask_again_${item.id}")) }) else null,
                 )
+                is FeedItem.Suggestion -> FeedCard(
+                    icon = Icons.Outlined.LocationOn, colors = PcColors.ChipViolet, meta = "Suggestion · ${item.timeLabel}",
+                    title = item.title, body = item.line + "\n" + item.sourceLabel, onClick = null,
+                    footer = { SuggestionButtons(item, onSuggestion, onWhy = { whyId = item.id }) },
+                )
                 is FeedItem.Nudge -> FeedCard(
                     icon = Icons.Outlined.Lightbulb, colors = PcColors.ChipAmber, meta = "Heads up · ${item.timeLabel}",
                     title = if (item.redacted) REDACTED_NUDGE else item.text, body = null,
@@ -164,6 +177,27 @@ fun HomeScreen(
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+    val shownWhy = state.feed.firstOrNull { it.id == whyId } as? FeedItem.Suggestion
+    if (shownWhy != null) androidx.compose.material3.ModalBottomSheet(onDismissRequest = { whyId = null }) {
+        com.rokid.context.phone.ui.settings.suggestions.WhyContent(shownWhy.why, onNever = { onSuggestion.never(shownWhy.id); whyId = null }, onClose = { whyId = null })
+    }
+}
+
+/** What the buttons of a suggestion card do (the phone feed). */
+class SuggestionActionsUi(val dismiss: (String) -> Unit, val snooze: (String) -> Unit, val never: (String) -> Unit, val thumb: (String, Boolean) -> Unit) {
+    companion object { val None = SuggestionActionsUi({}, {}, {}, { _, _ -> }) }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SuggestionButtons(item: FeedItem.Suggestion, a: SuggestionActionsUi, onWhy: () -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        TextButton(onClick = onWhy, modifier = Modifier.testTag("suggestion_why_${item.id}")) { Text("Why am I seeing this") }
+        TextButton(onClick = { a.dismiss(item.id) }, modifier = Modifier.testTag("suggestion_dismiss_${item.id}")) { Text("Dismiss") }
+        TextButton(onClick = { a.snooze(item.id) }, modifier = Modifier.testTag("suggestion_snooze_${item.id}")) { Text("Snooze 1 day") }
+        TextButton(onClick = { a.thumb(item.id, true) }, modifier = Modifier.testTag("suggestion_up_${item.id}")) { Text("Useful") }
+        TextButton(onClick = { a.thumb(item.id, false) }, modifier = Modifier.testTag("suggestion_down_${item.id}")) { Text("Not useful") }
     }
 }
 

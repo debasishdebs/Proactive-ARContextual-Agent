@@ -23,6 +23,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rokid.context.orchestration.proactive.ProactiveEnvironment
 import com.rokid.context.orchestration.proactive.ProactiveFamily
 import com.rokid.context.orchestration.proactive.SuggestionStore
+import com.rokid.context.orchestration.proactive.SuggestionActions
+import com.rokid.context.orchestration.proactive.SuggestionSurfaces
+import com.rokid.context.orchestration.proactive.Surface
 import com.rokid.context.orchestration.proactive.ProactiveForgetListener
 import com.rokid.context.orchestration.proactive.ProactiveGraph
 import com.rokid.context.orchestration.proactive.ProactiveSettings
@@ -59,6 +62,10 @@ data class SuggestionsUiState(
     val drivingLine: String = SuggestionsModel.DRIVING_UNKNOWN,
     /** The encrypted store could not be opened: recording is disabled. */
     val storageUnavailable: Boolean = false,
+    /** v3.1 delivery switches (each OFF by default, each also needs [master]). */
+    val deliverPhone: Boolean = false, val deliverHud: Boolean = false, val deliverNexus: Boolean = false,
+    /** How many keys carry feedback (the "Reset learning" button is on while there is something to reset). */
+    val learnedCount: Int = 0,
 )
 
 /** What the screen needs (production: [AndroidSuggestionsControl]; tests: a fake). */
@@ -67,6 +74,14 @@ interface SuggestionsControl {
     fun setMaster(on: Boolean)
     fun setPlaceRecall(on: Boolean)
     fun setReplay(on: Boolean)
+    /** v3.1: one delivery switch (independent of the others; the master must also be on). Turning one off takes what it shows off that surface at once. */
+    fun setDeliver(surface: Surface, on: Boolean) {}
+    /** v3.1: snooze one day. */
+    fun snooze(id: String) {}
+    /** v3.1: a thumb on a card (feeds the ranking within its bounds). */
+    fun thumb(id: String, up: Boolean) {}
+    /** v3.1: "Reset learning": clears the feedback counters. */
+    fun resetLearning() {}
     /** Dismiss: removes the would-show. */
     fun dismiss(id: String)
     /** "Never suggest this": the key joins the never list and the would-show goes. */
@@ -78,7 +93,17 @@ interface SuggestionsControl {
 object SuggestionsModel {
     const val TITLE = "Suggestions (shadow)"
     const val MASTER_TITLE = "Suggestions"
-    const val MASTER_NOTE = "Off by default. In shadow mode PCA only works out what it WOULD suggest from your own places, notes and marks, and lists it here. Nothing is shown on your glasses, in a notification or in Nexus, and nothing leaves your phone."
+    const val MASTER_NOTE = "Off by default. PCA works out what it WOULD suggest from your own places, notes and marks, and lists it here. It only shows a suggestion where you switch a place below on. Nothing leaves your phone, no model is called and there are no notifications."
+    const val SURFACES_TITLE = "Where to show suggestions"
+    const val PHONE_TITLE = "Show in the phone feed"
+    const val PHONE_NOTE = "A card in Home, with Why, Dismiss, Snooze and Never."
+    const val HUD_TITLE = "Show on the glasses HUD"
+    const val HUD_NOTE = "A short card for 12 seconds at Medium or Max verbosity only. Head movement dismisses it. Never inside a pause zone."
+    const val NEXUS_TITLE = "Show in Nexus"
+    const val NEXUS_NOTE = "Only while Rokid Nexus draws your HUD. Nexus's own safety checks apply."
+    const val SURFACES_NOTE = "Each place has its own switch (all off by default) and needs Suggestions on. Nothing is shown while you are driving, when your glasses are not worn (HUD, Nexus), paused, in quiet hours or inside a pause zone."
+    const val LEARNING_TITLE = "Reset learning"
+    const val LEARNING_NOTE = "Dismissals, snoozes and thumbs only nudge how suggestions rank, within fixed limits."
     const val SAFETY = "Suggestions can miss things. Do not rely on them for safety. No suggestion never means everything is fine."
     const val PLACE_TITLE = "Place recall"
     const val PLACE_NOTE = "“Last visit” reminders from your place memories, pinned-place notes and marks."
@@ -116,7 +141,11 @@ object SuggestionsModel {
         return WhyUi(familyWords(r.family), triggerWords(r.trigger), sources, reasons)
     }
 
-    private val COUNTER_WORDS = mapOf("runs" to "Runs", "would_show" to "Would have shown", "drop_no_candidates" to "Nothing to suggest")
+    private val COUNTER_WORDS = mapOf(
+        "runs" to "Runs", "would_show" to "Would have shown", "drop_no_candidates" to "Nothing to suggest",
+        "deliver_phone" to "Delivered to the phone feed", "deliver_hud" to "Delivered to the glasses HUD", "deliver_nexus" to "Delivered to Nexus",
+        "fb_dismiss" to "Dismissed", "fb_snooze" to "Snoozed", "fb_never" to "Never suggest this", "fb_up" to "Thumbs up", "fb_down" to "Thumbs down",
+    )
 
     fun counterLabel(name: String): String = COUNTER_WORDS[name] ?: name.removePrefix("drop_").replace('_', ' ').replaceFirstChar { it.uppercase() }.let { if (name.startsWith("drop_")) "Stopped: $it" else it }
 }
@@ -131,12 +160,14 @@ class AndroidSuggestionsControl(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val store: () -> SuggestionStore = { ProactiveGraph.store(app) },
     private val render: suspend (SuggestionRecord, Long) -> RenderedCard? = { r, now -> ProactiveGraph.generator(app).render(r, now) },
-    private val sweep: suspend () -> Unit = { ProactiveForgetListener({ ProactiveGraph.store(app) }, { ProactiveGraph.liveness(app) }).sweep() },
+    private val sweep: suspend () -> Unit = { ProactiveForgetListener({ ProactiveGraph.store(app) }, { ProactiveGraph.liveness(app) }, surfaces = { ProactiveEnvironment.surfaces }).sweep() },
+    private val actions: SuggestionActions = SuggestionActions({ store() }, { ProactiveEnvironment.surfaces }),
+    private val surfaces: () -> SuggestionSurfaces = { ProactiveEnvironment.surfaces },
 ) : SuggestionsControl {
     private val settings = ProactiveSettings.of(app)
     private val generation = java.util.concurrent.atomic.AtomicLong()
     private val publish = Any()
-    private val ui = MutableStateFlow(SuggestionsUiState(settings.master.value, settings.placeRecall.value, settings.replay.value, drivingLine = SuggestionsModel.drivingLine(), storageUnavailable = settings.storageUnavailable.value))
+    private val ui = MutableStateFlow(SuggestionsUiState(settings.master.value, settings.placeRecall.value, settings.replay.value, drivingLine = SuggestionsModel.drivingLine(), storageUnavailable = settings.storageUnavailable.value, deliverPhone = settings.deliverPhone.value, deliverHud = settings.deliverHud.value, deliverNexus = settings.deliverNexus.value))
     override val state: StateFlow<SuggestionsUiState> = ui.asStateFlow()
 
     init {
@@ -146,18 +177,23 @@ class AndroidSuggestionsControl(
                 val live = s.records().map { it.id }.toSet()
                 synchronized(publish) {
                     generation.incrementAndGet() // an in-flight refresh started before this change must not publish
-                    ui.value = ui.value.copy(rows = ui.value.rows.filter { it.id in live }, neverCount = s.never().size)
+                    ui.value = ui.value.copy(rows = ui.value.rows.filter { it.id in live }, neverCount = s.never().size, learnedCount = s.feedback().keys.size)
                 }
                 refresh()
             }
         }
     }
 
-    override fun setMaster(on: Boolean) { settings.setMaster(on); refresh() }
+    override fun setMaster(on: Boolean) { settings.setMaster(on); if (!on) runCatching { surfaces().withdrawAll() }; refresh() }
     override fun setPlaceRecall(on: Boolean) { settings.setPlaceRecall(on); refresh() }
     override fun setReplay(on: Boolean) { settings.setReplay(on); refresh() }
-    override fun dismiss(id: String) { store().withdraw(id); refresh() }
-    override fun never(id: String) { val s = store(); s.records().firstOrNull { it.id == id }?.let { s.addNever(it.key) }; s.withdraw(id); refresh() }
+    override fun setDeliver(surface: Surface, on: Boolean) { settings.setDeliver(surface, on); if (!on) runCatching { surfaces().withdrawSurface(surface) }; refresh() }
+    /** Dismiss from the list: the same as from any surface (feedback written, withdrawn everywhere). */
+    override fun dismiss(id: String) { scope.launch { actions.dismiss(id); refresh() } }
+    override fun never(id: String) { scope.launch { actions.never(id); refresh() } }
+    override fun snooze(id: String) { scope.launch { actions.snooze(id); refresh() } }
+    override fun thumb(id: String, up: Boolean) { scope.launch { actions.thumb(id, up); refresh() } }
+    override fun resetLearning() { scope.launch { store().resetFeedback(); refresh() } }
     override fun clearNever() { val s = store(); s.never().forEach(s::removeNever); refresh() }
 
     override fun refresh() {
@@ -172,7 +208,7 @@ class AndroidSuggestionsControl(
                 if (g != generation.get()) return@launch // overtaken by a newer refresh or by a change signal: never republish
                 val live = s.records().map { it.id }.toSet() // and the rows must still have their records at the moment of publishing
                 ui.value = SuggestionsUiState(settings.master.value, settings.placeRecall.value, settings.replay.value, rows.filter { it.id in live }, s.never().size,
-                    s.counters().toList().sortedBy { it.first }.map { SuggestionsModel.counterLabel(it.first) to it.second }, SuggestionsModel.drivingLine(), settings.storageUnavailable.value)
+                    s.counters().toList().sortedBy { it.first }.map { SuggestionsModel.counterLabel(it.first) to it.second }, SuggestionsModel.drivingLine(), settings.storageUnavailable.value, settings.deliverPhone.value, settings.deliverHud.value, settings.deliverNexus.value, s.feedback().keys.size)
             }
         }
     }
@@ -182,7 +218,7 @@ class AndroidSuggestionsControl(
 fun SuggestionsRoute(control: SuggestionsControl, back: () -> Unit) {
     val state by control.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { control.refresh() }
-    SuggestionsScreen(state, back, control::setMaster, control::setPlaceRecall, control::setReplay, control::dismiss, control::never, control::clearNever)
+    SuggestionsScreen(state, back, control::setMaster, control::setPlaceRecall, control::setReplay, control::dismiss, control::never, control::clearNever, control::setDeliver, control::snooze, control::thumb, control::resetLearning)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -190,6 +226,7 @@ fun SuggestionsRoute(control: SuggestionsControl, back: () -> Unit) {
 fun SuggestionsScreen(
     state: SuggestionsUiState, back: () -> Unit, onMaster: (Boolean) -> Unit, onPlace: (Boolean) -> Unit, onReplay: (Boolean) -> Unit,
     onDismiss: (String) -> Unit, onNever: (String) -> Unit, onClearNever: () -> Unit,
+    onDeliver: (Surface, Boolean) -> Unit = { _, _ -> }, onSnooze: (String) -> Unit = {}, onThumb: (String, Boolean) -> Unit = { _, _ -> }, onResetLearning: () -> Unit = {},
 ) {
     var whyId by remember { mutableStateOf<String?>(null) }
     val shown = state.rows.firstOrNull { it.id == whyId }
@@ -206,6 +243,26 @@ fun SuggestionsScreen(
             SettingsCard {
                 SwitchRow(SuggestionsModel.PLACE_TITLE, SuggestionsModel.PLACE_NOTE, state.placeRecall, onPlace, tag = "suggestions_place", enabled = state.master)
                 SwitchRow(SuggestionsModel.REPLAY_TITLE, SuggestionsModel.REPLAY_NOTE, state.replay, onReplay, tag = "suggestions_replay")
+            }
+        }
+        item {
+            SettingsCard {
+                Text(SuggestionsModel.SURFACES_TITLE, style = MaterialTheme.typography.titleMedium)
+                NoticeText(SuggestionsModel.SURFACES_NOTE, tag = "suggestions_surfaces_note")
+                val on = state.master && !state.storageUnavailable
+                SwitchRow(SuggestionsModel.PHONE_TITLE, SuggestionsModel.PHONE_NOTE, state.deliverPhone, { onDeliver(Surface.PHONE, it) }, tag = "suggestions_deliver_phone", enabled = on)
+                SwitchRow(SuggestionsModel.HUD_TITLE, SuggestionsModel.HUD_NOTE, state.deliverHud, { onDeliver(Surface.HUD, it) }, tag = "suggestions_deliver_hud", enabled = on)
+                SwitchRow(SuggestionsModel.NEXUS_TITLE, SuggestionsModel.NEXUS_NOTE, state.deliverNexus, { onDeliver(Surface.NEXUS, it) }, tag = "suggestions_deliver_nexus", enabled = on)
+            }
+        }
+        item {
+            SettingsCard {
+                Text(SuggestionsModel.LEARNING_TITLE, style = MaterialTheme.typography.titleMedium)
+                NoticeText(SuggestionsModel.LEARNING_NOTE, tag = "suggestions_learning_note")
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("Learned from ${state.learnedCount} ${if (state.learnedCount == 1) "suggestion" else "suggestions"}", Modifier.weight(1f).testTag("suggestions_learned_count"))
+                    SecondaryAction("Reset learning", onResetLearning, tag = "suggestions_reset_learning", enabled = state.learnedCount > 0)
+                }
             }
         }
         item {
@@ -230,6 +287,11 @@ fun SuggestionsScreen(
                         Row(Modifier.fillMaxWidth()) {
                             SecondaryAction("Why am I seeing this", { whyId = r.id }, tag = "suggestions_why_$i")
                             SecondaryAction("Dismiss", { onDismiss(r.id) }, tag = "suggestions_dismiss_$i")
+                        }
+                        Row(Modifier.fillMaxWidth()) {
+                            SecondaryAction("Snooze 1 day", { onSnooze(r.id) }, tag = "suggestions_snooze_$i")
+                            SecondaryAction("Useful", { onThumb(r.id, true) }, tag = "suggestions_up_$i")
+                            SecondaryAction("Not useful", { onThumb(r.id, false) }, tag = "suggestions_down_$i")
                         }
                     }
                 }

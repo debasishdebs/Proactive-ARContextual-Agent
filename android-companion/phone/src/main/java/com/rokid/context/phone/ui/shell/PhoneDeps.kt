@@ -68,6 +68,8 @@ class PhoneDeps(
     val photoSearch: com.rokid.context.phone.ui.photos.PhotoSearchDeps = com.rokid.context.phone.ui.photos.PhotoSearchDeps.None,
     /** v0.9.7 slice D: the shared utterance backend; the Home chat calls it before the ask (null in tests = every text is a plain ask). */
     val utterance: com.rokid.context.voice.Utterance? = null,
+    /** v3.1: the delivered suggestions in Home's feed (default: none; every delivery switch is OFF on a fresh install). */
+    val suggestionFeed: com.rokid.context.phone.ui.home.SuggestionFeedSource = com.rokid.context.phone.ui.home.SuggestionFeedSource.None,
 ) {
     fun today(): LocalDate = LocalDate.now(zone())
 
@@ -118,6 +120,7 @@ class PhoneDeps(
                 limitedMode = com.rokid.context.phone.ui.home.PrefsLimitedMode.forApp(app),
                 photoSearch = com.rokid.context.phone.ui.photos.PhotoSearchDeps.create(app),
                 utterance = voice.utterance,
+                suggestionFeed = com.rokid.context.phone.ui.home.AndroidSuggestionFeed(app),
             )
         }
     }

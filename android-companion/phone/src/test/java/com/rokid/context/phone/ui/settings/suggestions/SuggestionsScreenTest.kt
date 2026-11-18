@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertTextContains
@@ -98,5 +100,45 @@ class SuggestionsScreenTest {
         assertTrue(Routes.SETTINGS_SUGGESTIONS in Routes.LIVE_SETTINGS)
         compose.onAllNodes(androidx.compose.ui.test.hasText("Suggestions (shadow)")).assertCountEquals(0)
         assertEquals(null, opened)
+    }
+
+    @Test fun everyDeliverySwitchIsOffByDefaultAndNeedsTheMaster() {
+        val asked = ArrayList<Pair<com.rokid.context.orchestration.proactive.Surface, Boolean>>()
+        var state by androidx.compose.runtime.mutableStateOf(SuggestionsUiState())
+        compose.setContent { PcTheme { SuggestionsScreen(state, {}, {}, {}, {}, {}, {}, {}, { s, on -> asked += s to on }) } }
+        for (t in listOf("suggestions_deliver_phone", "suggestions_deliver_hud", "suggestions_deliver_nexus")) {
+            compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag(t)); compose.onNodeWithTag(t).assertIsOff(); compose.onNodeWithTag(t).assertIsNotEnabled()
+        }
+        compose.onNodeWithTag("suggestions_surfaces_note").assertTextContains("all off by default", substring = true)
+        state = SuggestionsUiState(master = true)
+        compose.onNodeWithTag("suggestions_deliver_hud").assertIsEnabled().assertIsOff(); compose.onNodeWithTag("suggestions_deliver_phone").assertIsOff()
+        compose.onNodeWithTag("suggestions_deliver_hud").performClick()
+        assertEquals(listOf(com.rokid.context.orchestration.proactive.Surface.HUD to true), asked)
+        state = SuggestionsUiState(master = true, deliverPhone = true, deliverNexus = true)
+        compose.onNodeWithTag("suggestions_deliver_phone").assertIsOn(); compose.onNodeWithTag("suggestions_deliver_nexus").assertIsOn(); compose.onNodeWithTag("suggestions_deliver_hud").assertIsOff()
+    }
+
+    @Test fun storageDownKeepsEverySwitchDisabled() {
+        compose.setContent { PcTheme { SuggestionsScreen(SuggestionsUiState(master = true, storageUnavailable = true), {}, {}, {}, {}, {}, {}, {}) } }
+        compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_deliver_phone"))
+        compose.onNodeWithTag("suggestions_deliver_phone").assertIsNotEnabled()
+    }
+
+    @Test fun resetLearningIsOnlyOnWhileThereIsSomethingToReset() {
+        var reset = 0; var state by androidx.compose.runtime.mutableStateOf(SuggestionsUiState())
+        compose.setContent { PcTheme { SuggestionsScreen(state, {}, {}, {}, {}, {}, {}, {}, onResetLearning = { reset++ }) } }
+        compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_reset_learning"))
+        compose.onNodeWithTag("suggestions_reset_learning").assertIsNotEnabled(); compose.onNodeWithTag("suggestions_learned_count").assertTextEquals("Learned from 0 suggestions")
+        state = SuggestionsUiState(learnedCount = 3)
+        compose.onNodeWithTag("suggestions_learned_count").assertTextEquals("Learned from 3 suggestions"); compose.onNodeWithTag("suggestions_reset_learning").performClick()
+        assertEquals(1, reset)
+    }
+
+    @Test fun theListRowOffersSnoozeAndThumbs() {
+        val got = ArrayList<String>()
+        compose.setContent { PcTheme { SuggestionsScreen(SuggestionsUiState(true, true, false, listOf(row), 0, emptyList()), {}, {}, {}, {}, {}, {}, {}, onSnooze = { got += "snooze:$it" }, onThumb = { id, up -> got += "thumb:$id:$up" }) } }
+        compose.onNodeWithTag("suggestions_settings").performScrollToNode(hasTestTag("suggestions_snooze_0"))
+        compose.onNodeWithTag("suggestions_snooze_0").performClick(); compose.onNodeWithTag("suggestions_up_0").performClick(); compose.onNodeWithTag("suggestions_down_0").performClick()
+        assertEquals(listOf("snooze:sg_1", "thumb:sg_1:true", "thumb:sg_1:false"), got)
     }
 }

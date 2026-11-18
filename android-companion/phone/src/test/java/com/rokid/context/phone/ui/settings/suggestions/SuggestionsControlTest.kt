@@ -79,4 +79,39 @@ class SuggestionsControlTest {
             assertEquals("a failing read is the fail-closed unknown", SuggestionsModel.DRIVING_UNKNOWN, SuggestionsModel.drivingLine())
         } finally { com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment = prior }
     }
+
+    private val surfaces = object : com.rokid.context.orchestration.proactive.SuggestionSurfaces {
+        val off = ArrayList<com.rokid.context.orchestration.proactive.Surface>(); var all = 0; val withdrawn = ArrayList<String>()
+        override fun withdrawSurface(surface: com.rokid.context.orchestration.proactive.Surface) { off += surface }
+        override fun withdrawAll() { all++ }
+        override fun withdraw(ids: Collection<String>) { withdrawn += ids }
+    }
+    private fun control2() = AndroidSuggestionsControl(app, scope, { store }, { _, _ -> card }, {}, com.rokid.context.orchestration.proactive.SuggestionActions({ store }, { surfaces }, { 1_799_000_000_000L }), { surfaces })
+
+    @Test fun theDeliverySwitchesPersistIndependentlyAndTurningOneOffWithdrawsThatSurface() = runBlocking {
+        val c = control2()
+        assertEquals(false, c.state.value.deliverPhone || c.state.value.deliverHud || c.state.value.deliverNexus)
+        c.setDeliver(com.rokid.context.orchestration.proactive.Surface.HUD, true)
+        await(c) { it.deliverHud }; assertTrue(!c.state.value.deliverPhone && !c.state.value.deliverNexus)
+        assertTrue(ProactiveSettings.of(app).deliverHud.value)
+        c.setDeliver(com.rokid.context.orchestration.proactive.Surface.HUD, false)
+        await(c) { !it.deliverHud }; assertEquals(listOf(com.rokid.context.orchestration.proactive.Surface.HUD), surfaces.off)
+    }
+
+    @Test fun theMasterOffWithdrawsEverySurface() = runBlocking {
+        val c = control2(); c.setMaster(true); c.setMaster(false); await(c) { !it.master }; assertEquals(1, surfaces.all)
+    }
+
+    @Test fun dismissSnoozeThumbsAndNeverWriteCountersAndWithdraw() = runBlocking {
+        val c = control2(); c.refresh(); await(c) { it.rows.size == 1 }
+        c.thumb("sg_1", false); await(c) { it.learnedCount == 1 }; assertEquals(1, store.counters()["fb_down"]); assertEquals("a thumb keeps the row", 1, c.state.value.rows.size)
+        c.dismiss("sg_1"); await(c) { it.rows.isEmpty() }; assertEquals(listOf("sg_1"), surfaces.withdrawn); assertEquals(1, store.counters()["fb_dismiss"])
+        store.add(rec); c.refresh(); await(c) { it.rows.size == 1 }
+        c.never("sg_1"); await(c) { it.rows.isEmpty() }; assertEquals(1, c.state.value.neverCount)
+    }
+
+    @Test fun resetLearningClearsTheCountersButNotTheNeverList() = runBlocking {
+        val c = control2(); store.addNever("f2:x"); c.thumb("sg_1", true); await(c) { it.learnedCount == 1 }
+        c.resetLearning(); await(c) { it.learnedCount == 0 }; assertEquals(setOf("f2:x"), store.never()); assertTrue(store.feedback().keys.isEmpty())
+    }
 }

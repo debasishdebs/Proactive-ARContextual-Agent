@@ -24,6 +24,8 @@ sealed interface FeedItem {
         /** The user already asked it again (no second button). */
         val askedAgain: Boolean = false) : FeedItem
     data class Nudge(override val id: String, override val atMs: Long, override val timeLabel: String, val text: String, val why: String, val redacted: Boolean) : FeedItem
+    /** v3.1: a delivered suggestion (its own kind and style, with the "why am I seeing this" sheet). Text is the template, rendered from the live sources. */
+    data class Suggestion(override val id: String, override val atMs: Long, override val timeLabel: String, val title: String, val line: String, val sourceLabel: String, val why: com.rokid.context.phone.ui.settings.suggestions.WhyUi) : FeedItem
 }
 
 /** "For you" feed (spec §2.4 Home): nudges and past asks, newest first. */
@@ -39,8 +41,10 @@ object Feed {
     fun ask(a: AskEntity, today: LocalDate, zone: ZoneId) = FeedItem.Ask(a.id, a.ts, label(a.ts, today, zone), a.question, a.answer, a.redacted, AskSourceStates.isForgotten(a), AskSourceStates.isReasked(a))
     fun nudge(n: NudgeEntity, today: LocalDate, zone: ZoneId) = FeedItem.Nudge(n.id, n.ts, label(n.ts, today, zone), n.text, n.why, n.redacted)
 
-    fun build(asks: List<AskEntity>, nudges: List<NudgeEntity>, today: LocalDate, zone: ZoneId, limit: Int = 30): List<FeedItem> =
-        (asks.map { ask(it, today, zone) } + nudges.map { nudge(it, today, zone) })
+    fun suggestion(c: SuggestionCardUi, today: LocalDate, zone: ZoneId) = FeedItem.Suggestion(c.id, c.atMs, label(c.atMs, today, zone), c.title, c.line, c.sourceLabel, c.why)
+
+    fun build(asks: List<AskEntity>, nudges: List<NudgeEntity>, today: LocalDate, zone: ZoneId, limit: Int = 30, suggestions: List<SuggestionCardUi> = emptyList()): List<FeedItem> =
+        (asks.map { ask(it, today, zone) } + nudges.map { nudge(it, today, zone) } + suggestions.map { suggestion(it, today, zone) })
             .sortedWith(compareByDescending<FeedItem> { it.atMs }.thenBy { it.id })
             .take(limit)
 }
