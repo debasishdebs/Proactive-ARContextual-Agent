@@ -455,7 +455,7 @@ scan_logs() { # serial pkg label
   say "STEP verify $label: (logcat is NOT cleared) launch $pkg, sample pid, wait ${SCAN_SECS}s, take ONE logcat snapshot, re-sample pid, report CLEAN / BENIGN-ONLY / FAIL"
   [ "$GO" = 1 ] || return 0
   comp="$(A "$s" shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$pkg" 2>/dev/null | tr -d '\r' | tail -n 1)" || comp=""
-  case "$comp" in "$pkg"/*) A "$s" shell am start -n "$comp" >/dev/null 2>&1 || fail "$label: could not launch $comp" ;;
+  case "$comp" in "$pkg"/*) A "$s" shell am start -W -n "$comp" >/dev/null 2>&1 || fail "$label: could not launch $comp" ;;
     *) A "$s" shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || fail "$label: no launcher activity for $pkg" ;; esac
   pid0="$(A "$s" shell pidof "$pkg" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || pid0=""
   sleep "$SCAN_SECS" || fail "$label: sleep failed"
@@ -622,6 +622,8 @@ run_fixtures() {
   FX_OUT="$(printf '0123456789abcdef%.0s' 1 2 3 4)  x\n"; FX_RC=1; fx "sha256: tool failure with a valid-looking digest" refuse sha_fx
   FX_RC=0; FX_PID0='4242\n'; FX_PID1='4242\n'; FX_SNAPR=0; FX_SNAP="$(mk)"
   fx "logs: clean text passes" ok sl
+  # REAL captured layout (emulator, 2026-11-18): 9 leading spaces, epoch.mmm, pid, tid, level, "Tag: msg" (also empty/multi-word tags), "--------- beginning of" separators without a timestamp
+  FX_SNAP="--------- beginning of main\n         1793999990.100   536   565 I am_uid_idle: 10181\n         1794000010.200  4242  4242 W ziparchive: Unable to open 'base.dm'\n         1794000010.300  4242  4260 D nativeloader: Configuring clns-6\n         1794000010.400  4242  4260 I WM-WorkerWrapper: Worker result SUCCESS\n         1794000010.500  4242  4260 I         : empty tag line\n         1794000010.600  4242  4260 E AndroidRuntime: \\tat a.b.C.d(C.java:1)\n         1794000010.700   536   559 W WindowManager: Failed to deliver inset control state change\n"; fx "logs: real-captured logcat layout, clean app pid passes" ok sl; unset FX_SNAP
   FX_SNAPR=7; fx "logs: snapshot logcat fails (rc 7)" refuse sl; FX_SNAPR=0
   FX_SNAP=''; fx "logs: snapshot returns nothing => UNVERIFIED exit 3" rc3 sl
   FX_SNAP="$(tl 4242 a; tl 4242 b)"; fx "logs: snapshot too short => UNVERIFIED exit 3" rc3 sl
