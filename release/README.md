@@ -1,6 +1,6 @@
 # PCA release signing
 
-Status: DRAFT, not exercised. Planned for after Sri Lanka (1.3.0 lineage). Design: `docs/superpowers/specs/2026-11-16-privacy-and-release-design.md` (B2). Rehearsal evidence: `docs/superpowers/reviews/2026-11/key-rotation-rehearsal-2026-11-18.md`.
+Status: DRAFT. The signing form was rehearsed on an emulator with throwaway keys (2026-11-19); the real CI run has not happened. Planned for after Sri Lanka (1.3.0 lineage). Design: `docs/superpowers/specs/2026-11-16-privacy-and-release-design.md` (B2). Rehearsal evidence: `docs/superpowers/reviews/2026-11/key-rotation-rehearsal-2026-11-18.md`.
 
 Rules: PKCS12 release key in the secrets of the GitHub Environment `release` (NOT repository secrets), signer SHA-256 pinned in `release/signer-sha256.txt`, CI builds a DRAFT release, publication is manual. No debug-signed APK ever goes on GitHub. Never commit key material (`.jks`, `.keystore`, `.p12`, `.pem`, lineage files are all kept out of the repo).
 
@@ -25,9 +25,11 @@ apksigner rotate --out pca.lineage \
      - `PCA_RELEASE_KEY_ALIAS` (`pca`)
      - `PCA_LINEAGE_B64` = `base64 < pca.lineage`
 3. Rehearse the CI signing form on an emulator before the first real release (checklist, none done yet):
-   - [ ] The CI form is UNREHEARSED. It signs with one signer (the new key) and v3 only: `--lineage pca.lineage --rotation-min-sdk-version 28 --v1-signing-enabled false --v2-signing-enabled false --v3-signing-enabled true --v4-signing-enabled false --debuggable-apk-permitted false`. The earlier rehearsal (`key-rotation-rehearsal-2026-11-18.md`) used the two-signer v1/v2/v3 form (`--ks debug.keystore ... --next-signer --ks release.jks ... --lineage ... --rotation-min-sdk-version 28`), so it does NOT cover this form. It needs its own emulator rehearsal.
-   - [ ] `adb install -r` of the CI-form APK over a debug-signed build succeeds with data preserved, and `dumpsys package` lists past signatures `[debug, release]` (API 28+ only; pre-28 cannot use a lineage).
-   - [ ] `release/verify-release.sh` passes on the CI-form APK.
+   - [x] Done 2026-11-19 (`docs/superpowers/reviews/2026-11/ci-signing-rehearsal-2026-11-19.md`, API 34 emulator, throwaway keys, release-variant APK). The CI form signs with one signer (the new key) and v3 only: `--lineage pca.lineage --rotation-min-sdk-version 28 --v1-signing-enabled false --v2-signing-enabled false --v3-signing-enabled true --v4-signing-enabled false --debuggable-apk-permitted false`. It differs from the earlier two-signer rehearsal (`key-rotation-rehearsal-2026-11-18.md`).
+   - [x] `adb install -r` of the CI-form APK over an old-key install succeeded with data preserved, and `dumpsys package` listed past signatures `[old, new]`.
+   - [x] `release/verify-release.sh` passed on the CI-form APK (with `PIN_FILE` pointing at a throwaway pin; the committed pin is still a placeholder).
+   - [ ] Still open: a real CI run, the protected environment, the real keys, a device below API 33 (glasses).
+   - Rehearsal notes: use a RELEASE-variant APK as input. `--debuggable-apk-permitted false` makes apksigner fail on a debug build (`APK is debuggable ... refuse to sign`), which is the intended guard. `zipalign -c -P 16 4` fails on the current release APK (native libs not 16 KB aligned); the workflow's `|| zipalign -c 4` fallback passes. To run `verify-release.sh` locally before the real pin exists, set `PIN_FILE=/path/to/throwaway-pin.txt`.
 
 ## Run
 
