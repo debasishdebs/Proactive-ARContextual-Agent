@@ -7,7 +7,8 @@ name: Release
 #          Before any secret is touched it checks the tag format and that the commit is reachable from the protected
 #          default branch (main). It downloads build's artifacts (never rebuilds with secrets present), signs, verifies
 #          with release/verify-release.sh, and creates a DRAFT GitHub release. Publishing is always manual.
-# Never debug-signed. The CI single-signer signing form is UNREHEARSED (see release/README.md).
+# Never debug-signed. The CI single-signer signing form was rehearsed on an API 34 emulator with throwaway keys
+# (docs/superpowers/reviews/2026-11/ci-signing-rehearsal-2026-11-19.md); the real runner, environment and keys are not.
 
 on:
   push:
@@ -211,9 +212,11 @@ jobs:
           printf '%s' "$LINEAGE_B64" | base64 --decode > "$RUNNER_TEMP/pca.lineage"
 
       # Single signer = the NEW key, with the lineage whose tail is that key, v3 only (v1/v2 would need the OLDEST
-      # signer's private key, which CI never holds; every project minSdk is >= 28). UNREHEARSED: the rehearsal used the
-      # two-signer v1/v2/v3 form. This exact form needs its own emulator rehearsal before the first real release
-      # (release/README.md checklist). Not claimed as verified.
+      # signer's private key, which CI never holds; every project minSdk is >= 28). Rehearsed 2026-11-19 on an API 34
+      # emulator with throwaway keys (ci-signing-rehearsal-2026-11-19.md): this exact apksigner form, verify-release.sh
+      # and `adb install -r` over an old-key install all passed, data kept, past signatures [old, new]. Not rehearsed:
+      # the real runner, the protected environment, the real keys, devices below API 33.
+      # --debuggable-apk-permitted false makes apksigner REFUSE a debuggable APK, so this form cannot sign a debug build.
       - name: Sign, then verify with release/verify-release.sh
         env:
           KS_PASS: ${{ secrets.PCA_RELEASE_KEYSTORE_PASSWORD }}
