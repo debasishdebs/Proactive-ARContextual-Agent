@@ -1,0 +1,4 @@
+# PLACEHOLDER: replace the next line with the SHA-256 of the NEW release certificate
+# (64 hex chars, from `keytool -list -v` or `apksigner verify --print-certs`), then commit.
+# Comment lines (#) and blank lines are ignored. While this is a placeholder CI fails on purpose.
+REPLACE_WITH_64_HEX_CHARS_OF_THE_RELEASE_CERT_SHA256
