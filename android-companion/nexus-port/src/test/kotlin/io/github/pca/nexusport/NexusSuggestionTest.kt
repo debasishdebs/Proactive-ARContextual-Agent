@@ -66,4 +66,24 @@ class NexusSuggestionTest {
     }
 
     @Test fun anEventWithoutAGateIsUntouched() = runBlocking<Unit> { assertIs<Outcome.Shown>(sink().show(sg())) }
+
+    // ---- Codex v3.1 r3 P1-2: an already-published suggestion handle carries its gate; tick() hides it when the gate closes ---------------------------------------------------
+
+    @Test fun aPublishedSuggestionHidesAtTheNextTickWhenItsGateCloses() = runBlocking<Unit> {
+        var open = true
+        val s = sink(); assertIs<Outcome.Shown>(s.show(gated { open })); assertEquals(1, s.liveHandles())
+        s.tick(); assertEquals(1, s.liveHandles(), "the gate is open: the card stays"); assertTrue("hide:NOTICE" !in t.calls)
+        open = false // driving started, quiet hours began, a switch went off or the record was withdrawn
+        s.tick(); assertTrue("hide:NOTICE" in t.calls, "the closed gate hid the card"); assertEquals(0, s.liveHandles())
+    }
+
+    @Test fun aThrowingGateHidesAPublishedSuggestionAtTheNextTick() = runBlocking<Unit> {
+        var boom = false
+        val s = sink(); assertIs<Outcome.Shown>(s.show(gated { if (boom) throw IllegalStateException("x"); true }))
+        boom = true; s.tick(); assertTrue("hide:NOTICE" in t.calls); assertEquals(0, s.liveHandles())
+    }
+
+    @Test fun anUngatedNoticeIsNotAffectedByTheGateRecheck() = runBlocking<Unit> {
+        val s = sink(); assertIs<Outcome.Shown>(s.show(sg())); s.tick(); assertEquals(1, s.liveHandles()); assertTrue("hide:NOTICE" !in t.calls)
+    }
 }

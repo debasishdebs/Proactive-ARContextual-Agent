@@ -113,10 +113,6 @@ class AndroidSuggestionFeed(
         private const val IDLE_MS = 60_000L
 
         /** The next instant after [nowMs] at which the quiet window starts (null = no window). */
-        internal fun nextQuietStart(q: com.rokid.context.core.model.QuietHours, nowMs: Long, zone: ZoneId): Long? {
-            if (q.startMinute == q.endMinute || q.startMinute !in 0..1439 || q.endMinute !in 0..1439) return null
-            val today = java.time.Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
-            return (0L..2L).map { d -> today.plusDays(d).atTime(q.startMinute / 60, q.startMinute % 60).atZone(zone).toInstant().toEpochMilli() }.firstOrNull { it > nowMs }
-        }
+        internal fun nextQuietStart(q: com.rokid.context.core.model.QuietHours, nowMs: Long, zone: ZoneId): Long? = com.rokid.context.orchestration.proactive.QuietBoundaryWatch.nextQuietStart(q, nowMs, zone)
     }
 }
