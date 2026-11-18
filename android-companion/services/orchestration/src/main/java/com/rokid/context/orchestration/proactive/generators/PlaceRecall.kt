@@ -29,8 +29,11 @@ interface CandidateGenerator {
     suspend fun generate(nowMs: Long, anchorBlocked: suspend (String) -> Boolean): Generated
 }
 
+/** The HUD line cap (the wire's PlaceCardInfo line is at most 140 characters). */
+object PlaceCardLine { const val MAX = 140 }
+
 /** What the "why" sheet and the shadow list show for one record: template text and the sources with their times. */
-data class RenderedCard(val text: String, val sourceLabel: String, val sources: List<RenderedSource>)
+data class RenderedCard(val text: String, val sourceLabel: String, val sources: List<RenderedSource>, val title: String = "", val line: String = text)
 data class RenderedSource(val kind: String, val tsMs: Long?)
 
 /**
@@ -80,7 +83,9 @@ class PlaceRecallGenerator(private val source: PlaceHistorySource, private val z
         val facts = PlaceFacts(last.placeName, last.tsMs, r.factors.firstNotNullOfOrNull { it.removePrefix("visits=").takeIf { s -> s != it }?.toIntOrNull() } ?: 1, pin?.note, r.factors.firstNotNullOfOrNull { it.removePrefix("marks=").takeIf { s -> s != it }?.toIntOrNull() } ?: marks.size)
         val z = zone()
         val srcs = mem.map { RenderedSource("memory", it.tsMs) } + listOfNotNull(pin?.takeIf { it.note.isNotBlank() }?.let { RenderedSource("pin", null) }) + marks.map { RenderedSource("mark", it.atMs) }
-        return RenderedCard(Templates.placeRecall(facts, z), Templates.sourceLabel(srcs.size, last.tsMs, z), srcs)
+        val text = Templates.placeRecall(facts, z)
+        val title = Templates.oneLine(last.placeName)
+        return RenderedCard(text, Templates.sourceLabel(srcs.size, last.tsMs, z), srcs, title, text.removePrefix("$title: ").take(PlaceCardLine.MAX))
     }
 
     companion object {

@@ -23,5 +23,5 @@ object Templates {
     /** "from 2 memories · 12 Nov" (the HUD / feed source label). */
     fun sourceLabel(sourceCount: Int, lastMs: Long, zone: ZoneId): String = "from $sourceCount ${if (sourceCount == 1) "item" else "items"} · ${date(lastMs, zone)}"
 
-    private fun oneLine(s: String) = s.replace(Regex("\\s+"), " ").trim()
+    internal fun oneLine(s: String) = s.replace(Regex("\\s+"), " ").trim()
 }

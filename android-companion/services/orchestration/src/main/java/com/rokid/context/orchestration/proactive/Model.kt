@@ -73,9 +73,18 @@ data class SuggestionRecord(
     val sourceIds: List<String>,
     /** Fixed tokens the "why am I seeing this" sheet turns into words: `visits=3`, `pin_note`, `marks=1`, `arrived`. */
     val factors: List<String>,
+    /** v3.1: the [Surface] tokens this record was already delivered to (at most once per record and surface). Fixed tokens only. */
+    val delivered: Set<String> = emptySet(),
 )
+
+/** v3.1 delivery surfaces; each has its own default-OFF switch ([ProactiveSettings]) and all need the master switch. */
+enum class Surface(val token: String) { PHONE("phone"), HUD("hud"), NEXUS("nexus");
+    companion object { fun of(token: String?): Surface? = entries.firstOrNull { it.token == token } }
+}
 
 /** Every reason a candidate or a run stops, as a fixed token (counters and replay verdicts). */
 enum class Gate {
     SWITCH, PAUSE, ZONE, ZONE_ANCHOR, THRESHOLD, OFF, QUIET_HOURS, CAP_REACHED, GLOBAL_CAP, FAMILY_MAX, SHOWN_GAP, COOLDOWN, FEEDBACK, LEASE, WEAR, DRIVING, PROVENANCE, COMMIT, ERROR, NO_CANDIDATES, NOT_PICKED, WOULD_SHOW,
+    /** v3.1 delivery: the surface switch is off, the record was already shown there, or it was withdrawn (dismissed, forgotten) before delivery. */
+    SURFACE_OFF, ALREADY_DELIVERED, WITHDRAWN, DELIVERED,
 }

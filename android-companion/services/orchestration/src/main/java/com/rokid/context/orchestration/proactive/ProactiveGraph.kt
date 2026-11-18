@@ -32,6 +32,10 @@ object ProactiveEnvironment {
     @Volatile var zones: () -> List<PauseZone>? = { null }
     /** The nudge cap ("Nudges per day"; 0 = off). */
     @Volatile var nudgeCap: () -> Int = { 0 }
+    /** v3.1: Rokid Nexus is the user's HUD host. */
+    @Volatile var nexusHost: () -> Boolean = { false }
+    /** v3.1: the live surfaces (HUD overlay, Nexus notice). The default shows nothing. */
+    @Volatile var surfaces: SuggestionSurfaces = SuggestionSurfaces.None
 }
 
 /** Composition of the shadow loop: one store, one engine factory. Nothing here starts a thread or a timer. */
@@ -77,7 +81,10 @@ object ProactiveGraph {
     private fun pinsChanged(ids: Set<String>) {
         val a = pinApp ?: return
         val dead = ids.map { SourceIds.pin(it) }.toSet()
-        store(a).withdrawWhere { r -> r.sourceIds.any { it in dead } }
+        val st = store(a)
+        val ids = st.records().filter { r -> r.sourceIds.any { it in dead } }.map { it.id }
+        st.withdrawWhere { r -> r.sourceIds.any { it in dead } }
+        if (ids.isNotEmpty()) try { ProactiveEnvironment.surfaces.withdraw(ids) } catch (e: Exception) { /* its own expiry and gates close it */ }
     }
 
     /** Registered once at start-up (`ContextApp`). */
@@ -103,6 +110,7 @@ object ProactiveGraph {
             drivingVersion = { ProactiveEnvironment.drivingVersion() },
             drivingCommit = { v, w -> ProactiveEnvironment.drivingCommit(v, w) },
             hud = { NudgeEnvironment.hud?.invoke() },
+            nexusHost = { ProactiveEnvironment.nexusHost() },
             globalCap = { ProactiveEnvironment.nudgeCap() },
             globalToday = { since -> mem.db.nudgeGateDao().countSince(since) },
             anchorBlocked = { key -> anchorBlocked(a, key) },
@@ -127,9 +135,21 @@ object ProactiveGraph {
         return ProactiveEngine(mem.db, ProvenanceGate.forGraph(mem), store, listOf(generator(app)), seams(app))
     }
 
+    /** v3.1 delivery stage (after the engine's would-show commit). Each surface needs the master, the family AND its own switch, all OFF on a fresh install. */
+    fun delivery(app: Context, store: SuggestionStore = store(app)): ProactiveDelivery {
+        val a = app.applicationContext
+        val mem = MemoryGraph.get(a)
+        val gen = generator(a)
+        return ProactiveDelivery(mem.db, ProvenanceGate.forGraph(mem), store, { r, now -> gen.render(r, now) }, seams(a), { ProactiveSettings.of(a).deliversTo(it) && storageAvailable(a) }, { ProactiveEnvironment.surfaces })
+    }
+
+    /** The user's answers to a delivered card, from any surface; each withdraws the record from every surface. */
+    fun actions(app: Context): SuggestionActions = SuggestionActions({ store(app) }, { ProactiveEnvironment.surfaces })
+
     fun replayer(app: Context): ProactiveReplayer {
         val mem = MemoryGraph.get(app)
-        return ProactiveReplayer(mem.db, ProvenanceGate.forGraph(mem), generator(app), { seams(app) }, never = { if (storageAvailable(app)) store(app).never() else throw IllegalStateException("storage unavailable") })
+        return ProactiveReplayer(mem.db, ProvenanceGate.forGraph(mem), generator(app), { seams(app) }, never = { if (storageAvailable(app)) store(app).never() else throw IllegalStateException("storage unavailable") },
+            feedback = { if (storageAvailable(app)) store(app).feedback() else throw IllegalStateException("storage unavailable") })
     }
 
     fun liveness(app: Context) = SourceLiveness(ProvenanceGate.forGraph(MemoryGraph.get(app))) { runCatching { pins(app).map { it.id }.toSet() }.getOrNull() }
@@ -137,7 +157,7 @@ object ProactiveGraph {
     /** The Forget / Delete all hook, registered once at start-up. */
     fun forgetListener(app: Context): ForgetListener {
         val a = app.applicationContext
-        return ProactiveForgetListener({ store(a) }, { liveness(a) }, { ProactiveSettings.of(a).reset() })
+        return ProactiveForgetListener({ store(a) }, { liveness(a) }, { ProactiveSettings.of(a).reset() }, { ProactiveEnvironment.surfaces })
     }
 
     internal fun resetForTests() { store = null; UserPinStore.removeChangeListener(pinListener); pinApp = null }
