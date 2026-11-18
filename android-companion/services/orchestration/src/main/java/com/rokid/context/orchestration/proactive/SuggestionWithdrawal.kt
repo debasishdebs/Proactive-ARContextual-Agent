@@ -37,6 +37,8 @@ class QuietBoundaryWatch(
     /** Arms the one-shot for the next start of [hud]'s quiet window after [nowMs]; nothing is armed when quiet hours are off. */
     fun arm(hud: NudgeHud?, nowMs: Long) {
         val q = hud?.quietHours
+        // v3.1 r5 P1-1: armed INSIDE an active window (the boundary passed after the last check): withdraw at once instead of scheduling tomorrow's start
+        if (q != null && com.rokid.context.core.model.QuietWindow.occurrenceAt(q, nowMs, hud.zone) != null) { disarm(); try { fire() } catch (_: Exception) { }; return }
         val next = if (q == null) null else nextQuietStart(q, nowMs, hud.zone)
         synchronized(lock) {
             pending?.let { try { it.close() } catch (_: Exception) { } }

@@ -155,27 +155,36 @@ class PrefsSuggestionStore(
     override fun removeNever(key: String) { synchronized(lock) { val s = readNever(); if (s.remove(key)) try { prefs.edit().putString(NEVER, JSONArray(s.toList()).toString()).commit() } catch (_: Exception) { } }; changed() }
     override fun counters(): Map<String, Int> = synchronized(lock) { readCounters() }
     override fun bump(counter: String) { synchronized(lock) { val c = readCounters(); c[counter] = (c[counter] ?: 0) + 1; try { prefs.edit().putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (_: Exception) { } } }
-    override fun clearAll() { synchronized(lock) { unsaved.clear(); inheritedTs = 0L; try { marker?.edit()?.clear()?.commit() } catch (_: Exception) { }; try { prefs.edit().clear().commit() } catch (_: Exception) { } }; changed() }
+    override fun clearAll() { synchronized(lock) { unsaved.clear(); fbMemory = null; inheritedTs = 0L; try { marker?.edit()?.clear()?.commit() } catch (_: Exception) { }; try { prefs.edit().clear().commit() } catch (_: Exception) { } }; changed() }
     override fun markDelivered(id: String, surface: Surface): Boolean = synchronized(lock) {
         flushUnsaved()
         val rows = readRows()
         val i = rows.indexOfFirst { it.id == id }
         if (i < 0 || surface.token in rows[i].delivered) false else { rows[i] = rows[i].copy(delivered = rows[i].delivered + surface.token); writeRows(rows) }
     }.also { if (it) changed() }
-    override fun feedback(): FeedbackState = synchronized(lock) { FeedbackState.fromJson(try { prefs.getString(FB, null) } catch (e: Exception) { null }) }
+    /** v3.1 r5 P1-3: feedback whose write failed after the retries (a dismissal's 24 h rest, a never): held in memory so the key is NEVER shown again by this process; replaced by the next successful write. */
+    private var fbMemory: FeedbackState? = null
+    override fun feedback(): FeedbackState = synchronized(lock) { fbMemory ?: FeedbackState.fromJson(try { prefs.getString(FB, null) } catch (e: Exception) { null }) }
     override fun recordFeedback(action: FeedbackAction, key: String, family: ProactiveFamily, nowMs: Long): Boolean = synchronized(lock) {
         flushUnsaved()
-        val next = FeedbackState.fromJson(try { prefs.getString(FB, null) } catch (e: Exception) { null }).after(action, key, family, nowMs)
+        val next = (fbMemory ?: FeedbackState.fromJson(try { prefs.getString(FB, null) } catch (e: Exception) { null })).after(action, key, family, nowMs)
         val c = readCounters(); c["fb_" + action.token] = (c["fb_" + action.token] ?: 0) + 1
-        try { prefs.edit().putString(FB, next.toJson()).putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (e: Exception) { false }
+        val ok = retry { try { prefs.edit().putString(FB, next.toJson()).putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (e: Exception) { false } }
+        fbMemory = if (ok) null else next
+        ok
     }.also { changed() }
-    override fun resetFeedback() { synchronized(lock) { try { prefs.edit().remove(FB).commit() } catch (_: Exception) { } }; changed() }
+    override fun resetFeedback() { synchronized(lock) { fbMemory = null; try { prefs.edit().remove(FB).commit() } catch (_: Exception) { } }; changed() }
     /** Dismissal lines whose write failed: kept in memory so the five-dismissals pause still holds for this process (a lost dismissal must not reopen delivery). RESERVED lines never go here: a failed reservation is no delivery. */
     private val unsaved = ArrayList<LedgerEntry>()
     private fun readLedger(): List<LedgerEntry> = DeliveryLedger.decode(try { prefs.getString(LEDGER, null) } catch (x: Exception) { null })
     private fun writeLedger(l: List<LedgerEntry>): Boolean = try { prefs.edit().putString(LEDGER, DeliveryLedger.encode(l)).commit() } catch (x: Exception) { false }
+    /** v3.1 r5 P1-3: a dismissal's writes are retried before they are given up on (a transient commit() failure is common). */
+    private fun retry(times: Int = WRITE_ATTEMPTS, op: () -> Boolean): Boolean { repeat(times) { if (op()) return true }; return false }
     /** v3.1 r3 P1-3: the time of a dismissal a PREVIOUS process may have lost (its marker was still there at start-up); 0 = none. */
-    private var inheritedTs: Long = marker?.let { m -> try { maxOf(m.getLong(MARK_TS, 0L), m.getLong(MARK_OWN, 0L)) } catch (_: Exception) { 0L } } ?: 0L
+    private var inheritedTs: Long = maxOf(
+        marker?.let { m -> try { maxOf(m.getLong(MARK_TS, 0L), m.getLong(MARK_OWN, 0L)) } catch (_: Exception) { 0L } } ?: 0L,
+        try { prefs.getLong(MARK_FALLBACK, 0L) } catch (_: Exception) { 0L },
+    )
 
     init {
         // the previous process's own pending write becomes the inherited one (still one tiny file, commit()); this process then writes MARK_OWN alone
@@ -183,8 +192,13 @@ class PrefsSuggestionStore(
     }
 
     /** Write-ahead: a dismissal at [ts] is about to be written; best effort (a failing marker store still leaves the in-memory pause). */
-    private fun markPending(ts: Long) { try { marker?.edit()?.putLong(MARK_OWN, maxOf(ts, marker.getLong(MARK_OWN, 0L)))?.commit() } catch (_: Exception) { } }
-    private fun clearPending() { try { marker?.edit()?.remove(MARK_OWN)?.commit() } catch (_: Exception) { } }
+    private fun markPending(ts: Long): Boolean {
+        val second = marker != null && retry { try { marker.edit().putLong(MARK_OWN, maxOf(ts, marker.getLong(MARK_OWN, 0L))).commit() } catch (_: Exception) { false } }
+        // r5 P1-3: no marker file, or its commit failed after the retries: the marker also goes into the ledger file itself (a different key; the same file is likely failing too, so this only helps a partial failure)
+        val inMain = !second && retry { try { prefs.edit().putLong(MARK_FALLBACK, maxOf(ts, prefs.getLong(MARK_FALLBACK, 0L))).commit() } catch (_: Exception) { false } }
+        return second || inMain
+    }
+    private fun clearPending() { try { marker?.edit()?.remove(MARK_OWN)?.commit() } catch (_: Exception) { }; try { if (prefs.contains(MARK_FALLBACK)) prefs.edit().remove(MARK_FALLBACK).commit() } catch (_: Exception) { } }
 
     /** The conservative pause of a lost dismissal: five dismissal lines at the marked time (only in memory, never written), so [DeliveryLedger.pausedUntil] pauses for 24 h from it. */
     private fun inheritedLines(): List<LedgerEntry> = if (inheritedTs <= 0L) emptyList() else List(DeliveryLedger.DISMISS_LIMIT) { LedgerEntry(inheritedTs, ProactiveFamily.entries.first(), LedgerKind.DISMISSED) }
@@ -198,10 +212,11 @@ class PrefsSuggestionStore(
 
     override fun ledger(): List<LedgerEntry> = synchronized(lock) { flushUnsaved(); (readLedger() + unsaved + inheritedLines()).sortedBy { it.ts } }
     override fun appendLedger(e: LedgerEntry): Boolean = synchronized(lock) {
-        if (e.kind == LedgerKind.DISMISSED) markPending(e.ts) // write-ahead: durable BEFORE the card is acknowledged as dismissed
-        val ok = writeLedger(DeliveryLedger.prune(readLedger() + unsaved + e, e.ts))
+        // write-ahead: durable BEFORE the card is acknowledged as dismissed. If neither the marker nor the ledger can be written (below) the dismissal is still held in memory: suppression stays for this process
+        if (e.kind == LedgerKind.DISMISSED) markPending(e.ts)
+        val ok = if (e.kind == LedgerKind.DISMISSED) retry { writeLedger(DeliveryLedger.prune(readLedger() + unsaved + e, e.ts)) } else writeLedger(DeliveryLedger.prune(readLedger() + unsaved + e, e.ts))
         if (ok) { unsaved.clear(); clearPending(); if (inheritedTs > 0L && e.ts - inheritedTs >= DeliveryLedger.DISMISS_PAUSE_MS) { inheritedTs = 0L; try { marker?.edit()?.remove(MARK_TS)?.commit() } catch (_: Exception) { } } }
-        else if (e.kind == LedgerKind.DISMISSED && unsaved.size < DeliveryLedger.MAX_ENTRIES) unsaved += e
+        else if (e.kind == LedgerKind.DISMISSED) { if (unsaved.size >= DeliveryLedger.MAX_ENTRIES) unsaved.removeAt(0); unsaved += e } // never drop the newest: keep suppressing
         ok
     }
     override fun confirmLedger(e: LedgerEntry): Boolean = synchronized(lock) { flushUnsaved(); DeliveryLedger.confirmed(readLedger(), e)?.let { writeLedger(it) } ?: false }
@@ -220,6 +235,8 @@ class PrefsSuggestionStore(
         const val MARKER_PREFS = "proactive_dismiss_marker"
         private const val MARK_OWN = "pending"
         private const val MARK_TS = "lost"
+        private const val MARK_FALLBACK = "pending_mark"
+        private const val WRITE_ATTEMPTS = 3
 
         internal fun encode(r: SuggestionRecord) = JSONObject().put("id", r.id).put("ts", r.ts).put("key", r.key).put("fam", r.family.token).put("trg", r.trigger.token).put("score", r.score)
             .put("anchor", r.anchorKey).put("src", JSONArray(r.sourceIds)).put("why", JSONArray(r.factors)).put("dlv", JSONArray(r.delivered.toList()))

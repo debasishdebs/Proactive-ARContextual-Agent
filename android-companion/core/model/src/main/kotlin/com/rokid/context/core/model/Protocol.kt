@@ -146,7 +146,15 @@ sealed interface Overlay {
     val title: String, val line: String, val source: String, val nearby: Boolean = false,
     /** Additive: this card instance (the phone numbers every published card); null from an old phone. A dismissal names it so a later card with the same title is never cleared by it. */
     val id: String? = null,
+    /**
+     * Additive (v3.1 r5 P1-2): a hard cap on how long the GLASSES show this card, counted on the glasses' own clock from the moment it first draws it (never longer than [SHOW_MS]; 0 or less = not at all). The phone sets
+     * it for a suggestion card so it ends at the next quiet-hours start even if the phone link or process dies. Null from an old phone or for a place card = [SHOW_MS]. An older glasses build ignores it.
+     */
+    val maxShowMs: Long? = null,
 ) {
+    /** The glasses' hard lifetime of this card: the cap (fail closed: never above [SHOW_MS], never below 0). */
+    fun limitMs(): Long = minOf(SHOW_MS, maxShowMs ?: SHOW_MS).coerceAtLeast(0L)
+
     companion object {
         /** How long the glasses show a card; the phone clears its copy at the same time. */
         const val SHOW_MS = 12_000L

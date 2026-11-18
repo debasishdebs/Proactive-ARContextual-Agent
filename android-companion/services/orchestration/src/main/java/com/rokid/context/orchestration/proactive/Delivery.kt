@@ -28,7 +28,9 @@ internal fun ProactiveSeams.commitFenced(ticket: com.rokid.context.memory.place.
 }
 
 /** A card as a live surface draws it. Built from the LIVE sources by the template at the moment of delivery; never stored. [sources] are the ids the Nexus sink checks again (memory ids, `frame:` cites, mark ids). */
-data class DeliveredCard(val id: String, val title: String, val line: String, val sourceLabel: String, val sources: Set<String>)
+data class DeliveredCard(val id: String, val title: String, val line: String, val sourceLabel: String, val sources: Set<String>,
+    /** Time from publication to the next quiet-hours start (null = no window): the glasses' hard cap is derived from it (v3.1 r5 P1-2). Set at the moment of publication. */
+    val quietInMs: Long? = null)
 
 /**
  * The live surfaces a delivered suggestion can reach besides the phone feed (which is derived from the store: a delivered, not withdrawn record IS the feed card). Every call is synchronous, cheap and never throws;
@@ -199,11 +201,23 @@ class ProactiveDelivery(
         if (!store.markDelivered(record.id, s)) return Gate.ALREADY_DELIVERED
         testBetweenClaimAndPublish?.invoke()
         var shown = false
+        var quietHit = false
         val ran = publications.publish(claim) {
-            shown = when (s) { Surface.PHONE -> true; Surface.HUD -> surfaces().showHud(card); Surface.NEXUS -> surfaces().showNexus(card) }
-            shown
+            // v3.1 r5 P1-1: quiet hours judged AGAIN at the moment of publication on a fresh clock (the persistence above may have crossed the boundary); fail closed when the host is unreadable
+            val now = clock(); val hud = try { seams.hud() } catch (e: Exception) { null }
+            if (hud == null || quiet(hud, now)) { quietHit = true; false } else {
+                val live = card.copy(quietInMs = hud.quietHours?.let { q -> QuietBoundaryWatch.nextQuietStart(q, now, hud.zone)?.minus(now) })
+                shown = when (s) { Surface.PHONE -> true; Surface.HUD -> surfaces().showHud(live); Surface.NEXUS -> surfaces().showNexus(live) }
+                shown
+            }
         }
-        if (ran) try { quietWatch.arm(seams.hud(), clock()) } catch (e: Exception) { } // a card is displayed: watch for the next quiet-hours boundary
+        if (quietHit) return Gate.QUIET_HOURS
+        if (ran) {
+            // a card is displayed: watch for the next quiet-hours boundary; arming inside an active window withdraws at once, and so does a boundary crossed since the publication
+            try { quietWatch.arm(seams.hud(), clock()) } catch (e: Exception) { }
+            val crossed = try { seams.hud()?.let { quiet(it, clock()) } ?: true } catch (e: Exception) { true }
+            if (crossed) { publications.withdraw(listOf(record.id)); try { surfaces().withdraw(listOf(record.id)) } catch (e: Exception) { PcLog.i(TAG, "withdraw failed") }; PcLog.i(TAG, "proactive card withdrawn at quiet boundary"); return Gate.WITHDRAWN }
+        }
         return when { ran -> Gate.DELIVERED; publications.isWithdrawn(record.id) -> Gate.WITHDRAWN; shown || publications.isLive(claim) -> Gate.COMMIT; else -> Gate.SURFACE_OFF }
     }
 
