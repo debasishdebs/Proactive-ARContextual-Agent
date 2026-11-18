@@ -42,8 +42,9 @@ class CanvasServerTest {
     private fun occupy(p: Int): ServerSocket {
         val ss = ServerSocket().also { it.reuseAddress = true; sockets += it }
         try { ss.bind(InetSocketAddress("127.0.0.1", p)) } catch (e: java.io.IOException) {
-            // acceptable only when some other process is already listening there
-            Socket().use { it.connect(InetSocketAddress("127.0.0.1", p), 500) }
+            // EADDRINUSE: another process holds the port. It may listen on the IPv6 wildcard only (macOS sharingd/AirDrop
+            // on 8770), which refuses a 127.0.0.1 connect yet blocks the same bind the server makes, so it is busy either way.
+            ss.close()
         }
         return ss
     }
