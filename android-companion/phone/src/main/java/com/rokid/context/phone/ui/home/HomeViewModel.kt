@@ -58,6 +58,8 @@ class HomeViewModel(
     private val utterance: Utterance? = null,
     /** M5: "Ask again" on an answer whose source was forgotten: the user's tap runs its stored question through the normal Ask path (never automatic). */
     private val askAgainOf: suspend (String) -> AskOutcome = { AskOutcome.Failed(AskActions.FAILED) },
+    /** v3.1: delivered suggestions (the default shows none: every delivery switch is OFF on a fresh install). */
+    private val suggestions: SuggestionFeedSource = SuggestionFeedSource.None,
 ) : ViewModel() {
     private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null, val reply: String? = null)
 
@@ -78,7 +80,7 @@ class HomeViewModel(
     private val today = clock.map { DayBucket.dayOf(it, zone()) }.distinctUntilChanged()
 
     private val feed: Flow<List<FeedItem>> =
-        combine(asks.recent(30), nudges.recent(30), today) { a, n, d -> Feed.build(a, n, d, zone()) }
+        combine(asks.recent(30), nudges.recent(30), today, suggestions.items) { a, n, d, g -> Feed.build(a, n, d, zone(), suggestions = g) }
 
     private val lastAnswer: Flow<FeedItem.Ask?> = combine(local.map { it.lastAskId }.distinctUntilChanged(), today) { id, d -> id to d }
         .flatMapLatest { (id, d) -> if (id == null) flowOf(null) else asks.observe(id).map { a -> a?.let { Feed.ask(it, d, zone()) } } }
@@ -101,6 +103,11 @@ class HomeViewModel(
         s.copy(voice = HomeVoiceUi.from(v, blocked), photosToday = n, limited = limited)
     }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
+
+    fun suggestionDismiss(id: String) = suggestions.dismiss(id)
+    fun suggestionSnooze(id: String) = suggestions.snooze(id)
+    fun suggestionNever(id: String) = suggestions.never(id)
+    fun suggestionThumb(id: String, up: Boolean) = suggestions.thumb(id, up)
 
     fun onQuestionChange(text: String) = local.update { it.copy(question = text.take(500), error = null, reply = null) }
 
