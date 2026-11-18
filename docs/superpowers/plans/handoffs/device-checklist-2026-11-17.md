@@ -52,3 +52,14 @@ Verified 2026-11-18 on the API 34 emulator (`docs/superpowers/reviews/2026-11/ke
 - Confirm Keystore survival on the real phone (the encrypted DB must open after the rotated update) and take the phone backup first.
 - After BOTH apps rotate: check the phone/watch Data Layer match and whether Rokid's CXR link checks signatures.
 - Always sign with the ONE lineage file: a wrong lineage over an already-rotated install silently overwrites the device's stored lineage. Debug-signed builds can no longer update a rotated install.
+
+
+## G. First worn card test (B3; proxy ruling 4 in docs/superpowers/decisions/2026-11-19-codex-proxy-rulings-4.md, needs the user's confirmation)
+Supervised, synthetic content, stationary, outside any zone. Enable only the switches the test needs, switch them OFF afterwards. Passing it does NOT turn on everyday delivery (that still needs seven worn shadow days and deliberate activation).
+- [ ] Card readable (title, body, source label) at MEDIUM/MAX; no suggestion card below the allowed verbosity.
+- [ ] Expires within 12 s; head-motion dismissal after 2.5 s; popup and minimised overlay both withdrawn.
+- [ ] Refused when unworn, paused, in a zone, driving/vehicle uncertain, budget exhausted; no later backlog.
+- [ ] Withdrawn on zone entry, source Forget, switch-off (also an in-flight card).
+- [ ] Quiet-hours boundary ends the card on the glasses clock; unknown clock offset draws no quiet-bounded card; reconnect with changed offset recomputes.
+- [ ] Dismissal/snooze/never survive an app restart; delivery fails closed when storage fails.
+- [ ] Place card placement: try LEFT/CENTRE/RIGHT (Settings > Place Guide > Card position, Developer mode), note clipping and the real field of view.
