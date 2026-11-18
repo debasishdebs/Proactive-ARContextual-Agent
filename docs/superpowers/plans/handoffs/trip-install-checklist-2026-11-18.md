@@ -8,6 +8,9 @@ Nothing is installed yet. Phone = eval build 394667e0, glasses = 1.0.0, watch = 
 - [ ] Room v17 migration (adds `ask.sourceStates`) runs on first phone launch. It was verified on the emulator (encrypted v16 -> v17). A phone backup is mandatory; there is no downgrade (a v16 binary cannot open a v17 DB: rollback = restore the backup + reinstall the same-signature APK).
 - [ ] Watch: skip for the trip (the watch APK shares the phone's applicationId; installing it on the wrong serial replaces the phone app).
 
+## 0b. Optional candidate (added 2026-11-19)
+- [ ] `~/Desktop/rokid/backups/apks-v110-cand-9b1def30/` (git 9b1def30, verified 15/15) adds card placement, Sikkim/Darjeeling/Sri Lanka seed presets, curated landmarks and v3.1 delivery code (all switches OFF). Same helper, same dry run and `--go` rules; use it INSTEAD of f1dcf1fb only if you want these on 22 Nov; f1dcf1fb remains the conservative default.
+
 ## 1. Preconditions
 - [ ] No call active (the helper also refuses). Phone plugged in or > 50% battery, glasses > 50%.
 - [ ] `adb devices -l`: note the PHONE serial and the GLASSES serial (a device can appear twice: USB serial and a wireless `adb-...-tls-connect` endpoint: pass ONE serial per device; the helper resolves identities and refuses aliases).
