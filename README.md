@@ -53,6 +53,8 @@ Add what you were doing ("mark that, I'm driving"); unknown words in the same se
 
 ## Privacy
 
+Full policy: [PRIVACY.md](PRIVACY.md).
+
 Memories, photos and the database are stored on your phone: the database is encrypted with SQLCipher and its key never leaves the Android Keystore. The glasses and the watch stream only to your own phone. When you configure a remote model provider, your prompts are sent to that provider, and so are images when you enable photos for Ask; with local models everything stays on the device. Voice recognition is on-device and audio is never stored. Forget removes a fact, photo, Moment or time range together with the copies derived from it (exports, run outputs, lineage). Prefs files holding keys, set-up or per-device state are excluded from backup and device transfer (checked by `BackupRulesTest`); the watch and glasses exclude everything.
 
 ## Docs
