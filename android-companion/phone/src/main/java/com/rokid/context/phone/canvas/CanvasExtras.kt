@@ -51,6 +51,11 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 candidates = com.rokid.context.canvas.plan.ReplayCandidates(db.canvasDao())::forHash,
                 signals = com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app),
                 devices = com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore.get(app),
+                proactiveReplay = DeveloperModeStore.get(app).let { dev ->
+                    com.rokid.context.phone.canvas.api.ProactiveReplayRoute(dev.enabled, com.rokid.context.orchestration.proactive.ProactiveSettings.of(app).replay, replay = { day, step, extra ->
+                        com.rokid.context.orchestration.proactive.ProactiveGraph.replayer(app).replay(day, step, extra)
+                    })
+                },
                 signalTry = DeveloperModeStore.get(app).let { dev ->
                     com.rokid.context.phone.canvas.api.SignalTry(
                         com.rokid.context.canvas.signal.SignalTryReader(db), { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app).config.value },
@@ -80,6 +85,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             devices: com.rokid.context.phone.ui.settings.capture.DeviceCapabilityStore? = null,
             /** v1.2 row 2: the real-data derived-signal preview behind `POST /api/signals/try`; null = the route answers 404. */
             signalTry: com.rokid.context.phone.canvas.api.SignalTry? = null,
+            /** v3.0 shadow loop: the developer dry-run replay (`POST /api/proactive/replay`); null = the route is not registered (404). */
+            proactiveReplay: com.rokid.context.phone.canvas.api.ProactiveReplayRoute? = null,
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
             val replays = ReplayRoutes(replay, candidates ?: { null })
@@ -92,6 +99,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
                 signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it, signalTry)::handle)) }
                 devices?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.DeviceRoutes(it)::handle)) }
+                proactiveReplay?.let { add(ApiExtra(it::handle)) }
             }
             return CanvasExtras(all, replay, startup, sweeps)
         }

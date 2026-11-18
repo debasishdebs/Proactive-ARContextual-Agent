@@ -92,6 +92,11 @@ object ProactiveGraph {
         return ProactiveEngine(mem.db, ProvenanceGate.forGraph(mem), store, listOf(generator(app)), seams(app))
     }
 
+    fun replayer(app: Context): ProactiveReplayer {
+        val mem = MemoryGraph.get(app)
+        return ProactiveReplayer(mem.db, ProvenanceGate.forGraph(mem), generator(app), { seams(app) }, never = { store(app).never() })
+    }
+
     fun liveness(app: Context) = SourceLiveness(ProvenanceGate.forGraph(MemoryGraph.get(app))) { runCatching { pins(app).map { it.id }.toSet() }.getOrNull() }
 
     /** The Forget / Delete all hook, registered once at start-up. */
