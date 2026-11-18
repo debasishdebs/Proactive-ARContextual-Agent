@@ -35,7 +35,7 @@ object PlaceGraph {
         })
     }
 
-    /** The user's pinned places (prefs `place_pins`, the source of truth: kept by Delete all, exported, backed up). */
+    /** The user's pinned places (prefs `place_pins`, the source of truth: kept by Delete all, exported on request; EXCLUDED from backup and device transfer, see UserPlace.kt and BackupRulesTest). */
     fun pins(context: Context): com.rokid.context.memory.place.UserPinStore =
         com.rokid.context.memory.place.UserPinStore(context.applicationContext.getSharedPreferences(com.rokid.context.memory.place.UserPinStore.PREFS, Context.MODE_PRIVATE))
 
