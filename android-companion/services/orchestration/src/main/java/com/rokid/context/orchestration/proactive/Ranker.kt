@@ -22,8 +22,11 @@ object ProactiveRanker {
     fun rank(cs: List<Candidate>, nowMs: Long, feedback: (Candidate) -> Double = { 1.0 }): List<Pair<Candidate, Double>> = cs.map { it to score(it, nowMs, feedback(it)) }.sortedWith(compareByDescending<Pair<Candidate, Double>> { it.second }.thenBy { it.first.key })
 }
 
-/** The counts the budget reads. [records] are the proactive would-shows (simulated: shadow mode never consumes a live slot); [globalToday] the nudges stored since local midnight. */
-data class BudgetState(val records: List<SuggestionRecord>, val globalToday: Int, val globalCap: Int)
+/**
+ * The counts the budget reads. [records] are the retained would-shows; [globalToday] the nudges stored since local midnight; [ledger] the delivery ledger (v3.1 r1): delivered suggestions count from the ledger, NOT from the
+ * retained records, so dismissing (which deletes the record) frees no budget. A retained record that was never delivered still counts as a would-show.
+ */
+data class BudgetState(val records: List<SuggestionRecord>, val globalToday: Int, val globalCap: Int, val ledger: List<LedgerEntry> = emptyList())
 
 /**
  * The attention budget (rulings 2 and 3): 3 per day INSIDE the global nudge cap (a global cap of 0 disables everything), a gap since the last would-show, 2 per family per day, a per-key cooldown, and quiet hours
@@ -39,11 +42,14 @@ class ProactiveBudget(
         if (state.globalCap <= 0 || capPerDay <= 0) return Gate.OFF
         if (hud.quietHours?.let { QuietWindow.occurrenceAt(it, nowMs, hud.zone) } != null) return Gate.QUIET_HOURS
         val midnight = Instant.ofEpochMilli(nowMs).atZone(hud.zone).toLocalDate().atStartOfDay(hud.zone).toInstant().toEpochMilli()
-        val today = state.records.filter { it.ts >= midnight && it.ts <= nowMs }
+        if (DeliveryLedger.pausedUntil(state.ledger) > nowMs) return Gate.DISMISS_PAUSE
+        // consumption = the ledger (delivered, whatever became of the record) + the retained would-shows that were never delivered
+        val events = state.ledger.filter { it.kind == LedgerKind.DELIVERED }.map { it.ts to it.family } + state.records.filter { it.delivered.isEmpty() }.map { it.ts to it.family }
+        val today = events.filter { it.first >= midnight && it.first <= nowMs }
         if (today.size >= capPerDay) return Gate.CAP_REACHED
         if (today.size + state.globalToday >= state.globalCap) return Gate.GLOBAL_CAP
-        if (today.count { it.family == family } >= familyMax) return Gate.FAMILY_MAX
-        if (gapMs > 0 && state.records.any { it.ts <= nowMs && nowMs - it.ts < gapMs }) return Gate.SHOWN_GAP
+        if (today.count { it.second == family } >= familyMax) return Gate.FAMILY_MAX
+        if (gapMs > 0 && events.any { it.first <= nowMs && nowMs - it.first < gapMs }) return Gate.SHOWN_GAP
         if (state.records.any { it.key == key && it.ts <= nowMs && nowMs - it.ts < cooldownMs }) return Gate.COOLDOWN
         return Gate.WOULD_SHOW
     }

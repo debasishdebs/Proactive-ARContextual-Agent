@@ -57,9 +57,15 @@ class ProactiveDelivery(
     private val budget: ProactiveBudget = ProactiveBudget(),
     private val clock: () -> Long = System::currentTimeMillis,
     private val generation: () -> Long = { MemoryWipe.generation.get() },
+    /** The claim -> publish -> withdrawn state machine every withdrawal path also goes through. */
+    private val publications: SuggestionPublications = SuggestionPublications.shared,
 ) {
     /** Test seam: runs after the last suspending read and before the final step (a gate "closing between the engine commit and delivery"). */
     @Volatile internal var testBeforeFinal: (suspend () -> Unit)? = null
+    /** Test seam: runs INSIDE the fences, first thing in the final step (a pause or a switch landing after the fences were taken). */
+    @Volatile internal var testInFence: (() -> Unit)? = null
+    /** Test seam: runs between a surface's claim and its publication (a withdrawal landing in between). */
+    @Volatile internal var testBetweenClaimAndPublish: (() -> Unit)? = null
 
     suspend fun deliver(recordId: String, nowMs: Long = clock()): Map<Surface, Gate> {
         if (Surface.entries.none(wanted)) return emptyMap() // every switch off: nothing happens, nothing is counted
@@ -117,17 +123,31 @@ class ProactiveDelivery(
         }
     }
 
-    /** Synchronous. Every gate that can be read without suspending, as of NOW, then the claim and the publication per surface. */
-    private fun finalStep(record: SuggestionRecord, card: DeliveredCard, pending: List<Surface>, nowMs: Long, globalToday: Int): Map<Surface, Gate> {
+    /** The synchronous pause read for the final step; a throw is a pause (fail closed). */
+    private fun pausedNow(): Boolean = try { seams.pausedNow() } catch (e: Exception) { true }
+
+    private fun quiet(hud: com.rokid.context.orchestration.nudge.NudgeHud, nowMs: Long) = hud.quietHours?.let { com.rokid.context.core.model.QuietWindow.occurrenceAt(it, nowMs, hud.zone) } != null
+
+    /**
+     * Synchronous, INSIDE the driving commit fence and the zone ticket's fence. Every gate again as of NOW (a fresh clock: quiet hours and the budget are judged at this instant, not at the delivery's entry; the pause is
+     * read here too), then per surface the claim ([SuggestionPublications] and [SuggestionStore.markDelivered]) and the publication, one step against a withdrawal.
+     */
+    private fun finalStep(record: SuggestionRecord, card: DeliveredCard, pending: List<Surface>, entryMs: Long, globalToday: Int): Map<Surface, Gate> {
+        testInFence?.invoke()
+        val nowMs = maxOf(entryMs, clock())
         val hud = seams.hud() ?: return all(Gate.OFF, pending)
         val live = store.records()
-        if (live.none { it.id == record.id }) return all(Gate.WITHDRAWN, pending)
+        val stored = live.firstOrNull { it.id == record.id }
+        if (stored == null || publications.isWithdrawn(record.id)) return all(Gate.WITHDRAWN, pending)
         if (seams.zoneGuard.blocked()) return all(Gate.ZONE, pending)
+        if (pausedNow()) return all(Gate.PAUSE, pending)
+        if (localMidnight(nowMs, hud) != localMidnight(entryMs, hud)) return all(Gate.COMMIT, pending) // the day turned during the reads: the nudge count is stale
         if (record.key in store.never() || FeedbackMath.blocked(record.key, store.feedback(), nowMs)) return all(Gate.FEEDBACK, pending)
-        val budgetGate = budget.check(record.key, record.family, BudgetState(live.filter { it.id != record.id }, globalToday, seams.globalCap()), hud, nowMs)
+        val budgetGate = budget.check(record.key, record.family, BudgetState(live.filter { it.id != record.id }, globalToday, seams.globalCap(), store.ledger()), hud, nowMs)
         if (budgetGate != Gate.WOULD_SHOW) return all(budgetGate, pending)
         val worn = seams.worn()
         val nexus = seams.nexusHost()
+        val first = stored.delivered.isEmpty()
         val out = LinkedHashMap<Surface, Gate>()
         for (s in pending) {
             out[s] = when {
@@ -135,14 +155,113 @@ class ProactiveDelivery(
                 s != Surface.PHONE && !worn -> Gate.WEAR
                 s == Surface.HUD && (nexus || hud.verbosity == Verbosity.SILENT) -> Gate.SURFACE_OFF
                 s == Surface.NEXUS && !nexus -> Gate.SURFACE_OFF
-                !store.markDelivered(record.id, s) -> Gate.ALREADY_DELIVERED
-                else -> {
-                    val shown = when (s) { Surface.PHONE -> true; Surface.HUD -> surfaces().showHud(card); Surface.NEXUS -> surfaces().showNexus(card) }
-                    if (shown) Gate.DELIVERED else Gate.COMMIT
-                }
+                else -> claimAndPublish(record, s, card)
             }
         }
+        if (first && out.values.any { it == Gate.DELIVERED }) store.appendLedger(LedgerEntry(nowMs, record.family, LedgerKind.DELIVERED)) // consumption outlives the record
         return out
+    }
+
+    private fun claimAndPublish(record: SuggestionRecord, s: Surface, card: DeliveredCard): Gate {
+        val claim = publications.claim(record.id, s) ?: return Gate.WITHDRAWN
+        if (!store.markDelivered(record.id, s)) return Gate.ALREADY_DELIVERED
+        testBetweenClaimAndPublish?.invoke()
+        var shown = false
+        val ran = publications.publish(claim) {
+            shown = when (s) { Surface.PHONE -> true; Surface.HUD -> surfaces().showHud(card); Surface.NEXUS -> surfaces().showNexus(card) }
+            shown
+        }
+        return when { ran -> Gate.DELIVERED; publications.isWithdrawn(record.id) -> Gate.WITHDRAWN; shown || publications.isLive(claim) -> Gate.COMMIT; else -> Gate.SURFACE_OFF }
+    }
+
+    /**
+     * The publish point of a QUEUED surface (Nexus; Codex v3.1 r1 P1-1): everything is checked again, as of now, under the driving commit fence and the zone ticket's fence: the master and the three switches, the driving
+     * state (UNKNOWN is driving), pause (a suspending read first, then the synchronous one inside the fences), the zone, quiet hours with a fresh clock, worn, the host and that the record is still stored, delivered
+     * there and not withdrawn. False = drop it.
+     */
+    suspend fun publishable(recordId: String, surface: Surface): Boolean {
+        if (!wanted(surface) || publications.isWithdrawn(recordId)) return false
+        return try {
+            val ticket = seams.zoneGuard.ticket()
+            if (try { seams.paused() } catch (e: CancellationException) { throw e } catch (e: Exception) { true }) return false
+            val dv = seams.drivingVersion()
+            var ok = false
+            val check = { ok = publishCheck(recordId, surface) }
+            val ran = seams.drivingCommit(dv) { if (ticket != null) { if (ticket.fence.act(ticket) { check() } == null) ok = false } else check() }
+            ran && ok
+        } catch (c: CancellationException) { throw c } catch (e: Exception) { false }
+    }
+
+    private fun publishCheck(id: String, surface: Surface): Boolean {
+        if (!wanted(surface) || publications.isWithdrawn(id)) return false
+        val hud = seams.hud() ?: return false
+        if (seams.zoneGuard.blocked() || pausedNow() || quiet(hud, clock())) return false
+        if (surface != Surface.PHONE && !seams.worn()) return false
+        val nexus = seams.nexusHost()
+        if (surface == Surface.HUD && (nexus || hud.verbosity == Verbosity.SILENT)) return false
+        if (surface == Surface.NEXUS && !nexus) return false
+        val r = store.records().firstOrNull { it.id == id } ?: return false
+        return surface.token in r.delivered
+    }
+
+    /** One card the phone feed shows: the stored record and the template rendered from its LIVE sources just now. */
+    data class FeedCard(val record: SuggestionRecord, val card: RenderedCard)
+
+    /**
+     * What the Home feed may show right now (Codex v3.1 r1 P1-2). The same fences and gates as a delivery at EVERY render: the phone switches, the read lease, provenance of every source, the zone of the place, pause,
+     * driving (UNKNOWN is driving), the zone fence and quiet hours with a fresh clock. Any gate closed = nothing (never previously delivered text). Never throws.
+     */
+    suspend fun phoneFeed(nowMs: Long = clock()): List<FeedCard> {
+        if (!wanted(Surface.PHONE)) return emptyList()
+        return try { feedPipeline(nowMs) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            PcLog.i(TAG, "proactive feed failed (${e.javaClass.simpleName})")
+            emptyList()
+        }
+    }
+
+    private suspend fun feedPipeline(nowMs: Long): List<FeedCard> {
+        val ticket = seams.zoneGuard.ticket() // before the first suspension
+        val shown = store.records().filter { Surface.PHONE.token in it.delivered && !publications.isWithdrawn(it.id) }
+        if (shown.isEmpty() || seams.hud() == null) return emptyList()
+        val gen = generation()
+        val lease = try { gate.lease(Leases.Kind.PROACTIVE) } catch (e: DataOpGate.LeaseBlocked) { return emptyList() }
+        try {
+            lease.extend(shown.flatMap { SourceIds.refs(it.sourceIds) })
+            val block: suspend () -> List<FeedCard> = block@{
+                val dv = seams.drivingVersion()
+                val ok = ArrayList<FeedCard>()
+                for (r in shown) {
+                    val card = render(r, nowMs) ?: continue
+                    if (provenance.check(SourceIds.provenance(r.sourceIds), gen) != ProvenanceGate.Verdict.Live) continue
+                    if (provenance.goneMarks(SourceIds.marks(r.sourceIds).toSet()).isNotEmpty() || !seams.pinsLive(SourceIds.pins(r.sourceIds))) continue
+                    if (try { seams.anchorBlocked(r.anchorKey) } catch (e: CancellationException) { throw e } catch (e: Exception) { true }) continue
+                    ok += FeedCard(r, card)
+                }
+                if (ok.isEmpty()) return@block emptyList()
+                if (try { seams.paused() } catch (e: CancellationException) { throw e } catch (e: Exception) { true }) return@block emptyList()
+                testBeforeFinal?.invoke()
+                var out: List<FeedCard> = emptyList()
+                val write = { out = feedFinal(ok, nowMs) }
+                val ran = seams.drivingCommit(dv) { if (ticket != null) { if (ticket.fence.act(ticket) { write() } == null) out = emptyList() } else write() }
+                if (ran) out else emptyList()
+            }
+            return when (val r = lease.commit(db, checkLive = true, block = block)) {
+                is Leases.Commit.Committed -> r.value
+                Leases.Commit.Fenced -> emptyList()
+            }
+        } finally {
+            lease.close()
+        }
+    }
+
+    /** Synchronous, inside the fences. */
+    private fun feedFinal(cards: List<FeedCard>, entryMs: Long): List<FeedCard> {
+        testInFence?.invoke()
+        if (!wanted(Surface.PHONE)) return emptyList()
+        val hud = seams.hud() ?: return emptyList()
+        if (seams.zoneGuard.blocked() || pausedNow() || quiet(hud, maxOf(entryMs, clock()))) return emptyList()
+        val live = store.records().associateBy { it.id }
+        return cards.filter { c -> live[c.record.id]?.let { Surface.PHONE.token in it.delivered } == true && !publications.isWithdrawn(c.record.id) }
     }
 
     private fun sourceIdsFor(r: SuggestionRecord): Set<String> = (SourceIds.memories(r.sourceIds) + SourceIds.frames(r.sourceIds).map { SourceIds.frame(it) } + SourceIds.marks(r.sourceIds)).toSet()
@@ -160,18 +279,22 @@ class SuggestionActions(
     private val store: () -> SuggestionStore,
     private val surfaces: () -> SuggestionSurfaces,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val publications: SuggestionPublications = SuggestionPublications.shared,
 ) {
-    private fun withdraw(id: String) { store().withdraw(id); try { surfaces().withdraw(listOf(id)) } catch (e: Exception) { PcLog.i(TAG, "withdraw failed") } }
+    /** The record is marked WITHDRAWN first (a delivery between its claim and its publication then loses), then removed from the store and every surface. */
+    private fun withdraw(id: String) { publications.withdraw(listOf(id)); store().withdraw(id); try { surfaces().withdraw(listOf(id)) } catch (e: Exception) { PcLog.i(TAG, "withdraw failed") } }
 
-    /** Dismiss: the key's multiplier drops and it rests 24 h. */
+    /** Dismiss: the key's multiplier drops and it rests 24 h; the dismissal also goes to the ledger (five in 24 h pause delivery for 24 h). */
     fun dismiss(id: String): Boolean = act(id, FeedbackAction.DISMISS, withdraw = true)
     /** Snooze one day. */
     fun snooze(id: String): Boolean = act(id, FeedbackAction.SNOOZE, withdraw = true)
     /** "Never suggest this": the KEY joins the never list (it survives Forget of unrelated data, as ruled; Delete all clears it). */
     fun never(id: String): Boolean {
         val s = store(); val r = s.records().firstOrNull { it.id == id } ?: return false
+        publications.withdraw(listOf(id))
         val ok = s.addNever(r.key)
         s.recordFeedback(FeedbackAction.NEVER, r.key, r.family, clock())
+        s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED))
         withdraw(id)
         return ok
     }
@@ -179,7 +302,9 @@ class SuggestionActions(
 
     private fun act(id: String, a: FeedbackAction, withdraw: Boolean): Boolean {
         val s = store(); val r = s.records().firstOrNull { it.id == id } ?: return false
+        if (withdraw) publications.withdraw(listOf(id))
         val ok = s.recordFeedback(a, r.key, r.family, clock())
+        if (a == FeedbackAction.DISMISS) s.appendLedger(LedgerEntry(clock(), r.family, LedgerKind.DISMISSED))
         if (withdraw) withdraw(id)
         return ok
     }

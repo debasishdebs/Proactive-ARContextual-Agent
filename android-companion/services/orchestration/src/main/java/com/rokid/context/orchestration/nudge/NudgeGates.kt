@@ -20,6 +20,8 @@ class NudgeGates(
     private val dao: NudgeGateDao,
     /** Minimum gap between shown nudges (notify throttle, spec P2.1); applies in [check] only, never to evaluation. */
     private val shownGapMs: () -> Long = { DEFAULT_SHOWN_GAP_MS },
+    /** v3.1 r1: how many Suggestions were DELIVERED since the time (the delivery ledger, read-only). They share the daily cap and the gap with the nudges; the proactive budget counts the nudge table the same way. */
+    private val deliveredSince: (sinceMs: Long) -> Int = { 0 },
     private val cap: () -> Int,
 ) {
     /** The gates that don't depend on the text (checked before any model call). */
@@ -30,14 +32,14 @@ class NudgeGates(
         // One quiet-hours implementation with the phone pause set (integration carry 9): DST-consistent occurrences.
         if (hud.quietHours?.let { QuietWindow.occurrenceAt(it, nowMs, hud.zone) } != null) return Gate.QUIET_HOURS
         val midnight = local.toLocalDate().atStartOfDay(hud.zone).toInstant().toEpochMilli()
-        if (dao.countSince(midnight) >= limit) return Gate.CAP_REACHED
+        if (dao.countSince(midnight) + deliveredSince(midnight) >= limit) return Gate.CAP_REACHED
         return Gate.PASS
     }
 
     suspend fun check(text: String, hud: NudgeHud, nowMs: Long): Gate {
         val pre = precheck(hud, nowMs)
         if (pre != Gate.PASS) return pre
-        if (shownGapMs() > 0 && dao.countSince(nowMs - shownGapMs()) > 0) return Gate.SHOWN_GAP
+        if (shownGapMs() > 0 && dao.countSince(nowMs - shownGapMs()) + deliveredSince(nowMs - shownGapMs()) > 0) return Gate.SHOWN_GAP
         if (dao.existsHashSince(hash(text), nowMs - DAY_MS)) return Gate.DUPLICATE
         return Gate.PASS
     }

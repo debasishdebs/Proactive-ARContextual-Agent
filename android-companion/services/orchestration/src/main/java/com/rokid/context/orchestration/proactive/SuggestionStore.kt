@@ -38,6 +38,10 @@ interface SuggestionStore {
     fun recordFeedback(action: FeedbackAction, key: String, family: ProactiveFamily, nowMs: Long): Boolean
     /** "Reset learning": clears the feedback counters (the never list has its own button). */
     fun resetFeedback()
+    /** v3.1 r1: the delivery ledger (see [DeliveryLedger]): delivered and dismissed lines, independent of the records, oldest first, pruned after 48 h. Not touched by Forget or Reset learning; Delete all clears it. */
+    fun ledger(): List<LedgerEntry> = emptyList()
+    /** Appends one line (then prunes). False = not stored. */
+    fun appendLedger(e: LedgerEntry): Boolean = false
 
     companion object {
         const val MAX_RECORDS = 100
@@ -69,7 +73,10 @@ class InMemorySuggestionStore : SuggestionStore {
     override fun counters(): Map<String, Int> = synchronized(lock) { counts.toMap() }
     override fun bump(counter: String) { synchronized(lock) { counts[counter] = (counts[counter] ?: 0) + 1 } }
     private var fb = FeedbackState.EMPTY
-    override fun clearAll() { synchronized(lock) { rows.clear(); nevers.clear(); counts.clear(); fb = FeedbackState.EMPTY }; changed() }
+    private var ledgerRows = emptyList<LedgerEntry>()
+    override fun ledger(): List<LedgerEntry> = synchronized(lock) { ledgerRows }
+    override fun appendLedger(e: LedgerEntry): Boolean { synchronized(lock) { ledgerRows = DeliveryLedger.prune(ledgerRows + e, e.ts) }; return true }
+    override fun clearAll() { synchronized(lock) { rows.clear(); nevers.clear(); counts.clear(); fb = FeedbackState.EMPTY; ledgerRows = emptyList() }; changed() }
     override fun markDelivered(id: String, surface: Surface): Boolean = synchronized(lock) {
         val i = rows.indexOfFirst { it.id == id }
         if (i < 0 || surface.token in rows[i].delivered) false else { rows[i] = rows[i].copy(delivered = rows[i].delivered + surface.token); true }
@@ -146,6 +153,11 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
         try { prefs.edit().putString(FB, next.toJson()).putString(COUNTS, JSONObject(c as Map<*, *>).toString()).commit() } catch (e: Exception) { false }
     }.also { changed() }
     override fun resetFeedback() { synchronized(lock) { try { prefs.edit().remove(FB).commit() } catch (_: Exception) { } }; changed() }
+    override fun ledger(): List<LedgerEntry> = synchronized(lock) { DeliveryLedger.decode(try { prefs.getString(LEDGER, null) } catch (e: Exception) { null }) }
+    override fun appendLedger(e: LedgerEntry): Boolean = synchronized(lock) {
+        val next = DeliveryLedger.prune(DeliveryLedger.decode(try { prefs.getString(LEDGER, null) } catch (x: Exception) { null }) + e, e.ts)
+        try { prefs.edit().putString(LEDGER, DeliveryLedger.encode(next)).commit() } catch (x: Exception) { false }
+    }
 
     companion object {
         /** The prefs file (a Delete-all-wiped, backup-excluded file; production opens it encrypted). */
@@ -154,6 +166,8 @@ class PrefsSuggestionStore(private val prefs: SharedPreferences) : SuggestionSto
         private const val NEVER = "never"
         private const val COUNTS = "counts"
         private const val FB = "fb"
+        /** The delivery ledger: `[[ts, family, kind], ...]`, no content (same encrypted, backup-excluded file). */
+        const val LEDGER = "ldg"
 
         internal fun encode(r: SuggestionRecord) = JSONObject().put("id", r.id).put("ts", r.ts).put("key", r.key).put("fam", r.family.token).put("trg", r.trigger.token).put("score", r.score)
             .put("anchor", r.anchorKey).put("src", JSONArray(r.sourceIds)).put("why", JSONArray(r.factors)).put("dlv", JSONArray(r.delivered.toList()))
