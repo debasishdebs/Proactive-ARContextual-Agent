@@ -37,3 +37,7 @@ Suggested regions (bboxes are rough and UNVERIFIED; check them on the map): Hyde
 ## Size guidance (estimates from the roadmap spec, not measured)
 
 256 px raster tiles are about 20 KB each. Andaman-sized areas (about 400 km2) at z10-16 are about 1,450 tiles (about 30 MB); z17 adds about 85 MB. Sri Lanka's cultural-triangle and south-coast sites (about 750 km2) at z10-16 are about 55 MB, plus the whole island at z0-13 for about 70 MB. Prefer maxzoom 16 unless you need street detail.
+
+## Hostile-file limits (fail closed)
+
+The archive is untrusted. Directories inflate to at most 4 MiB (counting stream, plus a 1000:1 ratio cap) and list at most 100k entries (count must also fit bytes/4; all columns are validated before any array is allocated). Header offsets and lengths must lie inside the file. Leaf recursion is at most 3 deep and a leaf that revisits itself is refused. A tile is at most 2 MiB compressed and 2 MiB inflated; it is decoded after a bounds-only read and subsampled to at most 16 megapixels. The leaf-directory cache and the decoded-tile cache are each bounded to 16 MiB; an out-of-memory during one tile decode leaves that tile absent (plain grid).

@@ -25,6 +25,7 @@ import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapWords
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.MapMode
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.PmTilesReader
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileCache
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileDecode
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileMath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -283,7 +284,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
         val boxes = zones.map { MapViewport.ringOf(it) }.ifEmpty { state.you?.let { listOf(MapViewport.grown(it.lat, it.lon, it.lat, it.lon, 2_000.0)) } ?: emptyList() }
         vp = MapViewport.fit(boxes, size.width, size.height)
     }
-    val cache = remember(reader) { reader?.let { r -> TileCache<ImageBitmap> { k -> r.tile(k.z, k.x, k.y)?.let { b -> BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap() } } } }
+    val cache = remember(reader) { reader?.let { r -> TileCache<ImageBitmap>(weigh = { it.width.toLong() * it.height * 4 }) { k -> r.tile(k.z, k.x, k.y)?.let { b -> decodeTileBounded(b) } } } }
     var loaded by remember(cache) { mutableStateOf(0) }
     val zoom = vp?.let { v -> reader?.let { TileMath.zoomFor(v.ppd, it.minZoom, it.maxZoom) } }
     val wanted = if (vp != null && zoom != null) TileMath.visible(vp!!, zoom) else emptyList()
@@ -421,4 +422,13 @@ private fun DrawScope.drawBox(v: MapViewport, b: DoubleArray, color: Color, fill
     val tlo = Offset(tl.x, tl.y); val sz = Size(br.x - tl.x, br.y - tl.y)
     if (filled) drawRect(color.copy(alpha = 0.25f), tlo, sz)
     drawRect(color, tlo, sz, style = Stroke(if (filled) 2.dp.toPx() else 1.5.dp.toPx(), pathEffect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(14f, 10f)) else null))
+}
+
+/** Decodes one raster tile with a pixel cap: reads the size first, subsamples past 16 megapixels, refuses absurd sizes. Returns null (plain grid) on anything unusable. */
+private fun decodeTileBounded(b: ByteArray): ImageBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(b, 0, b.size, bounds)
+    val sample = TileDecode.sampleSize(bounds.outWidth, bounds.outHeight)
+    if (sample == 0) return null
+    return BitmapFactory.decodeByteArray(b, 0, b.size, BitmapFactory.Options().apply { inSampleSize = sample })?.asImageBitmap()
 }

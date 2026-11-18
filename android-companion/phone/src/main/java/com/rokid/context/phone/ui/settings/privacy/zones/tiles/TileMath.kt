@@ -56,10 +56,21 @@ object TileMath {
  * Decoded tiles, newest-used kept (at most [capacity]); a tile the archive does not have is remembered as absent so it is not looked up again.
  * [load] reads and decodes one tile (blocking: call [ensure] from a background dispatcher). A read that throws counts one [problems] and the tile is treated as absent.
  */
-class TileCache<T : Any>(private val capacity: Int = 96, private val load: (TileKey) -> T?) {
+class TileCache<T : Any>(
+    private val capacity: Int = 96,
+    private val maxBytes: Long = 16L shl 20,
+    private val weigh: (T) -> Long = { 0L },
+    private val load: (TileKey) -> T?,
+) {
+    private var bytes = 0L
     private val lock = Any()
     private val map = object : LinkedHashMap<TileKey, Any>(64, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<TileKey, Any>) = size > capacity
+        @Suppress("UNCHECKED_CAST")
+        override fun removeEldestEntry(e: MutableMap.MutableEntry<TileKey, Any>): Boolean {
+            val drop = size > capacity || (bytes > maxBytes && size > 1)
+            if (drop && e.value !== ABSENT) bytes -= weigh(e.value as T)
+            return drop
+        }
     }
     @Volatile var problems: Int = 0
         private set
@@ -68,17 +79,46 @@ class TileCache<T : Any>(private val capacity: Int = 96, private val load: (Tile
     @Suppress("UNCHECKED_CAST")
     fun peek(k: TileKey): T? = synchronized(lock) { map[k]?.takeIf { it !== ABSENT } as T? }
 
+    /** Sum of the weights of the tiles currently held. */
+    fun heldBytes(): Long = synchronized(lock) { bytes }
+
     /** Loads every key not yet known. Returns whether anything new became drawable. */
+    @Suppress("UNCHECKED_CAST")
     fun ensure(keys: List<TileKey>): Boolean {
         var changed = false
         for (k in keys) {
             if (synchronized(lock) { map.containsKey(k) }) continue
-            val v: T? = try { load(k) } catch (e: Exception) { problems++; null }
-            synchronized(lock) { map[k] = v ?: ABSENT }
+            // OutOfMemoryError is caught narrowly (one tile decode): the tile is treated as absent and the plain grid shows
+            val v: T? = try { load(k) } catch (e: Exception) { problems++; null } catch (e: OutOfMemoryError) { problems++; null }
+            synchronized(lock) {
+                if (v != null) bytes += weigh(v)
+                map[k] = v ?: ABSENT
+                // removeEldestEntry runs once per insert; trim any remaining byte overshoot here
+                val it = map.entries.iterator()
+                while (bytes > maxBytes && map.size > 1 && it.hasNext()) {
+                    val old = it.next()
+                    if (old.key == k) continue
+                    if (old.value !== ABSENT) bytes -= weigh(old.value as T)
+                    it.remove()
+                }
+            }
             if (v != null) changed = true
         }
         return changed
     }
 
     private companion object { val ABSENT = Any() }
+}
+
+/** Decode limits for one raster tile (an untrusted file): at most [MAX_PIXELS] decoded pixels, found from the header size alone. */
+object TileDecode {
+    const val MAX_PIXELS = 16_000_000L
+
+    /** The power-of-two inSampleSize that brings [w] x [h] under [MAX_PIXELS], or 0 when the size is unusable (zero, negative) or absurd (needs more than 1/64 reduction). */
+    fun sampleSize(w: Int, h: Int): Int {
+        if (w <= 0 || h <= 0) return 0
+        var s = 1
+        while (w.toLong() / s * (h.toLong() / s) > MAX_PIXELS) { s *= 2; if (s > 64) return 0 }
+        return s
+    }
 }
