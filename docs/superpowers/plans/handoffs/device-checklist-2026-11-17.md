@@ -44,3 +44,11 @@ Multi-select Forget (A7-A9, Developer only, needs `forgetV2` ON, default OFF): f
 
 ## E. Quota note
 Codex quota is low until about 21 Nov: reviews run at medium effort in batches (`feedback-codex-effort-budget` memory).
+
+
+## F. Key rotation (release signing, planned after Sri Lanka, 1.3.0): verified on the emulator, device checks still owed
+Verified 2026-11-18 on the API 34 emulator (`docs/superpowers/reviews/2026-11/key-rotation-rehearsal-2026-11-18.md`): `apksigner rotate` + `apksigner sign --next-signer ... --lineage <file> --rotation-min-sdk-version 28` installs over a debug-signed install WITHOUT uninstall and keeps the data directory and the encrypted DB. Device checks owed before the real rotation:
+- Run it on a device BELOW API 33 (the glasses, minSdk 28; the phone if it runs API 29-32): older Android only sees the old-key block unless the flag is used.
+- Confirm Keystore survival on the real phone (the encrypted DB must open after the rotated update) and take the phone backup first.
+- After BOTH apps rotate: check the phone/watch Data Layer match and whether Rokid's CXR link checks signatures.
+- Always sign with the ONE lineage file: a wrong lineage over an already-rotated install silently overwrites the device's stored lineage. Debug-signed builds can no longer update a rotated install.
