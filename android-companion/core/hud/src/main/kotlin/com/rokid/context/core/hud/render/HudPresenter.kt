@@ -112,7 +112,7 @@ class HudPresenter {
         }
 
         fun limitMs(o: Overlay): Long = when (o) {
-            is Overlay.Nudge -> if (o.place != null) PlaceCardInfo.SHOW_MS else NUDGE_MS
+            is Overlay.Nudge -> if (o.place != null) o.place!!.limitMs() else NUDGE_MS
             is Overlay.Confirm -> CONFIRM_MS
             Overlay.PausedSplash -> SPLASH_MS
             is Overlay.Toast -> if (o.undoProposalId != null) UNDO_TOAST_MS else TOAST_MS
