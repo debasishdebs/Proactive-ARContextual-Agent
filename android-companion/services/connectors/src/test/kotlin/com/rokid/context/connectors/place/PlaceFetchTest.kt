@@ -234,10 +234,11 @@ class PlaceFetchTest {
         val verified = mapOf(
             "Q272153" to "Sigiriya", "Q16901632" to "Tiger Hill, Darjeeling", "Q4868648" to "Batasia Loop", "Q23038925" to "Banjhakri falls and park", "Q3214979" to "Khecheopalri Lake",
             "Q944175" to "Sri Maha Bodhi", "Q5653142" to "Happy Valley Tea Estate", "Q542864" to "Lake Tsongmo", "Q5285886" to "Do-drul Chorten", "Q24949017" to "Darjeeling railway station",
-            "Q60181073" to "Ghum railway station", "Q1961579" to "Jetavanaramaya", "Q19719626" to "Ritigala",
+            "Q60181073" to "Ghum railway station", "Q1961579" to "Jetavanaramaya",
         )
         assertEquals(verified.keys, PlaceCellSource.CURATED_LANDMARK_QIDS.keys)
-        assertEquals(2, PlaceCellSource.CURATED_LANDMARKS_VERSION)
+        assertEquals(3, PlaceCellSource.CURATED_LANDMARKS_VERSION)
+        assertTrue("Q19719626" !in PlaceCellSource.CURATED_LANDMARK_QIDS) // Ritigala: verified point is the mountain, not the ruins
         assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.values.all { it in PlaceKinds.ALL })
         assertEquals(setOf("Q5", "Q15632617", "Q95074", "Q21070568"), PlaceCellSource.PERSON_CLASSES)
         assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.keys.none { it in PlaceCellSource.MONUMENT_CLASSES })
@@ -316,10 +317,9 @@ class PlaceFetchTest {
 
     @Test fun verifiedCoordinateTableIsPinned() {
         val t = PlaceCellSource.VERIFIED_COORDINATES
-        assertEquals(1, PlaceCellSource.VERIFIED_COORDINATES_VERSION)
-        assertEquals(setOf("Q1961579", "Q19719626", "Q60181073"), t.keys)
+        assertEquals(2, PlaceCellSource.VERIFIED_COORDINATES_VERSION)
+        assertEquals(setOf("Q1961579", "Q60181073"), t.keys)
         assertEquals(VerifiedCoordinate("Jetavanaramaya", 8.351667, 80.403611), t["Q1961579"])
-        assertEquals(VerifiedCoordinate("Ritigala", 8.108611, 80.656111), t["Q19719626"])
         assertEquals(VerifiedCoordinate("Ghum railway station", 27.008643, 88.254223), t["Q60181073"])
         assertTrue(t.keys.all { it in PlaceCellSource.CURATED_LANDMARK_QIDS })
         assertTrue(t.values.all { it.lat in -90.0..90.0 && it.lon in -180.0..180.0 })
@@ -353,15 +353,14 @@ class PlaceFetchTest {
     }
 
     @Test fun aPersonClassIsRejectedEvenWithATableEntry() = runTest {
-        val got = extrasCell(Geohash5.encode(8.1086, 80.6561), entity("Q19719626", p31c("Q5", "Q8502")))
+        val got = extrasCell(Geohash5.encode(8.3517, 80.4036), entity("Q1961579", p31c("Q5", "Q180987")))
         assertTrue(got.isEmpty())
     }
 
-    @Test fun anEntryWithoutP31IsAdmittedLikeACuratedQidAndMountainClassNeedsTheCuratedKind() = runTest {
-        val got = extrasCell(Geohash5.encode(8.1086, 80.6561), entity("Q19719626", ""))
-        assertEquals("archaeological_site", got["wd:Q19719626"]?.first())
-        val withClass = extrasCell(Geohash5.encode(8.1086, 80.6561), entity("Q19719626", p31c("Q8502")))
-        assertEquals("archaeological_site", withClass["wd:Q19719626"]?.first())
+    @Test fun anEntryWithoutP31IsAdmittedWithTheCuratedKind() = runTest {
+        val cell = Geohash5.encode(8.3517, 80.4036)
+        assertEquals("stupa", extrasCell(cell, entity("Q1961579", ""))["wd:Q1961579"]?.first())
+        assertEquals("stupa", extrasCell(cell, entity("Q1961579", p31c("Q180987")))["wd:Q1961579"]?.first())
     }
 
     @Test fun aMalformedOrMissingResponseRejectsTheEntry() = runTest {
