@@ -562,7 +562,12 @@ class Hub(
             }
             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
             GlassesEvent.ListenEnd -> voice.onListenEnd()
-            is GlassesEvent.MotionHintReceived -> { wearEstimate.onHint(e.hint.wearEst); onMotionHint(e.hint) }
+            is GlassesEvent.MotionHintReceived -> {
+                wearEstimate.onHint(e.hint.wearEst)
+                // Codex v3 r3 P1-1: a hint of another (older) glasses session may still warn of a vehicle, but is never calm evidence: its session is stripped (unknown)
+                val h = e.hint
+                onMotionHint(if (h.sessionStartMs == 0L || h.sessionStartMs == sessionStartMs) h else { PcLog.i(TAG, "motion hint of another session: not calm evidence"); h.copy(sessionStartMs = 0L) })
+            }
             is GlassesEvent.PlanAckReceived -> {
                 peerTracker.onCapsAck() // any decoded plan ack proves the glasses speak the channel, stale or not
                 when (ackGate.classify(e.ack)) {

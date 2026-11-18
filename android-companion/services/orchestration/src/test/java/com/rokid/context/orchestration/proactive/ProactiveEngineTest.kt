@@ -185,26 +185,61 @@ class ProactiveEngineTest {
         assertNothingRecorded(Gate.DRIVING, engine().run(TriggerKind.TICK))
     }
 
+    private fun calmTracker(t: () -> Long, advance: (Long) -> Unit): DrivingTracker {
+        val tr = DrivingTracker { t() }
+        repeat(61) { tr.heartbeat(false); advance(10_000) }
+        tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING); tr.calm(CalmSource.GLASSES, Calm.STILL)
+        return tr
+    }
+    private fun engineWith(tr: DrivingTracker): ProactiveEngine {
+        val mem = MemoryGraph.get(ctx)
+        val seams = ProactiveSeams(
+            enabled = { enabled }, paused = { paused }, zoneGuard = guard, worn = { worn }, driving = { tr.assess().blocks }, drivingVersion = { tr.version },
+            drivingCommit = { v, w -> tr.commitIfNotDriving(v, w) }, hud = { hud }, globalCap = { cap }, globalToday = { nudgesToday }, anchorBlocked = { anchorBlocked }, pinsLive = { pinsLive },
+        )
+        return ProactiveEngine(mem.db, ProvenanceGate.forGraph(mem), store, listOf(PlaceRecallGenerator(history) { zone }), seams, gate, clock = { now })
+    }
+
     @Test fun theRealDrivingSignalGatesWouldShows() = runBlocking {
         var t = 1_000_000_000L
         val tr = DrivingTracker { t }
-        driving = true
-        fun gateNow(): Boolean { driving = tr.assess().blocks; return driving }
-        // process start, no data: UNKNOWN drops
-        assertTrue(gateNow()); assertNothingRecorded(Gate.DRIVING, engine().run(TriggerKind.TICK))
-        // 10 minutes of heartbeats, then a fresh walking reading: NOT_DRIVING, the would-show is recorded
+        assertNothingRecorded(Gate.DRIVING, engineWith(tr).run(TriggerKind.TICK)) // process start, no data: UNKNOWN drops
         repeat(61) { tr.heartbeat(false); t += 10_000 }
-        tr.calm(t, Calm.WALKING)
-        assertFalse(gateNow()); assertEquals(Gate.WOULD_SHOW, engine().run(TriggerKind.TICK).gate)
+        tr.calm(CalmSource.GLASSES, Calm.STILL)
+        assertNothingRecorded(Gate.DRIVING, engineWith(tr).run(TriggerKind.TICK)) // one source is not enough
+        tr.calm(CalmSource.PHONE_STEPS, Calm.WALKING)
+        assertEquals(Gate.WOULD_SHOW, engineWith(tr).run(TriggerKind.TICK).gate)
     }
 
-    @Test fun aVehicleAppearingBeforeTheCommitDropsThroughTheRealSignal() {
+    @Test fun aVehicleAppearingBeforeTheCommitDropsThroughTheRealSignal() = runBlocking {
         var t = 1_000_000_000L
-        val tr = DrivingTracker { t }
-        repeat(61) { tr.heartbeat(false); t += 10_000 }
-        tr.calm(t, Calm.STILL)
-        driving = false
-        flipBeforeCommit(Gate.DRIVING) { tr.vehicle(t); driving = tr.assess().blocks }
+        val tr = calmTracker({ t }) { t += it }
+        val e = engineWith(tr); e.testBeforeCommit = { tr.vehicle() }
+        assertNothingRecorded(Gate.DRIVING, e.run(TriggerKind.TICK))
+    }
+
+    // Codex v3 r3 P1-2: a vehicle accepted AFTER the driving check, during the suspending budget read of revalidate() (the 2nd read), still drops: the fence is the very last step
+    @Test fun aVehicleArrivingDuringTheSuspendingReadsAfterTheDrivingCheckDrops() = runBlocking {
+        var t = 1_000_000_000L
+        val tr = calmTracker({ t }) { t += it }
+        var reads = 0
+        val mem = MemoryGraph.get(ctx)
+        val seams = ProactiveSeams(
+            enabled = { enabled }, paused = { paused }, zoneGuard = guard, worn = { worn }, driving = { tr.assess().blocks }, drivingVersion = { tr.version },
+            drivingCommit = { v, w -> tr.commitIfNotDriving(v, w) }, hud = { hud }, globalCap = { cap }, anchorBlocked = { anchorBlocked }, pinsLive = { pinsLive },
+            globalToday = { if (++reads == 2) tr.vehicle(); nudgesToday },
+        )
+        val e = ProactiveEngine(mem.db, ProvenanceGate.forGraph(mem), store, listOf(PlaceRecallGenerator(history) { zone }), seams, gate, clock = { now })
+        assertNothingRecorded(Gate.DRIVING, e.run(TriggerKind.TICK))
+        assertEquals("the budget was read twice: the vehicle came after the first driving check", 2, reads)
+        assertEquals("the lease is closed", 0, leases.openCount)
+    }
+
+    @Test fun aHeartbeatBetweenTheReadAndTheWriteAbortsToo() = runBlocking {
+        var t = 1_000_000_000L
+        val tr = calmTracker({ t }) { t += it }
+        val e = engineWith(tr); e.testBeforeCommit = { tr.heartbeat(false) }
+        assertNothingRecorded(Gate.DRIVING, e.run(TriggerKind.TICK))
     }
 
     @Test fun theBudgetIsSharedAndSerialised() = runBlocking {

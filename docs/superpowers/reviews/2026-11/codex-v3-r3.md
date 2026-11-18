@@ -1,0 +1,13 @@
+- **P1 — Stale glasses hints become fresh calm evidence.** [ContextHub.kt:170](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/context/ContextHub.kt:170) replaces `h.atMs` with receipt time. A delayed WALKING/STILL hint can therefore produce NOT_DRIVING after ten minutes of heartbeats and permit shadow would-shows. Validate observation age and session freshness; receipt time alone cannot establish freshness.
+
+- **P1 — Driving can change after the final check.** The new live gate reaches [ProactiveEngine.kt:154](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/proactive/ProactiveEngine.kt:154), but suspending zone, budget, and provenance reads follow before `store.add`. A vehicle accepted during those reads still permits a would-show. Serialize the driving validation and write against tracker updates, or use an equivalent commit fence. The new test injects the vehicle before revalidation and misses this window.
+
+- **P1 — Wall-clock adjustments can expire vehicle protection early.** [DrivingSignal.kt:23](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/proactive/DrivingSignal.kt:23) uses `currentTimeMillis` for elapsed windows. With a vehicle 9m40s ago, continuous coverage and fresh calm evidence, a 30-second forward adjustment expires protection while remaining below the heartbeat-gap threshold. Shadow recording opens before ten real minutes pass. Use monotonic elapsed time for coverage, freshness and vehicle retention.
+
+- **P2 — Require stronger evidence before delivery.** [DrivingFeed.kt:24](/Users/<user>/Desktop/rokid/proactive-context-agent/android-companion/phone/src/main/java/com/rokid/context/phone/context/DrivingFeed.kt:24) accepts glasses STILL as calm; a seated driver can satisfy it. Acceptable only as an explicitly understood shadow limitation: this engine currently records without delivering. Before enabling delivery, STILL alone must remain UNKNOWN; require independently validated evidence that excludes driving.
+
+Tracker methods are synchronized; hooks run on `Dispatchers.Default` and perform no I/O. No new coordinate storage/logging found. Process restart starts UNKNOWN, and assessment exceptions block.
+
+Static review only; tests were not run in the read-only environment.
+
+NOT READY

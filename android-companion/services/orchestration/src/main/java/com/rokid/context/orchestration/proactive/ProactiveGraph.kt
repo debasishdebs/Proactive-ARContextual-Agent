@@ -21,6 +21,9 @@ object ProactiveEnvironment {
     @Volatile var worn: () -> Boolean = { false }
     /** A vehicle episode is under way, or cannot be told (ruling 10: unknown is DRIVING, so nothing is recorded). */
     @Volatile var driving: () -> Boolean = { true }
+    @Volatile var drivingVersion: () -> Long = { 0L }
+    /** Decision and write atomically (see [DrivingTracker.commitIfNotDriving]); the default fails closed. */
+    @Volatile var drivingCommit: (Long, () -> Unit) -> Boolean = { _, _ -> false }
     /** True only when [driving] is backed by the real signal ([DrivingSignal]); the default is the fail-closed UNKNOWN. */
     @Volatile var drivingSignalAvailable: Boolean = false
     /** The state with its plain reason, for the Suggestions screen. */
@@ -97,6 +100,8 @@ object ProactiveGraph {
             zoneGuard = AskZoneFence,
             worn = { ProactiveEnvironment.worn() },
             driving = { ProactiveEnvironment.driving() },
+            drivingVersion = { ProactiveEnvironment.drivingVersion() },
+            drivingCommit = { v, w -> ProactiveEnvironment.drivingCommit(v, w) },
             hud = { NudgeEnvironment.hud?.invoke() },
             globalCap = { ProactiveEnvironment.nudgeCap() },
             globalToday = { since -> mem.db.nudgeGateDao().countSince(since) },

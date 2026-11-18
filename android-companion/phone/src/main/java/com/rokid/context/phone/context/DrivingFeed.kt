@@ -8,38 +8,48 @@ import com.rokid.context.core.model.context.Evidence
 import com.rokid.context.core.model.context.PhoneActivity
 import com.rokid.context.core.model.context.WatchState
 import com.rokid.context.orchestration.proactive.Calm
+import com.rokid.context.orchestration.proactive.CalmSource
 import com.rokid.context.orchestration.proactive.DrivingSignal
 import com.rokid.context.orchestration.proactive.DrivingTracker
 
 /**
  * v3.0 T14: maps the evidence the context hub already collects onto the [DrivingTracker]. No new sensor, location request or permission; only
- * the kind and time of a reading is used, never a coordinate (the speed source emits km/h only). Anything not listed says nothing.
+ * the kind and age of a reading is used, never a coordinate (the speed source emits km/h only). Anything not listed says nothing.
+ *
+ * Ages (Codex v3 r3): a reading's age is the phone's wall time now minus its stamp (the source stamped it a moment ago on the same clock), never a time the tracker
+ * would have to compare with its monotonic clock. A calm reading stamped in the future is ignored (a vehicle one counts as now). The glasses hint carries its own measured
+ * age ([Evidence.GlassesMotion.ageMs]): unknown means never calm, and only a vehicle hint may use receipt time. Each source counts once; NOT_DRIVING needs two.
  */
 object DrivingFeed {
-    fun accepted(e: Evidence, t: DrivingTracker = DrivingSignal.tracker) {
-        val at = e.atMs
+    private const val FUTURE_SLACK_MS = 5_000L
+
+    fun accepted(e: Evidence, t: DrivingTracker = DrivingSignal.tracker, wallNow: Long = System.currentTimeMillis()) {
+        val raw = wallNow - e.atMs
+        val vehicleAge = raw.coerceAtLeast(0)
+        val calmAge: Long? = if (raw < -FUTURE_SLACK_MS) null else vehicleAge
+        fun calm(source: CalmSource, kind: Calm) { calmAge?.let { t.calm(source, kind, it) } }
         when (e) {
             is Evidence.GlassesMotion -> when (e.state) {
-                MotionState.WALKING -> t.calm(at, Calm.WALKING)
-                MotionState.STILL -> if (e.stillFrac5m >= DrivingTracker.STILL_FRAC) t.calm(at, Calm.STILL)
-                MotionState.VEHICLE -> t.vehicle(at)
+                MotionState.WALKING -> e.ageMs?.let { t.calm(CalmSource.GLASSES, Calm.WALKING, it) }
+                MotionState.STILL -> if (e.stillFrac5m >= DrivingTracker.STILL_FRAC) e.ageMs?.let { t.calm(CalmSource.GLASSES, Calm.STILL, it) }
+                MotionState.VEHICLE -> t.vehicle(e.ageMs ?: 0)
                 else -> {}
             }
             is Evidence.ActivityTransition -> if (e.enter) when (e.activity) {
-                PhoneActivity.IN_VEHICLE -> t.vehicle(at)
-                PhoneActivity.STILL -> t.calm(at, Calm.STILL)
-                PhoneActivity.WALKING, PhoneActivity.RUNNING -> t.calm(at, Calm.WALKING)
+                PhoneActivity.IN_VEHICLE -> t.vehicle(vehicleAge)
+                PhoneActivity.STILL -> calm(CalmSource.PHONE_ACTIVITY, Calm.STILL)
+                PhoneActivity.WALKING, PhoneActivity.RUNNING -> calm(CalmSource.PHONE_ACTIVITY, Calm.WALKING)
                 PhoneActivity.ON_BICYCLE -> {}
             }
-            is Evidence.Steps -> if (e.stepsPerMin >= 60) t.calm(at, Calm.WALKING)
-            is Evidence.Speed -> t.speed(at, e.kmh / 3.6f)
-            is Evidence.CarLink -> if (e.connected && (e.kind == CarLinkKind.ANDROID_AUTO || e.kind == CarLinkKind.MY_CAR_BT || e.kind == CarLinkKind.CAR_CLASS_BT)) t.vehicle(at)
+            is Evidence.Steps -> if (e.stepsPerMin >= 60) calm(CalmSource.PHONE_STEPS, Calm.WALKING)
+            is Evidence.Speed -> if (calmAge != null || e.kmh / 3.6f >= DrivingTracker.FAST_MPS) t.speed(e.kmh / 3.6f, vehicleAge)
+            is Evidence.CarLink -> if (e.connected && (e.kind == CarLinkKind.ANDROID_AUTO || e.kind == CarLinkKind.MY_CAR_BT || e.kind == CarLinkKind.CAR_CLASS_BT)) t.vehicle(vehicleAge)
             is Evidence.WatchMotion -> when (e.state) {
-                WatchState.IN_VEHICLE -> t.vehicle(at)
-                WatchState.WALKING, WatchState.RUNNING -> t.calm(at, Calm.WALKING)
+                WatchState.IN_VEHICLE -> t.vehicle(vehicleAge)
+                WatchState.WALKING, WatchState.RUNNING -> calm(CalmSource.WATCH, Calm.WALKING)
                 else -> {}
             }
-            is Evidence.Airplane -> if (e.on) t.vehicle(at)
+            is Evidence.Airplane -> if (e.on) t.vehicle(vehicleAge)
             is Evidence.Intent -> {}
         }
     }

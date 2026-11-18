@@ -60,7 +60,9 @@ class ContextHubTest {
         val logs = ArrayList<String>()
         val stats = ContextHubStats(clock)
         var watchOffs = 0
-        val hub = ContextHub(ts.backgroundScope, settings, registry, fusion = fusion ?: ContextFusion(FusionParams(watchTtlMs = 1_500_000)), clock = clock, stats = stats, log = { logs += it }, onWatchOff = { watchOffs++ }, overrides = overrides)
+        val seen = ArrayList<Evidence>()
+        var monoNow = 0L
+        val hub = ContextHub(ts.backgroundScope, settings, registry, fusion = fusion ?: ContextFusion(FusionParams(watchTtlMs = 1_500_000)), clock = clock, stats = stats, log = { logs += it }, onWatchOff = { watchOffs++ }, overrides = overrides, onAccepted = { seen += it }, mono = { monoNow })
         val msgs = ArrayList<MotionContextMessage?>()
         init { ts.backgroundScope.launch(UnconfinedTestDispatcher(ts.testScheduler)) { hub.message.collect { msgs += it } } }
         fun start() { hub.start(); ts.runCurrent() }
@@ -394,6 +396,26 @@ class ContextHubTest {
         val f = Fx(this); f.start(); f.adv(601_000)
         val line = f.logs.single { it.startsWith("ctxhub v=1 state=") }
         assertTrue(line, Regex("""^ctxhub v=1( \w+=[\w>-]+)+$""").matches(line))
+    }
+
+    // Codex v3 r3 P1-1: the receipt time never makes a delayed hint fresh calm evidence
+    private fun glassesHints(f: Fx) = f.seen.filterIsInstance<Evidence.GlassesMotion>()
+    @Test fun aDelayedHintCarriesItsAgeAndAnUnknownOneCarriesNone() = runTest {
+        val f = Fx(this); f.start()
+        fun send(g: Long, mono: Long, session: Long = 900L, st: MotionState = MotionState.WALKING) { f.monoNow = mono; f.hub.onMotionHint(MotionHint(st, g, sessionStartMs = session)); f.ts.runCurrent() }
+        send(1_000_000, 10_000)                       // baseline: age unknown
+        send(1_060_000, 70_000)                       // on time
+        send(1_120_000, 150_000)                      // 20 s late
+        send(1_180_000, 130_000 + 300_000)            // 4 min 10 s late: older than 2 min
+        send(1_240_000, 310_000 + 60_000, session = 0) // no session: unknown
+        assertEquals(listOf<Long?>(null, 0L, 20_000L, null, null), glassesHints(f).map { it.ageMs })
+        assertEquals("fusion still gets the receipt time", f.clock(), glassesHints(f).first().atMs)
+    }
+    @Test fun aHintFromAnotherSessionRestartsTheBaselineSoItIsUnknown() = runTest {
+        val f = Fx(this); f.start()
+        fun send(g: Long, mono: Long, session: Long) { f.monoNow = mono; f.hub.onMotionHint(MotionHint(MotionState.STILL, g, stillFrac5m = 0.95f, sessionStartMs = session)); f.ts.runCurrent() }
+        send(1_000_000, 10_000, 900); send(1_060_000, 70_000, 900); send(5_000, 80_000, 901); send(65_000, 140_000, 901)
+        assertEquals(listOf<Long?>(null, 0L, null, 0L), glassesHints(f).map { it.ageMs })
     }
 
     @Test fun aFloodIsBoundedDropOldestAndCounted() = runTest {
