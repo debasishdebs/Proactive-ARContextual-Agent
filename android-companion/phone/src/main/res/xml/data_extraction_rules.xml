@@ -75,6 +75,9 @@
         <exclude domain="sharedpref" path="export_cleanup.xml" />
         <!-- Pause zones: the recent past of THIS phone (latched state, last clear-fix time, clock-rollback total); a restore would describe a place and time it never saw. -->
         <exclude domain="sharedpref" path="pause_zone_state.xml" />
+        <!-- Offline map (PMTiles): the saved choice (a document URI whose read grant does not survive a restore) and an imported private copy of the user's own map file (large, re-importable). Never backed up or transferred. -->
+        <exclude domain="sharedpref" path="offline_map.xml" />
+        <exclude domain="file" path="offline_maps" />
         <!-- Place Guide switch: per-device, off again after a restore -->
         <exclude domain="sharedpref" path="place_guide.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />
@@ -164,6 +167,9 @@
         <exclude domain="sharedpref" path="export_cleanup.xml" />
         <!-- Pause zones: the recent past of THIS phone (latched state, last clear-fix time, clock-rollback total); a restore would describe a place and time it never saw. -->
         <exclude domain="sharedpref" path="pause_zone_state.xml" />
+        <!-- Offline map (PMTiles): the saved choice (a document URI whose read grant does not survive a restore) and an imported private copy of the user's own map file (large, re-importable). Never backed up or transferred. -->
+        <exclude domain="sharedpref" path="offline_map.xml" />
+        <exclude domain="file" path="offline_maps" />
         <!-- Place Guide switch: per-device, off again after a restore -->
         <exclude domain="sharedpref" path="place_guide.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />

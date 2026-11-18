@@ -111,6 +111,8 @@ class SettingsDeps(
     val zoneEditor: (() -> com.rokid.context.phone.ui.settings.privacy.zones.ZoneEditor)? = null,
     /** Whether the app holds a location permission right now (the zones screen's fail-closed banner). */
     val locationGranted: () -> Boolean = { false },
+    /** Settings > Privacy > Pause zones > Offline map: the Storage Access Framework file access and the saved choice. Null where no map support is wired (tests). */
+    val offlineMap: (() -> com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapDeps)? = null,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -181,6 +183,7 @@ class SettingsDeps(
             glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
             contextSources = AppContextSources(app),
             zoneEditor = { com.rokid.context.phone.ui.settings.privacy.zones.ControllerZoneEditor(com.rokid.context.phone.zone.ZoneGraph.get(app)) },
+            offlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapDeps(com.rokid.context.phone.ui.settings.privacy.zones.tiles.AndroidMapFiles(app), com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapStore.get(app)) },
             locationGranted = {
                 listOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)
                     .any { androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
