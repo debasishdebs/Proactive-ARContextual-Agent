@@ -43,6 +43,8 @@ class ContextApp : Application() {
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.driving = { com.rokid.context.orchestration.proactive.DrivingSignal.blocks() }
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingVersion = { com.rokid.context.orchestration.proactive.DrivingSignal.version() }
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingCommit = { v, w -> com.rokid.context.orchestration.proactive.DrivingSignal.commitIfNotDriving(v, w) }
+        // v3.1 r1: the pause set WITHOUT suspending, read inside the delivery's fences (the hub's live pauses, including quiet hours and zone holds, and Battery Saver); a throw is a pause.
+        com.rokid.context.orchestration.proactive.ProactiveEnvironment.pausedNow = { runCatching { !com.rokid.context.phone.hub.HubGraph.get(this).captureRunning() || com.rokid.context.orchestration.BatterySaver.isOn(this) }.getOrDefault(true) }
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingAssessment = { com.rokid.context.orchestration.proactive.DrivingSignal.assess() }
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.drivingSignalAvailable = true
         // a pin deleted or edited in Settings withdraws the suggestions built from it at once (it is no Forget event)

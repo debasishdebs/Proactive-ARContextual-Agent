@@ -60,7 +60,7 @@ object NexusGraph {
     fun suggestion(card: com.rokid.context.orchestration.proactive.DeliveredCard): Boolean = runtime?.feeder?.suggestion(card) ?: false
 
     /** v3.1: takes suggestions off Nexus by record id (dismissed or forgotten elsewhere). */
-    fun withdrawSuggestions(ids: Collection<String>) { val p = runtime?.provider ?: return; ids.forEach { p.withdraw(it) } }
+    fun withdrawSuggestions(ids: Collection<String>) { val r = runtime ?: return; r.feeder.cancelSuggestions(ids); ids.forEach { r.provider.withdraw(it) } }
 
     fun withdrawAllSuggestions() { val r = runtime ?: return; withdrawSuggestions(r.feeder.suggestionRefs()) }
 
@@ -125,6 +125,8 @@ object NexusGraph {
             askSources = { id -> MemoryGraph.get(app).asks.byId(id)?.takeIf { !it.redacted }?.let { AskSources.parseAll(it.sourcesJson).toSet() } },
             pinLive = { provider.liveSlots().hasPin() },
             log = { PcLog.i(TAG, it) },
+            suggestionGate = { id -> com.rokid.context.orchestration.proactive.ProactiveGraph.delivery(app).publishable(id, com.rokid.context.orchestration.proactive.Surface.NEXUS) },
+            withdrawOut = { id -> provider.withdraw(id) },
         )
         runtime = Runtime(provider, feeder, store)
 

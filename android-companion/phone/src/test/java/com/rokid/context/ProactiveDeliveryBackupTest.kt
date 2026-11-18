@@ -36,6 +36,10 @@ class ProactiveDeliveryBackupTest {
         val store = ctx.getSharedPreferences("test_backup_store", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
         PrefsSuggestionStore(store).recordFeedback(FeedbackAction.UP, "f2:k", ProactiveFamily.PLACE_RECALL, 1L)
         assertEquals(setOf("fb", "counts"), store.all.keys)
+        // v3.1 r1: the delivery ledger is ONE more key in the same excluded, encrypted file (timestamps, family and kind only; no ids, keys or text)
+        PrefsSuggestionStore(store).appendLedger(com.rokid.context.orchestration.proactive.LedgerEntry(1L, ProactiveFamily.PLACE_RECALL, com.rokid.context.orchestration.proactive.LedgerKind.DELIVERED))
+        assertEquals(setOf("fb", "counts", PrefsSuggestionStore.LEDGER), store.all.keys); assertEquals("ldg", PrefsSuggestionStore.LEDGER)
+        assertEquals("""[[1,"f2","d"]]""", store.getString("ldg", null))
         assertFalse("no text in the counters", store.all.values.joinToString().contains("last visit"))
     }
 
