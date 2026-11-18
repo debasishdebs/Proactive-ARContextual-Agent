@@ -3,7 +3,7 @@
 Nothing is installed yet. Phone = eval build 394667e0, glasses = 1.0.0, watch = 1.0.0-rc1. The install helper is `tools/install-trip-build.sh` (Codex READY at e1337bea; emulator-tested only). Rollback and backup details: `v17-upgrade-recovery.md`. Full device checks: `device-checklist-2026-11-17.md`.
 
 ## 0. Decide / confirm first (5 minutes)
-- [ ] Build to install: the FINAL verified folder `~/Desktop/rokid/backups/apks-v110-d9eb0f47/` (git d9eb0f47; do not use an older folder). Production code differs from `apks-v110-4f110dca` (later: offline map tiles, Suggestions shadow/delivery code, all OFF by default).
+- [ ] Build to install: the FINAL verified folder `~/Desktop/rokid/backups/apks-v110-ab61395f/` (git ab61395f; do not use an older folder). Production code differs from `apks-v110-4f110dca` (later: offline map tiles, Suggestions shadow/delivery code, all OFF by default).
 - [ ] What is ON in this build: hub restart fix, pause zones (you add zones), Place Guide (OFF until you switch it on), Ask date-window/last-state fixes, Activity pagination, Ask zone fence (ON). What is OFF: forgetV2 and multi-select Forget, Nexus bridge, Try-it, Suggestions (all switches).
 - [ ] Room v17 migration (adds `ask.sourceStates`) runs on first phone launch. It was verified on the emulator (encrypted v16 -> v17). A phone backup is mandatory; there is no downgrade (a v16 binary cannot open a v17 DB: rollback = restore the backup + reinstall the same-signature APK).
 - [ ] Watch: skip for the trip (the watch APK shares the phone's applicationId; installing it on the wrong serial replaces the phone app).
@@ -17,13 +17,13 @@ Nothing is installed yet. Phone = eval build 394667e0, glasses = 1.0.0, watch = 
 ## 2. Dry run (changes nothing: no backup, no pull, no install)
 ```
 cd ~/Desktop/rokid/proactive-context-agent
-tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-d9eb0f47
+tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-ab61395f
 ```
 Read the output: device identities distinct, APK package names correct, versionCode not a downgrade, call state 0, the exact backup path, the install order. Anything that says REFUSED: stop and tell Claude.
 
 ## 3. Real run (only with the user's explicit go)
 ```
-tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-d9eb0f47 --go
+tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --apks ~/Desktop/rokid/backups/apks-v110-ab61395f --go
 ```
 Order enforced by the script: preflight -> phone backup (force-stop, tar incl. -wal/-shm, validate, sha256) -> phone install (`install -r`, never uninstall) -> 60 s log scan (FATAL / Migration / Room / SQLCipher counts) -> glasses install -> log scan. Exit 0 = installed and verified, exit 3 = installed but NOT verified (do the manual checks below), exit 2 = refused (nothing changed), other = failure (follow the printed rollback steps; never uninstall the phone app).
 
