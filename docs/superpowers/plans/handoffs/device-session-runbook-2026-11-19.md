@@ -2,7 +2,7 @@
 
 Merged from: trip-install-checklist-2026-11-18, device-checklist-2026-11-17 (A, C, G), nexus-device-checklist (S2 4-8, 9-16), trip-day-quickref-2026-11-18, tools/INSTALL-TRIP-BUILD.md (install helper and post-install-check.sh), v17-upgrade-recovery, needs-user-2026-11-19. Docs-only: nothing here was executed when it was written. Commands are copied from those docs/scripts; anything not found in them is marked UNVERIFIED.
 
-Placeholders: `<PHONE>` = phone serial (Samsung SM-S931B), `<GLASSES>` = glasses serial (USB 1901092545029120 or a wireless endpoint), `<CAND>` = `~/Desktop/rokid/backups/apks-v110-cand-0fbd6057` (candidate), `<DEFAULT>` = `~/Desktop/rokid/backups/apks-v110-f1dcf1fb` (conservative fallback), `<TAG>` = e.g. `pre-v17-20261119`.
+Placeholders: `<PHONE>` = phone serial (Samsung SM-S931B), `<GLASSES>` = glasses serial (USB 1901092545029120 or a wireless endpoint), `<CAND>` = `~/Desktop/rokid/backups/apks-v110-cand-e59fcda5` (candidate), `<DEFAULT>` = `~/Desktop/rokid/backups/apks-v110-f1dcf1fb` (conservative fallback), `<TAG>` = e.g. `pre-v17-20261119`.
 
 ## Order of the session (about 2.5 h)
 Sections 0-2 (pre-flight, identify, dry run): 15 min. Section 3 (backup + install, only after you say "go"): 15 min. Section 4 (post-install check): 10 min. Section 5 (first launch): 15 min. Section 6 (Place Guide seed + Card position test): 30 min. Section 7 (first worn card test, section G): 30 min. Section 8 (pause zones): 10 min. Section 9 (Nexus S2): 30 min, only if time is left. Section 11 (collect logs): 10 min. Section 10 (rollback) is only used if something fails. Can be skipped, in this order of preference: 9 (Nexus S2: move to the 7-10 Dec half-day), then 8, then the card-edge measurements in 6 (keep the quick LEFT/CENTRE/RIGHT look), then 7 (worn test: needs a calm 30 min and you wearing the glasses). Never skip 0-5: they decide whether the build is safe for 22 Nov (install freeze 26 Nov). STOP and ask Claude on any REFUSED, FAIL, exit 3, "app opens empty" or "not a database".
@@ -36,7 +36,7 @@ adb devices -l
 ## 2. Dry run (changes nothing; 5 min)
 ```
 cd ~/Desktop/rokid/proactive-context-agent
-tools/install-trip-build.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-0fbd6057
+tools/install-trip-build.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-e59fcda5
 ```
 (Use the `apks-v110-f1dcf1fb` path instead for the fallback.) It writes no file and pulls nothing. Read every line:
 - [ ] Phone and glasses identities distinct (hardware serial, android_id, model, fingerprint).
@@ -58,7 +58,7 @@ User go: [ ] said "go" at ____ for build [ ] CAND [ ] DEFAULT.
 - [ ] Phone not in a call. Do not open PCA on the phone during the backup (the helper force-stops it first).
 
 ```
-tools/install-trip-build.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-0fbd6057 --tag <TAG> --go
+tools/install-trip-build.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-e59fcda5 --tag <TAG> --go
 ```
 Order enforced by the script: preflight and signature check, phone backup (force-stop proven, `run-as tar c .`, validated: tar listing, db and `db_key.xml` present, size, encrypted header, sha256; saved as `~/Desktop/rokid/backups/pca-phone-pre-<TAG>.tar` with the old phone APK beside it), `install -r` phone, 60 s log scan, then glasses install and its scan.
 
@@ -73,7 +73,7 @@ Order enforced by the script: preflight and signature check, phone backup (force
 
 ## 4. Post-install check (10 min, read-only)
 ```
-tools/post-install-check.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-0fbd6057
+tools/post-install-check.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-e59fcda5
 ```
 Exit 0 = no FAIL (read every WARN and UNKNOWN); exit 1 = at least one FAIL; exit 2 = refused/usage. It prints counts, hashes and names only.
 
@@ -155,7 +155,7 @@ Supervised, synthetic content, stationary, outside any zone, glasses worn, no ca
 Also glasses basics while worn: [ ] app starts, pairs, capture runs; [ ] double-tap pause/resume; [ ] voice mark + undo; [ ] mark photo refused inside a zone; [ ] take them off 10+ minutes: capture stops (not-worn fallback); [ ] case connect/disconnect: hub recovers within a few minutes (Settings > Diagnostics logs) and glasses are not relaunched during a call.
 
 END OF TEST (mandatory):
-- [ ] ALL THREE delivery switches turned back OFF at ____. Verify: `tools/post-install-check.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-0fbd6057` shows PASS for safety defaults (deliver_phone, deliver_hud, deliver_nexus OFF).
+- [ ] ALL THREE delivery switches turned back OFF at ____. Verify: `tools/post-install-check.sh --phone <PHONE> --glasses <GLASSES> --apks ~/Desktop/rokid/backups/apks-v110-cand-e59fcda5` shows PASS for safety defaults (deliver_phone, deliver_hud, deliver_nexus OFF).
 - [ ] Place Guide switched back OFF if you do not want it on until 22 Nov.
 
 ## 8. Pause zone checks (10 min)
