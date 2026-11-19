@@ -148,7 +148,9 @@ class KeyframeHandle internal constructor(private val app: Context) {
     private val pipelineLazy = lazy {
         KeyframePipeline(
             db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated,
-            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, dataSaverBlocked = { dataGate.refresh(); !photoUploadsAllowed() }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
+            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, dataSaverBlocked = { dataGate.refresh(); !photoUploadsAllowed() },
+            dataSaverWasBlocked = { (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.wasBlocked() == true },
+            dataSaverHandled = { (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.clearBlocked() }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
         )
     }
 

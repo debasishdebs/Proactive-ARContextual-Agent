@@ -92,11 +92,11 @@ class DataSaverScreenTest {
         compose.onNodeWithTag("data_saver_mode_note").assertTextContains("mobile data at home", substring = true)
         compose.onNodeWithTag("data_saver_abroad").assertIsOff()
         compose.onNodeWithTag("data_saver_small_roaming").assertIsOn()
+        compose.onNodeWithTag("data_saver_abroad").performClick()
+        compose.onNodeWithTag("data_saver_small_roaming").performClick()
         compose.onNodeWithTag("data_saver_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("data_saver_status"))
         compose.onNodeWithTag("data_saver_status_0").assertTextContains("waiting for Wi-Fi now: 9", substring = true)
         compose.onNodeWithTag("data_saver_status").assertTextContains("Counts only", substring = true)
-        compose.onNodeWithTag("data_saver_abroad").performClick()
-        compose.onNodeWithTag("data_saver_small_roaming").performClick()
         assertEquals(true, abroad); assertEquals(false, small); assertEquals(null, mode)
     }
 
@@ -109,6 +109,13 @@ class DataSaverScreenTest {
     @Test fun aSeedRefusedForWifiSaysSo() {
         assertEquals("Seeding needs Wi-Fi (data saver). Connect to Wi-Fi and try again.", com.rokid.context.phone.ui.settings.place.seedFailureText(com.rokid.context.phone.ui.settings.place.SeedNeedsWifiException()))
         assertTrue(com.rokid.context.phone.ui.settings.place.seedFailureText(java.io.IOException("x")).startsWith("Could not fetch places"))
+    }
+
+    @Test fun theProtectedBacklogCapIsDocumentedOnTheScreen() {
+        assertTrue(DataSaverModel.CAP_NOTE.contains("300"))
+        compose.setContent { PcTheme { DataSaverScreen(DataSaverUiState(), {}, {}, {}, {}) } }
+        compose.onNodeWithTag("data_saver_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("data_saver_status"))
+        compose.onNodeWithTag("data_saver_cap_note").assertTextContains("300", substring = true)
     }
 
     @Test fun theAbroadSwitchShowsOnWhenSet() {

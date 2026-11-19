@@ -329,3 +329,10 @@ Changes after the Opus review:
 - Wi-Fi that never validates: after 10 minutes the status line says remote photos wait; LAN and on-device endpoints were never blocked.
 - `onLost` only counts for the current default network; no active network at start is UNKNOWN, not OFFLINE.
 - Queue drain defers a blocked job without an attempt; a blocked primary stays a `DataSaverBlockedException` even when the fallback fails; user seeds are refused unless the network is FREE ("Seeding needs Wi-Fi"); the counter line is "blocked" (calls), and the card shows the live PENDING count; the night job's local index maintenance is no longer gated (only the describe step is).
+
+### Round 3 (2026-11-20, Opus re-review)
+
+- **Parked frames survive restarts and races.** A frame inserted while photo uploads are blocked is born parked (`lastError = 'data_saver'`, `RokidFrameInbox`). The data saver also persists a "blocked since" mark in `data_saver.xml` whenever it sees uploads blocked; the first unblocked drain (this process or after a restart) parks everything waiting SYNCHRONOUSLY before `shedBacklog` and then clears the mark. The in-process gate-open listener still tags too, but nothing depends on its timing. The idea of also parking by "oldest PENDING older than 30 min" was NOT built (it would park ordinary frames in tests and in a long battery-saver stretch without a block).
+- **Cap.** Only the newest 300 parked frames are protected from shedding (`FrameStateDao.PROTECTED_PARKED`); older parked frames in a longer backlog are shed as normal (salient ones go to the caption queue). The protected set is excluded from the shed threshold, so waiting frames do not make live frames thin at 21. This bounds the upload burst after Wi-Fi returns; the Data saver screen says so.
+- Frames whose earlier error is only timeout, abandoned or offline are parked too; solo_rebuild and describe_before_delete are left alone.
+- The status screen refreshes off the main thread, and "photos waiting" shows 0 once uploads are allowed again.

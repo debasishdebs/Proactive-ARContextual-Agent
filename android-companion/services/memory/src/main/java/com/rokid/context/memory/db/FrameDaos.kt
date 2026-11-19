@@ -162,11 +162,14 @@ abstract class FrameStateDao {
     abstract suspend fun pendingCount(): Int
 
     /**
-     * Roaming data saver: marks every PENDING frame without an earlier error as parked for Wi-Fi (`lastError = 'data_saver'`, no schema change). [shedOldestNonDwell] never touches a marked frame,
+     * Roaming data saver: marks every PENDING frame without an earlier error (or only a timeout, abandoned-claim or offline error: nothing reads those; solo_rebuild and describe_before_delete are left alone) as parked for Wi-Fi (`lastError = 'data_saver'`, no schema change). [shedOldestNonDwell] never touches a marked frame,
      * however many wait and whenever the gate opens; a frame that later fails for another reason gets that error instead and is an ordinary frame again. Returns how many were marked.
      */
-    @Query("UPDATE frame_state SET lastError = 'data_saver' WHERE state = 'PENDING' AND lastError IS NULL")
+    @Query("UPDATE frame_state SET lastError = 'data_saver' WHERE state = 'PENDING' AND (lastError IS NULL OR lastError IN ('timeout', 'abandoned', 'offline'))")
     abstract suspend fun parkPendingForDataSaver(): Int
+
+    /** PENDING frames that count toward the shed threshold: all of them except the protected newest [PROTECTED_PARKED] parked ones. */
+    suspend fun unprotectedPendingCount(): Int = (pendingCount() - minOf(dataSaverParkedCount(), PROTECTED_PARKED)).coerceAtLeast(0)
 
     /** Frames waiting for Wi-Fi because of the data saver (the Data saver card's "waiting" number). */
     @Query("SELECT COUNT(*) FROM frame_state WHERE state = 'PENDING' AND lastError = 'data_saver'")
@@ -184,7 +187,9 @@ abstract class FrameStateDao {
             "SELECT p.frameId FROM frame_state p LEFT JOIN frame f ON f.id = p.frameId WHERE p.state = 'PENDING' " +
             "ORDER BY COALESCE(f.ts, p.updatedAt) DESC LIMIT -1 OFFSET :keepNewest) " +
             "AND frameId NOT IN (SELECT frameId FROM frame_meta WHERE dwell = 1) " +
-            "AND COALESCE(lastError, '') != 'data_saver' " + // roaming data saver: a frame parked for Wi-Fi is waiting, never thinned (retention would delete it undescribed)
+            // roaming data saver: the newest PROTECTED_PARKED frames parked for Wi-Fi are waiting, never thinned (retention would delete them undescribed); older parked frames beyond the cap shed as normal
+            "AND NOT (lastError = 'data_saver' AND frameId IN (SELECT q.frameId FROM frame_state q LEFT JOIN frame g ON g.id = q.frameId WHERE q.state = 'PENDING' AND q.lastError = 'data_saver' " +
+            "ORDER BY COALESCE(g.ts, q.updatedAt) DESC LIMIT ${PROTECTED_PARKED})) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
     )
     abstract suspend fun shedOldestNonDwell(keepNewest: Int, nowMs: Long): Int
@@ -338,6 +343,8 @@ abstract class FrameStateDao {
 
     companion object {
         const val MAX_ATTEMPTS = 5
+        /** Roaming data saver: at most this many (the newest) frames parked for Wi-Fi are protected from backlog shedding; the rest of a longer backlog is thinned as usual (salient ones go to the caption queue). */
+        const val PROTECTED_PARKED = 300
         /** frame_state.lastError of a photo the night job queued (or described) for describe-before-delete. */
         const val DESCRIBE_BEFORE_DELETE = "describe_before_delete"
     }

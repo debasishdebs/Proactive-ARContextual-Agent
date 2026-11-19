@@ -49,6 +49,7 @@ object DataSaverModel {
     const val SMALL_NOTE = "Questions, place facts and suggestions as text. Never photos."
     const val TODAY_TITLE = "Blocked today"
     const val COUNTS_ONLY = "Counts only. Photos stay on the phone and upload on Wi-Fi; the same photo can be counted by more than one call."
+    const val CAP_NOTE = "Up to the newest 300 waiting photos are kept for Wi-Fi. In a longer backlog the older ones are thinned like any backlog (the salient ones are still described)."
     const val NO_LIMIT_YET = "There is no daily limit yet."
 
     fun modeNote(mode: DataMode): String = when (mode) {
@@ -132,7 +133,8 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
         flow.value = read()
         scope.launch { // the waiting count is a database read: off the main thread
             val n = try { com.rokid.context.memory.MemoryGraph.get(app).db.frameStateDao().dataSaverParkedCount() } catch (e: Exception) { return@launch }
-            flow.value = flow.value.copy(waiting = n)
+            // after Wi-Fi returns the parked frames are no longer held back, they are uploading: show only frames still blocked
+            flow.value = flow.value.copy(waiting = if (graph.decide(com.rokid.context.core.net.DataKind.PHOTO).allowed) 0 else n)
         }
     }
 }
@@ -140,7 +142,7 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
 @Composable
 fun DataSaverRoute(control: DataSaverControl, back: () -> Unit) {
     val state by control.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { while (true) { control.refresh(); delay(2_000) } } // the network and the counts change outside this screen
+    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { control.refresh() }; delay(2_000) } } // binder calls and a database read: never on the main thread // the network and the counts change outside this screen
     DataSaverScreen(state, back, control::setMode, control::setAbroad, control::setSmallOnRoaming)
 }
 
@@ -166,6 +168,7 @@ fun DataSaverScreen(state: DataSaverUiState, back: () -> Unit, onMode: (DataMode
             SettingsCard {
                 NoticeText(DataSaverModel.TODAY_TITLE, tag = "data_saver_today_title")
                 DataSaverModel.todayLines(state.today, state.waiting).forEachIndexed { i, line -> NoticeText(line, tag = "data_saver_status_$i") }
+                NoticeText(DataSaverModel.CAP_NOTE, tag = "data_saver_cap_note")
                 NoticeText(DataSaverModel.COUNTS_ONLY, tag = "data_saver_status")
             }
         }
