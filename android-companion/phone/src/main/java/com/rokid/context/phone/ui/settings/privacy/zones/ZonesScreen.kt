@@ -265,7 +265,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
         AlertDialog(
             onDismissRequest = p.cancelFirst, modifier = Modifier.testTag("online_first_dialog"),
             title = { Text(OnlineMapWords.DIALOG_TITLE) },
-            text = { Text(OnlineMapWords.DIALOG_BODY) },
+            text = { Text(OnlineMapWords.dialogBody(p.ui.providerName)) },
             // Cancel is the prominent (default) choice; turning the download on is the plain text button.
             confirmButton = { Button(p.cancelFirst, Modifier.testTag("online_first_cancel")) { Text("Cancel") } },
             dismissButton = { TextButton(p.confirmFirst, Modifier.testTag("online_first_confirm")) { Text("Turn on and download tiles") } },
@@ -289,7 +289,7 @@ private fun OnlineMapCard(p: OnlineMapPanel) {
         Text("Street map", style = MaterialTheme.typography.titleMedium)
         if (!p.ui.available) { NoticeText(OnlineMapWords.UNAVAILABLE, tag = "online_unavailable"); return@SettingsCard }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(OnlineMapWords.SWITCH, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            Text(OnlineMapWords.switchLabel(p.ui.providerName), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             Switch(p.ui.enabled, { p.setEnabled(it) }, modifier = Modifier.testTag("online_switch"))
         }
         NoticeText("Off by default. When on, the tile provider receives requests for the area you are looking at, and your IP address, only while this screen is open. Tiles are kept on the phone (up to 50 MB) until you turn this off or use Delete all. An offline file you choose below is used instead.", tag = "online_note")

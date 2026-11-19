@@ -26,7 +26,7 @@ class OnlineMapGraph private constructor(app: Context) {
         // The User-Agent names the app only (the same one the Place Guide fetchers use): no email, no personal data.
         OnlineTileSource(it, UrlConnectionTileTransport(), OnlineTileDiskCache(root, it.cacheId), UrlConnectionPlaceHttp.DEFAULT_USER_AGENT)
     }
-    val model = OnlineMapModel(OnlineMapStore(app.getSharedPreferences(OnlineMapStore.PREFS, Context.MODE_PRIVATE)), provider != null, stop = { source?.stop() }) { purge(root) }
+    val model = OnlineMapModel(OnlineMapStore(app.getSharedPreferences(OnlineMapStore.PREFS, Context.MODE_PRIVATE)), provider != null, provider?.name ?: "MapTiler", stop = { source?.stop() }) { purge(root) }
     val deps = OnlineMapDeps(model, source, AndroidCentreFix(app))
 
     companion object {
