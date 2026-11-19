@@ -26,11 +26,13 @@ class DataSaverTest {
             Row("metered wifi at home", snap(Transport.WIFI, notMetered = false), false, NetworkCost.HOME_MOBILE),
             Row("metered wifi abroad is a likely hotspot", snap(Transport.WIFI, notMetered = false), true, NetworkCost.ROAMING),
             Row("wifi reported roaming (hotspot)", wifiFree.copy(notRoaming = false), false, NetworkCost.ROAMING),
-            Row("android data saver on, metered wifi", snap(Transport.WIFI, restrict = true), false, NetworkCost.ROAMING),
+            Row("android data saver on, metered wifi", snap(Transport.WIFI, restrict = true), false, NetworkCost.RESTRICTED),
             Row("home mobile", homeMobile, false, NetworkCost.HOME_MOBILE),
             Row("mobile reported roaming", snap(Transport.CELLULAR, notRoaming = false), false, NetworkCost.ROAMING),
             Row("mobile, country mismatch", snap(Transport.CELLULAR, mismatch = true), false, NetworkCost.ROAMING),
-            Row("mobile, android data saver", snap(Transport.CELLULAR, restrict = true), false, NetworkCost.ROAMING),
+            Row("mobile, android data saver (not exempt)", snap(Transport.CELLULAR, restrict = true), false, NetworkCost.RESTRICTED),
+            Row("mobile, android data saver but the app is exempt (reads as off)", snap(Transport.CELLULAR, restrict = false), false, NetworkCost.HOME_MOBILE),
+            Row("roaming wins over android data saver", snap(Transport.CELLULAR, restrict = true, notRoaming = false), false, NetworkCost.ROAMING),
             Row("mobile, I'm abroad", homeMobile, true, NetworkCost.ROAMING),
             Row("mobile flagged not-metered is still not free", snap(Transport.CELLULAR, notMetered = true), false, NetworkCost.HOME_MOBILE),
             Row("vpn only / other transport", snap(Transport.OTHER), false, NetworkCost.UNKNOWN),
@@ -39,7 +41,7 @@ class DataSaverTest {
     }
 
     @Test fun costlyMeansEverythingButFreeAndOffline() {
-        assertEquals(setOf(NetworkCost.HOME_MOBILE, NetworkCost.ROAMING, NetworkCost.UNKNOWN), NetworkCost.entries.filter(NetworkCosts::isCostly).toSet())
+        assertEquals(setOf(NetworkCost.HOME_MOBILE, NetworkCost.ROAMING, NetworkCost.UNKNOWN, NetworkCost.RESTRICTED), NetworkCost.entries.filter(NetworkCosts::isCostly).toSet())
     }
 
     @Test fun aWifiThatNeverValidatesIsStuckOnlyAfterTenMinutesAndOnlyWhenOtherwiseConnected() {
@@ -56,6 +58,23 @@ class DataSaverTest {
         assertFalse(DataPolicy.decide(DataKind.PHOTO, EndpointReach.REMOTE, NetworkCost.UNKNOWN, Transport.WIFI, DataSaverSettings()).allowed)
         assertTrue(DataPolicy.decide(DataKind.PHOTO, EndpointReach.LAN, NetworkCost.UNKNOWN, Transport.WIFI, DataSaverSettings()).allowed)
         assertTrue(DataPolicy.decide(DataKind.PHOTO, EndpointReach.DEVICE, NetworkCost.UNKNOWN, Transport.WIFI, DataSaverSettings()).allowed)
+    }
+
+    @Test fun androidDataSaverHasItsOwnTokenBlocksPhotosInEveryModeAndKeepsText() {
+        for (mode in DataMode.entries) for (kind in listOf(DataKind.PHOTO, DataKind.BULK_OTHER)) {
+            assertEquals(DataDecision(false, DataPolicy.R_ANDROID_SAVER), decide(kind, NetworkCost.RESTRICTED, DataSaverSettings(mode)), "$mode $kind")
+        }
+        assertTrue(decide(DataKind.SMALL, NetworkCost.RESTRICTED, DataSaverSettings(smallOnRoaming = false)).allowed)
+        // the app exempt (whitelisted): plain home mobile data, allowed in the default mode
+        assertTrue(DataPolicy.decide(DataKind.PHOTO, EndpointReach.REMOTE, NetworkCosts.classify(snap(Transport.CELLULAR, restrict = false), false), Transport.CELLULAR, DataSaverSettings()).allowed)
+    }
+
+    @Test fun roamingWhyNamesTheSignal() {
+        assertEquals(NetworkCosts.WHY_REPORTED, NetworkCosts.roamingWhy(snap(Transport.CELLULAR, notRoaming = false), false))
+        assertEquals(NetworkCosts.WHY_COUNTRY, NetworkCosts.roamingWhy(snap(Transport.CELLULAR, mismatch = true), false))
+        assertEquals(NetworkCosts.WHY_ABROAD, NetworkCosts.roamingWhy(snap(Transport.CELLULAR), true))
+        assertEquals("", NetworkCosts.roamingWhy(snap(Transport.CELLULAR), false))
+        assertEquals("", NetworkCosts.roamingWhy(snap(Transport.CELLULAR, restrict = true), false))
     }
 
     // ---- the decision ----
@@ -99,7 +118,7 @@ class DataSaverTest {
 
     @Test fun anywhereModeAllowsAllButAbroadSwitchPullsItBackToNoRoaming() {
         val any = DataSaverSettings(mode = DataMode.ANYWHERE)
-        NetworkCost.entries.forEach { assertTrue(decide(DataKind.PHOTO, it, any).allowed, "anywhere $it") }
+        NetworkCost.entries.filter { it != NetworkCost.RESTRICTED }.forEach { assertTrue(decide(DataKind.PHOTO, it, any).allowed, "anywhere $it") }
         val abroad = any.copy(abroad = true)
         assertFalse(decide(DataKind.PHOTO, NetworkCost.ROAMING, abroad).allowed)
         assertFalse(decide(DataKind.BULK_OTHER, NetworkCost.UNKNOWN, abroad).allowed)
@@ -118,7 +137,7 @@ class DataSaverTest {
     }
 
     @Test fun reasonsAreFixedTokens() {
-        val tokens = setOf("allowed", "on_device", "lan", "free", "offline", "wifi_only", "roaming", "unknown_network", "home_mobile", "small_allowed", "anywhere")
+        val tokens = setOf("allowed", "on_device", "lan", "free", "offline", "wifi_only", "roaming", "unknown_network", "home_mobile", "small_allowed", "anywhere", "android_data_saver")
         for (kind in DataKind.entries) for (cost in NetworkCost.entries) for (mode in DataMode.entries) for (abroad in listOf(false, true)) for (small in listOf(false, true)) {
             val r = decide(kind, cost, DataSaverSettings(mode, abroad, small)).reason
             assertTrue(r in tokens, r)

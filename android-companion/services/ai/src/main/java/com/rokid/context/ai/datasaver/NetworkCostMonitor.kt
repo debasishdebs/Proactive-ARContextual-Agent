@@ -29,27 +29,43 @@ class NetworkCostMonitor(private val app: Context, private val clock: () -> Long
     @Volatile var snapshot: NetSnapshot = NetSnapshot.UNKNOWN
         private set
     @Volatile private var current: Network? = null
+    @Volatile private var currentCaps: NetworkCapabilities? = null
     private var started = false
+    private var failedBefore = false
 
+    /**
+     * Registers the default-network callback. Safe to call again: a registration that threw (no service, a SecurityException) is retried by every [reread] (each settings or network change and the 30-minute recheck),
+     * so UNKNOWN never lasts the whole process; the first success after a failure leaves a milestone line.
+     */
     @Synchronized fun start() {
         if (started) return
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         try {
             cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
-                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { current = network; update(read(cm, caps)) }
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { current = network; currentCaps = caps; update(read(cm, caps)) }
                 override fun onLost(network: Network) {
                     // A lost OLD default network arriving after the new one is already current must not turn the phone "offline".
-                    if (network == current) { current = null; update(read(cm, null)) }
+                    if (network == current) { current = null; currentCaps = null; update(read(cm, null)) }
                 }
             })
             started = true
+            if (failedBefore) PcLog.milestone(TAG, "network watch started after an earlier failure")
             // No active network at start is "not known yet" (the callback may still deliver one), never "offline": photos stay blocked until a reading says otherwise.
             val active = runCatching { cm.activeNetwork }.getOrNull()
             val caps = active?.let { runCatching { cm.getNetworkCapabilities(it) }.getOrNull() }
-            if (active != null && caps != null) { current = active; update(read(cm, caps)) }
+            if (active != null && caps != null) { current = active; currentCaps = caps; update(read(cm, caps)) }
         } catch (e: Exception) {
-            PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") // snapshot stays unknown: fail closed
+            failedBefore = true
+            PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") // snapshot stays unknown: fail closed; retried by the next reread
         }
+    }
+
+    /** Retries a failed start, and re-reads the facts that change without a capability callback (Android Data Saver status, SIM and network country) for the current default network. */
+    fun reread() {
+        if (!started) { start(); return }
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val caps = currentCaps ?: return // offline or not known yet: nothing to re-read
+        update(read(cm, caps))
     }
 
     private fun update(s: NetSnapshot) {

@@ -1,6 +1,7 @@
 package com.rokid.context.ai
 
 import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.net.DataDecision
 import com.rokid.context.core.net.DataGate
 import com.rokid.context.core.net.DataKind
 import com.rokid.context.core.net.DataPolicy
@@ -68,7 +69,13 @@ class ModelRouter(
 
     override suspend fun complete(role: Role, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply {
         val b = bindings.get(role) ?: throw ModelCallException("No model is set for ${role.name}", retryable = true, kind = FailureKind.NOT_SET)
-        return route(b, build, skipPrimary = false, callClass)
+        return counting { route(b, build, skipPrimary = false, callClass) }
+    }
+
+    /** Counts a data-saver block ONCE per outer call (the primary and the fallback, or the vision and summarize chain, may each be refused for the same call). */
+    private suspend fun <T> counting(block: suspend () -> T): T = try { block() } catch (d: DataSaverBlockedException) {
+        if (!d.counted) { d.counted = true; dataGate.skipped(d.dataKind, d.what, DataDecision(false, d.reason)) }
+        throw d
     }
 
     /**
@@ -80,6 +87,10 @@ class ModelRouter(
 
     override suspend fun completeFromFrames(callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply {
         val vision = bindings.get(Role.VISION_EXTRACT) ?: return complete(Role.SUMMARIZE, callClass, build)
+        return counting { completeFromFramesChain(vision, callClass, build) }
+    }
+
+    private suspend fun completeFromFramesChain(vision: RoleBinding, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply {
         return try {
             route(vision, build, skipPrimary = false, callClass)
         } catch (first: ModelCallException) {
@@ -110,7 +121,7 @@ class ModelRouter(
         var key: String? = null
         return try {
             key = endpoints.keyFor(e)
-            call(e, model, null, build, key, callClass)
+            counting { call(e, model, null, build, key, callClass) }
         } catch (c: CancellationException) {
             throw c
         } catch (m: ModelCallException) {
@@ -207,10 +218,7 @@ class ModelRouter(
         // It is not retried as text (a photo call that is blocked stays a photo call), and nothing is sent. The fallback is only tried when it is on-device or on the LAN (its own check passes).
         val dataKind = if (canSend) DataKind.PHOTO else DataKind.SMALL
         val dataDecision = dataGate.decide(dataKind, reachOf(e))
-        if (!dataDecision.allowed) {
-            dataGate.skipped(dataKind, if (canSend) Skipped.UPLOAD_QUEUED else Skipped.BULK, dataDecision)
-            throw DataSaverBlockedException(dataDecision.reason)
-        }
+        if (!dataDecision.allowed) throw DataSaverBlockedException(dataDecision.reason, dataKind, if (canSend) Skipped.UPLOAD_QUEUED else Skipped.BULK) // counted once by [counting]
         // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
@@ -243,11 +251,7 @@ class ModelRouter(
     }
 
     /** On this phone (never gated), a box on the user's own network (free on Wi-Fi), or anything else. Reads the address only to classify it; the host is never logged. */
-    private fun reachOf(e: Endpoint): EndpointReach = when {
-        e.kind == EndpointKind.LLAMACPP_LOCAL -> EndpointReach.DEVICE
-        DataPolicy.isLanHost(runCatching { java.net.URI(e.baseUrl.trim()).host }.getOrNull()) -> EndpointReach.LAN
-        else -> EndpointReach.REMOTE
-    }
+    private fun reachOf(e: Endpoint): EndpointReach = EndpointReaches.of(e)
 
     internal companion object {
         const val TAG = "ModelRouter"
@@ -282,5 +286,14 @@ class ModelRouter(
             java.net.URLEncoder.encode(key, "UTF-8"),
             java.util.Base64.getEncoder().encodeToString(key.toByteArray(Charsets.UTF_8)).trimEnd('='),
         ).filter { it.isNotEmpty() }
+    }
+}
+
+/** Where an endpoint's calls go, for the data saver: on this phone, a box on the user's own network (free on Wi-Fi), or anything else. Reads the address only to classify it; the host is never logged. */
+object EndpointReaches {
+    fun of(e: Endpoint): EndpointReach = when {
+        e.kind == EndpointKind.LLAMACPP_LOCAL -> EndpointReach.DEVICE
+        DataPolicy.isLanHost(runCatching { java.net.URI(e.baseUrl.trim()).host }.getOrNull()) -> EndpointReach.LAN
+        else -> EndpointReach.REMOTE
     }
 }

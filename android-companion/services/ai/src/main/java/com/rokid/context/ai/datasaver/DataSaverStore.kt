@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * The Data saver settings and today's skipped counts, in one app-private prefs file ([PREFS]). Per-device state: excluded from backup and device transfer (an "I'm abroad" or a
  * mode restored onto another phone would be wrong there). Delete all leaves it, like the neighbouring Place Guide and Ask-photos switches: it is a setting that protects the
  * user's mobile data, and a wipe must never silently re-open it (DeletionGraph keeps it).
- * Defaults (nothing stored, or an unreadable value): Wi-Fi only, not abroad, text allowed on roaming.
+ * Defaults (nothing stored, or an unreadable value): Wi-Fi and home mobile data (roaming, unknown networks and abroad stay blocked), not abroad, text allowed on roaming.
  */
 class DataSaverStore(private val prefs: SharedPreferences) {
     private val state = MutableStateFlow(read())

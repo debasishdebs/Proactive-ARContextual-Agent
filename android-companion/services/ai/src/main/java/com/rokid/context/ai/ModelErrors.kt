@@ -29,7 +29,14 @@ class PhotoForgottenException(val frameIds: Set<String>, val wiped: Boolean, val
  * The roaming data saver refused the call before anything was sent (a photo upload, or text when "Small requests on roaming" is off). [reason] is a fixed token.
  * Retryable: the work waits for Wi-Fi. Callers park without using an attempt ([com.rokid.context.work.frames.ExtractOutcome.classify]); the router never retries it as text.
  */
-class DataSaverBlockedException(val reason: String) : ModelCallException("blocked by data saver", retryable = true, kind = FailureKind.TRANSIENT)
+class DataSaverBlockedException(
+    val reason: String,
+    /** What was asked and how it is counted; the router counts it ONCE per outer call ([ModelRouter.counting]), whatever number of endpoints were tried. */
+    val dataKind: com.rokid.context.core.net.DataKind = com.rokid.context.core.net.DataKind.SMALL,
+    val what: com.rokid.context.core.net.Skipped = com.rokid.context.core.net.Skipped.BULK,
+) : ModelCallException("blocked by data saver", retryable = true, kind = FailureKind.TRANSIENT) {
+    @Volatile var counted = false
+}
 
 /** Codex r10: the call needs its photo but the endpoint or provider cannot deliver images (no VISION, or the on-device runtime): nothing was sent, no output. */
 class ImagesUnsupportedException : ModelCallException(ModelRouter.NEEDS_VISION, retryable = false, kind = FailureKind.NOT_SET)

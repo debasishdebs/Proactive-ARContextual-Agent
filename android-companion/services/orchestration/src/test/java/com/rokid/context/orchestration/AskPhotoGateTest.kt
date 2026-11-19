@@ -67,6 +67,25 @@ class AskPhotoGateTest {
         assertTrue(allowed())
     }
 
+    @Test fun theDefaultModeAllowsHomeMobileDataButNotRoamingAndAndroidDataSaverBlocks() {
+        net = net.copy(transport = com.rokid.context.core.net.Transport.CELLULAR, notMetered = false, notRoaming = true)
+        assertTrue("default mode: home mobile data is allowed", allowed())
+        net = net.copy(restrictBackground = true)
+        assertFalse("android data saver on and the app not exempt", allowed())
+        net = net.copy(restrictBackground = false, notRoaming = false)
+        assertFalse("roaming", allowed())
+    }
+
+    @Test fun aLanAnswerEndpointIsAskedAsLanSoRoamingDoesNotBlockIt() = runBlocking {
+        val ai = AiGraph.get(ctx)
+        ai.endpoints.save(com.rokid.context.ai.Endpoint("lan", "Box", com.rokid.context.ai.EndpointKind.OLLAMA, "http://mybox.local:11434", null, listOf("m"), setOf(Capability.CHAT, Capability.VISION), 1), apiKey = null).getOrThrow()
+        ai.bindings.set(com.rokid.context.ai.RoleBinding(com.rokid.context.ai.Role.ANSWER, "lan", "m")).getOrThrow()
+        net = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.WIFI, validated = false, notMetered = true, notRoaming = true) // Wi-Fi, not validated: remote photos wait
+        assertTrue(AnswerService.photosAllowedNow(ctx, noon))
+        net = net.copy(transport = com.rokid.context.core.net.Transport.CELLULAR, notRoaming = false) // on roaming mobile data a "private" address is a tunnel: remote
+        assertFalse(AnswerService.photosAllowedNow(ctx, noon))
+    }
+
     @Test fun switchOffBlocks() { AskPhotoPolicy.set(ctx, false); assertFalse(allowed()) }
 
     @Test fun unknownHudCountsAsQuiet() { NudgeEnvironment.hud = null; assertFalse(allowed()) }

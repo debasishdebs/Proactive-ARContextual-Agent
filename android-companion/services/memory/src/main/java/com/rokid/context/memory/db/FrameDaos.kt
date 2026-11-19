@@ -162,6 +162,17 @@ abstract class FrameStateDao {
     abstract suspend fun pendingCount(): Int
 
     /**
+     * Roaming data saver: marks every PENDING frame without an earlier error as parked for Wi-Fi (`lastError = 'data_saver'`, no schema change). [shedOldestNonDwell] never touches a marked frame,
+     * however many wait and whenever the gate opens; a frame that later fails for another reason gets that error instead and is an ordinary frame again. Returns how many were marked.
+     */
+    @Query("UPDATE frame_state SET lastError = 'data_saver' WHERE state = 'PENDING' AND lastError IS NULL")
+    abstract suspend fun parkPendingForDataSaver(): Int
+
+    /** Frames waiting for Wi-Fi because of the data saver (the Data saver card's "waiting" number). */
+    @Query("SELECT COUNT(*) FROM frame_state WHERE state = 'PENDING' AND lastError = 'data_saver'")
+    abstract suspend fun dataSaverParkedCount(): Int
+
+    /**
      * Fix wave K5, backlog shedding: PENDING frames beyond the NEWEST [keepNewest] (by capture time) that are not dwell keyframes
      * go to NEAR_DUP with lastError 'shed_backlog' (no schema change): they are never extracted, and their photos then follow the
      * normal retention of skipped photos. A shed frame with frame_meta.salience >= 0.5 goes to CAPTION_QUEUED instead (wave 2, Ruling 8). Dwell keyframes and tombstoned frames are left alone. Returns how many rows moved.
@@ -173,6 +184,7 @@ abstract class FrameStateDao {
             "SELECT p.frameId FROM frame_state p LEFT JOIN frame f ON f.id = p.frameId WHERE p.state = 'PENDING' " +
             "ORDER BY COALESCE(f.ts, p.updatedAt) DESC LIMIT -1 OFFSET :keepNewest) " +
             "AND frameId NOT IN (SELECT frameId FROM frame_meta WHERE dwell = 1) " +
+            "AND COALESCE(lastError, '') != 'data_saver' " + // roaming data saver: a frame parked for Wi-Fi is waiting, never thinned (retention would delete it undescribed)
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
     )
     abstract suspend fun shedOldestNonDwell(keepNewest: Int, nowMs: Long): Int
