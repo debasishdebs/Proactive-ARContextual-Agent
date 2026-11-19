@@ -592,7 +592,7 @@ class KeyframePipeline(
                 } else {
                     sent.forEach { clusters.release(it.clusterId, claimId, now) }
                     PcLog.i(PIPE_TAG, "released=${sent.size} clusters reason=${o.error}")
-                    if (o.error == ExtractOutcome.DATA_SAVER) pausedUntilMs = now + DATA_SAVER_PAUSE_MS
+                    if (o.error == ExtractOutcome.DATA_SAVER) pausedUntilMs = now + if (dataSaverBlocked()) DATA_SAVER_PAUSE_MS else DATA_SAVER_BLIP_PAUSE_MS
                     else {
                         pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
                         pausedUntilMs = now + pauseStepMs
@@ -643,8 +643,13 @@ class KeyframePipeline(
                 } else PcLog.i(PIPE_TAG, "released=${rest.size} reason=${o.error}")
                 if (!o.countsAttempt && !user && o.error == ExtractOutcome.DATA_SAVER) {
                     // Parked, not polled: the policy-open signal ([onNetworkReturn]) wakes it at once; this is only the safety re-check (cheap, no network).
-                    pausedUntilMs = now + DATA_SAVER_PAUSE_MS
-                    states.parkPendingForDataSaver() // the whole waiting backlog, not only this batch: none of it may be shed later
+                    if (dataSaverBlocked()) {
+                        pausedUntilMs = now + DATA_SAVER_PAUSE_MS
+                        states.parkPendingForDataSaver() // the whole waiting backlog, not only this batch: none of it may be shed later
+                    } else {
+                        // the router refused inside a Wi-Fi pre-validation blip (not held back): no parking, no 30-minute wait; look again shortly
+                        pausedUntilMs = now + DATA_SAVER_BLIP_PAUSE_MS
+                    }
                 } else if (!o.countsAttempt && !user) {
                     pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
                     pausedUntilMs = now + pauseStepMs
@@ -670,6 +675,8 @@ class KeyframePipeline(
         const val MAX_BATCH = 3
         /** How long a data-saver block parks the loop when no policy-open signal arrives (design 2.6: a 30-minute safety re-check). */
         const val DATA_SAVER_PAUSE_MS = 30 * 60_000L
+        /** A refusal that is only the pre-validation blip of a Wi-Fi reconnect: retry after this, parking nothing. */
+        const val DATA_SAVER_BLIP_PAUSE_MS = 30_000L
         /** The night drain stops after this many consecutive batches that settled nothing (a provider outage, a stale claim); a success resets the count. */
         private const val MAX_FRUITLESS = 3
         /** Above this many PENDING frames the oldest non-dwell ones beyond the newest [SHED_KEEP_NEWEST] are skipped (fix wave K5). */

@@ -70,6 +70,17 @@ class RokidFrameInboxTest {
         assertNull(states.get("pc")!!.lastError)
     }
 
+    @Test fun theProductionProbeUsesTheDebouncedHeldBackDecision() {
+        var net = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.WIFI, validated = false, notMetered = true, notRoaming = true, unvalidatedSinceMs = System.currentTimeMillis() - 2_000)
+        ctx.getSharedPreferences(com.rokid.context.ai.datasaver.DataSaverStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+        com.rokid.context.ai.datasaver.DataSaverGraph.resetForTests(com.rokid.context.ai.datasaver.DataSaverGraph.forTests(ctx) { net })
+        try {
+            assertFalse("a Wi-Fi reconnect blip is not held back", RokidFrameInbox.dataSaverBlockedNow(ctx))
+            net = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.CELLULAR, validated = true, notMetered = false, notRoaming = false)
+            assertTrue("roaming with a remote endpoint is", RokidFrameInbox.dataSaverBlockedNow(ctx))
+        } finally { com.rokid.context.ai.datasaver.DataSaverGraph.resetForTests(null) }
+    }
+
     @Test fun ingestRecordsTheGlassesCaptureTimeOnlyForAReceipt() = runBlocking {
         archive.mkdirs()
         val captured = now - 90_000

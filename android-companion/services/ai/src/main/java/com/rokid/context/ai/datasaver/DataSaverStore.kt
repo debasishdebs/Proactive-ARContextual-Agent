@@ -39,8 +39,10 @@ class DataSaverStore(private val prefs: SharedPreferences) {
     private val markLock = Any()
 
     /**
-     * Writes a NEW value (later than the old one) when there is no mark or the old one is at least [MARK_REFRESH_MS] old, so a clear that read the old value cannot erase a block seen after it
-     * (a frame that arrives inside the throttle window is born parked anyway). Throttled so a screen refreshing every 2 s does not write the file every time.
+     * Writes a NEW value (later than the old one) when there is no mark or the old one is at least [MARK_REFRESH_MS] old. Throttled so a screen refreshing every 2 s does not write the file each time.
+     * The real guarantee is NOT "a clear that read the old value can never erase a later block": inside the throttle window a new block keeps the old value, so a [clearBlocked] with that value does clear.
+     * Nothing is lost by that, because (1) a frame that arrives while uploads are held back is inserted already parked, (2) every blocked drain parks the whole backlog again, and (3) parked frames are never
+     * shed (up to the protected cap). The mark only exists so a restart still knows the backlog was parked; it can be lost only in a window of milliseconds, and the frames themselves stay tagged.
      */
     fun markBlocked(nowMs: Long) = synchronized(markLock) {
         val old = prefs.getLong(K_BLOCKED, 0L)

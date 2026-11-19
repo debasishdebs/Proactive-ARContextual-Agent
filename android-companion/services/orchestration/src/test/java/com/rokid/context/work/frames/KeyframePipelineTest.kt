@@ -589,4 +589,14 @@ class KeyframePipelineTest {
         assertEquals("data_saver", dao.get("a")!!.lastError); assertEquals("data_saver", dao.get("b")!!.lastError)
         assertEquals("solo_rebuild", dao.get("c")!!.lastError); assertEquals("describe_before_delete", dao.get("d")!!.lastError)
     }
+
+    @Test fun aRefusalInsideAWifiBlipParksNothingAndWaitsOnlyThirtySeconds() = runBlocking {
+        for (i in 1..50) seed("f$i", i * 1000L)
+        // the router refused (the raw decision), but the debounced "held back" says no: a reconnect blip
+        val p = KeyframePipeline(db, { ids, _, cls -> calls += ids to cls; ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("unknown_network")) }, { now }, null,
+            newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = { false })
+        p.drainOnce()
+        assertEquals(0, db.frameStateDao().dataSaverParkedCount())
+        for (i in 1..50) assertEquals(0, db.frameStateDao().get("f$i")!!.attempts)
+    }
 }

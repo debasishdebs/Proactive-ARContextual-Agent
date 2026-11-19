@@ -31,6 +31,9 @@ class DataSaverGraph internal constructor(
     epochDay: () -> Long = { LocalDate.now().toEpochDay() },
     /** Re-reads the network facts that change without a callback and restarts a failed network watch (production: the monitor's reread). */
     private val reread: () -> Unit = {},
+    /** Runs the one-off re-check after a pre-validation blip (production: a Default-dispatcher scope; tests: a test scope). */
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : DataGate {
     val ledger = SkippedLedger(store.counters, epochDay)
     val settings get() = store.settings
@@ -42,7 +45,7 @@ class DataSaverGraph internal constructor(
     fun snapshot(): NetSnapshot = snapshotNow()
     fun settingsNow(): DataSaverSettings = store.settings.value
     /** True when Wi-Fi is connected and unmetered but has not validated for over 10 minutes (the status line says remote photos still wait). */
-    fun stuckNow(): Boolean = NetworkCosts.stuckUnvalidated(snapshotNow(), System.currentTimeMillis())
+    fun stuckNow(): Boolean = NetworkCosts.stuckUnvalidated(snapshotNow(), clock())
     fun costNow(): NetworkCost = NetworkCosts.classify(snapshotNow(), settingsNow().abroad)
 
     /** Photo uploads were blocked and are now allowed (Wi-Fi came back, the mode or the abroad switch changed): the caller wakes its parked loop. */
@@ -61,7 +64,7 @@ class DataSaverGraph internal constructor(
      * This is the only input of the persisted "blocked" mark, of the insert-time parking probe and of the waiting line.
      */
     fun heldBack(): Boolean =
-        !decide(DataKind.PHOTO, reachProvider()).allowed && !NetworkCosts.preValidationBlip(snapshotNow(), System.currentTimeMillis())
+        !decide(DataKind.PHOTO, reachProvider()).allowed && !NetworkCosts.preValidationBlip(snapshotNow(), clock())
 
     /** When photo uploads were first held back since the pipeline last handled it (0 = not; persisted: survives a restart). */
     fun blockedSince(): Long = store.blockedSince()
@@ -69,7 +72,7 @@ class DataSaverGraph internal constructor(
     fun clearBlocked(expected: Long): Boolean = store.clearBlocked(expected)
 
     override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {
-        if (kind == DataKind.PHOTO && heldBack()) store.markBlocked(System.currentTimeMillis())
+        if (kind == DataKind.PHOTO && heldBack()) store.markBlocked(clock())
         ledger.add(what)
         // a blocked CALL: a parked frame can be blocked again at each recheck, so this counts calls, not photos (the live waiting count comes from the database)
         PcLog.i(TAG, "blocked kind=${kind.name} what=$what reason=${d.reason}")
@@ -87,9 +90,11 @@ class DataSaverGraph internal constructor(
             lastCost = cost
             PcLog.i(TAG, "net cost=${cost.name}")
         }
-        val open = decide(DataKind.PHOTO, reachProvider()).allowed
-        if (heldBack()) store.markBlocked(System.currentTimeMillis())
-        else if (!open) recheckAfterBlip() // pre-validation blip: look again once the debounce is over; still blocked then = marked
+        // Everything below is driven by the debounced, reach-aware [heldBack]: the persisted mark, the open transition that wakes the pipeline, and the re-check after a blip.
+        val held = heldBack()
+        val open = !held
+        if (held) store.markBlocked(clock())
+        else if (!decide(DataKind.PHOTO, reachProvider()).allowed) recheckAfterBlip() // pre-validation blip: look again once the debounce is over; still blocked then = marked
         val was = photoOpen
         photoOpen = open
         if (open && was == false) {
@@ -98,12 +103,11 @@ class DataSaverGraph internal constructor(
         }
     }
 
-    private val blipScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     @Volatile private var blipPending = false
     private fun recheckAfterBlip() {
         if (blipPending) return
         blipPending = true
-        blipScope.launch { kotlinx.coroutines.delay(NetworkCosts.BLIP_MS + 1_000); blipPending = false; refreshState() }
+        scope.launch { kotlinx.coroutines.delay(NetworkCosts.BLIP_MS + 1_000); blipPending = false; refreshState() }
     }
 
     companion object {
