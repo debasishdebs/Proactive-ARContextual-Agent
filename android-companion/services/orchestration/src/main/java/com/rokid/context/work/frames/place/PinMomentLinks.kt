@@ -68,16 +68,17 @@ object PinMomentLinks {
      * AFTER the Forget committed never fails it: [onPending] is called and the cleanup finishes at the next start.
      */
     suspend fun <T> explicit(context: Context, target: suspend (List<String>) -> Set<String>, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, onNotRemoved: () -> Unit = {}, allowedPins: Set<String>? = null, block: suspend () -> T): T =
-        explicitStore(PlaceGraph.pins(context), momentsOf(context), { PlaceGraph.savePins(context, it) }, target, committed, onPending, block, onNotRemoved, allowedPins)
+        explicitStore(PlaceGraph.pins(context), momentsOf(context), { PlaceGraph.savePins(context, it) }, target, committed, onPending, block, onNotRemoved, allowedPins, wipePendingOf(context))
 
-    internal suspend fun <T> explicitStore(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, save: suspend (List<UserPlace>) -> Boolean, target: suspend (List<String>) -> Set<String>, committed: (T) -> Boolean, onPending: () -> Unit = {}, block: suspend () -> T, onNotRemoved: () -> Unit = {}, allowedPins: Set<String>? = null): T {
+    internal suspend fun <T> explicitStore(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, save: suspend (List<UserPlace>) -> Boolean, target: suspend (List<String>) -> Set<String>, committed: (T) -> Boolean, onPending: () -> Unit = {}, block: suspend () -> T, onNotRemoved: () -> Unit = {}, allowedPins: Set<String>? = null, wipePending: () -> Boolean = { false }): T {
         val op = UUID.randomUUID().toString()
         inflight.add(op)
         try {
             PlacePinning.underPinLock {
-                resolveStore(store, alive, save, op) // an earlier operation's leftovers are finished (committed) or dropped (not)
+                resolveStore(store, alive, save, op, wipePending) // an earlier operation's leftovers are finished (committed) or dropped (not)
                 val pairs = targetPairs(store, alive, target).let { p -> if (allowedPins == null) p else p.filterKeys { it in allowedPins } } // inside the pin lock: only the pins the user confirmed
-                if (pairs.isNotEmpty() && !store.arm(Arming(op, "forget", false, pairs, carried(store)))) { store.disarm(); throw PinArmFailed() }
+                if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming (nothing is forgotten; try again)
+                if (pairs.isNotEmpty() && !store.arm(Arming(op, "forget", false, pairs, carried(store, wipePending)))) { store.disarm(); throw PinArmFailed() }
             }
             val r = try { block() } catch (t: Throwable) { PlacePinning.underPinLock { dropIfOp(store, op) }; throw t }
             try {
@@ -95,8 +96,14 @@ object PinMomentLinks {
         } finally { inflight.remove(op) }
     }
 
-    /** An older unfinished COMMITTED arming's dead set, to be carried by a new arming (merge, never overwrite). */
-    private fun carried(store: UserPinStore): Map<String, String> = store.arming()?.takeIf { it.committed }?.dead ?: emptyMap()
+    /**
+     * An older unfinished arming's pairs to be carried by a new arming (merge, never overwrite): a committed one's dead set; an uncommitted WIPE arming's dead + pairs while its epoch is still pending (the wipe
+     * did commit, only its arming write did not).
+     */
+    private fun carried(store: UserPinStore, wipePending: () -> Boolean): Map<String, String> {
+        val a = store.arming() ?: return emptyMap()
+        return when { a.committed -> a.dead; a.kind == "wipe" && wipePending() -> a.dead + a.pairs; else -> emptyMap() }
+    }
 
     private suspend fun targetPairs(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, target: suspend (List<String>) -> Set<String>): Map<String, String> {
         val live = livePairs(store, alive)
@@ -196,7 +203,8 @@ object PinMomentLinks {
                 } else {
                     resolveStore(store, alive, save, op, wipePending) // a stale uncommitted wipe arming of an earlier run that never got to its epoch commit is dropped here
                     val pairs = livePairs(store, alive)
-                    if (pairs.isNotEmpty() && !store.arm(Arming(op, "wipe", false, pairs, carried(store)))) { store.disarm(); throw PinArmFailed() }
+                    if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming
+                    if (pairs.isNotEmpty() && !store.arm(Arming(op, "wipe", false, pairs, carried(store, wipePending)))) { store.disarm(); throw PinArmFailed() }
                 }
             }
         } catch (t: Throwable) { inflight.remove(op); throw t }

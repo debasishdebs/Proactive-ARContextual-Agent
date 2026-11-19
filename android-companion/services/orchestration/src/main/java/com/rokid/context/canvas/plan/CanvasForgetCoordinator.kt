@@ -27,14 +27,17 @@ class CanvasForgetCoordinator(
     private val afterCascade: suspend (com.rokid.context.memory.forget.ForgetService.Result) -> Boolean = { true },
 ) : ForgetListener {
     /** The user forgot the time range. Returns what was tombstoned. */
-    suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result = com.rokid.context.orchestration.DataOpGate.shared.delete {
+    suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result = com.rokid.context.orchestration.DataOpGate.shared.delete { forgetRangeLocked(fromMs, toMs) }
+
+    /** [forgetRange] for a caller that already holds the DataOpGate's delete side (the pin cascade arms inside the gate and runs the range Forget in it). */
+    suspend fun forgetRangeLocked(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result {
         // Forget lifecycle M3: the read leases that reach the range are revoked before the delete (a planner failure revokes them all)
         if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) com.rokid.context.orchestration.forget.LeaseRevocation.before(forget.db) { it.planRange(fromMs, toMs) } // with forgetV2 the executor re-plans and revokes inside its transaction
         val r = forget.forgetRange(fromMs, toMs)
         val clean = afterCascade(r.cascade)
         afterRange(fromMs, toMs, r.tombstonedTraceIds)
         ForgetListeners.rangeForgotten(fromMs, toMs, r.tombstonedTraceIds, except = this)
-        r.copy(cacheClean = clean)
+        return r.copy(cacheClean = clean)
     }
 
     /** Files and glasses follow a committed range forget (also a photo's time link, through [ForgetListeners]). Idempotent. */

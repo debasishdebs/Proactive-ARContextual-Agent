@@ -52,8 +52,8 @@ class PinMomentLinksTest {
     private val only1: suspend (List<String>) -> Set<String> = { l -> l.filter { it == id1 }.toSet() }
     private val none: suspend (List<String>) -> Set<String> = { emptySet() }
 
-    private suspend fun <T> explicit(st: UserPinStore = store, sv: suspend (List<UserPlace>) -> Boolean = save, target: suspend (List<String>) -> Set<String> = all, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, onNotRemoved: () -> Unit = {}, allowed: Set<String>? = null, forget: suspend () -> T): T =
-        PinMomentLinks.explicitStore(st, alive, sv, target, committed, onPending, forget, onNotRemoved, allowed)
+    private suspend fun <T> explicit(st: UserPinStore = store, sv: suspend (List<UserPlace>) -> Boolean = save, target: suspend (List<String>) -> Set<String> = all, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, onNotRemoved: () -> Unit = {}, allowed: Set<String>? = null, wipePending: () -> Boolean = { false }, forget: suspend () -> T): T =
+        PinMomentLinks.explicitStore(st, alive, sv, target, committed, onPending, forget, onNotRemoved, allowed, wipePending)
     /** What the epoch store says: true once a Delete all committed its epoch and has not finished. */
     private var pendingFlag = false
     private suspend fun sweep() = PinMomentLinks.sweepGuarded(store, alive, save) { pendingFlag }
@@ -300,6 +300,48 @@ class PinMomentLinksTest {
         assertEquals(0, resolve()); assertEquals(3, store.pins().size)
     }
 
+    @Test fun aFreshDeleteAllWhileAnEarlierWipeIsStillPendingCarriesTheEarlierPairs() = runBlocking<Unit> {
+        // wipe 1: epoch committed, its commit write failed, the process died
+        val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        pendingFlag = true
+        assertFalse(PinMomentLinks.wipeCommittedStore(UserPinStore(FailingPrefs(rawPrefs, failKey = UserPinStore.ARMED_KEY)), op1))
+        db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op1)
+        // a pin made on a live Moment afterwards, then an immediate second Delete all (the epoch is still pending)
+        fx.frame("c", (sec2 + 50) * 1000 + 5); fx.project(MomentId.format(sec2 + 50), MomentPartKind.FRAME to "c")
+        assertTrue(store.write(store.pins() + pin(3, MomentId.format(sec2 + 50))))
+        val op2 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        assertEquals("the earlier confirmed pairs ride on the new arming", mapOf(ids[0] to id1, ids[1] to id2), store.arming()!!.dead)
+        assertTrue(PinMomentLinks.wipeCommittedStore(store, op2)); db.wipeDao().wipeMemory()
+        assertEquals(3, resolve(self = op2)); PinMomentLinks.endWipe(op2)
+        assertEquals(listOf("Pin 2"), names())
+    }
+
+    @Test fun aForgetArmingWhileAnEarlierWipeIsStillPendingCarriesItsPairsToo() = runBlocking<Unit> {
+        val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        pendingFlag = true; db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op1) // epoch committed, never marked, process died
+        fx.frame("c", (sec2 + 50) * 1000 + 5); fx.project(MomentId.format(sec2 + 50), MomentPartKind.FRAME to "c")
+        assertTrue(store.write(store.pins() + pin(3, MomentId.format(sec2 + 50))))
+        explicit(target = { l -> l.filter { it == MomentId.format(sec2 + 50) }.toSet() }, wipePending = { pendingFlag }) { fx.service.forgetMoment("c") }
+        assertEquals("the pending wipe's pins are not lost: the forget's commit carries them", listOf("Pin 2"), names())
+    }
+
+    @Test fun aRangeForgetRacingADeleteAllCannotOverwriteTheWipesArming() = runBlocking<Unit> {
+        val wipe = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        val armed = store.arming()!!
+        try { explicit(target = all) { org.junit.Assert.fail("the Forget must not run"); 0 }; org.junit.Assert.fail("expected PinArmFailed") } catch (e: PinArmFailed) { }
+        assertEquals("the wipe's arming is untouched", armed, store.arming()); PinMomentLinks.endWipe(wipe)
+    }
+
+    @Test fun aDeleteAllRacingARangeForgetCannotOverwriteTheForgetsArming() = runBlocking<Unit> {
+        var armedInside: Arming? = null; var refused = false
+        explicit(target = all) {
+            armedInside = store.arming()
+            try { PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag }); org.junit.Assert.fail("expected PinArmFailed") } catch (e: PinArmFailed) { refused = true }
+            assertEquals("the Forget's arming is untouched", armedInside, store.arming()); fx.service.forgetMoment("a")
+        }
+        assertTrue(refused); assertEquals(listOf("Pin 1", "Pin 2"), names())
+    }
+
     // ---- the invariant: every stored arming has a resolution at the next start ----
 
     @Test fun everyStoredArmingShapeIsResolvedByTheNextStart() = runBlocking<Unit> {
@@ -403,6 +445,7 @@ class PinMomentLinksTest {
         assertTrue(ForgetActions.rangeNeedsConfirmation(two, null)); assertTrue(ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0])))
         assertTrue("same count, other pins", ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0], ids[2])))
         val actions = src("ForgetActions.kt")
+        assertTrue("the range arming is stored inside the DataOpGate", "DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange)" in actions && "forgetRangeLocked" in actions)
         assertTrue("the arming is bound to the confirmed set", "allowedPins = confirmedPins ?: emptySet()" in actions)
         assertTrue("the refusal runs before the cascade", actions.indexOf("rangeNeedsConfirmation(going.ids, confirmedPins)") in 1 until actions.indexOf("PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }"))
     }
