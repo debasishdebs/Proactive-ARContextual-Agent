@@ -398,7 +398,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
     composable(Routes.SETTINGS_DATA_SAVER) {
         val app = LocalContext.current.applicationContext
-        com.rokid.context.phone.ui.settings.datasaver.DataSaverRoute(remember { com.rokid.context.phone.ui.settings.datasaver.AndroidDataSaverControl(app) }, back)
+        com.rokid.context.phone.ui.settings.datasaver.DataSaverRoute(remember { com.rokid.context.phone.datasaver.AndroidDataSaverControl(app) }, back)
     }
     composable(Routes.SETTINGS_NEXUS) {
         val app = LocalContext.current.applicationContext

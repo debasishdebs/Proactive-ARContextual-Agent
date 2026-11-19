@@ -61,6 +61,16 @@ object NetworkCosts {
 
     const val STUCK_MS = 10 * 60_000L
 
+    /**
+     * A Wi-Fi or Ethernet network that is connected but has been without validation for less than [debounceMs]: every reconnect delivers its capabilities before validation, so the cost is UNKNOWN for a moment.
+     * That blip is not a reason to mark photo uploads "blocked" or to park the backlog; a network still unvalidated after the debounce is.
+     */
+    fun preValidationBlip(s: NetSnapshot, nowMs: Long, debounceMs: Long = BLIP_MS): Boolean =
+        s.known && (s.transport == Transport.WIFI || s.transport == Transport.ETHERNET) && !s.validated && s.notRoaming &&
+            s.unvalidatedSinceMs > 0 && nowMs - s.unvalidatedSinceMs < debounceMs
+
+    const val BLIP_MS = 20_000L
+
     /** True for every cost that is not FREE and not OFFLINE: the cases where a stored place cell is kept instead of fetched again. */
     fun isCostly(c: NetworkCost): Boolean = c == NetworkCost.HOME_MOBILE || c == NetworkCost.ROAMING || c == NetworkCost.UNKNOWN || c == NetworkCost.RESTRICTED
 

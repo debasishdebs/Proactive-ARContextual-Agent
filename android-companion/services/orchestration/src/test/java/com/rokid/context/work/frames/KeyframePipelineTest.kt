@@ -535,13 +535,13 @@ class KeyframePipelineTest {
         assertEquals("parked frames are not", 0, (1..100).count { state("f$it") == "NEAR_DUP" })
     }
 
-    private fun blockedOnce(blocked: () -> Boolean, wasBlocked: () -> Boolean, handled: () -> Unit = {}) =
-        KeyframePipeline(db, completing(), { now }, null, newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = blocked, dataSaverWasBlocked = wasBlocked, dataSaverHandled = handled)
+    private fun blockedOnce(blocked: () -> Boolean, wasBlocked: () -> Boolean, handled: (Long) -> Unit = {}) =
+        KeyframePipeline(db, completing(), { now }, null, newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = blocked, dataSaverBlockedSince = { if (wasBlocked()) 777L else 0L }, dataSaverHandled = handled)
 
     @Test fun afterAProcessRestartTheFirstUnblockedDrainParksTheUntaggedBacklogBeforeSheddingAndHandlesTheMark() = runBlocking {
         for (i in 1..300) seed("f$i", i * 1000L) // never tagged: the old process died before its next blocked drain
         var handled = 0
-        val p = blockedOnce(blocked = { false }, wasBlocked = { handled == 0 }, handled = { handled++ })
+        val p = blockedOnce(blocked = { false }, wasBlocked = { handled == 0 }, handled = { since -> assertEquals("the value read before parking is passed on", 777L, since); handled++ })
         assertEquals(3, p.drainOnce())
         assertEquals("nothing was shed", 0, (1..300).count { state("f$it") == "NEAR_DUP" })
         assertEquals(1, handled)

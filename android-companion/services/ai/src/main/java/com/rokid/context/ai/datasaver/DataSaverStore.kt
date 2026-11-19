@@ -36,8 +36,21 @@ class DataSaverStore(private val prefs: SharedPreferences) {
 
     /** When photo uploads were first seen blocked since the mark was last cleared (ms; 0 = not blocked). Persisted so a restart while roaming still knows the backlog was parked. */
     fun blockedSince(): Long = prefs.getLong(K_BLOCKED, 0L)
-    fun markBlocked(nowMs: Long) { if (prefs.getLong(K_BLOCKED, 0L) == 0L) prefs.edit().putLong(K_BLOCKED, nowMs).apply() }
-    fun clearBlocked() { prefs.edit().remove(K_BLOCKED).apply() }
+    private val markLock = Any()
+
+    /**
+     * Writes a NEW value (later than the old one) when there is no mark or the old one is at least [MARK_REFRESH_MS] old, so a clear that read the old value cannot erase a block seen after it
+     * (a frame that arrives inside the throttle window is born parked anyway). Throttled so a screen refreshing every 2 s does not write the file every time.
+     */
+    fun markBlocked(nowMs: Long) = synchronized(markLock) {
+        val old = prefs.getLong(K_BLOCKED, 0L)
+        if (old == 0L || nowMs - old >= MARK_REFRESH_MS) prefs.edit().putLong(K_BLOCKED, maxOf(nowMs, old + 1)).apply()
+    }
+
+    /** Compare-and-clear: removes the mark only if it still equals [expected] (the value read before the backlog was parked). Returns whether it cleared. */
+    fun clearBlocked(expected: Long): Boolean = synchronized(markLock) {
+        if (expected == 0L || prefs.getLong(K_BLOCKED, 0L) != expected) false else { prefs.edit().remove(K_BLOCKED).apply(); true }
+    }
 
     /** The counters live in the same file under their own keys. */
     val counters: CounterStore = object : CounterStore {
@@ -51,6 +64,7 @@ class DataSaverStore(private val prefs: SharedPreferences) {
         private const val K_ABROAD = "abroad"
         private const val K_SMALL = "small_on_roaming"
         private const val K_BLOCKED = "blocked_since"
+        const val MARK_REFRESH_MS = 10_000L
         fun of(context: Context) = DataSaverStore(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
     }
 }

@@ -1,11 +1,9 @@
 package com.rokid.context.phone.ui.settings.datasaver
 
-import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.rokid.context.ai.datasaver.DataSaverGraph
 import com.rokid.context.core.net.DataMode
 import com.rokid.context.core.net.DataSaverSettings
 import com.rokid.context.core.net.NetworkCost
@@ -15,7 +13,6 @@ import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.SwitchRow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -101,7 +98,7 @@ object DataSaverModel {
     )
 }
 
-/** What the screen needs (production: [AndroidDataSaverControl]; tests: a fake). */
+/** What the screen needs (production: `phone.datasaver.AndroidDataSaverControl`; tests: a fake). */
 interface DataSaverControl {
     val state: StateFlow<DataSaverUiState>
     fun setMode(m: DataMode)
@@ -109,40 +106,14 @@ interface DataSaverControl {
     fun setSmallOnRoaming(on: Boolean)
     /** Re-reads the network cost and today's counts (they change outside the screen). */
     fun refresh()
-}
-
-/** Production control over the app's one [DataSaverGraph]. A mode change also re-ensures the night-job constraints (they follow the mode) while processing is on. */
-class AndroidDataSaverControl(private val app: Context, private val graph: DataSaverGraph = DataSaverGraph.get(app)) : DataSaverControl {
-    private val flow = MutableStateFlow(DataSaverUiState())
-    override val state: StateFlow<DataSaverUiState> = flow.asStateFlow()
-
-    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
-
-    private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today(), flow.value.waiting, graph.stuckNow(), com.rokid.context.core.net.NetworkCosts.roamingWhy(graph.snapshot(), graph.settingsNow().abroad))
-
-    override fun setMode(m: DataMode) {
-        graph.settingsStore.setMode(m); refresh()
-        try { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(app)) com.rokid.context.work.OrchestrationScheduler(app).ensureNightIndex() } catch (_: Exception) { /* the runtime gate still holds */ }
-    }
-    override fun setAbroad(on: Boolean) { graph.settingsStore.setAbroad(on); refresh() }
-    override fun setSmallOnRoaming(on: Boolean) { graph.settingsStore.setSmallOnRoaming(on); refresh() }
-    init { flow.value = read() }
-
-    override fun refresh() {
-        graph.refresh() // re-reads Android Data Saver and the country facts too
-        flow.value = read()
-        scope.launch { // the waiting count is a database read: off the main thread
-            val n = try { com.rokid.context.memory.MemoryGraph.get(app).db.frameStateDao().dataSaverParkedCount() } catch (e: Exception) { return@launch }
-            // after Wi-Fi returns the parked frames are no longer held back, they are uploading: show only frames still blocked
-            flow.value = flow.value.copy(waiting = if (graph.decide(com.rokid.context.core.net.DataKind.PHOTO).allowed) 0 else n)
-        }
-    }
+    /** Keeps [refresh]ing off the main thread for as long as the screen is shown (the caller cancels it); the polling lives with the control, not in the settings file. */
+    suspend fun poll() {}
 }
 
 @Composable
 fun DataSaverRoute(control: DataSaverControl, back: () -> Unit) {
     val state by control.state.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { control.refresh() }; delay(2_000) } } // binder calls and a database read: never on the main thread // the network and the counts change outside this screen
+    LaunchedEffect(Unit) { control.poll() }
     DataSaverScreen(state, back, control::setMode, control::setAbroad, control::setSmallOnRoaming)
 }
 
