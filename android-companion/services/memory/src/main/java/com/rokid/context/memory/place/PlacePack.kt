@@ -123,11 +123,15 @@ class PlacePack(
      * any that is a site. Every returned place gets today's `lastUsedDay`. The position is used for the lookup only; it is never stored or logged.
      */
     suspend fun candidates(lat: Double, lon: Double, networkUp: Boolean): PlaceCandidates {
+        val t0 = now()
         val outcome = ensureCell(Geohash5.encode(lat, lon), networkUp)
         val w = Geo.window(lat, lon, Geo.CANDIDATE_GAP_M + PlaceKinds.MAX_RADIUS_M)
-        val hits = Geo.candidates(dao.inBox(w.south, w.north, w.west, w.east), lat, lon).map { it.place }
+        val inBox = dao.inBox(w.south, w.north, w.west, w.east)
+        val hits = Geo.candidates(inBox, lat, lon).map { it.place }
         val all = if (hits.isEmpty()) hits else Geo.expandSubPlaces(hits, chunked(hits.map { it.id }) { dao.childrenOf(it) })
         if (all.isNotEmpty()) { val day = day(); eachChunk(all.map { it.id }) { dao.touch(it, day) } }
+        val pins = all.count { UserPlace.isUserId(it.id) }
+        log("pack lookup cell=${outcome.name} online=$networkUp inWindow=${inBox.size} hits=${hits.size} expanded=${all.size} pins=$pins ms=${now() - t0}") // counts and the cell's state only: never the cell key (a 5 km position) or a place
         return PlaceCandidates(all, outcome)
     }
 
@@ -215,8 +219,9 @@ class PlacePack(
 
     private suspend fun fetchAndStore(cell: String, src: CellSource, seeded: Boolean): CellOutcome {
         val epoch = wipeEpoch.get()
+        val fetchStart = now()
         val got = try { zoneCheck(); src.fetchCell(cell) } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            log("cell fetch failed cls=${e.javaClass.simpleName}")
+            log("cell fetch failed cls=${e.javaClass.simpleName} seeded=$seeded ms=${now() - fetchStart}")
             return CellOutcome.FAILED
         }
         if (wipeEpoch.get() != epoch) { log("cell fetch dropped: Delete all ran"); return CellOutcome.FAILED }
@@ -238,7 +243,7 @@ class PlacePack(
             dao.putCell(CellEntity(cell, t, if (got.complete) CELL_OK else CELL_PARTIAL))
             evicted = evictToBudget(keepIds = clean.map { it.id }, keepCell = cell)
         }
-        log("cell stored places=${clean.size} evicted=$evicted complete=${got.complete}")
+        log("cell stored places=${clean.size} evicted=$evicted complete=${got.complete} seeded=$seeded ms=${now() - fetchStart}")
         return if (got.complete) CellOutcome.FETCHED else CellOutcome.PARTIAL
     }
 

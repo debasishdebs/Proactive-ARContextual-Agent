@@ -123,10 +123,22 @@ class PlaceSampler(
     @Volatile private var job: Job? = null
     private val handled = ArrayDeque<String>()
 
+    /**
+     * The decision record of the attempt in flight, logged as ONE `place attempt ...` line when it ends. Only ids (`wd:`, `osm:`, `user:<uuid>`), counts, buckets, durations and fixed reason tokens:
+     * never a name, note, summary, coordinate, photo or frame id. One attempt runs at a time (the single-flight [PlaceFlight]), so a field is enough.
+     */
+    private class Trace(val startedAt: Long) {
+        var reason = "-"; var call = "none"; var online = "-"; var cell = "-"; var cand = 0; var ids = "-"
+        var frameAgeS = -1L; var fixAgeB = "-"; var accB = "-"; var candMs = -1L; var callMs = -1L
+        var chosen = "-"; var distB = "-"; var confPct = -1; var dedupeAgeS = -1L; var dedupeDistB = "-"; var callGapS = -1L
+        var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
+    }
+    @Volatile private var tr = Trace(0)
+
     /** A frame was stored. Cheap and non-blocking; the work runs on [scope]. */
     fun poke() {
         if (closed || !enabled()) return
-        if (!flight.busy.compareAndSet(false, true)) { finish(PlaceOutcome.BUSY); return }
+        if (!flight.busy.compareAndSet(false, true)) { finish(PlaceOutcome.BUSY, Trace(elapsed()).also { it.reason = "single_flight" }); return }
         val j = fence.launch(scope) { run() }
         job = j
         j.invokeOnCompletion { flight.busy.set(false) }
@@ -136,20 +148,23 @@ class PlaceSampler(
 
     private fun live(gen: Long) = !closed && enabled() && pipelineOn() && generation() == gen
 
-    private fun finish(o: PlaceOutcome) {
+    private fun finish(o: PlaceOutcome, t: Trace = tr) {
         stats(o)
         log("place outcome=${o.name}")
+        val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
+        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err}")
     }
 
     private suspend fun run() {
         val ticket = coroutineContext[ZoneTicket] ?: fence.ticket()
+        tr = Trace(elapsed())
         try {
             sweep()
             finish(attempt(ticket))
         } catch (c: CancellationException) {
-            if (c is ZoneFenced || !ticket.isOpen()) finish(PlaceOutcome.ZONE)
+            if (c is ZoneFenced || !ticket.isOpen()) { tr.reason = "cancelled_by_zone_fence"; finish(PlaceOutcome.ZONE) } else { tr.reason = "cancelled"; tr.err = "CancellationException"; finish(PlaceOutcome.FAILED) }
             throw c
-        } catch (_: Exception) { finish(PlaceOutcome.FAILED) }
+        } catch (e: Exception) { tr.reason = "exception"; tr.err = e.javaClass.simpleName; finish(PlaceOutcome.FAILED) }
     }
 
     /** Takes back every place memory a failed rollback left marked. Runs to the end even if the attempt is cancelled; a failure leaves the mark for the next sweep. */
@@ -174,10 +189,19 @@ class PlaceSampler(
      * the action it guards (a fix, a fetch, an upload, a write, a card).
      */
     private suspend fun stopped(gen: Long, ticket: ZoneTicket, frameId: String? = null): PlaceOutcome? {
-        if (!live(gen)) return PlaceOutcome.DISABLED
-        if (zoneBlocked()) return PlaceOutcome.ZONE
-        if (frameId != null && store.tombstoned(frameId)) return PlaceOutcome.DROPPED
-        return if (!ticket.isOpen() || !live(gen)) PlaceOutcome.ZONE else null
+        if (!live(gen)) { tr.reason = notLiveReason(gen); return PlaceOutcome.DISABLED }
+        if (zoneBlocked()) { tr.reason = "zone_blocked"; return PlaceOutcome.ZONE }
+        if (frameId != null && store.tombstoned(frameId)) { tr.reason = "tombstoned"; return PlaceOutcome.DROPPED }
+        return if (!ticket.isOpen() || !live(gen)) { tr.reason = if (!ticket.isOpen()) "fence_closed" else notLiveReason(gen); PlaceOutcome.ZONE } else null
+    }
+
+    /** Which of the liveness conditions failed (log only). */
+    private fun notLiveReason(gen: Long) = when {
+        closed -> "closed"
+        !enabled() -> "switch_off"
+        !pipelineOn() -> "pipeline_off"
+        generation() != gen -> "wipe_generation_changed"
+        else -> "not_live"
     }
 
     private suspend fun attempt(ticket: ZoneTicket): PlaceOutcome {
@@ -186,46 +210,67 @@ class PlaceSampler(
         // The zone gate comes first: nothing below runs while a zone is active, approaching or unreadable.
         stopped(gen, ticket)?.let { return it }
         val now = clock()
-        val f = store.newestDwell(now - RECENT_MS) ?: return PlaceOutcome.NO_FRAME
+        val f = store.newestDwell(now - RECENT_MS) ?: run { tr.reason = "no_dwell_frame"; return PlaceOutcome.NO_FRAME }
         val cap = f.capturedAtMs
-        if (cap == null || cap < now - RECENT_MS || cap > now + SKEW_MS || store.tombstoned(f.frameId)) return PlaceOutcome.STALE_FRAME
-        if (f.frameId in handled) return PlaceOutcome.SEEN
+        tr.frameAgeS = if (cap == null) -1L else (now - cap) / 1000
+        if (cap == null || cap < now - RECENT_MS || cap > now + SKEW_MS || store.tombstoned(f.frameId)) {
+            tr.reason = if (cap == null) "no_capture_time" else if (cap < now - RECENT_MS) "frame_too_old" else if (cap > now + SKEW_MS) "frame_in_future" else "tombstoned"
+            return PlaceOutcome.STALE_FRAME
+        }
+        if (f.frameId in handled) { tr.reason = "already_handled"; return PlaceOutcome.SEEN }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the fix is asked for
-        val fx = fix() ?: return PlaceOutcome.NO_FIX
-        if (fx.ageMs < 0 || fx.ageMs > MAX_FIX_AGE_MS || fx.accuracyM.isNaN() || fx.accuracyM > MAX_FIX_ACCURACY_M || !fx.lat.isFinite() || !fx.lon.isFinite()) return PlaceOutcome.STALE_FIX
+        val fx = fix() ?: run { tr.reason = "fix_unavailable"; return PlaceOutcome.NO_FIX }
+        tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM)
+        if (fx.ageMs < 0 || fx.ageMs > MAX_FIX_AGE_MS || fx.accuracyM.isNaN() || fx.accuracyM > MAX_FIX_ACCURACY_M || !fx.lat.isFinite() || !fx.lon.isFinite()) {
+            tr.reason = if (fx.ageMs < 0) "fix_age_negative" else if (fx.ageMs > MAX_FIX_AGE_MS) "fix_too_old" else if (!fx.lat.isFinite() || !fx.lon.isFinite()) "fix_not_finite" else "fix_inaccurate"
+            return PlaceOutcome.STALE_FIX
+        }
         // S2: the fix is judged against the zones itself (box + buffer + approach margin, accuracy against the user, unreadable zones block), before the cell fetch or any upload.
-        if (com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(try { zones() } catch (c: CancellationException) { throw c } catch (e: Exception) { null }, fx.lat, fx.lon, fx.accuracyM)) return PlaceOutcome.ZONE
+        if (com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(try { zones() } catch (c: CancellationException) { throw c } catch (e: Exception) { null }, fx.lat, fx.lon, fx.accuracyM)) { tr.reason = "zone_fix"; return PlaceOutcome.ZONE }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
         remember(f.frameId)
         val online = networkUp()
+        tr.online = online.toString()
+        val packAt = elapsed()
         val found = candidates(fx.lat, fx.lon, online)
-        if (found.places.isEmpty()) return PlaceOutcome.NO_CANDIDATES
+        tr.candMs = (elapsed() - packAt).coerceAtLeast(0L); tr.cell = found.outcome.name; tr.cand = found.places.size
+        if (found.places.isEmpty()) { tr.reason = "pack_empty"; return PlaceOutcome.NO_CANDIDATES }
         flight.lastAttempt?.let { a ->
-            if (now - a.at in 0..DEDUPE_MS && Geo.distanceM(fx.lat, fx.lon, a.lat, a.lon) <= DEDUPE_M) return PlaceOutcome.DUPLICATE
+            val d = Geo.distanceM(fx.lat, fx.lon, a.lat, a.lon)
+            tr.dedupeAgeS = (now - a.at) / 1000; tr.dedupeDistB = bucketM(d)
+            if (now - a.at in 0..DEDUPE_MS && d <= DEDUPE_M) { tr.reason = "same_place_recently"; return PlaceOutcome.DUPLICATE }
         }
         val hits = cutKeepingPins(found.places.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) })
+        tr.cand = hits.size; tr.ids = idList(hits.map { it.first.id })
         // The spacing is judged NOW (after any lengthy fetch), against the end of the previous call, on the monotonic clock.
-        val callOk = online && elapsed() - flight.lastCallAt >= MIN_CALL_GAP_MS
-        if (online && !callOk) return PlaceOutcome.RATE_LIMITED
+        val sinceCall = elapsed() - flight.lastCallAt
+        tr.callGapS = if (flight.lastCallAt < 0) -1L else (sinceCall / 1000).coerceAtLeast(0L)
+        val callOk = online && sinceCall >= MIN_CALL_GAP_MS
+        if (online && !callOk) { tr.reason = "call_gap_${MIN_CALL_GAP_MS / 1000}s"; return PlaceOutcome.RATE_LIMITED }
         flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now)
         stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
-        if (!callOk) return fallback(hits, f.frameId, gen, cardEpoch, ticket) // offline: the only no-call fallback (G1)
+        if (!callOk) { tr.reason = "offline"; tr.call = "skipped_offline"; return fallback(hits, f.frameId, gen, cardEpoch, ticket) } // offline: the only no-call fallback (G1)
         // G1 (ruling 2026-11-17): a power, thermal or policy denial is NOT a failure of the match and never becomes a nearby identification: no call, no card.
-        if (!admit()) return PlaceOutcome.NOT_ADMITTED
+        if (!admit()) { tr.reason = "not_admitted"; tr.call = "skipped_not_admitted"; return PlaceOutcome.NOT_ADMITTED }
         flight.lastCallAt = elapsed()
         val lines = hits.mapIndexed { i, h -> "${i + 1}. ${h.first.name} | ${h.first.kind.replace('_', ' ')}" }
-        if (!ticket.isOpen()) return PlaceOutcome.ZONE // the last check; nothing suspends between it and the call, which the fence's job cancels if the zone comes later
+        if (!ticket.isOpen()) { tr.reason = "fence_closed"; return PlaceOutcome.ZONE } // the last check; nothing suspends between it and the call, which the fence's job cancels if the zone comes later
         // G1: only a GENUINE call failure (the provider or the network failed) may fall back to the nearby card; a policy denial, a forgotten photo or an invalid reply is no identification.
         var genuineFailure = false
-        val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); null }
+        tr.call = "made"
+        val callAt = elapsed()
+        val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); tr.err = e.javaClass.simpleName; null }
         flight.lastCallAt = elapsed() // the permit wait and the call are over: the gap runs from here, not from the start of the attempt
+        tr.callMs = (flight.lastCallAt - callAt).coerceAtLeast(0L)
         if (stopped(gen, ticket, f.frameId) != null) return PlaceOutcome.DROPPED
-        if (res == null) return if (genuineFailure) fallback(hits, f.frameId, gen, cardEpoch, ticket) else PlaceOutcome.FAILED
-        if (!res.delivered) return PlaceOutcome.FAILED // the photo was not proven to have reached the model: not a photo match, not a nearby guess either
+        if (res == null) { tr.reason = if (genuineFailure) "call_failed_genuine" else "call_failed_or_photo_gone"; return if (genuineFailure) fallback(hits, f.frameId, gen, cardEpoch, ticket) else PlaceOutcome.FAILED }
+        if (!res.delivered) { tr.reason = "photo_not_delivered"; return PlaceOutcome.FAILED } // the photo was not proven to have reached the model: not a photo match, not a nearby guess either
         val choice = res.output.choice
-        if (choice.equals(NONE, ignoreCase = true)) return PlaceOutcome.NONE
-        val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: return PlaceOutcome.CONTRACT
-        if (res.output.confidence < MIN_CONFIDENCE) return PlaceOutcome.LOW_CONFIDENCE
+        tr.confPct = (res.output.confidence * 100).toInt()
+        if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; return PlaceOutcome.NONE }
+        val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; return PlaceOutcome.CONTRACT }
+        tr.chosen = hits[idx - 1].first.id; tr.distB = bucketM(hits[idx - 1].second)
+        if (res.output.confidence < MIN_CONFIDENCE) { tr.reason = "confidence_below_${(MIN_CONFIDENCE * 100).toInt()}"; return PlaceOutcome.LOW_CONFIDENCE }
         val place = hits[idx - 1].first
         val parent = place.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name }
         return commit(place, parent, res, f.frameId, gen, cardEpoch, ticket)
@@ -240,11 +285,12 @@ class PlaceSampler(
         ledger.mark(frameId)
         try {
             val saved = saveMemory(PlaceMemoryRequest(frameId, place, parent, res.output.confidence, res.delivered, gen, allowed = { ticket.isOpen() && live(gen) }))
-            if (!saved) return PlaceOutcome.DROPPED
+            if (!saved) { tr.reason = "memory_not_saved"; tr.card = "dropped"; tr.cardWhy = "memory_not_saved"; return PlaceOutcome.DROPPED }
             // A zone that became active while the memory was being saved (after its last in-transaction check): the memory goes again and no card is shown.
-            if (stopped(gen, ticket, frameId) != null) return PlaceOutcome.DROPPED
+            if (stopped(gen, ticket, frameId) != null) { tr.card = "dropped"; tr.cardWhy = tr.reason; return PlaceOutcome.DROPPED }
             if (!publish(PlaceCards.photo(place, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
             keep = true
+            tr.reason = "matched"
             return PlaceOutcome.MATCHED
         } finally {
             withContext(NonCancellable) { if (keep) show(frameId, gen) else rollback(frameId, gen) }
@@ -257,6 +303,7 @@ class PlaceSampler(
      */
     private suspend fun show(frameId: String, gen: Long) {
         val shown = try { reveal(frameId, gen) } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
+        tr.reveal = if (shown) "ok" else "failed"
         if (shown) ledger.clear(frameId) else try { onRollbackFailed() } catch (_: Exception) { }
     }
 
@@ -271,17 +318,21 @@ class PlaceSampler(
      * epoch check are made together, under the fence's lock, in the same synchronous step as the publication. False = no card (the caller drops the attempt).
      */
     private suspend fun publish(card: PlaceCard, epoch: Long, gen: Long, frameId: String, ticket: ZoneTicket): Boolean {
-        if (stopped(gen, ticket, frameId) != null) return false // the suspending checks (zone records, tombstone) come first; the synchronous ones below come last
+        if (stopped(gen, ticket, frameId) != null) { tr.card = "dropped"; tr.cardWhy = tr.reason; return false } // the suspending checks (zone records, tombstone) come first; the synchronous ones below come last
         val h = cards
-        return fence.act(ticket) { if (!live(gen)) false else if (h != null) h.publishIf(card, epoch) else { onCard(card); true } } == true
+        val shown = fence.act(ticket) { if (!live(gen)) false else if (h != null) h.publishIf(card, epoch) else { onCard(card); true } } == true
+        if (shown) { tr.card = "shown"; tr.cardWhy = "-" } else { tr.card = "dropped"; tr.cardWhy = "withdrawn_or_fenced"; tr.reason = "card_dropped" }
+        return shown
     }
 
     /** The nearest place's card when it is unique within [NEARBY_M] (edge distance); otherwise nothing. */
     private suspend fun fallback(hits: List<Pair<PlaceEntity, Double>>, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket): PlaceOutcome {
-        val first = hits.firstOrNull() ?: return PlaceOutcome.NOTHING_NEARBY
-        if (gap(first.first, first.second) > NEARBY_M) return PlaceOutcome.NOTHING_NEARBY
-        if (hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M) return PlaceOutcome.NOTHING_NEARBY
+        val first = hits.firstOrNull() ?: run { tr.reason = "no_hits"; return PlaceOutcome.NOTHING_NEARBY }
+        tr.chosen = first.first.id; tr.distB = bucketM(first.second)
+        if (gap(first.first, first.second) > NEARBY_M) { tr.reason = "nearest_beyond_${NEARBY_M.toInt()}m"; tr.chosen = "-"; return PlaceOutcome.NOTHING_NEARBY }
+        if (hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M) { tr.reason = "ambiguous_second_within_${NEARBY_M.toInt()}m"; tr.chosen = "-"; return PlaceOutcome.NOTHING_NEARBY }
         if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+        tr.reason = "nearby_card"
         return PlaceOutcome.NEARBY
     }
 
@@ -294,6 +345,13 @@ class PlaceSampler(
     private fun remember(id: String) { handled.addLast(id); while (handled.size > HANDLED_MAX) handled.removeFirst() }
 
     companion object {
+        /** Log buckets: never an exact position. Distances are metres to a candidate's centre. */
+        internal fun bucketM(m: Double): String = when { m < 25 -> "lt25m"; m < 50 -> "lt50m"; m < 100 -> "lt100m"; m < 250 -> "lt250m"; m < 500 -> "lt500m"; m < 1000 -> "lt1km"; m < 5000 -> "lt5km"; else -> "ge5km" }
+        internal fun bucketAgeMs(ms: Long): String = when { ms < 0 -> "negative"; ms <= 5_000 -> "le5s"; ms <= 15_000 -> "le15s"; ms <= 30_000 -> "le30s"; ms <= 60_000 -> "le60s"; else -> "gt60s" }
+        internal fun bucketAccuracyM(m: Float): String = when { m.isNaN() -> "nan"; m <= 10f -> "le10m"; m <= 25f -> "le25m"; m <= 50f -> "le50m"; m <= 100f -> "le100m"; else -> "gt100m" }
+        /** At most 12 ids (nearest first) and how many more: keeps the line under the 1 KiB cap. */
+        internal fun idList(ids: List<String>): String = if (ids.isEmpty()) "-" else ids.take(12).joinToString(",") + if (ids.size > 12) ",+${ids.size - 12}" else ""
+
         /** The FINAL model list (after the sub-place expansion): nearest edge first, cut to [MAX_LIST], but the nearest [Geo.PIN_SLOTS] user pins always keep a place (they replace the farthest non-pins). */
         internal fun cutKeepingPins(all: List<Pair<PlaceEntity, Double>>): List<Pair<PlaceEntity, Double>> {
             val order = compareBy<Pair<PlaceEntity, Double>>({ (it.second - it.first.radiusM).coerceAtLeast(0.0) }, { it.second }, { it.first.id })

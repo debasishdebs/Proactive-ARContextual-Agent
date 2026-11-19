@@ -310,7 +310,47 @@ class PlaceSamplerTest {
 
     @Test fun logsAreOutcomeNamesOnly() = runTest {
         poke(); now += 25_000; fresh("f2"); fix = PlaceFix(north(300.0), LON, 1_000, 10f); poke()
-        assertTrue(logs.all { it.matches(Regex("place outcome=[A-Z_]+")) })
+        assertTrue(logs.all { it.matches(Regex("place outcome=[A-Z_]+")) || it.startsWith("place attempt outcome=") })
+    }
+
+    // ---- trip diagnostics: the decision record of every attempt (ids, buckets, reasons; never content) ----
+
+    private val PIN = "user:11111111-2222-3333-4444-555555555555"
+
+    @Test fun aMatchedAttemptLogsIdsBucketsTimingsAndTheCardResultButNeverNamesNotesOrCoordinates() = runTest {
+        places = listOf(place(PIN, "SECRET-NAME-XYZ", summary = "SECRET-NOTE-XYZ", kind = "user_pin"), place("wd:Q9", "Other Landmark", lat = north(300.0)))
+        poke()
+        val line = logs.single { it.startsWith("place attempt ") }
+        assertTrue(line, line.contains("outcome=MATCHED reason=matched call=made online=true cell=FRESH cand=2 ids=$PIN,wd:Q9 "))
+        assertTrue(line, line.contains("frameAgeS=5 fixAgeB=le5s accB=le10m ") && line.contains("chosen=$PIN distB=lt25m confPct=86 "))
+        assertTrue(line, line.contains("card=shown cardWhy=- reveal=ok err=-"))
+        assertTrue(line, Regex("candMs=\\d+ callMs=\\d+ totalMs=\\d+").containsMatchIn(line))
+        val all = logs.joinToString("\n")
+        for (secret in listOf("SECRET", "Other Landmark", "Charminar", "17.36", "78.47", "f1", "monument in")) assertFalse("log leaks $secret: $all", all.contains(secret))
+        assertTrue("one line stays far under the 1 KiB cap", line.length < 700)
+    }
+
+    @Test fun everyRefusalNamesItsReasonAndStateOfTheRateLimit() = runTest {
+        zone = true; poke()
+        assertTrue(logs.last().contains("outcome=ZONE reason=zone_blocked "))
+        zone = false; fix = null; fresh("f2"); poke()
+        assertTrue(logs.last().contains("outcome=NO_FIX reason=fix_unavailable "))
+        fix = PlaceFix(LAT, LON, 3_000, 80f); fresh("f3"); poke()
+        assertTrue(logs.last().contains("outcome=STALE_FIX reason=fix_inaccurate ") && logs.last().contains("accB=le100m"))
+        fix = PlaceFix(LAT, LON, 3_000, 10f); fresh("f4"); poke()      // matched: starts the 20 s gap and the dedupe memory
+        now += 25_000; fresh("f5"); poke()
+        assertTrue(logs.last(), logs.last().contains("outcome=DUPLICATE reason=same_place_recently ") && logs.last().contains("dedupeAgeS=25 dedupeDistB=lt25m"))
+        now += 130_000; fresh("f6"); fix = PlaceFix(LAT, LON, 1_000, 10f); online = false; poke()
+        assertTrue(logs.last(), logs.last().contains("outcome=NEARBY reason=nearby_card call=skipped_offline online=false") && logs.last().contains("chosen=wd:Q1 distB=lt25m") && logs.last().contains("card=shown"))
+        online = true; admit = false; now += 25_000; fresh("f7"); fix = PlaceFix(north(900.0), LON, 1_000, 10f); poke()
+        assertTrue(logs.last(), logs.last().contains("outcome=NOT_ADMITTED reason=not_admitted call=skipped_not_admitted"))
+    }
+
+    @Test fun cardWhenRevealFailsOrTheModelSaysNoneIsExplained() = runTest {
+        reply = PlaceMatchResult(PlaceMatchOutput("NONE", 0.2f), true); poke()
+        assertTrue(logs.last(), logs.last().contains("outcome=NONE reason=model_none call=made") && logs.last().contains("confPct=20"))
+        now += 25_000; fresh("f2"); fix = PlaceFix(north(300.0), LON, 1_000, 10f); reply = PlaceMatchResult(PlaceMatchOutput("1", 0.3f), true); poke()
+        assertTrue(logs.last(), logs.last().contains("outcome=LOW_CONFIDENCE reason=confidence_below_50 ") && logs.last().contains("chosen=wd:Q1"))
     }
 
     @Test fun cardTextRules() {
