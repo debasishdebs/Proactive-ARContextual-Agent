@@ -91,7 +91,7 @@
         <exclude domain="file" path="canvas_tmp" />
         <!-- Final pass 10: the dev-mode trace staging folder (raw sensor traces, adb-readable) under the EXTERNAL files dir. -->
         <exclude domain="external" path="trace-staging" />
-        <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1): never backed up or transferred. -->
+        <!-- Always-on logging LGC2: files/logs (pca.log and pca.log.N segments, up to about 300 MB): never backed up or transferred. -->
         <exclude domain="file" path="logs" />
         <!-- LGC2: the pending log-wipe request is per-install. -->
         <exclude domain="sharedpref" path="log_wipe_state.xml" />
@@ -186,7 +186,7 @@
         <exclude domain="file" path="canvas_tmp" />
         <!-- Final pass 10: the dev-mode trace staging folder (raw sensor traces, adb-readable) under the EXTERNAL files dir. -->
         <exclude domain="external" path="trace-staging" />
-        <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1): never backed up or transferred. -->
+        <!-- Always-on logging LGC2: files/logs (pca.log and pca.log.N segments, up to about 300 MB): never backed up or transferred. -->
         <exclude domain="file" path="logs" />
         <!-- LGC2: the pending log-wipe request is per-install. -->
         <exclude domain="sharedpref" path="log_wipe_state.xml" />

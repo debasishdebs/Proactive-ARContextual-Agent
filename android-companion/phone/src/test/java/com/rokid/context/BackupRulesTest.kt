@@ -26,7 +26,7 @@ class BackupRulesTest {
         "file:models",
         // Final review I4: the photo test's labels (queries.json holds the user's free text about their photos) never leave the phone.
         "file:photo-eval",
-        // Always-on logging LGC2: files/logs (pca.log, pca.log.1) is a per-install diagnostic record: never backed up or transferred.
+        // Always-on logging LGC2: files/logs (pca.log and pca.log.N segments, up to about 300 MB) is a per-install diagnostic record: never backed up or transferred.
         "file:logs",
         // Offline map: an imported private copy of the user's own PMTiles file (large; the user re-imports it).
         "file:${com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapViewModel.IMPORT_DIR}",

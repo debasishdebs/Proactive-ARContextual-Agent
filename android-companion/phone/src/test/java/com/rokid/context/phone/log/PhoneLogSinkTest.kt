@@ -88,9 +88,10 @@ class PhoneLogSinkTest {
         assertFalse(fileText().contains("info-line")); assertTrue(fileText().contains("warn-line"))
     }
 
-    @Test fun fileLivesUnderFilesLogsAndDefaultBudgetIsTwoThreeMegabyteFiles() {
+    @Test fun fileLivesUnderFilesLogsAndDefaultBudgetIsTripSized() {
         assertEquals("logs", PhoneLogSink.LOG_DIR)
-        assertEquals(6_000_000L, PhoneLogSink.MAX_BYTES)
+        assertEquals(300_000_000L, PhoneLogSink.MAX_BYTES)
+        assertEquals(5_000_000L, PhoneLogSink.SEGMENT_BYTES)
         val root = tmp.newFolder("fx")
         val s = PhoneLogSink.create(root)
         s.emit(Line(Level.E, "T", "boom", 1L), Route(logcat = false, file = true))
@@ -111,6 +112,24 @@ class PhoneLogSinkTest {
         val done = s.close()
         done.get(3, TimeUnit.SECONDS)       // termination observed separately from idleness
         assertTrue(done.isDone)
+    }
+
+    @Test fun tripRetentionKeepsManySegmentsOldestFirstWithinTotalCapAndWipeClearsAll() {
+        val root = tmp.newFolder("trip"); val seg = 2_400L; val cap = seg * 5       // 5 files in all
+        val s = PhoneLogSink.create(root, maxBytes = cap, segmentBytes = seg)
+        val dir = File(root, "logs")
+        for (i in 0 until 400) s.emit(Line(Level.W, "T", "n%04d-".format(i) + "x".repeat(80), 1L), Route(false, true))
+        assertTrue(s.awaitIdle(5000))
+        val names = dir.list()!!.toSet()
+        assertEquals(setOf("pca.log", "pca.log.1", "pca.log.2", "pca.log.3", "pca.log.4"), names)
+        assertTrue("total within cap", dir.listFiles()!!.sumOf { it.length() } <= cap)
+        assertTrue(dir.listFiles()!!.all { it.length() <= seg })
+        // oldest first = highest number first; line numbers strictly increase across the whole sequence, newest is last
+        val seq = listOf("pca.log.4", "pca.log.3", "pca.log.2", "pca.log.1", "pca.log").flatMap { File(dir, it).readLines() }.map { it.substringAfter(" T n").take(4).toInt() }
+        assertEquals(seq.sorted(), seq); assertEquals(399, seq.last()); assertTrue("oldest dropped first", seq.first() > 0)
+        File(dir, "pca.log.9").writeText("leftover from a bigger cap")
+        assertTrue(s.wipe()); assertEquals(emptyList<String>(), dir.list()!!.toList())
+        s.close()
     }
 
     @Test fun installCreatesNoDirectoryAndTouchesNoFileOnTheCallingThread() {
