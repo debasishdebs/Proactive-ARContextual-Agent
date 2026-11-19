@@ -56,7 +56,7 @@ interface TileTransport {
     fun cancelAll()
 }
 
-/** HTTPS only, no redirect following, connect and read timeouts, a hard read cap, gzip off (a tile is already compressed). */
+/** HTTPS only, no redirect following, connect and read timeouts, a hard read cap (counted on the bytes after Android's transparent gzip unpacking). */
 class UrlConnectionTileTransport(
     private val maxBytes: Int = OnlineTileSource.MAX_TILE_BYTES,
     private val connectTimeoutMs: Int = 6_000,
@@ -153,7 +153,7 @@ class OnlineTileDiskCache(
  * Raster z/x/y tiles from [provider] for the zones map, feeding the same compositor as the PMTiles archive. Blocking: call [tile] from a background dispatcher.
  *
  * Fences: HTTPS and the provider's one host only (every request AND every redirect target is checked; a redirect off the host is refused); at most [MAX_TILE_BYTES] per tile and only a
- * real image (PNG, JPEG, WebP header); zoom 0..[MAX_ZOOM]; at most [sessionCap] requests per foreground session and [maxConcurrent] at once; a 429 or 5xx backs the whole source off
+ * real image (PNG, JPEG, WebP header); zoom 0..[MAX_ZOOM]; at most [sessionCap] requests per visit to the screen ([newVisit]; a pause and resume within a visit keeps the count) and [maxConcurrent] at once; a 429 or 5xx backs the whole source off
  * (Retry-After honoured, capped, doubling); nothing is requested until [start] and nothing after [stop], which also cancels the requests in flight.
  * Logs: fixed event names only. A tile number, a URL and the key are never logged (tile numbers reveal where the user is looking).
  */
@@ -181,10 +181,13 @@ class OnlineTileSource(
     private val failedUntil = HashMap<TileKey, Long>()
     private var capLogged = false
 
-    /** Network requests made in this foreground session. */
+    /** Network requests made in this visit to the screen. */
     fun requestCount(): Int = requests.get()
 
-    override fun start() { synchronized(lock) { running = true; epoch++; requests.set(0); capLogged = false } }
+    override fun start() { synchronized(lock) { running = true; epoch++ } }
+
+    /** A new visit to the screen: the request cap starts again. A pause and resume inside the same visit keeps the count. */
+    override fun newVisit() { synchronized(lock) { requests.set(0); capLogged = false } }
 
     override fun stop() { synchronized(lock) { running = false; epoch++ }; transport.cancelAll() }
 
@@ -286,7 +289,7 @@ class OnlineTileSource(
             if (b.size < 12) return false
             val png = b[0] == 0x89.toByte() && b[1] == 'P'.code.toByte() && b[2] == 'N'.code.toByte() && b[3] == 'G'.code.toByte()
             val jpg = b[0] == 0xFF.toByte() && b[1] == 0xD8.toByte()
-            val webp = b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte() && b[3] == 'F'.code.toByte() && b[8] == 'W'.code.toByte()
+            val webp = b[0] == 'R'.code.toByte() && b[1] == 'I'.code.toByte() && b[2] == 'F'.code.toByte() && b[3] == 'F'.code.toByte() && b[8] == 'W'.code.toByte() && b[9] == 'E'.code.toByte() && b[10] == 'B'.code.toByte() && b[11] == 'P'.code.toByte()
             return png || jpg || webp
         }
     }

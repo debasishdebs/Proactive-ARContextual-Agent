@@ -53,7 +53,7 @@ class NoSecretsInBuildConfigTest {
         assertFalse(secretValue.containsMatchIn("https://res.openai.azure.com"))
     }
 
-    @Test fun theMapTileKeyDefaultsToEmptyAndHasAPlainCharset() {
+    @Test fun theMapTileKeyHasAPlainCharset() {
         assertTrue(Regex("[A-Za-z0-9_-]*").matches(BuildConfig.MAP_TILES_KEY))
     }
 
