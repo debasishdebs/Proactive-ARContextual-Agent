@@ -195,7 +195,7 @@ private fun ImageContent(s: PreviewSection.ImageSection, host: PreviewHost) {
             TextButton(onClick = { asking = true }, modifier = Modifier.testTag("add_to_photo_test")) { Text("Add to photo test", color = PcColors.MintDeep) }
             if (asking) AddToPhotoTestDialog(onDismiss = { asking = false }, onAdd = { q, small -> asking = false; add(q, current, small) })
         }
-        if (BuildConfig.DEBUG) {
+        if (com.rokid.context.phone.DebugOnlyGates.copyFrameIdVisible(BuildConfig.DEBUG)) {
             // Debug builds: copy the id to label photos for the photo 256-vs-768 test (ids are not shown or logged anywhere).
             val clipboard = LocalClipboardManager.current
             TextButton(onClick = { clipboard.setText(AnnotatedString(current)) }, modifier = Modifier.testTag("copy_frame_id")) { Text("Copy frame id", color = PcColors.MintDeep) }
