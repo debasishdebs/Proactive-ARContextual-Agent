@@ -29,3 +29,9 @@ Re-run Codex on the diffs only Opus reviewed (hub-wp3 fixes, zone fixes, wipe ba
 - Pins are prefs JSON; Moment required for new pins; explicit Forget deletes the pin after a dialog naming it; expiry only de-links.
 - Gradle jobs strictly sequential (lock); design jobs parallel; device-dependent work waits for the user or runs on the emulator; never stop on a blocked task, take the next one.
 - Status at 01:45: pin fixes written (uncompiled, waiting for the lock), data saver slice 1 agent building, image embedder comparison running.
+
+## G. Pin cascade review outcome (Opus, 2026-11-20 03:10, tip 4436d1a5): READY, no P1. Follow-ups (P2, low likelihood, all end in the SAFE direction: pins kept with a cleared link)
+- P2-1: a fresh Delete all can overwrite an earlier wipe's UNCOMMITTED arming while that wipe is still pending (PinMomentLinks.kt ~197-199): carry `old.dead + old.pairs` into the new arming when the old arming is an uncommitted wipe and wipePending() is true. Needs: failed wipeCommitted disk write + crash + immediate second Delete all.
+- P2-2: `forgetRangeOutcome` arms outside the DataOpGate (ForgetActions.kt ~227; the gate is only inside CanvasForgetCoordinator.forgetRange). No production caller today: gate it BEFORE any screen calls it.
+- P2-3: DeletionEpochStore.commitWipe (~:37): when commit() returns false the in-memory pending marker stays true for the process; restore the previous value on failure.
+Do these with the Forget pipeline redesign (or earlier if time allows).
