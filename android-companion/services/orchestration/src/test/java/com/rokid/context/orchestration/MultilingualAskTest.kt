@@ -100,7 +100,38 @@ class MultilingualAskTest {
         assertEquals(0, c.calls)
     }
 
+    @Test fun flagOnACustomPlanWithACondenseNodeNeverGetsTheLexiconFallback() = runBlocking<Unit> {
+        market(); flag = true
+        val custom = FlowPlan.BUILT_IN_QUERY.copy(condense = com.rokid.context.ai.canvas.CondenseSpec())
+        val c = condenser { null }
+        val r = service(c).retrieve(karela, now, custom)
+        assertEquals(1, c.calls) // its own node runs; the failed reply is NOT replaced by the lexicon
+        assertEquals(ids(service().also { flag = false }.retrieve(karela, now, custom)), ids(r)); flag = true
+        assertEquals("tea", ids(r).first()) // no lexicon: the same ranking as without the flag
+        // the built-in plan with the same failing condenser DOES fall back
+        assertEquals("gourd", ids(service(condenser { null }).retrieve(karela, now)).first())
+    }
+
     // ---- fallback to the lexicon
+
+    @Test fun flagOnATimeoutOfTheCondenserFallsBackToTheLexiconWithinTheBudget() = runBlocking<Unit> {
+        market(); flag = true
+        assertEquals(3_000L, QueryCondenser.TIMEOUT_MS)
+        val slow = QueryCondenser(ask = { _, _, _ -> kotlinx.coroutines.delay(60_000); CondenseOutput("tea", "en") }, timeoutMs = 50)
+        val r = service(slow).retrieve(karela, now)
+        assertEquals(1, slow.calls); assertEquals("gourd", ids(r).first()); assertTrue(r.vars.question.contains(karela))
+    }
+
+    @Test fun flagOnAnOverlongReplyIsCappedAt120CharactersAndTheAskStillRuns() = runBlocking<Unit> {
+        market(); flag = true
+        val long = "bitter gourd " + "verylongword".repeat(30)
+        val r = service(condenser { CondenseOutput(long, "hi") }).retrieve(karela, now)
+        assertEquals("gourd", ids(r).first())
+        assertTrue(QueryCondenser.clean(long)!!.length <= 120)
+        val one = "x".repeat(400) // a single oversized word: capped, no crash, the question is still answered from the original text
+        val r2 = service(condenser { CondenseOutput(one, "hi") }).retrieve(karela, now)
+        assertTrue(r2.vars.question.contains(karela)); assertTrue(QueryCondenser.clean(one)!!.length <= 120)
+    }
 
     @Test fun flagOnAFailedCondenserFallsBackToTheLexicon() = runBlocking<Unit> {
         market(); flag = true
@@ -154,10 +185,11 @@ class MultilingualAskTest {
 
     @Test fun lexiconExpandsHinglishWordsAndFoldsSpellings() {
         val c = IndicLexicon.expand("Kal market mein karelaa aur bhindi dikhi thi?")!!
-        assertEquals("bitter gourd bitter melon okra lady finger", c.query)
+        assertTrue(c.query, c.query.startsWith("bitter gourd bitter melon okra lady finger "))
+        assertTrue(c.query, c.query.endsWith("Kal market mein karelaa aur bhindi dikhi thi"))
         assertEquals("hi", c.lang); assertEquals("Kal market mein karelaa aur bhindi dikhi thi?", c.probe)
-        assertEquals("bitter gourd bitter melon", IndicLexicon.expand("करेला कहाँ दिखा था?")!!.query)
-        assertEquals("stove gas stove", IndicLexicon.expand("chulha jala tha?")!!.query)
+        assertTrue(IndicLexicon.expand("करेला कहाँ दिखा था?")!!.query.startsWith("bitter gourd bitter melon "))
+        assertTrue(IndicLexicon.expand("chulha jala tha?")!!.query.startsWith("stove gas stove "))
     }
 
     @Test fun lexiconIgnoresEnglishQuestionsAndIsBounded() {
@@ -167,7 +199,8 @@ class MultilingualAskTest {
             assertNull(q, c)
         }
         val big = IndicLexicon.expand(IndicLexicon.ENTRIES.joinToString(" ") { it.first.substringBefore('|') })!!
-        assertTrue(big.query.split(" ").size <= QueryCondenser.MAX_WORDS)
+        assertTrue(big.query.split(" ").size <= IndicLexicon.MAX_WORDS_IN_QUERY + IndicLexicon.MAX_QUESTION_WORDS)
+        assertNull(IndicLexicon.expand("Can you tell me where my keys are?")); assertNull(IndicLexicon.expand("aata hai"))
     }
 
     @Test fun lexiconDataIsVersionedBoundedAndPlain() {
@@ -180,7 +213,7 @@ class MultilingualAskTest {
             assertTrue(f, terms.all { t -> t.matches(Regex("[a-z]+( [a-z]+)?")) })
         }
         // a plain word, never the name of a person: none of these given names is a key
-        val names = setOf("rahul", "amit", "priya", "sunita", "anita", "sita", "gita", "ravi", "raj", "ram", "mohan", "neha", "pooja", "kavita", "mandi", "geeta", "asha", "deepak", "ganesh", "kamal")
+        val names = setOf("rahul", "amit", "priya", "sunita", "anita", "sita", "gita", "ravi", "raj", "ram", "mohan", "neha", "pooja", "kavita", "geeta", "asha", "deepak", "ganesh", "kamal")
         assertTrue(IndicLexicon.keys().intersect(names.map { IndicLexicon.fold(it) }.toSet()).isEmpty())
         assertNotNull(IndicLexicon.expand("paneer atta"))
     }

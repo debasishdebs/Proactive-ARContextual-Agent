@@ -181,7 +181,8 @@ class AnswerService(
     /** The offline floor (the condenser gave nothing): English words for the Hindi/Hinglish words of [q] from the bundled lexicon; null = no hit. Runs on the phone, sends nothing. */
     private fun lexiconQuery(q: String): QueryCondenser.Condensed? {
         val c = com.rokid.context.orchestration.retrieval.IndicLexicon.expand(q) ?: return null
-        PcLog.i(TAG, "lexicon fallback terms=${c.query.split(' ').size}")
+        val words = c.query.split(' ')
+        PcLog.i(TAG, "lexicon fallback terms=${words.size}")
         return c
     }
 
@@ -238,7 +239,7 @@ class AnswerService(
         // Multilingual flag ON: the built-in plan gets the same step (same fences); its failure falls back to the offline lexicon. OFF: exactly the plan's own node, if any.
         val multilingual = multilingualAsk()
         val condenseSpec = plan.condense ?: if (builtIn && multilingual) com.rokid.context.ai.canvas.CondenseSpec() else null
-        val condensed = condenseSpec?.let { condensedQuery(q, nowMs, it) ?: if (multilingual) lexiconQuery(q) else null }
+        val condensed = condenseSpec?.let { condensedQuery(q, nowMs, it) ?: if (multilingual && builtIn) lexiconQuery(q) else null }
         val c = rag.retrieve(RagQuery(q, search = condensed?.query, probe = condensed?.probe), ragSources, plan.ragParams(), nowMs)
         return Retrieved(
             PromptVars(
