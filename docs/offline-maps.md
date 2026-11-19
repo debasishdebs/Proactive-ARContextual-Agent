@@ -7,9 +7,19 @@ The pause-zones map can draw raster tiles from a local `.pmtiles` file under the
 - Reads a PMTiles v3 archive with a small pure-Kotlin reader (`phone/.../ui/settings/privacy/zones/tiles/`). Supported: PNG, JPEG or WebP tiles; directory and tile compression none or gzip. Not supported (refused with a plain message, grid used instead): vector tiles (MVT), brotli, zstd, PMTiles v1/v2.
 - **Choose a .pmtiles file**: the file is opened through the Storage Access Framework with a persisted read-only grant. No storage permission, no copy.
 - **Import (copy) into the app**: the only way the file is copied. The copy lives in `files/offline_maps/` (app-private, excluded from cloud backup and device transfer), its size is shown, and "Delete the copy" removes it.
-- **No network, ever**: no tile fetching, no API keys, no new permissions. `INTERNET` stays declared for other features; `MapNoNetworkTest` fails the build if the map code names a network class or URL scheme.
+- **No network in the offline code**: no tile fetching, no API keys, no new permissions. `INTERNET` stays declared for other features; `MapNoNetworkTest` fails the build if the offline map code (`tiles/`, `ZonesScreen.kt`, `MapViewport.kt`) names a network class or URL scheme. The only network code of the map is the opt-in street map below, in its own package (`zones/online/`).
 - The choice is stored in `offline_map.xml` (a document URI; excluded from backup because the grant does not survive a restore).
 - Attribution: if the archive's metadata has an `attribution`, it is shown on the map. Keep it when you build an extract (OpenStreetMap-derived tiles need it).
+
+## Online street map (optional, off by default)
+
+Settings > Privacy > Pause zones > "Show a street map (downloads map tiles from MapTiler)" draws MapTiler raster tiles (`streets-v2`, 256 px) under the same canvas, so pan, zoom, Fit and drawing a box work as with an offline file. An offline `.pmtiles` file you select wins over it. With the switch off, no key, or no network, the grid shows as before. "Centre on me" (same screen) takes one location fix on tap and moves the map to a view about 500 m across.
+
+- **Key (setup)**: put `PCA_MAP_TILES_KEY=<your MapTiler key>` in `android-companion/local.properties` (untracked, git-ignored) or export it as an environment variable before building. It is compiled into `BuildConfig.MAP_TILES_KEY` (default empty). **Never commit a key.** The key is embedded in the APK and is NOT secret: restrict it in the MapTiler dashboard (allowed origins/app) and expect it to be extractable. The Gradle value guard still checks it (letters, digits, `-`, `_` only); `NoSecretsInBuildConfigTest` names this one field as the reviewed exception.
+- **Without a key**: a release build has no provider and shows the grid only (the switch is replaced by a note). A DEBUG build without a key falls back to `tile.openstreetmap.org` under the OSM tile usage policy (https://operations.osmfoundation.org/policies/tiles/): fixed identifying User-Agent, on-disk caching, light interactive use only, no prefetching. Do not ship that build.
+- **Attribution**: "(c) MapTiler (c) OpenStreetMap contributors" and the name "MapTiler" are drawn on the map whenever its tiles show.
+- **Limits**: HTTPS and one fixed host (a redirect off that host or to http is refused), 512 KiB per tile, only PNG/JPEG/WebP, zoom up to 19, 4 requests at a time, 400 per visit to the screen, backoff on 429/5xx, requests only while the screen is in the foreground (in-flight ones are cancelled on pause), cache at most 50 MB in the app cache folder (least recently used first), deleted when the switch goes off and by Delete all.
+- **Privacy**: see `PRIVACY.md` sections 2 and 10. The first time you turn it on, a dialog states exactly what is sent; Cancel is the default and leaves it off.
 
 ## Why not MapLibre Native
 

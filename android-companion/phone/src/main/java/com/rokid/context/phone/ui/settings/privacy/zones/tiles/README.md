@@ -10,3 +10,5 @@ No third-party map library. MapLibre Native (`org.maplibre.gl:android-sdk`, BSD-
 If MapLibre is wanted later: add it in `phone/build.gradle.kts` with a pinned version, do ONE online `./gradlew --refresh-dependencies :phone:dependencies` to fill the cache, then build with `--offline` as usual. Re-check the APK size and min SDK 29 first.
 
 How to build a `.pmtiles` extract and the size guidance: `docs/offline-maps.md`. The map code makes no network calls (`MapNoNetworkTest`).
+
+Online street map (opt-in): `OnlineMap.kt` holds the source interface (`RasterTileSource`), the switch state machine and its prefs. The network code is in the separate package `zones/online/` (`OnlineTileSource`, disk cache, wiring); this package stays network-free.
