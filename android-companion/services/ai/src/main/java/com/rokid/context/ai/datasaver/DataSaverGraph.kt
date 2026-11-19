@@ -8,6 +8,8 @@ import com.rokid.context.core.net.DataKind
 import com.rokid.context.core.net.DataPolicy
 import com.rokid.context.core.net.DataSaverSettings
 import com.rokid.context.core.net.EndpointReach
+import com.rokid.context.core.net.ModelPrivacy
+import com.rokid.context.core.net.ModelPrivacyPolicy
 import com.rokid.context.core.net.NetSnapshot
 import com.rokid.context.core.net.NetworkCost
 import com.rokid.context.core.net.NetworkCosts
@@ -34,6 +36,8 @@ class DataSaverGraph internal constructor(
     /** Runs the one-off re-check after a pre-validation blip (production: a Default-dispatcher scope; tests: a test scope). */
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Model privacy (slice 1.4.3): under OFFLINE_ONLY nothing that reaches a remote endpoint is allowed, so every caller that parks on this gate (the keyframe loop, the queue, Ask photos, Place Guide) parks without a call. Default AUTO (tests). */
+    private val privacy: () -> ModelPrivacy = { ModelPrivacy.AUTO },
 ) : DataGate {
     val ledger = SkippedLedger(store.counters, epochDay)
     val settings get() = store.settings
@@ -52,6 +56,8 @@ class DataSaverGraph internal constructor(
     fun addOpenListener(l: () -> Unit) { openListeners += l }
 
     override fun decide(kind: DataKind, reach: EndpointReach): DataDecision {
+        // Offline only comes before every data-saver rule: a remote endpoint is never allowed (an unreadable setting counts as OFFLINE_ONLY).
+        if (!ModelPrivacyPolicy.allows(try { privacy() } catch (e: Exception) { ModelPrivacy.OFFLINE_ONLY }, reach)) return DataDecision(false, ModelPrivacyPolicy.R_OFFLINE_ONLY)
         val s = settingsNow(); val snap = snapshotNow()
         return DataPolicy.decide(kind, reach, NetworkCosts.classify(snap, s.abroad), snap.transport, s)
     }
@@ -63,8 +69,11 @@ class DataSaverGraph internal constructor(
      * Photo uploads are held back right now for THIS app's photo endpoint (reach-aware, like the pipeline) and not merely in the pre-validation blip every Wi-Fi reconnect shows (cost UNKNOWN for a moment).
      * This is the only input of the persisted "blocked" mark, of the insert-time parking probe and of the waiting line.
      */
-    fun heldBack(): Boolean =
-        !decide(DataKind.PHOTO, reachProvider()).allowed && !NetworkCosts.preValidationBlip(snapshotNow(), clock())
+    fun heldBack(): Boolean {
+        val d = decide(DataKind.PHOTO, reachProvider())
+        // Offline only is a standing refusal, not a network blip: parked frames stay parked (and protected) for as long as it is on and the photo endpoint is remote.
+        return !d.allowed && (d.reason == ModelPrivacyPolicy.R_OFFLINE_ONLY || !NetworkCosts.preValidationBlip(snapshotNow(), clock()))
+    }
 
     /** When photo uploads were first held back since the pipeline last handled it (0 = not; persisted: survives a restart). */
     fun blockedSince(): Long = store.blockedSince()
@@ -73,7 +82,8 @@ class DataSaverGraph internal constructor(
 
     override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {
         if (kind == DataKind.PHOTO && heldBack()) store.markBlocked(clock())
-        ledger.add(what)
+        // Offline only refusals are not a data cost: they are logged but not added to the "Blocked today" counts (those say "waiting for Wi-Fi").
+        if (d.reason != ModelPrivacyPolicy.R_OFFLINE_ONLY) ledger.add(what)
         // a blocked CALL: a parked frame can be blocked again at each recheck, so this counts calls, not photos (the live waiting count comes from the database)
         PcLog.i(TAG, "blocked kind=${kind.name} what=$what reason=${d.reason}")
     }
@@ -122,11 +132,14 @@ class DataSaverGraph internal constructor(
             val store = DataSaverStore.of(app)
             lateinit var graph: DataSaverGraph
             val monitor = NetworkCostMonitor(app) { graph.refreshState() }
-            graph = DataSaverGraph(store, { monitor.snapshot }, reread = monitor::reread)
+            val privacy = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)
+            graph = DataSaverGraph(store, { monitor.snapshot }, reread = monitor::reread, privacy = privacy::current)
             monitor.start()
             graph.refreshState()
             // A mode or abroad change can open the gate as well.
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch { store.settings.drop(1).collect { graph.refreshState() } }
+            // Model privacy turning off Offline only can open the gate as well.
+            CoroutineScope(SupervisorJob() + Dispatchers.Default).launch { privacy.mode.drop(1).collect { graph.refreshState() } }
             return graph
         }
 

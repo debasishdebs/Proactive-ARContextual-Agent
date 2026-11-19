@@ -28,6 +28,8 @@ class EndpointTester(
     client: OkHttpClient = Http.modelClient(),
     connectTimeoutMs: Long = 20_000,
     private val callTimeoutMs: Long = 60_000,
+    /** Model privacy: Test of a remote endpoint is refused under Offline only ("nothing leaves"), whatever the test would send. */
+    private val privacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.AUTO },
 ) {
     private val testClient: OkHttpClient = client.newBuilder()
         .connectTimeout(connectTimeoutMs, TimeUnit.MILLISECONDS)
@@ -35,7 +37,7 @@ class EndpointTester(
         .writeTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
         .callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
         .build()
-    private val embeddings = EmbeddingClient(testClient, nativeTimeoutMs = callTimeoutMs)
+    private val embeddings = EmbeddingClient(testClient, nativeTimeoutMs = callTimeoutMs, privacy = privacy)
 
     /** Owns native chat work, so a timed-out, uninterruptible call keeps running here, one at a time, without blocking Test. */
     private val nativeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -43,6 +45,7 @@ class EndpointTester(
 
     suspend fun test(endpointId: String, model: String): TestResult {
         val e = repo.byId(endpointId) ?: return TestResult(false, 0, "Endpoint not found")
+        if (runCatching { OfflineOnlyGuard.require(privacy, e) }.isFailure) return TestResult(false, 0, OFFLINE_ONLY_MESSAGE)
         val key = repo.keyFor(e)
         val start = System.nanoTime()
         return runCatching {
@@ -70,6 +73,7 @@ class EndpointTester(
 
     companion object {
         private const val PROMPT = "Reply only with OK"
+        const val OFFLINE_ONLY_MESSAGE = "Offline only is on: remote endpoints are not tested"
 
         private const val MAX_CAUSES = 8
 

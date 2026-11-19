@@ -5,6 +5,7 @@ import com.rokid.context.core.net.DataDecision
 import com.rokid.context.core.net.DataGate
 import com.rokid.context.core.net.DataKind
 import com.rokid.context.core.net.DataPolicy
+import com.rokid.context.core.net.ModelPrivacy
 import com.rokid.context.core.net.EndpointReach
 import com.rokid.context.core.net.Skipped
 import com.rokid.context.model.CallClass
@@ -48,7 +49,18 @@ class ModelRouter(
     private val gate: CallGate = PassThroughGate,
     /** The roaming data saver (slice 1). Asked once per provider call, before the permit; the default allows everything (tests, tools that never see the network). */
     private val dataGate: DataGate = DataGate.ALLOW_ALL,
+    /**
+     * Model privacy (slice 1.4.3), read at EVERY provider call (never cached). [ModelPrivacy.OFFLINE_ONLY] refuses every endpoint that is not on this phone or on the user's own network, on every entry
+     * point and for the primary, the fallback and the SUMMARIZE hop alike. A reader that throws counts as OFFLINE_ONLY (fail closed). The default (tests, tools) is [ModelPrivacy.AUTO].
+     */
+    private val privacy: () -> ModelPrivacy = { ModelPrivacy.AUTO },
 ) : LanguageModel {
+    /**
+     * Fail-closed privacy check for [e], asked BEFORE its key is read and before any provider is built or request made. Throws [OfflineOnlyRefusedException] (a park-without-attempt block) when the mode is
+     * OFFLINE_ONLY and the endpoint is [EndpointReach.REMOTE]. The fixed log token carries no host, endpoint or content.
+     */
+    private fun requireAllowedByPrivacy(e: Endpoint) = OfflineOnlyGuard.require(privacy, e)
+
     /** [liveness]: required with [images] (codex r10; the router refuses a photo without it). */
     @Deprecated("Pass a CallClass", ReplaceWith("generate(role, CallClass.OTHER, prompt, images)"))
     suspend fun generate(role: Role, prompt: String, images: List<ModelImageInput> = emptyList(), liveness: PhotoLiveness? = null): String =
@@ -120,6 +132,7 @@ class ModelRouter(
         // there can't replace the provider's error.
         var key: String? = null
         return try {
+            requireAllowedByPrivacy(e) // before the key is read
             key = endpoints.keyFor(e)
             counting { call(e, model, null, build, key, callClass) }
         } catch (c: CancellationException) {
@@ -138,6 +151,7 @@ class ModelRouter(
         var primaryKey: String? = null
         val first: Throwable? = primaryEndpoint?.let { primary ->
             try {
+                requireAllowedByPrivacy(primary) // before the key is read
                 primaryKey = endpoints.keyFor(primary)
                 return call(primary, b.model, b, build, primaryKey, callClass)
             } catch (c: CancellationException) { throw c } catch (f: PhotoForgottenException) { throw f } catch (u: ImagesUnguardedException) { throw u } catch (t: Throwable) { t }
@@ -151,6 +165,7 @@ class ModelRouter(
             )
         var fallbackKey: String? = null
         return try {
+            requireAllowedByPrivacy(fallback) // the fallback is held to the same rule as the primary: a remote one is refused under Offline only
             fallbackKey = endpoints.keyFor(fallback)
             call(fallback, b.fallbackModel ?: b.model, b, build, fallbackKey, callClass)
         } catch (c: CancellationException) {
@@ -196,6 +211,7 @@ class ModelRouter(
      * [RoutedReply.imagesDelivered] is set only for a reply whose call carried the photos.
      */
     private suspend fun call(e: Endpoint, model: String, b: RoleBinding?, build: (Endpoint) -> ModelRequest, key: String?, callClass: CallClass): RoutedReply {
+        requireAllowedByPrivacy(e) // the last guard (every provider call passes here, whichever entry point or retry led to it)
         requireConfigured(e, model, key)
         val p = providers.create(e, model, key)
         val request = build(e).let { r -> r.copy(temperature = r.temperature ?: b?.temperature, maxTokens = r.maxTokens ?: b?.maxTokens) }

@@ -35,6 +35,8 @@ class EmbeddingClient(
     private val http: OkHttpClient = Http.modelClient(60),
     private val nativeTimeoutMs: Long = 60_000,
     private val native: (String, List<String>, Boolean) -> List<FloatArray> = { path, texts, normalize -> LlamaCppNativeProvider.embed(path, texts, normalize) },
+    /** Model privacy, read at every call: under OFFLINE_ONLY a REMOTE endpoint is refused before anything is sent (the on-device model and the user's own network still work). A reader that throws counts as OFFLINE_ONLY. */
+    private val privacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.AUTO },
 ) {
     /** Owns native work so a timed-out, uninterruptible call keeps running here without blocking or overlapping anyone. */
     private val nativeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -42,6 +44,7 @@ class EmbeddingClient(
 
     suspend fun embed(e: Endpoint, model: String, key: String?, inputs: List<String>, dimensions: Int? = null, normalize: Boolean = true): List<FloatArray> {
         if (inputs.isEmpty()) return emptyList()
+        com.rokid.context.ai.OfflineOnlyGuard.require(privacy, e)
         if (e.kind == EndpointKind.LLAMACPP_LOCAL) return validated(nativeEmbed(e.baseUrl, inputs, normalize), inputs.size)
         val base = e.baseUrl.trimEnd('/')
         val (url, body) = when (e.kind) {
@@ -121,6 +124,7 @@ class EmbeddingClient(
     /** Model revision when the backend exposes one (Ollama digest); null otherwise. */
     suspend fun revision(e: Endpoint, model: String): String? {
         if (e.kind != EndpointKind.OLLAMA) return null
+        com.rokid.context.ai.OfflineOnlyGuard.require(privacy, e)
         val request = Request.Builder().url("${e.baseUrl.trimEnd('/')}/api/tags").get().build()
         val text = withContext(Dispatchers.IO) {
             http.newCall(request).execute().use { r ->

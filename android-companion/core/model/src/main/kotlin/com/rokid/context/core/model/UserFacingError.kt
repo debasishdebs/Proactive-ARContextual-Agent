@@ -22,12 +22,14 @@ object UserFacingErrors {
     val AiNotSet = UserFacingError("AI model not set up", "Finish the endpoint and model in Settings.", ErrorAction.FIX_ENDPOINT)
     val AiRequestRejected = UserFacingError("AI request rejected", "Check the endpoint and model in Settings.", ErrorAction.FIX_ENDPOINT)
     val AiUnavailable = UserFacingError("AI unavailable", "Will retry automatically.", ErrorAction.RETRY_LATER)
+    /** Model privacy "Offline only" refused a call to a remote model (slice 1.4.3): the typed, user-visible "needs an on-device model" state. */
+    val AiNeedsOnDevice = UserFacingError("Needs an on-device model", "Offline only is on. Use an on-device or home model, or switch it off.", ErrorAction.FIX_ENDPOINT)
     val AiGaveUp = UserFacingError("AI kept failing", "Stopped retrying; check the endpoint in Settings.", ErrorAction.FIX_ENDPOINT)
     val Unknown = UserFacingError("Something went wrong", "Details are in Diagnostics.", ErrorAction.NONE)
 
     val all: List<UserFacingError> = listOf(
         GlassesOffline, ClosedOnGlasses, NotAuthorized, VersionMismatch, StorageFull,
-        AiKeyRejected, AiNotSet, AiRequestRejected, AiUnavailable, AiGaveUp, Unknown,
+        AiKeyRejected, AiNotSet, AiRequestRejected, AiUnavailable, AiNeedsOnDevice, AiGaveUp, Unknown,
     )
 
     /** Banner for a link state (spec §2.2); null for states that need no action. */
