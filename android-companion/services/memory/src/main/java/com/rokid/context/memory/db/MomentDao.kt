@@ -164,7 +164,7 @@ abstract class MomentDao : DerivedStaleDao() {
         "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason, m.errorReason AS errorReason, l.photo AS photo, l.provenance AS provenance, l.frameId AS frameId, " +
             "(SELECT q.refId FROM moment_part q JOIN memory y ON y.id = q.refId WHERE q.momentId = p.momentId AND q.kind = 'MEMORY' AND y.reviewState != 'INVALIDATED' ORDER BY q.partTimeMs, q.refId LIMIT 1) AS memoryId " +
             "FROM canvas_label l LEFT JOIN moment_part p ON p.kind = 'MARK' AND p.refId = l.labelId LEFT JOIN moment m ON m.momentId = p.momentId " +
-            "WHERE l.kind = 'MOMENT' AND l.atMs >= :fromMs AND l.atMs < :toMs AND (l.atMs < :cKey OR (l.atMs = :cKey AND l.labelId > :cId)) ORDER BY l.atMs DESC, l.labelId ASC LIMIT :n",
+            "WHERE l.kind = 'MOMENT' AND l.atMs >= :fromMs AND l.atMs < :toMs AND l.atMs <= :cKey AND (l.atMs < :cKey OR (l.atMs = :cKey AND l.labelId > :cId)) ORDER BY l.atMs DESC, l.labelId ASC LIMIT :n",
     )
     abstract suspend fun marksPage(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<MarkRow>
 
