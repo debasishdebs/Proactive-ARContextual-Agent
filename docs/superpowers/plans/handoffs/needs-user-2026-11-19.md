@@ -41,3 +41,10 @@ Left, in order:
 3. [ ] After Sri Lanka: create the REAL signing key + lineage (docs: release/README.md, key-rotation-rehearsal), put its digest in release/signer-sha256.txt (the committed pin is a placeholder: CI fails on it on purpose) and in PcaSignerTrust.PINNED (empty today), create the GitHub Environment `release` with required reviewers and its secrets.
 4. [ ] Bump versions at release time (phone/glasses 1.0.0, bridge 2.0.0-dev) and run the release workflow manually with with_bridge=true (a tag push never builds the bridge).
 5. [ ] Publish to GitHub only after steps 1-4 and the device checklist (nexus-device-checklist.md step 16).
+
+## I. Added 2026-11-20 (user only; none blocks the trip candidate)
+- Data saver (design `plans/2026-11-20-roaming-data-saver-design.md` section 6, 11 questions): defaults (photos Wi-Fi only; small text on roaming), limits (proposed 10 MB and 30 photo uploads a day on mobile), spoken questions after the limit, "describe" on roaming (ask or wait), "I'm abroad" manual or dated, which SIM in Sri Lanka (local SIM reports "not roaming"), hotspot/pocket Wi-Fi, Delete all resets counters, place cards on roaming (drop proposed), VPN use, glasses count. Slice 1 is built with the conservative defaults until you answer.
+- Pin times: approximate times of your 3 home pins from the Activity stream (to attach their Moments with the new day picker).
+- Privacy nod: logged place ids (wd:/osm:) form a place-level trail in the local log; distance/UTC-offset buckets are logged. Keep or hash?
+- Offline vision model: shortlist Qwen3-VL-2B / SmolVLM2-2.2B, about 8.5 agent-days plus one device session (`plans/2026-11-20-offline-vision-model-exploration.md`): go/no-go and when.
+- Forget pipeline redesign (`plans/2026-11-20-forget-pipeline-redesign.md`): confirm it is built after Sikkim.
