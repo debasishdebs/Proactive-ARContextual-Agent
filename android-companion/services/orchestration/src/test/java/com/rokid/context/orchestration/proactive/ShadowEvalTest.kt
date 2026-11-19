@@ -60,4 +60,22 @@ class ShadowEvalTest {
         secret.forEach { assertFalse("leaked $it", text.contains(it)) }
         assertFalse(text.contains("SECRET")); assertTrue(text.startsWith("shadow-eval verdict="))
     }
+    @Test fun invalidDayKeysAreDroppedAndOnlyCounted() {
+        val d0 = java.time.Instant.ofEpochMilli(t0).atZone(utc).toLocalDate().toString()
+        val r = ShadowEval.evaluate(input().copy(dailyCounters = mapOf("Golconda Fort SECRET" to mapOf("runs" to 1), "2026-13-45" to mapOf("runs" to 1), "2026-1-5" to mapOf("runs" to 1), d0 to mapOf("runs" to 40))))
+        assertEquals(3, r.invalidDayKeys); assertEquals(7, r.observedDays)
+        val text = r.toText()
+        assertFalse(text.contains("SECRET")); assertFalse(text.contains("Golconda")); assertTrue(text.contains("invalid day keys: 3"))
+    }
+    @Test fun aSnapshotAboveTheRetainedRecordsIsUsedAndFailsOverTheCap() {
+        val d0 = java.time.Instant.ofEpochMilli(t0).atZone(utc).toLocalDate().toString()
+        val r = ShadowEval.evaluate(input().copy(dailyCounters = mapOf(d0 to mapOf("runs" to 9, "would_show" to 4))))
+        assertEquals(4, r.days.first { it.day == d0 }.wouldShow); assertEquals(4, r.maxShownInADay); assertEquals(1, r.incompleteDays)
+        assertEquals(EvalVerdict.FAIL, r.verdict)
+    }
+    @Test fun anIncompleteSnapshotWithinTheCapIsNotEnoughDataNeverPass() {
+        val d0 = java.time.Instant.ofEpochMilli(t0).atZone(utc).toLocalDate().toString()
+        val r = ShadowEval.evaluate(input().copy(dailyCounters = mapOf(d0 to mapOf("would_show" to 2))))
+        assertEquals(EvalVerdict.NOT_ENOUGH_DATA, r.verdict); assertTrue(r.reasons.any { it.contains("incomplete") })
+    }
 }
