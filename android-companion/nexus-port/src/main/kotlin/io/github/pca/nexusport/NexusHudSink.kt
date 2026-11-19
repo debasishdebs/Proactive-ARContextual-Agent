@@ -508,7 +508,7 @@ class NexusHudSink internal constructor(
             if (r == NexusResult.OK) { forgetOkCount++; forgetRefusals = 0; forgetNotBefore = Long.MIN_VALUE }
             else if (forgetOkCount != okBefore) { /* an overlapping run was answered OK while this one was in flight: this late refusal must not re-arm the wait */ }
             else when (r) {
-                NexusResult.NOT_GRANTED, NexusResult.NOT_REGISTERED, NexusResult.NOT_AVAILABLE, NexusResult.INVALID, NexusResult.DISABLED, NexusResult.UNSUPPORTED -> {
+                NexusResult.NOT_GRANTED, NexusResult.NOT_REGISTERED, NexusResult.NOT_AVAILABLE, NexusResult.INVALID, NexusResult.DISABLED, NexusResult.UNSUPPORTED, NexusResult.RATE_LIMITED -> {
                     forgetRefusals++; forgetNotBefore = monotonicMs() + minOf(30_000L, 1_000L shl minOf(forgetRefusals - 1, 5))
                 }
                 NexusResult.BUSY, NexusResult.STALE -> forgetNotBefore = monotonicMs() + 1_000L     // short retry, never escalates

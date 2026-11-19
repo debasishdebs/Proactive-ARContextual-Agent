@@ -81,4 +81,37 @@ class WipeRefusalBackoffTest {
         assertEquals(2, fake.forgets)
         assertEquals(Long.MIN_VALUE, s.forgetNotBeforeForTest(), "a refusal that started before the OK must not re-arm the wait")
     }
+
+    @Test fun aRateLimitedHubEscalatesLikeTheOtherRefusalsAndTheDebtStaysOwed() = runBlocking<Unit> {
+        fake.forgetResult = NexusResult.RATE_LIMITED
+        s.trip(TripReason.FORGET)
+        assertEquals(1, fake.forgets)
+        while (now < 20_000) { now += 1_000; mono += 1_000; s.tick() }
+        assertTrue(fake.forgets in 2..7, "20 one-second ticks asked ${fake.forgets} times (RATE_LIMITED was asked every second)")
+        assertTrue(s.forgetOwed(), "the debt stays owed")
+        for (i in 1..60) { mono += 1_000; s.tick() }
+        val a = fake.forgets
+        for (i in 1..30) { mono += 1_000; s.tick() }
+        assertTrue(fake.forgets - a in 1..2, "at the cap (30 s) 30 s of ticks ask ${fake.forgets - a} times")
+    }
+
+    @Test fun aRateLimitedWaitIsResetByANewTripANewConnectionAndAnOk() = runBlocking<Unit> {
+        fake.forgetResult = NexusResult.RATE_LIMITED
+        s.trip(TripReason.FORGET)
+        for (i in 1..30) { mono += 1_000; s.tick() }
+        val a = fake.forgets
+        s.onBridgeConnected()
+        assertEquals(a + 1, fake.forgets)
+        mono += 1_000; s.tick()
+        assertEquals(a + 2, fake.forgets, "after a reconnect the next wait is 1 s again")
+        for (i in 1..30) { mono += 1_000; s.tick() }
+        val b = fake.forgets
+        s.trip(TripReason.DELETE_ALL)
+        assertEquals(b + 1, fake.forgets)
+        mono += 1_000; s.tick()
+        assertEquals(b + 2, fake.forgets, "after a new trip the next wait is 1 s again")
+        fake.forgetResult = NexusResult.OK
+        for (i in 1..40) { mono += 1_000; s.tick() }
+        assertEquals(Long.MIN_VALUE, s.forgetNotBeforeForTest(), "an OK clears the wait")
+    }
 }
