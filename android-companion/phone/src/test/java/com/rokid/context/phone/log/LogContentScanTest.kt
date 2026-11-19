@@ -64,6 +64,9 @@ class LogContentScanTest {
         "duration", "tail", "missingPhotos", "paused", "gate", "pendingRebuild", "rebuild", "waitS", "consecutive", "attemptNo",
         // Row 8 (SuspectSweepWorker): counts only (descriptions removed, photos queued, suspects replaced).
         "removedExpired", "queued", "replaced",
+        // DiagProbe (trip diagnostics): numbers, booleans and fixed tokens it computes itself (battery bucket, network flags and transport token, clock jump, UTC offset, permission short name, own worker class name); never a name, address or text.
+        "sdk", "uptimeS", "offsetMin", "bucket", "charging", "tempBucket", "why", "online", "validated", "metered", "roaming", "transport", "jumpS", "granted", "denied",
+        "worker", "running", "enqueued", "heapMb", "maxMb", "powerSave", "idle", "exempt", "foreground",
         "reps.values.sumOf { it.size }", "counts.closed.joinToString(\",\").ifEmpty { \"-\" }", "runCatching { l.isWearingCheckOn() }",
     )
     private val SAFE_PATTERNS = listOf(
