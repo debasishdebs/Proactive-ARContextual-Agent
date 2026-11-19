@@ -25,7 +25,7 @@ Method: wikidata.org `wbsearchentities` then `wbgetentities` (labels, P31, P625,
 | Laad Bazaar | Q6466530 | marketplace, bazaar | 17.361923, 78.472842 | no | yes | DROPPED: fixed (curated) |
 | Falaknuma Palace | Q2263539 | palace, hotel, heritage structures in Hyderabad | 17.330955, 78.467504 | yes | yes | ADMITTED |
 | Paigah Tombs | Q7124701 | cemetery | 17.343983, 78.504131 | no | yes | DROPPED: fixed (curated) |
-| Birla Mandir, Hyderabad | Q4916532 | temple | 17.38, 78.4 | yes | yes (17.4062, 78.4691) | ADMITTED (Wikidata P625 is rounded and about 3.7 km from the Wikipedia point; `PlaceCellSource` prefers the Wikidata point, see note 2) |
+| Birla Mandir, Hyderabad | Q4916532 | temple | 17.38, 78.4 | yes | yes (17.4062, 78.4691) | ADMITTED (Wikidata P625 is rounded and about 7.9 km (re-measured 2026-11-19 against the current Wikipedia point; the first audit figure of 3.7 km was wrong) from the Wikipedia point; `PlaceCellSource` prefers the Wikidata point, see note 2) |
 | Hussain Sagar | Q3275994 | reservoir | 17.42222, 78.47389 | no | yes | DROPPED: fixed (curated) |
 | Buddha Statue of Hyderabad | Q4984164 | colossal statue | 17.415556, 78.475 | no | yes | DROPPED: fixed (curated) |
 | Lumbini Park | Q1650886 | park | 17.41, 78.4722 | no | yes | DROPPED: fixed (curated) |
@@ -52,7 +52,7 @@ Nothing person-, settlement- or district-like was added (Golconda's "neighborhoo
 ## Notes and not verified
 
 1. Judgement calls: Hussain Sagar (reservoir), Lumbini Park (park), Nehru Zoo (zoo) and Laad Bazaar (market street) are attractions rather than monuments; they follow the precedent of the lakes and the energy park already curated for Sikkim. Remove the four ids from `CURATED_LANDMARK_QIDS` if only monuments are wanted.
-2. Birla Mandir: Wikidata P625 (17.38, 78.4) is rounded and wrong by about 3.7 km versus Wikipedia (17.4062, 78.4691, the real temple on Naubat Pahad). Because `fetchCell` takes `ent.lat` first, the stored point is the wrong one, and 17.38, 78.4 is in cell tepfb (the Golconda cell) while the temple is in tepg1. Not changed (outside this task's scope); a follow-up should prefer the Wikipedia coordinate when the two differ by more than about 1 km, or Birla Mandir should be fixed on Wikidata. Seeded places near Golconda may show a Birla Mandir pin there.
+2. Birla Mandir: Wikidata P625 (17.38, 78.4) is rounded and wrong by about 7.9 km (re-measured 2026-11-19 against the current Wikipedia point; the first audit figure of 3.7 km was wrong) versus Wikipedia (17.4062, 78.4691, the real temple on Naubat Pahad). Because `fetchCell` takes `ent.lat` first, the stored point is the wrong one, and 17.38, 78.4 is in cell tepfb (the Golconda cell) while the temple is in tepg1. Not changed (outside this task's scope); a follow-up should prefer the Wikipedia coordinate when the two differ by more than about 1 km, or Birla Mandir should be fixed on Wikidata. Seeded places near Golconda may show a Birla Mandir pin there.
 3. Overpass/OSM extras were not replayed (unchanged from the 2026-11-18 check). Fateh Darwaza, Bala Hissar, Ibrahim Bagh and Naya Qila depend on OSM (`historic=city_gate` etc.) if the user wants them.
 4. Wikipedia geosearch hit presence was not replayed for the new curated ids; their Wikipedia pages have coordinates (table), which is what geosearch uses.
 
@@ -63,3 +63,6 @@ Nothing person-, settlement- or district-like was added (Golconda's "neighborhoo
 Consequence: Birla Mandir (Q4916532) will now be ABSENT until its Wikidata P625 is corrected (note 2 above is superseded: no wrong pin near Golconda, but no pin at the temple either).
 
 Follow-up (not done; we do not edit Wikidata): correct Q4916532 P625 to about (17.4062, 78.4691) on Wikidata, or add a VERIFIED_COORDINATES entry after an independent check.
+
+## Coordinate-conflict rule check (2026-11-19, controller)
+Compared the current Wikipedia coordinate with the Wikidata P625 for every site in the table that has both (Wikipedia API, one request): the 1 km disagreement rule rejects ONLY Birla Mandir (7,886 m). All others are within 326 m (Golconda 326, Hussain Sagar 290, Ramoji 91, Chowmahalla 58, the rest under 11 m). Lumbini Park has no Wikipedia coordinate (single source, unaffected). No other trip site is affected.
