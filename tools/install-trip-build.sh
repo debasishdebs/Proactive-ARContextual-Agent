@@ -137,7 +137,8 @@ parse_call_states() { # stdin: dumpsys text. 0 only if >=1 mCallState lines, EVE
   # Newer Android adds e.g. 'mCallStateLists={}': a different key with an EMPTY value is not a call state. Non-empty stays a refusal.
   local empty_re='^[[:space:]]*mCallState[A-Za-z_][A-Za-z0-9_]*=(\{\}|\[\])[[:space:]]*$'
   while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in *mCallState*) ;; *) continue ;; esac
+    # Any case variant of the key is a call-state line (MCALLSTATE=2 must not slip through); the value checks below stay case-sensitive and strict.
+    case "$(printf '%s' "$line" | tr 'A-Z' 'a-z')" in *mcallstate*) ;; *) continue ;; esac
     if [[ "$line" =~ $empty_re ]]; then continue; fi
     if [[ "$line" =~ $re ]]; then
       [ "${BASH_REMATCH[1]}" = 0 ] || return 1
@@ -642,6 +643,10 @@ run_fixtures() {
   FX_OUT="  mCallStateLists={}\n";                      fx "call guard: only mCallStateLists={} (no real state) refuses" refuse cg
   FX_OUT="  mCallState=0\n  mCallStateLists={0=2}\n";   fx "call guard: non-empty mCallStateLists refuses" refuse cg
   FX_OUT="  mCallState=0\n  mCallStateLists=[]x\n";    fx "call guard: junk after empty list refuses" refuse cg
+  FX_OUT="mCallState=0\nMCALLSTATE=2\n";                fx "call guard: upper-case key with a call refuses" refuse cg
+  FX_OUT="mCallState=0\nmcallstatelists={0=2}\n";       fx "call guard: lower-case non-empty list refuses" refuse cg
+  FX_OUT="mCallState=0\nmcallstate=0\n";                fx "call guard: lower-case key even with 0 refuses (strict)" refuse cg
+  FX_OUT="mCallState=0\nMCallStateLists={}\n";          fx "call guard: mixed-case EMPTY list is not a call state (ignored only if exact-case)" refuse cg
   FX_OUT=$ok; FX_RC=1;                                  fx "call guard: adb failure with idle-looking output" refuse cg
   FX_RC=0
   FX_OVR=2; fx "call guard: self-test override 2 refuses" refuse cgo
