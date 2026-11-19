@@ -149,14 +149,14 @@ enum class Skipped { UPLOAD_QUEUED, DROPPED, BULK }
  */
 interface DataGate {
     fun decide(kind: DataKind, reach: EndpointReach = EndpointReach.REMOTE): DataDecision
-    fun skipped(kind: DataKind, what: Skipped, decision: DataDecision)
+    fun skipped(kind: DataKind, what: Skipped, d: DataDecision)
     /** True while the network is mobile, roaming or unknown (stored place cells are then kept instead of re-fetched). */
     fun costlyNow(): Boolean
 
     companion object {
         val ALLOW_ALL: DataGate = object : DataGate {
             override fun decide(kind: DataKind, reach: EndpointReach) = DataDecision.ALLOW
-            override fun skipped(kind: DataKind, what: Skipped, decision: DataDecision) {}
+            override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {}
             override fun costlyNow() = false
         }
     }
