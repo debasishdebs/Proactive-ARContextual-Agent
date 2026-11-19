@@ -35,3 +35,7 @@ Re-run Codex on the diffs only Opus reviewed (hub-wp3 fixes, zone fixes, wipe ba
 - P2-2: `forgetRangeOutcome` arms outside the DataOpGate (ForgetActions.kt ~227; the gate is only inside CanvasForgetCoordinator.forgetRange). No production caller today: gate it BEFORE any screen calls it.
 - P2-3: DeletionEpochStore.commitWipe (~:37): when commit() returns false the in-memory pending marker stays true for the process; restore the previous value on failure.
 Do these with the Forget pipeline redesign (or earlier if time allows).
+
+## H. Pin follow-up round (fc3e41a4) review outcome (Opus, 03:40): READY, no P1. P2s logged, to do with the Forget redesign (both need a stack of failures and fail in the safe direction)
+- P2-1: an abandoned wipe's uncommitted arming can be carried (`carried`, PinMomentLinks.kt ~103-106) into a later user Forget when `wipePending()` is true because of an EARLIER wipe W0 whose leftovers keep the flag set; the carried pairs are then deleted without the allowedPins filter. Fix: carry an uncommitted wipe arming's `pairs` only in the fresh-wipe branch (not in explicitStore), or bind the wipe arming to its epoch counter and promote it only when the pending value equals that counter.
+- P2-2: the busy guard (`busy(op)`, :80 and :206) fires when an operation is in flight, not when it armed something: two overlapping explicit Forgets fail the second with PIN_PREP_FAILED (retry works); the code comment overstates it. Retention/sweeps do not count as in flight.
