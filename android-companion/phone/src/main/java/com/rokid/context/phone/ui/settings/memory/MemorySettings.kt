@@ -55,7 +55,7 @@ data class MemorySettingsUiState(
     val confirmStep: Int = 0,
     val notice: String? = null,
     /** Slice 1.4.2: pinned places with a reference Moment: Delete all deletes them too (pins without one stay). Counted when the dialog opens. */
-    val pinsGoing: Int = 0,
+    val pinsGoing: com.rokid.context.work.frames.place.PinsGoing = com.rokid.context.work.frames.place.PinsGoing.NONE,
 )
 
 class MemorySettingsViewModel(
@@ -70,7 +70,7 @@ class MemorySettingsViewModel(
     /** Prefs reads/commits, file sizes, the wipe and the export run here, never on Main. */
     private val work: CoroutineDispatcher = Dispatchers.IO,
     /** Slice 1.4.2: how many pins reference a Moment (they go with Delete all). */
-    private val pinsGoing: suspend () -> Int = { 0 },
+    private val pinsGoing: suspend () -> com.rokid.context.work.frames.place.PinsGoing = { com.rokid.context.work.frames.place.PinsGoing.NONE },
 ) : ViewModel() {
     private val _state = MutableStateFlow(MemorySettingsUiState())
     val state: StateFlow<MemorySettingsUiState> = _state.asStateFlow()
@@ -105,8 +105,8 @@ class MemorySettingsViewModel(
     }
 
     fun askDeleteAll() {
-        _state.update { it.copy(confirmStep = 1, notice = null, pinsGoing = 0) }
-        viewModelScope.launch { val n = runCatching { withContext(work) { pinsGoing() } }.getOrDefault(0); _state.update { it.copy(pinsGoing = n) } }
+        _state.update { it.copy(confirmStep = 1, notice = null, pinsGoing = com.rokid.context.work.frames.place.PinsGoing.NONE) }
+        viewModelScope.launch { val n = runCatching { withContext(work) { pinsGoing() } }.getOrDefault(com.rokid.context.work.frames.place.PinsGoing.NONE); _state.update { it.copy(pinsGoing = n) } }
     }
     fun cancelDeleteAll() = _state.update { it.copy(confirmStep = 0) }
     fun confirmDeleteAll() {
@@ -154,6 +154,8 @@ class MemorySettingsViewModel(
                 _state.update { it.copy(notice = "A save is running — try again") }
             } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
                 _state.update { it.copy(notice = "Export in progress — try again") }
+            } catch (e: com.rokid.context.work.frames.place.PinArmFailed) {
+                _state.update { it.copy(notice = com.rokid.context.phone.ui.memory.ForgetCopy.PIN_PREP_FAILED) }
             } catch (e: Exception) {
                 PcLog.i(TAG, "memory action failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(notice = "That didn't work — try again") }
@@ -269,7 +271,7 @@ fun MemorySettingsScreen(
         AlertDialog(
             onDismissRequest = onCancelDeleteAll,
             title = { Text(if (state.confirmStep == 1) "Delete all memories?" else "Are you sure?") },
-            text = { Text((if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources and \"Send matching photos with questions\" also turn off, and your My car list is cleared." else "This can't be undone. Delete every memory, photo and answer?") + MemorySettingsCopy.pinsLine(state.pinsGoing)) },
+            text = { Text((if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources and \"Send matching photos with questions\" also turn off, and your My car list is cleared." else "This can't be undone. Delete every memory, photo and answer?") + MemorySettingsCopy.pinsLine(state.pinsGoing.count, state.pinsGoing.names)) },
             confirmButton = { TextButton(onClick = onConfirmDeleteAll, modifier = Modifier.testTag("delete_confirm")) { Text(if (state.confirmStep == 1) "Continue" else "Delete everything") } },
             dismissButton = { TextButton(onClick = onCancelDeleteAll, modifier = Modifier.testTag("delete_cancel")) { Text("Cancel") } },
         )
@@ -290,5 +292,5 @@ fun WatchListRow(items: List<String>, onSave: (List<String>) -> Unit, onReset: (
 /** Fixed copy of the Delete all dialog. */
 object MemorySettingsCopy {
     /** Slice 1.4.2: a pin whose reference Moment is wiped is wiped too; the dialog names how many. Empty when none. */
-    fun pinsLine(pins: Int): String = if (pins <= 0) "" else " This also deletes $pins pinned ${if (pins == 1) "place" else "places"} that ${if (pins == 1) "uses" else "use"} a Moment as a reference. Pins without a Moment stay."
+    fun pinsLine(pins: Int, names: List<String> = emptyList()): String = if (pins <= 0) "" else " " + com.rokid.context.phone.ui.memory.ForgetScopeCopy.pinsLine(pins, names) + " Pins without a Moment stay."
 }

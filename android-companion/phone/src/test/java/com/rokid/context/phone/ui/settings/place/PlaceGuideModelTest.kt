@@ -50,6 +50,7 @@ class PlaceGuideModelTest {
         var moments = listOf<MomentChoice>()
         val logged = mutableListOf<String>()
         override suspend fun recentMoments(limit: Int) = moments.take(limit)
+        override suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, offset: Int) = moments.filter { it.atMs in fromMs until toMs }.sortedByDescending { it.id }.drop(offset).take(limit)
         override suspend fun momentsOf(ids: List<String>) = moments.filter { it.id in ids }.associateBy { it.id }
         override suspend fun setMoment(pinId: String, momentId: String?) = pinning.setMoment(pinId, momentId)
         override suspend fun sweepMoments() { val alive = moments.map { it.id }.toSet(); stored = stored.map { if (it.momentId != null && it.momentId !in alive) it.copy(momentId = null) else it } }
@@ -204,7 +205,7 @@ class PlaceGuideModelTest {
     }
 
     @Test fun pinAPlaceHereOpensTheFormWithNearbySitesAndSavesAPinListedForEditAndDelete() = runTest(d) {
-        val c = Control().also { it.moments = listOf(MomentChoice("0000000a", "/p/a", NOW - 60_000)) }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        val c = Control().also { it.moments = listOf(MomentChoice("0000000a", "/p/a", NOW - 60_000)) }; val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
         vm.beginPin(); d.scheduler.advanceUntilIdle()
         vm.attachLatest(null); d.scheduler.advanceUntilIdle()
         val dlg = vm.state.value.pinDialog!!
@@ -252,7 +253,7 @@ class PlaceGuideModelTest {
     }
 
     @Test fun savingANewPinIsBlockedWithoutAMomentAndSaysWhy() = runTest(d) {
-        val c = Control().also { it.moments = listOf(MomentChoice("0000000a", "/p/a", NOW - 60_000)) }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        val c = Control().also { it.moments = listOf(MomentChoice("0000000a", "/p/a", NOW - 60_000)) }; val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
         newPin(c, vm)
         vm.savePin(); d.scheduler.advanceUntilIdle()
         assertEquals(PlaceGuideModel.ATTACH_FIRST, vm.state.value.pinDialog!!.error); assertTrue(c.stored.isEmpty())
@@ -264,7 +265,7 @@ class PlaceGuideModelTest {
     }
 
     @Test fun saveWithoutAMomentNeedsTheExplicitConfirmAndFlagsThePin() = runTest(d) {
-        val c = Control(); val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        val c = Control(); val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
         newPin(c, vm)
         vm.attachLatest(null); d.scheduler.advanceUntilIdle()
         assertEquals(PlaceGuideModel.NO_MOMENT_YET, vm.state.value.pinDialog!!.momentHint) // nothing captured yet
@@ -278,7 +279,7 @@ class PlaceGuideModelTest {
 
     @Test fun latestMomentMustBeWithinThirtyMinutesElsePickFromTheList() = runTest(d) {
         val old = MomentChoice("00000001", "/p/old", NOW - 31 * 60_000)
-        val c = Control().also { it.moments = listOf(old) }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        val c = Control().also { it.moments = listOf(old) }; val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
         newPin(c, vm)
         vm.attachLatest(null); d.scheduler.advanceUntilIdle()
         assertNull(vm.state.value.pinDialog!!.momentId); assertTrue(vm.state.value.pinDialog!!.momentHint!!.contains("30 minutes"))
@@ -289,16 +290,74 @@ class PlaceGuideModelTest {
         assertEquals(old, PlaceGuideModel.latestWithin(listOf(old), NOW - 60_000)); assertNull(PlaceGuideModel.latestWithin(emptyList(), NOW))
     }
 
-    @Test fun thePickerListsAtMostTwentyMoments() = runTest(d) {
-        val c = Control().also { c -> c.moments = (1..30).map { MomentChoice("%08x".format(1000 - it), "/p/$it", NOW - it * 1000L) } }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
+    private val DAY = 24 * 3_600_000L
+    private val DAY0 = NOW - NOW % DAY // UTC midnight of "today"
+
+    @Test fun thePickerOpensOnTodayAndPagesThirtyAtATime() = runTest(d) {
+        val c = Control().also { c -> c.moments = (1..45).map { MomentChoice("%08x".format(1000 + it), "/p/$it", DAY0 + it * 1000L) } }
+        val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
         vm.openMomentPicker(null); d.scheduler.advanceUntilIdle()
-        assertEquals(20, vm.state.value.momentPicker!!.items.size)
+        val pk = vm.state.value.momentPicker!!
+        assertEquals(DAY0, pk.dayStartMs); assertEquals(30, pk.items.size); assertTrue(pk.hasMore)
+        assertEquals("newest first", "%08x".format(1045), pk.items.first().id)
+        vm.pickerMore(); d.scheduler.advanceUntilIdle()
+        val all = vm.state.value.momentPicker!!
+        assertEquals(45, all.items.size); assertFalse(all.hasMore); assertEquals(45, all.items.map { it.id }.toSet().size)
+    }
+
+    @Test fun theDaySelectorGoesBackAndForwardButNeverPastToday() = runTest(d) {
+        val yesterday = MomentChoice("00000001", "/p/y", DAY0 - 3_600_000L); val today = MomentChoice("00000002", "/p/t", DAY0 + 1000L)
+        val c = Control().also { it.moments = listOf(yesterday, today) }; val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
+        vm.openMomentPicker(null); d.scheduler.advanceUntilIdle()
+        assertEquals(listOf(today), vm.state.value.momentPicker!!.items)
+        vm.pickerDay(-1); d.scheduler.advanceUntilIdle()
+        assertEquals(DAY0 - DAY, vm.state.value.momentPicker!!.dayStartMs); assertEquals(listOf(yesterday), vm.state.value.momentPicker!!.items)
+        vm.pickerDay(-1); d.scheduler.advanceUntilIdle()
+        assertTrue("an empty day is shown empty, not an error", vm.state.value.momentPicker!!.items.isEmpty())
+        vm.pickerDay(1); vm.pickerDay(1); d.scheduler.advanceUntilIdle(); vm.pickerDay(1); d.scheduler.advanceUntilIdle()
+        assertEquals("never past today", DAY0, vm.state.value.momentPicker!!.dayStartMs); assertEquals(listOf(today), vm.state.value.momentPicker!!.items)
+    }
+
+    @Test fun aForgottenMomentIsNotListedAndAYesterdayMomentCanBeAttachedToAnExistingPin() = runTest(d) {
+        val y = MomentChoice("00000001", "/p/y", DAY0 - 3_600_000L); val gone = MomentChoice("00000002", "/p/g", DAY0 - 7_200_000L)
+        val c = Control().also { it.moments = listOf(y); it.stored = listOf(UserPlace("user:00000000-0000-0000-0000-000000000007", "Old pin", PlaceKinds.MONUMENT, 7.0, 80.0)) } // `gone` was forgotten: the control no longer has it
+        val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC); d.scheduler.advanceUntilIdle()
+        vm.openMomentPicker(c.stored.single().id); d.scheduler.advanceUntilIdle(); vm.pickerDay(-1); d.scheduler.advanceUntilIdle()
+        assertEquals(listOf(y), vm.state.value.momentPicker!!.items); assertFalse(gone in vm.state.value.momentPicker!!.items)
+        vm.pickMoment(y); d.scheduler.advanceUntilIdle()
+        assertEquals("00000001", c.stored.single().momentId); assertNull(vm.state.value.momentPicker)
+    }
+
+    @Test fun aMomentForgottenWhileTheDialogIsOpenIsRefusedAndTheDialogStaysOpen() = runTest(d) {
+        val m = MomentChoice("0000000a", "/p/a", NOW - 60_000)
+        val c = Control().also { it.moments = listOf(m) }; val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
+        newPin(c, vm); vm.attachLatest(null); d.scheduler.advanceUntilIdle()
+        c.moments = emptyList() // Forgotten while the dialog was open
+        vm.savePin(); d.scheduler.advanceUntilIdle()
+        val dlg = vm.state.value.pinDialog!!
+        assertEquals("That Moment is gone, pick another or save without a Moment.", dlg.error); assertNull(dlg.momentId); assertTrue("nothing stored", c.stored.isEmpty())
+        assertTrue("the held position survives so the user can go on", c.pinning.hasDraft)
+        vm.askSkipMoment(); vm.confirmSkipMoment(); d.scheduler.advanceUntilIdle()
+        assertNull(c.stored.single().momentId); assertTrue("pinnedAt is set for a new pin", c.stored.single().pinnedAt != null)
+    }
+
+    @Test fun deleteAllNamesThePinsLikeTheOtherDialogs() {
+        val line = com.rokid.context.phone.ui.settings.memory.MemorySettingsCopy.pinsLine(7, listOf("A", "B", "C", "D", "E"))
+        listOf("A", "B", "C", "D", "E").forEach { assertTrue(line.contains("\u201C$it\u201D")) }
+        assertTrue(line.contains("and 2 more")); assertTrue(line.contains("cannot be undone")); assertTrue(line.contains("Pins without a Moment stay"))
+        assertEquals("", com.rokid.context.phone.ui.settings.memory.MemorySettingsCopy.pinsLine(0))
+    }
+
+    @Test fun theMomentNoteSaysAnExplicitForgetDeletesThePin() {
+        val n = PlaceGuideModel.MOMENT_NOTE
+        assertTrue(n.contains("the pin is deleted with it") && n.contains("you are asked first") && n.contains("Needs a Moment"))
+        assertFalse("the stale promise that the pin stays after a Forget", n.contains("the link goes and the pin stays") && !n.contains("only expires"))
     }
 
     @Test fun anExistingPinGetsAMomentRemovesItAndAnEditKeepsIt() = runTest(d) {
         val m = MomentChoice("0000000b", "/p/b", NOW - 1000)
         val c = Control().also { it.moments = listOf(m); it.stored = listOf(UserPlace("user:00000000-0000-0000-0000-000000000001", "Old pin", PlaceKinds.MONUMENT, 7.0, 80.0)) }
-        val vm = PlaceGuideViewModel(c, d, now = { NOW }); d.scheduler.advanceUntilIdle()
+        val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC); d.scheduler.advanceUntilIdle()
         val id = c.stored.single().id
         assertTrue(PlaceGuideModel.needsMoment(vm.state.value.pins.single(), vm.state.value.moments)) // an existing pin: badge, still a pin
         vm.attachLatest(id); d.scheduler.advanceUntilIdle()
@@ -312,7 +371,7 @@ class PlaceGuideModelTest {
     @Test fun aForgottenMomentClearsTheLinkAndTheBadgeReturnsWhileThePinStays() = runTest(d) {
         val m = MomentChoice("0000000c", "/p/c", NOW - 1000)
         val c = Control().also { it.moments = listOf(m); it.stored = listOf(UserPlace("user:00000000-0000-0000-0000-000000000002", "Pin", PlaceKinds.MONUMENT, 7.0, 80.0, momentId = "0000000c")) }
-        val vm = PlaceGuideViewModel(c, d, now = { NOW }); d.scheduler.advanceUntilIdle()
+        val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC); d.scheduler.advanceUntilIdle()
         assertFalse(PlaceGuideModel.needsMoment(vm.state.value.pins.single(), vm.state.value.moments))
         c.moments = emptyList() // Forget removed the Moment
         vm.deletePin("user:none"); d.scheduler.advanceUntilIdle() // any refresh of the screen

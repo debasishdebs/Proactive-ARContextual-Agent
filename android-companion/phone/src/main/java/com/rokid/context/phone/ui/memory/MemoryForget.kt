@@ -56,6 +56,9 @@ class ContentChanged : Exception("content changed since the preview")
 /** The Forget went through but, in a production build, a cached memory export that still holds text could not be deleted (it is retried at the next start and the next Forget). */
 class CacheCleanupFailed : Exception("cached export not deleted")
 
+/** Slice 1.4.2: the removal of the pins that go with this Moment could not be prepared: nothing was forgotten. */
+class PinPrepFailed : Exception("pin removal not prepared")
+
 /** Fixed copy (spec §2.4 Memory detail; never exception text). */
 object ForgetCopy {
     const val FACT_TITLE = "Forget this fact?"
@@ -79,6 +82,8 @@ object ForgetCopy {
     const val CACHE_LEFT = "Forgotten, but a saved copy of your memories (the export file in this app's cache) could not be deleted and may still contain it. It is retried when the app starts and at your next Forget; Delete all removes it too."
     /** The set changed between the counts and the confirm (new photos or marks, a changed Scene): nothing was deleted. */
     const val CONTENT_CHANGED = "Content changed since the preview. Review again."
+    /** Slice 1.4.2: the pin removal could not be prepared, so nothing was forgotten. */
+    const val PIN_PREP_FAILED = "Could not prepare the pin removal; nothing was forgotten."
     const val FAILED = "Couldn't forget that \u2014 try again"
 }
 

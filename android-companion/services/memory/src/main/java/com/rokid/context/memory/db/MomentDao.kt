@@ -91,6 +91,10 @@ abstract class MomentDao : DerivedStaleDao() {
     // --- Pin to Moment (slice 1.4.2): read-only lookups of PHOTO Moments, newest first; a Moment counts only while a photo of it still exists and its second is not tombstoned ---
     @Query("SELECT m.momentId AS momentId, MIN(f.path) AS path, MIN(p.partTimeMs) AS atMs FROM moment m JOIN moment_part p ON p.momentId = m.momentId AND p.kind = 'FRAME' JOIN frame f ON f.id = p.refId WHERE m.momentId NOT IN (SELECT momentId FROM moment_tombstone) GROUP BY m.momentId ORDER BY m.momentId DESC LIMIT :limit")
     abstract suspend fun recentPhotoMoments(limit: Int): List<PhotoMomentRow>
+    /** Slice 1.4.2: the photo Moments whose second lies in `[fromId, toId]` (a day), newest first, paged; tombstoned seconds and Moments without a stored photo are never listed. */
+    @Query("SELECT m.momentId AS momentId, MIN(f.path) AS path, MIN(p.partTimeMs) AS atMs FROM moment m JOIN moment_part p ON p.momentId = m.momentId AND p.kind = 'FRAME' JOIN frame f ON f.id = p.refId WHERE m.momentId >= :fromId AND m.momentId <= :toId AND m.momentId NOT IN (SELECT momentId FROM moment_tombstone) GROUP BY m.momentId ORDER BY m.momentId DESC LIMIT :limit OFFSET :offset")
+    abstract suspend fun photoMomentsBetween(fromId: String, toId: String, limit: Int, offset: Int): List<PhotoMomentRow>
+
     /**
      * Which of the Moment ids [ids] still have a stored photo: judged on the AUTHORITATIVE `frame` rows of that Moment second (the Moment second is the frame row's time), not on the rebuildable projection, so a
      * Moment row dropped and rebuilt (a forgotten fact) never counts as gone, and a tombstoned second never counts as alive. The path is the first photo's (the thumbnail source).
