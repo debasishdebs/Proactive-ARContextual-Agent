@@ -25,11 +25,11 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
     private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today(), flow.value.waiting, graph.stuckNow(), com.rokid.context.core.net.NetworkCosts.roamingWhy(graph.snapshot(), graph.settingsNow().abroad))
 
     override fun setMode(m: DataMode) {
-        graph.settingsStore.setMode(m); refresh()
+        graph.settingsStore.setMode(m); flow.value = read() // the settings collector refreshes the gate off the main thread
         try { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(app)) com.rokid.context.work.OrchestrationScheduler(app).ensureNightIndex() } catch (_: Exception) { /* the runtime gate still holds */ }
     }
-    override fun setAbroad(on: Boolean) { graph.settingsStore.setAbroad(on); refresh() }
-    override fun setSmallOnRoaming(on: Boolean) { graph.settingsStore.setSmallOnRoaming(on); refresh() }
+    override fun setAbroad(on: Boolean) { graph.settingsStore.setAbroad(on); flow.value = read() }
+    override fun setSmallOnRoaming(on: Boolean) { graph.settingsStore.setSmallOnRoaming(on); flow.value = read() }
     init { flow.value = read() }
 
     override fun refresh() {

@@ -148,7 +148,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     private val pipelineLazy = lazy {
         KeyframePipeline(
             db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated,
-            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, dataSaverBlocked = { dataGate.refresh(); !photoUploadsAllowed() },
+            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, dataSaverBlocked = { dataGate.refresh(); dataSaverHeldBack() },
             dataSaverBlockedSince = { (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.blockedSince() ?: 0L },
             dataSaverHandled = { since -> (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.clearBlocked(since) }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
         )
@@ -223,6 +223,9 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     /** Photo uploads are blocked right now (policy only; no count, no log): the Ask photo gate and tests read it. */
+    /** The debounced, reach-aware "held back" decision (see [com.rokid.context.ai.datasaver.DataSaverGraph.heldBack]): what the drain parks on. Falls back to the plain decision for a foreign gate. */
+    internal fun dataSaverHeldBack(): Boolean = (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.heldBack() ?: !photoUploadsAllowed()
+
     fun photoUploadsAllowed(): Boolean = dataGate.decide(DataKind.PHOTO, photoReach()).allowed
 
     @Volatile private var reachAt = 0L
@@ -235,15 +238,23 @@ class KeyframeHandle internal constructor(private val app: Context) {
     internal fun photoReach(): com.rokid.context.core.net.EndpointReach {
         val now = clock()
         if (now - reachAt < REACH_TTL_MS) return reachCached
-        reachCached = try {
-            kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-                val ai = AiGraph.get(app)
-                ai.bindings.get(com.rokid.context.ai.Role.VISION_EXTRACT)?.endpointId?.let { ai.endpoints.byId(it) }?.let(com.rokid.context.ai.EndpointReaches::of)
-            } ?: com.rokid.context.core.net.EndpointReach.REMOTE
-        } catch (e: Exception) { com.rokid.context.core.net.EndpointReach.REMOTE }
-        reachAt = now
+        // Never block the main thread (a Room read, and AiGraph may not exist yet): answer from the cache (REMOTE, fail-closed, until warmed) and warm it off-main.
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            if (reachWarming.compareAndSet(false, true)) scope.launch(kotlinx.coroutines.Dispatchers.IO) { try { storeReach(readReach()) } finally { reachWarming.set(false) } }
+            return reachCached
+        }
+        storeReach(readReach())
         return reachCached
     }
+
+    private val reachWarming = java.util.concurrent.atomic.AtomicBoolean(false)
+    private fun storeReach(r: com.rokid.context.core.net.EndpointReach) { reachCached = r; reachAt = clock() }
+    private fun readReach(): com.rokid.context.core.net.EndpointReach = try {
+        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+            val ai = AiGraph.get(app)
+            ai.bindings.get(com.rokid.context.ai.Role.VISION_EXTRACT)?.endpointId?.let { ai.endpoints.byId(it) }?.let(com.rokid.context.ai.EndpointReaches::of)
+        } ?: com.rokid.context.core.net.EndpointReach.REMOTE
+    } catch (e: Exception) { com.rokid.context.core.net.EndpointReach.REMOTE }
 
     @Synchronized private fun watchNetwork() {
         if (networkWatch != null) return

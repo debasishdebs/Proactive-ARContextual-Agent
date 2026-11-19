@@ -270,7 +270,7 @@ object RokidFrameInbox {
 
     /** Whether a photo upload would be refused right now (the data saver's reach-aware decision for the photo endpoint, without the pre-validation blip of a Wi-Fi reconnect): other fail-closed readings count as blocked. */
     internal fun dataSaverBlockedNow(context: Context): Boolean =
-        (com.rokid.context.work.frames.KeyframeGraph.get(context).dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.heldBack() == true // the same reach-aware, debounced input as the pipeline's mark
+        (com.rokid.context.work.frames.KeyframeGraph.get(context).dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.heldBack() ?: true // fail CLOSED if the gate is not the app's data saver: the same reach-aware, debounced input as the pipeline's mark
 
     internal suspend fun ingestFile(
         context: Context,

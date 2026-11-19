@@ -10,6 +10,7 @@ import com.rokid.context.core.net.DataSaverSettings
 import com.rokid.context.core.net.EndpointReach
 import com.rokid.context.core.net.NetSnapshot
 import com.rokid.context.core.net.NetworkCost
+import com.rokid.context.core.net.NetworkCosts
 import com.rokid.context.core.net.Skipped
 import com.rokid.context.core.net.Transport
 import org.junit.Assert.assertEquals
@@ -180,5 +181,72 @@ class DataSaverGraphTest {
         assertEquals(0L, store.blockedSince())
         assertFalse("nothing to clear", store.clearBlocked(read))
         assertFalse("0 never clears", store.clearBlocked(0L))
+    }
+
+    // ---- round 6: the debounced, injectable graph ----
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private class Blip {
+        val scope = kotlinx.coroutines.test.TestScope(kotlinx.coroutines.test.StandardTestDispatcher())
+        var clock = 1_000_000L
+        var snap = NetSnapshot(true, Transport.WIFI, validated = false, notMetered = true, notRoaming = true, unvalidatedSinceMs = 1_000_000L - 5_000)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun blipGraph(b: Blip, name: String) = DataSaverGraph(DataSaverStore(prefs(name)), { b.snap }, { 100L }, {}, b.scope, { b.clock })
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun aBlipThatIsStillUnvalidatedAfterTheDebounceIsMarkedByTheRecheck() {
+        val b = Blip(); val g = blipGraph(b, "dsb1")
+        g.refreshState()
+        assertEquals("blip: not marked yet", 0L, g.blockedSince())
+        b.clock += 25_000 // 30 s unvalidated now
+        b.scope.testScheduler.advanceTimeBy(NetworkCosts.BLIP_MS + 2_000); b.scope.testScheduler.runCurrent()
+        assertTrue("the recheck marked it", g.blockedSince() != 0L)
+        assertTrue(g.heldBack())
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun aBlipThatValidatesIsNeverMarkedAndLeavesNothingPending() {
+        val b = Blip(); val g = blipGraph(b, "dsb2")
+        g.refreshState()
+        b.snap = b.snap.copy(validated = true, unvalidatedSinceMs = 0)
+        b.clock += 25_000
+        b.scope.testScheduler.advanceTimeBy(NetworkCosts.BLIP_MS + 2_000); b.scope.testScheduler.runCurrent()
+        assertEquals(0L, g.blockedSince()); assertFalse(g.heldBack())
+        b.scope.testScheduler.advanceUntilIdle() // would run (and mark) any coroutine left over
+        assertEquals("no coroutine left over", 0L, g.blockedSince())
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun theOpenTransitionFollowsTheDebouncedDecisionNotTheRawOne() {
+        val b = Blip(); var fired = 0
+        val g = blipGraph(b, "dsb3"); g.addOpenListener { fired++ }
+        g.refreshState(); g.refreshState()
+        assertEquals("a reconnect blip from an open state wakes nothing and parks nothing", 0, fired); assertEquals(0L, g.blockedSince())
+        // held back (roaming), then the blip of the Wi-Fi reconnect: that is the opening, once
+        b.snap = NetSnapshot(true, Transport.CELLULAR, validated = true, notMetered = false, notRoaming = false)
+        g.refreshState(); assertTrue(g.blockedSince() != 0L)
+        b.snap = NetSnapshot(true, Transport.WIFI, validated = false, notMetered = true, notRoaming = true, unvalidatedSinceMs = b.clock - 1_000)
+        g.refreshState(); g.refreshState()
+        assertEquals(1, fired)
+    }
+
+    @Test fun theHeldBackDecisionTheProbeAndTheWaitingLineUseIsReachAwareAndDebounced() {
+        val b = Blip()
+        @Suppress("OPT_IN_USAGE") val g = blipGraph(b, "dsb4")
+        assertFalse("blip", g.heldBack())
+        b.snap = NetSnapshot(true, Transport.CELLULAR, validated = true, notMetered = false, notRoaming = false)
+        assertTrue("remote on roaming", g.heldBack())
+        g.reachProvider = { EndpointReach.DEVICE }
+        assertFalse("on-device on roaming", g.heldBack())
+    }
+
+    @Test fun insideTheThrottleWindowAClearWithTheOldValueDoesClearAndThatIsSafeBecauseFramesAreBornParked() {
+        val store = DataSaverStore(prefs("dsb5"))
+        store.markBlocked(1_000); val read = store.blockedSince()
+        store.markBlocked(1_000 + DataSaverStore.MARK_REFRESH_MS - 1) // inside the window: the value does not move
+        assertEquals(read, store.blockedSince())
+        assertTrue(store.clearBlocked(read))
     }
 }
