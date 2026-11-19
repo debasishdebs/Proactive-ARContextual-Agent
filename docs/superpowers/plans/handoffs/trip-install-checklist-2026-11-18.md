@@ -9,7 +9,7 @@ Nothing is installed yet. Phone = eval build 394667e0, glasses = 1.0.0, watch = 
 - [ ] Watch: skip for the trip (the watch APK shares the phone's applicationId; installing it on the wrong serial replaces the phone app).
 
 ## 0b. Optional candidate (added 2026-11-19)
-- [ ] `~/Desktop/rokid/backups/apks-v110-cand-b573738e/` (git b573738e, verified 15/15; older candidate folders are superseded) adds card placement, Sikkim/Darjeeling/Sri Lanka seed presets, curated landmarks and v3.1 delivery code (all switches OFF). Same helper, same dry run and `--go` rules; use it INSTEAD of f1dcf1fb only if you want these on 22 Nov; f1dcf1fb remains the conservative default.
+- [ ] `~/Desktop/rokid/backups/apks-v110-cand-aedb2d5f/` (git aedb2d5f, verified 15/15; older candidate folders are superseded) adds card placement, Sikkim/Darjeeling/Sri Lanka seed presets, curated landmarks and v3.1 delivery code (all switches OFF). Same helper, same dry run and `--go` rules; use it INSTEAD of f1dcf1fb only if you want these on 22 Nov; f1dcf1fb remains the conservative default.
 
 ## 1. Preconditions
 - [ ] No call active (the helper also refuses). Phone plugged in or > 50% battery, glasses > 50%.
