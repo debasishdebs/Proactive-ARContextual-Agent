@@ -426,6 +426,9 @@ class OrchestrationScheduler(
 
     companion object {
         /** The reduced-cadence flag (one cached prefs read): the cheap check before any restore work. */
+        /** [cadenceReduced] read under [CADENCE_LOCK]: waits for a reduce that is committing right now, so a restore never misses it. */
+        fun cadenceReducedSynced(context: Context): Boolean = synchronized(CADENCE_LOCK) { cadenceReduced(context) }
+
         fun cadenceReduced(context: Context): Boolean = context.getSharedPreferences(CADENCE_PREFS, Context.MODE_PRIVATE).getBoolean(KEY_REDUCED, false)
         const val CADENCE_PREFS = "periodic_cadence"
         private val CADENCE_LOCK = Any()

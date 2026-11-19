@@ -328,7 +328,7 @@ class ContextHubService : Service() {
 
         internal fun restorePeriodicJobsAsync(app: Context) {
             com.rokid.context.work.OrchestrationScheduler.noteCadenceRestore() // always: a reduce that is still deciding must see this restoration
-            if (!com.rokid.context.work.OrchestrationScheduler.cadenceReduced(app)) return
+            if (!com.rokid.context.work.OrchestrationScheduler.cadenceReducedSynced(app)) return // under the cadence lock: a reduce committing right now is seen
             kotlin.concurrent.thread(name = "cadence-restore") { runCatching { com.rokid.context.work.OrchestrationScheduler(app).restorePeriodicJobs() } }
         }
 
