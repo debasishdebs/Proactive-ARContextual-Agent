@@ -235,9 +235,12 @@ class PlaceFetchTest {
             "Q272153" to "Sigiriya", "Q16901632" to "Tiger Hill, Darjeeling", "Q4868648" to "Batasia Loop", "Q23038925" to "Banjhakri falls and park", "Q3214979" to "Khecheopalri Lake",
             "Q944175" to "Sri Maha Bodhi", "Q5653142" to "Happy Valley Tea Estate", "Q542864" to "Lake Tsongmo", "Q5285886" to "Do-drul Chorten", "Q24949017" to "Darjeeling railway station",
             "Q60181073" to "Ghum railway station", "Q1961579" to "Jetavanaramaya",
+            // version 4, read back from wikidata.org on 2026-11-19
+            "Q7685364" to "Taramati Baradari", "Q7124701" to "Paigah Tombs", "Q4984164" to "Buddha Statue of Hyderabad", "Q3275994" to "Hussain Sagar", "Q1650886" to "Lumbini Park",
+            "Q3493970" to "Nehru Zoological Park", "Q6466530" to "Laad Bazaar",
         )
         assertEquals(verified.keys, PlaceCellSource.CURATED_LANDMARK_QIDS.keys)
-        assertEquals(3, PlaceCellSource.CURATED_LANDMARKS_VERSION)
+        assertEquals(4, PlaceCellSource.CURATED_LANDMARKS_VERSION)
         assertTrue("Q19719626" !in PlaceCellSource.CURATED_LANDMARK_QIDS) // Ritigala: verified point is the mountain, not the ruins
         assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.values.all { it in PlaceKinds.ALL })
         assertEquals(setOf("Q5", "Q15632617", "Q95074", "Q21070568"), PlaceCellSource.PERSON_CLASSES)
@@ -317,8 +320,9 @@ class PlaceFetchTest {
 
     @Test fun verifiedCoordinateTableIsPinned() {
         val t = PlaceCellSource.VERIFIED_COORDINATES
-        assertEquals(2, PlaceCellSource.VERIFIED_COORDINATES_VERSION)
-        assertEquals(setOf("Q1961579", "Q60181073"), t.keys)
+        assertEquals(3, PlaceCellSource.VERIFIED_COORDINATES_VERSION)
+        assertEquals(setOf("Q1961579", "Q60181073", "Q7685364"), t.keys)
+        assertEquals(VerifiedCoordinate("Taramati Baradari", 17.37608, 78.378117), t["Q7685364"])
         assertEquals(VerifiedCoordinate("Jetavanaramaya", 8.351667, 80.403611), t["Q1961579"])
         assertEquals(VerifiedCoordinate("Ghum railway station", 27.008643, 88.254223), t["Q60181073"])
         assertTrue(t.keys.all { it in PlaceCellSource.CURATED_LANDMARK_QIDS })
