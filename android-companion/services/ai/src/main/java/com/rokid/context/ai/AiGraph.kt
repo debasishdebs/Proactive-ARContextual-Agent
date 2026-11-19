@@ -31,10 +31,12 @@ class AiGraph(
     power: () -> com.rokid.context.ai.embed.PowerState = { com.rokid.context.ai.embed.PowerState.UNGATED },
     /** Wraps every provider call by class (the call budget, P2); pass-through by default. */
     gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate,
+    /** The roaming data saver ([com.rokid.context.ai.datasaver.DataSaverGraph] in the app); allows everything by default (tests). */
+    dataGate: com.rokid.context.core.net.DataGate = com.rokid.context.core.net.DataGate.ALLOW_ALL,
 ) {
     val endpoints = EndpointRepository(memory.db.endpointDao(), vault)
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
-    val router = ModelRouter(bindings, endpoints, providers, gate)
+    val router = ModelRouter(bindings, endpoints, providers, gate, dataGate)
     val tester = EndpointTester(endpoints, providers)
     val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, power = power)
     val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
@@ -54,7 +56,7 @@ class AiGraph(
         @Volatile var gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate)
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate, dataGate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app))
                 .also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }

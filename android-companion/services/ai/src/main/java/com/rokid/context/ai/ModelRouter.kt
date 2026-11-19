@@ -1,6 +1,11 @@
 package com.rokid.context.ai
 
 import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.net.DataGate
+import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.DataPolicy
+import com.rokid.context.core.net.EndpointReach
+import com.rokid.context.core.net.Skipped
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.CallGate
 import com.rokid.context.model.LanguageModel
@@ -40,6 +45,8 @@ class ModelRouter(
     private val providers: ProviderBuilder,
     /** Every individual provider call (fallbacks and retries too) runs inside this, with the caller's [CallClass]. */
     private val gate: CallGate = PassThroughGate,
+    /** The roaming data saver (slice 1). Asked once per provider call, before the permit; the default allows everything (tests, tools that never see the network). */
+    private val dataGate: DataGate = DataGate.ALLOW_ALL,
 ) : LanguageModel {
     /** [liveness]: required with [images] (codex r10; the router refuses a photo without it). */
     @Deprecated("Pass a CallClass", ReplaceWith("generate(role, CallClass.OTHER, prompt, images)"))
@@ -76,14 +83,14 @@ class ModelRouter(
         return try {
             route(vision, build, skipPrimary = false, callClass)
         } catch (first: ModelCallException) {
-            if (first is PhotoForgottenException) throw first   // codex r10: a forgotten photo is never retried, not on SUMMARIZE's chain either
+            if (first is PhotoForgottenException || first is DataSaverBlockedException) throw first   // codex r10: a forgotten photo is never retried, not on SUMMARIZE's chain either
             val summarize = bindings.get(Role.SUMMARIZE) ?: throw first
             val samePrimary = summarize.endpointId == vision.endpointId && summarize.model == vision.model
             if (samePrimary && summarize.fallbackEndpointId == null) throw first
             try {
                 route(summarize, build, skipPrimary = samePrimary, callClass)
             } catch (second: ModelCallException) {
-                if (second is PhotoForgottenException) throw second
+                if (second is PhotoForgottenException || second is DataSaverBlockedException) throw second
                 // A photo-only call whose SUMMARIZE endpoint cannot take the photo: the vision failure is the real one (a 400 stays a 400, keeps its attempts and parking).
                 if (needsVision(second)) throw first
                 throw ModelCallException("Frame summary failed: ${first.message}; ${second.message}", first.retryable || second.retryable, second, ProviderErrors.worst(first.kind, second.kind))
@@ -125,7 +132,8 @@ class ModelRouter(
             } catch (c: CancellationException) { throw c } catch (f: PhotoForgottenException) { throw f } catch (u: ImagesUnguardedException) { throw u } catch (t: Throwable) { t }
         }
         val fallback = b.fallbackEndpointId?.let { endpoints.byId(it) }
-            ?: throw ModelCallException(
+            ?: throw first as? DataSaverBlockedException   // the data saver blocked the primary and there is no fallback: report that, not a generic failure
+            ?: ModelCallException(
                 "Primary provider failed: ${safe(first, primaryKey)}",
                 retryable = first == null || !ProviderErrors.isPermanent(first), first,
                 kind = first?.let(ProviderErrors::kindOf) ?: FailureKind.NOT_SET,
@@ -138,6 +146,8 @@ class ModelRouter(
             throw c
         } catch (f: PhotoForgottenException) {
             throw f
+        } catch (d: DataSaverBlockedException) {
+            throw d
         } catch (t: Throwable) {
             if (first != null && needsVision(t)) {
                 // A photo-only call whose fallback cannot take the photo: report the primary's own failure, not "not set".
@@ -191,6 +201,14 @@ class ModelRouter(
             PcLog.i(TAG, "vision_refused_no_text_retry images_unsupported")
             throw ImagesUnsupportedException()
         }
+        // Roaming data saver (slice 1): a pure pre-check BEFORE any permit, upload slot or provider call, so a blocked call spends no budget token and never reaches the liveness logic.
+        // It is not retried as text (a photo call that is blocked stays a photo call), and nothing is sent. The fallback is only tried when it is on-device or on the LAN (its own check passes).
+        val dataKind = if (canSend) DataKind.PHOTO else DataKind.SMALL
+        val dataDecision = dataGate.decide(dataKind, reachOf(e))
+        if (!dataDecision.allowed) {
+            dataGate.skipped(dataKind, if (canSend) Skipped.UPLOAD_QUEUED else Skipped.BULK, dataDecision)
+            throw DataSaverBlockedException(dataDecision.reason)
+        }
         // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
@@ -220,6 +238,13 @@ class ModelRouter(
             gated(request.copy(images = emptyList()))
         }
         return RoutedReply(reply.text, e, model, (System.nanoTime() - start) / 1_000_000, reply.promptTokens, reply.completionTokens, reply.truncated, request.maxTokens, imagesDelivered = delivered)
+    }
+
+    /** On this phone (never gated), a box on the user's own network (free on Wi-Fi), or anything else. Reads the address only to classify it; the host is never logged. */
+    private fun reachOf(e: Endpoint): EndpointReach = when {
+        e.kind == EndpointKind.LLAMACPP_LOCAL -> EndpointReach.DEVICE
+        DataPolicy.isLanHost(runCatching { java.net.URI(e.baseUrl.trim()).host }.getOrNull()) -> EndpointReach.LAN
+        else -> EndpointReach.REMOTE
     }
 
     internal companion object {

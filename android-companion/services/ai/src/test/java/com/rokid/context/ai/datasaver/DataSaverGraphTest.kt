@@ -1,0 +1,103 @@
+package com.rokid.context.ai.datasaver
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.net.DataDecision
+import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.DataMode
+import com.rokid.context.core.net.DataSaverSettings
+import com.rokid.context.core.net.EndpointReach
+import com.rokid.context.core.net.NetSnapshot
+import com.rokid.context.core.net.NetworkCost
+import com.rokid.context.core.net.Skipped
+import com.rokid.context.core.net.Transport
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class DataSaverGraphTest {
+    private val ctx: Context = ApplicationProvider.getApplicationContext()
+    private fun prefs(name: String) = ctx.getSharedPreferences(name, Context.MODE_PRIVATE).also { it.edit().clear().commit() }
+
+    private val wifi = NetSnapshot(true, Transport.WIFI, validated = true, notMetered = true, notRoaming = true)
+    private val mobile = NetSnapshot(true, Transport.CELLULAR, validated = true, notMetered = false, notRoaming = true)
+
+    @Test fun storeDefaultsAreWifiOnlyNotAbroadTextAllowed() {
+        val s = DataSaverStore(prefs("ds1")).settings.value
+        assertEquals(DataSaverSettings(DataMode.WIFI_ONLY, abroad = false, smallOnRoaming = true), s)
+    }
+
+    @Test fun storeRoundTripsAndAnUnknownStoredModeReadsAsTheSafeDefault() {
+        val p = prefs("ds2")
+        DataSaverStore(p).apply { setMode(DataMode.ANYWHERE); setAbroad(true); setSmallOnRoaming(false) }
+        assertEquals(DataSaverSettings(DataMode.ANYWHERE, true, false), DataSaverStore(p).settings.value)
+        p.edit().putString("mode", "SOMETHING_NEW").commit()
+        assertEquals(DataMode.WIFI_ONLY, DataSaverStore(p).settings.value.mode)
+    }
+
+    @Test fun theStoreFileNameIsTheOneBackupRulesExclude() = assertEquals("data_saver", DataSaverStore.PREFS)
+
+    private fun graph(store: DataSaverStore = DataSaverStore(prefs("dsg")), day: () -> Long = { 100L }, snap: () -> NetSnapshot) = DataSaverGraph(store, snap, day)
+
+    @Test fun beforeAnyNetworkReadingPhotosAreNotAllowedButTextIs() {
+        val g = graph { NetSnapshot.UNKNOWN }
+        assertFalse(g.decide(DataKind.PHOTO).allowed)
+        assertTrue(g.decide(DataKind.SMALL).allowed)
+        assertEquals(NetworkCost.UNKNOWN, g.costNow()); assertTrue(g.costlyNow())
+    }
+
+    @Test fun wifiAllowsPhotosMobileDoesNot() {
+        var snap = wifi
+        val g = graph { snap }
+        assertTrue(g.decide(DataKind.PHOTO).allowed); assertFalse(g.costlyNow())
+        snap = mobile
+        assertFalse(g.decide(DataKind.PHOTO).allowed); assertTrue(g.costlyNow())
+    }
+
+    @Test fun theAbroadSwitchMakesMobileRoamingAndLeavesRealWifiFree() {
+        var snap = mobile
+        val store = DataSaverStore(prefs("dsg2")); val g = graph(store) { snap }
+        assertEquals(NetworkCost.HOME_MOBILE, g.costNow())
+        store.setAbroad(true)
+        assertEquals(NetworkCost.ROAMING, g.costNow())
+        snap = wifi
+        assertEquals(NetworkCost.FREE, g.costNow())
+    }
+
+    @Test fun lanEndpointOnWifiIsAllowedEvenWithoutValidation() {
+        val g = graph { wifi.copy(validated = false) }
+        assertTrue(g.decide(DataKind.PHOTO, EndpointReach.LAN).allowed)
+        assertFalse(g.decide(DataKind.PHOTO, EndpointReach.REMOTE).allowed)
+    }
+
+    @Test fun skippedCountsInTheLedgerPerDayAndWritesToTheStoreFile() {
+        var day = 100L
+        val p = prefs("dsg3"); val g = graph(DataSaverStore(p), { day }) { wifi }
+        val d = DataDecision(false, "wifi_only")
+        g.skipped(DataKind.PHOTO, Skipped.UPLOAD_QUEUED, d); g.skipped(DataKind.PHOTO, Skipped.DROPPED, d); g.skipped(DataKind.SMALL, Skipped.BULK, d)
+        assertEquals(1, g.ledger.today().uploadsQueued); assertEquals(1, g.ledger.today().dropped); assertEquals(1, g.ledger.today().bulk)
+        // same file, so a new process sees today's counts
+        assertEquals(3, DataSaverGraph(DataSaverStore(p), { wifi }) { 100L }.ledger.today().total)
+        day = 101
+        assertEquals(0, g.ledger.today().total)
+    }
+
+    @Test fun openListenersFireOnlyWhenPhotosTurnFromBlockedToAllowed() {
+        var snap = mobile; var fired = 0
+        val store = DataSaverStore(prefs("dsg4")); val g = graph(store) { snap }
+        g.addOpenListener { fired++ }
+        g.refresh(); assertEquals("first reading is blocked", 0, fired)
+        g.refresh(); assertEquals(0, fired)
+        snap = wifi; g.refresh(); assertEquals(1, fired)
+        g.refresh(); assertEquals("no repeat while it stays open", 1, fired)
+        snap = mobile; g.refresh(); snap = wifi; g.refresh(); assertEquals(2, fired)
+        // the mode switch also opens it
+        snap = mobile; g.refresh(); store.setMode(DataMode.WIFI_AND_HOME_MOBILE); g.refresh(); assertEquals(3, fired)
+    }
+}
