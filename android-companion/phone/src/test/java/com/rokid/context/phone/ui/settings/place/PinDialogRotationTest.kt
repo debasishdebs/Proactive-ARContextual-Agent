@@ -76,7 +76,10 @@ class PinDialogRotationTest {
         compose.onNodeWithTag("pin_dialog").assertIsDisplayed()
         compose.onNodeWithTag("pin_f_name").assertIsDisplayed()
         assertTrue("the held position survives a rotation", c.pinning.hasDraft)
-        compose.onNodeWithTag("pin_f_save").performClick()
+        // slice 1.4.2: a new pin needs a Moment; this test has none, so it takes the explicit "Save without a Moment" path
+        compose.onNodeWithTag("pin_f_skip_moment").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(androidx.compose.ui.test.hasTestTag("pin_skip_confirm")).fetchSemanticsNodes().size > 0 }
+        compose.onNodeWithTag("pin_skip_confirm").performClick()
         compose.waitUntil(5_000) { c.stored.isNotEmpty() }
         assertEquals("Mirror Wall", c.stored.single().name)
         owner.viewModelStore.clear()
