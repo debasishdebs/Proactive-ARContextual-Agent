@@ -23,16 +23,18 @@ data class UserPlace(
     val note: String = "",
     /**
      * Slice 1.4.2 "Pin to Moment": the OPTIONAL reference Moment (an 8-hex Moment id) the user attached so they can check, later, that the capture of this spot was clear. A reference only: the
-     * matcher never reads it. Cleared (the pin stays) when that Moment is forgotten by any path; never exported, backed up or transferred.
+     * matcher never reads it. An explicit Forget (or Delete all) of that Moment ALSO DELETES the pin (the user is asked first and the dialog names it); a removal that is not a Forget (expiry, sweep) only clears the link, the pin stays and shows "Needs a Moment". Never exported, backed up or transferred.
      */
     val momentId: String? = null,
+    /** Slice 1.4.2: when a NEW pin was made (epoch ms), so a later suggestion can find the Moment closest to it. Null for pins made before it existed. Kept in the settings export; not read by matching. */
+    val pinnedAt: Long? = null,
 ) {
     val isValid: Boolean
         get() = ID.matches(id) && name.isNotBlank() && name.length <= NAME_MAX && '\n' !in name && kind in PlaceKinds.ALL &&
             lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0 &&
             radiusM in MIN_RADIUS_M..PlaceKinds.MAX_RADIUS_M && note.length <= NOTE_MAX && '\n' !in note &&
             (parentId == null || (parentId != id && !parentId.startsWith(PREFIX) && parentId.isNotBlank())) &&
-            (momentId == null || com.rokid.context.memory.moment.MomentId.parse(momentId) != null)
+            (momentId == null || com.rokid.context.memory.moment.MomentId.parse(momentId) != null) && (pinnedAt == null || pinnedAt > 0)
 
     /** The pack row: pinned, source `user`, the note as summary. [lastUsedDay] is kept across edits by the pack. */
     fun toEntity(lastUsedDay: Int = 0): PlaceEntity {
@@ -120,22 +122,39 @@ class UserPinStore(private val prefs: SharedPreferences) {
     }
 
     /**
-     * Slice 1.4.2 (Forget cascade). Before an EXPLICIT user Forget runs, the pins whose reference Moment is about to be at risk are ARMED (ids only, merged with any earlier arming, durable): once the Forget
-     * committed, an armed pin whose Moment is gone is deleted with it, also after a crash (the resume reads the arming). While anything is armed, the non-explicit sweep leaves links alone. Not part of
-     * the pin list: [pins] and [write] never see it, and the settings export drops it.
+     * Slice 1.4.2 (Forget cascade): the durable ARMING of one explicit Forget or Delete all. It belongs to ONE operation ([op]) and names the exact (pin, Moment) pairs that operation may delete; [committed] is
+     * set only once the Forget (or the wipe's epoch) really committed. A record that is not committed is never acted on (it is dropped); a committed one is finished at the next start. Not part of the pin
+     * list: [pins] and [write] never see it, and the settings export drops it.
      */
+    data class Arming(val op: String, val kind: String, val committed: Boolean, val pairs: Map<String, String>)
+
+    /** The stored arming, or null (none, or unreadable: an unreadable record is treated as none and dropped at the next resolve). */
     @Synchronized
-    fun arm(ids: Set<String>) {
-        if (ids.isEmpty()) return
-        val all = armed() + ids
-        try { prefs.edit().putString(ARMED_KEY, JSONArray(all.sorted()).toString()).commit() } catch (e: Exception) { }
+    fun arming(): Arming? = try {
+        prefs.getString(ARMED_KEY, null)?.let { raw ->
+            val o = JSONObject(raw); val a = o.getJSONArray("pairs")
+            Arming(o.getString("op"), o.getString("kind"), o.getBoolean("committed"), (0 until a.length()).associate { i -> a.getJSONArray(i).let { it.getString(0) to it.getString(1) } })
+        }
+    } catch (e: Exception) { null }
+
+    /** True when something is stored under the arming key (even if unreadable). */
+    @Synchronized
+    fun hasArmingRecord(): Boolean = try { prefs.contains(ARMED_KEY) } catch (e: Exception) { false }
+
+    /** Stores [a] durably and reads it back; false = not stored or not readable back (the caller must NOT run the Forget). */
+    @Synchronized
+    fun arm(a: Arming): Boolean {
+        val json = JSONObject().put("op", a.op).put("kind", a.kind).put("committed", a.committed).put("pairs", JSONArray().also { arr -> a.pairs.toSortedMap().forEach { (p, m) -> arr.put(JSONArray().put(p).put(m)) } }).toString()
+        val ok = try { prefs.edit().putString(ARMED_KEY, json).commit() } catch (e: Exception) { false }
+        return ok && arming() == a
     }
 
+    /** Marks arming [op] committed (the Forget or the wipe epoch committed). False = no such arming or not stored. */
     @Synchronized
-    fun armed(): Set<String> = try { prefs.getString(ARMED_KEY, null)?.let { raw -> JSONArray(raw).let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } } ?: emptySet() } catch (e: Exception) { emptySet() }
+    fun markCommitted(op: String): Boolean { val a = arming() ?: return false; return a.op == op && (a.committed || arm(a.copy(committed = true))) }
 
     @Synchronized
-    fun disarm() { try { prefs.edit().remove(ARMED_KEY).commit() } catch (e: Exception) { } }
+    fun disarm(): Boolean = try { prefs.edit().remove(ARMED_KEY).commit() } catch (e: Exception) { false }
 
     /** Clears every link (Delete all). Returns the pins cleared, or null when the list could not be rewritten. */
     fun clearAllMoments(): Set<String>? = clearMomentsExcept(emptySet())
@@ -154,7 +173,7 @@ class UserPinStore(private val prefs: SharedPreferences) {
         const val ARMED_KEY = "armed"
 
         fun encode(pins: List<UserPlace>): String = JSONArray().also { a ->
-            pins.forEach { p -> a.put(JSONObject().put("id", p.id).put("name", p.name).put("kind", p.kind).put("lat", p.lat).put("lon", p.lon).put("r", p.radiusM).put("parent", p.parentId ?: JSONObject.NULL).put("note", p.note).also { o -> if (p.momentId != null) o.put("moment", p.momentId) }) }
+            pins.forEach { p -> a.put(JSONObject().put("id", p.id).put("name", p.name).put("kind", p.kind).put("lat", p.lat).put("lon", p.lon).put("r", p.radiusM).put("parent", p.parentId ?: JSONObject.NULL).put("note", p.note).also { o -> if (p.momentId != null) o.put("moment", p.momentId); if (p.pinnedAt != null) o.put("at", p.pinnedAt) }) }
         }.toString()
 
         /** [raw] (the stored list) without any Moment link: what the settings export carries. An unreadable list is returned as it is (the export never invents content). */
@@ -168,7 +187,7 @@ class UserPinStore(private val prefs: SharedPreferences) {
             val a = JSONArray(raw)
             return (0 until a.length()).map { i ->
                 val o = a.getJSONObject(i)
-                UserPlace(o.getString("id"), o.getString("name"), o.getString("kind"), o.getDouble("lat"), o.getDouble("lon"), o.getInt("r"), if (o.isNull("parent")) null else o.getString("parent"), o.optString("note", ""), if (o.isNull("moment")) null else o.optString("moment", "").takeIf { com.rokid.context.memory.moment.MomentId.parse(it) != null }) // an unreadable link is no link: it never makes the list corrupt
+                UserPlace(o.getString("id"), o.getString("name"), o.getString("kind"), o.getDouble("lat"), o.getDouble("lon"), o.getInt("r"), if (o.isNull("parent")) null else o.getString("parent"), o.optString("note", ""), if (o.isNull("moment")) null else o.optString("moment", "").takeIf { com.rokid.context.memory.moment.MomentId.parse(it) != null }, if (o.isNull("at")) null else o.optLong("at", 0L).takeIf { it > 0 }) // an unreadable link is no link: it never makes the list corrupt
             }
         }
     }

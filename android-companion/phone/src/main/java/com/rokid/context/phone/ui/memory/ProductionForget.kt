@@ -37,6 +37,7 @@ fun productionMemoryForget(app: android.content.Context): MemoryForget = object 
                 ForgetActions.Outcome.CACHE_CLEANUP_FAILED -> throw CacheCleanupFailed()
                 ForgetActions.Outcome.CONTENT_CHANGED -> throw ContentChanged()
                 ForgetActions.Outcome.TOO_LARGE -> throw TooLarge()
-                ForgetActions.Outcome.FAILED -> false
+                ForgetActions.Outcome.PIN_PREP_FAILED -> throw PinPrepFailed()
+                ForgetActions.Outcome.PINS_NOT_CONFIRMED, ForgetActions.Outcome.FAILED -> false
             }
         }

@@ -55,7 +55,7 @@ data class PinDialogState(val editingId: String? = null, val parents: List<Paren
 data class MomentChoice(val id: String, val path: String, val atMs: Long)
 
 /** The "Pick from recent Moments" list. [pinId] null = for the pin dialog (a new pin), else that existing pin. */
-data class MomentPicker(val pinId: String?, val items: List<MomentChoice>)
+data class MomentPicker(val pinId: String?, val items: List<MomentChoice>, /** Local midnight of the day shown (epoch ms). */ val dayStartMs: Long = 0L, val hasMore: Boolean = false)
 
 data class PlaceGuideUiState(
     val enabled: Boolean = false, val cardSide: com.rokid.context.core.model.PlaceSide = com.rokid.context.core.model.PlaceSide.CENTRE, val developerMode: Boolean = false, val seeding: Boolean = false, val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
@@ -101,6 +101,8 @@ interface PlaceGuideControl {
     suspend fun recentMoments(limit: Int): List<MomentChoice> = emptyList()
     /** The Moments among [ids] that still have a photo (a forgotten one is missing from the map). */
     suspend fun momentsOf(ids: List<String>): Map<String, MomentChoice> = emptyMap()
+    /** The photo Moments of one day ([fromMs] inclusive, [toMs] exclusive), newest first, [limit] after [offset]; forgotten ones are never listed. */
+    suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, offset: Int): List<MomentChoice> = emptyList()
     /** Attaches (or with null removes) the Moment link of an existing pin. */
     suspend fun setMoment(pinId: String, momentId: String?): Boolean = false
     /** Clears the links of Moments that were forgotten (read-time repair; the Forget listener does it at the time). */
@@ -155,19 +157,23 @@ object PlaceGuideModel {
         PinRefusal.DRAFT_EXPIRED -> "That took too long: your position is no longer fresh. Start again."
         PinRefusal.INVALID -> "Check the name (up to 80 characters), the radius (10 to 1500 m) and the note (up to 140 characters)."
         PinRefusal.NOT_STORED -> "The pin could not be saved."
+        PinRefusal.MOMENT_GONE -> "That Moment is gone, pick another or save without a Moment."
     }
 
     /** "Attach latest Moment" takes the newest photo Moment only when it is at most this old. */
     const val LATEST_WINDOW_MS = 30 * 60_000L
     const val PICK_LIMIT = 20
+    const val PICK_PAGE = 30
     const val NO_MOMENT_YET = "No Moment yet: capture one with the glasses first."
     const val NEEDS_MOMENT = "Needs a Moment"
     const val NO_MOMENT_NOTE = "No reference Moment. The pin still works by location."
     const val ATTACH_FIRST = "Attach a Moment first (the latest one, or pick from recent Moments), so you can check the capture later."
-    const val MOMENT_NOTE = "A Moment is only a reference to check what was captured here: it does not change which place is named. If you Forget that Moment the link goes and the pin stays."
+    const val MOMENT_NOTE = "A Moment is only a reference to check what was captured here: it does not change which place is named. If you Forget that Moment, or Delete all, the pin is deleted with it (you are asked first). If the Moment only expires, the link goes and the pin stays with \"Needs a Moment\"."
 
     /** The newest Moment of [recent] (newest first) that is at most [LATEST_WINDOW_MS] old at [now]; null = none. */
     fun latestWithin(recent: List<MomentChoice>, now: Long): MomentChoice? = recent.firstOrNull { now - it.atMs <= LATEST_WINDOW_MS }
+
+    fun dayLabel(dayStartMs: Long): String = java.text.SimpleDateFormat("EEE d MMM", java.util.Locale.getDefault()).format(java.util.Date(dayStartMs))
 
     fun momentTime(atMs: Long): String = java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(atMs))
 
@@ -187,7 +193,7 @@ object PlaceGuideModel {
     }
 }
 
-class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis) : ViewModel() {
+class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis, private val zone: java.time.ZoneId = java.time.ZoneId.systemDefault()) : ViewModel() {
     private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb))
     val state: StateFlow<PlaceGuideUiState> = _state
 
@@ -301,7 +307,8 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
                 is PinResult.Saved -> _state.update { it.copy(pinDialog = null, pins = pinning.pins(), pinMessage = "Saved.", pinMessageIsError = false) }.also { refreshSummary() }
                 is PinResult.Refused -> _state.update { s ->
                     // a refused zone or expired position ends the dialog (the position is gone); a bad form stays open to fix
-                    if (res.why == PinRefusal.INVALID || res.why == PinRefusal.NOT_STORED) s.copy(pinDialog = d.copy(error = PlaceGuideModel.refusalText(res.why)))
+                    if (res.why == PinRefusal.MOMENT_GONE) s.copy(pinDialog = d.copy(momentId = null, moment = null, error = PlaceGuideModel.refusalText(res.why))) // the Moment was forgotten while the dialog was open
+                    else if (res.why == PinRefusal.INVALID || res.why == PinRefusal.NOT_STORED) s.copy(pinDialog = d.copy(error = PlaceGuideModel.refusalText(res.why)))
                     else s.copy(pinDialog = null, pinMessage = PlaceGuideModel.refusalText(res.why), pinMessageIsError = true)
                 }
             }
@@ -331,10 +338,28 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     }
 
     /** "Pick from recent Moments": opens the list of the last 20 photo Moments (thumbnail and time). */
-    fun openMomentPicker(pinId: String?) {
+    fun openMomentPicker(pinId: String?) { loadDay(pinId, dayStart(now()), append = false) }
+
+    /** The picker's day selector: [delta] = -1 previous day, +1 next day (never past today). */
+    fun pickerDay(delta: Int) {
+        val pk = _state.value.momentPicker ?: return
+        val day = java.time.Instant.ofEpochMilli(pk.dayStartMs).atZone(zone).toLocalDate().plusDays(delta.toLong())
+        if (day.isAfter(java.time.Instant.ofEpochMilli(now()).atZone(zone).toLocalDate())) return
+        loadDay(pk.pinId, day.atStartOfDay(zone).toInstant().toEpochMilli(), append = false)
+    }
+
+    /** "Load more": the next page of the same day. */
+    fun pickerMore() { val pk = _state.value.momentPicker ?: return; loadDay(pk.pinId, pk.dayStartMs, append = true) }
+
+    private fun dayStart(ms: Long): Long = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli()
+
+    private fun loadDay(pinId: String?, dayStartMs: Long, append: Boolean) {
         viewModelScope.launch(work) {
-            val recent = runCatching { control.recentMoments(PlaceGuideModel.PICK_LIMIT) }.getOrDefault(emptyList())
-            if (recent.isEmpty()) momentHint(pinId, PlaceGuideModel.NO_MOMENT_YET) else _state.update { it.copy(momentPicker = MomentPicker(pinId, recent)) }
+            val have = if (append) _state.value.momentPicker?.items.orEmpty() else emptyList()
+            val end = java.time.Instant.ofEpochMilli(dayStartMs).atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+            val page = runCatching { control.momentsBetween(dayStartMs, end, PlaceGuideModel.PICK_PAGE + 1, have.size) }.getOrDefault(emptyList())
+            val more = page.size > PlaceGuideModel.PICK_PAGE
+            _state.update { it.copy(momentPicker = MomentPicker(pinId, have + page.take(PlaceGuideModel.PICK_PAGE), dayStartMs, more)) }
         }
     }
 
@@ -391,7 +416,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     val state by vm.state.collectAsStateWithLifecycle()
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment))
 }
 
 /** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */
@@ -404,7 +429,7 @@ class PlaceGuideActions(
     val seedPreset: (SeedPreset) -> Unit = {},
     val setCardSide: (com.rokid.context.core.model.PlaceSide) -> Unit = {},
     val attachLatest: (String?) -> Unit = {}, val openMomentPicker: (String?) -> Unit = {}, val closeMomentPicker: () -> Unit = {}, val pickMoment: (MomentChoice) -> Unit = {},
-    val removeMoment: (String?) -> Unit = {}, val askSkipMoment: () -> Unit = {}, val cancelSkipMoment: () -> Unit = {}, val confirmSkipMoment: () -> Unit = {},
+    val pickerDay: (Int) -> Unit = {}, val pickerMore: () -> Unit = {}, val removeMoment: (String?) -> Unit = {}, val askSkipMoment: () -> Unit = {}, val cancelSkipMoment: () -> Unit = {}, val confirmSkipMoment: () -> Unit = {},
 )
 
 @Composable
@@ -520,6 +545,13 @@ private fun MomentPickerDialog(pk: MomentPicker, on: PlaceGuideActions) {
         onDismissRequest = on.closeMomentPicker, modifier = Modifier.testTag("pin_moment_picker"),
         title = { Text("Pick a Moment") },
         text = {
+            androidx.compose.foundation.layout.Column {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    TextButton({ on.pickerDay(-1) }, Modifier.testTag("pin_moment_day_prev")) { Text("\u2039 Previous") }
+                    Text(PlaceGuideModel.dayLabel(pk.dayStartMs), Modifier.testTag("pin_moment_day"))
+                    TextButton({ on.pickerDay(1) }, Modifier.testTag("pin_moment_day_next")) { Text("Next \u203A") }
+                }
+                if (pk.items.isEmpty()) Text("No Moments on this day.", Modifier.testTag("pin_moment_day_empty"))
             androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(pk.items.size) { i ->
                     val m = pk.items[i]
@@ -528,6 +560,8 @@ private fun MomentPickerDialog(pk: MomentPicker, on: PlaceGuideActions) {
                         Text(PlaceGuideModel.momentTime(m.atMs))
                     }
                 }
+                if (pk.hasMore) item { TextButton(on.pickerMore, Modifier.testTag("pin_moment_more")) { Text("Load more") } }
+            }
             }
         },
         confirmButton = {},

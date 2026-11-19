@@ -25,6 +25,8 @@ enum class PinRefusal {
     INVALID,
     /** The pins could not be stored. */
     NOT_STORED,
+    /** Slice 1.4.2: the Moment chosen in the form was forgotten while the dialog was open. */
+    MOMENT_GONE,
 }
 
 sealed interface PinResult {
@@ -62,6 +64,8 @@ class PlacePinning(
     private val log: (String) -> Unit = {},
     /** Slice 1.4.2: whether a Moment id still has its photo (not forgotten). A link to a gone Moment is never stored. Tests default to "alive". */
     private val momentAlive: suspend (String) -> Boolean = { true },
+    /** Slice 1.4.2: the wall clock for a new pin's `pinnedAt`. */
+    private val wallClock: () -> Long = System::currentTimeMillis,
     /** Runs [run] after [delayMs]; returns the cancel. Replaced by a fake in tests. */
     private val schedule: (delayMs: Long, run: () -> Unit) -> () -> Unit = DefaultTimer::schedule,
 ) {
@@ -94,10 +98,13 @@ class PlacePinning(
     /** Step 2: stores the pin at the position of [begin]. The zones are judged again, with the fix's coordinates. The draft is used once. */
     suspend fun create(form: PinForm): PinResult {
         val d = draft ?: return PinResult.Refused(PinRefusal.DRAFT_EXPIRED)
+        // slice 1.4.2: a Moment forgotten while the dialog was open is refused, never silently stored as "no link"; the held position is kept so the user can pick another or save without one
+        val moment = liveMoment(form.momentId)
+        if (form.momentId != null && moment == null) return PinResult.Refused(PinRefusal.MOMENT_GONE)
         drop()
         if (elapsed() - d.at > DRAFT_TTL_MS) return PinResult.Refused(PinRefusal.DRAFT_EXPIRED)
         if (zoneRefuses(d.lat, d.lon, d.accuracyM)) { log("pin refused zone"); return PinResult.Refused(PinRefusal.ZONE) }
-        val pin = UserPlace(newId(), UserPlace.cleanName(form.name), form.kind, d.lat, d.lon, form.radiusM, form.parentId?.takeIf { it.isNotBlank() }, UserPlace.cleanNote(form.note), liveMoment(form.momentId))
+        val pin = UserPlace(newId(), UserPlace.cleanName(form.name), form.kind, d.lat, d.lon, form.radiusM, form.parentId?.takeIf { it.isNotBlank() }, UserPlace.cleanNote(form.note), moment, wallClock())
         return writeLock.withLock {
             val now = load()
             if (!pin.isValid || now.size >= com.rokid.context.memory.place.UserPinStore.MAX_PINS) return@withLock PinResult.Refused(PinRefusal.INVALID)

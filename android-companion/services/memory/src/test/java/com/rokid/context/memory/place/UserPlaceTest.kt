@@ -129,4 +129,22 @@ class UserPlaceTest {
         assertNull(UserPinStore.parse(stripped).single().momentId); assertEquals(p.name, UserPinStore.parse(stripped).single().name)
         assertEquals("not json", UserPinStore.withoutLinks("not json"))
     }
+
+    @Test fun pinnedAtIsWrittenOnlyWhenSetReadBackAndOldPinsHaveNone() {
+        val store = UserPinStore(prefs)
+        assertTrue(store.write(listOf(pin("Old"), pin("New").copy(pinnedAt = 1_800_000_000_000L))))
+        assertEquals(listOf(null, 1_800_000_000_000L), store.pins().map { it.pinnedAt })
+        assertEquals("only the new pin carries the key", 1, Regex("\"at\"").findAll(prefs.getString("pins", "")!!).count())
+        assertFalse(pin().copy(pinnedAt = 0L).isValid)
+        assertTrue("the settings export may keep it", UserPinStore.withoutLinks(UserPinStore.encode(listOf(pin().copy(pinnedAt = 5L)))).contains("\"at\""))
+    }
+
+    @Test fun anArmingIsStoredReadBackMarkedCommittedAndDropped() {
+        val store = UserPinStore(prefs); val a = UserPinStore.Arming("op", "forget", false, mapOf("user:x" to "00000001"))
+        assertTrue(store.arm(a)); assertEquals(a, store.arming()); assertFalse(store.markCommitted("other"))
+        assertTrue(store.markCommitted("op")); assertTrue(store.arming()!!.committed)
+        assertTrue(store.disarm()); assertNull(store.arming()); assertFalse(store.hasArmingRecord())
+        prefs.edit().putString(UserPinStore.ARMED_KEY, "garbage").commit()
+        assertNull("an unreadable record is no arming", store.arming()); assertTrue(store.hasArmingRecord())
+    }
 }
