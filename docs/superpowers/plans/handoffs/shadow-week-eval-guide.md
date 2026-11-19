@@ -2,7 +2,17 @@
 
 Source: `ShadowEval.evaluate(ShadowEvalInput)` (`services/orchestration/.../proactive/ShadowEval.kt`), a pure, read-only function over the shadow store (records, counters, feedback, never-list size). `EvalReport.toText()` prints counts and fixed labels only; no suggestion text, place name, key or photo id. Bars come from the v3 spec section 4. Delivery switches stay OFF while you read this.
 
-Existing Developer-only surface: `POST /api/proactive/replay` and the Developer shadow list already expose the counters; the report function is not yet wired to them (add a one-line `ShadowEval.evaluate(...)` call there when wanted).
+## Fetch the report (Developer only)
+
+`GET /api/proactive/shadow-eval` returns the report as `text/plain`. It is read-only, needs Developer mode ON (403 `developer_mode_off` otherwise, same as the replay route; the replay flag is not needed), has no UI, and works with every delivery switch OFF.
+
+From the laptop, after the shadow week:
+
+1. Unlock the phone, Settings > Diagnostics > Developer mode ON, Settings > Experiment canvas > "Use from a laptop"; read host:port, code and fingerprint.
+2. From the repo root: `tools/m1-run.sh pair <host:port> <code> <fp8>` (the code lasts 5 min).
+3. `tools/m1-run.sh get /api/proactive/shadow-eval` prints the report.
+
+Built from the real stores: would-show records, the cumulative counters, feedback, never-list size, and the stored pause history (quiet = a non-zone pause covering the record time, zone = a `zone:` pause). The store keeps only CUMULATIVE counters, so `runs` and `refused_by_gate` are the overall histogram since install or the last Delete all (the report says so in a `note:` line); day lines show would-show counts only. Driving and unworn keep no history, so they print `UNCHECKED` and the verdict is NOT ENOUGH DATA at best until a build records them. Day keys that are not ISO dates are dropped and counted (`invalid day keys: N`); a daily snapshot with more would-show than retained records is used for the cap check and marks `incomplete_days`.
 
 ## Lines
 
