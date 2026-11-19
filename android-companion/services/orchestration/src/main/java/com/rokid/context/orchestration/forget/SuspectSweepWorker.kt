@@ -42,12 +42,14 @@ class SuspectSweepWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
 
     private suspend fun locked(): Result = try {
         val graph = MemoryGraph.get(applicationContext)
+        val zoneSignal = zoneSignal(applicationContext)
+        com.rokid.context.orchestration.AskZoneFence.prepare() // the stored zone records, when the controller has not judged in this process (never throws)
         val keyframes = KeyframeGraph.get(applicationContext)
         val gate = BulkGate({ LocalModelPower.read(applicationContext) }, { keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) })
         val service = ForgetService(graph.db, graph.proposals)
         val sweep = SuspectSweep(
             db = graph.db, pipeline = keyframes.pipeline, bulkAllowed = gate::allowed,
-            zoneBlocked = PlaceGraph.fence::blocked,
+            zoneBlocked = zoneSignal,
             remove = { ids ->
                 // the exclusive side of the DataOpGate (an export in progress is waited for), like retention; the ForgetActions follow the committed cascade
                 DataOpGate.shared.delete {
@@ -70,6 +72,16 @@ class SuspectSweepWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         private const val TAG = "SuspectSweepWorker"
         const val NAME = "suspect_sweep"
         const val MAX_ATTEMPTS = 3
+
+        /**
+         * S1: the sweep's zone signal, at the start of the run, before extraction and again at every upload (DispatchFence). Place Guide's own fence alone is open in a process where the hub never started (it is
+         * closed only by the zone controller), so a cold WorkManager start would upload marked photos from inside a zone. Chosen over seeding that fence in ContextApp.onCreate because it touches only this worker
+         * (no app-start path, no second owner of the fence) and reuses the audited Ask startup rule ([com.rokid.context.orchestration.AskZoneFence]): persisted facts, fail closed, hub-independent.
+         */
+        internal fun zoneSignal(ctx: Context): () -> Boolean {
+            try { com.rokid.context.orchestration.AskZoneFence.install(ctx) } catch (e: Exception) { return { true } }
+            return { PlaceGraph.fence.blocked() || com.rokid.context.orchestration.AskZoneFence.blockedForBackground() }
+        }
     }
 }
 

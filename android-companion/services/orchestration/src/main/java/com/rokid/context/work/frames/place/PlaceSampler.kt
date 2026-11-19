@@ -113,6 +113,11 @@ class PlaceSampler(
     private val reveal: suspend (frameId: String, generation: Long) -> Boolean = { _, _ -> true },
     /** A take-back gave up for now (the mark stays): schedules the independent recovery ([PlaceRecovery]); the hidden memory is not readable meanwhile. */
     private val onRollbackFailed: () -> Unit = {},
+    /**
+     * S2: the stored zones, for the geometric judgement of THE FIX ITSELF ([com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint]); null = unreadable (blocks). The controller's earlier OUTSIDE reading can be
+     * up to 15 min old, so a fix near or inside a zone is refused here whatever the controller last said. Production passes the real list (no default there); this default only serves the pure-flow tests.
+     */
+    private val zones: suspend () -> List<com.rokid.context.core.model.zone.PauseZone>? = { emptyList() },
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
@@ -188,6 +193,8 @@ class PlaceSampler(
         stopped(gen, ticket, f.frameId)?.let { return it } // before the fix is asked for
         val fx = fix() ?: return PlaceOutcome.NO_FIX
         if (fx.ageMs < 0 || fx.ageMs > MAX_FIX_AGE_MS || fx.accuracyM.isNaN() || fx.accuracyM > MAX_FIX_ACCURACY_M || !fx.lat.isFinite() || !fx.lon.isFinite()) return PlaceOutcome.STALE_FIX
+        // S2: the fix is judged against the zones itself (box + buffer + approach margin, accuracy against the user, unreadable zones block), before the cell fetch or any upload.
+        if (com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(try { zones() } catch (c: CancellationException) { throw c } catch (e: Exception) { null }, fx.lat, fx.lon, fx.accuracyM)) return PlaceOutcome.ZONE
         stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
         remember(f.frameId)
         val online = networkUp()
