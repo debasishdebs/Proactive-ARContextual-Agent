@@ -33,7 +33,11 @@ class AskPhotoGateTest {
     private val noon = java.time.LocalDateTime.of(2026, 10, 12, 12, 0).toInstant(ZoneOffset.UTC).toEpochMilli()
     private val noQuiet = NudgeHud(null, Verbosity.MEDIUM, ZoneOffset.UTC)
 
+    private var net = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.WIFI, validated = true, notMetered = true, notRoaming = true)
+
     @Before fun setUp() {
+        ctx.getSharedPreferences(com.rokid.context.ai.datasaver.DataSaverStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+        com.rokid.context.ai.datasaver.DataSaverGraph.resetForTests(com.rokid.context.ai.datasaver.DataSaverGraph.forTests(ctx) { net })
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         TestAi.bindAll(TestAi.graph(ctx) { "{}" })
         AskPhotoPolicy.set(ctx, true); AppConfigStore.setPipelineEnabled(ctx, true)
@@ -41,6 +45,7 @@ class AskPhotoGateTest {
     }
 
     @After fun tearDown() {
+        com.rokid.context.ai.datasaver.DataSaverGraph.resetForTests(null)
         NudgeEnvironment.hud = null; AskPhotoPolicy.set(ctx, false)
         AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null)
     }
@@ -48,6 +53,18 @@ class AskPhotoGateTest {
     private fun allowed() = runBlocking { AnswerService.photosAllowedNow(ctx, noon) }
 
     @Test fun allConditionsMetAllowsPhotos() { assertTrue(allowed()) }
+
+    @Test fun roamingDataSaverBlocksAndCountsAndWifiAllows() {
+        net = net.copy(transport = com.rokid.context.core.net.Transport.CELLULAR, notMetered = false, notRoaming = false)
+        assertFalse(allowed()); assertFalse(allowed())
+        assertEquals(2, com.rokid.context.ai.datasaver.DataSaverGraph.get(ctx).ledger.today().dropped)
+        net = net.copy(transport = com.rokid.context.core.net.Transport.CELLULAR, notRoaming = true) // home mobile data: Wi-Fi only mode still blocks
+        assertFalse(allowed())
+        net = com.rokid.context.core.net.NetSnapshot.UNKNOWN
+        assertFalse("an unknown network is not allowed", allowed())
+        net = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.WIFI, validated = true, notMetered = true, notRoaming = true)
+        assertTrue(allowed())
+    }
 
     @Test fun switchOffBlocks() { AskPhotoPolicy.set(ctx, false); assertFalse(allowed()) }
 
