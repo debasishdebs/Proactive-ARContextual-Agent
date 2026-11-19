@@ -31,6 +31,7 @@ tools/install-trip-build.sh --phone <PHONE_SERIAL> --glasses <GLASSES_SERIAL> --
 Order enforced by the script: preflight -> phone backup (force-stop, tar incl. -wal/-shm, validate, sha256) -> phone install (`install -r`, never uninstall) -> 60 s log scan (FATAL / Migration / Room / SQLCipher counts) -> glasses install -> log scan. Exit 0 = installed and verified, exit 3 = installed but NOT verified (do the manual checks below), exit 2 = refused (nothing changed), other = failure (follow the printed rollback steps; never uninstall the phone app).
 
 ## 4. Post-install checks (about 20 minutes, with Claude)
+First step (read-only, one command, phone + glasses connected): `tools/post-install-check.sh --phone <serial> --glasses <serial> --apks <apks folder>`. Exit 0 = no FAIL; read every WARN and UNKNOWN line. Any FAIL: stop, do not trust the install. See tools/INSTALL-TRIP-BUILD.md "Post-install check".
 Phone:
 - [ ] App opens, onboarding does not wipe anything, Home/Activity show your existing asks and memories; Settings > Memory shows encryption still ON.
 - [ ] Settings > Capture schedule: background exemption still granted; indexing battery level as before.
