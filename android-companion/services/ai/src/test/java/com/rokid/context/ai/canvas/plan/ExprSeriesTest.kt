@@ -98,6 +98,13 @@ class ExprSeriesTest {
         assertEquals(12, ok(series(ctxAge, (0 until 12).map { row(1L + it) }, 1, 12)).summary.contextDefaulted)
     }
 
+    @Test fun thePointsAreCappedAtThreeHundredAndTruncatedIsSet() {
+        val r = ok(series(ctxAge, (0 until 1800).map { row(1L + it) }, 1, 1800))
+        assertEquals(300, r.points.size); assertTrue(r.truncated)
+        val small = ok(series(ctxAge, (0 until 300).map { row(1L + it) }, 1, 300))
+        assertEquals(300, small.points.size); assertEquals(false, small.truncated)
+    }
+
     @Test fun anInvalidDefinitionAnswersProblemsNotAnException() {
         assertTrue(series(notNumber, emptyList(), 1, 5) is ExprSeries.Result.Problems)
         assertTrue(ExprSeries.run(null, emptyList(), 1, 5, 80, cfg) is ExprSeries.Result.Problems)

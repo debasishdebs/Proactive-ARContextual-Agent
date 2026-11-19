@@ -86,7 +86,9 @@ class SignalTryReader(
                 val clear = ArrayList<MomentSensorEntity>()
                 for (r in ofRecording) when (zones.status(r.phoneSecond)) { ZoneStatus.CLEAR -> clear += r; ZoneStatus.HELD -> held++; ZoneStatus.UNKNOWN -> unknown++ }
                 val moments = if (clear.isEmpty()) Triple(emptyList(), false, emptyList()) else momentsIn(from, end)
-                lease.extend(moments.first.map { Ref(Family.MOMENT, it.id) } + moments.third.map { Ref(Family.PHOTO, it) })
+                // Every Moment that owns an evaluated row is leased too, so a Moment or time-range Forget that leaves the trace in place is still detected.
+                val owners = clear.map { it.momentId }.distinct()
+                lease.extend((owners + moments.first.map { it.id }).distinct().map { Ref(Family.MOMENT, it) } + moments.third.map { Ref(Family.PHOTO, it) })
                 val s = Snapshot(
                     from, end, seconds, trace.phoneStartMs, trace.phoneEndMs,
                     md.firstSensorSecondOf(trace.traceId, trace.revision) ?: from, md.lastSensorSecondOf(trace.traceId, trace.revision) ?: end, md.sensorSecondCountOf(trace.traceId, trace.revision),

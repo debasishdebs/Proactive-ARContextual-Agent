@@ -243,6 +243,35 @@ class SignalTryRoutesTest {
         assertEquals(409, r.status); assertEquals("forgotten", err(r)); assertFalse(String(r.body).contains("summary"))
     }
 
+    @Test fun aMomentForgetDuringTheReadShowsNothing() = runBlocking {
+        seed(photos = emptySet())
+        zone = { leases.revoke(listOf(Ref(Family.MOMENT, id(650)))); ZoneStatus.CLEAR }
+        val r = post(body(fast, ",\"seconds\":300"))
+        assertEquals(409, r.status); assertEquals("forgotten", err(r)); assertFalse(String(r.body).contains("summary"))
+    }
+
+    @Test fun eightSavedSignalsDoNotMakeEveryTryFail() = runBlocking {
+        seed()
+        val g = Json.parseToJsonElement(fast)
+        for (i in 1..8) assertTrue(store.saveDerived("s$i", g).isEmpty())
+        assertEquals(8, store.config.value.derived.size)
+        assertEquals(true, obj(post(body(fast, ",\"seconds\":300")))["ok"]!!.jsonPrimitive.content.toBoolean())
+        clock += 10_000
+        assertEquals("a name that collides with a saved signal is no problem either", true, obj(post(body(fast, ",\"name\":\"s1\"")))["ok"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals("nothing was saved", 8, store.config.value.derived.size)
+    }
+
+    @Test fun aBodyOverTheLimitFlaggedByTheAdapterIsTooLarge() {
+        assertEquals("too_large", err(runBlocking { routes().handle(HttpRequest("POST", "/api/signals/try", emptyMap(), emptyMap(), body(fast).toByteArray(), bodyTooLarge = true))!! }))
+    }
+
+    @Test fun aThirtyMinuteWindowIsCappedAtThreeHundredPoints() = runBlocking {
+        seed(n = 2000)
+        val o = obj(post(body(fast, ",\"seconds\":1800")))
+        assertEquals(300, o["points"]!!.jsonArray.size); assertEquals(true, o["truncated"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(1800, o["window"]!!.jsonObject["covered"]!!.jsonPrimitive.content.toInt())
+    }
+
     @Test fun aRunningDeleteIsBusy() = runBlocking {
         seed()
         val inside = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()

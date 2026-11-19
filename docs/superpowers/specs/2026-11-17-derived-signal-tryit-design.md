@@ -97,7 +97,7 @@ Result (200, additive; field names match `ExprTry` where they overlap):
 
 Evaluation: new pure `ExprSeries.run(graph, role, rows, cfg, windowMinValidPct)` in `services/ai/.../canvas/plan/ExprSeries.kt`, sharing `ExprTry`'s lowering and `ExprRunner` (no
 second evaluator): one tick per second oldest first; a second without a row is NaN for every feature (= missing second, the warming/tolerance rules of `ExprTry`); `ctx` = row
-`context` (REST when null, flagged), `ctxAgeS` = seconds since the last `context` change seen in the window (UNAVAILABLE before the first change); probe every second.
+`context` (REST when null, flagged), `ctxAgeS` = seconds since the last `context` change seen in the window, counted from the window start until the first change (the code and `ExprSeriesTest` do this; the spec was wrong); probe every second.
 
 ## 6. Canvas JS budget impact (counted)
 

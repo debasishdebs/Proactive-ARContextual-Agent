@@ -129,6 +129,13 @@ class SignalTryReaderTest {
         assertEquals(SignalTryReader.Outcome.Forgotten, r); assertEquals(0, leases.openCount)
     }
 
+    @Test fun aMomentForgetOfARowOwnerDuringTheEvaluationShowsNothing() = runBlocking {
+        seed(0..59)   // no photos: the Moments are leased only as owners of the evaluated rows
+        assertEquals(SignalTryReader.Outcome.Forgotten, reader().read(60) { leases.revoke(listOf(Ref(Family.MOMENT, id(30)))); 1 })
+        assertEquals(SignalTryReader.Outcome.Forgotten, reader().read(60) { runBlocking { md.deleteMoments(listOf(id(31))) }; 1 })
+        assertEquals(0, leases.openCount)
+    }
+
     @Test fun aRevokedLeaseAndADeleteAllDuringTheEvaluationShowNothing() = runBlocking {
         seed(0..59, photos = setOf(5))
         assertEquals(SignalTryReader.Outcome.Forgotten, reader().read(60) { leases.revoke(listOf(Ref(Family.MOMENT, id(5)))); 1 })
