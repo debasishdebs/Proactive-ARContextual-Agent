@@ -227,12 +227,18 @@ class AsyncLineWriter(
         } catch (_: Throwable) { fail() }
     }
 
-    /** Drops the oldest segment, shifts every other one up and moves the active file to `.1`. Idempotent, so a retry after a partial failure just continues. */
+    /**
+     * Drops the oldest segment, shifts every other one up and moves the active file to `.1`. Idempotent: after a partial failure the retry starts at the highest free index
+     * (the gap the failed shift left) instead of deleting the oldest segment again, so a retry never costs another segment.
+     */
     private fun rotate(): Boolean {
         val last = segments - 1
-        val oldest = LogSegments.name(file, last)
-        if (fs.exists(oldest) && !fs.delete(oldest)) return false
-        for (k in last - 1 downTo 0) {
+        var top = (last downTo 1).firstOrNull { !fs.exists(LogSegments.name(file, it)) }      // a free slot above the active file: the gap of an earlier partial rotation
+        if (top == null) {
+            if (!fs.delete(LogSegments.name(file, last))) return false
+            top = last
+        }
+        for (k in top - 1 downTo 0) {
             val src = LogSegments.name(file, k)
             if (!fs.exists(src)) continue
             val dst = LogSegments.name(file, k + 1)
