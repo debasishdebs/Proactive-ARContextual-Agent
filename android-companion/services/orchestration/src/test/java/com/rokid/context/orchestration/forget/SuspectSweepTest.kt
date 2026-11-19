@@ -58,7 +58,12 @@ class SuspectSweepTest {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         AppConfigStore.setPipelineEnabled(ctx, false)
     }
-    @After fun tearDown() { AppConfigStore.setPipelineEnabled(ctx, true); db.close(); MemoryGraph.resetForTests(null) }
+    @After fun tearDown() {
+        com.rokid.context.orchestration.AskZoneFence.resetForTests()
+        ctx.getSharedPreferences(com.rokid.context.orchestration.AskZoneFence.ZONE_STATE_PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+        ctx.getSharedPreferences(com.rokid.context.orchestration.AskZoneFence.ZONES_PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+        AppConfigStore.setPipelineEnabled(ctx, true); db.close(); MemoryGraph.resetForTests(null)
+    }
 
     /** A stored photo (frame row, meta, EXTRACTED) with its pre-fix, delivery-unknown description; [marked] = the user's mark. */
     private suspend fun suspect(id: String, ts: Long = now - 3 * day, marked: Boolean = true, photoStored: Boolean = true) {
@@ -151,6 +156,62 @@ class SuspectSweepTest {
         gate = true
         o = sweep().run()
         assertEquals(1, calls.size); assertFalse(exists("old_a"))
+    }
+
+    // S1: a cold process (the hub never ran, Place Guide's fence is in its default open state) judges the zones from the persisted facts.
+    private fun coldSweep() = SuspectSweep(
+        db, pipeline(), bulkAllowed = { gate }, zoneBlocked = SuspectSweepWorker.zoneSignal(ctx),
+        remove = { ids -> removed += ids; ForgetService(db, graph.proposals) { clockMs }.removeDescriptions(ids).forgotten.size },
+        clock = { clockMs }, drainMs = 30_000L,
+    )
+    private fun zonePrefs(zones: String?, protect: Boolean? = null) {
+        val a = com.rokid.context.orchestration.AskZoneFence
+        a.resetForTests()
+        if (zones != null) ctx.getSharedPreferences(a.ZONES_PREFS, Context.MODE_PRIVATE).edit().putString(a.ZONES_KEY, zones).commit()
+        if (protect != null) ctx.getSharedPreferences(a.ZONE_STATE_PREFS, Context.MODE_PRIVATE).edit().putBoolean(a.PROTECT_KEY, protect).commit()
+    }
+
+    @Test fun coldStartWithASavedInsideZoneStateUploadsNothing() = runBlocking {
+        suspect("a")
+        zonePrefs("""[{"id":"z1","enabled":true}]""", protect = true)
+        assertFalse(com.rokid.context.work.frames.place.PlaceGraph.fence.blocked()) // the premise: the old signal was open
+        val o = coldSweep().run()
+        assertTrue(calls.isEmpty()); assertFalse(o.gate); assertEquals(0, o.queued); assertTrue(exists("old_a"))
+    }
+
+    @Test fun coldStartWithAZoneConfiguredIsBlockedUntilTheControllerJudges() = runBlocking {
+        suspect("a")
+        zonePrefs("""[{"id":"z1","enabled":true}]""")
+        assertFalse(coldSweep().run().gate); assertTrue(calls.isEmpty())
+        com.rokid.context.orchestration.AskZoneFence.protect(active = false, judged = true) // the hub ran and judged clear
+        assertTrue(coldSweep().run().gate); assertEquals(1, calls.size)
+    }
+
+    @Test fun coldStartWithNoZonesProceeds() = runBlocking {
+        suspect("a")
+        zonePrefs(null)
+        val o = coldSweep().run()
+        assertTrue(o.gate); assertEquals(1, calls.size); assertFalse(exists("old_a"))
+    }
+
+    @Test fun aZoneThatIsSwitchedOffIsNoZone() = runBlocking {
+        suspect("a")
+        zonePrefs("""[{"id":"z1","enabled":false}]""")
+        assertTrue(coldSweep().run().gate); assertEquals(1, calls.size)
+    }
+
+    @Test fun unreadableZoneStateBlocks() = runBlocking {
+        suspect("a")
+        zonePrefs("{not json")
+        val o = coldSweep().run()
+        assertFalse(o.gate); assertTrue(calls.isEmpty())
+    }
+
+    @Test fun theAskSwitchDoesNotOpenTheSweepsFence() = runBlocking {
+        suspect("a")
+        zonePrefs("""[{"id":"z1","enabled":true}]""", protect = true)
+        com.rokid.context.orchestration.AskZoneFence.setEnabled(ctx, false)
+        try { assertFalse(coldSweep().run().gate); assertTrue(calls.isEmpty()) } finally { com.rokid.context.orchestration.AskZoneFence.setEnabled(ctx, true) }
     }
 
     @Test fun aZoneThatClosesWhileTheCallWaitsForItsPermitBlocksTheUpload() = runBlocking {
