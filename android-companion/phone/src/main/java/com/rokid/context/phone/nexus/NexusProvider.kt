@@ -48,6 +48,9 @@ interface BridgeLink {
 
     /** The installed bridge is signed like PCA right now (checked again on every bind, every connection and every package change). Default true for fakes. */
     fun trusted(): Boolean = true
+
+    /** The bridge package is installed at all (a removed bridge is "not installed", never "not trusted"). Default true for fakes. */
+    fun present(): Boolean = true
 }
 
 /**
@@ -77,6 +80,8 @@ class ServiceBridgeLink(
 
     /** An explicit bind names only a package, and any app can claim the bridge's name while the genuine one is absent: the signer is verified first (Codex v2 r1 P1-3). */
     override fun trusted(): Boolean = PcaSignerTrust.trusted(signers, app.packageName, NexusPackages.BRIDGE, pinned)
+
+    override fun present(): Boolean = try { signers.signing(NexusPackages.BRIDGE) != null } catch (_: Exception) { false }
 
     override fun bind(onConnected: (IBinder) -> Unit, onGone: () -> Unit): BridgeLink.Bind {
         if (try { signers.signing(NexusPackages.BRIDGE) } catch (_: Exception) { null } == null) return BridgeLink.Bind.NOT_INSTALLED
@@ -218,6 +223,7 @@ class NexusProvider(
     }
 
     private fun safeTrusted(): Boolean = try { link.trusted() } catch (_: Exception) { false }
+    private fun safePresent(): Boolean = try { link.present() } catch (_: Exception) { true }
 
     private fun onConnected(binder: IBinder) {
         synchronized(lock) {
@@ -239,12 +245,14 @@ class NexusProvider(
 
     /** Lock held. The package behind the bridge's name is not (or no longer) signed like PCA: let go of it, say so, keep nothing connected. */
     private fun untrustedLocked() {
+        // The package behind the name may simply be gone (uninstalled while bound): that is "not installed", not "not trusted" (found by the real-hub smoke, 2026-11-19).
+        val gone = !safePresent()
         try { link.unbind() } catch (_: Exception) { }
         closeSinkLocked()
         sink = null; tickJob?.cancel(); tickJob = null; watchJob?.cancel(); watchJob = null
         wanted = false; stopping = false; _bound.value = false
-        _bind.value = BridgeLink.Bind.UNTRUSTED
-        log("nexus bridge untrusted")
+        _bind.value = if (gone) BridgeLink.Bind.NOT_INSTALLED else BridgeLink.Bind.UNTRUSTED
+        log(if (gone) "nexus bridge removed" else "nexus bridge untrusted")
     }
 
     /**

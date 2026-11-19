@@ -64,6 +64,7 @@ private class FakePort : NexusPort.Stub() {
 private class FakeLink(val port: FakePort, private val result: BridgeLink.Bind = BridgeLink.Bind.BOUND) : BridgeLink {
     var binds = 0; var unbinds = 0
     var trustedNow = true
+    var presentNow = true
     var deferConnect = false
     var connected: ((IBinder) -> Unit)? = null; var gone: (() -> Unit)? = null
     override fun bind(onConnected: (IBinder) -> Unit, onGone: () -> Unit): BridgeLink.Bind {
@@ -73,6 +74,7 @@ private class FakeLink(val port: FakePort, private val result: BridgeLink.Bind =
     }
     override fun unbind() { unbinds++ }
     override fun trusted() = trustedNow
+    override fun present() = presentNow
 }
 
 /** v2.0: the flag-OFF provider, the fail-closed gates through the real sink, and the trip fan-out. */
@@ -264,6 +266,15 @@ class NexusProviderTest {
         assertEquals(null, p.show(nudge))
         link.trustedNow = true; p.onPackageChanged()
         assertTrue(p.bound.value); assertEquals(BridgeLink.Bind.BOUND, p.bind.value)
+    }
+
+    @Test fun aBridgeUninstalledWhileBoundIsNotInstalledNeverNotTrusted() = runTest {
+        host = HudHost.NEXUS
+        val p = provider(); p.refresh()
+        assertTrue(p.bound.value)
+        link.presentNow = false; link.trustedNow = false; p.onPackageChanged()   // the package manager no longer has the package at all
+        assertFalse(p.bound.value); assertEquals(BridgeLink.Bind.NOT_INSTALLED, p.bind.value); assertEquals(1, link.unbinds)
+        assertEquals(null, p.show(nudge))
     }
 
     // ---- Codex v2 r1 P1-5: the history wipe is owed until the hub acknowledges ----
