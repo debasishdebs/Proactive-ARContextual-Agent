@@ -14,7 +14,7 @@ Rules: no installs without the user's "go"; nothing here changes the staged cand
 ## C. Build slices on separate branches from the final candidate tip (NOT in the candidate; each: implement, tests, full verification, Opus review; merge to `feat/v101-ask-eval` only after the candidate is staged)
 6. Data saver slice 1 (Wi-Fi only default for photo uploads, roaming detection, per-day cap, status card): needed before Sikkim 1 Dec.
 7. 1.4.3 model resolver (online only, "offline only" setting present, per-backend cache, logging).
-8. Activity pagination (v1.3 row): list + day/hour breakdown.
+8. (already built, commits 99054e92/09ceb09b; only a worn check is pending) Activity pagination. Replaced by: coverage map of which Forget entry points already use ForgetPlanner/ForgetExecutor (read-only, feeds item 9).
 9. Forget pipeline step 1 (`ForgetSource`, `ForgetPlan`, policy table; behaviour unchanged).
 
 ## D. Waiting on the user (record, do not block)

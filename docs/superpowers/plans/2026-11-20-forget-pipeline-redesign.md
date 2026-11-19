@@ -2,6 +2,10 @@
 
 Status: DESIGN, written 2026-11-20. Build after the install freeze and the Sikkim/Darjeeling trip (v1.2 row of `ROADMAP.md`), then a full worn test before Sri Lanka. Origin: user ruling 2026-11-20: "source carrying metadata, then a moment selector, then forgetPart which forgets or de-links per policy; the confirmation dialog is part of forgetPart; same experience for every type."
 
+## Correction found 2026-11-20 (read before the Shape section)
+
+A plan/preview/execute engine ALREADY EXISTS: `services/memory/.../forget/lifecycle/ForgetPlanner.kt` and `ForgetExecutor.kt`, wired to multi-select Forget (long-press select, top-right menu, plan/preview/acknowledgement/refusal) behind the Developer flag `forgetV2` (default OFF; commit ff685350). Activity pagination (commits 99054e92, 09ceb09b) and the generic multi-select list screen (1589bc23) are also built. So this redesign is NOT a new engine: it is (1) make the planner/executor the ONLY Forget path (move single, scoped, range, Delete all and the system sweeps onto it, then retire the old per-flow code and the flag), (2) add `ForgetSource` metadata and the one policy table (pins, marks, answers) to the planner, (3) one confirmation dialog built from the plan. The estimate below is therefore an upper bound until the planner's current coverage is mapped (first task of the build: a coverage map of which entry points already use it).
+
 ## Why
 
 Forget grew one entry point at a time (single, scoped Photo/Moment/Scene, multi-select, range, Delete all, crash-resume, system expiry and sweeps). Each has its own dialog wiring and its own post-commit cleanup. Consequences seen on 2026-11-19/20:
