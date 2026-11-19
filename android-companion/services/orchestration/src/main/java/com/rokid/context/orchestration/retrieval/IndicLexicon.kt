@@ -85,10 +85,26 @@ object IndicLexicon {
         "rasta|रास्ता" to listOf("road", "way"),
     )
 
+    /** Exact (unfolded) spellings, lowercase. */
+    private val EXACT: Map<String, List<String>> by lazy {
+        buildMap { for ((forms, terms) in ENTRIES) for (f in forms.split('|')) putIfAbsent(normalize(f), terms.take(MAX_TERMS_PER_WORD)) }
+    }
+
+    /** Folded spellings: the variants of the same keys. */
     private val INDEX: Map<String, List<String>> by lazy {
-        buildMap {
-            for ((forms, terms) in ENTRIES) for (f in forms.split('|')) putIfAbsent(fold(f), terms.take(MAX_TERMS_PER_WORD))
-        }
+        buildMap { for ((forms, terms) in ENTRIES) for (f in forms.split('|')) putIfAbsent(fold(f), terms.take(MAX_TERMS_PER_WORD)) }
+    }
+
+    /** Every exact spelling (tests). */
+    internal fun exactKeys(): Set<String> = EXACT.keys
+
+    internal fun normalize(word: String): String = Normalizer.normalize(word, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+
+    /** The lexicon terms of one token, or null: a word on the English stop list never matches; the exact spelling is tried before the folded one. */
+    internal fun lookup(token: String): List<String>? {
+        val t = normalize(token)
+        if (EnglishCommonWords.contains(t)) return null
+        return EXACT[t] ?: INDEX[fold(t)]
     }
 
     /** All keys, folded (tests). */
@@ -96,7 +112,7 @@ object IndicLexicon {
 
     /** Lowercase, NFKC, then the romanisation folds. Devanagari (no ASCII letters) is only NFKC'd. */
     internal fun fold(word: String): String {
-        val w = Normalizer.normalize(word, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+        val w = normalize(word)
         if (w.any { it.code > 0x24F }) return w
         val sb = StringBuilder()
         var i = 0
@@ -112,9 +128,11 @@ object IndicLexicon {
     fun expand(question: String): QueryCondenser.Condensed? {
         val words = question.split(Regex("[^\\p{L}\\p{M}]+")).filter { it.isNotEmpty() }.take(MAX_QUESTION_WORDS)
         val terms = LinkedHashSet<String>()
-        for (w in words) INDEX[fold(w)]?.let { terms.addAll(it) }
+        for (w in words) lookup(w)?.let { terms.addAll(it) }
         if (terms.isEmpty()) return null
-        val query = QueryCondenser.clean(terms.joinToString(" ")) ?: return null
-        return QueryCondenser.Condensed(query, question.trim().takeIf { it.isNotEmpty() && !it.equals(query, ignoreCase = true) }, "hi")
+        val added = QueryCondenser.clean(terms.joinToString(" ")) ?: return null
+        // The lexicon terms are ADDED to the question's own words, never a replacement (names and English nouns stay in the search).
+        val query = (added + " " + words.joinToString(" ")).trim()
+        return QueryCondenser.Condensed(query, question.trim().takeIf { it.isNotEmpty() }, "hi")
     }
 }
