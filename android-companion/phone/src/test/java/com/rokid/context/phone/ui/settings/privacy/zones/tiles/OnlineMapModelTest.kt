@@ -74,4 +74,17 @@ class OnlineMapModelTest {
         for (s in listOf("IP address", "roughly where you are looking", "Nothing else is sent", "not sent as such", "Delete all")) assertTrue(s, w.contains(s))
         assertTrue(OnlineMapWords.SWITCH.startsWith("Show a street map (downloads map tiles from MapTiler)"))
     }
+
+    @Test fun theWipeListenerResetsTheInMemorySwitchAndConsent() {
+        val store = OnlineMapStore(); val m = model(store)
+        m.requestEnabled(true); m.confirmFirst()
+        kotlinx.coroutines.runBlocking { OnlineMapWipeListener { m }.onDeleteAll(); OnlineMapWipeListener { null }.onDeleteAll() }
+        assertFalse(m.ui.value.enabled); assertFalse(store.enabled); assertFalse(store.consented); assertEquals(1, purges)
+    }
+
+    @Test fun thePrefsAndCacheNamesMatchWhatDeleteAllClears() {
+        assertEquals(com.rokid.context.orchestration.MemoryWipe.ONLINE_MAP_PREFS, OnlineMapStore.PREFS)
+        assertEquals(com.rokid.context.orchestration.MemoryWipe.ONLINE_TILES_DIR, com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.CACHE_DIR)
+        assertTrue(OnlineMapStore.PREFS in com.rokid.context.orchestration.MemoryWipe.WIPED_PREFS)
+    }
 }

@@ -71,6 +71,28 @@ class InterruptedDeleteAllTest {
         assertFalse("nothing pending: a second start does nothing", MemoryWipe.resumeIfPending(ctx))
     }
 
+    @Test fun aResumedWipeClearsTheStreetMapSwitchConsentAndTileCache() = runBlocking {
+        val prefs = ctx.getSharedPreferences(MemoryWipe.ONLINE_MAP_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("enabled", true).putBoolean("consented", true).commit()
+        val tiles = File(File(ctx.cacheDir, MemoryWipe.ONLINE_TILES_DIR), "maptiler").apply { mkdirs(); File(this, "15_1_2.tile").writeText("x") }
+        MemoryWipe.afterEpochCommit = { throw IllegalStateException("crash") }
+        assertThrows(IllegalStateException::class.java) { runBlocking { MemoryWipe.deleteAll(ctx) } }
+        assertTrue("nothing deleted yet", tiles.exists() && prefs.getBoolean("enabled", false))
+        MemoryWipe.afterEpochCommit = {}
+        assertTrue(MemoryWipe.resumeIfPending(ctx))
+        assertFalse(prefs.getBoolean("enabled", false)); assertFalse(prefs.getBoolean("consented", false))
+        assertFalse("the tile cache is gone", File(ctx.cacheDir, MemoryWipe.ONLINE_TILES_DIR).exists())
+        assertFalse(epochStore().wipePending())
+    }
+
+    @Test fun aNormalDeleteAllClearsTheStreetMapToo() = runBlocking {
+        ctx.getSharedPreferences(MemoryWipe.ONLINE_MAP_PREFS, Context.MODE_PRIVATE).edit().putBoolean("enabled", true).commit()
+        File(File(ctx.cacheDir, MemoryWipe.ONLINE_TILES_DIR), "osm").apply { mkdirs(); File(this, "1_0_0.tile").writeText("x") }
+        MemoryWipe.deleteAll(ctx)
+        assertFalse(ctx.getSharedPreferences(MemoryWipe.ONLINE_MAP_PREFS, Context.MODE_PRIVATE).getBoolean("enabled", false))
+        assertFalse(File(ctx.cacheDir, MemoryWipe.ONLINE_TILES_DIR).exists())
+    }
+
     private fun staged(): File = File(File(ctx.getExternalFilesDir(null)!!, FencedFiles.STAGING_DIR), "trace-aaaa-0001").apply { mkdirs(); File(this, "chunk-0000.json").writeText("raw sensor data") }
 
     @Test fun deleteAllClearsTheExternalTraceStagingFolder() = runBlocking {

@@ -151,7 +151,7 @@ class SettingsDeps(
                 }
             },
             usedBytes = { StorageUsage.usedBytes(app) },
-            wipe = { com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAll(app).also { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.wipe(app) } } },
+            wipe = { com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAll(app) } },
             export = { MemoryExport.write(app) },
             share = { f -> ShareFile.share(app, f) },
             logs = { LogReader.ownLines() },
