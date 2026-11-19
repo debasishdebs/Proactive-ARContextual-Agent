@@ -83,6 +83,8 @@
         <exclude domain="sharedpref" path="online_map.xml" />
         <!-- Place Guide switch: per-device, off again after a restore -->
         <exclude domain="sharedpref" path="place_guide.xml" />
+        <!-- Roaming data saver: mode, "I'm abroad" and today's skipped counts are per-device (a restore onto another phone would be wrong there): back to Wi-Fi only after a restore. -->
+        <exclude domain="sharedpref" path="data_saver.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />
         <!-- 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore or a device transfer never turns a grant on. -->
         <exclude domain="sharedpref" path="canvas_helper_grants.xml" />
@@ -178,6 +180,8 @@
         <exclude domain="sharedpref" path="online_map.xml" />
         <!-- Place Guide switch: per-device, off again after a restore -->
         <exclude domain="sharedpref" path="place_guide.xml" />
+        <!-- Roaming data saver: mode, "I'm abroad" and today's skipped counts are per-device (a restore onto another phone would be wrong there): back to Wi-Fi only after a restore. -->
+        <exclude domain="sharedpref" path="data_saver.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />
         <!-- 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore or a device transfer never turns a grant on. -->
         <exclude domain="sharedpref" path="canvas_helper_grants.xml" />

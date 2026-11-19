@@ -74,7 +74,9 @@ object SettingsModel {
     fun voiceSummary(c: VoiceCapabilities): String = "Voice · ${VoiceStatusText.glasses(c.glasses)}"
 }
 
-data class SettingsRootUiState(val glassesSummary: String = "Not connected", val captureSummary: String = "", val voiceSummary: String = "Voice · Checking…")
+data class SettingsRootUiState(val glassesSummary: String = "Not connected", val captureSummary: String = "", val voiceSummary: String = "Voice · Checking…",
+    /** The Data saver row's subtitle ([com.rokid.context.phone.ui.settings.datasaver.DataSaverModel.rowSubtitle]); Wi-Fi only until the route says otherwise. */
+    val dataSaver: String = "Photos on Wi-Fi only")
 
 class SettingsRootViewModel(
     glasses: GlassesStatusSource,
@@ -104,6 +106,7 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
         "Capture & privacy" to listOf(
             SettingRow(Icons.Outlined.Schedule, PcColors.ChipAmber, "Capture schedule", state.captureSummary, Routes.SETTINGS_CAPTURE),
             SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", "Pause, quiet hours", Routes.SETTINGS_PRIVACY),
+            SettingRow(Icons.Outlined.Cloud, PcColors.ChipSky, "Data saver", state.dataSaver, Routes.SETTINGS_DATA_SAVER),
         ) + if (developerMode) listOf(
             SettingRow(Icons.Outlined.Search, PcColors.ChipMint, "Place Guide", "Monument cards, seed an area", Routes.SETTINGS_PLACE_GUIDE),
             SettingRow(Icons.Outlined.AutoAwesome, PcColors.ChipViolet, "Suggestions (shadow)", "Off. Only logs what it would suggest", Routes.SETTINGS_SUGGESTIONS),

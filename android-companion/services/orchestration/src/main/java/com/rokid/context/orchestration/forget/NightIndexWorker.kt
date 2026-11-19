@@ -20,6 +20,7 @@ import com.rokid.context.orchestration.IndexMaintenance
 import com.rokid.context.orchestration.PrefsIndexClock
 import com.rokid.context.orchestration.PrefsReadAttempts
 import com.rokid.context.work.budget.BackgroundWork
+import com.rokid.context.work.DataSaverWorkGate
 import com.rokid.context.work.frames.KeyframeGraph
 import com.rokid.context.work.frames.KeyframePipeline
 import kotlin.coroutines.cancellation.CancellationException
@@ -54,16 +55,20 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             val ai = AiGraph.get(applicationContext)
             // G6 (charging or battery above 70 %) and a phone that is not too hot; the capture-burst check is [NightIndex]'s.
             val gate = BulkGate({ LocalModelPower.read(applicationContext) }, { keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) })
+            // Roaming data saver: no photo upload or remote backfill over mobile data, roaming or an unknown network; the run then does nothing and the photos wait (never deleted undescribed).
+            val data = keyframes.dataGate
+            DataSaverWorkGate.atStart(data)
+            val bulkOpen = { gate.allowed() && DataSaverWorkGate.open(data) }
             val maintenance = IndexMaintenance(
                 MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), PrefsIndexClock(applicationContext),
-                photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = gate::allowed,
-                bulkReason = gate::reason,
+                photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = bulkOpen,
+                bulkReason = { if (!DataSaverWorkGate.open(data)) "data saver" else gate.reason() },
             )
             val night = NightIndex(
                 db = MemoryGraph.get(applicationContext).db, pipeline = keyframes.pipeline,
                 settings = { MemorySettingsStore.get(applicationContext).settings.value },
-                bulkAllowed = gate::allowed,
-                gateReason = gate::reason,
+                bulkAllowed = bulkOpen,
+                gateReason = { if (!DataSaverWorkGate.open(data)) "data saver" else gate.reason() },
                 maintenance = { maintenance.run() },
                 onDescribed = { PipelineStatsStore.addDescribedBeforeDelete(applicationContext, it) },
             )

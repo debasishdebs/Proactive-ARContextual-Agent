@@ -138,7 +138,7 @@ class LocalModelDownloadWorkerTest {
         assertEquals(NetworkType.UNMETERED, wm.getWorkInfosForUniqueWork("local_model_test-model").get().single().constraints.requiredNetworkType)
         val other = model.copy(id = "other")
         store.enqueue(other, allowMetered = true)
-        assertEquals(NetworkType.CONNECTED, wm.getWorkInfosForUniqueWork("local_model_other").get().single().constraints.requiredNetworkType)
+        assertEquals(NetworkType.NOT_ROAMING, wm.getWorkInfosForUniqueWork("local_model_other").get().single().constraints.requiredNetworkType)
         assertEquals(0, server.requestCount)
     }
 
@@ -153,7 +153,7 @@ class LocalModelDownloadWorkerTest {
         store.enqueue(other, allowMetered = true)
         assertTrue(live(other.id).constraints.requiresBatteryNotLow())
         store.setAllowMetered(model, true)
-        assertEquals(NetworkType.CONNECTED, live(model.id).constraints.requiredNetworkType)
+        assertEquals(NetworkType.NOT_ROAMING, live(model.id).constraints.requiredNetworkType)
         assertTrue("the replacement keeps it", live(model.id).constraints.requiresBatteryNotLow())
     }
 
@@ -222,7 +222,7 @@ class LocalModelDownloadWorkerTest {
         val first = live().id
 
         store.setAllowMetered(model, true)
-        assertEquals(NetworkType.CONNECTED, live().constraints.requiredNetworkType)
+        assertEquals(NetworkType.NOT_ROAMING, live().constraints.requiredNetworkType)
         assertTrue("replaced, not a second download", live().id != first)
         val second = live().id
 

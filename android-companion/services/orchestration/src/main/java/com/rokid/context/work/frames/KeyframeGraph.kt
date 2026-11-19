@@ -9,6 +9,9 @@ import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.PowerManager
 import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.net.DataGate
+import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.Skipped
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.contract.ClusterContract
 import com.rokid.context.ai.contract.ClusterPhoto
@@ -176,6 +179,9 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     private var networkWatch: ConnectivityManager.NetworkCallback? = null
+    private val openHooked = AtomicBoolean(false)
+    /** The roaming data saver (the app's one [com.rokid.context.ai.datasaver.DataSaverGraph]). */
+    internal val dataGate: DataGate by lazy { com.rokid.context.ai.datasaver.DataSaverGraph.get(app) }
     private val started = AtomicBoolean(false)
 
     /** Starts the loop, requeues abandoned claims (startup recovery) and watches for the network coming back. Idempotent: recovery runs once. */
@@ -200,6 +206,20 @@ class KeyframeHandle internal constructor(private val app: Context) {
      */
     fun admitBackgroundCall(): Boolean = !batteryDeferral() && networkValidated() && power.tryExtraction()
 
+    /**
+     * [admitBackgroundCall] plus the roaming data saver, for the optional photo calls (image intent, Place Guide PLACE_MATCH). They are dropped, never queued: a card for where the user
+     * stood an hour ago is useless. The data check comes first so a refused call neither takes the shared extraction allowance nor reaches the model. A refusal is counted (a count and a reason
+     * token in the PcData line, no content).
+     */
+    fun admitPhotoCall(): Boolean {
+        val d = dataGate.decide(DataKind.PHOTO)
+        if (!d.allowed) { dataGate.skipped(DataKind.PHOTO, Skipped.DROPPED, d); return false }
+        return admitBackgroundCall()
+    }
+
+    /** Photo uploads are blocked right now (policy only; no count, no log): the Ask photo gate and tests read it. */
+    fun photoUploadsAllowed(): Boolean = dataGate.decide(DataKind.PHOTO).allowed
+
     @Synchronized private fun watchNetwork() {
         if (networkWatch != null) return
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
@@ -209,6 +229,8 @@ class KeyframeHandle internal constructor(private val app: Context) {
                 pipeline.onNetworkReturn()
             }
         }
+        // The roaming data saver opening (Wi-Fi back, mode or abroad switch changed) wakes the parked loop like a returning network does.
+        if (openHooked.compareAndSet(false, true)) (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.addOpenListener { pipeline.onNetworkReturn() }
         try { cm.registerDefaultNetworkCallback(cb); networkWatch = cb } catch (e: Exception) { PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") }
     }
 

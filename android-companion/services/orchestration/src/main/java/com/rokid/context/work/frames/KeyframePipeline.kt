@@ -77,6 +77,8 @@ sealed interface ExtractOutcome {
             val transient = RetryClassifier.classify(t) == RetryClassifier.Outcome.RETRY
             val attempts = if (transient) RetryPolicy.MAX_ATTEMPTS else FrameStateDao.MAX_ATTEMPTS
             return when {
+                // Roaming data saver: nothing was sent and no attempt is used; the loop parks until the policy opens (Wi-Fi back, mode or abroad switch changed).
+                chain.any { it is com.rokid.context.ai.DataSaverBlockedException } -> Failed(DATA_SAVER, countsAttempt = false)
                 model.any { it.kind == FailureKind.NOT_SET || it.kind == FailureKind.AUTH } ->
                     Failed("provider ${model.first { it.kind == FailureKind.NOT_SET || it.kind == FailureKind.AUTH }.kind.name}", countsAttempt = false)
                 chain.any { it is InterruptedIOException } -> Failed("timeout", maxAttempts = attempts) // SocketTimeoutException and OkHttp's call timeout
@@ -88,6 +90,8 @@ sealed interface ExtractOutcome {
         }
 
         private const val CHAIN_DEPTH = 8
+        /** The fixed error token of a data-saver block ([Failed.error]); the loop parks on it for [DATA_SAVER_PAUSE_MS] unless a policy-open signal comes first. */
+        const val DATA_SAVER = "data_saver"
     }
 }
 
@@ -568,8 +572,11 @@ class KeyframePipeline(
                 } else {
                     sent.forEach { clusters.release(it.clusterId, claimId, now) }
                     PcLog.i(PIPE_TAG, "released=${sent.size} clusters reason=${o.error}")
-                    pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
-                    pausedUntilMs = now + pauseStepMs
+                    if (o.error == ExtractOutcome.DATA_SAVER) pausedUntilMs = now + DATA_SAVER_PAUSE_MS
+                    else {
+                        pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
+                        pausedUntilMs = now + pauseStepMs
+                    }
                 }
                 0
             }
@@ -614,7 +621,10 @@ class KeyframePipeline(
                     val attempts = rest.maxOfOrNull { states.get(it.frameId)?.attempts ?: 0 } ?: 0
                     PcLog.i(PIPE_TAG, "failed class=${o.error} frames=${rest.size} attempts=$attempts")
                 } else PcLog.i(PIPE_TAG, "released=${rest.size} reason=${o.error}")
-                if (!o.countsAttempt && !user) {
+                if (!o.countsAttempt && !user && o.error == ExtractOutcome.DATA_SAVER) {
+                    // Parked, not polled: the policy-open signal ([onNetworkReturn]) wakes it at once; this is only the safety re-check (cheap, no network).
+                    pausedUntilMs = now + DATA_SAVER_PAUSE_MS
+                } else if (!o.countsAttempt && !user) {
                     pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
                     pausedUntilMs = now + pauseStepMs
                 }
@@ -637,6 +647,8 @@ class KeyframePipeline(
         /** Count-only audit log tag (ids, counts, class names; never captions, text or paths). */
         private const val PIPE_TAG = "PcPipeline"
         const val MAX_BATCH = 3
+        /** How long a data-saver block parks the loop when no policy-open signal arrives (design 2.6: a 30-minute safety re-check). */
+        const val DATA_SAVER_PAUSE_MS = 30 * 60_000L
         /** The night drain stops after this many consecutive batches that settled nothing (a provider outage, a stale claim); a success resets the count. */
         private const val MAX_FRUITLESS = 3
         /** Above this many PENDING frames the oldest non-dwell ones beyond the newest [SHED_KEEP_NEWEST] are skipped (fix wave K5). */

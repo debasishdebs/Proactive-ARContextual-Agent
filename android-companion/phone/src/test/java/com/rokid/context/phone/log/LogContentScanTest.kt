@@ -67,6 +67,8 @@ class LogContentScanTest {
         // DiagProbe (trip diagnostics): numbers, booleans and fixed tokens it computes itself (battery bucket, network flags and transport token, clock jump, UTC offset, permission short name, own worker class name); never a name, address or text.
         "sdk", "uptimeS", "offsetMin", "bucket", "charging", "tempBucket", "why", "online", "validated", "metered", "roaming", "transport", "jumpS", "granted", "denied",
         "worker", "running", "enqueued", "heapMb", "maxMb", "powerSave", "idle", "exempt", "foreground",
+        // Roaming data saver (DataSaverGraph, tag PcData): the cost class name (FREE / HOME_MOBILE / ROAMING / UNKNOWN / OFFLINE) and, in "skipped", the kind name, the Skipped enum value and the fixed reason token of the decision; never a host, endpoint, country or content.
+        "cost.name",
         "reps.values.sumOf { it.size }", "counts.closed.joinToString(\",\").ifEmpty { \"-\" }", "runCatching { l.isWearingCheckOn() }",
     )
     private val SAFE_PATTERNS = listOf(

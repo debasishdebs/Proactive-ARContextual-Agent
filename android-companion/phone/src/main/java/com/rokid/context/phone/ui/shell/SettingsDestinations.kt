@@ -97,7 +97,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val vm = viewModel { SettingsRootViewModel(deps.glasses, s.hud, s.voice.capabilities) }
         val state by vm.state.collectAsStateWithLifecycle()
         val devOn by DeveloperModeStore.get(LocalContext.current.applicationContext).enabled.collectAsStateWithLifecycle()
-        SettingsRootScreen(state, live = Routes.LIVE_SETTINGS, onOpen = { nav.navigate(it) }, developerMode = devOn)
+        val dataSaver by com.rokid.context.ai.datasaver.DataSaverGraph.get(LocalContext.current.applicationContext).settings.collectAsStateWithLifecycle()
+        SettingsRootScreen(state.copy(dataSaver = com.rokid.context.phone.ui.settings.datasaver.DataSaverModel.rowSubtitle(dataSaver)), live = Routes.LIVE_SETTINGS, onOpen = { nav.navigate(it) }, developerMode = devOn)
     }
 
     composable(Routes.SETTINGS_GLASSES) {
@@ -394,6 +395,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_PLACE_GUIDE) {
         val app = LocalContext.current.applicationContext
         com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back, changingConfigurations = rememberIsChangingConfigurations(), developerMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle().value)
+    }
+    composable(Routes.SETTINGS_DATA_SAVER) {
+        val app = LocalContext.current.applicationContext
+        com.rokid.context.phone.ui.settings.datasaver.DataSaverRoute(remember { com.rokid.context.phone.ui.settings.datasaver.AndroidDataSaverControl(app) }, back)
     }
     composable(Routes.SETTINGS_NEXUS) {
         val app = LocalContext.current.applicationContext
