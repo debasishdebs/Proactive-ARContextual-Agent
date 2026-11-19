@@ -98,7 +98,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         val devOn by DeveloperModeStore.get(LocalContext.current.applicationContext).enabled.collectAsStateWithLifecycle()
         val dataSaver by com.rokid.context.ai.datasaver.DataSaverGraph.get(LocalContext.current.applicationContext).settings.collectAsStateWithLifecycle()
-        SettingsRootScreen(state.copy(dataSaver = com.rokid.context.phone.ui.settings.datasaver.DataSaverModel.rowSubtitle(dataSaver)), live = Routes.LIVE_SETTINGS, onOpen = { nav.navigate(it) }, developerMode = devOn)
+        val modelPrivacy by com.rokid.context.ai.resolve.ModelPrivacyStore.get(LocalContext.current.applicationContext).mode.collectAsStateWithLifecycle()
+        SettingsRootScreen(state.copy(dataSaver = com.rokid.context.phone.ui.settings.datasaver.DataSaverModel.rowSubtitle(dataSaver), modelPrivacy = com.rokid.context.phone.ui.settings.modelprivacy.ModelPrivacyModel.rowSubtitle(modelPrivacy)), live = Routes.LIVE_SETTINGS, onOpen = { nav.navigate(it) }, developerMode = devOn)
     }
 
     composable(Routes.SETTINGS_GLASSES) {
@@ -399,6 +400,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_DATA_SAVER) {
         val app = LocalContext.current.applicationContext
         com.rokid.context.phone.ui.settings.datasaver.DataSaverRoute(remember { com.rokid.context.phone.datasaver.AndroidDataSaverControl(app) }, back)
+    }
+    composable(Routes.SETTINGS_MODEL_PRIVACY) {
+        val app = LocalContext.current.applicationContext
+        com.rokid.context.phone.ui.settings.modelprivacy.ModelPrivacyRoute(remember { com.rokid.context.phone.ui.settings.modelprivacy.AndroidModelPrivacyControl(app) }, back)
     }
     composable(Routes.SETTINGS_NEXUS) {
         val app = LocalContext.current.applicationContext
