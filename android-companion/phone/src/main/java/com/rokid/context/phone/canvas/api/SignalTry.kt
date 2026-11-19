@@ -64,7 +64,8 @@ class SignalTry(
         val graph = body["graph"] as? JsonObject ?: return HttpResponse.error(400, "bad_request", "Bad request.")
         val name = (body["name"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "tryit"
         val cfg = config()
-        DerivedSignals.validate(name, graph, cfg).takeIf { it.isNotEmpty() }?.let { return problems(it) }
+        // The preview is never saved, so it neither counts against nor collides with the saved-signal limit: validate against a config with no saved signals (the count is the only thing validate reads from it).
+        DerivedSignals.validate(name, graph, cfg.copy(derived = emptyList())).takeIf { it.isNotEmpty() }?.let { return problems(it) }
         if (thermal.status().ordinal >= PhoneThermal.SEVERE.ordinal) return HttpResponse.error(503, "busy", "The phone is hot.")
         if (!running.tryLock()) return HttpResponse.error(409, "busy", "A try is already running.")
         try {
