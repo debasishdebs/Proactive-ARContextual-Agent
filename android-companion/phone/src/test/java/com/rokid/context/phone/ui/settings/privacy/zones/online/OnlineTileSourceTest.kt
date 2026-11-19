@@ -179,6 +179,24 @@ class OnlineTileSourceTest {
         assertNotNull("a cached tile still draws while paused", s.tile(k1))
     }
 
+    /** The switch goes off while a download is in flight: stop (first), then the purge; the answer that arrives afterwards is not stored. */
+    @Test fun aTileArrivingAfterSwitchOffIsNotStored() {
+        val arrive = java.util.concurrent.CountDownLatch(1); val asked = java.util.concurrent.CountDownLatch(1)
+        val t = FakeTransport(mutableListOf({ asked.countDown(); arrive.await(5, java.util.concurrent.TimeUnit.SECONDS); TileResponse(200, body = png()) }))
+        val cache = OnlineTileDiskCache(File(tmp.root, "c"), OnlineProvider.mapTiler(key).cacheId, clock = { now })
+        val s = OnlineTileSource(OnlineProvider.mapTiler(key), t, cache, "TestAgent/1", clock = { now }).also { it.start() }
+        val model = com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapModel(
+            com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapStore().also { it.enabled = true; it.consented = true }, true, stop = { s.stop() }, purge = { cache.purge() })
+        var got: ByteArray? = png()
+        val th = Thread { got = s.tile(k1) }.also { it.start() }
+        assertTrue(asked.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        model.requestEnabled(false)
+        arrive.countDown(); th.join(5000)
+        assertNull(got)
+        assertNull("nothing stored after switch-off", cache.get(k1))
+        assertFalse("the cache folder was not recreated", File(tmp.root, "c").exists())
+    }
+
     @Test fun aNetworkErrorGivesNothingAndIsNotRetriedAtOnce() {
         val t = FakeTransport(mutableListOf({ throw IOException("offline") }))
         val s = source(t)
