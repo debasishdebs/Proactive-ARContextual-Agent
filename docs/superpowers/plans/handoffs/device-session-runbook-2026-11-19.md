@@ -242,3 +242,6 @@ Collect into one folder: `mkdir -p ~/Desktop/rokid/backups/session-20261119 && c
 - [ ] Answers: build installed (CAND/DEFAULT), exit codes, any REFUSED text, which side dropped in S2, card position verdict and FOV mm, whether the hub started after a reboot without opening the app, battery/heat if observed, anything surprising.
 - [ ] Leave state: Place Guide ON/OFF ____, all three delivery switches OFF, no test zones left, Nexus host = PCA, Rokid-Coder untouched (restart it only after PCA checks are done and note that PCA must be closed first for any Rokid-Coder use and vice versa).
 - [ ] Not decided tonight (rulings from needs-user): nightly photo-describe job zone fence (a/b/c, default a), Forget F2/forgetV2/Room v18, multilingual Ask.
+
+## 12. After the trip: how stable was the link? (read-only, 1 minute)
+`tools/link-health-report.sh --phone <PHONE> --date <MM-DD>` per trip day. Look for hours with many `sess-term`/`connecting` together with a long `max-gap-s`; note what else was active then (Rokid-Coder's Monitor sessions, calls). Send the table to Claude: it decides whether any link arbitration is worth building.

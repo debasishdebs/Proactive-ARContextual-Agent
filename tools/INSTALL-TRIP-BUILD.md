@@ -54,3 +54,6 @@ Each check prints PASS / WARN / FAIL / UNKNOWN with a reason; exit 0 = no FAIL, 
 8. Glasses: installed, version/sha, process. Link state is not observable read-only: always UNKNOWN, confirm on the phone.
 
 Emulator run (phone only, 1.0.0 code 4 candidate): 20 PASS, 1 WARN (no battery exemption on the emulator), 0 FAIL; a wrong APK folder gave FAIL on sha256 and a deliver_hud flag set ON gave FAIL on safety defaults (both exit 1).
+
+## Link health report (read-only)
+`tools/link-health-report.sh --phone <phone serial> [--date MM-DD]` reads PCA's own log from the phone (debuggable build, `run-as`) and prints, per clock hour: glasses frames received, link CONNECTING/CONNECTED, authorization timeouts, SESSION_TERMINATED send failures, watchdog HubDown ticks, relaunch lines and the longest quiet gap between frames. Counts and hours only; nothing is written to the device. `--file <pca.log>` reads saved logs without adb; `--fixtures` runs its 6 parsing cases. Purpose: measure whether the shared glasses link is stable (for example when Rokid-Coder is also active) before designing any arbitration. Example (2026-11-19 outing): 387 frames, 2-3 reconnects per hour in the busy hours, each recovered; the 20 authorization timeouts were all in idle (unworn) hours.
