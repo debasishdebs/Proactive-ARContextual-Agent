@@ -86,7 +86,7 @@ fun HudRoot(m: HudModel) {
             // B2: a LEFT or RIGHT place card; the geometry is PlaceCardLayout (unmeasured FOV: tune worn)
             val box = PlaceCardLayout.compute(placeSide, maxWidth.value)
             val edge = if (box.side == PlaceSide.LEFT) Modifier.align(Alignment.BottomStart).padding(start = box.insetDp.dp) else Modifier.align(Alignment.BottomEnd).padding(end = box.insetDp.dp)
-            Box(edge.padding(bottom = 24.dp).let { mod -> box.widthDp?.let { mod.width(it.dp) } ?: mod }, contentAlignment = if (box.side == PlaceSide.LEFT) Alignment.TopStart else Alignment.TopEnd) { OverlayView(overlay, m.confirmHighlightYes, m.recording) }
+            Box(edge.padding(bottom = 24.dp).let { mod -> box.widthDp?.let { mod.width(it.dp) } ?: mod }, contentAlignment = if (box.side == PlaceSide.LEFT) Alignment.TopStart else Alignment.TopEnd) { OverlayView(overlay, m.confirmHighlightYes, m.recording, sideCard = true) }
         }
     }
 }

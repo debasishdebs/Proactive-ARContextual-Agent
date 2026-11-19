@@ -16,9 +16,15 @@ object PlaceCardLayout {
     /** Gap kept clear on both screen edges for LEFT and RIGHT (unmeasured; conservative). */
     const val SAFE_MARGIN_DP = 24f
     /** A side card takes at most this fraction of the display width (leaves the other half of the view clear). */
-    const val SIDE_WIDTH_FRACTION = 0.6f
+    const val SIDE_WIDTH_FRACTION = 0.7f
     /** Narrowest a side card is made while the display allows it. */
     const val MIN_WIDTH_DP = 120f
+
+    /** Side cards only: drops the " · fetched <date>" part of a source line ("Wikipedia · fetched 12 Nov" -> "Wikipedia"); "nearby · not checked" is kept. */
+    fun shortSource(source: String): String {
+        val parts = source.split(" \u00b7 ").filterNot { it.trim().startsWith("fetched") }
+        return if (parts.isEmpty()) source else parts.joinToString(" \u00b7 ")
+    }
 
     /**
      * CENTRE = [PlaceCardBox] with no width and no inset: the caller applies no modifier, so the card is exactly as before. LEFT and RIGHT: a card of [SIDE_WIDTH_FRACTION] of the display,
