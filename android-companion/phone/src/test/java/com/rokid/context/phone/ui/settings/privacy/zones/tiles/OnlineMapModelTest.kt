@@ -8,7 +8,7 @@ import org.junit.Test
 /** The street-map switch: OFF by default, a first-time explanation whose Cancel leaves it OFF, the cache purged by switching off and by Delete all. */
 class OnlineMapModelTest {
     private var purges = 0
-    private fun model(store: OnlineMapStore = OnlineMapStore(), available: Boolean = true) = OnlineMapModel(store, available) { purges++ }
+    private fun model(store: OnlineMapStore = OnlineMapStore(), available: Boolean = true, providerName: String = "MapTiler") = OnlineMapModel(store, available, providerName) { purges++ }
 
     @Test fun defaultsOff() {
         val m = model()
@@ -70,9 +70,9 @@ class OnlineMapModelTest {
     }
 
     @Test fun theDialogSaysWhatIsSentAndWhatIsNot() {
-        val w = OnlineMapWords.DIALOG_BODY
+        val w = OnlineMapWords.dialogBody("MapTiler")
         for (s in listOf("IP address", "roughly where you are looking", "Nothing else is sent", "not sent as such", "Delete all")) assertTrue(s, w.contains(s))
-        assertTrue(OnlineMapWords.SWITCH.startsWith("Show a street map (downloads map tiles from MapTiler)"))
+        assertTrue(OnlineMapWords.switchLabel("MapTiler").startsWith("Show a street map (downloads map tiles from MapTiler)"))
     }
 
     @Test fun theWipeListenerResetsTheInMemorySwitchAndConsent() {
@@ -86,5 +86,33 @@ class OnlineMapModelTest {
         assertEquals(com.rokid.context.orchestration.MemoryWipe.ONLINE_MAP_PREFS, OnlineMapStore.PREFS)
         assertEquals(com.rokid.context.orchestration.MemoryWipe.ONLINE_TILES_DIR, com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.CACHE_DIR)
         assertTrue(OnlineMapStore.PREFS in com.rokid.context.orchestration.MemoryWipe.WIPED_PREFS)
+    }
+
+    private val providerLike = com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineProvider
+
+    @Test fun theDialogAndSwitchNameMapTilerWhenAKeyIsBuiltIn() {
+        val name = providerLike.select("k3yABC123xyz", debug = true)!!.name
+        val ui = model(OnlineMapStore(), providerName = name).ui.value
+        assertEquals("MapTiler", ui.providerName)
+        assertTrue(OnlineMapWords.dialogBody(ui.providerName).contains("asks MapTiler for"))
+        assertFalse(OnlineMapWords.dialogBody(ui.providerName).contains("OpenStreetMap"))
+        assertTrue(OnlineMapWords.switchLabel(ui.providerName).contains("from MapTiler)"))
+    }
+
+    @Test fun theDialogAndSwitchNameOpenStreetMapWhenTheDebugFallbackIsUsed() {
+        val name = providerLike.select("", debug = true)!!.name
+        val ui = model(OnlineMapStore(), providerName = name).ui.value
+        assertEquals("OpenStreetMap", ui.providerName)
+        assertTrue(OnlineMapWords.dialogBody(ui.providerName).contains("asks OpenStreetMap for"))
+        assertFalse(OnlineMapWords.dialogBody(ui.providerName).contains("MapTiler"))
+        assertTrue(OnlineMapWords.switchLabel(ui.providerName).contains("from OpenStreetMap)"))
+    }
+
+    @Test fun aSavedSwitchOnWithoutTheConsentIsTreatedAsOff() {
+        val store = OnlineMapStore().also { it.enabled = true }
+        val m = model(store)
+        assertFalse(m.ui.value.enabled)
+        m.requestEnabled(true)
+        assertTrue("the explanation is shown, not skipped", m.ui.value.askFirst); assertFalse(m.ui.value.enabled)
     }
 }

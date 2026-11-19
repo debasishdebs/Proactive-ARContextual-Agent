@@ -63,14 +63,16 @@ data class OnlineMapUi(
     val enabled: Boolean = false,
     /** The first-time explanation is showing and the switch is still OFF. */
     val askFirst: Boolean = false,
+    /** The provider the build really uses (MapTiler with a key; OpenStreetMap in a debug build without one): the switch label and the dialog name it. */
+    val providerName: String = "MapTiler",
 )
 
 /**
  * The switch's state machine. OFF by default. Turning it on the FIRST time only raises [OnlineMapUi.askFirst]; the switch stays OFF until [confirmFirst] (Cancel and a dismissal leave it OFF).
  * Turning it off, and [wipe] (Delete all), first run [stop] (the tile source: no request in flight may write a tile back), then [purge] (the tile cache); [wipe] also forgets the consent, so the explanation shows again.
  */
-class OnlineMapModel(private val store: OnlineMapStore, available: Boolean, private val stop: () -> Unit = {}, private val purge: () -> Unit) {
-    private val _ui = MutableStateFlow(OnlineMapUi(available = available, enabled = available && store.enabled))
+class OnlineMapModel(private val store: OnlineMapStore, available: Boolean, providerName: String = "MapTiler", private val stop: () -> Unit = {}, private val purge: () -> Unit) {
+    private val _ui = MutableStateFlow(OnlineMapUi(available = available, enabled = available && store.consented && store.enabled, providerName = providerName))
     val ui: StateFlow<OnlineMapUi> = _ui.asStateFlow()
 
     fun requestEnabled(on: Boolean) {
@@ -102,10 +104,10 @@ class OnlineMapWipeListener(private val model: () -> OnlineMapModel?) : com.roki
 class OnlineMapDeps(val model: OnlineMapModel, val source: RasterTileSource?, val fix: CentreFix?)
 
 object OnlineMapWords {
-    const val SWITCH = "Show a street map (downloads map tiles from MapTiler)"
+    fun switchLabel(provider: String) = "Show a street map (downloads map tiles from $provider)"
     const val UNAVAILABLE = "A street map is not available in this build (no map-tile key). The plain grid is used."
     const val DIALOG_TITLE = "Download map tiles?"
-    const val DIALOG_BODY = "With this on, the app asks MapTiler for map pictures (tiles) of the area you are looking at on this screen. What is sent: the tile requests, which reveal roughly where you are looking on the map, and your IP address, to the tile provider. " +
+    fun dialogBody(provider: String) = "With this on, the app asks $provider for map pictures (tiles) of the area you are looking at on this screen. What is sent: the tile requests, which reveal roughly where you are looking on the map, and your IP address, to the tile provider. " +
         "Nothing else is sent. Your zones and coordinates are not sent as such, and nothing is requested while this screen is closed. Tiles are kept on the phone (up to 50 MB) until you turn this off or use Delete all."
     const val NO_FIX = "No location fix yet. Try again with location on, ideally outdoors."
 }
