@@ -141,3 +141,24 @@ Decisions for the user:
 - The mapping of `GLASSES_WORN` and device-info to PCA's wear signal, the double-tap vs triple-tap behaviour and the assist button are unverified.
 - The estimates (3.5 Sd, 5-7 Sd) are judgement from the code read, not measured; the glasses `GlassesRuntime` was only skimmed, not read in full.
 - Source was read at commit 5e288bb3 and the 2026-11-17 notes (Nexus clone 680 commits behind v2.6.0); the current upstream SDK was not re-read.
+
+## 6. B0 desk check result (2026-11-19): can a third-party glasses app be a bus client of the Nexus hub?
+
+Desk only; no device, no build. Sources: the local Nexus clone `~/Desktop/rokid/rokid-resources/nexus/Rokid-Nexus` (HEAD 15cd98ad, 24 Oct) and the scratch worktree at `sdk-v0.27.0` (`~/Desktop/rokid/scratch/nexus-sdk-v0.27.0`), plus this repo.
+
+**Evidence against (decisive on paper).**
+- Nexus `BUSSPEC.md` L260-264 (identical text and lines at the clone and at `sdk-v0.27.0`): "Phone approval does not authorize an arbitrary glasses-side companion; release glasses hubs remain closed to those clients until companion provisioning has its own identity design." Release glasses hubs refuse unknown external glasses-side clients; no glasses-side plugin approval model like the phone's was found (`docs/PLUGIN_SDK.md` at `sdk-v0.27.0` was only grepped for "companion" and "glasses-side", not read in full).
+- `BUSSPEC.md` L260-262: legacy `register(clientId, prefixes, callback)` stays only for "same-UID hub internals and explicit debug-probe compatibility"; release hubs reject unknown external legacy callers.
+- `android-companion/nexus-bridge/README.md` L1-5, L16: PCA's only Nexus integration is a phone-side plugin; no glasses-side Nexus code exists (section 0, L7 of this doc says the same).
+
+**Evidence for (weak).**
+- `BUSSPEC.md` L44: `:glasses-client-probe` (`com.anezium.rokidbus.clientprobe`) is a sample glasses-side client of `:bus-client`, and `2026-11-17-nexus-spike-and-v2-plan.md` L26 cites `hubTarget` for it. That shows the client library supports a glasses target for a probe, not that a release glasses hub accepts a third-party app.
+- Rokid-Coder runs glasses-side code with Nexus, but it is a Nexus fork with its own hubs, so it does not show a third-party app working against the upstream release glasses hub. How it provisions is UNVERIFIED.
+
+**Unknown, needs the glasses (all UNVERIFIED).**
+1. Whether a debug-signed or probe-style PCA glasses client is accepted by the upstream v2.6.0 release glasses hub, or only by a debug-built hub.
+2. Whether a "companion provisioning" mechanism shipped after `sdk-v0.27.0` (not re-read past that tag; the clone is 680 commits behind upstream, per `reviews/2026-11/nexus-spike-s0-s1-2026-11-17.md`).
+3. Whether the wearer could provision PCA by hand (an identity or allow-list step on the glasses hub). Nothing in the sources read describes one.
+
+**Recommendation: shelve Option B; do not run the B1 spike.**
+Reason: the spec's own gate (B0: "if no, Option B is impossible; stop") is answered "no, as documented" by BUSSPEC L263-264, in the pinned SDK as well as the old clone. B1 (0.75 Sd of glasses-side transport extraction) only pays off if a glasses-side client is permitted, and no release hub we can read permits it. This matches the earlier recommendation (section 4, decision 1): shelve unless S2 fails and Nexus voice is wanted badly. Reopen only if S2 gives outcome 2 AND upstream ships companion provisioning (check BUSSPEC for changed L260-264 or a glasses-side plugin section) or the maintainer confirms an approval path. One question to upstream could settle it faster than any spike; that is the user's call. Decision 3 in section 4 is thereby answered.
