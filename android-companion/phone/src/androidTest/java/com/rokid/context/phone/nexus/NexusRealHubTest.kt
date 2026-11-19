@@ -53,9 +53,17 @@ class NexusRealHubTest {
     private val args = InstrumentationRegistry.getArguments()
     private val rigs = mutableListOf<Rig>()
 
+    @Test fun emulatorGuardMarkers() {
+        assertTrue(looksLikeEmulator("google/sdk_gphone64_arm64/emu:14/x:userdebug/dev-keys", "sdk_gphone64_arm64", "ranchu"))
+        assertTrue(looksLikeEmulator("generic/sdk_x86/generic_x86:9/x:eng/test-keys", "sdk_x86", "goldfish"))
+        assertTrue(looksLikeEmulator("generic_x86/generic_x86/x", "generic_x86", "unknown"))
+        assertFalse(looksLikeEmulator("generic/aosp_arm64/aosp_arm64:14/x:userdebug/test-keys", "aosp_arm64", "qcom"))
+        assertFalse(looksLikeEmulator("Rokid/glasses/x:12/x:user/release-keys", "glasses", "mt6785"))
+        assertFalse(looksLikeEmulator(null, null, null))
+    }
+
     @Before fun bridgePresent() {
-        val id = (Build.FINGERPRINT + "|" + Build.PRODUCT + "|" + Build.HARDWARE).lowercase()
-        assumeTrue("emulator only: this test force-stops the hub", listOf("generic", "emulator", "sdk_gphone", "ranchu").any { id.contains(it) })
+        assumeTrue("emulator only: this test force-stops the hub", looksLikeEmulator(Build.FINGERPRINT, Build.PRODUCT, Build.HARDWARE))
         val ok = try { ctx.packageManager.getPackageInfo(NexusPackages.BRIDGE, 0); true } catch (_: Exception) { false }
         assumeTrue("bridge APK not installed", ok)
     }
@@ -342,5 +350,17 @@ class NexusRealHubTest {
 
     private inline fun before(r: Rig, block: () -> Outcome?): Pair<Int, Outcome?> { val b = r.showAttempts(); return b to block() }
 
-    companion object { const val TAG = "PCAREALHUB" }
+    companion object {
+        const val TAG = "PCAREALHUB"
+
+        /**
+         * Emulator-specific markers only. Not a bare "generic": a real AOSP-based device build can carry it. "generic" counts only together with "sdk" (or as generic_x86).
+         * Pure and kept in this androidTest source set (src/test cannot see it without a copy); its marker list is covered by [emulatorGuardMarkers].
+         */
+        internal fun looksLikeEmulator(fingerprint: String?, product: String?, hardware: String?): Boolean {
+            val id = ((fingerprint ?: "") + "|" + (product ?: "") + "|" + (hardware ?: "")).lowercase()
+            if (listOf("sdk_gphone", "ranchu", "goldfish", "emulator", "google_sdk", "generic_x86").any { id.contains(it) }) return true
+            return id.contains("generic") && id.contains("sdk")
+        }
+    }
 }
