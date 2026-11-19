@@ -268,6 +268,10 @@ object RokidFrameInbox {
         return result
     }
 
+    /** Whether a photo upload would be refused right now (the data saver's own decision, remote endpoint): fail-closed readings count as blocked. */
+    internal fun dataSaverBlockedNow(context: Context): Boolean =
+        !com.rokid.context.ai.datasaver.DataSaverGraph.get(context).decide(com.rokid.context.core.net.DataKind.PHOTO).allowed
+
     internal suspend fun ingestFile(
         context: Context,
         file: File,
@@ -277,6 +281,8 @@ object RokidFrameInbox {
         receipt: ReceiptMeta? = null,
         nowMs: () -> Long = System::currentTimeMillis,
         sceneActive: suspend () -> Boolean = { com.rokid.context.work.frames.KeyframeGraph.sceneActive(context) },
+        /** Roaming data saver: true while photo uploads are blocked. The new frame is then inserted already parked (`lastError = 'data_saver'`), so it is never shed, whatever happens to the process before the next drain. */
+        parkedForDataSaver: () -> Boolean = { dataSaverBlockedNow(context) },
     ): InboxResult {
         val frameId = frameIdOf(file)
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
@@ -295,7 +301,7 @@ object RokidFrameInbox {
                 // ReceiptStore. Without a receipt the mtime is not a capture time, so it stays unknown.
                 capturedAtMs = if (receipt != null) file.lastModified().takeIf { it in 1..now } else null,   // a time after the receive time is a clock error
             ),
-            FrameStateEntity(frameId = frameId, state = "PENDING", attempts = 0, lastError = null, claimedAt = null, claimId = null, updatedAt = now),
+            FrameStateEntity(frameId = frameId, state = "PENDING", attempts = 0, lastError = if (try { parkedForDataSaver() } catch (_: Exception) { false }) "data_saver" else null, claimedAt = null, claimId = null, updatedAt = now),
         )
         val appended = try {
             appendFrame(

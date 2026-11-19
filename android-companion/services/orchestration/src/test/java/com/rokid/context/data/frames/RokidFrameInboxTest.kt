@@ -55,6 +55,21 @@ class RokidFrameInboxTest {
         assertEquals("wave-1 path: claimable at once", now, meta.get("b")!!.routedAt)
     }
 
+    @Test fun aFrameInsertedWhilePhotoUploadsAreBlockedIsBornParked() = runBlocking {
+        archive.mkdirs()
+        val a = File(archive, "pa.jpg").apply { writeBytes(byteArrayOf(1, 2)) }
+        val b = File(archive, "pb.jpg").apply { writeBytes(byteArrayOf(3, 4)) }
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, a, "rokid_glasses", nowMs = { now }, sceneActive = { false }, parkedForDataSaver = { true }))
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, b, "rokid_glasses", nowMs = { now }, sceneActive = { false }, parkedForDataSaver = { false }))
+        val states = MemoryGraph.get(ctx).db.frameStateDao()
+        assertEquals("data_saver", states.get("pa")!!.lastError); assertEquals("PENDING", states.get("pa")!!.state)
+        assertNull(states.get("pb")!!.lastError)
+        // a probe that throws never loses the frame
+        val c = File(archive, "pc.jpg").apply { writeBytes(byteArrayOf(5, 6)) }
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, c, "rokid_glasses", nowMs = { now }, sceneActive = { false }, parkedForDataSaver = { error("probe") }))
+        assertNull(states.get("pc")!!.lastError)
+    }
+
     @Test fun ingestRecordsTheGlassesCaptureTimeOnlyForAReceipt() = runBlocking {
         archive.mkdirs()
         val captured = now - 90_000

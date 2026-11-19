@@ -69,6 +69,23 @@ class DataSaverGraphTest {
         assertTrue(g.decide(DataKind.PHOTO).allowed)
     }
 
+    @Test fun theBlockedMarkIsPersistedSurvivesARestartAndIsClearedOnceHandled() {
+        var snap = mobile.copy(notRoaming = false)
+        val p = prefs("dsg8")
+        val g = graph(DataSaverStore(p)) { snap }
+        assertFalse(g.wasBlocked())
+        g.refreshState()
+        assertTrue("a refresh that sees photos blocked marks it", g.wasBlocked())
+        snap = wifi
+        val afterRestart = graph(DataSaverStore(p)) { snap } // a new process: photoOpen starts unknown, no listener fires
+        afterRestart.refreshState()
+        assertTrue("the mark survives, so the pipeline still parks the backlog", afterRestart.wasBlocked())
+        afterRestart.clearBlocked()
+        assertFalse(graph(DataSaverStore(p)) { snap }.wasBlocked())
+        // a blocked call marks it too
+        graph(DataSaverStore(p)) { snap }.also { it.skipped(DataKind.PHOTO, Skipped.UPLOAD_QUEUED, DataDecision(false, "roaming")); assertTrue(it.wasBlocked()) }
+    }
+
     @Test fun theDefaultAllowsHomeMobileDataButNotRoamingOrUnknown() {
         var snap = mobile
         val g = graph(DataSaverStore(prefs("dsg5"))) { snap }

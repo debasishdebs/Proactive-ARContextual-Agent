@@ -179,6 +179,10 @@ class KeyframePipeline(
      * parked frame is never shed afterwards, not even on the first drain after the gate opens ([shedBacklog] skips it): frames must wait for Wi-Fi, not be shed and later deleted undescribed.
      */
     private val dataSaverBlocked: () -> Boolean = { false },
+    /** True when the data saver blocked photo uploads since the last time this was handled, even in an earlier process (a persisted mark). The first unblocked drain then parks the backlog synchronously BEFORE any shedding. */
+    private val dataSaverWasBlocked: () -> Boolean = { false },
+    /** Called once that first unblocked drain has parked the backlog. */
+    private val dataSaverHandled: () -> Unit = {},
 ) {
     private sealed interface Step {
         data class Done(val frames: Int) : Step
@@ -388,7 +392,14 @@ class KeyframePipeline(
         }
         // Wave 2 (Ruling 3): routing runs before any claim; an ask routes at once, ignoring the background batching.
         val routeRetry = route(force = user)
-        if (!user) { if (dataSaverBlocked()) states.parkPendingForDataSaver() else shedBacklog(now) }
+        if (!user) {
+            if (dataSaverBlocked()) states.parkPendingForDataSaver()
+            else {
+                // The first drain after a block (this process or an earlier one) tags everything waiting synchronously, so neither a restart nor an opening noticed inside this very drain can let shedBacklog thin it.
+                if (dataSaverWasBlocked()) { states.parkPendingForDataSaver(); dataSaverHandled() }
+                shedBacklog(now)
+            }
+        }
 
         if (user) {
             val rows = soloFirst((states.askCandidates(sinceMs ?: Long.MIN_VALUE, MAX_BATCH) + states.newestClaimable(now, abandonBefore, sinceMs ?: Long.MIN_VALUE, 1, MAX_BATCH)).distinctBy { it.frameId })
@@ -593,7 +604,7 @@ class KeyframePipeline(
 
     /** Fix wave K5: the AI budget describes about 15 photos a minute; a bigger backlog is thinned (see [FrameStateDao.shedOldestNonDwell]). */
     private suspend fun shedBacklog(now: Long) {
-        if (states.pendingCount() <= SHED_ABOVE) return
+        if (states.unprotectedPendingCount() <= SHED_ABOVE) return // frames parked for Wi-Fi (up to the protected cap) do not make live frames look like a backlog
         val n = states.shedOldestNonDwell(SHED_KEEP_NEWEST, now)
         if (n > 0) PcLog.i(PIPE_TAG, "shed=$n")
     }

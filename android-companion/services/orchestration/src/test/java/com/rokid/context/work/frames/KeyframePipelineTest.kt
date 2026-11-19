@@ -534,4 +534,59 @@ class KeyframePipelineTest {
         assertTrue("ordinary frames are still thinned", (101..200).any { state("g$it") == "NEAR_DUP" })
         assertEquals("parked frames are not", 0, (1..100).count { state("f$it") == "NEAR_DUP" })
     }
+
+    private fun blockedOnce(blocked: () -> Boolean, wasBlocked: () -> Boolean, handled: () -> Unit = {}) =
+        KeyframePipeline(db, completing(), { now }, null, newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = blocked, dataSaverWasBlocked = wasBlocked, dataSaverHandled = handled)
+
+    @Test fun afterAProcessRestartTheFirstUnblockedDrainParksTheUntaggedBacklogBeforeSheddingAndHandlesTheMark() = runBlocking {
+        for (i in 1..300) seed("f$i", i * 1000L) // never tagged: the old process died before its next blocked drain
+        var handled = 0
+        val p = blockedOnce(blocked = { false }, wasBlocked = { handled == 0 }, handled = { handled++ })
+        assertEquals(3, p.drainOnce())
+        assertEquals("nothing was shed", 0, (1..300).count { state("f$it") == "NEAR_DUP" })
+        assertEquals(1, handled)
+        assertEquals(297, db.frameStateDao().dataSaverParkedCount())
+    }
+
+    @Test fun anOpeningNoticedInsideTheDrainStillParksBeforeSheddingNoRaceWithTheListener() = runBlocking {
+        for (i in 1..120) seed("f$i", i * 1000L)
+        var open = false
+        // dataSaverBlocked() is where the gate refreshes: the same call that notices the opening answers "not blocked"; the persisted mark is still set
+        val p = blockedOnce(blocked = { open = true; false }, wasBlocked = { open })
+        p.drainOnce()
+        assertEquals(0, (1..120).count { state("f$it") == "NEAR_DUP" })
+    }
+
+    @Test fun onlyTheNewestThreeHundredParkedFramesAreProtectedTheRestShedAsNormal() = runBlocking {
+        for (i in 1..500) seed("f$i", i * 1000L)
+        db.frameStateDao().parkPendingForDataSaver()
+        assertEquals(500, db.frameStateDao().dataSaverParkedCount())
+        assertEquals("the shed threshold ignores the protected set", 200, db.frameStateDao().unprotectedPendingCount())
+        val p = blockedOnce(blocked = { false }, wasBlocked = { false })
+        p.drainOnce()
+        val shed = (1..500).filter { state("f$it") == "NEAR_DUP" }
+        assertTrue("older frames beyond the cap are thinned", shed.isNotEmpty())
+        assertTrue("the newest 300 are all protected", shed.all { it <= 200 })
+    }
+
+    @Test fun liveFramesAreNotThinnedJustBecauseParkedOnesWait() = runBlocking {
+        for (i in 1..100) seed("p$i", i * 1000L)
+        db.frameStateDao().parkPendingForDataSaver()
+        for (i in 1..30) seed("l$i", (1000 + i) * 1000L) // live frames, newer
+        assertEquals("only the 30 live frames count toward the threshold", 30, db.frameStateDao().unprotectedPendingCount())
+        blockedOnce(blocked = { false }, wasBlocked = { false }).drainOnce()
+        assertEquals(0, (1..30).count { state("l$it") == "NEAR_DUP" })
+    }
+
+    @Test fun timeoutAndAbandonedFramesAreParkedButSoloRebuildAndDescribeBeforeDeleteAreNot() = runBlocking {
+        seed("a", 1000); seed("b", 2000); seed("c", 3000); seed("d", 4000)
+        val dao = db.frameStateDao()
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'timeout' WHERE frameId = 'a'")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'abandoned' WHERE frameId = 'b'")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'solo_rebuild' WHERE frameId = 'c'")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'describe_before_delete' WHERE frameId = 'd'")
+        assertEquals(2, dao.parkPendingForDataSaver())
+        assertEquals("data_saver", dao.get("a")!!.lastError); assertEquals("data_saver", dao.get("b")!!.lastError)
+        assertEquals("solo_rebuild", dao.get("c")!!.lastError); assertEquals("describe_before_delete", dao.get("d")!!.lastError)
+    }
 }

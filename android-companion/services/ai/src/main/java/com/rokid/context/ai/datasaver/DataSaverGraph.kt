@@ -53,7 +53,12 @@ class DataSaverGraph internal constructor(
         return DataPolicy.decide(kind, reach, NetworkCosts.classify(snap, s.abroad), snap.transport, s)
     }
 
+    /** Photo uploads were blocked at some point since the pipeline last handled it (persisted: survives a restart). */
+    fun wasBlocked(): Boolean = store.blockedSince() != 0L
+    fun clearBlocked() = store.clearBlocked()
+
     override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {
+        if (kind == DataKind.PHOTO) store.markBlocked(System.currentTimeMillis())
         ledger.add(what)
         // a blocked CALL: a parked frame can be blocked again at each recheck, so this counts calls, not photos (the live waiting count comes from the database)
         PcLog.i(TAG, "blocked kind=${kind.name} what=$what reason=${d.reason}")
@@ -72,6 +77,7 @@ class DataSaverGraph internal constructor(
             PcLog.i(TAG, "net cost=${cost.name}")
         }
         val open = decide(DataKind.PHOTO).allowed
+        if (!open) store.markBlocked(System.currentTimeMillis())
         val was = photoOpen
         photoOpen = open
         if (open && was == false) {
