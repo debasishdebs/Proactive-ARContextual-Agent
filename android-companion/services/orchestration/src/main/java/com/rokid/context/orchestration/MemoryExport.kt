@@ -78,7 +78,8 @@ object MemoryExport {
     const val MAX_START_RETRIES = 5
 
     /** A debuggable build may leave an undeletable cached export; a production build must report it. */
-    internal val defaultProductionBuild: (Context) -> Boolean = { (it.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0 }
+    internal fun isProductionFlags(applicationFlags: Int): Boolean = (applicationFlags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0
+    internal val defaultProductionBuild: (Context) -> Boolean = { isProductionFlags(it.applicationInfo.flags) }
     @Volatile internal var productionBuild: (Context) -> Boolean = defaultProductionBuild
     /** Test seam: replaces `File.delete()` in [deleteCached] (false = the file cannot be deleted). Always null in production. */
     @Volatile internal var testDelete: ((File) -> Boolean)? = null
