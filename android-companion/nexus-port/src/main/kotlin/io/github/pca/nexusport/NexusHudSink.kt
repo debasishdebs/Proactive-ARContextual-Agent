@@ -66,6 +66,9 @@ class NexusHudSink internal constructor(
     private val handles = EnumMap<Slot, Handle>(Slot::class.java)
     private val pendingHide = EnumMap<Slot, HideReq>(Slot::class.java)
     private var forgetQueued = false
+    /** A refused wipe request (hub: not granted, not registered, not available) is asked again by the tick only after a doubling wait (1 s up to 30 s), not every second for as long as the refusal lasts (found by the real-hub run, 2026-11-19). A new trip or a new connection still asks at once. */
+    private var forgetRefusals = 0
+    private var forgetNotBefore = 0L
     @Volatile private var epoch = 0L
     private var seq = 0L
     /** The last transport call of THIS thread timed out (the worker, a fresh privacy thread and the pool each have their own). */
@@ -497,6 +500,10 @@ class NexusHudSink internal constructor(
         val g = try { if (ledger.owed()) ledger.generation() else return } catch (_: Exception) { return }
         val r = callT { transport.forgetHistory(g) }
         log("nexus forget history code=${NexusResult.name(r)}")
+        synchronized(lock) {
+            if (NexusResult.isQuietGiveUp(r)) { forgetRefusals++; forgetNotBefore = clock() + minOf(30_000L, 1_000L shl minOf(forgetRefusals - 1, 5)) }
+            else if (r == NexusResult.OK) { forgetRefusals = 0; forgetNotBefore = 0L }
+        }
     }
 
     /**
@@ -510,7 +517,7 @@ class NexusHudSink internal constructor(
                 if (h.withdrawing) enqueueHideLocked(h.slot)
                 else if (now >= h.expiresAt) { if (h.slot == Slot.LISTEN) withdrawLocked(h.slot) else handles.remove(h.slot) }
             }
-            if (forgetOwed()) enqueueForgetLocked()
+            if (forgetOwed() && now >= forgetNotBefore) enqueueForgetLocked()
             handles.values.toList()
         }
         retryTripNotice()
