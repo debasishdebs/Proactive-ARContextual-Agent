@@ -27,9 +27,9 @@ import org.robolectric.annotation.Config
 import java.io.File
 
 /**
- * Slice 1.4.2 "Pin to Moment", privacy side. An EXPLICIT user Forget of a pin's reference Moment (a photo, a range, Delete all, also its crash resume) deletes the pin with it, but ONLY through an arming that
- * belongs to that one operation, names its (pin, Moment) pairs and is committed only when the Forget really committed. Every NON-explicit removal (retention expiry, a sweep) never deletes a pin, it only
- * clears the link; a stale or uncommitted arming is dropped, never acted on, and never blocks the sweeps. Real Forget code on an in-memory database drives the real cascade and sweep.
+ * Slice 1.4.2 "Pin to Moment", privacy side. An EXPLICIT user Forget of a pin's reference Moment (a photo, a range, Delete all, also its crash resume) deletes the pin with it, but ONLY the pairs of the operation's
+ * TARGET set, stored as an exact DEAD set in one write with `committed`. Every NON-explicit removal (retention expiry, a sweep) never deletes a pin, it only clears the link; a stale or uncommitted arming is
+ * never acted on. Real Forget code on an in-memory database drives the real cascade and sweep.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
@@ -42,21 +42,25 @@ class PinMomentLinksTest {
     private val sec2 = MomentForgetFixture.SEC + 100
     private val id1 = fx.id
     private val id2 = MomentId.format(sec2)
-    private val ids = (0..2).map { "user:00000000-0000-0000-0000-00000000000$it" }
+    private val ids = (0..3).map { "user:00000000-0000-0000-0000-00000000000$it" }
     private fun pin(i: Int, moment: String?) = UserPlace(ids[i], "Pin $i", PlaceKinds.MONUMENT, 7.9, 80.7, momentId = moment)
 
     private val alive: suspend (List<String>) -> Set<String> = { l -> db.momentDao().photoMomentsOf(l).map { it.momentId }.toSet() }
     private val save: suspend (List<UserPlace>) -> Boolean = { l -> store.write(l) }
+    private val noSave: suspend (List<UserPlace>) -> Boolean = { false }
+    private val all: suspend (List<String>) -> Set<String> = { it.toSet() }
+    private val only1: suspend (List<String>) -> Set<String> = { l -> l.filter { it == id1 }.toSet() }
+    private val none: suspend (List<String>) -> Set<String> = { emptySet() }
 
-    private suspend fun <T> explicit(st: UserPinStore = store, reached: (String) -> Boolean = { true }, committed: (T) -> Boolean = { true }, forget: suspend () -> T): T =
-        PinMomentLinks.explicitStore(st, alive, save, reached, committed, forget)
-    private suspend fun sweep() = PlacePinning.underPinLock { PinMomentLinks.sweepAll(store, alive, save) }
-    private suspend fun resolve() = PlacePinning.underPinLock { PinMomentLinks.resolveStore(store, alive, save) }
+    private suspend fun <T> explicit(st: UserPinStore = store, sv: suspend (List<UserPlace>) -> Boolean = save, target: suspend (List<String>) -> Set<String> = all, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, forget: suspend () -> T): T =
+        PinMomentLinks.explicitStore(st, alive, sv, target, committed, onPending, forget)
+    private suspend fun sweep() = PinMomentLinks.sweepGuarded(store, alive, save)
+    private suspend fun resolve(self: String? = null) = PlacePinning.underPinLock { PinMomentLinks.resolveStore(store, alive, save, self) }
 
     @Before fun setUp() = runBlocking<Unit> {
         rawPrefs.edit().clear().commit()
         ForgetListeners.clearForTests()
-        ForgetListeners.register(PinMomentLinks.listenerOf({ PinMomentLinks.sweepGuarded(store, alive, save) }, { resolve() })) // the production listener: it leaves the pins alone while an explicit operation runs
+        ForgetListeners.register(PinMomentLinks.listenerOf({ sweep() }, { resolve() })) // the production listener: it leaves the pins alone while an explicit operation runs
         fx.frame("a", MomentForgetFixture.MS + 5); fx.project(id1, MomentPartKind.FRAME to "a")
         fx.frame("b", sec2 * 1000 + 5); fx.project(id2, MomentPartKind.FRAME to "b")
         assertTrue(store.write(listOf(pin(0, id1), pin(1, id2), pin(2, null))))
@@ -67,30 +71,28 @@ class PinMomentLinksTest {
     private fun links() = store.pins().map { it.momentId }
     private val pairs get() = mapOf(ids[0] to id1, ids[1] to id2)
 
-    // ---- explicit Forget: the pin goes with its Moment ----
+    // ---- explicit Forget: the pin goes with its Moment, only the target set ----
 
     @Test fun anExplicitForgetOfThePhotoDeletesThePinsOfThatMomentOnly() = runBlocking<Unit> {
-        explicit { fx.service.forgetMoment("a") }
+        explicit(target = only1) { fx.service.forgetMoment("a") }
         assertEquals(listOf("Pin 1", "Pin 2"), names()); assertEquals(listOf(id2, null), links())
         assertNull("armed state is gone", store.arming())
     }
 
-    @Test fun anExplicitMomentAndRangeForgetDeleteThePinsInTheRangeOnly() = runBlocking<Unit> {
-        explicit { fx.forget.forgetMoments(listOf(id1)) }
-        assertEquals(listOf("Pin 1", "Pin 2"), names())
-        explicit(reached = { id -> MomentId.parse(id) == sec2 }) { fx.forget.forgetRange(sec2 * 1000, sec2 * 1000 + 999) }
-        assertEquals(listOf("Pin 2"), names())
+    @Test fun aRangeForgetDeletesOnlyThePinsOfItsTargetSet() = runBlocking<Unit> {
+        explicit(target = { l -> l.filter { MomentId.parse(it) == sec2 }.toSet() }) { fx.forget.forgetRange(sec2 * 1000, sec2 * 1000 + 999) }
+        assertEquals(listOf("Pin 0", "Pin 2"), names())
     }
 
-    @Test fun aRangeForgetDoesNotDeleteAPinWhoseMomentWentForAnotherReasonInTheSameOperation() = runBlocking<Unit> {
-        explicit(reached = { id -> MomentId.parse(id) == MomentForgetFixture.SEC }) { fx.service.forgetMoment("a"); fx.service.expirePhotos(listOf("b")) }
+    @Test fun aMomentOutsideTheTargetThatGoesForAnotherReasonDuringTheOperationKeepsItsPin() = runBlocking<Unit> {
+        explicit(target = only1) { fx.service.forgetMoment("a"); fx.service.expirePhotos(listOf("b")) } // b expires (retention) while the operation runs
         assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull("link cleared, pin kept", store.pins().first().momentId)
     }
 
-    @Test fun forgettingAFactNeverDeletesThePinBecauseThePhotoStays() = runBlocking<Unit> {
+    @Test fun aFactForgetArmsNothingAndNeverDeletesAPin() = runBlocking<Unit> {
         fx.memory("m1", "a")
-        explicit { fx.service.forgetFact("m1") }
-        assertEquals(listOf("Pin 0", "Pin 1", "Pin 2"), names()); assertEquals(listOf(id1, id2, null), links())
+        explicit(target = none) { fx.service.forgetFact("m1") }
+        assertNull(store.arming()); assertEquals(listOf(id1, id2, null), links())
     }
 
     @Test fun aForgetThatDidNotCommitKeepsThePinsAndDropsTheArming() = runBlocking<Unit> {
@@ -100,67 +102,124 @@ class PinMomentLinksTest {
         assertEquals(3, store.pins().size); assertNull(store.arming())
     }
 
-    // ---- Delete all ----
+    // ---- P2-A: only the stored dead set is ever deleted ----
 
-    @Test fun deleteAllDeletesEveryPinThatHadAMomentAndKeepsTheRest() = runBlocking<Unit> {
-        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false)
-        assertTrue(PinMomentLinks.wipeCommittedStore(store, op)); db.wipeDao().wipeMemory(); PinMomentLinks.endWipe()
-        assertEquals(2, resolve()); assertEquals(listOf("Pin 2"), names())
-    }
-
-    @Test fun aCrashedDeleteAllResumesAndDeletesThePinsEvenThoughTheMomentsAreAlreadyGone() = runBlocking<Unit> {
-        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false); PinMomentLinks.wipeCommittedStore(store, op); db.wipeDao().wipeMemory() // crash before the cascade
-        PinMomentLinks.endWipe()
-        PinMomentLinks.beginWipeStore(store, alive, save, resume = true); PinMomentLinks.endWipe() // the resume keeps the committed arming
-        assertEquals(pairs, store.arming()!!.pairs); assertTrue(store.arming()!!.committed)
-        assertEquals(2, resolve()); assertEquals(listOf("Pin 2"), names())
-    }
-
-    @Test fun deleteAllThatAbortsAtTheEpochCommitThenExpiryThenAnUnrelatedForgetNeverDeletesAPin() = runBlocking<Unit> {
-        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false)
-        PinMomentLinks.abortWipeStore(store, op); PinMomentLinks.endWipe() // commitWipe threw: nothing was deleted
-        assertNull(store.arming())
-        fx.service.expirePhotos(listOf("b")) // retention: the listener sweep clears the link
-        explicit { fx.service.forgetMoment("a") } // an unrelated explicit Forget
-        assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull("pin 1 keeps no link but is NOT deleted", store.pins().first().momentId)
-    }
-
-    @Test fun anArmingThatNeverCommittedIsDroppedNotCarriedIntoTheNextForget() = runBlocking<Unit> {
-        // a crash right after arming, before the epoch commit: the arming stays uncommitted
-        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false); PinMomentLinks.endWipe()
-        assertEquals(false, store.arming()!!.committed); assertEquals(op, store.arming()!!.op)
-        fx.service.expirePhotos(listOf("b"))
-        explicit { fx.service.forgetMoment("a") }
-        assertEquals(listOf("Pin 1", "Pin 2"), names())
-    }
-
-    // ---- crash between an explicit Forget's commit and its cascade ----
-
-    @Test fun aCommittedArmingIsFinishedAtNextStart() = runBlocking<Unit> {
-        ForgetListeners.clearForTests() // (in production the in-flight Forget keeps the sweeps away from its arming)
-        assertTrue(store.arm(Arming("op1", "forget", false, pairs)))
-        fx.service.forgetMoment("a") // committed; the process dies here
-        assertTrue(store.markCommitted("op1")) // (the Forget's result is marked committed just before the cascade)
+    @Test fun aLeftoverCommittedArmingDeletesOnlyItsDeadSetNotAMomentThatWentLaterForAnotherReason() = runBlocking<Unit> {
+        ForgetListeners.clearForTests()
+        assertTrue(store.arm(Arming("old", "forget", true, emptyMap(), mapOf(ids[0] to id1))))
+        fx.service.forgetMoment("a") // the Forget committed, the cascade did not run (crash)
+        fx.service.expirePhotos(listOf("b")) // later, retention takes pin 1's Moment
         assertEquals(1, resolve())
         assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull(store.arming())
     }
 
-    @Test fun anUncommittedArmingAtStartIsDroppedAndTheFollowingSweepOnlyClearsTheLink() = runBlocking<Unit> {
-        assertTrue(store.arm(Arming("op1", "forget", false, pairs)))
-        fx.service.expirePhotos(listOf("a")) // expiry, not a Forget; the listener sweep ran with the stale arming present
-        assertEquals(3, store.pins().size); assertEquals(listOf(null, id2, null), links()); assertNull(store.arming())
+    @Test fun aRangeResumeKeepsItsExactSetEvenThoughNoRangeFilterIsLeft() = runBlocking<Unit> {
+        // the range armed only pin 0 and committed with dead {pin 0}; pin 1's Moment is also gone now (retention): the resume must not take it
+        ForgetListeners.clearForTests()
+        assertTrue(store.arm(Arming("rng", "forget", true, emptyMap(), mapOf(ids[0] to id1))))
+        fx.service.forgetMoment("a"); fx.service.forgetMoment("b")
+        resolve()
+        assertEquals(listOf("Pin 1", "Pin 2"), names())
     }
 
-    @Test fun anArmedPinPlusExpiryOnlyClearsTheLink() = runBlocking<Unit> {
-        assertTrue(store.arm(Arming("op1", "forget", false, pairs)))
-        fx.service.expirePhotos(listOf("a", "b"))
-        assertEquals(3, store.pins().size); assertTrue(links().all { it == null })
+    @Test fun anArmingThatNeverCommittedIsDroppedNotCarriedIntoTheNextForget() = runBlocking<Unit> {
+        ForgetListeners.clearForTests()
+        assertTrue(store.arm(Arming("never", "forget", false, pairs)))
+        fx.service.forgetMoment("a") // a Forget by another path; the old arming never committed
+        explicit(target = none) { fx.service.expirePhotos(listOf("b")) }
+        assertEquals(3, store.pins().size); assertNull(store.arming())
     }
 
-    @Test fun anArmingOfAnotherPinOrMomentPairIsNeverActedOn() = runBlocking<Unit> {
-        assertTrue(store.arm(Arming("op1", "forget", true, mapOf(ids[0] to id2)))) // committed, but pin 0 now points at another Moment than the armed one
-        fx.service.forgetMoment("b")
-        assertEquals(0, resolve()); assertEquals(3, store.pins().size)
+    // ---- P3: merge, restore, post-commit failure ----
+
+    @Test fun aNewArmingMergesAnOlderUnfinishedCommittedOneAndAFailedOperationRestoresIt() = runBlocking<Unit> {
+        ForgetListeners.clearForTests()
+        assertTrue(store.arm(Arming("old", "forget", true, emptyMap(), mapOf(ids[0] to id1))))
+        fx.service.forgetMoment("a")
+        // a second operation cannot finish the old one (the list cannot be saved) and does not commit
+        explicit(sv = noSave, target = { l -> l.filter { it == id2 }.toSet() }, committed = { _: Boolean -> false }) {
+            assertEquals("merged: the old dead set rides on the new arming", mapOf(ids[0] to id1), store.arming()!!.dead); true
+        }
+        val a = store.arming()!!
+        assertTrue(a.committed); assertEquals(mapOf(ids[0] to id1), a.dead); assertTrue(a.pairs.isEmpty())
+        resolve()
+        assertEquals(listOf("Pin 1", "Pin 2"), names())
+    }
+
+    @Test fun anExceptionAfterTheForgetCommittedReportsPendingNotFailureAndTheNextStartFinishesIt() = runBlocking<Unit> {
+        var pending = false
+        val r = explicit(sv = noSave, target = only1, onPending = { pending = true }) { fx.service.forgetMoment("a"); "done" }
+        assertEquals("done", r); assertTrue(pending)
+        assertEquals("pins still there", 3, store.pins().size)
+        assertTrue(store.arming()!!.committed); assertEquals(mapOf(ids[0] to id1), store.arming()!!.dead)
+        resolve()
+        assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull(store.arming())
+    }
+
+    // ---- Delete all ----
+
+    @Test fun deleteAllDeletesEveryPinThatHadALiveMomentAndKeepsTheRest() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false)
+        assertTrue(PinMomentLinks.wipeCommittedStore(store, op)); db.wipeDao().wipeMemory()
+        assertEquals("the operation's own settle is exempt", 2, resolve(self = op)); PinMomentLinks.endWipe(op)
+        assertEquals(listOf("Pin 2"), names())
+    }
+
+    @Test fun aCrashedDeleteAllResumesAndDeletesOnlyTheCommittedSetNotAPinCreatedAfterTheCrash() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false); PinMomentLinks.wipeCommittedStore(store, op); db.wipeDao().wipeMemory() // crash before the cascade
+        PinMomentLinks.endWipe(op)
+        fx.frame("c", (sec2 + 50) * 1000 + 5); fx.project(MomentId.format(sec2 + 50), MomentPartKind.FRAME to "c")
+        assertTrue(store.write(store.pins() + pin(3, MomentId.format(sec2 + 50)))) // a pin made after the crash, on a live Moment
+        val op2 = PinMomentLinks.beginWipeStore(store, alive, save, resume = true)
+        assertEquals("the resume arms nothing new", mapOf(ids[0] to id1, ids[1] to id2), store.arming()!!.dead)
+        assertEquals(2, resolve(self = op2)); PinMomentLinks.endWipe(op2)
+        assertEquals(listOf("Pin 2", "Pin 3"), names())
+    }
+
+    @Test fun deleteAllThatAbortsAtTheEpochCommitThenExpiryThenAnUnrelatedForgetNeverDeletesAPin() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false)
+        PinMomentLinks.abortWipeStore(store, op); PinMomentLinks.endWipe(op) // commitWipe threw: nothing was deleted
+        assertNull(store.arming())
+        fx.service.expirePhotos(listOf("b")) // retention: the listener sweep clears the link
+        explicit(target = only1) { fx.service.forgetMoment("a") } // an unrelated explicit Forget of the other Moment
+        assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull("pin 1 keeps no link but is NOT deleted", store.pins().first().momentId)
+    }
+
+    @Test fun ifTheWipeCommitWriteFailsTheResumePromotesTheUncommittedWipeArming() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false)
+        val failing = UserPinStore(FailingPrefs(rawPrefs, failKey = UserPinStore.ARMED_KEY))
+        assertFalse("the commit write fails", PinMomentLinks.wipeCommittedStore(failing, op))
+        db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op)
+        assertFalse(store.arming()!!.committed)
+        assertEquals("a start-up settle never drops an uncommitted wipe arming", 0, resolve())
+        assertEquals(3, store.pins().size)
+        val op2 = PinMomentLinks.beginWipeStore(store, alive, save, resume = true)
+        assertTrue(store.arming()!!.committed); assertEquals(2, resolve(self = op2)); PinMomentLinks.endWipe(op2)
+        assertEquals(listOf("Pin 2"), names())
+    }
+
+    // ---- P2-B: sweeps and settle never run while an explicit operation has armed ----
+
+    @Test fun aScreenVisitSweepDuringAnArmedUncommittedForgetChangesNothing() = runBlocking<Unit> {
+        var duringSweep: Int? = -1; var armedAfterSweep: Arming? = null; var linksAfterSweep: List<String?> = emptyList()
+        explicit(target = only1) {
+            fx.service.forgetMoment("a")
+            duringSweep = sweep() // another thread's screen-visit sweep, after the Moment is gone but before the commit
+            armedAfterSweep = store.arming(); linksAfterSweep = links()
+            true
+        }
+        assertEquals(0, duringSweep); assertEquals(false, armedAfterSweep!!.committed); assertEquals(mapOf(ids[0] to id1), armedAfterSweep!!.pairs)
+        assertEquals("the sweep did not clear pin 0's link, so the cascade still finds it", listOf(id1, id2, null), linksAfterSweep)
+        assertEquals(listOf("Pin 1", "Pin 2"), names())
+    }
+
+    @Test fun aDeleteAllResumeIsNotRacedByAStartupSettle() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false); PinMomentLinks.wipeCommittedStore(store, op); db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op)
+        val op2 = PinMomentLinks.beginWipeStore(store, alive, save, resume = true)
+        assertEquals("ForgetStartup.settle while the resume runs", 0, resolve()); assertEquals(0, sweep())
+        assertEquals("nothing was dropped or changed", 3, store.pins().size); assertTrue(store.arming()!!.committed)
+        assertEquals(2, resolve(self = op2)); PinMomentLinks.endWipe(op2)
+        assertEquals(listOf("Pin 2"), names())
     }
 
     // ---- arming must be stored ----
@@ -184,10 +243,9 @@ class PinMomentLinksTest {
         assertEquals(listOf("a", "b"), db.frameDao().all().map { it.id }.sorted())
     }
 
-    @Test fun withNoLinkedPinNoArmingIsNeededAndTheForgetRuns() = runBlocking<Unit> {
-        assertTrue(store.write(listOf(pin(2, null))))
+    @Test fun withNothingToArmNoArmingIsNeededAndTheForgetRuns() = runBlocking<Unit> {
         val fp = FailingPrefs(rawPrefs, failKey = UserPinStore.ARMED_KEY)
-        explicit(UserPinStore(fp)) { fx.service.forgetMoment("a") }
+        explicit(UserPinStore(fp), target = none) { fx.service.forgetMoment("a") }
         assertEquals(listOf("b"), db.frameDao().all().map { it.id })
     }
 
@@ -197,11 +255,13 @@ class PinMomentLinksTest {
         assertEquals(3, store.pins().size)
     }
 
-    @Test fun aRangeForgetThatWouldDeletePinsNeedsTheConfirmedCount() {
-        assertFalse(ForgetActions.rangeNeedsConfirmation(0, null)); assertFalse(ForgetActions.rangeNeedsConfirmation(2, 2))
-        assertTrue(ForgetActions.rangeNeedsConfirmation(2, null)); assertTrue(ForgetActions.rangeNeedsConfirmation(2, 1))
+    @Test fun aRangeForgetThatWouldDeletePinsNeedsTheConfirmedPinIdSet() {
+        val two = setOf(ids[0], ids[1])
+        assertFalse(ForgetActions.rangeNeedsConfirmation(emptySet(), null)); assertFalse(ForgetActions.rangeNeedsConfirmation(two, two))
+        assertTrue(ForgetActions.rangeNeedsConfirmation(two, null)); assertTrue(ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0])))
+        assertTrue("same count, other pins", ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0], ids[2])))
         val actions = src("ForgetActions.kt")
-        assertTrue("the refusal runs before the cascade", actions.indexOf("rangeNeedsConfirmation(going.count, confirmedPins)") in 1 until actions.indexOf("PinMomentLinks.explicit(context, reached = inRange)"))
+        assertTrue("the refusal runs before the cascade", actions.indexOf("rangeNeedsConfirmation(going.ids, confirmedPins)") in 1 until actions.indexOf("PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }"))
     }
 
     // ---- non-explicit removal: the pin is NEVER deleted, only its link ----
@@ -241,12 +301,13 @@ class PinMomentLinksTest {
         val why = com.rokid.context.memory.forget.DeletionGraph.PREFS.single { it.name == "place_pins" }.why
         assertTrue("the inventory entry must say an explicit Forget deletes the pin and an expiry only clears the link", "reference Moment" in why && "EXPLICIT" in why && "NEVER deleted by an expiry" in why)
         val wipe = src("MemoryWipe.kt")
-        assertTrue("Delete all arms first, marks the commit and settles at the end", "PinMomentLinks.beginWipe(context, resume)" in wipe && "PinMomentLinks.wipeCommitted(context, pinOp)" in wipe && "PinMomentLinks.abortWipe(context, pinOp)" in wipe && "PinMomentLinks.settle(context)" in wipe)
+        assertTrue("Delete all arms first, marks the commit and settles at the end", "PinMomentLinks.beginWipe(context, resume)" in wipe && "PinMomentLinks.wipeCommitted(context, pinOp)" in wipe && "PinMomentLinks.abortWipe(context, pinOp)" in wipe && "PinMomentLinks.settle(context, pinOp)" in wipe)
         val actions = src("ForgetActions.kt")
-        assertTrue("every gated Forget runs inside the cascade", "PinMomentLinks.explicit(context, committed = { o: Outcome -> o.committed })" in actions)
+        assertTrue("every gated Forget runs inside the cascade with its target set", "PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }" in actions)
         assertTrue("an arming failure is a typed outcome", "Outcome.PIN_PREP_FAILED" in actions)
-        assertTrue("the range Forget runs inside the cascade", "PinMomentLinks.explicit(context, reached = inRange)" in actions)
+        assertTrue("the range Forget runs inside the cascade", "PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }" in actions)
         assertTrue("the crash resume at start", "PinMomentLinks.settle(context)" in actions)
+        assertFalse("no 'reached = {true}' resume shortcut", "reached" in src("PinMomentLinks.kt"))
         assertTrue("the listener is registered at start", "PinMomentLinks.listener(this)" in src("ContextApp.kt"))
         assertTrue("the settings export strips the link and the arming", "withoutLinks" in src("ConfigExport.kt") && "ARMED_KEY" in src("ConfigExport.kt"))
         listOf("RetentionWorker.kt", "SuspectSweepWorker.kt", "NightIndexWorker.kt").forEach { assertFalse("$it must not delete pins", "UserPinStore" in src(it) || "PinMomentLinks.explicit" in src(it)) }

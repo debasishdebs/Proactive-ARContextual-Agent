@@ -59,6 +59,12 @@ class CacheCleanupFailed : Exception("cached export not deleted")
 /** Slice 1.4.2: the removal of the pins that go with this Moment could not be prepared: nothing was forgotten. */
 class PinPrepFailed : Exception("pin removal not prepared")
 
+/** Slice 1.4.2: the pins this Forget would delete changed since they were confirmed: nothing was forgotten. */
+class PinsNotConfirmed : Exception("pins not confirmed")
+
+/** Slice 1.4.2: the Forget went through; only the removal of its pins did not finish (it completes at the next start). */
+class PinCleanupPending : Exception("pin cleanup pending")
+
 /** Fixed copy (spec §2.4 Memory detail; never exception text). */
 object ForgetCopy {
     const val FACT_TITLE = "Forget this fact?"
@@ -84,6 +90,10 @@ object ForgetCopy {
     const val CONTENT_CHANGED = "Content changed since the preview. Review again."
     /** Slice 1.4.2: the pin removal could not be prepared, so nothing was forgotten. */
     const val PIN_PREP_FAILED = "Could not prepare the pin removal; nothing was forgotten."
+    /** Slice 1.4.2: the Forget committed; the pin removal finishes at the next start. */
+    const val PIN_CLEANUP_PENDING = "Forgotten. The pinned places that used it will be removed when the app next starts."
+    /** Slice 1.4.2: the pins this Forget would delete are not the ones that were confirmed. */
+    const val PINS_CHANGED = "The pinned places affected changed. Review and try again; nothing was forgotten."
     const val FAILED = "Couldn't forget that \u2014 try again"
 }
 

@@ -119,7 +119,7 @@ class MemoryDetailViewModel(
         local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null, preview = null) } }
         if (!start) return
         viewModelScope.launch {
-            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false; var tooLarge = false; var pinPrep = false
+            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false; var tooLarge = false; var pinPrep = false; var pinsChanged = false; var pinPending = false
             val ok = try {
                 if (kind.single) objectId != null && forget.forgetObject(kind, objectId)
                 else if (preview != null) forget.forgetScoped(kind, memoryId, frameId, preview.requested, (if (preview.needsAck) preview.ackHash else preview.planHash).ifEmpty { null }) // the scope the dialog showed
@@ -136,14 +136,18 @@ class MemoryDetailViewModel(
                 exportBlocked = true; false
             } catch (e: PinPrepFailed) {
                 pinPrep = true; false
+            } catch (e: PinsNotConfirmed) {
+                pinsChanged = true; false
+            } catch (e: PinCleanupPending) {
+                pinPending = true; true // the Forget itself committed
             } catch (e: CacheCleanupFailed) {
                 cacheLeft = true; true // the Forget itself committed
             } catch (e: Exception) {
                 false
             }
             local.update {
-                if (ok) it.copy(forgetting = false, forgotten = true, message = if (cacheLeft) ForgetCopy.CACHE_LEFT else null)
-                else it.copy(forgetting = false, message = if (changed) ForgetCopy.CONTENT_CHANGED else if (tooLarge) ForgetScopeCopy.TOO_LARGE else if (pinPrep) ForgetCopy.PIN_PREP_FAILED else if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
+                if (ok) it.copy(forgetting = false, forgotten = true, message = if (cacheLeft) ForgetCopy.CACHE_LEFT else if (pinPending) ForgetCopy.PIN_CLEANUP_PENDING else null)
+                else it.copy(forgetting = false, message = if (changed) ForgetCopy.CONTENT_CHANGED else if (tooLarge) ForgetScopeCopy.TOO_LARGE else if (pinPrep) ForgetCopy.PIN_PREP_FAILED else if (pinsChanged) ForgetCopy.PINS_CHANGED else if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
             }
             if (changed && !kind.single) openDialog(kind, frameId) // review again: the dialog opens once more with the NEW counts, the message stays
         }

@@ -63,10 +63,10 @@ class AndroidPlaceGuideControl(
 
     override suspend fun recentMoments(limit: Int): List<MomentChoice> = momentDao().recentPhotoMoments(limit).map { it.choice() }
     override suspend fun momentsOf(ids: List<String>): Map<String, MomentChoice> = if (ids.isEmpty()) emptyMap() else momentDao().photoMomentsOf(ids).associate { it.momentId to it.choice() }
-    override suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, offset: Int): List<MomentChoice> {
+    override suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, beforeId: String?): List<MomentChoice> {
         val lo = com.rokid.context.memory.moment.MomentId.format(Math.floorDiv(maxOf(fromMs, 0L), 1000L))
         val hi = com.rokid.context.memory.moment.MomentId.format(Math.floorDiv(maxOf(toMs, 1L) - 1, 1000L).coerceAtLeast(0))
-        return momentDao().photoMomentsBetween(lo, hi, limit, offset).map { it.choice() }
+        return momentDao().photoMomentsBetween(lo, hi, limit, beforeId).map { it.choice() }
     }
     override suspend fun setMoment(pinId: String, momentId: String?): Boolean = pinning.setMoment(pinId, momentId)
     /** A link whose Moment was forgotten is cleared whenever the screen reads the pins (the Forget listener does it at the time; this also covers a crash in between). */

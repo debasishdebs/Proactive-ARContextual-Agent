@@ -99,22 +99,24 @@ object MemoryWipe {
     private suspend fun wipeNow(context: Context, db: ContextDatabase, resume: Boolean): Int {
         // Slice 1.4.2: the pins with a reference Moment are armed (durably, for THIS wipe) before anything is deleted; if that cannot be stored nothing is deleted (PinArmFailed). A resume keeps its earlier committed arming.
         val pinOp = com.rokid.context.work.frames.place.PinMomentLinks.beginWipe(context, resume)
-        try { return wipeNowArmed(context, db, resume, pinOp) } finally { com.rokid.context.work.frames.place.PinMomentLinks.endWipe() }
+        try { return wipeNowArmed(context, db, resume, pinOp) } finally { com.rokid.context.work.frames.place.PinMomentLinks.endWipe(pinOp) }
     }
 
     private suspend fun wipeNowArmed(context: Context, db: ContextDatabase, resume: Boolean, pinOp: String): Int = withContext(Dispatchers.IO + NonCancellable) {
         // S57: the persisted deletion epoch (`counter + 1`, `wipedAtMs`) is committed BEFORE anything is deleted, so a crash or power loss mid-wipe still
         // leaves a durable record that everything recorded under the old counter is stale. If it cannot be committed nothing is deleted.
         // The same commit writes the "wipe pending" marker: if the process dies before the cleanup below finished, the next start finishes it ([resumeIfPending]).
+        var pinsCommitted = true
         if (!resume) {
             val epoch = try { DeletionEpochStore.of(context).commitWipe(System.currentTimeMillis()) } catch (t: Throwable) {
                 runCatching { com.rokid.context.work.frames.place.PinMomentLinks.abortWipe(context, pinOp) } // nothing was deleted: the arming is dropped and the pins stay
                 throw t
             }
-            runCatching { com.rokid.context.work.frames.place.PinMomentLinks.wipeCommitted(context, pinOp) } // from here on the wipe is real: a crash is finished from the committed arming
+            pinsCommitted = runCatching { com.rokid.context.work.frames.place.PinMomentLinks.wipeCommitted(context, pinOp) }.getOrDefault(false) // from here on the wipe is real: a crash is finished from the committed arming
             afterEpochCommit(epoch)
         }
-        var leftovers = 0 // artefacts that still exist after their deletion was attempted: the marker stays and the next start retries
+        var leftovers = 0
+        if (!pinsCommitted) { leftovers++; PcLog.w("MemoryWipe", "pin removal not marked: the resume completes it") } // the wipe stays pending, so the next start resumes and promotes the pin arming // artefacts that still exist after their deletion was attempted: the marker stays and the next start retries
         // Fix round 3: never import here (a failing import must not block Delete all). An import in progress is
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
@@ -180,7 +182,7 @@ object MemoryWipe {
                 leftovers++; PcLog.w("MemoryWipe", "place pack not cleared: ${SafeLog.describe(e)}")
             }
             // Slice 1.4.2: a pin whose reference Moment was just wiped is forgotten with it (armed at the start of this wipe, also on its resume); a failure is a leftover, so the resume retries it.
-            try { if (com.rokid.context.work.frames.place.PinMomentLinks.settle(context) == null) leftovers++ } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            try { if (com.rokid.context.work.frames.place.PinMomentLinks.settle(context, pinOp) == null) leftovers++ } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 leftovers++; PcLog.w("MemoryWipe", "pin cascade not done: ${SafeLog.describe(e)}")
             }
             MemoryMaintenance.vacuum(db)
