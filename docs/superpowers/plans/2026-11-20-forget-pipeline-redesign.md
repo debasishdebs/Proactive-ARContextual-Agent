@@ -53,3 +53,21 @@ Estimate: 4 to 6 agent-days of build, 1 to 2 days of review and fixes (Forget co
 ## Out of scope here
 
 Changing what is retained or for how long (retention rules), the answer/nudge Forget semantics, new object families.
+
+## Step 1 built (2026-11-20, additive, no behaviour change)
+
+Built in `services/memory/.../forget/lifecycle/` and read by NOTHING in production yet (no dialog, executor, `ForgetPlanner`, `ForgetExecutor` or `ForgetActions` change):
+
+- `ForgetSource.kt`: `ForgetSourceKind` (SINGLE, MULTI, RANGE, SCOPE, DELETE_ALL, SYSTEM_EXPIRY, SYSTEM_SWEEP, SYSTEM_PURGE, each with its `explicit`), `SourceSelection` (None, Ids, TimeRange, Scoped) and `ForgetSource(kind, explicit, selection, origin)`. A wrong `explicit` flag fails at construction; `toString` is counts and kinds only.
+- `ForgetPolicy.kt`: THE policy table. `ForgetChild` (every lifecycle `Family` plus EMBEDDING, FILES, PIN, GLASSES, LOGS) x source group (user kinds share one cell, DELETE_ALL, SYSTEM_EXPIRY, SYSTEM_SWEEP, SYSTEM_PURGE) -> `FORGET | DE_LINK | CASCADE_BY_EXISTING_RULES | KEEP`. Each cell carries the `file:line` that implements it today; 12 cells copied from the coverage map are flagged `verified = false` (step 2 must re-read them). Thumbnails have no store of their own (rendered from the JPEG), so they sit under FILES.
+- `PolicyPlan.kt`: `PolicyPlan.of(source, targetCount, children)` is a PURE function giving forgotten / de-linked / cascaded / kept entries with counts and, for pins and marks (`fewItems`), up to 5 names plus the exact ids. Named `PolicyPlan`, not `ForgetPlan`, because `ForgetPlan` is already the planner's node -> Fate type. It is the user-facing disposition view of the same Forget, not a second planner.
+- Tests: `ForgetPolicyTest` (second written copy of the matrix, one failure message per cell, a new `Family` / `Families.ALL` entry / DeletionGraph table owner with no row FAILS, WIPED tables never KEEP, KEPT tables never FORGET, only explicit sources forget a pin), `ForgetPolicyConformanceTest` (the real planner on the golden world, v1 and v2: it never touches a family the table says KEEP, never ERASEs one the table says DE_LINK), `ForgetPolicyPinConformanceTest` in orchestration (the real `PinMomentLinks` explicit cascade, Delete all wipe cascade and sweep against the PIN row for every kind), `PolicyPlanTest`.
+
+Known divergences the table records, not fixes (need the rulings of coverage map section 5): MARK under SYSTEM_EXPIRY is CASCADE (photo expiry erases marks in the radius, G9); PIN under mark undo from the glasses is FORGET with no dialog (G2); legacy-frame expiry and orphan-memory purge use the user cascade (G7), so their cells say CASCADE / FORGET for memories.
+
+### What step 2 will do
+
+1. Thread a `ForgetSource` through `ForgetActions.run`, `MemoryWipe.deleteAll`, `RetentionWorker`, `SuspectSweepWorker` and `InvalidMomentPurge` as a parameter only (default = the kind they are today), still no behaviour change; add the entry-point registry test (coverage map step 0).
+2. Add the PIN family to the PREVIEW: build the `PolicyPlan` for each existing dialog (previewer, multi-select, scoped, range, Delete all) and replace the three hand-made `pinsGoing` reaches (`FA:100`, `FA:116-118`, `MemorySettings.kt:109`) with `plan.entry(PIN)`; execution passes the plan's (pin, Moment) pairs to `PinMomentLinks.explicit` instead of `reached = { true }` (medium risk: changes which pins go, so `PinMomentLinksTest`, `MemorySettingsTest`, `SelectionControllerTest` plus the new conformance tests are the net).
+3. Re-read the 12 `verified = false` cells and flip them; get the four rulings (marks under expiry, pins under glasses undo, orphan purge, watch-off / canvas run delete).
+4. Only then the one dialog (step 4 of the migration plan) reads `PolicyPlan`; the planner's `ForgetPlan` stays the executor's input.
