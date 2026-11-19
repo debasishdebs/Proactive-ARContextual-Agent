@@ -37,3 +37,20 @@ Extra UNVERIFIED (exit 3) rules, evaluated after the FAIL check (a real signatur
 - Small clock changes (under 5 s) and a clock rolled back and forward again are not detected.
 
 The manual post-install checks (v17-upgrade-recovery.md section 3) therefore remain MANDATORY even after CLEAN.
+
+## Post-install check
+
+`tools/post-install-check.sh --phone <serial> [--glasses <serial>] --apks <folder>` (and `--fixtures`, no device). READ-ONLY: every adb call goes through an allow-list (`adb_safe`, fixture-tested) that refuses install, uninstall, clear, force-stop, grant, settings put, input, `logcat -c` and any redirect; it only reads dumpsys/getprop/logcat -d, `cat`s two prefs files via run-as, and copies the installed base APK into a temp dir it removes. Prints counts, hashes and names only, never a log line.
+
+Each check prints PASS / WARN / FAIL / UNKNOWN with a reason; exit 0 = no FAIL, 1 = any FAIL, 2 = refused/usage.
+
+1. Identity: phone and glasses are distinct physical devices, phone is not a watch.
+2. Version and sha256 of the installed base APK vs the staged APK (PASS only on exact match), signature digest (needs aapt/apkanalyzer and apksigner, else UNKNOWN).
+3. Every runtime permission granted (from `dumpsys package`); POST_NOTIFICATIONS, BLUETOOTH_CONNECT, location reported; battery-optimization exemption (WARN if missing).
+4. Process running, same pid 10 s apart (`PCA_CHECK_PIDWAIT` overrides the wait).
+5. Logcat counts of FATAL EXCEPTION / ANR / SQLite-Room migration errors for the app pid and package (same signatures as the install script).
+6. Safety defaults OFF: `pc_dev` forget_v2, multilingual_ask; `proactive_settings` deliver_phone, deliver_hud, deliver_nexus. Debuggable builds only (run-as); otherwise UNKNOWN.
+7. Call state, clock skew (WARN above 120 s), airplane/Bluetooth/Wi-Fi, battery (WARN below 50%), free storage (WARN below 2 GB).
+8. Glasses: installed, version/sha, process. Link state is not observable read-only: always UNKNOWN, confirm on the phone.
+
+Emulator run (phone only, 1.0.0 code 4 candidate): 20 PASS, 1 WARN (no battery exemption on the emulator), 0 FAIL; a wrong APK folder gave FAIL on sha256 and a deliver_hud flag set ON gave FAIL on safety defaults (both exit 1).
