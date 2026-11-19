@@ -252,7 +252,7 @@ class NexusProvider(
         sink = null; tickJob?.cancel(); tickJob = null; watchJob?.cancel(); watchJob = null
         wanted = false; stopping = false; _bound.value = false
         _bind.value = if (gone) BridgeLink.Bind.NOT_INSTALLED else BridgeLink.Bind.UNTRUSTED
-        log(if (gone) "nexus bridge removed" else "nexus bridge untrusted")
+        if (gone) log("nexus bridge removed") else log("nexus bridge untrusted")
     }
 
     /**
