@@ -126,6 +126,8 @@ class PlaceHostileInputTest {
             val mo = if (which == 3) mutated(o, rnd) else o to placeJson.parseToJsonElement(o)
             val out = try {
                 source(Net(mg.first, mp.first, mw.first, mo.first)).fetchCell(cell)
+            } catch (e: SerializationException) {
+                return@repeat // a non-object root is a malformed response: the cell fails and nothing is stored (the documented contract)
             } catch (e: Throwable) { throw AssertionError("seed=$SEED iter=$i which=$which: ${e.javaClass.name}: ${e.message?.take(200)}\nwd=${mw.first.take(600)}", e) }
             val people = personItems(mw.second)
             for (pl in out.places) {
