@@ -65,7 +65,7 @@ class ContextApp : Application() {
         val timing by lazy { com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this) } // lazy: loaded at the first Forget (or by the warm-up thread)
         com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }
         com.rokid.context.memory.forget.ForgetScopeSetting.provider = { timing.forgetScopeNow() } // the Forget scope (Photo | Moment | Scene), read when a Forget starts
-        val devMode by lazy { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).diagnosticLog }
+        val devMode by lazy { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled }
         com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { devMode.value } // the engine re-checks Developer mode at every Moment/Scene Forget
         kotlin.concurrent.thread(name = "settings-warm") {
             runCatching {
