@@ -39,8 +39,19 @@ class DiagProbe(private val app: Application, private val scope: CoroutineScope)
     private val perms = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     private val workStates = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val started = java.util.concurrent.atomic.AtomicInteger(0)
+    private val startedOnce = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var snapshotLogged = false
 
+    /**
+     * Returns at once: every registration (sticky battery read, receivers, the default-network callback, the lifecycle callbacks, the permission checks) is binder IPC, so it runs on [scope] (IO), not on the
+     * main thread of `Application.onCreate`. All of those APIs are thread-safe; a second call does nothing, so receivers and callbacks are registered once.
+     */
     fun start() {
+        if (!startedOnce.compareAndSet(false, true)) return
+        guard { scope.launch { startNow() } }
+    }
+
+    private suspend fun startNow() {
         guard { appStart() }
         guard { registerBattery() }
         guard { registerTime() }
@@ -160,7 +171,7 @@ class DiagProbe(private val app: Application, private val scope: CoroutineScope)
     private suspend fun watchWork() {
         val all = WorkQuery.Builder.fromStates(listOf(WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING, WorkInfo.State.SUCCEEDED, WorkInfo.State.FAILED, WorkInfo.State.BLOCKED, WorkInfo.State.CANCELLED)).build()
         WorkManager.getInstance(app).getWorkInfosFlow(all).catch { }.collect { infos ->
-            val first = workStates.isEmpty()
+            val first = !snapshotLogged
             var running = 0; var enqueued = 0
             for (w in infos) {
                 if (w.state == WorkInfo.State.RUNNING) running++
@@ -175,7 +186,9 @@ class DiagProbe(private val app: Application, private val scope: CoroutineScope)
                     PcLog.i(TAG, "worker $worker state=$state attempt=$attempt stopReason=$code")
                 }
             }
-            if (first) PcLog.i(TAG, "workers snapshot running=$running enqueued=$enqueued total=${infos.size}")
+            if (first) { snapshotLogged = true; PcLog.i(TAG, "workers snapshot running=$running enqueued=$enqueued total=${infos.size}") }
+            val present = infos.mapTo(HashSet()) { it.id.toString() }; workStates.keys.removeAll { it !in present }      // work WorkManager itself pruned
+            pruneWorkStates(workStates, MAX_WORK_STATES)
         }
     }
 
@@ -197,6 +210,15 @@ class DiagProbe(private val app: Application, private val scope: CoroutineScope)
 
     companion object {
         const val TAG = "PcDiag"
+        const val MAX_WORK_STATES = 200
+
+        /** Bounds [states] (work id -> "STATE/attempt"): above [cap] it drops finished entries (SUCCEEDED, FAILED, CANCELLED) until it fits; unfinished work is always kept. */
+        internal fun pruneWorkStates(states: MutableMap<String, String>, cap: Int) {
+            if (states.size <= cap) return
+            val it = states.entries.iterator()
+            while (it.hasNext() && states.size > cap) { val v = it.next().value; if (v.startsWith("SUCCEEDED/") || v.startsWith("FAILED/") || v.startsWith("CANCELLED/")) it.remove() }
+        }
+
         const val HEARTBEAT_MS = 60 * 60 * 1000L
         private const val MB = 1024L * 1024L
         /** Fixed short names for the runtime permissions the app uses. */

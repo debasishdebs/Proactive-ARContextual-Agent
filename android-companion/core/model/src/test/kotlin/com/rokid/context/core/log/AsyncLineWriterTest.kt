@@ -20,11 +20,12 @@ import kotlin.test.fail
 /** A [LogFs] over the real one whose operations can be made to fail, with attempt counters. */
 private class FlakyFs : LogFs {
     val failDelete = AtomicBoolean(false); val failRename = AtomicBoolean(false); val failAppend = AtomicBoolean(false)
+    val failRenameNth = AtomicInteger(0)      // fails only the Nth rename (1-based) once
     val appends = AtomicInteger(0); val deletes = AtomicInteger(0); val renames = AtomicInteger(0)
     override fun length(f: File) = RealLogFs.length(f)
     override fun exists(f: File) = RealLogFs.exists(f)
     override fun delete(f: File): Boolean { deletes.incrementAndGet(); return if (failDelete.get()) false else RealLogFs.delete(f) }
-    override fun rename(from: File, to: File): Boolean { renames.incrementAndGet(); return if (failRename.get()) false else RealLogFs.rename(from, to) }
+    override fun rename(from: File, to: File): Boolean { renames.incrementAndGet(); return if (failRename.get() || renames.get() == failRenameNth.get()) false else RealLogFs.rename(from, to) }
     override fun append(f: File, bytes: ByteArray) { appends.incrementAndGet(); if (failAppend.get()) throw IOException("disk"); RealLogFs.append(f, bytes) }
 }
 
@@ -193,6 +194,21 @@ class AsyncLineWriterTest {
         assertTrue(w.awaitIdle(10_000))
         assertTrue(File(dir, "pca.log.1").exists()); assertTrue(pca.readText().contains("line after"))
         assertTrue(w.ioFailures() >= 2)
+    }
+
+    @Test fun retryAfterPartialRotationDoesNotDeleteTheOldestSegmentAgain() {
+        val fs = FlakyFs(); val p = Probe()
+        val w = writer(maxBytes = 4_800, backoff = 1, fs = fs, probe = p, segmentBytes = 1_200)      // 4 segments: pca.log, .1, .2, .3
+        File(dir, "pca.log.1").writeText("A"); File(dir, "pca.log.2").writeText("B"); File(dir, "pca.log.3").writeText("C")
+        pca.writeText("x".repeat(1_150) + "\n")
+        fs.failRenameNth.set(2)                                   // .3 deleted, .2 -> .3 done, .1 -> .2 fails
+        val big = "y".repeat(100)
+        w.append(line(big)); awaitCond(what = "failed rotation") { fs.renames.get() >= 2 }
+        awaitCond(what = "attempt done") { p.works.get() >= 1 }
+        Thread.sleep(20); w.append(line("retry")); assertTrue(w.awaitIdle(10_000))
+        assertEquals("B", File(dir, "pca.log.3").readText(), "the retry must not delete the segment the first pass shifted up")
+        assertEquals("A", File(dir, "pca.log.2").readText())
+        assertTrue(File(dir, "pca.log.1").readText().startsWith("x"))
     }
 
     @Test fun backoffDeadlineIsEnforcedBetweenAttemptsAndRecovers() = gated { gate ->
