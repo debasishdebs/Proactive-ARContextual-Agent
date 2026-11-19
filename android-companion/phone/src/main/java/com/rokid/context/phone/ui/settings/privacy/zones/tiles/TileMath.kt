@@ -19,7 +19,9 @@ object TileMath {
 
     /** The zoom whose tiles are closest to 1:1 on screen, kept inside the archive's [minZoom]..[maxZoom] (lower zooms are stretched, higher ones shrunk). */
     fun zoomFor(ppd: Double, minZoom: Int, maxZoom: Int): Int {
-        val ideal = (ln(ppd * 360.0 / TILE_PX) / ln(2.0)).roundToInt()
+        val raw = ln(ppd * 360.0 / TILE_PX) / ln(2.0)
+        if (raw.isNaN()) return minZoom // a NaN or negative ppd has no zoom; roundToInt would throw
+        val ideal = raw.roundToInt()
         return ideal.coerceIn(minZoom, maxZoom)
     }
 
