@@ -21,3 +21,8 @@ Everything below was NOT done because it needs the user, the real devices, or a 
 
 ## E. Codex quota (found 2026-11-19 13:25)
 - The Codex weekly usage limit is reached; it resets 21 Nov 2026 21:36. Reviews done by Codex this session: all up to the batch review (codex-batch-2026-11-19.md, READY). NOT yet Codex-reviewed: the Hyderabad coordinate rule (9d69e05a) and the 7 new landmark ids (b07969ad). An independent Claude review (not Codex) was run instead: scratchpad/review-hyd-claude.md (result recorded in the handoff). Re-run Codex on `git diff 0b71d96b..9d69e05a` after 21 Nov 21:36.
+
+## F. Rokid-Coder on the same glasses/phone (noted 2026-11-19 15:58, user is installing rc.12)
+- Rokid-Coder (Nexus fork) and PCA do NOT run together: one CXR/bus session per phone (nexus-device-checklist.md Setup step 1, BUSSPEC). Before a PCA capture day (22 Nov): close/disable the Rokid-Coder hub and its glasses app first, check Settings > Diagnostics in PCA shows the glasses link up, and note whether PCA's link drops when the Rokid-Coder hub starts. This is exactly the S2 coexistence question, so what you see is useful: write down which side drops.
+- Install order for the trip: PCA phone + glasses via tools/install-trip-build.sh (dry run first); do NOT use the Rokid-Coder installer for PCA packages. Both apps are separate packages (PCA: com.rokid.context / com.rokid.context.glasses).
+- 2026-11-19 15:57: glasses visible on adb as 192.168.68.105:5555 but OFFLINE; phone not listed. The install dry run needs both online.
