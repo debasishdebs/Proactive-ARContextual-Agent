@@ -46,14 +46,30 @@ class DeveloperModeStore(context: Context) {
     val signalTryEnabled: StateFlow<Boolean> = _signalTry.asStateFlow()
     fun setSignalTry(on: Boolean) { prefs.edit().putBoolean(KEY_SIGNAL_TRY, on).apply(); _signalTry.value = on }
 
+    private val _detailedLog = MutableStateFlow(prefs.getBoolean(KEY_DETAILED_LOG, true))
+    /** Trip build: the full diagnostic log (every I and D line, not only milestones and warnings) is ON by default; the user can turn it off in Settings > Diagnostics. Lives in this per-device, backup-excluded file. */
+    val detailedLog: StateFlow<Boolean> = _detailedLog.asStateFlow()
+
+    private val _diagnosticLog = MutableStateFlow(_enabled.value || _detailedLog.value)
+    /** What PcLog's diagnostic snapshot follows: the detailed log switch, or Developer mode (which always turned diagnostics on). */
+    val diagnosticLog: StateFlow<Boolean> = _diagnosticLog.asStateFlow()
+
+    fun setDetailedLog(on: Boolean) {
+        prefs.edit().putBoolean(KEY_DETAILED_LOG, on).apply()
+        _detailedLog.value = on
+        _diagnosticLog.value = _enabled.value || on
+    }
+
     fun set(on: Boolean) {
         prefs.edit().putBoolean(KEY, on).apply()
         _enabled.value = on
+        _diagnosticLog.value = on || _detailedLog.value
     }
 
     companion object {
         const val PREFS = "pc_dev"
         const val KEY = "developer_mode"
+        const val KEY_DETAILED_LOG = "detailed_log"
         const val KEY_SIGNAL_TRY = "signal_try_enabled"
         const val KEY_SESSION_HOURS = "canvas_session_hours"
         const val KEY_SESSIONS = "canvas_sessions"

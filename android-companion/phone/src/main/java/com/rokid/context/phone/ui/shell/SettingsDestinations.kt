@@ -339,6 +339,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onMarkSuspect = vm::markSuspect, onMarkAllSuspects = vm::markAllSuspects, onUndoMark = vm::undoMark,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
             developerMode = devOn,
+            detailedLog = dev.detailedLog.collectAsStateWithLifecycle().value, onDetailedLog = dev::setDetailedLog,
             devSessionHours = devSessionHours,
             onDevSessionHours = { h -> dev.setSessionHours(h); CanvasGraph.get(app).revokeAll() }, // the new rule starts clean: every current pairing ends
             askZoneFence = askZoneFenceOn, onAskZoneFence = { on -> com.rokid.context.orchestration.AskZoneFence.setEnabled(app, on); askZoneFenceOn = on },

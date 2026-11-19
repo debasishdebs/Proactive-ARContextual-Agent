@@ -14,6 +14,8 @@ interface LogFs {
     fun delete(f: File): Boolean
     fun rename(from: File, to: File): Boolean
     fun append(f: File, bytes: ByteArray)
+    /** Names in [dir] (empty when it does not exist); used by the clear to find every segment, whatever the cap was when it was written. */
+    fun names(dir: File): List<String> = dir.list()?.toList() ?: emptyList()
 }
 
 object RealLogFs : LogFs {
@@ -22,6 +24,14 @@ object RealLogFs : LogFs {
     override fun delete(f: File) = f.delete()
     override fun rename(from: File, to: File) = from.renameTo(to)
     override fun append(f: File, bytes: ByteArray) { f.parentFile?.mkdirs(); f.appendBytes(bytes) }
+}
+
+/** The segment files of a log: `base` (active, newest) then `base.1` (newest retained) ... `base.N` (oldest). */
+object LogSegments {
+    fun name(base: File, index: Int): File = if (index == 0) base else File(base.path + "." + index)
+    /** Index of [fileName] among the segments of [base] (0 = active), or null when it is not one. */
+    fun indexOf(baseName: String, fileName: String): Int? =
+        if (fileName == baseName) 0 else if (fileName.startsWith("$baseName.")) fileName.substring(baseName.length + 1).takeIf { it.isNotEmpty() && it.all(Char::isDigit) }?.toIntOrNull()?.takeIf { it > 0 } else null
 }
 
 /**
@@ -36,7 +46,9 @@ object RealLogFs : LogFs {
  *   with bounded backoff, and entries wait behind it.
  * - Every filesystem result is checked; a failure counts [ioFailures], drops that record, and starts a backoff whose deadline
  *   is enforced BETWEEN attempts (entries keep queueing within [capacity] with overflow accounting). A failed rotation stops
- *   appends (no growth past the limit). Each file stays within maxBytes / 2, so disk use is at most [maxBytes].
+ *   appends (no growth past the limit). Each segment stays within [segmentBytes] and there are at most maxBytes / segmentBytes of them
+ *   (default: two, the old behaviour), so disk use is at most [maxBytes]. A rotation shifts `log.k` to `log.k+1` (highest first, the
+ *   oldest dropped), so `log.1` is always the newest retained and the highest number the oldest; a trip build keeps about 300 MB.
  * - [close]: drain (write what is queued, unless a failure is pending) or discard; returns a termination future. The closed
  *   check is made under the queue lock, so no append can enqueue after the worker exits.
  * [beforeWrite] (record in flight), [afterWork] (a work item finished) and [onBackoffWait] (worker re-checked the clock during a
@@ -52,6 +64,7 @@ class AsyncLineWriter(
     private val beforeWrite: () -> Unit = {},
     private val afterWork: () -> Unit = {},
     private val onBackoffWait: () -> Unit = {},
+    private val segmentBytes: Long = maxBytes / 2,
 ) {
     /** One command with ONE shared acknowledgement, however many callers coalesced into it (retained state is O(1) per command). */
     private class Cmd(var clear: Boolean, val ack: CompletableFuture<Boolean> = CompletableFuture())
@@ -64,9 +77,10 @@ class AsyncLineWriter(
         class Terminate(val acks: List<CompletableFuture<Boolean>>) : Work()
     }
 
-    init { require(maxBytes / 2 >= MAX_RECORD_BYTES) { "maxBytes must allow one maximum record (${MAX_RECORD_BYTES} bytes) per file" } }
+    init { require(segmentBytes >= MAX_RECORD_BYTES) { "a segment must allow one maximum record (${MAX_RECORD_BYTES} bytes)" } }
 
-    private val older = File(file.path + ".1")
+    /** Files kept in all, the active one included (at least two). */
+    private val segments = maxOf(2L, maxBytes / segmentBytes).toInt()
     private val lock = Object()
     private val entries = ArrayDeque<Line>()      // guarded by lock, size <= capacity
     private val cmds = ArrayDeque<Cmd>()          // guarded by lock, at most MAX_CMDS
@@ -186,7 +200,10 @@ class AsyncLineWriter(
 
     private fun doClear(): Boolean {
         var ok = true
-        for (f in listOf(file, older)) {
+        val dir = file.parentFile
+        val names = try { if (dir == null) emptyList() else fs.names(dir).filter { LogSegments.indexOf(file.name, it) != null } } catch (_: Throwable) { ok = false; emptyList() }
+        val all = (names.map { File(dir, it) } + (0 until segments).map { LogSegments.name(file, it) }).distinct()      // listed ones, plus the known names when the listing fails
+        for (f in all) {
             try { if (fs.exists(f) && !fs.delete(f) && fs.exists(f)) ok = false } catch (_: Throwable) { ok = false }
         }
         if (ok) succeed() else fail()
@@ -200,15 +217,29 @@ class AsyncLineWriter(
         try {
             val len = fs.length(file)
             if (len == 0L) rotationPending = false          // nothing to rotate (new file, or cleared meanwhile)
-            if (len > 0 && (rotationPending || len + bytes.size > maxBytes / 2)) {
+            if (len > 0 && (rotationPending || len + bytes.size > segmentBytes)) {
                 rotationPending = true          // retained until it succeeds: nothing is appended around a failed rotation
-                if (fs.exists(older) && !fs.delete(older)) return fail()
-                if (!fs.rename(file, older)) return fail()
+                if (!rotate()) return fail()
                 rotationPending = false
             }
             fs.append(file, bytes)
             succeed()
         } catch (_: Throwable) { fail() }
+    }
+
+    /** Drops the oldest segment, shifts every other one up and moves the active file to `.1`. Idempotent, so a retry after a partial failure just continues. */
+    private fun rotate(): Boolean {
+        val last = segments - 1
+        val oldest = LogSegments.name(file, last)
+        if (fs.exists(oldest) && !fs.delete(oldest)) return false
+        for (k in last - 1 downTo 0) {
+            val src = LogSegments.name(file, k)
+            if (!fs.exists(src)) continue
+            val dst = LogSegments.name(file, k + 1)
+            if (fs.exists(dst) && !fs.delete(dst)) return false
+            if (!fs.rename(src, dst)) return false
+        }
+        return true
     }
 
     private fun succeed() { consecutive = 0; nextAttempt = 0L }

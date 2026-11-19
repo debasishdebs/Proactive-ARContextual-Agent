@@ -52,9 +52,9 @@ class AsyncLineWriterTest {
     private fun line(i: Any, level: Level = Level.I) = Line(level, "T", "line $i", 0L)
     private fun writer(
         maxBytes: Long = 3_000_000L, capacity: Int = 2048, backoff: Long = 1, fs: LogFs = RealLogFs,
-        clock: () -> Long = System::nanoTime, hook: () -> Unit = {}, probe: Probe? = null,
+        clock: () -> Long = System::nanoTime, hook: () -> Unit = {}, probe: Probe? = null, segmentBytes: Long = maxBytes / 2,
     ) = AsyncLineWriter(pca, maxBytes, capacity, backoff, fs, clock, hook,
-        afterWork = { probe?.works?.incrementAndGet() }, onBackoffWait = { probe?.waits?.incrementAndGet() }).also { open += it }
+        afterWork = { probe?.works?.incrementAndGet() }, onBackoffWait = { probe?.waits?.incrementAndGet() }, segmentBytes = segmentBytes).also { open += it }
 
     private inline fun gated(body: (Gate) -> Unit) { val g = Gate(); try { body(g) } finally { g.release.countDown() } }
 
@@ -224,6 +224,18 @@ class AsyncLineWriterTest {
         assertTrue(pca.length() <= 2_000 && b.length() <= 2_000, "a=${pca.length()} b=${b.length()}")
         assertEquals(setOf("pca.log", "pca.log.1"), dir.listFiles()!!.map { it.name }.toSet())
         assertTrue(pca.readLines().last().contains("line 299"))
+    }
+
+    @Test fun manySegmentsKeepTheNewestWithinTheTotalCapAndShiftOldestFirst() {
+        val w = writer(maxBytes = 6_000, segmentBytes = 1_200)       // 5 files in all
+        repeat(300) { w.append(Line(Level.I, "T", "n%04d ".format(it).padEnd(80, 'x'), 0L)) }
+        assertTrue(w.awaitIdle(5_000))
+        assertEquals(setOf("pca.log", "pca.log.1", "pca.log.2", "pca.log.3", "pca.log.4"), dir.listFiles()!!.map { it.name }.toSet())
+        assertTrue(dir.listFiles()!!.sumOf { it.length() } <= 6_000); assertTrue(dir.listFiles()!!.all { it.length() <= 1_200 })
+        val nums = listOf("pca.log.4", "pca.log.3", "pca.log.2", "pca.log.1", "pca.log").flatMap { File(dir, it).readLines() }.map { it.substringAfter(" T n").take(4).toInt() }
+        assertEquals(nums.sorted(), nums); assertEquals(299, nums.last()); assertTrue(nums.first() > 0, "the oldest lines were dropped")
+        assertTrue(w.clear().get(5, TimeUnit.SECONDS))
+        assertEquals(0, dir.listFiles()!!.size)
     }
 
     @Test fun budgetSmallerThanOneMaximumRecordIsRejected() {

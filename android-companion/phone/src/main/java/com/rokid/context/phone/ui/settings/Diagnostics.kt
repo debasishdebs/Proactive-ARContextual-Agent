@@ -307,6 +307,9 @@ fun DiagnosticsScreen(
     /** The Developer mode switch at the bottom: shows Settings > AI > Experiment canvas when on. */
     developerMode: Boolean = false,
     onDeveloperMode: (Boolean) -> Unit = {},
+    /** Trip build: the full on-device log (kept up to about 300 MB, app-private, never uploaded). On by default; off keeps only warnings and key events. */
+    detailedLog: Boolean = true,
+    onDetailedLog: (Boolean) -> Unit = {},
     /** Roadmap row 7: how long a canvas pairing lasts (0 = Off: the normal 30 min / 12 h rules); one of [CanvasSessionCopy.HOURS]. Shown only with [developerMode]; any change ends every current session. */
     devSessionHours: Int = 0,
     onDevSessionHours: (Int) -> Unit = {},
@@ -400,6 +403,15 @@ fun DiagnosticsScreen(
         }
         state.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(20.dp)) }
         SectionLabel("Developer")
+        SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Detailed log", style = MaterialTheme.typography.titleSmall)
+                    Text("Keeps a full record of what the app decided (no photos, texts, names or places), up to about 300 MB on this phone. Never uploaded; Delete all clears it. Turn off to keep only warnings and key events.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                }
+                Switch(checked = detailedLog, onCheckedChange = onDetailedLog, modifier = Modifier.testTag("detailed_log_switch"))
+            }
+        }
         SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) { Column { // SoftCard is a Box: without the Column its rows draw on top of each other
             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Link health report for PCA (READ-ONLY, bash 3.2 / macOS awk compatible).
-#   tools/link-health-report.sh --phone <serial> [--date MM-DD]      read pca.log(.1) from the phone (run-as; debuggable builds only)
-#   tools/link-health-report.sh --file <pca.log> [--file <pca.log.1>] [--date MM-DD]   read saved log files (no adb)
+#   tools/link-health-report.sh --phone <serial> [--date MM-DD]      read every pca.log segment from the phone (run-as; debuggable builds only)
+#   tools/link-health-report.sh --file <oldest> ... [--file <pca.log>] [--date MM-DD]   read saved log files, OLDEST FIRST (highest pca.log.N first, pca.log last; no adb)
 #   tools/link-health-report.sh --fixtures                            parsing fixtures, no adb
 # Counts per clock hour of the chosen day: glasses frames received, link CONNECTING/CONNECTED, authorization timeouts,
 # SESSION_TERMINATED send failures, watchdog HubDown ticks, relaunch lines, and the longest quiet gap between glasses frames.
@@ -48,6 +48,11 @@ END {
 
 report_stdin() { awk -v day="$1" "$REPORT_AWK"; }
 
+# stdin = file names in files/logs; prints the pca.log segments OLDEST first (highest pca.log.N ... pca.log.1, then pca.log); anything else is ignored
+segment_order_all() {
+  awk '$0 == "pca.log" { print "0 " $0; next } $0 ~ /^pca\.log\.[0-9]+$/ { print (substr($0, 9) + 0) " " $0 }' | sort -rn | awk '{ print $2 }'
+}
+
 fixtures() {
   local pass=0 fail=0 out want
   check() { # name want got
@@ -73,6 +78,7 @@ total       3          1         1        1         1        1         1" "$out"
   check "a hostile line (no fields) is ignored" "no log lines for 11-19" "$(printf '%s\n' 'x' '' '   ' | report_stdin 11-19)"
   check "the report never prints a log line (counts only)" "0" "$(printf '%s\n' "$L1" | report_stdin 11-19 | grep -c 'SESSION_TERMINATED\|origin=glasses\|pc_state')"
   check "hours come out ascending even if the log is not" "21:xx 22:xx" "$(printf '%s\n%s\n' '11-19 22:00:00.000 I PcRelaunch relaunch: x' '11-19 21:00:00.000 I PcRelaunch relaunch: y' | report_stdin 11-19 | awk 'NR>1 && $1 ~ /xx/ {printf "%s ", $1}' | sed 's/ $//')"
+  check "segments come out oldest first, the active file last, junk ignored" "pca.log.12 pca.log.2 pca.log.1 pca.log" "$(printf '%s\n' pca.log pca.log.1 pca.log.2 notes.txt pca.log.12 pca.log.x pca.log.bak | segment_order_all | tr '\n' ' ' | sed 's/ $//')"
   echo "fixtures: $pass passed, $fail failed"
   [ "$fail" = 0 ]
 }
@@ -97,7 +103,9 @@ if [ -z "$PHONE" ] && [ ${#FILES[@]} -eq 0 ]; then usage; fi
 echo "link health report: day $DAY (counts per clock hour; read-only)"
 if [ -n "$PHONE" ]; then
   # adb with stdin closed (adb would otherwise swallow a pipe); older log first
-  { for f in pca.log.1 pca.log; do adb -s "$PHONE" exec-out run-as com.rokid.context cat "files/logs/$f" </dev/null 2>/dev/null; done; } | tr -d '\r' | report_stdin "$DAY"
+  SEGS="$(adb -s "$PHONE" exec-out run-as com.rokid.context ls files/logs </dev/null 2>/dev/null | tr -d '\r' | segment_order_all)"
+  [ -n "$SEGS" ] || SEGS="$(printf 'pca.log.1\npca.log\n')"      # ls refused: the two names a pre-trip build used
+  { for f in $SEGS; do adb -s "$PHONE" exec-out run-as com.rokid.context cat "files/logs/$f" </dev/null 2>/dev/null; done; } | tr -d '\r' | report_stdin "$DAY"
 else
   for f in "${FILES[@]}"; do [ -r "$f" ] || { echo "REFUSED: cannot read $f" >&2; exit 2; }; done
   cat "${FILES[@]}" | tr -d '\r' | report_stdin "$DAY"

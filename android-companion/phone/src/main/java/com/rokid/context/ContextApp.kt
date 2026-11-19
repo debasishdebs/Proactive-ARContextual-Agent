@@ -11,7 +11,7 @@ class ContextApp : Application() {
         // filesystem on the main thread: the path is built from dataDir (Context.getFilesDir() may stat or create the directory), the writer creates it,
         // and the Developer mode flag (SharedPreferences load) is applied on IO BEFORE the bootstrap ring drains. Delete all clears the files through the listener.
         com.rokid.context.phone.log.PhoneLogging.install(
-            java.io.File(applicationInfo.dataDir, "files"), { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled },
+            java.io.File(applicationInfo.dataDir, "files"), { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).diagnosticLog },
             com.rokid.context.phone.log.PrefsWipePending(this),
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
         )?.let { com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.log.LogWipeListener(it.wiper, it.ready)) }
@@ -65,7 +65,7 @@ class ContextApp : Application() {
         val timing by lazy { com.rokid.context.phone.ui.settings.capture.CaptureTimingStore.get(this) } // lazy: loaded at the first Forget (or by the warm-up thread)
         com.rokid.context.memory.forget.ForgetRadius.provider = { timing.forgetRadiusMs() }
         com.rokid.context.memory.forget.ForgetScopeSetting.provider = { timing.forgetScopeNow() } // the Forget scope (Photo | Moment | Scene), read when a Forget starts
-        val devMode by lazy { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled }
+        val devMode by lazy { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).diagnosticLog }
         com.rokid.context.memory.forget.ForgetScopeSetting.experimentalAllowed = { devMode.value } // the engine re-checks Developer mode at every Moment/Scene Forget
         kotlin.concurrent.thread(name = "settings-warm") {
             runCatching {
