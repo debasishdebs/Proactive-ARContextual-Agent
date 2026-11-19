@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -48,10 +49,25 @@ interface OverpassSource {
 
 internal val placeJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
+/**
+ * The one parse boundary of every place source. A hostile, absurdly nested body overflows the stack inside kotlinx's recursive tree reader: that [StackOverflowError] is a parsing
+ * artefact, so it becomes a [SerializationException] (a malformed response; the cell fails and is retried). Every API answers with a JSON object: lenient mode would read an HTML error
+ * page or captive-portal text as a bare string and the cell would look like a successful empty one, so a non-object root is a [SerializationException] too. No other Error is caught: OutOfMemoryError and the like propagate.
+ */
+internal fun parseBody(body: String): JsonObject = try {
+    placeJson.parseToJsonElement(body) as? JsonObject ?: throw SerializationException("response is not a JSON object")
+} catch (e: StackOverflowError) {
+    throw SerializationException("response nested too deeply")
+}
+
 private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 private fun JsonElement?.arr(): JsonArray? = this as? JsonArray
 private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
 private fun JsonElement?.dbl(): Double? = (this as? JsonPrimitive)?.doubleOrNull
+/** A latitude: finite and in [-90, 90], else null (a hostile NaN, Infinity or out-of-range value never becomes a coordinate). */
+private fun JsonElement?.latOrNull(): Double? = dbl()?.takeIf { it.isFinite() && it in -90.0..90.0 }
+/** A longitude: finite and in [-180, 180], else null. */
+private fun JsonElement?.lonOrNull(): Double? = dbl()?.takeIf { it.isFinite() && it in -180.0..180.0 }
 private fun JsonElement?.lng(): Long? = (this as? JsonPrimitive)?.longOrNull
 
 private fun fmt(d: Double) = String.format(Locale.US, "%.5f", d)
@@ -74,19 +90,19 @@ class WikipediaHttpSource(private val http: PlaceHttp, private val host: String 
         const val SENTENCES = 3
 
         fun parseGeosearch(body: String): List<WikiHit> =
-            placeJson.parseToJsonElement(body).obj()?.get("query").obj()?.get("geosearch").arr().orEmpty().mapNotNull { e ->
+            parseBody(body).obj()?.get("query").obj()?.get("geosearch").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
-                WikiHit(o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["lat"].dbl() ?: return@mapNotNull null, o["lon"].dbl() ?: return@mapNotNull null)
+                WikiHit(o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["lat"].latOrNull() ?: return@mapNotNull null, o["lon"].lonOrNull() ?: return@mapNotNull null)
             }
 
         fun parsePages(body: String): List<WikiPage> =
-            placeJson.parseToJsonElement(body).obj()?.get("query").obj()?.get("pages").arr().orEmpty().mapNotNull { e ->
+            parseBody(body).obj()?.get("query").obj()?.get("pages").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
                 if (o["missing"] != null) return@mapNotNull null
                 val c = o["coordinates"].arr()?.firstOrNull().obj()
                 WikiPage(
                     o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["extract"].str().orEmpty(),
-                    o["pageprops"].obj()?.get("wikibase_item").str(), c?.get("lat").dbl(), c?.get("lon").dbl(),
+                    o["pageprops"].obj()?.get("wikibase_item").str(), c?.get("lat").latOrNull(), c?.get("lon").lonOrNull(),
                 )
             }
     }
@@ -115,14 +131,14 @@ class WikidataHttpSource(private val http: PlaceHttp, private val host: String =
         }
 
         fun parse(body: String): Map<String, WikidataEntity> {
-            val entities = placeJson.parseToJsonElement(body).obj()?.get("entities").obj() ?: return emptyMap()
+            val entities = parseBody(body).obj()?.get("entities").obj() ?: return emptyMap()
             return entities.entries.mapNotNull { (qid, v) ->
                 val rawClaims = v.obj()?.get("claims")
                 // Wikidata sends an item with no claims as an empty ARRAY: that is absence, not damage. Any other non-object claims value is unreadable and drops the entity.
                 val claims = rawClaims.obj() ?: if (rawClaims.arr()?.isEmpty() == true) JsonObject(emptyMap()) else return@mapNotNull null // unreadable claims: no entity, so the caller rejects the item
                 fun ids(p: String) = claims[p].arr().orEmpty().mapNotNull { it.obj()?.get("mainsnak").obj()?.get("datavalue").obj()?.get("value").obj()?.get("id").str() }
                 val coord = claims["P625"].arr()?.firstNotNullOfOrNull { it.obj()?.get("mainsnak").obj()?.get("datavalue").obj()?.get("value").obj() }
-                qid to WikidataEntity(qid, ids("P31").toSet(), ids("P361"), ids("P527"), coord?.get("latitude").dbl(), coord?.get("longitude").dbl(), p31Malformed = p31Malformed(claims["P31"]))
+                qid to WikidataEntity(qid, ids("P31").toSet(), ids("P361"), ids("P527"), coord?.get("latitude").latOrNull(), coord?.get("longitude").lonOrNull(), p31Malformed = p31Malformed(claims["P31"]))
             }.toMap()
         }
     }
@@ -139,16 +155,16 @@ class OverpassHttpSource(private val http: PlaceHttp, private val endpoint: Stri
         }
 
         fun parse(body: String): List<OsmElement> =
-            placeJson.parseToJsonElement(body).obj()?.get("elements").arr().orEmpty().mapNotNull { e ->
+            parseBody(body).obj()?.get("elements").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
                 val type = o["type"].str() ?: return@mapNotNull null
                 val id = o["id"].lng() ?: return@mapNotNull null
                 val c = o["center"].obj()
-                val lat = (o["lat"] ?: c?.get("lat")).dbl() ?: return@mapNotNull null
-                val lon = (o["lon"] ?: c?.get("lon")).dbl() ?: return@mapNotNull null
+                val lat = (o["lat"] ?: c?.get("lat")).latOrNull() ?: return@mapNotNull null
+                val lon = (o["lon"] ?: c?.get("lon")).lonOrNull() ?: return@mapNotNull null
                 val b = o["bounds"].obj()
                 val radius = b?.let {
-                    val s = it["minlat"].dbl(); val w = it["minlon"].dbl(); val n = it["maxlat"].dbl(); val ee = it["maxlon"].dbl()
+                    val s = it["minlat"].latOrNull(); val w = it["minlon"].lonOrNull(); val n = it["maxlat"].latOrNull(); val ee = it["maxlon"].lonOrNull()
                     if (s == null || w == null || n == null || ee == null) null
                     else (com.rokid.context.memory.place.Geo.distanceM(s, w, n, ee) / 2).toInt()
                 }
