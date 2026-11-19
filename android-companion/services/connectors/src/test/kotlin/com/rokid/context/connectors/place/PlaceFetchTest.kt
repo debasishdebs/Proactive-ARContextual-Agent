@@ -295,7 +295,7 @@ class PlaceFetchTest {
         for (bad in listOf("""{"P31":{}}""", """{"P31":"Q5"}""", """{"P31":[1,"x",null]}""", """{"P31":[{"mainsnak":{}}]}""", """{"P31":[{"mainsnak":{"snaktype":"value","datavalue":{"value":{"id":5}}}}]}""")) {
             val logs = mutableListOf<String>()
             assertEquals(emptyMap<String, String>(), parsedCell(item(bad), logs), bad)
-            assertTrue(logs.any { it.endsWith("kept=0 osm=0 rejected=1") }, bad)
+            assertTrue(logs.any { it.endsWith("kept=0 osm=0 rejected=1 coordsDisagree=0") }, bad)
         }
         assertEquals(emptyMap<String, String>(), parsedCell(item(""""unreadable"""")))
         assertEquals(setOf("wd:Q272153"), parsedCell(item("""{"P31":[{"mainsnak":{"snaktype":"somevalue"}}]}""")).keys) // unknown value is not damage
@@ -381,10 +381,72 @@ class PlaceFetchTest {
             override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Jetavanaramaya", 8.35, 80.40))
             override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Jetavanaramaya", "A stupa.", "Q1961579", 8.35, 80.40))
         }
-        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>): Map<String, WikidataEntity> { asked += ids; return WikidataHttpSource.parse(entity("Q1961579", p31c("Q180987"))) } }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>): Map<String, WikidataEntity> { asked += ids; return WikidataHttpSource.parse(entity("Q1961579", p31c("Q180987"), 8.35, 80.40)) } }
         val places = PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(8.3517, 80.4036)).places
         assertEquals(listOf("Q1961579"), asked)
         assertEquals(1, places.size); assertEquals("wikipedia:en", places.single().source)
+    }
+
+    // ---- Coordinate conflict between Wikipedia and Wikidata fails closed ----
+
+    @Test fun haversineNormalEqualAndThresholdCases() {
+        assertEquals(0.0, PlaceCellSource.haversineM(17.4062, 78.4691, 17.4062, 78.4691), 1e-6)
+        val birla = PlaceCellSource.haversineM(17.38, 78.4, 17.4062, 78.4691)
+        assertTrue(birla in 7_000.0..8_500.0, "Birla Mandir points are far apart: $birla")
+        val mPerDeg = PlaceCellSource.haversineM(0.0, 0.0, 1.0, 0.0)
+        val d999 = 999.0 / mPerDeg; val d1001 = 1001.0 / mPerDeg
+        assertFalse(PlaceCellSource.coordsDisagree(17.0, 78.0, 17.0 + d999, 78.0))
+        assertTrue(PlaceCellSource.coordsDisagree(17.0, 78.0, 17.0 + d1001, 78.0))
+        assertFalse(PlaceCellSource.coordsDisagree(17.0, 78.0, 17.0, 78.0))
+        assertTrue(PlaceCellSource.coordsDisagree(Double.NaN, 78.0, 17.0, 78.0))
+    }
+
+    private suspend fun conflictCell(qid: String, p31: Set<String>, hit: Pair<Double, Double>, ent: Pair<Double, Double>?, logs: MutableList<String>): Map<String, String> {
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Some place", hit.first, hit.second))
+            override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Some place", "x.", qid, null, null))
+        }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>) = mapOf(qid to WikidataEntity(qid, p31, emptyList(), emptyList(), ent?.first, ent?.second)) }
+        return PlaceCellSource(wiki, wd, null) { logs += it }.fetchCell(Geohash5.encode(17.4062, 78.4691)).places.associate { it.id to "${it.lat},${it.lon}" }
+    }
+
+    @Test fun birlaMandirLikeDisagreementIsRejectedAndCounted() = runTest {
+        val logs = mutableListOf<String>()
+        val got = conflictCell("Q4916532", setOf("Q842402"), 17.4062 to 78.4691, 17.38 to 78.4, logs)
+        assertTrue(got.isEmpty())
+        assertTrue(logs.single().endsWith("kept=0 osm=0 rejected=0 coordsDisagree=1"), logs.single())
+        assertFalse(logs.single().contains("Some place"))
+    }
+
+    @Test fun agreeingSourcesAreKeptWithTheWikidataPreference() = runTest {
+        val logs = mutableListOf<String>()
+        val got = conflictCell("Q9000101", setOf("Q842402"), 17.4062 to 78.4691, 17.4065 to 78.4693, logs)
+        assertEquals(mapOf("wd:Q9000101" to "17.4065,78.4693"), got)
+        assertTrue(logs.single().endsWith("coordsDisagree=0"))
+    }
+
+    @Test fun oneSourceOnlyIsUnaffected() = runTest {
+        val logs = mutableListOf<String>()
+        assertEquals(mapOf("wd:Q9000102" to "17.4062,78.4691"), conflictCell("Q9000102", setOf("Q842402"), 17.4062 to 78.4691, null, logs))
+        assertTrue(logs.single().endsWith("coordsDisagree=0"))
+        // a VERIFIED_COORDINATES entry has no Wikipedia point: admitted from the table, never counted, even though Wikidata's own point differs
+        val l2 = mutableListOf<String>()
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = emptyList<WikiHit>()
+            override suspend fun pages(pageIds: List<Long>) = emptyList<WikiPage>()
+        }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>) = mapOf("Q7685364" to WikidataEntity("Q7685364", emptySet(), emptyList(), emptyList(), 17.5, 78.5)) }
+        val got = PlaceCellSource(wiki, wd, null) { l2 += it }.fetchCell(Geohash5.encode(17.37608, 78.378117)).places
+        assertEquals(listOf("wd:Q7685364"), got.map { it.id }); assertEquals(17.37608, got.single().lat, 1e-9)
+        assertTrue(l2.single().endsWith("coordsDisagree=0"))
+    }
+
+    @Test fun aCuratedQidWithADisagreementIsAlsoRejected() = runTest {
+        val logs = mutableListOf<String>()
+        assertTrue(PlaceCellSource.CURATED_LANDMARK_QIDS.containsKey("Q7124701")) // Paigah Tombs, curated; its class (cemetery) is not allowlisted
+        assertTrue(conflictCell("Q7124701", setOf("Q39614"), 17.4062 to 78.4691, 17.38 to 78.4, logs).isEmpty())
+        assertTrue(logs.single().endsWith("coordsDisagree=1"))
+        assertEquals(setOf("wd:Q7124701"), conflictCell("Q7124701", setOf("Q39614"), 17.4062 to 78.4691, 17.4062 to 78.4691, mutableListOf()).keys)
     }
 
     private class Mirror(val answer: suspend () -> List<OsmElement>) : OverpassSource {
