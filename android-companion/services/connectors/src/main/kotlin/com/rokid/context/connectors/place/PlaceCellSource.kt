@@ -132,10 +132,10 @@ class PlaceCellSource(
         )
 
         /** Version of [CURATED_LANDMARK_QIDS]; raise it with every change to the set. */
-        const val CURATED_LANDMARKS_VERSION = 3
+        const val CURATED_LANDMARKS_VERSION = 4
 
         /** Version of [VERIFIED_COORDINATES]; raise it with every change to the table. */
-        const val VERIFIED_COORDINATES_VERSION = 2
+        const val VERIFIED_COORDINATES_VERSION = 3
 
         /**
          * VERIFIED_COORDINATES (version 2, 2026-11-19): curated QIDs that Wikipedia geosearch cannot return because the English Wikipedia page carries no coordinates (checked with
@@ -149,6 +149,9 @@ class PlaceCellSource(
         val VERIFIED_COORDINATES: Map<String, VerifiedCoordinate> = mapOf(
             "Q1961579" to VerifiedCoordinate("Jetavanaramaya", 8.351667, 80.403611),
             "Q60181073" to VerifiedCoordinate("Ghum railway station", 27.008643, 88.254223),
+            // Version 3 (2026-11-19), read back from wikidata.org: Q7685364 "Taramati Baradari", P31 caravanserai Q186347 + Baradari Q4858146, P625 (17.37608, 78.378117). The Wikipedia page has no
+            // coordinates. Checked it is the building itself: OpenStreetMap Nominatim "Taramati Baradari" returns (17.3761241, 78.3781632), about 5 m from the Wikidata point.
+            "Q7685364" to VerifiedCoordinate("Taramati Baradari", 17.37608, 78.378117),
         )
 
         /**
@@ -171,6 +174,14 @@ class PlaceCellSource(
             // Added in version 2 (2026-11-19), read back from wikidata.org; Q1961579 is found through VERIFIED_COORDINATES, as their Wikipedia pages have no coordinates:
             "Q1961579" to PlaceKinds.STUPA, // "Jetavanaramaya" (8.352, 80.404), P31 stupa (also in MONUMENT_CLASSES): Anuradhapura
         // Version 3 (2026-11-19): Q19719626 "Ritigala" removed again (its point is the mountain, not the ruins; see VERIFIED_COORDINATES).
+            // Version 4 (2026-11-19), Hyderabad landmark audit (docs/superpowers/reviews/2026-11/hyderabad-landmark-audit-2026-11-19.md); each read back from wikidata.org on 2026-11-19 (label en, P31, P625):
+            "Q7685364" to PlaceKinds.HISTORIC_SITE, // "Taramati Baradari" (17.37608, 78.378117), P31 caravanserai + Baradari: Golconda pavilion; its Wikipedia page has no coordinates, so it is found through VERIFIED_COORDINATES
+            "Q7124701" to PlaceKinds.TOMB, // "Paigah Tombs" (17.343983, 78.504131), P31 cemetery: the Paigah nobles' tombs
+            "Q4984164" to PlaceKinds.MONUMENT, // "Buddha Statue of Hyderabad" (17.415556, 78.475), P31 colossal statue: the statue in Hussain Sagar
+            "Q3275994" to PlaceKinds.ATTRACTION, // "Hussain Sagar" (17.42222, 78.47389), P31 reservoir: the lake with the Buddha statue
+            "Q1650886" to PlaceKinds.ATTRACTION, // "Lumbini Park" (17.41, 78.4722), P31 park: Hussain Sagar lakeside park
+            "Q3493970" to PlaceKinds.ATTRACTION, // "Nehru Zoological Park" (17.351111, 78.449722), P31 zoo: Hyderabad zoo
+            "Q6466530" to PlaceKinds.ATTRACTION, // "Laad Bazaar" (17.361923, 78.472842), P31 marketplace + bazaar: the bangle market beside Charminar
         )
 
         /** The OSM tag combinations that make an object a place: historic, heritage and tourism=attraction|museum|viewpoint, named. */
