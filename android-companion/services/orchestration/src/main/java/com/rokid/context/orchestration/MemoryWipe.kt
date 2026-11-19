@@ -51,8 +51,12 @@ object MemoryWipe {
         return e.commit()
     }
 
+    /** v1.0.1 opt-in street map: its switch and consent (the phone's `OnlineMapStore.PREFS`) and its tile cache folder under `cacheDir` (the phone's `OnlineMapGraph.CACHE_DIR`); a phone test pins both names. Plain strings: this module cannot see phone classes. */
+    const val ONLINE_MAP_PREFS = "online_map"
+    const val ONLINE_TILES_DIR = "online_tiles"
+
     /** The prefs Delete all clears (a test pins it to [com.rokid.context.memory.forget.DeletionGraph.wipedPrefs]). */
-    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS, MemoryExport.CLEANUP_PREFS, SIGNAL_CONFIG_PREFS, PROACTIVE_SETTINGS_PREFS, PROACTIVE_SHADOW_PREFS, PROACTIVE_DISMISS_MARKER_PREFS)
+    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS, MemoryExport.CLEANUP_PREFS, SIGNAL_CONFIG_PREFS, PROACTIVE_SETTINGS_PREFS, PROACTIVE_SHADOW_PREFS, PROACTIVE_DISMISS_MARKER_PREFS, ONLINE_MAP_PREFS)
 
     /**
      * Bumped first by every Delete all. A writer that read it before its work began (a queue job before its claim, an
@@ -150,6 +154,8 @@ object MemoryWipe {
             MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { f -> f.delete(); if (f.exists()) leftovers++ }
             // Final review I3: the debug photo test's labels (queries.json, the user's free text about their photos) and results.
             File(context.filesDir, PHOTO_EVAL_DIR).let { it.deleteRecursively(); if (it.exists()) leftovers++ }
+            // v1.0.1: the street map's downloaded tiles (areas the user looked at) live in the cache folder.
+            File(context.cacheDir, ONLINE_TILES_DIR).let { it.deleteRecursively(); if (it.exists()) leftovers++ }
             // Slice 3a: sealed traces, pulled imports and orphan tmp files (the tables went with wipeMemory). The epoch above already refuses a fenced publish.
             FencedFiles.DELETE_ALL_DIRS.forEach { File(context.filesDir, it).let { d -> d.deleteRecursively(); if (d.exists()) leftovers++ } }
             // Final pass 10: raw traces staged under the EXTERNAL files dir (adb push) are sensor data too; the resume of an interrupted wipe comes through here as well.

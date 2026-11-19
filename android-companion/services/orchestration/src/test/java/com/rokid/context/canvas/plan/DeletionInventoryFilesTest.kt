@@ -15,13 +15,20 @@ import java.io.File
  */
 class DeletionInventoryFilesTest {
     private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
-    private val registeredNames = (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.GLASSES_FILES + DeletionGraph.DIRS + DeletionGraph.EXTERNAL_DIRS).map { it.name }.toSet()
+    private val registeredNames = (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.GLASSES_FILES + DeletionGraph.DIRS + DeletionGraph.CACHE_DIRS + DeletionGraph.EXTERNAL_DIRS).map { it.name }.toSet()
 
     @Test fun deleteAllClearsExactlyTheRegisteredPrefsAndFolders() {
         assertEquals(DeletionGraph.wipedPrefs.toSet(), MemoryWipe.WIPED_PREFS.toSet())
         assertEquals(DeletionGraph.wipedDirs.toSet(), FencedFiles.DELETE_ALL_DIRS.toSet())
         assertEquals(DeletionGraph.wipedExternalDirs.toSet(), setOf(FencedFiles.STAGING_DIR))
         assertTrue(CollectSession.PREFS in MemoryWipe.WIPED_PREFS)
+    }
+
+    /** The opt-in street map (v1.0.1): its switch and consent file and its tile cache folder (under cacheDir, not filesDir) are wiped and registered. */
+    @Test fun theOnlineMapPrefsAndTileCacheAreWipedAndRegistered() {
+        assertTrue("online_map" in MemoryWipe.WIPED_PREFS); assertTrue("online_map" in DeletionGraph.wipedPrefs)
+        assertEquals(setOf(MemoryWipe.ONLINE_TILES_DIR), DeletionGraph.wipedCacheDirs.toSet())
+        assertEquals("online_tiles", MemoryWipe.ONLINE_TILES_DIR)
     }
 
     /** Any string literal of the form "canvas_*" / "mark_*" assigned to a PREFS or DIR constant in a main source is an on-disk artefact and needs a decision. */
@@ -40,7 +47,7 @@ class DeletionInventoryFilesTest {
      * preferences file or names a folder, in ANY main source of the app, the services, the glasses and the cores, must be a registered artefact.
      */
     @Test fun noFileOrPrefsLiteralInAnyMainSourceEscapesTheRegistry() {
-        val lit = Regex(""""((?:canvas|mark|imu|trace|traces|signal)[a-z_.]*)"""")
+        val lit = Regex(""""((?:canvas|mark|imu|trace|traces|signal|online)[a-z_.]*)"""")
         val ctx = Regex("""File\(|getSharedPreferences|PREFS|DIR|Dir\b|filesDir|cacheDir|\.xml""")
         val found = HashMap<String, MutableSet<String>>()
         root.walkTopDown().onEnter { it.name != "build" && it.name != ".git" && it.name != "node_modules" }
@@ -53,7 +60,7 @@ class DeletionInventoryFilesTest {
 
     @Test fun everyBackupExcludedCanvasPathIsRegistered() {
         val rules = File(root, "phone/src/main/res/xml/backup_rules.xml").readText()
-        val paths = Regex("""path="((?:canvas|mark|signal)_\w+|deletion_epoch)(?:\.xml)?"""").findAll(rules).map { it.groupValues[1] }.toSet()
+        val paths = Regex("""path="((?:canvas|mark|signal|online)_\w+|deletion_epoch)(?:\.xml)?"""").findAll(rules).map { it.groupValues[1] }.toSet()
         assertTrue(paths.size >= 6)
         val missing = paths.filter { it !in registeredNames }
         assertTrue("backup-excluded but undecided: $missing", missing.isEmpty())

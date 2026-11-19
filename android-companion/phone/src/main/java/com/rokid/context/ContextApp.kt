@@ -36,6 +36,7 @@ class ContextApp : Application() {
         com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.ui.settings.capture.SignalConfigStore.wipeListener(this)) // Delete all removes the user's signal configuration
         com.rokid.context.ai.canvas.plan.SignalConfigs.provider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).config.value }
         com.rokid.context.ai.canvas.plan.SignalConfigs.historyProvider = { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(this).history }
+        com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.wipeListener()) // Delete all resets the street-map switch and consent in memory
         // v3.0 proactive loop (SHADOW MODE, switches OFF by default): the seams only the phone knows, and the Forget / Delete all hook that withdraws records whose sources are gone. Every default fails closed.
         com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.orchestration.proactive.ProactiveGraph.forgetListener(this))
         com.rokid.context.orchestration.proactive.ProactiveEnvironment.worn = { runCatching { com.rokid.context.phone.hub.HubGraph.get(this).wornNow() == true }.getOrDefault(false) }

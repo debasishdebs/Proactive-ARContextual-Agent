@@ -93,6 +93,11 @@ class OnlineMapModel(private val store: OnlineMapStore, available: Boolean, priv
     fun wipe() { store.clear(); purge(); _ui.update { it.copy(enabled = false, askFirst = false) } }
 }
 
+/** Delete all: the in-memory switch and consent follow the prefs file and the cache folder that `MemoryWipe` already cleared (also on the resume of an interrupted wipe). [model] is null while the screen's graph was never built. */
+class OnlineMapWipeListener(private val model: () -> OnlineMapModel?) : com.rokid.context.memory.forget.ForgetListener {
+    override suspend fun onDeleteAll() { model()?.wipe() }
+}
+
 /** What the zones screen is built with to offer the street map and "Centre on me" (null in builds and tests without them). [source] is null when the build has no tile provider. */
 class OnlineMapDeps(val model: OnlineMapModel, val source: RasterTileSource?, val fix: CentreFix?)
 

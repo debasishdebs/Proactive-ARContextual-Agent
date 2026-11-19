@@ -12,6 +12,7 @@ import com.rokid.context.phone.ui.settings.privacy.zones.tiles.CentreFix
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapDeps
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapModel
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapStore
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapWipeListener
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -36,16 +37,8 @@ class OnlineMapGraph private constructor(app: Context) {
         @Volatile private var instance: OnlineMapGraph? = null
         fun get(context: Context): OnlineMapGraph = instance ?: synchronized(this) { instance ?: OnlineMapGraph(context.applicationContext).also { instance = it } }
 
-        /**
-         * Delete all: the switch goes OFF, the consent is forgotten and the tile cache is deleted. Works with no provider and with the screen never opened (it clears the prefs file and
-         * deletes the folder directly).
-         */
-        fun wipe(context: Context) {
-            val app = context.applicationContext
-            runCatching { app.getSharedPreferences(OnlineMapStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit() }
-            purge(cacheRoot(app))
-            instance?.model?.wipe()
-        }
+        /** Delete all (and the resume of an interrupted one): `MemoryWipe` clears the prefs file and deletes the cache folder itself; this resets the in-memory switch and consent. */
+        fun wipeListener(): OnlineMapWipeListener = OnlineMapWipeListener { instance?.model }
     }
 }
 
