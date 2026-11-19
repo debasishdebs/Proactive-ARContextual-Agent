@@ -14,7 +14,8 @@ Real optics, the unmeasured field of view / waveguide visible area, brightness, 
 
 ## Observations
 - The CENTRE card is edge to edge: its border sits at x=0 and x=480, no margin. If the visible area is smaller than the panel (likely), the border and text start would be clipped. This is the pre-B2 layout.
-- LEFT/RIGHT cards are 144 dp wide (60%) with a 24 dp inset. The 140-char line shows only about 5-6 words (3 lines, then an ellipsis); the title is truncated ("Chowmahal…" for a 17-char name); the source is cut ("Wikipedia · fetche…", "Suggestion · Wiki…"). Legible, but most of the content is lost; a side card works as a pointer, not something to read.
+- LEFT/RIGHT before (60% = 144 dp): title cut ("Chowmahal..."), body 3 lines (~5-6 words), source cut ("Wikipedia · fetche...", "Suggestion · Wiki..").
+- LEFT/RIGHT after (70% = 168 dp, 24 dp margin, 12 dp side padding): the title wraps to 2 lines ("Chowmahalla / Palace" in full), the body gets 4 lines (about 12 words, still ellipsised), and the source is shortened to "Wikipedia" / "Suggestion · Wikipedia" (the fetched date is dropped on side cards only; "nearby · not checked" is kept). Title, body start and source are now readable; the full 140-char line still does not fit. The card is taller, grows upward from the same bottom anchor, and touches the countdown no more than before. CENTRE is unchanged (byte-identical).
 - The card sits over the Glance page: it hides the REC/phone/battery row and leaves only the top half of the "NEXT 4:12" digits and the page dots visible below it. CENTRE does the same (overlays draw in the lower band over the page). This is the existing overlay design, not a side-card regression.
 - No LEFT/RIGHT card element runs outside the 480x640 frame.
-- No layout fix was made: nothing was a clear-cut bug; the above are design trade-offs (wider side cards, 2-line title, hiding the page under a card, a CENTRE margin).
+- Remaining limits: real optics, field of view, brightness and the real font are not shown (the side offsets still need tuning while worn); the CENTRE card has no margin (existing design, deliberately untouched); the card still hides the page under it.
