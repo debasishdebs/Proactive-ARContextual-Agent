@@ -2,7 +2,7 @@
 Everything below was NOT done because it needs the user, the real devices, or a ruling. Work continued on everything else.
 
 ## A. Install (blocks all device checks)
-- [ ] Plug in phone + glasses (adb), say which build: DEFAULT apks-v110-f1dcf1fb or CANDIDATE apks-v110-cand-3fd7da1c (README in each folder). Then: dry run (tools/install-trip-build.sh), then an explicit "go". Never auto-installed.
+- [ ] Plug in phone + glasses (adb), say which build: DEFAULT apks-v110-f1dcf1fb or CANDIDATE apks-v110-cand-22c2e0bb (README in each folder). Then: dry run (tools/install-trip-build.sh), then an explicit "go". Never auto-installed.
 
 ## B. Rulings (proxy answers exist: decisions/2026-11-19-codex-proxy-rulings-4.md; confirm or change)
 - [ ] Forget F2 (cited photo tombstone: keep), forgetV2 (OFF through both trips), Room v18 (stay on v17), v3.1 delivery (supervised first worn test only).
