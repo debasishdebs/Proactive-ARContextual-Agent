@@ -36,7 +36,7 @@ class ActivityPaginationPerfTest {
     private fun f1(d: Double) = "%.1f".format(d)
     private fun heapMb(): Double { repeat(3) { System.gc() }; return Runtime.getRuntime().let { (it.totalMemory() - it.freeMemory()) / 1048576.0 } }
     private fun plan(sql: String, vararg args: String): List<String> =
-        db.openHelper.readableDatabase.query("EXPLAIN QUERY PLAN $sql", args).use { c -> buildList { while (c.moveToNext()) add(c.getString(3)) } }
+        db.openHelper.readableDatabase.query("EXPLAIN QUERY PLAN $sql", args).use { c -> buildList { while (c.moveToNext()) add(c.getString(3).replace("SEARCH TABLE ", "SEARCH ").replace("SCAN TABLE ", "SCAN ")) } }
 
     private fun seed() {
         val w = db.openHelper.writableDatabase
@@ -52,6 +52,12 @@ class ActivityPaginationPerfTest {
                     put("confidence", 0.8); put("reviewState", if (n % 50 == 0) "NEEDS_REVIEW" else "OK"); put("trusted", 0); put("createdAt", at); put("derived", 0); put("searchText", "")
                 })
                 n++
+            }
+            // 30,000 nudges and 30,000 marks over the same 100 days, for the plan checks of those two keyset queries (the plan, not the page time, is what they assert).
+            for (i in 0 until 30_000) {
+                val at = start + i * (days * day / 30_000)
+                w.insert("nudge", 0, ContentValues().apply { put("id", "n%06d".format(i)); put("ts", at); put("text", "n"); put("why", "w"); put("sourceIdsJson", "[]"); put("priority", 1); put("hash", "h$i"); put("shownOn", "phone"); put("redacted", 0) })
+                w.insert("canvas_label", 0, ContentValues().apply { put("labelId", "l%06d".format(i)); put("kind", "MOMENT"); put("source", "tap"); put("name", "X"); put("atMs", at); put("provenance", ""); put("deletionCounter", 0); put("createdAt", at) })
             }
             w.setTransactionSuccessful()
         } finally { w.endTransaction() }
@@ -116,14 +122,33 @@ class ActivityPaginationPerfTest {
         out("answers first page behind 10,000 newer eval asks: ${f1(askMs)} ms (${a1.size} rows)")
         assertEquals(100, a1.size); assertTrue(a1.none { it.source == "canvas_eval" })
 
-        // 5. query plans: a page query must not scan a whole table
-        val plans = mapOf(
-            "visiblePageIn" to plan("SELECT * FROM memory WHERE createdAt >= ? AND createdAt < ? AND reviewState = 'OK' AND (createdAt < ? OR (createdAt = ? AND id < ?)) ORDER BY createdAt DESC, id DESC LIMIT ?", "0", "1", "1", "1", "", "100"),
-            "momentPageIn" to plan("SELECT m.*, COALESCE(f.ts, m.createdAt) AS shownAt FROM memory m LEFT JOIN frame f ON f.id = m.frameId WHERE m.createdAt >= ? AND m.createdAt < ? AND m.reviewState = 'OK' AND COALESCE(f.ts, m.createdAt) >= ? AND COALESCE(f.ts, m.createdAt) < ? ORDER BY COALESCE(f.ts, m.createdAt) DESC, m.id DESC LIMIT ?", "0", "1", "0", "1", "25"),
-            "askPageIn" to plan("SELECT * FROM ask WHERE ts >= ? AND ts < ? AND source != 'canvas_eval' AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?", "0", "1", "1", "1", "", "100"),
+        // 5. query plans of the ACTUAL five keyset queries (SQL text read from the @Query annotations in the DAO sources, so it cannot drift), with a cursor in the MIDDLE of the 100,000-row data:
+        // each must SEARCH its table through the time index with a range on BOTH sides and never SCAN the table.
+        val mid = start + 50 * day + 12_345
+        val midArgs = mapOf("fromMs" to start, "toMs" to end, "cKey" to mid, "cId" to "m050000", "n" to 100L)
+        val five = listOf(
+            Triple("frames", QuerySource.of("ViewDaos.kt", "interface FrameViewDao", "pageIn"), "frame" to "ts"),
+            Triple("memories", QuerySource.of("ViewDaos.kt", "abstract class MemoryViewDao", "visiblePageIn"), "memory" to "createdAt"),
+            Triple("answers", QuerySource.of("ViewDaos.kt", "interface AskDao", "pageIn"), "ask" to "ts"),
+            Triple("nudges", QuerySource.of("ViewDaos.kt", "interface NudgeDao", "pageIn"), "nudge" to "ts"),
+            Triple("marks", QuerySource.of("MomentDao.kt", "abstract class MomentDao", "marksPage"), "canvas_label" to "atMs"),
         )
-        plans.forEach { (k, p) -> out("plan $k: $p") }
-        plans.forEach { (k, p) -> assertTrue("$k must not full-scan a table: $p", p.none { it.startsWith("SCAN") && !it.contains("USING") }) }
+        for ((name, q, tc) in five) {
+            assertTrue("$name: the real query has the cKey bound: ${q.sql}", q.sql.contains("<= :cKey"))
+            val (qs, qargs) = q.bind(midArgs)
+            val p = plan(qs, *qargs)
+            out("plan $name (cursor mid-range): $p")
+            val (table, col) = tc
+            val search = p.firstOrNull { it.startsWith("SEARCH $table ") && it.contains(" USING ") }
+            assertTrue("$name must SEARCH $table through an index: $p", search != null)
+            assertTrue("$name must use an index on $col with a lower bound: $search", search!!.contains("INDEX") && search.contains("$col>?"))
+            assertTrue("$name needs a range constraint on BOTH sides of $col: $search", search.contains("$col<?"))
+            assertTrue("$name must never SCAN $table: $p", p.none { it.startsWith("SCAN $table") })
+        }
+        // momentPageIn (hour/day window, no cKey bound by design): real SQL, must not scan memory
+        val (mq, margs) = QuerySource.of("ViewDaos.kt", "abstract class MemoryViewDao", "momentPageIn").bind(mapOf("dayFromMs" to start, "dayToMs" to end, "hFromMs" to start, "hToMs" to end, "cKey" to mid, "cId" to "m050000", "n" to 25L))
+        val mp = plan(mq, *margs); out("plan momentPageIn: $mp")
+        assertTrue("momentPageIn must not scan memory: $mp", mp.none { it.startsWith("SCAN m") })
 
         // very generous bounds (measured: worst page 16 ms on a laptop; these only catch a pathological regression and must not flake under load; the phone allowance lives in the review doc, not here)
         assertTrue("first page cold < 10 s: $cold", cold < 10_000)
@@ -134,5 +159,82 @@ class ActivityPaginationPerfTest {
         assertTrue("hour page < 10 s: $hp1Ms", hp1Ms < 10_000)
         assertTrue("answers behind eval asks < 10 s: $askMs", askMs < 10_000)
         assertTrue("heap growth < 300 MB: ${heap1 - heap0}", heap1 - heap0 < 300)
+    }
+
+    /** The `@Query` SQL of one DAO function read from its Kotlin source (Room keeps no runtime copy); `:name` parameters are kept so they can be bound in order. */
+    class QuerySource private constructor(val sql: String) {
+        /** `?` for every `:name`, plus the values in order of appearance (the order Room binds them in). */
+        fun bind(values: Map<String, Any>): Pair<String, Array<String>> {
+            val names = mutableListOf<String>()
+            val q = Regex(":([A-Za-z]+)").replace(sql) { names += it.groupValues[1]; "?" }
+            return q to names.map { values.getValue(it).toString() }.toTypedArray()
+        }
+        companion object {
+            fun of(file: String, anchor: String, fn: String): QuerySource {
+                val rel = "src/main/java/com/rokid/context/memory/db/$file"
+                val f = listOf(rel, "services/memory/$rel", "android-companion/services/memory/$rel").map { java.io.File(it) }.first { it.exists() }
+                val src = f.readText()
+                val anchorAt = src.indexOf(anchor); require(anchorAt >= 0) { "no $anchor in $file" }
+                val fnAt = src.indexOf("fun $fn(", anchorAt); require(fnAt >= 0) { "no $fn after $anchor" }
+                val qAt = src.lastIndexOf("@Query(", fnAt)
+                val lits = Regex("\"((?:[^\"\\\\]|\\\\.)*)\"").findAll(src.substring(qAt, fnAt)).map { it.groupValues[1] }.toList()
+                require(lits.isNotEmpty()) { "no SQL for $fn" }
+                return QuerySource(lits.joinToString(""))
+            }
+        }
+    }
+
+    /**
+     * The `AND key <= :cKey` bound is only a planner hint: it must NEVER change a result. On a small dataset full of timestamp ties (and eval asks, review-needed memories, INTENT labels), random cursors (inside the
+     * range, outside it, on a tie, with an unknown id, the first-page cursor) give exactly the rows of a reference query written here WITHOUT the bound, for all five queries (marks tie-break on labelId ASC).
+     */
+    @Test fun cKeyBoundNeverChangesResults() = runBlocking<Unit> {
+        val rnd = java.util.Random(20261119)
+        val w = db.openHelper.writableDatabase
+        val stamps = (0 until 15).map { 1_000L + it * 100 } // 15 distinct instants, ~20 rows each: heavy ties
+        val ids = ArrayList<String>()
+        w.beginTransaction()
+        try {
+            for (i in 0 until 300) {
+                val ts = stamps[rnd.nextInt(stamps.size)]; val id = "x%04d".format(rnd.nextInt(10_000)) + "_$i"; ids += id
+                w.insert("frame", 0, ContentValues().apply { put("id", id); put("ts", ts); put("path", "/x/$id"); put("source", "rokid_glasses"); put("payload", "") })
+                w.insert("memory", 0, ContentValues().apply {
+                    put("id", id); putNull("frameId"); put("text", "t"); put("type", "short_term"); put("tags", ""); put("tier", "SHORT"); put("confidence", 0.8)
+                    put("reviewState", if (i % 7 == 0) "NEEDS_REVIEW" else "OK"); put("trusted", 0); put("createdAt", ts); put("derived", 0); put("searchText", "")
+                })
+                w.insert("ask", 0, ContentValues().apply { put("id", id); put("ts", ts); put("question", "q"); put("answer", "a"); put("sourcesJson", "[]"); put("source", if (i % 5 == 0) "canvas_eval" else "phone_typed"); put("redacted", 0) })
+                w.insert("nudge", 0, ContentValues().apply { put("id", id); put("ts", ts); put("text", "n"); put("why", "w"); put("sourceIdsJson", "[]"); put("priority", 1); put("hash", "h_$id"); put("shownOn", "phone"); put("redacted", 0) })
+                w.insert("canvas_label", 0, ContentValues().apply { put("labelId", id); put("kind", if (i % 6 == 0) "INTENT" else "MOMENT"); put("source", "tap"); put("name", "X"); put("atMs", ts); put("provenance", ""); put("deletionCounter", 0); put("createdAt", ts) })
+            }
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+
+        val from = 1_200L; val to = 2_200L
+        fun refIds(sql: String, args: Array<Any?>): List<String> = w.query(sql, args).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+        // reference queries: the same filter and order, the cursor test WITHOUT the `<= :cKey` bound
+        val refFrame = "SELECT id FROM frame WHERE ts >= ? AND ts < ? AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?"
+        val refMemory = "SELECT id FROM memory WHERE createdAt >= ? AND createdAt < ? AND reviewState = 'OK' AND (createdAt < ? OR (createdAt = ? AND id < ?)) ORDER BY createdAt DESC, id DESC LIMIT ?"
+        val refAsk = "SELECT id FROM ask WHERE ts >= ? AND ts < ? AND source != 'canvas_eval' AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?"
+        val refNudge = "SELECT id FROM nudge WHERE ts >= ? AND ts < ? AND (ts < ? OR (ts = ? AND id < ?)) ORDER BY ts DESC, id DESC LIMIT ?"
+        val refMark = "SELECT labelId FROM canvas_label WHERE kind = 'MOMENT' AND atMs >= ? AND atMs < ? AND (atMs < ? OR (atMs = ? AND labelId > ?)) ORDER BY atMs DESC, labelId ASC LIMIT ?"
+
+        val v = db.memoryViewDao(); val fv = db.frameViewDao(); val a = db.askDao(); val nd = db.nudgeDao(); val md = db.momentDao()
+        var nonEmpty = 0
+        repeat(400) { round ->
+            val cKey = when (round % 4) { 0 -> stamps[rnd.nextInt(stamps.size)]; 1 -> to; 2 -> rnd.nextInt(3_000).toLong() - 200; else -> from + rnd.nextInt(1_000) }
+            val cId = when (rnd.nextInt(4)) { 0 -> ""; 1 -> "zzzz"; 2 -> ids[rnd.nextInt(ids.size)]; else -> "x%04d".format(rnd.nextInt(10_000)) }
+            val n = intArrayOf(1, 3, 17, 100, 1_000)[rnd.nextInt(5)]
+            val args = arrayOf<Any?>(from, to, cKey, cKey, cId, n.toLong())
+            val ctx = "cursor=($cKey,'$cId') n=$n"
+            assertEquals("frames $ctx", refIds(refFrame, args), fv.pageIn(from, to, cKey, cId, n).map { it.id })
+            assertEquals("memories $ctx", refIds(refMemory, args), v.visiblePageIn(from, to, cKey, cId, n).map { it.id })
+            assertEquals("answers $ctx", refIds(refAsk, args), a.pageIn(from, to, cKey, cId, n).map { it.id })
+            assertEquals("nudges $ctx", refIds(refNudge, args), nd.pageIn(from, to, cKey, cId, n).map { it.id })
+            val marks = md.marksPage(from, to, cKey, cId, n).map { it.labelId }
+            assertEquals("marks $ctx", refIds(refMark, args), marks)
+            if (marks.isNotEmpty()) nonEmpty++
+        }
+        assertTrue("the random cursors must exercise real pages, not only empty ones ($nonEmpty)", nonEmpty > 100)
+        out("keyset invariant: 400 random cursors x 5 queries equal to the unbounded reference ($nonEmpty rounds with a non-empty marks page)")
     }
 }
