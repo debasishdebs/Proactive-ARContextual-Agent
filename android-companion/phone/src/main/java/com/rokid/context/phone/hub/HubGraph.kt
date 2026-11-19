@@ -144,7 +144,7 @@ object HubGraph {
             // A receipt already committed to Room is acked at once (spec P2 receipt durability).
             committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },
         ) { onFrameStored(app) }
-        val link = CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG)
+        val link = CxrGlassesLink(app, scope, probe = com.rokid.context.phone.DebugOnlyGates.linkProbe(com.rokid.context.BuildConfig.DEBUG))
         val phoneUse = PhoneUseSignal().also { it.start(app) }
         // Wave B: constructed here, started and stopped with the Hub (no sensing until a source is registered and switched on).
         val ctxRegistry = com.rokid.context.phone.context.ContextSourceRegistry()

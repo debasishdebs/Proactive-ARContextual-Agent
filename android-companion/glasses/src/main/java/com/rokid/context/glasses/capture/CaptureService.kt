@@ -182,7 +182,7 @@ class CaptureService : LifecycleService() {
         }
         if (!started) return START_NOT_STICKY
         // ACTION_NOW is the user's "Capture now" (forced); ACTION_SCHEDULED is the alarm (never forced).
-        captureNow(BuildConfig.DEBUG && intent?.getBooleanExtra(EXTRA_SKIP_DEDUPE, false) == true, userRequest = action == ACTION_NOW)
+        captureNow(skipDedupeHonoured(BuildConfig.DEBUG, intent?.getBooleanExtra(EXTRA_SKIP_DEDUPE, false) == true), userRequest = action == ACTION_NOW)
         return START_NOT_STICKY
     }
 
@@ -713,8 +713,11 @@ class CaptureService : LifecycleService() {
             liveInstance?.endKeepAlive()
         }
 
+        /** The skip-dedupe request is a debug-only aid: a release build ignores it and always dedupes. */
+        internal fun skipDedupeHonoured(debugBuild: Boolean, requested: Boolean): Boolean = debugBuild && requested
+
         fun captureNow(context: Context, skipDedupe: Boolean = false) {
-            liveInstance?.let { if (!it.captureNow(BuildConfig.DEBUG && skipDedupe, userRequest = true)) DiagLog.i(TAG, "capture already in flight"); return }
+            liveInstance?.let { if (!it.captureNow(skipDedupeHonoured(BuildConfig.DEBUG, skipDedupe), userRequest = true)) DiagLog.i(TAG, "capture already in flight"); return }
             context.startForegroundService(Intent(context, CaptureService::class.java).setAction(ACTION_NOW).putExtra(EXTRA_SKIP_DEDUPE, skipDedupe))
         }
     }
