@@ -88,6 +88,22 @@ abstract class MomentDao : DerivedStaleDao() {
         return ids
     }
 
+    // --- Pin to Moment (slice 1.4.2): read-only lookups of PHOTO Moments, newest first; a Moment counts only while a photo of it still exists and its second is not tombstoned ---
+    @Query("SELECT m.momentId AS momentId, MIN(f.path) AS path, MIN(p.partTimeMs) AS atMs FROM moment m JOIN moment_part p ON p.momentId = m.momentId AND p.kind = 'FRAME' JOIN frame f ON f.id = p.refId WHERE m.momentId NOT IN (SELECT momentId FROM moment_tombstone) GROUP BY m.momentId ORDER BY m.momentId DESC LIMIT :limit")
+    abstract suspend fun recentPhotoMoments(limit: Int): List<PhotoMomentRow>
+    /**
+     * Which of the Moment ids [ids] still have a stored photo: judged on the AUTHORITATIVE `frame` rows of that Moment second (the Moment second is the frame row's time), not on the rebuildable projection, so a
+     * Moment row dropped and rebuilt (a forgotten fact) never counts as gone, and a tombstoned second never counts as alive. The path is the first photo's (the thumbnail source).
+     */
+    @Transaction open suspend fun photoMomentsOf(ids: List<String>): List<PhotoMomentRow> = ids.distinct().mapNotNull { id ->
+        val sec = com.rokid.context.memory.moment.MomentId.parse(id) ?: return@mapNotNull null
+        if (tombstonedAmong(listOf(id)).isNotEmpty()) return@mapNotNull null
+        firstFrameBetween(sec * 1000, sec * 1000 + 999)?.let { PhotoMomentRow(id, it.path, it.ts) }
+    }
+    @Query("SELECT ts FROM frame WHERE id = :id") abstract suspend fun frameTs(id: String): Long?
+    @Query("SELECT COUNT(*) FROM frame WHERE ts >= :fromMs AND ts <= :toMs AND id != :exceptId") abstract suspend fun framesBetweenExcept(fromMs: Long, toMs: Long, exceptId: String): Int
+    @Query("SELECT * FROM frame WHERE ts >= :fromMs AND ts <= :toMs ORDER BY ts, id LIMIT 1") protected abstract suspend fun firstFrameBetween(fromMs: Long, toMs: Long): FrameEntity?
+
     // --- tombstones ---
     /** Upsert: a repeated Forget REFRESHES `createdAt` (the newest wins), because the recency window of unknown-capture-time frames is measured from it. */
     @Transaction open suspend fun insertTombstones(t: List<MomentTombstoneEntity>) = t.forEach { upsertTombstone(it.momentId, it.createdAt) }
@@ -212,3 +228,6 @@ abstract class MomentDao : DerivedStaleDao() {
 
     private companion object { const val CHUNK = 500 }
 }
+
+/** A photo Moment as the pin screen lists it: its id, the (encrypted) photo file path for the thumbnail and the capture time of its first photo. No text. */
+data class PhotoMomentRow(val momentId: String, val path: String, val atMs: Long)

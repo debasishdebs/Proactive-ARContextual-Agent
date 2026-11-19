@@ -15,7 +15,12 @@ data class FateCounts(val erase: Int, val rebuild: Int, val drop: Int) { val tot
  */
 class SelectionPreview(
     val roots: Int, val missing: Set<Ref>, val nodes: Int, val counts: Map<Family, FateCounts>, val planHash: String, val needsAck: Boolean, val tooLarge: Boolean,
+    /** Slice 1.4.2: the photos the plan erases (frame ids only), so the caller can tell which Moments (and the pins that reference them) lose their last photo. Never shown. */
+    val erasedPhotos: Set<String> = emptySet(),
+    /** Slice 1.4.2: pinned places that reference a Moment this Forget removes (deleted with it): their number and the first names, for the dialog only. */
+    val pins: Int = 0, val pinNames: List<String> = emptyList(),
 ) {
+    fun withPins(count: Int, names: List<String>) = SelectionPreview(roots, missing, nodes, counts, planHash, needsAck, tooLarge, erasedPhotos, count, names)
     val ackHash: String get() = if (needsAck) planHash + SelectionLimits.ACK_SUFFIX else planHash
     /** The token the delete is confirmed with: the acknowledgement only when one is needed AND given. */
     fun token(acknowledged: Boolean): String = if (needsAck && acknowledged) ackHash else planHash
@@ -41,7 +46,8 @@ object ForgetSelection {
 
     fun preview(roots: Set<Ref>, plan: ForgetPlan): SelectionPreview {
         val counts = plan.nodes.entries.groupBy { it.key.family }.mapValues { (_, e) -> FateCounts(e.count { it.value == Fate.ERASE }, e.count { it.value == Fate.REBUILD }, e.count { it.value == Fate.DROP }) }
-        return SelectionPreview(roots.size, roots - plan.nodes.keys, plan.size, counts, hashOf(roots, plan), needsAck(roots, plan), tooLarge(roots, plan))
+        return SelectionPreview(roots.size, roots - plan.nodes.keys, plan.size, counts, hashOf(roots, plan), needsAck(roots, plan), tooLarge(roots, plan),
+            erasedPhotos = plan.nodes.entries.filter { it.key.family == Family.PHOTO && it.value == Fate.ERASE }.map { it.key.id }.toSet())
     }
 
     /** Reads only: the plan of [roots] as a user Forget, in one snapshot. A selection above the ceiling, or a closure the planner refuses, is a preview with [SelectionPreview.tooLarge] and nothing else. */

@@ -43,6 +43,8 @@ data class ForgetPreview(
     val peerResults: Int = 0,
     /** A large rebuild (more than [com.rokid.context.memory.forget.MomentForget.MAX_UNACKED_RESULTS] regenerable results): the dialog warns and the delete needs [ackHash], sent only after the user ticks the acknowledgement. */
     val needsAck: Boolean = false, val ackHash: String = "",
+    /** Slice 1.4.2: pinned places that reference a Moment this Forget removes: they are deleted with it ("also deletes N pins"). */
+    val pins: Int = 0, val pinNames: List<String> = emptyList(),
 )
 
 /** The Forget was refused because too much is connected to it: nothing was deleted. */
@@ -65,6 +67,8 @@ object ForgetCopy {
     /** Said in the dialog of every single-object Forget: the Forget scope setting (Photo, Moment, Scene) does not apply. */
     const val SINGLE_SCOPE = "This forgets just this one item. The Forget scope setting does not apply."
     const val CONFIRM = "Forget"
+    /** Slice 1.4.2: the confirm button when pinned places go with the Moment. */
+    const val CONFIRM_WITH_PINS = "Forget Moment and pin(s)"
     const val CANCEL = "Cancel"
     const val DONE = "Forgotten"
     /** A running export holds the delete gate for up to 30 s: the Forget did not run. */
@@ -93,6 +97,15 @@ object ForgetScopeCopy {
         com.rokid.context.memory.forget.ForgetScope.PHOTO -> "Photo: only that photo and what came from it, plus the marks and Moments within the Forget radius. Neighbouring photos stay."
         com.rokid.context.memory.forget.ForgetScope.MOMENT -> "Moment: everything of the Moment around it, every photo, fact, mark and sensor reading, extended by the Forget radius."
         com.rokid.context.memory.forget.ForgetScope.SCENE -> "Scene: the whole Scene it belongs to, every Moment in it, and the Scene itself. The most destructive choice."
+    }
+
+    /** Slice 1.4.2: a pin whose reference Moment is forgotten is forgotten too; the confirmation says how many. Empty when none. */
+    fun pinsLine(pins: Int, names: List<String> = emptyList()): String {
+        if (pins <= 0) return ""
+        val shown = names.take(5).joinToString(", ") { "\u201C$it\u201D" }
+        val more = if (pins > names.take(5).size && names.isNotEmpty()) " and ${pins - names.take(5).size} more" else ""
+        val list = if (shown.isEmpty()) "" else ": $shown$more"
+        return "Also deletes $pins pinned ${if (pins == 1) "place" else "places"} that ${if (pins == 1) "uses" else "use"} ${if (pins == 1) "this Moment" else "these Moments"} as a reference$list. This cannot be undone, and place cards may stop appearing there."
     }
 
     /** The confirm dialog: the scope that will really run, in plain words, then the numbers. */

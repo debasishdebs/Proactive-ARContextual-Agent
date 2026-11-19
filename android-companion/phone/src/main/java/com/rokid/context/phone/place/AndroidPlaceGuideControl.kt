@@ -3,6 +3,7 @@ package com.rokid.context.phone.place
 import android.content.Context
 import com.rokid.context.memory.place.GeoBox
 import com.rokid.context.memory.place.PackStats
+import com.rokid.context.phone.ui.settings.place.MomentChoice
 import com.rokid.context.phone.ui.settings.place.PlaceGuideControl
 import com.rokid.context.work.frames.place.PlaceGraph
 import com.rokid.context.work.frames.place.PlacePinning
@@ -53,6 +54,16 @@ class AndroidPlaceGuideControl(
             nearby = { lat, lon -> PlaceGraph.readyPack(app).sitesNear(lat, lon) },
             load = { PlaceGraph.pins(app).pins() }, save = { PlaceGraph.savePins(app, it) },
             elapsed = android.os.SystemClock::elapsedRealtime, log = { com.rokid.context.core.log.PcLog.i("PcPlace", it) },
+            momentAlive = { id -> momentDao().photoMomentsOf(listOf(id)).isNotEmpty() },
         )
     }
+
+    private fun momentDao() = com.rokid.context.memory.MemoryGraph.get(app).db.momentDao()
+    private fun com.rokid.context.memory.db.PhotoMomentRow.choice() = MomentChoice(momentId, path, atMs)
+
+    override suspend fun recentMoments(limit: Int): List<MomentChoice> = momentDao().recentPhotoMoments(limit).map { it.choice() }
+    override suspend fun momentsOf(ids: List<String>): Map<String, MomentChoice> = if (ids.isEmpty()) emptyMap() else momentDao().photoMomentsOf(ids).associate { it.momentId to it.choice() }
+    override suspend fun setMoment(pinId: String, momentId: String?): Boolean = pinning.setMoment(pinId, momentId)
+    /** A link whose Moment was forgotten is cleared whenever the screen reads the pins (the Forget listener does it at the time; this also covers a crash in between). */
+    override suspend fun sweepMoments() { com.rokid.context.work.frames.place.PinMomentLinks.sweep(app) }
 }

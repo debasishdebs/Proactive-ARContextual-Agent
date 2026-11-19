@@ -21,12 +21,18 @@ data class UserPlace(
     val parentId: String? = null,
     /** One line, at most [NOTE_MAX] characters. */
     val note: String = "",
+    /**
+     * Slice 1.4.2 "Pin to Moment": the OPTIONAL reference Moment (an 8-hex Moment id) the user attached so they can check, later, that the capture of this spot was clear. A reference only: the
+     * matcher never reads it. Cleared (the pin stays) when that Moment is forgotten by any path; never exported, backed up or transferred.
+     */
+    val momentId: String? = null,
 ) {
     val isValid: Boolean
         get() = ID.matches(id) && name.isNotBlank() && name.length <= NAME_MAX && '\n' !in name && kind in PlaceKinds.ALL &&
             lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0 &&
             radiusM in MIN_RADIUS_M..PlaceKinds.MAX_RADIUS_M && note.length <= NOTE_MAX && '\n' !in note &&
-            (parentId == null || (parentId != id && !parentId.startsWith(PREFIX) && parentId.isNotBlank()))
+            (parentId == null || (parentId != id && !parentId.startsWith(PREFIX) && parentId.isNotBlank())) &&
+            (momentId == null || com.rokid.context.memory.moment.MomentId.parse(momentId) != null)
 
     /** The pack row: pinned, source `user`, the note as summary. [lastUsedDay] is kept across edits by the pack. */
     fun toEntity(lastUsedDay: Int = 0): PlaceEntity {
@@ -83,11 +89,56 @@ class UserPinStore(private val prefs: SharedPreferences) {
         if (ok) {
             val after = pins.associateBy { it.id }
             // removed or edited pins (ids only): anything derived from them must be withdrawn at once
-            val changed = before.filter { (id, old) -> after[id] != old }.keys
+            // a change of the Moment link alone is no edit of the pin (nothing derived from the pin cites it)
+            val changed = before.filter { (id, old) -> after[id]?.copy(momentId = null) != old.copy(momentId = null) }.keys
             if (changed.isNotEmpty()) notifyChanged(changed)
         }
         return ok
     }
+
+    /**
+     * Sets (or, with null, removes) the Moment link of one pin. False = unknown pin, invalid id or unreadable/unwritable list. Fires no change listener (the link is not part of what the matcher sees).
+     */
+    @Synchronized
+    fun setMoment(pinId: String, momentId: String?): Boolean {
+        val now = pins()
+        if (bad) return false
+        val pin = now.firstOrNull { it.id == pinId } ?: return false
+        if (pin.momentId == momentId) return true
+        return write(now.map { if (it.id == pinId) it.copy(momentId = momentId) else it })
+    }
+
+    /** Clears every link whose Moment id is not in [alive]; returns the ids of the PINS cleared (never the Moment ids). The pins themselves stay. A corrupt stored list is left alone (null). */
+    @Synchronized
+    fun clearMomentsExcept(alive: Set<String>): Set<String>? {
+        val now = pins()
+        if (bad) return null
+        val gone = now.filter { it.momentId != null && it.momentId !in alive }
+        if (gone.isEmpty()) return emptySet()
+        val ids = gone.map { it.id }.toSet()
+        return if (write(now.map { if (it.id in ids) it.copy(momentId = null) else it })) ids else null
+    }
+
+    /**
+     * Slice 1.4.2 (Forget cascade). Before an EXPLICIT user Forget runs, the pins whose reference Moment is about to be at risk are ARMED (ids only, merged with any earlier arming, durable): once the Forget
+     * committed, an armed pin whose Moment is gone is deleted with it, also after a crash (the resume reads the arming). While anything is armed, the non-explicit sweep leaves links alone. Not part of
+     * the pin list: [pins] and [write] never see it, and the settings export drops it.
+     */
+    @Synchronized
+    fun arm(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        val all = armed() + ids
+        try { prefs.edit().putString(ARMED_KEY, JSONArray(all.sorted()).toString()).commit() } catch (e: Exception) { }
+    }
+
+    @Synchronized
+    fun armed(): Set<String> = try { prefs.getString(ARMED_KEY, null)?.let { raw -> JSONArray(raw).let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } } ?: emptySet() } catch (e: Exception) { emptySet() }
+
+    @Synchronized
+    fun disarm() { try { prefs.edit().remove(ARMED_KEY).commit() } catch (e: Exception) { } }
+
+    /** Clears every link (Delete all). Returns the pins cleared, or null when the list could not be rewritten. */
+    fun clearAllMoments(): Set<String>? = clearMomentsExcept(emptySet())
 
     companion object {
         /** The prefs file: user configuration (exported on request, never in a backup or transfer, never deleted by Delete all). */
@@ -99,16 +150,25 @@ class UserPinStore(private val prefs: SharedPreferences) {
         fun removeChangeListener(l: (Set<String>) -> Unit) { listeners -= l }
         private fun notifyChanged(ids: Set<String>) { for (l in listeners) try { l(ids) } catch (_: Exception) { } }
         private const val KEY = "pins"
+        /** The arming of a pending Forget cascade (see [arm]): a prefs key beside the list, never exported. */
+        const val ARMED_KEY = "armed"
 
         fun encode(pins: List<UserPlace>): String = JSONArray().also { a ->
-            pins.forEach { p -> a.put(JSONObject().put("id", p.id).put("name", p.name).put("kind", p.kind).put("lat", p.lat).put("lon", p.lon).put("r", p.radiusM).put("parent", p.parentId ?: JSONObject.NULL).put("note", p.note)) }
+            pins.forEach { p -> a.put(JSONObject().put("id", p.id).put("name", p.name).put("kind", p.kind).put("lat", p.lat).put("lon", p.lon).put("r", p.radiusM).put("parent", p.parentId ?: JSONObject.NULL).put("note", p.note).also { o -> if (p.momentId != null) o.put("moment", p.momentId) }) }
         }.toString()
+
+        /** [raw] (the stored list) without any Moment link: what the settings export carries. An unreadable list is returned as it is (the export never invents content). */
+        fun withoutLinks(raw: String): String = try {
+            val a = JSONArray(raw)
+            for (i in 0 until a.length()) a.optJSONObject(i)?.remove("moment")
+            a.toString()
+        } catch (e: Exception) { raw }
 
         fun parse(raw: String): List<UserPlace> {
             val a = JSONArray(raw)
             return (0 until a.length()).map { i ->
                 val o = a.getJSONObject(i)
-                UserPlace(o.getString("id"), o.getString("name"), o.getString("kind"), o.getDouble("lat"), o.getDouble("lon"), o.getInt("r"), if (o.isNull("parent")) null else o.getString("parent"), o.optString("note", ""))
+                UserPlace(o.getString("id"), o.getString("name"), o.getString("kind"), o.getDouble("lat"), o.getDouble("lon"), o.getInt("r"), if (o.isNull("parent")) null else o.getString("parent"), o.optString("note", ""), if (o.isNull("moment")) null else o.optString("moment", "").takeIf { com.rokid.context.memory.moment.MomentId.parse(it) != null }) // an unreadable link is no link: it never makes the list corrupt
             }
         }
     }

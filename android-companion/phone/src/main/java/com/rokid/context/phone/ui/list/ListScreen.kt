@@ -593,13 +593,14 @@ private fun SelectionDialogs(st: SelectionState, sel: SelectionController) {
                         if (stage.changed) Text(SelectionText.CHANGED, color = PcColors.MintDeep, modifier = Modifier.testTag("sel_changed"))
                         Text("This cannot be undone. Forgetting these also affects:", modifier = Modifier.padding(top = 4.dp))
                         previewLines(p).forEach { Text("\u2022 $it", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("sel_line")) }
+                        if (p.pins > 0) Text(com.rokid.context.phone.ui.memory.ForgetScopeCopy.pinsLine(p.pins, p.pinNames), fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp).testTag("sel_pins"))
                         if (p.needsAck) Row(Modifier.padding(top = 12.dp).clickable { sel.acknowledge(!stage.acknowledged) }.semantics(mergeDescendants = true) { stateDescription = if (stage.acknowledged) "Checked" else "Not checked" }, verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = stage.acknowledged, onCheckedChange = null, modifier = Modifier.testTag("sel_ack"))
                             Text(SelectionText.ack(p.nodes), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 8.dp))
                         }
                     }
                 },
-                confirmButton = { TextButton(onClick = { sel.confirm() }, enabled = stage.canConfirm, modifier = Modifier.testTag("sel_confirm")) { Text("Forget", fontWeight = FontWeight.SemiBold, color = if (stage.canConfirm) PcColors.MintDeep else PcColors.InkSoft) } },
+                confirmButton = { TextButton(onClick = { sel.confirm() }, enabled = stage.canConfirm, modifier = Modifier.testTag("sel_confirm")) { Text(if (p.pins > 0) com.rokid.context.phone.ui.memory.ForgetCopy.CONFIRM_WITH_PINS else "Forget", fontWeight = FontWeight.SemiBold, color = if (stage.canConfirm) PcColors.MintDeep else PcColors.InkSoft) } },
                 dismissButton = { TextButton(onClick = { sel.dismiss() }, modifier = Modifier.testTag("sel_cancel")) { Text("Cancel", color = PcColors.InkSoft) } },
                 containerColor = PcColors.Surface,
             )

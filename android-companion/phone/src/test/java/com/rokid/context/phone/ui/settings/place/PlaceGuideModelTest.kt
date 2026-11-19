@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -43,7 +44,15 @@ class PlaceGuideModelTest {
             fix = { PlaceFix(7.957, 80.759, 1_000, 10f) }, zoneBlocked = { zone }, zones = { emptyList() },
             nearby = { _, _ -> listOf(PlaceEntity("wd:Q1", null, "Sigiriya", PlaceKinds.ARCHAEOLOGICAL_SITE, 7.957, 80.759, 250, "s", "wikipedia:en", "x", 1, false, false, 0, 10)) },
             load = { stored }, save = { stored = it; true }, elapsed = { 5_000L },
+            log = { logged += it }, momentAlive = { id -> moments.any { it.id == id } },
         )
+        /** Slice 1.4.2: the photo Moments that exist (newest first); a Forget removes one from here. */
+        var moments = listOf<MomentChoice>()
+        val logged = mutableListOf<String>()
+        override suspend fun recentMoments(limit: Int) = moments.take(limit)
+        override suspend fun momentsOf(ids: List<String>) = moments.filter { it.id in ids }.associateBy { it.id }
+        override suspend fun setMoment(pinId: String, momentId: String?) = pinning.setMoment(pinId, momentId)
+        override suspend fun sweepMoments() { val alive = moments.map { it.id }.toSet(); stored = stored.map { if (it.momentId != null && it.momentId !in alive) it.copy(momentId = null) else it } }
         /** The production mapping (AndroidPlaceGuideControl: seedArea's SeedResult through PlaceGuideModel.seedOutcome); [failedCells] > 0 fakes a source that kept answering 429. */
         var failedCells = 0
         override suspend fun seed(box: GeoBox): Result<SeedOutcome> {
@@ -195,8 +204,9 @@ class PlaceGuideModelTest {
     }
 
     @Test fun pinAPlaceHereOpensTheFormWithNearbySitesAndSavesAPinListedForEditAndDelete() = runTest(d) {
-        val c = Control(); val vm = PlaceGuideViewModel(c, d)
+        val c = Control().also { it.moments = listOf(MomentChoice("0000000a", "/p/a", NOW - 60_000)) }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
         vm.beginPin(); d.scheduler.advanceUntilIdle()
+        vm.attachLatest(null); d.scheduler.advanceUntilIdle()
         val dlg = vm.state.value.pinDialog!!
         assertEquals(listOf("Sigiriya"), dlg.parents.map { it.name }); assertEquals("60", dlg.radius)
         vm.updatePinDialog { it.copy(name = "Mirror Wall", parentIndex = 1, note = "tmp", kindIndex = PlacePinning.KINDS.indexOf(PlaceKinds.ARCHAEOLOGICAL_SITE)) }
@@ -233,4 +243,88 @@ class PlaceGuideModelTest {
         val n = PlaceGuideModel.PIN_NOTE
         assertTrue("Your note" in n && "stay on this phone" in n && "Delete all" in n && "pause zone" in n)
     }
+
+    // ---- slice 1.4.2: Pin to Moment ----
+
+    private fun TestScope.newPin(c: Control, vm: PlaceGuideViewModel) {
+        vm.beginPin(); d.scheduler.advanceUntilIdle()
+        vm.updatePinDialog { it.copy(name = "Mirror Wall") }
+    }
+
+    @Test fun savingANewPinIsBlockedWithoutAMomentAndSaysWhy() = runTest(d) {
+        val c = Control().also { it.moments = listOf(MomentChoice("0000000a", "/p/a", NOW - 60_000)) }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        newPin(c, vm)
+        vm.savePin(); d.scheduler.advanceUntilIdle()
+        assertEquals(PlaceGuideModel.ATTACH_FIRST, vm.state.value.pinDialog!!.error); assertTrue(c.stored.isEmpty())
+        vm.attachLatest(null); d.scheduler.advanceUntilIdle()
+        assertEquals("0000000a", vm.state.value.pinDialog!!.momentId); assertEquals("/p/a", vm.state.value.pinDialog!!.moment!!.path)
+        vm.savePin(); d.scheduler.advanceUntilIdle()
+        assertEquals("0000000a", c.stored.single().momentId); assertTrue("pin moment linked" in c.logged)
+        assertEquals("0000000a", vm.state.value.moments["0000000a"]!!.id); assertFalse(PlaceGuideModel.needsMoment(vm.state.value.pins.single(), vm.state.value.moments))
+    }
+
+    @Test fun saveWithoutAMomentNeedsTheExplicitConfirmAndFlagsThePin() = runTest(d) {
+        val c = Control(); val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        newPin(c, vm)
+        vm.attachLatest(null); d.scheduler.advanceUntilIdle()
+        assertEquals(PlaceGuideModel.NO_MOMENT_YET, vm.state.value.pinDialog!!.momentHint) // nothing captured yet
+        vm.askSkipMoment(); assertTrue(vm.state.value.pinDialog!!.askSkipMoment)
+        vm.cancelSkipMoment(); vm.savePin(); d.scheduler.advanceUntilIdle()
+        assertTrue(c.stored.isEmpty()) // cancelling the confirm saves nothing
+        vm.askSkipMoment(); vm.confirmSkipMoment(); d.scheduler.advanceUntilIdle()
+        val pin = c.stored.single(); assertNull(pin.momentId)
+        assertTrue(PlaceGuideModel.needsMoment(vm.state.value.pins.single(), vm.state.value.moments)) // the "Needs a Moment" badge
+    }
+
+    @Test fun latestMomentMustBeWithinThirtyMinutesElsePickFromTheList() = runTest(d) {
+        val old = MomentChoice("00000001", "/p/old", NOW - 31 * 60_000)
+        val c = Control().also { it.moments = listOf(old) }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        newPin(c, vm)
+        vm.attachLatest(null); d.scheduler.advanceUntilIdle()
+        assertNull(vm.state.value.pinDialog!!.momentId); assertTrue(vm.state.value.pinDialog!!.momentHint!!.contains("30 minutes"))
+        vm.openMomentPicker(null); d.scheduler.advanceUntilIdle()
+        assertEquals(listOf(old), vm.state.value.momentPicker!!.items)
+        vm.pickMoment(old); d.scheduler.advanceUntilIdle()
+        assertNull(vm.state.value.momentPicker); assertEquals("00000001", vm.state.value.pinDialog!!.momentId)
+        assertEquals(old, PlaceGuideModel.latestWithin(listOf(old), NOW - 60_000)); assertNull(PlaceGuideModel.latestWithin(emptyList(), NOW))
+    }
+
+    @Test fun thePickerListsAtMostTwentyMoments() = runTest(d) {
+        val c = Control().also { c -> c.moments = (1..30).map { MomentChoice("%08x".format(1000 - it), "/p/$it", NOW - it * 1000L) } }; val vm = PlaceGuideViewModel(c, d, now = { NOW })
+        vm.openMomentPicker(null); d.scheduler.advanceUntilIdle()
+        assertEquals(20, vm.state.value.momentPicker!!.items.size)
+    }
+
+    @Test fun anExistingPinGetsAMomentRemovesItAndAnEditKeepsIt() = runTest(d) {
+        val m = MomentChoice("0000000b", "/p/b", NOW - 1000)
+        val c = Control().also { it.moments = listOf(m); it.stored = listOf(UserPlace("user:00000000-0000-0000-0000-000000000001", "Old pin", PlaceKinds.MONUMENT, 7.0, 80.0)) }
+        val vm = PlaceGuideViewModel(c, d, now = { NOW }); d.scheduler.advanceUntilIdle()
+        val id = c.stored.single().id
+        assertTrue(PlaceGuideModel.needsMoment(vm.state.value.pins.single(), vm.state.value.moments)) // an existing pin: badge, still a pin
+        vm.attachLatest(id); d.scheduler.advanceUntilIdle()
+        assertEquals("0000000b", c.stored.single().momentId); assertEquals(m, vm.state.value.moments["0000000b"])
+        vm.editPin(id); vm.updatePinDialog { it.copy(name = "Renamed") }; vm.savePin(); d.scheduler.advanceUntilIdle()
+        assertEquals("0000000b", c.stored.single().momentId) // an edit keeps the link
+        vm.removeMoment(id); d.scheduler.advanceUntilIdle()
+        assertNull(c.stored.single().momentId); assertEquals(1, c.stored.size); assertTrue("pin moment unlinked by user" in c.logged)
+    }
+
+    @Test fun aForgottenMomentClearsTheLinkAndTheBadgeReturnsWhileThePinStays() = runTest(d) {
+        val m = MomentChoice("0000000c", "/p/c", NOW - 1000)
+        val c = Control().also { it.moments = listOf(m); it.stored = listOf(UserPlace("user:00000000-0000-0000-0000-000000000002", "Pin", PlaceKinds.MONUMENT, 7.0, 80.0, momentId = "0000000c")) }
+        val vm = PlaceGuideViewModel(c, d, now = { NOW }); d.scheduler.advanceUntilIdle()
+        assertFalse(PlaceGuideModel.needsMoment(vm.state.value.pins.single(), vm.state.value.moments))
+        c.moments = emptyList() // Forget removed the Moment
+        vm.deletePin("user:none"); d.scheduler.advanceUntilIdle() // any refresh of the screen
+        val pin = vm.state.value.pins.single()
+        assertNull(pin.momentId); assertTrue(vm.state.value.moments.isEmpty()); assertTrue(PlaceGuideModel.needsMoment(pin, vm.state.value.moments))
+    }
+
+    @Test fun aLinkToAGoneMomentIsNeverStored() = runTest(d) {
+        val c = Control().also { it.stored = listOf(UserPlace("user:00000000-0000-0000-0000-000000000003", "Pin", PlaceKinds.MONUMENT, 7.0, 80.0)) }
+        assertFalse(c.setMoment("user:00000000-0000-0000-0000-000000000003", "0000000d"))
+        assertNull(c.stored.single().momentId)
+    }
+
+    private companion object { const val NOW = 1_800_000_000_000L }
 }
