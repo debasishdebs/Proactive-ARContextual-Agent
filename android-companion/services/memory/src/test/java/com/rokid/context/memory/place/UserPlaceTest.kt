@@ -75,4 +75,58 @@ class UserPlaceTest {
     }
 
     @Test fun thePrefsFileIsNamedPlacePins() { assertEquals("place_pins", UserPinStore.PREFS) }
+
+    // ---- slice 1.4.2: the optional reference Moment link (pin storage is a prefs JSON list, not Room: the "migration" is a new optional key) ----
+
+    @Test fun pinsStoredBeforeTheMomentLinkStillReadAndCarryNoLink() {
+        // exactly the JSON an older build wrote: no "moment" key
+        val id = "user:00000000-0000-0000-0000-0000000000aa"
+        prefs.edit().putString("pins", """[{"id":"$id","name":"Old","kind":"${PlaceKinds.MONUMENT}","lat":7.9,"lon":80.7,"r":60,"parent":null,"note":"n"}]""").commit()
+        val store = UserPinStore(prefs)
+        val p = store.pins().single()
+        assertEquals("Old", p.name); assertNull(p.momentId); assertFalse(store.corrupt)
+        assertTrue(store.write(listOf(p.copy(name = "Renamed")))) // writing back keeps working and adds no key
+        assertFalse("moment" in prefs.getString("pins", "")!!)
+    }
+
+    @Test fun theMomentLinkRoundTripsAndAnUnreadableOneIsNoLinkNotACorruptList() {
+        val store = UserPinStore(prefs); val p = pin().copy(momentId = "0000001f")
+        assertTrue(store.write(listOf(p))); assertEquals("0000001f", store.pins().single().momentId)
+        val id = p.id
+        prefs.edit().putString("pins", """[{"id":"$id","name":"Old","kind":"${PlaceKinds.MONUMENT}","lat":7.9,"lon":80.7,"r":60,"parent":null,"note":"","moment":"not hex"}]""").commit()
+        assertNull(store.pins().single().momentId); assertFalse(store.corrupt)
+        assertFalse(p.copy(momentId = "XYZ").isValid)
+    }
+
+    @Test fun setMomentAndClearMomentsOnlyTouchTheLinkAndFireNoPinChangeListener() {
+        val store = UserPinStore(prefs); val a = pin("A"); val b = pin("B"); assertTrue(store.write(listOf(a, b)))
+        val heard = ArrayList<Set<String>>(); val l: (Set<String>) -> Unit = { heard += it }
+        UserPinStore.addChangeListener(l)
+        try {
+            assertTrue(store.setMoment(a.id, "00000001")); assertTrue(store.setMoment(b.id, "00000002"))
+            assertFalse(store.setMoment("user:00000000-0000-0000-0000-00000000ffff", "00000003")); assertFalse(store.setMoment(a.id, "zz"))
+            assertTrue("a link alone is no edit of the pin", heard.isEmpty())
+            assertEquals(setOf(a.id), store.clearMomentsExcept(setOf("00000002")))
+            assertEquals(listOf(null, "00000002"), store.pins().map { it.momentId }); assertEquals(2, store.pins().size) // the pins stay
+            assertEquals(setOf(b.id), store.clearAllMoments()); assertTrue(store.pins().all { it.momentId == null })
+            assertTrue(store.setMoment(a.id, "00000004")); assertTrue(store.write(listOf(a.copy(momentId = "00000004", name = "A2"), b)))
+            assertEquals("a real edit still notifies", listOf(setOf(a.id)), heard)
+        } finally { UserPinStore.removeChangeListener(l) }
+    }
+
+    @Test fun anUnreadableStoredListIsNeverRewrittenByTheLinkOperations() {
+        prefs.edit().putString("pins", "not json").commit()
+        val store = UserPinStore(prefs)
+        assertFalse(store.setMoment("user:00000000-0000-0000-0000-00000000ffff", "00000001")); assertNull(store.clearMomentsExcept(emptySet())); assertNull(store.clearAllMoments())
+        assertEquals("not json", prefs.getString("pins", null))
+    }
+
+    @Test fun theExportCopyOfThePinsCarriesNoMomentLinkAndTheStoreKeepsIt() {
+        val p = pin().copy(momentId = "0000002a"); val raw = UserPinStore.encode(listOf(p))
+        assertTrue("moment" in raw)
+        val stripped = UserPinStore.withoutLinks(raw)
+        assertFalse("moment" in stripped); assertFalse("0000002a" in stripped)
+        assertNull(UserPinStore.parse(stripped).single().momentId); assertEquals(p.name, UserPinStore.parse(stripped).single().name)
+        assertEquals("not json", UserPinStore.withoutLinks("not json"))
+    }
 }

@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.settings.place
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Arrangement
@@ -46,12 +47,20 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /** The pin dialog: [editingId] null = a new pin at the current position ([parents] are the nearby sites it may hang under), else an edit of that pin. */
-data class PinDialogState(val editingId: String? = null, val parents: List<ParentChoice> = emptyList(), val name: String = "", val kindIndex: Int = 0, val radius: String = UserPlace.DEFAULT_RADIUS_M.toString(), val parentIndex: Int = 0, val note: String = "", val error: String? = null)
+data class PinDialogState(val editingId: String? = null, val parents: List<ParentChoice> = emptyList(), val name: String = "", val kindIndex: Int = 0, val radius: String = UserPlace.DEFAULT_RADIUS_M.toString(), val parentIndex: Int = 0, val note: String = "", val error: String? = null,
+    /** Slice 1.4.2: the reference Moment attached to a NEW pin (or shown on an edit), its thumbnail source, a hint line, and the two steps of "Save without a Moment". */
+    val momentId: String? = null, val moment: MomentChoice? = null, val momentHint: String? = null, val askSkipMoment: Boolean = false, val skipMoment: Boolean = false)
+
+/** A photo Moment as the pin screen shows it: its id (whatever created it), the photo path for the thumbnail and its capture time. */
+data class MomentChoice(val id: String, val path: String, val atMs: Long)
+
+/** The "Pick from recent Moments" list. [pinId] null = for the pin dialog (a new pin), else that existing pin. */
+data class MomentPicker(val pinId: String?, val items: List<MomentChoice>)
 
 data class PlaceGuideUiState(
     val enabled: Boolean = false, val cardSide: com.rokid.context.core.model.PlaceSide = com.rokid.context.core.model.PlaceSide.CENTRE, val developerMode: Boolean = false, val seeding: Boolean = false, val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
     val stats: PackStats? = null, val budgetMb: Int = 50, val confirmClear: Boolean = false,
-    val pins: List<UserPlace> = emptyList(), val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
+    val pins: List<UserPlace> = emptyList(), val moments: Map<String, MomentChoice> = emptyMap(), val momentPicker: MomentPicker? = null, val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
 )
 
 /**
@@ -88,6 +97,14 @@ interface PlaceGuideControl {
     suspend fun clearFetched(): Int = 0
     /** User pins; null = not available on this build. */
     val pinning: PlacePinning? get() = null
+    /** Slice 1.4.2: the newest photo Moments, newest first, at most [limit] (no text). Empty = none (or not available on this build). */
+    suspend fun recentMoments(limit: Int): List<MomentChoice> = emptyList()
+    /** The Moments among [ids] that still have a photo (a forgotten one is missing from the map). */
+    suspend fun momentsOf(ids: List<String>): Map<String, MomentChoice> = emptyMap()
+    /** Attaches (or with null removes) the Moment link of an existing pin. */
+    suspend fun setMoment(pinId: String, momentId: String?): Boolean = false
+    /** Clears the links of Moments that were forgotten (read-time repair; the Forget listener does it at the time). */
+    suspend fun sweepMoments() {}
 }
 
 object PlaceGuideModel {
@@ -140,6 +157,23 @@ object PlaceGuideModel {
         PinRefusal.NOT_STORED -> "The pin could not be saved."
     }
 
+    /** "Attach latest Moment" takes the newest photo Moment only when it is at most this old. */
+    const val LATEST_WINDOW_MS = 30 * 60_000L
+    const val PICK_LIMIT = 20
+    const val NO_MOMENT_YET = "No Moment yet: capture one with the glasses first."
+    const val NEEDS_MOMENT = "Needs a Moment"
+    const val NO_MOMENT_NOTE = "No reference Moment. The pin still works by location."
+    const val ATTACH_FIRST = "Attach a Moment first (the latest one, or pick from recent Moments), so you can check the capture later."
+    const val MOMENT_NOTE = "A Moment is only a reference to check what was captured here: it does not change which place is named. If you Forget that Moment the link goes and the pin stays."
+
+    /** The newest Moment of [recent] (newest first) that is at most [LATEST_WINDOW_MS] old at [now]; null = none. */
+    fun latestWithin(recent: List<MomentChoice>, now: Long): MomentChoice? = recent.firstOrNull { now - it.atMs <= LATEST_WINDOW_MS }
+
+    fun momentTime(atMs: Long): String = java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault()).format(java.util.Date(atMs))
+
+    /** A pin shows the "Needs a Moment" badge when it has no link, or its Moment is no longer there (Forgotten). */
+    fun needsMoment(p: UserPlace, moments: Map<String, MomentChoice>): Boolean = p.momentId == null || p.momentId !in moments
+
     val SIDE_LABELS = listOf("Left", "Centre", "Right")
     const val SIDE_NOTE = "Where the card sits on the glasses. The visible area of the glasses was not measured: the margins are cautious and the side must be tuned while worn."
 
@@ -153,7 +187,7 @@ object PlaceGuideModel {
     }
 }
 
-class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false) : ViewModel() {
+class PlaceGuideViewModel(private val control: PlaceGuideControl, private val work: CoroutineDispatcher = Dispatchers.IO, developerMode: Boolean = false, private val now: () -> Long = System::currentTimeMillis) : ViewModel() {
     private val _state = MutableStateFlow(PlaceGuideUiState(enabled = control.enabled, cardSide = control.cardSide, developerMode = developerMode, budgetMb = control.budgetMb))
     val state: StateFlow<PlaceGuideUiState> = _state
 
@@ -241,7 +275,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 
     fun editPin(id: String) {
         val p = control.pinning?.pins()?.firstOrNull { it.id == id } ?: return
-        _state.update { it.copy(pinDialog = PinDialogState(editingId = id, name = p.name, kindIndex = PlacePinning.KINDS.indexOf(p.kind).coerceAtLeast(0), radius = p.radiusM.toString(), note = p.note), pinMessage = null) }
+        _state.update { it.copy(pinDialog = PinDialogState(editingId = id, name = p.name, kindIndex = PlacePinning.KINDS.indexOf(p.kind).coerceAtLeast(0), radius = p.radiusM.toString(), note = p.note, momentId = p.momentId, moment = p.momentId?.let { m -> it.moments[m] }), pinMessage = null) }
     }
 
     fun updatePinDialog(f: (PinDialogState) -> PinDialogState) { _state.update { s -> s.copy(pinDialog = s.pinDialog?.let(f)?.copy(error = null)) } }
@@ -255,14 +289,16 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         val d = _state.value.pinDialog ?: return
         val radius = d.radius.trim().toIntOrNull()
         if (radius == null || d.name.isBlank()) { _state.update { it.copy(pinDialog = d.copy(error = PlaceGuideModel.refusalText(PinRefusal.INVALID))) }; return }
+        // Slice 1.4.2: a NEW pin needs a Moment unless the user explicitly chose "Save without a Moment" (an edit of an existing pin never blocks)
+        if (d.editingId == null && d.momentId == null && !d.skipMoment) { _state.update { it.copy(pinDialog = d.copy(error = PlaceGuideModel.ATTACH_FIRST)) }; return }
         val kind = PlacePinning.KINDS.getOrElse(d.kindIndex) { PlacePinning.KINDS.first() }
         viewModelScope.launch(work) {
             val res = if (d.editingId != null) {
                 val old = pinning.pins().firstOrNull { it.id == d.editingId }
-                pinning.edit(d.editingId, PinForm(d.name, kind, radius, old?.parentId, d.note))
-            } else pinning.create(PinForm(d.name, kind, radius, d.parents.getOrNull(d.parentIndex - 1)?.id, d.note))
+                pinning.edit(d.editingId, PinForm(d.name, kind, radius, old?.parentId, d.note, d.momentId))
+            } else pinning.create(PinForm(d.name, kind, radius, d.parents.getOrNull(d.parentIndex - 1)?.id, d.note, d.momentId))
             when (res) {
-                is PinResult.Saved -> _state.update { it.copy(pinDialog = null, pins = pinning.pins(), pinMessage = "Saved.", pinMessageIsError = false) }
+                is PinResult.Saved -> _state.update { it.copy(pinDialog = null, pins = pinning.pins(), pinMessage = "Saved.", pinMessageIsError = false) }.also { refreshSummary() }
                 is PinResult.Refused -> _state.update { s ->
                     // a refused zone or expired position ends the dialog (the position is gone); a bad form stays open to fix
                     if (res.why == PinRefusal.INVALID || res.why == PinRefusal.NOT_STORED) s.copy(pinDialog = d.copy(error = PlaceGuideModel.refusalText(res.why)))
@@ -282,13 +318,70 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         }
     }
 
-    private fun refreshSummary() {
+    // ---- slice 1.4.2: the pin's reference Moment ----
+
+    /** "Attach latest Moment": the newest photo Moment, if it is at most 30 minutes old. [pinId] null = the open pin dialog (a new pin). */
+    fun attachLatest(pinId: String?) {
         viewModelScope.launch(work) {
-            val s = runCatching { control.summary() }.getOrDefault("")
-            val st = runCatching { control.stats() }.getOrNull()
-            val pins = runCatching { control.pinning?.pins() }.getOrNull().orEmpty()
-            _state.update { it.copy(packSummary = s, stats = st, pins = pins) }
+            val recent = runCatching { control.recentMoments(PlaceGuideModel.PICK_LIMIT) }.getOrDefault(emptyList())
+            val m = PlaceGuideModel.latestWithin(recent, now())
+            if (m != null) applyMoment(pinId, m)
+            else momentHint(pinId, if (recent.isEmpty()) PlaceGuideModel.NO_MOMENT_YET else "No Moment in the last 30 minutes. Pick from recent Moments.")
         }
+    }
+
+    /** "Pick from recent Moments": opens the list of the last 20 photo Moments (thumbnail and time). */
+    fun openMomentPicker(pinId: String?) {
+        viewModelScope.launch(work) {
+            val recent = runCatching { control.recentMoments(PlaceGuideModel.PICK_LIMIT) }.getOrDefault(emptyList())
+            if (recent.isEmpty()) momentHint(pinId, PlaceGuideModel.NO_MOMENT_YET) else _state.update { it.copy(momentPicker = MomentPicker(pinId, recent)) }
+        }
+    }
+
+    fun closeMomentPicker() { _state.update { it.copy(momentPicker = null) } }
+
+    fun pickMoment(m: MomentChoice) {
+        val target = _state.value.momentPicker ?: return
+        _state.update { it.copy(momentPicker = null) }
+        viewModelScope.launch(work) { applyMoment(target.pinId, m) }
+    }
+
+    /** "Remove link": the pin stays, it only has no reference Moment any more. */
+    fun removeMoment(pinId: String?) {
+        if (pinId == null) { _state.update { s -> s.copy(pinDialog = s.pinDialog?.copy(momentId = null, moment = null, momentHint = null)) }; return }
+        viewModelScope.launch(work) {
+            val ok = runCatching { control.setMoment(pinId, null) }.getOrDefault(false)
+            _state.update { it.copy(pinMessage = if (ok) "Moment link removed." else "The link could not be removed.", pinMessageIsError = !ok) }
+            refreshSummary()
+        }
+    }
+
+    /** "Save without a Moment": asks first (a confirm dialog), then saves the new pin flagged "No reference Moment". */
+    fun askSkipMoment() { _state.update { s -> s.copy(pinDialog = s.pinDialog?.copy(askSkipMoment = true)) } }
+    fun cancelSkipMoment() { _state.update { s -> s.copy(pinDialog = s.pinDialog?.copy(askSkipMoment = false)) } }
+    fun confirmSkipMoment() { _state.update { s -> s.copy(pinDialog = s.pinDialog?.copy(askSkipMoment = false, skipMoment = true)) }; savePin() }
+
+    private fun momentHint(pinId: String?, text: String) {
+        if (pinId == null) _state.update { s -> s.copy(pinDialog = s.pinDialog?.copy(momentHint = text)) }
+        else _state.update { it.copy(pinMessage = text, pinMessageIsError = true) }
+    }
+
+    private suspend fun applyMoment(pinId: String?, m: MomentChoice) {
+        if (pinId == null) { _state.update { s -> s.copy(pinDialog = s.pinDialog?.copy(momentId = m.id, moment = m, momentHint = null, error = null)) }; return }
+        val ok = runCatching { control.setMoment(pinId, m.id) }.getOrDefault(false)
+        _state.update { it.copy(pinMessage = if (ok) "Moment attached." else "That Moment is gone: pick another.", pinMessageIsError = !ok) }
+        refreshSummaryNow()
+    }
+
+    private fun refreshSummary() { viewModelScope.launch(work) { refreshSummaryNow() } }
+
+    private suspend fun refreshSummaryNow() {
+        val s = runCatching { control.summary() }.getOrDefault("")
+        val st = runCatching { control.stats() }.getOrNull()
+        runCatching { control.sweepMoments() }
+        val pins = runCatching { control.pinning?.pins() }.getOrNull().orEmpty()
+        val moments = runCatching { control.momentsOf(pins.mapNotNull { it.momentId }) }.getOrDefault(emptyMap())
+        _state.update { it.copy(packSummary = s, stats = st, pins = pins, moments = moments) }
     }
 }
 
@@ -298,7 +391,7 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     val state by vm.state.collectAsStateWithLifecycle()
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment))
 }
 
 /** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */
@@ -310,6 +403,8 @@ class PlaceGuideActions(
     val updatePinDialog: ((PinDialogState) -> PinDialogState) -> Unit = {}, val savePin: () -> Unit = {}, val cancelPin: () -> Unit = {},
     val seedPreset: (SeedPreset) -> Unit = {},
     val setCardSide: (com.rokid.context.core.model.PlaceSide) -> Unit = {},
+    val attachLatest: (String?) -> Unit = {}, val openMomentPicker: (String?) -> Unit = {}, val closeMomentPicker: () -> Unit = {}, val pickMoment: (MomentChoice) -> Unit = {},
+    val removeMoment: (String?) -> Unit = {}, val askSkipMoment: () -> Unit = {}, val cancelSkipMoment: () -> Unit = {}, val confirmSkipMoment: () -> Unit = {},
 )
 
 @Composable
@@ -357,6 +452,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                     Text(p.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("pin_name_${p.id}"))
                     NoticeText("${PlaceGuideModel.kindLabel(p.kind)}, ${p.radiusM} m" + if (p.parentId != null) ", part of a site" else "", tag = "pin_detail_${p.id}")
                     if (p.note.isNotEmpty()) NoticeText("Your note: ${p.note}", tag = "pin_note_${p.id}")
+                    MomentSection(p.id, state.moments[p.momentId], PlaceGuideModel.needsMoment(p, state.moments), on)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         SecondaryAction("Edit", { on.editPin(p.id) }, tag = "pin_edit_${p.id}")
                         SecondaryAction("Delete", { on.deletePin(p.id) }, tag = "pin_delete_${p.id}")
@@ -395,6 +491,48 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
         dismissButton = { TextButton(on.cancelClear, Modifier.testTag("pack_clear_cancel")) { Text("Keep") } },
     )
     state.pinDialog?.let { d -> PinDialog(d, on) }
+    state.momentPicker?.let { pk -> MomentPickerDialog(pk, on) }
+}
+
+/** The pin's reference Moment: its thumbnail and time, or the "Needs a Moment" badge, and the attach / pick / remove actions. [pinId] null = inside the pin dialog of a new pin. */
+@Composable
+private fun MomentSection(pinId: String?, moment: MomentChoice?, needs: Boolean, on: PlaceGuideActions, hint: String? = null) {
+    val key = pinId ?: "new"
+    androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (moment != null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            com.rokid.context.core.ui.components.FrameThumb(moment.path, Modifier.testTag("pin_moment_thumb_$key"), size = 56.dp)
+            NoticeText("Moment ${PlaceGuideModel.momentTime(moment.atMs)}", tag = "pin_moment_time_$key")
+        } else if (needs) {
+            NoticeText(if (pinId == null) PlaceGuideModel.NO_MOMENT_NOTE else PlaceGuideModel.NEEDS_MOMENT, error = pinId != null, tag = "pin_moment_badge_$key")
+        }
+        hint?.let { NoticeText(it, tag = "pin_moment_hint_$key") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SecondaryAction("Attach latest Moment", { on.attachLatest(pinId) }, tag = "pin_moment_latest_$key")
+            SecondaryAction("Pick from recent Moments", { on.openMomentPicker(pinId) }, tag = "pin_moment_pick_$key")
+        }
+        if (moment != null) SecondaryAction("Remove link", { on.removeMoment(pinId) }, tag = "pin_moment_remove_$key")
+    }
+}
+
+@Composable
+private fun MomentPickerDialog(pk: MomentPicker, on: PlaceGuideActions) {
+    AlertDialog(
+        onDismissRequest = on.closeMomentPicker, modifier = Modifier.testTag("pin_moment_picker"),
+        title = { Text("Pick a Moment") },
+        text = {
+            androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(pk.items.size) { i ->
+                    val m = pk.items[i]
+                    Row(Modifier.fillMaxWidth().clickable { on.pickMoment(m) }.testTag("pin_moment_item_${m.id}"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        com.rokid.context.core.ui.components.FrameThumb(m.path, size = 56.dp)
+                        Text(PlaceGuideModel.momentTime(m.atMs))
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(on.closeMomentPicker, Modifier.testTag("pin_moment_picker_close")) { Text("Close") } },
+    )
 }
 
 @Composable
@@ -409,11 +547,27 @@ private fun PinDialog(d: PinDialogState, on: PlaceGuideActions) {
                 TextFieldRow("Radius (metres, 10 to 1500)", d.radius, { v -> on.updatePinDialog { it.copy(radius = v) } }, tag = "pin_f_radius", number = true)
                 if (d.editingId == null) ChoiceRow("Part of", listOf("No site") + d.parents.map { it.name }, d.parentIndex, { i -> on.updatePinDialog { it.copy(parentIndex = i) } }, tag = "pin_f_parent")
                 TextFieldRow("Your note (up to 140 characters, shown on the card)", d.note, { v -> on.updatePinDialog { it.copy(note = v.take(UserPlace.NOTE_MAX)) } }, tag = "pin_f_note", singleLine = false)
+                if (d.editingId == null) {
+                    NoticeText(PlaceGuideModel.MOMENT_NOTE, tag = "pin_moment_note")
+                    MomentSection(null, d.moment, d.momentId == null, on, d.momentHint)
+                }
                 d.error?.let { NoticeText(it, error = true, tag = "pin_f_error") }
             }
         },
         confirmButton = { TextButton(on.savePin, Modifier.testTag("pin_f_save")) { Text("Save") } },
-        dismissButton = { TextButton(on.cancelPin, Modifier.testTag("pin_f_cancel")) { Text("Cancel") } },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (d.editingId == null && d.momentId == null) TextButton(on.askSkipMoment, Modifier.testTag("pin_f_skip_moment")) { Text("Save without a Moment") }
+                TextButton(on.cancelPin, Modifier.testTag("pin_f_cancel")) { Text("Cancel") }
+            }
+        },
+    )
+    if (d.askSkipMoment) AlertDialog(
+        onDismissRequest = on.cancelSkipMoment, modifier = Modifier.testTag("pin_skip_dialog"),
+        title = { Text("Save without a Moment?") },
+        text = { Text("The pin will be flagged \"Needs a Moment\". It still works by location, and you can attach a Moment later.") },
+        confirmButton = { TextButton(on.confirmSkipMoment, Modifier.testTag("pin_skip_confirm")) { Text("Save without") } },
+        dismissButton = { TextButton(on.cancelSkipMoment, Modifier.testTag("pin_skip_cancel")) { Text("Back") } },
     )
 }
 

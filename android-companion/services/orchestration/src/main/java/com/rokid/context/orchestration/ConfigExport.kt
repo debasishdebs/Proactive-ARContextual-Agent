@@ -73,7 +73,9 @@ object ConfigExport {
 
     private fun prefsFile(context: Context, name: String): JsonObject {
         val all = context.getSharedPreferences(name, Context.MODE_PRIVATE).all
-        return JsonObject(all.filterKeys { !SECRET_NAME.containsMatchIn(it) }.toSortedMap().mapValues { (_, v) -> value(v) })
+        // Slice 1.4.2: the pins' Moment links name photos of THIS phone only: never exported (a link means nothing, and nothing private, on another device).
+        val pins = if (name == "place_pins") all["pins"] as? String else null
+        return JsonObject(all.filterKeys { !SECRET_NAME.containsMatchIn(it) && !(name == "place_pins" && it == com.rokid.context.memory.place.UserPinStore.ARMED_KEY) }.toSortedMap().mapValues { (k, v) -> if (pins != null && k == "pins") value(com.rokid.context.memory.place.UserPinStore.withoutLinks(pins)) else value(v) })
     }
 
     private fun value(v: Any?): JsonElement = when (v) {

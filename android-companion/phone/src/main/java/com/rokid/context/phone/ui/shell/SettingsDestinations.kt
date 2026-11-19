@@ -294,7 +294,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_MEMORY) {
         val vm = viewModel {
-            MemorySettingsViewModel({ s.memorySettings }, s.encryption, s.usedBytes, s.wipe, s.export, s.share, deps.memory.memoryEdits.needsReviewCount())
+            MemorySettingsViewModel({ s.memorySettings }, s.encryption, s.usedBytes, s.wipe, s.export, s.share, deps.memory.memoryEdits.needsReviewCount(), pinsGoing = { com.rokid.context.work.frames.place.PinMomentLinks.pinsGoing(app).count })
         }
         val state by vm.state.collectAsStateWithLifecycle()
         val watchList by s.watchList.items.collectAsStateWithLifecycle()

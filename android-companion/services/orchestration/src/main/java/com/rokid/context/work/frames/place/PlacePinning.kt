@@ -36,7 +36,7 @@ sealed interface PinResult {
 data class ParentChoice(val id: String, val name: String, val kind: String)
 
 /** What the user typed. */
-data class PinForm(val name: String, val kind: String, val radiusM: Int = UserPlace.DEFAULT_RADIUS_M, val parentId: String? = null, val note: String = "")
+data class PinForm(val name: String, val kind: String, val radiusM: Int = UserPlace.DEFAULT_RADIUS_M, val parentId: String? = null, val note: String = "", /** Slice 1.4.2: the reference Moment chosen in the form (null = none). Re-checked against the live Moments at save. */ val momentId: String? = null)
 
 /**
  * User-pinned places (Place Guide v2). "Pin a place here" takes the current position ONCE, from a fresh fix only ([fix] returns null for a stale or coarse one), and only when no pause zone is
@@ -60,6 +60,8 @@ class PlacePinning(
     private val elapsed: () -> Long,
     private val newId: () -> String = UserPlace::newId,
     private val log: (String) -> Unit = {},
+    /** Slice 1.4.2: whether a Moment id still has its photo (not forgotten). A link to a gone Moment is never stored. Tests default to "alive". */
+    private val momentAlive: suspend (String) -> Boolean = { true },
     /** Runs [run] after [delayMs]; returns the cancel. Replaced by a fake in tests. */
     private val schedule: (delayMs: Long, run: () -> Unit) -> () -> Unit = DefaultTimer::schedule,
 ) {
@@ -95,12 +97,13 @@ class PlacePinning(
         drop()
         if (elapsed() - d.at > DRAFT_TTL_MS) return PinResult.Refused(PinRefusal.DRAFT_EXPIRED)
         if (zoneRefuses(d.lat, d.lon, d.accuracyM)) { log("pin refused zone"); return PinResult.Refused(PinRefusal.ZONE) }
-        val pin = UserPlace(newId(), UserPlace.cleanName(form.name), form.kind, d.lat, d.lon, form.radiusM, form.parentId?.takeIf { it.isNotBlank() }, UserPlace.cleanNote(form.note))
+        val pin = UserPlace(newId(), UserPlace.cleanName(form.name), form.kind, d.lat, d.lon, form.radiusM, form.parentId?.takeIf { it.isNotBlank() }, UserPlace.cleanNote(form.note), liveMoment(form.momentId))
         return writeLock.withLock {
             val now = load()
             if (!pin.isValid || now.size >= com.rokid.context.memory.place.UserPinStore.MAX_PINS) return@withLock PinResult.Refused(PinRefusal.INVALID)
             if (!save(now + pin)) return@withLock PinResult.Refused(PinRefusal.NOT_STORED)
             log("pin created count=${now.size + 1}")
+            if (pin.momentId != null) log("pin moment linked")
             PinResult.Saved(pin)
         }
     }
@@ -118,11 +121,25 @@ class PlacePinning(
     suspend fun edit(id: String, form: PinForm): PinResult = writeLock.withLock {
         val now = load()
         val old = now.firstOrNull { it.id == id } ?: return@withLock PinResult.Refused(PinRefusal.INVALID)
-        val pin = old.copy(name = UserPlace.cleanName(form.name), kind = form.kind, radiusM = form.radiusM, parentId = form.parentId?.takeIf { it.isNotBlank() }, note = UserPlace.cleanNote(form.note))
+        val pin = old.copy(name = UserPlace.cleanName(form.name), kind = form.kind, radiusM = form.radiusM, parentId = form.parentId?.takeIf { it.isNotBlank() }, note = UserPlace.cleanNote(form.note), momentId = if (form.momentId == null) old.momentId else liveMoment(form.momentId) ?: old.momentId) // an edit never drops the link (Remove link is setMoment); a link to a gone Moment is not taken over
         if (!pin.isValid) return@withLock PinResult.Refused(PinRefusal.INVALID)
         if (!save(now.map { if (it.id == id) pin else it })) return@withLock PinResult.Refused(PinRefusal.NOT_STORED)
         log("pin edited")
+        if (pin.momentId != old.momentId) log(if (pin.momentId != null) "pin moment linked" else "pin moment unlinked by user")
         PinResult.Saved(pin)
+    }
+
+    private suspend fun liveMoment(id: String?): String? = id?.takeIf { com.rokid.context.memory.moment.MomentId.parse(it) != null && try { momentAlive(it) } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { false } }
+
+    /** Slice 1.4.2: attaches [momentId] to the pin (null = "Remove link"). Under the pin lock; false = unknown pin, a Moment that is gone, or not stored. Logs the event only (no ids). */
+    suspend fun setMoment(id: String, momentId: String?): Boolean = writeLock.withLock {
+        val now = load()
+        val old = now.firstOrNull { it.id == id } ?: return@withLock false
+        val m = if (momentId == null) null else liveMoment(momentId) ?: return@withLock false
+        if (old.momentId == m) return@withLock true
+        if (!save(now.map { if (it.id == id) it.copy(momentId = m) else it })) return@withLock false
+        if (m != null) log("pin moment linked") else log("pin moment unlinked by user")
+        true
     }
 
     suspend fun delete(id: String): Boolean = writeLock.withLock {
@@ -148,6 +165,8 @@ class PlacePinning(
     companion object {
         /** The ONE lock of every read-modify-persist of the pin list in this process (several instances may exist: the settings screen builds a control per visit). */
         private val writeLock = Mutex()
+        /** Runs [block] under that same lock: the Moment link (set, cleared by the user or by Forget) is a read-modify-persist of the same list and must not interleave with [edit] or [create]. */
+        suspend fun <T> underPinLock(block: suspend () -> T): T = writeLock.withLock { block() }
         const val MAX_FIX_AGE_MS = 60_000L
         const val MAX_FIX_ACCURACY_M = 50f
         const val DRAFT_TTL_MS = 3 * 60_000L

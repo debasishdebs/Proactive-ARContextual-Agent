@@ -88,6 +88,22 @@ class ScopedForget(
     private suspend fun secondsOfFrames(frameIds: List<String>): List<Long> =
         frameIds.chunked(500).flatMap { db.momentDao().captureTimes(it) }.map { Math.floorDiv(it.ms, 1000L) }.filter { it in 0..MomentId.MAX_SECOND }.distinct().sorted()
 
+    /**
+     * Slice 1.4.2: which of the Moment ids [ids] this Forget would leave without a photo (so a pin that references one goes with it). Spans (Moment / Scene scope): every second wholly inside them; a single photo:
+     * the second of that photo when no other photo of it stays. A fact Forget removes no photo. Read only; the same rule the cascade applies after the Forget (no stored photo of the second left).
+     */
+    suspend fun momentsReached(plan: Plan, ids: Collection<String>): Set<String> {
+        if (plan.isEmpty) return emptySet()
+        val md = db.momentDao()
+        val frameTs = plan.frameId?.let { md.frameTs(it) }
+        return ids.filter { id ->
+            val sec = com.rokid.context.memory.moment.MomentId.parse(id) ?: return@filter false
+            val a = sec * 1000; val b = a + 999
+            (plan.spans.isNotEmpty() && plan.spans.any { a >= it.first && b <= it.last }) ||
+                (frameTs != null && frameTs in a..b && md.framesBetweenExcept(a, b, plan.frameId!!) == 0)
+        }.toSet()
+    }
+
     /** The numbers of the confirm dialog: exactly what [forget] removes for spans (the same discovery); for a single photo or fact, what its cascade and the radius path reach. */
     suspend fun preview(plan: Plan): MomentForget.Counts {
         if (plan.effective != ForgetScope.PHOTO) requireExperimental() // a plan made earlier is not previewed once Developer mode is off

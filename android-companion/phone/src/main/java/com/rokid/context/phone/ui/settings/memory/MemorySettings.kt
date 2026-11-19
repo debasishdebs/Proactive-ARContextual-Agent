@@ -54,6 +54,8 @@ data class MemorySettingsUiState(
     /** 0 = none, 1 = first "Delete all?" dialog, 2 = second, final confirm. */
     val confirmStep: Int = 0,
     val notice: String? = null,
+    /** Slice 1.4.2: pinned places with a reference Moment: Delete all deletes them too (pins without one stay). Counted when the dialog opens. */
+    val pinsGoing: Int = 0,
 )
 
 class MemorySettingsViewModel(
@@ -67,6 +69,8 @@ class MemorySettingsViewModel(
     reviewCount: Flow<Int>,
     /** Prefs reads/commits, file sizes, the wipe and the export run here, never on Main. */
     private val work: CoroutineDispatcher = Dispatchers.IO,
+    /** Slice 1.4.2: how many pins reference a Moment (they go with Delete all). */
+    private val pinsGoing: suspend () -> Int = { 0 },
 ) : ViewModel() {
     private val _state = MutableStateFlow(MemorySettingsUiState())
     val state: StateFlow<MemorySettingsUiState> = _state.asStateFlow()
@@ -100,7 +104,10 @@ class MemorySettingsViewModel(
         _state.update { it.copy(notice = "Export ready") }
     }
 
-    fun askDeleteAll() = _state.update { it.copy(confirmStep = 1, notice = null) }
+    fun askDeleteAll() {
+        _state.update { it.copy(confirmStep = 1, notice = null, pinsGoing = 0) }
+        viewModelScope.launch { val n = runCatching { withContext(work) { pinsGoing() } }.getOrDefault(0); _state.update { it.copy(pinsGoing = n) } }
+    }
     fun cancelDeleteAll() = _state.update { it.copy(confirmStep = 0) }
     fun confirmDeleteAll() {
         when (_state.value.confirmStep) {
@@ -262,7 +269,7 @@ fun MemorySettingsScreen(
         AlertDialog(
             onDismissRequest = onCancelDeleteAll,
             title = { Text(if (state.confirmStep == 1) "Delete all memories?" else "Are you sure?") },
-            text = { Text(if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources and \"Send matching photos with questions\" also turn off, and your My car list is cleared." else "This can't be undone. Delete every memory, photo and answer?") },
+            text = { Text(if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources and \"Send matching photos with questions\" also turn off, and your My car list is cleared." else "This can't be undone. Delete every memory, photo and answer?") + MemorySettingsCopy.pinsLine(state.pinsGoing) },
             confirmButton = { TextButton(onClick = onConfirmDeleteAll, modifier = Modifier.testTag("delete_confirm")) { Text(if (state.confirmStep == 1) "Continue" else "Delete everything") } },
             dismissButton = { TextButton(onClick = onCancelDeleteAll, modifier = Modifier.testTag("delete_cancel")) { Text("Cancel") } },
         )
@@ -278,4 +285,10 @@ fun WatchListRow(items: List<String>, onSave: (List<String>) -> Unit, onReset: (
     OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.testTag("watch_list_field"))
     SecondaryAction("Save", { onSave(text.split(',')) }, tag = "watch_list_save")
     SecondaryAction("Reset to defaults", onReset, tag = "watch_list_reset")
+}
+
+/** Fixed copy of the Delete all dialog. */
+object MemorySettingsCopy {
+    /** Slice 1.4.2: a pin whose reference Moment is wiped is wiped too; the dialog names how many. Empty when none. */
+    fun pinsLine(pins: Int): String = if (pins <= 0) "" else " This also deletes $pins pinned ${if (pins == 1) "place" else "places"} that ${if (pins == 1) "uses" else "use"} a Moment as a reference. Pins without a Moment stay."
 }

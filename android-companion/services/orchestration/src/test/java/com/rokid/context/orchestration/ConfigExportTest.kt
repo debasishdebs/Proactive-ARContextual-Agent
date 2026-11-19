@@ -120,6 +120,17 @@ class ConfigExportTest {
         prefs(com.rokid.context.memory.place.UserPinStore.PREFS).edit().clear().commit(); prefs("place_guide").edit().clear().commit()
     }
 
+    /** Slice 1.4.2: a pin's reference Moment names a photo of THIS phone: the settings export carries the pin but never the link. */
+    @Test fun pinnedPlacesAreExportedWithoutTheirMomentLink() = runBlocking<Unit> {
+        val pin = com.rokid.context.memory.place.UserPlace(com.rokid.context.memory.place.UserPlace.newId(), "Mirror Wall", com.rokid.context.memory.place.PlaceKinds.ARCHAEOLOGICAL_SITE, 7.957, 80.759, 60, null, "Polished wall.", "0000abcd")
+        val store = com.rokid.context.memory.place.UserPinStore(prefs(com.rokid.context.memory.place.UserPinStore.PREFS))
+        assertTrue(store.write(listOf(pin)))
+        val out = Json.parseToJsonElement(ConfigExport.write(ctx, ai, nowMs = 9).readText()).jsonObject["preferences"]!!.jsonObject["place_pins"].toString()
+        assertTrue("Mirror Wall" in out); assertFalse("0000abcd" in out); assertFalse("moment" in out)
+        assertEquals("the phone's own list keeps the link", "0000abcd", store.pins().single().momentId)
+        prefs(com.rokid.context.memory.place.UserPinStore.PREFS).edit().clear().commit()
+    }
+
     /** Wave B: the context hub's state (my-car addresses, the LiveFit digest) never enters the settings export. */
     @Test fun ctxHubStateIsNotExported() {
         assertFalse("ctx_hub_state" in ConfigExport.PREFS_FILES)

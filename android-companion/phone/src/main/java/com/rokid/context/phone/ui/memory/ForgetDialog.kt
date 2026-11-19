@@ -22,6 +22,7 @@ fun ForgetDialog(state: MemoryDetailUiState, onConfirm: () -> Unit, onDismiss: (
                     state.forgetPreview?.let { p ->
                         Text(ForgetScopeCopy.dialogScope(p.effective), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                         if (!p.tooLarge) Text(ForgetScopeCopy.counts(p.photos, p.memories, p.marks, p.moments, p.scenesRemoved, p.scenesShrunk))
+                        if (!p.tooLarge && p.pins > 0) Text(ForgetScopeCopy.pinsLine(p.pins, p.pinNames), fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                         if (!p.tooLarge && p.outside > 0) Text(ForgetScopeCopy.outsideLine(p.outside))
                         if (!p.tooLarge && p.peerResults > 0) Text(ForgetScopeCopy.peerResultsLine(p.peerResults))
                         if (!p.tooLarge && p.needsAck) {
@@ -38,7 +39,7 @@ fun ForgetDialog(state: MemoryDetailUiState, onConfirm: () -> Unit, onDismiss: (
                     if (state.forgetPreviewFailed) Text(ForgetScopeCopy.COUNTS_FAILED)
                 }
             },
-            confirmButton = { TextButton(onClick = onConfirm, enabled = !state.forgetting && !state.forgetPreviewing && state.forgetConfirmable) { Text(ForgetCopy.CONFIRM) } },
+            confirmButton = { TextButton(onClick = onConfirm, enabled = !state.forgetting && !state.forgetPreviewing && state.forgetConfirmable) { Text(if (state.forgetPreview?.pins?.let { it > 0 } == true) ForgetCopy.CONFIRM_WITH_PINS else ForgetCopy.CONFIRM) } },
             dismissButton = { TextButton(onClick = onDismiss) { Text(ForgetCopy.CANCEL) } },
         )
     }
