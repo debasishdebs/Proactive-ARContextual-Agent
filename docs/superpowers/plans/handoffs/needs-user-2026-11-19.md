@@ -32,3 +32,12 @@ Everything below was NOT done because it needs the user, the real devices, or a 
 - If I add the same check to NightIndexWorker: strict privacy (no upload while you are in or near a zone) BUT if home is a pause zone, the nightly indexing would never run while charging at home, and would not run in a process where the hub never started. If I leave it: photos captured outside a zone can be described (uploaded) later while you are inside a zone (e.g. at night at home).
 - Options: (a) keep as is (no zone check on the night job); (b) fence it like the sweep (strict; likely stops indexing at home); (c) fence it but only block while a zone is INSIDE/APPROACH is judged (not for cold start), i.e. allow when the hub has not run. Default until you rule: (a), unchanged behaviour.
 - Also noted: the suspect sweep (marked suspects, Diagnostics) now runs only on nights the hub is up and has judged you outside every zone; removals needing no model call still run every night.
+
+## H. v2.0 release: the steps only you can do (device-free prep is finished: docs/superpowers/plans/2026-11-19-path-to-v2.0.md)
+Done and verified WITHOUT devices: Nexus code T1-T8 reviewed (Codex v2 r6 READY); bridge release build, signing form and trust decision on the emulator with throwaway keys (reviews/2026-11/nexus-bridge-release-smoke-2026-11-19.md); CI signing form rehearsed; install/uninstall procedure and release-notes draft written.
+Left, in order:
+1. [ ] S2 half-day with the real phone + glasses (nexus-device-checklist.md steps 4-8): do PCA's link and the Nexus hub link coexist? Option B is shelved, so a failed S2 blocks 1.5 to 2.0 (decide then).
+2. [ ] S3 (speech quality, battery, heat; steps 12-14), cards rendering on the glasses (steps 9-11), skills (step 15).
+3. [ ] After Sri Lanka: create the REAL signing key + lineage (docs: release/README.md, key-rotation-rehearsal), put its digest in release/signer-sha256.txt (the committed pin is a placeholder: CI fails on it on purpose) and in PcaSignerTrust.PINNED (empty today), create the GitHub Environment `release` with required reviewers and its secrets.
+4. [ ] Bump versions at release time (phone/glasses 1.0.0, bridge 2.0.0-dev) and run the release workflow manually with with_bridge=true (a tag push never builds the bridge).
+5. [ ] Publish to GitHub only after steps 1-4 and the device checklist (nexus-device-checklist.md step 16).
