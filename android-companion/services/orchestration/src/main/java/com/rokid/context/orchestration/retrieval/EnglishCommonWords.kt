@@ -18,7 +18,7 @@ pass past pay pen people pick place plan plane plate play please pocket pot put 
 send sent set seven shall she shelf shop short should show shut sit six sleep slow small so some soon sorry speak stay still stop store street such sure table take taken talk tall tea tell tells ten
 than thank that the their them then there these they thing think third this those three through time to today together told too took top town train travel tree trip true try turn two under until up
 upon us use used very wait walk want was wash watch water way we wear week well went were what when where which while white who whom whose why will window wish with without woman won work would
-write wrong yes yet you your aata aate aati ata tala
+write wrong yes yet you your aata aate aati ata tala khanna allu
 """
     val WORDS: Set<String> by lazy { RAW.split(Regex("\\s+")).filter { it.isNotEmpty() }.toSet() }
 

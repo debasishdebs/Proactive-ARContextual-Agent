@@ -34,7 +34,12 @@ class IndicLexiconTest {
     @Test fun everyKeyAndItsFoldedFormIsNotOnTheStopListAndEveryStopWordIsSilent() {
         // a stop word is never a key (else real Hinglish would be blocked), exact or folded
         for (k in IndicLexicon.exactKeys()) assertFalse("key on the stop list: $k", EnglishCommonWords.contains(k))
-        // (a folded form such as "ata" may be stopped on purpose: it is not a spelling a person writes for a key, and "aata" is the verb "comes")
+        // The folded form of every key must not be on the stop list either, except these on purpose: the stop list blocks the spellings "aata", "ata" and "tala" (ambiguous with English-like
+        // tokens and the verb "aata" = comes). Cost: "aata kahan rakha" no longer expands (write "atta" / "taala" / Devanagari); documented, deliberately not worked around.
+        val blockedOnPurpose = setOf("ata", "tala", "dud") // "dud" = fold("doodh"), the English word; "doodh" itself (exact) still hits
+        for (k in IndicLexicon.keys()) if (EnglishCommonWords.contains(k)) assertTrue("folded key on the stop list: $k", k in blockedOnPurpose)
+        for (w in listOf("aata", "ata", "tala")) assertNull(w, IndicLexicon.lookup(w))
+        assertNull(IndicLexicon.expand("aata kahan rakha"))
         // every common word: no hit, whatever its spelling folds to
         for (w in EnglishCommonWords.WORDS) {
             assertNull(w, IndicLexicon.lookup(w)); assertNull(w, IndicLexicon.lookup(w.uppercase())); assertNull(w, IndicLexicon.expand("is the $w here?"))

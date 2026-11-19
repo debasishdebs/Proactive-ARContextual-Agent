@@ -212,9 +212,13 @@ class MultilingualAskTest {
             assertTrue(f, terms.size in 1..IndicLexicon.MAX_TERMS_PER_WORD)
             assertTrue(f, terms.all { t -> t.matches(Regex("[a-z]+( [a-z]+)?")) })
         }
-        // a plain word, never the name of a person: none of these given names is a key
+        // Guarantee: none of these names is a key, EXCEPT the plain object words that are also given names, which are kept on purpose (palak = spinach, aloo = potato).
         val names = setOf("rahul", "amit", "priya", "sunita", "anita", "sita", "gita", "ravi", "raj", "ram", "mohan", "neha", "pooja", "kavita", "geeta", "asha", "deepak", "ganesh", "kamal")
         assertTrue(IndicLexicon.keys().intersect(names.map { IndicLexicon.fold(it) }.toSet()).isEmpty())
+        for (n in names + "khanna" + "allu") assertNull("a given name or surname must not expand: $n", IndicLexicon.lookup(n))
+        // "allu" (surname spelling) folds onto the key "aloo" and "khanna" onto "khana": both are stopped; the real words and the allowed name-like words still hit
+        assertNull(IndicLexicon.lookup("allu")); assertNull(IndicLexicon.lookup("Khanna"))
+        assertNotNull(IndicLexicon.lookup("aloo")); assertNotNull(IndicLexicon.lookup("khana")); assertNotNull(IndicLexicon.lookup("palak"))
         assertNotNull(IndicLexicon.expand("paneer atta"))
     }
 }

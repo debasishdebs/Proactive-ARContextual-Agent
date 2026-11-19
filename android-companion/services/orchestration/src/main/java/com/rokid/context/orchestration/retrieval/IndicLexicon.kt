@@ -6,7 +6,11 @@ import java.util.Locale
 /**
  * Multilingual Ask, option B (design 2026-11-19): a small curated, versioned, DATA-ONLY lexicon of plain Hindi/Hinglish food, household and place words and the English words a caption would
  * use for them. Used only as the offline floor when the query condenser gave nothing (offline, timeout, broken reply) and the developer flag `multilingualAsk` is ON. Pure and local: nothing
- * here reaches the network or a log (no question text, no word). Every entry is a common noun or verb-free object word; none is the name of a person (a test pins the list against given names).
+ * here reaches the network or a log (no question text, no word). Every entry is a common noun or verb-free object word. What is guaranteed (pinned by a test): no entry is a person's name that is not also a plain object word. Two entries are
+ plain words that are ALSO given names and are kept on purpose: "palak" (spinach) and "aloo" (potato). Surnames and name spellings that merely FOLD onto a key ("khanna" -> khana, "allu" -> aloo)
+ are on the stop list, so they never expand. An expansion only ADDS terms to the question, so a given-name hit on "palak" costs at most two extra search words.
+ Stop-list note: the spellings "aata", "ata" and "tala" are blocked on purpose (they are ambiguous with English-like tokens and verb forms: "aata" = comes). Cost: "aata kahan rakha" does not expand;
+ write "atta" or "taala" (or Devanagari) for flour and lock. This is documented, not worked around.
  *
  * Matching folds the usual romanisation variants (`aa`->`a`, `ee`->`i`, `oo`->`u`, doubled letters, a trailing `h`), so "karela", "karelaa" and "kareela" are one key. Only whole words match.
  */
@@ -122,8 +126,8 @@ object IndicLexicon {
     }
 
     /**
-     * The condensed form of [question] from the lexicon: [QueryCondenser.Condensed.query] = the English terms of every lexicon word in the question (in order, no duplicates, at most [MAX_WORDS_IN_QUERY]
-     * words), [probe] = the question as asked (the second own-language word search of the condenser contract), lang "hi". Null = no lexicon word, the raw question is searched as before. Never throws.
+     * The condensed form of [question] from the lexicon: [QueryCondenser.Condensed.query] = the English terms of every lexicon word in the question (in order, no duplicates, cleaned to at most [MAX_WORDS_IN_QUERY] lexicon words)
+     * followed by the question's own words (only its first [MAX_QUESTION_WORDS] words are read), so the query is at most [MAX_WORDS_IN_QUERY] + [MAX_QUESTION_WORDS] words, [probe] = the question as asked (the second own-language word search of the condenser contract), lang "hi". Null = no lexicon word, the raw question is searched as before. Never throws.
      */
     fun expand(question: String): QueryCondenser.Condensed? {
         val words = question.split(Regex("[^\\p{L}\\p{M}]+")).filter { it.isNotEmpty() }.take(MAX_QUESTION_WORDS)
