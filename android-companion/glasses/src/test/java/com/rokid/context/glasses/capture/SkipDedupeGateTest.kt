@@ -1,8 +1,8 @@
 package com.rokid.context.glasses.capture
 
-import kotlin.test.Test
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import org.junit.Test
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 
 /** The CaptureService DEBUG gate: a release build ignores a skip-dedupe request. */
 class SkipDedupeGateTest {
