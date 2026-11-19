@@ -101,4 +101,12 @@ class ReducedCadenceTest {
     @Test fun theDefaultCatchUpRebuildsAndAllowsTheReduceWhenNothingFails() {
         assertTrue(sched.reducePeriodicJobsIfIdle())
     }
+
+    @Test fun theSyncedReadSeesAReduceAndItsRestoration() {
+        assertFalse(OrchestrationScheduler.cadenceReducedSynced(ctx))
+        sched.reducePeriodicJobsIfIdle()
+        assertTrue(OrchestrationScheduler.cadenceReducedSynced(ctx))
+        sched.restorePeriodicJobs()
+        assertFalse(OrchestrationScheduler.cadenceReducedSynced(ctx))
+    }
 }
