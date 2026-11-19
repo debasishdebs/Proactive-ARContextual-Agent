@@ -57,8 +57,8 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             val gate = BulkGate({ LocalModelPower.read(applicationContext) }, { keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) })
             // Roaming data saver: no photo upload over mobile data, roaming or an unknown network; the run then does nothing and the photos wait (never deleted undescribed).
             val data = keyframes.dataGate
-            DataSaverWorkGate.atStart(data)
-            val dataOpen = { DataSaverWorkGate.open(data) }
+            DataSaverWorkGate.atStart(data, keyframes.photoReach())
+            val dataOpen = { DataSaverWorkGate.open(data, keyframes.photoReach()) }
             val maintenance = IndexMaintenance(
                 MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), PrefsIndexClock(applicationContext),
                 photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = gate::allowed, // local index work (and the on-device image embedder) is not a data cost: only the describe step below waits for the data saver

@@ -50,9 +50,9 @@ class SuspectSweepWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         val service = ForgetService(graph.db, graph.proposals)
         // Roaming data saver: re-describing marked photos is a photo upload; over mobile data, roaming or an unknown network nothing is queued or described (the gate-closed path; removals of expired descriptions still run).
         val data = keyframes.dataGate
-        DataSaverWorkGate.atStart(data)
+        DataSaverWorkGate.atStart(data, keyframes.photoReach())
         val sweep = SuspectSweep(
-            db = graph.db, pipeline = keyframes.pipeline, bulkAllowed = { gate.allowed() && DataSaverWorkGate.open(data) },
+            db = graph.db, pipeline = keyframes.pipeline, bulkAllowed = { gate.allowed() && DataSaverWorkGate.open(data, keyframes.photoReach()) },
             zoneBlocked = zoneSignal,
             remove = { ids ->
                 // the exclusive side of the DataOpGate (an export in progress is waited for), like retention; the ForgetActions follow the committed cascade

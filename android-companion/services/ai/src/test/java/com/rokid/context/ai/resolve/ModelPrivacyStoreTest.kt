@@ -29,14 +29,45 @@ class ModelPrivacyStoreTest {
         assertEquals("ai_backend", ModelPrivacyStore.PREFS)
     }
 
-    @Test fun aSavedModeSurvivesANewStoreAndEveryReaderSeesItAtOnce() {
-        val p = prefs("mp2")
-        val a = ModelPrivacyStore(p); val b = ModelPrivacyStore(p)
+    @Test fun aSavedModeSurvivesANewStoreAndTheOneStoreIsAuthoritativeAtOnce() {
+        val p = prefs("mp2"); val s = prefs("mp2s")
+        val a = ModelPrivacyStore(p, s)
         a.set(ModelPrivacy.OFFLINE_ONLY)
-        assertEquals(ModelPrivacy.OFFLINE_ONLY, b.current()); assertEquals(ModelPrivacy.OFFLINE_ONLY, a.mode.value)
-        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p).current())
-        a.set(ModelPrivacy.AUTO); assertEquals(ModelPrivacy.AUTO, b.current())
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, a.current()); assertEquals(ModelPrivacy.OFFLINE_ONLY, a.mode.value)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s).current())
+        a.set(ModelPrivacy.AUTO); assertEquals(ModelPrivacy.AUTO, a.current()); assertEquals(ModelPrivacy.AUTO, ModelPrivacyStore(p, s).current())
+        assertFalse(a.wasReset.value)
     }
+
+    // ---- P2-2: lost settings fail closed ----
+
+    @Test fun neverSetIsAutoAndNotReset() {
+        val st = ModelPrivacyStore(prefs("mp9"), prefs("mp9s"))
+        assertEquals(ModelPrivacy.AUTO, st.current()); assertFalse(st.wasReset.value)
+    }
+
+    @Test fun anEmptiedMainFileAfterAChoiceReadsOfflineOnlyAndSaysItWasReset() {
+        val p = prefs("mp10"); val s = prefs("mp10s")
+        ModelPrivacyStore(p, s).set(ModelPrivacy.OFFLINE_ONLY)
+        p.edit().clear().commit() // a corrupted ai_backend.xml loads as an empty map
+        val st = ModelPrivacyStore(p, s)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, st.current()); assertTrue(st.wasReset.value)
+        st.set(ModelPrivacy.AUTO) // the user checks and chooses
+        assertEquals(ModelPrivacy.AUTO, st.current()); assertFalse(st.wasReset.value)
+    }
+
+    @Test fun aLostSentinelAloneOrALostMainFileAloneStillFailsClosed() {
+        val p = prefs("mp11"); val s = prefs("mp11s")
+        ModelPrivacyStore(p, s).set(ModelPrivacy.AUTO)
+        p.edit().remove("mode").commit()
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s).current()) // the main file lost its mode: sentinel (and its own flag) remember
+        s.edit().clear().commit(); p.edit().clear().commit()
+        assertEquals("both gone = indistinguishable from a fresh install", ModelPrivacy.AUTO, ModelPrivacyStore(p, s).current())
+        ModelPrivacyStore(p, s).set(ModelPrivacy.AUTO); p.edit().clear().commit(); s.edit().putBoolean("initialised", true).commit()
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s).current())
+    }
+
+    @Test fun theSentinelFileNameIsTheOneBackupRulesExclude() = assertEquals("ai_backend_init", ModelPrivacyStore.SENTINEL_PREFS)
 
     @Test fun anUnknownOrWronglyTypedStoredValueFailsClosedToOfflineOnly() {
         val p = prefs("mp3")

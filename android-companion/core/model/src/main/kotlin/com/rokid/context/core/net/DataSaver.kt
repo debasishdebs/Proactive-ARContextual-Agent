@@ -164,7 +164,7 @@ object DataPolicy {
     }
 
     /**
-     * Whether [host] is a private, link-local, loopback or `.local` address: a box on the user's own network. Never resolves a name. IPv6 literals other than loopback
+     * Whether [host] is a private, link-local, loopback or `.local` address: a box on the user's own network. Never resolves a name (under Offline only the model client's DNS check also requires every resolved address to be on the user's own network). IPv6 literals other than loopback
      * count as remote (we cannot tell a ULA from a public one cheaply, and fail closed).
      */
     fun isLanHost(host: String?): Boolean {
@@ -172,7 +172,8 @@ object DataPolicy {
         if (h.isEmpty()) return false
         if (h == "localhost" || h.endsWith(".local") || h == "::1" || h == "[::1]") return true
         val p = h.split('.')
-        if (p.size != 4 || p.any { it.isEmpty() || it.length > 3 || !it.all(Char::isDigit) }) return false
+        // ASCII digits only, and no leading zero ("010.0.0.1" may be read as octal by the system resolver, "٣" is not an ASCII digit): anything unusual is remote.
+        if (p.size != 4 || p.any { it.isEmpty() || it.length > 3 || !it.all { c -> c in '0'..'9' } || (it.length > 1 && it[0] == '0') }) return false
         val o = p.map { it.toInt() }
         if (o.any { it > 255 }) return false
         return o[0] == 10 || o[0] == 127 || (o[0] == 192 && o[1] == 168) || (o[0] == 172 && o[1] in 16..31) || (o[0] == 169 && o[1] == 254)

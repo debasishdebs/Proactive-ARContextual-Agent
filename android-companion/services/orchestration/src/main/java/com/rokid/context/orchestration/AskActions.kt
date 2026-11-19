@@ -74,6 +74,8 @@ object AskActions {
     /** G10 (MVP section 9.5): no match says so, with when it will look again (the ask queued a priority reprocess). */
     const val NO_MEMORIES = "I don't have anything on that yet \u2014 I'll look again in your next photos"
     const val AI_UNAVAILABLE = "AI unavailable — check Settings › Model endpoints"
+    /** Model privacy "Offline only" refused the answer model (a remote one). Not retried: switching to Automatic and asking again works. */
+    const val NEEDS_ON_DEVICE = "Offline only is on: needs an on-device model. Switch to Automatic to ask"
     const val FAILED = "Couldn't answer that — try again"
     const val REVIEW_REASON = "User marked an answer unhelpful"
     /** G7 ruling (2026-10-15): Battery Saver pauses user asks too. Home shows it, and so does the HUD toast. */

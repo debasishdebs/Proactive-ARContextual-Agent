@@ -34,6 +34,11 @@ class AndroidPlaceGuideControl(
         set(v) { settings.budgetMb = v }
 
     override suspend fun seed(box: GeoBox): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {
+        // Model privacy: under Offline only no place is fetched from the internet, a user-started seed included.
+        if (com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() != com.rokid.context.core.net.ModelPrivacy.AUTO) {
+            com.rokid.context.core.log.PcLog.i("PcData", "seed refused: offline only")
+            throw com.rokid.context.phone.ui.settings.place.SeedOfflineOnlyException()
+        }
         // Roaming data saver: a seed is hundreds of requests; only on free Wi-Fi (never mobile, roaming, unknown or a captive portal).
         if (com.rokid.context.ai.datasaver.DataSaverGraph.get(app).costNow() != com.rokid.context.core.net.NetworkCost.FREE) {
             com.rokid.context.core.log.PcLog.i("PcData", "seed refused: not free wifi")

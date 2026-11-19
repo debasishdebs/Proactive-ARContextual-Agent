@@ -77,8 +77,11 @@ data class SeedPreset(val id: String, val name: String, val boxes: List<GeoBox>,
 /** Roaming data saver: a user-started seed (hundreds of requests) was refused because the network is not free Wi-Fi. */
 class SeedNeedsWifiException : Exception("Seeding needs Wi-Fi (data saver). Connect to Wi-Fi and try again.")
 
-/** The screen text for a failed seed: the Wi-Fi refusal says so, anything else is the generic connection hint. */
-internal fun seedFailureText(t: Throwable): String = if (t is SeedNeedsWifiException) t.message.orEmpty() else "Could not fetch places. Check the connection and try again."
+/** Model privacy "Offline only": a user-started seed was refused because no place may be fetched from the internet. */
+class SeedOfflineOnlyException : Exception("Offline only is on, so places are not fetched. Switch Model privacy to Automatic to seed an area.")
+
+/** The screen text for a failed seed: the Wi-Fi and Offline-only refusals say so, anything else is the generic connection hint. */
+internal fun seedFailureText(t: Throwable): String = if (t is SeedNeedsWifiException || t is SeedOfflineOnlyException) t.message.orEmpty() else "Could not fetch places. Check the connection and try again."
 
 /** One box's seed answer: the screen text and how many cells still failed after the retry (0 = nothing to retry). */
 data class SeedOutcome(val message: String, val failedCells: Int = 0)

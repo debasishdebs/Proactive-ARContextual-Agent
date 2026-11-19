@@ -323,6 +323,9 @@ class AnswerService(
         AskOutcome.Failed(AskActions.EMPTY_QUESTION)
     } catch (e: NoMemoriesException) {
         AskOutcome.Failed(AskActions.NO_MEMORIES)
+    } catch (e: com.rokid.context.ai.OfflineOnlyRefusedException) {
+        PcLog.i(TAG, "answer refused: offline only")
+        AskOutcome.Failed(AskActions.NEEDS_ON_DEVICE)
     } catch (e: ModelCallException) {
         PcLog.i(TAG, "answer failed: kind=${e.kind} retryable=${e.retryable}") // never the message: it can carry provider text
         AskOutcome.Failed(if (e.kind == FailureKind.INVALID_OUTPUT) AskActions.FAILED else AskActions.AI_UNAVAILABLE)

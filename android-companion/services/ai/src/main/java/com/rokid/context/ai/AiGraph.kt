@@ -58,7 +58,7 @@ class AiGraph(
         @Volatile var gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate, dataGate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app), privacy = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)::current)
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate, dataGate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app), privacy = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).let { s -> OfflineOnlyDns.globalMode = s::current; s::current })
                 .also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }

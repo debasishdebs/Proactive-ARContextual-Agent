@@ -12,6 +12,7 @@ object Http {
         .callTimeout(callTimeoutSec, TimeUnit.SECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
+        .dns(OfflineOnlyDns.shared) // Offline only: every resolved address must be on the user's own network
         .build()
 
     /**
