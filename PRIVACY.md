@@ -99,7 +99,9 @@ Off by default. Suggestions are **local only**: no network request, no model cal
 
 ## 8. Logs
 
-The diagnostic log (`files/logs`, two files, 6 MB cap) holds literal event names, counts, state names and durations (no memory text, answers, place names or coordinates). It is built so it cannot hold your content: `LogContentScanTest` fails any log call whose message is not a literal or an approved count/state/class name. It is excluded from backup and cleared by Delete all.
+The diagnostic log (`files/logs`, up to 60 files of 5 MB, about 300 MB in all, oldest dropped first) holds literal event names, counts, state names and durations (no memory text, answers, place names or coordinates). It is built so it cannot hold your content: `LogContentScanTest` fails any log call whose message is not a literal or an approved count/state/class name. It is excluded from backup and cleared by Delete all.
+
+**The log is larger and longer-lived than before.** So that a whole trip can be analysed afterwards, the trip build keeps a detailed log by default (Settings > Diagnostics > Detailed log; turn it off to keep only warnings and key events). It records what the app decided and why: for Place Guide, per attempt, the outcome and reason, the ids of the candidate places (never their names, notes or summaries), whether a call was made, how old and accurate the fix was and how far the match was (as ranges, never a position), the confidence and the timings; and the phone's battery range, network state (online, metered, roaming, Wi-Fi or mobile; never a network name), clock or time zone changes, permission changes, background worker states and an hourly heartbeat. It is stored only in the app's private folder, is never uploaded, is excluded from backup and device transfer, is cleared by Delete all, and leaves the phone only if you export it yourself.
 
 ## 9. Backups
 

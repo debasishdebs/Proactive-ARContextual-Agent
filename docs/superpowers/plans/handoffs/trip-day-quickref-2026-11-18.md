@@ -31,3 +31,10 @@
 
 ## After the day
 Settings > Diagnostics: note the hub state and any 'restart' lines; tell Claude what you saw (also the card position verdict and any failed seed cells).
+
+## Trip logging (added 2026-11-20)
+
+- Retention: `files/logs/pca.log` (active) and `pca.log.1` ... `pca.log.59` (`.1` newest retained, highest number oldest), 5 MB each, 300 MB in all, oldest dropped first. Same private folder, same backup exclusion, Delete all clears every segment.
+- Detailed log: Settings > Diagnostics > Detailed log, ON by default in this build (Developer mode also turns it on). Off keeps only warnings and key events (milestones). Without it most of the new lines below would not reach the file.
+- New lines: `PcPlace place attempt ...` (one per Place Guide attempt: outcome, reason, call, cell, ids, buckets, ms, confPct, dedupe and rate-limit state, card result), `PcPlace pack lookup ...`, `PcDiag` (app start milestone, battery, network, clock, timezone, permission, worker, foreground, heartbeat hourly).
+- Pull everything oldest first: `tools/link-health-report.sh --phone <serial>` reads all segments; for a manual pull copy `files/logs/` with `run-as` and `cat` the files from the highest `pca.log.N` down to `pca.log`.
