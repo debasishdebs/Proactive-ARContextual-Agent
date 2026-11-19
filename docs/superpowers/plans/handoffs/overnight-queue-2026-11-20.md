@@ -22,3 +22,10 @@ Install "go" for the candidate; pin times for the 3 home pins; Detailed-log and 
 
 ## E. After 21 Nov 21:36
 Re-run Codex on the diffs only Opus reviewed (hub-wp3 fixes, zone fixes, wipe backoff, coordinate rule, map picker, logging, pin-to-Moment).
+
+## F. Decisions of the night (2026-11-20, user)
+- Embeddings: KEEP the text embedder; ADD a CLIP-family image-text embedder as a second space (lazy, Forget-inventoried). Finalise embedding models (1.4.4, shadow mode first) BEFORE the offline VLM (1.4.5: Qwen3-VL-2B or SmolVLM2).
+- Forget rework: ONE flow (source, selector, plan, one dialog, policy table), built after Sikkim.
+- Pins are prefs JSON; Moment required for new pins; explicit Forget deletes the pin after a dialog naming it; expiry only de-links.
+- Gradle jobs strictly sequential (lock); design jobs parallel; device-dependent work waits for the user or runs on the emulator; never stop on a blocked task, take the next one.
+- Status at 01:45: pin fixes written (uncompiled, waiting for the lock), data saver slice 1 agent building, image embedder comparison running.
