@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -48,6 +49,16 @@ interface OverpassSource {
 
 internal val placeJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
+/**
+ * The one parse boundary of every place source. A hostile, absurdly nested body overflows the stack inside kotlinx's recursive tree reader: that [StackOverflowError] is a parsing
+ * artefact, so it becomes a [SerializationException] (a malformed response; the cell fails and is retried). No other Error is caught: OutOfMemoryError and the like propagate.
+ */
+internal fun parseBody(body: String): JsonElement = try {
+    placeJson.parseToJsonElement(body)
+} catch (e: StackOverflowError) {
+    throw SerializationException("response nested too deeply")
+}
+
 private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 private fun JsonElement?.arr(): JsonArray? = this as? JsonArray
 private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
@@ -78,13 +89,13 @@ class WikipediaHttpSource(private val http: PlaceHttp, private val host: String 
         const val SENTENCES = 3
 
         fun parseGeosearch(body: String): List<WikiHit> =
-            placeJson.parseToJsonElement(body).obj()?.get("query").obj()?.get("geosearch").arr().orEmpty().mapNotNull { e ->
+            parseBody(body).obj()?.get("query").obj()?.get("geosearch").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
                 WikiHit(o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["lat"].latOrNull() ?: return@mapNotNull null, o["lon"].lonOrNull() ?: return@mapNotNull null)
             }
 
         fun parsePages(body: String): List<WikiPage> =
-            placeJson.parseToJsonElement(body).obj()?.get("query").obj()?.get("pages").arr().orEmpty().mapNotNull { e ->
+            parseBody(body).obj()?.get("query").obj()?.get("pages").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
                 if (o["missing"] != null) return@mapNotNull null
                 val c = o["coordinates"].arr()?.firstOrNull().obj()
@@ -119,7 +130,7 @@ class WikidataHttpSource(private val http: PlaceHttp, private val host: String =
         }
 
         fun parse(body: String): Map<String, WikidataEntity> {
-            val entities = placeJson.parseToJsonElement(body).obj()?.get("entities").obj() ?: return emptyMap()
+            val entities = parseBody(body).obj()?.get("entities").obj() ?: return emptyMap()
             return entities.entries.mapNotNull { (qid, v) ->
                 val rawClaims = v.obj()?.get("claims")
                 // Wikidata sends an item with no claims as an empty ARRAY: that is absence, not damage. Any other non-object claims value is unreadable and drops the entity.
@@ -143,7 +154,7 @@ class OverpassHttpSource(private val http: PlaceHttp, private val endpoint: Stri
         }
 
         fun parse(body: String): List<OsmElement> =
-            placeJson.parseToJsonElement(body).obj()?.get("elements").arr().orEmpty().mapNotNull { e ->
+            parseBody(body).obj()?.get("elements").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
                 val type = o["type"].str() ?: return@mapNotNull null
                 val id = o["id"].lng() ?: return@mapNotNull null
