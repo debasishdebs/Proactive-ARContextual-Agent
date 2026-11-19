@@ -78,4 +78,25 @@ class ModelPrivacyStoreTest {
         val g = DataSaverGraph(DataSaverStore(prefs("mp6")), { wifi }, { 100L })
         assertTrue(g.decide(DataKind.PHOTO, EndpointReach.REMOTE).allowed)
     }
+
+    // ---- parked frames: Offline only is a standing refusal, not a blip, and not a data cost ----
+
+    @Test fun offlineOnlyHoldsPhotosBackForARemoteEndpointEvenDuringAPreValidationBlipAndMarksTheBacklog() {
+        val blip = NetSnapshot(true, Transport.WIFI, validated = false, notMetered = true, notRoaming = true, unvalidatedSinceMs = System.currentTimeMillis() - 1_000) // a fresh Wi-Fi reconnect: cost UNKNOWN for a moment
+        var m = ModelPrivacy.OFFLINE_ONLY
+        val g = DataSaverGraph(DataSaverStore(prefs("mp7")), { blip }, { 100L }, privacy = { m })
+        assertTrue(g.heldBack())
+        g.skipped(DataKind.PHOTO, com.rokid.context.core.net.Skipped.UPLOAD_QUEUED, g.decide(DataKind.PHOTO, EndpointReach.REMOTE))
+        assertTrue("the backlog is marked, so it is parked and protected", g.blockedSince() != 0L)
+        g.reachProvider = { EndpointReach.DEVICE }
+        assertFalse("an on-device photo endpoint is not held back", g.heldBack())
+        m = ModelPrivacy.AUTO; g.reachProvider = { EndpointReach.REMOTE }
+        assertFalse("AUTO: the blip debounce applies as before", g.heldBack())
+    }
+
+    @Test fun offlineOnlyRefusalsAreLoggedButNotCountedInBlockedToday() {
+        val g = DataSaverGraph(DataSaverStore(prefs("mp8")), { wifi }, { 100L }, privacy = { ModelPrivacy.OFFLINE_ONLY })
+        g.skipped(DataKind.PHOTO, com.rokid.context.core.net.Skipped.UPLOAD_QUEUED, g.decide(DataKind.PHOTO, EndpointReach.REMOTE))
+        assertEquals(0L, g.ledger.today().total)
+    }
 }
