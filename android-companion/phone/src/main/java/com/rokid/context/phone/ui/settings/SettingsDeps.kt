@@ -113,6 +113,8 @@ class SettingsDeps(
     val locationGranted: () -> Boolean = { false },
     /** Settings > Privacy > Pause zones > Offline map: the Storage Access Framework file access and the saved choice. Null where no map support is wired (tests). */
     val offlineMap: (() -> com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapDeps)? = null,
+    /** Settings > Privacy > Pause zones > Street map and "Centre on me": the opt-in switch, the tile source and the one-shot fix. Null where not wired (tests). */
+    val onlineMap: (() -> com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapDeps)? = null,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -149,7 +151,7 @@ class SettingsDeps(
                 }
             },
             usedBytes = { StorageUsage.usedBytes(app) },
-            wipe = { com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAll(app) } },
+            wipe = { com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAll(app).also { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.wipe(app) } } },
             export = { MemoryExport.write(app) },
             share = { f -> ShareFile.share(app, f) },
             logs = { LogReader.ownLines() },
@@ -184,6 +186,7 @@ class SettingsDeps(
             contextSources = AppContextSources(app),
             zoneEditor = { com.rokid.context.phone.ui.settings.privacy.zones.ControllerZoneEditor(com.rokid.context.phone.zone.ZoneGraph.get(app)) },
             offlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapDeps(com.rokid.context.phone.ui.settings.privacy.zones.tiles.AndroidMapFiles(app), com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapStore.get(app)) },
+            onlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.get(app).deps },
             locationGranted = {
                 listOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)
                     .any { androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
