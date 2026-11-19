@@ -93,6 +93,12 @@ class QueueDrainWorker(
                     PipelineRecords.upsertTrace(applicationContext, job.id, "FAILED", STALE_NOTE)
                     return@onFailure
                 }
+                if (generateSequence(error) { it.cause?.takeIf { c -> c !== it } }.take(8).any { it is com.rokid.context.ai.OfflineOnlyRefusedException }) {
+                    // Model privacy "Offline only": nothing was sent; the job keeps its retry budget and runs if the user switches to Automatic (or binds an on-device model).
+                    QueueRuntimeStore.markPostponed(applicationContext, job.id, OFFLINE_ONLY_NOTE, delayMs = POLICY_DEFER_MS)
+                    PipelineRecords.upsertTrace(applicationContext, job.id, "RETRY", OFFLINE_ONLY_NOTE)
+                    return@onFailure
+                }
                 if (generateSequence(error) { it.cause?.takeIf { c -> c !== it } }.take(8).any { it is com.rokid.context.ai.DataSaverBlockedException }) {
                     // Roaming data saver: nothing was sent. A postponement, not an attempt (like the battery policy): the job waits for the policy to open and keeps its full retry budget.
                     QueueRuntimeStore.markPostponed(applicationContext, job.id, "waiting for Wi-Fi (data saver)", delayMs = POLICY_DEFER_MS)
@@ -474,5 +480,6 @@ class QueueDrainWorker(
         /** Photos per batch sent to VISION_EXTRACT, one call each (final review I1; the batch sent 3 before). */
         private const val MAX_VISION_FRAMES = 3
         const val STALE_NOTE = "Skipped: sources changed"
+        const val OFFLINE_ONLY_NOTE = "Offline only is on: needs an on-device model; will run if you switch to Automatic"
     }
 }

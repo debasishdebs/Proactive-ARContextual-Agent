@@ -76,4 +76,16 @@ class ModelPrivacyScreenTest {
         assertEquals(Routes.SETTINGS_MODEL_PRIVACY, opened)
         assertFalse(opened == Routes.SETTINGS_DATA_SAVER)
     }
+
+    @Test fun aResetSettingIsSaidOnTheScreenAndQueuedWorkIsExplained() {
+        compose.setContent { PcTheme { ModelPrivacyScreen(ModelPrivacyUiState(ModelPrivacy.OFFLINE_ONLY, null, wasReset = true), {}, {}) } }
+        compose.onNodeWithTag("model_privacy_reset").assertTextContains("were reset: check them", substring = true)
+        compose.onNodeWithTag("model_privacy_queued").assertTextContains("switch back to Automatic", substring = true)
+        assertFalse(ModelPrivacyModel.OFFLINE_EFFECT.contains("not fetched from the internet."))
+    }
+
+    @Test fun noResetNoticeNormally() {
+        compose.setContent { PcTheme { ModelPrivacyScreen(ModelPrivacyUiState(), {}, {}) } }
+        compose.onNodeWithTag("model_privacy_reset").assertDoesNotExist()
+    }
 }

@@ -2,6 +2,7 @@ package com.rokid.context.work
 
 import com.rokid.context.core.net.DataGate
 import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.EndpointReach
 import com.rokid.context.core.net.Skipped
 
 /**
@@ -11,10 +12,11 @@ import com.rokid.context.core.net.Skipped
  * The WorkManager constraint (`OrchestrationScheduler.dataSaverNetwork`) only saves the wake-up; this check is the real gate, because the constraint cannot know about roaming or the abroad switch.
  */
 internal object DataSaverWorkGate {
-    fun open(g: DataGate): Boolean = g.decide(DataKind.BULK_OTHER).allowed
+    /** [reach] is where the photo calls really go (the vision binding and its fallback, see KeyframeGraph.photoReach): an on-device or LAN endpoint is not a data cost and is not refused by Offline only. */
+    fun open(g: DataGate, reach: EndpointReach = EndpointReach.REMOTE): Boolean = g.decide(DataKind.BULK_OTHER, reach).allowed
 
-    fun atStart(g: DataGate): Boolean {
-        val d = g.decide(DataKind.BULK_OTHER)
+    fun atStart(g: DataGate, reach: EndpointReach = EndpointReach.REMOTE): Boolean {
+        val d = g.decide(DataKind.BULK_OTHER, reach)
         if (!d.allowed) g.skipped(DataKind.BULK_OTHER, Skipped.BULK, d)
         return d.allowed
     }

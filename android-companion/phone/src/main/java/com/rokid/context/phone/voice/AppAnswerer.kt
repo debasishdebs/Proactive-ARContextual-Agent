@@ -20,6 +20,7 @@ object HudAskText {
         AskActions.EMPTY_QUESTION -> VoiceCopy.COULDNT_HEAR_HUD
         AskActions.NO_MEMORIES -> "Nothing on that yet \u2014 I'll check your next photos"
         AskActions.AI_UNAVAILABLE -> "AI unavailable"
+        AskActions.NEEDS_ON_DEVICE -> "Offline only: needs an on-device model"
         AskActions.BATTERY_SAVER -> AskActions.BATTERY_SAVER
         AskActions.ZONE_PAUSED -> AskActions.ZONE_PAUSED // Z1: the refusal, on the HUD and spoken
         else -> VoiceCopy.FAILED_HUD
@@ -27,7 +28,7 @@ object HudAskText {
 
     fun forPhone(phoneMessage: String): String = when (phoneMessage) {
         AskActions.EMPTY_QUESTION -> VoiceCopy.COULDNT_HEAR_PHONE
-        AskActions.NO_MEMORIES, AskActions.AI_UNAVAILABLE, AskActions.FAILED, AskActions.BATTERY_SAVER, AskActions.ZONE_PAUSED -> phoneMessage
+        AskActions.NO_MEMORIES, AskActions.AI_UNAVAILABLE, AskActions.NEEDS_ON_DEVICE, AskActions.FAILED, AskActions.BATTERY_SAVER, AskActions.ZONE_PAUSED -> phoneMessage
         else -> AskActions.FAILED
     }
 }

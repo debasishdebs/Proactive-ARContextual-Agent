@@ -87,6 +87,7 @@
         <exclude domain="sharedpref" path="data_saver.xml" />
         <!-- Model privacy (slice 1.4.3): per-device (a restore onto another phone would be wrong there): Automatic again after a restore. -->
         <exclude domain="sharedpref" path="ai_backend.xml" />
+        <exclude domain="sharedpref" path="ai_backend_init.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />
         <!-- 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore or a device transfer never turns a grant on. -->
         <exclude domain="sharedpref" path="canvas_helper_grants.xml" />
@@ -186,6 +187,7 @@
         <exclude domain="sharedpref" path="data_saver.xml" />
         <!-- Model privacy (slice 1.4.3): per-device (a restore onto another phone would be wrong there): Automatic again after a restore. -->
         <exclude domain="sharedpref" path="ai_backend.xml" />
+        <exclude domain="sharedpref" path="ai_backend_init.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />
         <!-- 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore or a device transfer never turns a grant on. -->
         <exclude domain="sharedpref" path="canvas_helper_grants.xml" />

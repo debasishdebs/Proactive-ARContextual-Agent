@@ -252,7 +252,11 @@ class KeyframeHandle internal constructor(private val app: Context) {
     private fun readReach(): com.rokid.context.core.net.EndpointReach = try {
         kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
             val ai = AiGraph.get(app)
-            ai.bindings.get(com.rokid.context.ai.Role.VISION_EXTRACT)?.endpointId?.let { ai.endpoints.byId(it) }?.let(com.rokid.context.ai.EndpointReaches::of)
+            // The router tries the primary and then the fallback, so the call can go out wherever the best of the two reaches (a remote primary with an on-device or LAN fallback is not "remote" under Offline only).
+            ai.bindings.get(com.rokid.context.ai.Role.VISION_EXTRACT)?.let { b ->
+                val reaches = listOfNotNull(b.endpointId, b.fallbackEndpointId).mapNotNull { ai.endpoints.byId(it) }.map(com.rokid.context.ai.EndpointReaches::of)
+                reaches.minOrNull() // DEVICE < LAN < REMOTE
+            }
         } ?: com.rokid.context.core.net.EndpointReach.REMOTE
     } catch (e: Exception) { com.rokid.context.core.net.EndpointReach.REMOTE }
 

@@ -114,16 +114,23 @@ object PlaceResolvers {
 
     private fun build(app: Context): com.rokid.context.ai.resolve.ModelResolver {
         val ai = AiGraph.get(app)
-        return com.rokid.context.ai.resolve.ModelResolver(
-            mode = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)::current,
-            net = { KeyframeGraph.get(app).networkState() },
-            factories = mapOf((com.rokid.context.ai.resolve.ResolverRole.PLACE_CONFIRM to com.rokid.context.core.net.Backend.ONLINE) to com.rokid.context.ai.resolve.OnlineRouteFactory(com.rokid.context.ai.Role.VISION_EXTRACT, ai.bindings, ai.endpoints)),
-            log = { PcLog.i("PcPlace", it) }, // literal resolver lines: role, mode, net, backend and reason names, a fixed label
-        )
+        return create(com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)::current, { KeyframeGraph.get(app).networkState() }, ai.bindings, ai.endpoints)
     }
 
+    /** The production wiring (the PLACE_CONFIRM role over the VISION_EXTRACT binding), with its inputs injectable so a test can drive it from a real store and real repositories. */
+    internal fun create(
+        mode: () -> com.rokid.context.core.net.ModelPrivacy, net: () -> com.rokid.context.core.net.NetState,
+        bindings: com.rokid.context.ai.RoleBindingRepository, endpoints: com.rokid.context.ai.EndpointRepository, log: (String) -> Unit = { PcLog.i("PcPlace", it) }, // literal resolver lines: role, mode, net, backend and reason names, a fixed label
+    ) = com.rokid.context.ai.resolve.ModelResolver(
+        mode = mode, net = net,
+        factories = mapOf((com.rokid.context.ai.resolve.ResolverRole.PLACE_CONFIRM to com.rokid.context.core.net.Backend.ONLINE) to com.rokid.context.ai.resolve.OnlineRouteFactory(com.rokid.context.ai.Role.VISION_EXTRACT, bindings, endpoints)),
+        log = log,
+    )
+
     /** The backend for this attempt. Never throws except for cancellation (the resolver turns a failed load into a typed unavailable). */
-    suspend fun choose(app: Context): BackendChoice = when (val r = get(app).resolve(com.rokid.context.ai.resolve.ResolverRole.PLACE_CONFIRM)) {
+    suspend fun choose(app: Context): BackendChoice = choose(get(app))
+
+    internal suspend fun choose(resolver: com.rokid.context.ai.resolve.ModelResolver): BackendChoice = when (val r = resolver.resolve(com.rokid.context.ai.resolve.ResolverRole.PLACE_CONFIRM)) {
         is com.rokid.context.ai.resolve.Resolved.Ready -> BackendChoice(r.backend, com.rokid.context.core.net.ResolveReason.OK, r.mode, r.label)
         is com.rokid.context.ai.resolve.Resolved.Unavailable -> BackendChoice(null, r.reason, r.mode)
     }
