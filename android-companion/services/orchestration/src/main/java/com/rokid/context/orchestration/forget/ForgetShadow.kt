@@ -22,6 +22,11 @@ object DeveloperFlags {
     /** Forget lifecycle M4: the destructive switch-over (the `ForgetExecutor` instead of the legacy cascades). OFF by default; flip it only when the shadow line has stayed clean on real data. */
     const val FORGET_V2 = com.rokid.context.memory.forget.lifecycle.ForgetV2.KEY
 
+    /** Multilingual Ask (design 2026-11-19, options A + B): the built-in Ask also runs the query condenser (and, when it is unavailable, the bundled lexicon). OFF by default; no UI. */
+    const val MULTILINGUAL_ASK = "multilingual_ask"
+
+    fun multilingualAsk(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MULTILINGUAL_ASK, false) }.getOrDefault(false)
+    fun setMultilingualAsk(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MULTILINGUAL_ASK, on).apply() }
     fun forgetShadow(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(FORGET_SHADOW, false) }.getOrDefault(false)
     fun forgetV2(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(FORGET_V2, false) }.getOrDefault(false)
     fun setForgetV2(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(FORGET_V2, on).apply() }

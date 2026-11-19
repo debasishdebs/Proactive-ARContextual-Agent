@@ -129,6 +129,8 @@ class AnswerService(
     private val zoneGuard: AskZoneGuard = AskZoneGuard.None,
     /** The `rag.condense` node's model call (T10). Null = a [QueryCondenser] over this service's own runner (the normal text-call gates); a test passes its own. */
     private val condenser: QueryCondenser? = null,
+    /** `DeveloperFlags.multilingualAsk`: ON = the built-in Ask also condenses the question (and falls back to the bundled lexicon). Read on every ask; OFF (the default) = today's Ask, unchanged. */
+    private val multilingualAsk: () -> Boolean = { false },
 ) {
     /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
     data class Retrieved(
@@ -174,6 +176,13 @@ class AnswerService(
         return try { (condenser ?: defaultCondenser).condense(q, nowMs, zone(), spec.translate) } catch (c: CancellationException) { throw c } catch (z: AskZoneBlockedException) { throw z } catch (e: Exception) {
             PcLog.i(TAG, "query condensing unavailable (${e.javaClass.simpleName})"); null
         }
+    }
+
+    /** The offline floor (the condenser gave nothing): English words for the Hindi/Hinglish words of [q] from the bundled lexicon; null = no hit. Runs on the phone, sends nothing. */
+    private fun lexiconQuery(q: String): QueryCondenser.Condensed? {
+        val c = com.rokid.context.orchestration.retrieval.IndicLexicon.expand(q) ?: return null
+        PcLog.i(TAG, "lexicon fallback terms=${c.query.split(' ').size}")
+        return c
     }
 
     private val defaultCondenser: QueryCondenser by lazy { QueryCondenser(ask = ::condenseCall) }
@@ -226,7 +235,10 @@ class AnswerService(
         val builtIn = plan == FlowPlan.BUILT_IN_QUERY
         val ragSources = plan.askSources(windowOf(q, nowMs, plan.window)).map { if (builtIn && it is RagSource.MemoryStore) it.copy(stateNewest = true) else it }
         // T10: the search words (and the own-language probe) replace the question for the SEARCH only; the Answer prompt below still gets the original question.
-        val condensed = plan.condense?.let { condensedQuery(q, nowMs, it) }
+        // Multilingual flag ON: the built-in plan gets the same step (same fences); its failure falls back to the offline lexicon. OFF: exactly the plan's own node, if any.
+        val multilingual = multilingualAsk()
+        val condenseSpec = plan.condense ?: if (builtIn && multilingual) com.rokid.context.ai.canvas.CondenseSpec() else null
+        val condensed = condenseSpec?.let { condensedQuery(q, nowMs, it) ?: if (multilingual) lexiconQuery(q) else null }
         val c = rag.retrieve(RagQuery(q, search = condensed?.query, probe = condensed?.probe), ragSources, plan.ragParams(), nowMs)
         return Retrieved(
             PromptVars(
@@ -537,6 +549,7 @@ class AnswerService(
                 photoImages = { ids -> FramePhotos.load(context, ids).photos.associate { it.frameId to it.image } },
                 beforeRetrieve = { if (extractFirst) kotlinx.coroutines.withTimeoutOrNull(ASK_EXTRACT_TIMEOUT_MS) { com.rokid.context.work.frames.KeyframeGraph.get(context).pipeline.extractForAsk() } },
                 zoneGuard = AskZoneFence.also { it.install(context) },
+                multilingualAsk = { com.rokid.context.orchestration.forget.DeveloperFlags.multilingualAsk(context) },
                 onNoMatch = { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context)) com.rokid.context.work.OrchestrationScheduler(context).enqueueFrameIngestIfIdle() },
             )
         }
