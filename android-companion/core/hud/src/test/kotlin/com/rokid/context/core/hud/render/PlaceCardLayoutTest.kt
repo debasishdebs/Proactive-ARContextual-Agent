@@ -15,9 +15,9 @@ class PlaceCardLayoutTest {
     }
 
     @Test fun leftAndRightOn240And320() {
-        assertEquals(PlaceCardBox(PlaceSide.LEFT, 144f, 24f), PlaceCardLayout.compute(PlaceSide.LEFT, 240f))
-        assertEquals(PlaceCardBox(PlaceSide.RIGHT, 144f, 24f), PlaceCardLayout.compute(PlaceSide.RIGHT, 240f))
-        assertEquals(PlaceCardBox(PlaceSide.LEFT, 192f, 24f), PlaceCardLayout.compute(PlaceSide.LEFT, 320f))
+        assertEquals(PlaceCardBox(PlaceSide.LEFT, 168f, 24f), PlaceCardLayout.compute(PlaceSide.LEFT, 240f))
+        assertEquals(PlaceCardBox(PlaceSide.RIGHT, 168f, 24f), PlaceCardLayout.compute(PlaceSide.RIGHT, 240f))
+        assertEquals(PlaceCardBox(PlaceSide.LEFT, 224f, 24f), PlaceCardLayout.compute(PlaceSide.LEFT, 320f))
     }
 
     @Test fun aSideCardIsAlwaysInsideTheDisplayWithItsMargins() {
@@ -33,6 +33,13 @@ class PlaceCardLayoutTest {
     @Test fun aSmallDisplayShrinksTheCardAndTheMargin() {
         assertEquals(PlaceCardBox(PlaceSide.RIGHT, 72f, 24f), PlaceCardLayout.compute(PlaceSide.RIGHT, 120f))
         assertEquals(PlaceCardBox(PlaceSide.LEFT, 20f, 10f), PlaceCardLayout.compute(PlaceSide.LEFT, 40f))
+    }
+
+    @Test fun sideSourceDropsTheFetchedDate() {
+        assertEquals("Wikipedia", PlaceCardLayout.shortSource("Wikipedia \u00b7 fetched 12 Nov"))
+        assertEquals("Suggestion \u00b7 Wikipedia", PlaceCardLayout.shortSource("Suggestion \u00b7 Wikipedia \u00b7 fetched 12 Nov"))
+        assertEquals("nearby \u00b7 not checked", PlaceCardLayout.shortSource("nearby \u00b7 not checked"))
+        assertEquals("fetched 1 Nov", PlaceCardLayout.shortSource("fetched 1 Nov"))
     }
 
     @Test fun anUnusableDisplayFallsBackToCentre() {

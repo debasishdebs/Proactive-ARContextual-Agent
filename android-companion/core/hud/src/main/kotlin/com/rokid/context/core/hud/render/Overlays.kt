@@ -35,11 +35,11 @@ import com.rokid.context.core.model.PlaceCardInfo
 
 /** One overlay at full scale in the lower band (spec §3.2–§3.3). */
 @Composable
-fun OverlayView(o: Overlay, confirmHighlightYes: Boolean, recording: Boolean = false) {
+fun OverlayView(o: Overlay, confirmHighlightYes: Boolean, recording: Boolean = false, sideCard: Boolean = false) {
     when (o) {
         is Overlay.Listening -> ListeningOverlay(o.partial, recording)
         is Overlay.Answer -> AnswerCard(o)
-        is Overlay.Nudge -> if (o.place != null) PlaceCardView(o.place!!) else NudgeToast(o.text)
+        is Overlay.Nudge -> if (o.place != null) PlaceCardView(o.place!!, sideCard) else NudgeToast(o.text)
         is Overlay.Confirm -> ConfirmOverlay(o.title, o.detail, confirmHighlightYes)
         Overlay.PausedSplash -> PausedSplash()
         is Overlay.Toast -> HudToast(o.text)
@@ -91,14 +91,15 @@ fun NudgeToast(text: String) {
 
 /** Place Guide card (PG3): title, one line, and the source (or "nearby · not checked"). Same band and position as every overlay. */
 @Composable
-fun PlaceCardView(c: PlaceCardInfo) {
+fun PlaceCardView(c: PlaceCardInfo, side: Boolean = false) {
+    // side (LEFT/RIGHT) cards are narrower than the centre card: 2-line title, 4 body lines, a short source. The centre card is unchanged.
     Column(
         Modifier.background(Color.Black).border(Hud.STROKE, Hud.Green.copy(alpha = Hud.SECONDARY), RoundedCornerShape(14.dp))
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = if (side) 12.dp else 16.dp, vertical = 10.dp),
     ) {
-        Label(c.title, 26.sp, Hud.PRIMARY, FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Label(c.line, 22.sp, Hud.PRIMARY, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        Label(c.source, 18.sp, Hud.TERTIARY, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Label(c.title, 26.sp, Hud.PRIMARY, FontWeight.Bold, maxLines = if (side) 2 else 1, overflow = TextOverflow.Ellipsis)
+        Label(c.line, 22.sp, Hud.PRIMARY, maxLines = if (side) 4 else 3, overflow = TextOverflow.Ellipsis)
+        Label(if (side) PlaceCardLayout.shortSource(c.source) else c.source, 18.sp, Hud.TERTIARY, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
