@@ -92,5 +92,8 @@ class DataSaverGraph internal constructor(
         }
 
         fun resetForTests(graph: DataSaverGraph?) { synchronized(this) { instance = graph } }
+
+        /** Tests only: a graph over [app]'s real settings file with a scripted network reading (Robolectric has none). Install it with [resetForTests]. */
+        fun forTests(app: Context, snapshot: () -> NetSnapshot): DataSaverGraph = DataSaverGraph(DataSaverStore.of(app), snapshot)
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.net.DataMode
 import com.rokid.context.core.net.DataSaverSettings
@@ -79,6 +80,7 @@ class DataSaverScreenTest {
         compose.onNodeWithTag("data_saver_mode_note").assertTextContains("wait for Wi-Fi", substring = true)
         compose.onNodeWithTag("data_saver_abroad").assertIsOff()
         compose.onNodeWithTag("data_saver_small_roaming").assertIsOn()
+        compose.onNodeWithTag("data_saver_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("data_saver_status"))
         compose.onNodeWithTag("data_saver_status_0").assertTextContains("waiting for Wi-Fi: 3", substring = true)
         compose.onNodeWithTag("data_saver_status").assertTextContains("Counts only", substring = true)
         compose.onNodeWithTag("data_saver_abroad").performClick()

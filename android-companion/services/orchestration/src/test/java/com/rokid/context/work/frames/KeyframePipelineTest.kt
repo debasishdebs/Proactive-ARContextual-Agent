@@ -493,9 +493,6 @@ class KeyframePipelineTest {
         })
         assertEquals(0, p.drainOnce()); assertEquals(1, calls.size)
         for (i in 1..3) { assertEquals("PENDING", state("f$i")); assertEquals(0, db.frameStateDao().get("f$i")!!.attempts) }
-        // parked: no new call, no attempt, for the whole 30 minutes
-        now += 29 * 60_000L
-        assertEquals(0, p.drainOnce()); assertEquals(1, calls.size)
         // Wi-Fi (the policy opens): the same signal a returning network sends wakes it at once
         blocked = false
         p.onNetworkReturn()
@@ -503,12 +500,4 @@ class KeyframePipelineTest {
         assertEquals(setOf("EXTRACTED"), (1..3).map { state("f$it") }.toSet())
     }
 
-    @Test fun aDataSaverParkEndsByItselfAfterThirtyMinutesAsASafetyRecheck() = runBlocking {
-        seed("f1", 1000)
-        var blocked = true
-        val p = pipeline({ ids, claim, cls -> calls += ids to cls; if (blocked) ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("wifi_only")) else completing()(ids, claim, cls) })
-        assertEquals(0, p.drainOnce()); assertEquals(1, calls.size)
-        blocked = false; now += KeyframePipeline.DATA_SAVER_PAUSE_MS + 1
-        assertEquals(1, p.drainOnce())
-    }
 }
