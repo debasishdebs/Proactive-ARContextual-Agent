@@ -224,7 +224,8 @@ object ForgetActions {
                 if (rangeNeedsConfirmation(going.ids, confirmedPins)) { PcLog.w(TAG, "range forget not run: pins not confirmed"); return@withContext Outcome.PINS_NOT_CONFIRMED }
                 var pending = false; var notRemoved = false
                 // only the pins the user confirmed are armed (checked again inside the pin lock): a pin linked after the check is never deleted
-                val r = com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = confirmedPins ?: emptySet()) { coordinator.forgetRange(fromMs, toMs) } // slice 1.4.2: pins of the Moments in the range go with them
+                // the arming is stored INSIDE the DataOpGate (with the Forget, not before it)
+                val r = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = confirmedPins ?: emptySet()) { coordinator.forgetRangeLocked(fromMs, toMs) } } // slice 1.4.2: pins of the Moments in the range go with them
                 runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
                 withPinNotice(if (!r.cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE, pending, notRemoved)
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) { Outcome.PIN_PREP_FAILED

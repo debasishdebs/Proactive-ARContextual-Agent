@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -75,5 +76,30 @@ class DeletionEpochStoreTest {
         }
         val s = DeletionEpochStore(broken) { "id" }
         org.junit.Assert.assertThrows(java.io.IOException::class.java) { s.commitWipe(1) }
+    }
+
+    /** Like SharedPreferences: a failed commit() still updated the in-memory map. */
+    private fun applyButFail(real: android.content.SharedPreferences) = object : android.content.SharedPreferences by real {
+        override fun edit(): android.content.SharedPreferences.Editor { val e = real.edit(); return object : android.content.SharedPreferences.Editor by e {
+            override fun putLong(key: String?, value: Long) = apply { e.putLong(key, value) }
+            override fun putString(key: String?, value: String?) = apply { e.putString(key, value) }
+            override fun remove(key: String?) = apply { e.remove(key) }
+            override fun commit(): Boolean { e.apply(); return false }
+        } }
+    }
+
+    @Test fun aFailedEpochCommitLeavesNoPendingWipeInThisProcess() {
+        val real = ctx.getSharedPreferences("epoch-fail", Context.MODE_PRIVATE); real.edit().clear().commit()
+        val s = DeletionEpochStore(real) { "id" }
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { DeletionEpochStore(applyButFail(real)) { "id" }.commitWipe(5) }
+        assertFalse("resumeIfPending would see no wipe", s.wipePending()); assertEquals(0L, s.read().counter); assertEquals(0L, s.read().wipedAtMs)
+    }
+
+    @Test fun aFailedEpochCommitKeepsAnEarlierPendingWipePending() {
+        val real = ctx.getSharedPreferences("epoch-fail2", Context.MODE_PRIVATE); real.edit().clear().commit()
+        val s = DeletionEpochStore(real) { "id" }
+        assertEquals(1L, s.commitWipe(1).counter); assertTrue(s.wipePending())
+        org.junit.Assert.assertThrows(java.io.IOException::class.java) { DeletionEpochStore(applyButFail(real)) { "id" }.commitWipe(9) }
+        assertTrue("the earlier wipe is still pending", s.wipePending()); assertEquals(1L, s.read().counter); assertEquals(1L, s.read().wipedAtMs)
     }
 }

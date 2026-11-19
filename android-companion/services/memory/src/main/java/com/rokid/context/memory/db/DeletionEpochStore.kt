@@ -34,7 +34,12 @@ class DeletionEpochStore(private val prefs: SharedPreferences, private val newIn
     fun commitWipe(nowMs: Long): DeletionEpoch = synchronized(LOCK) {
         val old = read()
         val next = DeletionEpoch(old.installId, old.counter + 1, nowMs)
-        if (!prefs.edit().putLong(KEY_COUNTER, next.counter).putLong(KEY_WIPED_AT, next.wipedAtMs).putLong(KEY_PENDING, next.counter).commit()) throw IOException("deletion epoch not committed")
+        val oldPending = prefs.getLong(KEY_PENDING, 0L)
+        if (!prefs.edit().putLong(KEY_COUNTER, next.counter).putLong(KEY_WIPED_AT, next.wipedAtMs).putLong(KEY_PENDING, next.counter).commit()) {
+            // SharedPreferences.commit() updates the in-memory map even when the disk write fails: put the previous values back, so nothing in this process (resumeIfPending, the pin sweeps) sees a wipe that was never started
+            try { prefs.edit().putLong(KEY_COUNTER, old.counter).putLong(KEY_WIPED_AT, old.wipedAtMs).also { if (oldPending > 0L) it.putLong(KEY_PENDING, oldPending) else it.remove(KEY_PENDING) }.commit() } catch (e: Exception) { }
+            throw IOException("deletion epoch not committed")
+        }
         next
     }
 
