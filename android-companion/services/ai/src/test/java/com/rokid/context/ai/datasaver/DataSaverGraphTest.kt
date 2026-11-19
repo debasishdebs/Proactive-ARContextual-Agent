@@ -73,17 +73,17 @@ class DataSaverGraphTest {
         var snap = mobile.copy(notRoaming = false)
         val p = prefs("dsg8")
         val g = graph(DataSaverStore(p)) { snap }
-        assertFalse(g.wasBlocked())
+        assertEquals(0L, g.blockedSince())
         g.refreshState()
-        assertTrue("a refresh that sees photos blocked marks it", g.wasBlocked())
+        assertTrue("a refresh that sees photos blocked marks it", g.blockedSince() != 0L)
         snap = wifi
         val afterRestart = graph(DataSaverStore(p)) { snap } // a new process: photoOpen starts unknown, no listener fires
         afterRestart.refreshState()
-        assertTrue("the mark survives, so the pipeline still parks the backlog", afterRestart.wasBlocked())
-        afterRestart.clearBlocked()
-        assertFalse(graph(DataSaverStore(p)) { snap }.wasBlocked())
+        assertTrue("the mark survives, so the pipeline still parks the backlog", afterRestart.blockedSince() != 0L)
+        assertTrue(afterRestart.clearBlocked(afterRestart.blockedSince()))
+        assertEquals(0L, graph(DataSaverStore(p)) { snap }.blockedSince())
         // a blocked call marks it too
-        graph(DataSaverStore(p)) { snap }.also { it.skipped(DataKind.PHOTO, Skipped.UPLOAD_QUEUED, DataDecision(false, "roaming")); assertTrue(it.wasBlocked()) }
+        graph(DataSaverStore(p)) { mobile.copy(notRoaming = false) }.also { it.skipped(DataKind.PHOTO, Skipped.UPLOAD_QUEUED, DataDecision(false, "roaming")); assertTrue(it.blockedSince() != 0L) }
     }
 
     @Test fun theDefaultAllowsHomeMobileDataButNotRoamingOrUnknown() {
@@ -142,5 +142,43 @@ class DataSaverGraphTest {
         snap = mobile; g.refresh(); snap = wifi; g.refresh(); assertEquals(2, fired)
         // the mode switch also opens it
         snap = mobile; g.refresh(); store.setMode(DataMode.WIFI_AND_HOME_MOBILE); g.refresh(); assertEquals(3, fired)
+    }
+
+    private val cellRoaming = NetSnapshot(true, Transport.CELLULAR, validated = true, notMetered = false, notRoaming = false)
+
+    @Test fun aWifiReconnectBlipBeforeValidationDoesNotMarkButOneStillUnvalidatedAfterTheDebounceDoes() {
+        val now = System.currentTimeMillis()
+        var snap = NetSnapshot(true, Transport.WIFI, validated = false, notMetered = true, notRoaming = true, unvalidatedSinceMs = now - 5_000)
+        val g = graph { snap }
+        g.refreshState()
+        assertEquals("pre-validation blip: not marked", 0L, g.blockedSince()); assertFalse(g.heldBack())
+        snap = snap.copy(unvalidatedSinceMs = now - 30_000)
+        g.refreshState()
+        assertTrue("still blocked after the debounce: marked", g.blockedSince() != 0L); assertTrue(g.heldBack())
+    }
+
+    @Test fun anOnDeviceExtractorOnRoamingMobileNeverMarksButARemoteOneDoes() {
+        val device = graph { cellRoaming }.also { it.reachProvider = { EndpointReach.DEVICE } }
+        device.refreshState(); device.refreshState()
+        assertEquals(0L, device.blockedSince()); assertFalse(device.heldBack())
+        device.skipped(DataKind.PHOTO, Skipped.UPLOAD_QUEUED, DataDecision(false, "roaming")) // some other remote photo call being blocked is not this app's backlog
+        assertEquals(0L, device.blockedSince())
+        val lan = graph(DataSaverStore(prefs("dsg9"))) { cellRoaming }.also { it.reachProvider = { EndpointReach.LAN } }
+        lan.refreshState(); assertEquals("a LAN box is not reachable for free on mobile data: held back", true, lan.blockedSince() != 0L)
+        val remote = graph(DataSaverStore(prefs("dsg10"))) { cellRoaming }
+        remote.refreshState(); assertTrue(remote.blockedSince() != 0L)
+    }
+
+    @Test fun clearBlockedIsCompareAndClearSoABlockSeenWhileParkingSurvives() {
+        val store = DataSaverStore(prefs("dsg11"))
+        store.markBlocked(1_000)
+        val read = store.blockedSince()
+        store.markBlocked(1_000 + DataSaverStore.MARK_REFRESH_MS + 5) // a new block arrives between the read and the clear
+        assertFalse("the mark moved: not cleared", store.clearBlocked(read))
+        assertTrue(store.blockedSince() > read)
+        assertTrue(store.clearBlocked(store.blockedSince()))
+        assertEquals(0L, store.blockedSince())
+        assertFalse("nothing to clear", store.clearBlocked(read))
+        assertFalse("0 never clears", store.clearBlocked(0L))
     }
 }

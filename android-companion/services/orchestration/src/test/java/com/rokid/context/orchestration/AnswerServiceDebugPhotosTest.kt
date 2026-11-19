@@ -99,6 +99,10 @@ class AnswerServiceDebugPhotosTest {
     @Test fun theProductionGateIsOffByDefaultOnWithTheSwitchAndPausedByAPause() = runBlocking<Unit> {
         NudgeEnvironment.hud = { NudgeHud(null, Verbosity.MEDIUM, java.time.ZoneOffset.UTC) }
         AppConfigStore.setPipelineEnabled(ctx, true)
+        // Robolectric has no network: the real data saver would read "unknown" (fail closed, photos held back). Home mobile data is what a default user has: the default mode allows it, so the gate behaves exactly as before.
+        var net = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.CELLULAR, validated = true, notMetered = false, notRoaming = true)
+        ctx.getSharedPreferences(com.rokid.context.ai.datasaver.DataSaverStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+        com.rokid.context.ai.datasaver.DataSaverGraph.resetForTests(com.rokid.context.ai.datasaver.DataSaverGraph.forTests(ctx) { net })
         try {
             val gate = AnswerService.forApp(ctx, extractFirst = false).askDebugPhotos()
             assertFalse("the switch defaults to OFF", gate.allowed())
@@ -111,6 +115,12 @@ class AnswerServiceDebugPhotosTest {
             assertTrue(gate.allowed())
             AskPhotoPolicy.set(ctx, false)
             assertFalse(gate.allowed())
-        } finally { NudgeEnvironment.hud = null; AskPhotoPolicy.set(ctx, false) }
+            // the data saver is a further, separate condition: roaming holds photos back, the other semantics are untouched
+            AskPhotoPolicy.set(ctx, true)
+            net = net.copy(notRoaming = false)
+            assertFalse("roaming: no photo leaves", gate.allowed())
+            net = net.copy(notRoaming = true)
+            assertTrue(gate.allowed())
+        } finally { NudgeEnvironment.hud = null; AskPhotoPolicy.set(ctx, false); com.rokid.context.ai.datasaver.DataSaverGraph.resetForTests(null) }
     }
 }

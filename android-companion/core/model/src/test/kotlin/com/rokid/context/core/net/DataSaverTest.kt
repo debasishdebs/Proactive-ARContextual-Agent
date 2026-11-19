@@ -77,6 +77,16 @@ class DataSaverTest {
         assertEquals("", NetworkCosts.roamingWhy(snap(Transport.CELLULAR, restrict = true), false))
     }
 
+    @Test fun preValidationBlipOnlyOnAConnectedWifiForTheFirstTwentySeconds() {
+        val t0 = 5_000_000L
+        val s = snap(Transport.WIFI, validated = false, notMetered = true).copy(unvalidatedSinceMs = t0)
+        assertTrue(NetworkCosts.preValidationBlip(s, t0 + 5_000))
+        assertFalse(NetworkCosts.preValidationBlip(s, t0 + 25_000))
+        assertFalse(NetworkCosts.preValidationBlip(s.copy(transport = Transport.CELLULAR), t0 + 5_000))
+        assertFalse(NetworkCosts.preValidationBlip(s.copy(unvalidatedSinceMs = 0), t0 + 5_000))
+        assertFalse(NetworkCosts.preValidationBlip(NetSnapshot.UNKNOWN, t0))
+    }
+
     // ---- the decision ----
 
     private fun decide(kind: DataKind, cost: NetworkCost, s: DataSaverSettings = DataSaverSettings(DataMode.WIFI_ONLY), reach: EndpointReach = EndpointReach.REMOTE, t: Transport = Transport.CELLULAR) =

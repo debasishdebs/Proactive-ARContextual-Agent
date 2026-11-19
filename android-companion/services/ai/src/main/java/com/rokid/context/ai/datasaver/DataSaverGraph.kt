@@ -53,12 +53,23 @@ class DataSaverGraph internal constructor(
         return DataPolicy.decide(kind, reach, NetworkCosts.classify(snap, s.abroad), snap.transport, s)
     }
 
-    /** Photo uploads were blocked at some point since the pipeline last handled it (persisted: survives a restart). */
-    fun wasBlocked(): Boolean = store.blockedSince() != 0L
-    fun clearBlocked() = store.clearBlocked()
+    /** Where the photo calls go (the vision endpoint's kind). Set by the app (`KeyframeGraph`); REMOTE, the fail-closed answer, until then. The same input the pipeline's own gate uses. */
+    @Volatile var reachProvider: () -> EndpointReach = { EndpointReach.REMOTE }
+
+    /**
+     * Photo uploads are held back right now for THIS app's photo endpoint (reach-aware, like the pipeline) and not merely in the pre-validation blip every Wi-Fi reconnect shows (cost UNKNOWN for a moment).
+     * This is the only input of the persisted "blocked" mark, of the insert-time parking probe and of the waiting line.
+     */
+    fun heldBack(): Boolean =
+        !decide(DataKind.PHOTO, reachProvider()).allowed && !NetworkCosts.preValidationBlip(snapshotNow(), System.currentTimeMillis())
+
+    /** When photo uploads were first held back since the pipeline last handled it (0 = not; persisted: survives a restart). */
+    fun blockedSince(): Long = store.blockedSince()
+    /** Clears the mark only if it still equals [expected] (read before the backlog was parked). */
+    fun clearBlocked(expected: Long): Boolean = store.clearBlocked(expected)
 
     override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {
-        if (kind == DataKind.PHOTO) store.markBlocked(System.currentTimeMillis())
+        if (kind == DataKind.PHOTO && heldBack()) store.markBlocked(System.currentTimeMillis())
         ledger.add(what)
         // a blocked CALL: a parked frame can be blocked again at each recheck, so this counts calls, not photos (the live waiting count comes from the database)
         PcLog.i(TAG, "blocked kind=${kind.name} what=$what reason=${d.reason}")
@@ -76,14 +87,23 @@ class DataSaverGraph internal constructor(
             lastCost = cost
             PcLog.i(TAG, "net cost=${cost.name}")
         }
-        val open = decide(DataKind.PHOTO).allowed
-        if (!open) store.markBlocked(System.currentTimeMillis())
+        val open = decide(DataKind.PHOTO, reachProvider()).allowed
+        if (heldBack()) store.markBlocked(System.currentTimeMillis())
+        else if (!open) recheckAfterBlip() // pre-validation blip: look again once the debounce is over; still blocked then = marked
         val was = photoOpen
         photoOpen = open
         if (open && was == false) {
             PcLog.i(TAG, "photo uploads open")
             openListeners.forEach { l -> try { l() } catch (e: Exception) { PcLog.w(TAG, "open hook failed: ${e.javaClass.simpleName}") } }
         }
+    }
+
+    private val blipScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Volatile private var blipPending = false
+    private fun recheckAfterBlip() {
+        if (blipPending) return
+        blipPending = true
+        blipScope.launch { kotlinx.coroutines.delay(NetworkCosts.BLIP_MS + 1_000); blipPending = false; refreshState() }
     }
 
     companion object {

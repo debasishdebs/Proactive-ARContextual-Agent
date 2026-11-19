@@ -149,8 +149,8 @@ class KeyframeHandle internal constructor(private val app: Context) {
         KeyframePipeline(
             db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated,
             onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, dataSaverBlocked = { dataGate.refresh(); !photoUploadsAllowed() },
-            dataSaverWasBlocked = { (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.wasBlocked() == true },
-            dataSaverHandled = { (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.clearBlocked() }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
+            dataSaverBlockedSince = { (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.blockedSince() ?: 0L },
+            dataSaverHandled = { since -> (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.clearBlocked(since) }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
         )
     }
 
@@ -183,7 +183,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     private var networkWatch: ConnectivityManager.NetworkCallback? = null
     private val openHooked = AtomicBoolean(false)
     /** The roaming data saver (the app's one [com.rokid.context.ai.datasaver.DataSaverGraph]). */
-    internal val dataGate: DataGate by lazy { com.rokid.context.ai.datasaver.DataSaverGraph.get(app) }
+    internal val dataGate: DataGate by lazy { com.rokid.context.ai.datasaver.DataSaverGraph.get(app).also { it.reachProvider = ::photoReach } }
     private val started = AtomicBoolean(false)
 
     /** Starts the loop, requeues abandoned claims (startup recovery) and watches for the network coming back. Idempotent: recovery runs once. */

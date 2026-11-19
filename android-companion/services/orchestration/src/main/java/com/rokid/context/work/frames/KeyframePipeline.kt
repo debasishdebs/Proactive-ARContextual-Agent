@@ -179,10 +179,10 @@ class KeyframePipeline(
      * parked frame is never shed afterwards, not even on the first drain after the gate opens ([shedBacklog] skips it): frames must wait for Wi-Fi, not be shed and later deleted undescribed.
      */
     private val dataSaverBlocked: () -> Boolean = { false },
-    /** True when the data saver blocked photo uploads since the last time this was handled, even in an earlier process (a persisted mark). The first unblocked drain then parks the backlog synchronously BEFORE any shedding. */
-    private val dataSaverWasBlocked: () -> Boolean = { false },
-    /** Called once that first unblocked drain has parked the backlog. */
-    private val dataSaverHandled: () -> Unit = {},
+    /** The time (non-zero) the data saver first held photo uploads back since the last time this was handled, even in an earlier process (a persisted mark). The first unblocked drain then parks the backlog synchronously BEFORE any shedding. */
+    private val dataSaverBlockedSince: () -> Long = { 0L },
+    /** Called once that first unblocked drain has parked the backlog, with the mark value read BEFORE parking (the store clears only if it is still that value: a block seen meanwhile survives). */
+    private val dataSaverHandled: (Long) -> Unit = {},
 ) {
     private sealed interface Step {
         data class Done(val frames: Int) : Step
@@ -396,7 +396,8 @@ class KeyframePipeline(
             if (dataSaverBlocked()) states.parkPendingForDataSaver()
             else {
                 // The first drain after a block (this process or an earlier one) tags everything waiting synchronously, so neither a restart nor an opening noticed inside this very drain can let shedBacklog thin it.
-                if (dataSaverWasBlocked()) { states.parkPendingForDataSaver(); dataSaverHandled() }
+                val since = dataSaverBlockedSince()
+                if (since != 0L) { states.parkPendingForDataSaver(); dataSaverHandled(since) }
                 shedBacklog(now)
             }
         }
