@@ -1,5 +1,7 @@
 # PCA Nexus publish against the real Nexus hub (S1.5b), emulator only, 2026-11-19
 
+**WARNING: emulator only.** Never run `connectedDebugAndroidTest` while the real phone or glasses are attached: the task installs on every attached device, and this test runs `am force-stop` on the hub. The test class now skips itself (Assume) unless the device is an emulator.
+
 Emulator `emulator-5554` only (AVD MyEmulator, API 34, no glasses link, no Hi Rokid). Counts, codes and states only; no content. No real device was addressed (the emulator was the only attached device).
 
 ## How it was done (no production hook)

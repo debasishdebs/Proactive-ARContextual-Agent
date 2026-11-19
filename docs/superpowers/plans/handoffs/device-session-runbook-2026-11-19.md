@@ -10,6 +10,7 @@ Sections 0-2 (pre-flight, identify, dry run): 15 min. Section 3 (backup + instal
 Time log: start ____ end ____
 
 ## 0. Pre-flight (5 min)
+- [ ] NEVER run `connectedDebugAndroidTest` while the real phone or glasses are attached: the task installs and runs on every attached device, and the Nexus real-hub test force-stops the hub (it now skips itself unless the device is an emulator, but do not rely on that).
 - [ ] Laptop awake (no sleep) and on the charger; repo at `~/Desktop/rokid/proactive-context-agent`.
 - [ ] Phone unlocked, screen on, USB debugging authorised for this Mac, > 50% battery or charging. Do NOT change the screen lock or credentials (Keystore risk, v17-upgrade-recovery section 5).
 - [ ] Glasses awake, > 50%, on USB or Wi-Fi adb. (Earlier today the glasses showed as `192.168.68.105:5555` OFFLINE and the phone was not listed: re-check.)
