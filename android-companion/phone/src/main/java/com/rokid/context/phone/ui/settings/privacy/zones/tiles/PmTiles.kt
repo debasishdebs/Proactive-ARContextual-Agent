@@ -252,7 +252,7 @@ class PmTilesReader private constructor(private val src: ByteSource, val header:
                 ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { p -> p.isString }?.content }
             raw?.replace(Regex("<[^>]*>"), "")?.replace(Regex("\\s+"), " ")?.trim()?.take(120)?.ifBlank { null }
         }
-    } catch (e: Exception) { null }
+    } catch (e: Exception) { null } catch (e: StackOverflowError) { null } // deeply nested hostile metadata JSON
 
     override fun close() = src.close()
 
