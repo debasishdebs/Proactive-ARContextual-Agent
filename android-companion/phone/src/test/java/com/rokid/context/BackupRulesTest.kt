@@ -62,6 +62,8 @@ class BackupRulesTest {
         "pause_zone_state",
         // Offline map: the saved choice holds a document URI whose read grant does not survive a restore: never restored.
         com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapStore.PREFS,
+        // Street map (opt-in): the switch and its first-time consent are per-device consent: OFF again after a restore.
+        com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapStore.PREFS,
         // User-pinned places (exact coordinates, names, notes): private, never in an automatic backup or transfer; only the explicit settings export carries them (P1 review).
         com.rokid.context.memory.place.UserPinStore.PREFS,
         // Place Guide: the on/off switch is per-device (default off after a restore).

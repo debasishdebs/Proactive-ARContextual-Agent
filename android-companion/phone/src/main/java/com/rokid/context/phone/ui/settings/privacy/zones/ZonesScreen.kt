@@ -19,6 +19,12 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.CentreRequest
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapDeps
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapModel
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapUi
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapWords
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.RasterTileSource
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapUi
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapViewModel
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapWords
@@ -26,6 +32,7 @@ import com.rokid.context.phone.ui.settings.privacy.zones.tiles.MapMode
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.PmTilesReader
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileCache
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileDecode
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileKey
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileMath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,6 +40,16 @@ import android.graphics.BitmapFactory
 import kotlin.math.roundToInt
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -122,14 +139,52 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit) {
         if (state.requestPermission) { vm.permissionPromptShown(); launcher.launch(LOCATION_PERMISSIONS) }
     }
     val offline = deps.offlineMap?.let { make -> remember { make() } }
-    if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back)); return }
+    val online = deps.onlineMap?.let { make -> remember { make() } }?.let { d -> rememberOnlinePanel(d, ::granted, vm::requestLocation) }
+    if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
     val mapUi by mapVm.ui.collectAsStateWithLifecycle()
     val reader by mapVm.reader.collectAsStateWithLifecycle()
     val link = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.link(u.toString()) }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.importCopy(u.toString()) }
     val panel = OfflineMapPanel(mapUi, reader, { link.launch(PICK_TYPES) }, { import.launch(PICK_TYPES) }, mapVm::remove, mapVm::dismissMessage)
-    ZonesScreen(state, ZonesCallbacks.of(vm, back), panel)
+    ZonesScreen(state, ZonesCallbacks.of(vm, back), panel, online)
+}
+
+/**
+ * Builds the street-map panel: the switch state, the tile source (started only while this screen is resumed, stopped and its requests cancelled on pause, stop and leaving) and the
+ * one-shot "Centre on me". Location is read ONLY here, on the tap, with the existing permission; the result is held in screen state and never stored or logged.
+ */
+@Composable
+private fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPermission: () -> Unit): OnlineMapPanel {
+    val ui by d.model.ui.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    var foreground by remember { mutableStateOf(false) }
+    var centre by remember { mutableStateOf<CentreRequest?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    var seq by remember { mutableStateOf(0) }
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner, ui.enabled) {
+        val obs = LifecycleEventObserver { _, e ->
+            when (e) {
+                Lifecycle.Event.ON_RESUME -> { foreground = true; if (ui.enabled) d.source?.start() }
+                Lifecycle.Event.ON_PAUSE -> { foreground = false; d.source?.stop() }
+                else -> {}
+            }
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs); d.source?.stop() }
+    }
+    val tap: () -> Unit = {
+        if (!granted()) { note = "Allow location to centre the map on you."; askPermission() }
+        else if (!busy) scope.launch {
+            busy = true; note = null
+            val p = d.fix?.current()
+            busy = false
+            if (p == null) note = OnlineMapWords.NO_FIX else centre = CentreRequest(++seq, p)
+        }
+    }
+    return OnlineMapPanel(ui, d.source.takeIf { ui.enabled && ui.available }, foreground, centre, busy, note, d.model::requestEnabled, d.model::confirmFirst, d.model::cancelFirst, tap, { note = null }, d.fix != null)
 }
 
 /** A PMTiles file has no registered MIME type, so the picker is not narrowed. */
@@ -145,18 +200,36 @@ class OfflineMapPanel(
     val dismiss: () -> Unit,
 )
 
+/** What the zones screen needs to offer the opt-in street map and "Centre on me". [source] is non-null only while the switch is ON; [foreground] is whether this screen is resumed. */
+class OnlineMapPanel(
+    val ui: OnlineMapUi,
+    val source: RasterTileSource?,
+    val foreground: Boolean,
+    val centre: CentreRequest?,
+    val centreBusy: Boolean,
+    val note: String?,
+    val setEnabled: (Boolean) -> Unit,
+    val confirmFirst: () -> Unit,
+    val cancelFirst: () -> Unit,
+    val centreOnMe: () -> Unit,
+    val dismissNote: () -> Unit,
+    val canCentre: Boolean = true,
+)
+
 private val LOCATION_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
 @Composable
-fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null) {
+fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null, online: OnlineMapPanel? = null) {
     SettingsPage("Pause zones", on.back, tag = "zones_screen") {
         item {
             SettingsCard {
-                Text("Capture pauses inside a red box and in the ring around it. " + if (offline?.reader != null) "The map is drawn from your offline file." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
-                ZoneMap(state, on, offline?.reader)
+                Text("Capture pauses inside a red box and in the ring around it. " + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+                ZoneMap(state, on, offline?.reader, online)
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = !state.protectedMode)
+                    if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
                 }
+                online?.note?.let { n -> NoticeText(n, tag = "zone_centre_note"); SecondaryAction("Dismiss", online.dismissNote, tag = "zone_centre_note_dismiss") }
                 if (state.drawing) NoticeText("Drag on the map from one corner to the opposite corner.", tag = "zone_draw_hint")
                 if (state.you == null) NoticeText("Your position is not shown: there is no fresh location fix.", tag = "zone_no_fix")
             }
@@ -169,6 +242,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             }
         }
         state.message?.let { m -> item { SettingsCard { NoticeText(m, error = state.messageIsError, tag = "zone_message"); SecondaryAction("Dismiss", on.dismissMessage, tag = "zone_message_dismiss") } } }
+        online?.let { p -> item { OnlineMapCard(p) } }
         offline?.let { p -> item { OfflineMapCard(p) } }
         item { NewZoneCard(state, on) }
         item {
@@ -187,6 +261,16 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             }
         }
     }
+    online?.takeIf { it.ui.askFirst }?.let { p ->
+        AlertDialog(
+            onDismissRequest = p.cancelFirst, modifier = Modifier.testTag("online_first_dialog"),
+            title = { Text(OnlineMapWords.DIALOG_TITLE) },
+            text = { Text(OnlineMapWords.DIALOG_BODY) },
+            // Cancel is the prominent (default) choice; turning the download on is the plain text button.
+            confirmButton = { Button(p.cancelFirst, Modifier.testTag("online_first_cancel")) { Text("Cancel") } },
+            dismissButton = { TextButton(p.confirmFirst, Modifier.testTag("online_first_confirm")) { Text("Turn on and download tiles") } },
+        )
+    }
     state.pendingDeleteId?.let { id ->
         val name = state.rows.firstOrNull { it.zone.id == id }?.zone?.name ?: "this zone"
         AlertDialog(
@@ -196,6 +280,19 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             confirmButton = { TextButton(on.confirmDelete, Modifier.testTag("zone_delete_confirm")) { Text("Delete") } },
             dismissButton = { TextButton(on.cancelDelete, Modifier.testTag("zone_delete_cancel")) { Text("Keep") } },
         )
+    }
+}
+
+@Composable
+private fun OnlineMapCard(p: OnlineMapPanel) {
+    SettingsCard {
+        Text("Street map", style = MaterialTheme.typography.titleMedium)
+        if (!p.ui.available) { NoticeText(OnlineMapWords.UNAVAILABLE, tag = "online_unavailable"); return@SettingsCard }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(OnlineMapWords.SWITCH, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            Switch(p.ui.enabled, { p.setEnabled(it) }, modifier = Modifier.testTag("online_switch"))
+        }
+        NoticeText("Off by default. When on, the tile provider receives requests for the area you are looking at, and your IP address, only while this screen is open. Tiles are kept on the phone (up to 50 MB) until you turn this off or use Delete all. An offline file you choose below is used instead.", tag = "online_note")
     }
 }
 
@@ -216,7 +313,7 @@ private fun OfflineMapCard(p: OfflineMapPanel) {
         PrimaryAction("Choose a .pmtiles file", p.chooseLink, tag = "offline_choose", enabled = !u.busy)
         SecondaryAction("Import (copy) into the app", p.chooseImport, tag = "offline_import", enabled = !u.busy)
         if (sel != null) SecondaryAction(if (sel.mode == MapMode.IMPORTED) "Delete the copy" else "Stop using this file", p.remove, tag = "offline_remove", enabled = !u.busy)
-        NoticeText("Choose reads the file where it is, with no storage permission. Import copies it into the app only if you ask. The app never fetches map tiles from the internet.", tag = "offline_note")
+        NoticeText("Choose reads the file where it is, with no storage permission. Import copies it into the app only if you ask. Online tiles are used only if you turn on the street map above.", tag = "offline_note")
     }
 }
 
@@ -270,7 +367,7 @@ private fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
 
 /** The tile-less map: plain background, a latitude/longitude grid, red boxes with their buffer ring, the draft box and (only with a fresh fix) a blue dot for the user. */
 @Composable
-private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null) {
+private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
@@ -284,15 +381,30 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
         val boxes = zones.map { MapViewport.ringOf(it) }.ifEmpty { state.you?.let { listOf(MapViewport.grown(it.lat, it.lon, it.lat, it.lon, 2_000.0)) } ?: emptyList() }
         vp = MapViewport.fit(boxes, size.width, size.height)
     }
-    val cache = remember(reader) { reader?.let { r -> TileCache<ImageBitmap>(weigh = { it.width.toLong() * it.height * 4 }) { k -> r.tile(k.z, k.x, k.y)?.let { b -> decodeTileBounded(b) } } } }
+    // An offline PMTiles file wins; otherwise the opt-in online source (only while this screen is in the foreground); otherwise the plain grid.
+    val onlineSource = online?.source?.takeIf { reader == null }
+    val tiles: RasterTileSource? = remember(reader, onlineSource) { reader?.let { r -> ReaderTiles(r) } ?: onlineSource }
+    val cache = remember(tiles) { tiles?.let { t -> TileCache<ImageBitmap>(weigh = { it.width.toLong() * it.height * 4 }, rememberAbsent = onlineSource == null) { k -> t.tile(k)?.let { b -> decodeTileBounded(b) } } } }
     var loaded by remember(cache) { mutableStateOf(0) }
-    val zoom = vp?.let { v -> reader?.let { TileMath.zoomFor(v.ppd, it.minZoom, it.maxZoom) } }
+    val zoom = vp?.let { v -> tiles?.let { TileMath.zoomFor(v.ppd, it.minZoom, it.maxZoom) } }
     val wanted = if (vp != null && zoom != null) TileMath.visible(vp!!, zoom) else emptyList()
-    LaunchedEffect(cache, wanted) {
+    val canFetch = onlineSource == null || online?.foreground == true
+    LaunchedEffect(cache, wanted, canFetch) {
         val c = cache ?: return@LaunchedEffect
-        if (wanted.isNotEmpty() && withContext(Dispatchers.IO) { c.ensure(wanted) }) loaded++
+        if (wanted.isEmpty() || !canFetch) return@LaunchedEffect
+        withContext(Dispatchers.IO) {
+            if (onlineSource == null) { if (c.ensure(wanted)) loaded++ }
+            else for (chunk in wanted.chunked(ONLINE_PARALLEL)) coroutineScope { chunk.map { k -> async { if (c.ensure(listOf(k))) loaded++ } }.awaitAll() }
+        }
     }
-    val attribution = remember(reader) { reader?.attribution() }
+    val centreReq = online?.centre
+    LaunchedEffect(centreReq?.id, size.width >= 10f && size.height >= 10f) {
+        val r = centreReq ?: return@LaunchedEffect
+        if (size.width < 10f || size.height < 10f) return@LaunchedEffect
+        vp = MapViewport.fit(listOf(MapViewport.grown(r.at.lat, r.at.lon, r.at.lat, r.at.lon, CENTRE_HALF_SPAN_M)), size.width, size.height)
+    }
+    val offlineAttribution = remember(reader) { reader?.attribution() }
+    val onlineShown = onlineSource != null && loaded >= 0 && cache != null && wanted.any { cache.peek(it) != null }
     val summary = "Map with ${zones.size} pause zone" + (if (zones.size == 1) "" else "s") + if (state.you != null) " and your position" else ""
     Box(
         Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, PcColors.Line, RoundedCornerShape(12.dp))
@@ -331,9 +443,14 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
             state.draft.box()?.let { drawBox(v, it, ZoneRed, filled = false, dashed = true) }
             val a = dragA; val b = dragB
             if (a != null && b != null) drawRect(ZoneRed, Offset(min(a.x, b.x), min(a.y, b.y)), Size(abs(a.x - b.x), abs(a.y - b.y)), style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))))
-            state.you?.let { y -> val p = v.toPx(y.lat, y.lon); drawCircle(Color.White, 9.dp.toPx(), Offset(p.x, p.y)); drawCircle(PcColors.Sky, 6.dp.toPx(), Offset(p.x, p.y)) }
+            (centreReq?.at ?: state.you)?.let { y -> val p = v.toPx(y.lat, y.lon); drawCircle(Color.White, 9.dp.toPx(), Offset(p.x, p.y)); drawCircle(PcColors.Sky, 6.dp.toPx(), Offset(p.x, p.y)) }
         }
-        attribution?.let { a -> Text(a, style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft, modifier = Modifier.align(Alignment.BottomEnd).background(Color.White.copy(alpha = 0.7f)).padding(horizontal = 4.dp).testTag("zone_map_attribution")) }
+        offlineAttribution?.let { a -> Text(a, style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft, modifier = Modifier.align(Alignment.BottomEnd).background(Color.White.copy(alpha = 0.7f)).padding(horizontal = 4.dp).testTag("zone_map_attribution")) }
+        // The provider's terms: its attribution and logo text on every map that shows its tiles.
+        if (onlineShown && onlineSource != null) Row(Modifier.align(Alignment.BottomEnd).background(Color.White.copy(alpha = 0.8f)).padding(horizontal = 4.dp).testTag("zone_map_attribution"), verticalAlignment = Alignment.CenterVertically) {
+            onlineSource.logoText?.let { Text(it, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = PcColors.InkSoft, modifier = Modifier.padding(end = 4.dp).testTag("zone_map_logo")) }
+            onlineSource.attribution?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft) }
+        }
         Row(Modifier.align(Alignment.TopEnd).padding(4.dp)) {
             MapButton("+", "zone_zoom_in") { vp = vp?.zoomed(1.6) }
             MapButton("-", "zone_zoom_out") { vp = vp?.zoomed(1 / 1.6) }
@@ -363,6 +480,17 @@ internal fun DrawScope.drawLabel(tm: TextMeasurer, text: String, at: Offset, sty
 }
 
 private const val LABEL_MAX_WIDTH_DP = 160
+private const val ONLINE_PARALLEL = 4
+/** "Centre on me": the box is 2 x this around the fix, so the view is about 500 m across. */
+private const val CENTRE_HALF_SPAN_M = 250.0
+
+/** The open PMTiles archive as a tile source: it never goes online and its attribution is drawn from the archive itself. */
+private class ReaderTiles(private val r: PmTilesReader) : RasterTileSource {
+    override val minZoom get() = r.minZoom
+    override val maxZoom get() = r.maxZoom
+    override val attribution: String? get() = null
+    override fun tile(k: TileKey): ByteArray? = r.tile(k.z, k.x, k.y)
+}
 private const val TICK_GAP_PX = 6f
 
 /** One longitude gridline: its x, and its label (null when the label would overlap the previous kept one) with the label's [left, right] edges. */

@@ -79,6 +79,8 @@
         <!-- Offline map (PMTiles): the saved choice (a document URI whose read grant does not survive a restore) and an imported private copy of the user's own map file (large, re-importable). Never backed up or transferred. -->
         <exclude domain="sharedpref" path="offline_map.xml" />
         <exclude domain="file" path="offline_maps" />
+        <!-- Street map (opt-in): the switch and its first-time consent are per-device (OFF again after a restore). The tile cache is in the cache folder, never backed up. -->
+        <exclude domain="sharedpref" path="online_map.xml" />
         <!-- Place Guide switch: per-device, off again after a restore -->
         <exclude domain="sharedpref" path="place_guide.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />
@@ -172,6 +174,8 @@
         <!-- Offline map (PMTiles): the saved choice (a document URI whose read grant does not survive a restore) and an imported private copy of the user's own map file (large, re-importable). Never backed up or transferred. -->
         <exclude domain="sharedpref" path="offline_map.xml" />
         <exclude domain="file" path="offline_maps" />
+        <!-- Street map (opt-in): the switch and its first-time consent are per-device (OFF again after a restore). The tile cache is in the cache folder, never backed up. -->
+        <exclude domain="sharedpref" path="online_map.xml" />
         <!-- Place Guide switch: per-device, off again after a restore -->
         <exclude domain="sharedpref" path="place_guide.xml" />
         <exclude domain="sharedpref" path="nexus_host.xml" />

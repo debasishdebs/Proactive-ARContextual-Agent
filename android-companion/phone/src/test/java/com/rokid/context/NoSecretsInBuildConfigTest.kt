@@ -17,8 +17,11 @@ import org.robolectric.annotation.Config
 class NoSecretsInBuildConfigTest {
     private val secretName = Regex("(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)")
 
+    /** The one reviewed exception: the street-map tile key is a public client key, embedded by design and NOT secret (phone/build.gradle.kts). Its value is still held to the value guard below and to a plain charset. */
+    private val publicClientFields = setOf("MAP_TILES_KEY")
+
     @Test fun buildConfigHasNoSecretFields() {
-        val offenders = BuildConfig::class.java.declaredFields.map { it.name }.filter { secretName.containsMatchIn(it) }
+        val offenders = BuildConfig::class.java.declaredFields.map { it.name }.filter { secretName.containsMatchIn(it) && it !in publicClientFields }
         assertTrue("BuildConfig must not carry secrets: $offenders", offenders.isEmpty())
     }
 
@@ -48,6 +51,10 @@ class NoSecretsInBuildConfigTest {
         assertFalse(secretValue.containsMatchIn("http://10.0.2.2:11434"))
         assertFalse(secretValue.containsMatchIn("https://h/access_tokens/list"))
         assertFalse(secretValue.containsMatchIn("https://res.openai.azure.com"))
+    }
+
+    @Test fun theMapTileKeyDefaultsToEmptyAndHasAPlainCharset() {
+        assertTrue(Regex("[A-Za-z0-9_-]*").matches(BuildConfig.MAP_TILES_KEY))
     }
 
     /** Names only in the message, never a value. */

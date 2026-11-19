@@ -94,7 +94,7 @@ data class OfflineMapUi(
 )
 
 object OfflineMapWords {
-    const val NONE = "No offline map is selected: the plain grid is used. Pick a PMTiles file you built on your computer. The app never downloads map tiles."
+    const val NONE = "No offline map is selected: the plain grid is used. Pick a PMTiles file you built on your computer. Online street tiles are used only if you turn on the street map switch."
     const val NOT_URI = "That is not a file from the document picker. Nothing was changed."
     const val NO_ROOM = "There is not enough free space to copy that file into the app. Nothing was changed."
     const val CANT_OPEN = "The offline map file could not be opened (it may have been moved, or access was withdrawn). The plain grid is used. Remove it or pick the file again."
