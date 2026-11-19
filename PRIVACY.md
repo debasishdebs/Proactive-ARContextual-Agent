@@ -8,7 +8,7 @@ PCA has no server of its own and no account. There is no analytics or crash uplo
 
 - **Memories, photos, Moments, marks, answers, nudges**: in an encrypted Room database (SQLCipher). The key lives in the Android Keystore and never leaves the phone. Photos are JPEG files in the app's private storage.
 - **Locations**: PCA does not store a precise location history. Pause-zone and Place Guide fixes are used in memory and dropped (`TripLocation`: "never stored, logged or sent"). Exceptions you create on purpose:
-  - **Pins** (`place_pins`): names, notes and exact coordinates you pin. They stay on the phone, are excluded from every backup and device transfer, and are kept until you delete them. Only the explicit settings export (which you choose to make and share) can carry them.
+  - **Pins** (`place_pins`): names, notes and exact coordinates you pin. They stay on the phone, are excluded from every Android backup and device transfer, and are kept until you delete them. Two things can carry them: the explicit settings export (which you choose to make and share), and the install helper's safety backup to your own Mac, which archives the whole app directory (section 13).
   - **Offline map choice**: see section 10.
   - **Pause zones** (`pause_zones`): the boxes you draw, with names and buffers.
   - **Place memories**: a photo that matched a monument stores the monument (id, name), not your coordinates. A memory's own context line may carry a coarse place label if you switched the Location context source on (off by default).
@@ -26,7 +26,7 @@ PCA has no server of its own and no account. There is no analytics or crash uplo
 | One extra photo plus a numbered list of candidate monument names (`PLACE_MATCH`) | The same vision endpoint | Place Guide on, a glance (dwell) photo, candidate monuments nearby, not in a pause zone. The list holds monuments only, never people. This is a second upload of the same photo; bystanders may be in it. |
 | Photos that match a question | Your configured **Answer endpoint** | Only if "Send matching photos with questions" is on (off by default, max 2 photos, never while paused or in quiet hours, switched off again by Delete all). |
 | Embedding requests | Your embedding endpoint, if you chose a remote one; otherwise on-device | Text/image embedding role binding. |
-| The 5 km cell key and box (not your position) | `en.wikipedia.org`, `www.wikidata.org`, and the Overpass mirrors `overpass-api.de`, `overpass.kumi.systems`, `overpass.private.coffee` (tried in that order) | Place Guide seeding (including the Hyderabad and Ramoji Film City presets) or a glance with no fresh cell. Each request is checked against pause zones first. The User-Agent is a fixed `ProactiveContextAgent/1.1 (...)` string with no personal data. If Overpass answers on no mirror, the cell is kept as "seeded without OSM extras" (Wikipedia/Wikidata only); seed again later to add them. |
+| The 5 km cell box (not your position), then public page IDs and Wikidata QIDs | `en.wikipedia.org`, `www.wikidata.org`, and the Overpass mirrors `overpass-api.de`, `overpass.kumi.systems`, `overpass.private.coffee` (tried in that order) | Place Guide seeding (including the trip presets) or a glance with no fresh cell. Wikipedia geosearch and Overpass receive the cell's bounds; the later Wikipedia and Wikidata requests receive only public page IDs and QIDs. No precise fix, pin or memory content is in any of them. Each request is checked against pause zones first. The User-Agent is a fixed `ProactiveContextAgent/1.1 (...)` string with no personal data. If Overpass answers on no mirror, the cell is kept as "seeded without OSM extras" (Wikipedia/Wikidata only); seed again later to add them. |
 | Model file download | `huggingface.co` | Only when you download an on-device model. |
 | Map tiles | Nobody | PCA never fetches tiles (section 10). |
 | Notice and status text (nudge, place card, answer, mark text, capture status) | The **Rokid Nexus hub app on the same phone**, via the optional bridge | Only when you pick Nexus as the HUD host. See section 6. |
@@ -43,7 +43,7 @@ The reverse-geocode label for the Location context source uses Android's `Geocod
 - Raw audio. Precise fixes. Your exact position (only the 5 km cell box goes to Wikimedia/Overpass).
 - Anything while PCA is paused, or inside a pause zone, for the Place Guide fetch and Ask.
 - Suggestions (section 7): no network, no model call, template text only.
-- Your pins, in any backup or transfer (section 9).
+- Your pins, in any Android backup or transfer (section 9). The one exception is the install helper's backup to your own Mac (section 13).
 
 ## 4. Retention and expiry
 
@@ -66,7 +66,7 @@ Defaults from `MemorySettings` (changeable in Settings, Memory):
 - Endpoints, keys, prompts and other settings.
 - **Pause zones** (`pause_zones`): never deleted by Forget or Delete all.
 - **Pins** (`place_pins`): never deleted by Forget or Delete all.
-- Seeded Place Guide areas, the Nexus host choice (`nexus_host`), and your offline map choice and imported map copy (**UNVERIFIED** whether Delete all removes the `files/offline_maps` copy; use "Delete the copy" in the map settings).
+- Seeded Place Guide areas and the place records they seeded (Delete all clears recency and removes fetched records that are neither seeded nor pinned), the Nexus host choice (`nexus_host`), and your offline map choice and imported map copy (**UNVERIFIED** whether Delete all removes the `files/offline_maps` copy; use "Delete the copy" in the map settings).
 
 To remove those, delete them yourself in Settings.
 
@@ -80,7 +80,7 @@ Same words as the in-app text (`NexusStatus.TRUST_LINES`):
 - When Nexus is the HUD host, the bridge sees every card PCA sends to the glasses: nudge, place card, answer and mark texts, and the capture status. It can draw and hide them, and it tells PCA when you tap Dismiss, Mark or More. It cannot read your memories or photos and stores nothing. The bridge APK has no INTERNET, microphone, camera, location or storage permission.
 - Nexus can keep the notices it showed in its hub history for up to 24 hours. PCA asks Nexus to wipe that history when you Forget, Delete all, or switch Nexus off (mode off). Retention expiry does not trigger a wipe. When you pause, or a pause zone is near, PCA hides what is on the glasses at once.
 - Nothing is sent while PCA is paused, a pause zone is near, or the glasses are not worn.
-- Bridge identity: PCA checks the bridge's signing certificate on every bind and package change, and refuses a bridge signed by a different key than the one it first trusted (`SignerTrust`; a release can also pin fingerprints, empty by default). If the history wipe has not been confirmed, PCA keeps owing it.
+- Bridge identity: PCA checks the bridge's signing certificate on every bind and package change, and trusts a bridge only if it is signed with PCA's own key, a key in the accepted rotation lineage of PCA's key, or a fingerprint explicitly pinned in the build (`SignerTrust`; the pin list is empty by default). There is no trust on first use: anything else is refused. If the history wipe has not been confirmed, PCA keeps owing it.
 - Rokid-Coder and Nexus run one at a time on one pair of glasses. PCA never installs, starts or takes over either of them.
 
 **Voice permissions**: approving the plugin in the hub can pre-select speech-to-text, text-to-speech and "replace the glasses assistant". If you do not use Nexus voice, untick those three in Nexus, Settings, Plugin access before tapping Allow on glasses. PCA's own switches (voice, speak answers, skills) are all off by default, and a hub grant alone opens no speech session.
@@ -108,7 +108,7 @@ Consequence: an uninstall deletes the database (the key goes with it), and a res
 
 ## 10. Pause zones and the law
 
-A pause zone stops capture while you are inside it or near it (a buffer). It uses foreground location only: no background-location permission and no geofencing API. Fixes are never stored. If the zone list is unreadable, or the fix is stale or location is off, PCA fails closed and treats you as inside. A mark photo does not bypass a zone.
+A pause zone stops capture while you are inside it or near it (a buffer). It uses foreground location only: no background-location permission and no geofencing API. Fixes are never stored. If the zone list is unreadable, or the fix is stale or location is off, PCA fails closed and treats you as inside. Location off applies immediately only for a zone in the approach or inside state; for a zone you are outside of, PCA keeps treating you as outside until the last fix is older than 15 minutes (a fix older than 3 minutes counts as stale for the other states). A mark photo does not bypass a zone.
 
 **Ask zone fence** (`AskZoneFence`, Developer-visible switch `askZoneFence`, ON by default): inside or near a zone, an Ask model call and delivery of its answer to the glasses are refused, because stored text can reveal private context. Browsing your own data on the phone is not blocked. Until the zones have been judged after a restart, it stays closed if any zone may apply.
 
@@ -118,7 +118,11 @@ A pause zone stops capture while you are inside it or near it (a buffer). It use
 
 ## 11. Place Guide and people
 
-Place Guide names monuments and buildings only. The candidate list comes from Wikipedia/Wikidata classes in a monument allowlist, so people are never candidates; the prompt says "never identify or describe people"; and the card text is a template over the stored Wikipedia extract, not model-written. A photo-derived place-match is second-checked by the provenance gate and the zone fence. PCA does not recognise faces or voices.
+Place Guide names monuments and buildings only. Candidates come from three places: Wikidata classes in a monument allowlist, a curated list of landmark QIDs (for example some lakes and viewpoints that no allowlisted class covers), and OpenStreetMap places tagged historic, heritage or tourism (attraction, museum, viewpoint). Wikidata items whose class is a person (human and fictional human classes) are rejected explicitly, even if the QID is curated, and an item whose class cannot be read is also dropped. So people are never candidates; the prompt says "never identify or describe people"; and the card text is a template over the stored Wikipedia extract, not model-written. A photo-derived place-match is second-checked by the provenance gate and the zone fence. PCA does not recognise faces or voices.
+
+### Card placement and trip presets
+
+The card position setting (left, centre, right; Developer mode) is a display preference stored on the phone. It is sent to the glasses with the card and contains no personal data. The trip presets (Gangtok, Darjeeling, West Sikkim, Sri Lanka sites) are approximate seed boxes, **UNVERIFIED** on the ground; check them before relying on them.
 
 ## 12. Developer mode
 
