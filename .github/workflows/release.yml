@@ -53,10 +53,13 @@ jobs:
           grep -Eq "$TAG_RE" <<<"$TAG" || { echo "::error::tag '$TAG' does not match $TAG_RE"; exit 1; }
 
       # actions/checkout v4.4.0 (resolved with git ls-remote 2026-11-18)
-      - name: Check out (full history, for the previous tag)
+      - name: Check out (full history, for the previous tag; llama.cpp submodule for the native build)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          # services/ai builds llama.cpp through CMake: the submodule (pinned by its gitlink commit, android-companion/services/ai/src/main/cpp/llama.cpp)
+          # is not fetched by default and the build fails without it. Not recursive: llama.cpp's own submodules are not used.
+          submodules: true
           persist-credentials: false
 
       # actions/setup-java v4.9.1 (resolved with git ls-remote 2026-11-18). Exact Temurin patch version pinned.

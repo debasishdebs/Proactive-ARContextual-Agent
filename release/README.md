@@ -78,3 +78,6 @@ With default lineage capabilities the debug key is not rolled back: a debug-sign
 ## Release build smoke
 
 2026-11-18, `./gradlew --no-daemon --offline :phone:assembleRelease` (under the lock): BUILD SUCCESSFUL in 4m 16s, 397 tasks, output `phone-release-unsigned.apk` (build dir, git-ignored, not copied; unsigned, so not installable as is). Only Kotlin warnings (e.g. FlowPreview opt-ins). `:glasses:assembleRelease` and `:nexus-bridge:assembleRelease` were NOT tried. The behaviour of the DEBUG=false sites from the design (HubGraph probe, PreviewSection, CaptureService line 185, MemoryExport.productionBuild) is a runtime matter and is not exercised by a build; the device checklist in the design still applies. No app code was changed.
+
+## Submodule note (added 2026-11-19, found by reading, UNVERIFIED in CI)
+`services/ai` builds `llama.cpp` through CMake; it is a git submodule pinned by its gitlink (`android-companion/services/ai/src/main/cpp/llama.cpp`, commit `4dd6dd4b`, url in `.gitmodules`). `actions/checkout` does not fetch submodules by default, so the build job now sets `submodules: true` (not recursive). The sign job does not build and does not need it. No local rehearsal could catch this (a local checkout already has the submodule). Confirm on the first real workflow run: the build job's native step must find `llama.cpp/CMakeLists.txt`.
