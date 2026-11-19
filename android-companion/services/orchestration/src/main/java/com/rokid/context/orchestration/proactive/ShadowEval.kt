@@ -55,6 +55,10 @@ data class EvalReport(
     val dismissRate: Double?, val snoozeRate: Double?, val neverRate: Double?, val usefulRate: Double?,
     val maxShownInADay: Int, val dailyCap: Int,
     val verdict: EvalVerdict, val reasons: List<String>,
+    /** Daily-counter keys that were not an ISO date and were dropped (the key text is never kept). */
+    val invalidDayKeys: Int = 0,
+    /** Days whose snapshot counted more would-show than the retained records: the safety history for them is incomplete. */
+    val incompleteDays: Int = 0,
 ) {
     /** Literal counts and fixed labels, one fact per line. */
     fun toText(): String = buildString {
@@ -64,6 +68,7 @@ data class EvalReport(
         appendLine("shadow-eval verdict=${verdict.label}")
         reasons.forEach { appendLine("reason: $it") }
         appendLine("observed_days=$observedDays (bar>=$MIN_DAYS) runs=$runs would_show=$wouldShowTotal")
+        appendLine("invalid day keys: $invalidDayKeys incomplete_days=$incompleteDays")
         appendLine("max_would_show_in_a_day=$maxShownInADay cap=$dailyCap")
         appendLine("refused_by_gate: ${map(refusedByGate)}")
         appendLine("budget_exhausted=$budgetExhausted")
@@ -102,14 +107,25 @@ object ShadowEval {
             count(rs, i.drivingAt?.let { d -> { r: SuggestionRecord -> d(r.ts) } }), count(rs, i.wornAt?.let { w -> { r: SuggestionRecord -> !w(r.ts) } }))
 
         val byDay = i.records.groupBy { dayOf(it.ts) }
-        val dayKeys = (byDay.keys + i.dailyCounters.keys).toSortedSet()
+        // only canonical ISO dates survive; any other key (it could hold a place name) is dropped and only counted. Two keys for the same date merge by the larger count.
+        val snaps = HashMap<String, Map<String, Int>>(); var invalidDayKeys = 0
+        for ((k, v) in i.dailyCounters) {
+            val d = try { java.time.LocalDate.parse(k).toString().takeIf { it == k } } catch (e: Exception) { null }
+            if (d == null) invalidDayKeys++ else snaps[d] = snaps[d]?.let { o -> if ((o["would_show"] ?: 0) >= (v["would_show"] ?: 0)) o else v } ?: v
+        }
+        val dayKeys = (byDay.keys + snaps.keys).toSortedSet()
+        var incompleteDays = 0
         val days = dayKeys.map { d ->
             val rs = byDay[d].orEmpty()
-            val dc = i.dailyCounters[d]
-            EvalDay(d, dc?.get("runs"), dc?.get("would_show") ?: rs.size, dc?.let { refusals(it) } ?: emptyMap(), rs.size,
+            val dc = snaps[d]
+            // a snapshot that counted more would-show than the retained records is used (conservative) and marks the day's history incomplete
+            val snapShow = dc?.get("would_show") ?: 0
+            if (snapShow > rs.size) incompleteDays++
+            val shown = maxOf(rs.size, snapShow)
+            EvalDay(d, dc?.get("runs"), shown, dc?.let { refusals(it) } ?: emptyMap(), shown,
                 rs.groupingBy { it.family.token }.eachCount().toSortedMap(), leaks(rs))
         }
-        val total = i.records.size
+        val total = days.sumOf { it.wouldShow }
         val leak = leaks(i.records)
         val refused = refusals(i.counters)
         val budget = BUDGET.sumOf { refused[it.name] ?: 0 }
@@ -126,6 +142,7 @@ object ShadowEval {
         if (leak.total() > 0) fail += "safety invariant broken: ${leak.total()} would-show record(s) inside a quiet, zone, driving or unworn period"
         if (maxDay > i.dailyCap) fail += "a day had $maxDay would-show cards, cap is ${i.dailyCap}"
         if (useful != null && rated >= EvalReport.MIN_RATED && useful < EvalReport.USEFUL_BAR) fail += "useful rate ${Math.round(useful * 100)}% is below ${Math.round(EvalReport.USEFUL_BAR * 100)}%"
+        if (incompleteDays > 0) nod += "$incompleteDays day(s) counted more would-show than the retained records, so the safety history for them is incomplete"
         if (leak.unchecked().isNotEmpty()) nod += "cannot check the safety invariant for: ${leak.unchecked().joinToString(",")}"
         if (dayKeys.size < EvalReport.MIN_DAYS) nod += "only ${dayKeys.size} observed day(s), need ${EvalReport.MIN_DAYS}"
         if (total == 0) nod += "no would-show records"
@@ -134,6 +151,6 @@ object ShadowEval {
         val reasons = when (verdict) { EvalVerdict.FAIL -> fail; EvalVerdict.NOT_ENOUGH_DATA -> nod; EvalVerdict.PASS -> listOf("all measurable bars met") }
 
         return EvalReport(days, dayKeys.size, i.counters["runs"] ?: 0, total, refused, budget, i.records.groupingBy { it.family.token }.eachCount().toSortedMap(), leak,
-            dismissed, snoozed, i.neverCount, up, down, rate(dismissed), rate(snoozed), rate(i.neverCount), useful, maxDay, i.dailyCap, verdict, reasons)
+            dismissed, snoozed, i.neverCount, up, down, rate(dismissed), rate(snoozed), rate(i.neverCount), useful, maxDay, i.dailyCap, verdict, reasons, invalidDayKeys, incompleteDays)
     }
 }
