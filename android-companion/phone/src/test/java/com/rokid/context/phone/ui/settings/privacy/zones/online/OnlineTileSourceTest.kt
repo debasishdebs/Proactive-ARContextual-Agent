@@ -1,0 +1,245 @@
+package com.rokid.context.phone.ui.settings.privacy.zones.online
+
+import com.rokid.context.core.log.Line
+import com.rokid.context.core.log.LogSink
+import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.log.Route
+import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileKey
+import org.junit.After
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.io.IOException
+
+/** A scripted network: each call takes the next answer (or the last one); every URL asked is recorded. */
+private class FakeTransport(private val answers: MutableList<() -> TileResponse>) : TileTransport {
+    val urls = mutableListOf<String>()
+    var cancelled = 0
+    override fun get(url: String, userAgent: String): TileResponse { synchronized(urls) { urls += url }; return (if (answers.size > 1) answers.removeAt(0) else answers[0])() }
+    override fun cancelAll() { cancelled++ }
+}
+
+private fun png(extra: Int = 0) = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 13, 10, 26, 10, 0, 0, 0, 13) + ByteArray(extra)
+private fun ok(b: ByteArray = png()) = { TileResponse(200, body = b) }
+
+class OnlineTileSourceTest {
+    @get:Rule val tmp = TemporaryFolder()
+    private val key = "k3yABC123xyz"
+    private var now = 1_000_000L
+    private val lines = mutableListOf<Line>()
+
+    @Before fun logs() { PcLog.testOnlyResetNeverCallFromProduction(); PcLog.install(object : LogSink { override fun emit(line: Line, route: Route) { synchronized(lines) { lines += line } } }); PcLog.setDiagnostic(true) }
+    @After fun reset() { PcLog.testOnlyResetNeverCallFromProduction() }
+
+    private fun source(t: FakeTransport, provider: OnlineProvider = OnlineProvider.mapTiler(key), cap: Int = 400, maxBytes: Long = OnlineTileDiskCache.MAX_BYTES, started: Boolean = true) =
+        OnlineTileSource(provider, t, OnlineTileDiskCache(File(tmp.root, "c"), provider.cacheId, maxBytes, clock = { now }), "TestAgent/1", clock = { now }, sessionCap = cap)
+            .also { if (started) it.start() }
+
+    private val k1 = TileKey(15, 23_456, 14_321)
+    private val k2 = TileKey(15, 23_457, 14_321)
+
+    // ---- provider and the host allowlist
+
+    @Test fun mapTilerWithAKey_osmOnlyInADebugBuildWithoutOne_nothingInAKeylessRelease() {
+        assertEquals(OnlineProvider.MAPTILER_HOST, OnlineProvider.select(key, debug = false)!!.host)
+        assertEquals(OnlineProvider.MAPTILER_HOST, OnlineProvider.select(key, debug = true)!!.host)
+        assertEquals(OnlineProvider.OSM_HOST, OnlineProvider.select("", debug = true)!!.host)
+        assertEquals(OnlineProvider.OSM_HOST, OnlineProvider.select("  ", debug = true)!!.host)
+        assertNull("a release build without a key shows the grid only", OnlineProvider.select("", debug = false))
+        assertNull(OnlineProvider.select("   ", debug = false))
+    }
+
+    @Test fun theKeyIsNeverInToString_andTheUrlIsHttpsOnTheProviderHost() {
+        val p = OnlineProvider.mapTiler(key)
+        assertFalse(p.toString().contains(key))
+        val u = p.url(k1)
+        assertTrue(u.startsWith("https://api.maptiler.com/maps/streets-v2/256/15/23456/14321.png?key="))
+        assertEquals("https://tile.openstreetmap.org/15/23456/14321.png", OnlineProvider.osmDebug().url(k1))
+    }
+
+    @Test fun anImageIsFetchedAndThenServedFromTheDiskCacheWithoutAnotherRequest() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val s = source(t)
+        assertArrayEquals(png(), s.tile(k1))
+        assertArrayEquals(png(), s.tile(k1))
+        assertEquals(1, t.urls.size)
+    }
+
+    @Test fun aRedirectToAnotherHostIsRefused() {
+        val t = FakeTransport(mutableListOf({ TileResponse(302, location = "https://evil.example/t.png") }, ok()))
+        assertNull(source(t).tile(k1))
+        assertEquals("the off-host target was never asked", 1, t.urls.size)
+    }
+
+    @Test fun aRedirectToPlainHttpIsRefused_evenOnTheSameHost() {
+        val t = FakeTransport(mutableListOf({ TileResponse(301, location = "http://api.maptiler.com/maps/x.png") }, ok()))
+        assertNull(source(t).tile(k1))
+        assertEquals(1, t.urls.size)
+    }
+
+    @Test fun aRedirectWithUserInfoOrAnotherPortIsRefused() {
+        for (loc in listOf("https://user:pw@api.maptiler.com/a.png", "https://api.maptiler.com:8443/a.png", "https://api.maptiler.com.evil.example/a.png")) {
+            val t = FakeTransport(mutableListOf({ TileResponse(307, location = loc) }, ok()))
+            assertNull(loc, source(t).tile(TileKey(14, (loc.length), 3)))
+            assertEquals(loc, 1, t.urls.size)
+        }
+    }
+
+    @Test fun aSameHostHttpsRedirectIsFollowed_aRelativeOneToo() {
+        val t = FakeTransport(mutableListOf({ TileResponse(302, location = "/maps/streets-v2/256/15/1/2.png") }, ok()))
+        assertNotNull(source(t).tile(k1))
+        assertEquals(2, t.urls.size)
+        assertTrue(t.urls[1].startsWith("https://api.maptiler.com/"))
+    }
+
+    @Test fun redirectLoopsStopAfterTwoHops() {
+        val t = FakeTransport(mutableListOf({ TileResponse(302, location = "/again.png") }))
+        assertNull(source(t).tile(k1))
+        assertEquals(OnlineTileSource.MAX_REDIRECTS + 1, t.urls.size)
+    }
+
+    // ---- size, content and zoom limits
+
+    @Test fun aTileOverTheCapIsRefused_aBodyAtTheCapIsKept() {
+        val big = FakeTransport(mutableListOf(ok(png(OnlineTileSource.MAX_TILE_BYTES))))
+        assertNull(source(big).tile(k1))
+        val tooLargeFlag = FakeTransport(mutableListOf({ TileResponse(200, body = null) }))
+        assertNull(source(tooLargeFlag).tile(k2))
+        val atCap = FakeTransport(mutableListOf(ok(png(OnlineTileSource.MAX_TILE_BYTES - png().size))))
+        assertEquals(OnlineTileSource.MAX_TILE_BYTES, source(atCap).tile(TileKey(15, 1, 1))!!.size)
+    }
+
+    @Test fun aBodyThatIsNotAnImageIsRefused() {
+        val t = FakeTransport(mutableListOf(ok("<html>captive portal</html>".toByteArray())))
+        assertNull(source(t).tile(k1))
+    }
+
+    @Test fun zoomPastTheMaxAndOutOfRangeNumbersAreNotRequested() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val s = source(t)
+        assertNull(s.tile(TileKey(20, 1, 1))); assertNull(s.tile(TileKey(15, -1, 1))); assertNull(s.tile(TileKey(3, 8, 1))); assertNull(s.tile(TileKey(0, 0, 0)))
+        assertEquals(0, t.urls.size)
+        assertNotNull(s.tile(TileKey(OnlineTileSource.MAX_ZOOM, 5, 5)))
+    }
+
+    // ---- backoff, caps and foreground
+
+    @Test fun a429BacksOffTheWholeSource_thenRetriesAfterTheWait() {
+        val t = FakeTransport(mutableListOf({ TileResponse(429) }, ok()))
+        val s = source(t)
+        assertNull(s.tile(k1))
+        assertNull(s.tile(k2)); assertEquals("no request while backing off", 1, t.urls.size)
+        now += OnlineTileSource.INITIAL_BACKOFF_MS + 1
+        assertNotNull(s.tile(k2)); assertEquals(2, t.urls.size)
+    }
+
+    @Test fun a5xxBacksOff_retryAfterIsHonouredAndCapped_andRepeatsDouble() {
+        val t = FakeTransport(mutableListOf({ TileResponse(503, retryAfterSec = 20) }, { TileResponse(500) }, { TileResponse(429, retryAfterSec = 100_000) }))
+        val s = source(t)
+        assertNull(s.tile(k1))
+        now += 19_000; assertNull(s.tile(k2)); assertEquals("Retry-After 20 s not over", 1, t.urls.size)
+        now += 2_000; assertNull(s.tile(k2)); assertEquals(2, t.urls.size)                   // 500: waits twice the first step (4 s)
+        now += 3_000; assertNull(s.tile(TileKey(15, 9, 9))); assertEquals(2, t.urls.size)
+        now += 2_000; assertNull(s.tile(TileKey(15, 9, 9))); assertEquals(3, t.urls.size)   // the huge Retry-After is capped
+        now += OnlineTileSource.MAX_BACKOFF_MS + 1; assertNull(s.tile(TileKey(15, 8, 8))); assertEquals(4, t.urls.size)
+    }
+
+    @Test fun aSuccessResetsTheBackoffSteps() {
+        val t = FakeTransport(mutableListOf({ TileResponse(500) }, ok(), { TileResponse(500) }, ok()))
+        val s = source(t)
+        s.tile(k1); now += 2_001; assertNotNull(s.tile(k2))
+        s.tile(TileKey(15, 3, 3)); now += OnlineTileSource.INITIAL_BACKOFF_MS + 1
+        assertNotNull("the step is the first again, not doubled", s.tile(TileKey(15, 4, 4)))
+    }
+
+    @Test fun theSessionRequestCapStopsRequests_andAFreshSessionResetsIt() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val s = source(t, cap = 3)
+        for (i in 1..6) s.tile(TileKey(15, i, 1))
+        assertEquals(3, t.urls.size); assertEquals(3, s.requestCount())
+        s.start()
+        assertNotNull(s.tile(TileKey(15, 10, 1))); assertEquals(4, t.urls.size)
+    }
+
+    @Test fun nothingIsRequestedBeforeStartOrAfterStop_andStopCancelsInFlightRequests() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val s = source(t, started = false)
+        assertNull(s.tile(k1)); assertEquals(0, t.urls.size)
+        s.start(); assertNotNull(s.tile(k1)); assertEquals(1, t.urls.size)
+        s.stop(); assertEquals(1, t.cancelled)
+        assertNull(s.tile(k2)); assertEquals(1, t.urls.size)
+        assertNotNull("a cached tile still draws while paused", s.tile(k1))
+    }
+
+    @Test fun aNetworkErrorGivesNothingAndIsNotRetriedAtOnce() {
+        val t = FakeTransport(mutableListOf({ throw IOException("offline") }))
+        val s = source(t)
+        assertNull(s.tile(k1)); assertNull(s.tile(k1))
+        assertEquals(1, t.urls.size)
+    }
+
+    // ---- disk cache
+
+    @Test fun theDiskCacheIsCappedAndEvictsTheLeastRecentlyUsed() {
+        val c = OnlineTileDiskCache(File(tmp.root, "d"), "p", maxBytes = 3 * (100 + 8L), clock = { now })
+        val a = TileKey(15, 1, 1); val b = TileKey(15, 2, 1); val d = TileKey(15, 3, 1); val e = TileKey(15, 4, 1)
+        c.put(a, ByteArray(100)); now += 10_000; c.put(b, ByteArray(100)); now += 10_000; c.put(d, ByteArray(100)); now += 10_000
+        assertNotNull(c.get(a)); now += 10_000                        // a is now the most recently used
+        c.put(e, ByteArray(100))
+        assertTrue(c.sizeBytes() <= 3 * 108)
+        assertNull("b was the least recently used", c.get(b)); assertNotNull(c.get(a)); assertNotNull(c.get(e))
+    }
+
+    @Test fun theCacheCapIsFiftyMegabytes() { assertEquals(50L * 1024 * 1024, OnlineTileDiskCache.MAX_BYTES) }
+
+    @Test fun purgeDeletesEveryTile_andOldTilesExpire() {
+        val root = File(tmp.root, "e")
+        val c = OnlineTileDiskCache(root, "p", clock = { now }, ttlMs = 1_000)
+        c.put(k1, ByteArray(50)); assertNotNull(c.get(k1))
+        now += 1_001; assertNull(c.get(k1))
+        c.put(k1, ByteArray(50)); c.put(k2, ByteArray(50)); assertTrue(root.exists())
+        c.purge()
+        assertFalse(root.exists()); assertNull(c.get(k1))
+        c.put(k1, ByteArray(10)); assertNotNull("usable again after a purge", c.get(k1))
+    }
+
+    // ---- logs
+
+    @Test fun noLogLineHoldsACoordinateAZoomAUrlOrTheKey() {
+        val t = FakeTransport(mutableListOf({ TileResponse(302, location = "https://evil.example/15/23456/14321.png?key=$key") }, { TileResponse(429) }, { TileResponse(500) }, ok("not an image at all".toByteArray()), { throw IOException("boom 15/23456/14321") }, { TileResponse(200, body = null) }, { TileResponse(404) }))
+        val s = source(t, cap = 6, maxBytes = 1)
+        repeat(8) { i -> s.tile(TileKey(15, 23_456 + i, 14_321)); now += 100_000 }
+        assertTrue("some events were logged", lines.isNotEmpty())
+        for (l in lines) {
+            assertTrue("literal event only: ${l.msg}", Regex("^[a-z ]+$").matches(l.msg))
+            for (bad in listOf(key, "23456", "14321", "15/", "http", "maptiler", "?key")) assertFalse("${l.msg} has $bad", l.msg.contains(bad, ignoreCase = true))
+        }
+    }
+
+    @Test fun theUserAgentCarriesNoEmailOrPersonalData() {
+        val ua = com.rokid.context.connectors.place.UrlConnectionPlaceHttp.DEFAULT_USER_AGENT
+        assertFalse("@" in ua); assertTrue(ua.startsWith("ProactiveContextAgent/"))
+    }
+
+    // ---- confinement
+
+    @Test fun onlyTheOnlinePackageNamesNetworkClasses_andItsLogLinesAreLiteral() {
+        val base = "src/main/java/com/rokid/context/phone/ui/settings/privacy/zones"
+        val online = File("$base/online").listFiles { f -> f.extension == "kt" }.orEmpty().toList()
+        assertTrue(online.isNotEmpty())
+        val logs = online.flatMap { f -> f.readLines().filter { "PcLog." in it } }
+        assertTrue(logs.isNotEmpty())
+        for (l in logs) assertTrue("literal only: $l", Regex("""PcLog\.i\(TAG, "[a-z ]+"\)""").containsMatchIn(l))
+        // no other file of the map names the network (the offline map scan, MapNoNetworkTest, covers tiles/, ZonesScreen.kt and MapViewport.kt)
+        val others = listOf("ZonesModel.kt").map { File("$base/$it") }
+        assertTrue(others.none { f -> f.readText().contains("java.net") })
+    }
+}

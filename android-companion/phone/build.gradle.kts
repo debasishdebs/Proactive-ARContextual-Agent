@@ -5,6 +5,7 @@ plugins {
 }
 
 import java.io.File
+import java.util.Properties
 
 fun loadDotEnv(file: File): Map<String, String> {
     if (!file.exists()) return emptyMap()
@@ -26,6 +27,13 @@ fun envOrDefault(key: String, default: String): String = env[key].orEmpty().ifBl
 
 // No API key or other secret may be compiled into the APK; keys live only in the on-device KeyVault.
 val secretName = Regex("(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)")
+
+// The street-map tile key is the ONE named exception (MAP_TILES_KEY; the test NoSecretsInBuildConfigTest names it too): a map-tile client key is embedded in the APK by design and is NOT secret (restrict it by app/referrer in the provider's dashboard).
+// Read from android-companion/local.properties (untracked) or the environment; empty by default, and an empty key means a release build shows the grid only. NEVER commit a value.
+val mapTilesKey: String = run {
+    val lp = Properties().also { p -> rootDir.resolve("local.properties").takeIf { it.isFile }?.inputStream()?.use { p.load(it) } }
+    (lp.getProperty("PCA_MAP_TILES_KEY") ?: System.getenv("PCA_MAP_TILES_KEY") ?: "").trim()
+}
 val secretValue = Regex("(?i)(://[^/@\\s]+@|[?&](key|api[-_]?key|token|sig|code|password)=|(^|[^a-z0-9])(access[-_]?token|subscription[-_]?key|client[-_]?secret)=)")
 
 android {
@@ -46,6 +54,9 @@ android {
             require(!secretValue.containsMatchIn(value)) { "$name carries credentials (user:pass@ or a key parameter); it must not be compiled into the APK" }
             buildConfigField("String", name, "\"$value\"")
         }
+
+        require(Regex("[A-Za-z0-9_-]{0,80}").matches(mapTilesKey)) { "PCA_MAP_TILES_KEY must be letters, digits, - or _ only" }
+        buildConfigField("String", "MAP_TILES_KEY", "\"$mapTilesKey\"")
 
         publicField("AZURE_KG_ENDPOINT", envOrDefault("AZURE_KG_ENDPOINT", ""))
         publicField("AZURE_KG_DEPLOYMENT", envOrDefault("AZURE_KG_DEPLOYMENT", "gpt-5.4"))
