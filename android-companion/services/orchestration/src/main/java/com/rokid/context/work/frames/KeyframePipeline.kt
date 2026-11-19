@@ -173,6 +173,8 @@ class KeyframePipeline(
     /** Wave 2: routes keyframes into the fast path, near-dups and scene clusters before any claim. Null: wave-1 behaviour (every frame is claimable). */
     private val indexer: SceneIndexer? = null,
     /** Wave 2: one CLUSTER_SUMMARY call over the claimed [clusters] with [reps] (cluster id to the representatives to send), saved with the cluster CAS. */
+    /** Roaming data saver: false while photo uploads are blocked. The backlog is then NOT thinned ([shedBacklog]): the frames must wait for Wi-Fi, not be shed and later deleted undescribed. Also true while offline (today's behaviour). */
+    private val shedAllowed: () -> Boolean = { true },
     private val clusterExtractor: (suspend (clusters: List<FrameClusterEntity>, reps: Map<String, List<String>>, claimId: String, callClass: CallClass) -> ClusterOutcome)? = null,
 ) {
     private sealed interface Step {
@@ -380,7 +382,7 @@ class KeyframePipeline(
         }
         // Wave 2 (Ruling 3): routing runs before any claim; an ask routes at once, ignoring the background batching.
         val routeRetry = route(force = user)
-        if (!user) shedBacklog(now)
+        if (!user && shedAllowed()) shedBacklog(now)
 
         if (user) {
             val rows = soloFirst((states.askCandidates(sinceMs ?: Long.MIN_VALUE, MAX_BATCH) + states.newestClaimable(now, abandonBefore, sinceMs ?: Long.MIN_VALUE, 1, MAX_BATCH)).distinctBy { it.frameId })

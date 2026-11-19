@@ -38,6 +38,8 @@ class DataSaverGraph internal constructor(
     @Volatile private var lastCost: NetworkCost? = null
 
     fun settingsNow(): DataSaverSettings = store.settings.value
+    /** True when Wi-Fi is connected and unmetered but has not validated for over 10 minutes (the status line says remote photos still wait). */
+    fun stuckNow(): Boolean = NetworkCosts.stuckUnvalidated(snapshotNow(), System.currentTimeMillis())
     fun costNow(): NetworkCost = NetworkCosts.classify(snapshotNow(), settingsNow().abroad)
 
     /** Photo uploads were blocked and are now allowed (Wi-Fi came back, the mode or the abroad switch changed): the caller wakes its parked loop. */
@@ -50,7 +52,8 @@ class DataSaverGraph internal constructor(
 
     override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {
         ledger.add(what)
-        PcLog.i(TAG, "skipped kind=${kind.name} what=$what reason=${d.reason}")
+        // a blocked CALL: a parked frame can be blocked again at each recheck, so this counts calls, not photos (the live waiting count comes from the database)
+        PcLog.i(TAG, "blocked kind=${kind.name} what=$what reason=${d.reason}")
     }
 
     override fun costlyNow(): Boolean = NetworkCosts.isCostly(costNow())

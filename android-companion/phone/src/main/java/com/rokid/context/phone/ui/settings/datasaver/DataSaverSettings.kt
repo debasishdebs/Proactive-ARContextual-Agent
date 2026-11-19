@@ -19,12 +19,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /** What the Data saver screen shows. */
 data class DataSaverUiState(
     val settings: DataSaverSettings = DataSaverSettings(),
     val cost: NetworkCost = NetworkCost.UNKNOWN,
     val today: SkippedLedger.Today = SkippedLedger.Today(0, 0, 0),
+    /** Frames waiting for Wi-Fi right now (the live PENDING count; it does not grow with every recheck). */
+    val waiting: Int = 0,
+    /** Wi-Fi connected and unmetered but not validated for over 10 minutes. */
+    val stuck: Boolean = false,
 )
 
 /** All the screen's words and rules, pure so a JVM test pins them. Nothing here names a country, a network or a place. */
@@ -33,15 +38,15 @@ object DataSaverModel {
     const val ROW_TITLE = "Data saver"
 
     /** Option labels, in [DataMode] order. */
-    val MODE_LABELS = listOf("Wi-Fi only", "Wi-Fi and home mobile data", "Anywhere")
+    val MODE_LABELS = listOf("Wi-Fi only", "Wi-Fi and home mobile data (default)", "Anywhere")
     const val MODE_TITLE = "Photos and big uploads"
 
     const val ABROAD_TITLE = "I'm abroad"
     const val ABROAD_NOTE = "Treat all mobile data as roaming, whatever the phone reports. Turn it on before you travel."
     const val SMALL_TITLE = "Small requests on roaming"
     const val SMALL_NOTE = "Questions, place facts and suggestions as text. Never photos."
-    const val TODAY_TITLE = "Skipped today"
-    const val COUNTS_ONLY = "Counts only. Nothing waits in a hidden list: photos stay on the phone and upload on Wi-Fi."
+    const val TODAY_TITLE = "Blocked today"
+    const val COUNTS_ONLY = "Counts only. Photos stay on the phone and upload on Wi-Fi; the same photo can be counted by more than one call."
     const val NO_LIMIT_YET = "There is no daily limit yet."
 
     fun modeNote(mode: DataMode): String = when (mode) {
@@ -50,7 +55,9 @@ object DataSaverModel {
         DataMode.ANYWHERE -> "Any connection, roaming too. $NO_LIMIT_YET While \"I'm abroad\" is on this acts like \"Wi-Fi and home mobile data\"."
     }
 
-    fun nowLine(cost: NetworkCost, abroad: Boolean): String = when (cost) {
+    const val STUCK_LINE = "Now: Wi-Fi without an internet check for over 10 minutes. Photos to remote models wait; your own box on this network still works."
+
+    fun nowLine(cost: NetworkCost, abroad: Boolean, stuck: Boolean = false): String = if (stuck && cost == NetworkCost.UNKNOWN) STUCK_LINE else when (cost) {
         NetworkCost.FREE -> "Now: Wi-Fi"
         NetworkCost.HOME_MOBILE -> "Now: Home mobile data"
         NetworkCost.ROAMING -> if (abroad) "Now: Mobile data, treated as roaming (I'm abroad)" else "Now: Roaming (the phone reports roaming)"
@@ -74,9 +81,10 @@ object DataSaverModel {
         else -> "Photos on any connection"
     }
 
-    fun todayLines(t: SkippedLedger.Today): List<String> = listOf(
-        "Photo uploads waiting for Wi-Fi: ${t.uploadsQueued}",
-        "Optional photo calls skipped (place cards, intent, Ask photos): ${t.dropped}",
+    fun todayLines(t: SkippedLedger.Today, waiting: Int = 0): List<String> = listOf(
+        "Photos waiting for Wi-Fi now: $waiting",
+        "Blocked photo-upload calls today: ${t.uploadsQueued} (a call carries up to 3 photos and is tried again later)",
+        "Optional photo calls skipped (place matches, intent, Ask photos): ${t.dropped}",
         "Other big jobs left for Wi-Fi (night describe, text calls): ${t.bulk}",
     )
 }
@@ -93,10 +101,12 @@ interface DataSaverControl {
 
 /** Production control over the app's one [DataSaverGraph]. A mode change also re-ensures the night-job constraints (they follow the mode) while processing is on. */
 class AndroidDataSaverControl(private val app: Context, private val graph: DataSaverGraph = DataSaverGraph.get(app)) : DataSaverControl {
-    private val flow = MutableStateFlow(read())
+    private val flow = MutableStateFlow(DataSaverUiState())
     override val state: StateFlow<DataSaverUiState> = flow.asStateFlow()
 
-    private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today())
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+
+    private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today(), flow.value.waiting, graph.stuckNow())
 
     override fun setMode(m: DataMode) {
         graph.settingsStore.setMode(m); refresh()
@@ -104,7 +114,15 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
     }
     override fun setAbroad(on: Boolean) { graph.settingsStore.setAbroad(on); refresh() }
     override fun setSmallOnRoaming(on: Boolean) { graph.settingsStore.setSmallOnRoaming(on); refresh() }
-    override fun refresh() { flow.value = read() }
+    init { flow.value = read() }
+
+    override fun refresh() {
+        flow.value = read()
+        scope.launch { // the waiting count is a database read: off the main thread
+            val n = try { com.rokid.context.memory.MemoryGraph.get(app).db.frameStateDao().pendingCount() } catch (e: Exception) { return@launch }
+            flow.value = flow.value.copy(waiting = n)
+        }
+    }
 }
 
 @Composable
@@ -120,7 +138,7 @@ fun DataSaverScreen(state: DataSaverUiState, back: () -> Unit, onMode: (DataMode
     SettingsPage(DataSaverModel.TITLE, back, tag = "data_saver_settings") {
         item {
             SettingsCard {
-                NoticeText(DataSaverModel.nowLine(state.cost, s.abroad), tag = "data_saver_now")
+                NoticeText(DataSaverModel.nowLine(state.cost, s.abroad, state.stuck), tag = "data_saver_now")
                 NoticeText(DataSaverModel.nowExplain(state.cost, s), tag = "data_saver_now_explain")
             }
         }
@@ -135,7 +153,7 @@ fun DataSaverScreen(state: DataSaverUiState, back: () -> Unit, onMode: (DataMode
         item {
             SettingsCard {
                 NoticeText(DataSaverModel.TODAY_TITLE, tag = "data_saver_today_title")
-                DataSaverModel.todayLines(state.today).forEachIndexed { i, line -> NoticeText(line, tag = "data_saver_status_$i") }
+                DataSaverModel.todayLines(state.today, state.waiting).forEachIndexed { i, line -> NoticeText(line, tag = "data_saver_status_$i") }
                 NoticeText(DataSaverModel.COUNTS_ONLY, tag = "data_saver_status")
             }
         }

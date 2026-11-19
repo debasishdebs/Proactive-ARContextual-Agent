@@ -41,6 +41,7 @@ class PlaceSamplerTest {
     private var reply: PlaceMatchResult? = PlaceMatchResult(PlaceMatchOutput("1", 0.86f), true)
     private var thrown: Exception? = null
     private var saved = true
+    private var photoOk = true
 
     private var fixCalls = 0
     private var candidateCalls = 0
@@ -64,7 +65,7 @@ class PlaceSamplerTest {
         candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, CellOutcome.FRESH) },
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
-        admit = { admit }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
+        admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -251,6 +252,15 @@ class PlaceSamplerTest {
         assertEquals(PlaceCard("wd:Q1", "Charminar", "80 m away", "nearby · not checked", PlaceConfidence.NEARBY, "f1"), c)
         assertFalse("never a summary from a guess", c.line.contains("monument"))
         assertTrue(memories.isEmpty())
+    }
+
+    @Test fun onlineButPhotosNotAllowedByTheDataSaverShowsTheNearbyCardWithNoCall() = runTest {
+        photoOk = false; fix = PlaceFix(north(130.0), LON, 1_000, 10f); poke()
+        assertEquals("no photo was matched", 0, matchCalls.size)
+        assertEquals(listOf(PlaceOutcome.NEARBY), outcomes)
+        assertEquals(PlaceCard("wd:Q1", "Charminar", "80 m away", "nearby · not checked", PlaceConfidence.NEARBY, "f1"), cards.single())
+        assertTrue(memories.isEmpty())
+        assertTrue(logs.last(), logs.last().contains("reason=nearby_card call=skipped_data_saver online=true"))
     }
 
     @Test fun aGenuineProviderFailureFallsBackTheSameWay() = runTest {

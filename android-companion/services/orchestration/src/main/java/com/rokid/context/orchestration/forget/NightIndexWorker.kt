@@ -55,25 +55,26 @@ class NightIndexWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             val ai = AiGraph.get(applicationContext)
             // G6 (charging or battery above 70 %) and a phone that is not too hot; the capture-burst check is [NightIndex]'s.
             val gate = BulkGate({ LocalModelPower.read(applicationContext) }, { keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) })
-            // Roaming data saver: no photo upload or remote backfill over mobile data, roaming or an unknown network; the run then does nothing and the photos wait (never deleted undescribed).
+            // Roaming data saver: no photo upload over mobile data, roaming or an unknown network; the run then does nothing and the photos wait (never deleted undescribed).
             val data = keyframes.dataGate
             DataSaverWorkGate.atStart(data)
-            val bulkOpen = { gate.allowed() && DataSaverWorkGate.open(data) }
+            val dataOpen = { DataSaverWorkGate.open(data) }
             val maintenance = IndexMaintenance(
                 MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), PrefsIndexClock(applicationContext),
-                photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = bulkOpen,
-                bulkReason = { if (!DataSaverWorkGate.open(data)) "data saver" else gate.reason() },
+                photos = keyframes::photoReads, readAttempts = PrefsReadAttempts(applicationContext), bulkAllowed = gate::allowed, // local index work (and the on-device image embedder) is not a data cost: only the describe step below waits for the data saver
+                bulkReason = gate::reason,
             )
             val night = NightIndex(
                 db = MemoryGraph.get(applicationContext).db, pipeline = keyframes.pipeline,
                 settings = { MemorySettingsStore.get(applicationContext).settings.value },
-                bulkAllowed = bulkOpen,
-                gateReason = { if (!DataSaverWorkGate.open(data)) "data saver" else gate.reason() },
+                bulkAllowed = gate::allowed,
+                gateReason = gate::reason,
+                describeAllowed = dataOpen,
                 maintenance = { maintenance.run() },
                 onDescribed = { PipelineStatsStore.addDescribedBeforeDelete(applicationContext, it) },
             )
             // A run whose gate was open counts as a night run: the catch-up only fills in for nights the idle-mode job missed.
-            if (night.run().backfill != "gate") prefs.edit().putLong(K_LAST_RUN, now).commit() // under the run lock: the next run reads it
+            if (night.run().backfill != "gate" && dataOpen()) prefs.edit().putLong(K_LAST_RUN, now).commit() // under the run lock: the next run reads it
             Result.success()
         } catch (c: CancellationException) {
             throw c
@@ -135,6 +136,8 @@ internal class NightIndex(
     /** At most this many model calls a night: ~1,000 trip photos drain over several nights, not one. */
     private val maxCalls: Int = MAX_CALLS,
     private val callClass: CallClass = CallClass.BACKFILL,
+    /** Roaming data saver: false = no photo may be uploaded on this network. The describe step (queueing and the caption drain) is skipped; the local index maintenance still runs. */
+    private val describeAllowed: () -> Boolean = { true },
     /** Log only: why [bulkAllowed] is closed right now. */
     private val gateReason: () -> String = { "bulk gate closed" },
 ) {
@@ -142,12 +145,14 @@ internal class NightIndex(
 
     suspend fun run(): Result {
         if (!bulkAllowed()) { PcLog.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); val reason = try { gateReason() } catch (_: Exception) { "bulk gate closed" }; PcLog.milestone(TAG, "index backfill paused (night job): $reason"); return Result(0, 0, 0, "gate") }
-        val queued = queue()
+        val dataOpen = describeAllowed()
+        if (!dataOpen) PcLog.i(TAG, "PcNight describe skipped: data saver")
+        val queued = if (dataOpen) queue() else emptyList()
         var described = 0
-        if (queued.isNotEmpty() || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty()) {
+        if (dataOpen && (queued.isNotEmpty() || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty())) {
             // Not during an active capture burst: the live loop owns the budget then. A burst that starts mid-drain stops the drain.
             val before = db.frameStateDao().describedCount()
-            pipeline.drainCaptionQueue(drainMs, callClass, { bulkAllowed() && !captureBurst() }, maxCalls)
+            pipeline.drainCaptionQueue(drainMs, callClass, { bulkAllowed() && describeAllowed() && !captureBurst() }, maxCalls)
             described = (db.frameStateDao().describedCount() - before).coerceAtLeast(0)
             onDescribed(described)
             // A describe that saved no memory is a failed attempt too: cooldown 1, 2, 4, 8 days, then parked as describe_failed (never deleted).

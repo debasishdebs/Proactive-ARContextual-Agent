@@ -1,6 +1,6 @@
 # Roaming data saver: design (2026-11-20)
 
-Status: DESIGN ONLY. No code changed. Branch read: `feat/v101-ask-eval`, `android-companion/`. All paths below are relative to `android-companion/`.
+Status: DESIGN, slice 1 built on branch `worktree-agent-af0d488758d150685` (not merged, NOT in the 22 Nov trip candidate; see section 7). Original text below is the 2026-11-20 design pass. Branch read: `feat/v101-ask-eval`, `android-companion/`. All paths below are relative to `android-companion/`.
 Trips: Charminar 22 Nov and Ramoji 23 Nov (Hyderabad, home), Sikkim/Darjeeling 1-6 Dec (domestic mobile data, patchy), Sri Lanka 23-31 Dec (international roaming, costly).
 Claims marked UNVERIFIED were not checked on a device or in the Android sources during this design pass.
 
@@ -118,8 +118,8 @@ Modes (Settings > Data saver), for PHOTO and BULK_OTHER:
 
 | Mode | FREE | HOME_MOBILE | ROAMING |
 |---|---|---|---|
-| **Wi-Fi only** (default) | yes | queue/drop | queue/drop |
-| Wi-Fi and home mobile data | yes | yes, within cap | queue/drop |
+| Wi-Fi only | yes | queue/drop | queue/drop |
+| **Wi-Fi and home mobile data** (default, changed after review) | yes | yes, within cap | queue/drop |
 | Anywhere | yes | yes, within cap | yes, within cap |
 
 SMALL traffic: allowed on FREE and HOME_MOBILE; on ROAMING only if "Small requests on roaming" is on (default ON, within the cap; open question 1). LOCAL: always allowed.
@@ -315,3 +315,17 @@ Policy feeds the resolver: on a costly network a role with an on-device backend 
 9. Place cards on roaming: drop the photo match (proposed), or queue the photo and show the card later?
 10. Do you use a VPN (for example to reach a home Ollama) while travelling?
 11. Should the "photos waiting" count also show on the glasses, or phone only?
+
+
+## 7. Slice 1 as built, and what changed after review (2026-11-20)
+
+Built: pure policy (`core/model/.../core/net/DataSaver.kt`), `DataSaverStore` / `NetworkCostMonitor` / `DataSaverGraph` (`services/ai/.../datasaver/`), the router gate, pipeline park, Place Guide and intent admit, stale-while-costly cells, worker gates, Settings > Data saver. Not built (still slice 2): byte accounting, daily caps, embeddings / tiles / canvas gates, "Send once" dialog, Ask footer.
+
+Changes after the Opus review:
+- **Default mode is now "Wi-Fi and home mobile data"** (was Wi-Fi only). Roaming, unknown networks and everything while "I'm abroad" is on stay blocked; "Wi-Fi only" is one tap away. The earlier remark that the default "does not matter at home" was wrong: at home on mobile data the first default would have held every photo. With the new default a current user's photos still go over home mobile data; only roaming / unknown / abroad / metered-Wi-Fi-abroad change behaviour.
+- **No backlog shedding while photo uploads are blocked** (`KeyframePipeline.shedAllowed`). The 30-minute recheck and network-return wakes used to run `shedBacklog`, which would thin PENDING frames to NEAR_DUP and retention would later delete them undescribed.
+- **Place Guide online but photo not allowed** takes the offline path: the name-and-distance "nearby" card from the pack, no call, log `call=skipped_data_saver`.
+- VPN over Wi-Fi: the real (non-VPN) Wi-Fi network decides FREE; a VPN naming no transport is unknown. UNVERIFIED on a device.
+- Wi-Fi that never validates: after 10 minutes the status line says remote photos wait; LAN and on-device endpoints were never blocked.
+- `onLost` only counts for the current default network; no active network at start is UNKNOWN, not OFFLINE.
+- Queue drain defers a blocked job without an attempt; a blocked primary stays a `DataSaverBlockedException` even when the fallback fails; user seeds are refused unless the network is FREE ("Seeding needs Wi-Fi"); the counter line is "blocked" (calls), and the card shows the live PENDING count; the night job's local index maintenance is no longer gated (only the describe step is).

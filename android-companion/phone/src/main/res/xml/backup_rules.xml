@@ -90,7 +90,7 @@
     <exclude domain="sharedpref" path="online_map.xml" />
     <!-- Place Guide switch: per-device, off again after a restore -->
     <exclude domain="sharedpref" path="place_guide.xml" />
-    <!-- Roaming data saver: mode, "I'm abroad" and today's skipped counts are per-device (a restore onto another phone would be wrong there): back to Wi-Fi only after a restore. -->
+    <!-- Roaming data saver: mode, "I'm abroad" and today's skipped counts are per-device (a restore onto another phone would be wrong there): back to the default (Wi-Fi and home mobile data) after a restore. -->
     <exclude domain="sharedpref" path="data_saver.xml" />
     <!-- Rokid Nexus HUD host choice (v2.0): per-device consent, PCA again after a restore -->
     <exclude domain="sharedpref" path="nexus_host.xml" />

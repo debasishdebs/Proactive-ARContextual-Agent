@@ -68,7 +68,7 @@ class BackupRulesTest {
         com.rokid.context.memory.place.UserPinStore.PREFS,
         // Place Guide: the on/off switch is per-device (default off after a restore).
         com.rokid.context.work.frames.place.PlaceGuideSettings.PREFS,
-        // Roaming data saver: the mode, the "I'm abroad" switch and today's skipped counts are per-device: Wi-Fi only again after a restore.
+        // Roaming data saver: the mode, the "I'm abroad" switch and today's skipped counts are per-device: the default again after a restore.
         com.rokid.context.ai.datasaver.DataSaverStore.PREFS,
         // v3.1 r3: the failed-dismissal marker (one timestamp): device state, never restored.
         com.rokid.context.orchestration.proactive.PrefsSuggestionStore.MARKER_PREFS,

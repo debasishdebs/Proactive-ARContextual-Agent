@@ -92,6 +92,8 @@ class PlaceSampler(
     private val zoneBlocked: suspend () -> Boolean,
     private val networkUp: () -> Boolean,
     private val admit: () -> Boolean = { true },
+    /** Roaming data saver: false = the phone is online but a photo upload is not allowed on this network. Then no call is made and the same pack-based nearby card as offline is shown. Counted by the owner of the lambda. */
+    private val photoAllowed: () -> Boolean = { true },
     private val pipelineOn: () -> Boolean = { true },
     private val generation: () -> Long = { 0L },
     private val flight: PlaceFlight = PlaceFlight(),
@@ -250,6 +252,8 @@ class PlaceSampler(
         flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now)
         stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
         if (!callOk) { tr.reason = "offline"; tr.call = "skipped_offline"; return fallback(hits, f.frameId, gen, cardEpoch, ticket) } // offline: the only no-call fallback (G1)
+        // Roaming data saver: online, but photos may not go out on this network (mobile, roaming, unknown). Same path as offline: the name-and-distance card from the pack, no identification, no photo sent.
+        if (!photoAllowed()) { tr.reason = "data_saver"; tr.call = "skipped_data_saver"; return fallback(hits, f.frameId, gen, cardEpoch, ticket) }
         // G1 (ruling 2026-11-17): a power, thermal or policy denial is NOT a failure of the match and never becomes a nearby identification: no call, no card.
         if (!admit()) { tr.reason = "not_admitted"; tr.call = "skipped_not_admitted"; return PlaceOutcome.NOT_ADMITTED }
         flight.lastCallAt = elapsed()

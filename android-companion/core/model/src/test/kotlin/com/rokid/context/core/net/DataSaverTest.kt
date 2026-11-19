@@ -42,14 +42,30 @@ class DataSaverTest {
         assertEquals(setOf(NetworkCost.HOME_MOBILE, NetworkCost.ROAMING, NetworkCost.UNKNOWN), NetworkCost.entries.filter(NetworkCosts::isCostly).toSet())
     }
 
+    @Test fun aWifiThatNeverValidatesIsStuckOnlyAfterTenMinutesAndOnlyWhenOtherwiseConnected() {
+        val t0 = 1_000_000L
+        val s = snap(Transport.WIFI, validated = false, notMetered = true).copy(unvalidatedSinceMs = t0)
+        assertFalse(NetworkCosts.stuckUnvalidated(s, t0 + 9 * 60_000L))
+        assertTrue(NetworkCosts.stuckUnvalidated(s, t0 + 11 * 60_000L))
+        assertFalse(NetworkCosts.stuckUnvalidated(s.copy(validated = true), t0 + 11 * 60_000L))
+        assertFalse(NetworkCosts.stuckUnvalidated(s.copy(notMetered = false), t0 + 11 * 60_000L), "metered: not the portal case")
+        assertFalse(NetworkCosts.stuckUnvalidated(s.copy(transport = Transport.CELLULAR), t0 + 11 * 60_000L))
+        assertFalse(NetworkCosts.stuckUnvalidated(s.copy(unvalidatedSinceMs = 0), t0 + 11 * 60_000L))
+        // it stays costly for remote photos, but a LAN box or the device keeps working
+        assertEquals(NetworkCost.UNKNOWN, NetworkCosts.classify(s, false))
+        assertFalse(DataPolicy.decide(DataKind.PHOTO, EndpointReach.REMOTE, NetworkCost.UNKNOWN, Transport.WIFI, DataSaverSettings()).allowed)
+        assertTrue(DataPolicy.decide(DataKind.PHOTO, EndpointReach.LAN, NetworkCost.UNKNOWN, Transport.WIFI, DataSaverSettings()).allowed)
+        assertTrue(DataPolicy.decide(DataKind.PHOTO, EndpointReach.DEVICE, NetworkCost.UNKNOWN, Transport.WIFI, DataSaverSettings()).allowed)
+    }
+
     // ---- the decision ----
 
-    private fun decide(kind: DataKind, cost: NetworkCost, s: DataSaverSettings = DataSaverSettings(), reach: EndpointReach = EndpointReach.REMOTE, t: Transport = Transport.CELLULAR) =
+    private fun decide(kind: DataKind, cost: NetworkCost, s: DataSaverSettings = DataSaverSettings(DataMode.WIFI_ONLY), reach: EndpointReach = EndpointReach.REMOTE, t: Transport = Transport.CELLULAR) =
         DataPolicy.decide(kind, reach, cost, t, s)
 
-    @Test fun defaultsAreWifiOnlyAndTextAllowed() {
+    @Test fun defaultsAreWifiAndHomeMobileAndTextAllowed() {
         val d = DataSaverSettings()
-        assertEquals(DataMode.WIFI_ONLY, d.mode); assertFalse(d.abroad); assertTrue(d.smallOnRoaming)
+        assertEquals(DataMode.WIFI_AND_HOME_MOBILE, d.mode); assertFalse(d.abroad); assertTrue(d.smallOnRoaming)
     }
 
     @Test fun photoAndBulkTableInWifiOnlyMode() {
@@ -114,8 +130,8 @@ class DataSaverTest {
         listOf("api.openai.com", "172.32.0.1", "172.15.0.1", "8.8.8.8", "192.169.0.1", "1.2.3", "999.1.1.1", "", null, "10.0.0.1.evil.com", "fd00::1").forEach { assertFalse(DataPolicy.isLanHost(it), it.toString()) }
     }
 
-    @Test fun modeParseFailsToTheSafeDefault() {
-        assertEquals(DataMode.WIFI_ONLY, DataMode.parse(null)); assertEquals(DataMode.WIFI_ONLY, DataMode.parse("nonsense"))
+    @Test fun modeParseFallsBackToTheDefault() {
+        assertEquals(DataMode.DEFAULT, DataMode.parse(null)); assertEquals(DataMode.DEFAULT, DataMode.parse("nonsense"))
         assertEquals(DataMode.ANYWHERE, DataMode.parse("ANYWHERE"))
     }
 
