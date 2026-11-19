@@ -220,8 +220,12 @@ class OnlineTileSource(
                     val b = r.body
                     if (b == null || b.size > MAX_TILE_BYTES) { PcLog.i(TAG, "online tiles response too large"); return fail(k) }
                     if (!looksLikeImage(b)) { PcLog.i(TAG, "online tiles response not an image"); return fail(k) }
-                    synchronized(lock) { backoffMs = 0L; failedUntil.remove(k) }
-                    cache.put(k, b)
+                    // Under the same lock as stop(): a stop that came first (switch off, pause) wins and nothing is written; one that comes after waits, and its purge then removes the tile.
+                    synchronized(lock) {
+                        if (!running || epoch != e0) return null
+                        backoffMs = 0L; failedUntil.remove(k)
+                        cache.put(k, b)
+                    }
                     return b
                 }
                 code == 301 || code == 302 || code == 303 || code == 307 || code == 308 -> {

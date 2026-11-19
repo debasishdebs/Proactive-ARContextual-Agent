@@ -67,15 +67,15 @@ data class OnlineMapUi(
 
 /**
  * The switch's state machine. OFF by default. Turning it on the FIRST time only raises [OnlineMapUi.askFirst]; the switch stays OFF until [confirmFirst] (Cancel and a dismissal leave it OFF).
- * Turning it off, and [wipe] (Delete all), run [purge] (the tile cache); [wipe] also forgets the consent, so the explanation shows again.
+ * Turning it off, and [wipe] (Delete all), first run [stop] (the tile source: no request in flight may write a tile back), then [purge] (the tile cache); [wipe] also forgets the consent, so the explanation shows again.
  */
-class OnlineMapModel(private val store: OnlineMapStore, available: Boolean, private val purge: () -> Unit) {
+class OnlineMapModel(private val store: OnlineMapStore, available: Boolean, private val stop: () -> Unit = {}, private val purge: () -> Unit) {
     private val _ui = MutableStateFlow(OnlineMapUi(available = available, enabled = available && store.enabled))
     val ui: StateFlow<OnlineMapUi> = _ui.asStateFlow()
 
     fun requestEnabled(on: Boolean) {
         if (!_ui.value.available) return
-        if (!on) { store.enabled = false; purge(); _ui.update { it.copy(enabled = false, askFirst = false) }; return }
+        if (!on) { store.enabled = false; stop(); purge(); _ui.update { it.copy(enabled = false, askFirst = false) }; return }
         if (_ui.value.enabled) return
         if (!store.consented) { _ui.update { it.copy(askFirst = true) }; return }
         store.enabled = true; _ui.update { it.copy(enabled = true) }
@@ -90,7 +90,7 @@ class OnlineMapModel(private val store: OnlineMapStore, available: Boolean, priv
     fun cancelFirst() { _ui.update { it.copy(askFirst = false) } }
 
     /** Delete all: switch OFF, consent forgotten, tile cache deleted. */
-    fun wipe() { store.clear(); purge(); _ui.update { it.copy(enabled = false, askFirst = false) } }
+    fun wipe() { store.clear(); stop(); purge(); _ui.update { it.copy(enabled = false, askFirst = false) } }
 }
 
 /** Delete all: the in-memory switch and consent follow the prefs file and the cache folder that `MemoryWipe` already cleared (also on the resume of an interrupted wipe). [model] is null while the screen's graph was never built. */
