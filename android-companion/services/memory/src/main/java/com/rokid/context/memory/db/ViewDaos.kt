@@ -18,7 +18,7 @@ interface FrameViewDao {
     fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
 
     /** Keyset page (activity pagination A1): newest first, ties by id DESC, rows strictly after the cursor `(cKey, cId)`. The first page passes `(toMs, "")`. Bounded by [n], served by the `ts` index. */
-    @Query("SELECT * FROM frame WHERE ts >= :fromMs AND ts < :toMs AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
+    @Query("SELECT * FROM frame WHERE ts >= :fromMs AND ts < :toMs AND ts <= :cKey AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
     suspend fun pageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<FrameEntity>
 
     /** Ids only (activity multi-select, ruling P2): the photos of `[fromMs, toMs)`, newest first, at most [n]. Same range and filter as [pageIn] and [observeTimes]. */
@@ -41,7 +41,7 @@ abstract class MemoryViewDao : DerivedStaleDao() {
     abstract fun observeVisibleTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
 
     /** Keyset page of the visible memories by `createdAt` (list view), newest first, ties by id DESC. Same filter as [observeVisibleTimes]. */
-    @Query("SELECT * FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState = 'OK' AND (createdAt < :cKey OR (createdAt = :cKey AND id < :cId)) ORDER BY createdAt DESC, id DESC LIMIT :n")
+    @Query("SELECT * FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState = 'OK' AND createdAt <= :cKey AND (createdAt < :cKey OR (createdAt = :cKey AND id < :cId)) ORDER BY createdAt DESC, id DESC LIMIT :n")
     abstract suspend fun visiblePageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<MemoryEntity>
 
     /**
@@ -125,7 +125,7 @@ interface AskDao {
     @Query("UPDATE ask SET answer = :answer, sourcesJson = :sourcesJson WHERE id = :id") suspend fun complete(id: String, answer: String, sourcesJson: String): Int
     @Query("SELECT * FROM ask WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<AskEntity>
     /** Keyset page (A1): newest first, ties by id DESC. Same filter as [observeTimes]: a developer eval ask is never listed. */
-    @Query("SELECT * FROM ask WHERE ts >= :fromMs AND ts < :toMs AND source != 'canvas_eval' AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
+    @Query("SELECT * FROM ask WHERE ts >= :fromMs AND ts < :toMs AND source != 'canvas_eval' AND ts <= :cKey AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
     suspend fun pageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<AskEntity>
     @Query("SELECT * FROM ask WHERE id = :id") suspend fun byId(id: String): AskEntity?
     @Query("SELECT * FROM ask WHERE id = :id") fun observe(id: String): Flow<AskEntity?>
@@ -143,7 +143,7 @@ interface NudgeDao {
     @Query("SELECT * FROM nudge WHERE id IN (:ids)") suspend fun byIds(ids: List<String>): List<NudgeEntity>
     @Query("SELECT * FROM nudge WHERE id = :id") fun observe(id: String): Flow<NudgeEntity?>
     /** Keyset page (A1): newest first, ties by id DESC; no other filter (as [observeTimes]). */
-    @Query("SELECT * FROM nudge WHERE ts >= :fromMs AND ts < :toMs AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
+    @Query("SELECT * FROM nudge WHERE ts >= :fromMs AND ts < :toMs AND ts <= :cKey AND (ts < :cKey OR (ts = :cKey AND id < :cId)) ORDER BY ts DESC, id DESC LIMIT :n")
     suspend fun pageIn(fromMs: Long, toMs: Long, cKey: Long, cId: String, n: Int): List<NudgeEntity>
     @Query("SELECT * FROM nudge ORDER BY ts DESC LIMIT :limit") fun observeRecent(limit: Int): Flow<List<NudgeEntity>>
     @Query("SELECT ts FROM nudge WHERE ts >= :fromMs AND ts < :toMs") fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
