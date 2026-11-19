@@ -110,12 +110,12 @@ class UserPinStore(private val prefs: SharedPreferences) {
         return write(now.map { if (it.id == pinId) it.copy(momentId = momentId) else it })
     }
 
-    /** Clears every link whose Moment id is not in [alive]; returns the ids of the PINS cleared (never the Moment ids). The pins themselves stay. A corrupt stored list is left alone (null). */
+    /** Clears every link whose Moment id is not in [alive] (except the pins in [keep]: an unfinished arming still needs their link); returns the ids of the PINS cleared (never the Moment ids). The pins themselves stay. A corrupt stored list is left alone (null). */
     @Synchronized
-    fun clearMomentsExcept(alive: Set<String>): Set<String>? {
+    fun clearMomentsExcept(alive: Set<String>, keep: Set<String> = emptySet()): Set<String>? {
         val now = pins()
         if (bad) return null
-        val gone = now.filter { it.momentId != null && it.momentId !in alive }
+        val gone = now.filter { it.momentId != null && it.momentId !in alive && it.id !in keep }
         if (gone.isEmpty()) return emptySet()
         val ids = gone.map { it.id }.toSet()
         return if (write(now.map { if (it.id in ids) it.copy(momentId = null) else it })) ids else null

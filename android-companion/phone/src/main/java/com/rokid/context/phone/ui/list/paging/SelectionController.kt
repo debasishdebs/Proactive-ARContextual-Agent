@@ -128,8 +128,8 @@ class SelectionController(
         scope.launch {
             val out = try { p.forget(roots, token) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { ForgetActions.Outcome.FAILED }
             when (out) {
-                ForgetActions.Outcome.DONE, ForgetActions.Outcome.CACHE_CLEANUP_FAILED, ForgetActions.Outcome.PIN_CLEANUP_PENDING -> {
-                    set { it.copy(selection = Selection(), stage = ForgetStage.Idle, message = if (out == ForgetActions.Outcome.PIN_CLEANUP_PENDING) com.rokid.context.phone.ui.memory.ForgetCopy.PIN_CLEANUP_PENDING else SelectionText.forgot(roots.size)) }
+                ForgetActions.Outcome.DONE, ForgetActions.Outcome.CACHE_CLEANUP_FAILED, ForgetActions.Outcome.PIN_CLEANUP_PENDING, ForgetActions.Outcome.PIN_NOT_REMOVED, ForgetActions.Outcome.CACHE_AND_PIN_PENDING, ForgetActions.Outcome.CACHE_AND_PIN_NOT_REMOVED -> {
+                    set { it.copy(selection = Selection(), stage = ForgetStage.Idle, message = when (out) { ForgetActions.Outcome.PIN_CLEANUP_PENDING -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(true, false); ForgetActions.Outcome.PIN_NOT_REMOVED -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(false, false); ForgetActions.Outcome.CACHE_AND_PIN_PENDING -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(true, true); ForgetActions.Outcome.CACHE_AND_PIN_NOT_REMOVED -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(false, true); else -> SelectionText.forgot(roots.size) }) }
                     onForgotten() // ONE refresh after the receipt
                 }
                 ForgetActions.Outcome.CONTENT_CHANGED -> plan(p, roots, changed = true)

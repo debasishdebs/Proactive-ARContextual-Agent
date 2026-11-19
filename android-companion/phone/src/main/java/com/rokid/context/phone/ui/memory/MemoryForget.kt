@@ -63,7 +63,7 @@ class PinPrepFailed : Exception("pin removal not prepared")
 class PinsNotConfirmed : Exception("pins not confirmed")
 
 /** Slice 1.4.2: the Forget went through; only the removal of its pins did not finish (it completes at the next start). */
-class PinCleanupPending : Exception("pin cleanup pending")
+class PinNotice(val pending: Boolean, val cacheLeft: Boolean) : Exception("pin notice")
 
 /** Fixed copy (spec §2.4 Memory detail; never exception text). */
 object ForgetCopy {
@@ -91,6 +91,9 @@ object ForgetCopy {
     /** Slice 1.4.2: the pin removal could not be prepared, so nothing was forgotten. */
     const val PIN_PREP_FAILED = "Could not prepare the pin removal; nothing was forgotten."
     /** Slice 1.4.2: the Forget committed; the pin removal finishes at the next start. */
+    /** Slice 1.4.2: the Forget committed but the removal of its pins could not be recorded: they stay. */
+    const val PIN_NOT_REMOVED = "Forgotten. The pinned places that used it could not be removed; they stay and will show Needs a Moment."
+    fun pinNotice(pending: Boolean, cacheLeft: Boolean): String = (if (cacheLeft) CACHE_LEFT + " " else "") + (if (pending) PIN_CLEANUP_PENDING else PIN_NOT_REMOVED)
     const val PIN_CLEANUP_PENDING = "Forgotten. The pinned places that used it will be removed when the app next starts."
     /** Slice 1.4.2: the pins this Forget would delete are not the ones that were confirmed. */
     const val PINS_CHANGED = "The pinned places affected changed. Review and try again; nothing was forgotten."

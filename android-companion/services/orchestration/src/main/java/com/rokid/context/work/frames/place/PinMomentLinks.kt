@@ -18,6 +18,9 @@ data class PinsGoing(val count: Int, val names: List<String>, /** The ids of exa
 /** The pin removal of an explicit Forget could not be prepared (the durable arming was not stored or not readable back): the Forget is NOT run. */
 class PinArmFailed : Exception("pin removal could not be prepared")
 
+/** The Forget committed but its pin removal could not be durably recorded (the committed dead set was not stored): the pins stay, with their link cleared by the next sweep. */
+class PinCommitNotStored : Exception("pin removal not recorded")
+
 /**
  * Slice 1.4.2 "Pin to Moment": what becomes of a pin whose reference Moment goes away (the link is an 8-hex Moment id on the pin, prefs `place_pins`). Two kinds of removal, two fates:
  *
@@ -60,16 +63,16 @@ object PinMomentLinks {
      * are armed. [committed] says whether the Forget's result means it committed. Throws [PinArmFailed] BEFORE running [block] when pins would be armed and the arming cannot be stored. A failure of the cascade
      * AFTER the Forget committed never fails it: [onPending] is called and the cleanup finishes at the next start.
      */
-    suspend fun <T> explicit(context: Context, target: suspend (List<String>) -> Set<String>, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, block: suspend () -> T): T =
-        explicitStore(PlaceGraph.pins(context), momentsOf(context), { PlaceGraph.savePins(context, it) }, target, committed, onPending, block)
+    suspend fun <T> explicit(context: Context, target: suspend (List<String>) -> Set<String>, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, onNotRemoved: () -> Unit = {}, allowedPins: Set<String>? = null, block: suspend () -> T): T =
+        explicitStore(PlaceGraph.pins(context), momentsOf(context), { PlaceGraph.savePins(context, it) }, target, committed, onPending, block, onNotRemoved, allowedPins)
 
-    internal suspend fun <T> explicitStore(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, save: suspend (List<UserPlace>) -> Boolean, target: suspend (List<String>) -> Set<String>, committed: (T) -> Boolean, onPending: () -> Unit = {}, block: suspend () -> T): T {
+    internal suspend fun <T> explicitStore(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, save: suspend (List<UserPlace>) -> Boolean, target: suspend (List<String>) -> Set<String>, committed: (T) -> Boolean, onPending: () -> Unit = {}, block: suspend () -> T, onNotRemoved: () -> Unit = {}, allowedPins: Set<String>? = null): T {
         val op = UUID.randomUUID().toString()
         inflight.add(op)
         try {
             PlacePinning.underPinLock {
                 resolveStore(store, alive, save, op) // an earlier operation's leftovers are finished (committed) or dropped (not)
-                val pairs = targetPairs(store, alive, target)
+                val pairs = targetPairs(store, alive, target).let { p -> if (allowedPins == null) p else p.filterKeys { it in allowedPins } } // inside the pin lock: only the pins the user confirmed
                 if (pairs.isNotEmpty() && !store.arm(Arming(op, "forget", false, pairs, carried(store)))) { store.disarm(); throw PinArmFailed() }
             }
             val r = try { block() } catch (t: Throwable) { PlacePinning.underPinLock { dropIfOp(store, op) }; throw t }
@@ -77,7 +80,10 @@ object PinMomentLinks {
                 PlacePinning.underPinLock {
                     if (committed(r)) commitOp(store, op, alive, save) else dropIfOp(store, op)
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: PinCommitNotStored) {
+                PcLog.w("PcPlace", "pin removal could not be recorded: the pins stay")
+                onNotRemoved()
+            } catch (e: Exception) {
                 PcLog.w("PcPlace", "pin cleanup after forget will finish at next start")
                 onPending()
             }
@@ -114,7 +120,7 @@ object PinMomentLinks {
         val a = store.arming()?.takeIf { it.op == op } ?: return
         val live = if (a.pairs.isEmpty()) emptySet() else alive(a.pairs.values.distinct())
         val dead = a.dead + a.pairs.filter { it.value !in live }
-        if (!store.arm(Arming(op, a.kind, true, emptyMap(), dead))) throw IllegalStateException("arming not committed")
+        if (!store.arm(Arming(op, a.kind, true, emptyMap(), dead)) && !store.arm(Arming(op, a.kind, true, emptyMap(), dead))) throw PinCommitNotStored() // one retry; if it still fails the pins stay
         finishCommitted(store, dead, alive, save)
     }
 
@@ -228,7 +234,8 @@ object PinMomentLinks {
         val linked = store.pins().mapNotNull { it.momentId }.toSet()
         if (store.corrupt) return null
         if (linked.isEmpty()) return 0
-        val cleared = store.clearMomentsExcept(alive(linked.toList())) ?: return null
+        val armed = store.arming()?.let { it.pairs.keys + it.dead.keys } ?: emptySet() // an unfinished arming (a wipe not yet committed, a dead set not yet deleted) still needs these pins' links: never cleared here
+        val cleared = store.clearMomentsExcept(alive(linked.toList()), armed) ?: return null
         val n = cleared.size
         if (n > 0) PcLog.i("PcPlace", "pin moment link cleared by removal count=$n")
         return n
