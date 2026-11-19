@@ -62,6 +62,8 @@ class TileCache<T : Any>(
     private val capacity: Int = 96,
     private val maxBytes: Long = 16L shl 20,
     private val weigh: (T) -> Long = { 0L },
+    /** False for a source that can fail for a while and recover (the online tiles): a failed load is not remembered, so it is asked again later (the source itself backs off). */
+    private val rememberAbsent: Boolean = true,
     private val load: (TileKey) -> T?,
 ) {
     private var bytes = 0L
@@ -94,7 +96,7 @@ class TileCache<T : Any>(
             val v: T? = try { load(k) } catch (e: Exception) { problems++; null } catch (e: OutOfMemoryError) { problems++; null }
             synchronized(lock) {
                 if (v != null) bytes += weigh(v)
-                map[k] = v ?: ABSENT
+                if (v != null || rememberAbsent) map[k] = v ?: ABSENT
                 // removeEldestEntry runs once per insert; trim any remaining byte overshoot here
                 val it = map.entries.iterator()
                 while (bytes > maxBytes && map.size > 1 && it.hasNext()) {
