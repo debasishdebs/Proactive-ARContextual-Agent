@@ -125,7 +125,7 @@ class PlacePinning(
         if (!pin.isValid) return@withLock PinResult.Refused(PinRefusal.INVALID)
         if (!save(now.map { if (it.id == id) pin else it })) return@withLock PinResult.Refused(PinRefusal.NOT_STORED)
         log("pin edited")
-        if (pin.momentId != old.momentId) log(if (pin.momentId != null) "pin moment linked" else "pin moment unlinked by user")
+        if (pin.momentId != old.momentId) { if (pin.momentId != null) log("pin moment linked") else log("pin moment unlinked by user") }
         PinResult.Saved(pin)
     }
 
