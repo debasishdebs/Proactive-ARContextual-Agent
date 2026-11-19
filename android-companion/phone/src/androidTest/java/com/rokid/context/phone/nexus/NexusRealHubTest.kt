@@ -1,5 +1,6 @@
 package com.rokid.context.phone.nexus
 
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
@@ -41,6 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * transaction untouched). The hub's state (approved, a capability unticked, force-stopped) is arranged from outside by adb; the expected answer is passed as an instrumentation argument (`expect`).
  * Results are logged with the tag `PCAREALHUB` (codes, counts and states only, never text).
  */
+/**
+ * WARNING: EMULATOR ONLY. These tests run `am force-stop` on the Nexus hub. Gradle's connectedDebugAndroidTest installs and runs on EVERY attached device, so never run it while the real phone or
+ * glasses are attached. The class skips itself (Assume) unless the device is an emulator.
+ */
 @RunWith(AndroidJUnit4::class)
 class NexusRealHubTest {
     private val inst = InstrumentationRegistry.getInstrumentation()
@@ -49,6 +54,8 @@ class NexusRealHubTest {
     private val rigs = mutableListOf<Rig>()
 
     @Before fun bridgePresent() {
+        val id = (Build.FINGERPRINT + "|" + Build.PRODUCT + "|" + Build.HARDWARE).lowercase()
+        assumeTrue("emulator only: this test force-stops the hub", listOf("generic", "emulator", "sdk_gphone", "ranchu").any { id.contains(it) })
         val ok = try { ctx.packageManager.getPackageInfo(NexusPackages.BRIDGE, 0); true } catch (_: Exception) { false }
         assumeTrue("bridge APK not installed", ok)
     }
