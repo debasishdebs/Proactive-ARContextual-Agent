@@ -74,12 +74,12 @@ class PinMomentLookupTest {
         two()
         val day1 = MomentForgetFixture.SEC - 10; val day2 = second2 + 10 // id range of "a day" around both
         val lo = com.rokid.context.memory.moment.MomentId.format(day1); val hi = com.rokid.context.memory.moment.MomentId.format(day2)
-        assertEquals(listOf(id2, fx.id), md.photoMomentsBetween(lo, hi, 30, 0).map { it.momentId })
-        assertEquals("paged", listOf(fx.id), md.photoMomentsBetween(lo, hi, 1, 1).map { it.momentId })
-        assertTrue("outside the day", md.photoMomentsBetween(com.rokid.context.memory.moment.MomentId.format(second2 + 50), com.rokid.context.memory.moment.MomentId.format(second2 + 60), 30, 0).isEmpty())
+        assertEquals(listOf(id2, fx.id), md.photoMomentsBetween(lo, hi, 30).map { it.momentId })
+        assertEquals("keyset paging: the next page starts after the last id", listOf(fx.id), md.photoMomentsBetween(lo, hi, 1, id2).map { it.momentId })
+        assertTrue("outside the day", md.photoMomentsBetween(com.rokid.context.memory.moment.MomentId.format(second2 + 50), com.rokid.context.memory.moment.MomentId.format(second2 + 60), 30).isEmpty())
         fx.service.forgetMoment("a")
-        assertEquals("a forgotten Moment is not listed", listOf(id2), md.photoMomentsBetween(lo, hi, 30, 0).map { it.momentId })
+        assertEquals("a forgotten Moment is not listed", listOf(id2), md.photoMomentsBetween(lo, hi, 30).map { it.momentId })
         md.insertTombstones(listOf(com.rokid.context.memory.db.MomentTombstoneEntity(id2, 1)))
-        assertTrue(md.photoMomentsBetween(lo, hi, 30, 0).isEmpty())
+        assertTrue(md.photoMomentsBetween(lo, hi, 30).isEmpty())
     }
 }

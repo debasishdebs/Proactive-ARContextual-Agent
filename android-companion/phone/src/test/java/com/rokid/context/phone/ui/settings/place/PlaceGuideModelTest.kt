@@ -50,7 +50,11 @@ class PlaceGuideModelTest {
         var moments = listOf<MomentChoice>()
         val logged = mutableListOf<String>()
         override suspend fun recentMoments(limit: Int) = moments.take(limit)
-        override suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, offset: Int) = moments.filter { it.atMs in fromMs until toMs }.sortedByDescending { it.id }.drop(offset).take(limit)
+        var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null; var gateDay: Long? = null
+        override suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, beforeId: String?): List<MomentChoice> {
+            if (gateDay == fromMs) gate?.await() // a slow load of that day
+            return moments.filter { it.atMs in fromMs until toMs && (beforeId == null || it.id < beforeId) }.sortedByDescending { it.id }.take(limit)
+        }
         override suspend fun momentsOf(ids: List<String>) = moments.filter { it.id in ids }.associateBy { it.id }
         override suspend fun setMoment(pinId: String, momentId: String?) = pinning.setMoment(pinId, momentId)
         override suspend fun sweepMoments() { val alive = moments.map { it.id }.toSet(); stored = stored.map { if (it.momentId != null && it.momentId !in alive) it.copy(momentId = null) else it } }
@@ -316,6 +320,27 @@ class PlaceGuideModelTest {
         assertTrue("an empty day is shown empty, not an error", vm.state.value.momentPicker!!.items.isEmpty())
         vm.pickerDay(1); vm.pickerDay(1); d.scheduler.advanceUntilIdle(); vm.pickerDay(1); d.scheduler.advanceUntilIdle()
         assertEquals("never past today", DAY0, vm.state.value.momentPicker!!.dayStartMs); assertEquals(listOf(today), vm.state.value.momentPicker!!.items)
+    }
+
+    @Test fun aSlowEarlierDayLoadNeverOverwritesALaterOne() = runTest(d) {
+        val y = MomentChoice("00000001", "/p/y", DAY0 - 3_600_000L); val t = MomentChoice("00000002", "/p/t", DAY0 + 1000L)
+        val c = Control().also { it.moments = listOf(y, t) }; val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
+        vm.openMomentPicker(null); d.scheduler.advanceUntilIdle()
+        c.gateDay = DAY0 - DAY; c.gate = kotlinx.coroutines.CompletableDeferred()
+        vm.pickerDay(-1); d.scheduler.advanceUntilIdle() // yesterday is slow
+        vm.closeMomentPicker(); vm.openMomentPicker(null); d.scheduler.advanceUntilIdle() // today again, fast
+        c.gate!!.complete(Unit); d.scheduler.advanceUntilIdle() // the slow answer arrives late
+        assertEquals(DAY0, vm.state.value.momentPicker!!.dayStartMs); assertEquals(listOf(t), vm.state.value.momentPicker!!.items)
+    }
+
+    @Test fun loadMorePagesByTheLastIdOfItsOwnDayAndNeverRepeats() = runTest(d) {
+        val c = Control().also { c -> c.moments = (1..65).map { MomentChoice("%08x".format(2000 + it), "/p/$it", DAY0 + it * 1000L) } }
+        val vm = PlaceGuideViewModel(c, d, now = { NOW }, zone = java.time.ZoneOffset.UTC)
+        vm.openMomentPicker(null); d.scheduler.advanceUntilIdle()
+        vm.pickerMore(); d.scheduler.advanceUntilIdle(); vm.pickerMore(); d.scheduler.advanceUntilIdle()
+        val pk = vm.state.value.momentPicker!!
+        assertEquals(65, pk.items.size); assertEquals(65, pk.items.map { it.id }.toSet().size); assertFalse(pk.hasMore)
+        assertEquals(pk.items.map { it.id }.sortedDescending(), pk.items.map { it.id })
     }
 
     @Test fun aForgottenMomentIsNotListedAndAYesterdayMomentCanBeAttachedToAnExistingPin() = runTest(d) {

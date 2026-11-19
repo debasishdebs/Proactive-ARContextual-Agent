@@ -128,15 +128,16 @@ class SelectionController(
         scope.launch {
             val out = try { p.forget(roots, token) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { ForgetActions.Outcome.FAILED }
             when (out) {
-                ForgetActions.Outcome.DONE, ForgetActions.Outcome.CACHE_CLEANUP_FAILED -> {
-                    set { it.copy(selection = Selection(), stage = ForgetStage.Idle, message = SelectionText.forgot(roots.size)) }
+                ForgetActions.Outcome.DONE, ForgetActions.Outcome.CACHE_CLEANUP_FAILED, ForgetActions.Outcome.PIN_CLEANUP_PENDING -> {
+                    set { it.copy(selection = Selection(), stage = ForgetStage.Idle, message = if (out == ForgetActions.Outcome.PIN_CLEANUP_PENDING) com.rokid.context.phone.ui.memory.ForgetCopy.PIN_CLEANUP_PENDING else SelectionText.forgot(roots.size)) }
                     onForgotten() // ONE refresh after the receipt
                 }
                 ForgetActions.Outcome.CONTENT_CHANGED -> plan(p, roots, changed = true)
                 ForgetActions.Outcome.TOO_LARGE -> set { it.copy(stage = ForgetStage.Refused(ForgetStage.Reason.TOO_LARGE, roots.size)) }
                 ForgetActions.Outcome.EXPORT_IN_PROGRESS, ForgetActions.Outcome.SAVE_IN_PROGRESS -> set { it.copy(stage = ForgetStage.Idle, message = SelectionText.BUSY) }
                 ForgetActions.Outcome.PIN_PREP_FAILED -> set { it.copy(stage = ForgetStage.Idle, message = com.rokid.context.phone.ui.memory.ForgetCopy.PIN_PREP_FAILED) }
-                ForgetActions.Outcome.PINS_NOT_CONFIRMED, ForgetActions.Outcome.FAILED -> set { it.copy(stage = ForgetStage.Idle, message = SelectionText.FAILED) }
+                ForgetActions.Outcome.PINS_NOT_CONFIRMED -> set { it.copy(stage = ForgetStage.Idle, message = com.rokid.context.phone.ui.memory.ForgetCopy.PINS_CHANGED) }
+                ForgetActions.Outcome.FAILED -> set { it.copy(stage = ForgetStage.Idle, message = SelectionText.FAILED) }
             }
         }
     }

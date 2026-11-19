@@ -101,8 +101,8 @@ interface PlaceGuideControl {
     suspend fun recentMoments(limit: Int): List<MomentChoice> = emptyList()
     /** The Moments among [ids] that still have a photo (a forgotten one is missing from the map). */
     suspend fun momentsOf(ids: List<String>): Map<String, MomentChoice> = emptyMap()
-    /** The photo Moments of one day ([fromMs] inclusive, [toMs] exclusive), newest first, [limit] after [offset]; forgotten ones are never listed. */
-    suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, offset: Int): List<MomentChoice> = emptyList()
+    /** The photo Moments of one day ([fromMs] inclusive, [toMs] exclusive), newest first, [limit] of them older than [beforeId] (keyset paging, no offset); forgotten ones are never listed. */
+    suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, beforeId: String?): List<MomentChoice> = emptyList()
     /** Attaches (or with null removes) the Moment link of an existing pin. */
     suspend fun setMoment(pinId: String, momentId: String?): Boolean = false
     /** Clears the links of Moments that were forgotten (read-time repair; the Forget listener does it at the time). */
@@ -349,24 +349,34 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
     }
 
     /** "Load more": the next page of the same day. */
-    fun pickerMore() { val pk = _state.value.momentPicker ?: return; loadDay(pk.pinId, pk.dayStartMs, append = true) }
+    fun pickerMore() { val pk = _state.value.momentPicker ?: return; if (pk.hasMore) loadDay(pk.pinId, pk.dayStartMs, append = true) }
 
     private fun dayStart(ms: Long): Long = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli()
 
+    /** Each load takes a generation number; a result is applied only if it is still the newest and the picker still shows the day it was started for, so a slow earlier load never overwrites a later day. */
+    private val pickerGen = java.util.concurrent.atomic.AtomicInteger(0)
+
     private fun loadDay(pinId: String?, dayStartMs: Long, append: Boolean) {
+        val gen = pickerGen.incrementAndGet()
+        val before = if (append) _state.value.momentPicker?.takeIf { it.dayStartMs == dayStartMs }?.items?.lastOrNull()?.id else null
+        if (append && before == null) return
         viewModelScope.launch(work) {
-            val have = if (append) _state.value.momentPicker?.items.orEmpty() else emptyList()
             val end = java.time.Instant.ofEpochMilli(dayStartMs).atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-            val page = runCatching { control.momentsBetween(dayStartMs, end, PlaceGuideModel.PICK_PAGE + 1, have.size) }.getOrDefault(emptyList())
+            val page = runCatching { control.momentsBetween(dayStartMs, end, PlaceGuideModel.PICK_PAGE + 1, before) }.getOrDefault(emptyList())
             val more = page.size > PlaceGuideModel.PICK_PAGE
-            _state.update { it.copy(momentPicker = MomentPicker(pinId, have + page.take(PlaceGuideModel.PICK_PAGE), dayStartMs, more)) }
+            _state.update { s ->
+                val cur = s.momentPicker
+                if (gen != pickerGen.get() || (append && (cur == null || cur.dayStartMs != dayStartMs))) s // superseded: a newer day was asked for, or the picker closed
+                else s.copy(momentPicker = MomentPicker(pinId, (if (append) cur!!.items else emptyList()) + page.take(PlaceGuideModel.PICK_PAGE), dayStartMs, more))
+            }
         }
     }
 
-    fun closeMomentPicker() { _state.update { it.copy(momentPicker = null) } }
+    fun closeMomentPicker() { pickerGen.incrementAndGet(); _state.update { it.copy(momentPicker = null) } }
 
     fun pickMoment(m: MomentChoice) {
         val target = _state.value.momentPicker ?: return
+        pickerGen.incrementAndGet()
         _state.update { it.copy(momentPicker = null) }
         viewModelScope.launch(work) { applyMoment(target.pinId, m) }
     }

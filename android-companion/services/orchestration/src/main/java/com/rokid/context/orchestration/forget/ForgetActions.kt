@@ -40,9 +40,11 @@ object ForgetActions {
         /** Slice 1.4.2: the removal of the pins that reference a Moment this Forget deletes could not be prepared: NOTHING was forgotten. */
         PIN_PREP_FAILED,
         /** Slice 1.4.2: a range Forget would delete pins and the caller did not pass the number of pins the user confirmed: nothing was forgotten. */
-        PINS_NOT_CONFIRMED;
+        PINS_NOT_CONFIRMED,
+        /** Slice 1.4.2: the Forget COMMITTED; only the removal of its pins did not finish and is completed at the next start. */
+        PIN_CLEANUP_PENDING;
         /** The Forget itself went through (the cached-export leftover does not undo it). */
-        val committed: Boolean get() = this == DONE || this == CACHE_CLEANUP_FAILED
+        val committed: Boolean get() = this == DONE || this == CACHE_CLEANUP_FAILED || this == PIN_CLEANUP_PENDING
     }
 
     suspend fun forgetFact(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Boolean = forgetFactOutcome(context, memoryId, onForgotten).committed
@@ -50,10 +52,10 @@ object ForgetActions {
     suspend fun forgetMoment(context: Context, frameId: String, onForgotten: () -> Unit = {}): Boolean = forgetMomentOutcome(context, frameId, onForgotten).committed
 
     suspend fun forgetFactOutcome(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten, LoggedScope.FACT, shadowRoot = com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.MEMORY, memoryId)) { it.forgetFact(memoryId) }
+        run(context, onForgotten, { LoggedScope.FACT }, com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.MEMORY, memoryId), target = { emptySet() }) { it.forgetFact(memoryId) } // a fact Forget removes no photo: no pin goes
 
     suspend fun forgetMomentOutcome(context: Context, frameId: String, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten, LoggedScope.PHOTO, shadowRoot = com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, frameId)) { it.forgetMoment(frameId) }
+        run(context, onForgotten, { LoggedScope.PHOTO }, com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, frameId), target = scopedTarget(context, ForgetTarget.Photo(frameId), ForgetScope.PHOTO)) { it.forgetMoment(frameId) }
 
     /**
      * The granular Forget with the user's SCOPE (Photo | Moment | Scene, [ForgetScopeSetting]): memory detail's Forget fact and Forget photo, and any Moment or Scene entry, go through here. Same gate, same typed
@@ -64,7 +66,7 @@ object ForgetActions {
         if (target is ForgetTarget.Mark) markOutcome(target.labelId, onForgotten, undoMark)
         else {
             var ran: ForgetScope? = null
-            run(context, onForgotten, { ran?.let { LoggedScope.valueOf(it.name) } ?: LoggedScope.PHOTO }) { svc ->
+            run(context, onForgotten, { ran?.let { LoggedScope.valueOf(it.name) } ?: LoggedScope.PHOTO }, target = scopedTarget(context, target, scope)) { svc ->
                 val engine = ScopedForget(MemoryGraph.get(context).db, svc)
                 val plan = engine.plan(target, scope)
                 ran = plan.effective
@@ -116,10 +118,7 @@ object ForgetActions {
             val p = ForgetService(graph.db, graph.proposals).previewSelection(roots)
             if (p == null || p.tooLarge || p.erasedPhotos.isEmpty()) p
             else { // slice 1.4.2: the pins whose Moment loses its last photo here go with it: named in the confirmation
-                val md = graph.db.momentDao()
-                val g = com.rokid.context.work.frames.place.PinMomentLinks.pinsGoing(context) { ids ->
-                    ids.filter { id -> val s = com.rokid.context.memory.moment.MomentId.parse(id); s != null && md.frameIdsBetween(s * 1000, s * 1000 + 999).let { f -> f.isNotEmpty() && p.erasedPhotos.containsAll(f) } }.toSet()
-                }
+                val g = com.rokid.context.work.frames.place.PinMomentLinks.pinsGoing(context) { ids -> momentsFullyErased(graph.db.momentDao(), ids, p.erasedPhotos) }
                 if (g.count > 0) p.withPins(g.count, g.names) else p
             }
         } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e
@@ -134,7 +133,7 @@ object ForgetActions {
     suspend fun forgetSelectionOutcome(context: Context, roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>, token: String, onForgotten: () -> Unit = {}): Outcome {
         runCatching { MemoryGraph.get(context) } // installs the flag reader
         if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) { PcLog.w(TAG, "selection forget not run: forgetV2 is off"); return Outcome.FAILED }
-        return run(context, onForgotten, LoggedScope.SELECTION) { it.forgetSelection(roots, token) }
+        return run(context, onForgotten, { LoggedScope.SELECTION }, target = selectionTarget(context, roots)) { it.forgetSelection(roots, token) }
     }
 
     /**
@@ -212,16 +211,17 @@ object ForgetActions {
     }
 
     /** A time-range Forget with the typed outcome (the coordinator must have been built with `afterCascade = { afterRange(ctx, it) }`). */
-    suspend fun forgetRangeOutcome(context: Context, coordinator: com.rokid.context.canvas.plan.CanvasForgetCoordinator, fromMs: Long, toMs: Long, confirmedPins: Int? = null): Outcome =
+    suspend fun forgetRangeOutcome(context: Context, coordinator: com.rokid.context.canvas.plan.CanvasForgetCoordinator, fromMs: Long, toMs: Long, confirmedPins: Set<String>? = null): Outcome =
         withContext(Dispatchers.IO + NonCancellable) {
             try {
                 val inRange = { id: String -> com.rokid.context.memory.moment.MomentId.startMs(id)?.let { it in (Math.floorDiv(maxOf(fromMs, 0L), 1000L) * 1000)..toMs } ?: false }
                 // slice 1.4.2: a range Forget that would delete pins runs only with the number of pins the user was shown ([previewRangePins]); no caller can delete pins unannounced
                 val going = previewRangePins(context, fromMs, toMs)
-                if (rangeNeedsConfirmation(going.count, confirmedPins)) { PcLog.w(TAG, "range forget not run: pins not confirmed"); return@withContext Outcome.PINS_NOT_CONFIRMED }
-                val r = com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, reached = inRange) { coordinator.forgetRange(fromMs, toMs) } // slice 1.4.2: pins of the Moments in the range go with them
+                if (rangeNeedsConfirmation(going.ids, confirmedPins)) { PcLog.w(TAG, "range forget not run: pins not confirmed"); return@withContext Outcome.PINS_NOT_CONFIRMED }
+                var pending = false
+                val r = com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }, onPending = { pending = true }) { coordinator.forgetRange(fromMs, toMs) } // slice 1.4.2: pins of the Moments in the range go with them
                 runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
-                if (!r.cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE
+                if (!r.cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) Outcome.CACHE_CLEANUP_FAILED else if (pending) Outcome.PIN_CLEANUP_PENDING else Outcome.DONE
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) { Outcome.PIN_PREP_FAILED
             } catch (e: DataOpGate.WriteInProgress) { Outcome.SAVE_IN_PROGRESS
             } catch (e: DataOpGate.ExportInProgress) { Outcome.EXPORT_IN_PROGRESS
@@ -229,8 +229,8 @@ object ForgetActions {
             } catch (e: Exception) { PcLog.w(TAG, "range forget failed: ${SafeLog.describe(e)}"); Outcome.FAILED }
         }
 
-    /** Slice 1.4.2: a Forget that would delete [pins] pins runs only when the caller passes exactly that number (the count its confirmation showed). */
-    internal fun rangeNeedsConfirmation(pins: Int, confirmedPins: Int?): Boolean = pins > 0 && confirmedPins != pins
+    /** Slice 1.4.2: a Forget that would delete pins runs only when the caller passes exactly the pin ids its confirmation showed (a set, not a count). */
+    internal fun rangeNeedsConfirmation(pins: Set<String>, confirmedPins: Set<String>?): Boolean = pins.isNotEmpty() && confirmedPins != pins
 
     /** Slice 1.4.2: the pins (count and first names) a range Forget of [fromMs]..[toMs] would delete: what its confirmation must show and pass back as `confirmedPins`. */
     suspend fun previewRangePins(context: Context, fromMs: Long, toMs: Long): com.rokid.context.work.frames.place.PinsGoing {
@@ -247,13 +247,25 @@ object ForgetActions {
         }
     }
 
-    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref? = null, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
-        run(context, onForgotten, { kind }, shadowRoot, op)
+    /** Slice 1.4.2: the Moments (of [ids]) that lose their last photo to [target] at [scope]: the set the confirmation named and the only one whose pins an explicit Forget may delete. */
+    private fun scopedTarget(context: Context, target: ForgetTarget, scope: ForgetScope): suspend (List<String>) -> Set<String> = { ids ->
+        val g = MemoryGraph.get(context); val e = ScopedForget(g.db, ForgetService(g.db, g.proposals)); e.momentsReached(e.plan(target, scope), ids)
+    }
 
-    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref? = null, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
+    private fun selectionTarget(context: Context, roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>): suspend (List<String>) -> Set<String> = { ids ->
+        val g = MemoryGraph.get(context); val p = ForgetService(g.db, g.proposals).previewSelection(roots)
+        if (p == null || p.tooLarge || p.erasedPhotos.isEmpty()) emptySet() else momentsFullyErased(g.db.momentDao(), ids, p.erasedPhotos)
+    }
+
+    private suspend fun momentsFullyErased(md: com.rokid.context.memory.db.MomentDao, ids: Collection<String>, erased: Set<String>): Set<String> =
+        ids.filter { id -> val s = com.rokid.context.memory.moment.MomentId.parse(id); s != null && md.frameIdsBetween(s * 1000, s * 1000 + 999).let { f -> f.isNotEmpty() && erased.containsAll(f) } }.toSet()
+
+    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref? = null, target: suspend (List<String>) -> Set<String>, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
         withContext(Dispatchers.IO + NonCancellable) {
             try {
-                DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, committed = { o: Outcome -> o.committed }) { runLocked(context, onForgotten, kind, shadowRoot, op) } } // slice 1.4.2: a pin whose Moment this Forget removes goes with it
+                var pending = false
+                val o = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }, onPending = { pending = true }) { runLocked(context, onForgotten, kind, shadowRoot, op) } } // slice 1.4.2: a pin whose Moment this Forget removes goes with it
+                if (pending && o == Outcome.DONE) Outcome.PIN_CLEANUP_PENDING else o
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) {
                 PcLog.w(TAG, "forget not run: pin removal not prepared")
                 Outcome.PIN_PREP_FAILED

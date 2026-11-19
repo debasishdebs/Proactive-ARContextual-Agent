@@ -126,14 +126,16 @@ class UserPinStore(private val prefs: SharedPreferences) {
      * set only once the Forget (or the wipe's epoch) really committed. A record that is not committed is never acted on (it is dropped); a committed one is finished at the next start. Not part of the pin
      * list: [pins] and [write] never see it, and the settings export drops it.
      */
-    data class Arming(val op: String, val kind: String, val committed: Boolean, val pairs: Map<String, String>)
+    data class Arming(val op: String, val kind: String, val committed: Boolean, val pairs: Map<String, String>,
+        /** Once [committed]: exactly the (pin, Moment) pairs whose deletion is now due (stored together with `committed` in ONE write). Before commit: pairs carried over from an older unfinished arming. */
+        val dead: Map<String, String> = emptyMap())
 
     /** The stored arming, or null (none, or unreadable: an unreadable record is treated as none and dropped at the next resolve). */
     @Synchronized
     fun arming(): Arming? = try {
         prefs.getString(ARMED_KEY, null)?.let { raw ->
             val o = JSONObject(raw); val a = o.getJSONArray("pairs")
-            Arming(o.getString("op"), o.getString("kind"), o.getBoolean("committed"), (0 until a.length()).associate { i -> a.getJSONArray(i).let { it.getString(0) to it.getString(1) } })
+            Arming(o.getString("op"), o.getString("kind"), o.getBoolean("committed"), pairsOf(a), o.optJSONArray("dead")?.let { pairsOf(it) } ?: emptyMap())
         }
     } catch (e: Exception) { null }
 
@@ -144,10 +146,13 @@ class UserPinStore(private val prefs: SharedPreferences) {
     /** Stores [a] durably and reads it back; false = not stored or not readable back (the caller must NOT run the Forget). */
     @Synchronized
     fun arm(a: Arming): Boolean {
-        val json = JSONObject().put("op", a.op).put("kind", a.kind).put("committed", a.committed).put("pairs", JSONArray().also { arr -> a.pairs.toSortedMap().forEach { (p, m) -> arr.put(JSONArray().put(p).put(m)) } }).toString()
+        val json = JSONObject().put("op", a.op).put("kind", a.kind).put("committed", a.committed).put("pairs", pairsJson(a.pairs)).put("dead", pairsJson(a.dead)).toString()
         val ok = try { prefs.edit().putString(ARMED_KEY, json).commit() } catch (e: Exception) { false }
         return ok && arming() == a
     }
+
+    private fun pairsJson(m: Map<String, String>) = JSONArray().also { arr -> m.toSortedMap().forEach { (p, m2) -> arr.put(JSONArray().put(p).put(m2)) } }
+    private fun pairsOf(a: JSONArray): Map<String, String> = (0 until a.length()).associate { i -> a.getJSONArray(i).let { it.getString(0) to it.getString(1) } }
 
     /** Marks arming [op] committed (the Forget or the wipe epoch committed). False = no such arming or not stored. */
     @Synchronized
@@ -179,7 +184,7 @@ class UserPinStore(private val prefs: SharedPreferences) {
         /** [raw] (the stored list) without any Moment link: what the settings export carries. An unreadable list is returned as it is (the export never invents content). */
         fun withoutLinks(raw: String): String = try {
             val a = JSONArray(raw)
-            for (i in 0 until a.length()) a.optJSONObject(i)?.remove("moment")
+            for (i in 0 until a.length()) a.optJSONObject(i)?.let { it.remove("moment"); it.remove("at") }
             a.toString()
         } catch (e: Exception) { raw }
 
