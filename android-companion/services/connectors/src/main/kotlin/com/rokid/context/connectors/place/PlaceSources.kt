@@ -51,10 +51,11 @@ internal val placeJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
 /**
  * The one parse boundary of every place source. A hostile, absurdly nested body overflows the stack inside kotlinx's recursive tree reader: that [StackOverflowError] is a parsing
- * artefact, so it becomes a [SerializationException] (a malformed response; the cell fails and is retried). No other Error is caught: OutOfMemoryError and the like propagate.
+ * artefact, so it becomes a [SerializationException] (a malformed response; the cell fails and is retried). Every API answers with a JSON object: lenient mode would read an HTML error
+ * page or captive-portal text as a bare string and the cell would look like a successful empty one, so a non-object root is a [SerializationException] too. No other Error is caught: OutOfMemoryError and the like propagate.
  */
-internal fun parseBody(body: String): JsonElement = try {
-    placeJson.parseToJsonElement(body)
+internal fun parseBody(body: String): JsonObject = try {
+    placeJson.parseToJsonElement(body) as? JsonObject ?: throw SerializationException("response is not a JSON object")
 } catch (e: StackOverflowError) {
     throw SerializationException("response nested too deeply")
 }
