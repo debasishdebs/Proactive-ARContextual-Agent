@@ -1,6 +1,6 @@
 # Trip day quick reference (Charminar 22 Nov, Ramoji 23 Nov), updated 2026-11-19
 
-**Build:** default `~/Desktop/rokid/backups/apks-v110-f1dcf1fb/`; optional candidate `apks-v110-cand-a1149084/` (adds Card position, Sikkim/Sri Lanka presets; not installed yet, install only via `tools/install-trip-build.sh`, dry run first). Steps: `trip-install-checklist-2026-11-18.md`.
+**Build:** default `~/Desktop/rokid/backups/apks-v110-f1dcf1fb/`; optional candidate `apks-v110-cand-5bd9fc6f/` (adds Card position, Sikkim/Sri Lanka presets; not installed yet, install only via `tools/install-trip-build.sh`, dry run first). Steps: `trip-install-checklist-2026-11-18.md`.
 
 ## Switches (Settings, Developer mode on)
 - **Place Guide** (OFF by default): ON at the first monument = a card appears on the glasses after you look at a place a few seconds (MEDIUM/MAX HUD level). Offline it shows 'name, nearby, not checked'. Seed while it is OFF.
