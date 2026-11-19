@@ -353,9 +353,25 @@ check_installed() { # serial pkg apk label : version (no downgrade) + signature
   return 0
 }
 
+# ---------- plaintext database mode (the app's own record decides, never the header alone) ----------
+db_mode_class() { # $1 = first 15 bytes of context.db, $2 = db_encrypted from shared_prefs/memory_graph.xml ('true' | 'false' | ''): echoes encrypted|plaintext; fails on an inconsistent pair
+  case "$1:$2" in
+    "SQLite format 3:false") echo plaintext ;;
+    "SQLite format 3:"*) return 1 ;;
+    *:false) return 1 ;;
+    *) echo encrypted ;;
+  esac
+}
+plain_integrity() { # $1 = dir holding the extracted databases/ copy: ok only when sqlite3 on the COPY says exactly 'ok'
+  local r
+  command -v sqlite3 >/dev/null 2>&1 || return 1
+  r="$(sqlite3 "$1/context.db" 'PRAGMA integrity_check;' 2>/dev/null)" || return 1
+  [ "$r" = ok ]
+}
+
 # ---------- steps ----------
 do_backup() {
-  local t n sz db bytes h ph apksha vn vc stop_st hdr
+  local t n sz db bytes h ph apksha vn vc stop_st hdr encflag
   BACKUP_TAR="$BACKUP_DIR/pca-phone-pre-$TAG.tar"; PREV_APK="$BACKUP_DIR/pca-phone-pre-$TAG.apk"
   say "STEP backup: force-stop $PHONE_PKG (verified gone), tar c . via run-as -> $BACKUP_TAR (0600; validated with tar -t, listing, size, header, sha256)"
   [ "$GO" = 1 ] || return 0
@@ -379,11 +395,24 @@ do_backup() {
   db="$t/databases/context.db"
   sz="$(fsize "$db")" || fail "backup validation: cannot stat context.db"
   if [ "$sz" -le 0 ]; then fail "backup validation: context.db is empty"; fi
-  if [ $((sz % 4096)) -ne 0 ] && [ "$PLAIN_OK" = 0 ]; then fail "backup validation: context.db size $sz is not a multiple of 4096"; fi
   hdr="$(head -c 15 "$db")" || fail "backup validation: cannot read the context.db header"
-  if [ "$hdr" = "SQLite format 3" ] && [ "$PLAIN_OK" = 0 ]; then fail "backup validation: context.db has a plaintext header (bad snapshot or unencrypted install)"; fi
+  DB_MODE=encrypted
+  if [ "$PLAIN_OK" = 0 ]; then
+    # the app records its own mode (shared_prefs/memory_graph.xml db_encrypted): a plaintext header is accepted ONLY when that record says plaintext,
+    # and then the extracted COPY must also pass sqlite3's integrity_check; any inconsistent pair is a bad snapshot and refuses.
+    tar xf "$BACKUP_TAR" -C "$t" ./shared_prefs/memory_graph.xml 2>/dev/null || tar xf "$BACKUP_TAR" -C "$t" shared_prefs/memory_graph.xml 2>/dev/null || true
+    encflag="$(grep -o '<boolean name="db_encrypted" value="[a-z]*"' "$t/shared_prefs/memory_graph.xml" 2>/dev/null | sed 's/.*value="//; s/"$//' | head -1)" || encflag=""
+    DB_MODE="$(db_mode_class "$hdr" "$encflag")" || fail "backup validation: context.db header ('$(printf '%s' "$hdr" | tr -c 'A-Za-z0-9 ' '?')') and the app's own db_encrypted flag ('${encflag:-missing}') disagree (bad snapshot)"
+    if [ "$DB_MODE" = plaintext ]; then
+      tar xf "$BACKUP_TAR" -C "$t" ./databases/context.db-wal ./databases/context.db-shm 2>/dev/null || tar xf "$BACKUP_TAR" -C "$t" databases/context.db-wal databases/context.db-shm 2>/dev/null || true
+      plain_integrity "$t/databases" || fail "backup validation: the plaintext context.db copy failed sqlite3 integrity_check (or sqlite3 is missing): backup NOT trusted"
+      say "plaintext database mode confirmed by the app's own flag (db_encrypted=false) and an integrity_check of the backup copy"
+    elif [ $((sz % 4096)) -ne 0 ]; then
+      fail "backup validation: context.db size $sz is not a multiple of 4096"
+    fi
+  fi
   h="$(sha256_of "$BACKUP_TAR")" || fail "backup validation: cannot compute a valid SHA-256 of the tar"
-  say "backup OK: $BACKUP_TAR bytes=$bytes entries=$(wc -l < "$TMP/list.txt" | tr -d ' ') wal/shm=$n context.db=$sz sha256=$h"
+  say "backup OK ($DB_MODE db): $BACKUP_TAR bytes=$bytes entries=$(wc -l < "$TMP/list.txt" | tr -d ' ') wal/shm=$n context.db=$sz sha256=$h"
   if [ -f "$TMP/prev-phone.apk" ]; then
     cp "$TMP/prev-phone.apk" "$PREV_APK" || fail "cannot write $PREV_APK"
     chmod 600 "$PREV_APK" || fail "cannot chmod 600 $PREV_APK"
@@ -648,6 +677,22 @@ run_fixtures() {
   FX_OUT="mCallState=0\nmcallstate=0\n";                fx "call guard: lower-case key even with 0 refuses (strict)" refuse cg
   FX_OUT="mCallState=0\nMCallStateLists={}\n";          fx "call guard: mixed-case EMPTY list is not a call state (ignored only if exact-case)" refuse cg
   FX_OUT=$ok; FX_RC=1;                                  fx "call guard: adb failure with idle-looking output" refuse cg
+  FX_RC=0
+  dmc() { db_mode_class "$FX_HDR" "$FX_ENC" >/dev/null; }
+  dmp() { [ "$(db_mode_class "$FX_HDR" "$FX_ENC")" = plaintext ]; }
+  dme() { [ "$(db_mode_class "$FX_HDR" "$FX_ENC")" = encrypted ]; }
+  FX_HDR="SQLite format 3"; FX_ENC=false; fx "db mode: plaintext header + db_encrypted=false is accepted" ok dmc
+  FX_HDR="SQLite format 3"; FX_ENC=false; fx "db mode: ... and it is classified plaintext" ok dmp
+  FX_HDR="SQLite format 3"; FX_ENC=true;  fx "db mode: plaintext header but the app says encrypted refuses" refuse dmc
+  FX_HDR="SQLite format 3"; FX_ENC="";    fx "db mode: plaintext header and no flag refuses" refuse dmc
+  FX_HDR="abcdefghijklmno"; FX_ENC=false; fx "db mode: encrypted-looking header but the app says plaintext refuses" refuse dmc
+  FX_HDR="abcdefghijklmno"; FX_ENC=true;  fx "db mode: encrypted header + db_encrypted=true is encrypted" ok dme
+  FX_HDR="abcdefghijklmno"; FX_ENC="";    fx "db mode: encrypted header with no flag keeps the old behaviour (encrypted)" ok dme
+  pint() { sqlite3() { printf '%b' "$FX_OUT"; return "${FX_RC:-0}"; }; plain_integrity /nonexistent; }
+  FX_RC=0; FX_OUT='ok\n';                                                     fx "integrity: sqlite3 says ok" ok pint
+  FX_RC=0; FX_OUT='*** in database main ***\nPage 3: btreeInitPage() returns error code 11\n'; fx "integrity: sqlite3 reports corruption refuses" refuse pint
+  FX_RC=0; FX_OUT='';                                                          fx "integrity: empty output refuses" refuse pint
+  FX_RC=1; FX_OUT='ok\n';                                                     fx "integrity: sqlite3 fails despite ok-looking output refuses" refuse pint
   FX_RC=0
   FX_OVR=2; fx "call guard: self-test override 2 refuses" refuse cgo
   FX_OVR=0; fx "call guard: self-test override 0 passes" ok cgo
