@@ -33,12 +33,14 @@ class AiGraph(
     gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate,
     /** The roaming data saver ([com.rokid.context.ai.datasaver.DataSaverGraph] in the app); allows everything by default (tests). */
     dataGate: com.rokid.context.core.net.DataGate = com.rokid.context.core.net.DataGate.ALLOW_ALL,
+    /** Model privacy (slice 1.4.3), read at every call; the app passes the stored setting. The default is AUTO (tests, tools). */
+    privacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.AUTO },
 ) {
     val endpoints = EndpointRepository(memory.db.endpointDao(), vault)
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
-    val router = ModelRouter(bindings, endpoints, providers, gate, dataGate)
-    val tester = EndpointTester(endpoints, providers)
-    val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, power = power)
+    val router = ModelRouter(bindings, endpoints, providers, gate, dataGate, privacy)
+    val tester = EndpointTester(endpoints, providers, privacy = privacy)
+    val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, client = com.rokid.context.ai.embed.EmbeddingClient(privacy = privacy), power = power)
     val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
         com.rokid.context.memory.retrieval.LexicalRetriever(memory.db.retrievalDao()),
         com.rokid.context.memory.retrieval.SemanticRetriever(memory.spaces, memory.vectorIndex, embedders).apply { embedBound = { bindings.get(Role.EMBED) != null } },
@@ -56,7 +58,7 @@ class AiGraph(
         @Volatile var gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate, dataGate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app))
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate, dataGate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app), privacy = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)::current)
                 .also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }
