@@ -8,7 +8,12 @@ Trip dates that shape the order: Charminar 22 Nov, Ramoji 23 Nov, install freeze
 
 ## Released
 
-- [x] ✅ **v0.5.0-beta**, **v0.7.0-beta**, **v0.9.0-beta**, **v0.9.2-beta** to **v0.9.4-beta**: capture, memory, Ask, the canvas foundations and the first hardening rounds (see the git tags).
+- [x] ✅ **v0.5.0-beta**: early beta (see the git tag).
+- [x] ✅ **v0.7.0-beta**: early beta (see the git tag).
+- [x] ✅ **v0.9.0-beta**: start of the 0.9 beta line (see the git tag).
+- [x] ✅ **v0.9.2-beta**: hardening round (see the git tag).
+- [x] ✅ **v0.9.3-beta**: hardening round (see the git tag).
+- [x] ✅ **v0.9.4-beta**: hardening round (see the git tag).
 - [x] ✅ **v0.9.5-beta**: hardening rulings, Moments palette, per-arm photo settings, export/Forget gate, Scene/Forget settings.
 - [x] ✅ **v0.9.6-beta**: Moments carry text, marks touch capture (with fallback and error), the mark transcript object scaffold.
 - [x] ✅ **v0.9.7-beta**: configurable sensors, signals, classifier thresholds, user-defined derived signals, operators extensible through the expression catalogue.
