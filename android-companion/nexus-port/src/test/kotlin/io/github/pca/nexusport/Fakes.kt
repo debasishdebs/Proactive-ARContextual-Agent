@@ -44,7 +44,8 @@ internal class FakeNexusTransport : NexusTransport {
         if (hideResult == NexusResult.OK) live -= Slot.SPEECH
         return hideResult
     }
-    override fun forgetHistory(generation: Long): Int { calls += "forget"; forgets++; forgetGens += generation; return forgetResult }
+    var onForget: (() -> Unit)? = null
+    override fun forgetHistory(generation: Long): Int { calls += "forget"; forgets++; forgetGens += generation; onForget?.let { onForget = null; it() }; return forgetResult }
     override fun tripped(epoch: Long): Int { trippedEpochs += epoch; return NexusResult.OK }
     var skillHost = false
     override fun stopListening(): Int {

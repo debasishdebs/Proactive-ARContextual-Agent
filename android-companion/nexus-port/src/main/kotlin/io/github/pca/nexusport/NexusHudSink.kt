@@ -51,6 +51,8 @@ class NexusHudSink internal constructor(
     private val dispatcher: NexusDispatcher = NexusDispatcher.direct(),
     /** How long a show whose binder call has not returned holds a wipe acknowledgement back (tests shorten it). The show stays tracked after that: when it returns, the wipe is re-owed (r4 P1-2). */
     private val inFlightMaxNs: Long = IN_FLIGHT_MAX_NS,
+    /** Monotonic milliseconds for the wipe-refusal backoff only: a wall-clock change (network time, manual) must neither freeze nor flood the retries. Tests inject it. */
+    private val monotonicMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     private class Handle(val slot: Slot, val sources: Set<String>, val pauseGated: Boolean, val ref: String, val expiresAt: Long, val actionIds: Set<String>, val seq: Long, val prev: Handle?, val gate: SuggestionGate? = null) {
         val used = HashSet<String>()
@@ -68,7 +70,8 @@ class NexusHudSink internal constructor(
     private var forgetQueued = false
     /** A refused wipe request (hub: not granted, not registered, not available) is asked again by the tick only after a doubling wait (1 s up to 30 s), not every second for as long as the refusal lasts (found by the real-hub run, 2026-11-19). A new trip or a new connection still asks at once. */
     private var forgetRefusals = 0
-    private var forgetNotBefore = 0L
+    private var forgetNotBefore = Long.MIN_VALUE        // monotonic ms ([monotonicMs]), never the wall clock
+    private var forgetOkCount = 0           // OK answers so far: a refusal from a run that started before one is stale
     @Volatile private var epoch = 0L
     private var seq = 0L
     /** The last transport call of THIS thread timed out (the worker, a fresh privacy thread and the pool each have their own). */
@@ -447,7 +450,7 @@ class NexusHudSink internal constructor(
             val left = withdrawAllLocked()
             requestStopListening()      // a session may be opening (authorized, no handle yet): it must not outlive the trip, and a full queue never loses this stop
             log("nexus trip reason=${reason.name} left=${left}")
-            if (wipe) enqueueForgetLocked()
+            if (wipe) { resetForgetWaitLocked(); enqueueForgetLocked() }
             if (reason == TripReason.MODE_OFF) submitOrFresh { callT { transport.setFeatures(NexusFeatures.NONE) } }
         }
         // (b) + (c) the bridge learns the epoch BEFORE any further content is sent: wait (at most EXCLUSIVE_WAIT_MS) until no send is inside its binder call, and deliver the epoch on its own thread (at most TRIP_CALL_MS) while no
@@ -498,13 +501,25 @@ class NexusHudSink internal constructor(
     private fun runForget() {
         synchronized(lock) { forgetQueued = false }
         val g = try { if (ledger.owed()) ledger.generation() else return } catch (_: Exception) { return }
+        val okBefore = synchronized(lock) { forgetOkCount }
         val r = callT { transport.forgetHistory(g) }
         log("nexus forget history code=${NexusResult.name(r)}")
         synchronized(lock) {
-            if (NexusResult.isQuietGiveUp(r)) { forgetRefusals++; forgetNotBefore = clock() + minOf(30_000L, 1_000L shl minOf(forgetRefusals - 1, 5)) }
-            else if (r == NexusResult.OK) { forgetRefusals = 0; forgetNotBefore = 0L }
+            if (r == NexusResult.OK) { forgetOkCount++; forgetRefusals = 0; forgetNotBefore = Long.MIN_VALUE }
+            else if (forgetOkCount != okBefore) { /* an overlapping run was answered OK while this one was in flight: this late refusal must not re-arm the wait */ }
+            else when (r) {
+                NexusResult.NOT_GRANTED, NexusResult.NOT_REGISTERED, NexusResult.NOT_AVAILABLE, NexusResult.INVALID, NexusResult.DISABLED, NexusResult.UNSUPPORTED -> {
+                    forgetRefusals++; forgetNotBefore = monotonicMs() + minOf(30_000L, 1_000L shl minOf(forgetRefusals - 1, 5))
+                }
+                NexusResult.BUSY, NexusResult.STALE -> forgetNotBefore = monotonicMs() + 1_000L     // short retry, never escalates
+            }
         }
     }
+
+    internal fun forgetNotBeforeForTest(): Long = synchronized(lock) { forgetNotBefore }
+
+    /** Lock held. A new trip or a new connection asks at once and restarts the wait at 1 s. */
+    private fun resetForgetWaitLocked() { forgetRefusals = 0; forgetNotBefore = Long.MIN_VALUE }
 
     /**
      * One poll: expires what ran out, retries hides that failed, re-reads every gate for every live handle (so a gate that changed without a [trip] still withdraws within one tick) and re-checks the
@@ -517,7 +532,7 @@ class NexusHudSink internal constructor(
                 if (h.withdrawing) enqueueHideLocked(h.slot)
                 else if (now >= h.expiresAt) { if (h.slot == Slot.LISTEN) withdrawLocked(h.slot) else handles.remove(h.slot) }
             }
-            if (forgetOwed() && now >= forgetNotBefore) enqueueForgetLocked()
+            if (forgetOwed() && monotonicMs() >= forgetNotBefore) enqueueForgetLocked()
             handles.values.toList()
         }
         retryTripNotice()
@@ -564,6 +579,7 @@ class NexusHudSink internal constructor(
             requestStopListening()
             queueFeatures()
             submitOrFresh { callT { transport.setSkillHost(skills != null || asks != null) } }     // the host also answers `authorizeListen` for the assist ask
+            resetForgetWaitLocked()
             if (forgetOwed()) enqueueForgetLocked()
         }
         dispatcher.markOk()
