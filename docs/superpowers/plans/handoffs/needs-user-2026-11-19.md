@@ -18,3 +18,6 @@ Everything below was NOT done because it needs the user, the real devices, or a 
 ## D. Chores
 - [ ] GitHub main move to v1.x (ask first); rotate credentials hard-coded in the kg repo; create the GitHub Environment `release` before any CI signing; real key rotation after Sri Lanka.
 - [ ] ~/Desktop/rokid/backups holds ~23 GB (old APK folders marked STALE/SUPERSEDED, emulator backups); disk was at 100% earlier. Delete what you do not need.
+
+## E. Codex quota (found 2026-11-19 13:25)
+- The Codex weekly usage limit is reached; it resets 21 Nov 2026 21:36. Reviews done by Codex this session: all up to the batch review (codex-batch-2026-11-19.md, READY). NOT yet Codex-reviewed: the Hyderabad coordinate rule (9d69e05a) and the 7 new landmark ids (b07969ad). An independent Claude review (not Codex) was run instead: scratchpad/review-hyd-claude.md (result recorded in the handoff). Re-run Codex on `git diff 0b71d96b..9d69e05a` after 21 Nov 21:36.
