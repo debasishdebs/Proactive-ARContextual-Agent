@@ -56,6 +56,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                         com.rokid.context.orchestration.proactive.ProactiveGraph.replayer(app).replay(day, step, extra)
                     }, counters = { if (com.rokid.context.orchestration.proactive.ProactiveGraph.storageAvailable(app)) com.rokid.context.orchestration.proactive.ProactiveGraph.store(app).counters() else emptyMap() })
                 },
+                shadowEval = DeveloperModeStore.get(app).let { dev -> com.rokid.context.phone.canvas.api.ShadowEvalRoute(dev.enabled) { shadowEvalInput(app) } },
                 signalTry = DeveloperModeStore.get(app).let { dev ->
                     com.rokid.context.phone.canvas.api.SignalTry(
                         com.rokid.context.canvas.signal.SignalTryReader(db), { com.rokid.context.phone.ui.settings.capture.SignalConfigStore.get(app).config.value },
@@ -87,6 +88,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             signalTry: com.rokid.context.phone.canvas.api.SignalTry? = null,
             /** v3.0 shadow loop: the developer dry-run replay (`POST /api/proactive/replay`); null = the route is not registered (404). */
             proactiveReplay: com.rokid.context.phone.canvas.api.ProactiveReplayRoute? = null,
+            /** Developer-only `GET /api/proactive/shadow-eval` (the shadow-week report); null = not registered (404). */
+            shadowEval: com.rokid.context.phone.canvas.api.ShadowEvalRoute? = null,
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
             val replays = ReplayRoutes(replay, candidates ?: { null })
@@ -100,8 +103,29 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it, signalTry)::handle)) }
                 devices?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.DeviceRoutes(it)::handle)) }
                 proactiveReplay?.let { add(ApiExtra(it::handle)) }
+                shadowEval?.let { add(ApiExtra(it::handle)) }
             }
             return CanvasExtras(all, replay, startup, sweeps)
+        }
+
+        /**
+         * The shadow-week report input from the REAL stores (read-only; works with every delivery switch OFF). Quiet and zone come from the stored pause intervals at each record's time (a pause that covers it that is not a
+         * `zone:` one = quiet; a `zone:` one = zone); a read that fails counts as a leak (fail closed). Driving and wear keep no history, so they are null (UNCHECKED). The store has only cumulative counters: they go in as the overall histogram.
+         */
+        internal suspend fun shadowEvalInput(app: Context): com.rokid.context.orchestration.proactive.ShadowEvalInput {
+            val g = com.rokid.context.orchestration.proactive.ProactiveGraph
+            if (!g.storageAvailable(app)) return com.rokid.context.orchestration.proactive.ShadowEvalInput(emptyList(), emptyMap(), com.rokid.context.orchestration.proactive.FeedbackState())
+            val st = g.store(app)
+            val records = st.records()
+            val pauses = MemoryGraph.get(app).db.pauseDao()
+            val quiet = HashMap<Long, Boolean>(); val zone = HashMap<Long, Boolean>()
+            for (ts in records.map { it.ts }.toSet()) {
+                try { val all = pauses.countCovering(ts); val z = pauses.countZoneCovering(ts); zone[ts] = z > 0; quiet[ts] = all - z > 0 } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { zone[ts] = true; quiet[ts] = true }
+            }
+            return com.rokid.context.orchestration.proactive.ShadowEvalInput(
+                records = records, counters = st.counters(), feedback = st.feedback(), neverCount = st.never().size,
+                quietAt = { quiet[it] ?: true }, zoneBlocked = { zone[it.ts] ?: true },
+            )
         }
     }
 }
