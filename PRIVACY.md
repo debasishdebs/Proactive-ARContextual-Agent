@@ -22,6 +22,7 @@ PCA has no server of its own and no account. There is no analytics or crash uplo
 | What | To whom | When |
 |---|---|---|
 | Prompts: your question, memory text, nudge and summary requests, time-word and search-word helpers | The **model endpoint you configured** per role (Ask, Summarise, Nudge, etc.) | Only if that endpoint is remote. A local on-device model sends nothing. |
+| Query rewriting (`CONDENSE_QUERY`): **only your question text and today's date**, never memory content | The model endpoint configured for that role | Only in the opt-in `dated-query` pipeline or when the Developer flag `multilingualAsk` is on (both off by default). Not sent while a pause zone is approached or entered, or when the Ask zone fence refuses. If the call fails, the original question is used and the answer is not blocked. An offline fallback (a small built-in Hindi/Hinglish word list) sends nothing. |
 | Photos for captions and scene summaries (`VISION_EXTRACT`, `CLUSTER_SUMMARY`, `INTENT_CLASSIFY`) | Your configured **vision endpoint** | Every captured photo that is described, if the vision role points to a remote endpoint. |
 | One extra photo plus a numbered list of candidate monument names (`PLACE_MATCH`) | The same vision endpoint | Place Guide on, a glance (dwell) photo, candidate monuments nearby, not in a pause zone. The list holds monuments only, never people. This is a second upload of the same photo; bystanders may be in it. |
 | Photos that match a question | Your configured **Answer endpoint** | Only if "Send matching photos with questions" is on (off by default, max 2 photos, never while paused or in quiet hours, switched off again by Delete all). |
@@ -94,7 +95,7 @@ Off by default. Suggestions are **local only**: no network request, no model cal
 - **Shadow by default**: with Suggestions on, PCA works out what it *would* show and lists it in Settings. It delivers nothing until you flip a delivery switch.
 - **Three separate OFF switches**: phone feed, glasses HUD, and Nexus. Each needs the master switch and is off by default. Nothing is delivered while paused, in quiet hours, in a pause zone, while driving, or (HUD, Nexus) when the glasses are not worn.
 - **Stored** (encrypted, app-private, excluded from backup): ids and tokens, the **delivery ledger** (timestamp, suggestion family and kind only, no content, kept 48 h), **feedback counters** (dismiss, snooze, thumbs), and the **never list** (keys that encode places or habits). Delete all clears all of it; Forget withdraws records built from what you forgot.
-- **Known not ready**: delivery (v3.1) is **under review**. A Codex review (`docs/superpowers/reviews/2026-11/codex-v31-r3.md`) listed three open P1 issues; another agent is working on them and I have not verified the result. Do not turn the delivery switches on until that review closes.
+- **Review status**: delivery (v3.1) was reviewed in seven rounds; the last (`docs/superpowers/reviews/2026-11/codex-v31-r7.md`) is READY. It has **never been seen on real glasses**. The delivery switches stay off until you have supervised a first worn test (`docs/superpowers/plans/handoffs/device-checklist-2026-11-17.md`, section G). A known limit: if every write of a dismissal fails and the app restarts, the suppression for that dismissal is lost.
 
 ## 8. Logs
 
@@ -126,7 +127,7 @@ The card position setting (left, centre, right; Developer mode) is a display pre
 
 ## 12. Developer mode
 
-Off by default (Settings, Diagnostics); the flag is excluded from backup. When on, it shows extra screens and lets you use the experiment canvas, a local web UI served by the phone (token-paired sessions), the developer sensor recording, Moment and Scene Forget scopes, and longer canvas sessions (optional). Developer mode adds no new upload destination that I found. Raw sensor traces it creates are never exported or backed up, and Delete all removes them.
+Off by default (Settings, Diagnostics); the flag is excluded from backup. When on, it shows extra screens and lets you use the experiment canvas, a local web UI served by the phone (token-paired sessions), the developer sensor recording, Moment and Scene Forget scopes, and longer canvas sessions (optional). A Developer-only page on that canvas (`/api/proactive/shadow-eval`) prints a counts-only report of the suggestion shadow week (counts and fixed labels, no suggestion text, place names or ids); it answers 403 when Developer mode is off. Developer mode adds no new upload destination that I found. Raw sensor traces it creates are never exported or backed up, and Delete all removes them.
 
 ## 13. The install helper
 
