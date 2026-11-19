@@ -52,8 +52,8 @@ class PinMomentLinksTest {
     private val only1: suspend (List<String>) -> Set<String> = { l -> l.filter { it == id1 }.toSet() }
     private val none: suspend (List<String>) -> Set<String> = { emptySet() }
 
-    private suspend fun <T> explicit(st: UserPinStore = store, sv: suspend (List<UserPlace>) -> Boolean = save, target: suspend (List<String>) -> Set<String> = all, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, forget: suspend () -> T): T =
-        PinMomentLinks.explicitStore(st, alive, sv, target, committed, onPending, forget)
+    private suspend fun <T> explicit(st: UserPinStore = store, sv: suspend (List<UserPlace>) -> Boolean = save, target: suspend (List<String>) -> Set<String> = all, committed: (T) -> Boolean = { true }, onPending: () -> Unit = {}, onNotRemoved: () -> Unit = {}, allowed: Set<String>? = null, forget: suspend () -> T): T =
+        PinMomentLinks.explicitStore(st, alive, sv, target, committed, onPending, forget, onNotRemoved, allowed)
     private suspend fun sweep() = PinMomentLinks.sweepGuarded(store, alive, save)
     private suspend fun resolve(self: String? = null) = PlacePinning.underPinLock { PinMomentLinks.resolveStore(store, alive, save, self) }
 
@@ -193,9 +193,89 @@ class PinMomentLinksTest {
         assertFalse(store.arming()!!.committed)
         assertEquals("a start-up settle never drops an uncommitted wipe arming", 0, resolve())
         assertEquals(3, store.pins().size)
+        sweep(); PlacePinning.underPinLock { PinMomentLinks.sweepStore(store, alive) } // the in-run settle and a start-up sweep: all Moments are gone, yet the armed pins keep their link
+        assertEquals("the armed pins keep their links", listOf(id1, id2, null), links())
         val op2 = PinMomentLinks.beginWipeStore(store, alive, save, resume = true)
         assertTrue(store.arming()!!.committed); assertEquals(2, resolve(self = op2)); PinMomentLinks.endWipe(op2)
         assertEquals(listOf("Pin 2"), names())
+    }
+
+    @Test fun aCrashBetweenTheEpochCommitAndTheCommitWriteSurvivesAStartupSweepBeforeTheResume() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false) // epoch committed, process dies before wipeCommitted
+        db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op)
+        sweep(); resolve(); PlacePinning.underPinLock { PinMomentLinks.sweepStore(store, alive) } // ForgetStartup.settle, a listener, a screen visit
+        assertEquals(listOf(id1, id2, null), links()); assertFalse(store.arming()!!.committed)
+        val op2 = PinMomentLinks.beginWipeStore(store, alive, save, resume = true)
+        assertEquals(2, resolve(self = op2)); PinMomentLinks.endWipe(op2)
+        assertEquals(listOf("Pin 2"), names())
+    }
+
+    @Test fun aCommittedDeadSetThatCouldNotBeDeletedKeepsItsPinsLinkedThroughASweep() = runBlocking<Unit> {
+        ForgetListeners.clearForTests()
+        assertTrue(store.arm(Arming("old", "forget", true, emptyMap(), mapOf(ids[0] to id1))))
+        fx.service.forgetMoment("a")
+        assertEquals(0, PlacePinning.underPinLock { PinMomentLinks.resolveStore(store, alive, noSave) }) // not finished
+        PlacePinning.underPinLock { PinMomentLinks.sweepStore(store, alive) }
+        assertEquals("the dead pin still has its link, so the retry can find it", id1, store.pins().first().momentId)
+        assertEquals(1, resolve()); assertEquals(listOf("Pin 1", "Pin 2"), names())
+    }
+
+    // ---- notices: only truthful ones ----
+
+    private class FlakyPrefs(private val d: SharedPreferences, private var skip: Int, private var failures: Int) : SharedPreferences by d {
+        override fun edit(): SharedPreferences.Editor {
+            val e = d.edit()
+            return object : SharedPreferences.Editor by e {
+                var k: String? = null
+                override fun putString(key: String?, value: String?): SharedPreferences.Editor { k = key; e.putString(key, value); return this }
+                override fun commit(): Boolean {
+                    if (k != UserPinStore.ARMED_KEY) return e.commit()
+                    if (skip > 0) { skip--; return e.commit() }
+                    if (failures > 0) { failures--; return false }
+                    return e.commit()
+                }
+            }
+        }
+    }
+
+    @Test fun ifTheCommittedDeadSetCannotBeStoredTheForgetIsNotRemovedNoticeNotPendingAndThePinsStay() = runBlocking<Unit> {
+        var pending = false; var notRemoved = false
+        val r = explicit(UserPinStore(FlakyPrefs(rawPrefs, skip = 1, failures = 2)), target = only1, onPending = { pending = true }, onNotRemoved = { notRemoved = true }) { fx.service.forgetMoment("a"); "done" }
+        assertEquals("done", r); assertTrue(notRemoved); assertFalse("never the 'will be removed' promise", pending)
+        assertEquals(3, store.pins().size)
+        resolve() // next start: the uncommitted arming is dropped
+        assertNull(store.arming()); assertEquals(3, store.pins().size)
+    }
+
+    @Test fun aSingleFailedCommitWriteIsRetriedOnceAndTheForgetSucceedsQuietly() = runBlocking<Unit> {
+        var pending = false; var notRemoved = false
+        explicit(UserPinStore(FlakyPrefs(rawPrefs, skip = 1, failures = 1)), target = only1, onPending = { pending = true }, onNotRemoved = { notRemoved = true }) { fx.service.forgetMoment("a") }
+        assertFalse(pending); assertFalse(notRemoved); assertEquals(listOf("Pin 1", "Pin 2"), names())
+    }
+
+    @Test fun thePinNoticeSurvivesACachedExportNoticeAndIsNeverInventedForAFailure() {
+        val o = ForgetActions.Outcome.values().associateWith { it }
+        assertEquals(ForgetActions.Outcome.CACHE_AND_PIN_PENDING, ForgetActions.withPinNotice(ForgetActions.Outcome.CACHE_CLEANUP_FAILED, pending = true, notRemoved = false))
+        assertEquals(ForgetActions.Outcome.CACHE_AND_PIN_NOT_REMOVED, ForgetActions.withPinNotice(ForgetActions.Outcome.CACHE_CLEANUP_FAILED, pending = false, notRemoved = true))
+        assertEquals(ForgetActions.Outcome.PIN_CLEANUP_PENDING, ForgetActions.withPinNotice(ForgetActions.Outcome.DONE, true, false))
+        assertEquals(ForgetActions.Outcome.PIN_NOT_REMOVED, ForgetActions.withPinNotice(ForgetActions.Outcome.DONE, false, true))
+        assertEquals(ForgetActions.Outcome.FAILED, ForgetActions.withPinNotice(ForgetActions.Outcome.FAILED, true, true))
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.withPinNotice(ForgetActions.Outcome.DONE, false, false))
+        assertTrue(o.keys.filter { it.committed }.containsAll(listOf(ForgetActions.Outcome.PIN_NOT_REMOVED, ForgetActions.Outcome.CACHE_AND_PIN_PENDING)))
+        assertFalse(ForgetActions.Outcome.PINS_NOT_CONFIRMED.committed); assertFalse(ForgetActions.Outcome.PIN_PREP_FAILED.committed)
+    }
+
+    // ---- P2-2: only the confirmed pins are armed ----
+
+    @Test fun aPinLinkedAfterTheConfirmationCheckIsNotArmedNorDeleted() = runBlocking<Unit> {
+        assertTrue(store.write(store.pins() + pin(3, id1))) // linked to the same Moment between the check and the arm
+        explicit(target = only1, allowed = setOf(ids[0])) { assertEquals("only the confirmed pin is armed", mapOf(ids[0] to id1), store.arming()!!.pairs); fx.service.forgetMoment("a") }
+        assertEquals(listOf("Pin 1", "Pin 2", "Pin 3"), names()); assertNull("its link is cleared, the pin stays", store.pins().last().momentId)
+    }
+
+    @Test fun anEmptyConfirmedSetArmsNothing() = runBlocking<Unit> {
+        explicit(target = only1, allowed = emptySet()) { assertNull(store.arming()); fx.service.forgetMoment("a") }
+        assertEquals(3, store.pins().size)
     }
 
     // ---- P2-B: sweeps and settle never run while an explicit operation has armed ----
@@ -261,6 +341,7 @@ class PinMomentLinksTest {
         assertTrue(ForgetActions.rangeNeedsConfirmation(two, null)); assertTrue(ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0])))
         assertTrue("same count, other pins", ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0], ids[2])))
         val actions = src("ForgetActions.kt")
+        assertTrue("the arming is bound to the confirmed set", "allowedPins = confirmedPins ?: emptySet()" in actions)
         assertTrue("the refusal runs before the cascade", actions.indexOf("rangeNeedsConfirmation(going.ids, confirmedPins)") in 1 until actions.indexOf("PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }"))
     }
 
