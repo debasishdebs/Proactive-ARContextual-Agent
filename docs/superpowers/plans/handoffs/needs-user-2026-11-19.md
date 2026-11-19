@@ -7,7 +7,7 @@ Everything below was NOT done because it needs the user, the real devices, or a 
 ## B. Rulings (proxy answers exist: decisions/2026-11-19-codex-proxy-rulings-4.md; confirm or change)
 - [ ] Forget F2 (cited photo tombstone: keep), forgetV2 (OFF through both trips), Room v18 (stay on v17), v3.1 delivery (supervised first worn test only).
 - [ ] Multilingual retrieval: design specs/2026-11-19-multilingual-retrieval-design.md: turn the query condenser on in default Ask as v1.3.1 after the 26 Nov freeze? (also needs: condense endpoint/privacy, who curates a lexicon, pass bar).
-- [ ] Nexus Option B transport: shelve unless S2 fails (specs/2026-11-19-nexus-option-b-transport-design.md); run the 0.25 day B0 desk check now?
+- [x] Nexus Option B transport: B0 desk check DONE 2026-11-19: NOT possible as documented (upstream BUSSPEC L260-264 keeps release glasses hubs closed to third-party glasses apps until provisioning exists): shelve Option B, skip the B1 spike; reopen only if S2 fails AND upstream ships provisioning (specs/2026-11-19-nexus-option-b-transport-design.md section 6).
 
 ## C. Hardware / worn checks
 - [ ] First worn card test (device-checklist-2026-11-17.md section G), incl. side-card position LEFT/CENTRE/RIGHT and clipping/FOV.
