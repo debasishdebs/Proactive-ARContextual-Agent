@@ -158,8 +158,18 @@ object AskZoneFence : AskZoneGuard {
     override fun blocked(): Boolean {
         val on = try { enabledProvider() } catch (_: Exception) { true }
         if (!on) return false
-        return try { fence.blocked() || (extraBlocked?.invoke() ?: false) || startupBlocked() } catch (e: Exception) { PcLog.i(TAG, "zone state unreadable (${e.javaClass.simpleName}); fail closed"); true }
+        return anyZoneSignal()
     }
+
+    /**
+     * S1 (Codex batch-r9 residual): the zone signal for background work that uploads stored photos (the suspect sweep), INDEPENDENT of the hub and of the Ask switch. A cold process (WorkManager started the worker, the hub never ran) has no
+     * controller word yet, so this reads the persisted facts exactly as the Ask startup rule does (the controller's protect flag, any enabled stored zone or an unreadable zone list; [prepare] adds the stored zone records): with zones
+     * configured and not yet judged in this process it is CLOSED, with none it is open. Once the controller has judged, its word wins. Synchronous, preference reads only, no location request, any error is "blocked".
+     */
+    fun blockedForBackground(): Boolean = anyZoneSignal()
+
+    private fun anyZoneSignal(): Boolean =
+        try { fence.blocked() || (extraBlocked?.invoke() ?: false) || startupBlocked() } catch (e: Exception) { PcLog.i(TAG, "zone state unreadable (${e.javaClass.simpleName}); fail closed"); true }
 
     /** Tests: the process-start state. */
     internal fun resetForTests() {

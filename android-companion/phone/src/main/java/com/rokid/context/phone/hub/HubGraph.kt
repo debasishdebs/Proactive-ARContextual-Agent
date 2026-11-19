@@ -201,6 +201,7 @@ object HubGraph {
         com.rokid.context.work.frames.KeyframeGraph.placeSampler = com.rokid.context.work.frames.place.PlaceSamplers.create(
             app, ctxScope, fix = placeFixes::fresh,
             zoneBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || pauses.zoneRecords().isNotEmpty() },
+            zones = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
             onCard = com.rokid.context.work.frames.place.PlaceGraph.port::publish,
         )
         // Opt-in, default off. Calls only inside a vehicle episode a listed Bluetooth device started; never pauses or throttles capture.
