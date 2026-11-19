@@ -108,8 +108,8 @@ class NightIndexWorkerTest {
 
     private fun night(
         p: KeyframePipeline = pipeline(), s: MemorySettings = settings(), gate: () -> Boolean = { true },
-        maintenance: suspend () -> IndexMaintenance.Outcome? = { null }, described: MutableList<Int>? = null,
-    ) = NightIndex(db, p, { s }, gate, maintenance, { clockMs }, { described?.add(it) }, drainMs = 30_000L)
+        maintenance: suspend () -> IndexMaintenance.Outcome? = { null }, described: MutableList<Int>? = null, describeAllowed: () -> Boolean = { true },
+    ) = NightIndex(db, p, { s }, gate, maintenance, { clockMs }, { described?.add(it) }, drainMs = 30_000L, describeAllowed = describeAllowed)
 
     /** One retention pass at [at] deleting the listed files like the worker does. */
     private fun retention(at: Long, ready: Boolean, s: MemorySettings = settings()) = runBlocking {
@@ -199,6 +199,14 @@ class NightIndexWorkerTest {
         var ran = false
         val r = night(gate = { false }, maintenance = { ran = true; null }).run()
         assertTrue(calls.isEmpty()); assertFalse(ran); assertEquals("EXTRACTED", state("a").state); assertEquals(0, r.queued)
+    }
+
+    @Test fun theDataSaverSkipsTheDescribeButTheLocalMaintenanceStillRuns() = runBlocking {
+        photo("a", now - 7 * day)
+        var ran = false
+        val r = night(maintenance = { ran = true; null }, describeAllowed = { false }).run()
+        assertTrue(calls.isEmpty()); assertTrue("local index work is not a data cost", ran)
+        assertEquals("EXTRACTED", state("a").state); assertEquals(0, r.queued); assertEquals(0, r.described)
     }
 
     @Test fun noDescribeDuringACaptureBurst() = runBlocking {

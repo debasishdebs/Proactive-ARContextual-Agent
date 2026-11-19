@@ -148,7 +148,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     private val pipelineLazy = lazy {
         KeyframePipeline(
             db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated,
-            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
+            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, shedAllowed = { photoUploadsAllowed() }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
         )
     }
 
@@ -211,10 +211,13 @@ class KeyframeHandle internal constructor(private val app: Context) {
      * stood an hour ago is useless. The data check comes first so a refused call neither takes the shared extraction allowance nor reaches the model. A refusal is counted (a count and a reason
      * token in the PcData line, no content).
      */
-    fun admitPhotoCall(): Boolean {
+    fun admitPhotoCall(): Boolean = dataSaverAllowsPhoto() && admitBackgroundCall()
+
+    /** The data-saver part alone: false (and one counted, logged refusal) when a photo may not go out on this network. Place Guide uses it separately so it can still show the offline-style card. */
+    fun dataSaverAllowsPhoto(): Boolean {
         val d = dataGate.decide(DataKind.PHOTO)
         if (!d.allowed) { dataGate.skipped(DataKind.PHOTO, Skipped.DROPPED, d); return false }
-        return admitBackgroundCall()
+        return true
     }
 
     /** Photo uploads are blocked right now (policy only; no count, no log): the Ask photo gate and tests read it. */

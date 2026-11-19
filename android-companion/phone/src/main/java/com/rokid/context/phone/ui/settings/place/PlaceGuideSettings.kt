@@ -74,6 +74,12 @@ data class SeedPreset(val id: String, val name: String, val boxes: List<GeoBox>,
     companion object { const val APPROXIMATE = "Approximate: UNVERIFIED." }
 }
 
+/** Roaming data saver: a user-started seed (hundreds of requests) was refused because the network is not free Wi-Fi. */
+class SeedNeedsWifiException : Exception("Seeding needs Wi-Fi (data saver). Connect to Wi-Fi and try again.")
+
+/** The screen text for a failed seed: the Wi-Fi refusal says so, anything else is the generic connection hint. */
+internal fun seedFailureText(t: Throwable): String = if (t is SeedNeedsWifiException) t.message.orEmpty() else "Could not fetch places. Check the connection and try again."
+
 /** One box's seed answer: the screen text and how many cells still failed after the retry (0 = nothing to retry). */
 data class SeedOutcome(val message: String, val failedCells: Int = 0)
 
@@ -210,7 +216,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
         viewModelScope.launch(work) {
             val r = control.seed(box)
-            _state.update { it.copy(seeding = false, message = r.fold({ o -> o.message }, { "Could not fetch places. Check the connection and try again." }), messageIsError = r.isFailure) }
+            _state.update { it.copy(seeding = false, message = r.fold({ o -> o.message }, { seedFailureText(it) }), messageIsError = r.isFailure) }
             refreshSummary()
         }
     }
@@ -230,7 +236,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
             }
             val n = preset.boxes.size
             val text = when {
-                failure != null -> "Could not fetch places. Check the connection and try again."
+                failure != null -> seedFailureText(failure!!)
                 stoppedAt > 0 -> "Stopped at box $stoppedAt of $n: some cells failed after a retry (the server may be rate limiting). ${msgs.last()} Tap seed again to retry."
                 msgs.size == 1 -> msgs[0]
                 else -> msgs.withIndex().joinToString(" ") { "Part ${it.index + 1} of ${msgs.size}: ${it.value}" }

@@ -19,6 +19,8 @@ data class NetSnapshot(
     val countryMismatch: Boolean = false,
     /** Android's own Data Saver is on for this app. */
     val restrictBackground: Boolean = false,
+    /** When the network was first seen without validation (ms, 0 = validated or not applicable). Not part of the cost: only for the "stuck without internet" status line. */
+    val unvalidatedSinceMs: Long = 0L,
 ) {
     companion object {
         /** Before the first reading: fail closed. */
@@ -50,6 +52,13 @@ object NetworkCosts {
         }
     }
 
+    /** A Wi-Fi or Ethernet network that is connected and unmetered but has not validated for longer than [thresholdMs]: remote photo calls stay blocked (the cost stays UNKNOWN); only the status line says so, and LAN or on-device endpoints keep working. */
+    fun stuckUnvalidated(s: NetSnapshot, nowMs: Long, thresholdMs: Long = STUCK_MS): Boolean =
+        s.known && (s.transport == Transport.WIFI || s.transport == Transport.ETHERNET) && !s.validated && s.notMetered && s.notRoaming &&
+            s.unvalidatedSinceMs > 0 && nowMs - s.unvalidatedSinceMs > thresholdMs
+
+    const val STUCK_MS = 10 * 60_000L
+
     /** True for every cost that is not FREE and not OFFLINE: the cases where a stored place cell is kept instead of fetched again. */
     fun isCostly(c: NetworkCost): Boolean = c == NetworkCost.HOME_MOBILE || c == NetworkCost.ROAMING || c == NetworkCost.UNKNOWN
 }
@@ -65,13 +74,16 @@ enum class DataMode {
     WIFI_ONLY, WIFI_AND_HOME_MOBILE, ANYWHERE;
 
     companion object {
-        /** An unknown stored value reads as the safe default. */
-        fun parse(s: String?): DataMode = entries.firstOrNull { it.name == s } ?: WIFI_ONLY
+        /** The default: Wi-Fi and home mobile data. Roaming, unknown networks and the "I'm abroad" case stay blocked; "Wi-Fi only" is one tap away. */
+        val DEFAULT = WIFI_AND_HOME_MOBILE
+
+        /** An unknown stored value reads as the default. */
+        fun parse(s: String?): DataMode = entries.firstOrNull { it.name == s } ?: DEFAULT
     }
 }
 
 data class DataSaverSettings(
-    val mode: DataMode = DataMode.WIFI_ONLY,
+    val mode: DataMode = DataMode.DEFAULT,
     /** The manual "I'm abroad" switch. */
     val abroad: Boolean = false,
     /** Text requests (questions, place facts) stay allowed on roaming. Slice 1 default ON, no daily limit yet. */

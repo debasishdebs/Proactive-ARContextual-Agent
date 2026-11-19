@@ -500,4 +500,18 @@ class KeyframePipelineTest {
         assertEquals(setOf("EXTRACTED"), (1..3).map { state("f$it") }.toSet())
     }
 
+
+    @Test fun parkedByTheDataSaverNothingIsShedHoweverLongTheBacklogAndTheRecheckWakes() = runBlocking {
+        for (i in 1..200) seed("f$i", i * 1000L)
+        var allowUploads = false
+        val p = KeyframePipeline(db, { ids, _, cls -> calls += ids to cls; ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("roaming")) }, { now }, null,
+            newClaimId = { "claim-${calls.size}" }, pollMs = 50, shedAllowed = { allowUploads })
+        p.drainOnce(); p.onNetworkReturn(); p.drainOnce()          // a recheck and a network-return wake while parked
+        now += 31 * 60_000L; p.drainOnce()                          // and the 30-minute safety recheck
+        assertEquals(200, db.frameStateDao().pendingCount())
+        assertEquals(0, (1..200).count { state("f$it") == "NEAR_DUP" })
+        // control: with uploads allowed the old thinning still applies
+        allowUploads = true; p.drainOnce()
+        assertTrue((1..200).any { state("f$it") == "NEAR_DUP" })
+    }
 }

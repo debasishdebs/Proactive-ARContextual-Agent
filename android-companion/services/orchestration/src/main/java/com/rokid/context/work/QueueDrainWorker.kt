@@ -93,6 +93,12 @@ class QueueDrainWorker(
                     PipelineRecords.upsertTrace(applicationContext, job.id, "FAILED", STALE_NOTE)
                     return@onFailure
                 }
+                if (generateSequence(error) { it.cause?.takeIf { c -> c !== it } }.take(8).any { it is com.rokid.context.ai.DataSaverBlockedException }) {
+                    // Roaming data saver: nothing was sent. A postponement, not an attempt (like the battery policy): the job waits for the policy to open and keeps its full retry budget.
+                    QueueRuntimeStore.markPostponed(applicationContext, job.id, "waiting for Wi-Fi (data saver)", delayMs = POLICY_DEFER_MS)
+                    PipelineRecords.upsertTrace(applicationContext, job.id, "RETRY", "waiting for Wi-Fi (data saver)")
+                    return@onFailure
+                }
                 val outcome = RetryClassifier.classify(error)
                 if (outcome == RetryClassifier.Outcome.CANCELLED) {
                     // WorkManager stopped us: keep the job for the next run, then let cancellation propagate.

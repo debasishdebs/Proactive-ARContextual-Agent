@@ -129,6 +129,14 @@ class QueueDrainWorkerRetryTest {
         assertEquals(1, QueueRuntimeStore.recent(ctx, 10).single().attemptCount)
     }
 
+    @Test fun aDataSaverBlockDefersTheJobWithoutUsingAnAttempt() {
+        bind(); behaviour = { throw com.rokid.context.ai.DataSaverBlockedException("roaming") }
+        repeat(RetryPolicy.MAX_ATTEMPTS + 2) { runWorker(); dueNow() }
+        val job = QueueRuntimeStore.recent(ctx, 10).single()
+        assertEquals(QueueRuntimeStore.STATE_DEFERRED, job.state)
+        assertEquals("never counted, so never failed however long it waits", 0, job.attemptCount)
+    }
+
     @Test fun cancellationDoesNotUseAnAttempt() {
         bind(); behaviour = { throw CancellationException("work stopped") }
         repeat(3) { runWorker(); dueNow() }

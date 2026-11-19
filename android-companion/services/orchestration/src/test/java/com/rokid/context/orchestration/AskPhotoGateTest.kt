@@ -55,10 +55,11 @@ class AskPhotoGateTest {
     @Test fun allConditionsMetAllowsPhotos() { assertTrue(allowed()) }
 
     @Test fun roamingDataSaverBlocksAndCountsAndWifiAllows() {
+        com.rokid.context.ai.datasaver.DataSaverGraph.get(ctx).settingsStore.setMode(com.rokid.context.core.net.DataMode.WIFI_ONLY)
         net = net.copy(transport = com.rokid.context.core.net.Transport.CELLULAR, notMetered = false, notRoaming = false)
         assertFalse(allowed()); assertFalse(allowed())
         assertEquals(2, com.rokid.context.ai.datasaver.DataSaverGraph.get(ctx).ledger.today().dropped)
-        net = net.copy(transport = com.rokid.context.core.net.Transport.CELLULAR, notRoaming = true) // home mobile data: Wi-Fi only mode still blocks
+        net = net.copy(transport = com.rokid.context.core.net.Transport.CELLULAR, notRoaming = true) // home mobile data: Wi-Fi only mode blocks it (the default mode does not)
         assertFalse(allowed())
         net = com.rokid.context.core.net.NetSnapshot.UNKNOWN
         assertFalse("an unknown network is not allowed", allowed())

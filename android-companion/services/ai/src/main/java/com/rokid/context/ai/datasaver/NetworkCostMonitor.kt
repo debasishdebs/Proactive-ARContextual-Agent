@@ -9,14 +9,26 @@ import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.net.NetSnapshot
 import com.rokid.context.core.net.Transport
 
+/** The capability bits of one network, as plain values so the mapping is testable without the platform. */
+data class RawCaps(
+    val wifi: Boolean, val ethernet: Boolean, val cellular: Boolean, val vpn: Boolean,
+    val validated: Boolean, val notMetered: Boolean, val notRoaming: Boolean,
+)
+
 /**
  * Keeps the latest [NetSnapshot] of the default network (the same callback DiagProbe uses for its log line). Every failure to read is "unknown", never a guess: a missing
- * service, a SecurityException or a null capability set all give [NetSnapshot.UNKNOWN]-like readings that the policy treats as costly.
+ * service, a SecurityException, no first reading yet, or a transport we cannot place all give readings the policy treats as costly.
  * [onChange] runs after every new reading (callback thread); it must be cheap.
+ *
+ * VPN assumption (documented, UNVERIFIED on a device): Android 10+ copies the underlying network's transports onto a VPN network, so a VPN over Wi-Fi reports WIFI + VPN. Its metered and
+ * roaming bits are the VPN's own (VPNs are metered by default). We therefore never trust a VPN's own bits for "free": when the default network is a VPN carrying Wi-Fi we look at the real
+ * (non-VPN) Wi-Fi network instead, and call it FREE only if THAT network is validated, unmetered and not roaming; if no such network is found the VPN's own (metered) reading is used, which is
+ * the safe direction. A VPN that reports no underlying transport at all is [Transport.OTHER], i.e. unknown.
  */
-class NetworkCostMonitor(private val app: Context, private val onChange: () -> Unit) {
+class NetworkCostMonitor(private val app: Context, private val clock: () -> Long = System::currentTimeMillis, private val onChange: () -> Unit) {
     @Volatile var snapshot: NetSnapshot = NetSnapshot.UNKNOWN
         private set
+    @Volatile private var current: Network? = null
     private var started = false
 
     @Synchronized fun start() {
@@ -24,39 +36,52 @@ class NetworkCostMonitor(private val app: Context, private val onChange: () -> U
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         try {
             cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
-                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { update(read(caps)) }
-                override fun onLost(network: Network) { update(read(null)) }
+                override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { current = network; update(read(cm, caps)) }
+                override fun onLost(network: Network) {
+                    // A lost OLD default network arriving after the new one is already current must not turn the phone "offline".
+                    if (network == current) { current = null; update(read(cm, null)) }
+                }
             })
             started = true
-            update(read(runCatching { cm.getNetworkCapabilities(cm.activeNetwork) }.getOrNull()))
+            // No active network at start is "not known yet" (the callback may still deliver one), never "offline": photos stay blocked until a reading says otherwise.
+            val active = runCatching { cm.activeNetwork }.getOrNull()
+            val caps = active?.let { runCatching { cm.getNetworkCapabilities(it) }.getOrNull() }
+            if (active != null && caps != null) { current = active; update(read(cm, caps)) }
         } catch (e: Exception) {
             PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") // snapshot stays unknown: fail closed
         }
     }
 
     private fun update(s: NetSnapshot) {
-        val changed = s != snapshot
-        snapshot = s
-        if (changed) try { onChange() } catch (e: Exception) { PcLog.w(TAG, "network change hook failed: ${e.javaClass.simpleName}") }
+        val old = snapshot
+        // Keep the moment an unvalidated reading started; any validated or different-network reading clears it.
+        val stamped = if (!s.validated && s.known && s.transport != Transport.NONE) s.copy(unvalidatedSinceMs = if (old.unvalidatedSinceMs > 0 && !old.validated && old.transport == s.transport) old.unvalidatedSinceMs else clock()) else s
+        snapshot = stamped
+        if (stamped != old) try { onChange() } catch (e: Exception) { PcLog.w(TAG, "network change hook failed: ${e.javaClass.simpleName}") }
     }
 
-    /** [caps] null = no default network (offline), which is a known state. */
-    private fun read(caps: NetworkCapabilities?): NetSnapshot {
+    /** [caps] null = the default network was lost (offline), which is a known state once the callback said so. */
+    private fun read(cm: ConnectivityManager, caps: NetworkCapabilities?): NetSnapshot {
         if (caps == null) return NetSnapshot(known = true, transport = Transport.NONE, validated = false, notMetered = false, notRoaming = true)
-        val transport = when {
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> Transport.WIFI
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> Transport.ETHERNET
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> Transport.CELLULAR
-            else -> Transport.OTHER // VPN only, Bluetooth, anything else
-        }
-        return NetSnapshot(
-            known = true, transport = transport,
-            validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
-            notMetered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
-            notRoaming = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING),
-            countryMismatch = countryMismatch(), restrictBackground = restrictBackground(),
-        )
+        val raw = raw(caps)
+        val effective = if (raw.vpn && raw.wifi) underlyingWifi(cm) ?: raw else raw
+        return snapshotOf(effective, raw, countryMismatch(), restrictBackground(cm))
     }
+
+    private fun raw(c: NetworkCapabilities) = RawCaps(
+        wifi = c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI), ethernet = c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
+        cellular = c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR), vpn = c.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+        validated = c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED), notMetered = c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
+        notRoaming = c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING),
+    )
+
+    /** The real Wi-Fi network under a VPN: a validated, non-VPN Wi-Fi network with internet. Null when none is found (then the VPN's own reading stands). */
+    @Suppress("DEPRECATION")
+    private fun underlyingWifi(cm: ConnectivityManager): RawCaps? = try {
+        cm.allNetworks.mapNotNull { cm.getNetworkCapabilities(it) }
+            .filter { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) }
+            .map(::raw).let { l -> l.firstOrNull { it.validated } ?: l.firstOrNull() }
+    } catch (e: Exception) { null }
 
     /** SIM country vs network country. Only the boolean leaves this function; both empty (no SIM, airplane mode) is "no mismatch". */
     private fun countryMismatch(): Boolean = try {
@@ -65,9 +90,28 @@ class NetworkCostMonitor(private val app: Context, private val onChange: () -> U
         sim.isNotEmpty() && net.isNotEmpty() && !sim.equals(net, ignoreCase = true)
     } catch (e: Exception) { false }
 
-    private fun restrictBackground(): Boolean = try {
-        (app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)?.restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+    private fun restrictBackground(cm: ConnectivityManager): Boolean = try {
+        cm.restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
     } catch (e: Exception) { false }
 
-    private companion object { const val TAG = "PcData" }
+    companion object {
+        private const val TAG = "PcData"
+
+        /**
+         * The pure mapping. [effective] carries the validated / metered / roaming bits to trust (the real Wi-Fi under a VPN, else the default network itself); [defaultCaps] decides the transport.
+         * A VPN whose default reading names no transport at all is OTHER (unknown).
+         */
+        fun snapshotOf(effective: RawCaps, defaultCaps: RawCaps, countryMismatch: Boolean, restrictBackground: Boolean): NetSnapshot {
+            val transport = when {
+                effective.wifi -> Transport.WIFI
+                effective.ethernet -> Transport.ETHERNET
+                effective.cellular -> Transport.CELLULAR
+                defaultCaps.wifi -> Transport.WIFI
+                defaultCaps.ethernet -> Transport.ETHERNET
+                defaultCaps.cellular -> Transport.CELLULAR
+                else -> Transport.OTHER
+            }
+            return NetSnapshot(true, transport, effective.validated, effective.notMetered, effective.notRoaming, countryMismatch, restrictBackground)
+        }
+    }
 }

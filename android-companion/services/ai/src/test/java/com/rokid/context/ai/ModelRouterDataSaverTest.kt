@@ -31,12 +31,13 @@ class ModelRouterDataSaverTest {
     private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
     private val providerCalls = mutableListOf<String>()
     private val permits = mutableListOf<CallClass>()
+    private val failing = mutableSetOf<String>()
     private val callGate = object : CallGate {
         override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T { permits += callClass; return block() }
     }
     private val providers = ProviderBuilder { e, model, _ ->
         object : ModelProvider {
-            override suspend fun generate(prompt: String): String { providerCalls += "${e.id}:text"; return "${e.id}/$model" }
+            override suspend fun generate(prompt: String): String { providerCalls += "${e.id}:text"; if (e.id in failing) error("boom"); return "${e.id}/$model" }
             override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { providerCalls += "${e.id}:vision"; return "${e.id}/vision" }
         }
     }
@@ -102,6 +103,14 @@ class ModelRouterDataSaverTest {
         val r = router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
         assertEquals("loc", r.endpoint.id)
         assertEquals(listOf(EndpointReach.REMOTE, EndpointReach.DEVICE), data.asked.map { it.second })
+    }
+
+    @Test fun aBlockedPrimaryWhoseOnDeviceFallbackFailsStillSurfacesAsTheBlock() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT)); ep("loc", kind = EndpointKind.LLAMACPP_LOCAL, caps = arrayOf(Capability.CHAT))
+        bindings.set(RoleBinding(Role.ANSWER, "v", "m", fallbackEndpointId = "loc", fallbackModel = "m2")).getOrThrow()
+        data.blockSmall = true; failing += "loc"
+        val e = err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
+        assertTrue("not a generic failure that a caller would count as an attempt: $e", e is DataSaverBlockedException)
     }
 
     @Test fun aBlockedPrimaryWithARemoteFallbackIsBlockedToo() = runTest {

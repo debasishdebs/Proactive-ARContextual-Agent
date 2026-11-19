@@ -28,9 +28,9 @@ class DataSaverGraphTest {
     private val wifi = NetSnapshot(true, Transport.WIFI, validated = true, notMetered = true, notRoaming = true)
     private val mobile = NetSnapshot(true, Transport.CELLULAR, validated = true, notMetered = false, notRoaming = true)
 
-    @Test fun storeDefaultsAreWifiOnlyNotAbroadTextAllowed() {
+    @Test fun storeDefaultsAreWifiAndHomeMobileNotAbroadTextAllowed() {
         val s = DataSaverStore(prefs("ds1")).settings.value
-        assertEquals(DataSaverSettings(DataMode.WIFI_ONLY, abroad = false, smallOnRoaming = true), s)
+        assertEquals(DataSaverSettings(DataMode.WIFI_AND_HOME_MOBILE, abroad = false, smallOnRoaming = true), s)
     }
 
     @Test fun storeRoundTripsAndAnUnknownStoredModeReadsAsTheSafeDefault() {
@@ -38,18 +38,27 @@ class DataSaverGraphTest {
         DataSaverStore(p).apply { setMode(DataMode.ANYWHERE); setAbroad(true); setSmallOnRoaming(false) }
         assertEquals(DataSaverSettings(DataMode.ANYWHERE, true, false), DataSaverStore(p).settings.value)
         p.edit().putString("mode", "SOMETHING_NEW").commit()
-        assertEquals(DataMode.WIFI_ONLY, DataSaverStore(p).settings.value.mode)
+        assertEquals(DataMode.DEFAULT, DataSaverStore(p).settings.value.mode)
     }
 
     @Test fun theStoreFileNameIsTheOneBackupRulesExclude() = assertEquals("data_saver", DataSaverStore.PREFS)
 
-    private fun graph(store: DataSaverStore = DataSaverStore(prefs("dsg")), day: () -> Long = { 100L }, snap: () -> NetSnapshot) = DataSaverGraph(store, snap, day)
+    private fun graph(store: DataSaverStore = DataSaverStore(prefs("dsg")).also { it.setMode(DataMode.WIFI_ONLY) }, day: () -> Long = { 100L }, snap: () -> NetSnapshot) = DataSaverGraph(store, snap, day)
 
     @Test fun beforeAnyNetworkReadingPhotosAreNotAllowedButTextIs() {
         val g = graph { NetSnapshot.UNKNOWN }
         assertFalse(g.decide(DataKind.PHOTO).allowed)
         assertTrue(g.decide(DataKind.SMALL).allowed)
         assertEquals(NetworkCost.UNKNOWN, g.costNow()); assertTrue(g.costlyNow())
+    }
+
+    @Test fun theDefaultAllowsHomeMobileDataButNotRoamingOrUnknown() {
+        var snap = mobile
+        val g = graph(DataSaverStore(prefs("dsg5"))) { snap }
+        assertTrue(g.decide(DataKind.PHOTO).allowed)
+        snap = mobile.copy(notRoaming = false); assertFalse(g.decide(DataKind.PHOTO).allowed)
+        snap = NetSnapshot.UNKNOWN; assertFalse(g.decide(DataKind.PHOTO).allowed)
+        snap = mobile; g.settingsStore.setAbroad(true); assertFalse(g.decide(DataKind.PHOTO).allowed)
     }
 
     @Test fun wifiAllowsPhotosMobileDoesNot() {
@@ -90,7 +99,7 @@ class DataSaverGraphTest {
 
     @Test fun openListenersFireOnlyWhenPhotosTurnFromBlockedToAllowed() {
         var snap = mobile; var fired = 0
-        val store = DataSaverStore(prefs("dsg4")); val g = graph(store) { snap }
+        val store = DataSaverStore(prefs("dsg4")).also { it.setMode(DataMode.WIFI_ONLY) }; val g = graph(store) { snap }
         g.addOpenListener { fired++ }
         g.refresh(); assertEquals("first reading is blocked", 0, fired)
         g.refresh(); assertEquals(0, fired)

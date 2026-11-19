@@ -149,6 +149,8 @@ class ModelRouter(
         } catch (d: DataSaverBlockedException) {
             throw d
         } catch (t: Throwable) {
+            // The data saver blocked the primary and the on-device/LAN fallback failed too: the call is still "blocked, nothing sent, wait for Wi-Fi", never a counted failure.
+            if (first is DataSaverBlockedException) throw first
             if (first != null && needsVision(t)) {
                 // A photo-only call whose fallback cannot take the photo: report the primary's own failure, not "not set".
                 throw ModelCallException("Primary provider failed: ${safe(first, primaryKey, fallbackKey)}", !ProviderErrors.isPermanent(first), first, ProviderErrors.kindOf(first))

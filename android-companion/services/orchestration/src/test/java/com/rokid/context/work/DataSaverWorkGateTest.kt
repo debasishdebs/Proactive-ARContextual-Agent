@@ -67,8 +67,9 @@ class DataSaverWorkGateTest {
 
     private fun constraintOf(name: String) = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(name).get().single { !it.state.isFinished }.constraints.requiredNetworkType
 
-    @Test fun theDescribeOnlyJobsWaitForAnUnmeteredNetworkByDefaultAndTheNightJobDoesNot() {
+    @Test fun inWifiOnlyModeTheDescribeOnlyJobsWaitForAnUnmeteredNetworkAndTheNightJobDoesNot() {
         AppConfigStore.setPipelineEnabled(ctx, true)
+        DataSaverStore.of(ctx).setMode(DataMode.WIFI_ONLY)
         OrchestrationScheduler(ctx).ensureNightIndex()
         assertEquals(NetworkType.UNMETERED, constraintOf(NightIndexWorker.CATCH_UP_NAME))
         assertEquals(NetworkType.UNMETERED, constraintOf(SuspectSweepWorker.NAME))
@@ -77,6 +78,7 @@ class DataSaverWorkGateTest {
 
     @Test fun aModeChangeReachesTheJobsAlreadyScheduled() {
         AppConfigStore.setPipelineEnabled(ctx, true)
+        DataSaverStore.of(ctx).setMode(DataMode.WIFI_ONLY)
         OrchestrationScheduler(ctx).ensureNightIndex()
         DataSaverStore.of(ctx).setMode(DataMode.WIFI_AND_HOME_MOBILE)
         OrchestrationScheduler(ctx).ensureNightIndex()

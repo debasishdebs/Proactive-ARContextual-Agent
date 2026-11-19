@@ -34,6 +34,11 @@ class AndroidPlaceGuideControl(
         set(v) { settings.budgetMb = v }
 
     override suspend fun seed(box: GeoBox): Result<com.rokid.context.phone.ui.settings.place.SeedOutcome> = runCatching {
+        // Roaming data saver: a seed is hundreds of requests; only on free Wi-Fi (never mobile, roaming, unknown or a captive portal).
+        if (com.rokid.context.ai.datasaver.DataSaverGraph.get(app).costNow() != com.rokid.context.core.net.NetworkCost.FREE) {
+            com.rokid.context.core.log.PcLog.i("PcData", "seed refused: not free wifi")
+            throw com.rokid.context.phone.ui.settings.place.SeedNeedsWifiException()
+        }
         val id = String.format(Locale.ROOT, "seed:%.3f,%.3f,%.3f,%.3f", box.south, box.west, box.north, box.east)
         val r = PlaceGraph.readyPack(app).seedArea(id, box)
         com.rokid.context.phone.ui.settings.place.PlaceGuideModel.seedOutcome(r)

@@ -75,8 +75,8 @@ object SettingsModel {
 }
 
 data class SettingsRootUiState(val glassesSummary: String = "Not connected", val captureSummary: String = "", val voiceSummary: String = "Voice · Checking…",
-    /** The Data saver row's subtitle ([com.rokid.context.phone.ui.settings.datasaver.DataSaverModel.rowSubtitle]); Wi-Fi only until the route says otherwise. */
-    val dataSaver: String = "Photos on Wi-Fi only")
+    /** The Data saver row's subtitle ([com.rokid.context.phone.ui.settings.datasaver.DataSaverModel.rowSubtitle]); the default until the route says otherwise. */
+    val dataSaver: String = "Photos on Wi-Fi and home mobile data")
 
 class SettingsRootViewModel(
     glasses: GlassesStatusSource,
