@@ -336,7 +336,7 @@ class OrchestrationScheduler(
     }
 
     /**
-     * Roaming data saver: the jobs that only describe stored photos (the catch-up and the suspect sweep) wait for an unmetered network while the mode is "Wi-Fi only" (the default), so the phone is not woken for
+     * Roaming data saver: the jobs that only describe stored photos (the catch-up and the suspect sweep) wait for an unmetered network while the mode is "Wi-Fi only" (the default is "Wi-Fi and home mobile data": no constraint), so the phone is not woken for
      * nothing. The night job itself has no network constraint: it also does local index work, and a worker run on mobile data does nothing remote (see [DataSaverWorkGate], the real gate: it knows about
      * roaming and the abroad switch, which a WorkManager constraint cannot).
      */

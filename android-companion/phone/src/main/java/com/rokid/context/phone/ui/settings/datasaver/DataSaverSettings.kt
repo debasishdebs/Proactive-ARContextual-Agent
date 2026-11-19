@@ -26,10 +26,12 @@ data class DataSaverUiState(
     val settings: DataSaverSettings = DataSaverSettings(),
     val cost: NetworkCost = NetworkCost.UNKNOWN,
     val today: SkippedLedger.Today = SkippedLedger.Today(0, 0, 0),
-    /** Frames waiting for Wi-Fi right now (the live PENDING count; it does not grow with every recheck). */
+    /** Frames the data saver is holding for Wi-Fi right now (the live count of frames parked by it; it does not grow with every recheck). */
     val waiting: Int = 0,
     /** Wi-Fi connected and unmetered but not validated for over 10 minutes. */
     val stuck: Boolean = false,
+    /** Why the network is ROAMING: [NetworkCosts.WHY_ABROAD], [NetworkCosts.WHY_REPORTED], [NetworkCosts.WHY_COUNTRY] or "". */
+    val why: String = "",
 )
 
 /** All the screen's words and rules, pure so a JVM test pins them. Nothing here names a country, a network or a place. */
@@ -57,10 +59,18 @@ object DataSaverModel {
 
     const val STUCK_LINE = "Now: Wi-Fi without an internet check for over 10 minutes. Photos to remote models wait; your own box on this network still works."
 
-    fun nowLine(cost: NetworkCost, abroad: Boolean, stuck: Boolean = false): String = if (stuck && cost == NetworkCost.UNKNOWN) STUCK_LINE else when (cost) {
+    const val ANDROID_SAVER_LINE = "Now: Android Data Saver is on for this app. Photos wait for Wi-Fi (Android blocks background mobile data)."
+
+    fun nowLine(cost: NetworkCost, abroad: Boolean, stuck: Boolean = false, why: String = ""): String = if (stuck && cost == NetworkCost.UNKNOWN) STUCK_LINE else when (cost) {
+        NetworkCost.RESTRICTED -> ANDROID_SAVER_LINE
         NetworkCost.FREE -> "Now: Wi-Fi"
         NetworkCost.HOME_MOBILE -> "Now: Home mobile data"
-        NetworkCost.ROAMING -> if (abroad) "Now: Mobile data, treated as roaming (I'm abroad)" else "Now: Roaming (the phone reports roaming)"
+        NetworkCost.ROAMING -> when {
+            why == com.rokid.context.core.net.NetworkCosts.WHY_COUNTRY -> "Now: Mobile data, treated as roaming (the SIM country differs from the network country)"
+            why == com.rokid.context.core.net.NetworkCosts.WHY_REPORTED -> "Now: Roaming (the phone reports roaming)"
+            abroad -> "Now: Mobile data, treated as roaming (I'm abroad)"
+            else -> "Now: Roaming (the phone reports roaming)"
+        }
         NetworkCost.UNKNOWN -> "Now: Unknown network, treated as roaming"
         NetworkCost.OFFLINE -> "Now: Offline"
     }
@@ -69,6 +79,7 @@ object DataSaverModel {
     fun nowExplain(cost: NetworkCost, s: DataSaverSettings): String = when (cost) {
         NetworkCost.FREE -> "Photos upload normally."
         NetworkCost.OFFLINE -> "Nothing can leave the phone."
+        NetworkCost.RESTRICTED -> "Photos wait for Wi-Fi."
         else -> if (com.rokid.context.core.net.DataPolicy.decide(com.rokid.context.core.net.DataKind.PHOTO, com.rokid.context.core.net.EndpointReach.REMOTE, cost, com.rokid.context.core.net.Transport.CELLULAR, s).allowed)
             "Photos upload on this connection." else "Photos wait for Wi-Fi."
     }
@@ -106,7 +117,7 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
 
     private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
 
-    private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today(), flow.value.waiting, graph.stuckNow())
+    private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today(), flow.value.waiting, graph.stuckNow(), com.rokid.context.core.net.NetworkCosts.roamingWhy(graph.snapshot(), graph.settingsNow().abroad))
 
     override fun setMode(m: DataMode) {
         graph.settingsStore.setMode(m); refresh()
@@ -117,9 +128,10 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
     init { flow.value = read() }
 
     override fun refresh() {
+        graph.refresh() // re-reads Android Data Saver and the country facts too
         flow.value = read()
         scope.launch { // the waiting count is a database read: off the main thread
-            val n = try { com.rokid.context.memory.MemoryGraph.get(app).db.frameStateDao().pendingCount() } catch (e: Exception) { return@launch }
+            val n = try { com.rokid.context.memory.MemoryGraph.get(app).db.frameStateDao().dataSaverParkedCount() } catch (e: Exception) { return@launch }
             flow.value = flow.value.copy(waiting = n)
         }
     }
@@ -138,7 +150,7 @@ fun DataSaverScreen(state: DataSaverUiState, back: () -> Unit, onMode: (DataMode
     SettingsPage(DataSaverModel.TITLE, back, tag = "data_saver_settings") {
         item {
             SettingsCard {
-                NoticeText(DataSaverModel.nowLine(state.cost, s.abroad, state.stuck), tag = "data_saver_now")
+                NoticeText(DataSaverModel.nowLine(state.cost, s.abroad, state.stuck, state.why), tag = "data_saver_now")
                 NoticeText(DataSaverModel.nowExplain(state.cost, s), tag = "data_saver_now_explain")
             }
         }

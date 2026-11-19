@@ -518,7 +518,8 @@ class AnswerService(
             // Roaming data saver: no photo leaves on mobile data, roaming or an unknown network; the question is answered from the memory text instead (the router would refuse the photo call anyway).
             // A refusal here is counted like any other skipped upload.
             val data = com.rokid.context.ai.datasaver.DataSaverGraph.get(context)
-            val d = data.decide(com.rokid.context.core.net.DataKind.PHOTO)
+            val reach = ai.bindings.get(com.rokid.context.ai.Role.ANSWER)?.endpointId?.let { ai.endpoints.byId(it) }?.let(com.rokid.context.ai.EndpointReaches::of) ?: com.rokid.context.core.net.EndpointReach.REMOTE
+            val d = data.decide(com.rokid.context.core.net.DataKind.PHOTO, reach)
             if (!d.allowed) { data.skipped(com.rokid.context.core.net.DataKind.PHOTO, com.rokid.context.core.net.Skipped.DROPPED, d); return false }
             return true
         }

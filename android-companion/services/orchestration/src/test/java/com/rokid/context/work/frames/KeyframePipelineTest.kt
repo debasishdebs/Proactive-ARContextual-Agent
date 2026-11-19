@@ -501,17 +501,37 @@ class KeyframePipelineTest {
     }
 
 
-    @Test fun parkedByTheDataSaverNothingIsShedHoweverLongTheBacklogAndTheRecheckWakes() = runBlocking {
-        for (i in 1..200) seed("f$i", i * 1000L)
-        var allowUploads = false
-        val p = KeyframePipeline(db, { ids, _, cls -> calls += ids to cls; ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("roaming")) }, { now }, null,
-            newClaimId = { "claim-${calls.size}" }, pollMs = 50, shedAllowed = { allowUploads })
-        p.drainOnce(); p.onNetworkReturn(); p.drainOnce()          // a recheck and a network-return wake while parked
-        now += 31 * 60_000L; p.drainOnce()                          // and the 30-minute safety recheck
-        assertEquals(200, db.frameStateDao().pendingCount())
-        assertEquals(0, (1..200).count { state("f$it") == "NEAR_DUP" })
-        // control: with uploads allowed the old thinning still applies
-        allowUploads = true; p.drainOnce()
-        assertTrue((1..200).any { state("f$it") == "NEAR_DUP" })
+    @Test fun framesParkedByTheDataSaverAreNeverShedNotEvenOnTheFirstDrainAfterTheGateOpens() = runBlocking {
+        for (i in 1..300) seed("f$i", i * 1000L)
+        var blocked = true
+        val order = mutableListOf<String>()
+        val p = KeyframePipeline(db, { ids, claim, cls ->
+            calls += ids to cls
+            if (blocked) ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("roaming"))
+            else { order += ids; completing()(ids, claim, cls) }
+        }, { now }, null, newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = { blocked })
+        p.drainOnce(); p.onNetworkReturn(); p.drainOnce()          // parked, plus a network-return wake
+        now += 31 * 60_000L; p.drainOnce()                          // and the 30-minute recheck
+        assertEquals(300, db.frameStateDao().pendingCount()); assertEquals(300, db.frameStateDao().dataSaverParkedCount())
+        // the gate opens: the very first drain must not thin the backlog, and everything is then described
+        blocked = false; p.onNetworkReturn()
+        assertEquals(3, p.drainOnce())
+        assertEquals(0, (1..300).count { state("f$it") == "NEAR_DUP" })
+        var guard = 0
+        while (p.drainOnce() > 0 && guard++ < 200) { }
+        assertEquals(setOf("EXTRACTED"), (1..300).map { state("f$it") }.toSet())
+        assertEquals("every parked frame was sent exactly once", 300, order.toSet().size)
+        assertEquals(0, db.frameStateDao().dataSaverParkedCount())
+    }
+
+    @Test fun framesThatArrivedWhileParkedAreMarkedWhenTheGateOpensAndOrdinaryBacklogStillSheds() = runBlocking {
+        for (i in 1..100) seed("f$i", i * 1000L)
+        val p = KeyframePipeline(db, completing(), { now }, null, newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = { false })
+        p.parkForDataSaver()
+        assertEquals(100, db.frameStateDao().dataSaverParkedCount())
+        for (i in 101..200) seed("g$i", i * 1000L) // ordinary frames, never parked
+        p.drainOnce()
+        assertTrue("ordinary frames are still thinned", (101..200).any { state("g$it") == "NEAR_DUP" })
+        assertEquals("parked frames are not", 0, (1..100).count { state("f$it") == "NEAR_DUP" })
     }
 }

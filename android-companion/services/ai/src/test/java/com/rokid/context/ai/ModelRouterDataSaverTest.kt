@@ -113,6 +113,22 @@ class ModelRouterDataSaverTest {
         assertTrue("not a generic failure that a caller would count as an attempt: $e", e is DataSaverBlockedException)
     }
 
+    @Test fun aCallBlockedOnPrimaryAndFallbackIsCountedOnce() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); ep("b", caps = arrayOf(Capability.CHAT))
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m", fallbackEndpointId = "b", fallbackModel = "m2")).getOrThrow()
+        data.blockSmall = true
+        assertTrue(err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } } is DataSaverBlockedException)
+        assertEquals("one call, one count", 1, data.skippedLog.size)
+    }
+
+    @Test fun theFramesChainCountsOnceToo() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); ep("t", caps = arrayOf(Capability.CHAT))
+        bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow(); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
+        data.blockPhoto = true
+        assertTrue(err { router.completeFromFrames(CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) } } is DataSaverBlockedException)
+        assertEquals(1, data.skippedLog.size)
+    }
+
     @Test fun aBlockedPrimaryWithARemoteFallbackIsBlockedToo() = runTest {
         ep("a", caps = arrayOf(Capability.CHAT)); ep("b", caps = arrayOf(Capability.CHAT))
         bindings.set(RoleBinding(Role.ANSWER, "a", "m", fallbackEndpointId = "b", fallbackModel = "m2")).getOrThrow()

@@ -47,6 +47,15 @@ class DataSaverScreenTest {
         assertEquals("Now: Offline", DataSaverModel.nowLine(NetworkCost.OFFLINE, false))
     }
 
+    @Test fun androidDataSaverAndTheCountryMismatchHaveTheirOwnWords() {
+        assertEquals(DataSaverModel.ANDROID_SAVER_LINE, DataSaverModel.nowLine(NetworkCost.RESTRICTED, false))
+        assertTrue(DataSaverModel.ANDROID_SAVER_LINE.contains("Android Data Saver is on for this app"))
+        assertFalse(DataSaverModel.nowLine(NetworkCost.RESTRICTED, false).contains("roaming", ignoreCase = true))
+        assertTrue(DataSaverModel.nowLine(NetworkCost.ROAMING, false, why = com.rokid.context.core.net.NetworkCosts.WHY_COUNTRY).contains("SIM country differs"))
+        assertFalse(DataSaverModel.nowLine(NetworkCost.ROAMING, false, why = com.rokid.context.core.net.NetworkCosts.WHY_COUNTRY).contains("reports roaming"))
+        assertEquals("Photos wait for Wi-Fi.", DataSaverModel.nowExplain(NetworkCost.RESTRICTED, DataSaverSettings(DataMode.ANYWHERE)))
+    }
+
     @Test fun nowExplainSaysWhetherPhotosGoOnThisConnection() {
         val wifiOnly = DataSaverSettings(DataMode.WIFI_ONLY)
         assertEquals("Photos upload normally.", DataSaverModel.nowExplain(NetworkCost.FREE, wifiOnly))

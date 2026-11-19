@@ -17,7 +17,7 @@ data class NetSnapshot(
     val notRoaming: Boolean,
     /** SIM country differs from the network country (a second roaming signal). Only this boolean is kept, never the countries. */
     val countryMismatch: Boolean = false,
-    /** Android's own Data Saver is on for this app. */
+    /** Android's own Data Saver is ON and this app is NOT exempt from it (ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED; a whitelisted app reads false): the system itself blocks our background mobile data. */
     val restrictBackground: Boolean = false,
     /** When the network was first seen without validation (ms, 0 = validated or not applicable). Not part of the cost: only for the "stuck without internet" status line. */
     val unvalidatedSinceMs: Long = 0L,
@@ -32,7 +32,9 @@ data class NetSnapshot(
  * [UNKNOWN] is its own value so the screen can say "Unknown network: treated as roaming", but every rule treats it like [ROAMING].
  * [OFFLINE] = no network at all: nothing can leave, the existing offline handling (queue, no attempt) applies.
  */
-enum class NetworkCost { FREE, HOME_MOBILE, ROAMING, UNKNOWN, OFFLINE }
+enum class NetworkCost { FREE, HOME_MOBILE, ROAMING, UNKNOWN, OFFLINE,
+    /** Metered network while Android's Data Saver is on and this app is not exempt: not roaming, but Android blocks background data, so photo uploads wait (small text is still tried). */
+    RESTRICTED }
 
 object NetworkCosts {
     /** Fail closed: anything the phone does not say clearly is costly. [abroad] is the user's "I'm abroad" switch: it forces every cellular network (and a metered Wi-Fi, a likely hotspot) to ROAMING. */
@@ -42,11 +44,11 @@ object NetworkCosts {
             Transport.NONE -> NetworkCost.OFFLINE
             Transport.OTHER -> NetworkCost.UNKNOWN
             Transport.CELLULAR ->
-                if (abroad || !s.notRoaming || s.countryMismatch || s.restrictBackground) NetworkCost.ROAMING else NetworkCost.HOME_MOBILE
+                if (abroad || !s.notRoaming || s.countryMismatch) NetworkCost.ROAMING else if (s.restrictBackground) NetworkCost.RESTRICTED else NetworkCost.HOME_MOBILE
             Transport.WIFI, Transport.ETHERNET -> when {
                 !s.notRoaming -> NetworkCost.ROAMING
                 !s.validated -> NetworkCost.UNKNOWN // a captive portal or a network still being checked is not free
-                !s.notMetered -> if (abroad || s.restrictBackground) NetworkCost.ROAMING else NetworkCost.HOME_MOBILE
+                !s.notMetered -> if (abroad) NetworkCost.ROAMING else if (s.restrictBackground) NetworkCost.RESTRICTED else NetworkCost.HOME_MOBILE
                 else -> NetworkCost.FREE
             }
         }
@@ -60,7 +62,20 @@ object NetworkCosts {
     const val STUCK_MS = 10 * 60_000L
 
     /** True for every cost that is not FREE and not OFFLINE: the cases where a stored place cell is kept instead of fetched again. */
-    fun isCostly(c: NetworkCost): Boolean = c == NetworkCost.HOME_MOBILE || c == NetworkCost.ROAMING || c == NetworkCost.UNKNOWN
+    fun isCostly(c: NetworkCost): Boolean = c == NetworkCost.HOME_MOBILE || c == NetworkCost.ROAMING || c == NetworkCost.UNKNOWN || c == NetworkCost.RESTRICTED
+
+    /** Why a ROAMING classification happened, for the status line: [WHY_ABROAD] (the switch), [WHY_REPORTED] (the phone says roaming), [WHY_COUNTRY] (SIM and network country differ); "" when not roaming. */
+    fun roamingWhy(s: NetSnapshot, abroad: Boolean): String = when {
+        classify(s, abroad) != NetworkCost.ROAMING -> ""
+        !s.notRoaming -> WHY_REPORTED
+        s.countryMismatch -> WHY_COUNTRY
+        abroad -> WHY_ABROAD
+        else -> WHY_REPORTED
+    }
+    const val WHY_ABROAD = "abroad"
+    const val WHY_REPORTED = "reported"
+    const val WHY_COUNTRY = "country"
+
 }
 
 /** Which traffic is asked about. PHOTO: a request whose images will be sent. BULK_OTHER: many or large requests without photos (model download, seeding, night re-describe sweeps). SMALL: text. */
@@ -114,6 +129,7 @@ object DataPolicy {
     const val R_HOME_MOBILE = "home_mobile"
     const val R_SMALL_OK = "small_allowed"
     const val R_ANYWHERE = "anywhere"
+    const val R_ANDROID_SAVER = "android_data_saver"
 
     /**
      * The one decision. [transport] is only used to tell whether a LAN endpoint is reachable for free (Wi-Fi or Ethernet).
@@ -124,11 +140,12 @@ object DataPolicy {
         if (reach == EndpointReach.LAN && (transport == Transport.WIFI || transport == Transport.ETHERNET)) return DataDecision(true, R_LAN)
         if (cost == NetworkCost.FREE) return DataDecision(true, R_FREE)
         if (cost == NetworkCost.OFFLINE) return DataDecision(true, R_OFFLINE)
-        val blockedToken = if (cost == NetworkCost.UNKNOWN) R_UNKNOWN else if (cost == NetworkCost.ROAMING) R_ROAMING else R_HOME_MOBILE
+        val blockedToken = when (cost) { NetworkCost.UNKNOWN -> R_UNKNOWN; NetworkCost.ROAMING -> R_ROAMING; NetworkCost.RESTRICTED -> R_ANDROID_SAVER; else -> R_HOME_MOBILE }
         return when (kind) {
             DataKind.SMALL ->
-                if (cost == NetworkCost.HOME_MOBILE || s.smallOnRoaming) DataDecision(true, R_SMALL_OK) else DataDecision(false, blockedToken)
-            DataKind.PHOTO, DataKind.BULK_OTHER -> when (s.effectiveMode) {
+                if (cost == NetworkCost.HOME_MOBILE || cost == NetworkCost.RESTRICTED || s.smallOnRoaming) DataDecision(true, R_SMALL_OK) else DataDecision(false, blockedToken)
+            DataKind.PHOTO, DataKind.BULK_OTHER -> if (cost == NetworkCost.RESTRICTED) DataDecision(false, R_ANDROID_SAVER) // Android itself blocks background data: no mode can change that
+            else when (s.effectiveMode) {
                 DataMode.ANYWHERE -> DataDecision(true, R_ANYWHERE)
                 DataMode.WIFI_AND_HOME_MOBILE -> if (cost == NetworkCost.HOME_MOBILE) DataDecision(true, R_HOME_MOBILE) else DataDecision(false, blockedToken)
                 DataMode.WIFI_ONLY -> DataDecision(false, if (cost == NetworkCost.HOME_MOBILE) R_WIFI_ONLY else blockedToken)
@@ -164,6 +181,8 @@ interface DataGate {
     fun skipped(kind: DataKind, what: Skipped, d: DataDecision)
     /** True while the network is mobile, roaming or unknown (stored place cells are then kept instead of re-fetched). */
     fun costlyNow(): Boolean
+    /** Re-reads the network facts that can change without a capability callback (Android Data Saver status, SIM and network country) and restarts a failed network watch. Cheap; default no-op. */
+    fun refresh() {}
 
     companion object {
         val ALLOW_ALL: DataGate = object : DataGate {

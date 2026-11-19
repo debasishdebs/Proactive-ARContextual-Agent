@@ -148,7 +148,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     private val pipelineLazy = lazy {
         KeyframePipeline(
             db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated,
-            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, shedAllowed = { photoUploadsAllowed() }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
+            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, dataSaverBlocked = { dataGate.refresh(); !photoUploadsAllowed() }, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
         )
     }
 
@@ -215,13 +215,33 @@ class KeyframeHandle internal constructor(private val app: Context) {
 
     /** The data-saver part alone: false (and one counted, logged refusal) when a photo may not go out on this network. Place Guide uses it separately so it can still show the offline-style card. */
     fun dataSaverAllowsPhoto(): Boolean {
-        val d = dataGate.decide(DataKind.PHOTO)
+        val d = dataGate.decide(DataKind.PHOTO, photoReach())
         if (!d.allowed) { dataGate.skipped(DataKind.PHOTO, Skipped.DROPPED, d); return false }
         return true
     }
 
     /** Photo uploads are blocked right now (policy only; no count, no log): the Ask photo gate and tests read it. */
-    fun photoUploadsAllowed(): Boolean = dataGate.decide(DataKind.PHOTO).allowed
+    fun photoUploadsAllowed(): Boolean = dataGate.decide(DataKind.PHOTO, photoReach()).allowed
+
+    @Volatile private var reachAt = 0L
+    @Volatile private var reachCached = com.rokid.context.core.net.EndpointReach.REMOTE
+
+    /**
+     * Where the photo calls go: the VISION_EXTRACT binding's endpoint, classified like the router does (on this phone or on the LAN is not a data cost). Cached for a minute (a database read);
+     * unknown or unreadable is REMOTE, the fail-closed answer. The same endpoint serves describe, place match and intent in the default setup.
+     */
+    internal fun photoReach(): com.rokid.context.core.net.EndpointReach {
+        val now = clock()
+        if (now - reachAt < REACH_TTL_MS) return reachCached
+        reachCached = try {
+            kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                val ai = AiGraph.get(app)
+                ai.bindings.get(com.rokid.context.ai.Role.VISION_EXTRACT)?.endpointId?.let { ai.endpoints.byId(it) }?.let(com.rokid.context.ai.EndpointReaches::of)
+            } ?: com.rokid.context.core.net.EndpointReach.REMOTE
+        } catch (e: Exception) { com.rokid.context.core.net.EndpointReach.REMOTE }
+        reachAt = now
+        return reachCached
+    }
 
     @Synchronized private fun watchNetwork() {
         if (networkWatch != null) return
@@ -233,7 +253,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
             }
         }
         // The roaming data saver opening (Wi-Fi back, mode or abroad switch changed) wakes the parked loop like a returning network does.
-        if (openHooked.compareAndSet(false, true)) (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.addOpenListener { pipeline.onNetworkReturn() }
+        if (openHooked.compareAndSet(false, true)) (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.addOpenListener { scope.launch { runCatching { pipeline.parkForDataSaver() }; pipeline.onNetworkReturn() } }
         try { cm.registerDefaultNetworkCallback(cb); networkWatch = cb } catch (e: Exception) { PcLog.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") }
     }
 
@@ -345,6 +365,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     internal companion object {
         private const val TAG = "KeyframeGraph"
         private const val SCENE_CHECK_MS = 30_000L
+        private const val REACH_TTL_MS = 60_000L
 
         /** The memory id prefix of one extraction: the WHOLE claim id (a 12-char prefix collided, and a collision replaced another batch's memories). */
         fun factPrefix(claimId: String) = "$ID_ROOT${claimId}_"

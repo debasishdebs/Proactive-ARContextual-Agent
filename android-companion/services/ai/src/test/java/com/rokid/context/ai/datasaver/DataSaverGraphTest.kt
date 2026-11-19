@@ -52,6 +52,23 @@ class DataSaverGraphTest {
         assertEquals(NetworkCost.UNKNOWN, g.costNow()); assertTrue(g.costlyNow())
     }
 
+    @Test fun refreshRereadsTheNetworkFactsAndRestartsAFailedWatch() {
+        var rereads = 0
+        val g = DataSaverGraph(DataSaverStore(prefs("dsg6")), { wifi }, { 100L }, { rereads++ })
+        g.refresh(); g.refresh()
+        assertEquals(2, rereads)
+        g.refreshState(); assertEquals("the state-only refresh does not reread", 2, rereads)
+    }
+
+    @Test fun androidDataSaverNotExemptBlocksPhotosEvenInTheDefaultModeButAnExemptAppIsHomeMobile() {
+        var snap = mobile.copy(restrictBackground = true)
+        val g = graph(DataSaverStore(prefs("dsg7"))) { snap }
+        assertEquals(NetworkCost.RESTRICTED, g.costNow()); assertFalse(g.decide(DataKind.PHOTO).allowed)
+        assertEquals("android_data_saver", g.decide(DataKind.PHOTO).reason)
+        snap = mobile.copy(restrictBackground = false) // whitelisted: the monitor reads it as off
+        assertTrue(g.decide(DataKind.PHOTO).allowed)
+    }
+
     @Test fun theDefaultAllowsHomeMobileDataButNotRoamingOrUnknown() {
         var snap = mobile
         val g = graph(DataSaverStore(prefs("dsg5"))) { snap }
@@ -92,7 +109,7 @@ class DataSaverGraphTest {
         g.skipped(DataKind.PHOTO, Skipped.UPLOAD_QUEUED, d); g.skipped(DataKind.PHOTO, Skipped.DROPPED, d); g.skipped(DataKind.SMALL, Skipped.BULK, d)
         assertEquals(1, g.ledger.today().uploadsQueued); assertEquals(1, g.ledger.today().dropped); assertEquals(1, g.ledger.today().bulk)
         // same file, so a new process sees today's counts
-        assertEquals(3, DataSaverGraph(DataSaverStore(p), { wifi }) { 100L }.ledger.today().total)
+        assertEquals(3, DataSaverGraph(DataSaverStore(p), { wifi }, epochDay = { 100L }).ledger.today().total)
         day = 101
         assertEquals(0, g.ledger.today().total)
     }

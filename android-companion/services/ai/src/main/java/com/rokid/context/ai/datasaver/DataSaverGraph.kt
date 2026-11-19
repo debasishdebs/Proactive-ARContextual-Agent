@@ -29,6 +29,8 @@ class DataSaverGraph internal constructor(
     private val store: DataSaverStore,
     private val snapshotNow: () -> NetSnapshot,
     epochDay: () -> Long = { LocalDate.now().toEpochDay() },
+    /** Re-reads the network facts that change without a callback and restarts a failed network watch (production: the monitor's reread). */
+    private val reread: () -> Unit = {},
 ) : DataGate {
     val ledger = SkippedLedger(store.counters, epochDay)
     val settings get() = store.settings
@@ -37,6 +39,7 @@ class DataSaverGraph internal constructor(
     @Volatile private var photoOpen: Boolean? = null
     @Volatile private var lastCost: NetworkCost? = null
 
+    fun snapshot(): NetSnapshot = snapshotNow()
     fun settingsNow(): DataSaverSettings = store.settings.value
     /** True when Wi-Fi is connected and unmetered but has not validated for over 10 minutes (the status line says remote photos still wait). */
     fun stuckNow(): Boolean = NetworkCosts.stuckUnvalidated(snapshotNow(), System.currentTimeMillis())
@@ -58,8 +61,11 @@ class DataSaverGraph internal constructor(
 
     override fun costlyNow(): Boolean = NetworkCosts.isCostly(costNow())
 
+    /** Re-reads the Android Data Saver status and country facts, restarts a failed network watch, then [refreshState]. Called by the pipeline's recheck and the status screen. */
+    override fun refresh() { try { reread() } catch (e: Exception) { PcLog.w(TAG, "reread failed: ${e.javaClass.simpleName}") }; refreshState() }
+
     /** Called on every network or settings change: logs the cost class on change, and wakes the listeners when photo uploads turn from blocked to allowed. */
-    fun refresh() {
+    fun refreshState() {
         val cost = costNow()
         if (cost != lastCost) {
             lastCost = cost
@@ -85,12 +91,12 @@ class DataSaverGraph internal constructor(
         private fun create(app: Context): DataSaverGraph {
             val store = DataSaverStore.of(app)
             lateinit var graph: DataSaverGraph
-            val monitor = NetworkCostMonitor(app) { graph.refresh() }
-            graph = DataSaverGraph(store, { monitor.snapshot })
+            val monitor = NetworkCostMonitor(app) { graph.refreshState() }
+            graph = DataSaverGraph(store, { monitor.snapshot }, reread = monitor::reread)
             monitor.start()
-            graph.refresh()
+            graph.refreshState()
             // A mode or abroad change can open the gate as well.
-            CoroutineScope(SupervisorJob() + Dispatchers.Default).launch { store.settings.drop(1).collect { graph.refresh() } }
+            CoroutineScope(SupervisorJob() + Dispatchers.Default).launch { store.settings.drop(1).collect { graph.refreshState() } }
             return graph
         }
 
