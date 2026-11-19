@@ -51,6 +51,9 @@ class PlaceSamplerTest {
     private val logs = mutableListOf<String>()
     private var flight = PlaceFlight()
 
+    private var zoneList: List<com.rokid.context.core.model.zone.PauseZone>? = emptyList()
+    private fun zoneAt(lat: Double, lon: Double, buffer: Int = 100) = com.rokid.context.core.model.zone.PauseZone("z1", "Z", lat - 0.0005, lon - 0.0005, lat + 0.0005, lon + 0.0005, buffer)
+
     private val store = object : PlaceFrameStore {
         override suspend fun newestDwell(sinceReceivedMs: Long) = frame
         override suspend fun tombstoned(frameId: String) = tomb
@@ -60,7 +63,7 @@ class PlaceSamplerTest {
         scope = scope, store = store, fix = { fixCalls++; fix },
         candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, CellOutcome.FRESH) },
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
-        saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online },
+        saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
     )
 
@@ -78,6 +81,28 @@ class PlaceSamplerTest {
         zone = true; poke()
         assertEquals(listOf(PlaceOutcome.ZONE), outcomes)
         assertEquals(0, fixCalls); assertEquals(0, candidateCalls); assertEquals(0, matchCalls.size); assertTrue(cards.isEmpty()); assertTrue(memories.isEmpty())
+    }
+
+    // S2: the one-shot fix is judged against the zones itself.
+    @Test fun aFixInsideAZoneNeverFetchesNorMatches() = runTest {
+        zoneList = listOf(zoneAt(LAT, LON)); poke()
+        assertEquals(listOf(PlaceOutcome.ZONE), outcomes); assertEquals(1, fixCalls)
+        assertEquals(0, candidateCalls); assertEquals(0, matchCalls.size); assertTrue(cards.isEmpty()); assertTrue(memories.isEmpty())
+    }
+
+    @Test fun aFixWithinTheApproachMarginOfAZoneIsRefused() = runTest {
+        zoneList = listOf(zoneAt(north(1_500.0), LON)); poke()
+        assertEquals(listOf(PlaceOutcome.ZONE), outcomes); assertEquals(0, candidateCalls); assertEquals(0, matchCalls.size)
+    }
+
+    @Test fun anUnreadableZoneListRefusesTheFix() = runTest {
+        zoneList = null; poke()
+        assertEquals(listOf(PlaceOutcome.ZONE), outcomes); assertEquals(0, candidateCalls); assertEquals(0, matchCalls.size)
+    }
+
+    @Test fun aFixFarFromEveryZoneProceeds() = runTest {
+        zoneList = listOf(zoneAt(north(30_000.0), LON)); poke()
+        assertEquals(1, candidateCalls); assertEquals(1, matchCalls.size)
     }
 
     @Test fun aZoneThatStartsDuringTheCallDropsTheResult() = runTest {

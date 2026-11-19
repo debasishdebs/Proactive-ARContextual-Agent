@@ -60,7 +60,7 @@ object PlaceSamplers {
 
     /** [fix] is the phone's fresh foreground fix; [zoneBlocked] is true while a pause zone is active, approaching or unreadable. */
     fun create(
-        app: Context, scope: CoroutineScope, fix: suspend () -> PlaceFix?, zoneBlocked: suspend () -> Boolean, onCard: (PlaceCard) -> Unit,
+        app: Context, scope: CoroutineScope, fix: suspend () -> PlaceFix?, zoneBlocked: suspend () -> Boolean, zones: suspend () -> List<com.rokid.context.core.model.zone.PauseZone>?, onCard: (PlaceCard) -> Unit,
         fence: ZoneFence = PlaceGraph.fence,
     ): PlaceSampler {
         val keyframes = KeyframeGraph.get(app)
@@ -72,7 +72,7 @@ object PlaceSamplers {
             elapsed = android.os.SystemClock::elapsedRealtime, cards = PlaceGraph.port, deleteMemory = { PlaceMemory.delete(app, it) },
             enabled = { PlaceGuideSettings.of(app).enabled }, zoneBlocked = zoneBlocked, networkUp = keyframes::networkUp,
             admit = keyframes::admitBackgroundCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
-            generation = { MemoryWipe.generation.get() }, flight = flight, fence = fence, ledger = PlaceMemory.ledger(app),
+            generation = { MemoryWipe.generation.get() }, flight = flight, zones = zones, fence = fence, ledger = PlaceMemory.ledger(app),
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
         )
     }
