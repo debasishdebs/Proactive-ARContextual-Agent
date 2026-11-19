@@ -312,4 +312,53 @@ class PlacePackTest {
         val r = runCatching { kotlinx.coroutines.withContext(fence.ticket()) { pack(src).candidates(CHARMINAR_LAT, CHARMINAR_LON, true) } }
         assertTrue(r.exceptionOrNull() is ZoneFenced); assertTrue(src.asked.isEmpty())
     }
+
+    // ---- roaming data saver: stale-while-costly ----
+
+    private val charminarBox = GeoBox(17.30, 78.40, 17.40, 78.50)
+
+    @Test fun aStaleSeededCellIsKeptNotRefetchedOnACostlyNetworkAndRefetchedOnAFreeOne() = run {
+        val src = FakeSource { c -> CellFetch(listOf(fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01))) }
+        val p = pack(src)
+        p.seedArea("hyd", charminarBox)
+        val askedAfterSeed = src.asked.size
+        t += 60 * DAY // past FRESH_MS: stale
+        assertEquals("kept, used as it is", CellOutcome.OFFLINE, p.ensureCell(cell, true, costly = true))
+        assertEquals("nothing fetched", askedAfterSeed, src.asked.size)
+        assertTrue(logs.any { it == "cell stale kept while costly seeded=true" })
+        assertEquals("a free network refreshes it", CellOutcome.FETCHED, p.ensureCell(cell, true, costly = false))
+        assertEquals(askedAfterSeed + 1, src.asked.size)
+    }
+
+    @Test fun aStalePartialCellIsKeptWhileCostlyEvenOutsideASeededArea() = run {
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1")), complete = false) }
+        val p = pack(src)
+        assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true))
+        t += 2 * DAY // past PARTIAL_FRESH_MS
+        assertEquals(CellOutcome.OFFLINE, p.ensureCell(cell, true, costly = true))
+        assertEquals(1, src.asked.size)
+        assertTrue(logs.any { it == "cell stale kept while costly seeded=false" })
+        assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true, costly = false))
+        assertEquals(2, src.asked.size)
+    }
+
+    @Test fun aStaleCellOutsideEverySeededAreaAndACellNeverStoredAreStillFetchedWhileCostly() = run {
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1"))) }
+        val p = pack(src)
+        assertEquals("never stored: a small request", CellOutcome.FETCHED, p.ensureCell(cell, true, costly = true))
+        t += 40 * DAY
+        assertEquals("stale, not seeded: refetched", CellOutcome.FETCHED, p.ensureCell(cell, true, costly = true))
+        assertEquals(2, src.asked.size)
+    }
+
+    @Test fun costlyAndNoNetworkNeverFetchesAndTheLogLinesHoldNoCellKey() = run {
+        val src = FakeSource { c -> CellFetch(listOf(fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01))) }
+        val p = pack(src)
+        p.seedArea("hyd", charminarBox); t += 60 * DAY
+        val n = src.asked.size
+        p.candidates(CHARMINAR_LAT, CHARMINAR_LON, networkUp = false, costly = true)
+        p.candidates(CHARMINAR_LAT, CHARMINAR_LON, networkUp = true, costly = true)
+        assertEquals(n, src.asked.size)
+        assertTrue(logs.none { it.contains(cell) })
+    }
 }

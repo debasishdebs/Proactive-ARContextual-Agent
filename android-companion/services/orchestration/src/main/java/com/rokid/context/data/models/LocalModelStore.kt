@@ -71,7 +71,7 @@ class LocalModelStore(context: Context) {
         workManager.enqueueUniqueWork(LocalModelDownloadWorker.uniqueName(model.id), policy, request)
     }
 
-    private fun networkType(allowMetered: Boolean) = if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED
+    private fun networkType(allowMetered: Boolean) = if (allowMetered) NetworkType.NOT_ROAMING else NetworkType.UNMETERED // roaming data saver: "Allow mobile data" never means roaming (model files are tens to hundreds of MB)
 
     /** Stops the download; the .part stays so a later Download resumes it. */
     fun cancel(model: LocalModel) {

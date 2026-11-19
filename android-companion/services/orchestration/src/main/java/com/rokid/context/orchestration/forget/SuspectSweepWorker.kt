@@ -17,6 +17,7 @@ import com.rokid.context.orchestration.DataOpGate
 import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.provenance.ProvenanceGate
 import com.rokid.context.work.budget.BackgroundWork
+import com.rokid.context.work.DataSaverWorkGate
 import com.rokid.context.work.frames.KeyframeGraph
 import com.rokid.context.work.frames.KeyframePipeline
 import com.rokid.context.work.frames.place.PlaceGraph
@@ -47,8 +48,11 @@ class SuspectSweepWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         val keyframes = KeyframeGraph.get(applicationContext)
         val gate = BulkGate({ LocalModelPower.read(applicationContext) }, { keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) })
         val service = ForgetService(graph.db, graph.proposals)
+        // Roaming data saver: re-describing marked photos is a photo upload; over mobile data, roaming or an unknown network nothing is queued or described (the gate-closed path; removals of expired descriptions still run).
+        val data = keyframes.dataGate
+        DataSaverWorkGate.atStart(data)
         val sweep = SuspectSweep(
-            db = graph.db, pipeline = keyframes.pipeline, bulkAllowed = gate::allowed,
+            db = graph.db, pipeline = keyframes.pipeline, bulkAllowed = { gate.allowed() && DataSaverWorkGate.open(data) },
             zoneBlocked = zoneSignal,
             remove = { ids ->
                 // the exclusive side of the DataOpGate (an export in progress is waited for), like retention; the ForgetActions follow the committed cascade

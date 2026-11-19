@@ -104,10 +104,22 @@ class PlacePack(
      */
     suspend fun clearFetched(): Int = fetchLock.withLock { wipeEpoch.incrementAndGet(); db.withTransaction { clearFetchedLocked(resetRecency = false) } }
 
-    /** Makes the cell fresh when it is not, and says how it stands. One fetch at a time. */
-    suspend fun ensureCell(cell: String, networkUp: Boolean): CellOutcome {
+    /**
+     * Makes the cell fresh when it is not, and says how it stands. One fetch at a time.
+     * [costly] (roaming data saver): the phone is on mobile data, roaming or an unknown network. A STORED cell that a seeded area covers, or that was stored partial (no OSM extras), is then used
+     * as it is however old it is, and not fetched again: the refetch is three public APIs per 5 km cell, and a seeded area is exactly what the user downloaded on Wi-Fi to avoid that. It
+     * is fetched again when the network is not costly. A cell that is not stored at all, or a stale cell outside every seeded area, is still fetched (a small request). The outcome is [CellOutcome.OFFLINE]:
+     * "stored data used, not refreshed".
+     */
+    suspend fun ensureCell(cell: String, networkUp: Boolean, costly: Boolean = false): CellOutcome {
         if (!Geohash5.isCell(cell)) return CellOutcome.FAILED
-        if (isFresh(dao.cell(cell))) return CellOutcome.FRESH
+        val stored = dao.cell(cell)
+        if (isFresh(stored)) return CellOutcome.FRESH
+        if (costly && stored != null && keepWhileCostly(stored)) {
+            val seeded = stored.status == CELL_OK // an OK cell is only kept here when a seeded area covers it; the other kept cells are partial
+            log("cell stale kept while costly seeded=$seeded") // a count-style line: the cell key is a position and is never logged
+            return CellOutcome.OFFLINE
+        }
         val src = source
         if (!networkUp || src == null) return CellOutcome.OFFLINE
         zoneCheck() // an attempt whose zone fence closed never queues for the lock
@@ -122,9 +134,9 @@ class PlacePack(
      * The candidates for a glance at (lat, lon): the glance's cell is made fresh (cache-aside), then the places whose edge is within 300 m, the 8 nearest, plus the sub-places of
      * any that is a site. Every returned place gets today's `lastUsedDay`. The position is used for the lookup only; it is never stored or logged.
      */
-    suspend fun candidates(lat: Double, lon: Double, networkUp: Boolean): PlaceCandidates {
+    suspend fun candidates(lat: Double, lon: Double, networkUp: Boolean, costly: Boolean = false): PlaceCandidates {
         val t0 = now()
-        val outcome = ensureCell(Geohash5.encode(lat, lon), networkUp)
+        val outcome = ensureCell(Geohash5.encode(lat, lon), networkUp, costly)
         val w = Geo.window(lat, lon, Geo.CANDIDATE_GAP_M + PlaceKinds.MAX_RADIUS_M)
         val inBox = dao.inBox(w.south, w.north, w.west, w.east)
         val hits = Geo.candidates(inBox, lat, lon).map { it.place }
@@ -209,6 +221,13 @@ class PlacePack(
         eachChunk(stale) { dao.deleteCells(it) }
         log("pack cleared removed=$removed cells=${stale.size} recencyReset=$resetRecency")
         return removed
+    }
+
+    /** A stored cell that is kept instead of fetched again on a costly network: stored partial (the retry would be daily), or inside a seeded area. */
+    private suspend fun keepWhileCostly(c: CellEntity): Boolean {
+        if (c.status != CELL_OK) return true
+        val b = Geohash5.bounds(c.geohash5) ?: return false
+        return dao.areas().any { it.box.intersects(b) }
     }
 
     private fun isFresh(c: CellEntity?): Boolean {

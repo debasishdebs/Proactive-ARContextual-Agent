@@ -323,16 +323,25 @@ class OrchestrationScheduler(
         // 2026-11-08: the catch-up for missed nights (charger + battery not low, no idle constraint); it no-ops unless photos wait and the night run is overdue.
         val catchUp = PeriodicWorkRequestBuilder<com.rokid.context.orchestration.forget.NightIndexWorker>(6, TimeUnit.HOURS)
             .setInputData(androidx.work.workDataOf(com.rokid.context.orchestration.forget.NightIndexWorker.KEY_CATCH_UP to true))
-            .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresBatteryNotLow(true).build())
+            .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresBatteryNotLow(true).setRequiredNetworkType(dataSaverNetwork()).build())
             .build()
-        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.NightIndexWorker.CATCH_UP_NAME, ExistingPeriodicWorkPolicy.KEEP, catchUp)
+        // UPDATE (not KEEP): the network constraint follows the data saver mode, so a changed mode must reach the job already scheduled.
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.NightIndexWorker.CATCH_UP_NAME, ExistingPeriodicWorkPolicy.UPDATE, catchUp)
         // Row 8: the suspect-description sweep (marked suspects: expired photo -> description removed, stored photo -> re-described). Charger + battery not low, backoff on a failed run.
         val sweep = PeriodicWorkRequestBuilder<com.rokid.context.orchestration.forget.SuspectSweepWorker>(24, TimeUnit.HOURS)
-            .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresBatteryNotLow(true).build())
+            .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresBatteryNotLow(true).setRequiredNetworkType(dataSaverNetwork()).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.MINUTES)
             .build()
-        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.SuspectSweepWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, sweep)
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.SuspectSweepWorker.NAME, ExistingPeriodicWorkPolicy.UPDATE, sweep)
     }
+
+    /**
+     * Roaming data saver: the jobs that only describe stored photos (the catch-up and the suspect sweep) wait for an unmetered network while the mode is "Wi-Fi only" (the default), so the phone is not woken for
+     * nothing. The night job itself has no network constraint: it also does local index work, and a worker run on mobile data does nothing remote (see [DataSaverWorkGate], the real gate: it knows about
+     * roaming and the abroad switch, which a WorkManager constraint cannot).
+     */
+    internal fun dataSaverNetwork(): NetworkType =
+        if (com.rokid.context.ai.datasaver.DataSaverStore.of(context).settings.value.mode == com.rokid.context.core.net.DataMode.WIFI_ONLY) NetworkType.UNMETERED else NetworkType.NOT_REQUIRED
 
     /**
      * The jobs that must run whatever the pipeline state (they only remove data or rebuild a projection and never make an AI call): retention and the Moment cadence. Called from every start path

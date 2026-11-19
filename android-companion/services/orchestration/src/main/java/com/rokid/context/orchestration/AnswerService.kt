@@ -514,7 +514,13 @@ class AnswerService(
                 ?.capabilities?.contains(com.rokid.context.ai.Capability.VISION) == true
             // Paused = a pause covers now (the pause button writes pause records) or the legacy pipeline flag is off.
             val paused = MemoryGraph.get(context).db.pauseDao().countCovering(nowMs) > 0
-            return AskPhotoPolicy.allowed(true, com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context) && !paused, quiet, vision)
+            if (!AskPhotoPolicy.allowed(true, com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context) && !paused, quiet, vision)) return false
+            // Roaming data saver: no photo leaves on mobile data, roaming or an unknown network; the question is answered from the memory text instead (the router would refuse the photo call anyway).
+            // A refusal here is counted like any other skipped upload.
+            val data = com.rokid.context.ai.datasaver.DataSaverGraph.get(context)
+            val d = data.decide(com.rokid.context.core.net.DataKind.PHOTO)
+            if (!d.allowed) { data.skipped(com.rokid.context.core.net.DataKind.PHOTO, com.rokid.context.core.net.Skipped.DROPPED, d); return false }
+            return true
         }
 
         /** Adapts the connectors provider: the ask's nowMs reaches it (the one-argument form falls back to the wall clock). */

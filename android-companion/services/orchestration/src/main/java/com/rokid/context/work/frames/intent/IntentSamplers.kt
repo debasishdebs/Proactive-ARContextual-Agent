@@ -49,7 +49,7 @@ object IntentSamplers {
         return IntentSampler(
             scope = scope, store = RoomIntentFrameStore { MemoryGraph.get(app).db }, classify = { id -> classify(app, id) },
             clock = System::currentTimeMillis, episode = episode, onResult = onResult, enabled = enabled, stats = stats,
-            admit = keyframes::admitBackgroundCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
+            admit = keyframes::admitPhotoCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
             generation = { MemoryWipe.generation.get() }, flight = flight,
             preflight = { id -> FramePhotos.load(app, listOf(id)).photos.isNotEmpty() },
         )

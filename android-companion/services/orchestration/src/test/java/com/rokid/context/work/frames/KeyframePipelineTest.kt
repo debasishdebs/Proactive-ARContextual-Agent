@@ -471,4 +471,44 @@ class KeyframePipelineTest {
         p.extractNow(listOf("a")); assertTrue("describe is not offered to the nudge evaluator", offered.isEmpty())
         p.drainOnce(); assertEquals("the ordinary path still is", listOf(listOf("b")), offered)
     }
+
+    // ---- roaming data saver ----
+
+    @Test fun aDataSaverBlockClassifiesAsParkedWithNoAttemptThroughTheWholeCauseChain() {
+        val block = com.rokid.context.ai.DataSaverBlockedException("wifi_only")
+        listOf<Throwable>(block, modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, block)).forEach {
+            val o = ExtractOutcome.classify(it)
+            assertEquals("data_saver", o.error); assertEquals(false, o.countsAttempt)
+        }
+        // even with the phone reporting offline: it is the saver, not the network
+        assertEquals("data_saver", ExtractOutcome.classify(block, online = false).error)
+    }
+
+    @Test fun aDataSaverBlockParksTheLoopWithoutAnAttemptAndTheOpenSignalResumesIt() = runBlocking {
+        for (i in 1..3) seed("f$i", i * 1000L)
+        var blocked = true
+        val p = pipeline({ ids, claim, cls ->
+            calls += ids to cls
+            if (blocked) ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("roaming")) else completing()(ids, claim, cls)
+        })
+        assertEquals(0, p.drainOnce()); assertEquals(1, calls.size)
+        for (i in 1..3) { assertEquals("PENDING", state("f$i")); assertEquals(0, db.frameStateDao().get("f$i")!!.attempts) }
+        // parked: no new call, no attempt, for the whole 30 minutes
+        now += 29 * 60_000L
+        assertEquals(0, p.drainOnce()); assertEquals(1, calls.size)
+        // Wi-Fi (the policy opens): the same signal a returning network sends wakes it at once
+        blocked = false
+        p.onNetworkReturn()
+        assertEquals(3, p.drainOnce())
+        assertEquals(setOf("EXTRACTED"), (1..3).map { state("f$it") }.toSet())
+    }
+
+    @Test fun aDataSaverParkEndsByItselfAfterThirtyMinutesAsASafetyRecheck() = runBlocking {
+        seed("f1", 1000)
+        var blocked = true
+        val p = pipeline({ ids, claim, cls -> calls += ids to cls; if (blocked) ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("wifi_only")) else completing()(ids, claim, cls) })
+        assertEquals(0, p.drainOnce()); assertEquals(1, calls.size)
+        blocked = false; now += KeyframePipeline.DATA_SAVER_PAUSE_MS + 1
+        assertEquals(1, p.drainOnce())
+    }
 }

@@ -66,12 +66,17 @@ object PlaceSamplers {
         val keyframes = KeyframeGraph.get(app)
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
-            candidates = { lat, lon, up -> withContext(Dispatchers.IO) { PlaceGraph.readyPack(app).candidates(lat, lon, up) } },
+            candidates = { lat, lon, up ->
+                // Roaming data saver: on a costly network a stored seeded or partial cell is used as it is, and a cell fetch (a text request) happens only when text is allowed there.
+                val costly = keyframes.dataGate.costlyNow()
+                val fetchOk = up && keyframes.dataGate.decide(com.rokid.context.core.net.DataKind.SMALL).allowed
+                withContext(Dispatchers.IO) { PlaceGraph.readyPack(app).candidates(lat, lon, fetchOk, costly) }
+            },
             match = { id, lines -> matchCall(app, id, lines, zoneBlocked, currentZoneTicket()) },
             saveMemory = { PlaceMemory.save(app, it, pending = true) }, reveal = { id, gen -> PlaceMemory.reveal(app, id, gen).also { if (it) com.rokid.context.orchestration.proactive.ProactiveTrigger.onPlaceArrival(app) } }, onRollbackFailed = { PlaceRecovery.ensure(app) }, onCard = onCard, clock = System::currentTimeMillis,
             elapsed = android.os.SystemClock::elapsedRealtime, cards = PlaceGraph.port, deleteMemory = { PlaceMemory.delete(app, it) },
             enabled = { PlaceGuideSettings.of(app).enabled }, zoneBlocked = zoneBlocked, networkUp = keyframes::networkUp,
-            admit = keyframes::admitBackgroundCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
+            admit = keyframes::admitPhotoCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
             generation = { MemoryWipe.generation.get() }, flight = flight, zones = zones, fence = fence, ledger = PlaceMemory.ledger(app),
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
         )
