@@ -316,6 +316,34 @@ class PlaceFetchTest {
         assertEquals(0, PlaceCellSource(wiki, wd, null).fetchCell(Geohash5.encode(7.957, 80.76)).places.size)
     }
 
+    // ---- The 1 km coordinate rule is per QID ----
+
+    private suspend fun twoPagesOneQid(secondLat: Double, secondLon: Double, logs: MutableList<String>): List<com.rokid.context.memory.place.FetchedPlace> {
+        val wiki = object : WikipediaSource {
+            override suspend fun geosearch(box: com.rokid.context.memory.place.GeoBox) = listOf(WikiHit(1, "Sigiriya", 7.957, 80.76), WikiHit(2, "Sigiriya rock", secondLat, secondLon))
+            override suspend fun pages(pageIds: List<Long>) = listOf(WikiPage(1, "Sigiriya", "x.", "Q272153", null, null), WikiPage(2, "Sigiriya rock", "y.", "Q272153", null, null))
+        }
+        val wd = object : WikidataSource { override suspend fun entities(ids: List<String>) = mapOf("Q272153" to WikidataEntity("Q272153", setOf("Q839954"), emptyList(), emptyList(), 7.957, 80.76)) }
+        return PlaceCellSource(wiki, wd, null) { logs += it }.fetchCell(Geohash5.encode(7.957, 80.76)).places
+    }
+
+    @Test fun twoPagesOneQidWithOneDisagreeingRejectsTheWholePlaceCountedOnce() = runTest {
+        val logs = mutableListOf<String>()
+        // page 2 is ~5 km from Wikidata's point; page 1 agrees, yet the QID is rejected
+        assertEquals(emptyList(), twoPagesOneQid(8.0, 80.76, logs).map { it.id })
+        assertTrue(logs.any { it.endsWith("kept=0 osm=0 rejected=0 coordsDisagree=1") }, logs.toString())
+    }
+
+    @Test fun twoPagesOneQidBothAgreeingKeepOneSinglePlace() = runTest {
+        val logs = mutableListOf<String>()
+        assertEquals(listOf("wd:Q272153"), twoPagesOneQid(7.9575, 80.7601, logs).map { it.id })
+        assertTrue(logs.any { it.endsWith("coordsDisagree=0") }, logs.toString())
+    }
+
+    @Test fun aSingleSourceUnaffectedPlaceIsKept() = runTest {
+        assertEquals(mapOf("wd:Q272153" to PlaceKinds.ARCHAEOLOGICAL_SITE), parsedCell(item(p31("Q839954"))))
+    }
+
     // ---- Verified-coordinate extras (curated places whose Wikipedia page has no coordinates) ----
 
     @Test fun verifiedCoordinateTableIsPinned() {

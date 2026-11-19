@@ -39,6 +39,16 @@ class PlaceCellSource(
         val hasPart = HashMap<String, List<String>>()
         var rejected = 0
         var coordsDisagree = 0
+        // The 1 km rule is per PLACE (QID), not per page: when two pages share one QID and ANY of them disagrees with Wikidata, the QID is rejected entirely (fail closed), counted once.
+        val disagreeingQids = HashSet<String>()
+        for (p in pages) {
+            val q = p.qid ?: continue
+            val ent = entities[q] ?: continue
+            val wpLat = hitById[p.pageId]?.lat ?: p.lat
+            val wpLon = hitById[p.pageId]?.lon ?: p.lon
+            if (ent.lat != null && ent.lon != null && wpLat != null && wpLon != null && coordsDisagree(wpLat, wpLon, ent.lat, ent.lon)) disagreeingQids += q
+        }
+        val countedDisagree = HashSet<String>()
         for (p in pages) {
             val q = p.qid ?: continue
             val ent = entities[q] ?: run { rejected++; null } ?: continue
@@ -46,9 +56,7 @@ class PlaceCellSource(
             if (ent.classes.any { it in PERSON_CLASSES }) continue // people are never candidates, not even for a curated QID
             val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
             // Fail closed on a coordinate conflict: when Wikipedia (geosearch hit, else the page) and Wikidata P625 both have a point and they are more than COORD_DISAGREE_M apart, the candidate is dropped, curated or not.
-            val wpLat = hitById[p.pageId]?.lat ?: p.lat
-            val wpLon = hitById[p.pageId]?.lon ?: p.lon
-            if (ent.lat != null && ent.lon != null && wpLat != null && wpLon != null && coordsDisagree(wpLat, wpLon, ent.lat, ent.lon)) { coordsDisagree++; continue }
+            if (q in disagreeingQids) { if (countedDisagree.add(q)) coordsDisagree++; continue } // per QID, see above
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
             val lon = ent.lon ?: p.lon ?: hitById[p.pageId]?.lon ?: continue
             kept["wd:$q"] = FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, p.title, kind, lat, lon, PlaceKinds.defaultRadiusM(kind), p.extract, "wikipedia:en", "page:${p.pageId}")
