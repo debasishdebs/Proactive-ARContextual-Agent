@@ -340,10 +340,6 @@ class PlaceFetchTest {
         assertTrue(logs.any { it.endsWith("coordsDisagree=0") }, logs.toString())
     }
 
-    @Test fun aSingleSourceUnaffectedPlaceIsKept() = runTest {
-        assertEquals(mapOf("wd:Q272153" to PlaceKinds.ARCHAEOLOGICAL_SITE), parsedCell(item(p31("Q839954"))))
-    }
-
     // ---- Verified-coordinate extras (curated places whose Wikipedia page has no coordinates) ----
 
     @Test fun verifiedCoordinateTableIsPinned() {

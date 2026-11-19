@@ -55,7 +55,7 @@ class PlaceCellSource(
             if (ent.p31Malformed) { rejected++; continue } // unreadable classification is not absence: person exclusion cannot be checked, so not even a curated QID is admitted
             if (ent.classes.any { it in PERSON_CLASSES }) continue // people are never candidates, not even for a curated QID
             val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
-            // Fail closed on a coordinate conflict: when Wikipedia (geosearch hit, else the page) and Wikidata P625 both have a point and they are more than COORD_DISAGREE_M apart, the candidate is dropped, curated or not.
+            // Fail closed on a coordinate conflict: when Wikipedia (geosearch hit, else the page) and Wikidata P625 both have a point and they are more than COORD_DISAGREE_M apart, the place (QID) is dropped, curated or not; the rule is per QID, not per page.
             if (q in disagreeingQids) { if (countedDisagree.add(q)) coordsDisagree++; continue } // per QID, see above
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
             val lon = ent.lon ?: p.lon ?: hitById[p.pageId]?.lon ?: continue

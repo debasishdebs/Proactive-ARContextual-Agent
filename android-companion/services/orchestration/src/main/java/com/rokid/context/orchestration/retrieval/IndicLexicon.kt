@@ -7,10 +7,10 @@ import java.util.Locale
  * Multilingual Ask, option B (design 2026-11-19): a small curated, versioned, DATA-ONLY lexicon of plain Hindi/Hinglish food, household and place words and the English words a caption would
  * use for them. Used only as the offline floor when the query condenser gave nothing (offline, timeout, broken reply) and the developer flag `multilingualAsk` is ON. Pure and local: nothing
  * here reaches the network or a log (no question text, no word). Every entry is a common noun or verb-free object word. What is guaranteed (pinned by a test): no entry is a person's name that is not also a plain object word. Two entries are
- plain words that are ALSO given names and are kept on purpose: "palak" (spinach) and "aloo" (potato). Surnames and name spellings that merely FOLD onto a key ("khanna" -> khana, "allu" -> aloo)
- are on the stop list, so they never expand. An expansion only ADDS terms to the question, so a given-name hit on "palak" costs at most two extra search words.
- Stop-list note: the spellings "aata", "ata" and "tala" are blocked on purpose (they are ambiguous with English-like tokens and verb forms: "aata" = comes). Cost: "aata kahan rakha" does not expand;
- write "atta" or "taala" (or Devanagari) for flour and lock. This is documented, not worked around.
+ * plain words that are ALSO given names and are kept on purpose: "palak" (spinach) and "aloo" (potato). Surnames and name spellings that merely FOLD onto a key ("khanna" -> khana, "allu" -> aloo)
+ * are on the stop list, so they never expand. An expansion only ADDS terms to the question, so a given-name hit on "palak" costs at most two extra search words.
+ * Stop-list note: the spellings "aata", "ata" and "tala" are blocked on purpose (they are ambiguous with English-like tokens and verb forms: "aata" = comes). Cost: "aata kahan rakha" does not expand;
+ * write "atta" or "taala" (or Devanagari) for flour and lock. This is documented, not worked around.
  *
  * Matching folds the usual romanisation variants (`aa`->`a`, `ee`->`i`, `oo`->`u`, doubled letters, a trailing `h`), so "karela", "karelaa" and "kareela" are one key. Only whole words match.
  */

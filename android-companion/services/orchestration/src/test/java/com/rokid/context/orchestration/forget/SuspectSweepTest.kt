@@ -207,6 +207,29 @@ class SuspectSweepTest {
         assertFalse(o.gate); assertTrue(calls.isEmpty())
     }
 
+    @Test fun aLiveZonePauseRecordWithNoEnabledZoneBlocksTheSweep() = runBlocking {
+        suspect("a")
+        val a = com.rokid.context.orchestration.AskZoneFence
+        zonePrefs(null)
+        a.install(ctx); a.liveRecordsReader = { true }
+        a.prepare()
+        val o = coldSweep().run()
+        assertFalse(o.gate); assertTrue(calls.isEmpty()); assertTrue(exists("old_a"))
+    }
+
+    @Test fun aStaleProtectFlagWithNoZonesOpensViaStartupClear() = runBlocking {
+        suspect("a")
+        val a = com.rokid.context.orchestration.AskZoneFence
+        zonePrefs(null, protect = true)
+        a.install(ctx)
+        assertTrue("the stale flag blocks until prepare reconciles", a.blockedForBackground())
+        a.liveRecordsReader = { false }
+        a.prepare()
+        assertFalse(a.blockedForBackground())
+        val o = coldSweep().run()
+        assertTrue(o.gate); assertEquals(1, calls.size)
+    }
+
     @Test fun theAskSwitchDoesNotOpenTheSweepsFence() = runBlocking {
         suspect("a")
         zonePrefs("""[{"id":"z1","enabled":true}]""", protect = true)

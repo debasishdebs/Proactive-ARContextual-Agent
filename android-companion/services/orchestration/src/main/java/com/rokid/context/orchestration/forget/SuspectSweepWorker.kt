@@ -91,7 +91,7 @@ internal class SuspectSweep(
     private val pipeline: KeyframePipeline,
     /** The bulk gate: charging or battery above 70 %, thermal below MODERATE. Closed: nothing is described (removals of expired descriptions need no model and still run). */
     private val bulkAllowed: () -> Boolean = { true },
-    /** The Place Guide zone fence (production: `PlaceGraph.fence::blocked`): while held nothing is queued or described. */
+    /** The Place Guide zone fence (production: [zoneSignal], the persisted-facts signal that works in a cold process): while held nothing is queued or described. */
     private val zoneBlocked: () -> Boolean = { false },
     /** Removes the descriptions [ids] (ForgetService + the post-commit actions); returns how many were removed. */
     private val remove: suspend (List<String>) -> Int,
