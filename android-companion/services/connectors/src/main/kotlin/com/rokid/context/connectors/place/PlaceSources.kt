@@ -52,6 +52,10 @@ private fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 private fun JsonElement?.arr(): JsonArray? = this as? JsonArray
 private fun JsonElement?.str(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
 private fun JsonElement?.dbl(): Double? = (this as? JsonPrimitive)?.doubleOrNull
+/** A latitude: finite and in [-90, 90], else null (a hostile NaN, Infinity or out-of-range value never becomes a coordinate). */
+private fun JsonElement?.latOrNull(): Double? = dbl()?.takeIf { it.isFinite() && it in -90.0..90.0 }
+/** A longitude: finite and in [-180, 180], else null. */
+private fun JsonElement?.lonOrNull(): Double? = dbl()?.takeIf { it.isFinite() && it in -180.0..180.0 }
 private fun JsonElement?.lng(): Long? = (this as? JsonPrimitive)?.longOrNull
 
 private fun fmt(d: Double) = String.format(Locale.US, "%.5f", d)
@@ -76,7 +80,7 @@ class WikipediaHttpSource(private val http: PlaceHttp, private val host: String 
         fun parseGeosearch(body: String): List<WikiHit> =
             placeJson.parseToJsonElement(body).obj()?.get("query").obj()?.get("geosearch").arr().orEmpty().mapNotNull { e ->
                 val o = e.obj() ?: return@mapNotNull null
-                WikiHit(o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["lat"].dbl() ?: return@mapNotNull null, o["lon"].dbl() ?: return@mapNotNull null)
+                WikiHit(o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["lat"].latOrNull() ?: return@mapNotNull null, o["lon"].lonOrNull() ?: return@mapNotNull null)
             }
 
         fun parsePages(body: String): List<WikiPage> =
@@ -86,7 +90,7 @@ class WikipediaHttpSource(private val http: PlaceHttp, private val host: String 
                 val c = o["coordinates"].arr()?.firstOrNull().obj()
                 WikiPage(
                     o["pageid"].lng() ?: return@mapNotNull null, o["title"].str() ?: return@mapNotNull null, o["extract"].str().orEmpty(),
-                    o["pageprops"].obj()?.get("wikibase_item").str(), c?.get("lat").dbl(), c?.get("lon").dbl(),
+                    o["pageprops"].obj()?.get("wikibase_item").str(), c?.get("lat").latOrNull(), c?.get("lon").lonOrNull(),
                 )
             }
     }
@@ -122,7 +126,7 @@ class WikidataHttpSource(private val http: PlaceHttp, private val host: String =
                 val claims = rawClaims.obj() ?: if (rawClaims.arr()?.isEmpty() == true) JsonObject(emptyMap()) else return@mapNotNull null // unreadable claims: no entity, so the caller rejects the item
                 fun ids(p: String) = claims[p].arr().orEmpty().mapNotNull { it.obj()?.get("mainsnak").obj()?.get("datavalue").obj()?.get("value").obj()?.get("id").str() }
                 val coord = claims["P625"].arr()?.firstNotNullOfOrNull { it.obj()?.get("mainsnak").obj()?.get("datavalue").obj()?.get("value").obj() }
-                qid to WikidataEntity(qid, ids("P31").toSet(), ids("P361"), ids("P527"), coord?.get("latitude").dbl(), coord?.get("longitude").dbl(), p31Malformed = p31Malformed(claims["P31"]))
+                qid to WikidataEntity(qid, ids("P31").toSet(), ids("P361"), ids("P527"), coord?.get("latitude").latOrNull(), coord?.get("longitude").lonOrNull(), p31Malformed = p31Malformed(claims["P31"]))
             }.toMap()
         }
     }
@@ -144,11 +148,11 @@ class OverpassHttpSource(private val http: PlaceHttp, private val endpoint: Stri
                 val type = o["type"].str() ?: return@mapNotNull null
                 val id = o["id"].lng() ?: return@mapNotNull null
                 val c = o["center"].obj()
-                val lat = (o["lat"] ?: c?.get("lat")).dbl() ?: return@mapNotNull null
-                val lon = (o["lon"] ?: c?.get("lon")).dbl() ?: return@mapNotNull null
+                val lat = (o["lat"] ?: c?.get("lat")).latOrNull() ?: return@mapNotNull null
+                val lon = (o["lon"] ?: c?.get("lon")).lonOrNull() ?: return@mapNotNull null
                 val b = o["bounds"].obj()
                 val radius = b?.let {
-                    val s = it["minlat"].dbl(); val w = it["minlon"].dbl(); val n = it["maxlat"].dbl(); val ee = it["maxlon"].dbl()
+                    val s = it["minlat"].latOrNull(); val w = it["minlon"].lonOrNull(); val n = it["maxlat"].latOrNull(); val ee = it["maxlon"].lonOrNull()
                     if (s == null || w == null || n == null || ee == null) null
                     else (com.rokid.context.memory.place.Geo.distanceM(s, w, n, ee) / 2).toInt()
                 }
