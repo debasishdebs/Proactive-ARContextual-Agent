@@ -75,7 +75,7 @@ object PlaceSamplers {
             match = { id, lines -> matchCall(app, id, lines, zoneBlocked, currentZoneTicket()) },
             saveMemory = { PlaceMemory.save(app, it, pending = true) }, reveal = { id, gen -> PlaceMemory.reveal(app, id, gen).also { if (it) com.rokid.context.orchestration.proactive.ProactiveTrigger.onPlaceArrival(app) } }, onRollbackFailed = { PlaceRecovery.ensure(app) }, onCard = onCard, clock = System::currentTimeMillis,
             elapsed = android.os.SystemClock::elapsedRealtime, cards = PlaceGraph.port, deleteMemory = { PlaceMemory.delete(app, it) },
-            enabled = { PlaceGuideSettings.of(app).enabled }, zoneBlocked = zoneBlocked, networkUp = keyframes::networkUp,
+            enabled = { PlaceGuideSettings.of(app).enabled }, zoneBlocked = zoneBlocked, networkUp = keyframes::networkUp, backend = { PlaceResolvers.choose(app) },
             admit = keyframes::admitBackgroundCall, photoAllowed = keyframes::dataSaverAllowsPhoto, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
             generation = { MemoryWipe.generation.get() }, flight = flight, zones = zones, fence = fence, ledger = PlaceMemory.ledger(app),
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
@@ -99,6 +99,39 @@ object PlaceSamplers {
         val out = r.output as? PlaceMatchOutput ?: return null
         return PlaceMatchResult(out, r.imagesDelivered)
     }
+}
+
+/**
+ * Place Guide's model resolver (slice 1.4.3): the PLACE_CONFIRM role over the VISION_EXTRACT binding. Setting first (Model privacy), then the network ([KeyframeGraph.networkState]). Process-wide, so the one
+ * cache and the one decision log serve every sampler. Only the ONLINE slot has a factory: under Offline only, and with no network, the offline slot resolves to a typed "unavailable" until slice 1.4.5.
+ */
+object PlaceResolvers {
+    @Volatile private var resolver: com.rokid.context.ai.resolve.ModelResolver? = null
+
+    fun get(app: Context): com.rokid.context.ai.resolve.ModelResolver = resolver ?: synchronized(this) {
+        resolver ?: build(app.applicationContext).also { resolver = it }
+    }
+
+    private fun build(app: Context): com.rokid.context.ai.resolve.ModelResolver {
+        val ai = AiGraph.get(app)
+        return com.rokid.context.ai.resolve.ModelResolver(
+            mode = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)::current,
+            net = { KeyframeGraph.get(app).networkState() },
+            factories = mapOf((com.rokid.context.ai.resolve.ResolverRole.PLACE_CONFIRM to com.rokid.context.core.net.Backend.ONLINE) to com.rokid.context.ai.resolve.OnlineRouteFactory(com.rokid.context.ai.Role.VISION_EXTRACT, ai.bindings, ai.endpoints)),
+            log = { PcLog.i("PcPlace", it) }, // literal resolver lines: role, mode, net, backend and reason names, a fixed label
+        )
+    }
+
+    /** The backend for this attempt. Never throws except for cancellation (the resolver turns a failed load into a typed unavailable). */
+    suspend fun choose(app: Context): BackendChoice = when (val r = get(app).resolve(com.rokid.context.ai.resolve.ResolverRole.PLACE_CONFIRM)) {
+        is com.rokid.context.ai.resolve.Resolved.Ready -> BackendChoice(r.backend, com.rokid.context.core.net.ResolveReason.OK, r.mode, r.label)
+        is com.rokid.context.ai.resolve.Resolved.Unavailable -> BackendChoice(null, r.reason, r.mode)
+    }
+
+    /** The decision alone (nothing is created, nothing is logged), for the Model privacy status line. */
+    suspend fun status(app: Context): com.rokid.context.core.net.BackendPick = get(app).peek(com.rokid.context.ai.resolve.ResolverRole.PLACE_CONFIRM)
+
+    fun resetForTests() { synchronized(this) { resolver = null } }
 }
 
 /** The one `type="place"` memory per matched photo, through the existing memory writer ([PipelineRecords.appendFact]): no schema change. */

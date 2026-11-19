@@ -273,11 +273,19 @@ class KeyframeHandle internal constructor(private val app: Context) {
     /** Whether the active network has validated internet access (ConnectivityManager). Unknown counts as online: only a clear "no" means offline. */
     internal fun networkUp(): Boolean = networkValidated()
 
-    private fun networkValidated(): Boolean = try {
+    private fun networkValidated(): Boolean = networkState() != com.rokid.context.core.net.NetState.NONE
+
+    /**
+     * The same reading as [networkUp], but the "the check itself failed" case is told apart: [com.rokid.context.core.net.NetState.UNKNOWN] (no ConnectivityManager, or an exception) versus [com.rokid.context.core.net.NetState.NONE]
+     * (no validated network). [networkUp] keeps treating UNKNOWN as up (today's behaviour in AUTO); the model resolver never lets UNKNOWN open a remote call under Offline only.
+     */
+    internal fun networkState(): com.rokid.context.core.net.NetState = try {
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val caps = cm?.activeNetwork?.let(cm::getNetworkCapabilities)
-        cm == null || (caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
-    } catch (e: Exception) { true }
+        if (cm == null) com.rokid.context.core.net.NetState.UNKNOWN
+        else if (caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) com.rokid.context.core.net.NetState.VALIDATED
+        else com.rokid.context.core.net.NetState.NONE
+    } catch (e: Exception) { com.rokid.context.core.net.NetState.UNKNOWN }
 
     /** Battery saver, or battery <= 30% and not charging: today's deferral rules (spec §P2.5). */
     private fun batteryDeferral(): Boolean {

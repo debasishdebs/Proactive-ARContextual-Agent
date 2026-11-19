@@ -1,6 +1,10 @@
 package com.rokid.context.work.frames.place
 
 import com.rokid.context.ai.contract.PlaceMatchOutput
+import com.rokid.context.core.net.Backend
+import com.rokid.context.core.net.BackendThresholds
+import com.rokid.context.core.net.ModelPrivacy
+import com.rokid.context.core.net.ResolveReason
 import com.rokid.context.memory.place.Geo
 import com.rokid.context.memory.place.PlaceCandidates
 import com.rokid.context.memory.place.PlaceEntity
@@ -56,6 +60,20 @@ class InMemoryPlaceLedger : PlaceMemoryLedger {
     override fun pending(): Set<String> = ids.toSet()
 }
 
+/**
+ * Which backend the model resolver picked for this attempt, and why ([backend] null = none: [reason] says why). Only [Backend.ONLINE] makes a call (the offline slot is filled by slice 1.4.5). [label] is the
+ * resolver's fixed, content-free label (for example `remote:AZURE_OPENAI`).
+ */
+data class BackendChoice(val backend: Backend?, val reason: ResolveReason, val mode: ModelPrivacy = ModelPrivacy.AUTO, val label: String = "-") {
+    /** Offline only and no on-device model: the typed "needs an on-device model" state. */
+    val needsOnDeviceModel: Boolean get() = reason == ResolveReason.OFFLINE_ONLY_NO_LOCAL_MODEL
+
+    companion object {
+        val ONLINE = BackendChoice(Backend.ONLINE, ResolveReason.OK)
+        val NO_NETWORK = BackendChoice(null, ResolveReason.NO_NETWORK_NO_LOCAL_MODEL)
+    }
+}
+
 enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED, NOT_ADMITTED }
 
 /**
@@ -91,6 +109,11 @@ class PlaceSampler(
     private val enabled: () -> Boolean,
     private val zoneBlocked: suspend () -> Boolean,
     private val networkUp: () -> Boolean,
+    /**
+     * The model resolver's pick for this attempt (setting first, then network). The default is today's rule, so the pure-flow tests and any caller without a resolver behave as before: online exactly when [networkUp].
+     * Production passes the resolver. Under Offline only the pick is never [Backend.ONLINE], so no pack fetch and no model call is made.
+     */
+    private val backend: suspend () -> BackendChoice = { if (networkUp()) BackendChoice.ONLINE else BackendChoice.NO_NETWORK },
     private val admit: () -> Boolean = { true },
     /** Roaming data saver: false = the phone is online but a photo upload is not allowed on this network. Then no call is made and the same pack-based nearby card as offline is shown. Counted by the owner of the lambda. */
     private val photoAllowed: () -> Boolean = { true },
@@ -134,6 +157,7 @@ class PlaceSampler(
         var frameAgeS = -1L; var fixAgeB = "-"; var accB = "-"; var candMs = -1L; var callMs = -1L
         var chosen = "-"; var distB = "-"; var confPct = -1; var dedupeAgeS = -1L; var dedupeDistB = "-"; var callGapS = -1L
         var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
+        var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
     }
     @Volatile private var tr = Trace(0)
 
@@ -154,7 +178,7 @@ class PlaceSampler(
         stats(o)
         log("place outcome=${o.name}")
         val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
-        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err}")
+        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION}")
     }
 
     private suspend fun run() {
@@ -231,8 +255,9 @@ class PlaceSampler(
         if (com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(try { zones() } catch (c: CancellationException) { throw c } catch (e: Exception) { null }, fx.lat, fx.lon, fx.accuracyM)) { tr.reason = "zone_fix"; return PlaceOutcome.ZONE }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
         remember(f.frameId)
-        val online = networkUp()
-        tr.online = online.toString()
+        val picked = backend()
+        val online = picked.backend == Backend.ONLINE // Offline only is never online: the pack is not fetched from the network and no photo or name is sent
+        tr.online = online.toString(); tr.mode = picked.mode.name; tr.backend = picked.backend?.name?.lowercase() ?: "none"; tr.resolve = picked.reason.token; tr.label = picked.label
         val packAt = elapsed()
         val found = candidates(fx.lat, fx.lon, online)
         tr.candMs = (elapsed() - packAt).coerceAtLeast(0L); tr.cell = found.outcome.name; tr.cand = found.places.size
@@ -251,7 +276,9 @@ class PlaceSampler(
         if (online && !callOk) { tr.reason = "call_gap_${MIN_CALL_GAP_MS / 1000}s"; return PlaceOutcome.RATE_LIMITED }
         flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now)
         stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
-        if (!callOk) { tr.reason = "offline"; tr.call = "skipped_offline"; return fallback(hits, f.frameId, gen, cardEpoch, ticket) } // offline: the only no-call fallback (G1)
+        if (!callOk) { // Offline only without an on-device model keeps the pack-only fallback (no photo analysis, nothing leaves the phone) and says why in the log
+            tr.reason = if (picked.needsOnDeviceModel) "offline_only_no_local_model" else "offline"; tr.call = if (picked.needsOnDeviceModel) "skipped_offline_only" else "skipped_offline"
+            return fallback(hits, f.frameId, gen, cardEpoch, ticket) } // offline: the only no-call fallback (G1)
         // Roaming data saver: online, but photos may not go out on this network (mobile, roaming, unknown). Same path as offline: the name-and-distance card from the pack, no identification, no photo sent.
         if (!photoAllowed()) { tr.reason = "data_saver"; tr.call = "skipped_data_saver"; return fallback(hits, f.frameId, gen, cardEpoch, ticket) }
         // G1 (ruling 2026-11-17): a power, thermal or policy denial is NOT a failure of the match and never becomes a nearby identification: no call, no card.
@@ -274,7 +301,8 @@ class PlaceSampler(
         if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; return PlaceOutcome.NONE }
         val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; return PlaceOutcome.CONTRACT }
         tr.chosen = hits[idx - 1].first.id; tr.distB = bucketM(hits[idx - 1].second)
-        if (res.output.confidence < MIN_CONFIDENCE) { tr.reason = "confidence_below_${(MIN_CONFIDENCE * 100).toInt()}"; return PlaceOutcome.LOW_CONFIDENCE }
+        val floor = picked.backend ?: Backend.ONLINE // the floor of the backend that made the call
+        if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"; return PlaceOutcome.LOW_CONFIDENCE }
         val place = hits[idx - 1].first
         val parent = place.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name }
         return commit(place, parent, res, f.frameId, gen, cardEpoch, ticket)
@@ -378,7 +406,6 @@ class PlaceSampler(
         const val DEDUPE_M = 30.0
         const val NEARBY_M = 100.0
         const val MAX_LIST = 16
-        const val MIN_CONFIDENCE = 0.5f
         const val NONE = "NONE"
         private val GENUINE_KINDS = setOf(com.rokid.context.ai.FailureKind.TRANSIENT, com.rokid.context.ai.FailureKind.AUTH, com.rokid.context.ai.FailureKind.REJECTED)
         internal const val ROLLBACK_TRIES = 3
