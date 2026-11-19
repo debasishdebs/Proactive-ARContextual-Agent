@@ -160,13 +160,23 @@ class OnlineTileSourceTest {
         assertNotNull("the step is the first again, not doubled", s.tile(TileKey(15, 4, 4)))
     }
 
-    @Test fun theSessionRequestCapStopsRequests_andAFreshSessionResetsIt() {
+    @Test fun theRequestCapIsPerVisit_aPauseAndResumeKeepsItAndANewVisitResetsIt() {
         val t = FakeTransport(mutableListOf(ok()))
         val s = source(t, cap = 3)
         for (i in 1..6) s.tile(TileKey(15, i, 1))
         assertEquals(3, t.urls.size); assertEquals(3, s.requestCount())
-        s.start()
+        s.stop(); s.start()
+        assertNull("same visit: still capped after a resume", s.tile(TileKey(15, 10, 1))); assertEquals(3, t.urls.size)
+        s.newVisit()
+        assertEquals(0, s.requestCount())
         assertNotNull(s.tile(TileKey(15, 10, 1))); assertEquals(4, t.urls.size)
+    }
+
+    @Test fun webpNeedsTheWholeWebpMarker() {
+        val riffWebp = "RIFF".toByteArray() + ByteArray(4) + "WEBP".toByteArray()
+        val riffWave = "RIFF".toByteArray() + ByteArray(4) + "WAVE".toByteArray()
+        assertTrue(OnlineTileSource.looksLikeImage(riffWebp)); assertFalse(OnlineTileSource.looksLikeImage(riffWave))
+        assertFalse(OnlineTileSource.looksLikeImage("RIFF".toByteArray() + ByteArray(4) + "WxxP".toByteArray()))
     }
 
     @Test fun nothingIsRequestedBeforeStartOrAfterStop_andStopCancelsInFlightRequests() {

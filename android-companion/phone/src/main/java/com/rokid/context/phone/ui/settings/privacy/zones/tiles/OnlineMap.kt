@@ -23,6 +23,8 @@ interface RasterTileSource {
     fun start() {}
     /** The screen left the foreground: no further request, and in-flight ones are cancelled. */
     fun stop() {}
+    /** The user entered the zones screen: per-visit limits (the request cap) start again. Pausing and resuming inside one visit does NOT call this. */
+    fun newVisit() {}
 }
 
 /** The one-shot "Centre on me" fix. The platform version asks for ONE foreground fix with the existing location permission; nothing is stored or logged. */

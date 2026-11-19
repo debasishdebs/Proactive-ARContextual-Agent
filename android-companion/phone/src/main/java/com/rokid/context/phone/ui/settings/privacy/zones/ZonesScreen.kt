@@ -164,6 +164,7 @@ private fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPer
     var note by remember { mutableStateOf<String?>(null) }
     var seq by remember { mutableStateOf(0) }
     val owner = LocalLifecycleOwner.current
+    DisposableEffect(d.source) { d.source?.newVisit(); onDispose {} } // entering the screen: the per-visit request cap starts again (a resume does not)
     DisposableEffect(owner, ui.enabled) {
         val obs = LifecycleEventObserver { _, e ->
             when (e) {
