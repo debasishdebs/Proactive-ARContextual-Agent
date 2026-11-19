@@ -29,7 +29,7 @@ Scopes below come from the git tag messages and the feature commits between tags
 
 - [ ] ⚪ **v1.1** (trip build, installed on the devices as candidate `18c1b76a`; not tagged yet): stability and privacy; Place Guide (pins, packs, Wikipedia/Wikidata/OSM places, glasses cards, left/centre/right placement, pause zones that fail closed); Ask quality (time window, ordering, safety questions); Forget lifecycle fixes; not-worn fallback; shadow-eval route (Developer only); link diagnostics tools; install helper with validated backup and rollback.
 - [ ] ⚪ **v1.1 + opt-in street map** (staged, awaiting install): MapTiler/OSM tiles for the Pause zones editor, off by default, explicit consent, capped, cleared by Delete all.
-- [ ] ⚪ **v1.2**: multi-select Forget with the range confirmation (design); derived-signal try-it preview (built, Developer only, default OFF).
+- [ ] ⚪ **v1.2**: Forget pipeline redesign (one flow for every Forget: source, selector, plan, one confirmation dialog, policy table; design in `docs/superpowers/plans/2026-11-20-forget-pipeline-redesign.md`, build after the Sikkim trip); multi-select and range Forget on that flow; derived-signal try-it preview (built, Developer only, default OFF).
 - [ ] ❌ **v1.3**: Activity pagination (list + day/hour breakdown); multilingual/Indic retrieval (code behind a default-OFF flag); Nexus spike and plugin plan (design done, code behind OFF flags).
 - [ ] ⚪ **v1.4 line: Place Guide intelligence** (numbering proposed):
   - [ ] ⚪ **1.4.1** trip logging: 300 MB / 60-segment on-device log, Detailed log switch (default ON), one decision line per Place Guide attempt, runtime diagnostics (in verification).
