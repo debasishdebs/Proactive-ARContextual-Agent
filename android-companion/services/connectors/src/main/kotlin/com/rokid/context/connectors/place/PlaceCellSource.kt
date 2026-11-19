@@ -38,12 +38,17 @@ class PlaceCellSource(
         val kept = LinkedHashMap<String, FetchedPlace>()
         val hasPart = HashMap<String, List<String>>()
         var rejected = 0
+        var coordsDisagree = 0
         for (p in pages) {
             val q = p.qid ?: continue
             val ent = entities[q] ?: run { rejected++; null } ?: continue
             if (ent.p31Malformed) { rejected++; continue } // unreadable classification is not absence: person exclusion cannot be checked, so not even a curated QID is admitted
             if (ent.classes.any { it in PERSON_CLASSES }) continue // people are never candidates, not even for a curated QID
             val kind = ent.classes.firstNotNullOfOrNull { MONUMENT_CLASSES[it] } ?: CURATED_LANDMARK_QIDS[q] ?: continue
+            // Fail closed on a coordinate conflict: when Wikipedia (geosearch hit, else the page) and Wikidata P625 both have a point and they are more than COORD_DISAGREE_M apart, the candidate is dropped, curated or not.
+            val wpLat = hitById[p.pageId]?.lat ?: p.lat
+            val wpLon = hitById[p.pageId]?.lon ?: p.lon
+            if (ent.lat != null && ent.lon != null && wpLat != null && wpLon != null && coordsDisagree(wpLat, wpLon, ent.lat, ent.lon)) { coordsDisagree++; continue }
             val lat = ent.lat ?: p.lat ?: hitById[p.pageId]?.lat ?: continue
             val lon = ent.lon ?: p.lon ?: hitById[p.pageId]?.lon ?: continue
             kept["wd:$q"] = FetchedPlace("wd:$q", ent.partOf.firstOrNull()?.let { "wd:$it" }, p.title, kind, lat, lon, PlaceKinds.defaultRadiusM(kind), p.extract, "wikipedia:en", "page:${p.pageId}")
@@ -83,11 +88,29 @@ class PlaceCellSource(
             }
         }
         val out = kept.values.toList() + osmPlaces.filter { it.id !in kept }
-        log("cell parsed hits=${hits.size} pages=${pages.size} kept=${kept.size} osm=${osmPlaces.size} rejected=$rejected")
+        log("cell parsed hits=${hits.size} pages=${pages.size} kept=${kept.size} osm=${osmPlaces.size} rejected=$rejected coordsDisagree=$coordsDisagree")
         return CellFetch(out, complete)
     }
 
     companion object {
+        /** Two sources for one entity that are further apart than this (metres) disagree about where it is. */
+        const val COORD_DISAGREE_M = 1000.0
+
+        /** Great-circle distance in metres between two points (haversine, mean Earth radius 6,371,008.8 m). Pure. */
+        fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+            val r = 6_371_008.8
+            val p1 = Math.toRadians(lat1); val p2 = Math.toRadians(lat2)
+            val dp = p2 - p1; val dl = Math.toRadians(lon2 - lon1)
+            val a = Math.sin(dp / 2).let { it * it } + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2).let { it * it }
+            return 2 * r * Math.asin(Math.sqrt(a.coerceIn(0.0, 1.0)))
+        }
+
+        /** True when the two points are more than [COORD_DISAGREE_M] apart; a non-finite result is treated as a disagreement (fail closed). */
+        fun coordsDisagree(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Boolean {
+            val d = haversineM(lat1, lon1, lat2, lon2)
+            return !d.isFinite() || d > COORD_DISAGREE_M
+        }
+
         /**
          * Wikidata classes (P31) a place may have to enter the pack: monument, temple, stupa, fort, palace, prison, archaeological site, memorial, church, mosque, lighthouse,
          * heritage and historic sites, museum (and, since 2026-11-18, tomb, art museum, national museum, theme park, vihara, Tibetan Buddhist monastery, peace pagoda, ruins, botanical garden). A person (Q5) is in no entry.

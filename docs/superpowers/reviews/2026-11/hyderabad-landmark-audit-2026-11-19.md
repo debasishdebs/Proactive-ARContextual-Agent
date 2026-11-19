@@ -55,3 +55,11 @@ Nothing person-, settlement- or district-like was added (Golconda's "neighborhoo
 2. Birla Mandir: Wikidata P625 (17.38, 78.4) is rounded and wrong by about 3.7 km versus Wikipedia (17.4062, 78.4691, the real temple on Naubat Pahad). Because `fetchCell` takes `ent.lat` first, the stored point is the wrong one, and 17.38, 78.4 is in cell tepfb (the Golconda cell) while the temple is in tepg1. Not changed (outside this task's scope); a follow-up should prefer the Wikipedia coordinate when the two differ by more than about 1 km, or Birla Mandir should be fixed on Wikidata. Seeded places near Golconda may show a Birla Mandir pin there.
 3. Overpass/OSM extras were not replayed (unchanged from the 2026-11-18 check). Fateh Darwaza, Bala Hissar, Ibrahim Bagh and Naya Qila depend on OSM (`historic=city_gate` etc.) if the user wants them.
 4. Wikipedia geosearch hit presence was not replayed for the new curated ids; their Wikipedia pages have coordinates (table), which is what geosearch uses.
+
+## Update: coordinate-conflict rule (2026-11-19)
+
+`PlaceCellSource.fetchCell` now fails closed: when an entity has BOTH a Wikipedia coordinate (geosearch hit, else the page) and a Wikidata P625, and they are more than 1 km apart (haversine), the candidate is rejected (not stored, not seeded), curated QIDs included. The count is added to the per-cell log line as `coordsDisagree=N` (literal, no names). Entities with one coordinate source (VERIFIED_COORDINATES, Wikidata-only, Wikipedia-only) are unaffected; agreeing sources keep the Wikidata-first preference.
+
+Consequence: Birla Mandir (Q4916532) will now be ABSENT until its Wikidata P625 is corrected (note 2 above is superseded: no wrong pin near Golconda, but no pin at the temple either).
+
+Follow-up (not done; we do not edit Wikidata): correct Q4916532 P625 to about (17.4062, 78.4691) on Wikidata, or add a VERIFIED_COORDINATES entry after an independent check.
