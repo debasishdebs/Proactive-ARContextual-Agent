@@ -195,6 +195,7 @@ Settings > Capture & privacy > Model privacy. **Automatic** (default) is the beh
 What Offline only does, in code:
 
 - Every model call (all roles, through the router), every embedding call and every endpoint test is refused **before the key is read** if the endpoint is remote. Allowed: models on this phone and on your own network (a loopback, private, link-local or `.local` address; an IPv6 literal other than loopback counts as remote).
+- A loopback endpoint (`localhost`, `127.x`, `::1`) is trusted to be a model on this phone: a local forwarder on the phone (for example an SSH tunnel or socat in Termux that relays to a remote model) would send data off the phone but is not recognised as remote, and its mobile data is not counted.
 - **Name check**: every address a model client resolves must be on this phone or your own network; one public address among the answers refuses the request.
 - **No proxy**: a system HTTP or SOCKS proxy is ignored for model clients (it would otherwise receive the request), and the connection actually used, pooled ones included, must be direct to an own-network address. Idle pooled connections of the model clients are closed when the mode is set.
 - No Place Guide fetch and no seed (a seed you start is refused), no new street-map tile. Place Guide has no on-device vision model yet, so matching is paused and the nearby card is shown instead.
