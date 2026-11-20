@@ -5,9 +5,6 @@ import com.rokid.context.memory.place.PlaceEntity
 import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.memory.retrieval.CandidateScorer
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 
 /** What the shadow hook gives back for one attempt. [OFF] adds nothing to the log line; [UNAVAILABLE] logs `shadow=na`; an exception or a timeout is logged `shadow=err` by the sampler. */
 class ShadowOutcome private constructor(val kind: Kind, val result: CandidateScorer.Result?, val embedMs: Long) {
@@ -31,8 +28,10 @@ class PlaceShadow(
     private val embedder: suspend () -> ImageTextEmbedder?,
     /** The dwell photo's JPEG bytes (the one photo the attempt loaded, shared with the model call), or null when it is gone. */
     private val photo: suspend (frameId: String) -> ByteArray?,
-    /** A user pin's reference photo vectors (slice B1: [PinReferenceVectors], in memory only, revalidated on every use); empty = no image channel for it. [live] is the attempt's fence. Never asked for a pack place. */
-    private val imageRefs: suspend (PlaceEntity, ImageTextEmbedder, () -> Boolean) -> List<FloatArray> = { _, _, _ -> emptyList() },
+    /** The reference photo vectors of the user pins among the candidates, asked ONCE per score (slice B1: [PinReferenceVectors], in memory only, revalidated per use); a pin missing or empty = no image channel for it. [live] is the attempt's fence. Never asked when there is no user pin, never for a pack place. */
+    private val imageRefs: suspend (List<PlaceEntity>, ImageTextEmbedder, () -> Boolean) -> Map<String, List<FloatArray>> = { _, _, _ -> emptyMap() },
+    /** Asked once after scoring with what [imageRefs] returned: false = a reference photo was Forgotten (or its link, or a wipe) while this ran, and the score is dropped. */
+    private val refsStillValid: suspend (Map<String, List<FloatArray>>, ImageTextEmbedder) -> Boolean = { _, _ -> true },
     private val elapsed: () -> Long,
     /** The wipe generation (production: `MemoryWipe.generation`); a change empties the text cache. */
     private val generation: () -> Long = { 0L },
@@ -40,6 +39,9 @@ class PlaceShadow(
     private val cache = object : LinkedHashMap<String, FloatArray>(16, 0.75f, true) { override fun removeEldestEntry(e: MutableMap.MutableEntry<String, FloatArray>?) = size > CACHE_MAX }
     private var cacheGen = Long.MIN_VALUE
     private var cacheSpace = ""
+
+    /** Empties the pack-place text vectors now (the eager clear, see [ShadowCaches]). */
+    fun clear() { synchronized(cache) { cache.clear(); cacheGen = Long.MIN_VALUE; cacheSpace = "" } }
 
     /** [live] is the attempt's own liveness (ticket, switch, pipeline, wipe generation): asked again after the photo is read and after the embed; false drops the result. */
     suspend fun score(frameId: String, hits: List<Pair<PlaceEntity, Double>>, live: () -> Boolean = { true }): ShadowOutcome {
@@ -50,15 +52,16 @@ class PlaceShadow(
         val q = e.embedImage(jpeg)
         val texts = anchors(e, hits)
         // The pins' reference vectors are asked together, so one cold miss costs one wait, not one per pin. Any failure of one pin leaves only that pin without an image channel.
-        val refs: Map<String, List<FloatArray>> = coroutineScope {
-            hits.map { it.first }.filter { UserPlace.isUserId(it.id) }.map { p -> async { p.id to (try { imageRefs(p, e, live) } catch (c: CancellationException) { throw c } catch (_: Exception) { emptyList() }) } }.awaitAll().toMap()
-        }
+        val pins = hits.map { it.first }.filter { UserPlace.isUserId(it.id) }
+        val refs: Map<String, List<FloatArray>> = if (pins.isEmpty()) emptyMap() else try { imageRefs(pins, e, live) } catch (c: CancellationException) { throw c } catch (_: Exception) { emptyMap() }
         if (!live()) return ShadowOutcome.DROPPED
         val cands = hits.map { (p, d) ->
             CandidateScorer.Candidate(p.id, imageRefs = refs[p.id].orEmpty(), textAnchor = texts[p.id], edgeGapM = (d - p.radiusM).coerceAtLeast(0.0), distanceM = d)
         }
         val result = CandidateScorer.score(q, cands)
         if (!live()) return ShadowOutcome.DROPPED
+        // The last word before a score leaves: the reference photos are asked about once more, so a Forget that landed since they were read (single Moment, link change, wipe) drops this score.
+        if (refs.values.any { it.isNotEmpty() } && !(try { refsStillValid(refs, e) } catch (c: CancellationException) { throw c } catch (_: Exception) { false })) return ShadowOutcome.DROPPED
         return ShadowOutcome.scored(result, elapsed() - t0)
     }
 
