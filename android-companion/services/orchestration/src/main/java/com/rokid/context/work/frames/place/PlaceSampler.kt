@@ -166,7 +166,7 @@ class PlaceSampler(
 
     /**
      * The decision record of the attempt in flight, logged as ONE `place attempt ...` line when it ends. Only ids (`wd:`, `osm:`, `user:<uuid>`), counts, buckets, durations and fixed reason tokens:
-     * never a name, note, summary, coordinate, photo or frame id. One attempt runs at a time (the single-flight [PlaceFlight]), so a field is enough.
+     * never a name, note, summary, coordinate, photo or frame id. The single-flight [PlaceFlight] is released once the card is decided, so a LATER attempt can start while this one settles its shadow: each attempt creates and logs its OWN Trace ([runAttempt]); [tr] only points at the newest one.
      */
     private class Trace(val startedAt: Long) {
         var reason = "-"; var call = "none"; var online = "-"; var cell = "-"; var cand = 0; var ids = "-"
@@ -177,6 +177,8 @@ class PlaceSampler(
         /** null = shadow off (the line is unchanged); "err", "na" or "ok". */
         var shadow: String? = null; var shadowOut: ShadowOutcome? = null; var shadowRank = "na"; var shadowAgrees = "na"
         var shadowPending: kotlinx.coroutines.Deferred<ShadowOutcome?>? = null; var shadowStartedAt = 0L; var shadowChoice: String? = null
+        /** The pack (non-pin) candidate ids of the attempt: on the image channel they are not ranked, which is what `shMixed` counts. */
+        var shadowPackIds: List<String> = emptyList()
     }
     @Volatile private var tr = Trace(0)
 
@@ -208,8 +210,12 @@ class PlaceSampler(
         val s = t.shadow ?: return ""
         val r = t.shadowOut?.result
         if (s != "ok" || r == null) return " shadow=$s"
-        return " shadow=ok shCh=${r.channel.name.lowercase()} scoreTop=${r.top1?.let { PlaceShadow.scoreBucket(it.milli) } ?: "na"} margin=${PlaceShadow.marginBucket(r.margin)} chosenRank=${t.shadowRank} agrees=${t.shadowAgrees} embedMs=${t.shadowOut?.embedMs ?: -1}"
+        return " shadow=ok shCh=${r.channel.name.lowercase()} scoreTop=${r.top1?.let { PlaceShadow.scoreBucket(it.milli) } ?: "na"} margin=${PlaceShadow.marginBucket(r.margin)} chosenRank=${t.shadowRank} agrees=${t.shadowAgrees} embedMs=${t.shadowOut?.embedMs ?: -1}${mixedField(t, r)}"
     }
+
+    /** `shMixed=<n>`: on the IMAGE channel, how many pack places were left out of the ranking (they have no image reference), so a pin + pack attempt is told apart from a pins-only one. Only on a scored line (shadow on). */
+    private fun mixedField(t: Trace, r: com.rokid.context.memory.retrieval.CandidateScorer.Result): String =
+        " shMixed=${if (r.channel == com.rokid.context.memory.retrieval.CandidateScorer.Channel.IMAGE) t.shadowPackIds.count { r.rankOf(it) == null } else 0}"
 
     private suspend fun runAttempt(release: () -> Unit) {
         val ticket = coroutineContext[ZoneTicket] ?: fence.ticket()
@@ -331,7 +337,7 @@ class PlaceSampler(
         tr.call = "made"
         val callAt = elapsed()
         val sh = shadow
-        if (sh != null && shadowEnabled()) { tr.shadowStartedAt = elapsed(); tr.shadowPending = shadowScope.async { try { sh(f.frameId, hits) { ticket.isOpen() && live(gen) } } catch (c: CancellationException) { throw c } catch (_: Exception) { null } } }
+        if (sh != null && shadowEnabled()) { tr.shadowStartedAt = elapsed(); tr.shadowPackIds = hits.map { it.first.id }.filter { !UserPlace.isUserId(it) }; tr.shadowPending = shadowScope.async { try { sh(f.frameId, hits) { ticket.isOpen() && live(gen) } } catch (c: CancellationException) { throw c } catch (_: Exception) { null } } }
         val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); tr.err = e.javaClass.simpleName; null }
         flight.lastCallAt = elapsed() // the permit wait and the call are over: the gap runs from here, not from the start of the attempt
         tr.callMs = (flight.lastCallAt - callAt).coerceAtLeast(0L)
@@ -478,6 +484,7 @@ class PlaceSampler(
         const val NEARBY_M = 100.0
         const val MAX_LIST = 16
         const val SHADOW_BUDGET_MS = 2_500L
+        init { require(SHADOW_BUDGET_MS < MIN_CALL_GAP_MS) { "the shadow of attempt 1 must end before attempt 2 may call: it shares the one loaded photo" } }
         const val NONE = "NONE"
         private val GENUINE_KINDS = setOf(com.rokid.context.ai.FailureKind.TRANSIENT, com.rokid.context.ai.FailureKind.AUTH, com.rokid.context.ai.FailureKind.REJECTED)
         internal const val ROLLBACK_TRIES = 3
