@@ -59,3 +59,12 @@ Do these with the Forget pipeline redesign (or earlier if time allows).
 - P2: stale KDoc at PlaceSampler.kt:168-169 ('one attempt runs at a time ... a field is enough').
 - Missing tests: 'first loader cancelled, second loads itself'; second poke during settle ends RATE_LIMITED (test asserts only not BUSY).
 - Slice B still to do: wire pins' reference-Moment photos into the image channel (imageRefs defaults empty), SigLIP 2 base as a second embedding space (6.5-9 agent-days), thresholds from a real eval on the user's pins; text embeds currently use the local llama.cpp/Nomic text path only when Nomic is bound.
+
+## L. Slice B1 (pin reference vectors in the shadow) review outcome (Opus, 08:00, tip 879cce7a): READY, no P1; flag-off nothing runs; shadow only. P2s to fix before any non-shadow use (B2 / SigLIP):
+- store-after-wipe race (PinReferenceVectors.kt:161-165): inside the lock `if (generation() != gen) return null` (a stale-gen vector can be stored and also clear newer entries; never served, cleared on the next revalidate).
+- cache-hit gap (:122-124): a single-Moment Forget between momentFrame and the hit can let one log line carry a score from a just-forgotten photo (live() covers wipes, not single Forget): microseconds, log-only.
+- Delete all clears the cache LAZILY (next attempt): add an eager clear from MemoryWipe/Forget through a small registry and list the in-memory vectors in the Forget inventory before any non-shadow use; flag ON then OFF leaves vectors in a long-lived hub process (unreachable, never scored).
+- the embed job (:157) does not check live() (ticket/pipeline): after the attempt closed or the pipeline paused it can still read the stored photo: pass a pipeline-on gate.
+- doc wording: 'or the file is gone' (production momentFrame uses requirePresent=false: a retention run deleting the file but keeping the row leaves the vector servable); 'with the flag off nothing is created' (PinReferenceVectors is allocated at sampler build, no I/O).
+- mixed pin+pack attempts: shCh=image drops pack places from ranking (agreement skewed near a pin): log a mixed marker (dropped count) or analyse separately.
+- per-pin parallel revalidate (pins x 16 reads per attempt): revalidate once per score. Missing tests: Forget DURING the embed, cached vector dropped on generation change before anything else is asked.
