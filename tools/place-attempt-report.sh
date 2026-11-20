@@ -98,6 +98,8 @@ index($0, "place attempt") == 0 { next }
     if (sh == "ok") {
       ag = ("agrees" in f) ? tok(f["agrees"]) : "(missing)"; if (ag != "true" && ag != "false" && ag != "na") ag = "(garbled)"
       agc[ag]++
+      mx = ("shMixed" in f && isnum(f["shMixed"]) && f["shMixed"] + 0 >= 0 && f["shMixed"] + 0 <= 99) ? f["shMixed"] + 0 : 0
+      if (ag == "true" || ag == "false") { if (mx > 0) mixc[ag]++; else cleanc[ag]++ }
       tb = ("scoreTop" in f) ? tok(f["scoreTop"]) : "(missing)"; mb = ("margin" in f) ? tok(f["margin"]) : "(missing)"
       if (ag == "true" || ag == "false") { agtop[tb, ag]++; agtopseen[tb] = 1; agmar[mb, ag]++; agmarseen[mb] = 1 }
       if ("chosenRank" in f && isnum(f["chosenRank"]) && f["chosenRank"] + 0 >= 1 && f["chosenRank"] + 0 <= 99) { crk = f["chosenRank"] + 0; if (crk > 5) crk = 5; rkc[crk]++ }
@@ -162,6 +164,9 @@ END {
     nd = agc["true"] + agc["false"]
     if (nd > 0) printf "  agreement: agrees=%d disagrees=%d (%d%% of %d decided); not decided (na)=%d\n", agc["true"], agc["false"], int((agc["true"] * 100) / nd + 0.5), nd, agc["na"] + 0
     else printf "  agreement: no decided attempts; not decided (na)=%d\n", agc["na"] + 0
+    # shMixed>0 = a pin + pack attempt on the image channel: the pack places were dropped from the ranking, so its agreement is skewed near a pin and is shown apart
+    printf "  unmixed (no pack place dropped from the ranking): agrees=%d disagrees=%d\n", cleanc["true"] + 0, cleanc["false"] + 0
+    printf "  mixed (shMixed>0, pack places dropped from the image ranking): agrees=%d disagrees=%d\n", mixc["true"] + 0, mixc["false"] + 0
     nch = sortkeys(shch, chk); for (j = 1; j <= nch; j++) printf "  channel %-6s %d\n", chk[j], shch[chk[j]]
     nb = split("lt200 lt300 lt400 lt500 lt600 lt700 lt800 lt900 ge900", tbo, " ")
     for (j = 1; j <= nb; j++) if (agtopseen[tbo[j]]) printf "  scoreTop=%-6s agrees=%d disagrees=%d\n", tbo[j], agtop[tbo[j], "true"] + 0, agtop[tbo[j], "false"] + 0
@@ -262,6 +267,13 @@ fixtures() {
   check "shadow: by score bucket" "scoreTop=lt300 agrees=1 disagrees=1|scoreTop=ge900 agrees=1 disagrees=0" "$(printf '%s\n' "$out" | grep '^  scoreTop=' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
   check "shadow: by margin bucket" "margin=lt10 agrees=0 disagrees=1|margin=ge100 agrees=2 disagrees=0" "$(printf '%s\n' "$out" | grep '^  margin=' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
   check "shadow: chosenRank and embedMs" "chosenRank by score: 1=2 2=1 3=0 4=0 5+=0|embedMs n=4 p50=120 p95=160 max=160" "$(printf '%s\n' "$out" | grep -E '^  (chosenRank|embedMs)' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
+  local M1='11-20 10:06:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=user:abc,wd:Q1,wd:Q2 chosen=user:abc card=shown shadow=ok shCh=image scoreTop=ge900 margin=ge100 chosenRank=1 agrees=true shMixed=2 embedMs=150'
+  local M2='11-20 10:07:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=user:abc,wd:Q1 chosen=wd:Q1 card=shown shadow=ok shCh=image scoreTop=lt600 margin=lt25 chosenRank=na agrees=na shMixed=1 embedMs=170'
+  local M3='11-20 10:08:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=user:abc chosen=wd:Q1 card=shown shadow=ok shCh=image scoreTop=lt600 margin=lt25 chosenRank=2 agrees=false shMixed=0 embedMs=130'
+  out="$(printf '%s\n' "$SHALL" "$M1" "$M2" "$M3" | report_stdin)"
+  check "shadow: mixed attempts are shown apart" "unmixed (no pack place dropped from the ranking): agrees=2 disagrees=2|mixed (shMixed>0, pack places dropped from the image ranking): agrees=1 disagrees=0" "$(printf '%s\n' "$out" | grep -E '^  (unmixed|mixed) ' | sed 's/^ *//' | tr '\n' '|' | sed 's/|$//')"
+  out="$(printf '%s\n' 'x' '11-20 10:00:00.000 I PcPlace place attempt outcome=MATCHED shadow=ok agrees=true shMixed=/etc/passwd chosenRank=1 shCh=image' | report_stdin)"
+  check "shadow: a garbled shMixed counts as unmixed and is never echoed" "0" "$(has x "$out" -i 'passwd')"
   out="$(printf '%s\n' "$ALL" | report_stdin)"
   check "shadow: no shadow lines says so" "(no shadow lines: placeShadowScore was off)" "$(printf '%s\n' "$out" | grep 'no shadow lines' | sed 's/^ *//')"
   out="$(printf '%s\n' 'x' '11-20 10:00:00.000 I PcPlace place attempt outcome=MATCHED shadow=ok agrees=/etc/passwd scoreTop=SECRET_Name chosenRank=999 embedMs=abc shCh=Foo/Bar' | report_stdin)"
