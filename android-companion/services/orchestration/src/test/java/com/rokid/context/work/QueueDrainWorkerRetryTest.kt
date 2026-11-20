@@ -137,6 +137,19 @@ class QueueDrainWorkerRetryTest {
         assertEquals("never counted, so never failed however long it waits", 0, job.attemptCount)
     }
 
+    /** P2-e: a reachable but always failing on-device/LAN fallback is parked CAP times without an attempt; the next failure is an ordinary transient one. */
+    @Test fun aFallbackThatKeepsFailingIsParkedOnlyCapTimesThenCountsAnAttempt() {
+        FallbackParkCap.resetForTests()
+        bind(); behaviour = { throw com.rokid.context.ai.OfflineOnlyRefusedException(fallbackKind = com.rokid.context.ai.FailureKind.TRANSIENT) }
+        repeat(FallbackParkCap.CAP) { runWorker(); dueNow() }
+        val parked = QueueRuntimeStore.recent(ctx, 10).single()
+        assertEquals(QueueRuntimeStore.STATE_DEFERRED, parked.state)
+        assertEquals("parked: no attempt used", 0, parked.attemptCount)
+        runWorker(); dueNow()
+        assertEquals("the park after the cap is an ordinary failure", 1, QueueRuntimeStore.recent(ctx, 10).single().attemptCount)
+        FallbackParkCap.resetForTests()
+    }
+
     @Test fun cancellationDoesNotUseAnAttempt() {
         bind(); behaviour = { throw CancellationException("work stopped") }
         repeat(3) { runWorker(); dueNow() }
