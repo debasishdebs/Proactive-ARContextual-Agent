@@ -325,11 +325,15 @@ internal object PlacePackFamily : ForgetFamily {
     override val prefs = listOf("place_guide", "place_pins")
 }
 
-/** The published Place Guide card: held in memory only (`PlaceCardHolder`), never stored. A Forget of its photo, a range Forget and Delete all WITHDRAW it (a `ForgetListener`). */
+/**
+ * The published Place Guide card: held in memory only (`PlaceCardHolder`), never stored. A Forget of its photo, a range Forget and Delete all WITHDRAW it (a `ForgetListener`).
+ * Also the in-memory DERIVED holders of the Place Guide shadow (1.4.4 B1): the image vectors of a pin's reference photo (`PinReferenceVectors`) and the text vectors of pack places (`PlaceShadow`). Never stored; emptied at once
+ * by Delete all, every Forget listener event and every pin link change through the `ShadowCaches` registry (listed in [com.rokid.context.memory.forget.DeletionGraph.IN_MEMORY]), and revalidated on every use.
+ */
 internal object PlaceCardFamily : ForgetFamily {
     override val family = Family.PLACE_CARD
     override val tables = emptyList<String>()
-    override val holders = listOf("PlaceCardHolder")
+    override val holders = listOf("PlaceCardHolder", "PinReferenceVectors", "PlaceShadow")
 }
 
 /** Settings and user lists a Forget never touches: endpoints, role bindings, prompts, pauses, the shopping list, notes, pipelines and publishes. Pause zones (`pause_zones`, `pause_zone_state`) are preferences: never deleted by a Forget or Delete all. */

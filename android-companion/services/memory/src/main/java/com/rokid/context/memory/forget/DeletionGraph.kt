@@ -25,6 +25,15 @@ object DeletionGraph {
     private fun s(n: String, why: String) = Entry(n, Fate.SCRUBBED, why)
     private fun f(n: String, why: String) = Entry(n, Fate.FOLLOWS, why)
 
+    /**
+     * In-memory DERIVED items (never stored, so not tables, prefs or folders): vectors computed from a photo the user can Forget. Each is emptied at once by Delete all (`MemoryWipe.wipeNow`), every Forget listener
+     * event (a photo, a range, any user Forget, retention expiry), every pin link change and the shadow flag going off, through the orchestration `ShadowCaches` registry; a test pins these names to it.
+     */
+    val IN_MEMORY: List<Entry> = listOf(
+        w("place_shadow.pin_reference_vectors", "in-memory image vectors of user pins' reference Moment photos (PinReferenceVectors, 1.4.4 B1); max 16, never persisted, dropped with the process; revalidated on every use against the pin link and the photo's tombstone"),
+        w("place_shadow.pack_text_vectors", "in-memory text vectors of pack place names (PlaceShadow cache, public text, max 64); not photo-derived, cleared with the others for simplicity"),
+    )
+
     val TABLES: List<Entry> = listOf(
         w("canvas_trace", "IMU and hub traces (motion history); a Forget range tombstones them"),
         w("canvas_trace_event", "hub trace events"),
