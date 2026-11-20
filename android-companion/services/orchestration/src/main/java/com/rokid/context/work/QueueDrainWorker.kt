@@ -93,13 +93,17 @@ class QueueDrainWorker(
                     PipelineRecords.upsertTrace(applicationContext, job.id, "FAILED", STALE_NOTE)
                     return@onFailure
                 }
-                if (generateSequence(error) { it.cause?.takeIf { c -> c !== it } }.take(8).any { it is com.rokid.context.ai.OfflineOnlyRefusedException }) {
+                val refusal = generateSequence(error) { it.cause?.takeIf { c -> c !== it } }.take(8).filterIsInstance<com.rokid.context.ai.OfflineOnlyRefusedException>().firstOrNull()
+                // A reachable but consistently failing on-device/LAN fallback is parked only FallbackParkCap.CAP times; then the failure counts as an ordinary transient one (below).
+                val capped = refusal?.fallbackKind != null && FallbackParkCap.over(listOf(job.id))
+                if (refusal != null && !capped) {
                     // Model privacy "Offline only": nothing was sent; the job keeps its retry budget and runs if the user switches to Automatic (or binds an on-device model).
-                    QueueRuntimeStore.markPostponed(applicationContext, job.id, OFFLINE_ONLY_NOTE, delayMs = POLICY_DEFER_MS)
-                    PipelineRecords.upsertTrace(applicationContext, job.id, "RETRY", OFFLINE_ONLY_NOTE)
+                    val note = if (refusal.fallbackKind != null) OFFLINE_ONLY_FALLBACK_NOTE else OFFLINE_ONLY_NOTE
+                    QueueRuntimeStore.markPostponed(applicationContext, job.id, note, delayMs = POLICY_DEFER_MS)
+                    PipelineRecords.upsertTrace(applicationContext, job.id, "RETRY", note)
                     return@onFailure
                 }
-                if (generateSequence(error) { it.cause?.takeIf { c -> c !== it } }.take(8).any { it is com.rokid.context.ai.DataSaverBlockedException }) {
+                if (!capped && generateSequence(error) { it.cause?.takeIf { c -> c !== it } }.take(8).any { it is com.rokid.context.ai.DataSaverBlockedException }) {
                     // Roaming data saver: nothing was sent. A postponement, not an attempt (like the battery policy): the job waits for the policy to open and keeps its full retry budget.
                     QueueRuntimeStore.markPostponed(applicationContext, job.id, "waiting for Wi-Fi (data saver)", delayMs = POLICY_DEFER_MS)
                     PipelineRecords.upsertTrace(applicationContext, job.id, "RETRY", "waiting for Wi-Fi (data saver)")
@@ -480,6 +484,7 @@ class QueueDrainWorker(
         /** Photos per batch sent to VISION_EXTRACT, one call each (final review I1; the batch sent 3 before). */
         private const val MAX_VISION_FRAMES = 3
         const val STALE_NOTE = "Skipped: sources changed"
+        const val OFFLINE_ONLY_FALLBACK_NOTE = "Offline only is on: your on-device or home model is not answering; will retry"
         const val OFFLINE_ONLY_NOTE = "Offline only is on: needs an on-device model; will run if you switch to Automatic"
     }
 }

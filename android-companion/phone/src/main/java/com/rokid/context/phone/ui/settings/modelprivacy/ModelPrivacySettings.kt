@@ -24,7 +24,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 /** What the Model privacy screen shows. [placeUnavailable] is the typed reason Place Guide has no model to confirm with right now (null = it has one, or it is not asked). */
-data class ModelPrivacyUiState(val mode: ModelPrivacy = ModelPrivacy.DEFAULT, val placeUnavailable: ResolveReason? = null, /** The stored choice was lost (the file was emptied or corrupted): the mode reads Offline only until the user picks one. */ val wasReset: Boolean = false, /** The first load of the stored mode has not finished: show "Loading", never a guess. */ val loading: Boolean = false, /** A change is being written to the disk. */ val saving: Boolean = false)
+data class ModelPrivacyUiState(val mode: ModelPrivacy = ModelPrivacy.DEFAULT, val placeUnavailable: ResolveReason? = null, /** The stored choice was lost (the file was emptied or corrupted): the mode reads Offline only until the user picks one. */ val wasReset: Boolean = false, /** The first load of the stored mode has not finished: show "Loading", never a guess. */ val loading: Boolean = false, /** A change is being written to the disk. */ val saving: Boolean = false, /** The last change could not be written to the disk: it holds for this run only. */ val saveFailed: Boolean = false)
 
 /** All the screen's words and rules, pure so a JVM test pins them. Nothing here names an endpoint, host or place. */
 object ModelPrivacyModel {
@@ -49,6 +49,7 @@ object ModelPrivacyModel {
     const val OFFLINE_EFFECT = "Photo descriptions and place matches that need a remote model wait. Place cards show nearby names only, and no place is fetched from the internet (seeding an area is refused too), and the street map shows no new tiles."
     const val QUEUED_NOTE = "Questions and photos that are waiting are sent after you switch back to Automatic (or add an on-device model)."
     const val LOADING = "Loading…"
+    const val SAVE_FAILED = "Couldn't save this choice; it may not survive a restart."
     const val SAVING = "Saving…"
     const val RESET_NOTICE = "Model privacy settings were reset: check them. Offline only is used until you choose."
     const val PLACE_NEEDS_MODEL = "Place Guide: needs an on-device model. None is available yet, so matching is paused."
@@ -67,7 +68,11 @@ interface ModelPrivacyControl {
     fun refresh()
 }
 
-class AndroidModelPrivacyControl(private val app: Context, private val store: ModelPrivacyStore = ModelPrivacyStore.get(app)) : ModelPrivacyControl {
+class AndroidModelPrivacyControl(
+    private val app: Context, private val store: ModelPrivacyStore = ModelPrivacyStore.get(app),
+    /** The Place Guide decision for the status line (null = nothing to say). Tests pass a stub: the production one reads the bindings. */
+    private val placeStatus: suspend () -> com.rokid.context.core.net.BackendPick? = { PlaceResolvers.status(app) },
+) : ModelPrivacyControl {
     private val flow = MutableStateFlow(ModelPrivacyUiState(mode = store.peek() ?: ModelPrivacy.DEFAULT, wasReset = false, loading = store.peek() == null))
     override val state: StateFlow<ModelPrivacyUiState> = flow.asStateFlow()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -76,13 +81,10 @@ class AndroidModelPrivacyControl(private val app: Context, private val store: Mo
     fun close() { scope.cancel() }
 
     override fun setMode(m: ModelPrivacy) {
-        // in memory at once; the write itself runs on IO and is awaited, so a failure or a kill before it can only read back as "reset" (Offline only), never as Automatic
-        flow.update { it.copy(mode = m, wasReset = false, loading = false, saving = true) }
-        scope.launch {
-            val ok = store.setAndWait(m)
-            flow.update { it.copy(saving = false) } // [ok] false = the disk may still read "reset" (Offline only): safe, logged
-            refresh()
-        }
+        // The mode is in force the moment this returns (begin is synchronous): the router and the network guards read it at once, even if the screen is left right now. The disk write runs in the store's own scope.
+        val pending = store.begin(m)
+        flow.update { it.copy(mode = m, wasReset = false, loading = false, saving = true, saveFailed = false) }
+        store.commitAsync(pending) { ok -> flow.update { it.copy(saving = false, saveFailed = !ok) } }
     }
 
     override fun refresh() {
@@ -90,8 +92,8 @@ class AndroidModelPrivacyControl(private val app: Context, private val store: Mo
             store.warm()
             // read at update time, so a tap made while this was loading is never overwritten by an older value
             flow.update { it.copy(mode = store.current(), wasReset = store.wasReset.value, loading = false) }
-            val pick = try { PlaceResolvers.status(app) } catch (e: Exception) { return@launch }
-            flow.update { it.copy(placeUnavailable = if (pick.backend == null) pick.reason else null) }
+            val pick = try { placeStatus() } catch (e: Exception) { return@launch }
+            flow.update { it.copy(placeUnavailable = if (pick != null && pick.backend == null) pick.reason else null) }
         }
     }
 
@@ -113,6 +115,7 @@ fun ModelPrivacyScreen(state: ModelPrivacyUiState, back: () -> Unit, onMode: (Mo
             SettingsCard {
                 if (state.loading) { NoticeText(ModelPrivacyModel.LOADING, tag = "model_privacy_loading"); return@SettingsCard }
                 if (state.saving) NoticeText(ModelPrivacyModel.SAVING, tag = "model_privacy_saving")
+                if (state.saveFailed) NoticeText(ModelPrivacyModel.SAVE_FAILED, error = true, tag = "model_privacy_save_failed")
                 ChoiceRow(ModelPrivacyModel.MODE_TITLE, ModelPrivacyModel.MODE_LABELS, state.mode.ordinal, { onMode(ModelPrivacy.entries[it]) }, tag = "model_privacy_mode")
                 NoticeText(ModelPrivacyModel.modeNote(state.mode), tag = "model_privacy_mode_note")
                 if (state.wasReset) NoticeText(ModelPrivacyModel.RESET_NOTICE, error = true, tag = "model_privacy_reset")
