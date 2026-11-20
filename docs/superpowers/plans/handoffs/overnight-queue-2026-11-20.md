@@ -68,3 +68,8 @@ Do these with the Forget pipeline redesign (or earlier if time allows).
 - doc wording: 'or the file is gone' (production momentFrame uses requirePresent=false: a retention run deleting the file but keeping the row leaves the vector servable); 'with the flag off nothing is created' (PinReferenceVectors is allocated at sampler build, no I/O).
 - mixed pin+pack attempts: shCh=image drops pack places from ranking (agreement skewed near a pin): log a mixed marker (dropped count) or analyse separately.
 - per-pin parallel revalidate (pins x 16 reads per attempt): revalidate once per score. Missing tests: Forget DURING the embed, cached vector dropped on generation change before anything else is asked.
+
+## M. B1 follow-ups review outcome (Opus, 08:25, tip 14a3ffa6): READY, no P1; no lock-order deadlock (clearAll takes two leaf monitors), no inventory test loosened. Small P2s (do with the next code round; not blocking):
+- Delete all clears the caches TOO EARLY (MemoryWipe.kt:100 clearAll runs before the generation bump at :125): a shadow in that window can store a photo-derived vector that stays in memory until ForgetListeners.deleteAll() (:193, not in a finally). Never served, but add a second `ShadowCaches.clearAll()` right after `generation.incrementAndGet()` (or in the finally).
+- ShadowCaches.epochValue++ is a @Volatile read-modify-write (only tests read it): use AtomicLong or delete.
+- ShadowCachesTest.everyDeletionPathCallsTheRegistry counts the string 'ShadowCaches.clearAll()' (a comment satisfies it): brittle tripwire; the listener/registry tests carry the real coverage.
