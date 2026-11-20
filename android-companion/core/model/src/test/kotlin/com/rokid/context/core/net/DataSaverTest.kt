@@ -155,6 +155,11 @@ class DataSaverTest {
         }
     }
 
+    @Test fun loopbackIsLanButOnlyLocalhost127AndIpv6LoopbackAreLoopback() {
+        listOf("localhost", "LOCALHOST.", "127.0.0.1", "127.9.9.9", "::1", "[::1]").forEach { assertTrue(DataPolicy.isLoopbackHost(it), it); assertTrue(DataPolicy.isLanHost(it), it) }
+        listOf("192.168.0.9", "10.0.0.1", "mybox.local", "128.0.0.1", "1127.0.0.1", "127.0.0.1.evil.com", "127.0.0", "", null).forEach { assertFalse(DataPolicy.isLoopbackHost(it), it.toString()) }
+    }
+
     @Test fun lanHosts() {
         listOf("mybox.local", "MYBOX.LOCAL.", "10.1.2.3", "192.168.0.9", "172.16.0.1", "172.31.255.1", "169.254.1.1", "127.0.0.1", "localhost", "[::1]").forEach { assertTrue(DataPolicy.isLanHost(it), it) }
         listOf("api.openai.com", "172.32.0.1", "172.15.0.1", "8.8.8.8", "192.169.0.1", "1.2.3", "999.1.1.1", "", null, "10.0.0.1.evil.com", "fd00::1").forEach { assertFalse(DataPolicy.isLanHost(it), it.toString()) }

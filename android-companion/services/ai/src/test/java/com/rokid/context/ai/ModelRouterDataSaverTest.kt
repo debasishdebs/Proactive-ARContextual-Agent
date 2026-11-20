@@ -66,7 +66,8 @@ class ModelRouterDataSaverTest {
         var throwOnSent = false
         var sentAttempts = 0
         val costlyAtStartLog = mutableListOf<Boolean>()
-        override fun costlyNow() = costly
+        var costlyCalls = 0
+        override fun costlyNow() = costly.also { costlyCalls++ }
         override fun sentAt(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) {
             sentAttempts++; costlyAtStartLog += costlyAtStart
             if (throwOnSent) error("ledger down")
@@ -176,6 +177,27 @@ class ModelRouterDataSaverTest {
         router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
         assertEquals(0, data.sentAttempts)
         assertTrue(data.sentLog.isEmpty())
+        assertEquals("the network class is not even read", 0, data.costlyCalls)
+    }
+
+    @Test fun anEndpointOnThePhoneItselfIsNeverCountedEvenOnMobileData() = runTest {
+        data.costly = true
+        for (host in listOf("127.0.0.1", "127.1.2.3", "localhost", "[::1]")) {
+            data.sentLog.clear(); data.asked.clear()
+            ep("lo", url = "https://$host:11434", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "lo", "m")).getOrThrow()
+            router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+            assertEquals(host, 0, data.sentAttempts)
+            assertTrue(host, data.sentLog.isEmpty())
+            assertEquals("the data-saver gate still sees it as LAN: $host", listOf(DataKind.SMALL to EndpointReach.LAN), data.asked)
+        }
+    }
+
+    @Test fun aLanBoxThatIsNotLoopbackIsStillCountedOnMobileData() = runTest {
+        data.costly = true
+        ep("lan", url = "https://192.168.1.5:11434", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "lan", "m")).getOrThrow()
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertEquals(1, data.sentAttempts)
+        assertEquals(listOf(true), data.costlyAtStartLog)
     }
 
     @Test fun aReplyThatCannotBeUsedCountsItsRequestBytesButNoPhoto() = runTest {

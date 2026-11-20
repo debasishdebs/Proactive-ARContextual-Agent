@@ -52,6 +52,8 @@ class PushToTalkTest {
         awaitUntil { "start" in link.sent }
         pcm.permits.release(3)
         awaitUntil { link.sent.count { it == "audio" } == 3 }
+        // The 4th read must be IN FLIGHT before the tap: a tap that lands while the loop is still between chunks (loaded machine) correctly ends it with no read, and the chunk is not "in flight" yet.
+        awaitUntil { pcm.readSizes.size == 4 }
         ptt.stop(); pcm.permits.release(1)
         awaitUntil { !ptt.recording.value }
         assertEquals(4, link.sent.count { it == "audio" }, "the chunk in flight at the tap is trailing speech: it is sent")

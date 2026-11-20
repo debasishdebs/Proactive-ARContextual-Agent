@@ -234,6 +234,16 @@ object DataPolicy {
     }
 
     /**
+     * Whether [host] is a loopback address (`localhost`, `127.x.x.x`, `::1`): a server on this phone itself (for example Ollama in Termux). It is still a LAN host for
+     * [isLanHost] (so the data-saver gate treats it exactly as before), but it never leaves the phone, so the byte counter does not count it.
+     */
+    fun isLoopbackHost(host: String?): Boolean {
+        val h = host?.trim()?.lowercase()?.trimEnd('.') ?: return false
+        if (h == "localhost" || h == "::1" || h == "[::1]") return true
+        return isLanHost(h) && h.split('.').firstOrNull() == "127"
+    }
+
+    /**
      * Whether [host] is a private, link-local, loopback or `.local` address: a box on the user's own network. Never resolves a name (under Offline only the model client's DNS check also requires every resolved address to be on the user's own network). IPv6 literals other than loopback
      * count as remote (we cannot tell a ULA from a public one cheaply, and fail closed).
      */

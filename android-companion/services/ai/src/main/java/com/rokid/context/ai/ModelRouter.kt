@@ -252,7 +252,7 @@ class ModelRouter(
         // Slice 2 byte counter, at this single choke point: payload only (the request's prompt and Base64 photos as sent, the reply text), counts only.
         // The network class is read in send(), once per provider call, at the moment the call holds its permit (and upload slot): the permit wait can be long, and the class that counts is the one the request goes out on
         // (the vision attempt and its text retry each read their own). A call that ends on another network is still counted where it began.
-        // Everything but an on-device model is a candidate (an on-device model sends nothing). A LAN endpoint is NOT free by its address: DataPolicy treats it as free only on Wi-Fi/Ethernet, and on mobile data a LAN host
+        // Everything but a model on the phone itself is a candidate: an on-device model sends nothing, and a loopback endpoint (localhost, 127.x, ::1, e.g. Ollama in Termux) never leaves the phone. A loopback endpoint keeps the LAN reach for the data-saver gate (unchanged), it is only not counted. A LAN endpoint is NOT free by its address: DataPolicy treats it as free only on Wi-Fi/Ethernet, and on mobile data a LAN host
         // (192.168.x or 10.x through WireGuard/Tailscale) is allowed and its bytes DO use mobile data. So [costlyNow] at the permit decides, and the ledger counts only while it is true.
         // A failed call does NOT use up the photo cap: photos count on success only. The request bytes of a failure count only when the server demonstrably received the request and answered:
         // an HTTP error status, or a 2xx whose reply could not be used ([ProviderResponseException]: missing or empty content, malformed JSON; the providers map their parse failures to it).
@@ -261,7 +261,7 @@ class ModelRouter(
             val photos = r.images.size
             val kind = if (photos > 0) DataKind.PHOTO else DataKind.SMALL // the text-only retry of a photo call is a text call
             val tx = DataBytes.requestBytes(r)
-            val counted = reachOf(e) != EndpointReach.DEVICE
+            val counted = reachOf(e) != EndpointReach.DEVICE && !EndpointReaches.isLoopback(e)
             val costlyAtStart = counted && dataGate.costlyNow()
             val reply = try { p.complete(r) }
             catch (c: CancellationException) { throw c }
@@ -356,6 +356,9 @@ object EndpointReaches {
         val capable = endpointsInOrder.filter(EndpointRules::deliversImages).map(::of)
         return capable.minOrNull() ?: endpointsInOrder.firstOrNull()?.let(::of) ?: EndpointReach.REMOTE
     }
+
+    /** An endpoint on this phone itself (localhost, 127.x, ::1): its traffic never touches the network, so it is not counted as mobile data. Its gate reach stays [of] (LAN). */
+    fun isLoopback(e: Endpoint): Boolean = e.kind != EndpointKind.LLAMACPP_LOCAL && DataPolicy.isLoopbackHost(runCatching { java.net.URI(e.baseUrl.trim()).host }.getOrNull())
 
     fun of(e: Endpoint): EndpointReach = when {
         e.kind == EndpointKind.LLAMACPP_LOCAL -> EndpointReach.DEVICE
