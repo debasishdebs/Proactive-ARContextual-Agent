@@ -16,7 +16,7 @@ class ModelPrivacyDurabilityTest {
      * A prefs file with a real "disk": [apply] changes memory only (a process kill loses it), [commit] writes through; [failWrites] makes BOTH fail (a full or broken disk). A restart is a new instance over the same [disk].
      * [flushApply] true = apply reaches the disk (the normal case when the process lives a moment longer).
      */
-    private class DiskPrefs(val disk: MutableMap<String, Any?> = HashMap(), var failWrites: Boolean = false, var flushApply: Boolean = false) : SharedPreferences {
+    private class DiskPrefs(val disk: MutableMap<String, Any?> = HashMap(), var failWrites: Boolean = false, var flushApply: Boolean = false, /** Runs at the start of every commit: a newer tap can land between two commits of an older write. */ var onCommit: (() -> Unit)? = null) : SharedPreferences {
         private val mem = HashMap(disk)
         override fun getAll(): MutableMap<String, *> = HashMap(mem)
         override fun getString(k: String?, d: String?) = (mem[k] as? String) ?: d
@@ -38,8 +38,9 @@ class ModelPrivacyDurabilityTest {
             override fun putInt(k: String?, v: Int) = apply { ops += { it[k!!] = v } }
             override fun putLong(k: String?, v: Long) = apply { ops += { it[k!!] = v } }
             override fun putFloat(k: String?, v: Float) = apply { ops += { it[k!!] = v } }
-            override fun apply() { if (failWrites) return; ops.forEach { it(mem) }; if (flushApply) { ops.forEach { it(disk) } } }
-            override fun commit(): Boolean { if (failWrites) return false; ops.forEach { it(mem); it(disk) }; return true }
+            // like SharedPreferencesImpl: memory is updated even when the disk write fails; only the disk is skipped
+            override fun apply() { ops.forEach { it(mem) }; if (flushApply && !failWrites) { ops.forEach { it(disk) } } }
+            override fun commit(): Boolean { onCommit?.invoke(); ops.forEach { it(mem) }; if (failWrites) return false; ops.forEach { it(disk) }; return true }
         }
         /** The process restarts: only what reached the disk is there. */
         fun restart(): DiskPrefs = DiskPrefs(disk)
@@ -102,6 +103,36 @@ class ModelPrivacyDurabilityTest {
         st.begin(ModelPrivacy.OFFLINE_ONLY) // the apply()s were flushed, the durable commit never ran
         val next = ModelPrivacyStore(main.restart(), side.restart(), direct)
         assertEquals(ModelPrivacy.OFFLINE_ONLY, next.current()); assertTrue(next.wasReset.value)
+    }
+
+    @Test fun aNewerTapBetweenTheTwoCommitsOfAnOlderWriteStopsTheOlderOneBeforeItReachesTheMainFile() {
+        val main = DiskPrefs(); val side = DiskPrefs()
+        val st = ModelPrivacyStore(main, side, direct)
+        st.setAndWaitBlocking(ModelPrivacy.OFFLINE_ONLY)
+        var newer: ModelPrivacyStore.Pending? = null
+        side.onCommit = { side.onCommit = null; newer = st.begin(ModelPrivacy.OFFLINE_ONLY) } // the double tap lands while the older write is between its commits
+        var olderReported = false
+        st.commitAsync(st.begin(ModelPrivacy.AUTO)) { olderReported = true }
+        Thread.sleep(300)
+        assertFalse("a superseded write reports nothing (it must not clear a failure)", olderReported)
+        assertEquals("the older AUTO never reached the main file", ModelPrivacy.OFFLINE_ONLY.name, main.disk["mode"])
+        val done = CountDownLatch(1)
+        st.commitAsync(newer!!) { done.countDown() }
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(main.restart(), side.restart(), direct).current())
+    }
+
+    @Test fun aSupersededWriteDoesNotClearAFailureReportedByTheNewerOne() {
+        val main = DiskPrefs(); val side = DiskPrefs()
+        val st = ModelPrivacyStore(main, side, direct)
+        val older = st.begin(ModelPrivacy.AUTO); val newer = st.begin(ModelPrivacy.OFFLINE_ONLY)
+        main.failWrites = true
+        val results = java.util.concurrent.CopyOnWriteArrayList<Boolean>(); val latch = CountDownLatch(1)
+        st.commitAsync(newer) { results += it; latch.countDown() }
+        assertTrue(latch.await(5, TimeUnit.SECONDS))
+        st.commitAsync(older) { results += true } // runs after the newer one: skipped, so it must not report "true"
+        Thread.sleep(300)
+        assertEquals(listOf(false), results.toList())
     }
 
     private fun ModelPrivacyStore.setAndWaitBlocking(m: ModelPrivacy) = kotlinx.coroutines.runBlocking { setAndWait(m) }
