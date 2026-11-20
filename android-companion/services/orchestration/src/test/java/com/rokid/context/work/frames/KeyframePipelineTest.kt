@@ -501,6 +501,49 @@ class KeyframePipelineTest {
     }
 
 
+    /** Slice 2 on virtual time: a daily cap parks the loop exactly like a hold (no attempt, frames parked, nothing shed) and the next local day, announced by the open signal, drains it. */
+    @Test fun aDailyCapParksThePhotosAndTheNextDayWakesThemAllWithoutAnAttemptOrAShed() = runBlocking {
+        val store = object : com.rokid.context.core.net.CounterStore {
+            val m = mutableMapOf<String, Long>()
+            override fun getLong(key: String, default: Long) = m[key] ?: default
+            override fun putLongs(values: Map<String, Long>) { m.putAll(values) }
+        }
+        val day = 86_400_000L
+        now = 5 * day + 10 * 3_600_000L // 10:00 on day 5 (UTC stands in for the local zone)
+        val ledger = com.rokid.context.core.net.MobileDataLedger(store) { Math.floorDiv(now, day) }
+        val limit = com.rokid.context.core.net.DailyLimit(10L * 1024 * 1024, 3)
+        fun capReached() = com.rokid.context.core.net.DailyCaps.reached(limit, ledger.today().usage)
+        for (i in 1..9) seed("f$i", i * 1000L)
+        val sent = mutableListOf<List<String>>()
+        val p = KeyframePipeline(db, { ids, claim, cls ->
+            calls += ids to cls
+            if (capReached()) ExtractOutcome.classify(com.rokid.context.ai.DataSaverBlockedException("daily_limit"))
+            else { sent += ids; ledger.add(com.rokid.context.core.net.DataKind.PHOTO, 100_000L * ids.size, ids.size); completing()(ids, claim, cls) }
+        }, { now }, null, newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = { capReached() })
+        var guard = 0
+        while (guard++ < 20 && p.drainOnce() > 0) { }
+        val described = (1..9).count { state("f$it") == "EXTRACTED" }
+        assertTrue("some went out under the cap: $described", described in 1..8)
+        assertTrue("the cap stopped the rest: ${sent.sumOf { it.size }} photos sent", sent.sumOf { it.size } >= 3)
+        for (i in 1..9) if (state("f$i") == "PENDING") assertEquals("a cap block never uses an attempt", 0, db.frameStateDao().get("f$i")!!.attempts)
+        assertEquals("every waiting photo is parked and none is shed", 9 - described, db.frameStateDao().dataSaverParkedCount())
+        assertEquals(0, (1..9).count { state("f$it") == "NEAR_DUP" })
+        val sentBefore = sent.sumOf { it.size }
+        // later the same day: still parked, nothing goes
+        now += 31 * 60_000L; p.drainOnce()
+        assertEquals(sentBefore, sent.sumOf { it.size })
+        // local midnight passes: today's counters are zero, the graph's open signal wakes the loop
+        now = 6 * day + 1_000L
+        assertEquals(0L, ledger.today().photos)
+        p.onNetworkReturn()
+        guard = 0
+        while (guard++ < 40 && p.drainOnce() > 0) { }
+        // the new day has its own cap of 3: the rest drain over the following days, every one of them exactly once and never shed
+        assertTrue("the next day sent more", sent.sumOf { it.size } > sentBefore)
+        assertEquals(sent.sumOf { it.size }, sent.flatten().toSet().size)
+        assertEquals(0, (1..9).count { state("f$it") == "NEAR_DUP" })
+    }
+
     @Test fun framesParkedByTheDataSaverAreNeverShedNotEvenOnTheFirstDrainAfterTheGateOpens() = runBlocking {
         for (i in 1..300) seed("f$i", i * 1000L)
         var blocked = true

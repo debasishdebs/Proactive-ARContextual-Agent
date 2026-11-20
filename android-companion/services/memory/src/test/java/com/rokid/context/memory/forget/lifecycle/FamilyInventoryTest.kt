@@ -73,6 +73,12 @@ class FamilyInventoryTest {
         assertTrue("never in the wiped list", DeletionGraph.wipedPrefs.none { it in setOf("pause_zones", "pause_zone_state", "place_guide", "place_pins", "nexus_host") })
     }
 
+    @Test fun theDataSaverSettingsAndTodaysByteCountersAreKeptByDeleteAll() {
+        assertEquals(DeletionGraph.Fate.KEPT, DeletionGraph.PREFS.single { it.name == "data_saver" }.fate)
+        assertTrue("data_saver is never in the wiped list", "data_saver" !in DeletionGraph.wipedPrefs)
+        assertTrue(DeletionGraph.PREFS.single { it.name == "data_saver" }.why.contains("byte counters"))
+    }
+
     @Test fun aPlaceMemoryIsAMemoryAndItsFrameSourceRowIsThePhotos() {
         assertEquals(Family.MEMORY, Families.ownerOfTable("memory")); assertEquals(Family.PHOTO, Families.ownerOfTable("frame_source"))
         assertEquals(listOf("PlaceCardHolder", "PinReferenceVectors", "PlaceShadow"), Families.of(Family.PLACE_CARD).holders)
