@@ -599,4 +599,19 @@ class KeyframePipelineTest {
         assertEquals(0, db.frameStateDao().dataSaverParkedCount())
         for (i in 1..50) assertEquals(0, db.frameStateDao().get("f$i")!!.attempts)
     }
+
+    /** P2-e: settle() after the cap. A reachable but always failing on-device/LAN fallback parks a frame CAP times without an attempt; the next failure is an ordinary one. */
+    @Test fun aFrameWhoseFallbackKeepsFailingIsParkedCapTimesThenCountsAnAttempt() = runBlocking {
+        com.rokid.context.work.FallbackParkCap.resetForTests()
+        seed("f1", 1000L)
+        val p = KeyframePipeline(db, { ids, _, cls -> calls += ids to cls; ExtractOutcome.classify(com.rokid.context.ai.OfflineOnlyRefusedException(fallbackKind = com.rokid.context.ai.FailureKind.TRANSIENT)) }, { now }, null,
+            newClaimId = { "claim-${calls.size}" }, pollMs = 50, dataSaverBlocked = { true })
+        repeat(com.rokid.context.work.FallbackParkCap.CAP) { p.drainOnce(); now += 2 * 60 * 60_000L }
+        assertEquals("parked CAP times: no attempt used", 0, db.frameStateDao().get("f1")!!.attempts)
+        assertEquals("PENDING", state("f1"))
+        p.drainOnce(); now += 2 * 60 * 60_000L
+        assertEquals("the next one is an ordinary transient failure", 1, db.frameStateDao().get("f1")!!.attempts)
+        assertEquals("fallback_unavailable", db.frameStateDao().get("f1")!!.lastError)
+        com.rokid.context.work.FallbackParkCap.resetForTests()
+    }
 }
