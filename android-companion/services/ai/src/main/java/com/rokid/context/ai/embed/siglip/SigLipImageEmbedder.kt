@@ -36,7 +36,9 @@ class SigLipImageEmbedder(
     private val modelFile: File,
     private val variant: String = "vision_quantized",
     private val batchSize: Int = BATCH,
-    private val sessionFactory: (String) -> ImageSession = { OrtImageSession(it, outputName = OUTPUT_NAME, width = DIM) },
+    /** (path, outputName, width) -> session; the default builds the real ORT session. Exists so a test can see what the default path asks for. */
+    private val ortFactory: (String, String, Int) -> ImageSession = { p, o, w -> OrtImageSession(p, outputName = o, width = w) },
+    private val sessionFactory: (String) -> ImageSession = { ortFactory(it, OUTPUT_NAME, DIM) },
     private val decode: (ByteArray) -> Argb = { decodeBitmap(it) },
 ) : ImageOnlyEmbedder, AutoCloseable {
     /** Decoded pixels: packed ARGB, w x h. */
@@ -51,7 +53,21 @@ class SigLipImageEmbedder(
     override suspend fun embedImage(bytes: ByteArray): FloatArray = embedImages(listOf(bytes)).single()
 
     suspend fun embedImages(images: List<ByteArray>): List<FloatArray> = withContext(Dispatchers.Default) {
-        embedArgb(images.map { decode(it) })
+        if (images.isEmpty()) return@withContext emptyList()
+        val s = session()
+        val out = ArrayList<FloatArray>(images.size)
+        // Decode and preprocess one image at a time: only the chunk's 224x224 tensors are alive, never every full-resolution ARGB array.
+        for (chunk in images.chunked(batchSize)) out += runChunk(s, chunk.size) { i -> decode(chunk[i]).let { SigLipPreprocess.preprocessArgb(it.pixels, it.w, it.h) } }
+        out
+    }
+
+    private fun runChunk(s: ImageSession, n: Int, tensor: (Int) -> FloatArray): List<FloatArray> {
+        val per = 3 * SigLipPreprocess.SIDE * SigLipPreprocess.SIDE
+        val batch = FloatArray(n * per)
+        for (i in 0 until n) tensor(i).copyInto(batch, i * per)
+        val res = s.run(batch, n)
+        check(res.size == n * DIM) { "unexpected model output" }
+        return List(n) { l2(res.copyOfRange(it * DIM, (it + 1) * DIM)) }
     }
 
     /** Pixels in (already decoded): preprocess, run in batches, L2. */

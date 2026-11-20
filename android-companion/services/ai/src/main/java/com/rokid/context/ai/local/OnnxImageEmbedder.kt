@@ -119,9 +119,7 @@ internal class OrtImageSession(
             (if (outputName == null) ort.run(feed) else ort.run(feed, setOf(outputName))).use { r ->
                 val t = (if (outputName == null) r[0] else r.get(outputName).get()) as OnnxTensor
                 val buf = t.floatBuffer
-                val flat = FloatArray(buf.remaining())
-                buf.get(flat)
-                return rows(flat, t.info.shape, n, width)
+                return rows(buf, t.info.shape, n, width)
             }
         }
     }
@@ -133,11 +131,11 @@ internal class OrtImageSession(
          * First [width] values of each of the [n] rows: [flat] is [n,width] (2-D) or [n,tokens,width] (3-D, row = token 0). Pure, so the Nomic reading
          * (CLS from output 0) is unit-tested without ORT.
          */
-        internal fun rows(flat: FloatArray, shape: LongArray, n: Int, width: Int): FloatArray {
+        internal fun rows(buf: FloatBuffer, shape: LongArray, n: Int, width: Int): FloatArray {
             val stride = if (shape.size == 3) (shape[1] * shape[2]).toInt() else width
-            require(n >= 1 && flat.size >= (n - 1) * stride + width) { "unexpected model output" }
+            require(n >= 1 && buf.limit() >= (n - 1) * stride + width) { "unexpected model output" }
             val out = FloatArray(n * width)
-            for (i in 0 until n) System.arraycopy(flat, i * stride, out, i * width, width)
+            for (i in 0 until n) { buf.position(i * stride); buf.get(out, i * width, width) } // only the needed rows: no whole-tensor copy
             return out
         }
     }
