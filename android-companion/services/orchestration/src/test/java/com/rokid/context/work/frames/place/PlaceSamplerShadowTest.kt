@@ -39,6 +39,7 @@ class PlaceSamplerShadowTest {
     private var flight = PlaceFlight()
     private var detached: CoroutineScope? = null
     private var attemptEnds = 0
+    private var matchImpl: suspend (String) -> PlaceMatchResult? = { delay(callMs); reply }
 
     private fun scored(top: Int, other: Int): ShadowOutcome {
         val q = floatArrayOf(1f, 0f)
@@ -54,7 +55,7 @@ class PlaceSamplerShadowTest {
                 override suspend fun tombstoned(frameId: String) = false
             },
             fix = { PlaceFix(17.36, 78.47, 3_000, 10f) }, candidates = { _, _, _ -> PlaceCandidates(places, CellOutcome.FRESH) },
-            match = { _, _ -> delay(callMs); reply }, saveMemory = { true }, onCard = { cards += it }, clock = { T0 }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
+            match = { id, _ -> matchImpl(id) }, saveMemory = { true }, onCard = { cards += it }, clock = { T0 }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
             log = { logs += it }, stats = { outcomes += it }, elapsed = { scope.testScheduler.currentTime }, flight = flight,
             shadow = hook?.let { h -> { id, hits, live -> hookCalls++; h(id, hits, live) } }, shadowEnabled = { flag }, shadowScope = d, onAttemptEnd = { attemptEnds++ },
         )
@@ -151,6 +152,55 @@ class PlaceSamplerShadowTest {
         assertFalse(l.contains("Charminar")); assertFalse(l.contains("Mecca"))
     }
 
+    @Test fun aCancelDuringTheSettleWindowKeepsTheRealOutcome() = runTest {
+        callMs = 100
+        val never = CompletableDeferred<ShadowOutcome>()
+        val s = sampler(this) { _, _, _ -> never.await() }
+        s.poke(); advanceTimeBy(150)
+        assertEquals("the card is out", 1, cards.size); assertTrue(logs.none { it.startsWith("place attempt") })
+        s.close(); advanceUntilIdle()
+        val l = attempt()
+        assertTrue(l, l.startsWith("place attempt outcome=MATCHED") && l.contains("card=shown") && !l.contains("shadow") && !l.contains("cancelled"))
+        assertEquals(listOf(PlaceOutcome.MATCHED), outcomes)
+    }
+
+    @Test fun theSingleFlightIsFreeOnceTheCardIsOutEvenWhileTheShadowIsStillSettling() = runTest {
+        callMs = 100
+        val never = CompletableDeferred<ShadowOutcome>()
+        val s = sampler(this) { _, _, _ -> never.await() }
+        s.poke(); advanceTimeBy(150)
+        assertFalse("busy is released at the card", flight.busy.get())
+        s.poke(); advanceTimeBy(1)
+        assertTrue("no BUSY outcome was logged", outcomes.none { it == PlaceOutcome.BUSY })
+        advanceUntilIdle()
+    }
+
+    @Test fun anErrorWhileLoadingThePhotoEndsTheAttemptAndFreesTheFlight() = runTest {
+        val share = SharedPhoto { throw OutOfMemoryError() }
+        matchImpl = { id -> share.get(id)?.let { reply } }
+        val s = sampler(this, null)
+        run(s)
+        assertEquals(PlaceOutcome.FAILED, outcomes.last()); assertFalse(flight.busy.get()); assertTrue(cards.isEmpty())
+        assertTrue(attempt(), attempt().contains("reason=call_failed_or_photo_gone"))
+    }
+
+    @Test fun aFenceCancelDuringThePhotoLoadCancelsTheLoad() = runTest {
+        var cancelled = false
+        val share = SharedPhoto { try { delay(60_000); null } catch (c: kotlinx.coroutines.CancellationException) { cancelled = true; throw c } }
+        matchImpl = { id -> share.get(id)?.let { reply } }
+        val s = sampler(this, null)
+        s.poke(); advanceTimeBy(100); s.close(); advanceUntilIdle()
+        assertTrue("the read is cancelled with the attempt", cancelled); assertFalse(flight.busy.get()); assertEquals(1, attemptEnds)
+    }
+
+    @Test fun theAttemptEndHookRunsOnAnExceptionAndOnCancel() = runTest {
+        matchImpl = { throw IllegalStateException("x") }
+        run(sampler(this, null)); assertEquals(1, attemptEnds)
+        matchImpl = { delay(60_000); reply }; flight = PlaceFlight()
+        val s = sampler(this, null); s.poke(); advanceTimeBy(100); s.close(); advanceUntilIdle()
+        assertEquals(2, attemptEnds)
+    }
+
     // ---- PlaceShadow itself ----
 
     private class FakeEmbedder(override val spaceId: String = "fake") : ImageTextEmbedder {
@@ -185,6 +235,14 @@ class PlaceSamplerShadowTest {
         val hits = listOf(pl("wd:Q1", "Charminar") to 10.0)
         sh.score("f", hits); g = 1; sh.score("f", hits)
         assertEquals(2, e.texts.size)
+    }
+
+    @Test fun aSpaceChangeEmptiesTheCache() = runTest {
+        var space = "a"; val e1 = FakeEmbedder("a"); val e2 = FakeEmbedder("b")
+        val sh = PlaceShadow(embedder = { if (space == "a") e1 else e2 }, photo = { ByteArray(1) }, elapsed = { 0L })
+        val hits = listOf(pl("wd:Q1", "Charminar") to 10.0)
+        sh.score("f", hits); space = "b"; sh.score("f", hits); space = "a"; sh.score("f", hits)
+        assertEquals(2, e1.texts.size); assertEquals(1, e2.texts.size)
     }
 
     @Test fun theCacheIsBounded() = runTest {
