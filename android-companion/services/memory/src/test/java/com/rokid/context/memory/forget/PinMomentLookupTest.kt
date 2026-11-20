@@ -64,6 +64,14 @@ class PinMomentLookupTest {
         assertEquals(listOf(fx.id), alive())
     }
 
+    @Test fun photoFrameOfFollowsTheSameLifeAsPhotoMomentsOf() = runBlocking<Unit> {
+        two()
+        assertEquals("a", md.photoFrameOf(fx.id)?.id); assertEquals("b", md.photoFrameOf(id2)?.id)
+        assertEquals(null, md.photoFrameOf("zz"))
+        fx.service.forgetMoment("a"); assertEquals(null, md.photoFrameOf(fx.id))
+        md.insertTombstones(listOf(com.rokid.context.memory.db.MomentTombstoneEntity(id2, 1))); assertEquals(null, md.photoFrameOf(id2))
+    }
+
     @Test fun deleteAllEndsEveryMoment() = runBlocking<Unit> {
         two()
         db.wipeDao().wipeMemory()
