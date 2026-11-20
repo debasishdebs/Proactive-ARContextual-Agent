@@ -78,21 +78,23 @@ class OpenAiCompatProvider(
         executeFenced(client, http, beforeAdmit).use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw ProviderHttpException(response.code, "Azure OpenAI", body)
-            val json = Json.parseToJsonElement(body).jsonObject
-            val choice = json["choices"]?.jsonArray?.firstOrNull()?.jsonObject
-            val content = choice?.get("message")?.jsonObject?.get("content")
-                ?: throw ProviderResponseException("Azure OpenAI response missing message content")
-            // OBS-R3-1: a refusal comes as `content: null` (+ `refusal`); JsonNull.content is the text "null", which
-            // parses as JSON. It is no reply at all: empty text, so RoleRunner rejects it as "not JSON" and retries.
-            val text = if (content is JsonNull) "" else runCatching { content.jsonPrimitive.content }.getOrElse {
-                content.jsonArray.joinToString("\n") { part ->
-                    val o = part.jsonObject
-                    o["text"]?.jsonPrimitive?.content ?: o["refusal"]?.jsonPrimitive?.content ?: ""
-                }.trim().ifBlank { throw ProviderResponseException("Azure OpenAI response contained empty content parts") }
+            ProviderResponseException.parsing("Azure OpenAI") {
+                val json = Json.parseToJsonElement(body).jsonObject
+                val choice = json["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+                val content = choice?.get("message")?.jsonObject?.get("content")
+                    ?: throw ProviderResponseException("Azure OpenAI response missing message content")
+                // OBS-R3-1: a refusal comes as `content: null` (+ `refusal`); JsonNull.content is the text "null", which
+                // parses as JSON. It is no reply at all: empty text, so RoleRunner rejects it as "not JSON" and retries.
+                val text = if (content is JsonNull) "" else runCatching { content.jsonPrimitive.content }.getOrElse {
+                    content.jsonArray.joinToString("\n") { part ->
+                        val o = part.jsonObject
+                        o["text"]?.jsonPrimitive?.content ?: o["refusal"]?.jsonPrimitive?.content ?: ""
+                    }.trim().ifBlank { throw ProviderResponseException("Azure OpenAI response contained empty content parts") }
+                }
+                val usage = json["usage"] as? JsonObject
+                val cut = (choice?.get("finish_reason") as? JsonPrimitive)?.takeIf { it.isString }?.content == "length"
+                ModelReply(text, usage?.get("prompt_tokens")?.jsonPrimitive?.intOrNull, usage?.get("completion_tokens")?.jsonPrimitive?.intOrNull, truncated = cut)
             }
-            val usage = json["usage"] as? JsonObject
-            val cut = (choice?.get("finish_reason") as? JsonPrimitive)?.takeIf { it.isString }?.content == "length"
-            ModelReply(text, usage?.get("prompt_tokens")?.jsonPrimitive?.intOrNull, usage?.get("completion_tokens")?.jsonPrimitive?.intOrNull, truncated = cut)
         }
     }
 

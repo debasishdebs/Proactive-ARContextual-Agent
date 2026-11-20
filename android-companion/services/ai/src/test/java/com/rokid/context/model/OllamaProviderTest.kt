@@ -1,5 +1,6 @@
 package com.rokid.context.model
 
+import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.model.provider.OllamaProvider
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -13,6 +14,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OllamaProviderTest {
@@ -42,5 +44,13 @@ class OllamaProviderTest {
         assertEquals("hi", OllamaProvider(url(), "m").generate("q"))
         val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
         assertFalse("format" in body); assertFalse("images" in body)
+    }
+
+    @Test fun anUnusable2xxReplyIsAProviderResponseExceptionNeverARawParseError() = runTest {
+        for (body in listOf("not json", "[1]", """{"nothing":1}""", """{"response":{"a":1}}""")) {
+            server.enqueue(MockResponse().setBody(body))
+            val e = runCatching { OllamaProvider(url(), "m").generate("q") }.exceptionOrNull()
+            assertTrue("$body -> $e", e is ProviderResponseException)
+        }
     }
 }
