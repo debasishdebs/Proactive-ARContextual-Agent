@@ -4,6 +4,18 @@ Merged from: trip-install-checklist-2026-11-18, device-checklist-2026-11-17 (A, 
 
 Placeholders: `<PHONE>` = phone serial (Samsung SM-S931B), `<GLASSES>` = glasses serial (USB 1901092545029120 or a wireless endpoint), `<CAND>` = `~/Desktop/rokid/backups/apks-v110-cand-18c1b76a` (candidate), `<DEFAULT>` = `~/Desktop/rokid/backups/apks-v110-f1dcf1fb` (conservative fallback), `<TAG>` = e.g. `pre-v17-20261119`.
 
+## UPDATE 2026-11-20: next install (two staged builds). Every step below needs the devices: **device needed**
+The 19 Nov session is done: the devices run **18c1b76a** (installed 19 Nov 22:54, validated backup `~/Desktop/rokid/backups/pca-phone-pre-trip-20261119-2254.tar`). Sections 0-12 stay as the procedure; for the next install read `<CAND>` as one of:
+- **`<CONS>` = `~/Desktop/rokid/backups/apks-v110-cand-4436d1a5`** (git 4436d1a5, verified 15/15, review READY): 18c1b76a + street map (opt-in), 300 MB trip log with Detailed log, pin-to-Moment. **Recommended before Charminar (22 Nov).**
+- **`<TRAIN>` = `~/Desktop/rokid/backups/apks-v110-train-166d3fd4`** (git 166d3fd4, verified 15/15, review READY): `<CONS>` + roaming data saver slice 1 + Model privacy (Automatic / Offline only) + Forget policy table (types only, not wired). Recommended after the data saver questions are answered and a day of use, **before Sikkim (1 Dec)**.
+- Both: Room v17 unchanged, no new permission, `glasses-debug.apk` differs only in the shared log writer (optional), `nexus-bridge-debug.apk` byte-identical (do not install for the trip), no watch APK. Read the folder's `README.txt` first.
+
+Install (device needed, only on your explicit "go", one build at a time):
+1. [ ] Dry run, writes nothing: `tools/install-trip-build.sh --phone <PHONE> --glasses <GLASSES> --apks <CONS or TRAIN>`. Check the section 2 list (identities, packages, no downgrade, call state 0, backup path, order backup -> phone -> glasses).
+2. [ ] Real run: same command plus `--tag pre-<cons|train>-<YYYYMMDD-HHMM> --go`. The helper takes the **validated backup first** (tar, db + `db_key.xml`, encrypted header, sha256), then installs the **phone first**, scans 60 s, then the glasses. Exit codes as in section 3; never add override flags.
+3. [ ] `tools/post-install-check.sh --phone <PHONE> --glasses <GLASSES> --apks <CONS or TRAIN>` (section 4), then section 5 (first launch).
+4. [ ] Then section 13 (new-feature tests) for the build you installed. Going from `<CONS>` to `<TRAIN>` later is the same procedure with a new tag and a new backup.
+
 ## Order of the session (about 2.5 h)
 Sections 0-2 (pre-flight, identify, dry run): 15 min. Section 3 (backup + install, only after you say "go"): 15 min. Section 4 (post-install check): 10 min. Section 5 (first launch): 15 min. Section 6 (Place Guide seed + Card position test): 30 min. Section 7 (first worn card test, section G): 30 min. Section 8 (pause zones): 10 min. Section 9 (Nexus S2): 30 min, only if time is left. Section 11 (collect logs): 10 min. Section 10 (rollback) is only used if something fails. Can be skipped, in this order of preference: 9 (Nexus S2: move to the 7-10 Dec half-day), then 8, then the card-edge measurements in 6 (keep the quick LEFT/CENTRE/RIGHT look), then 7 (worn test: needs a calm 30 min and you wearing the glasses). Never skip 0-5: they decide whether the build is safe for 22 Nov (install freeze 26 Nov). STOP and ask Claude on any REFUSED, FAIL, exit 3, "app opens empty" or "not a database".
 
@@ -245,3 +257,59 @@ Collect into one folder: `mkdir -p ~/Desktop/rokid/backups/session-20261119 && c
 
 ## 12. After the trip: how stable was the link? (read-only, 1 minute)
 `tools/link-health-report.sh --phone <PHONE> --date <MM-DD>` per trip day. Look for hours with many `sess-term`/`connecting` together with a long `max-gap-s`; note what else was active then (Rokid-Coder's Monitor sessions, calls). Send the table to Claude: it decides whether any link arbitration is worth building.
+
+## 13. New-feature tests (worn / on device), 2026-11-20. Every item: **device needed**
+Before you start: Settings > Diagnostics > **Detailed log ON** (default), so every line below reaches `pca.log` and logcat. Live view: `adb -s <PHONE> logcat -v time | grep -E 'PcPlace|PcData|PcPrivacy|OfflineOnly|OnlineTiles|PcDiag'` (the logcat may hold private text from other apps: do not send it unread). Results go in the session notes.
+
+### 13a. Pin editor (both builds). Settings > Place Guide > Your pinned places
+- [ ] **New pin requires a Moment**: "Pin a place here" (fresh fix needed). The editor offers "Attach latest Moment" (latest within 30 min) or "Pick from recent Moments"; with no Moment it says "No Moment in the last 30 minutes" / "No Moment yet: capture one with the glasses first".
+- [ ] **Day picker**: "Pick from recent Moments" > pick a day > list of that day's Moments ("No Moments on this day." on an empty day); pick one, Save. The row shows "Moment <time>".
+- [ ] **Save without a Moment**: tap it; a confirmation "Save without a Moment?" appears; confirm. The pin is saved and shows **"Needs a Moment"** ("No reference Moment. The pin still works by location.").
+- [ ] **Existing pins** (made before this build): show "Needs a Moment" and still match by location. Attach their Moments with the day picker (needs-user item 2: the approximate times of the 3 home pins).
+- [ ] **Forget dialog names pins**: Forget a TEST Moment that a TEST pin uses. The dialog names the pin and the button reads "Forget Moment and pin(s)". Cancel once (nothing changes), then confirm: the Moment and the pin are gone. Log: `PcPlace pin deleted with its forgotten moment count=1`.
+- [ ] **Expiry only de-links**: not forceable on a real phone in one session; note "not tested". (Log when it happens: `pin moment link cleared by removal count=N`.)
+- [ ] **Delete all dialog names pins**: ONLY on a throwaway state, never on trip data: read the Settings > Memory > Delete all confirmation and check it says "also deletes N pins" with the names; then **Cancel**. Do not confirm Delete all on the real phone.
+- [ ] Look for in the log: any `PcPlace pin ... failed`, `pin arming not restored`, `pin removal could not be recorded` (W lines): send them to Claude.
+
+### 13b. Trip log (both builds)
+- [ ] Settings > Diagnostics > **Detailed log** switch is ON by default; text says up to about 300 MB, never uploaded. Turn it off and on once; no crash.
+- [ ] After a short Place Guide walk (or on the trip), read the logs on the Mac (debuggable build, read-only):
+  - `tools/place-attempt-report.sh --phone <PHONE> --date <MM-DD>` (or `--since "MM-DD HH:MM"`; `--pin-map <file>` prints your own labels next to ids on the laptop only). Look for: outcomes and reasons (`nearby_card`, `data_saver`, `offline_only_no_local_model`, `call_failed_genuine`, `same_place_recently`), call timings, confidence, how many attempts made a call.
+  - `tools/link-health-report.sh --phone <PHONE> --date <MM-DD>` (section 12).
+- [ ] `PcDiag` lines present: `app start`, `battery bucket=`, `network online=... metered=... roaming=...`, `heartbeat` once an hour, `permission state` at start.
+- [ ] Note the size of `files/logs` after a full day (`adb -s <PHONE> shell run-as com.rokid.context du -sh files/logs`: command form UNVERIFIED) and the battery drop with Detailed log on.
+
+### 13c. Street map (both builds). Settings > Privacy > Pause zones
+- [ ] Off by default: the zones map shows the grid.
+- [ ] Turn on "Show a street map": the first-use explanation appears with **Cancel as default**; Cancel leaves it off. Turn on again and accept.
+- [ ] **Provider**: the explanation and the map attribution name the provider really used. No MapTiler key was configured for the staged builds (UNVERIFIED), so expect "OpenStreetMap" (debug build without key). To get MapTiler, a key must be put in `android-companion/local.properties` (`PCA_MAP_TILES_KEY=...`) and the APK rebuilt: needs-user item 7.
+- [ ] Pan and zoom: tiles load; "Centre on me" moves to your position (one fix on tap). Leave the screen: requests stop.
+- [ ] Turn the switch off: the map goes back to the grid (the tile cache is deleted).
+- [ ] Log: `OnlineTiles` lines only on problems (`backing off`, `session cap reached`, `refused a redirect`); never a tile number or URL.
+
+### 13d. Data saver (TRAIN only). Settings > Data saver
+- [ ] Default mode reads "Wi-Fi and home mobile data (default)"; "Small requests on roaming" ON; "I'm abroad" OFF.
+- [ ] **Status line** on each network (write down the exact "Now: ..." text): home Wi-Fi ("Photos upload normally"); home mobile data, Wi-Fi off ("Now: Home mobile data", photos upload); **confirm home mobile data still describes photos**: capture a few frames on mobile data and check they get captions.
+- [ ] **"I'm abroad" ON** on home mobile data: "Mobile data, treated as roaming (I'm abroad)", "Photos wait for Wi-Fi"; capture a few frames: "Photos waiting for Wi-Fi now: N" rises, "Blocked today" counts rise; Place Guide shows the nearby card. Back on Wi-Fi: the waiting photos are described. Turn "I'm abroad" OFF again.
+- [ ] **Wi-Fi only** mode on mobile data: photos wait. Switch back to the default.
+- [ ] **Android Data Saver** (Android Settings > Connections > Data usage > Data saver; Samsung menu path UNVERIFIED) ON while on mobile data: "Android Data Saver is on for this app"; OFF again.
+- [ ] **VPN** on over Wi-Fi: still free Wi-Fi (the Wi-Fi underneath is judged). VPN on over mobile data: home mobile data. Note what you see.
+- [ ] **Hotspot**: phone on another phone's hotspot (metered Wi-Fi): reads as home mobile data (or roaming with "I'm abroad").
+- [ ] **Captive portal** (hotel/airport Wi-Fi before login): "Unknown network, treated as roaming"; after 10 min "Wi-Fi without an internet check for over 10 minutes". Seeding refused.
+- [ ] **Airplane mode**: "Now: Offline", "Nothing can leave the phone".
+- [ ] **Seed** on mobile data: refused ("seed refused: not free wifi" in the log); on home Wi-Fi it works.
+- [ ] Log: `PcData net cost=FREE|HOME_MOBILE|ROAMING|UNKNOWN|RESTRICTED|OFFLINE`, `PcData blocked kind=PHOTO what=UPLOAD_QUEUED reason=roaming`, `photo uploads open`. A `network watch unavailable` W line: send to Claude.
+- [ ] Real roaming cannot be tested at home: switch "I'm abroad" ON before Sri Lanka.
+
+### 13e. Model privacy (TRAIN only). Settings > Capture & privacy > Model privacy
+- [ ] Default **Automatic**. First open may show "Loading…" briefly, never a wrong mode.
+- [ ] Switch to **Offline only**: "Saving…" then the explanation; no "Couldn't save this choice". Force-stop and reopen: still Offline only.
+- [ ] Under Offline only: ask a question (refused or answered only by an on-device/home model; note the wording); capture frames (they wait, not counted as "Blocked today"); Place Guide at a seeded place shows the **nearby card** ("Place Guide: needs an on-device model" on the screen); "Seed this area" refused; street map shows no new tiles; endpoint test of a cloud endpoint refused.
+- [ ] Switch back to **Automatic**: waiting photos are described; Place Guide matches again.
+- [ ] **'Reset' notice**: not forceable without editing app files; note "not tested" (it reads "Model privacy settings were reset: check them").
+- [ ] **Nothing leaves the phone** (optional, laptop): a proxy test proves little here, because Offline only ignores the system proxy by design. Better: put the phone on the Mac's Internet Sharing Wi-Fi and capture on the Mac (`sudo tcpdump -i bridge100 -n` : interface name UNVERIFIED), then under Offline only ask, capture and open Place Guide: there must be no connection to your cloud endpoint's address or to Wikipedia/Overpass/tile hosts. Other apps' traffic will show too; filter by those addresses. Do the same under Automatic as the baseline.
+- [ ] Log: `PcPlace place attempt ... mode=OFFLINE_ONLY backend=none reason=offline_only_no_local_model call=skipped_offline_only`; `OfflineOnly offline_only_refused` (and `_dns`, `_route` if a name or route was refused); `PcData seed refused: offline only`; any `PcPrivacy privacy write failed`: send to Claude.
+- [ ] Leave the mode on **Automatic** for the trip unless you decide otherwise.
+
+### 13f. Send back
+The filled 13a-13e boxes, the two report outputs, the exact status-line texts, and any W/E lines from the tags above.

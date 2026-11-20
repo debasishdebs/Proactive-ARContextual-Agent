@@ -11,6 +11,12 @@ Nothing is installed yet. Phone = eval build 394667e0, glasses = 1.0.0, watch = 
 ## 0b. Optional candidate (added 2026-11-19)
 - [ ] `~/Desktop/rokid/backups/apks-v110-cand-18c1b76a/` (git 18c1b76a, verified 15/15; older candidate folders are superseded) adds card placement, Sikkim/Darjeeling/Sri Lanka seed presets, curated landmarks and v3.1 delivery code (all switches OFF). Same helper, same dry run and `--go` rules; use it INSTEAD of f1dcf1fb only if you want these on 22 Nov; f1dcf1fb remains the conservative default.
 
+## 0c. Staged builds (added 2026-11-20; all steps: device needed)
+Installed now: **18c1b76a** (19 Nov, validated backup `~/Desktop/rokid/backups/pca-phone-pre-trip-20261119-2254.tar`). Two newer builds are staged, NOT installed; pick one, read its `README.txt`:
+- [ ] `~/Desktop/rokid/backups/apks-v110-cand-4436d1a5/` (conservative, recommended for 22 Nov): + street map (opt-in), 300 MB trip log / Detailed log, pin-to-Moment.
+- [ ] `~/Desktop/rokid/backups/apks-v110-train-166d3fd4/` (full train, recommended before Sikkim 1 Dec): the above + roaming data saver + Model privacy (Automatic / Offline only).
+Install exactly as sections 2-4 with that folder as `--apks`: dry run first; `--go --tag pre-<cons|train>-<date>` only on your go (the helper takes the validated backup first, then the phone, then the glasses; glasses APK optional, bridge APK not for the trip). Then run the new-feature tests in `device-session-runbook-2026-11-19.md` section 13 (pin editor, trip log, street map; data saver and Model privacy for the train only).
+
 ## 1. Preconditions
 - [ ] No call active (the helper also refuses). Phone plugged in or > 50% battery, glasses > 50%.
 - [ ] `adb devices -l`: note the PHONE serial and the GLASSES serial (a device can appear twice: USB serial and a wireless `adb-...-tls-connect` endpoint: pass ONE serial per device; the helper resolves identities and refuses aliases).
@@ -45,7 +51,7 @@ Glasses:
 
 ## 5. Place Guide prep for 22 Nov (needs internet, before leaving the house)
 - [ ] Settings > Place Guide (Developer mode on): leave the switch OFF while seeding. Seed this area: Hyderabad preset (Charminar/Golconda/Qutb Shahi Tombs/Salar Jung; 17.34-17.41 N, 78.38-78.52 E), then also tap 'Seed Ramoji Film City (23 Nov)'. Check the result line: cells ok / seeded without OSM extras / failed (retried) and the places count; a partial or failed cell: tap seed again (retries those cells).
-- [ ] Pin Golconda sub-places you care about with 'Pin a place here' ON SITE (needs a fresh fix; pins stay on the phone and are never backed up).
+- [ ] Pin Golconda sub-places you care about with 'Pin a place here' ON SITE (needs a fresh fix; pins stay on the phone and are never backed up). With 4436d1a5 or the train: a new pin asks for a reference Moment (capture one first, or attach the latest); 'Save without a Moment' leaves it flagged 'Needs a Moment'. Forgetting that Moment later also deletes the pin (the dialog names it).
 - [ ] Switch Place Guide ON only when you are at the first monument; the card shows at MEDIUM/MAX HUD level; offline it shows name + distance 'nearby, not checked'.
 - [ ] Confirm zones: remove any test zones; add a zone only where you must not capture (Jarawa preset is not relevant to this trip).
 
@@ -54,4 +60,4 @@ Glasses:
 - [ ] If the phone misbehaves on the trip: Settings > Pause (stops capture), then restore per `v17-upgrade-recovery.md` section 4 only if the DB fails to open; otherwise leave it.
 
 ## What Claude has NOT verified on real hardware
-Background hub start from boot/Bluetooth, real GPS zone transitions, camera/glasses card rendering, battery and heat over a day, the encrypted DB upgrade on YOUR phone (the emulator test used a seeded encrypted DB), and the installer's real-device refusal paths.
+Background hub start from boot/Bluetooth, real GPS zone transitions, camera/glasses card rendering, battery and heat over a day, the encrypted DB upgrade on YOUR phone (the emulator test used a seeded encrypted DB), and the installer's real-device refusal paths. Added 2026-11-20: the street map, the pin editor and its Forget/Delete all dialogs, the log volume and battery with Detailed log on, the data saver on real networks (VPN, hotspot, captive portal, Android Data Saver, roaming), the Model privacy screens and the absence of traffic under Offline only.
