@@ -87,8 +87,11 @@ class DataSaverGraph internal constructor(
     }
 
     /** Byte counter at the router's choke point: only while the network is costly (mobile, roaming, unknown); Wi-Fi is not counted. */
-    override fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) {
-        if (!NetworkCosts.isCostly(costNow())) return
+    override fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) = sentAt(kind, txBytes, rxBytes, photos, NetworkCosts.isCostly(costNow()))
+
+    /** The class was read when the call started: a call that began on mobile data counts even if it ends on Wi-Fi, and the other way round. */
+    override fun sentAt(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) {
+        if (!costlyAtStart) return
         val before = limitReachedNow()
         mobile.add(kind, txBytes + rxBytes, if (kind == DataKind.PHOTO) photos else 0)
         if (!before && limitReachedNow()) {
@@ -103,11 +106,17 @@ class DataSaverGraph internal constructor(
      */
     fun startMidnightWatch(): kotlinx.coroutines.Job = scope.launch {
         while (true) {
-            kotlinx.coroutines.delay(msUntilLocalMidnight(clock(), zone()) + MIDNIGHT_SLACK_MS)
-            PcLog.i(TAG, "day rollover")
+            // Sleeps until the next local midnight, or until the clock or the zone changes (then the wait is recomputed from the new time and zone).
+            val changed = kotlinx.coroutines.withTimeoutOrNull(msUntilLocalMidnight(clock(), zone()) + MIDNIGHT_SLACK_MS) { clockChanged.receive(); true } == true
+            PcLog.i(TAG, if (changed) "clock or zone changed" else "day rollover")
             refreshState()
         }
     }
+
+    private val clockChanged = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+
+    /** The clock was set or the time zone changed (the app's time-change receiver): the midnight wake is recomputed now instead of at the old midnight. Safe from any thread. */
+    fun onClockChanged() { clockChanged.trySend(Unit) }
 
     /** Where the photo calls go (the vision endpoint's kind). Set by the app (`KeyframeGraph`); REMOTE, the fail-closed answer, until then. The same input the pipeline's own gate uses. */
     @Volatile var reachProvider: () -> EndpointReach = { EndpointReach.REMOTE }
@@ -121,6 +130,11 @@ class DataSaverGraph internal constructor(
         // Offline only is a standing refusal, not a network blip: parked frames stay parked (and protected) for as long as it is on and the photo endpoint is remote.
         return !d.allowed && (d.reason == ModelPrivacyPolicy.R_OFFLINE_ONLY || !NetworkCosts.preValidationBlip(snapshotNow(), clock()))
     }
+
+    /**
+     * "Send over mobile data once?" is asked only when the hold is real: the debounced [heldBack] (not the Wi-Fi reconnect blip) and not the standing Offline only refusal, which "once" cannot lift.
+     */
+    fun heldBackForPrompt(): Boolean = heldBack() && decide(DataKind.PHOTO, reachProvider()).reason != ModelPrivacyPolicy.R_OFFLINE_ONLY
 
     /** When photo uploads were first held back since the pipeline last handled it (0 = not; persisted: survives a restart). */
     fun blockedSince(): Long = store.blockedSince()

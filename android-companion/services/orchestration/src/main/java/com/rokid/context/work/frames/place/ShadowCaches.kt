@@ -2,6 +2,7 @@ package com.rokid.context.work.frames.place
 
 import com.rokid.context.memory.forget.ForgetListener
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The registry of the Place Guide shadow's IN-MEMORY derived data (1.4.4 slice B1): the pin reference image vectors ([PinReferenceVectors], derived from a photo the user can Forget) and the pack-place text
@@ -17,19 +18,19 @@ object ShadowCaches {
     val DERIVED_ITEMS = listOf("place_shadow.pin_reference_vectors", "place_shadow.pack_text_vectors")
 
     private val clears = ConcurrentHashMap<String, () -> Unit>()
-    @Volatile private var epochValue = 0L
+    private val epochValue = AtomicLong(0)
 
     /** Registers (or replaces) the clear action under [name] (one of [DERIVED_ITEMS]). Called when the cache is first created. */
     fun register(name: String, clear: () -> Unit) { clears[name] = clear }
 
     /** Counts every [clearAll]. */
-    fun epoch(): Long = epochValue
+    fun epoch(): Long = epochValue.get()
 
     fun registered(): Set<String> = clears.keys.toSet()
 
     /** Empties every registered cache now. Never throws. */
     fun clearAll() {
-        epochValue++
+        epochValue.incrementAndGet()
         for (c in clears.values) try { c() } catch (_: Exception) { }
     }
 

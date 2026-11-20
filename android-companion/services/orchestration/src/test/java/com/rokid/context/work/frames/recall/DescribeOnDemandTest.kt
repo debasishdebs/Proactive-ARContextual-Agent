@@ -30,6 +30,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -60,6 +61,18 @@ class DescribeOnDemandTest {
         override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T { classes += callClass; return block() }
     }
 
+    /** A data saver that holds every photo call, but lets a USER photo call through when the user said "once" (the router asks decideOnce only for a marked USER call). */
+    private class OnceGate : com.rokid.context.core.net.DataGate {
+        @Volatile var hold = false
+        val onceAsked = java.util.concurrent.atomic.AtomicInteger()
+        override fun decide(kind: com.rokid.context.core.net.DataKind, reach: com.rokid.context.core.net.EndpointReach) =
+            if (hold && kind == com.rokid.context.core.net.DataKind.PHOTO) com.rokid.context.core.net.DataDecision(false, "wifi_only") else com.rokid.context.core.net.DataDecision.ALLOW
+        override fun decideOnce(kind: com.rokid.context.core.net.DataKind, reach: com.rokid.context.core.net.EndpointReach): com.rokid.context.core.net.DataDecision { onceAsked.incrementAndGet(); return com.rokid.context.core.net.DataDecision(true, "send_once") }
+        override fun skipped(kind: com.rokid.context.core.net.DataKind, what: com.rokid.context.core.net.Skipped, d: com.rokid.context.core.net.DataDecision) {}
+        override fun costlyNow() = hold
+    }
+    private val onceGate = OnceGate()
+
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
@@ -77,7 +90,7 @@ class DescribeOnDemandTest {
                 }
                 override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>) = generate(prompt)
             }
-        }, gate = gate).also { AiGraph.resetForTests(it) }
+        }, gate = gate, dataGate = onceGate).also { AiGraph.resetForTests(it) }
         TestAi.bindAll(ai); this.ai = ai
         AppConfigStore.setPipelineEnabled(ctx, true)
     }
@@ -215,6 +228,35 @@ class DescribeOnDemandTest {
         release.complete(Unit)
         assertTrue(first.await() is DescribeResult.Saved); assertTrue(second.await() is DescribeResult.Saved)
         assertEquals(2, prompts.size)
+    }
+
+    // --- slice 2 "Send once", end to end: describe -> extractNow -> router ---
+
+    @Test fun sendOnceReachesTheRouterThroughDescribeAndExtractNow() = runBlocking {
+        onceGate.hold = true
+        seed("s1", "PENDING")
+        // no marker: the held photo call never leaves the phone and "once" is never even asked
+        assertEquals(DescribeResult.Unavailable, describe.describePhotos(listOf("s1")))
+        assertTrue("nothing was sent", prompts.isEmpty()); assertEquals(0, onceGate.onceAsked.get())
+        // the marker (put on the coroutine by the screen's own tap) travels through DescribeOnDemand and the pipeline's extractNow to the router: the call goes out
+        val r = withContext(com.rokid.context.core.net.SendOnce) { describe.describePhotos(listOf("s1")) }
+        assertTrue(r.toString(), r is DescribeResult.Saved)
+        assertTrue("the photo went out", photoIdsSent().contains("s1")); assertTrue(onceGate.onceAsked.get() >= 1)
+        assertEquals("the call stayed USER class", setOf(CallClass.USER), classes.toSet())
+        // the marker is per call chain: the next describe without it is held again
+        val before = prompts.size
+        seed("s2", "PENDING")
+        assertEquals(DescribeResult.Unavailable, describe.describePhotos(listOf("s2")))
+        assertEquals(before, prompts.size)
+    }
+
+    @Test fun onceCoversEveryUserPhotoCallOfThatOneDescribe() = runBlocking {
+        // documented behaviour: the marker is on the whole describe, so a describe of 3 photos that needs more than one provider call is allowed for all of them
+        onceGate.hold = true
+        for (i in 1..3) seed("m$i", "EXTRACTED")
+        val r = withContext(com.rokid.context.core.net.SendOnce) { describe.describePhotos(listOf("m1", "m2", "m3")) }
+        assertTrue(r is DescribeResult.Saved)
+        assertEquals(setOf("m1", "m2", "m3"), photoIdsSent().toSet())
     }
 
     // --- scenes ---------------------------------------------------------------------------------------------------------

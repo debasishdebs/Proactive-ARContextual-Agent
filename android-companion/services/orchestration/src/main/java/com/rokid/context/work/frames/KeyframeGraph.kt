@@ -231,6 +231,8 @@ class KeyframeHandle internal constructor(private val app: Context) {
      * Offline only is a standing refusal that "once" cannot lift, so it does not ask. No count, no log.
      */
     fun photoHeldForPrompt(): Boolean {
+        val g = dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph
+        if (g != null) return g.heldBackForPrompt() // debounced: no "Send over mobile data?" during the Wi-Fi reconnect blip
         val d = dataGate.decide(DataKind.PHOTO, photoReach())
         return !d.allowed && d.reason != com.rokid.context.core.net.ModelPrivacyPolicy.R_OFFLINE_ONLY
     }

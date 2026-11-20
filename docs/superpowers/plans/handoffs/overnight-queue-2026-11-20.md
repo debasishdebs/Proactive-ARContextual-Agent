@@ -82,3 +82,12 @@ Do these with the Forget pipeline redesign (or earlier if time allows).
 5. Send-once dialog race (two quick taps drop the first describe); photoHeldForPrompt uses plain decide not the debounced heldBack (wording 'Send over mobile data?' during the Wi-Fi reconnect blip).
 6. No end-to-end SendOnce test (ViewModel -> DescribeOnDemand -> extractNow -> router); 'once' covers every USER photo call inside one describe (document).
 Nits: BULK_OTHER counter always 0 vs PRIVACY s15 'per kind'; text bytes count toward the byte cap (say so in PRIVACY).
+
+## O. Fix round for sections M and N (Sonnet, 2026-11-20)
+- N1-N3 done in ModelRouter.send: photos count on success only, request bytes of a failure only for an HTTP error status (the server received it), class read once at call start (`DataGate.sentAt`), only REMOTE endpoints counted, a throwing ledger can no longer discard a reply or count twice.
+- N4 done: `DataSaverGraph.onClockChanged()` (fed by DiagProbe's TIME_CHANGED/TIMEZONE_CHANGED receiver) restarts the midnight wait; west/east/DST tests added.
+- N5 done: synchronous in-flight flag in PhotoSearchViewModel; prompt uses `heldBackForPrompt()` (debounced, not Offline only).
+- N6 done: end-to-end SendOnce test through DescribeOnDemand/extractNow/router; 'once' covers every USER photo call of one describe (documented in code and PRIVACY s15).
+- Nits done: BULK_OTHER wording fixed in PRIVACY s15 (bulk jobs are counted as text); text bytes count toward the byte cap (PRIVACY).
+- M done: second `ShadowCaches.clearAll()` after the generation bump (behaviour test in MemoryWipeTest), epoch is an AtomicLong, source scan ignores comments and demands 2 calls in MemoryWipe.
+- K and L leftovers: already closed in code (SharedPhoto lock, SHADOW_BUDGET require, store-after-wipe, live() gate, stillValid, mixed marker); not re-touched.

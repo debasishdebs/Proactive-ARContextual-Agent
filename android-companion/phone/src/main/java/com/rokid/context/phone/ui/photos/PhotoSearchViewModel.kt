@@ -90,17 +90,22 @@ class PhotoSearchViewModel(
     fun describeScene(clusterId: String) = request { describeScene.invoke(clusterId) }
 
     private var pending: (suspend () -> DescribeResult)? = null
+    private var requesting = false // main thread only (the tap handlers and viewModelScope)
 
     /** A describe is the user's own USER-class photo call. When the data saver would hold it, ask first (default Wait); otherwise run it as before. */
     private fun request(call: suspend () -> DescribeResult) {
-        if (_state.value.describing || _state.value.sendOncePrompt) return
+        // The in-flight flag is taken synchronously, BEFORE the async photoHeld(): a second quick tap cannot start a second check that would replace the first one's pending call.
+        if (_state.value.describing || _state.value.sendOncePrompt || requesting) return
+        requesting = true
         viewModelScope.launch {
-            val held = try { photoHeld() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
-            if (held) { pending = call; _state.update { it.copy(sendOncePrompt = true, status = null) } } else runDescribe(call)
+            try {
+                val held = try { photoHeld() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
+                if (held) { pending = call; _state.update { it.copy(sendOncePrompt = true, status = null) } } else runDescribe(call)
+            } finally { requesting = false }
         }
     }
 
-    /** "Send over mobile data once": this one call goes out, the next describe asks again. Nothing is remembered. */
+    /** "Send over mobile data once": this one call goes out, the next describe asks again. Nothing is remembered. The marker covers every USER photo call inside this one describe (a describe may make more than one provider call). */
     fun sendOnce() {
         val c = pending ?: return
         pending = null

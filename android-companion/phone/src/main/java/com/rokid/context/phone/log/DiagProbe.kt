@@ -32,7 +32,7 @@ import java.util.TimeZone
  * Registered once from `ContextApp` on an IO scope; every callback only logs (non-blocking, through [PcLog]) and nothing here can throw into the app. The lines are INFO (file only while the Detailed log is on), except the
  * app start marker which is a milestone.
  */
-class DiagProbe(private val app: Application, private val scope: CoroutineScope) {
+class DiagProbe(private val app: Application, private val scope: CoroutineScope, private val onTimeChange: () -> Unit = {}) {
     @Volatile private var lastBattery = ""
     @Volatile private var lastNet = ""
     @Volatile private var lastWallMinusElapsed = System.currentTimeMillis() - SystemClock.elapsedRealtime()
@@ -121,9 +121,9 @@ class DiagProbe(private val app: Application, private val scope: CoroutineScope)
 
     // ---- clock and time zone ----
 
-    private fun registerTime() {
+    internal fun registerTime() {
         val receiver = object : BroadcastReceiver() {
-            override fun onReceive(c: Context, i: Intent) { guard { timeLine(i.action) } }
+            override fun onReceive(c: Context, i: Intent) { guard { timeLine(i.action) }; guard { onTimeChange() } }
         }
         app.registerReceiver(receiver, IntentFilter().apply { addAction(Intent.ACTION_TIME_CHANGED); addAction(Intent.ACTION_TIMEZONE_CHANGED) })
     }

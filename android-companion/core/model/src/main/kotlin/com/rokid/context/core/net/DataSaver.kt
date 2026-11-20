@@ -269,6 +269,8 @@ interface DataGate {
      * [photos] = photos the call carried. Counts only, never content. Default no-op.
      */
     fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) {}
+    /** Same, with the network class read when the call STARTED ([costlyAtStart], from [costlyNow]): the call counts where it began, whatever network it ends on. Default: [sent]. */
+    fun sentAt(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) = sent(kind, txBytes, rxBytes, photos)
     /** Re-reads the network facts that can change without a capability callback (Android Data Saver status, SIM and network country) and restarts a failed network watch. Cheap; default no-op. */
     fun refresh() {}
 

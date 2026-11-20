@@ -146,6 +146,21 @@ class PhotoSearchViewModelTest {
         assertEquals(1, markers.size)
     }
 
+    @Test fun twoQuickTapsWhileTheHeldCheckIsStillRunningKeepTheFirstDescribe() = runTest {
+        val check = CompletableDeferred<Boolean>()
+        heldFn = { check.await() }
+        val calls = mutableListOf<List<String>>()
+        describeFn = { calls += it; DescribeResult.Saved(1, 1) }
+        val m = vm("keys")
+        m.describe("a"); m.describe("b") // the second tap arrives before the async check of the first answered
+        check.complete(true)
+        assertTrue(m.state.value.sendOncePrompt)
+        m.sendOnce()
+        assertEquals("the first tap's describe is the one that goes out", listOf(listOf("a")), calls)
+        m.describe("b") // the flag is released: a later describe works again
+        assertTrue(m.state.value.sendOncePrompt)
+    }
+
     @Test fun whenNothingIsHeldTheDescribeRunsAtOnceWithoutTheMarker() = runTest {
         val markers = mutableListOf<Boolean>()
         describeFn = { markers += (currentCoroutineContext()[com.rokid.context.core.net.SendOnce.Key] != null); DescribeResult.Saved(1, 1) }
