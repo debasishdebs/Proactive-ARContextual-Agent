@@ -41,7 +41,7 @@ Whatever your own endpoint (OpenAI-compatible, Azure, a box on your LAN) receive
 
 Every model call declares which photos and memories it carries (`PayloadSources`). Text built from a photo (captions, scene and place-match text, derived facts) passes one gate (`ProvenanceGate`): if the photo or any source was forgotten, or the answer cannot be checked, it is not sent, shown, exported or kept (fail closed).
 
-The reverse-geocode label for the Location context source uses Android's `Geocoder`; which service answers is decided by your Android system (**UNVERIFIED**).
+The reverse-geocode label for the Location context source uses Android's `Geocoder`; which service answers is decided by your Android system (**UNVERIFIED**: on most phones it is a remote service, so your coordinates go to it). That lookup is gated: it is never made under Model privacy "Offline only" (no place name is then shown), and not when the data saver refuses a small remote call (roaming or an unknown network, unless you allowed small requests there). Model downloads stay user-started and are outside what "Offline only" blocks, by design.
 
 ## 3. What never leaves
 

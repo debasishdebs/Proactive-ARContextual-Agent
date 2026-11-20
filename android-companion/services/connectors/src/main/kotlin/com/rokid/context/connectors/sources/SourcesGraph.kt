@@ -62,7 +62,12 @@ object SourcesGraph {
                 CalendarSource(ZoneId.systemDefault()) { from, to -> calendar(from, to) },
                 NotesSource({ memory.shopping.open(10).map { ShoppingLineRow(it.name, it.qty, it.unit) } }, { memory.notes.recent(5).map { it.text } }),
                 ContactsSource { tokens -> contacts(tokens) },
-                LocationSource(LocationSource.lastKnown(app), LocationSource.geocoder(app), Dispatchers.IO),
+                LocationSource(
+                    LocationSource.lastKnown(app),
+                    // the Geocoder is a remote call: never under Offline only, and only when the data saver allows a small remote call
+                    LocationSource.gated(LocationSource.geocoder(app), { com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }, { com.rokid.context.ai.datasaver.DataSaverGraph.get(app) }),
+                    Dispatchers.IO,
+                ),
             ),
             granted = { p -> ContextCompat.checkSelfPermission(app, p) == PackageManager.PERMISSION_GRANTED },
         )

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Geocoder
 import android.location.LocationManager
+import com.rokid.context.core.log.PcLog
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
@@ -73,6 +74,26 @@ class LocationSource(
         fun geocoder(context: Context): suspend (Double, Double) -> Place? = { lat, lon ->
             if (!Geocoder.isPresent()) null
             else Geocoder(context, Locale.ENGLISH).getFromLocation(lat, lon, 1)?.firstOrNull()?.let { Place(it.subLocality, it.locality, it.adminArea) }
+        }
+
+        /**
+         * The Geocoder is a remote call on most devices (the coordinates go to the system's geocoding service), so it is gated like any other small remote call: NO lookup (null, so no place name) under Offline only
+         * (a throwing or missing reader reads as Offline only: fail closed), and none when the data saver refuses a SMALL remote call (roaming or an unknown network, unless the user allowed small requests there).
+         * A skip logs only a fixed token. [privacy] and [gate] are read at call time.
+         */
+        fun gated(inner: suspend (Double, Double) -> Place?, privacy: () -> com.rokid.context.core.net.ModelPrivacy, gate: () -> com.rokid.context.core.net.DataGate?): suspend (Double, Double) -> Place? = { lat, lon ->
+            val mode = try { privacy() } catch (e: CancellationException) { throw e } catch (e: Exception) { com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY }
+            if (mode != com.rokid.context.core.net.ModelPrivacy.AUTO) {
+                PcLog.i("PcLocation", "geocode skipped offline_only"); null
+            } else {
+                val g = try { gate() } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                val d = try { g?.decide(com.rokid.context.core.net.DataKind.SMALL, com.rokid.context.core.net.EndpointReach.REMOTE) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                if (g == null || d == null || !d.allowed) {
+                    PcLog.i("PcLocation", "geocode skipped data_saver reason=${d?.reason ?: "no_gate"}")
+                    try { if (g != null && d != null) g.skipped(com.rokid.context.core.net.DataKind.SMALL, com.rokid.context.core.net.Skipped.DROPPED, d) } catch (e: Exception) { }
+                    null
+                } else inner(lat, lon)
+            }
         }
     }
 }
