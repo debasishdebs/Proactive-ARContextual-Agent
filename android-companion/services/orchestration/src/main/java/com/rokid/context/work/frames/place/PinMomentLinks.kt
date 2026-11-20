@@ -161,6 +161,7 @@ object PinMomentLinks {
         val live = alive(cand.mapNotNull { it.momentId }.distinct())
         val gone = cand.filter { it.momentId !in live }.map { it.id }.toSet()
         if (gone.isNotEmpty() && !save(pins.filter { it.id !in gone })) return null
+        if (gone.isNotEmpty()) ShadowCaches.clearAll() // a pin went with its Moment: the shadow's in-memory vectors go at once
         return gone.size
     }
 
@@ -260,7 +261,7 @@ object PinMomentLinks {
         val armed = store.arming()?.let { it.pairs.keys + it.dead.keys } ?: emptySet() // an unfinished arming (a wipe not yet committed, a dead set not yet deleted) still needs these pins' links: never cleared here
         val cleared = store.clearMomentsExcept(alive(linked.toList()), armed) ?: return null
         val n = cleared.size
-        if (n > 0) PcLog.i("PcPlace", "pin moment link cleared by removal count=$n")
+        if (n > 0) { ShadowCaches.clearAll(); PcLog.i("PcPlace", "pin moment link cleared by removal count=$n") }
         return n
     }
 

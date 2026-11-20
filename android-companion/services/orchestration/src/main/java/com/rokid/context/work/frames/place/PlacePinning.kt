@@ -132,7 +132,7 @@ class PlacePinning(
         if (!pin.isValid) return@withLock PinResult.Refused(PinRefusal.INVALID)
         if (!save(now.map { if (it.id == id) pin else it })) return@withLock PinResult.Refused(PinRefusal.NOT_STORED)
         log("pin edited")
-        if (pin.momentId != old.momentId) { if (pin.momentId != null) log("pin moment linked") else log("pin moment unlinked by user") }
+        if (pin.momentId != old.momentId) { ShadowCaches.clearAll(); if (pin.momentId != null) log("pin moment linked") else log("pin moment unlinked by user") }
         PinResult.Saved(pin)
     }
 
@@ -145,6 +145,7 @@ class PlacePinning(
         val m = if (momentId == null) null else liveMoment(momentId) ?: return@withLock false
         if (old.momentId == m) return@withLock true
         if (!save(now.map { if (it.id == id) it.copy(momentId = m) else it })) return@withLock false
+        ShadowCaches.clearAll() // a pin link change: the shadow's in-memory reference vectors go at once
         if (m != null) log("pin moment linked") else log("pin moment unlinked by user")
         true
     }

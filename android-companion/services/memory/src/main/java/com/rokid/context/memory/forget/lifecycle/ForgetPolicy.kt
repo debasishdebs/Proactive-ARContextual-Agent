@@ -113,7 +113,7 @@ object ForgetPolicy {
             user = r(K, "FAM:322-325 'never a deletion target'"), deleteAll = r(C, "DG:28-86 TABLES: place/cell SCRUBBED, area KEPT (FamilyInventoryTest.thePlacePackIsNotPhotoDerivedAndDeleteAllKeepsItsSeededAreas)"),
             expiry = r(K, "FAM:322-325"), sweep = r(K, "FAM:322-325"), purge = r(K, "FAM:322-325")),
         PolicyRow(ForgetChild.PLACE_CARD,
-            user = r(K, "FAM:329 in-memory card, never a deletion target"), deleteAll = r(C, "FAM:329 PlaceCardHolder cleared with the pack", verified = false),
+            user = r(K, "FAM:329 in-memory card, never a deletion target (the shadow's in-memory vectors of a pin's reference photo, FAM:329 holders, are derived and cleared by ShadowCaches on every Forget listener event)"), deleteAll = r(C, "FAM:329 PlaceCardHolder cleared with the pack; ShadowCaches.clearAll() empties the in-memory shadow vectors first (MemoryWipe.wipeNow)", verified = false),
             expiry = r(K, "FAM:329"), sweep = r(K, "FAM:329"), purge = r(K, "FAM:329")),
         PolicyRow(ForgetChild.CONFIG,
             user = r(K, "FAM:336 settings and user lists, never a deletion target"), deleteAll = r(C, "MW:59,179 WIPED_PREFS cleared; DG PREFS decide kept vs wiped"),

@@ -97,6 +97,7 @@ object MemoryWipe {
     }
 
     private suspend fun wipeNow(context: Context, db: ContextDatabase, resume: Boolean): Int {
+        com.rokid.context.work.frames.place.ShadowCaches.clearAll() // the Place Guide shadow's in-memory vectors (derived from photos) go first, before anything is deleted; the Forget listeners clear them again at the end
         // Slice 1.4.2: the pins with a reference Moment are armed (durably, for THIS wipe) before anything is deleted; if that cannot be stored nothing is deleted (PinArmFailed). A resume keeps its earlier committed arming.
         val pinOp = com.rokid.context.work.frames.place.PinMomentLinks.beginWipe(context, resume)
         try { return wipeNowArmed(context, db, resume, pinOp) } finally { com.rokid.context.work.frames.place.PinMomentLinks.endWipe(pinOp) }

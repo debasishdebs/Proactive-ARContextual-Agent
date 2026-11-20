@@ -75,6 +75,6 @@ class FamilyInventoryTest {
 
     @Test fun aPlaceMemoryIsAMemoryAndItsFrameSourceRowIsThePhotos() {
         assertEquals(Family.MEMORY, Families.ownerOfTable("memory")); assertEquals(Family.PHOTO, Families.ownerOfTable("frame_source"))
-        assertEquals(listOf("PlaceCardHolder"), Families.of(Family.PLACE_CARD).holders)
+        assertEquals(listOf("PlaceCardHolder", "PinReferenceVectors", "PlaceShadow"), Families.of(Family.PLACE_CARD).holders)
     }
 }
