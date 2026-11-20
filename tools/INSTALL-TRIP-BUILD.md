@@ -53,6 +53,18 @@ Each check prints PASS / WARN / FAIL / UNKNOWN with a reason; exit 0 = no FAIL, 
 7. Call state, clock skew (WARN above 120 s), airplane/Bluetooth/Wi-Fi, battery (WARN below 50%), free storage (WARN below 2 GB).
 8. Glasses: installed, version/sha, process. Link state is not observable read-only: always UNKNOWN, confirm on the phone.
 
+9. Trip-build checks (phone, debuggable builds via `run-as`; otherwise one UNKNOWN; counts and enums only, never a log line, name or id; fixtures 169 total with `--fixtures`):
+   - `log segments`: `files/logs` has `pca.log` (+ `pca.log.N`), total under 300 MB (FAIL at or above; WARN if `pca.log` is missing).
+   - `detailed log`: inferred from the logs (the app-start milestone is always written, the hourly `PcDiag heartbeat` only while Detailed log is on): heartbeat within 70 min = ON; none after more than 70 min of running = OFF; shorter run = UNKNOWN; stale heartbeat = WARN.
+   - `log forbidden shapes` (last `pca.log`): lines with a coordinate-like decimal pair or `http` = FAIL, `@` only = WARN; counts only.
+   - `data saver (PcData)`: `blocked` lines by fixed reason token (anything outside the DataPolicy list prints as `other`) and the last `net cost=` enum.
+   - `prefs files`: presence by exact name only of `place_pins`, `data_saver`, `ai_backend`, `ai_backend_init`, `online_map` (the last is optional). Whether they are excluded from the backup rules is NOT checked here (that needs the APK manifest; see the BackupRulesTest).
+   - `model privacy`: `mode=AUTO|OFFLINE_ONLY|missing|garbled`, `reset=yes` (WARN) when the sentinel says the stored choice was lost (same rule as `ModelPrivacyStore`).
+   - `place attempts`: count of `place attempt` lines in the last 24 h (`PCA_CHECK_PLACE_HOURS`, measured back from the last log record) by outcome; unknown outcome tokens count as garbled (WARN). Own parser, not `tools/place-attempt-report.sh` (that prints ids).
+   - `pins`: total, with a Moment link, without one (python3 on the Mac; never prints a name or id).
+   - `db version` / `db integrity`: a host COPY of `context.db`, only when the header and the app's own `db_encrypted` flag both say plaintext (same pairing rule as the install script) and `sqlite3` exists: `user_version` must be 17 and `integrity_check` ok. Encrypted (the normal case) = UNKNOWN, inconsistent = WARN.
+   Not verifiable without a device: the real `ls -l` / prefs / log formats on a phone (parsers follow the source and the emulator-style samples), the 70-minute heartbeat on a real run, and everything on a non-debuggable build.
+
 Emulator run (phone only, 1.0.0 code 4 candidate): 20 PASS, 1 WARN (no battery exemption on the emulator), 0 FAIL; a wrong APK folder gave FAIL on sha256 and a deliver_hud flag set ON gave FAIL on safety defaults (both exit 1).
 
 ## Link health report (read-only)

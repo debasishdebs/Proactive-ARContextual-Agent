@@ -6,10 +6,12 @@
 # Exit codes: 0 = no FAIL (WARN/UNKNOWN allowed, read them), 1 = at least one FAIL, 2 = refused / usage.
 # NEVER installs, uninstalls, clears, force-stops, writes settings or sends input: every adb call goes through adb_safe (allow-list, tested in the fixtures).
 # It only reads (dumpsys, getprop, pm path, logcat -d, run-as cat of two prefs files) and pulls the installed base APK into a temp dir it removes.
+# Trip-build checks (check_trip_build, debuggable builds): files/logs segments and pca.log content, shared_prefs names, pin counts, db user_version on a host COPY: counts and enums only.
 # Every adb call carries -s. Prints counts, hashes, names and statuses only: never a logcat line, token or pairing code.
 # Procedure: tools/INSTALL-TRIP-BUILD.md section "Post-install check".
 set -uo pipefail
 umask 077
+export LC_ALL=C   # byte-wise awk/sed: hostile or non-UTF-8 log bytes must never abort a parser
 
 PHONE_PKG=com.rokid.context
 GLASSES_PKG=com.rokid.context.glasses
@@ -190,6 +192,121 @@ log_counts() {
     END { f = (fe > pr) ? fe : pr; printf "%d %d %d %d\n", f, an + 0, d + 0, rel + 0 }'
 }
 
+# ---------- trip-build pure parsers (counts and enums only: nothing read from a log or a prefs file is ever echoed except a whitelisted token) ----------
+# shared awk prelude: tmins("MM-DD", "HH:MM:SS") -> minutes since Jan 1 (pca.log has no year); tdiff handles the new-year wrap
+TS_AWK='
+BEGIN { split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ") }
+function tmins(d, t,   m, n, i) { m = substr(d, 1, 2) + 0; n = substr(d, 4, 2) + 0; for (i = 1; i < m; i++) n += dim[i]; return (n * 24 + substr(t, 1, 2)) * 60 + substr(t, 4, 2) }
+function tdiff(a, b,   x) { x = b - a; if (x < 0) x += 365 * 1440; return x }
+function isrec() { return ($1 ~ /^[0-9][0-9]-[0-9][0-9]$/ && $2 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/) }
+'
+# ls -l of files/logs (stdin) -> "segments total_bytes ignored has_main": only exact pca.log / pca.log.N names with 8 ls fields count
+seg_scan() {
+  awk '
+    $1 ~ /^-/ && NF == 8 && $5 ~ /^[0-9]+$/ && length($5) <= 12 && ($8 == "pca.log" || $8 ~ /^pca\.log\.[0-9][0-9]?$/) { n++; t += $5; if ($8 == "pca.log") m = 1; next }
+    $1 ~ /^total/ { next }
+    NF > 0 { ign++ }
+    END { printf "%d %d %d %d\n", n + 0, t + 0, ign + 0, m + 0 }'
+}
+# detailed-log inference from log text (stdin): "start hb ran_min gap_min" (start Y|N; ran/gap minutes or -), measured to the LAST record
+diag_state() {
+  awk "$TS_AWK"'
+    { if (isrec()) {
+        t = tmins($1, $2); last = t; have = 1
+        if ($4 == "PcDiag" && $5 == "app" && $6 == "start") { st = t; hb = 0; hbt = -1; s = 1 }
+        else if ($4 == "PcDiag" && $5 == "heartbeat" && s) { hb++; hbt = t }
+    } }
+    END {
+      if (!s || !have) { print "N 0 - -"; exit }
+      printf "Y %d %d %s\n", hb, tdiff(st, last), (hbt < 0 ? "-" : tdiff(hbt, last))
+    }'
+}
+# forbidden shapes in the message text of a log (stdin): "latlon http at" line counts; the timestamp is not scanned
+forbidden_counts() {
+  awk '
+    { l = $0; sub(/^[0-9][0-9]-[0-9][0-9] [0-9:.]+ /, "", l)
+      if (l ~ /-?[0-9][0-9]?[0-9]?\.[0-9][0-9][0-9][0-9]*[ ,;:\/=]+-?[0-9][0-9]?[0-9]?\.[0-9][0-9][0-9][0-9]*/) a++
+      if (tolower(l) ~ /http/) b++
+      if (index(l, "@") > 0) c++ }
+    END { printf "%d %d %d\n", a + 0, b + 0, c + 0 }'
+}
+# PcData "blocked ... reason=<token>" lines (stdin) -> sorted "token n" lines; tokens only from the fixed DataPolicy list, anything else is "other"
+pcdata_counts() {
+  awk '
+    BEGIN { n = split("on_device lan free offline wifi_only roaming unknown_network home_mobile small_allowed anywhere android_data_saver data_saver", k, " "); for (i = 1; i <= n; i++) ok[k[i]] = 1 }
+    $4 == "PcData" && $5 == "blocked" { r = "other"; for (i = 6; i <= NF; i++) if (substr($i, 1, 7) == "reason=") { v = substr($i, 8); if (v in ok) r = v; break } c[r]++ }
+    END { for (r in c) print r, c[r] }' | sort
+}
+# last "net cost=<ENUM>" PcData line (stdin) -> FREE|HOME_MOBILE|ROAMING|UNKNOWN|OFFLINE|RESTRICTED|other|none
+pcdata_last_cost() {
+  awk '$4 == "PcData" && $5 == "net" && $6 ~ /^cost=/ { v = substr($6, 6); if (v == "FREE" || v == "HOME_MOBILE" || v == "ROAMING" || v == "UNKNOWN" || v == "OFFLINE" || v == "RESTRICTED") last = v; else last = "other" } END { print (last == "" ? "none" : last) }'
+}
+# shared_prefs names (stdin: one name per line, or ls -l) -> "place_pins=Y|N data_saver=.. ai_backend=.. ai_backend_init=.. online_map=.." (exact names only)
+prefs_present() {
+  awk '
+    { n = $NF; sub(/\r$/, "", n); if (NF == 1 || NF == 8) seen[n] = 1 }
+    END { split("place_pins data_saver ai_backend ai_backend_init online_map", w, " ")
+      for (i = 1; i <= 5; i++) printf "%s=%s%s", w[i], ((w[i] ".xml") in seen ? "Y" : "N"), (i < 5 ? " " : "\n") }'
+}
+# one <string> value of a prefs XML (stdin) by exact key name: the first match, raw (callers whitelist it before use)
+prefs_string() { sed -n "s/.*<string name=\"$1\">\([^<]*\)<\/string>.*/\1/p" | sed -n 1p; }
+# Model privacy (mirrors ModelPrivacyStore.load): $1 = ai_backend.xml text, $2 = ai_backend_init.xml text -> "mode=AUTO|OFFLINE_ONLY|missing|garbled reset=yes|no"
+privacy_state() {
+  local m last initb ib2 mode reset=no
+  m="$(printf '%s\n' "$1" | prefs_string mode)"; last="$(printf '%s\n' "$2" | prefs_string last_choice)"
+  initb="$(printf '%s\n' "$1" | prefs_bool initialised)"; ib2="$(printf '%s\n' "$2" | prefs_bool initialised)"
+  if [ -z "$m" ]; then
+    mode=missing; if [ "$initb" = true ] || [ "$ib2" = true ]; then reset=yes; fi
+  else
+    case "$m" in AUTO) mode=AUTO ;; OFFLINE_ONLY) mode=OFFLINE_ONLY ;; *) mode=garbled; reset=yes ;; esac
+    if [ "$m" = AUTO ] && [ "$last" = OFFLINE_ONLY ]; then mode=OFFLINE_ONLY; reset=yes; fi
+  fi
+  echo "mode=$mode reset=$reset"
+}
+# place attempts (stdin log, $1 = window hours back from the log's last record) -> "total=N window=H outcomes=A:1,B:2|none garbled=G" (fixed outcome list only)
+place_counts() {
+  awk -v H="$1" "$TS_AWK"'
+    BEGIN { n = split("DISABLED ZONE NO_FRAME STALE_FRAME SEEN NO_FIX STALE_FIX NO_CANDIDATES DUPLICATE RATE_LIMITED BUSY MATCHED NONE CONTRACT LOW_CONFIDENCE NEARBY NOTHING_NEARBY DROPPED FAILED NOT_ADMITTED", ko, " "); for (i = 1; i <= n; i++) known[ko[i]] = 1 }
+    { if (isrec()) { t = tmins($1, $2); last = t; p = index($0, "place attempt outcome="); if (p > 0) { m++; at[m] = t; v = substr($0, p + 22); sub(/[^A-Za-z0-9_].*/, "", v); ot[m] = v } } }
+    END {
+      for (i = 1; i <= m; i++) if (tdiff(at[i], last) <= H * 60) { tot++; if (ot[i] in known) c[ot[i]]++; else g++ }
+      s = ""; for (i = 1; i <= n; i++) if (c[ko[i]] > 0) s = s (s == "" ? "" : ",") ko[i] ":" c[ko[i]]
+      printf "total=%d window=%d outcomes=%s garbled=%d\n", tot + 0, H, (s == "" ? "none" : s), g + 0 }'
+}
+# pins (stdin = place_pins.xml) -> "total with_moment without_moment" | bad | nopython. Never prints a name, id or any text.
+pins_counts() {
+  local o
+  command -v python3 >/dev/null 2>&1 || { echo nopython; return; }
+  o="$(python3 -c '
+import sys, json, xml.etree.ElementTree as E
+try:
+    r = E.fromstring(sys.stdin.read()); s = None
+    for e in r.iter("string"):
+        if e.get("name") == "pins": s = e.text
+    if s is None:
+        print("0 0 0"); sys.exit(0)
+    a = json.loads(s)
+    if not isinstance(a, list) or any(not isinstance(o, dict) for o in a):
+        print("bad"); sys.exit(0)
+    m = sum(1 for o in a if isinstance(o.get("moment"), str) and o.get("moment"))
+    print(len(a), m, len(a) - m)
+except Exception:
+    print("bad")
+' 2>/dev/null)" || o=bad
+  if [[ "$o" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]]; then echo "$o"; else echo bad; fi
+}
+# db mode: $1 = first 15 bytes of context.db, $2 = db_encrypted ('true'|'false'|'') -> plaintext | encrypted | inconsistent (same pairing rule as install-trip-build.sh)
+db_mode3() {
+  case "$1:$2" in
+    "SQLite format 3:false") echo plaintext ;;
+    "SQLite format 3:"*) echo inconsistent ;;
+    *:false) echo inconsistent ;;
+    *) echo encrypted ;;
+  esac
+}
+# segment names (stdin) -> oldest first (highest pca.log.N first, pca.log last); anything else is dropped
+seg_order() { awk '$0 == "pca.log" { m = 1; next } $0 ~ /^pca\.log\.[0-9][0-9]?$/ { n = $0; sub(/.*\./, "", n); print n + 0, $0 } END { if (m) print -1, "pca.log" }' | sort -k1,1nr | awk '{print $2}'; }
+
 # ---------- fixtures ----------
 FX_PASS=0 FX_FAIL=0
 eq() { # name expected actual
@@ -323,6 +440,103 @@ run_fixtures() {
   eq "safe: run-as cat allowed" "-s S exec-out run-as com.x cat shared_prefs/a.xml" "$(adb_safe S exec-out run-as com.x cat shared_prefs/a.xml 2>/dev/null)"
   eq "safe: reboot refused" 97 "$(adb_safe S reboot >/dev/null 2>&1; echo $?)"
   eq "safe: monkey refused" 97 "$(adb_safe S shell monkey -p com.x 1 >/dev/null 2>&1; echo $?)"
+  # --- trip-build checks (new): log segments, detailed-log inference, forbidden shapes, PcData, prefs names, privacy, place attempts, pins, db mode
+  local LS1 LSB L1 L2 L3 L4 L5 PIN PX SEC=Zq9SECRET
+  LS1='total 2048
+-rw------- 1 u0_a145 u0_a145 3000000 2026-11-20 10:00 pca.log
+-rw------- 1 u0_a145 u0_a145 3000000 2026-11-20 09:00 pca.log.1
+-rw------- 1 u0_a145 u0_a145 2999999 2026-11-20 08:00 pca.log.2
+-rw------- 1 u0_a145 u0_a145 99 2026-11-20 08:00 pca.log.bak
+-rw------- 1 u0_a145 u0_a145 99 2026-11-20 08:00 other.txt'
+  eq "seg: 3 segments counted, bak/other ignored" "3 8999999 2 1" "$(printf '%s\n' "$LS1" | seg_scan)"
+  eq "seg: no pca.log" "1 5 0 0" "$(printf -- '-rw------- 1 u u 5 2026-11-20 10:00 pca.log.1\n' | seg_scan)"
+  eq "seg: empty" "0 0 0 0" "$(printf '' | seg_scan)"
+  eq "seg: garbled size ignored" "0 0 1 0" "$(printf -- '-rw------- 1 u u 12x 2026-11-20 10:00 pca.log\n' | seg_scan)"
+  eq "seg: spaced name ignored" "0 0 1 0" "$(printf -- '-rw------- 1 u u 5 2026-11-20 10:00 pca.log extra\n' | seg_scan)"
+  eq "seg: error text ignored" "0 0 1 0" "$(printf 'run-as: package not debuggable\n' | seg_scan)"
+  eq "seg: directory not counted" "0 0 1 0" "$(printf 'drwx------ 1 u u 4096 2026-11-20 10:00 pca.log\n' | seg_scan)"
+  eq "seg order: oldest first" "pca.log.10 pca.log.2 pca.log.1 pca.log" "$(printf 'pca.log\npca.log.1\npca.log.10\npca.log.2\nzzz\npca.log.x\n' | seg_order | tr '\n' ' ' | sed 's/ $//')"
+  eq "seg order: empty" "" "$(printf '' | seg_order)"
+  L1='11-20 08:00:00.000 I PcDiag app start cold process sdk=34 uptimeS=3 tzOffsetMin=330
+11-20 08:30:00.000 I PcDiag heartbeat uptimeS=1800 heapMb=40
+11-20 09:30:00.000 I PcDiag heartbeat uptimeS=5400 heapMb=41
+11-20 10:00:00.000 I PcDiag battery bucket=8'
+  eq "diag: heartbeats ON" "Y 2 120 30" "$(printf '%s\n' "$L1" | diag_state)"
+  eq "diag: no start milestone" "N 0 - -" "$(printf '11-20 08:30:00.000 I PcDiag heartbeat x\n' | diag_state)"
+  eq "diag: empty" "N 0 - -" "$(printf '' | diag_state)"
+  eq "diag: no heartbeat, short run" "Y 0 30 -" "$(printf '11-20 08:00:00.000 I PcDiag app start cold\n11-20 08:30:00.000 I Other x\n' | diag_state)"
+  eq "diag: no heartbeat, long run" "Y 0 150 -" "$(printf '11-20 08:00:00.000 I PcDiag app start cold\n11-20 10:30:00.000 I Other x\n' | diag_state)"
+  eq "diag: last start wins, old heartbeat dropped" "Y 0 10 -" "$(printf '11-20 07:00:00.000 I PcDiag app start cold\n11-20 07:30:00.000 I PcDiag heartbeat x\n11-20 08:00:00.000 I PcDiag app start cold\n11-20 08:10:00.000 I X y\n' | diag_state)"
+  eq "diag: garbled lines skipped" "Y 1 60 60" "$(printf 'garbage\n\377\376\n11-20 08:00:00.000 I PcDiag app start cold\nxx-yy 99:99 I PcDiag heartbeat\n11-20 08:00:30.000 I PcDiag heartbeat u\n11-20 09:00:30.000 I X y\n' | diag_state)"
+  eq "diag: new year wrap" "Y 0 60 -" "$(printf '12-31 23:30:00.000 I PcDiag app start cold\n01-01 00:30:00.000 I X y\n' | diag_state)"
+  eq "forbidden: clean" "0 0 0" "$(printf '11-20 08:00:00.000 I PcDiag heapMb=12.5 batt=80\n11-20 08:00:01.000 I PlaceSampler place attempt outcome=NONE distB=12\n' | forbidden_counts)"
+  eq "forbidden: lat lon pair" "1 0 0" "$(printf '11-20 08:00:00.000 I X at 17.385044, 78.486671 ok\n' | forbidden_counts)"
+  eq "forbidden: negative pair slash" "1 0 0" "$(printf '11-20 08:00:00.000 I X -33.8688/151.2093\n' | forbidden_counts)"
+  eq "forbidden: http either case" "0 2 0" "$(printf '11-20 08:00:00.000 I X https://a\n11-20 08:00:00.000 I X HTTP/1.1\n' | forbidden_counts)"
+  eq "forbidden: at sign" "0 0 1" "$(printf '11-20 08:00:00.000 I X a@b\n' | forbidden_counts)"
+  eq "forbidden: timestamp alone is not a pair" "0 0 0" "$(printf '11-20 08:00:00.123 I X 10.500 only\n' | forbidden_counts)"
+  eq "forbidden: empty" "0 0 0" "$(printf '' | forbidden_counts)"
+  eq "forbidden: output is digits only, never the line" "0 1 0" "$(printf '11-20 08:00:00.000 I X http://%s.example\n' "$SEC" | forbidden_counts | sed "s/$SEC/LEAK/")"
+  L2='11-20 08:00:00.000 I PcData blocked kind=PHOTO what=upload reason=roaming
+11-20 08:00:01.000 I PcData blocked kind=PHOTO what=upload reason=roaming
+11-20 08:00:02.000 I PcData blocked kind=SMALL what=x reason=wifi_only
+11-20 08:00:03.000 I PcData net cost=ROAMING
+11-20 08:00:04.000 I PcData blocked kind=PHOTO what=x reason=Zq9SECRET_host'
+  eq "pcdata: counts by reason, unknown token is other" "other 1 roaming 2 wifi_only 1" "$(printf '%s\n' "$L2" | pcdata_counts | tr '\n' ' ' | sed 's/ $//')"
+  eq "pcdata: secret token never echoed" "0" "$(printf '%s\n' "$L2" | pcdata_counts | grep -c "$SEC")"
+  eq "pcdata: last cost" ROAMING "$(printf '%s\n' "$L2" | pcdata_last_cost)"
+  eq "pcdata: cost garbled is other" other "$(printf '11-20 08:00:03.000 I PcData net cost=%s\n' "$SEC" | pcdata_last_cost)"
+  eq "pcdata: no lines" none "$(printf 'x\n' | pcdata_last_cost)"
+  eq "pcdata: empty counts" "" "$(printf '' | pcdata_counts)"
+  eq "pcdata: reason missing is other" "other 1" "$(printf '11-20 08:00:00.000 I PcData blocked kind=PHOTO\n' | pcdata_counts)"
+  eq "prefs names: all present (plain ls)" "place_pins=Y data_saver=Y ai_backend=Y ai_backend_init=Y online_map=Y" "$(printf 'place_pins.xml\ndata_saver.xml\nai_backend.xml\nai_backend_init.xml\nonline_map.xml\n' | prefs_present)"
+  eq "prefs names: some absent" "place_pins=Y data_saver=N ai_backend=N ai_backend_init=N online_map=N" "$(printf 'place_pins.xml\nother.xml\n' | prefs_present)"
+  eq "prefs names: lookalikes do not count" "place_pins=N data_saver=N ai_backend=N ai_backend_init=N online_map=N" "$(printf 'place_pins.xml.bak\nxplace_pins.xml\nai_backend.xml.tmp\n' | prefs_present)"
+  eq "prefs names: ls -l form" "place_pins=Y data_saver=N ai_backend=N ai_backend_init=N online_map=N" "$(printf -- '-rw------- 1 u u 5 2026-11-20 10:00 place_pins.xml\n' | prefs_present)"
+  eq "prefs names: error text and empty" "place_pins=N data_saver=N ai_backend=N ai_backend_init=N online_map=N" "$(printf 'ls: shared_prefs: No such file\n' | prefs_present)"
+  eq "prefs names: only fixed names are printed" "0" "$(printf 'Zq9SECRET_john.xml\nplace_pins.xml\n' | prefs_present | grep -c "$SEC")"
+  PX='<map><string name="mode">OFFLINE_ONLY</string><boolean name="initialised" value="true" /></map>'
+  eq "privacy: offline only" "mode=OFFLINE_ONLY reset=no" "$(privacy_state "$PX" '')"
+  eq "privacy: auto" "mode=AUTO reset=no" "$(privacy_state '<map><string name="mode">AUTO</string></map>' '')"
+  eq "privacy: fresh install (nothing)" "mode=missing reset=no" "$(privacy_state '' '')"
+  eq "privacy: mode lost but sentinel initialised = RESET" "mode=missing reset=yes" "$(privacy_state '<map />' '<map><boolean name="initialised" value="true" /></map>')"
+  eq "privacy: auto but sentinel last_choice offline = RESET" "mode=OFFLINE_ONLY reset=yes" "$(privacy_state '<map><string name="mode">AUTO</string></map>' '<map><string name="last_choice">OFFLINE_ONLY</string></map>')"
+  eq "privacy: unknown value is garbled+RESET, text not echoed" "mode=garbled reset=yes" "$(privacy_state "<map><string name=\"mode\">$SEC</string></map>" '')"
+  eq "privacy: lookalike key ignored" "mode=missing reset=no" "$(privacy_state '<map><string name="mode2">AUTO</string></map>' '')"
+  eq "privacy: init flag in main file" "mode=missing reset=yes" "$(privacy_state '<map><boolean name="initialised" value="true" /></map>' '')"
+  L3='11-20 08:00:00.000 I PlaceSampler place attempt outcome=MATCHED reason=ok chosen=wd:Q1
+11-20 09:00:00.000 I PlaceSampler place attempt outcome=NONE reason=x
+11-20 09:10:00.000 I PlaceSampler place attempt outcome=NONE reason=x
+11-20 09:20:00.000 I PlaceSampler place attempt outcome=Zq9SECRET reason=x
+11-20 09:30:00.000 I PlaceSampler place outcome=NONE
+11-19 00:00:00.000 I PlaceSampler place attempt outcome=FAILED reason=old
+11-20 10:00:00.000 I X y'
+  eq "place: window 24h, outcomes in fixed order, garbled counted" "total=4 window=24 outcomes=MATCHED:1,NONE:2 garbled=1" "$(printf '%s\n' "$L3" | place_counts 24)"
+  eq "place: window 1h" "total=3 window=1 outcomes=NONE:2 garbled=1" "$(printf '%s\n' "$L3" | place_counts 1)"
+  eq "place: window 48h includes older" "total=5 window=48 outcomes=MATCHED:1,NONE:2,FAILED:1 garbled=1" "$(printf '%s\n' "$L3" | place_counts 48)"
+  eq "place: none at all" "total=0 window=24 outcomes=none garbled=0" "$(printf '11-20 10:00:00.000 I X y\n' | place_counts 24)"
+  eq "place: empty" "total=0 window=24 outcomes=none garbled=0" "$(printf '' | place_counts 24)"
+  eq "place: secret outcome never echoed" "0" "$(printf '%s\n' "$L3" | place_counts 24 | grep -c "$SEC")"
+  eq "place: hostile non-record line with the phrase ignored" "total=0 window=24 outcomes=none garbled=0" "$(printf 'place attempt outcome=NONE\n' | place_counts 24)"
+  PIN='<map><string name="pins">[{&quot;id&quot;:&quot;u1&quot;,&quot;name&quot;:&quot;Zq9SECRET Cafe&quot;,&quot;lat&quot;:1.5,&quot;moment&quot;:&quot;abcd1234&quot;,&quot;at&quot;:5},{&quot;id&quot;:&quot;u2&quot;,&quot;name&quot;:&quot;B&quot;},{&quot;id&quot;:&quot;u3&quot;,&quot;moment&quot;:&quot;ffff0000&quot;}]</string><string name="armed">x</string></map>'
+  eq "pins: total, with, without" "3 2 1" "$(printf '%s\n' "$PIN" | pins_counts)"
+  eq "pins: names/ids never echoed" "0" "$(printf '%s\n' "$PIN" | pins_counts | grep -c -e "$SEC" -e u1)"
+  eq "pins: no pins key" "0 0 0" "$(printf '<map />\n' | pins_counts)"
+  eq "pins: empty list" "0 0 0" "$(printf '<map><string name="pins">[]</string></map>\n' | pins_counts)"
+  eq "pins: garbled xml" bad "$(printf 'not xml %s <<<\n' "$SEC" | pins_counts)"
+  eq "pins: garbled json" bad "$(printf '<map><string name="pins">[{oops %s</string></map>\n' "$SEC" | pins_counts)"
+  eq "pins: not a list" bad "$(printf '<map><string name="pins">{"a":1}</string></map>\n' | pins_counts)"
+  eq "pins: list of non-objects" bad "$(printf '<map><string name="pins">[1,2]</string></map>\n' | pins_counts)"
+  eq "pins: null moment counts as without" "1 0 1" "$(printf '<map><string name="pins">[{"id":"a","moment":null}]</string></map>\n' | pins_counts)"
+  eq "pins: empty input" bad "$(printf '' | pins_counts)"
+  eq "dbmode: plaintext" plaintext "$(db_mode3 'SQLite format 3' false)"
+  eq "dbmode: plaintext header, flag true" inconsistent "$(db_mode3 'SQLite format 3' true)"
+  eq "dbmode: plaintext header, no flag" inconsistent "$(db_mode3 'SQLite format 3' '')"
+  eq "dbmode: encrypted header, flag false" inconsistent "$(db_mode3 'abcdefghijklmno' false)"
+  eq "dbmode: encrypted header, flag true" encrypted "$(db_mode3 'abcdefghijklmno' true)"
+  eq "dbmode: encrypted header, no flag" encrypted "$(db_mode3 'abcdefghijklmno' '')"
+  eq "safe: run-as via shell ls -l is read-only and allowed" "-s S shell run-as com.x ls -l files/logs; echo __PCA_RC=\$?" "$(adb_safe S shell "run-as com.x ls -l files/logs; echo __PCA_RC=\$?" 2>/dev/null)"
+  eq "safe: shell rm of a log still refused" 97 "$(adb_safe S shell 'run-as com.x rm files/logs/pca.log' >/dev/null 2>&1; echo $?)"
   say "fixtures: $FX_PASS passed, $FX_FAIL failed"
   [ "$FX_FAIL" = 0 ]
 }
@@ -477,6 +691,129 @@ check_system() { # phone
   else res PASS "free storage" "$((fr / 1024)) MB free"; fi
 }
 
+# ---------- trip-build checks (phone, debuggable builds via run-as; counts and enums only, never content) ----------
+LOG_CAP_BYTES=314572800   # 300 MB
+HB_MAX_MIN=70
+PLACE_HOURS="${PCA_CHECK_PLACE_HOURS:-24}"
+PREF_TXT=""
+pref_read() { # file-name-without-.xml -> PREF_TXT; 0 = read, 1 = unreadable
+  PREF_TXT=""
+  rc_shell "$1" "run-as $PHONE_PKG cat shared_prefs/$2.xml" || return 1
+  [ "$REMOTE_RC" = 0 ] || return 1
+  PREF_TXT="$REMOTE_OUT"; return 0
+}
+
+check_trip_logs() { # serial -> builds $TMP/all.log (every segment, oldest first) and $TMP/main.log (pca.log)
+  local s="$1" ls_out sc n bytes ign hasmain names f
+  rc_shell "$s" "run-as $PHONE_PKG ls -l files/logs" || { res UNKNOWN "log segments" "ls files/logs failed (adb)"; return; }
+  if [ "$REMOTE_RC" != 0 ]; then res UNKNOWN "log segments" "files/logs not listable"; return; fi
+  sc="$(printf '%s\n' "$REMOTE_OUT" | seg_scan)"; set -- $sc; n="$1"; bytes="$2"; ign="$3"; hasmain="$4"
+  ls_out="$REMOTE_OUT"
+  if [ "$n" = 0 ] || [ "$hasmain" = 0 ]; then res WARN "log segments" "pca.log missing ($n segment(s), $ign other entries)"; return; fi
+  if [ "$bytes" -ge "$LOG_CAP_BYTES" ]; then res FAIL "log segments" "$n segments, $((bytes / 1048576)) MB (>= 300 MB cap)"; return; fi
+  res PASS "log segments" "$n segment(s) incl. pca.log, $((bytes / 1048576)) MB total (< 300 MB)"
+  [ -n "$TMP" ] || return
+  : > "$TMP/all.log"; : > "$TMP/main.log"
+  names="$(printf '%s\n' "$ls_out" | awk 'NF == 8 {print $8}' | seg_order)"
+  for f in $names; do
+    A "$s" exec-out run-as "$PHONE_PKG" cat "files/logs/$f" 2>/dev/null | tr -d '\r' > "$TMP/seg.part" || true
+    cat "$TMP/seg.part" >> "$TMP/all.log"
+    if [ "$f" = pca.log ]; then cp "$TMP/seg.part" "$TMP/main.log"; fi
+  done
+  rm -f "$TMP/seg.part"
+  TRIP_LOGS=1
+}
+
+check_trip_log_content() {
+  local st hb ran gap fc lat http at pc tot line cost pl
+  if [ "${TRIP_LOGS:-0}" != 1 ]; then
+    res UNKNOWN "detailed log" "log not read"; res UNKNOWN "log forbidden shapes" "log not read"; res UNKNOWN "data saver (PcData)" "log not read"; res UNKNOWN "place attempts" "log not read"; return
+  fi
+  set -- $(diag_state < "$TMP/all.log"); st="$1"; hb="$2"; ran="$3"; gap="$4"
+  if [ "$st" != Y ]; then res UNKNOWN "detailed log" "no PcDiag app-start milestone in the retained log"
+  elif [ "$hb" -ge 1 ]; then
+    if [ "$gap" != - ] && [ "$gap" -le "$HB_MAX_MIN" ]; then res PASS "detailed log" "ON inferred: $hb heartbeat(s), last ${gap} min before the log end, app ran ${ran} min"
+    else res WARN "detailed log" "heartbeats seen ($hb) but the last is ${gap} min old (> ${HB_MAX_MIN}): logging stalled or switched off"; fi
+  elif [ "$ran" -gt "$HB_MAX_MIN" ]; then res PASS "detailed log" "OFF inferred: no heartbeat in ${ran} min of running (milestones only)"
+  else res UNKNOWN "detailed log" "app ran only ${ran} min: too short to see a heartbeat (wait > ${HB_MAX_MIN} min)"; fi
+  set -- $(forbidden_counts < "$TMP/main.log"); lat="$1"; http="$2"; at="$3"
+  if [ "$lat" != 0 ] || [ "$http" != 0 ]; then res FAIL "log forbidden shapes" "pca.log lines with coordinate-like pairs=$lat, 'http'=$http, '@'=$at (counts only)"
+  elif [ "$at" != 0 ]; then res WARN "log forbidden shapes" "pca.log lines with '@'=$at (no coordinates/http)"
+  else res PASS "log forbidden shapes" "pca.log: coordinate-like pairs=0 http=0 @=0"; fi
+  pc="$(pcdata_counts < "$TMP/main.log")"; cost="$(pcdata_last_cost < "$TMP/main.log")"
+  if [ -z "$pc" ]; then res PASS "data saver (PcData)" "no blocked lines in pca.log; last net cost=$cost"
+  else pl="$(printf '%s\n' "$pc" | awk '{printf "%s%s=%s", (NR > 1 ? " " : ""), $1, $2}')"; res PASS "data saver (PcData)" "blocked by reason: $pl; last net cost=$cost (report only)"; fi
+  pl="$(place_counts "$PLACE_HOURS" < "$TMP/all.log")"
+  set -- $pl
+  case "$pl" in *" garbled=0") res PASS "place attempts" "$pl" ;; *) res WARN "place attempts" "$pl (garbled outcomes present)" ;; esac
+}
+
+check_trip_prefs() {
+  local s="$1" pp ls_ok=0 pins ab init pv cnt
+  if rc_shell "$s" "run-as $PHONE_PKG ls shared_prefs" && [ "$REMOTE_RC" = 0 ]; then ls_ok=1; fi
+  if [ "$ls_ok" = 0 ]; then res UNKNOWN "prefs files" "shared_prefs not listable"; res UNKNOWN "model privacy" "prefs unreadable"; res UNKNOWN "pins" "prefs unreadable"; return; fi
+  pp="$(printf '%s\n' "$REMOTE_OUT" | prefs_present)"
+  res PASS "prefs files" "$pp (names only; online_map is optional)"
+  ab=""; init=""
+  case "$pp" in *"ai_backend=Y"*) pref_read "$s" ai_backend && ab="$PREF_TXT" || ab="" ;; esac
+  case "$pp" in *"ai_backend_init=Y"*) pref_read "$s" ai_backend_init && init="$PREF_TXT" || init="" ;; esac
+  pv="$(privacy_state "$ab" "$init")"
+  case "$pv" in
+    *"reset=yes"*) res WARN "model privacy" "$pv: the stored choice was lost, the app reads Offline only: confirm in Settings" ;;
+    *garbled*) res WARN "model privacy" "$pv" ;;
+    *) res PASS "model privacy" "$pv" ;;
+  esac
+  case "$pp" in
+    *"place_pins=Y"*)
+      if pref_read "$s" place_pins; then
+        cnt="$(printf '%s\n' "$PREF_TXT" | pins_counts)"
+        case "$cnt" in
+          nopython) res UNKNOWN "pins" "python3 not available on the host" ;;
+          bad) res UNKNOWN "pins" "place_pins.xml unreadable or not the expected JSON" ;;
+          *) set -- $cnt; res PASS "pins" "total=$1 with Moment link=$2 without=$3 (counts only)" ;;
+        esac
+      else res UNKNOWN "pins" "place_pins.xml unreadable"; fi ;;
+    *) res PASS "pins" "total=0 (no place_pins.xml)" ;;
+  esac
+}
+
+check_trip_db() { # serial: only a COPY, only when the app's own flag says plaintext
+  local s="$1" d hdr enc mode uv ic
+  [ -n "$TMP" ] || { res UNKNOWN "db version" "no temp dir"; return; }
+  d="$TMP/db"; mkdir -p "$d"
+  A "$s" exec-out run-as "$PHONE_PKG" cat databases/context.db > "$d/context.db" 2>/dev/null || true
+  if [ ! -s "$d/context.db" ]; then res UNKNOWN "db version" "context.db not readable"; rm -rf "$d"; return; fi
+  hdr="$(head -c 15 "$d/context.db" 2>/dev/null | tr -c 'A-Za-z0-9 ' '?')"
+  enc=""; if pref_read "$s" memory_graph; then enc="$(printf '%s\n' "$PREF_TXT" | grep -o '<boolean name="db_encrypted" value="[a-z]*"' | sed 's/.*value="//; s/"$//' | sed -n 1p)"; fi
+  mode="$(db_mode3 "$hdr" "$enc")"
+  case "$mode" in
+    encrypted) res UNKNOWN "db version" "database is encrypted: user_version/integrity not readable read-only on the host"; rm -rf "$d"; return ;;
+    inconsistent) res WARN "db version" "db header and the app's db_encrypted flag disagree: not inspected"; rm -rf "$d"; return ;;
+  esac
+  if ! command -v sqlite3 >/dev/null 2>&1; then res UNKNOWN "db version" "sqlite3 not on the host"; rm -rf "$d"; return; fi
+  A "$s" exec-out run-as "$PHONE_PKG" cat databases/context.db-wal > "$d/context.db-wal" 2>/dev/null || true
+  [ -s "$d/context.db-wal" ] || rm -f "$d/context.db-wal"
+  uv="$(sqlite3 "$d/context.db" 'PRAGMA user_version;' 2>/dev/null | tr -d '\r[:space:]')" || uv=""
+  ic="$(sqlite3 "$d/context.db" 'PRAGMA integrity_check;' 2>/dev/null | tr -d '\r')" || ic=""
+  rm -rf "$d"
+  case "$uv" in ''|*[!0-9]*) res UNKNOWN "db version" "user_version unreadable"; return ;; esac
+  if [ "$uv" = 17 ]; then res PASS "db version" "user_version=17"; else res FAIL "db version" "user_version=$uv (expected 17)"; fi
+  if [ "$ic" = ok ]; then res PASS "db integrity" "integrity_check ok (copy)"
+  elif [ -z "$ic" ]; then res UNKNOWN "db integrity" "integrity_check gave no answer"
+  else res FAIL "db integrity" "integrity_check on the copy did not say ok"; fi
+}
+
+check_trip_build() { # phone
+  local s="$1"
+  TRIP_LOGS=0
+  rc_shell "$s" "run-as $PHONE_PKG id" || { res UNKNOWN "trip-build checks" "run-as probe failed (adb)"; return; }
+  if [ "$REMOTE_RC" != 0 ]; then res UNKNOWN "trip-build checks" "not debuggable (run-as unavailable): logs, prefs and db not readable"; return; fi
+  check_trip_logs "$s"
+  check_trip_log_content
+  check_trip_prefs "$s"
+  check_trip_db "$s"
+}
+
 # ---------- main ----------
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -536,6 +873,7 @@ if check_version_hash "$PHONE" "$PHONE_PKG" "$APKS/phone-debug.apk" phone; then
   check_logs "$PHONE" "$PHONE_PKG" "$LAST_PID" phone
   check_safety "$PHONE"
 fi
+check_trip_build "$PHONE"
 check_system "$PHONE"
 
 # (8) glasses
