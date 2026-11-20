@@ -316,13 +316,27 @@ class PinMomentLinksTest {
         assertEquals(listOf("Pin 2"), names())
     }
 
-    @Test fun aForgetArmingWhileAnEarlierWipeIsStillPendingCarriesItsPairsToo() = runBlocking<Unit> {
+    @Test fun aUserForgetWhileAnEarlierWipeIsStillPendingNeverCarriesTheWipesUncommittedPairs() = runBlocking<Unit> {
         val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
-        pendingFlag = true; db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op1) // epoch committed, never marked, process died
+        pendingFlag = true; db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op1) // epoch committed, never marked, process died: the flag stays set
         fx.frame("c", (sec2 + 50) * 1000 + 5); fx.project(MomentId.format(sec2 + 50), MomentPartKind.FRAME to "c")
         assertTrue(store.write(store.pins() + pin(3, MomentId.format(sec2 + 50))))
-        explicit(target = { l -> l.filter { it == MomentId.format(sec2 + 50) }.toSet() }, wipePending = { pendingFlag }) { fx.service.forgetMoment("c") }
-        assertEquals("the pending wipe's pins are not lost: the forget's commit carries them", listOf("Pin 2"), names())
+        var armedInside: Arming? = null
+        explicit(target = { l -> l.filter { it == MomentId.format(sec2 + 50) }.toSet() }, wipePending = { pendingFlag }) { armedInside = store.arming(); fx.service.forgetMoment("c") }
+        assertTrue("the user's Forget arms only its own pair", armedInside!!.dead.isEmpty() && armedInside!!.pairs.keys == setOf(ids[3]))
+        assertEquals("only the pin the user confirmed is deleted; the wipe's pins keep (their links are cleared)", listOf("Pin 0", "Pin 1", "Pin 2"), names())
+    }
+
+    @Test fun anOperationInFlightThatArmedNothingDoesNotBlockASweepOrAnotherForget() = runBlocking<Unit> {
+        var swept: Int? = -1; var inner = false
+        explicit(target = none) { // nothing of this Forget reaches a pin: no arming
+            assertEquals(null, store.arming())
+            swept = sweep()
+            explicit(target = only1) { fx.service.forgetMoment("a"); inner = true }
+            true
+        }
+        assertEquals("the sweep ran (no arming to protect)", 0, swept)
+        assertTrue(inner); assertEquals(listOf("Pin 1", "Pin 2"), names())
     }
 
     @Test fun aRangeForgetRacingADeleteAllCannotOverwriteTheWipesArming() = runBlocking<Unit> {
