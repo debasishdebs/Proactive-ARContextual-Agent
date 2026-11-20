@@ -111,15 +111,29 @@ object PlaceSamplers {
     /** The shadow scorer over the ACTIVE image-text space (today only the on-device Nomic bundle, and only when the user bound it); absent space = `shadow=na`. Reads the flag on every attempt. */
     internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): PlaceShadow {
         val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
+        val db = { MemoryGraph.get(app).db }
+        val gate = { com.rokid.context.provenance.ProvenanceGate(db()) }
+        // One reference-vector cache per shadow, in memory only (see PinReferenceVectors). It is built here, so with the flag off nothing is ever created or called.
+        val refs = PinReferenceVectors(
+            pinMoments = { PlaceGraph.pins(app).pins().mapNotNull { p -> p.momentId?.let { p.id to it } }.toMap() },
+            momentFrame = { momentId -> db().momentDao().photoFrameOf(momentId)?.id?.takeIf { gate().goneFrames(setOf(it), requirePresent = false).isEmpty() } },
+            photo = { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull()?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) } },
+            mayEmbed = { KeyframeGraph.get(app).power.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.IMAGE_VECTORS) },
+            zoneBlocked = zoneBlocked, generation = { MemoryWipe.generation.get() }, scope = refScope, elapsed = android.os.SystemClock::elapsedRealtime,
+        )
         return PlaceShadow(
             embedder = { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } },
             photo = { id ->
-                if (zoneBlocked() || com.rokid.context.provenance.ProvenanceGate(MemoryGraph.get(app).db).goneFrames(setOf(id), requirePresent = false).isNotEmpty()) null
+                if (zoneBlocked() || gate().goneFrames(setOf(id), requirePresent = false).isNotEmpty()) null
                 else photoOf(id)?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) }
             },
+            imageRefs = refs::vectorsFor,
             elapsed = android.os.SystemClock::elapsedRealtime, generation = { MemoryWipe.generation.get() },
         )
     }
+
+    /** Where a missing reference vector is embedded (one at a time, bounded by [PinReferenceVectors]); it outlives one attempt so a slow first embed still lands in the cache. */
+    private val refScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
 
     private const val TAG = "PcPlace"
 
