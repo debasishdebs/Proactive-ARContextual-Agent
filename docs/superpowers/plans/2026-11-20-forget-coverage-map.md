@@ -101,3 +101,75 @@ Families (columns): PHOTO, MEMORY (target), MEMORY descendants, MOMENT, SCENE, D
 Each cell: the action (ERASE / REBUILD / DROP / DE_LINK / KEEP), `inDialog` (count or names), and whether it is planned or post-commit. Cells the current code already fixes (keep as is): Retention keeps accepted proposals and keyframes and does not rebuild descendants (`FP:39`); photo expiry keeps memories, meta and vector (`FE:159-178`); suspect sweep keeps photos (`FE:152-157`); explicit sources FORGET pins and system sources DE_LINK them (`PML:10-17`); Delete all FORGETs every Moment-linked pin and keeps unlinked ones (`MemorySettings.kt:292`).
 
 Cells that need a ruling before the table is final: (a) MARK under SYSTEM_EXPIRY_PHOTO / LEGACY (today ERASE via the radius); (b) PIN under MARK_UNDO_GLASSES (today FORGET, with no dialog); (c) SYSTEM_EXPIRY_LEGACY and SYSTEM_PURGE_INVALID orphans (today the User policy); (d) whether WATCH_OFF and CANVAS_DELETE_RUN belong in the table or are CONTROL-only.
+
+## 6. Verification pass of the policy table (2026-11-20, tip of `feat/v101-ask-eval`)
+
+Every `verified = false` cell of `ForgetPolicy.kt` (20 table cells; 29 when counted per source kind, because the four user kinds share one cell) was re-read at the cited line. Result: all cells are now `verified = true` and the test ceiling is 0. Line numbers in sections 1-5 above are those of an older tip and several are off; this section and the `at` strings in `ForgetPolicy.kt` are the current ones.
+
+| Cell | Result |
+|---|---|
+| MOMENT x sweep, SCENE x expiry/sweep, DERIVED_FIELD x expiry/sweep | Confirmed CASCADE. `removeDescriptions` runs `cascade(lockFrames=false)`, whose `dropHolding(inside, ...)` (FE:209, FP:107) is NOT gated by `lockFrames`; `MomentDao.remove` (MomentDao.kt:57-66) shrinks the holding Scenes and deletes the derived rows. |
+| TRACE x sweep, RUN_RESULT x sweep | Confirmed KEEP (FE:211-214: `dropCanvasOutputs` only runs under `lockFrames`). |
+| **TRACE x purge** | **Corrected CASCADE -> KEEP.** IMP:63 `deleteTracesForFrames` deletes `canvas_live_trace`, a RUN_RESULT table (Families.kt:203), not the IMU `canvas_trace` rows. The orphan memories of the purge have no frame row, so no capture time and no radius span (FE:237). KEEP holds because of the data shape, not a rule (see O3). The expected matrix in `ForgetPolicyTest` was changed too. |
+| CONTROL x sweep | Action unchanged (CASCADE), evidence corrected: the sweep writes no tombstone and moves no fence (both need `lockFrames`); it only writes `cleanup_outbox` rows for an uncited legacy frame (FE:231). The old line "fence moves with every Forget" was wrong for this source. |
+| PLACE_CARD x delete-all | Confirmed CASCADE (PlaceGraph.kt:31-35, MW:100,127, ShadowCaches.kt:41). The FAM line numbers had moved (FAM:329 is now FAM:333-338). |
+| FILES x user / delete-all / expiry / sweep | Confirmed (F, F, C, K). Evidence corrected: the post-commit sweep is `FA:194-196` (`apply`), not `FA:167-198`; Delete all deletes files at MW:139-180. Sweep is KEEP except the legacy-frame exception (O2). |
+| GLASSES x user / delete-all / expiry / sweep / purge | Confirmed (C, F, C, K, K) with corrected evidence. User: outbox rows `FE:252` plus the listener path (`ForgetService.kt:248-254` -> `CanvasForgetCoordinator.kt:44-53`). Delete all: `MW:195` (was cited as MW:179) -> `CanvasForgetCoordinator.kt:58-61`. **Expiry reaches the glasses through the radius span's listener notice, not through the outbox** (`phoneFilesOnly` queues no glasses rows), so the old evidence "FE:250 outbox rows" was wrong though the action was right. `FE:56 notifyAfterCommit` was a wrong line: it is FE:244. |
+| LOGS x user, x delete-all | Confirmed (K, F). Evidence corrected: the milestone line is `FA:162-165` (was FA:155-158); `LogWipeListener` overrides only `onDeleteAll` (PhoneLogging.kt:139-146), so a user Forget never wipes logs. |
+| PIN x delete-all, PIN x expiry/sweep/purge | Already `verified`, but the cited lines had moved (PML:190, PML:205, PML:252-259, "MemorySettings.kt:292, unverified"); now PML:195-208, PML:119, PML:257-262, MemorySettings.kt:295. |
+
+Noted, not wrong: FILES x purge is "C" and queues nothing in practice (an orphan memory has no `frame` row, so `files` at FE:230 is empty).
+
+## 7. Deletes outside the Forget pipeline (added to the table)
+
+`ForgetPolicy.sideDeletes` holds one mini row set per delete that is neither a `ForgetSource` nor routed through the planner or executor. A child absent from a row is KEEP. `ForgetPolicyTest` has three new guards: the rows equal an expected matrix written a second time; no system side delete forgets a pin or a mark; and a source scan (`services/memory`, `services/orchestration`, `phone`) fails when a production file calls one of the entry points without being listed, or a listed file no longer calls it.
+
+| Side delete | Starts at | Explicit | RUN_RESULT | CONTROL | Everything else |
+|---|---|---|---|---|---|
+| WATCH_OFF | `HubGraph.kt:158` `onWatchOff` -> `WatchRowCleanup.kt:10,18-25` (gated, retries every 30 s) -> `CanvasDao.kt:47` | no | FORGET (`canvas_run`, items, scores of every run holding a `watch:` item, CanvasDao.kt:39,226) | FORGET (the run's saved marker, CanvasDao.kt:41) | KEEP |
+| CANVAS_RUN_DELETE | `CanvasApi.kt:165` `DELETE runs/:id` -> `CanvasBackendImpl.kt:891-896` -> `CanvasDao.kt:39` | yes | FORGET (run, items, scores) | FORGET (saved marker) | KEEP |
+| CANVAS_RUN_PRUNE (extra, found by the same scan) | `CanvasRunner.kt:366,437,484,532,587` before each new run -> `CanvasDao.kt:50` | no | FORGET (runs beyond the newest 20) | FORGET (saved marker) | KEEP |
+
+`canvas_live_trace` is keyed by `publishId` and none of the three touches it.
+
+## 8. Open rulings
+
+Nothing below changes behaviour. Each has the code evidence, the options and a recommendation; the table cell shows today's behaviour and cites the ruling.
+
+**O1. MARK under photo expiry (SYSTEM_EXPIRY) cascades (this is G9).**
+Evidence: `FP:197` -> `dropCanvasOutputs` `FP:249-255` erases the marks inside the +/- radius (`range()` FP:230-231) and the marks linked to the photo (FP:255); the executor does the same via `FE:175,236-243` -> `TraceFamily.eraseRange` -> `CanvasSlice3Dao.forgetRangeTx` (`deleteLabelsBetween`, CanvasSlice3Dao.kt:77-83). The design rule ("a system source never deletes a user-authored object", enforced for pins by `ForgetPolicyTest.noSystemSourceForgetsAPin`) is not applied to marks. `ForgetPolicyTest.knownDivergenceMarkUnderPhotoExpiryIsCascadeNotKeep` pins this divergence.
+Options: (a) keep ERASE: expiry is hygiene for a photo that is gone anyway, and a mark in the radius is "about" that moment. (b) KEEP the marks; only the Moment goes (what the purge does, IMP:20). (c) DE_LINK: clear the mark's photo link (`canvas_label.frameId`), keep the mark and its time. In (b) and (c) the radius traces (sensor history) stay erased, because they are the photo's sensor context, not user-authored.
+Recommendation: (c). It matches the pin rule (system sources de-link, explicit sources delete), loses nothing the user typed, and costs one flag on the expiry path.
+
+**O2. Legacy frames (no `frame_meta`) take the user cascade from system sources.**
+Evidence: `RW:144-148` retention step 7 calls `service.forgetMoment(it, redactCites = false, phoneFilesOnly = true)`: the full photo Forget (tombstone, ERASE, radius marks and traces, run results, glasses-range notice through `FE:244`) with only the cites and the glasses outbox rows switched off. Memory expiry (`FE:149`, `keepKeyframes`) and the suspect sweep (`FE:156`) also treat an uncited legacy frame as fully owned: `FE:229-231` delete its vector and queue its JPEG even when `lockFrames=false`, so a swept legacy photo is left as a `frame` row without a file or vector. Because `frames = cited - keyframes` (FE:203), this affects only frames without `frame_meta`.
+Options: (a) status quo, documented (legacy photos are pre-wave-1 data the app already treats as disposable). (b) a SYSTEM_EXPIRY_LEGACY source with its own row (marks per O1, pins DE_LINK, accepted proposals kept). (c) in the sweep, drop legacy frames from `uncited` when `lockFrames=false`, so no file or vector goes while the row stays.
+Recommendation: (b) for retention, plus (c) as a bug fix: the half-deleted state of the sweep case is the one outcome nobody designed. Cells affected: FILES x sweep (KEEP, but not for a legacy frame), CONTROL x sweep, FILES x expiry.
+
+**O3. Orphan memories of the one-time purge use the user cascade.**
+Evidence: `IMP:67-70` calls `service.forgetFacts(chunk)`, i.e. `Policy.User`: descendants REBUILD, asks and nudges redacted, **accepted proposals scrubbed** (`scrubAccepted = true`, FE:228; retention keeps them, FE:149), tombstones written for frames that no longer exist, and `dropCanvasOutputs` (FE:236-247) which runs `RunResultFamily.dropSliceOutputs` -> `deleteSliceOutputsForFrames` -> `moveFrameForgetFence`, so **it voids every open laptop-helper job** (CanvasSlice3Dao.kt:87-95) and notifies the listeners with the orphan frame ids (FE:244: trace folders swept, shadow caches cleared). The TRACE, GLASSES and FILES x purge cells are KEEP/empty only because an orphan has no `frame`, no `frame_meta`, and so no wire id or capture time (`MemoryOrphan`, ExportDao.kt:44-49), not because a rule says so.
+Options: (a) status quo (it runs once, at the first start after v0.9.6; marker `invalid_moment_purge_v1_ms` in `canvas_meta`). (b) a SYSTEM_PURGE policy: Retention-like cascade (accepted proposals kept, no fence move, no helper-job void). (c) delete the one-time purge when no device can still need it.
+Recommendation: (c) if no installed build predates v0.9.6, else (b). It is dead weight with a surprising side effect.
+
+**O4. WATCH-OFF: gated raw DAO delete, outside the pipeline.**
+Evidence: section 7. It takes the `DataOpGate` (waits for an export) but does no lease revocation and fires no `ForgetListeners` event, does not move `ForgetActions.removals` (FA:171), so an open canvas page is not told. It deletes only runs that already hold an item (CanvasDao.kt:44-46: "a run with no item yet holds no value and stays").
+Options: (a) leave it as a side delete with the rows of section 7 (done). (b) give it a `SYSTEM_WATCH_OFF` source and an executor op `RunResultFamily.selfDelete(DROP)`, so it is one transaction with a count log line and moves `removals`. (c) also scrub the saved memories a watch-derived run produced (today they are ordinary memories and are not touched).
+Recommendation: (a) now, (b) when the executor takes over the run results (step 7 of section 4). Not (c) without a user ruling: a saved memory is the user's.
+
+**O5. Canvas run delete (user) takes no `DataOpGate` (this is G13).**
+Evidence: `CanvasBackendImpl.kt:891-896` calls `dao.deleteRun(id)` directly after `runner.isBusy(id)`. `DeleterGateInventoryTest`'s `deleting` list does not include `.deleteRun(`, so it cannot catch this; `.deleteWatchRuns(` is listed and its caller is gated. A Save of the same run (`CanvasRunSave`) and an export can race the delete.
+Options: (a) wrap in `DataOpGate.shared.delete { ... }` and add `.deleteRun(` to the inventory test (a behaviour change: the call may then throw `ExportInProgress` / `WriteInProgress`, so `CanvasApi` needs a 409 mapping). (b) rule it as regenerable and CONTROL-only, leave it. (c) route it through the executor as RUN_RESULT DROP.
+Recommendation: (a). Not done here (no behaviour changes in this pass); the new source scan already fails if a second caller appears.
+
+**O6. PIN under glasses mark undo is FORGET with no dialog.**
+Evidence: `MarkRecorder.kt:156-164` `removeMark` calls `forgetPhoto(frame)`, wired in `MarkGraph.kt:28` to `ForgetActions.forgetMomentOutcome`, which is `run(...)` with `PinMomentLinks.explicit` (`FA:61-62,280`). The undo is an explicit source, so the pin whose Moment loses its last photo is deleted, and a glasses tap or voice undo shows no confirmation. `MarkGraph.kt` is the one allow-listed unscoped caller in `DeleterGateInventoryTest` (decision D1).
+Options: (a) status quo: undoing a mark whose photo is a pin's reference Moment deletes the pin. (b) the glasses undo is a system-like source: DE_LINK the pin ("Needs a Moment"), delete it only from the phone. (c) keep FORGET only for the app's own "Forget this mark" (`MarkRecorder.kt:133`), which can confirm.
+Recommendation: (b). A voice command without a dialog must not destroy a user-authored pin; the link clear is recoverable (the pin keeps its place and only needs a new Moment).
+
+**O7. PLACE_CARD x user Forget is KEEP in the table but the code withdraws the card.**
+Evidence: `PlaceGraph.kt:31-35` `onFramesForgotten` (also fired by photo expiry, FE:244) trips the fence and `withdrawFrames`; `onRangeForgotten` clears the card; `ShadowCaches.kt:38-43` clears the in-memory shadow vectors on every Forget, expiry and `onUserForget`. The table says KEEP ("never a deletion target") for every source except Delete all.
+Options: (a) leave it: the card is never stored, KEEP means "no stored data touched". (b) make the user and expiry cells DE_LINK or CASCADE, so a future table-driven executor does not forget to call the withdraw.
+Recommendation: (b) when step 2 wires the table in; no behaviour change now.
+
+**O8. Deleters with no source row of their own (reported, by design).**
+`ForgetPolicyTest` covers every `Family`, every table of `DeletionGraph` and now every side delete. Every family that deletes data has a row. Not covered by a source row of their own: user-list edits of CONFIG tables (`shopping_item`, `note`, `role_binding`, `endpoint`, `pause_record`, `pause_interval`, `canvas_pipeline`: single DAO deletes from settings screens; CONFIG is KEEP under every Forget source), the startup `FrameSweep.sweep` and `MemoryExport.retryPending` (FA:341-342, post-commit cleanup of an earlier Forget, FILES), the image-vector expiry (`RW:139-141`, a raw delete of EMBEDDING under SYSTEM_EXPIRY, covered by that cell), and the `CleanupOutbox` drain. Recommendation: none, unless CONFIG deletes ever have to take part in Delete all's count plan (G5).

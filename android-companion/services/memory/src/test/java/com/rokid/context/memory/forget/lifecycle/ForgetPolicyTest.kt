@@ -22,7 +22,7 @@ class ForgetPolicyTest {
         ForgetChild.SCENE to listOf(C, F, C, C, C),
         ForgetChild.DERIVED_FIELD to listOf(C, F, C, C, C),
         ForgetChild.MARK to listOf(F, F, C, K, K),
-        ForgetChild.TRACE to listOf(C, F, C, K, C),
+        ForgetChild.TRACE to listOf(C, F, C, K, K),
         ForgetChild.RUN_RESULT to listOf(C, F, C, K, C),
         ForgetChild.ANSWER to listOf(C, F, C, C, C),
         ForgetChild.NUDGE to listOf(C, F, C, C, C),
@@ -130,10 +130,48 @@ class ForgetPolicyTest {
         assertTrue("G9: a ruling is pending", ForgetPolicy.rule(ForgetChild.MARK, ForgetSourceKind.SYSTEM_EXPIRY).at.contains("needs a ruling"))
     }
 
+    /** Counted per source kind (the four user kinds share one rule, so an unverified user cell counts 4). Every cell was re-read at its cited line on 2026-11-20: the ceiling is 0 and must stay there; a new cell lands verified or not at all. */
     @Test fun theUnverifiedCellsAreListedSoStep2ConfirmsThem() {
-        val unverified = ForgetPolicy.rows.flatMap { row -> ForgetSourceKind.entries.filter { !row.rule(it).verified }.map { "${row.child} x $it" } }
-        // not a failure: a count that only shrinks. Raise the ceiling only with a written reason.
-        assertTrue("unverified cells grew to ${unverified.size}: $unverified", unverified.size <= 29)
+        val unverified = ForgetPolicy.rows.flatMap { row -> ForgetSourceKind.entries.filter { !row.rule(it).verified }.map { "${row.child} x $it" } } +
+            ForgetPolicy.sideDeletes.flatMap { d -> d.cells.filterValues { !it.verified }.keys.map { "${d.name} x $it" } }
+        assertTrue("unverified cells grew to ${unverified.size}: $unverified", unverified.size <= 0)
+    }
+
+    // ---- deletes outside the Forget pipeline (watch-off, canvas run delete, run prune) ----
+
+    private val sideExpected: Map<String, Pair<Boolean, Map<ForgetChild, PolicyAction>>> = mapOf(
+        "WATCH_OFF" to (false to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
+        "CANVAS_RUN_DELETE" to (true to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
+        "CANVAS_RUN_PRUNE" to (false to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
+    )
+
+    /** FAILS when a side delete loses its row, changes a cell, or a new one is added without being written here too. */
+    @Test fun everySideDeleteHasARowThatEqualsTodaysBehaviour() {
+        assertEquals("one row per side delete: add the new one here and in ForgetPolicy.sideDeletes", sideExpected.keys, ForgetPolicy.sideDeletes.map { it.name }.toSet())
+        assertEquals("no side delete twice", ForgetPolicy.sideDeletes.size, ForgetPolicy.sideDeletes.map { it.name }.toSet().size)
+        for (d in ForgetPolicy.sideDeletes) {
+            val (explicit, cells) = sideExpected.getValue(d.name)
+            assertEquals("${d.name} explicit", explicit, d.explicit)
+            for (child in ForgetChild.entries) assertEquals("${d.name} x $child", cells[child] ?: K, d.action(child))
+            for ((child, rule) in d.cells) assertTrue("${d.name} x $child has no file:line evidence: '${rule.at}'", Regex("[A-Za-z]+(\\.kt)?:\\d+").containsMatchIn(rule.at))
+        }
+    }
+
+    /** The privacy rule for the non-Forget deletes: a system delete (watch-off, prune) never FORGETs a user-authored object (a pin, a mark). */
+    @Test fun noSystemSideDeleteForgetsAUserAuthoredObject() {
+        for (d in ForgetPolicy.sideDeletes.filter { !it.explicit }) for (child in listOf(ForgetChild.PIN, ForgetChild.MARK)) assertTrue("${d.name} must not delete $child", d.action(child) != F)
+    }
+
+    /** FAILS when a production file starts calling one of the side-delete entry points without a row, or a listed caller no longer calls it (the row is then stale). */
+    @Test fun everySideDeleteCallerIsListedAndEveryListedCallerExists() {
+        val root = generateSequence(java.io.File("").absoluteFile) { it.parentFile }.first { java.io.File(it, "phone").isDirectory && java.io.File(it, "services").isDirectory }
+        val files = listOf("services/memory/src/main", "services/orchestration/src/main", "phone/src/main").flatMap { r -> java.io.File(root, r).walkTopDown().filter { it.isFile && it.name.endsWith(".kt") }.toList() }
+        assertTrue("the scan sees the DAO and the callers", files.any { it.name == "CanvasDao.kt" } && files.any { it.name == "CanvasRunner.kt" } && files.any { it.name == "CanvasBackendImpl.kt" })
+        val code = files.associate { f -> f.name to f.readLines().filter { l -> l.trimStart().let { !it.startsWith("*") && !it.startsWith("//") && !it.startsWith("/*") } }.joinToString("\n") }
+        for (d in ForgetPolicy.sideDeletes) {
+            val found = code.filter { (name, c) -> name != "CanvasDao.kt" && name != "ForgetPolicy.kt" && d.entryPoints.any { it in c } }.keys
+            assertEquals("${d.name}: the files that call ${d.entryPoints} (a NEW deleter needs a row in ForgetPolicy.sideDeletes)", d.callers.toSet(), found)
+        }
     }
 
     // ---- ForgetSource ----
