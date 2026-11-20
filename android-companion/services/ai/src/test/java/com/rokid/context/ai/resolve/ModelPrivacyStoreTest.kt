@@ -137,7 +137,7 @@ class ModelPrivacyStoreTest {
         val p = prefs("mp3")
         p.edit().putString("mode", "SOMETHING_NEW").commit()
         assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p).current())
-        assertTrue("an unknown value counts as reset, so the screen says so", ModelPrivacyStore(p).wasReset.value)
+        assertTrue("an unknown value counts as reset, so the screen says so", ModelPrivacyStore(p).also { it.warm() }.wasReset.value)
         p.edit().clear().putInt("mode", 7).commit() // a ClassCastException on read
         assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p).current())
     }
@@ -194,5 +194,34 @@ class ModelPrivacyStoreTest {
         val g = DataSaverGraph(DataSaverStore(prefs("mp8")), { wifi }, { 100L }, privacy = { ModelPrivacy.OFFLINE_ONLY })
         g.skipped(DataKind.PHOTO, com.rokid.context.core.net.Skipped.UPLOAD_QUEUED, g.decide(DataKind.PHOTO, EndpointReach.REMOTE))
         assertEquals(0L, g.ledger.today().total)
+    }
+
+    // ---- P3-4: mode and wasReset never read the disk on the caller's thread ----
+
+    /** Prefs that record which thread read them. */
+    private fun spying(inner: SharedPreferences, readers: MutableSet<Thread>): SharedPreferences = java.lang.reflect.Proxy.newProxyInstance(
+        SharedPreferences::class.java.classLoader, arrayOf(SharedPreferences::class.java),
+    ) { _, m, args -> if (m.name.startsWith("get") || m.name == "contains") synchronized(readers) { readers += Thread.currentThread() }; m.invoke(inner, *(args ?: emptyArray())) } as SharedPreferences
+
+    @Test fun modeAndWasResetAreNeverLoadedOnTheCallersThread_andCarryTheStoredValueOnceWarm() {
+        val p = prefs("mp20"); val s = prefs("mp20s")
+        ModelPrivacyStore(p, s, DIRECT).set(ModelPrivacy.OFFLINE_ONLY)
+        p.edit().clear().commit() // lost main file after a choice: Offline only, reset
+        val readers = HashSet<Thread>()
+        val st = ModelPrivacyStore(spying(p, readers), spying(s, readers), DIRECT)
+        val me = Thread.currentThread()
+        val m = st.mode; val r = st.wasReset // the first access, from the test thread
+        val end = System.currentTimeMillis() + 5_000
+        while (st.peek() == null && System.currentTimeMillis() < end) Thread.sleep(10)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, st.peek())
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, m.value); assertTrue(r.value)
+        synchronized(readers) { assertTrue("the disk was read, and not by the caller's thread", readers.isNotEmpty() && me !in readers) }
+    }
+
+    @Test fun beforeTheFirstLoadTheFlowsAreThePendingDefault_andAChoiceMadeMeanwhileWins() {
+        val st = ModelPrivacyStore(prefs("mp21"), prefs("mp21s"), DIRECT)
+        assertEquals("pending: the screen's Loading signal", null, st.peek())
+        st.begin(ModelPrivacy.OFFLINE_ONLY)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, st.mode.value); assertFalse(st.wasReset.value)
     }
 }
