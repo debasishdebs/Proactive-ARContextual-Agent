@@ -92,6 +92,19 @@ index($0, "place attempt") == 0 { next }
   cd = ("card" in f) ? tok(f["card"]) : "(missing)"; cdc[cd]++
   if (cd == "dropped") cw[("cardWhy" in f) ? tok(f["cardWhy"]) : "(missing)"]++
   if ("reveal" in f && f["reveal"] != "-") rv[tok(f["reveal"])]++
+  # shadow scoring (1.4.4a): only lines written with placeShadowScore on carry shadow=
+  if ("shadow" in f) {
+    sh = tok(f["shadow"]); shc[sh]++; nsh++
+    if (sh == "ok") {
+      ag = ("agrees" in f) ? tok(f["agrees"]) : "(missing)"; if (ag != "true" && ag != "false" && ag != "na") ag = "(garbled)"
+      agc[ag]++
+      tb = ("scoreTop" in f) ? tok(f["scoreTop"]) : "(missing)"; mb = ("margin" in f) ? tok(f["margin"]) : "(missing)"
+      if (ag == "true" || ag == "false") { agtop[tb, ag]++; agtopseen[tb] = 1; agmar[mb, ag]++; agmarseen[mb] = 1 }
+      if ("chosenRank" in f && isnum(f["chosenRank"]) && f["chosenRank"] + 0 >= 1 && f["chosenRank"] + 0 <= 99) { crk = f["chosenRank"] + 0; if (crk > 5) crk = 5; rkc[crk]++ }
+      if ("embedMs" in f && isnum(f["embedMs"]) && f["embedMs"] + 0 >= 0) { nem++; emv[nem] = f["embedMs"] + 0 }
+      if ("shCh" in f) shch[tok(f["shCh"])]++
+    }
+  }
 }
 END {
   printf "place attempt lines: %d parsed, %d unparseable; pack lookup lines: %d\n", natt + 0, unparsed + 0, nlk + 0
@@ -141,6 +154,22 @@ END {
   printf "  shown=%d dropped=%d none=%d other=%d\n", cdc["shown"] + 0, cdc["dropped"] + 0, cdc["none"] + 0, natt - cdc["shown"] - cdc["dropped"] - cdc["none"]
   ncw = sortkeys(cw, wk); for (j = 1; j <= ncw; j++) printf "  dropped because %-28s %d\n", wk[j], cw[wk[j]]
   nrv = sortkeys(rv, vk); for (j = 1; j <= nrv; j++) printf "  reveal=%-10s %d\n", vk[j], rv[vk[j]]
+  print ""
+  print "(8) shadow agreement (the model choice vs the top on-device score; shadow never changes a card)"
+  if (nsh + 0 == 0) print "  (no shadow lines: placeShadowScore was off)"
+  else {
+    printf "  shadow lines=%d ok=%d err=%d na=%d\n", nsh, shc["ok"] + 0, shc["err"] + 0, shc["na"] + 0
+    nd = agc["true"] + agc["false"]
+    if (nd > 0) printf "  agreement: agrees=%d disagrees=%d (%d%% of %d decided); not decided (na)=%d\n", agc["true"], agc["false"], int((agc["true"] * 100) / nd + 0.5), nd, agc["na"] + 0
+    else printf "  agreement: no decided attempts; not decided (na)=%d\n", agc["na"] + 0
+    nch = sortkeys(shch, chk); for (j = 1; j <= nch; j++) printf "  channel %-6s %d\n", chk[j], shch[chk[j]]
+    nb = split("lt200 lt300 lt400 lt500 lt600 lt700 lt800 lt900 ge900", tbo, " ")
+    for (j = 1; j <= nb; j++) if (agtopseen[tbo[j]]) printf "  scoreTop=%-6s agrees=%d disagrees=%d\n", tbo[j], agtop[tbo[j], "true"] + 0, agtop[tbo[j], "false"] + 0
+    nb = split("lt10 lt25 lt50 lt100 ge100", mbo, " ")
+    for (j = 1; j <= nb; j++) if (agmarseen[mbo[j]]) printf "  margin=%-6s   agrees=%d disagrees=%d\n", mbo[j], agmar[mbo[j], "true"] + 0, agmar[mbo[j], "false"] + 0
+    printf "  chosenRank by score: 1=%d 2=%d 3=%d 4=%d 5+=%d\n", rkc[1] + 0, rkc[2] + 0, rkc[3] + 0, rkc[4] + 0, rkc[5] + 0
+    stats("embedMs", emv, nem)
+  }
 }'
 
 report_stdin() { # args: since until mapfile
@@ -219,6 +248,24 @@ fixtures() {
   local out2; out2="$(printf '%s\n%s\n' "$B" "$A" | report_stdin | grep 'longest gap')"
   check "gap needs file order oldest first (reversed input yields no negative gap)" "longest gap without an attempt: 600 s (10 min; between consecutive attempt lines in file order)|longest gap without an attempt: n/a (fewer than 2 attempts)" "$(printf '%s' "$out" | sed 's/^ *//')|$(printf '%s' "$out2" | sed 's/^ *//')"
   check "CRLF logs are accepted via tr" "place attempt lines: 1 parsed, 0 unparseable; pack lookup lines: 0" "$(printf '%s\r\n' "$A" | tr -d '\r' | report_stdin | sed -n 1p)"
+  # shadow agreement section
+  local S1='11-20 10:00:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=wd:Q1,wd:Q2 chosen=wd:Q1 card=shown shadow=ok shCh=text scoreTop=lt300 margin=ge100 chosenRank=1 agrees=true embedMs=120'
+  local S2='11-20 10:01:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=wd:Q1,wd:Q2 chosen=wd:Q2 card=shown shadow=ok shCh=text scoreTop=lt300 margin=lt10 chosenRank=2 agrees=false embedMs=140'
+  local S3='11-20 10:02:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=wd:Q1,wd:Q2 chosen=wd:Q1 card=shown shadow=ok shCh=img scoreTop=ge900 margin=ge100 chosenRank=1 agrees=true embedMs=160'
+  local S4='11-20 10:03:00.000 I PcPlace place attempt outcome=NONE reason=model_none call=made ids=wd:Q1 chosen=- card=none shadow=ok shCh=text scoreTop=lt400 margin=na chosenRank=na agrees=na embedMs=100'
+  local S5='11-20 10:04:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=wd:Q1 chosen=wd:Q1 card=shown shadow=err'
+  local S6='11-20 10:05:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=wd:Q1 chosen=wd:Q1 card=shown shadow=na'
+  local SHALL; SHALL="$(printf '%s\n' "$S1" "$S2" "$S3" "$S4" "$S5" "$S6")"
+  out="$(printf '%s\n' "$SHALL" | report_stdin)"
+  check "shadow: line counts" "shadow lines=6 ok=4 err=1 na=1" "$(printf '%s\n' "$out" | grep '^  shadow lines=' | sed 's/^ *//')"
+  check "shadow: agreement 2 of 3 decided, one undecided" "agreement: agrees=2 disagrees=1 (67% of 3 decided); not decided (na)=1" "$(printf '%s\n' "$out" | grep '^  agreement:' | sed 's/^ *//')"
+  check "shadow: by score bucket" "scoreTop=lt300 agrees=1 disagrees=1|scoreTop=ge900 agrees=1 disagrees=0" "$(printf '%s\n' "$out" | grep '^  scoreTop=' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
+  check "shadow: by margin bucket" "margin=lt10 agrees=0 disagrees=1|margin=ge100 agrees=2 disagrees=0" "$(printf '%s\n' "$out" | grep '^  margin=' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
+  check "shadow: chosenRank and embedMs" "chosenRank by score: 1=2 2=1 3=0 4=0 5+=0|embedMs n=4 p50=120 p95=160 max=160" "$(printf '%s\n' "$out" | grep -E '^  (chosenRank|embedMs)' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
+  out="$(printf '%s\n' "$ALL" | report_stdin)"
+  check "shadow: no shadow lines says so" "(no shadow lines: placeShadowScore was off)" "$(printf '%s\n' "$out" | grep 'no shadow lines' | sed 's/^ *//')"
+  out="$(printf '%s\n' 'x' '11-20 10:00:00.000 I PcPlace place attempt outcome=MATCHED shadow=ok agrees=/etc/passwd scoreTop=SECRET_Name chosenRank=999 embedMs=abc shCh=Foo/Bar' | report_stdin)"
+  check "shadow: hostile values never echoed" "0" "$(has x "$out" -i 'passwd\|SECRET_Name\|Foo/Bar')"
   echo "fixtures: $pass passed, $fail failed"
   [ "$fail" = 0 ]
 }
