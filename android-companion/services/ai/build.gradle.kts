@@ -36,6 +36,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0") // Nomic vision; MIT; arm64 only via abiFilters
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // Optional, for the env-gated SigLIP vision parity test only: the desktop ONNX Runtime jar (com.microsoft.onnxruntime:onnxruntime:1.31.0, not in the offline cache).
+    System.getenv("ORT_DESKTOP_JAR")?.takeIf { File(it).isFile }?.let { testRuntimeOnly(files(it)) }
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")

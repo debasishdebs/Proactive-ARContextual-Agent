@@ -3,15 +3,22 @@ package com.rokid.context.memory
 import com.rokid.context.memory.retrieval.VectorMath
 
 /**
- * A shared image-text vector space (CLIP family): a photo and a text land in the SAME space, so their cosine means "this text describes that photo". Shaped like the identity of an
- * `EmbeddingSpec` (a space id that changes when anything that decides the vectors changes, and one fixed width) so a SigLIP 2 implementation can plug in later (plan 2026-11-20 image-embedder
- * comparison). Vectors are L2-normalised, [dim] wide. Implementations may throw; callers treat any failure as "no score" and never let it change an outcome.
+ * The image half of an image-text space: a photo to an L2-normalised [dim]-wide vector in the space named [spaceId]. A vision-only tower (SigLIP 2 milestone V, text tower not yet
+ * available) implements just this; [ImageTextEmbedder] adds the text half. Implementations may throw; callers treat any failure as "no score".
  */
-interface ImageTextEmbedder {
+interface ImageOnlyEmbedder {
     /** The fingerprint of the space: scores from two different ids are never compared. */
     val spaceId: String
     val dim: Int
     suspend fun embedImage(bytes: ByteArray): FloatArray
+}
+
+/**
+ * A shared image-text vector space (CLIP family): a photo and a text land in the SAME space, so their cosine means "this text describes that photo". Shaped like the identity of an
+ * `EmbeddingSpec` (a space id that changes when anything that decides the vectors changes, and one fixed width) so a SigLIP 2 implementation can plug in later (plan 2026-11-20 image-embedder
+ * comparison). Vectors are L2-normalised, [dim] wide. Implementations may throw; callers treat any failure as "no score" and never let it change an outcome.
+ */
+interface ImageTextEmbedder : ImageOnlyEmbedder {
     suspend fun embedText(text: String): FloatArray
     /** Several texts in one call where the space supports it (same vectors and order as [embedText] one by one). */
     suspend fun embedTexts(texts: List<String>): List<FloatArray> = texts.map { embedText(it) }
