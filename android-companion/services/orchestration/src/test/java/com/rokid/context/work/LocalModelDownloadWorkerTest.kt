@@ -212,6 +212,30 @@ class LocalModelDownloadWorkerTest {
         assertTrue(com.rokid.context.ai.local.ModelFileVerifier.verify(store.fileFor(model), model.bytes, model.sha256))
     }
 
+    /** P3-9: a local foreign SIM does not report roaming, so "I'm abroad" must keep "Allow mobile data" off for downloads. */
+    @Test fun abroadKeepsAMobileDataDownloadOnWifi_andReachesAQueuedOne() {
+        val wm = WorkManager.getInstance(ctx)
+        fun live(id: String) = wm.getWorkInfosForUniqueWork("local_model_$id").get().single { !it.state.isFinished }
+        com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(true)
+        store.enqueue(model, allowMetered = true)
+        assertEquals("abroad: Wi-Fi only although mobile data is allowed", NetworkType.UNMETERED, live(model.id).constraints.requiredNetworkType)
+        com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(false)
+        store.setAllowMetered(model, true)
+        assertEquals("back home: the user's choice applies again", NetworkType.NOT_ROAMING, live(model.id).constraints.requiredNetworkType)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test fun aQueuedDownloadDoesNothingOnAMeteredNetworkWhileAbroadIsOn() {
+        val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+        org.robolectric.Shadows.shadowOf(cm).setActiveNetworkInfo(org.robolectric.shadows.ShadowNetworkInfo.newInstance(android.net.NetworkInfo.DetailedState.CONNECTED, android.net.ConnectivityManager.TYPE_MOBILE, 0, true, android.net.NetworkInfo.State.CONNECTED))
+        com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(true)
+        server.enqueue(MockResponse().setBody(body()))
+        assertEquals(ListenableWorker.Result.retry(), runWorker())
+        assertEquals("no byte was requested over mobile data", 0, server.requestCount)
+        com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(false)
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+    }
+
     /** Final review I3: the "Allow mobile data" switch reaches a download already queued, both ways; the .part stays. */
     @Test fun mobileDataSwitchReachesAQueuedDownload() {
         val wm = WorkManager.getInstance(ctx)
