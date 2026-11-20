@@ -108,7 +108,7 @@ class DataSaverGraph internal constructor(
         while (true) {
             // Sleeps until the next local midnight, or until the clock or the zone changes (then the wait is recomputed from the new time and zone).
             val changed = kotlinx.coroutines.withTimeoutOrNull(msUntilLocalMidnight(clock(), zone()) + MIDNIGHT_SLACK_MS) { clockChanged.receive(); true } == true
-            PcLog.i(TAG, if (changed) "clock or zone changed" else "day rollover")
+            if (changed) PcLog.i(TAG, "clock or zone changed") else PcLog.i(TAG, "day rollover")
             refreshState()
         }
     }
