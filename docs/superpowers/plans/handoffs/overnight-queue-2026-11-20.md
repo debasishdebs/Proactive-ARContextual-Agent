@@ -73,3 +73,12 @@ Do these with the Forget pipeline redesign (or earlier if time allows).
 - Delete all clears the caches TOO EARLY (MemoryWipe.kt:100 clearAll runs before the generation bump at :125): a shadow in that window can store a photo-derived vector that stays in memory until ForgetListeners.deleteAll() (:193, not in a finally). Never served, but add a second `ShadowCaches.clearAll()` right after `generation.incrementAndGet()` (or in the finally).
 - ShadowCaches.epochValue++ is a @Volatile read-modify-write (only tests read it): use AtomicLong or delete.
 - ShadowCachesTest.everyDeletionPathCallsTheRegistry counts the string 'ShadowCaches.clearAll()' (a comment satisfies it): brittle tripwire; the listener/registry tests carry the real coverage.
+
+## N. Data saver slice 2 review outcome (Opus, 08:55, tip eac23a5c): READY, no P1; default users uncapped by construction (DailyCaps.limitFor null on FREE/OFFLINE/HOME_MOBILE/RESTRICTED unless the user's own limit is on); Send once cannot leak (structural withContext + USER class + photos). P2s (fix round dispatched, before Sri Lanka):
+1. Failed calls use up the photo cap (ModelRouter.kt:258-259 counts size+photos on any non-cancellation failure even if nothing left the phone): count photos only on success / bytes after connect.
+2. A success can be double-counted if dataGate.sent throws inside the try (move out of the try).
+3. DataSaverGraph.sent classifies the network when the call ENDS (call that starts on mobile and ends on Wi-Fi uncounted; LAN endpoint over metered/UNKNOWN Wi-Fi counted as mobile).
+4. Midnight watch is one fixed delay with no TIME_SET/TIMEZONE_CHANGED listener (30-min pipeline recheck covers it); flying west extends the cap day, east resets early; no DailyCaps zone-change test.
+5. Send-once dialog race (two quick taps drop the first describe); photoHeldForPrompt uses plain decide not the debounced heldBack (wording 'Send over mobile data?' during the Wi-Fi reconnect blip).
+6. No end-to-end SendOnce test (ViewModel -> DescribeOnDemand -> extractNow -> router); 'once' covers every USER photo call inside one describe (document).
+Nits: BULK_OTHER counter always 0 vs PRIVACY s15 'per kind'; text bytes count toward the byte cap (say so in PRIVACY).
