@@ -304,7 +304,7 @@ class Hub(
         // Fail closed: a push the link did not accept (or that threw) is reported to the zone controller, which keeps its publish pending and retries; connected glasses may still be capturing.
         var pushed = false
         guarded("zones") { pushed = pushSettings(); broadcaster.markDirty(); refreshPauses() }
-        check(pushed) { "zone settings push not accepted" }
+        if (!pushed) throw com.rokid.context.phone.zone.ZonePublishDeferred()
     }
 
     /** Something a frame shows changed outside the hub's own flows: send a fresh frame (≤ 4 Hz). */

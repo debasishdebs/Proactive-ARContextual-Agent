@@ -36,19 +36,21 @@ class ZoneR2Test {
     private val pauses = HubPauses(db.pauseDao()) { wall }
     private var failAdd = false
     private var failPublish = false
+    private var deferPublish = false
+    private val logs = ArrayList<String>()
     private var publishes = 0
     private val sink = object : ZoneSink {
         override suspend fun activeZoneRecords() = pauses.zoneRecords()
         override suspend fun add(record: PauseRecord) { if (failAdd) error("disk full"); pauses.add(record) }
         override suspend fun end(ids: Set<String>) { if (failAdd) error("disk full"); pauses.resumeZones(ids) }
-        override suspend fun publish() { if (failPublish) error("link"); publishes++ }
+        override suspend fun publish() { if (deferPublish) throw ZonePublishDeferred(); if (failPublish) error("link"); publishes++ }
     }
     private val notes = object : ZoneNotifier {
         val events = ArrayList<String>()
         override fun paused(zoneNames: List<String>, locationUnknown: Boolean) { events += "paused:${zoneNames.joinToString()}:$locationUnknown" }
         override fun cleared() { events += "cleared" }
     }
-    private fun controller() = ZoneController(ZoneStore(storePrefs), sink, notes, elapsed = { el }, wall = { wall }, stateStore = ZoneStateStore(statePrefs))
+    private fun controller() = ZoneController(ZoneStore(storePrefs), sink, notes, elapsed = { el }, wall = { wall }, stateStore = ZoneStateStore(statePrefs), log = { logs += it })
     private val c = controller()
 
     @Before fun reset() { ClockGuard.reset(); ZoneHold.set(null) }
@@ -204,6 +206,23 @@ class ZoneR2Test {
         failPublish = false; c.tick()
         assertEquals("the retry went out", before + 1, publishes)
         c.tick(); assertEquals("and only once", before + 1, publishes)
+    }
+
+    // No glasses link: an expected deferral, logged once with a clear token (not "failed"), the phone's fences never wait for it, and the publish goes out once the link accepts.
+    @Test fun aPublishThatTheLinkDoesNotAcceptIsDeferredQuietlyKeepsThePhoneFencesAndGoesOutWhenTheLinkIsUp() = runTest {
+        deferPublish = true
+        c.upsert(zone); c.start(); c.at2(50_000.0)
+        val before = publishes
+        c.at2(100.0) // entry while there is no glasses link
+        assertTrue("the phone's own fences hold without any publish", c.enforcing || c.approach)
+        assertTrue("the zone's pause record is stored", pauses.zoneRecords().isNotEmpty())
+        c.tick(); c.tick()
+        assertEquals(before, publishes)
+        assertEquals("one deferred line per episode", 1, logs.count { it == "zone publish deferred reason=no_link" })
+        assertTrue("never reported as a failure", logs.none { it.startsWith("zone publish failed") })
+        deferPublish = false; c.tick()
+        assertEquals("the retry went out when the link accepted", before + 1, publishes)
+        c.tick(); assertEquals(before + 1, publishes)
     }
 
     // P2-8: bulk replacement obeys the single-edit guards.
