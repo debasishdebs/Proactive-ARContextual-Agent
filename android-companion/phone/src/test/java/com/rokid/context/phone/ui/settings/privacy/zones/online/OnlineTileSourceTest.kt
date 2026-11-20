@@ -308,4 +308,79 @@ class OnlineTileSourceTest {
         val src = OnlineTileSource(provider, t, OnlineTileDiskCache(File(tmp.root, "c3"), provider.cacheId, OnlineTileDiskCache.MAX_BYTES, clock = { now }), "TestAgent/1", clock = { now }, offlineOnly = { error("prefs") }).also { it.start() }
         assertNull(src.tile(k1)); assertEquals(0, t.urls.size)
     }
+
+    // ---- data saver: the same decision function and caps as photos, and the byte ledger
+
+    /** A gate built from the real policy: [cost] is the network class, [settings] the user's choices, bytes go to a real [com.rokid.context.core.net.MobileDataLedger]. */
+    private inner class PolicyGate(var cost: com.rokid.context.core.net.NetworkCost, var settings: com.rokid.context.core.net.DataSaverSettings = com.rokid.context.core.net.DataSaverSettings()) : com.rokid.context.core.net.DataGate {
+        val store = object : com.rokid.context.core.net.CounterStore {
+            val m = HashMap<String, Long>()
+            override fun getLong(key: String, default: Long) = m[key] ?: default
+            override fun putLongs(values: Map<String, Long>) { m.putAll(values) }
+        }
+        val ledger = com.rokid.context.core.net.MobileDataLedger(store) { 20_000L }
+        override fun decide(kind: com.rokid.context.core.net.DataKind, reach: com.rokid.context.core.net.EndpointReach) =
+            com.rokid.context.core.net.DataPolicy.decide(kind, reach, cost, com.rokid.context.core.net.Transport.CELLULAR, settings, ledger.today().usage)
+        override fun skipped(kind: com.rokid.context.core.net.DataKind, what: com.rokid.context.core.net.Skipped, d: com.rokid.context.core.net.DataDecision) {}
+        override fun costlyNow() = com.rokid.context.core.net.NetworkCosts.isCostly(cost)
+        override fun sentAt(kind: com.rokid.context.core.net.DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) { if (costlyAtStart) ledger.add(kind, txBytes + rxBytes, photos) }
+    }
+
+    private fun gated(t: FakeTransport, g: com.rokid.context.core.net.DataGate, dir: String): OnlineTileSource {
+        val provider = OnlineProvider.mapTiler(key)
+        return OnlineTileSource(provider, t, OnlineTileDiskCache(File(tmp.root, dir), provider.cacheId, OnlineTileDiskCache.MAX_BYTES, clock = { now }), "TestAgent/1", clock = { now }, dataGate = g).also { it.start() }
+    }
+
+    @Test fun aDefaultUserOnHomeMobileDataStillFetchesTiles_andTheBytesAreCounted() {
+        val t = FakeTransport(mutableListOf(ok(png(100))))
+        val g = PolicyGate(com.rokid.context.core.net.NetworkCost.HOME_MOBILE)
+        val src = gated(t, g, "g1")
+        assertNotNull(src.tile(k1)); assertEquals(1, t.urls.size)
+        assertEquals("the received bytes (12 header + 100) are counted as big-download bytes", 112L, g.ledger.today().bulkBytes)
+    }
+
+    @Test fun onWifiTilesAreFetchedAndNotCounted() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val g = PolicyGate(com.rokid.context.core.net.NetworkCost.FREE)
+        assertNotNull(gated(t, g, "g2").tile(k1)); assertEquals(0L, g.ledger.today().bytes)
+    }
+
+    @Test fun onRoamingOnlyCachedTilesAreShown_noRequestIsMade() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val g = PolicyGate(com.rokid.context.core.net.NetworkCost.FREE)
+        val src = gated(t, g, "g3")
+        assertNotNull(src.tile(k1)); assertEquals(1, t.urls.size) // cached on Wi-Fi
+        g.cost = com.rokid.context.core.net.NetworkCost.ROAMING
+        assertNotNull("a cached tile is still shown", src.tile(k1))
+        assertNull("a new tile is not requested on roaming", src.tile(k2)); assertEquals(1, t.urls.size)
+        g.cost = com.rokid.context.core.net.NetworkCost.UNKNOWN
+        assertNull(src.tile(k2)); assertEquals(1, t.urls.size)
+        g.cost = com.rokid.context.core.net.NetworkCost.FREE
+        assertNotNull(src.tile(k2)); assertEquals(2, t.urls.size)
+    }
+
+    @Test fun onHomeMobileDataTheUsersOwnLimitStopsTilesOnceUsedUp() {
+        val t = FakeTransport(mutableListOf(ok(png(2_000))))
+        val g = PolicyGate(com.rokid.context.core.net.NetworkCost.HOME_MOBILE, com.rokid.context.core.net.DataSaverSettings(dailyLimitOn = true, limitMb = 0))
+        val src = gated(t, g, "g4")
+        assertNull("a limit of 0 MB is already used up", src.tile(k1)); assertEquals(0, t.urls.size)
+        g.settings = com.rokid.context.core.net.DataSaverSettings(dailyLimitOn = true, limitMb = 5)
+        assertNotNull(src.tile(k1)); assertEquals(1, t.urls.size)
+    }
+
+    @Test fun anAbroadUserWithTheDefaultModeGetsCachedTilesOnly() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val g = PolicyGate(com.rokid.context.core.net.NetworkCost.ROAMING, com.rokid.context.core.net.DataSaverSettings(abroad = true))
+        assertNull(gated(t, g, "g5").tile(k1)); assertEquals(0, t.urls.size)
+    }
+
+    @Test fun anUnreadableDataGateFailsClosed() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val bad = object : com.rokid.context.core.net.DataGate {
+            override fun decide(kind: com.rokid.context.core.net.DataKind, reach: com.rokid.context.core.net.EndpointReach): com.rokid.context.core.net.DataDecision = error("prefs")
+            override fun skipped(kind: com.rokid.context.core.net.DataKind, what: com.rokid.context.core.net.Skipped, d: com.rokid.context.core.net.DataDecision) {}
+            override fun costlyNow() = false
+        }
+        assertNull(gated(t, bad, "g6").tile(k1)); assertEquals(0, t.urls.size)
+    }
 }

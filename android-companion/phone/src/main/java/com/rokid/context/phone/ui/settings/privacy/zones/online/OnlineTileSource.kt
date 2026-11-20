@@ -1,6 +1,8 @@
 package com.rokid.context.phone.ui.settings.privacy.zones.online
 
 import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.net.DataGate
+import com.rokid.context.core.net.DataKind
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.RasterTileSource
 import com.rokid.context.phone.ui.settings.privacy.zones.tiles.TileKey
 import java.io.File
@@ -167,6 +169,11 @@ class OnlineTileSource(
     maxConcurrent: Int = MAX_CONCURRENT,
     /** Model privacy "Offline only": no tile is requested from the internet (tiles already on the phone are still shown). Read at every request; the default allows. */
     private val offlineOnly: () -> Boolean = { false },
+    /**
+     * The data saver: on a costly network where the decision for big downloads (the same function and caps as photos) says no (roaming, unknown, Android Data Saver, or the user's own daily limit used up),
+     * only tiles already on the phone are shown. Tiles fetched while the network is costly are added to today's mobile-data bytes (class BULK_OTHER, the class read when the request started). Default: no gate.
+     */
+    private val dataGate: DataGate = DataGate.ALLOW_ALL,
 ) : RasterTileSource {
     override val minZoom = 1
     override val maxZoom = MAX_ZOOM
@@ -199,29 +206,38 @@ class OnlineTileSource(
         if (k.x < 0 || k.y < 0 || k.x >= n || k.y >= n) return null
         cache.get(k)?.let { return it }
         if (!running) return null
-        if (offline()) return null // fail closed: an unreadable privacy setting is Offline only
+        if (offline() || saverBlocks()) return null // fail closed: an unreadable privacy setting is Offline only
         val e0 = epoch
         val now = clock()
         synchronized(lock) { if (now < backoffUntil || (failedUntil[k] ?: 0L) > now) return null }
         gate.acquire()
         try {
-            if (!running || epoch != e0 || offline()) return null // a request that waited for a slot is judged again: the switch may have come meanwhile
+            if (!running || epoch != e0 || offline() || saverBlocks()) return null // a request that waited for a slot is judged again: the switch may have come meanwhile
             return download(k, e0)
         } finally { gate.release() }
     }
 
     private fun offline(): Boolean = try { offlineOnly() } catch (e: Exception) { true }
 
+    /** True when the data saver says no download on this network now (fail closed: an unreadable gate blocks). */
+    private fun saverBlocks(): Boolean = try { !dataGate.decide(DataKind.BULK_OTHER).allowed } catch (e: Exception) { true }
+
+    private fun costlyNow(): Boolean = try { dataGate.costlyNow() } catch (e: Exception) { false }
+
+    private fun counted(costlyAtStart: Boolean, bytes: Long) { try { dataGate.sentAt(DataKind.BULK_OTHER, 0L, bytes, 0, costlyAtStart) } catch (e: Exception) { /* counting never breaks the map */ } }
+
     private fun download(k: TileKey, e0: Int): ByteArray? {
         var url = provider.url(k)
         for (hop in 0..MAX_REDIRECTS) {
             if (!permitted(url)) { PcLog.i(TAG, "online tiles refused a url"); return fail(k) }
             if (!takeSlot()) return null
-            if (offline()) return null // immediately before the request (and before every redirect hop)
+            if (offline() || saverBlocks()) return null // immediately before the request (and before every redirect hop)
+            val costly = costlyNow() // the network class when the request STARTS
             val r = try { transport.get(url, userAgent) } catch (e: IOException) {
                 if (!running || epoch != e0) return null
                 PcLog.i(TAG, "online tiles request failed"); return fail(k)
             }
+            counted(costly, (r.body?.size ?: if (r.code in 200..299) MAX_TILE_BYTES + 1 else 0).toLong()) // bytes actually received (a too-large body was cut at the cap)
             if (!running || epoch != e0) return null
             val code = r.code
             when {

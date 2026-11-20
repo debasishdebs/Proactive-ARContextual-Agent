@@ -6,6 +6,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.rokid.context.memory.place.currentZoneTicket
 import kotlinx.coroutines.withContext
+import com.rokid.context.core.net.DataGate
+import com.rokid.context.core.net.DataKind
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -18,6 +20,12 @@ class PlaceHttpException(val code: Int) : IOException("HTTP $code")
 interface PlaceHttp {
     suspend fun get(url: String): String
     suspend fun postForm(url: String, form: Map<String, String>): String
+}
+
+/** Counts the bytes read from the wire (the compressed bytes when the answer is gzip). */
+internal class CountingInputStream(`in`: java.io.InputStream, private val count: java.util.concurrent.atomic.AtomicLong) : java.io.FilterInputStream(`in`) {
+    override fun read(): Int { val b = super.read(); if (b >= 0) count.incrementAndGet(); return b }
+    override fun read(b: ByteArray, off: Int, len: Int): Int { val n = super.read(b, off, len); if (n > 0) count.addAndGet(n.toLong()); return n }
 }
 
 fun formEncode(form: Map<String, String>): String = form.entries.joinToString("&") { enc(it.key) + "=" + enc(it.value) }
@@ -36,6 +44,11 @@ class UrlConnectionPlaceHttp(
     private val maxBytes: Int = 4 * 1024 * 1024,
     private val clock: () -> Long = System::currentTimeMillis,
     private val pause: suspend (Long) -> Unit = { delay(it) },
+    /**
+     * The data saver's byte ledger: a cell fetch is a small text request (class SMALL). The network class is read when the request STARTS (before the connection opens) and the bytes actually received
+     * (on the wire, before gzip is unpacked) are added to today's mobile-data count, only when that class was costly (mobile, roaming, unknown). Counts only, never a URL or content.
+     */
+    private val gate: DataGate = DataGate.ALLOW_ALL,
 ) : PlaceHttp {
     private val lock = Mutex()
     private val lastByHost = HashMap<String, Long>()
@@ -55,6 +68,8 @@ class UrlConnectionPlaceHttp(
             lastByHost[u.host] = clock()
         }
         return withContext(Dispatchers.IO) {
+            val costlyAtStart = try { gate.costlyNow() } catch (e: Exception) { false } // the network class when the request starts
+            val received = java.util.concurrent.atomic.AtomicLong(0)
             val c = u.openConnection() as HttpURLConnection // not connected yet: no byte leaves before connect()
             val tripped = java.util.concurrent.atomic.AtomicBoolean(false)
             // Registered synchronously, and the registration IS the admission check (one step under the fence lock): a close before it throws, a close after it runs this hook on the
@@ -77,7 +92,8 @@ class UrlConnectionPlaceHttp(
                 }
                 val code = c.responseCode
                 if (code !in 200..299) throw PlaceHttpException(code)
-                val raw = if (c.contentEncoding.equals("gzip", true)) java.util.zip.GZIPInputStream(c.inputStream) else c.inputStream
+                val wire = CountingInputStream(c.inputStream, received)
+                val raw = if (c.contentEncoding.equals("gzip", true)) java.util.zip.GZIPInputStream(wire) else wire
                 raw.use { ins ->
                     val out = java.io.ByteArrayOutputStream()
                     val buf = ByteArray(16 * 1024)
@@ -90,7 +106,11 @@ class UrlConnectionPlaceHttp(
                 }
             } catch (e: IOException) {
                 if (tripped.get()) throw com.rokid.context.memory.place.ZoneFenced() else throw e
-            } finally { reg?.close(); c.disconnect() }
+            } finally {
+                reg?.close(); c.disconnect()
+                val rx = received.get()
+                if (rx > 0) try { gate.sentAt(DataKind.SMALL, 0L, rx, 0, costlyAtStart) } catch (e: Exception) { /* counting never breaks a fetch */ }
+            }
         }
     }
 

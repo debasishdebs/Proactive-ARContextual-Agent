@@ -66,7 +66,7 @@ object PlaceGraph {
     fun pack(context: Context): PlacePack = pack ?: synchronized(this) { pack ?: build(context.applicationContext).also { pack = it } }
 
     private fun build(app: Context): PlacePack {
-        val http = UrlConnectionPlaceHttp()
+        val http = UrlConnectionPlaceHttp(gate = com.rokid.context.ai.datasaver.DataSaverGraph.get(app)) // cell fetches count in the mobile-data ledger (class SMALL)
         val source = PlaceCellSource(WikipediaHttpSource(http), WikidataHttpSource(http), OverpassMirrorSource.default(http) { PcLog.i(TAG, it) }, log = { PcLog.i(TAG, it) }) // counts and class names only
         return PlacePack(PlacesDatabase.build(app), source, budgetBytes = PlaceGuideSettings.of(app).budgetMb * 1024L * 1024L, log = { PcLog.i(TAG, it) })
     }
