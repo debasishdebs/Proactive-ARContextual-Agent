@@ -22,7 +22,7 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today(), flow.value.waiting, graph.stuckNow(), com.rokid.context.core.net.NetworkCosts.roamingWhy(graph.snapshot(), graph.settingsNow().abroad))
+    private fun read() = DataSaverUiState(graph.settingsNow(), graph.costNow(), graph.ledger.today(), graph.mobile.today(), graph.limitNow(), graph.limitReachedNow(), flow.value.waiting, graph.stuckNow(), com.rokid.context.core.net.NetworkCosts.roamingWhy(graph.snapshot(), graph.settingsNow().abroad, graph.settingsNow().wifiMeteredAbroad))
 
     override fun setMode(m: DataMode) {
         graph.settingsStore.setMode(m); flow.value = read() // the settings collector refreshes the gate off the main thread
@@ -30,6 +30,10 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
     }
     override fun setAbroad(on: Boolean) { graph.settingsStore.setAbroad(on); flow.value = read() }
     override fun setSmallOnRoaming(on: Boolean) { graph.settingsStore.setSmallOnRoaming(on); flow.value = read() }
+    override fun setDailyLimitOn(on: Boolean) { graph.settingsStore.setDailyLimitOn(on); flow.value = read() }
+    override fun setLimitMb(mb: Int) { graph.settingsStore.setLimitMb(mb); flow.value = read() }
+    override fun setLimitPhotos(n: Int) { graph.settingsStore.setLimitPhotos(n); flow.value = read() }
+    override fun setWifiMeteredAbroad(on: Boolean) { graph.settingsStore.setWifiMeteredAbroad(on); flow.value = read() }
     init { flow.value = read() }
 
     override fun refresh() {

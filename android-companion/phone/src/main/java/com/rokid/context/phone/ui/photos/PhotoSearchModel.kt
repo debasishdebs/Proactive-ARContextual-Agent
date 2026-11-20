@@ -30,9 +30,16 @@ data class PhotoSearchUiState(
     val note: String? = null,
     val describing: Boolean = false,
     val status: String? = null,
+    /** Slice 2: the data saver would hold this describe (mobile data, roaming or today's limit): the screen asks "Send over mobile data once / Wait for Wi-Fi". Default answer is wait. */
+    val sendOncePrompt: Boolean = false,
 )
 
 object PhotoSearchModel {
+    const val SEND_ONCE_TITLE = "Send over mobile data?"
+    const val SEND_ONCE_BODY = "Describing sends the photo to your model over mobile data (about 100 KB per photo, up to 3 for a scene). It counts toward today's mobile data. On Wi-Fi it costs nothing."
+    const val SEND_ONCE_YES = "Send over mobile data once"
+    const val SEND_ONCE_WAIT = "Wait for Wi-Fi"
+    const val WAITING = "Not sent. Describe it again on Wi-Fi."
     const val CAPTIONS_ONLY = "Searching captions only. For photo search, turn on Nomic in Settings → AI → On-device models."
     const val SEARCH_FAILED = "Couldn't search \u2014 try again"
     private val CLOCK = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
