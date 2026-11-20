@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
@@ -138,9 +139,11 @@ data class SuspectDescriptions(val total: Int = 0, val items: List<SuspectItem> 
 
 /** The suspect list over [dao], re-read by Room whenever memory, frame or frame_source change (Codex r20). */
 fun suspectDescriptionsOf(dao: com.rokid.context.memory.db.ForgetDao): kotlinx.coroutines.flow.Flow<SuspectDescriptions> =
-    combine(dao.observeSuspectDescriptionCount(), dao.observeSuspectDescriptions(SuspectDescriptions.SHOWN)) { n, rows ->
-        SuspectDescriptions(n, rows.map { SuspectItem(it.id, it.type, it.createdAt, it.text) })
-    }
+    suspectDescriptionsFrom(dao.observeSuspects(SuspectDescriptions.SHOWN))
+
+/** One emission of [rows] (one database snapshot) is one [SuspectDescriptions]: the total and the snippets are never read apart. */
+fun suspectDescriptionsFrom(rows: kotlinx.coroutines.flow.Flow<List<com.rokid.context.memory.db.SuspectObservedRow>>): kotlinx.coroutines.flow.Flow<SuspectDescriptions> =
+    rows.map { r -> SuspectDescriptions(r.firstOrNull()?.total ?: 0, r.map { SuspectItem(it.id, it.type, it.createdAt, it.text) }) }
 
 /** The active interpreter publish for the "Live pipeline" line: [live] false is Shadow. */
 data class LivePipelineInfo(val name: String, val version: Int, val live: Boolean, val fallbacks: Int, val interpreted: Int)
