@@ -10,6 +10,7 @@ import com.rokid.context.work.frames.recall.PhotoSource
 import com.rokid.context.work.frames.recall.RecallResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.test.runTest
@@ -34,10 +35,11 @@ class PhotoSearchViewModelTest {
     private var describeFn: suspend (List<String>) -> DescribeResult = { DescribeResult.Saved(2, 1) }
     private var sceneFn: suspend (String) -> DescribeResult = { DescribeResult.Saved(2, 3) }
     private val changes = Channel<Unit>(Channel.UNLIMITED)
+    private var heldFn: suspend () -> Boolean = { false }
 
     private fun vm(initial: String? = null) = PhotoSearchViewModel(
         initial, { q -> searches += q; searchFn(q) }, { reenrichFn(it) }, { describeFn(it) }, { sceneFn(it) }, { ids -> ids.associateWith { "/p/$it.jpg" } },
-        { ZONE }, { TODAY }, changes.receiveAsFlow(),
+        { ZONE }, { TODAY }, changes.receiveAsFlow(), { heldFn() },
     )
 
     @Test fun typingNeverSearchesAndSubmitSearchesOnce() = runTest {
@@ -110,6 +112,62 @@ class PhotoSearchViewModelTest {
         gate.complete(DescribeResult.Busy)
         assertFalse(m.state.value.describing)
         assertEquals("Already being described — check back in a minute", m.state.value.status)
+    }
+
+    // ---- slice 2: "Send over mobile data once / Wait for Wi-Fi" ----
+
+    @Test fun whenTheDataSaverWouldHoldThePhotoTheDescribeAsksFirstAndSendsNothing() = runTest {
+        heldFn = { true }
+        val calls = mutableListOf<List<String>>()
+        describeFn = { calls += it; DescribeResult.Saved(1, 1) }
+        val m = vm("keys")
+        m.describe("a")
+        assertTrue(m.state.value.sendOncePrompt); assertFalse(m.state.value.describing)
+        assertTrue("nothing was sent while the dialog is open", calls.isEmpty())
+        m.describe("b") // a second tap with the dialog open is ignored
+        assertTrue(calls.isEmpty())
+        m.waitForWifi() // the default answer
+        assertFalse(m.state.value.sendOncePrompt); assertEquals(PhotoSearchModel.WAITING, m.state.value.status)
+        assertTrue("waiting sends nothing", calls.isEmpty())
+        m.sendOnce() // nothing pending any more: no call
+        assertTrue(calls.isEmpty())
+    }
+
+    @Test fun sendOnceRunsThatOneDescribeUnderTheMarkerAndTheNextDescribeAsksAgain() = runTest {
+        heldFn = { true }
+        val markers = mutableListOf<Boolean>()
+        describeFn = { markers += (currentCoroutineContext()[com.rokid.context.core.net.SendOnce.Key] != null); DescribeResult.Saved(2, 1) }
+        val m = vm("keys")
+        m.describe("a"); m.sendOnce()
+        assertEquals(listOf(true), markers)
+        assertFalse(m.state.value.sendOncePrompt); assertEquals(PhotoSearchModel.status(DescribeResult.Saved(2, 1)), m.state.value.status)
+        m.describe("a")
+        assertTrue("nothing is remembered: it asks again", m.state.value.sendOncePrompt)
+        assertEquals(1, markers.size)
+    }
+
+    @Test fun whenNothingIsHeldTheDescribeRunsAtOnceWithoutTheMarker() = runTest {
+        val markers = mutableListOf<Boolean>()
+        describeFn = { markers += (currentCoroutineContext()[com.rokid.context.core.net.SendOnce.Key] != null); DescribeResult.Saved(1, 1) }
+        val m = vm("keys")
+        m.describe("a")
+        assertEquals(listOf(false), markers); assertFalse(m.state.value.sendOncePrompt)
+    }
+
+    @Test fun aSceneDescribeAsksToo() = runTest {
+        heldFn = { true }
+        val scenes = mutableListOf<String>()
+        sceneFn = { scenes += it; DescribeResult.Saved(1, 3) }
+        val m = vm("keys")
+        m.describeScene("c1")
+        assertTrue(m.state.value.sendOncePrompt); assertTrue(scenes.isEmpty())
+        m.sendOnce()
+        assertEquals(listOf("c1"), scenes)
+    }
+
+    @Test fun theDialogWordsAreTheDocumentedOnes() {
+        assertEquals("Send over mobile data once", PhotoSearchModel.SEND_ONCE_YES); assertEquals("Wait for Wi-Fi", PhotoSearchModel.SEND_ONCE_WAIT)
+        assertTrue(PhotoSearchModel.SEND_ONCE_BODY.contains("mobile data"))
     }
 
     @Test fun describeSceneUsesTheClusterAndFailureNeverThrows() = runTest {

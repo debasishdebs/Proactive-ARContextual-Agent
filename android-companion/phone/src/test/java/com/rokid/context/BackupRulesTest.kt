@@ -294,6 +294,16 @@ class BackupRulesTest {
         for (section in sections) assertTrue(section.tagName, "sharedpref:app_config.xml" in excludes(section))
     }
 
+    /** Slice 2: the daily limit, the Wi-Fi-as-metered switch and today's byte counters all live in data_saver.xml: excluded from backup, cloud backup and transfer, never restored, never exported. */
+    @Test fun theDataSaverLimitsAndByteCountersAreExcludedEverywhere() {
+        assertEquals("data_saver", com.rokid.context.ai.datasaver.DataSaverStore.PREFS)
+        for (section in listOf(parse("src/main/res/xml/backup_rules.xml")) + listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element })
+            assertTrue(section.tagName, "sharedpref:data_saver.xml" in excludes(section))
+        assertTrue("data_saver" in setupState)
+        assertFalse("data_saver" in restorable)
+        assertFalse("data_saver.xml" in com.rokid.context.orchestration.ConfigExport.PREFS_FILES || "data_saver" in com.rokid.context.orchestration.ConfigExport.PREFS_FILES)
+    }
+
     private fun allSections() = listOf(parse("src/main/res/xml/backup_rules.xml")) +
         listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
 

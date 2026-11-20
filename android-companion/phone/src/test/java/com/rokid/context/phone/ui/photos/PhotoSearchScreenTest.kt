@@ -38,13 +38,31 @@ class PhotoSearchScreenTest {
         id: String, expired: Boolean = false, cluster: String? = null, captionId: String? = null, caption: String? = null, described: Boolean = false,
     ) = PhotoTile(id, if (expired) null else "/p/$id.jpg", "09:41", "0.55", "Image", described, expired, caption, cluster, "2026-10-12", captionId)
 
+    private var sendOnces = 0
+    private var waits = 0
+
     private fun show(state: PhotoSearchUiState) = compose.setContent {
         PcTheme {
             PhotoSearchScreen(
                 state, onBack = {}, onQueryChange = { queries += it }, onSubmit = { submits++ }, onDescribe = { describes += it }, onDescribeScene = { scenes += it },
-                onPreview = { opened += it },
+                onPreview = { opened += it }, onSendOnce = { sendOnces++ }, onWaitForWifi = { waits++ },
             )
         }
+    }
+
+    @Test fun noDialogUnlessTheDataSaverWouldHoldTheDescribe() {
+        show(PhotoSearchUiState())
+        child("send_once_dialog").assertDoesNotExist()
+    }
+
+    @Test fun theSendOnceDialogOffersSendOnceOrWaitAndEachButtonReportsItself() {
+        show(PhotoSearchUiState(sendOncePrompt = true))
+        compose.onNodeWithText("Send over mobile data?").assertIsDisplayed()
+        compose.onNodeWithText("Send over mobile data once").assertIsDisplayed(); compose.onNodeWithText("Wait for Wi-Fi").assertIsDisplayed()
+        child("send_once_wait").tap()
+        assertEquals(1, waits); assertEquals(0, sendOnces)
+        child("send_once_yes").tap()
+        assertEquals(1, sendOnces)
     }
 
     @Test fun submitRunsOneSearchNotPerKeystroke() {
