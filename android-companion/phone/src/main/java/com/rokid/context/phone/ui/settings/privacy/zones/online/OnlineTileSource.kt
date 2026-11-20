@@ -199,22 +199,25 @@ class OnlineTileSource(
         if (k.x < 0 || k.y < 0 || k.x >= n || k.y >= n) return null
         cache.get(k)?.let { return it }
         if (!running) return null
-        if (try { offlineOnly() } catch (e: Exception) { true }) return null // fail closed: an unreadable privacy setting is Offline only
+        if (offline()) return null // fail closed: an unreadable privacy setting is Offline only
         val e0 = epoch
         val now = clock()
         synchronized(lock) { if (now < backoffUntil || (failedUntil[k] ?: 0L) > now) return null }
         gate.acquire()
         try {
-            if (!running || epoch != e0) return null
+            if (!running || epoch != e0 || offline()) return null // a request that waited for a slot is judged again: the switch may have come meanwhile
             return download(k, e0)
         } finally { gate.release() }
     }
+
+    private fun offline(): Boolean = try { offlineOnly() } catch (e: Exception) { true }
 
     private fun download(k: TileKey, e0: Int): ByteArray? {
         var url = provider.url(k)
         for (hop in 0..MAX_REDIRECTS) {
             if (!permitted(url)) { PcLog.i(TAG, "online tiles refused a url"); return fail(k) }
             if (!takeSlot()) return null
+            if (offline()) return null // immediately before the request (and before every redirect hop)
             val r = try { transport.get(url, userAgent) } catch (e: IOException) {
                 if (!running || epoch != e0) return null
                 PcLog.i(TAG, "online tiles request failed"); return fail(k)

@@ -165,14 +165,23 @@ class ModelRouterOfflineOnlyTest {
         assertFalse(permits.isEmpty())
     }
 
-    @Test fun aLanFallbackThatWasTriedAndFailedIsReportedAsItsOwnFailureNotAsTheRemoteRefusal() = runTest {
+    private fun failingLan(t: Throwable): ModelRouter = ModelRouter(bindings, endpoints, ProviderBuilder { _, _, _ -> object : ModelProvider { override suspend fun generate(prompt: String): String { throw t } } }, privacy = { ModelPrivacy.OFFLINE_ONLY })
+
+    @Test fun aLanFallbackThatIsAsleepKeepsParkingWithoutAnAttemptAndSaysUnavailableNotMissing() = runTest {
         ep("r", caps = chat); ep("home", url = lan, caps = chat)
         bindings.set(RoleBinding(Role.ANSWER, "r", "m", fallbackEndpointId = "home", fallbackModel = "m2")).getOrThrow()
-        val failing = ModelRouter(bindings, endpoints, ProviderBuilder { e, _, _ -> object : ModelProvider { override suspend fun generate(prompt: String): String { throw java.io.IOException("refused") } } }, privacy = { ModelPrivacy.OFFLINE_ONLY })
-        val e = err { failing.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
+        val e = err { failingLan(java.io.IOException("refused")).complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
+        assertTrue("still a park-without-attempt block: $e", e is OfflineOnlyRefusedException && e is DataSaverBlockedException)
+        assertEquals(FailureKind.TRANSIENT, (e as OfflineOnlyRefusedException).fallbackKind)
+        assertEquals("not the 'needs an on-device model' text: the box exists but is unreachable", UserFacingErrors.AiUnavailable, ModelErrorMapper.toUserFacing(e))
+    }
+
+    @Test fun aLanFallbackThatFailsPermanentlyIsReportedAsItsOwnError() = runTest {
+        ep("r", caps = chat); ep("home", url = lan, caps = chat)
+        bindings.set(RoleBinding(Role.ANSWER, "r", "m", fallbackEndpointId = "home", fallbackModel = "m2")).getOrThrow()
+        val e = err { failingLan(ProviderHttpException(401, "x", "no")).complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
         assertFalse(e.toString(), e is OfflineOnlyRefusedException)
-        assertTrue(e is ModelCallException)
-        assertEquals(ModelErrorMapper.toUserFacing(e), UserFacingErrors.AiUnavailable)
+        assertTrue(e is ModelCallException); assertEquals(FailureKind.AUTH, (e as ModelCallException).kind)
     }
 
     // ---- user-facing ----

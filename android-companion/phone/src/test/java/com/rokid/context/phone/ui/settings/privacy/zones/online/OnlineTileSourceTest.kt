@@ -283,6 +283,25 @@ class OnlineTileSourceTest {
         off = false; assertNotNull(src.tile(k2)); assertEquals(2, t.urls.size)
     }
 
+    @Test fun aRequestThatWaitedForASlotIsJudgedAgainAndNeverDownloadsAfterTheSwitch() {
+        val provider = OnlineProvider.mapTiler(key)
+        var off = false
+        val entered = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        val urls = mutableListOf<String>()
+        val transport = object : TileTransport {
+            override fun get(url: String, userAgent: String): TileResponse { synchronized(urls) { urls += url }; entered.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS); return TileResponse(200, body = png()) }
+            override fun cancelAll() {}
+        }
+        val src = OnlineTileSource(provider, transport, OnlineTileDiskCache(File(tmp.root, "c4"), provider.cacheId, OnlineTileDiskCache.MAX_BYTES, clock = { now }), "TestAgent/1", clock = { now }, maxConcurrent = 1, offlineOnly = { off }).also { it.start() }
+        val first = java.util.concurrent.Executors.newSingleThreadExecutor().submit<ByteArray?> { src.tile(k1) }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS)) // the first request holds the only slot
+        val second = java.util.concurrent.Executors.newSingleThreadExecutor().submit<ByteArray?> { src.tile(k2) } // queued behind it
+        Thread.sleep(200)
+        off = true; release.countDown() // the switch comes while the second one waits
+        assertNotNull(first.get(5, java.util.concurrent.TimeUnit.SECONDS)); assertNull("the queued request is refused after the switch", second.get(5, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(1, urls.size)
+    }
+
     @Test fun anUnreadableOfflineOnlyReaderFailsClosed() {
         val t = FakeTransport(mutableListOf(ok()))
         val provider = OnlineProvider.mapTiler(key)

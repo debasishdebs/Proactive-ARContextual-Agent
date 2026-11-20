@@ -162,6 +162,7 @@ class EndpointTesterTest {
         assertEquals("Timed out", r.message); assertTrue("took ${r.latencyMs} ms", r.latencyMs < 2_500)
     }
 
+    // runTest + withTimeout: the virtual clock can only fire the timeout EARLY, which is the expected "Timed out" result here, so this cannot flake into a failure.
     @Test fun localChatTestIsBoundedByTheOwnedScopeTimeout() = runTest {
         save(EndpointKind.LLAMACPP_LOCAL, setOf(Capability.CHAT), url = "/sdcard/m.gguf")
         val never = CompletableDeferred<String>()

@@ -69,6 +69,68 @@ class ModelPrivacyStoreTest {
         assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s, DIRECT).current())
     }
 
+    // ---- P2-1: a lost or failed write is never Automatic ----
+
+    /** Prefs whose commit() can be made to fail; apply() and reads go to the real file. */
+    private class FlakyPrefs(private val real: SharedPreferences, var failCommits: Int = 0) : SharedPreferences by real {
+        var commits = 0
+        override fun edit(): SharedPreferences.Editor = object : SharedPreferences.Editor {
+            val e = real.edit()
+            override fun putString(k: String?, v: String?) = apply { e.putString(k, v) }
+            override fun putBoolean(k: String?, v: Boolean) = apply { e.putBoolean(k, v) }
+            override fun remove(k: String?) = apply { e.remove(k) }
+            override fun clear() = apply { e.clear() }
+            override fun putInt(k: String?, v: Int) = apply { e.putInt(k, v) }
+            override fun putLong(k: String?, v: Long) = apply { e.putLong(k, v) }
+            override fun putFloat(k: String?, v: Float) = apply { e.putFloat(k, v) }
+            override fun putStringSet(k: String?, v: MutableSet<String>?) = apply { e.putStringSet(k, v) }
+            override fun apply() = e.apply()
+            override fun commit(): Boolean { commits++; if (failCommits > 0) { failCommits--; return false }; return e.commit() }
+        }
+    }
+
+    @Test fun aKillBeforeTheDurableWriteReadsBackAsResetOfflineOnlyNeverAutomatic() {
+        val p = prefs("mp12"); val s = prefs("mp12s")
+        ModelPrivacyStore(p, s, DIRECT).set(ModelPrivacy.AUTO) // an earlier, permissive choice is on the disk
+        val neverRuns = java.util.concurrent.Executor { } // the process dies before the writer thread runs
+        ModelPrivacyStore(p, s, neverRuns).set(ModelPrivacy.OFFLINE_ONLY)
+        val next = ModelPrivacyStore(p, s, DIRECT)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, next.current()); assertTrue(next.wasReset.value)
+    }
+
+    @Test fun aCommitThatKeepsReturningFalseAlsoReadsBackAsResetOfflineOnly() {
+        val rp = prefs("mp13"); val rs = prefs("mp13s")
+        val st = ModelPrivacyStore(FlakyPrefs(rp, failCommits = 100), FlakyPrefs(rs, failCommits = 100), DIRECT); st.set(ModelPrivacy.AUTO) // first ever choice, nothing durable
+        st.set(ModelPrivacy.OFFLINE_ONLY)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, st.current())
+        val next = ModelPrivacyStore(rp, rs, DIRECT)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, next.current()); assertTrue("the begin step reached the disk through apply()", next.wasReset.value)
+    }
+
+    @Test fun aFailedCommitIsRetriedOnceAndThenSucceeds() {
+        val rp = prefs("mp14"); val rs = prefs("mp14s")
+        val st = ModelPrivacyStore(FlakyPrefs(rp, failCommits = 1), rs, DIRECT)
+        st.set(ModelPrivacy.OFFLINE_ONLY)
+        val next = ModelPrivacyStore(rp, rs, DIRECT)
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, next.current()); assertFalse("the retry made it durable", next.wasReset.value)
+    }
+
+    @Test fun setAndWaitReportsWhetherTheWriteIsDurable() = kotlinx.coroutines.runBlocking {
+        val p1 = prefs("mp15"); val s1 = prefs("mp15s")
+        assertTrue(ModelPrivacyStore(p1, s1, DIRECT).setAndWait(ModelPrivacy.OFFLINE_ONLY))
+        assertFalse(ModelPrivacyStore(FlakyPrefs(prefs("mp16"), failCommits = 100), prefs("mp16s"), DIRECT).setAndWait(ModelPrivacy.OFFLINE_ONLY))
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p1, s1, DIRECT).current())
+    }
+
+    @Test fun aSupersededWriteDoesNotOverwriteANewerChoice() {
+        val p = prefs("mp17"); val s = prefs("mp17s")
+        val queued = mutableListOf<Runnable>()
+        val st = ModelPrivacyStore(p, s, java.util.concurrent.Executor { queued += it })
+        st.set(ModelPrivacy.OFFLINE_ONLY); st.set(ModelPrivacy.AUTO)
+        queued.reversed().forEach { it.run() } // the newer write runs first, the older one after
+        assertEquals(ModelPrivacy.AUTO, ModelPrivacyStore(p, s, DIRECT).current())
+    }
+
     @Test fun theSentinelFileNameIsTheOneBackupRulesExclude() = assertEquals("ai_backend_init", ModelPrivacyStore.SENTINEL_PREFS)
 
     @Test fun anUnknownOrWronglyTypedStoredValueFailsClosedToOfflineOnly() {
