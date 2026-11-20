@@ -96,7 +96,7 @@ class CanvasApi(
     } catch (e: CanvasRunner.AbArmEmpty) {
         HttpResponse.error(422, "ab_arm_empty", if (e.arm == "A") "Arm A has no photo left after its Photo settings. Nothing ran." else "Arm B has no photo left after its Photo settings. Nothing ran.")
     } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
-        HttpResponse.error(409, "busy", "An export or save is running. Nothing was deleted. Try again.")
+        HttpResponse.error(409, "busy", "An export, a save or a photo upload is running. Nothing was deleted. Try again.")
     } catch (e: NoSuchElementException) {
         HttpResponse.error(404, "not_found", "Not found.")
     } catch (e: IllegalArgumentException) {

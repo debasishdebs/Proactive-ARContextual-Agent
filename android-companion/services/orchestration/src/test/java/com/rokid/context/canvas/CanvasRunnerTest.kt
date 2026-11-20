@@ -35,6 +35,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -376,11 +379,54 @@ class CanvasRunnerTest {
     @Test fun pruneKeepsTwentyIncludingNew() = runBlocking<Unit> {
         for (i in 1..25) dao.insertRun(CanvasRunEntity("old$i", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, i.toLong(), i + 1L, "[]"))
         val run = runAll(runner(liveFakes()), DefaultPipelines.liveExtract(), frames(1))
+        awaitPruned()
         val kept = dao.runs(100).map { it.runId }
         assertEquals(20, kept.size)
         assertTrue(run.runId in kept)
         assertFalse("old1" in kept)
         assertTrue("old25" in kept)
+    }
+
+    /** The prune runs after the start, in its own coroutine: wait (bounded) until it has trimmed the table to the kept 20. */
+    private suspend fun awaitPruned() { withTimeout(10_000) { while (dao.runs(100).size > 20) delay(10) } }
+
+    /** Holds the shared gate's shared side (an export) until [release] is counted down; returns once it is held. */
+    private suspend fun holdGate(release: java.util.concurrent.CountDownLatch) {
+        val held = kotlinx.coroutines.CompletableDeferred<Unit>()
+        scope.launch { try { com.rokid.context.orchestration.DataOpGate.shared.export { held.complete(Unit); withContext(Dispatchers.IO) { release.await() } } } catch (_: Throwable) { held.complete(Unit) } }
+        held.await()
+    }
+
+    @Test fun runStartDoesNotWaitForABlockedGateAndPrunesAfterwards() = runBlocking<Unit> {
+        for (i in 1..25) dao.insertRun(CanvasRunEntity("old$i", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, i.toLong(), i + 1L, "[]"))
+        val release = java.util.concurrent.CountDownLatch(1)
+        holdGate(release)
+        try {
+            val r = runner(liveFakes())
+            val t0 = System.nanoTime()
+            val first = runAll(r, DefaultPipelines.liveExtract(), frames(1))   // the start returns and the run ends while the gate is held
+            assertTrue("a start must not wait for the gate", (System.nanoTime() - t0) / 1_000_000 < 5_000)
+            assertEquals("DONE", first.status)
+            // a second start is not told a run is active, and the prune has not run yet (gate held)
+            val second = runAll(r, DefaultPipelines.liveExtract(), frames(1))
+            assertEquals("DONE", second.status)
+            assertTrue("the prune waits for the gate", dao.runs(100).size > 20)
+        } finally { release.countDown() }
+        awaitPruned()                                                       // the gate is free: the pending prune trims the table
+        assertEquals(20, dao.runs(100).size)
+    }
+
+    @Test fun runStartsWhenThePruneIsSkipped() = runBlocking<Unit> {
+        for (i in 1..25) dao.insertRun(CanvasRunEntity("old$i", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, i.toLong(), i + 1L, "[]"))
+        com.rokid.context.orchestration.DataOpGate.shared = com.rokid.context.orchestration.DataOpGate(waitMs = 50)
+        val release = java.util.concurrent.CountDownLatch(1)
+        holdGate(release)
+        try {
+            val run = runAll(runner(liveFakes()), DefaultPipelines.liveExtract(), frames(1))
+            assertEquals("DONE", run.status)
+            delay(300)                                                      // the bounded wait ended: the prune was skipped, the run was not affected
+            assertEquals(26, dao.runs(100).size)
+        } finally { release.countDown() }
     }
 
     @Test fun snapshotStoresCanonicalJsonAndHash() = runBlocking<Unit> {
@@ -652,6 +698,7 @@ class CanvasRunnerTest {
         for (i in 1..25) dao.insertRun(CanvasRunEntity("old$i", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, i.toLong(), i + 1L, "[]"))
         val r = runner(liveFakes()); val a = DefaultPipelines.liveExtract()
         val st = beginAb(r, a, variantB(a), frames(1)); finish(r)
+        awaitPruned()
         val kept = dao.runs(100).map { it.runId }
         assertEquals(20, kept.size)
         assertTrue(st.runA in kept && st.runB in kept)
