@@ -2,6 +2,8 @@ package com.rokid.context.ai.datasaver
 
 import android.content.Context
 import com.rokid.context.core.log.PcLog
+import com.rokid.context.core.net.DailyCaps
+import com.rokid.context.core.net.DailyLimit
 import com.rokid.context.core.net.DataDecision
 import com.rokid.context.core.net.DataGate
 import com.rokid.context.core.net.DataKind
@@ -13,6 +15,7 @@ import com.rokid.context.core.net.ModelPrivacyPolicy
 import com.rokid.context.core.net.NetSnapshot
 import com.rokid.context.core.net.NetworkCost
 import com.rokid.context.core.net.NetworkCosts
+import com.rokid.context.core.net.MobileDataLedger
 import com.rokid.context.core.net.Skipped
 import com.rokid.context.core.net.SkippedLedger
 import kotlinx.coroutines.CoroutineScope
@@ -38,8 +41,12 @@ class DataSaverGraph internal constructor(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Model privacy (slice 1.4.3): under OFFLINE_ONLY nothing that reaches a remote endpoint is allowed, so every caller that parks on this gate (the keyframe loop, the queue, Ask photos, Place Guide) parks without a call. Default AUTO (tests). */
     private val privacy: () -> ModelPrivacy = { ModelPrivacy.AUTO },
+    /** The local time zone, read at each use (the midnight wake follows a zone change). */
+    private val zone: () -> java.time.ZoneId = { java.time.ZoneId.systemDefault() },
 ) : DataGate {
     val ledger = SkippedLedger(store.counters, epochDay)
+    /** Slice 2: bytes and photos sent over costly networks today (counts only). */
+    val mobile = MobileDataLedger(store.counters, epochDay)
     val settings get() = store.settings
     val settingsStore: DataSaverStore get() = store
     private val openListeners = CopyOnWriteArrayList<() -> Unit>()
@@ -50,7 +57,12 @@ class DataSaverGraph internal constructor(
     fun settingsNow(): DataSaverSettings = store.settings.value
     /** True when Wi-Fi is connected and unmetered but has not validated for over 10 minutes (the status line says remote photos still wait). */
     fun stuckNow(): Boolean = NetworkCosts.stuckUnvalidated(snapshotNow(), clock())
-    fun costNow(): NetworkCost = NetworkCosts.classify(snapshotNow(), settingsNow().abroad)
+    fun costNow(): NetworkCost = NetworkCosts.classify(snapshotNow(), settingsNow())
+
+    /** The daily limit that applies on the network right now (null = none: Wi-Fi, a default user at home, offline). */
+    fun limitNow(): DailyLimit? = DailyCaps.limitFor(settingsNow(), costNow())
+    /** Today's limit is used up on the network we are on right now (the status line says "Daily limit reached"). */
+    fun limitReachedNow(): Boolean = DailyCaps.reached(limitNow(), mobile.today().usage)
 
     /** Photo uploads were blocked and are now allowed (Wi-Fi came back, the mode or the abroad switch changed): the caller wakes its parked loop. */
     fun addOpenListener(l: () -> Unit) { openListeners += l }
@@ -58,8 +70,43 @@ class DataSaverGraph internal constructor(
     override fun decide(kind: DataKind, reach: EndpointReach): DataDecision {
         // Offline only comes before every data-saver rule: a remote endpoint is never allowed (an unreadable setting counts as OFFLINE_ONLY).
         if (!ModelPrivacyPolicy.allows(try { privacy() } catch (e: Exception) { ModelPrivacy.OFFLINE_ONLY }, reach)) return DataDecision(false, ModelPrivacyPolicy.R_OFFLINE_ONLY)
+        return decideWith(kind, reach, sendOnce = false)
+    }
+
+    private fun decideWith(kind: DataKind, reach: EndpointReach, sendOnce: Boolean): DataDecision {
         val s = settingsNow(); val snap = snapshotNow()
-        return DataPolicy.decide(kind, reach, NetworkCosts.classify(snap, s.abroad), snap.transport, s)
+        return DataPolicy.decide(kind, reach, NetworkCosts.classify(snap, s), snap.transport, s, mobile.today().usage, sendOnce)
+    }
+
+    /** USER-class photo call the user sent "once" (the router checks the class and the [SendOnce] element). Offline only still refuses. Logged as a fixed line, no content. */
+    override fun decideOnce(kind: DataKind, reach: EndpointReach): DataDecision {
+        if (!ModelPrivacyPolicy.allows(try { privacy() } catch (e: Exception) { ModelPrivacy.OFFLINE_ONLY }, reach)) return DataDecision(false, ModelPrivacyPolicy.R_OFFLINE_ONLY)
+        val d = decideWith(kind, reach, sendOnce = true)
+        if (d.reason == DataPolicy.R_SEND_ONCE) PcLog.i(TAG, "send once allowed kind=${kind.name}")
+        return d
+    }
+
+    /** Byte counter at the router's choke point: only while the network is costly (mobile, roaming, unknown); Wi-Fi is not counted. */
+    override fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) {
+        if (!NetworkCosts.isCostly(costNow())) return
+        val before = limitReachedNow()
+        mobile.add(kind, txBytes + rxBytes, if (kind == DataKind.PHOTO) photos else 0)
+        if (!before && limitReachedNow()) {
+            if (mobile.firstNoticeToday()) PcLog.i(TAG, "daily limit reached")
+            refreshState() // photo uploads just became held back: mark it so frames park, and the status line follows
+        }
+    }
+
+    /**
+     * Wakes at each local midnight: the day's counters start from zero, so a limit that held photo uploads is lifted and the open listeners (the parked keyframe loop) are woken.
+     * Follows the injected clock and zone, so a test on virtual time drives it. Safe to call once; the production graph starts it at creation.
+     */
+    fun startMidnightWatch(): kotlinx.coroutines.Job = scope.launch {
+        while (true) {
+            kotlinx.coroutines.delay(msUntilLocalMidnight(clock(), zone()) + MIDNIGHT_SLACK_MS)
+            PcLog.i(TAG, "day rollover")
+            refreshState()
+        }
     }
 
     /** Where the photo calls go (the vision endpoint's kind). Set by the app (`KeyframeGraph`); REMOTE, the fail-closed answer, until then. The same input the pipeline's own gate uses. */
@@ -122,6 +169,13 @@ class DataSaverGraph internal constructor(
 
     companion object {
         private const val TAG = "PcData"
+        const val MIDNIGHT_SLACK_MS = 1_000L
+        /** Milliseconds from [nowMs] to the next local midnight in [zone] (DST-safe: asks the zone for the start of the next day). */
+        fun msUntilLocalMidnight(nowMs: Long, zone: java.time.ZoneId): Long {
+            val now = java.time.Instant.ofEpochMilli(nowMs)
+            val next = now.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant()
+            return (next.toEpochMilli() - nowMs).coerceAtLeast(1L)
+        }
         @Volatile private var instance: DataSaverGraph? = null
 
         fun get(context: Context): DataSaverGraph = instance ?: synchronized(this) {
@@ -136,6 +190,7 @@ class DataSaverGraph internal constructor(
             graph = DataSaverGraph(store, { monitor.snapshot }, reread = monitor::reread, privacy = privacy::current)
             monitor.start()
             graph.refreshState()
+            graph.startMidnightWatch()
             // A mode or abroad change can open the gate as well.
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch { store.settings.drop(1).collect { graph.refreshState() } }
             // Model privacy turning off Offline only can open the gate as well.
