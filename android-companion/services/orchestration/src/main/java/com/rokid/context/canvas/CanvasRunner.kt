@@ -189,6 +189,12 @@ class CanvasRunner(
     /** Count-only, fixed texts: never a run, frame or node id, token, class name or provider text. A sink that throws must never reach the run. */
     private fun line(level: Level, msg: String) { try { log.log(level, "canvas", msg) } catch (_: Throwable) { } }
 
+    /** The prune before a new run is a delete: it takes the [com.rokid.context.orchestration.DataOpGate]. A running export holds it off (bounded wait): the prune is skipped, the run starts, the next run prunes again. */
+    private suspend fun pruneGated(keep: Int) {
+        try { com.rokid.context.orchestration.DataOpGate.shared.delete { dao.pruneRuns(keep) } }
+        catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) { line(Level.I, "run prune skipped: export in progress") }
+    }
+
     private suspend fun price(p: Pipeline, ids: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Priced {
         var nominal = 0
         var max = 0
@@ -363,7 +369,7 @@ class CanvasRunner(
             }
             if (res.size != ids.size) throw ScenesMoved()
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            dao.pruneRuns(KEEP_RUNS - 1)
+            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             val keys = res.map(::keyOf)
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
@@ -434,7 +440,7 @@ class CanvasRunner(
                 ConfirmTokens.Verdict.OK -> Unit
             }
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            dao.pruneRuns(KEEP_RUNS - 1)
+            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
             cancelled.set(null)
@@ -481,7 +487,7 @@ class CanvasRunner(
             if (takesMoments(p) || takesScenes(p) || takesWatch(p)) throw IllegalArgumentException("pipeline needs moments, scenes or watch values")
             if (!tokens.consume(confirmToken, PipelineHash.of(p), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            dao.pruneRuns(KEEP_RUNS - 1)
+            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", ids, models, null))
             cancelled.set(null)
@@ -529,7 +535,7 @@ class CanvasRunner(
             }
             if (res.size != ids.size) throw MomentsMoved()
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            dao.pruneRuns(KEEP_RUNS - 1)
+            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             val keys = res.map(::keyOf)
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
@@ -584,7 +590,7 @@ class CanvasRunner(
                 throw IllegalArgumentException("bad_token")
             }
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }.orEmpty()
-            dao.pruneRuns(KEEP_RUNS - 2) // once for the group: neither of its rows exists yet, so neither can be pruned
+            pruneGated(KEEP_RUNS - 2) // once for the group: neither of its rows exists yet, so neither can be pruned
             val g = Group(newId(), newId(), newId())
             dao.insertRun(runRow(g.runA, spec.aId, versionA, a, "RUNNING", ia, models.getOrNull(0) ?: "[]", g.id))
             dao.insertRun(runRow(g.runB, spec.bId, versionB, b, "QUEUED", ib, models.getOrNull(1) ?: "[]", g.id))

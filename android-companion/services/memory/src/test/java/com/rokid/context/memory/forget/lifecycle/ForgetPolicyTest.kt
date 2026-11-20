@@ -142,6 +142,7 @@ class ForgetPolicyTest {
     private val sideExpected: Map<String, Pair<Boolean, Map<ForgetChild, PolicyAction>>> = mapOf(
         "WATCH_OFF" to (false to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
         "CANVAS_RUN_DELETE" to (true to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
+        "MARK_UNDO" to (true to mapOf(ForgetChild.MARK to F, ForgetChild.PIN to L)),
         "CANVAS_RUN_PRUNE" to (false to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
     )
 
@@ -160,6 +161,11 @@ class ForgetPolicyTest {
     /** The privacy rule for the non-Forget deletes: a system delete (watch-off, prune) never FORGETs a user-authored object (a pin, a mark). */
     @Test fun noSystemSideDeleteForgetsAUserAuthoredObject() {
         for (d in ForgetPolicy.sideDeletes.filter { !it.explicit }) for (child in listOf(ForgetChild.PIN, ForgetChild.MARK)) assertTrue("${d.name} must not delete $child", d.action(child) != F)
+    }
+
+    /** Ruling O6: the undo of a mark (glasses voice or tap, phone "Forget this mark") never deletes a pin: it only de-links it. */
+    @Test fun aMarkUndoNeverForgetsAPin() {
+        assertEquals(L, ForgetPolicy.sideDelete("MARK_UNDO").action(ForgetChild.PIN))
     }
 
     /** FAILS when a production file starts calling one of the side-delete entry points without a row, or a listed caller no longer calls it (the row is then stale). */

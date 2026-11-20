@@ -891,7 +891,7 @@ class CanvasBackendImpl(
     override suspend fun deleteRun(id: String): Boolean {
         if (runner.isBusy(id)) throw CanvasRunner.Busy() // the active run or either run of a live A/B group (a QUEUED B included)
         if (dao.run(id) == null) return false
-        dao.deleteRun(id)
+        com.rokid.context.orchestration.DataOpGate.shared.delete { dao.deleteRun(id) } // a delete: waits for a running export, else throws ExportInProgress (CanvasApi answers 409); the run stays
         return true
     }
 
