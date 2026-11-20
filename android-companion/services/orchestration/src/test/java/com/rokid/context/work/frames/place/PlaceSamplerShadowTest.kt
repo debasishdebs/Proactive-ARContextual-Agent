@@ -74,6 +74,19 @@ class PlaceSamplerShadowTest {
         assertFalse(attempt().contains("shadow")); assertEquals(PlaceOutcome.MATCHED, outcomes.last())
     }
 
+    @Test fun flagOffNeverReachesTheReferenceVectorSeamWithARealShadow() = runTest {
+        var refAsks = 0; var embeds = 0
+        val e = object : ImageTextEmbedder {
+            override val spaceId = "x"; override val dim = 2
+            override suspend fun embedImage(bytes: ByteArray): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
+            override suspend fun embedText(text: String): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
+        }
+        val real = PlaceShadow(embedder = { e }, photo = { ByteArray(1) }, imageRefs = { _, _, _ -> refAsks++; emptyList() }, elapsed = { 0L })
+        flag = false
+        run(sampler(this) { id, hits, live -> real.score(id, hits, live) })
+        assertEquals(0, hookCalls); assertEquals(0, refAsks); assertEquals(0, embeds); assertFalse(attempt().contains("shadow"))
+    }
+
     @Test fun flagOnWithALongCallAndAFastScoreIsOkNotErr() = runTest {
         callMs = 3_000
         run(sampler(this) { _, _, _ -> delay(400); scored(800, 500) })

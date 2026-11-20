@@ -5,6 +5,9 @@ import com.rokid.context.memory.place.PlaceEntity
 import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.memory.retrieval.CandidateScorer
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 /** What the shadow hook gives back for one attempt. [OFF] adds nothing to the log line; [UNAVAILABLE] logs `shadow=na`; an exception or a timeout is logged `shadow=err` by the sampler. */
 class ShadowOutcome private constructor(val kind: Kind, val result: CandidateScorer.Result?, val embedMs: Long) {
@@ -21,14 +24,15 @@ class ShadowOutcome private constructor(val kind: Kind, val result: CandidateSco
 /**
  * Shadow scoring of the candidates [PlaceSampler] already sends to the model (1.4.4 slice A). It embeds the dwell photo, embeds a text anchor (`name. kind`) per candidate in ONE batch and ranks them with
  * [CandidateScorer]. The photo and its vector live in locals only. The only thing kept is a small in-memory cache of text vectors of PACK places (public names), bounded by [CACHE_MAX], dropped whenever
- * the wipe [generation] changes or the embedding space changes; a user pin's name is never cached. [imageRefs] is the seam for a pin's reference photos (slice B; empty today). The sampler never waits for
+ * the wipe [generation] changes or the embedding space changes; a user pin's name is never cached. [imageRefs] is the seam for a pin's reference photo vectors (slice B1, see [PinReferenceVectors]); a candidate with one is scored on the IMAGE channel, a pack place keeps its text anchor, and the decision channel (`shCh`) is image as soon as one candidate has a reference. The sampler never waits for
  * this class and treats any exception as `shadow=err`; it never touches an outcome.
  */
 class PlaceShadow(
     private val embedder: suspend () -> ImageTextEmbedder?,
     /** The dwell photo's JPEG bytes (the one photo the attempt loaded, shared with the model call), or null when it is gone. */
     private val photo: suspend (frameId: String) -> ByteArray?,
-    private val imageRefs: suspend (PlaceEntity, ImageTextEmbedder) -> List<FloatArray> = { _, _ -> emptyList() },
+    /** A user pin's reference photo vectors (slice B1: [PinReferenceVectors], in memory only, revalidated on every use); empty = no image channel for it. [live] is the attempt's fence. Never asked for a pack place. */
+    private val imageRefs: suspend (PlaceEntity, ImageTextEmbedder, () -> Boolean) -> List<FloatArray> = { _, _, _ -> emptyList() },
     private val elapsed: () -> Long,
     /** The wipe generation (production: `MemoryWipe.generation`); a change empties the text cache. */
     private val generation: () -> Long = { 0L },
@@ -45,8 +49,13 @@ class PlaceShadow(
         val t0 = elapsed()
         val q = e.embedImage(jpeg)
         val texts = anchors(e, hits)
+        // The pins' reference vectors are asked together, so one cold miss costs one wait, not one per pin. Any failure of one pin leaves only that pin without an image channel.
+        val refs: Map<String, List<FloatArray>> = coroutineScope {
+            hits.map { it.first }.filter { UserPlace.isUserId(it.id) }.map { p -> async { p.id to (try { imageRefs(p, e, live) } catch (c: CancellationException) { throw c } catch (_: Exception) { emptyList() }) } }.awaitAll().toMap()
+        }
+        if (!live()) return ShadowOutcome.DROPPED
         val cands = hits.map { (p, d) ->
-            CandidateScorer.Candidate(p.id, imageRefs = if (UserPlace.isUserId(p.id)) imageRefs(p, e) else emptyList(), textAnchor = texts[p.id], edgeGapM = (d - p.radiusM).coerceAtLeast(0.0), distanceM = d)
+            CandidateScorer.Candidate(p.id, imageRefs = refs[p.id].orEmpty(), textAnchor = texts[p.id], edgeGapM = (d - p.radiusM).coerceAtLeast(0.0), distanceM = d)
         }
         val result = CandidateScorer.score(q, cands)
         if (!live()) return ShadowOutcome.DROPPED
