@@ -89,27 +89,56 @@ class OnnxImageEmbedder(
     }
 }
 
-/** The real ONNX Runtime session. Accepts either [n,768] or [n,tokens,768] output (CLS = token 0). */
-internal class OrtImageSession(modelPath: String) : ImageSession {
+/**
+ * The real ONNX Runtime session. Accepts either [n,width] or [n,tokens,width] output (3-D: CLS = token 0).
+ *
+ * [outputName] picks the model output BY NAME; null (the default) = output 0, exactly the behaviour before SigLIP, so the Nomic path is unchanged. SigLIP 2's vision
+ * ONNX has outputs `last_hidden_state` (0, [n,196,768], NOT an embedding) then `pooler_output` (1, [n,768], the MAP-head embedding): it must be asked for by name.
+ * A name the model does not have fails at construction (never a silent fallback to output 0).
+ */
+internal class OrtImageSession(
+    modelPath: String,
+    private val outputName: String? = null,
+    private val width: Int = NomicVision.CLS_DIMS,
+) : ImageSession {
     private val env = OrtEnvironment.getEnvironment()
     private val ort: OrtSession = env.createSession(modelPath, OrtSession.SessionOptions())
     private val inputName = ort.inputNames.first()
 
+    init {
+        if (outputName != null && outputName !in ort.outputNames) {
+            ort.close()
+            throw IllegalArgumentException("model has no output named $outputName")
+        }
+    }
+
     override fun run(batch: FloatArray, n: Int): FloatArray {
         val shape = longArrayOf(n.toLong(), 3, NomicVision.INPUT.toLong(), NomicVision.INPUT.toLong())
         OnnxTensor.createTensor(env, FloatBuffer.wrap(batch), shape).use { input ->
-            ort.run(mapOf(inputName to input)).use { r ->
-                val t = r[0] as OnnxTensor
+            val feed = mapOf(inputName to input)
+            (if (outputName == null) ort.run(feed) else ort.run(feed, setOf(outputName))).use { r ->
+                val t = (if (outputName == null) r[0] else r.get(outputName).get()) as OnnxTensor
                 val buf = t.floatBuffer
-                val dims = t.info.shape
-                val d = NomicVision.CLS_DIMS
-                val out = FloatArray(n * d)
-                val stride = if (dims.size == 3) (dims[1] * dims[2]).toInt() else d
-                for (i in 0 until n) { buf.position(i * stride); buf.get(out, i * d, d) }
-                return out
+                val flat = FloatArray(buf.remaining())
+                buf.get(flat)
+                return rows(flat, t.info.shape, n, width)
             }
         }
     }
 
     override fun close() = ort.close()
+
+    companion object {
+        /**
+         * First [width] values of each of the [n] rows: [flat] is [n,width] (2-D) or [n,tokens,width] (3-D, row = token 0). Pure, so the Nomic reading
+         * (CLS from output 0) is unit-tested without ORT.
+         */
+        internal fun rows(flat: FloatArray, shape: LongArray, n: Int, width: Int): FloatArray {
+            val stride = if (shape.size == 3) (shape[1] * shape[2]).toInt() else width
+            require(n >= 1 && flat.size >= (n - 1) * stride + width) { "unexpected model output" }
+            val out = FloatArray(n * width)
+            for (i in 0 until n) System.arraycopy(flat, i * stride, out, i * width, width)
+            return out
+        }
+    }
 }
