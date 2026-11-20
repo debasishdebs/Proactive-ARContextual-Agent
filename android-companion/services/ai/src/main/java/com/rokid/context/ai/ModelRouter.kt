@@ -250,19 +250,23 @@ class ModelRouter(
         // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
         // Slice 2 byte counter, at this single choke point: payload only (the request's prompt and Base64 photos as sent, the reply text), counts only.
-        // The network class is read ONCE here, at call start, and that class decides whether the call counts (a call that ends on another network is still counted where it began).
-        // Only a REMOTE endpoint is counted (an on-device model sends nothing; a LAN endpoint uses no mobile data). A failed call does NOT use up the photo cap: photos count on success only,
-        // and the request bytes of a failure count only when the server demonstrably received the request (an HTTP error status), never for a connect, DNS, timeout or other failure.
-        val costlyAtStart = dataGate.costlyNow()
+        // The network class is read in send(), once per provider call, at the moment the call holds its permit (and upload slot): the permit wait can be long, and the class that counts is the one the request goes out on
+        // (the vision attempt and its text retry each read their own). A call that ends on another network is still counted where it began.
+        // Everything but an on-device model is a candidate (an on-device model sends nothing). A LAN endpoint is NOT free by its address: DataPolicy treats it as free only on Wi-Fi/Ethernet, and on mobile data a LAN host
+        // (192.168.x or 10.x through WireGuard/Tailscale) is allowed and its bytes DO use mobile data. So [costlyNow] at the permit decides, and the ledger counts only while it is true.
+        // A failed call does NOT use up the photo cap: photos count on success only. The request bytes of a failure count only when the server demonstrably received the request and answered:
+        // an HTTP error status, or a 2xx whose reply could not be used ([ProviderResponseException]: missing or empty content, malformed JSON; the providers map their parse failures to it).
+        // Never counted: a connect, DNS, TLS, timeout or other IO failure, nor a read timeout after the request was sent (the request may well have been received, so the byte cap can be slightly permissive).
         suspend fun send(r: ModelRequest): com.rokid.context.model.ModelReply {
             val photos = r.images.size
             val kind = if (photos > 0) DataKind.PHOTO else DataKind.SMALL // the text-only retry of a photo call is a text call
             val tx = DataBytes.requestBytes(r)
-            val counted = reachOf(e) == EndpointReach.REMOTE
+            val counted = reachOf(e) != EndpointReach.DEVICE
+            val costlyAtStart = counted && dataGate.costlyNow()
             val reply = try { p.complete(r) }
             catch (c: CancellationException) { throw c }
             catch (t: Throwable) {
-                if (counted && t is ProviderHttpException) safeSent(kind, tx, 0, 0, costlyAtStart)
+                if (counted && (t is ProviderHttpException || t is ProviderResponseException || t is kotlinx.serialization.SerializationException)) safeSent(kind, tx, 0, 0, costlyAtStart)
                 throw t
             }
             // outside the try above: a throwing ledger can neither count the call twice nor discard a paid reply

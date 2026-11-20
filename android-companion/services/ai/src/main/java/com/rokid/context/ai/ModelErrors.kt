@@ -66,7 +66,19 @@ class ProviderHttpException(val code: Int, provider: String, body: String) :
 class ProviderConfigException(message: String) : IllegalArgumentException(message)
 
 /** A 2xx reply without the expected content. */
-class ProviderResponseException(message: String) : IllegalStateException(message)
+class ProviderResponseException(message: String) : IllegalStateException(message) {
+    companion object {
+        /**
+         * Runs the parse of a 2xx reply: malformed JSON ([kotlinx.serialization.SerializationException]) or a field of the wrong shape ([IllegalArgumentException] from the
+         * `jsonObject`/`jsonPrimitive` casts) becomes a [ProviderResponseException], so the router can tell "the server received the request but the reply is unusable" from a
+         * connect, DNS, timeout or other IO failure. Fixed text only: the cause (which can echo the reply) is not carried.
+         */
+        inline fun <T> parsing(provider: String, block: () -> T): T = try { block() }
+        catch (e: ProviderResponseException) { throw e }
+        catch (e: kotlinx.serialization.SerializationException) { throw ProviderResponseException("$provider reply was not valid JSON") }
+        catch (e: IllegalArgumentException) { throw ProviderResponseException("$provider reply had an unexpected shape") }
+    }
+}
 
 object ProviderErrors {
     /**

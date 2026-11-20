@@ -35,14 +35,16 @@ class ModelRouterDataSaverTest {
     private val permits = mutableListOf<CallClass>()
     private val failing = mutableSetOf<String>()
     private var httpFailure = false
+    private var failWith: Throwable? = null
+    private var onPermit: () -> Unit = {}
     private var onGenerate: () -> Unit = {}
     private val callGate = object : CallGate {
-        override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T { permits += callClass; return block() }
+        override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T { permits += callClass; onPermit(); return block() }
     }
     private val providers = ProviderBuilder { e, model, _ ->
         object : ModelProvider {
-            override suspend fun generate(prompt: String): String { providerCalls += "${e.id}:text"; onGenerate(); if (e.id in failing) error("boom"); return "${e.id}/$model" }
-            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { providerCalls += "${e.id}:vision"; if (httpFailure) throw ProviderHttpException(500, "x", ""); return "${e.id}/vision" }
+            override suspend fun generate(prompt: String): String { providerCalls += "${e.id}:text"; onGenerate(); failWith?.let { throw it }; if (e.id in failing) error("boom"); return "${e.id}/$model" }
+            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { providerCalls += "${e.id}:vision"; failWith?.let { throw it }; if (httpFailure) throw ProviderHttpException(500, "x", ""); return "${e.id}/vision" }
         }
     }
 
@@ -152,10 +154,67 @@ class ModelRouterDataSaverTest {
         assertEquals(listOf(true), data.costlyAtStartLog)
     }
 
-    @Test fun aLanEndpointIsNeverCounted() = runTest {
+    @Test fun aLanEndpointOnWifiIsNotCounted() = runTest {
         ep("lan", url = "http://mac.local:11434", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "lan", "m")).getOrThrow()
+        data.costly = false
         router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertEquals("the ledger is told the call began on a free network, so it adds nothing", listOf(false), data.costlyAtStartLog)
+    }
+
+    @Test fun aLanEndpointOnMobileDataOrAVpnIsCounted() = runTest {
+        ep("lan", url = "https://192.168.1.20:11434", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "lan", "m")).getOrThrow()
+        data.costly = true // mobile data, a LAN host reached through WireGuard/Tailscale
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertEquals(listOf(true), data.costlyAtStartLog)
+        assertEquals(1, data.sentLog.size)
+        assertEquals(512L + 1, data.sentLog[0][1])
+    }
+
+    @Test fun anOnDeviceModelIsNeverCountedNorEvenAskedForTheNetworkClass() = runTest {
+        ep("loc", kind = EndpointKind.LLAMACPP_LOCAL, caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "loc", "m")).getOrThrow()
+        data.costly = true
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertEquals(0, data.sentAttempts)
         assertTrue(data.sentLog.isEmpty())
+    }
+
+    @Test fun aReplyThatCannotBeUsedCountsItsRequestBytesButNoPhoto() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        for (t in listOf(ProviderResponseException("no content"), kotlinx.serialization.SerializationException("bad json"))) {
+            data.sentLog.clear(); failWith = t
+            err { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
+            assertEquals("$t", listOf(listOf<Any>(DataKind.PHOTO, 517L, 0L, 0)), data.sentLog)
+        }
+    }
+
+    @Test fun connectDnsTimeoutAndIoFailuresCountNothing() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        for (t in listOf(java.net.ConnectException("refused"), java.net.UnknownHostException("dns"), java.net.SocketTimeoutException("read timed out"), java.io.IOException("reset"), IllegalStateException("x"))) {
+            failWith = t
+            err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
+        }
+        assertTrue(data.sentLog.isEmpty())
+    }
+
+    @Test fun theNetworkClassIsReadAtThePermitNotBeforeTheWait() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        data.costly = false
+        onPermit = { data.costly = true } // the network became costly while the call waited for its permit
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertEquals(listOf(true), data.costlyAtStartLog)
+    }
+
+    @Test fun aVisionAttemptAndItsTextRetryEachReadTheClassAtTheirOwnPermit() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.costly = true
+        var n = 0
+        onPermit = { data.costly = (n++ == 0) } // costly at the vision attempt's permit, free by the text retry's
+        failWith = java.io.IOException("vision down") // the vision attempt fails with nothing counted; the text retry then succeeds
+        onGenerate = { failWith = null }
+        router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) }
+        assertEquals("only the successful text retry is counted, with its own class", listOf(false), data.costlyAtStartLog)
+        assertEquals(listOf("v:vision", "v:text"), providerCalls)
+        assertEquals(2, permits.size)
     }
 
     @Test fun sendOnceIsHonouredOnlyForAUserClassPhotoCallCarryingTheMarker() = runTest {

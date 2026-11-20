@@ -56,9 +56,11 @@ class OllamaProvider(
         executeFenced(client, http, beforeAdmit).use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw ProviderHttpException(response.code, "Ollama", body)
-            val json = Json.parseToJsonElement(body).jsonObject
-            val text = json["response"]?.jsonPrimitive?.content ?: throw ProviderResponseException("Ollama response missing text")
-            ModelReply(text, json["prompt_eval_count"]?.jsonPrimitive?.intOrNull, json["eval_count"]?.jsonPrimitive?.intOrNull)
+            ProviderResponseException.parsing("Ollama") {
+                val json = Json.parseToJsonElement(body).jsonObject
+                val text = json["response"]?.jsonPrimitive?.content ?: throw ProviderResponseException("Ollama response missing text")
+                ModelReply(text, json["prompt_eval_count"]?.jsonPrimitive?.intOrNull, json["eval_count"]?.jsonPrimitive?.intOrNull)
+            }
         }
     }
 }

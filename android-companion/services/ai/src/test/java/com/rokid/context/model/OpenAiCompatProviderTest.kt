@@ -1,6 +1,7 @@
 package com.rokid.context.model
 
 import com.rokid.context.ai.ProviderHttpException
+import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.model.provider.OpenAiCompatProvider
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -77,6 +78,14 @@ class OpenAiCompatProviderTest {
         server.enqueue(MockResponse().setResponseCode(429).setBody("slow"))
         val e = runCatching { OpenAiCompatProvider(url(), "k", "m", client = client).complete(ModelRequest("q")) }.exceptionOrNull()
         assertTrue(e is ProviderHttpException); assertEquals(429, (e as ProviderHttpException).code)
+    }
+
+    @Test fun anUnusable2xxReplyIsAProviderResponseExceptionNeverARawParseError() = runTest {
+        for (body in listOf("not json at all", "[1,2]", """{"choices":[{"message":{"content":{"a":1}}}]}""", """{"choices":[{"message":{}}]}""", """{"choices":[{"message":{"content":[]}}]}""")) {
+            server.enqueue(MockResponse().setBody(body))
+            val e = runCatching { OpenAiCompatProvider(url(), "k", "m", client = client).complete(ModelRequest("q")) }.exceptionOrNull()
+            assertTrue("$body -> $e", e is ProviderResponseException)
+        }
     }
 
     @Test fun redirectsAreNotFollowed() = runTest {
