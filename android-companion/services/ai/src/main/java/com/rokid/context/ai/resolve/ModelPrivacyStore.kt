@@ -89,16 +89,20 @@ class ModelPrivacyStore(
 
     private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
 
-    /** The durable write of [p], on IO, in a scope no screen can cancel (the process-wide store owns it). [onDone] gets true when it is durable. */
-    fun commitAsync(p: Pending, onDone: (Boolean) -> Unit = {}) { ioScope.launch { onDone(try { durable(p.mode, p.version) } catch (e: Exception) { false }) } }
+    /** The durable write of [p], on IO, in a scope no screen can cancel (the process-wide store owns it). [onDone] gets true when it is durable, false when it failed; it is NOT called when a newer choice superseded this write (the newer one reports, so an older skipped write cannot clear a failure). */
+    fun commitAsync(p: Pending, onDone: (Boolean) -> Unit = {}) { ioScope.launch { val r = try { durable(p.mode, p.version) } catch (e: Exception) { false }; if (r != null) onDone(r) } }
 
-    /** Step 2: the durable write (sentinel first, then the mode), each retried once; a fixed token is logged on failure. False = the disk may still say "reset" (safe: Offline only). Superseded writes are skipped. */
-    private fun durable(m: ModelPrivacy, v: Long): Boolean = synchronized(writeLock) {
-        if (v != version) return@synchronized true // a newer choice owns the disk now
+    /** Step 2: the durable write (sentinel first, then the mode), each retried once; a fixed token is logged on failure. False = the disk may still say "reset" (safe: Offline only). Superseded writes are skipped (null): the version is re-checked before EACH commit, so an older choice can never reach the disk after a newer one. */
+    private fun durable(m: ModelPrivacy, v: Long): Boolean? = synchronized(writeLock) {
+        if (v != version) return@synchronized null // a newer choice owns the disk now
         try { com.rokid.context.ai.OfflineOnlyNet.evictPools() } catch (e: Exception) { }
         fun commitTwice(write: () -> Boolean): Boolean = try { write() || write() } catch (e: Exception) { false }
-        val ok = (sentinel === prefs || commitTwice { sentinel.edit().putString(K_LAST, m.name).putBoolean(K_INIT, true).commit() }) &&
-            commitTwice { prefs.edit().putString(K_MODE, m.name).putBoolean(K_INIT, true).commit() }
+        if (sentinel !== prefs) {
+            if (!commitTwice { v == version && sentinel.edit().putString(K_LAST, m.name).putBoolean(K_INIT, true).commit() }) return@synchronized if (v != version) null else { PcLog.w(TAG, "privacy write failed"); false }
+        }
+        if (v != version) return@synchronized null
+        val ok = commitTwice { v == version && prefs.edit().putString(K_MODE, m.name).putBoolean(K_INIT, true).commit() }
+        if (v != version) return@synchronized null
         if (!ok) PcLog.w(TAG, "privacy write failed")
         ok
     }
@@ -107,7 +111,7 @@ class ModelPrivacyStore(
     fun set(m: ModelPrivacy) { val p = begin(m); writer.execute { durable(p.mode, p.version) } }
 
     /** Like [set] but returns only after the write was attempted on [writer-independent] IO: true = durable. The UI shows "Saving" meanwhile; switching TO Offline only should use this. */
-    suspend fun setAndWait(m: ModelPrivacy): Boolean { val p = begin(m); return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.NonCancellable) { durable(p.mode, p.version) } }
+    suspend fun setAndWait(m: ModelPrivacy): Boolean { val p = begin(m); return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.NonCancellable) { durable(p.mode, p.version) ?: true } }
 
     companion object {
         private const val TAG = "PcPrivacy"

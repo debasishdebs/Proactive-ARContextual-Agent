@@ -37,6 +37,7 @@ class ModelPrivacyControlTest {
         val end = System.currentTimeMillis() + 5_000
         while (control.state.value.saving && System.currentTimeMillis() < end) Thread.sleep(20)
         assertFalse(control.state.value.saving); assertFalse(control.state.value.saveFailed)
+        assertFalse("a chosen mode is not a reset", store.wasReset.value)
         assertEquals("durable although the control's scope was cancelled", ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s).current())
     }
 
