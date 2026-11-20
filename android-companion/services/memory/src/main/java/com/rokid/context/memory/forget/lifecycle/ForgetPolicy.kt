@@ -42,6 +42,11 @@ enum class ForgetChild(val lifecycle: Family?, val fewItems: Boolean = false) {
 /** One cell: the [action] and the code that implements it TODAY ([at], `file:line`, see [ForgetPolicy] for the short names). [verified] = false when the cell comes from the coverage map and was not re-read at that line. */
 data class PolicyRule(val action: PolicyAction, val at: String, val verified: Boolean = true)
 
+/** A delete outside the Forget pipeline: its name, whether the USER asked for it ([explicit]), the call tokens that start it, the production files that call it, and the children it deletes (the rest are KEEP). */
+class SideDelete(val name: String, val explicit: Boolean, val entryPoints: List<String>, val callers: List<String>, val cells: Map<ForgetChild, PolicyRule>) {
+    fun action(child: ForgetChild): PolicyAction = cells[child]?.action ?: PolicyAction.KEEP
+}
+
 /** One row: a child family under the five source groups. [user] covers SINGLE, MULTI, RANGE and SCOPE (the same rules today: all go through the `Policy.User` / `Policy.Spans` cascade). */
 class PolicyRow(val child: ForgetChild, val user: PolicyRule, val deleteAll: PolicyRule, val expiry: PolicyRule, val sweep: PolicyRule, val purge: PolicyRule) {
     fun rule(kind: ForgetSourceKind): PolicyRule = when (kind) {
@@ -60,7 +65,7 @@ class PolicyRow(val child: ForgetChild, val user: PolicyRule, val deleteAll: Pol
  * Short names in the `at` evidence (paths from `android-companion/services/`): FP = `memory/.../forget/lifecycle/ForgetPlanner.kt`, FE = `.../lifecycle/ForgetExecutor.kt`, FAM = `.../lifecycle/Families.kt`,
  * PML = `orchestration/.../work/frames/place/PinMomentLinks.kt`, MW = `orchestration/.../orchestration/MemoryWipe.kt`, WD = `memory/.../db/WipeDao.kt`, RW = `orchestration/.../forget/RetentionWorker.kt`,
  * IMP = `orchestration/.../canvas/moment/InvalidMomentPurge.kt`, DG = `memory/.../forget/DeletionGraph.kt`. Line numbers are of the tree at 2026-11-20 (1d91f33a).
- * A cell marked `unverified` was taken from `docs/superpowers/plans/2026-11-20-forget-coverage-map.md` and not re-read; step 2 must confirm those before relying on them.
+ * Every cell was re-read at its cited line on 2026-11-20 (`verified = true`); the rulings the code does not settle are OPEN RULINGs in `docs/superpowers/plans/2026-11-20-forget-coverage-map.md` section "Open rulings". FA = `orchestration/.../forget/ForgetActions.kt`.
  */
 object ForgetPolicy {
     private fun r(a: PolicyAction, at: String, verified: Boolean = true) = PolicyRule(a, at, verified)
@@ -78,25 +83,25 @@ object ForgetPolicy {
             purge = r(F, "IMP:69 orphan memories via service.forgetFacts (user policy)")),
         PolicyRow(ForgetChild.MOMENT,
             user = r(C, "FP:107,181,216 dropHolding / removeMoments (DROP or REBUILD per row)"), deleteAll = r(F, "WD:60-63 DELETE FROM moment_part, moment_trace_dep, moment, moment_tombstone"),
-            expiry = r(C, "FP:196 dropHolding(expired photos)"), sweep = r(C, "FP:107 dropHolding(inside, forgotten + invalidated)", verified = false),
+            expiry = r(C, "FP:196 dropHolding(expired photos)"), sweep = r(C, "FP:107 / FE:209 dropHolding(inside, forgotten + invalidated): `inside` = the cited non-keyframe photos, filled whatever lockFrames says (FE:203)"),
             purge = r(F, "IMP:60-65 md.insertTombstones + md.remove(invalid)")),
         PolicyRow(ForgetChild.SCENE,
             user = r(C, "FP:219-223 scoped scenes DROP / REBUILD (FE:68 rebuildScenes)"), deleteAll = r(F, "WD:70-71 DELETE FROM scene_part, scene"),
-            expiry = r(C, "FP:196 dropHolding shrinks holding Scenes", verified = false), sweep = r(C, "FP:107 dropHolding shrinks holding Scenes", verified = false),
+            expiry = r(C, "FP:196 / FE:173 dropHolding -> MomentDao.kt:57-60 remove() shrinkScenesHolding (FP:284 touchedScenes, FP:288 finish)"), sweep = r(C, "FP:107 / FE:209 dropHolding -> MomentDao.kt:57-60 remove() shrinkScenesHolding"),
             purge = r(C, "IMP:17 doc: every Scene holding an invalid Moment shrinks and hides its derived fields")),
         PolicyRow(ForgetChild.DERIVED_FIELD,
             user = r(C, "FAM:145 DerivedFieldFamily; FP:216-217 hidden with the holding Moment / Scene"), deleteAll = r(F, "WD:68 DELETE FROM object_derived"),
-            expiry = r(C, "FP:196 with the holding Moment", verified = false), sweep = r(C, "FP:107 with the holding Moment", verified = false), purge = r(C, "IMP:17 md.remove deletes derived fields")),
+            expiry = r(C, "FP:196 / FP:283 with the holding Moment: MomentDao.kt:61-66 deleteObjectRows"), sweep = r(C, "FP:107 / FP:283 with the holding Moment: MomentDao.kt:61-66 deleteObjectRows"), purge = r(C, "IMP:17 md.remove deletes derived fields")),
         PolicyRow(ForgetChild.MARK,
             user = r(F, "FP:239-246 marks(): explicit mark ERASE; FP:255 marks linked to a forgotten photo ERASE"), deleteAll = r(F, "WD:46 DELETE FROM canvas_label"),
             expiry = r(C, "FP:197 -> FP:249-255 photo expiry ERASEs marks in the +/- radius (coverage map G9: needs a ruling)"), sweep = r(K, "FE:153-157 lockFrames=false: no mark step in cascade()"),
             purge = r(K, "IMP:20 doc: a bare mark stays, only its Moment goes")),
         PolicyRow(ForgetChild.TRACE,
             user = r(C, "FP:228-229 range(): overlapping traces ERASE; FP:249-252 radius cascade"), deleteAll = r(F, "DG:126 DIRS canvas_traces WIPED; WD:42-43 canvas_trace_event, canvas_trace"),
-            expiry = r(C, "FP:197 radius traces ERASE"), sweep = r(K, "FE:153-157 lockFrames=false: no radius step", verified = false), purge = r(C, "IMP:58-66 canvas items, scores and traces keyed by the Moment", verified = false)),
+            expiry = r(C, "FP:197 radius traces ERASE"), sweep = r(K, "FE:156 lockFrames=false: cascade() FE:211-214 skips dropCanvasOutputs, so no radius step (FE:239-243 TraceFamily.eraseRange)"), purge = r(K, "IMP:63 deleteTracesForFrames is canvas_live_trace (a RUN_RESULT table), not the IMU traces; orphan memories have no frame row so FE:237 finds no capture time and no radius span (OPEN RULING O3)")),
         PolicyRow(ForgetChild.RUN_RESULT,
             user = r(C, "FP:258 runResults DROP; FP:243-245 lineage DROP"), deleteAll = r(F, "WD:35-38 DELETE FROM canvas_run_item, canvas_score, canvas_run, canvas_live_trace"),
-            expiry = r(C, "FP:197 -> FP:253 runResults DROP"), sweep = r(K, "FE:153-157 no photo step, no run-result keys", verified = false), purge = r(C, "IMP:18 run rows keyed by the Moment")),
+            expiry = r(C, "FP:197 -> FP:253 runResults DROP"), sweep = r(K, "FE:156 lockFrames=false: FE:211-214 never reaches RunResultFamily (FE:245-246), FP:108-110 likewise"), purge = r(C, "IMP:61-64 run rows keyed `moment:<id>` (items, scores, live traces)")),
         PolicyRow(ForgetChild.ANSWER,
             user = r(C, "FP:118-120 AskRules.reach -> REBUILD (redact)"), deleteAll = r(F, "WD:28 DELETE FROM ask"),
             expiry = r(C, "FP:39 + FP:118-120 retention cascade reaches cited asks"), sweep = r(C, "FE:153-158 cascade reaches cited asks"), purge = r(C, "IMP:19 forgetFacts: cited asks")),
@@ -113,31 +118,54 @@ object ForgetPolicy {
             user = r(K, "FAM:322-325 'never a deletion target'"), deleteAll = r(C, "DG:28-86 TABLES: place/cell SCRUBBED, area KEPT (FamilyInventoryTest.thePlacePackIsNotPhotoDerivedAndDeleteAllKeepsItsSeededAreas)"),
             expiry = r(K, "FAM:322-325"), sweep = r(K, "FAM:322-325"), purge = r(K, "FAM:322-325")),
         PolicyRow(ForgetChild.PLACE_CARD,
-            user = r(K, "FAM:329 in-memory card, never a deletion target (the shadow's in-memory vectors of a pin's reference photo, FAM:329 holders, are derived and cleared by ShadowCaches on every Forget listener event)"), deleteAll = r(C, "FAM:329 PlaceCardHolder cleared with the pack; ShadowCaches.clearAll() empties the in-memory shadow vectors first (MemoryWipe.wipeNow)", verified = false),
+            user = r(K, "FAM:329 in-memory card, never a deletion target (the shadow's in-memory vectors of a pin's reference photo, FAM:329 holders, are derived and cleared by ShadowCaches on every Forget listener event)"), deleteAll = r(C, "PlaceGraph.kt:31-35 onDeleteAll fence.trip + port.clear (published card); MW:100,127 ShadowCaches.clearAll (shadow vectors); ShadowCaches.kt:41; FAM:333-338 PlaceCardFamily"),
             expiry = r(K, "FAM:329"), sweep = r(K, "FAM:329"), purge = r(K, "FAM:329")),
         PolicyRow(ForgetChild.CONFIG,
             user = r(K, "FAM:336 settings and user lists, never a deletion target"), deleteAll = r(C, "MW:59,179 WIPED_PREFS cleared; DG PREFS decide kept vs wiped"),
             expiry = r(K, "FAM:336"), sweep = r(K, "FAM:336"), purge = r(K, "FAM:336")),
         PolicyRow(ForgetChild.CONTROL,
             user = r(C, "FP:134 fence; tombstones written by FAM:44 PhotoFamily.lock"), deleteAll = r(C, "WD:27 tombstones deleted; DG counters / fences"),
-            expiry = r(C, "FAM:48 expireRows leaves a tombstone"), sweep = r(C, "FE:153 fence moves with every Forget", verified = false), purge = r(C, "IMP:60 moment_tombstone per second")),
+            expiry = r(C, "FAM:48 expireRows leaves a tombstone"), sweep = r(C, "FE:231 queueCleanup writes cleanup_outbox rows, only for an uncited legacy frame (OPEN RULING O2); no tombstone (FE:212 needs lockFrames) and no fence move (CanvasSlice3Dao.kt:77,91 only via FE:244-246 dropCanvasOutputs)"), purge = r(C, "IMP:60 moment_tombstone per second")),
         // ---- families that live inside another one or outside the database ----
         PolicyRow(ForgetChild.EMBEDDING,
             user = r(F, "FAM:77-78 deleteVectorsFor with the memory; FAM:46 PhotoFamily.deleteVectors, frame vector with the photo"), deleteAll = r(F, "WD:22 DELETE FROM frame_vector; memory vectors with memory"),
-            expiry = r(C, "FAM:77 memory vector goes with the memory; photo expiry keeps the frame vector (FAM:48); RW:141 vector expiry is its own raw delete"), sweep = r(F, "FAM:78 REBUILD deletes the memory vectors"),
+            expiry = r(C, "FAM:77 memory vector goes with the memory; photo expiry keeps the frame vector (FAM:48); RW:139-141 vector expiry is its own raw delete"), sweep = r(F, "FAM:78 REBUILD deletes the memory vectors"),
             purge = r(F, "IMP:69 forgetFacts deletes vectors")),
         PolicyRow(ForgetChild.FILES,
-            user = r(F, "FE:250-255 queueCleanup: JPEG + sidecar via the outbox; FA:167-198 post-commit sweep, export cache (FA = ForgetActions.kt, unverified)", verified = false), deleteAll = r(F, "MW:99-184 every frame JPEG, inbox, exports, trace folders", verified = false),
-            expiry = r(C, "FE:250 queueCleanup (phone files only for memory expiry)", verified = false), sweep = r(K, "FE:153-157 photos kept (lockFrames=false), so FE:250 queues no file cleanup"), purge = r(C, "IMP:19 forgetFacts queues the outbox rows for files")),
+            user = r(F, "FE:250-253 queueCleanup PHONE_FILE rows (JPEG + sidecar, FE:107); FA:194 FrameSweep.delete, FA:196 MemoryExport.deleteCached (FA = ForgetActions.kt); CanvasForgetCoordinator.kt:46-51,72 trace folders"), deleteAll = r(F, "MW:139,155-165 frame JPEGs, MW:158 inbox dirs, MW:171-174 legacy files / exports, MW:178 trace dirs, MW:180 staged traces"),
+            expiry = r(C, "FE:177 / FE:149+231 queueCleanup phoneFilesOnly: JPEG + sidecar of the expired photo, or of an uncited legacy frame (RW:144-148 legacy frames take the user cascade, OPEN RULING O2)"), sweep = r(K, "FE:156 lockFrames=false keeps the photo row, so no file goes; EXCEPT an uncited legacy frame: FE:230-231 still queues its JPEG and FE:229 deletes its vector (OPEN RULING O2)"), purge = r(C, "IMP:19 forgetFacts queues the outbox rows for files")),
         PolicyRow(ForgetChild.PIN,
-            user = r(F, "PML:27-29 explicit forget: pin forgotten with its Moment (armed pairs, PML:70)"), deleteAll = r(F, "PML:190 beginWipe arms every linked pin (PML:205 livePairs); unlinked pins are kept (MemorySettings.kt:292, unverified)"),
-            expiry = r(L, "PML:31 + PML:252-259 sweepStore clears the link only"), sweep = r(L, "PML:31 + PML:252-259"), purge = r(L, "PML:31 + PML:252-259")),
+            user = r(F, "PML:27-29 explicit forget: pin forgotten with its Moment (armed pairs, PML:70)"), deleteAll = r(F, "PML:195-208 beginWipe arms every linked pin (PML:119 livePairs); unlinked pins are kept (MemorySettings.kt:295 'Pins without a Moment stay')"),
+            expiry = r(L, "PML:31 + PML:257-262 sweepStore clears the link only"), sweep = r(L, "PML:31 + PML:257-262"), purge = r(L, "PML:31 + PML:257-262")),
         PolicyRow(ForgetChild.GLASSES,
-            user = r(C, "FA:273-285 post-commit glasses notify; CanvasForgetCoordinator.kt:30-38", verified = false), deleteAll = r(F, "MW:179 ForgetListeners.deleteAll: glasses epoch (CanvasForgetCoordinator.onDeleteAll)", verified = false),
-            expiry = r(C, "FE:250 outbox rows", verified = false), sweep = r(K, "FE:153-158 no glasses notify, FE:56 notifyAfterCommit is for erased frames", verified = false), purge = r(K, "IMP:58-69 no glasses notify, FE:56 notifyAfterCommit is for erased frames", verified = false)),
+            user = r(C, "FE:252 outbox GLASSES_FRAME / GLASSES_TRACE / GLASSES_RANGE rows (not phoneFilesOnly); ForgetService.kt:248-254 notifying -> ForgetListeners; CanvasForgetCoordinator.kt:33-41,44-53 sends pc_trace_ctl; only when the Forget reaches a photo or a time span"), deleteAll = r(F, "MW:195 ForgetListeners.deleteAll -> CanvasForgetCoordinator.kt:58-61 onDeleteAll sends the persisted new epoch (the glasses wipe their buffer); HubGraph.kt:246-253 registers it"),
+            expiry = r(C, "FE:177 phoneFilesOnly queues NO glasses outbox rows; the radius span goes out through FE:244 notifyAfterCommit -> ForgetService.kt:253 -> CanvasForgetCoordinator.kt:44-52 (glasses control with the forget range)"), sweep = r(K, "FE:156 lockFrames=false: FE:244 notifyAfterCommit is only in dropCanvasOutputs (FE:212), FE:231 phoneFilesOnly queues no glasses rows"), purge = r(K, "IMP:69 forgetFacts: an orphan memory has no frame row and no frame_meta (ExportDao.kt:44-49), so FE:231 has no wire id and FE:237 no capture time span; nothing is sent (OPEN RULING O3)")),
         PolicyRow(ForgetChild.LOGS,
-            user = r(K, "FA:155-158 one counts-only milestone line; log files wiped only by Delete all", verified = false), deleteAll = r(F, "PhoneLogging.kt:139 LogWipeListener via ForgetListeners.deleteAll", verified = false),
+            user = r(K, "FA:162-165 logDone: one counts-only milestone line; FA:323 userForget(): LogWipeListener (PhoneLogging.kt:139-146) overrides only onDeleteAll"), deleteAll = r(F, "PhoneLogging.kt:139-146 LogWipeListener.onDeleteAll wipes both log files; ContextApp.kt:17 registers it; MW:195 calls it"),
             expiry = r(K, "RW:100-148 calls no log wipe"), sweep = r(K, "FE:153-158 calls no log wipe"), purge = r(K, "IMP:58-69 calls no log wipe")),
+    )
+
+    /**
+     * Deletes that run OUTSIDE the Forget pipeline (no [ForgetSource], no planner, no executor): each has its own mini row set. A child absent from [SideDelete.cells] is KEEP. [SideDelete.entryPoints] are the
+     * call tokens, [SideDelete.callers] the production files that make those calls (the DAO that defines them, `CanvasDao.kt`, is not a caller); `ForgetPolicyTest.everySideDeleteCallerIsListedAndEveryListedCallerExists`
+     * scans the sources, so a NEW caller of one of these deletes, or a file that stops calling it, fails until this list is updated. Rulings that are still open: see the coverage map, "Open rulings" (O4, O5).
+     */
+    val sideDeletes: List<SideDelete> = listOf(
+        SideDelete("WATCH_OFF", explicit = false, entryPoints = listOf(".deleteWatchRuns(", ".deleteUntilDone("), callers = listOf("WatchRowCleanup.kt", "HubGraph.kt"),
+            cells = mapOf(
+                ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:47 deleteWatchRuns -> :39 deleteRun: canvas_run, canvas_run_item, canvas_score of every run holding a `watch:<atMs>` item; HubGraph.kt:158 onWatchOff; WatchRowCleanup.kt:10 under the DataOpGate"),
+                ForgetChild.CONTROL to r(F, "CanvasDao.kt:39,41 deleteRun also deletes the run's saved-marker row in canvas_meta"),
+            )),
+        SideDelete("CANVAS_RUN_DELETE", explicit = true, entryPoints = listOf(".deleteRun("), callers = listOf("CanvasApi.kt", "CanvasBackendImpl.kt"),
+            cells = mapOf(
+                ForgetChild.RUN_RESULT to r(F, "CanvasBackendImpl.kt:891-896 deleteRun -> CanvasDao.kt:39: the run, its items and scores (canvas_live_trace is keyed by publishId and is not touched); NO DataOpGate (OPEN RULING O5)"),
+                ForgetChild.CONTROL to r(F, "CanvasDao.kt:39,41 the run's saved-marker row in canvas_meta"),
+            )),
+        SideDelete("CANVAS_RUN_PRUNE", explicit = false, entryPoints = listOf(".pruneRuns("), callers = listOf("CanvasRunner.kt"),
+            cells = mapOf(
+                ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:50 pruneRuns -> :39 deleteRun: runs beyond the newest KEEP_RUNS (CanvasRunner.kt:105,366) before a new run starts"),
+                ForgetChild.CONTROL to r(F, "CanvasDao.kt:39,41 the pruned run's saved-marker row in canvas_meta"),
+            )),
     )
 
     /** A reserved family owns no store, so every source keeps it. */
@@ -145,6 +173,7 @@ object ForgetPolicy {
 
     private val byChild: Map<ForgetChild, PolicyRow> = rows.associateBy { it.child }
 
+    fun sideDelete(name: String): SideDelete = sideDeletes.first { it.name == name }
     fun row(child: ForgetChild): PolicyRow = byChild[child] ?: error("no policy row for $child")
     fun rule(child: ForgetChild, kind: ForgetSourceKind): PolicyRule = row(child).rule(kind)
     fun action(child: ForgetChild, kind: ForgetSourceKind): PolicyAction = rule(child, kind).action
