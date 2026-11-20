@@ -91,3 +91,7 @@ Nits: BULK_OTHER counter always 0 vs PRIVACY s15 'per kind'; text bytes count to
 - Nits done: BULK_OTHER wording fixed in PRIVACY s15 (bulk jobs are counted as text); text bytes count toward the byte cap (PRIVACY).
 - M done: second `ShadowCaches.clearAll()` after the generation bump (behaviour test in MemoryWipeTest), epoch is an AtomicLong, source scan ignores comments and demands 2 calls in MemoryWipe.
 - K and L leftovers: already closed in code (SharedPhoto lock, SHADOW_BUDGET require, store-after-wipe, live() gate, stillValid, mixed marker); not re-touched.
+
+## O2. Counting-fix round (c2609926) review outcome (Opus, 09:55): READY, no P1
+- P2 (safe direction, rare): loopback (`localhost`, 127.x, ::1) is classed LAN by DataPolicy.isLanHost (core/model DataSaver.kt:243,249), so with `counted = reachOf(e) != DEVICE` an Ollama/OpenAI-compatible endpoint on the phone itself (Termux at 127.0.0.1) counts as mobile data when the phone is on mobile and can trip the daily byte limit. Fix: treat loopback as not counted in send() (or a DEVICE-like reach for loopback) and fix the PRIVACY wording ('everything but a model on the phone is counted').
+- Nits: the test 'anOnDeviceModelIsNeverCountedNorEvenAskedForTheNetworkClass' never checks costlyNow was not called (fake has no counter); a VPN that falsely reports Wi-Fi while riding cellular is undercounted (old behaviour, document it); an IOException while reading a 2xx body counts nothing (slight undercount).
