@@ -39,3 +39,11 @@ Do these with the Forget pipeline redesign (or earlier if time allows).
 ## H. Pin follow-up round (fc3e41a4) review outcome (Opus, 03:40): READY, no P1. P2s logged, to do with the Forget redesign (both need a stack of failures and fail in the safe direction)
 - P2-1: an abandoned wipe's uncommitted arming can be carried (`carried`, PinMomentLinks.kt ~103-106) into a later user Forget when `wipePending()` is true because of an EARLIER wipe W0 whose leftovers keep the flag set; the carried pairs are then deleted without the allowedPins filter. Fix: carry an uncommitted wipe arming's `pairs` only in the fresh-wipe branch (not in explicitStore), or bind the wipe arming to its epoch counter and promote it only when the pending value equals that counter.
 - P2-2: the busy guard (`busy(op)`, :80 and :206) fires when an operation is in flight, not when it armed something: two overlapping explicit Forgets fail the second with PIN_PREP_FAILED (retry works); the code comment overstates it. Retention/sweeps do not count as in flight.
+
+## I. Resolver round 5 review outcome (Opus, 06:30, tip 166d3fd4): READY, no P1. P2 follow-ups (none blocks an install; all rare)
+- P2-a: quick double-tap can let an older choice reach disk last (ModelPrivacyStore.kt ~96-101: re-check `v != version` before EACH commit inside durable).
+- P2-b: a write skipped because a newer tap replaced it returns true, so an older skipped write can clear `saveFailed` (ModelPrivacySettings.kt:87): skip onDone for skipped writes or pass the version.
+- P2-c: FallbackParkCap is in memory; a background process killed between 15-minute queue parks never reaches the cap (old behaviour: parks forever). Persist the count with the job if it matters.
+- P2-d: DeletionGraph.kt:104 text says `ai_backend_init` is one boolean; it also holds last_choice (a mode name).
+- P2-e: tests: settle() after the cap and QueueDrainWorker's capped branch are untested; ModelPrivacyControlTest:125 should also assert !wasReset; fake DiskPrefs.apply with failWrites skips memory.
+- Known open window by design: kill in the few ms between the tap and the first disk write reads the previous durable choice (closing it needs a synchronous side-file commit on main).
