@@ -153,6 +153,10 @@ sealed interface PreviewSection {
     }
 }
 
+/** The photo's path as a flow: observed when the host can ([PreviewHost.observeFramePath]; null once the row is gone), else one read. */
+internal fun PreviewHost.framePathFlow(id: String): kotlinx.coroutines.flow.Flow<String?> =
+    observeFramePath?.invoke(id) ?: kotlinx.coroutines.flow.flow { emit(framePath(id)) }
+
 private sealed interface Shown { data object Loading : Shown; data object Expired : Shown; data class Ok(val path: String) : Shown }
 
 @Composable
@@ -170,9 +174,7 @@ private fun ImageContent(s: PreviewSection.ImageSection, host: PreviewHost) {
         HorizontalPager(pager, key = { s.frameIds[it] }, modifier = Modifier.fillMaxWidth().height(260.dp).testTag("frame_pager")) { page ->
             val id = s.frameIds[page]
             val shown by produceState<Shown>(Shown.Loading, id) {
-                val observe = host.observeFramePath
-                if (observe == null) value = host.framePath(id)?.let { Shown.Ok(it) } ?: Shown.Expired
-                else observe(id).collect { path -> value = path?.let { Shown.Ok(it) } ?: Shown.Expired } // a removed row drops the decoded photo at once
+                host.framePathFlow(id).collect { path -> value = path?.let { Shown.Ok(it) } ?: Shown.Expired } // a removed row drops the decoded photo at once
             }
             when (val x = shown) {
                 is Shown.Ok -> ZoomableFrame(x.path, Modifier.fillMaxWidth().height(260.dp))
@@ -266,7 +268,8 @@ private fun SourcesContent(s: PreviewSection.SourcesSection, host: PreviewHost) 
 /** A cited memory (its text, photo and confidence) or photo (a large thumbnail, or "Photo expired" once it is gone); a tap previews it. */
 @Composable
 private fun SourceCardRow(src: SourceItem, host: PreviewHost) {
-    val path by produceState<String?>(null, src.frameId) { value = src.frameId?.let { id -> host.framePath(id) } }
+    // Observed, not read once: a Forget, retention expiry or Delete all drops the decoded photo from the open card at once.
+    val path by produceState<String?>(null, src.frameId) { src.frameId?.let { id -> host.framePathFlow(id).collect { value = it } } }
     val onClick = src.ref?.let { r -> { host.open(r) } }
     val photo = src.photoId != null
     val label = if (src.expired) MemoryDetailModel.PHOTO_EXPIRED else "Photo, opens the photo previewer"
@@ -325,9 +328,13 @@ private fun StatusContent(s: PreviewSection.StatusSection, host: PreviewHost) {
     }
 }
 
+/** The Config section of a live memory preview is hidden once the memory is gone (the same gate as the text). */
+internal fun configHidden(live: Boolean, loading: Boolean, found: Boolean): Boolean = live && !loading && !found
+
 @Composable
 private fun ConfigContent(s: PreviewSection.ConfigSection, host: PreviewHost) {
     val d = host.detail
+    if (configHidden(s.live, d.loading, d.found)) return // a forgotten memory's Tags and Saved (from the old snapshot) are never shown
     Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp).testTag("preview_config"), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         s.entries.map { (k, v) ->
             when {

@@ -91,6 +91,18 @@ object Timeline {
         return (if (latest) labels.asReversed() else labels).mapNotNull { label -> grouped[label]?.let { TimelineSection(label, it) } }
     }
 
+    /**
+     * The memories that are still visible NOW. The memories and frames flows are separate Room queries: after one Forget transaction (memory and frame rows), the
+     * frames flow can emit first while the memories list is still the old one. [lookup] is a live read, done after both flows emitted, so a forgotten memory's
+     * caption is never mapped to the UI for that intermediate emission. A live read that fails keeps the list as it was (the next emission corrects it).
+     */
+    suspend fun stillVisible(memories: List<MemoryEntity>, lookup: suspend (List<String>) -> List<MemoryEntity>): List<MemoryEntity> {
+        if (memories.isEmpty()) return memories
+        val live = try { lookup(memories.map { it.id }) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { return memories }
+        val ok = live.filter { it.reviewState == com.rokid.context.memory.db.ReviewState.OK }.mapTo(HashSet()) { it.id }
+        return memories.filter { it.id in ok }
+    }
+
     /** [dayFrames] plus the frames of [memories] captured outside that window (looked up by frameId). */
     suspend fun framesFor(memories: List<MemoryEntity>, dayFrames: List<FrameEntity>, lookup: suspend (List<String>) -> List<FrameEntity>): List<FrameEntity> {
         val have = dayFrames.mapTo(HashSet()) { it.id }

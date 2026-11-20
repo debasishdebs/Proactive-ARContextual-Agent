@@ -52,7 +52,8 @@ class DayViewModel(
                 if (r == null) {
                     flowOf(notFound)
                 } else {
-                    combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), sort) { m, f, o ->
+                    combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), sort) { m0, f, o ->
+                        val m = Timeline.stillVisible(m0, timeline::memoriesByIds) // never a forgotten memory's caption from the intermediate emission
                         DayUiState(false, true, d, ActivityModel.dayLabel(d, today()), Timeline.sections(m, Timeline.framesFor(m, f, timeline::framesByIds), z, d, o), f.map { it.id })
                     }
                 }

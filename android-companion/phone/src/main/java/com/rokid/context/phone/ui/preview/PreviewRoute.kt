@@ -1,6 +1,7 @@
 package com.rokid.context.phone.ui.preview
 
 import android.widget.Toast
+import com.rokid.context.phone.ui.list.tableChanges
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -86,7 +87,8 @@ fun PreviewRoute(raw: String, deps: PhoneDeps, nav: NavController) {
     // The memory behind the item (if any) runs Trust, Edit and Forget through the memory detail's view model: the existing ones.
     val memoryId = state.item?.sections()?.filterIsInstance<PreviewSection.TextSection>()?.firstNotNullOfOrNull { it.memoryId }.orEmpty()
     val dvm = viewModel(key = "preview_detail_$raw:$memoryId") {
-        MemoryDetailViewModel(memoryId, deps.memory.timeline, deps.memory.memoryEdits, deps.zone, forget = productionMemoryForget(app), onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) })
+        MemoryDetailViewModel(memoryId, deps.memory.timeline, deps.memory.memoryEdits, deps.zone, forget = productionMemoryForget(app), onTextEdited = { com.rokid.context.orchestration.MemoryExport.deleteCached(app) },
+            frameChanges = deps.memory.db.tableChanges("frame"))
     }
     val detail by dvm.state.collectAsStateWithLifecycle()
     LaunchedEffect(detail.forgotten) {
