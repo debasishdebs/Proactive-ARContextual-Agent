@@ -21,7 +21,7 @@ import com.rokid.context.memory.db.ReviewState
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.rokid.context.memory.place.ZoneFence
@@ -56,21 +56,26 @@ internal class ZoneFencedLiveness(
     }
 }
 
-/** The ONE loaded photo of the attempt in flight, handed to both the model call and the shadow (no second read, no second copy in memory). [clear] when the attempt ends. */
-internal class SharedPhoto(private val scope: CoroutineScope, private val load: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?) {
-    private var cur: Pair<String, kotlinx.coroutines.Deferred<com.rokid.context.orchestration.ExtractPhoto?>>? = null
+/**
+ * The ONE loaded photo of the attempt in flight, handed to both the model call and the shadow (no second read, no second copy in memory). The first caller loads it IN ITS OWN coroutine (so a fence or close
+ * that cancels that caller cancels the read; the other caller then loads it itself), the second waits on the mutex and reuses it. Any failure to load, an Error such as an out-of-memory included, is "no photo"
+ * (null, remembered for the frame so it is not retried within the attempt), never a hang. [clear] when the attempt ends; a load that finishes after [clear] is not kept.
+ */
+internal class SharedPhoto(private val load: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?) {
+    private val mutex = kotlinx.coroutines.sync.Mutex()
+    @Volatile private var frameId: String? = null
+    @Volatile private var photo: com.rokid.context.orchestration.ExtractPhoto? = null
+    @Volatile private var epoch = 0L
 
-    suspend fun get(frameId: String): com.rokid.context.orchestration.ExtractPhoto? {
-        val d = synchronized(this) {
-            cur?.takeIf { it.first == frameId }?.second ?: kotlinx.coroutines.CompletableDeferred<com.rokid.context.orchestration.ExtractPhoto?>().also { c ->
-                cur = frameId to c
-                scope.launch { try { c.complete(load(frameId)) } catch (e: CancellationException) { c.cancel(e); throw e } catch (e: Exception) { c.completeExceptionally(e) } }
-            }
-        }
-        return d.await()
+    suspend fun get(id: String): com.rokid.context.orchestration.ExtractPhoto? = mutex.withLock {
+        if (frameId == id) return@withLock photo
+        val e = epoch
+        val p = try { load(id) } catch (c: CancellationException) { throw c } catch (_: Throwable) { null }
+        if (e == epoch) { frameId = id; photo = p }
+        p
     }
 
-    fun clear() { synchronized(this) { cur = null } }
+    fun clear() { epoch++; frameId = null; photo = null }
 }
 
 /** The production wiring of [PlaceSampler]: the pack, the PLACE_MATCH call and the place memory. */
@@ -83,7 +88,7 @@ object PlaceSamplers {
         fence: ZoneFence = PlaceGraph.fence,
     ): PlaceSampler {
         val keyframes = KeyframeGraph.get(app)
-        val share = SharedPhoto(scope) { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
+        val share = SharedPhoto { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
             candidates = { lat, lon, up ->

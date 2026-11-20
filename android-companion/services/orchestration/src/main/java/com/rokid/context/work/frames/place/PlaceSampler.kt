@@ -184,9 +184,12 @@ class PlaceSampler(
     fun poke() {
         if (closed || !enabled()) return
         if (!flight.busy.compareAndSet(false, true)) { finish(PlaceOutcome.BUSY, Trace(elapsed()).also { it.reason = "single_flight" }); return }
-        val j = fence.launch(scope) { run() }
+        // The single-flight is held until the card is decided, not through the shadow settle (a poke then is not logged BUSY). Released once per poke, by whichever of the two comes first.
+        val held = AtomicBoolean(true)
+        val release = { if (held.compareAndSet(true, false)) flight.busy.set(false) }
+        val j = fence.launch(scope) { runAttempt(release) }
         job = j
-        j.invokeOnCompletion { flight.busy.set(false) }
+        j.invokeOnCompletion { release() }
     }
 
     fun close() { closed = true; job?.cancel(); tr.shadowPending?.cancel(); shadowScope.coroutineContext[Job]?.cancel() }
@@ -208,19 +211,25 @@ class PlaceSampler(
         return " shadow=ok shCh=${r.channel.name.lowercase()} scoreTop=${r.top1?.let { PlaceShadow.scoreBucket(it.milli) } ?: "na"} margin=${PlaceShadow.marginBucket(r.margin)} chosenRank=${t.shadowRank} agrees=${t.shadowAgrees} embedMs=${t.shadowOut?.embedMs ?: -1}"
     }
 
-    private suspend fun run() {
+    private suspend fun runAttempt(release: () -> Unit) {
         val ticket = coroutineContext[ZoneTicket] ?: fence.ticket()
-        tr = Trace(elapsed())
+        val mine = Trace(elapsed()) // a later poke may replace [tr] while this attempt settles its shadow: this attempt always logs its own trace
+        tr = mine
+        var decided: PlaceOutcome? = null
         try {
             sweep()
             val o = attempt(ticket)
-            settleShadow()
-            finish(o)
+            decided = o
+            release()
+            try { settleShadow(mine) } catch (c: CancellationException) { mine.shadow = null; mine.shadowPending?.cancel(); finish(o, mine); throw c } // the card is out: the line keeps the REAL outcome
+            finish(o, mine)
         } catch (c: CancellationException) {
-            tr.shadowPending?.cancel(); tr.shadow = null
-            if (c is ZoneFenced || !ticket.isOpen()) { tr.reason = "cancelled_by_zone_fence"; finish(PlaceOutcome.ZONE) } else { tr.reason = "cancelled"; tr.err = "CancellationException"; finish(PlaceOutcome.FAILED) }
+            mine.shadowPending?.cancel(); mine.shadow = null
+            if (decided == null) {
+                if (c is ZoneFenced || !ticket.isOpen()) { mine.reason = "cancelled_by_zone_fence"; finish(PlaceOutcome.ZONE, mine) } else { mine.reason = "cancelled"; mine.err = "CancellationException"; finish(PlaceOutcome.FAILED, mine) }
+            }
             throw c
-        } catch (e: Exception) { tr.shadowPending?.cancel(); tr.shadow = null; tr.reason = "exception"; tr.err = e.javaClass.simpleName; finish(PlaceOutcome.FAILED) }
+        } catch (e: Exception) { mine.shadowPending?.cancel(); mine.shadow = null; mine.reason = "exception"; mine.err = e.javaClass.simpleName; finish(PlaceOutcome.FAILED, mine) }
         finally { try { onAttemptEnd() } catch (_: Exception) { } }
     }
 
@@ -346,28 +355,28 @@ class PlaceSampler(
      * Runs AFTER the card, the memory and the call timing are settled. A shadow that is already done is read at once; otherwise this waits at most what is left of [SHADOW_BUDGET_MS] since it started, and a
      * miss is `err`. Nothing here can change the outcome. A result dropped by the fence (a zone, the switch, a wipe) logs nothing.
      */
-    private suspend fun settleShadow() {
-        val pending = tr.shadowPending ?: return
+    private suspend fun settleShadow(t: Trace) {
+        val pending = t.shadowPending ?: return
         val out: ShadowOutcome? = try {
             if (pending.isCompleted) pending.getCompleted()
             else {
-                val left = SHADOW_BUDGET_MS - (elapsed() - tr.shadowStartedAt)
+                val left = SHADOW_BUDGET_MS - (elapsed() - t.shadowStartedAt)
                 if (left > 0) withTimeoutOrNull(left) { pending.await() } else null
             }
         } catch (c: CancellationException) { pending.cancel(); throw c } catch (_: Exception) { null }
-        if (out == null) { pending.cancel(); tr.shadow = "err"; return }
+        if (out == null) { pending.cancel(); t.shadow = "err"; return }
         when (out.kind) {
-            ShadowOutcome.Kind.OFF, ShadowOutcome.Kind.DROPPED -> tr.shadow = null
-            ShadowOutcome.Kind.UNAVAILABLE -> tr.shadow = "na"
-            ShadowOutcome.Kind.SCORED -> { tr.shadow = "ok"; tr.shadowOut = out; tr.shadowChoice?.let { shadowAgreement(it) } }
+            ShadowOutcome.Kind.OFF, ShadowOutcome.Kind.DROPPED -> t.shadow = null
+            ShadowOutcome.Kind.UNAVAILABLE -> t.shadow = "na"
+            ShadowOutcome.Kind.SCORED -> { t.shadow = "ok"; t.shadowOut = out; t.shadowChoice?.let { shadowAgreement(t, it) } }
         }
     }
 
     /** The rank of the model choice by score, and whether it is the top score. "na" when there was no scored result or the choice was not ranked. */
-    private fun shadowAgreement(chosenId: String) {
-        val r = tr.shadowOut?.result ?: return
+    private fun shadowAgreement(t: Trace, chosenId: String) {
+        val r = t.shadowOut?.result ?: return
         val rank = r.rankOf(chosenId) ?: return
-        tr.shadowRank = rank.toString(); tr.shadowAgrees = (rank == 1).toString()
+        t.shadowRank = rank.toString(); t.shadowAgrees = (rank == 1).toString()
     }
 
     /**
