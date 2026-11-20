@@ -313,3 +313,9 @@ Before you start: Settings > Diagnostics > **Detailed log ON** (default), so eve
 
 ### 13f. Send back
 The filled 13a-13e boxes, the two report outputs, the exact status-line texts, and any W/E lines from the tags above.
+
+## 14. ROLLBACK WARNING (train audit 2026-11-20, P1-1 and P2-1)
+- An older APK (18c1b76a or cand-4436d1a5) does NOT know Offline only or the data saver. After a rollback it sends EVERY photo waiting for Wi-Fi at once, over whatever network it is on, and remote model calls resume even if you had chosen Offline only. BEFORE any rollback: turn mobile data AND roaming off and stay on Wi-Fi you trust until the train build is reinstalled; if Offline only was ON, unbind the remote endpoints first.
+- The older build's Delete all clears only `pca.log` and `pca.log.1`: move `files/logs/pca.log.[2-9]*` and `pca.log.[1-5][0-9]` into the quarantine folder before relying on it (they hold the place-id trail).
+- Pins edited in an older build lose their Moment links and `pinnedAt` (the old serializer drops unknown keys): they show 'Needs a Moment' again after reinstalling the train.
+- If Android's own Data Saver is ON for the phone, PCA photos wait for Wi-Fi (the Data saver screen says "Android Data Saver is on for this app"): exempt PCA in Android Settings > Network > Data Saver > Unrestricted data. (UNVERIFIED whether Android would let the foreground hub send anyway: check on the device.)
