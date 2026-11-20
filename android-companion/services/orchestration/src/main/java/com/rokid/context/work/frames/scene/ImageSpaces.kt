@@ -18,6 +18,8 @@ class ImageSpaceTarget(
     val embedImages: suspend (List<ByteArray>) -> List<FloatArray>,
     val embedQueryFull: suspend (String) -> FloatArray,
     val active: Boolean = true,
+    /** Several query texts in one call (Place Guide shadow scoring); defaults to one [embedQueryFull] per text. */
+    val embedQueriesFull: suspend (List<String>) -> List<FloatArray> = { ts -> ts.map { embedQueryFull(it) } },
 )
 
 /** The spaces to write image vectors into, [active?, building?]; only spaces whose embedder has [Modality.IMAGE]. */
@@ -36,6 +38,6 @@ class SpaceImageSpaces(private val spaces: EmbeddingSpaces, private val provider
         if (Modality.IMAGE !in e.modalities) return null
         // One width source: what the embedder declares. No probe and no text-width fallback (the text dim can be shorter than the image width).
         val d = e.imageDims ?: throw IndexConfigException("image embedder must declare imageDims")
-        return ImageSpaceTarget(space.id, space.fingerprint, d, e::embedImages, e::embedQueryFull, active)
+        return ImageSpaceTarget(space.id, space.fingerprint, d, e::embedImages, e::embedQueryFull, active, e::embedQueriesFull)
     }
 }

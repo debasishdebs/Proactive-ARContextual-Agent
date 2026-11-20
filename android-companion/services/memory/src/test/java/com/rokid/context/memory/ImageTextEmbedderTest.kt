@@ -12,6 +12,8 @@ class ImageTextEmbedderTest {
         override suspend fun embedDocuments(texts: List<String>) = texts.map { floatArrayOf(1f) }
         override suspend fun embedQuery(text: String) = floatArrayOf(1f)
         override suspend fun embedQueryFull(text: String) = floatArrayOf(3f, 4f, 9f, 9f)
+        var batchCalls = 0
+        override suspend fun embedQueriesFull(texts: List<String>): List<FloatArray> { batchCalls++; return texts.map { floatArrayOf(3f, 4f, 9f, 9f) } }
         override suspend fun embedImages(jpegs: List<ByteArray>) = jpegs.map { floatArrayOf(0f, 1f) }
     }
 
@@ -26,5 +28,12 @@ class ImageTextEmbedderTest {
         assertEquals("fp-1", e!!.spaceId); assertEquals(2, e.dim)
         assertEquals(listOf(0.6f, 0.8f), e.embedText("x").toList())
         assertEquals(listOf(0f, 1f), e.embedImage(ByteArray(1)).toList())
+    }
+
+    @Test fun `embedTexts is one batched call to the embedder`() = runBlocking {
+        val f = Fake(setOf(Modality.TEXT, Modality.IMAGE), 2)
+        val e = EmbeddingServiceImageText.of(f)!!
+        assertEquals(listOf(listOf(0.6f, 0.8f), listOf(0.6f, 0.8f)), e.embedTexts(listOf("a", "b")).map { it.toList() })
+        assertEquals(1, f.batchCalls)
     }
 }

@@ -43,12 +43,17 @@ object CandidateScorer {
             if (t != null && sane(t)) txtScores[c.id] = milli(VectorMath.cosine(q, t))
         }
         val channel = if (imgScores.isNotEmpty()) Channel.IMAGE else if (txtScores.isNotEmpty()) Channel.TEXT else return Result.EMPTY
-        val scores = if (channel == Channel.IMAGE) imgScores else txtScores
         val order = compareByDescending<Pair<Candidate, Int>> { it.second }.thenBy { it.first.edgeGapM }.thenBy { it.first.distanceM }.thenBy { it.first.id }
-        // a duplicated id keeps its first occurrence only
-        val ranked = candidates.filter { it.id in scores }.distinctBy { it.id }.map { it to scores.getValue(it.id) }.sortedWith(order).map { Scored(it.first.id, it.second) }
+        // A duplicated id: the occurrence that sorts first (best score, then smaller edge gap, smaller distance) is kept, so the result never depends on the input order.
+        val ranked = scored(candidates, q, channel).sortedWith(order).distinctBy { it.first.id }.map { Scored(it.first.id, it.second) }
         val margin = if (ranked.size >= 2) ranked[0].milli - ranked[1].milli else null
         return Result(channel, ranked, ranked.take(k.coerceAtLeast(1)), margin)
+    }
+
+    private fun scored(candidates: List<Candidate>, q: FloatArray, channel: Channel): List<Pair<Candidate, Int>> = candidates.mapNotNull { c ->
+        val s = if (channel == Channel.IMAGE) c.imageRefs.filter { it.size == q.size && it.all(Float::isFinite) && VectorMath.usable(it) }.maxOfOrNull { VectorMath.cosine(q, it) }
+        else c.textAnchor?.takeIf { it.size == q.size && it.all(Float::isFinite) && VectorMath.usable(it) }?.let { VectorMath.cosine(q, it) }
+        s?.let { c to milli(it) }
     }
 
     private fun milli(c: Double): Int = Math.round(c * 1000.0).toInt()

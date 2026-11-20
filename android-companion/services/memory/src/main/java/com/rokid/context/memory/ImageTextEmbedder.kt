@@ -13,6 +13,8 @@ interface ImageTextEmbedder {
     val dim: Int
     suspend fun embedImage(bytes: ByteArray): FloatArray
     suspend fun embedText(text: String): FloatArray
+    /** Several texts in one call where the space supports it (same vectors and order as [embedText] one by one). */
+    suspend fun embedTexts(texts: List<String>): List<FloatArray> = texts.map { embedText(it) }
 }
 
 /** Today's only image-text space in production: the on-device Nomic bundle, seen through the existing [EmbeddingService]. */
@@ -26,6 +28,11 @@ class EmbeddingServiceImageText private constructor(private val inner: Embedding
         val full = inner.embedQueryFull(text)
         check(full.size >= dim) { "text vector narrower than the image space" }
         return VectorMath.l2(full.copyOf(dim))
+    }
+
+    override suspend fun embedTexts(texts: List<String>): List<FloatArray> = inner.embedQueriesFull(texts).map { full ->
+        check(full.size >= dim) { "text vector narrower than the image space" }
+        VectorMath.l2(full.copyOf(dim))
     }
 
     companion object {

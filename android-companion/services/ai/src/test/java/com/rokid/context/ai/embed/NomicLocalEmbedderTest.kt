@@ -51,4 +51,16 @@ class NomicLocalEmbedderTest {
         assertEquals(768, full.size); assertArrayEquals(NomicText.shorten(NomicText.layerNorm(raw), 768), full, 1e-6f)
         assertTrue(emb.modalities == setOf(com.rokid.context.memory.Modality.TEXT))
     }
+
+    @Test fun nomicBatchesQueriesInOneNativeCallWithTheSameVectors() = runBlocking {
+        val calls = Calls(); var batches = 0
+        val raw = FloatArray(NomicText.FULL_DIMS) { (it % 7).toFloat() + 10f }
+        val c = EmbeddingClient(native = { _, texts, normalize -> batches++; calls.normalize += normalize; calls.texts += texts; texts.map { raw } })
+        val spec = EmbeddingSpec("l", EndpointKind.LLAMACPP_LOCAL, "/m/n.gguf", null, NomicText.CATALOG_ID, null, null, 256, true, NomicText.DOC, NomicText.QUERY, 2_000)
+        val emb = EndpointEmbedder(spec, local(NomicText.CATALOG_ID), null, c)
+        val out = emb.embedQueriesFull(listOf("a", "b", "c"))
+        assertEquals(1, batches); assertEquals(listOf("search_query: a", "search_query: b", "search_query: c"), calls.texts)
+        assertEquals(3, out.size)
+        out.forEach { assertArrayEquals(NomicText.shorten(NomicText.layerNorm(raw), 768), it, 1e-6f) }
+    }
 }
