@@ -254,8 +254,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
             val ai = AiGraph.get(app)
             // The router tries the primary and then the fallback, so the call can go out wherever the best of the two reaches (a remote primary with an on-device or LAN fallback is not "remote" under Offline only).
             ai.bindings.get(com.rokid.context.ai.Role.VISION_EXTRACT)?.let { b ->
-                val reaches = listOfNotNull(b.endpointId, b.fallbackEndpointId).mapNotNull { ai.endpoints.byId(it) }.map(com.rokid.context.ai.EndpointReaches::of)
-                reaches.minOrNull() // DEVICE < LAN < REMOTE
+                com.rokid.context.ai.EndpointReaches.photoReach(listOfNotNull(b.endpointId, b.fallbackEndpointId).mapNotNull { ai.endpoints.byId(it) }) // only endpoints that can take the photo count
             }
         } ?: com.rokid.context.core.net.EndpointReach.REMOTE
     } catch (e: Exception) { com.rokid.context.core.net.EndpointReach.REMOTE }

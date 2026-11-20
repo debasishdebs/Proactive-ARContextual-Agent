@@ -18,6 +18,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
+private val DIRECT = java.util.concurrent.Executor { it.run() }
+
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class ModelPrivacyStoreTest {
@@ -31,26 +33,26 @@ class ModelPrivacyStoreTest {
 
     @Test fun aSavedModeSurvivesANewStoreAndTheOneStoreIsAuthoritativeAtOnce() {
         val p = prefs("mp2"); val s = prefs("mp2s")
-        val a = ModelPrivacyStore(p, s)
+        val a = ModelPrivacyStore(p, s, DIRECT)
         a.set(ModelPrivacy.OFFLINE_ONLY)
         assertEquals(ModelPrivacy.OFFLINE_ONLY, a.current()); assertEquals(ModelPrivacy.OFFLINE_ONLY, a.mode.value)
-        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s).current())
-        a.set(ModelPrivacy.AUTO); assertEquals(ModelPrivacy.AUTO, a.current()); assertEquals(ModelPrivacy.AUTO, ModelPrivacyStore(p, s).current())
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s, DIRECT).current())
+        a.set(ModelPrivacy.AUTO); assertEquals(ModelPrivacy.AUTO, a.current()); assertEquals(ModelPrivacy.AUTO, ModelPrivacyStore(p, s, DIRECT).current())
         assertFalse(a.wasReset.value)
     }
 
     // ---- P2-2: lost settings fail closed ----
 
     @Test fun neverSetIsAutoAndNotReset() {
-        val st = ModelPrivacyStore(prefs("mp9"), prefs("mp9s"))
+        val st = ModelPrivacyStore(prefs("mp9"), prefs("mp9s"), DIRECT)
         assertEquals(ModelPrivacy.AUTO, st.current()); assertFalse(st.wasReset.value)
     }
 
     @Test fun anEmptiedMainFileAfterAChoiceReadsOfflineOnlyAndSaysItWasReset() {
         val p = prefs("mp10"); val s = prefs("mp10s")
-        ModelPrivacyStore(p, s).set(ModelPrivacy.OFFLINE_ONLY)
+        ModelPrivacyStore(p, s, DIRECT).set(ModelPrivacy.OFFLINE_ONLY)
         p.edit().clear().commit() // a corrupted ai_backend.xml loads as an empty map
-        val st = ModelPrivacyStore(p, s)
+        val st = ModelPrivacyStore(p, s, DIRECT)
         assertEquals(ModelPrivacy.OFFLINE_ONLY, st.current()); assertTrue(st.wasReset.value)
         st.set(ModelPrivacy.AUTO) // the user checks and chooses
         assertEquals(ModelPrivacy.AUTO, st.current()); assertFalse(st.wasReset.value)
@@ -58,13 +60,13 @@ class ModelPrivacyStoreTest {
 
     @Test fun aLostSentinelAloneOrALostMainFileAloneStillFailsClosed() {
         val p = prefs("mp11"); val s = prefs("mp11s")
-        ModelPrivacyStore(p, s).set(ModelPrivacy.AUTO)
+        ModelPrivacyStore(p, s, DIRECT).set(ModelPrivacy.AUTO)
         p.edit().remove("mode").commit()
-        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s).current()) // the main file lost its mode: sentinel (and its own flag) remember
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s, DIRECT).current()) // the main file lost its mode: sentinel (and its own flag) remember
         s.edit().clear().commit(); p.edit().clear().commit()
-        assertEquals("both gone = indistinguishable from a fresh install", ModelPrivacy.AUTO, ModelPrivacyStore(p, s).current())
-        ModelPrivacyStore(p, s).set(ModelPrivacy.AUTO); p.edit().clear().commit(); s.edit().putBoolean("initialised", true).commit()
-        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s).current())
+        assertEquals("both gone = indistinguishable from a fresh install", ModelPrivacy.AUTO, ModelPrivacyStore(p, s, DIRECT).current())
+        ModelPrivacyStore(p, s, DIRECT).set(ModelPrivacy.AUTO); p.edit().clear().commit(); s.edit().putBoolean("initialised", true).commit()
+        assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p, s, DIRECT).current())
     }
 
     @Test fun theSentinelFileNameIsTheOneBackupRulesExclude() = assertEquals("ai_backend_init", ModelPrivacyStore.SENTINEL_PREFS)
@@ -73,6 +75,7 @@ class ModelPrivacyStoreTest {
         val p = prefs("mp3")
         p.edit().putString("mode", "SOMETHING_NEW").commit()
         assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p).current())
+        assertTrue("an unknown value counts as reset, so the screen says so", ModelPrivacyStore(p).wasReset.value)
         p.edit().clear().putInt("mode", 7).commit() // a ClassCastException on read
         assertEquals(ModelPrivacy.OFFLINE_ONLY, ModelPrivacyStore(p).current())
     }

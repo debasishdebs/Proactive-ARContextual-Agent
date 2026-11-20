@@ -120,7 +120,8 @@ class EmbeddersTest {
         } finally { old.shutdown() }
     }
 
-    @Test fun bindingWritesImageDim() = runTest {
+    // runBlocking, not runTest: the on-device embed runs on a real thread under a withTimeout, and runTest's virtual clock jumps past that timeout while the thread is still starting (a flake under load).
+    @Test fun bindingWritesImageDim() = kotlinx.coroutines.runBlocking {
         val dir = java.io.File(System.getProperty("java.io.tmpdir"), "nomic_binding_test").apply { mkdirs() }
         val gguf = java.io.File(dir, "nomic-embed-text-v1.5.Q8_0.gguf").path
         db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity("local_nomic", "Nomic", "LLAMACPP_LOCAL", gguf, null,

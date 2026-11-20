@@ -35,7 +35,7 @@ class PlaceResolversWiringTest {
     private val db = DatabaseFactory.inMemory(ctx)
     private val endpoints = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
     private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
-    private val store = ModelPrivacyStore(ctx.getSharedPreferences("wire_mp", Context.MODE_PRIVATE).also { it.edit().clear().commit() }, ctx.getSharedPreferences("wire_mp_init", Context.MODE_PRIVATE).also { it.edit().clear().commit() })
+    private val store = ModelPrivacyStore(ctx.getSharedPreferences("wire_mp", Context.MODE_PRIVATE).also { it.edit().clear().commit() }, ctx.getSharedPreferences("wire_mp_init", Context.MODE_PRIVATE).also { it.edit().clear().commit() }, java.util.concurrent.Executor { it.run() })
     private var net = NetState.VALIDATED
     private val logs = mutableListOf<String>()
     private val resolver = PlaceResolvers.create(store::current, { net }, bindings, endpoints) { logs += it }
@@ -75,7 +75,7 @@ class PlaceResolversWiringTest {
         store.set(ModelPrivacy.AUTO)
         // the main file is wiped but the sentinel remembers a choice: a store over the same files reads Offline only
         ctx.getSharedPreferences("wire_mp", Context.MODE_PRIVATE).edit().clear().commit()
-        val lost = ModelPrivacyStore(ctx.getSharedPreferences("wire_mp", Context.MODE_PRIVATE), ctx.getSharedPreferences("wire_mp_init", Context.MODE_PRIVATE))
+        val lost = ModelPrivacyStore(ctx.getSharedPreferences("wire_mp", Context.MODE_PRIVATE), ctx.getSharedPreferences("wire_mp_init", Context.MODE_PRIVATE), java.util.concurrent.Executor { it.run() })
         val r = PlaceResolvers.create(lost::current, { NetState.VALIDATED }, bindings, endpoints) { logs += it }
         val c = PlaceResolvers.choose(r)
         assertNull(c.backend); assertEquals(ModelPrivacy.OFFLINE_ONLY, c.mode); assertTrue(lost.wasReset.value)
