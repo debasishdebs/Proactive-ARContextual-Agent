@@ -3,6 +3,7 @@ package com.rokid.context.ai.datasaver
 import android.content.Context
 import android.content.SharedPreferences
 import com.rokid.context.core.net.CounterStore
+import com.rokid.context.core.net.DailyCaps
 import com.rokid.context.core.net.DataMode
 import com.rokid.context.core.net.DataSaverSettings
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,11 +24,19 @@ class DataSaverStore(private val prefs: SharedPreferences) {
         mode = DataMode.parse(prefs.getString(K_MODE, null)),
         abroad = prefs.getBoolean(K_ABROAD, false),
         smallOnRoaming = prefs.getBoolean(K_SMALL, true),
+        dailyLimitOn = prefs.getBoolean(K_LIMIT_ON, false),
+        limitMb = prefs.getInt(K_LIMIT_MB, DailyCaps.DEFAULT_MB).let { if (it in 0..1024) it else DailyCaps.DEFAULT_MB },
+        limitPhotos = prefs.getInt(K_LIMIT_PHOTOS, DailyCaps.DEFAULT_PHOTOS).let { if (it in 0..10_000) it else DailyCaps.DEFAULT_PHOTOS },
+        wifiMeteredAbroad = prefs.getBoolean(K_WIFI_METERED, false),
     )
 
     fun setMode(m: DataMode) = write { it.putString(K_MODE, m.name) }
     fun setAbroad(on: Boolean) = write { it.putBoolean(K_ABROAD, on) }
     fun setSmallOnRoaming(on: Boolean) = write { it.putBoolean(K_SMALL, on) }
+    fun setDailyLimitOn(on: Boolean) = write { it.putBoolean(K_LIMIT_ON, on) }
+    fun setLimitMb(mb: Int) = write { it.putInt(K_LIMIT_MB, mb) }
+    fun setLimitPhotos(n: Int) = write { it.putInt(K_LIMIT_PHOTOS, n) }
+    fun setWifiMeteredAbroad(on: Boolean) = write { it.putBoolean(K_WIFI_METERED, on) }
 
     private fun write(edit: (SharedPreferences.Editor) -> Unit) {
         prefs.edit().also(edit).apply()
@@ -66,6 +75,10 @@ class DataSaverStore(private val prefs: SharedPreferences) {
         private const val K_ABROAD = "abroad"
         private const val K_SMALL = "small_on_roaming"
         private const val K_BLOCKED = "blocked_since"
+        private const val K_LIMIT_ON = "daily_limit_on"
+        private const val K_LIMIT_MB = "daily_limit_mb"
+        private const val K_LIMIT_PHOTOS = "daily_limit_photos"
+        private const val K_WIFI_METERED = "wifi_metered_abroad"
         const val MARK_REFRESH_MS = 10_000L
         fun of(context: Context) = DataSaverStore(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
     }

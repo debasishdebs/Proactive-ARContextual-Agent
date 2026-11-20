@@ -13,7 +13,9 @@ import com.rokid.context.model.CallGate
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelProvider
 import com.rokid.context.model.ModelRequest
+import com.rokid.context.core.net.SendOnce
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -54,6 +56,12 @@ class ModelRouterDataSaverTest {
         }
         override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) { skippedLog += Triple(kind, what, d.reason) }
         override fun costlyNow() = false
+        /** (kind, txBytes, rxBytes, photos) of every call that went out (slice 2 byte counter). */
+        val sentLog = mutableListOf<List<Any>>()
+        override fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) { sentLog += listOf(kind, txBytes, rxBytes, photos) }
+        var onceAsked = 0
+        var allowOnce = false
+        override fun decideOnce(kind: DataKind, reach: EndpointReach): DataDecision { onceAsked++; return if (allowOnce) DataDecision(true, "send_once") else decide(kind, reach) }
     }
 
     private val data = FakeGate()
@@ -74,6 +82,63 @@ class ModelRouterDataSaverTest {
         assertTrue("no token spent", permits.isEmpty())
         assertTrue("nothing sent", providerCalls.isEmpty())
         assertEquals(listOf(Triple(DataKind.PHOTO, Skipped.UPLOAD_QUEUED, "wifi_only")), data.skippedLog)
+    }
+
+    // ---- slice 2: the byte counter and "Send once" ----
+
+    @Test fun aPhotoCallCountsItsRequestAndReplyBytesOnceAtTheChokePoint() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) }
+        // prompt "q" (1) + Base64 "AAAA" (4) + 512 envelope; reply "v/vision" (8) + 512
+        assertEquals(listOf(listOf(DataKind.PHOTO, 517L, 520L, 1)), data.sentLog)
+    }
+
+    @Test fun aTextCallCountsAsSmallWithNoPhotos() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") }
+        assertEquals(1, data.sentLog.size)
+        assertEquals(DataKind.SMALL, data.sentLog[0][0]); assertEquals(512L + 5, data.sentLog[0][1]); assertEquals(0, data.sentLog[0][3])
+    }
+
+    @Test fun anOnDeviceModelAndABlockedCallCountNothing() = runTest {
+        ep("loc", kind = EndpointKind.LLAMACPP_LOCAL, caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "loc", "m")).getOrThrow()
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertTrue("nothing leaves the phone", data.sentLog.isEmpty())
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.blockPhoto = true
+        err { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) } }
+        assertTrue("a blocked call sent nothing", data.sentLog.isEmpty())
+    }
+
+    @Test fun aFailedCallStillCountsTheRequestItSent() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        failing += "a"
+        err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
+        assertEquals(listOf(listOf<Any>(DataKind.SMALL, 513L, 0L, 0)), data.sentLog)
+    }
+
+    @Test fun sendOnceIsHonouredOnlyForAUserClassPhotoCallCarryingTheMarker() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.blockPhoto = true; data.allowOnce = true
+        // no marker: blocked, "once" is never even asked
+        assertTrue(err { router.complete(Role.VISION_EXTRACT, CallClass.USER) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } } is DataSaverBlockedException)
+        assertEquals(0, data.onceAsked)
+        // marker but a background class: blocked, never asked
+        assertTrue(err { withContext(SendOnce) { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } } } is DataSaverBlockedException)
+        assertEquals(0, data.onceAsked)
+        assertTrue(providerCalls.isEmpty())
+        // marker and USER: goes out, counted
+        val r = withContext(SendOnce) { router.complete(Role.VISION_EXTRACT, CallClass.USER) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
+        assertEquals("v/vision", r.text); assertEquals(1, data.onceAsked); assertEquals(1, data.sentLog.size)
+        // the marker is per call chain: the next call without it is blocked again
+        assertTrue(err { router.complete(Role.VISION_EXTRACT, CallClass.USER) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } } is DataSaverBlockedException)
+    }
+
+    @Test fun sendOnceNeverAppliesToTextCalls() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        data.blockSmall = true; data.allowOnce = true
+        assertTrue(err { withContext(SendOnce) { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } } } is DataSaverBlockedException)
+        assertEquals(0, data.onceAsked)
     }
 
     @Test fun aBlockedPhotoCallIsNotRetriedAsTextEvenWhenImagesAreOptional() = runTest {

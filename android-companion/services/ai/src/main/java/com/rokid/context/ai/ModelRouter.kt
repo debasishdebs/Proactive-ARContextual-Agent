@@ -7,6 +7,7 @@ import com.rokid.context.core.net.DataKind
 import com.rokid.context.core.net.DataPolicy
 import com.rokid.context.core.net.ModelPrivacy
 import com.rokid.context.core.net.EndpointReach
+import com.rokid.context.core.net.SendOnce
 import com.rokid.context.core.net.Skipped
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.CallGate
@@ -242,12 +243,23 @@ class ModelRouter(
         // Roaming data saver (slice 1): a pure pre-check BEFORE any permit, upload slot or provider call, so a blocked call spends no budget token and never reaches the liveness logic.
         // It is not retried as text (a photo call that is blocked stays a photo call), and nothing is sent. The fallback is only tried when it is on-device or on the LAN (its own check passes).
         val dataKind = if (canSend) DataKind.PHOTO else DataKind.SMALL
-        val dataDecision = dataGate.decide(dataKind, reachOf(e))
+        var dataDecision = dataGate.decide(dataKind, reachOf(e))
+        // Slice 2 "Send once": a USER-class photo call the user confirmed on the phone (the SendOnce element is put on the coroutine by the screen's own tap) is asked again as "once". Nothing else can carry it.
+        if (!dataDecision.allowed && canSend && callClass == CallClass.USER && kotlin.coroutines.coroutineContext[SendOnce.Key] != null) dataDecision = dataGate.decideOnce(dataKind, reachOf(e))
         if (!dataDecision.allowed) throw DataSaverBlockedException(dataDecision.reason, dataKind, if (canSend) Skipped.UPLOAD_QUEUED else Skipped.BULK) // counted once by [counting]
         // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
+        // Slice 2 byte counter, at this single choke point: payload only (the request's prompt and Base64 photos as sent, the reply text), counts only. A call that fails after it was sent still counts its request.
+        suspend fun send(r: ModelRequest): com.rokid.context.model.ModelReply {
+            val photos = r.images.size
+            val kind = if (photos > 0) DataKind.PHOTO else DataKind.SMALL // the text-only retry of a photo call is a text call
+            val tx = DataBytes.requestBytes(r)
+            val counted = reachOf(e) != EndpointReach.DEVICE // an on-device model sends nothing
+            try { return p.complete(r).also { if (counted) dataGate.sent(kind, tx, DataBytes.replyBytes(it), photos) } }
+            catch (c: CancellationException) { throw c } catch (t: Throwable) { if (counted) dataGate.sent(kind, tx, 0, photos); throw t }
+        }
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
-            if (liveness == null || !guarded) p.complete(r) else liveness.holdUploadSlot {
+            if (liveness == null || !guarded) send(r) else liveness.holdUploadSlot {
                 val gone = liveness.gone(photoIds) // also the wipe generation the liveness captured: checked even when no id is attached
                 val goneMemories = if (memoryIds.isEmpty()) emptySet() else liveness.goneMemories(memoryIds)
                 val goneMarks = if (markIds.isEmpty()) emptySet() else liveness.goneMarks(markIds)
@@ -256,7 +268,7 @@ class ModelRouter(
                     else PcLog.i(TAG, "image_dispatch_dropped reason=forgotten photos=${gone.ids.size} memories=${goneMemories.size} marks=${goneMarks.size}")
                     throw PhotoForgottenException(gone.ids, gone.wiped, goneMemories, goneMarks)
                 }
-                p.complete(r)
+                send(r)
             }
         }
         var delivered = false
@@ -330,4 +342,12 @@ object EndpointReaches {
         DataPolicy.isLanHost(runCatching { java.net.URI(e.baseUrl.trim()).host }.getOrNull()) -> EndpointReach.LAN
         else -> EndpointReach.REMOTE
     }
+}
+
+/** Sizes for the byte counter: what the request body and the reply carry as text, never the content itself. */
+internal object DataBytes {
+    /** About the wire size of a model request: the prompt in UTF-8, each photo as the Base64 string that is sent, and a fixed 512 B for the JSON envelope (TLS and headers are not counted). */
+    fun requestBytes(r: ModelRequest): Long = ENVELOPE + r.prompt.toByteArray(Charsets.UTF_8).size + r.images.sumOf { it.base64Data.length.toLong() }
+    fun replyBytes(r: com.rokid.context.model.ModelReply): Long = ENVELOPE + r.text.toByteArray(Charsets.UTF_8).size
+    const val ENVELOPE = 512L
 }
