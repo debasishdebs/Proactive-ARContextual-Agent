@@ -56,7 +56,10 @@ class PinCommitNotStored : Exception("pin removal not recorded")
 object PinMomentLinks {
     /** Explicit operations (a Forget, a wipe) running in this process, by op id. */
     private val inflight: MutableSet<String> = ConcurrentHashMap.newKeySet()
-    private fun busy(self: String?): Boolean = inflight.any { it != self }
+    /** The subset of [inflight] that has a stored arming right now (set inside the pin lock right after a successful arm, so a sweep, which also takes the lock, sees it atomically). */
+    private val armed: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /** True when ANOTHER operation holds an arming: only then is its arming at risk of being overwritten or acted on. An operation in flight that armed nothing (no pins in its target) does not block anyone. */
+    private fun busy(self: String?): Boolean = armed.any { it != self }
 
     private fun momentsOf(context: Context): suspend (List<String>) -> Set<String> = { ids -> MemoryGraph.get(context).db.momentDao().photoMomentsOf(ids).map { it.momentId }.toSet() }
 
@@ -78,7 +81,7 @@ object PinMomentLinks {
                 resolveStore(store, alive, save, op, wipePending) // an earlier operation's leftovers are finished (committed) or dropped (not)
                 val pairs = targetPairs(store, alive, target).let { p -> if (allowedPins == null) p else p.filterKeys { it in allowedPins } } // inside the pin lock: only the pins the user confirmed
                 if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming (nothing is forgotten; try again)
-                if (pairs.isNotEmpty() && !store.arm(Arming(op, "forget", false, pairs, carried(store, wipePending)))) { store.disarm(); throw PinArmFailed() }
+                if (pairs.isNotEmpty()) { if (!store.arm(Arming(op, "forget", false, pairs, carried(store, wipePending, carryWipe = false)))) { store.disarm(); throw PinArmFailed() }; armed.add(op) }
             }
             val r = try { block() } catch (t: Throwable) { PlacePinning.underPinLock { dropIfOp(store, op) }; throw t }
             try {
@@ -93,16 +96,17 @@ object PinMomentLinks {
                 onPending()
             }
             return r
-        } finally { inflight.remove(op) }
+        } finally { inflight.remove(op); armed.remove(op) }
     }
 
     /**
-     * An older unfinished arming's pairs to be carried by a new arming (merge, never overwrite): a committed one's dead set; an uncommitted WIPE arming's dead + pairs while its epoch is still pending (the wipe
-     * did commit, only its arming write did not).
+     * An older unfinished arming's pairs to be carried by a new arming (merge, never overwrite): a committed one's dead set; and, ONLY for a fresh Delete all ([carryWipe]), an uncommitted WIPE arming's dead + pairs
+     * while its epoch is still pending (the wipe did commit, only its arming write did not). "A wipe is pending" can be true because of any earlier wipe, so a user Forget never inherits those pairs: they would be
+     * deleted without its allowed-pins filter.
      */
-    private fun carried(store: UserPinStore, wipePending: () -> Boolean): Map<String, String> {
+    private fun carried(store: UserPinStore, wipePending: () -> Boolean, carryWipe: Boolean): Map<String, String> {
         val a = store.arming() ?: return emptyMap()
-        return when { a.committed -> a.dead; a.kind == "wipe" && wipePending() -> a.dead + a.pairs; else -> emptyMap() }
+        return when { a.committed -> a.dead; carryWipe && a.kind == "wipe" && wipePending() -> a.dead + a.pairs; else -> emptyMap() }
     }
 
     private suspend fun targetPairs(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, target: suspend (List<String>) -> Set<String>): Map<String, String> {
@@ -199,15 +203,15 @@ object PinMomentLinks {
                 val old = store.arming()
                 if (resume) {
                     val dead = when { old == null -> emptyMap(); old.committed -> old.dead; old.kind == "wipe" && wipePending() -> old.dead + old.pairs; else -> old.dead } // promoted only when the epoch says the wipe committed
-                    if (dead.isNotEmpty() && !store.arm(Arming(op, "wipe", true, emptyMap(), dead))) PcLog.w("PcPlace", "pin arming not kept on resume")
+                    if (dead.isNotEmpty()) { if (store.arm(Arming(op, "wipe", true, emptyMap(), dead))) armed.add(op) else PcLog.w("PcPlace", "pin arming not kept on resume") }
                 } else {
                     resolveStore(store, alive, save, op, wipePending) // a stale uncommitted wipe arming of an earlier run that never got to its epoch commit is dropped here
                     val pairs = livePairs(store, alive)
                     if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming
-                    if (pairs.isNotEmpty() && !store.arm(Arming(op, "wipe", false, pairs, carried(store, wipePending)))) { store.disarm(); throw PinArmFailed() }
+                    if (pairs.isNotEmpty()) { if (!store.arm(Arming(op, "wipe", false, pairs, carried(store, wipePending, carryWipe = true)))) { store.disarm(); throw PinArmFailed() }; armed.add(op) }
                 }
             }
-        } catch (t: Throwable) { inflight.remove(op); throw t }
+        } catch (t: Throwable) { inflight.remove(op); armed.remove(op); throw t }
         return op
     }
 
@@ -223,7 +227,7 @@ object PinMomentLinks {
     /** The epoch could NOT be committed: nothing was deleted, so the arming is dropped (the pins stay). */
     suspend fun abortWipe(context: Context, op: String) { PlacePinning.underPinLock { dropIfOp(PlaceGraph.pins(context), op) } }
 
-    fun endWipe(op: String) { inflight.remove(op) }
+    fun endWipe(op: String) { inflight.remove(op); armed.remove(op) }
 
     // ---- settling, sweeps ----
 
