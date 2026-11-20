@@ -57,6 +57,8 @@ print_guidance() {
     adb -s $PHONE install -r ${PREV_APK:-<previous phone apk, same signature>}
  4. Open the app and run the section 3 checks. If it still fails: stop, delete nothing, ask for help.
  Glasses: adb -s <glasses> install -r <old 1.0.0 glasses apk> (staged in $BACKUP_DIR/apks-v100-*).
+ BEFORE ANY ROLLBACK OF A TRAIN BUILD (audit 2026-11-20): an older APK does NOT know Offline only or the data saver: it sends every photo waiting for Wi-Fi at once, over whatever network it is on. Turn mobile data AND roaming off (stay on Wi-Fi you trust) until the train build is reinstalled; if Offline only was ON, unbind the remote endpoints first.
+ The older build's Delete all clears only pca.log and pca.log.1: before relying on it, move files/logs/pca.log.[2-9]* (and pca.log.[1-5][0-9]) into the quarantine folder (they hold the place-id trail).
 RB
   elif [ "$BACKUP_VALID" = 1 ]; then
     echo "No change was made to the phone: leave phone data untouched (phase=$PHASE). The backup $BACKUP_TAR is complete and validated but is NOT needed. The app may have been force-stopped: just reopen it." >&2

@@ -206,7 +206,7 @@ Honest limits:
 
 - **Model file downloads are not blocked** (`huggingface.co`); the screen says so. Nothing of yours is sent in them.
 - **"Your own network" is an address range, not proof of ownership.** On a hotel or public Wi-Fi, a private address is someone else's network. Offline only would still let a model endpoint you configured with a private address be called there.
-- Not covered: Android's `Geocoder` for the optional Location context source, the Nexus bridge (on the phone, no network), other apps and Android itself. Nothing at the system level (DNS of other apps, captive-portal checks) is changed.
+- Not covered: the Nexus bridge (on the phone, no network), other apps and Android itself. Nothing at the system level (DNS of other apps, captive-portal checks) is changed.
 - A request already on the wire when you switch is not cut off (the model client's call timeout is 90 s); the switch applies at once to every request that starts after the tap.
 - **Small window**: the tap takes effect in memory at once, but if the app is killed in the few milliseconds before the first disk write, the previous stored choice is what comes back after the restart. A quick double tap can, rarely, leave the older choice on disk (a known follow-up).
 - Checked by tests only: nobody has yet watched the phone's traffic (proxy or packet capture) under Offline only.
