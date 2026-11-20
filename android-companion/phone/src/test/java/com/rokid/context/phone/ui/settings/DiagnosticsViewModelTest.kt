@@ -6,6 +6,8 @@ import com.rokid.context.phone.ui.FakePipelineControl
 import com.rokid.context.phone.ui.MainDispatcherRule
 import com.rokid.context.phone.ui.cancelScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -144,8 +146,22 @@ class DiagnosticsViewModelTest {
             val shown = withTimeout(5_000) { v.keyframeRows.first { it.suspects.total == 1 } }
             assertEquals("A desk with keys", shown.suspects.items.single().text)
             dao.deleteMemories(listOf("rokid_kf_old_c0")) // what RetentionWorker does to an expired SHORT memory
-            val after = withTimeout(5_000) { v.keyframeRows.first { it.suspects.total == 0 } }
-            assertTrue("no snippet of the deleted memory is left", after.suspects.items.isEmpty())
+            // every emission from now on is checked, not just the one that ends the wait: a count of zero must never sit beside a leftover snippet
+            val seen = java.util.Collections.synchronizedList(mutableListOf<SuspectDescriptions>())
+            val watcher = launch(kotlinx.coroutines.Dispatchers.Unconfined) { v.keyframeRows.collect { seen += it.suspects } }
+            withTimeout(5_000) { v.keyframeRows.first { it.suspects.total == 0 } }
+            watcher.cancel()
+            assertTrue("no snippet of the deleted memory is left: $seen", seen.all { it.total != 0 || it.items.isEmpty() })
+            assertTrue("no snippet of the deleted memory is left", v.keyframeRows.value.suspects.items.isEmpty())
         } finally { v.cancelScope(); db.close() }
+    }
+
+    /** One database snapshot is one SuspectDescriptions: a total of 0 never appears beside snippets, whatever the rows' timing. */
+    @Test fun suspectCountAndSnippetsComeFromOneSnapshot() = runBlocking {
+        fun row(id: String, total: Int) = com.rokid.context.memory.db.SuspectObservedRow(id, "p", "note", 1L, "text $id", total)
+        val snapshots = kotlinx.coroutines.flow.flowOf(listOf(row("a", 2), row("b", 2)), emptyList(), listOf(row("c", 1)))
+        val out = suspectDescriptionsFrom(snapshots).toList()
+        assertEquals(listOf(2 to 2, 0 to 0, 1 to 1), out.map { it.total to it.items.size })
+        assertTrue(out.all { it.total != 0 || it.items.isEmpty() })
     }
 }
