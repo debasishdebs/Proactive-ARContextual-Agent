@@ -62,6 +62,7 @@ fun PhotoSearchScreen(
     onDescribe: (String) -> Unit, onDescribeScene: (String) -> Unit,
     /** Opens a result through previewMoment: its photo, or (the photo being gone) its caption's memory. */
     onPreview: (List<String>) -> Unit,
+    onSendOnce: () -> Unit = {}, onWaitForWifi: () -> Unit = {},
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     val selected = state.tiles.firstOrNull { it.frameId == selectedId }
@@ -88,6 +89,16 @@ fun PhotoSearchScreen(
             }
             items(state.tiles, key = { it.frameId }) { t -> TileCell(t) { selectedId = t.frameId } }
         }
+    }
+    if (state.sendOncePrompt) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = onWaitForWifi, // dismissing is waiting
+            title = { Text(PhotoSearchModel.SEND_ONCE_TITLE) },
+            text = { Text(PhotoSearchModel.SEND_ONCE_BODY) },
+            confirmButton = { TextButton(onClick = onSendOnce, modifier = Modifier.testTag("send_once_yes")) { Text(PhotoSearchModel.SEND_ONCE_YES) } },
+            dismissButton = { TextButton(onClick = onWaitForWifi, modifier = Modifier.testTag("send_once_wait")) { Text(PhotoSearchModel.SEND_ONCE_WAIT) } },
+            modifier = Modifier.testTag("send_once_dialog"),
+        )
     }
     if (selected != null) {
         ModalBottomSheet(onDismissRequest = { selectedId = null }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {

@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.rokid.context.core.net.SendOnce
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -32,6 +34,8 @@ class PhotoSearchViewModel(
     private val zone: () -> ZoneId,
     private val today: () -> LocalDate,
     changes: Flow<Unit> = emptyFlow(),
+    /** Slice 2: true when the data saver would hold a photo upload right now (mobile data, roaming, today's limit; not Offline only). Asked before every describe; the default says no. */
+    private val photoHeld: suspend () -> Boolean = { false },
 ) : ViewModel() {
     private val _state = MutableStateFlow(PhotoSearchUiState(query = initialQuery.orEmpty()))
     val state: StateFlow<PhotoSearchUiState> = _state.asStateFlow()
@@ -81,9 +85,34 @@ class PhotoSearchViewModel(
         }
     }
 
-    fun describe(frameId: String) = runDescribe { describePhotos(listOf(frameId)) }
+    fun describe(frameId: String) = request { describePhotos(listOf(frameId)) }
 
-    fun describeScene(clusterId: String) = runDescribe { describeScene.invoke(clusterId) }
+    fun describeScene(clusterId: String) = request { describeScene.invoke(clusterId) }
+
+    private var pending: (suspend () -> DescribeResult)? = null
+
+    /** A describe is the user's own USER-class photo call. When the data saver would hold it, ask first (default Wait); otherwise run it as before. */
+    private fun request(call: suspend () -> DescribeResult) {
+        if (_state.value.describing || _state.value.sendOncePrompt) return
+        viewModelScope.launch {
+            val held = try { photoHeld() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
+            if (held) { pending = call; _state.update { it.copy(sendOncePrompt = true, status = null) } } else runDescribe(call)
+        }
+    }
+
+    /** "Send over mobile data once": this one call goes out, the next describe asks again. Nothing is remembered. */
+    fun sendOnce() {
+        val c = pending ?: return
+        pending = null
+        _state.update { it.copy(sendOncePrompt = false) }
+        runDescribe { withContext(SendOnce) { c() } }
+    }
+
+    /** "Wait for Wi-Fi" (and dismissing the dialog): nothing is sent. */
+    fun waitForWifi() {
+        pending = null
+        _state.update { it.copy(sendOncePrompt = false, status = PhotoSearchModel.WAITING) }
+    }
 
     private fun runDescribe(call: suspend () -> DescribeResult) {
         if (_state.value.describing) return

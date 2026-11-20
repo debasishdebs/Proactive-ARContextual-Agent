@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.debounce
@@ -27,6 +28,8 @@ class PhotoSearchDeps(
     val framePaths: suspend (List<String>) -> Map<String, String>,
     /** Room invalidation of frame, frame_meta, memory and frame_source (S11). */
     val changes: Flow<Unit>,
+    /** Slice 2: the data saver would hold a photo upload right now (the "Send over mobile data once" dialog asks this). */
+    val photoHeld: suspend () -> Boolean = { false },
 ) {
     companion object {
         /** Nothing found, nothing described: the default of [com.rokid.context.phone.ui.shell.PhoneDeps] in tests. */
@@ -46,6 +49,7 @@ class PhotoSearchDeps(
                 describePhotos = { KeyframeGraph.get(app).describe.describePhotos(it) },
                 describeScene = { KeyframeGraph.get(app).describe.describeScene(it) },
                 framePaths = { ids -> memory.timeline.framesByIds(ids).associate { it.id to it.path } },
+                photoHeld = { withContext(Dispatchers.IO) { KeyframeGraph.get(app).photoHeldForPrompt() } },
                 changes = flow { emitAll(MemoryGraph.get(app).db.tableChanges("frame", "frame_meta", "memory", "frame_source")) }.debounce(400).flowOn(Dispatchers.IO), // the graphs open off Main (M5)
             )
         }
