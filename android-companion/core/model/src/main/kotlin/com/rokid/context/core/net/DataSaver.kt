@@ -38,7 +38,9 @@ enum class NetworkCost { FREE, HOME_MOBILE, ROAMING, UNKNOWN, OFFLINE,
 
 object NetworkCosts {
     /** Fail closed: anything the phone does not say clearly is costly. [abroad] is the user's "I'm abroad" switch: it forces every cellular network (and a metered Wi-Fi, a likely hotspot) to ROAMING. */
-    fun classify(s: NetSnapshot, abroad: Boolean): NetworkCost {
+    fun classify(s: NetSnapshot, settings: DataSaverSettings): NetworkCost = classify(s, settings.abroad, settings.wifiMeteredAbroad)
+
+    fun classify(s: NetSnapshot, abroad: Boolean, wifiMeteredAbroad: Boolean = false): NetworkCost {
         if (!s.known) return NetworkCost.UNKNOWN
         return when (s.transport) {
             Transport.NONE -> NetworkCost.OFFLINE
@@ -48,6 +50,8 @@ object NetworkCosts {
             Transport.WIFI, Transport.ETHERNET -> when {
                 !s.notRoaming -> NetworkCost.ROAMING
                 !s.validated -> NetworkCost.UNKNOWN // a captive portal or a network still being checked is not free
+                // Slice 2 (hotspot): while abroad AND the user asked for it, every Wi-Fi counts as mobile data (a phone hotspot or pocket Wi-Fi looks like free Wi-Fi). Global, nothing about the network is stored.
+                abroad && wifiMeteredAbroad && s.transport == Transport.WIFI -> NetworkCost.ROAMING
                 !s.notMetered -> if (abroad) NetworkCost.ROAMING else if (s.restrictBackground) NetworkCost.RESTRICTED else NetworkCost.HOME_MOBILE
                 else -> NetworkCost.FREE
             }
@@ -75,8 +79,8 @@ object NetworkCosts {
     fun isCostly(c: NetworkCost): Boolean = c == NetworkCost.HOME_MOBILE || c == NetworkCost.ROAMING || c == NetworkCost.UNKNOWN || c == NetworkCost.RESTRICTED
 
     /** Why a ROAMING classification happened, for the status line: [WHY_ABROAD] (the switch), [WHY_REPORTED] (the phone says roaming), [WHY_COUNTRY] (SIM and network country differ); "" when not roaming. */
-    fun roamingWhy(s: NetSnapshot, abroad: Boolean): String = when {
-        classify(s, abroad) != NetworkCost.ROAMING -> ""
+    fun roamingWhy(s: NetSnapshot, abroad: Boolean, wifiMeteredAbroad: Boolean = false): String = when {
+        classify(s, abroad, wifiMeteredAbroad) != NetworkCost.ROAMING -> ""
         !s.notRoaming -> WHY_REPORTED
         s.countryMismatch -> WHY_COUNTRY
         abroad -> WHY_ABROAD
@@ -111,14 +115,68 @@ data class DataSaverSettings(
     val mode: DataMode = DataMode.DEFAULT,
     /** The manual "I'm abroad" switch. */
     val abroad: Boolean = false,
-    /** Text requests (questions, place facts) stay allowed on roaming. Slice 1 default ON, no daily limit yet. */
+    /** Text requests (questions, place facts) stay allowed on roaming. Default ON. */
     val smallOnRoaming: Boolean = true,
+    /** Slice 2: the user's own "Daily limit on mobile data". Default OFF: a default user has no limit on home Wi-Fi or home mobile data. */
+    val dailyLimitOn: Boolean = false,
+    /** The user's own limit, MB per day on mobile data (only read while [dailyLimitOn]). */
+    val limitMb: Int = DailyCaps.DEFAULT_MB,
+    /** The user's own limit, photo uploads per day on mobile data (only read while [dailyLimitOn]). */
+    val limitPhotos: Int = DailyCaps.DEFAULT_PHOTOS,
+    /** Slice 2: "Treat Wi-Fi as metered while I'm abroad" (a phone hotspot or pocket Wi-Fi). Default OFF; only has an effect while [abroad] is on. */
+    val wifiMeteredAbroad: Boolean = false,
 ) {
-    /**
-     * The mode that is applied. Without a daily limit (slice 2) "Anywhere" cannot be honoured while the user says they are abroad, so it behaves as "Wi-Fi and home mobile data":
-     * the abroad switch always means no photo or big upload on mobile data.
-     */
-    val effectiveMode: DataMode get() = if (abroad && mode == DataMode.ANYWHERE) DataMode.WIFI_AND_HOME_MOBILE else mode
+    /** The mode that is applied. Slice 2: "Anywhere" is honoured while abroad (under the daily cap of [DailyCaps]); it was held to "Wi-Fi and home mobile data" in slice 1 for want of a cap. */
+    val effectiveMode: DataMode get() = mode
+}
+
+/** Mobile data used today (counts only). [bytes]: every kind, both directions, payload only. [photos]: photos in uploaded photo calls. */
+data class DayUsage(val bytes: Long, val photos: Long) {
+    companion object { val ZERO = DayUsage(0, 0) }
+}
+
+/** A day's limit on mobile data. */
+data class DailyLimit(val bytes: Long, val photos: Long)
+
+/**
+ * Slice 2 caps. NO limit unless (i) the user says they are abroad or the network is roaming/unknown AND the mode lets photos use mobile data ("Anywhere"), or
+ * (ii) the user turned on "Daily limit on mobile data". On Wi-Fi (FREE) and offline there is never a limit. A default user (mode "Wi-Fi and home mobile data", not abroad, no limit) never has one.
+ */
+object DailyCaps {
+    const val DEFAULT_MB = 10
+    const val DEFAULT_PHOTOS = 30
+    val MB_CHOICES = listOf(5, 10, 25, 50)
+    val PHOTO_CHOICES = listOf(0, 10, 30, 100)
+    private const val MB = 1024L * 1024L
+
+    fun limitFor(s: DataSaverSettings, cost: NetworkCost): DailyLimit? {
+        if (!NetworkCosts.isCostly(cost)) return null
+        val roamingLike = s.abroad || cost == NetworkCost.ROAMING || cost == NetworkCost.UNKNOWN
+        val abroadCap = if (roamingLike && s.effectiveMode == DataMode.ANYWHERE) DailyLimit(DEFAULT_MB * MB, DEFAULT_PHOTOS.toLong()) else null
+        val own = if (s.dailyLimitOn) DailyLimit(s.limitMb.coerceAtLeast(0) * MB, s.limitPhotos.coerceAtLeast(0).toLong()) else null
+        return when {
+            abroadCap != null && own != null -> DailyLimit(minOf(abroadCap.bytes, own.bytes), minOf(abroadCap.photos, own.photos))
+            else -> abroadCap ?: own
+        }
+    }
+
+    /** True when [kind] may not start: the byte limit stops photos and big jobs, the photo limit stops photos. Text (SMALL) is never stopped by a cap. A call that starts under the limit may end a little over it. */
+    fun blocks(kind: DataKind, limit: DailyLimit?, usage: DayUsage): Boolean = limit != null && when (kind) {
+        DataKind.SMALL -> false
+        DataKind.BULK_OTHER -> usage.bytes >= limit.bytes
+        DataKind.PHOTO -> usage.bytes >= limit.bytes || usage.photos >= limit.photos
+    }
+
+    /** The status-line flag: today's limit (if any applies right now) is used up. */
+    fun reached(limit: DailyLimit?, usage: DayUsage): Boolean = blocks(DataKind.PHOTO, limit, usage)
+}
+
+/**
+ * Marks a USER-class photo call the user said "Send over mobile data once" to. Put on the coroutine with `withContext`; the router honours it only for [com.rokid.context.model.CallClass.USER]
+ * (checked there) and for one call chain; it never persists.
+ */
+object SendOnce : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
+    object Key : kotlin.coroutines.CoroutineContext.Key<SendOnce>
 }
 
 /** [reason] is a fixed token (never text from a user or a provider) and is the only thing logged. */
@@ -140,12 +198,14 @@ object DataPolicy {
     const val R_SMALL_OK = "small_allowed"
     const val R_ANYWHERE = "anywhere"
     const val R_ANDROID_SAVER = "android_data_saver"
+    const val R_DAILY_LIMIT = "daily_limit"
+    const val R_SEND_ONCE = "send_once"
 
     /**
      * The one decision. [transport] is only used to tell whether a LAN endpoint is reachable for free (Wi-Fi or Ethernet).
      * Offline is allowed here: nothing can leave, and the callers' existing offline path (no attempt used, park, resume) handles it.
      */
-    fun decide(kind: DataKind, reach: EndpointReach, cost: NetworkCost, transport: Transport, s: DataSaverSettings): DataDecision {
+    fun decide(kind: DataKind, reach: EndpointReach, cost: NetworkCost, transport: Transport, s: DataSaverSettings, usage: DayUsage = DayUsage.ZERO, sendOnce: Boolean = false): DataDecision {
         if (reach == EndpointReach.DEVICE) return DataDecision(true, R_ON_DEVICE)
         if (reach == EndpointReach.LAN && (transport == Transport.WIFI || transport == Transport.ETHERNET)) return DataDecision(true, R_LAN)
         if (cost == NetworkCost.FREE) return DataDecision(true, R_FREE)
@@ -154,11 +214,21 @@ object DataPolicy {
         return when (kind) {
             DataKind.SMALL ->
                 if (cost == NetworkCost.HOME_MOBILE || cost == NetworkCost.RESTRICTED || s.smallOnRoaming) DataDecision(true, R_SMALL_OK) else DataDecision(false, blockedToken)
-            DataKind.PHOTO, DataKind.BULK_OTHER -> if (cost == NetworkCost.RESTRICTED) DataDecision(false, R_ANDROID_SAVER) // Android itself blocks background data: no mode can change that
-            else when (s.effectiveMode) {
-                DataMode.ANYWHERE -> DataDecision(true, R_ANYWHERE)
-                DataMode.WIFI_AND_HOME_MOBILE -> if (cost == NetworkCost.HOME_MOBILE) DataDecision(true, R_HOME_MOBILE) else DataDecision(false, blockedToken)
-                DataMode.WIFI_ONLY -> DataDecision(false, if (cost == NetworkCost.HOME_MOBILE) R_WIFI_ONLY else blockedToken)
+            DataKind.PHOTO, DataKind.BULK_OTHER -> {
+                val byMode = if (cost == NetworkCost.RESTRICTED) DataDecision(false, R_ANDROID_SAVER) // Android itself blocks background data: no mode can change that
+                else when (s.effectiveMode) {
+                    DataMode.ANYWHERE -> DataDecision(true, R_ANYWHERE)
+                    DataMode.WIFI_AND_HOME_MOBILE -> if (cost == NetworkCost.HOME_MOBILE) DataDecision(true, R_HOME_MOBILE) else DataDecision(false, blockedToken)
+                    DataMode.WIFI_ONLY -> DataDecision(false, if (cost == NetworkCost.HOME_MOBILE) R_WIFI_ONLY else blockedToken)
+                }
+                when {
+                    // the user's own tap ("Send over mobile data once", USER-class photo calls only: the router checks that): it goes whatever the mode or today's limit says
+                    !byMode.allowed && sendOnce && kind == DataKind.PHOTO -> DataDecision(true, R_SEND_ONCE)
+                    !byMode.allowed -> byMode
+                    sendOnce && kind == DataKind.PHOTO -> if (DailyCaps.blocks(kind, DailyCaps.limitFor(s, cost), usage)) DataDecision(true, R_SEND_ONCE) else byMode
+                    DailyCaps.blocks(kind, DailyCaps.limitFor(s, cost), usage) -> DataDecision(false, R_DAILY_LIMIT)
+                    else -> byMode
+                }
             }
         }
     }
@@ -192,6 +262,13 @@ interface DataGate {
     fun skipped(kind: DataKind, what: Skipped, d: DataDecision)
     /** True while the network is mobile, roaming or unknown (stored place cells are then kept instead of re-fetched). */
     fun costlyNow(): Boolean
+    /** The decision for a USER-class photo call the user said "Send over mobile data once" to (see [SendOnce]). Default: the plain decision. */
+    fun decideOnce(kind: DataKind, reach: EndpointReach = EndpointReach.REMOTE): DataDecision = decide(kind, reach)
+    /**
+     * Slice 2 byte counter: a provider call that went out. Bytes are payload (request body and reply text, no TLS or headers), counted only while the network is costly (mobile, roaming, unknown);
+     * [photos] = photos the call carried. Counts only, never content. Default no-op.
+     */
+    fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) {}
     /** Re-reads the network facts that can change without a capability callback (Android Data Saver status, SIM and network country) and restarts a failed network watch. Cheap; default no-op. */
     fun refresh() {}
 
@@ -239,4 +316,53 @@ class SkippedLedger(private val store: CounterStore, private val epochDay: () ->
     private fun key(w: Skipped) = "skipped_" + w.name.lowercase()
 
     companion object { const val DAY = "skipped_day" }
+}
+
+/**
+ * Slice 2: what was sent over costly networks today, as numbers only (bytes per kind, photos), keyed by the LOCAL date. Same day rule as [SkippedLedger]: a later date starts new counters,
+ * an EARLIER date than the stored one (the clock was set back) keeps counting into the stored day (never a free reset). Wi-Fi traffic is not counted here.
+ */
+class MobileDataLedger(private val store: CounterStore, private val epochDay: () -> Long) {
+    data class Today(val photoBytes: Long, val bulkBytes: Long, val smallBytes: Long, val photos: Long) {
+        val bytes: Long get() = photoBytes + bulkBytes + smallBytes
+        val usage: DayUsage get() = DayUsage(bytes, photos)
+    }
+
+    private fun key(k: DataKind) = "mobile_bytes_" + k.name.lowercase()
+
+    /** Adds one call. Returns today's totals after it. */
+    @Synchronized fun add(kind: DataKind, bytes: Long, photos: Int): Today {
+        val stored = store.getLong(DAY, -1)
+        val today = epochDay()
+        val day = if (stored < 0 || today > stored) today else stored
+        val fresh = day != stored
+        fun base(k: String) = if (fresh) 0L else store.getLong(k, 0)
+        val values = mutableMapOf(DAY to day)
+        DataKind.entries.forEach { values[key(it)] = base(key(it)) }
+        values[PHOTOS] = base(PHOTOS)
+        values[key(kind)] = values.getValue(key(kind)) + bytes.coerceAtLeast(0)
+        values[PHOTOS] = values.getValue(PHOTOS) + photos.coerceAtLeast(0)
+        store.putLongs(values)
+        return read()
+    }
+
+    @Synchronized fun today(): Today {
+        val stored = store.getLong(DAY, -1)
+        if (stored < 0 || epochDay() > stored) return Today(0, 0, 0, 0)
+        return read()
+    }
+
+    private fun read(): Today = Today(store.getLong(key(DataKind.PHOTO), 0), store.getLong(key(DataKind.BULK_OTHER), 0), store.getLong(key(DataKind.SMALL), 0), store.getLong(PHOTOS, 0))
+
+    /** True the first time it is called on a day (the "limit reached" log happens once a day). Follows the same day rule. */
+    @Synchronized fun firstNoticeToday(): Boolean {
+        val stored = store.getLong(DAY, -1)
+        val today = epochDay()
+        val day = if (stored < 0 || today > stored) today else stored
+        if (store.getLong(NOTICE_DAY, -1) >= day) return false // given today (or on a later day: the clock was set back)
+        store.putLongs(mapOf(NOTICE_DAY to day))
+        return true
+    }
+
+    companion object { const val DAY = "mobile_day"; const val PHOTOS = "mobile_photos"; const val NOTICE_DAY = "mobile_notice_day" }
 }

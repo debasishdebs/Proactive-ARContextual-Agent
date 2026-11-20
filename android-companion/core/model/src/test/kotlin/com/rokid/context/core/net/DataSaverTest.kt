@@ -126,12 +126,13 @@ class DataSaverTest {
         assertFalse(decide(DataKind.PHOTO, NetworkCost.UNKNOWN, s).allowed)
     }
 
-    @Test fun anywhereModeAllowsAllButAbroadSwitchPullsItBackToNoRoaming() {
+    @Test fun anywhereModeAllowsAllAndAbroadHonoursItUnderTheDailyCap() {
         val any = DataSaverSettings(mode = DataMode.ANYWHERE)
         NetworkCost.entries.filter { it != NetworkCost.RESTRICTED }.forEach { assertTrue(decide(DataKind.PHOTO, it, any).allowed, "anywhere $it") }
         val abroad = any.copy(abroad = true)
-        assertFalse(decide(DataKind.PHOTO, NetworkCost.ROAMING, abroad).allowed)
-        assertFalse(decide(DataKind.BULK_OTHER, NetworkCost.UNKNOWN, abroad).allowed)
+        // slice 2: abroad + Anywhere goes out, but only under today's cap (see DailyCapsTest for the cap table)
+        assertTrue(decide(DataKind.PHOTO, NetworkCost.ROAMING, abroad).allowed)
+        assertTrue(decide(DataKind.BULK_OTHER, NetworkCost.UNKNOWN, abroad).allowed)
     }
 
     @Test fun onDeviceIsNeverGated() {
@@ -147,7 +148,7 @@ class DataSaverTest {
     }
 
     @Test fun reasonsAreFixedTokens() {
-        val tokens = setOf("allowed", "on_device", "lan", "free", "offline", "wifi_only", "roaming", "unknown_network", "home_mobile", "small_allowed", "anywhere", "android_data_saver")
+        val tokens = setOf("allowed", "on_device", "lan", "free", "offline", "wifi_only", "roaming", "unknown_network", "home_mobile", "small_allowed", "anywhere", "android_data_saver", "daily_limit", "send_once")
         for (kind in DataKind.entries) for (cost in NetworkCost.entries) for (mode in DataMode.entries) for (abroad in listOf(false, true)) for (small in listOf(false, true)) {
             val r = decide(kind, cost, DataSaverSettings(mode, abroad, small)).reason
             assertTrue(r in tokens, r)
