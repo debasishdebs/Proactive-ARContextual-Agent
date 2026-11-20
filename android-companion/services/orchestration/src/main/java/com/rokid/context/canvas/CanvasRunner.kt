@@ -189,10 +189,27 @@ class CanvasRunner(
     /** Count-only, fixed texts: never a run, frame or node id, token, class name or provider text. A sink that throws must never reach the run. */
     private fun line(level: Level, msg: String) { try { log.log(level, "canvas", msg) } catch (_: Throwable) { } }
 
-    /** The prune before a new run is a delete: it takes the [com.rokid.context.orchestration.DataOpGate]. A running export holds it off (bounded wait): the prune is skipped, the run starts, the next run prunes again. */
-    private suspend fun pruneGated(keep: Int) {
-        try { com.rokid.context.orchestration.DataOpGate.shared.delete { dao.pruneRuns(keep) } }
-        catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) { line(Level.I, "run prune skipped: export in progress") }
+    /**
+     * The prune of old runs is a delete: it takes the [com.rokid.context.orchestration.DataOpGate]. A running export, Save or photo upload holds it off (bounded wait, 30 s): the prune is skipped
+     * and the next run prunes again. It runs AFTER the new run is registered and OUTSIDE the runner lock's critical path (its own coroutine), so a run start never waits for the gate. The new run's
+     * row is already in, so the newest [KEEP_RUNS] rows are kept (the same set the prune before the insert kept). Best effort: nothing it throws reaches the run.
+     */
+    private fun pruneAfterStart(scope: CoroutineScope) {
+        scope.launch {
+            try {
+                com.rokid.context.orchestration.DataOpGate.shared.delete { dao.pruneRuns(KEEP_RUNS) }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: com.rokid.context.orchestration.DataOpGate.UploadInProgress) {
+                line(Level.I, "run prune skipped: photo upload in progress")
+            } catch (e: com.rokid.context.orchestration.DataOpGate.WriteInProgress) {
+                line(Level.I, "run prune skipped: save in progress")
+            } catch (e: com.rokid.context.orchestration.DataOpGate.ExportInProgress) {
+                line(Level.I, "run prune skipped: export in progress")
+            } catch (t: Throwable) {
+                line(Level.W, "run prune failed")
+            }
+        }
     }
 
     private suspend fun price(p: Pipeline, ids: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Priced {
@@ -369,13 +386,13 @@ class CanvasRunner(
             }
             if (res.size != ids.size) throw ScenesMoved()
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             val keys = res.map(::keyOf)
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
             cancelled.set(null)
             _active.value = runId
             launched = true
+            pruneAfterStart(scope)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, keys, ssel = SceneSel(ids, bound))
@@ -440,12 +457,12 @@ class CanvasRunner(
                 ConfirmTokens.Verdict.OK -> Unit
             }
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
             cancelled.set(null)
             _active.value = runId
             launched = true
+            pruneAfterStart(scope)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, keys, wsel = WatchSel(fromMs, toMs, bound))
@@ -487,12 +504,12 @@ class CanvasRunner(
             if (takesMoments(p) || takesScenes(p) || takesWatch(p)) throw IllegalArgumentException("pipeline needs moments, scenes or watch values")
             if (!tokens.consume(confirmToken, PipelineHash.of(p), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", ids, models, null))
             cancelled.set(null)
             _active.value = runId
             launched = true
+            pruneAfterStart(scope)
             // ATOMIC: the body runs (and its finally releases the runner) even if the scope is cancelled before the job starts.
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
@@ -535,13 +552,13 @@ class CanvasRunner(
             }
             if (res.size != ids.size) throw MomentsMoved()
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
-            pruneGated(KEEP_RUNS - 1)
             val runId = newId()
             val keys = res.map(::keyOf)
             dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
             cancelled.set(null)
             _active.value = runId
             launched = true
+            pruneAfterStart(scope)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, keys, MomentSel(ids, bound))
@@ -590,7 +607,6 @@ class CanvasRunner(
                 throw IllegalArgumentException("bad_token")
             }
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }.orEmpty()
-            pruneGated(KEEP_RUNS - 2) // once for the group: neither of its rows exists yet, so neither can be pruned
             val g = Group(newId(), newId(), newId())
             dao.insertRun(runRow(g.runA, spec.aId, versionA, a, "RUNNING", ia, models.getOrNull(0) ?: "[]", g.id))
             dao.insertRun(runRow(g.runB, spec.bId, versionB, b, "QUEUED", ib, models.getOrNull(1) ?: "[]", g.id))
@@ -598,6 +614,7 @@ class CanvasRunner(
             group = g
             _active.value = g.runA
             launched = true
+            pruneAfterStart(scope)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     val first = execute(g.runA, a, ia)

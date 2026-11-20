@@ -72,7 +72,7 @@ object ForgetCopy {
     const val MOMENT_TITLE = "Forget this moment?"
     const val MOMENT_BODY = "The photo and every fact from it are deleted. Answers that used them will show as removed."
     const val MARK_TITLE = "Forget this mark?"
-    const val MARK_BODY = "The mark is deleted, and the Moment made from it goes with it. It has no photo."
+    const val MARK_BODY = "The mark is deleted, and the Moment made from it goes with it. Any photo taken for this mark is forgotten too."
     /** Said in the dialog of every single-object Forget: the Forget scope setting (Photo, Moment, Scene) does not apply. */
     const val SINGLE_SCOPE = "This forgets just this one item. The Forget scope setting does not apply."
     const val CONFIRM = "Forget"

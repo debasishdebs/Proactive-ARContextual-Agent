@@ -169,7 +169,7 @@ object ForgetPolicy {
             )),
         SideDelete("CANVAS_RUN_PRUNE", explicit = false, entryPoints = listOf(".pruneRuns("), callers = listOf("CanvasRunner.kt"),
             cells = mapOf(
-                ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:50 pruneRuns -> :39 deleteRun: runs beyond the newest KEEP_RUNS (CanvasRunner.kt pruneGated, before a new run starts) under DataOpGate.shared.delete; skipped while an export runs"),
+                ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:50 pruneRuns -> :39 deleteRun: runs beyond the newest KEEP_RUNS (CanvasRunner.kt pruneAfterStart, right after a new run is registered, outside the runner lock) under DataOpGate.shared.delete; skipped while an export, save or upload holds the gate"),
                 ForgetChild.CONTROL to r(F, "CanvasDao.kt:39,41 the pruned run's saved-marker row in canvas_meta"),
             )),
     )
