@@ -66,16 +66,18 @@ internal class SharedPhoto(private val load: suspend (String) -> com.rokid.conte
     @Volatile private var frameId: String? = null
     @Volatile private var photo: com.rokid.context.orchestration.ExtractPhoto? = null
     @Volatile private var epoch = 0L
+    /** Guards the check-and-set of the state against [clear]: a clear can never land between "epoch unchanged" and the store, so a photo is not left held after it. */
+    private val state = Any()
 
     suspend fun get(id: String): com.rokid.context.orchestration.ExtractPhoto? = mutex.withLock {
-        if (frameId == id) return@withLock photo
-        val e = epoch
+        synchronized(state) { if (frameId == id) return@withLock photo }
+        val e = synchronized(state) { epoch }
         val p = try { load(id) } catch (c: CancellationException) { throw c } catch (_: Throwable) { null }
-        if (e == epoch) { frameId = id; photo = p }
+        synchronized(state) { if (e == epoch) { frameId = id; photo = p } }
         p
     }
 
-    fun clear() { epoch++; frameId = null; photo = null }
+    fun clear() { synchronized(state) { epoch++; frameId = null; photo = null } }
 }
 
 /** The production wiring of [PlaceSampler]: the pack, the PLACE_MATCH call and the place memory. */
@@ -89,6 +91,7 @@ object PlaceSamplers {
     ): PlaceSampler {
         val keyframes = KeyframeGraph.get(app)
         val share = SharedPhoto { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
+        val shadowOf by lazy { shadowFor(app, zoneBlocked, share::get) }
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
             candidates = { lat, lon, up ->
@@ -104,7 +107,10 @@ object PlaceSamplers {
             admit = keyframes::admitBackgroundCall, photoAllowed = keyframes::dataSaverAllowsPhoto, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
             generation = { MemoryWipe.generation.get() }, flight = flight, zones = zones, fence = fence, ledger = PlaceMemory.ledger(app),
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
-            shadow = shadowFor(app, zoneBlocked, share::get)::score, shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app) }, onAttemptEnd = share::clear,
+            // LAZY: with the flag off the shadow, its caches and the reference-vector cache are never allocated (the lambda is only reached behind shadowEnabled()).
+            shadow = { id, hits, live -> shadowOf.score(id, hits, live) },
+            shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app).also { on -> if (!on) ShadowCaches.clearAll() } }, // the flag going OFF empties the in-memory vectors at the next attempt (the setter does it at once)
+            onAttemptEnd = share::clear,
         )
     }
 
@@ -113,7 +119,7 @@ object PlaceSamplers {
         val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
         val db = { MemoryGraph.get(app).db }
         val gate = { com.rokid.context.provenance.ProvenanceGate(db()) }
-        // One reference-vector cache per shadow, in memory only (see PinReferenceVectors). It is built here, so with the flag off nothing is ever created or called.
+        // One reference-vector cache per shadow, in memory only (see PinReferenceVectors). The shadow itself is created lazily by [create], so with the flag off none of this is ever allocated.
         val refs = PinReferenceVectors(
             pinMoments = { PlaceGraph.pins(app).pins().mapNotNull { p -> p.momentId?.let { p.id to it } }.toMap() },
             momentFrame = { momentId -> db().momentDao().photoFrameOf(momentId)?.id?.takeIf { gate().goneFrames(setOf(it), requirePresent = false).isEmpty() } },
@@ -121,15 +127,16 @@ object PlaceSamplers {
             mayEmbed = { KeyframeGraph.get(app).power.mayRunBackground(com.rokid.context.work.budget.BackgroundWork.IMAGE_VECTORS) },
             zoneBlocked = zoneBlocked, generation = { MemoryWipe.generation.get() }, scope = refScope, elapsed = android.os.SystemClock::elapsedRealtime,
         )
+        ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[0], refs::clear)
         return PlaceShadow(
             embedder = { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } },
             photo = { id ->
                 if (zoneBlocked() || gate().goneFrames(setOf(id), requirePresent = false).isNotEmpty()) null
                 else photoOf(id)?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) }
             },
-            imageRefs = refs::vectorsFor,
+            imageRefs = refs::vectorsForAll, refsStillValid = refs::stillValid,
             elapsed = android.os.SystemClock::elapsedRealtime, generation = { MemoryWipe.generation.get() },
-        )
+        ).also { ShadowCaches.register(ShadowCaches.DERIVED_ITEMS[1], it::clear) }
     }
 
     /** Where a missing reference vector is embedded (one at a time, bounded by [PinReferenceVectors]); it outlives one attempt so a slow first embed still lands in the cache. */

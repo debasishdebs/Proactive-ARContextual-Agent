@@ -46,4 +46,24 @@ class SharedPhotoTest {
         advanceTimeBy(50); sp.clear(); advanceUntilIdle(); a.await()
         sp.get("f1"); assertEquals(2, loads)
     }
+
+    @Test fun ifTheFirstLoaderIsCancelledTheSecondLoadsItself() = runTest {
+        var loads = 0
+        val sp = SharedPhoto { id -> loads++; delay(100); photo(id) }
+        val first = async { sp.get("f1") }
+        advanceTimeBy(50)
+        val second = async { sp.get("f1") } // waits on the mutex behind the first
+        advanceTimeBy(10)
+        first.cancel(); advanceUntilIdle()
+        assertEquals("the second did not inherit a half-load: it loaded the photo itself", 2, loads)
+        assertEquals("f1", second.await()!!.frameId)
+    }
+
+    @Test fun aClearBetweenTheCheckAndTheStoreLeavesNothingHeld() = runTest {
+        var loads = 0
+        val sp = SharedPhoto { id -> loads++; delay(100); photo(id) }
+        val a = async { sp.get("f1") }
+        advanceTimeBy(100); sp.clear(); advanceUntilIdle(); a.await()
+        sp.get("f1"); assertEquals("the cleared attempt's photo was not kept", 2, loads)
+    }
 }

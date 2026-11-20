@@ -35,7 +35,9 @@ class PlaceSamplerShadowTest {
     private var callMs = 100L
     private var flag = true
     private var hookCalls = 0
-    private val places = listOf(pl("wd:Q1", "Charminar"), pl("wd:Q2", "Mecca Masjid"))
+    private var places = listOf(pl("wd:Q1", "Charminar"), pl("wd:Q2", "Mecca Masjid"))
+    private var dwellFrame = "f1"
+    private var fixLat = 17.36
     private var flight = PlaceFlight()
     private var detached: CoroutineScope? = null
     private var attemptEnds = 0
@@ -51,10 +53,10 @@ class PlaceSamplerShadowTest {
         val d = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scope.testScheduler)).also { detached = it }
         return PlaceSampler(
             scope = scope, store = object : PlaceFrameStore {
-                override suspend fun newestDwell(sinceReceivedMs: Long) = PlaceFrame("f1", T0 - 5_000)
+                override suspend fun newestDwell(sinceReceivedMs: Long) = PlaceFrame(dwellFrame, T0 - 5_000)
                 override suspend fun tombstoned(frameId: String) = false
             },
-            fix = { PlaceFix(17.36, 78.47, 3_000, 10f) }, candidates = { _, _, _ -> PlaceCandidates(places, CellOutcome.FRESH) },
+            fix = { PlaceFix(fixLat, 78.47, 3_000, 10f) }, candidates = { _, _, _ -> PlaceCandidates(places, CellOutcome.FRESH) },
             match = { id, _ -> matchImpl(id) }, saveMemory = { true }, onCard = { cards += it }, clock = { T0 }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
             log = { logs += it }, stats = { outcomes += it }, elapsed = { scope.testScheduler.currentTime }, flight = flight,
             shadow = hook?.let { h -> { id, hits, live -> hookCalls++; h(id, hits, live) } }, shadowEnabled = { flag }, shadowScope = d, onAttemptEnd = { attemptEnds++ },
@@ -81,7 +83,7 @@ class PlaceSamplerShadowTest {
             override suspend fun embedImage(bytes: ByteArray): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
             override suspend fun embedText(text: String): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
         }
-        val real = PlaceShadow(embedder = { e }, photo = { ByteArray(1) }, imageRefs = { _, _, _ -> refAsks++; emptyList() }, elapsed = { 0L })
+        val real = PlaceShadow(embedder = { e }, photo = { ByteArray(1) }, imageRefs = { _, _, _ -> refAsks++; emptyMap() }, elapsed = { 0L })
         flag = false
         run(sampler(this) { id, hits, live -> real.score(id, hits, live) })
         assertEquals(0, hookCalls); assertEquals(0, refAsks); assertEquals(0, embeds); assertFalse(attempt().contains("shadow"))
@@ -186,6 +188,51 @@ class PlaceSamplerShadowTest {
         s.poke(); advanceTimeBy(1)
         assertTrue("no BUSY outcome was logged", outcomes.none { it == PlaceOutcome.BUSY })
         advanceUntilIdle()
+    }
+
+    @Test fun aSecondPokeDuringTheSettleWindowEndsRateLimitedBecauseOfTheCallGap() = runTest {
+        callMs = 100
+        val never = CompletableDeferred<ShadowOutcome>()
+        val s = sampler(this) { _, _, _ -> never.await() }
+        s.poke(); advanceTimeBy(150)
+        assertEquals("the card of attempt 1 is out; its shadow is still settling", 1, cards.size)
+        dwellFrame = "f2"; fixLat = 17.37 // a new frame, far enough from the last attempt to skip the same-place dedupe
+        s.poke(); advanceTimeBy(1)
+        assertTrue("the second attempt ends RATE_LIMITED on the call gap, not BUSY: $outcomes", PlaceOutcome.RATE_LIMITED in outcomes && PlaceOutcome.BUSY !in outcomes)
+        advanceUntilIdle()
+        assertTrue(logs.any { it.startsWith("place attempt outcome=RATE_LIMITED") && it.contains("reason=call_gap_20s") })
+        assertTrue("attempt 1 still logs its own shadow result", logs.any { it.startsWith("place attempt outcome=MATCHED") && it.contains(" shadow=err") })
+    }
+
+    @Test fun aMixedPinAndPackAttemptLogsHowManyPackPlacesWereDroppedFromTheRanking() = runTest {
+        places = listOf(pl("user:abc", "My Desk"), pl("wd:Q1", "Charminar"), pl("wd:Q2", "Mecca Masjid"))
+        val q = floatArrayOf(1f, 0f)
+        run(sampler(this) { _, _, _ -> ShadowOutcome.scored(CandidateScorer.score(q, listOf(CandidateScorer.Candidate("user:abc", imageRefs = listOf(floatArrayOf(1f, 0f))), CandidateScorer.Candidate("wd:Q1", textAnchor = floatArrayOf(1f, 0f)), CandidateScorer.Candidate("wd:Q2", textAnchor = floatArrayOf(0f, 1f)))), 42L) })
+        val l = attempt()
+        assertTrue(l, l.contains(" shCh=image ") && l.endsWith(" embedMs=42 shMixed=2"))
+    }
+
+    @Test fun aPinsOnlyAttemptHasShMixedZeroAndATextAttemptToo() = runTest {
+        places = listOf(pl("user:abc", "My Desk"))
+        val q = floatArrayOf(1f, 0f)
+        run(sampler(this) { _, _, _ -> ShadowOutcome.scored(CandidateScorer.score(q, listOf(CandidateScorer.Candidate("user:abc", imageRefs = listOf(floatArrayOf(1f, 0f))))), 42L) })
+        assertTrue(attempt(), attempt().endsWith(" shMixed=0"))
+        logs.clear(); outcomes.clear(); flight = PlaceFlight(); places = listOf(pl("wd:Q1", "Charminar"), pl("wd:Q2", "Mecca Masjid")); dwellFrame = "f9"
+        run(sampler(this) { _, _, _ -> scored(800, 500) })
+        assertTrue(attempt(), attempt().contains(" shCh=text ") && attempt().endsWith(" shMixed=0"))
+    }
+
+    @Test fun shMixedIsAbsentWhenTheShadowIsOffOrNotScored() = runTest {
+        flag = false
+        run(sampler(this) { _, _, _ -> scored(800, 500) })
+        assertFalse(attempt().contains("shMixed"))
+        logs.clear(); outcomes.clear(); flight = PlaceFlight(); flag = true; dwellFrame = "f7"
+        run(sampler(this) { _, _, _ -> ShadowOutcome.UNAVAILABLE })
+        assertFalse(attempt().contains("shMixed"))
+    }
+
+    @Test fun theShadowBudgetEndsBeforeTheNextCallMayStart() {
+        assertTrue(PlaceSampler.SHADOW_BUDGET_MS < PlaceSampler.MIN_CALL_GAP_MS)
     }
 
     @Test fun anErrorWhileLoadingThePhotoEndsTheAttemptAndFreesTheFlight() = runTest {
