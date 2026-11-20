@@ -25,6 +25,12 @@ object DeveloperFlags {
     /** Multilingual Ask (design 2026-11-19, options A + B): the built-in Ask also runs the query condenser (and, when it is unavailable, the bundled lexicon). OFF by default; no UI. */
     const val MULTILINGUAL_ASK = "multilingual_ask"
 
+    /** Place Guide shadow scoring (1.4.4 slice A): scores the candidates against the dwell photo on-device and adds content-free fields to the `place attempt` line. Never changes a card or a call. OFF by default; no UI. */
+    const val PLACE_SHADOW_SCORE = "placeShadowScore"
+
+    fun placeShadowScore(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_SCORE, false) }.getOrDefault(false)
+    fun setPlaceShadowScore(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_SCORE, on).apply() }
+
     fun multilingualAsk(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MULTILINGUAL_ASK, false) }.getOrDefault(false)
     fun setMultilingualAsk(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MULTILINGUAL_ASK, on).apply() }
     fun forgetShadow(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(FORGET_SHADOW, false) }.getOrDefault(false)

@@ -16,7 +16,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 import java.util.concurrent.atomic.AtomicBoolean
@@ -143,6 +147,13 @@ class PlaceSampler(
      * up to 15 min old, so a fix near or inside a zone is refused here whatever the controller last said. Production passes the real list (no default there); this default only serves the pure-flow tests.
      */
     private val zones: suspend () -> List<com.rokid.context.core.model.zone.PauseZone>? = { emptyList() },
+    /**
+     * Shadow scoring (1.4.4 slice A), null = absent. Asked only when a model call is about to be made, on [shadowScope], bounded by [SHADOW_BUDGET_MS]; its result only ever adds fields to the `place attempt` line.
+     * A failure or a timeout is logged `shadow=err`; it never changes an outcome, a card or the call.
+     */
+    private val shadow: (suspend (frameId: String, hits: List<Pair<PlaceEntity, Double>>) -> ShadowOutcome)? = null,
+    /** Detached from the attempt on purpose: an embed that cannot be cancelled must not hold the attempt (its late result is dropped). */
+    private val shadowScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
@@ -158,6 +169,8 @@ class PlaceSampler(
         var chosen = "-"; var distB = "-"; var confPct = -1; var dedupeAgeS = -1L; var dedupeDistB = "-"; var callGapS = -1L
         var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
+        /** null = shadow off (the line is unchanged); "err", "na" or "ok". */
+        var shadow: String? = null; var shadowOut: ShadowOutcome? = null; var shadowRank = "na"; var shadowAgrees = "na"
     }
     @Volatile private var tr = Trace(0)
 
@@ -178,7 +191,15 @@ class PlaceSampler(
         stats(o)
         log("place outcome=${o.name}")
         val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
-        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION}")
+        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION}${shadowFields(t)}")
+    }
+
+    /** The content-free shadow fields: buckets, a rank, a boolean and a duration. Empty when the shadow flag is off, so the line is then byte-identical to before. */
+    private fun shadowFields(t: Trace): String {
+        val s = t.shadow ?: return ""
+        val r = t.shadowOut?.result
+        if (s != "ok" || r == null) return " shadow=$s"
+        return " shadow=ok shCh=${r.channel.name.lowercase()} scoreTop=${r.top1?.let { PlaceShadow.scoreBucket(it.milli) } ?: "na"} margin=${PlaceShadow.marginBucket(r.margin)} chosenRank=${t.shadowRank} agrees=${t.shadowAgrees} embedMs=${t.shadowOut?.embedMs ?: -1}"
     }
 
     private suspend fun run() {
@@ -290,7 +311,9 @@ class PlaceSampler(
         var genuineFailure = false
         tr.call = "made"
         val callAt = elapsed()
-        val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); tr.err = e.javaClass.simpleName; null }
+        val pending = shadow?.let { sh -> shadowScope.async { try { sh(f.frameId, hits) } catch (c: CancellationException) { throw c } catch (_: Exception) { null } } }
+        val res = try { match(f.frameId, lines) } catch (c: CancellationException) { pending?.cancel(); throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); tr.err = e.javaClass.simpleName; null }
+        if (pending != null) settleShadow(pending, callAt)
         flight.lastCallAt = elapsed() // the permit wait and the call are over: the gap runs from here, not from the start of the attempt
         tr.callMs = (flight.lastCallAt - callAt).coerceAtLeast(0L)
         if (stopped(gen, ticket, f.frameId) != null) return PlaceOutcome.DROPPED
@@ -301,11 +324,31 @@ class PlaceSampler(
         if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; return PlaceOutcome.NONE }
         val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; return PlaceOutcome.CONTRACT }
         tr.chosen = hits[idx - 1].first.id; tr.distB = bucketM(hits[idx - 1].second)
+        shadowAgreement(tr.chosen)
         val floor = picked.backend ?: Backend.ONLINE // the floor of the backend that made the call
         if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"; return PlaceOutcome.LOW_CONFIDENCE }
         val place = hits[idx - 1].first
         val parent = place.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name }
         return commit(place, parent, res, f.frameId, gen, cardEpoch, ticket)
+    }
+
+    /** Waits only for what is left of [SHADOW_BUDGET_MS] since the call started (usually nothing: the call takes longer); a late or failed shadow is `err`. Never throws except for cancellation. */
+    private suspend fun settleShadow(pending: kotlinx.coroutines.Deferred<ShadowOutcome?>, startedAt: Long) {
+        val left = (SHADOW_BUDGET_MS - (elapsed() - startedAt)).coerceAtLeast(0L)
+        val out = try { withTimeoutOrNull(left) { pending.await() } } catch (c: CancellationException) { pending.cancel(); throw c } catch (_: Exception) { null }
+        if (out == null) { pending.cancel(); tr.shadow = "err"; return }
+        when (out.kind) {
+            ShadowOutcome.Kind.OFF -> tr.shadow = null
+            ShadowOutcome.Kind.UNAVAILABLE -> tr.shadow = "na"
+            ShadowOutcome.Kind.SCORED -> { tr.shadow = "ok"; tr.shadowOut = out }
+        }
+    }
+
+    /** The rank of the model's choice by score, and whether it is the top score. "na" when there was no scored result or the choice was not ranked. */
+    private fun shadowAgreement(chosenId: String) {
+        val r = tr.shadowOut?.result ?: return
+        val rank = r.rankOf(chosenId) ?: return
+        tr.shadowRank = rank.toString(); tr.shadowAgrees = (rank == 1).toString()
     }
 
     /**
@@ -406,6 +449,7 @@ class PlaceSampler(
         const val DEDUPE_M = 30.0
         const val NEARBY_M = 100.0
         const val MAX_LIST = 16
+        const val SHADOW_BUDGET_MS = 2_500L
         const val NONE = "NONE"
         private val GENUINE_KINDS = setOf(com.rokid.context.ai.FailureKind.TRANSIENT, com.rokid.context.ai.FailureKind.AUTH, com.rokid.context.ai.FailureKind.REJECTED)
         internal const val ROLLBACK_TRIES = 3

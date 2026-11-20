@@ -79,6 +79,21 @@ object PlaceSamplers {
             admit = keyframes::admitBackgroundCall, photoAllowed = keyframes::dataSaverAllowsPhoto, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
             generation = { MemoryWipe.generation.get() }, flight = flight, zones = zones, fence = fence, ledger = PlaceMemory.ledger(app),
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
+            shadow = shadowFor(app, zoneBlocked)::score,
+        )
+    }
+
+    /** The shadow scorer over the ACTIVE image-text space (today only the on-device Nomic bundle, and only when the user bound it); absent space = `shadow=na`. Reads the flag on every attempt. */
+    internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean): PlaceShadow {
+        val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
+        return PlaceShadow(
+            enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app) },
+            embedder = { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } },
+            photo = { id ->
+                if (zoneBlocked() || com.rokid.context.provenance.ProvenanceGate(MemoryGraph.get(app).db).goneFrames(setOf(id), requirePresent = false).isNotEmpty()) null
+                else FramePhotos.load(app, listOf(id)).photos.singleOrNull()?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) }
+            },
+            elapsed = android.os.SystemClock::elapsedRealtime,
         )
     }
 
