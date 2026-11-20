@@ -4,7 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.memory.MemoryEdits
 import com.rokid.context.memory.TimelineRepository
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.onStart
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +26,8 @@ class MemoryDetailViewModel(
     private val forget: MemoryForget = MemoryForget.None,
     /** After a saved edit: the cached memory export still holds the old text, so the route deletes it (GAP-1). */
     private val onTextEdited: () -> Unit = {},
+    /** Emits when the frame table changes (retention expiry, a Forget): the memory's photo is read again, so a gone frame never leaves a stale path. */
+    frameChanges: Flow<Unit> = emptyFlow(),
 ) : ViewModel() {
     private data class Local(
         val draft: String? = null, val message: String? = null, val confirm: ForgetKind? = null,
@@ -37,7 +42,7 @@ class MemoryDetailViewModel(
     private val local = MutableStateFlow(Local())
 
     val state: StateFlow<MemoryDetailUiState> = combine(
-        timeline.memory(memoryId).map { m -> m?.let { MemoryDetailModel.build(it, it.frameId?.let { id -> timeline.frame(id) }, zone()) } ?: MemoryDetailModel.NOT_FOUND },
+        detailFlow(timeline.memory(memoryId), frameChanges, timeline::frame, zone),
         local,
     ) { base0, l ->
         val base = if (!base0.found && (l.photo != null || l.obj != null)) base0.copy(loading = false, found = true, frameId = l.photo) else base0
@@ -47,6 +52,16 @@ class MemoryDetailViewModel(
         else base.copy(forgotten = l.forgotten, message = if (l.forgotten) l.message else base.message) // the cached-export notice outlives the row
     }
         .stateIn(viewModelScope, SharingStarted.Eagerly, MemoryDetailUiState())
+
+    companion object {
+        /** The memory and its photo, re-read on a memory change AND on a frame change: the photo's path is never older than the frame row. */
+        internal fun detailFlow(
+            memory: Flow<com.rokid.context.memory.db.MemoryEntity?>, frameChanges: Flow<Unit>,
+            frame: suspend (String) -> com.rokid.context.memory.db.FrameEntity?, zone: () -> ZoneId,
+        ): Flow<MemoryDetailUiState> = combine(memory, frameChanges.onStart { emit(Unit) }) { m, _ ->
+            m?.let { MemoryDetailModel.build(it, it.frameId?.let { id -> frame(id) }, zone()) } ?: MemoryDetailModel.NOT_FOUND
+        }
+    }
 
     fun trust() {
         viewModelScope.launch { if (edits.trust(memoryId)) local.update { it.copy(message = "Marked as trusted") } }

@@ -53,7 +53,8 @@ class ActivityViewModel(
         val w = PeriodWindow.of(p, d)
         val r = w.millis(z)
         return if (p == Period.TODAY) {
-            combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), asks.timesIn(r), nudges.timesIn(r), marks.marksIn(r)) { mems, frames, a, n, k ->
+            combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), asks.timesIn(r), nudges.timesIn(r), marks.marksIn(r)) { mems0, frames, a, n, k ->
+                val mems = Timeline.stillVisible(mems0, timeline::memoriesByIds) // never a forgotten memory's caption from the intermediate emission
                 ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), sections = Timeline.sections(mems, Timeline.framesFor(mems, frames, timeline::framesByIds), z, d, o), today = d, sort = o, marks = MarkRows.rows(k, z, withDay = false))
             }
         } else {
