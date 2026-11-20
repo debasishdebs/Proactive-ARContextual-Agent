@@ -19,7 +19,9 @@ import com.rokid.context.memory.db.FrameSourceEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.rokid.context.memory.place.ZoneFence
@@ -54,6 +56,23 @@ internal class ZoneFencedLiveness(
     }
 }
 
+/** The ONE loaded photo of the attempt in flight, handed to both the model call and the shadow (no second read, no second copy in memory). [clear] when the attempt ends. */
+internal class SharedPhoto(private val scope: CoroutineScope, private val load: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?) {
+    private var cur: Pair<String, kotlinx.coroutines.Deferred<com.rokid.context.orchestration.ExtractPhoto?>>? = null
+
+    suspend fun get(frameId: String): com.rokid.context.orchestration.ExtractPhoto? {
+        val d = synchronized(this) {
+            cur?.takeIf { it.first == frameId }?.second ?: kotlinx.coroutines.CompletableDeferred<com.rokid.context.orchestration.ExtractPhoto?>().also { c ->
+                cur = frameId to c
+                scope.launch { try { c.complete(load(frameId)) } catch (e: CancellationException) { c.cancel(e); throw e } catch (e: Exception) { c.completeExceptionally(e) } }
+            }
+        }
+        return d.await()
+    }
+
+    fun clear() { synchronized(this) { cur = null } }
+}
+
 /** The production wiring of [PlaceSampler]: the pack, the PLACE_MATCH call and the place memory. */
 object PlaceSamplers {
     internal val flight = PlaceFlight()
@@ -64,6 +83,7 @@ object PlaceSamplers {
         fence: ZoneFence = PlaceGraph.fence,
     ): PlaceSampler {
         val keyframes = KeyframeGraph.get(app)
+        val share = SharedPhoto(scope) { id -> FramePhotos.load(app, listOf(id)).photos.singleOrNull() } // ONE loaded photo for the model call and the shadow
         return PlaceSampler(
             scope = scope, store = RoomPlaceFrameStore { MemoryGraph.get(app).db }, fix = fix,
             candidates = { lat, lon, up ->
@@ -72,28 +92,27 @@ object PlaceSamplers {
                 val fetchOk = up && keyframes.dataGate.decide(com.rokid.context.core.net.DataKind.SMALL).allowed
                 withContext(Dispatchers.IO) { PlaceGraph.readyPack(app).candidates(lat, lon, fetchOk, costly) }
             },
-            match = { id, lines -> matchCall(app, id, lines, zoneBlocked, currentZoneTicket()) },
+            match = { id, lines -> matchCall(app, id, lines, zoneBlocked, currentZoneTicket(), share::get) },
             saveMemory = { PlaceMemory.save(app, it, pending = true) }, reveal = { id, gen -> PlaceMemory.reveal(app, id, gen).also { if (it) com.rokid.context.orchestration.proactive.ProactiveTrigger.onPlaceArrival(app) } }, onRollbackFailed = { PlaceRecovery.ensure(app) }, onCard = onCard, clock = System::currentTimeMillis,
             elapsed = android.os.SystemClock::elapsedRealtime, cards = PlaceGraph.port, deleteMemory = { PlaceMemory.delete(app, it) },
             enabled = { PlaceGuideSettings.of(app).enabled }, zoneBlocked = zoneBlocked, networkUp = keyframes::networkUp, backend = { PlaceResolvers.choose(app) },
             admit = keyframes::admitBackgroundCall, photoAllowed = keyframes::dataSaverAllowsPhoto, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
             generation = { MemoryWipe.generation.get() }, flight = flight, zones = zones, fence = fence, ledger = PlaceMemory.ledger(app),
             log = { PcLog.i(TAG, it) }, // literal text and an outcome name only
-            shadow = shadowFor(app, zoneBlocked)::score,
+            shadow = shadowFor(app, zoneBlocked, share::get)::score, shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app) }, onAttemptEnd = share::clear,
         )
     }
 
     /** The shadow scorer over the ACTIVE image-text space (today only the on-device Nomic bundle, and only when the user bound it); absent space = `shadow=na`. Reads the flag on every attempt. */
-    internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean): PlaceShadow {
+    internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): PlaceShadow {
         val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
         return PlaceShadow(
-            enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app) },
             embedder = { spaces.targets().firstOrNull { it.active }?.let { ImageSpaceTargetImageText(it) } },
             photo = { id ->
                 if (zoneBlocked() || com.rokid.context.provenance.ProvenanceGate(MemoryGraph.get(app).db).goneFrames(setOf(id), requirePresent = false).isNotEmpty()) null
-                else FramePhotos.load(app, listOf(id)).photos.singleOrNull()?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) }
+                else photoOf(id)?.let { android.util.Base64.decode(it.image.base64Data, android.util.Base64.DEFAULT) }
             },
-            elapsed = android.os.SystemClock::elapsedRealtime,
+            elapsed = android.os.SystemClock::elapsedRealtime, generation = { MemoryWipe.generation.get() },
         )
     }
 
@@ -103,8 +122,11 @@ object PlaceSamplers {
      * One photo, one PLACE_MATCH call through the same router and choke point as VISION_EXTRACT / INTENT_CLASSIFY (CallClass.EXTRACT, so the AI call pace applies; the photo carries its ref and
      * the liveness the router re-checks inside the permit). The prompt gets the numbered names and kinds inside a data block, no summaries. Null = the photo is gone or the call failed.
      */
-    internal suspend fun matchCall(app: Context, frameId: String, lines: List<String>, zoneBlocked: suspend () -> Boolean = { false }, ticket: ZoneTicket? = null): PlaceMatchResult? {
-        val photo = FramePhotos.load(app, listOf(frameId)).photos.singleOrNull() ?: return null
+    internal suspend fun matchCall(
+        app: Context, frameId: String, lines: List<String>, zoneBlocked: suspend () -> Boolean = { false }, ticket: ZoneTicket? = null,
+        photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto? = { FramePhotos.load(app, listOf(it)).photos.singleOrNull() },
+    ): PlaceMatchResult? {
+        val photo = photoOf(frameId) ?: return null
         val r = try {
             AiGraph.get(app).runner.run(RoleCall(PromptKey.PLACE_MATCH, PromptVars(recentContext = PromptComposer.dataBlock("candidates", lines)), images = listOf(photo.image.copy(ref = frameId)), callClass = CallClass.EXTRACT,
                 liveness = ZoneFencedLiveness(com.rokid.context.work.frames.FrameLiveness.forApp(app, MemoryWipe.generation.get()), zoneBlocked, ticket), sources = com.rokid.context.model.PayloadSources.frames(listOf(frameId))))

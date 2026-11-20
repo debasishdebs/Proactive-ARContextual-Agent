@@ -86,6 +86,16 @@ class CandidateScorerTest {
         assertEquals(Channel.NONE, CandidateScorer.score(q, listOf(Candidate("a"))).channel)
     }
 
+    @Test fun `a duplicated id keeps its best occurrence whatever the input order`() {
+        val weak = Candidate("a", textAnchor = v(0f, 1f), edgeGapM = 0.0)
+        val strong = Candidate("a", textAnchor = v(0.8f, 0.6f), edgeGapM = 9.0)
+        val other = Candidate("b", textAnchor = v(0.5f, 0.866025404f))
+        val r1 = CandidateScorer.score(q, listOf(weak, strong, other)).ranked
+        val r2 = CandidateScorer.score(q, listOf(other, strong, weak)).ranked
+        assertEquals(listOf(Scored("a", 800), Scored("b", 500)), r1)
+        assertEquals(r1, r2)
+    }
+
     @Test fun `duplicate id keeps one entry`() {
         val r = CandidateScorer.score(q, listOf(Candidate("a", textAnchor = q), Candidate("a", textAnchor = v(0f, 1f))))
         assertEquals(1, r.ranked.size)

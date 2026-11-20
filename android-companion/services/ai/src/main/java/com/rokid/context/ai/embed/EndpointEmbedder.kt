@@ -52,6 +52,10 @@ class EndpointEmbedder(
     override suspend fun embedQueryFull(text: String): FloatArray =
         if (!nomic) embedQuery(text) else NomicText.shorten(NomicText.layerNorm(raw(listOf(spec.queryPrefix + text.take(spec.maxInputChars))).single()), NomicText.FULL_DIMS)
 
+    override suspend fun embedQueriesFull(texts: List<String>): List<FloatArray> =
+        if (!nomic) texts.map { embedQueryFull(it) }
+        else raw(texts.map { spec.queryPrefix + it.take(spec.maxInputChars) }).map { NomicText.shorten(NomicText.layerNorm(it), NomicText.FULL_DIMS) }
+
     private suspend fun raw(inputs: List<String>): List<FloatArray> = inputs.chunked(BATCH).flatMap { chunk ->
         client.embed(endpoint, spec.model, key, chunk, spec.dimensions, normalize = !nomic).onEach { v ->
             if (nomic && v.size != NomicText.FULL_DIMS) throw ProviderResponseException("Embedding size changed (expected ${NomicText.FULL_DIMS}, got ${v.size})")

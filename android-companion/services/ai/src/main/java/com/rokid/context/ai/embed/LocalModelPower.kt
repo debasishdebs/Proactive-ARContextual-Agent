@@ -79,4 +79,10 @@ class PowerGatedEmbedder(private val inner: Embedder, private val power: () -> P
         if (!LocalModelPower.queryAllowed(power(), text)) throw LocalModelPausedException()
         return inner.embedQueryFull(text)
     }
+
+    override suspend fun embedQueriesFull(texts: List<String>): List<FloatArray> {
+        val p = power()
+        if (texts.any { !LocalModelPower.queryAllowed(p, it) }) throw LocalModelPausedException()
+        return inner.embedQueriesFull(texts)
+    }
 }
