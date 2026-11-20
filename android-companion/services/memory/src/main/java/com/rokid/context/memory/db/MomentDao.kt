@@ -104,6 +104,12 @@ abstract class MomentDao : DerivedStaleDao() {
         if (tombstonedAmong(listOf(id)).isNotEmpty()) return@mapNotNull null
         firstFrameBetween(sec * 1000, sec * 1000 + 999)?.let { PhotoMomentRow(id, it.path, it.ts) }
     }
+    /** Slice 1.4.4 B1: the FIRST photo frame of Moment [id] (the one [photoMomentsOf] shows as the thumbnail), or null when the Moment id is invalid, its second is tombstoned or no photo of it is left. Read-only. */
+    @Transaction open suspend fun photoFrameOf(id: String): FrameEntity? {
+        val sec = com.rokid.context.memory.moment.MomentId.parse(id) ?: return null
+        if (tombstonedAmong(listOf(id)).isNotEmpty()) return null
+        return firstFrameBetween(sec * 1000, sec * 1000 + 999)
+    }
     @Query("SELECT ts FROM frame WHERE id = :id") abstract suspend fun frameTs(id: String): Long?
     @Query("SELECT COUNT(*) FROM frame WHERE ts >= :fromMs AND ts <= :toMs AND id != :exceptId") abstract suspend fun framesBetweenExcept(fromMs: Long, toMs: Long, exceptId: String): Int
     @Query("SELECT * FROM frame WHERE ts >= :fromMs AND ts <= :toMs ORDER BY ts, id LIMIT 1") protected abstract suspend fun firstFrameBetween(fromMs: Long, toMs: Long): FrameEntity?
