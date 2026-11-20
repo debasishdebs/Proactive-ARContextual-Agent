@@ -47,7 +47,7 @@ class LocalModelStore(context: Context) {
     fun enqueue(model: LocalModel, allowMetered: Boolean) = enqueue(model, allowMetered, ExistingWorkPolicy.KEEP)
 
     /**
-     * The "Allow mobile data" switch for a download already queued or running: it is replaced by one with the new
+     * The "Allow mobile data" switch for a download already queued or running (with "I'm abroad" on it stays Wi-Fi only): it is replaced by one with the new
      * network constraint (the stopped worker lets go of the .part first, and the new one resumes it). With nothing
      * queued, or the same constraint already, nothing happens. Never blocks the caller.
      */
@@ -71,7 +71,11 @@ class LocalModelStore(context: Context) {
         workManager.enqueueUniqueWork(LocalModelDownloadWorker.uniqueName(model.id), policy, request)
     }
 
-    private fun networkType(allowMetered: Boolean) = if (allowMetered) NetworkType.NOT_ROAMING else NetworkType.UNMETERED // roaming data saver: "Allow mobile data" never means roaming (model files are tens to hundreds of MB)
+    /**
+     * Roaming data saver: "Allow mobile data" never means roaming (model files are tens to hundreds of MB), and it never means mobile data while "I'm abroad" is on either: a local foreign SIM does not report roaming,
+     * so Android alone cannot tell. Fail closed: an unreadable switch counts as abroad.
+     */
+    private fun networkType(allowMetered: Boolean) = if (allowMetered && !abroad(app)) NetworkType.NOT_ROAMING else NetworkType.UNMETERED
 
     /** Stops the download; the .part stays so a later Download resumes it. */
     fun cancel(model: LocalModel) {
@@ -103,6 +107,9 @@ class LocalModelStore(context: Context) {
         private const val TAG = "local_model"
         /** Bumped on delete, so every store's [state] re-reads the disk. */
         private val fileChanges = MutableStateFlow(0)
+
+        /** The "I'm abroad" switch of the data saver (true when it cannot be read). */
+        internal fun abroad(context: Context): Boolean = try { com.rokid.context.ai.datasaver.DataSaverStore.of(context).settings.value.abroad } catch (e: Exception) { true }
 
         fun modelsDir(context: Context): File = File(context.applicationContext.filesDir, "models")
     }

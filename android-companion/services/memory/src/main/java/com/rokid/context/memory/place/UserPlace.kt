@@ -26,7 +26,7 @@ data class UserPlace(
      * matcher never reads it. An explicit Forget (or Delete all) of that Moment ALSO DELETES the pin (the user is asked first and the dialog names it); a removal that is not a Forget (expiry, sweep) only clears the link, the pin stays and shows "Needs a Moment". Never exported, backed up or transferred.
      */
     val momentId: String? = null,
-    /** Slice 1.4.2: when a NEW pin was made (epoch ms), so a later suggestion can find the Moment closest to it. Null for pins made before it existed. Kept in the settings export; not read by matching. */
+    /** Slice 1.4.2: when a NEW pin was made (epoch ms), so a later suggestion can find the Moment closest to it. Null for pins made before it existed. NOT in the settings export ([withoutLinks] strips it with the Moment link), never backed up or transferred; not read by matching. */
     val pinnedAt: Long? = null,
 ) {
     val isValid: Boolean

@@ -48,6 +48,8 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         val id = inputData.getString(KEY_MODEL_ID).orEmpty()
         val model = resolve(id) ?: return fail(id, MSG_FAILED, "unknown_model")
         if (model.files.any { !it.url.startsWith("https://") }) return fail(id, MSG_FAILED, "not_https")
+        // "I'm abroad" was switched on after this download was queued with "Allow mobile data": a local foreign SIM does not report roaming, so no byte goes over a metered network until it is off (Wi-Fi still runs).
+        if (LocalModelStore.abroad(applicationContext) && meteredNow()) return Result.retry().also { modelEvent(id, "abroad_metered") }
         val outcome = try {
             // One writer per model file: a replacement waits until the stopped worker has let go of the .part.
             withContext(Dispatchers.IO) { downloadAll(model) }
@@ -60,6 +62,8 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
             is Outcome.Fail -> fail(id, outcome.message, outcome.reason)
         }
     }
+
+    private fun meteredNow(): Boolean = try { applicationContext.getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered != false } catch (e: Exception) { true }
 
     /** Each file of the bundle in turn (existing verified files are skipped); the first non-Done outcome stops the run. */
     private suspend fun downloadAll(model: LocalModel): Outcome {
