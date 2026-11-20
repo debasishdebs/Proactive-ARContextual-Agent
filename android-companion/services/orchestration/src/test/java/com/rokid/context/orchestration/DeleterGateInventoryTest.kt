@@ -12,10 +12,11 @@ import java.io.File
 class DeleterGateInventoryTest {
     private val deleting = listOf(
         ".deleteLabel(", ".deleteLabelsForFrames(", ".deleteRunRowsOfLabels(", ".deleteWatchRuns(", ".forgetRangeTx(", "ForgetService(", "CanvasSlice3Forget(", "MomentForget(", "ScopedForget(", ".wipeMemory(",
-        ".deleteSliceOutputsForFrames(", ".deleteCanvasOutputsForFrames(",
+        ".deleteSliceOutputsForFrames(", ".deleteCanvasOutputsForFrames(", ".deleteRun(", ".pruneRuns(",
     )
     /** Files that call a deleting API and are NOT themselves gated, each with why that is fine. */
-    private val insideGatedCallers = mapOf("HubGraph.kt" to "it only constructs CanvasSlice3Forget for CanvasForgetCoordinator.forgetRange (gated) and calls the gated WatchRowCleanup")
+    private val insideGatedCallers = mapOf("HubGraph.kt" to "it only constructs CanvasSlice3Forget for CanvasForgetCoordinator.forgetRange (gated) and calls the gated WatchRowCleanup",
+        "CanvasApi.kt" to "it only routes DELETE runs/:id to CanvasBackendImpl.deleteRun, which takes the DataOpGate (CanvasApi maps ExportInProgress to 409)")
 
     @Test fun everyDeleterOutsideTheMemoryModuleTakesTheGate() {
         val roots = listOf(File("src/main"), File("../../phone/src/main")).filter { it.exists() }
@@ -54,6 +55,9 @@ class DeleterGateInventoryTest {
         assertTrue("the scan sees the production Forget port and the mark graph", files.any { it.name == "ProductionForget.kt" } && files.any { it.name == "MarkGraph.kt" })
         val offenders = files.filter { f -> unscoped.any { it in code(f) } && f.name !in unscopedByRuling }.map { it.name }
         assertEquals("a granular Forget that ignores the Forget scope", emptyList<String>(), offenders)
+        // ruling O6: the mark undo must use the variant that never deletes a pin
+        val mg = code(files.single { it.name == "MarkGraph.kt" })
+        assertTrue("MarkGraph undoes a mark's photo without deleting pins", mg.contains("forgetMomentKeepPinsOutcome(") && !mg.contains("forgetMomentOutcome("))
         // the previewer's Forget fact / Forget photo (ProductionForget, moved here from MemoryDetailRoute by the preview migration) run at the Forget scope; Forget mark is a single-object undo through the same entry, and the scope does not apply to it
         assertTrue("the previewer Forget is scoped", files.single { it.name == "ProductionForget.kt" }.readText().contains("forgetScopedOutcome("))
     }

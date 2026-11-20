@@ -30,6 +30,9 @@ class PinCommitNotStored : Exception("pin removal not recorded")
  *    operation itself or by [settle] after a crash; "every linked pin" is never used, and a Moment that goes later for another reason is not in it.
  *  - every other removal (retention expiry, the suspect-photo sweep, the invalid-Moment purge, ...): the pin is NEVER deleted; only its LINK is cleared and the pin shows "Needs a Moment".
  *
+ *  - the UNDO of a mark (glasses voice or tap, or the phone's "Forget this mark", `ForgetActions.forgetMomentKeepPinsOutcome`): no dialog names pins, so it is not an explicit pin Forget. It runs the photo Forget with an
+ *    EMPTY target (nothing armed); a pin on that Moment keeps its place and loses only its link ("Needs a Moment").
+ *
  * While an explicit operation runs in this process the sweeps and [settle] leave everything alone (checked INSIDE the pin lock; the operation's own settle is exempt).
  * A new arming MERGES an older unfinished committed one (its dead set is carried), it never overwrites it.
  *
@@ -40,6 +43,7 @@ class PinCommitNotStored : Exception("pin removal not recorded")
  * Crash points and what the next start does:
  * | crash / failure point                                              | stored state                  | next start / result                                                          |
  * |--------------------------------------------------------------------|-------------------------------|------------------------------------------------------------------------------|
+ * | mark undo: any point (it arms nothing)                             | none                          | the pin stays; the sweep clears its link; never a pin deleted                |
  * | before the arming is stored (or it cannot be stored)               | none                          | the Forget does not run (PinArmFailed): nothing forgotten                    |
  * | after arming, before the Forget commits (or it fails / throws)     | uncommitted forget arming     | dropped (never acted on); a carried committed dead set is restored           |
  * | Forget committed, before the commit write (or the write fails)     | uncommitted forget arming     | dropped: the pins stay, dead links are cleared by the sweep (no pin deleted) |

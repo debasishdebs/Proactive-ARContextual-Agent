@@ -62,6 +62,14 @@ object ForgetActions {
         run(context, onForgotten, { LoggedScope.PHOTO }, com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, frameId), target = scopedTarget(context, ForgetTarget.Photo(frameId), ForgetScope.PHOTO)) { it.forgetMoment(frameId) }
 
     /**
+     * The photo Forget of a mark that is undone (glasses voice or tap, and the phone's "Forget this mark"): the same gated Forget as [forgetMomentOutcome], but it NEVER deletes a pin. An undo shows no dialog that
+     * names pins, and a pin is deleted only by an explicit Forget that names it. The explicit target is empty, so nothing is armed; the listener sweep then clears the link of a pin whose Moment lost its last photo
+     * (the pin stays and shows "Needs a Moment"), exactly as for expiry (coverage map O6).
+     */
+    suspend fun forgetMomentKeepPinsOutcome(context: Context, frameId: String, onForgotten: () -> Unit = {}): Outcome =
+        run(context, onForgotten, { LoggedScope.PHOTO }, com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, frameId), target = { emptySet() }) { it.forgetMoment(frameId) }
+
+    /**
      * The granular Forget with the user's SCOPE (Photo | Moment | Scene, [ForgetScopeSetting]): memory detail's Forget fact and Forget photo, and any Moment or Scene entry, go through here. Same gate, same typed
      * outcomes, same post-commit cleanup as every Forget (cached export, reminders, notifications, outbox, queue scrub, listeners); MOMENT and SCENE run the range-Forget code ([com.rokid.context.memory.forget.ScopedForget]).
      * The scope is read ONCE here ([scope] defaults to the setting) so the dialog's counts and the delete name the same scope.

@@ -59,7 +59,7 @@ class MarkRecorder(
     /** Called (never blocking) with the phone-clock time of a mark that was undone or re-tagged, so the Moment of that second is rebuilt (a MARK Moment goes with its mark; the code follows the tag). */
     private val onChanged: (Long) -> Unit = {},
     /**
-     * Forgets the photo of a mark that is undone, through the existing gated Forget path (production: `ForgetActions.forgetMomentOutcome`). False = it could not (a running export held the gate): the undo
+     * Forgets the photo of a mark that is undone, through the existing gated Forget path (production: `ForgetActions.forgetMomentKeepPinsOutcome`: a pin on the photo's Moment is de-linked, never deleted). False = it could not (a running export held the gate): the undo
      * then throws, is not acknowledged and the glasses resend it. The default (tests of other behaviour) forgets nothing.
      */
     private val forgetPhoto: suspend (frameId: String) -> Boolean = { true },

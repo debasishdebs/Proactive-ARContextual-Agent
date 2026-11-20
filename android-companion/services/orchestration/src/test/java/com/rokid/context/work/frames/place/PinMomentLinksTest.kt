@@ -81,6 +81,13 @@ class PinMomentLinksTest {
         assertNull("armed state is gone", store.arming())
     }
 
+    /** Ruling O6: the undo of a mark runs the photo Forget with an EMPTY target (`ForgetActions.forgetMomentKeepPinsOutcome`): the pin on that Moment survives with its link cleared. */
+    @Test fun aMarkUndoForgetOfThePhotoKeepsThePinAndClearsItsLink() = runBlocking<Unit> {
+        explicit(target = none) { fx.service.forgetMoment("a") }
+        assertEquals(listOf("Pin 0", "Pin 1", "Pin 2"), names()); assertEquals(listOf(null, id2, null), links())
+        assertNull("nothing was armed", store.arming())
+    }
+
     @Test fun aRangeForgetDeletesOnlyThePinsOfItsTargetSet() = runBlocking<Unit> {
         explicit(target = { l -> l.filter { MomentId.parse(it) == sec2 }.toSet() }) { fx.forget.forgetRange(sec2 * 1000, sec2 * 1000 + 999) }
         assertEquals(listOf("Pin 0", "Pin 2"), names())

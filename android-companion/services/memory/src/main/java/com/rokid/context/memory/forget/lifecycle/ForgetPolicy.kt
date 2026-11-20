@@ -135,7 +135,7 @@ object ForgetPolicy {
             user = r(F, "FE:250-253 queueCleanup PHONE_FILE rows (JPEG + sidecar, FE:107); FA:194 FrameSweep.delete, FA:196 MemoryExport.deleteCached (FA = ForgetActions.kt); CanvasForgetCoordinator.kt:46-51,72 trace folders"), deleteAll = r(F, "MW:139,155-165 frame JPEGs, MW:158 inbox dirs, MW:171-174 legacy files / exports, MW:178 trace dirs, MW:180 staged traces"),
             expiry = r(C, "FE:177 / FE:149+231 queueCleanup phoneFilesOnly: JPEG + sidecar of the expired photo, or of an uncited legacy frame (RW:144-148 legacy frames take the user cascade, OPEN RULING O2)"), sweep = r(K, "FE:156 lockFrames=false keeps the photo row, so no file goes; EXCEPT an uncited legacy frame: FE:230-231 still queues its JPEG and FE:229 deletes its vector (OPEN RULING O2)"), purge = r(C, "IMP:19 forgetFacts queues the outbox rows for files")),
         PolicyRow(ForgetChild.PIN,
-            user = r(F, "PML:27-29 explicit forget: pin forgotten with its Moment (armed pairs, PML:70)"), deleteAll = r(F, "PML:195-208 beginWipe arms every linked pin (PML:119 livePairs); unlinked pins are kept (MemorySettings.kt:295 'Pins without a Moment stay')"),
+            user = r(F, "PML:27-29 explicit forget: pin forgotten with its Moment (armed pairs, PML:70); NOT the undo of a mark (glasses voice or tap, phone Forget this mark): that de-links, see sideDeletes MARK_UNDO, ruling O6"), deleteAll = r(F, "PML:195-208 beginWipe arms every linked pin (PML:119 livePairs); unlinked pins are kept (MemorySettings.kt:295 'Pins without a Moment stay')"),
             expiry = r(L, "PML:31 + PML:257-262 sweepStore clears the link only"), sweep = r(L, "PML:31 + PML:257-262"), purge = r(L, "PML:31 + PML:257-262")),
         PolicyRow(ForgetChild.GLASSES,
             user = r(C, "FE:252 outbox GLASSES_FRAME / GLASSES_TRACE / GLASSES_RANGE rows (not phoneFilesOnly); ForgetService.kt:248-254 notifying -> ForgetListeners; CanvasForgetCoordinator.kt:33-41,44-53 sends pc_trace_ctl; only when the Forget reaches a photo or a time span"), deleteAll = r(F, "MW:195 ForgetListeners.deleteAll -> CanvasForgetCoordinator.kt:58-61 onDeleteAll sends the persisted new epoch (the glasses wipe their buffer); HubGraph.kt:246-253 registers it"),
@@ -148,7 +148,7 @@ object ForgetPolicy {
     /**
      * Deletes that run OUTSIDE the Forget pipeline (no [ForgetSource], no planner, no executor): each has its own mini row set. A child absent from [SideDelete.cells] is KEEP. [SideDelete.entryPoints] are the
      * call tokens, [SideDelete.callers] the production files that make those calls (the DAO that defines them, `CanvasDao.kt`, is not a caller); `ForgetPolicyTest.everySideDeleteCallerIsListedAndEveryListedCallerExists`
-     * scans the sources, so a NEW caller of one of these deletes, or a file that stops calling it, fails until this list is updated. Rulings that are still open: see the coverage map, "Open rulings" (O4, O5).
+     * scans the sources, so a NEW caller of one of these deletes, or a file that stops calling it, fails until this list is updated. Rulings that are still open: see the coverage map, "Open rulings" (O4); O5 (the run delete takes the DataOpGate) and O6 (a mark undo de-links pins) were decided and done.
      */
     val sideDeletes: List<SideDelete> = listOf(
         SideDelete("WATCH_OFF", explicit = false, entryPoints = listOf(".deleteWatchRuns(", ".deleteUntilDone("), callers = listOf("WatchRowCleanup.kt", "HubGraph.kt"),
@@ -158,12 +158,18 @@ object ForgetPolicy {
             )),
         SideDelete("CANVAS_RUN_DELETE", explicit = true, entryPoints = listOf(".deleteRun("), callers = listOf("CanvasApi.kt", "CanvasBackendImpl.kt"),
             cells = mapOf(
-                ForgetChild.RUN_RESULT to r(F, "CanvasBackendImpl.kt:891-896 deleteRun -> CanvasDao.kt:39: the run, its items and scores (canvas_live_trace is keyed by publishId and is not touched); NO DataOpGate (OPEN RULING O5)"),
+                ForgetChild.RUN_RESULT to r(F, "CanvasBackendImpl.kt:891-896 deleteRun -> CanvasDao.kt:39: the run, its items and scores (canvas_live_trace is keyed by publishId and is not touched); under DataOpGate.shared.delete (ruling O5; CanvasApi answers 409 while an export runs)"),
                 ForgetChild.CONTROL to r(F, "CanvasDao.kt:39,41 the run's saved-marker row in canvas_meta"),
+            )),
+        // The undo of a mark: the photo goes through the user single-photo Forget row (the other children follow it, not listed here); only the two user-authored children differ from a plain photo Forget, and the PIN cell is the ruling O6.
+        SideDelete("MARK_UNDO", explicit = true, entryPoints = listOf(".forgetMomentKeepPinsOutcome("), callers = listOf("MarkGraph.kt"),
+            cells = mapOf(
+                ForgetChild.MARK to r(F, "MarkRecorder.kt:156-164 removeMark deletes the mark and its intent row (the user undid it); MarkGraph.kt:28 forgetPhoto"),
+                ForgetChild.PIN to r(L, "MarkGraph.kt:28 -> ForgetActions.forgetMomentKeepPinsOutcome: PinMomentLinks.explicit with an EMPTY target arms nothing, so a pin on the photo's Moment only has its link cleared by the sweep (PML:257-262); ruling O6: no dialog names pins, so an undo never deletes one"),
             )),
         SideDelete("CANVAS_RUN_PRUNE", explicit = false, entryPoints = listOf(".pruneRuns("), callers = listOf("CanvasRunner.kt"),
             cells = mapOf(
-                ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:50 pruneRuns -> :39 deleteRun: runs beyond the newest KEEP_RUNS (CanvasRunner.kt:105,366) before a new run starts"),
+                ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:50 pruneRuns -> :39 deleteRun: runs beyond the newest KEEP_RUNS (CanvasRunner.kt pruneGated, before a new run starts) under DataOpGate.shared.delete; skipped while an export runs"),
                 ForgetChild.CONTROL to r(F, "CanvasDao.kt:39,41 the pruned run's saved-marker row in canvas_meta"),
             )),
     )

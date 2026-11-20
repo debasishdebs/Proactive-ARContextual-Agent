@@ -67,6 +67,16 @@ class ForgetPolicyPinConformanceTest {
         }
     }
 
+    /** Ruling O6: the table row MARK_UNDO says DE_LINK for the pin; the real wiring (an explicit Forget with an empty target, as `forgetMomentKeepPinsOutcome` runs it, plus the listener sweep) agrees. */
+    @Test fun aMarkUndoDeLinksThePinAsItsSideDeleteRowSays() = runBlocking<Unit> {
+        PinMomentLinks.explicitStore(store, alive, save, { emptySet() }, { _: Unit -> true }, {}, { live = emptySet() }, {}, null, { false })
+        PinMomentLinks.sweepGuarded(store, alive, save) { false } // what the ForgetListeners event does after the Forget
+        val p = pins()
+        assertEquals(1, p.size); assertNull("the pin stays, its link is cleared", p.single().momentId)
+        assertEquals(PolicyAction.DE_LINK, ForgetPolicy.sideDelete("MARK_UNDO").action(ForgetChild.PIN))
+        assertNull(store.arming())
+    }
+
     @Test fun aSystemRemovalNeverDeletesThePinEvenWhenTheMomentIsGone() = runBlocking<Unit> {
         for (kind in ForgetSourceKind.entries.filter { !it.explicit }) {
             setUp(); outcomeOf(kind)
