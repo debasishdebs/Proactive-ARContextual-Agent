@@ -145,10 +145,11 @@ class DiagnosticsViewModelTest {
         try {
             val shown = withTimeout(5_000) { v.keyframeRows.first { it.suspects.total == 1 } }
             assertEquals("A desk with keys", shown.suspects.items.single().text)
-            dao.deleteMemories(listOf("rokid_kf_old_c0")) // what RetentionWorker does to an expired SHORT memory
-            // every emission from now on is checked, not just the one that ends the wait: a count of zero must never sit beside a leftover snippet
+            // every emission from now on is checked, not just the one that ends the wait: a count of zero must never sit beside a leftover snippet.
+            // The watcher starts BEFORE the delete so no emission between the delete and the watcher goes unchecked.
             val seen = java.util.Collections.synchronizedList(mutableListOf<SuspectDescriptions>())
             val watcher = launch(kotlinx.coroutines.Dispatchers.Unconfined) { v.keyframeRows.collect { seen += it.suspects } }
+            dao.deleteMemories(listOf("rokid_kf_old_c0")) // what RetentionWorker does to an expired SHORT memory
             withTimeout(5_000) { v.keyframeRows.first { it.suspects.total == 0 } }
             watcher.cancel()
             assertTrue("no snippet of the deleted memory is left: $seen", seen.all { it.total != 0 || it.items.isEmpty() })

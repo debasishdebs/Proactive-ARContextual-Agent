@@ -349,6 +349,7 @@ abstract class ForgetDao {
     }
 }
 
-/** One row of the v16 suspect-description list (Diagnostics). */
+/** One row of [ForgetDao.observeSuspects]: a suspect-description row plus [total], the count of ALL suspects from the same snapshot. */
 data class SuspectObservedRow(val id: String, val frameId: String?, val type: String, val createdAt: Long, val text: String, val total: Int)
+/** One row of the v16 suspect-description list (Diagnostics), from [ForgetDao.suspectDescriptions]. */
 data class SuspectDescriptionRow(val id: String, val frameId: String?, val type: String, val createdAt: Long, val text: String)
