@@ -127,6 +127,8 @@ class ContextApp : Application() {
         kotlin.concurrent.thread(name = "index-enqueue") {
             runCatching { com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) }.onFailure { PcLog.w("ContextApp", "index enqueue failed: ${it.javaClass.simpleName}") }
         }
+        // A restart with "I'm abroad" ON: model downloads queued earlier with "Allow mobile data" are made Wi-Fi only again (WorkManager and prefs reads: off the main thread).
+        kotlin.concurrent.thread(name = "model-download-net") { runCatching { com.rokid.context.data.models.LocalModelStore(this).reevaluate() } }
         // rc1 fix: a committed Forget withdraws the answers of the asks it redacted wherever they may still show (phone voice card, glasses HUD through the hub's frames).
         com.rokid.context.orchestration.forget.ForgetActions.asksRedacted = { ids -> android.os.Handler(android.os.Looper.getMainLooper()).post { runCatching { com.rokid.context.phone.voice.VoiceGraph.onAsksRedacted(this, ids) }.onFailure { PcLog.w("ContextApp", "answer withdrawal failed: ${it.javaClass.simpleName}") } } }
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)

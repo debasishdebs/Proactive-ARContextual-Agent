@@ -230,10 +230,44 @@ class LocalModelDownloadWorkerTest {
         org.robolectric.Shadows.shadowOf(cm).setActiveNetworkInfo(org.robolectric.shadows.ShadowNetworkInfo.newInstance(android.net.NetworkInfo.DetailedState.CONNECTED, android.net.ConnectivityManager.TYPE_MOBILE, 0, true, android.net.NetworkInfo.State.CONNECTED))
         com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(true)
         server.enqueue(MockResponse().setBody(body()))
-        assertEquals(ListenableWorker.Result.retry(), runWorker())
+        val wm = WorkManager.getInstance(ctx)
+        store.enqueue(model, allowMetered = true) // abroad is on, so this is already UNMETERED: make it NOT_ROAMING as a download queued before the switch would be
+        com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(false); store.setAllowMetered(model, true)
+        com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(true)
+        fun live() = wm.getWorkInfosForUniqueWork("local_model_test-model").get().single { !it.state.isFinished }
+        assertEquals(NetworkType.NOT_ROAMING, live().constraints.requiredNetworkType)
+        val before = live().id
+        val r = runWorker()
+        assertTrue("not a retry: no attempt is consumed and no backoff starts", r !is ListenableWorker.Result.Retry)
+        assertEquals("the work was replaced by a Wi-Fi-only request", NetworkType.UNMETERED, live().constraints.requiredNetworkType)
+        assertTrue(live().id != before); assertEquals("a fresh request: no attempt used", 0, live().runAttemptCount)
         assertEquals("no byte was requested over mobile data", 0, server.requestCount)
         com.rokid.context.ai.datasaver.DataSaverStore.of(ctx).setAbroad(false)
+        server.enqueue(MockResponse().setBody(body()))
         assertEquals(ListenableWorker.Result.success(), runWorker())
+    }
+
+    private fun allowMobile(on: Boolean) = ctx.getSharedPreferences(LocalModelStore.APP_CONFIG, Context.MODE_PRIVATE).edit().putBoolean(LocalModelStore.KEY_ALLOW_METERED, on).commit()
+
+    @Test fun theAbroadSwitchReconstrainsAQueuedDownloadAndRestoresItWhenOff_andARestartWithAbroadOnDoes() {
+        val wm = WorkManager.getInstance(ctx)
+        fun live() = wm.getWorkInfosForUniqueWork("local_model_test-model").get().single { !it.state.isFinished }
+        val saver = com.rokid.context.ai.datasaver.DataSaverStore.of(ctx)
+        allowMobile(true)
+        store.enqueue(model, allowMetered = true)
+        assertEquals(NetworkType.NOT_ROAMING, live().constraints.requiredNetworkType)
+        saver.setAbroad(true); store.reevaluate(listOf(model))
+        assertEquals("abroad ON: Wi-Fi only", NetworkType.UNMETERED, live().constraints.requiredNetworkType)
+        saver.setAbroad(false); store.reevaluate(listOf(model))
+        assertEquals("abroad OFF: the user's Allow mobile data is back", NetworkType.NOT_ROAMING, live().constraints.requiredNetworkType)
+        allowMobile(false); store.reevaluate(listOf(model))
+        assertEquals("the user did not allow mobile data: it stays Wi-Fi only", NetworkType.UNMETERED, live().constraints.requiredNetworkType)
+        // a restart with abroad ON: the work was queued by an earlier run with NOT_ROAMING
+        allowMobile(true); store.reevaluate(listOf(model)); assertEquals(NetworkType.NOT_ROAMING, live().constraints.requiredNetworkType)
+        saver.setAbroad(true)
+        LocalModelStore(ctx).reevaluate(listOf(model))
+        assertEquals(NetworkType.UNMETERED, live().constraints.requiredNetworkType)
+        assertEquals(0, server.requestCount)
     }
 
     /** Final review I3: the "Allow mobile data" switch reaches a download already queued, both ways; the .part stays. */

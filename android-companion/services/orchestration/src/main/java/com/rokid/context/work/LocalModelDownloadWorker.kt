@@ -49,7 +49,8 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         val model = resolve(id) ?: return fail(id, MSG_FAILED, "unknown_model")
         if (model.files.any { !it.url.startsWith("https://") }) return fail(id, MSG_FAILED, "not_https")
         // "I'm abroad" was switched on after this download was queued with "Allow mobile data": a local foreign SIM does not report roaming, so no byte goes over a metered network until it is off (Wi-Fi still runs).
-        if (LocalModelStore.abroad(applicationContext) && meteredNow()) return Result.retry().also { modelEvent(id, "abroad_metered") }
+        // Not a retry (that would keep the mobile-data request, back off for hours and use up attempts): the work is replaced by a Wi-Fi-only one, which WorkManager starts when Wi-Fi is there. The .part is kept.
+        if (LocalModelStore.abroad(applicationContext) && meteredNow()) { LocalModelStore(applicationContext).waitForWifi(model); return Result.success().also { modelEvent(id, "abroad_metered_wait_wifi") } }
         val outcome = try {
             // One writer per model file: a replacement waits until the stopped worker has let go of the .part.
             withContext(Dispatchers.IO) { downloadAll(model) }
