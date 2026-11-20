@@ -28,7 +28,11 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
         graph.settingsStore.setMode(m); flow.value = read() // the settings collector refreshes the gate off the main thread
         try { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(app)) com.rokid.context.work.OrchestrationScheduler(app).ensureNightIndex() } catch (_: Exception) { /* the runtime gate still holds */ }
     }
-    override fun setAbroad(on: Boolean) { graph.settingsStore.setAbroad(on); flow.value = read() }
+    override fun setAbroad(on: Boolean) {
+        graph.settingsStore.setAbroad(on); flow.value = read()
+        // Model downloads follow the switch at once: ON = Wi-Fi only (a running one is stopped and resumes on Wi-Fi), OFF = the user's "Allow mobile data" again.
+        scope.launch { try { com.rokid.context.data.models.LocalModelStore(app).reevaluate() } catch (_: Exception) { } }
+    }
     override fun setSmallOnRoaming(on: Boolean) { graph.settingsStore.setSmallOnRoaming(on); flow.value = read() }
     override fun setDailyLimitOn(on: Boolean) { graph.settingsStore.setDailyLimitOn(on); flow.value = read() }
     override fun setLimitMb(mb: Int) { graph.settingsStore.setLimitMb(mb); flow.value = read() }

@@ -56,7 +56,7 @@ object DataSaverModel {
     const val SMALL_NOTE = "Questions, place facts and suggestions as text. Never photos."
     const val TODAY_TITLE = "Blocked today"
     const val COUNTS_ONLY = "Counts only. Photos stay on the phone and upload on Wi-Fi; the same photo can be counted by more than one call."
-    const val COUNTED_NOTE = "Sent today counts model calls, Place Guide fetches and street-map tiles loaded on mobile data. Where photos would wait (roaming, unknown network, or your daily limit used up), the street map shows only tiles already saved on the phone."
+    const val COUNTED_NOTE = "Sent today counts model calls, Place Guide fetches and street-map tiles loaded on mobile data. Where photos would wait (roaming, unknown network, Android Data Saver, or your daily limit used up), the street map shows only tiles already saved on the phone."
     const val CAP_NOTE = "Up to the newest 300 waiting photos are kept for Wi-Fi. In a longer backlog the older ones are thinned like any backlog (the salient ones are still described)."
     const val LIMIT_ABROAD_NOTE = "While \"I'm abroad\" is on or the phone reports roaming, photos stop for the day at 10 MB or 30 photos (your own limit if lower) and wait for Wi-Fi. At home on Wi-Fi or home mobile data there is no limit unless you set one below."
 

@@ -60,6 +60,19 @@ class LocalModelStore(context: Context) {
         }, Runnable::run)
     }
 
+    /**
+     * Re-applies the network constraint of every queued or RUNNING download of [models] from the CURRENT settings: "I'm abroad" ON makes it Wi-Fi only (UNMETERED), OFF gives back what the user chose
+     * with "Allow mobile data" (NOT_ROAMING when allowed). A replaced running worker is cancelled by WorkManager (the .part stays, the new work resumes it with a Range request once the network fits).
+     * Called when the abroad switch changes and at every app start (a restart with abroad ON). Never blocks the caller.
+     */
+    fun reevaluate(models: List<LocalModel> = com.rokid.context.ai.local.LocalModels.all) {
+        val allowed = try { app.getSharedPreferences(APP_CONFIG, Context.MODE_PRIVATE).getBoolean(KEY_ALLOW_METERED, false) } catch (e: Exception) { false }
+        models.forEach { setAllowMetered(it, allowed) }
+    }
+
+    /** The download guard of the worker: replace the work with a Wi-Fi-only one (a fresh request: no attempt is consumed, WorkManager waits for the network). */
+    internal fun waitForWifi(model: LocalModel) = enqueue(model, false, ExistingWorkPolicy.REPLACE)
+
     private fun enqueue(model: LocalModel, allowMetered: Boolean, policy: ExistingWorkPolicy) {
         val request = OneTimeWorkRequestBuilder<LocalModelDownloadWorker>()
             .setInputData(workDataOf(LocalModelDownloadWorker.KEY_MODEL_ID to model.id))
@@ -105,6 +118,9 @@ class LocalModelStore(context: Context) {
 
     companion object {
         private const val TAG = "local_model"
+        /** The "Allow mobile data" choice lives in the app's config prefs (written by the Local models page). */
+        const val APP_CONFIG = "app_config"
+        const val KEY_ALLOW_METERED = "local_models_allow_metered"
         /** Bumped on delete, so every store's [state] re-reads the disk. */
         private val fileChanges = MutableStateFlow(0)
 
