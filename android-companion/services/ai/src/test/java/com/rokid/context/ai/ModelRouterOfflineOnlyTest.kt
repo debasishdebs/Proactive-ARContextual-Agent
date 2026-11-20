@@ -165,6 +165,16 @@ class ModelRouterOfflineOnlyTest {
         assertFalse(permits.isEmpty())
     }
 
+    @Test fun aLanFallbackThatWasTriedAndFailedIsReportedAsItsOwnFailureNotAsTheRemoteRefusal() = runTest {
+        ep("r", caps = chat); ep("home", url = lan, caps = chat)
+        bindings.set(RoleBinding(Role.ANSWER, "r", "m", fallbackEndpointId = "home", fallbackModel = "m2")).getOrThrow()
+        val failing = ModelRouter(bindings, endpoints, ProviderBuilder { e, _, _ -> object : ModelProvider { override suspend fun generate(prompt: String): String { throw java.io.IOException("refused") } } }, privacy = { ModelPrivacy.OFFLINE_ONLY })
+        val e = err { failing.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
+        assertFalse(e.toString(), e is OfflineOnlyRefusedException)
+        assertTrue(e is ModelCallException)
+        assertEquals(ModelErrorMapper.toUserFacing(e), UserFacingErrors.AiUnavailable)
+    }
+
     // ---- user-facing ----
 
     @Test fun theRefusalMapsToTheNeedsAnOnDeviceModelState() {
@@ -176,7 +186,7 @@ class ModelRouterOfflineOnlyTest {
 
     // ---- embeddings and the endpoint test ----
 
-    @Test fun anEmbeddingCallToARemoteEndpointIsRefusedBeforeAnythingIsSentButTheOnDeviceModelStillEmbeds() = runTest {
+    @Test fun anEmbeddingCallToARemoteEndpointIsRefusedBeforeAnythingIsSentButTheOnDeviceModelStillEmbeds() = kotlinx.coroutines.runBlocking { // real time: the native embed runs under a withTimeout on a real thread
         val nativeCalls = mutableListOf<String>()
         val client = EmbeddingClient(native = { path, texts, _ -> nativeCalls += path; texts.map { floatArrayOf(1f, 0f) } }, privacy = { mode() })
         val remoteEp = Endpoint("r", "r", EndpointKind.OLLAMA, remote, null, listOf("m"), setOf(Capability.EMBEDDINGS), 1)

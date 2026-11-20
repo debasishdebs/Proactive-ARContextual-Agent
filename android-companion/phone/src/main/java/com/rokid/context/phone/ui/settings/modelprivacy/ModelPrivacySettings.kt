@@ -46,7 +46,7 @@ object ModelPrivacyModel {
         ModelPrivacy.OFFLINE_ONLY -> "Offline only"
     }
 
-    const val OFFLINE_EFFECT = "Photo descriptions and place matches that need a remote model wait. Place cards show nearby names only, and no place is fetched from the internet (seeding an area is refused too)."
+    const val OFFLINE_EFFECT = "Photo descriptions and place matches that need a remote model wait. Place cards show nearby names only, and no place is fetched from the internet (seeding an area is refused too), and the street map shows no new tiles."
     const val QUEUED_NOTE = "Questions and photos that are waiting are sent after you switch back to Automatic (or add an on-device model)."
     const val RESET_NOTICE = "Model privacy settings were reset: check them. Offline only is used until you choose."
     const val PLACE_NEEDS_MODEL = "Place Guide: needs an on-device model. None is available yet, so matching is paused."
@@ -66,7 +66,7 @@ interface ModelPrivacyControl {
 }
 
 class AndroidModelPrivacyControl(private val app: Context, private val store: ModelPrivacyStore = ModelPrivacyStore.get(app)) : ModelPrivacyControl {
-    private val flow = MutableStateFlow(ModelPrivacyUiState())
+    private val flow = MutableStateFlow(ModelPrivacyUiState(mode = store.peek() ?: ModelPrivacy.DEFAULT, wasReset = false))
     override val state: StateFlow<ModelPrivacyUiState> = flow.asStateFlow()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -81,8 +81,9 @@ class AndroidModelPrivacyControl(private val app: Context, private val store: Mo
 
     override fun refresh() {
         scope.launch { // the first load of the prefs and the resolver's binding read stay off the main thread
-            val mode = store.current(); val reset = store.wasReset.value
-            flow.update { it.copy(mode = mode, wasReset = reset) }
+            store.warm()
+            // read at update time, so a tap made while this was loading is never overwritten by an older value
+            flow.update { it.copy(mode = store.current(), wasReset = store.wasReset.value) }
             val pick = try { PlaceResolvers.status(app) } catch (e: Exception) { return@launch }
             flow.update { it.copy(placeUnavailable = if (pick.backend == null) pick.reason else null) }
         }

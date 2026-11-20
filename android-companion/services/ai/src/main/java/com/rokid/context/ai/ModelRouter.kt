@@ -176,6 +176,10 @@ class ModelRouter(
             throw d
         } catch (t: Throwable) {
             // The data saver blocked the primary and the on-device/LAN fallback failed too: the call is still "blocked, nothing sent, wait for Wi-Fi", never a counted failure.
+            // Offline only refused the primary and the on-device/LAN fallback WAS tried but failed: say that (the fallback's own failure), not that the primary was refused. (A fallback that cannot take the photo keeps the refusal below.)
+            if (first is OfflineOnlyRefusedException && !needsVision(t)) {
+                throw ModelCallException("Offline only: the on-device or LAN fallback failed: ${safe(t, fallbackKey)}", !ProviderErrors.isPermanent(t), t, ProviderErrors.kindOf(t))
+            }
             if (first is DataSaverBlockedException) throw first
             if (first != null && needsVision(t)) {
                 // A photo-only call whose fallback cannot take the photo: report the primary's own failure, not "not set".
@@ -307,6 +311,15 @@ class ModelRouter(
 
 /** Where an endpoint's calls go, for the data saver: on this phone, a box on the user's own network (free on Wi-Fi), or anything else. Reads the address only to classify it; the host is never logged. */
 object EndpointReaches {
+    /**
+     * Where a PHOTO call can really go: the best reach among the endpoints that can deliver the photo ([EndpointRules.deliversImages]: VISION declared, not the on-device text runtime). A remote primary with an on-device or LAN
+     * TEXT fallback is still REMOTE, because the fallback cannot take the photo (the router rethrows the primary's refusal). When none of them can, the first (the primary's) reach decides, as before. Empty = REMOTE (fail closed).
+     */
+    fun photoReach(endpointsInOrder: List<Endpoint>): EndpointReach {
+        val capable = endpointsInOrder.filter(EndpointRules::deliversImages).map(::of)
+        return capable.minOrNull() ?: endpointsInOrder.firstOrNull()?.let(::of) ?: EndpointReach.REMOTE
+    }
+
     fun of(e: Endpoint): EndpointReach = when {
         e.kind == EndpointKind.LLAMACPP_LOCAL -> EndpointReach.DEVICE
         DataPolicy.isLanHost(runCatching { java.net.URI(e.baseUrl.trim()).host }.getOrNull()) -> EndpointReach.LAN

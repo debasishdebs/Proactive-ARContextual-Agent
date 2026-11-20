@@ -165,6 +165,8 @@ class OnlineTileSource(
     private val clock: () -> Long = System::currentTimeMillis,
     private val sessionCap: Int = SESSION_CAP,
     maxConcurrent: Int = MAX_CONCURRENT,
+    /** Model privacy "Offline only": no tile is requested from the internet (tiles already on the phone are still shown). Read at every request; the default allows. */
+    private val offlineOnly: () -> Boolean = { false },
 ) : RasterTileSource {
     override val minZoom = 1
     override val maxZoom = MAX_ZOOM
@@ -197,6 +199,7 @@ class OnlineTileSource(
         if (k.x < 0 || k.y < 0 || k.x >= n || k.y >= n) return null
         cache.get(k)?.let { return it }
         if (!running) return null
+        if (try { offlineOnly() } catch (e: Exception) { true }) return null // fail closed: an unreadable privacy setting is Offline only
         val e0 = epoch
         val now = clock()
         synchronized(lock) { if (now < backoffUntil || (failedUntil[k] ?: 0L) > now) return null }

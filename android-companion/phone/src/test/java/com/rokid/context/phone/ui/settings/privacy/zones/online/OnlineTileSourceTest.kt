@@ -270,4 +270,23 @@ class OnlineTileSourceTest {
         val others = listOf("ZonesModel.kt").map { File("$base/$it") }
         assertTrue(others.none { f -> f.readText().contains("java.net") })
     }
+
+    @Test fun offlineOnlyRequestsNoTileButStillShowsTilesAlreadyOnThePhone() {
+        val t = FakeTransport(mutableListOf(ok()))
+        var off = false
+        val provider = OnlineProvider.mapTiler(key)
+        val src = OnlineTileSource(provider, t, OnlineTileDiskCache(File(tmp.root, "c2"), provider.cacheId, OnlineTileDiskCache.MAX_BYTES, clock = { now }), "TestAgent/1", clock = { now }, offlineOnly = { off }).also { it.start() }
+        assertNotNull(src.tile(k1)); assertEquals(1, t.urls.size) // fetched and cached under Automatic
+        off = true
+        assertNotNull("a cached tile is still shown", src.tile(k1))
+        assertNull("a new tile is not requested", src.tile(k2)); assertEquals(1, t.urls.size)
+        off = false; assertNotNull(src.tile(k2)); assertEquals(2, t.urls.size)
+    }
+
+    @Test fun anUnreadableOfflineOnlyReaderFailsClosed() {
+        val t = FakeTransport(mutableListOf(ok()))
+        val provider = OnlineProvider.mapTiler(key)
+        val src = OnlineTileSource(provider, t, OnlineTileDiskCache(File(tmp.root, "c3"), provider.cacheId, OnlineTileDiskCache.MAX_BYTES, clock = { now }), "TestAgent/1", clock = { now }, offlineOnly = { error("prefs") }).also { it.start() }
+        assertNull(src.tile(k1)); assertEquals(0, t.urls.size)
+    }
 }

@@ -13,7 +13,9 @@ object Http {
         .followRedirects(false)
         .followSslRedirects(false)
         .dns(OfflineOnlyDns.shared) // Offline only: every resolved address must be on the user's own network
-        .build()
+        .proxySelector(OfflineOnlyNet.selector) // ... no system proxy (it would receive the request) ...
+        .addNetworkInterceptor(OfflineOnlyNet.shared) // ... and the connection actually used (pooled ones too) must be direct to an own-network address
+        .build().let(OfflineOnlyNet::register)
 
     /**
      * Keyless model-file downloads (catalog URLs only). Pinned Hugging Face URLs answer with a redirect to their CDN, so
