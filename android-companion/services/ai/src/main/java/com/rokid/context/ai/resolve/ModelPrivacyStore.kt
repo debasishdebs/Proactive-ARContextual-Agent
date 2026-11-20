@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * Fail closed. The mode is AUTO only when it was TRULY never set (neither file knows of a choice). A value that is not a known mode, a read that throws, or a mode key that is missing although a choice was recorded
  * (a corrupted or emptied `ai_backend.xml` for a user who had Offline only) reads as [ModelPrivacy.OFFLINE_ONLY], and [wasReset] is true so the screen can say so until the user picks a mode again.
  *
- * The in-memory value is authoritative after the first load (so a tap needs no disk wait and every reader agrees); [set] writes asynchronously (`apply`). The first load reads the file: warm it off the main thread ([warm]).
+ * The in-memory value is authoritative after the first load (so a tap needs no disk wait and every reader agrees); [set] writes asynchronously (`apply`). The first load reads the file: it is started on IO when the process-wide store is created ([warmAsync]); [mode] and [wasReset] never load on the caller's thread, only [current] (enforcement) waits for the real value.
  */
 class ModelPrivacyStore(
     private val prefs: SharedPreferences, private val sentinel: SharedPreferences = prefs,
@@ -52,11 +52,17 @@ class ModelPrivacyStore(
     /** The mode right now. Cheap after the first call. */
     fun current(): ModelPrivacy = load().mode
 
-    /** The mode as a flow for screens (first read happens at construction of a collector; warm the store first to keep it off the main thread). */
-    val mode: StateFlow<ModelPrivacy> get() { load(); return state.asStateFlow() }
+    /**
+     * The mode as a flow for screens. NEVER reads the disk on the caller's thread: before the first load it holds the default ([ModelPrivacy.DEFAULT], "pending": [peek] is null, the same signal the Model privacy screen
+     * shows as "Loading") and the load runs on IO, after which the flow carries the stored value. Enforcement does not use this flow: it asks [current], which waits for the real value.
+     */
+    val mode: StateFlow<ModelPrivacy> get() { warmAsync(); return state.asStateFlow() }
 
-    /** True when the stored choice was lost (the file was emptied or corrupted although a mode had been set): the mode then reads Offline only and the screen asks the user to check it. */
-    val wasReset: StateFlow<Boolean> get() { load(); return resetState.asStateFlow() }
+    /** True when the stored choice was lost (the file was emptied or corrupted although a mode had been set): the mode then reads Offline only and the screen asks the user to check it. False while the first load is pending (never loads on the caller's thread; see [mode]). */
+    val wasReset: StateFlow<Boolean> get() { warmAsync(); return resetState.asStateFlow() }
+
+    /** Starts the first load on IO if it has not happened yet; returns at once. */
+    fun warmAsync() { if (loaded == null) ioScope.launch { try { load() } catch (e: Exception) { } } }
 
     /** The loaded value, or null before the first load (never reads the disk): for a screen's first frame. */
     fun peek(): ModelPrivacy? = loaded?.mode
@@ -126,7 +132,7 @@ class ModelPrivacyStore(
         /** The process-wide store, so every reader and the screen share one value. */
         fun get(context: Context): ModelPrivacyStore = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: ModelPrivacyStore(app.getSharedPreferences(PREFS, Context.MODE_PRIVATE), app.getSharedPreferences(SENTINEL_PREFS, Context.MODE_PRIVATE)).also { instance = it }
+            instance ?: ModelPrivacyStore(app.getSharedPreferences(PREFS, Context.MODE_PRIVATE), app.getSharedPreferences(SENTINEL_PREFS, Context.MODE_PRIVATE)).also { instance = it; it.warmAsync() } // warmed on IO at creation
         }
 
         fun resetForTests(store: ModelPrivacyStore?) { synchronized(this) { instance = store } }
