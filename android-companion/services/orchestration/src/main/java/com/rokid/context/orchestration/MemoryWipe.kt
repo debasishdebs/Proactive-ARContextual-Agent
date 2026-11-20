@@ -123,6 +123,8 @@ object MemoryWipe {
         MemoryGraph.markLegacyImportDone(context)
         AskPhotoPolicy.set(context, false) // Delete all withdraws the consent to send photos with questions (like image intent); re-enabling is one tap
         generation.incrementAndGet()
+        // A shadow attempt that read the OLD generation before the first clear (top of wipeNow) can still store a photo-derived vector until now; with the bump in place a new store is refused, so clear again.
+        com.rokid.context.work.frames.place.ShadowCaches.clearAll()
         if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) com.rokid.context.orchestration.forget.LeaseRevocation.all("delete all") // M3: Delete all revokes every read lease (the generation check is the second line); with forgetV2 the executor revokes in `wipeMemory`
         val wipedAt = System.currentTimeMillis()
         val wipedElapsed = SystemClock.elapsedRealtime()

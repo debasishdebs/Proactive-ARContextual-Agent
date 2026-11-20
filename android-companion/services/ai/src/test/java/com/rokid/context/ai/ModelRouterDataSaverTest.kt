@@ -34,13 +34,15 @@ class ModelRouterDataSaverTest {
     private val providerCalls = mutableListOf<String>()
     private val permits = mutableListOf<CallClass>()
     private val failing = mutableSetOf<String>()
+    private var httpFailure = false
+    private var onGenerate: () -> Unit = {}
     private val callGate = object : CallGate {
         override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T { permits += callClass; return block() }
     }
     private val providers = ProviderBuilder { e, model, _ ->
         object : ModelProvider {
-            override suspend fun generate(prompt: String): String { providerCalls += "${e.id}:text"; if (e.id in failing) error("boom"); return "${e.id}/$model" }
-            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { providerCalls += "${e.id}:vision"; return "${e.id}/vision" }
+            override suspend fun generate(prompt: String): String { providerCalls += "${e.id}:text"; onGenerate(); if (e.id in failing) error("boom"); return "${e.id}/$model" }
+            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { providerCalls += "${e.id}:vision"; if (httpFailure) throw ProviderHttpException(500, "x", ""); return "${e.id}/vision" }
         }
     }
 
@@ -55,10 +57,19 @@ class ModelRouterDataSaverTest {
             return if (block) DataDecision(false, "wifi_only") else DataDecision.ALLOW
         }
         override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) { skippedLog += Triple(kind, what, d.reason) }
-        override fun costlyNow() = false
         /** (kind, txBytes, rxBytes, photos) of every call that went out (slice 2 byte counter). */
         val sentLog = mutableListOf<List<Any>>()
         override fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) { sentLog += listOf(kind, txBytes, rxBytes, photos) }
+        var costly = false
+        var throwOnSent = false
+        var sentAttempts = 0
+        val costlyAtStartLog = mutableListOf<Boolean>()
+        override fun costlyNow() = costly
+        override fun sentAt(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) {
+            sentAttempts++; costlyAtStartLog += costlyAtStart
+            if (throwOnSent) error("ledger down")
+            sent(kind, txBytes, rxBytes, photos)
+        }
         var onceAsked = 0
         var allowOnce = false
         override fun decideOnce(kind: DataKind, reach: EndpointReach): DataDecision { onceAsked++; return if (allowOnce) DataDecision(true, "send_once") else decide(kind, reach) }
@@ -110,11 +121,41 @@ class ModelRouterDataSaverTest {
         assertTrue("a blocked call sent nothing", data.sentLog.isEmpty())
     }
 
-    @Test fun aFailedCallStillCountsTheRequestItSent() = runTest {
+    @Test fun aFailedCallThatNeverReachedTheServerCountsNothingAndKeepsThePhotoCap() = runTest {
         ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
-        failing += "a"
+        failing += "a" // IllegalStateException("boom"): a connect-style failure, nothing was received
         err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
-        assertEquals(listOf(listOf<Any>(DataKind.SMALL, 513L, 0L, 0)), data.sentLog)
+        assertTrue("no bytes for a request that did not go out", data.sentLog.isEmpty())
+    }
+
+    @Test fun anHttpErrorCountsItsRequestBytesButNeverAPhoto() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        httpFailure = true
+        err { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
+        assertEquals(listOf(listOf<Any>(DataKind.PHOTO, 517L, 0L, 0)), data.sentLog)
+    }
+
+    @Test fun aThrowingLedgerNeitherDiscardsTheReplyNorCountsTwice() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        data.throwOnSent = true
+        val r = router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") }
+        assertEquals("a/m", r.text)
+        assertEquals("one attempt at counting, no retry", 1, data.sentAttempts)
+        assertEquals("a single provider call", listOf("a:text"), providerCalls)
+    }
+
+    @Test fun theNetworkClassIsReadOnceAtCallStartAndHandedToTheCounter() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        data.costly = true
+        onGenerate = { data.costly = false } // the network changes while the call runs
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertEquals(listOf(true), data.costlyAtStartLog)
+    }
+
+    @Test fun aLanEndpointIsNeverCounted() = runTest {
+        ep("lan", url = "http://mac.local:11434", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "lan", "m")).getOrThrow()
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
+        assertTrue(data.sentLog.isEmpty())
     }
 
     @Test fun sendOnceIsHonouredOnlyForAUserClassPhotoCallCarryingTheMarker() = runTest {

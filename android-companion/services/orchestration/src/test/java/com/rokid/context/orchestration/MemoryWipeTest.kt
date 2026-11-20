@@ -59,6 +59,17 @@ class MemoryWipeTest {
 
     /** Final review I3: the photo test's labels (the user's own free text about their photos) and results go with Delete all. */
     /** Fix round 2 (m4): Delete all withdraws the consent to send photos with questions, like image intent. */
+    /** M-follow-up: a shadow that read the old generation can store after the first clear, so Delete all clears again once the generation moved (behaviour, not a source scan). */
+    @Test fun deleteAllClearsTheShadowCachesBeforeAndAfterTheGenerationBump() = runBlocking {
+        val seen = mutableListOf<Long>()
+        com.rokid.context.work.frames.place.ShadowCaches.resetForTests()
+        com.rokid.context.work.frames.place.ShadowCaches.register("probe") { seen += MemoryWipe.generation.get() }
+        val g0 = MemoryWipe.generation.get()
+        try { MemoryWipe.deleteAll(ctx) } finally { com.rokid.context.work.frames.place.ShadowCaches.resetForTests() }
+        assertTrue("cleared before the bump: $seen", seen.any { it == g0 })
+        assertTrue("cleared again after the bump: $seen", seen.any { it > g0 })
+    }
+
     @Test fun deleteAllTurnsTheAskPhotosSwitchOff() = runBlocking {
         AskPhotoPolicy.set(ctx, true)
         MemoryWipe.deleteAll(ctx)

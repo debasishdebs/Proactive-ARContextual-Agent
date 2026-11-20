@@ -64,6 +64,13 @@ class ShadowCachesTest {
         } finally { sp.coroutineContext[kotlinx.coroutines.Job]!!.cancel() }
     }
 
+    @Test fun epochCountsEveryClearEvenFromManyThreads() {
+        val e0 = ShadowCaches.epoch()
+        val ts = List(8) { Thread { repeat(250) { ShadowCaches.clearAll() } } }
+        ts.forEach { it.start() }; ts.forEach { it.join() }
+        assertEquals(e0 + 2_000, ShadowCaches.epoch())
+    }
+
     @Test fun theInMemoryVectorsAreListedInTheForgetInventory() {
         assertEquals("the DeletionGraph in-memory table and the registry name the same items", ShadowCaches.DERIVED_ITEMS.toSet(), DeletionGraph.IN_MEMORY.map { it.name }.toSet())
         DeletionGraph.IN_MEMORY.forEach { assertEquals("${it.name}: Delete all clears it", DeletionGraph.Fate.WIPED, it.fate); assertTrue(it.why.isNotBlank()) }
@@ -73,9 +80,10 @@ class ShadowCachesTest {
 
     @Test fun everyDeletionPathCallsTheRegistry() {
         val root = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
-        fun src(rel: String) = File(root, rel).readText()
+        // comments do not count: only code lines carry a call (the behaviour tests above and MemoryWipeTest carry the real coverage)
+        fun src(rel: String) = File(root, rel).readLines().filterNot { it.trim().startsWith("//") || it.trim().startsWith("*") || it.trim().startsWith("/*") }.joinToString("\n") { it.substringBefore(" // ") }
         val orch = "services/orchestration/src/main/java/com/rokid/context/"
-        assertTrue("Delete all", "ShadowCaches.clearAll()" in src(orch + "orchestration/MemoryWipe.kt"))
+        assertTrue("Delete all clears before and after the generation bump", src(orch + "orchestration/MemoryWipe.kt").split("ShadowCaches.clearAll()").size - 1 >= 2)
         assertTrue("flag off", "ShadowCaches.clearAll()" in src(orch + "orchestration/forget/ForgetShadow.kt"))
         assertTrue("pin link set and edit", src(orch + "work/frames/place/PlacePinning.kt").split("ShadowCaches.clearAll()").size - 1 >= 2)
         assertTrue("pin sweep and pin deletion", src(orch + "work/frames/place/PinMomentLinks.kt").split("ShadowCaches.clearAll()").size - 1 >= 2)

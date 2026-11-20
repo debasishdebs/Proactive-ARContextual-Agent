@@ -177,6 +177,59 @@ class DataSaverCapTest {
         advanceTimeBy(24 * 3_600_000L); assertEquals(2, wakes)
     }
 
+    @Test fun midnightMathFollowsDstDayLengths() {
+        val london = ZoneId.of("Europe/London")
+        fun ms(y: Int, m: Int, d: Int, h: Int, mi: Int) = ZonedDateTime.of(y, m, d, h, mi, 0, 0, london).toInstant().toEpochMilli()
+        assertEquals("25-hour day (clocks go back)", 25 * 3_600_000L, DataSaverGraph.msUntilLocalMidnight(ms(2026, 10, 25, 0, 0), london))
+        assertEquals("23-hour day (clocks go forward)", 23 * 3_600_000L, DataSaverGraph.msUntilLocalMidnight(ms(2026, 3, 29, 0, 0), london))
+    }
+
+    @Test fun aZoneChangeRecomputesTheMidnightWakeInsteadOfWaitingForTheOldOne() = runTest {
+        var zone = kolkata
+        val clock = { start + currentTime }
+        val day = { Instant.ofEpochMilli(clock()).atZone(zone).toLocalDate().toEpochDay() }
+        val g = DataSaverGraph(DataSaverStore(prefs("cap7z")).apply { setMode(DataMode.ANYWHERE); setAbroad(true) }, { home }, epochDay = day, scope = backgroundScope, clock = clock, zone = { zone })
+        g.refreshState(); var wakes = 0; g.addOpenListener { wakes++ }
+        g.startMidnightWatch()
+        g.sent(DataKind.PHOTO, 11 * mb, 0, 31); assertTrue(g.heldBack())
+        advanceTimeBy(10 * 60_000L) // 22:40 Kolkata: the old wake is 80 minutes away
+        // fly east to Tokyo (+3:30): it is already 02:10 on the 21st there, so the day changed now
+        zone = ZoneId.of("Asia/Tokyo")
+        g.onClockChanged()
+        advanceTimeBy(1)
+        assertFalse("the new local day lifted the limit at the change, not 80 minutes later", g.heldBack())
+        assertEquals(1, wakes)
+        // and the next wake is the Tokyo midnight (21h50m away), not the stale Kolkata one
+        g.sent(DataKind.PHOTO, 11 * mb, 0, 31); assertTrue(g.heldBack())
+        advanceTimeBy(80 * 60_000L + 5_000L); assertTrue("the old Kolkata midnight no longer fires", g.heldBack())
+        advanceTimeBy(21 * 3_600_000L); assertFalse(g.heldBack()); assertEquals(2, wakes)
+    }
+
+    @Test fun flyingWestExtendsTheCapDayUntilTheLocalDatePassesIt() = runTest {
+        var zone = kolkata
+        val clock = { start + currentTime }
+        val day = { Instant.ofEpochMilli(clock()).atZone(zone).toLocalDate().toEpochDay() }
+        val g = DataSaverGraph(DataSaverStore(prefs("cap7w")).apply { setMode(DataMode.ANYWHERE); setAbroad(true) }, { home }, epochDay = day, scope = backgroundScope, clock = clock, zone = { zone })
+        g.refreshState(); g.startMidnightWatch()
+        advanceTimeBy(91 * 60_000L) // 00:01 on the 21st in Kolkata
+        g.sent(DataKind.PHOTO, 11 * mb, 0, 31); assertTrue(g.heldBack())
+        zone = ZoneId.of("America/Los_Angeles") // still the 20th there
+        g.onClockChanged(); advanceTimeBy(1)
+        assertTrue("west: the stored day (21st) stays the cap day", g.heldBack())
+    }
+
+    @Test fun heldBackForPromptIgnoresTheWifiReconnectBlipAndOfflineOnly() {
+        val now = System.currentTimeMillis()
+        var snap = NetSnapshot(true, Transport.WIFI, validated = false, notMetered = true, notRoaming = true, unvalidatedSinceMs = now - 5_000)
+        var privacy = com.rokid.context.core.net.ModelPrivacy.AUTO
+        val g = DataSaverGraph(DataSaverStore(prefs("cap10")), { snap }, epochDay = { 100L }, privacy = { privacy })
+        assertFalse("blip: no prompt", g.heldBackForPrompt())
+        snap = snap.copy(unvalidatedSinceMs = now - 60_000)
+        assertTrue("still unvalidated after the debounce: prompt", g.heldBackForPrompt())
+        privacy = com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY
+        assertFalse("offline only cannot be lifted by once: no prompt", g.heldBackForPrompt())
+    }
+
     // ---- the store ----
 
     @Test fun theStoreDefaultsToNoLimitAndRoundTripsTheSliceTwoSettings() {

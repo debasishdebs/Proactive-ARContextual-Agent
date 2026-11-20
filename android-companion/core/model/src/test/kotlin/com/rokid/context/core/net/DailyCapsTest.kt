@@ -164,4 +164,47 @@ class DailyCapsTest {
         assertEquals(1000, l.today().photoBytes); assertEquals(2, k.today().dropped)
         assertTrue(st.m.keys.all { it.startsWith("mobile_") || it.startsWith("skipped_") }, st.m.keys.toString())
     }
+
+    // ---- time zone changes (the local day is the cap day) ----
+
+    private fun dayIn(zone: String, at: java.time.Instant) = at.atZone(java.time.ZoneId.of(zone)).toLocalDate().toEpochDay()
+
+    @Test fun flyingWestKeepsTheCapDayInsteadOfGivingAFreeReset() {
+        // 2026-11-21 02:00 in Kolkata is still 20 Nov in Los Angeles (the local date goes back one day)
+        val t = java.time.ZonedDateTime.of(2026, 11, 21, 2, 0, 0, 0, java.time.ZoneId.of("Asia/Kolkata")).toInstant()
+        var zone = "Asia/Kolkata"
+        val l = MobileDataLedger(MapStore()) { dayIn(zone, t) }
+        l.add(DataKind.PHOTO, 10 * mb, 30)
+        assertTrue(DailyCaps.reached(DailyLimit(10 * mb, 30), l.today().usage))
+        zone = "America/Los_Angeles"
+        assertEquals(10 * mb, l.today().photoBytes, "an earlier local date keeps counting into the stored day")
+        l.add(DataKind.SMALL, 1000, 0)
+        assertEquals(10 * mb + 1000, l.today().bytes)
+        assertTrue(DailyCaps.reached(DailyLimit(10 * mb, 30), l.today().usage), "the cap day is extended, not reset")
+    }
+
+    @Test fun flyingEastStartsTheNextDayEarly() {
+        val t = java.time.ZonedDateTime.of(2026, 11, 20, 20, 0, 0, 0, java.time.ZoneId.of("America/Los_Angeles")).toInstant()
+        var zone = "America/Los_Angeles"
+        val l = MobileDataLedger(MapStore()) { dayIn(zone, t) }
+        l.add(DataKind.PHOTO, 10 * mb, 30)
+        assertTrue(DailyCaps.reached(DailyLimit(10 * mb, 30), l.today().usage))
+        zone = "Asia/Kolkata" // the same instant is already 21 Nov there
+        assertEquals(0, l.today().bytes, "a later local date is a new day: counters read zero")
+        assertFalse(DailyCaps.reached(DailyLimit(10 * mb, 30), l.today().usage))
+    }
+
+    @Test fun aDstChangeInsideTheDayNeitherResetsNorDoublesTheDay() {
+        val zone = java.time.ZoneId.of("Europe/London")
+        // 2026-10-25 has 25 hours (clocks go back); 2026-03-29 has 23. The local date is the key either side of the change.
+        val before = java.time.ZonedDateTime.of(2026, 10, 25, 0, 30, 0, 0, zone).toInstant()
+        val after = before.plusSeconds(2 * 3600) // the same local date, after the repeated hour
+        var now = before
+        val l = MobileDataLedger(MapStore()) { now.atZone(zone).toLocalDate().toEpochDay() }
+        l.add(DataKind.PHOTO, 5 * mb, 3)
+        now = after
+        assertEquals(5 * mb, l.today().photoBytes, "same local date across the change")
+        now = java.time.ZonedDateTime.of(2026, 10, 26, 0, 1, 0, 0, zone).toInstant()
+        assertEquals(0, l.today().bytes)
+    }
 }

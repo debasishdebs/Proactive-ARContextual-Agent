@@ -249,14 +249,25 @@ class ModelRouter(
         if (!dataDecision.allowed) throw DataSaverBlockedException(dataDecision.reason, dataKind, if (canSend) Skipped.UPLOAD_QUEUED else Skipped.BULK) // counted once by [counting]
         // Each provider call (the vision attempt and its text retry are two) takes its own permit, then the upload slot, then the liveness re-check.
         val start = System.nanoTime()
-        // Slice 2 byte counter, at this single choke point: payload only (the request's prompt and Base64 photos as sent, the reply text), counts only. A call that fails after it was sent still counts its request.
+        // Slice 2 byte counter, at this single choke point: payload only (the request's prompt and Base64 photos as sent, the reply text), counts only.
+        // The network class is read ONCE here, at call start, and that class decides whether the call counts (a call that ends on another network is still counted where it began).
+        // Only a REMOTE endpoint is counted (an on-device model sends nothing; a LAN endpoint uses no mobile data). A failed call does NOT use up the photo cap: photos count on success only,
+        // and the request bytes of a failure count only when the server demonstrably received the request (an HTTP error status), never for a connect, DNS, timeout or other failure.
+        val costlyAtStart = dataGate.costlyNow()
         suspend fun send(r: ModelRequest): com.rokid.context.model.ModelReply {
             val photos = r.images.size
             val kind = if (photos > 0) DataKind.PHOTO else DataKind.SMALL // the text-only retry of a photo call is a text call
             val tx = DataBytes.requestBytes(r)
-            val counted = reachOf(e) != EndpointReach.DEVICE // an on-device model sends nothing
-            try { return p.complete(r).also { if (counted) dataGate.sent(kind, tx, DataBytes.replyBytes(it), photos) } }
-            catch (c: CancellationException) { throw c } catch (t: Throwable) { if (counted) dataGate.sent(kind, tx, 0, photos); throw t }
+            val counted = reachOf(e) == EndpointReach.REMOTE
+            val reply = try { p.complete(r) }
+            catch (c: CancellationException) { throw c }
+            catch (t: Throwable) {
+                if (counted && t is ProviderHttpException) safeSent(kind, tx, 0, 0, costlyAtStart)
+                throw t
+            }
+            // outside the try above: a throwing ledger can neither count the call twice nor discard a paid reply
+            if (counted) safeSent(kind, tx, DataBytes.replyBytes(reply), photos, costlyAtStart)
+            return reply
         }
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
             if (liveness == null || !guarded) send(r) else liveness.holdUploadSlot {
@@ -288,6 +299,11 @@ class ModelRouter(
     }
 
     /** On this phone (never gated), a box on the user's own network (free on Wi-Fi), or anything else. Reads the address only to classify it; the host is never logged. */
+    /** The counter must never break a call: a throwing ledger is logged (fixed token) and dropped. */
+    private fun safeSent(kind: DataKind, tx: Long, rx: Long, photos: Int, costlyAtStart: Boolean) {
+        try { dataGate.sentAt(kind, tx, rx, photos, costlyAtStart) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") }
+    }
+
     private fun reachOf(e: Endpoint): EndpointReach = EndpointReaches.of(e)
 
     internal companion object {
