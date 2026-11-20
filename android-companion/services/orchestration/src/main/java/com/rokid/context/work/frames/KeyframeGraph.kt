@@ -226,6 +226,15 @@ class KeyframeHandle internal constructor(private val app: Context) {
     /** The debounced, reach-aware "held back" decision (see [com.rokid.context.ai.datasaver.DataSaverGraph.heldBack]): what the drain parks on. Falls back to the plain decision for a foreign gate. */
     internal fun dataSaverHeldBack(): Boolean = (dataGate as? com.rokid.context.ai.datasaver.DataSaverGraph)?.heldBack() ?: !photoUploadsAllowed()
 
+    /**
+     * Slice 2 "Send once": the data saver would hold a photo upload right now (mobile data, roaming, unknown network, today's limit) AND the user could override it for one call.
+     * Offline only is a standing refusal that "once" cannot lift, so it does not ask. No count, no log.
+     */
+    fun photoHeldForPrompt(): Boolean {
+        val d = dataGate.decide(DataKind.PHOTO, photoReach())
+        return !d.allowed && d.reason != com.rokid.context.core.net.ModelPrivacyPolicy.R_OFFLINE_ONLY
+    }
+
     fun photoUploadsAllowed(): Boolean = dataGate.decide(DataKind.PHOTO, photoReach()).allowed
 
     @Volatile private var reachAt = 0L
