@@ -89,7 +89,8 @@ class LocationSource(
                 val g = try { gate() } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
                 val d = try { g?.decide(com.rokid.context.core.net.DataKind.SMALL, com.rokid.context.core.net.EndpointReach.REMOTE) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
                 if (g == null || d == null || !d.allowed) {
-                    PcLog.i("PcLocation", "geocode skipped data_saver reason=${d?.reason ?: "no_gate"}")
+                    if (d == null) PcLog.i("PcLocation", "geocode skipped data_saver reason=no_gate")
+                    else PcLog.i("PcLocation", "geocode skipped data_saver")
                     try { if (g != null && d != null) g.skipped(com.rokid.context.core.net.DataKind.SMALL, com.rokid.context.core.net.Skipped.DROPPED, d) } catch (e: Exception) { }
                     null
                 } else inner(lat, lon)
