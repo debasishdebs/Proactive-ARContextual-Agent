@@ -84,6 +84,17 @@ class ModelPrivacyScreenTest {
         assertFalse(ModelPrivacyModel.OFFLINE_EFFECT.contains("not fetched from the internet."))
     }
 
+    @Test fun beforeTheFirstLoadTheScreenSaysLoadingAndNeverShowsAChoice() {
+        compose.setContent { PcTheme { ModelPrivacyScreen(ModelPrivacyUiState(loading = true), {}, {}) } }
+        compose.onNodeWithTag("model_privacy_loading").assertTextContains("Loading", substring = true)
+        compose.onNodeWithTag("model_privacy_mode").assertDoesNotExist()
+    }
+
+    @Test fun savingIsShownWhileTheWriteRuns() {
+        compose.setContent { PcTheme { ModelPrivacyScreen(ModelPrivacyUiState(ModelPrivacy.OFFLINE_ONLY, saving = true), {}, {}) } }
+        compose.onNodeWithTag("model_privacy_saving").assertTextContains("Saving", substring = true)
+    }
+
     @Test fun noResetNoticeNormally() {
         compose.setContent { PcTheme { ModelPrivacyScreen(ModelPrivacyUiState(), {}, {}) } }
         compose.onNodeWithTag("model_privacy_reset").assertDoesNotExist()

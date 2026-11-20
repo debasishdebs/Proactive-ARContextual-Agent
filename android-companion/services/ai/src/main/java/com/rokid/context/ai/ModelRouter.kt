@@ -178,6 +178,11 @@ class ModelRouter(
             // The data saver blocked the primary and the on-device/LAN fallback failed too: the call is still "blocked, nothing sent, wait for Wi-Fi", never a counted failure.
             // Offline only refused the primary and the on-device/LAN fallback WAS tried but failed: say that (the fallback's own failure), not that the primary was refused. (A fallback that cannot take the photo keeps the refusal below.)
             if (first is OfflineOnlyRefusedException && !needsVision(t)) {
+                if (!ProviderErrors.isPermanent(t)) { // a box that is asleep or unreachable right now: park without an attempt (like the refusal itself), never burn the retry budget overnight
+                    val kind = ProviderErrors.kindOf(t)
+                    PcLog.i(TAG, "offline_only_fallback_unavailable kind=${kind.name}")
+                    throw OfflineOnlyRefusedException(fallbackKind = kind)
+                }
                 throw ModelCallException("Offline only: the on-device or LAN fallback failed: ${safe(t, fallbackKey)}", !ProviderErrors.isPermanent(t), t, ProviderErrors.kindOf(t))
             }
             if (first is DataSaverBlockedException) throw first

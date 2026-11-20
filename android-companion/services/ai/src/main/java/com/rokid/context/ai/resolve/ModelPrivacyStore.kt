@@ -2,6 +2,7 @@ package com.rokid.context.ai.resolve
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.net.ModelPrivacy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,21 +61,41 @@ class ModelPrivacyStore(
     /** Forces the first load (call from an IO thread at start-up). */
     fun warm() { load() }
 
-    fun set(m: ModelPrivacy) {
-        synchronized(this) {
-            loaded = Loaded(m, false); state.value = m; resetState.value = false
-        }
-        // The in-memory value is authoritative from here; the write is durable (commit, in order, off the caller's thread). Open connections of the model clients are dropped so a new mode never rides an old connection.
-        writer.execute {
-            try { com.rokid.context.ai.OfflineOnlyNet.evictPools() } catch (e: Exception) { }
-            try {
-                prefs.edit().putString(K_MODE, m.name).putBoolean(K_INIT, true).commit()
-                if (sentinel !== prefs) sentinel.edit().putBoolean(K_INIT, true).commit()
-            } catch (e: Exception) { /* the in-memory value still holds for this process */ }
-        }
+    private val writeLock = Any()
+    @Volatile private var version = 0L
+
+    /**
+     * Step 1, at once (in memory, queued to disk by `apply`): the sentinel and "initialised" are written and the stored mode key is REMOVED. If the process dies, or a later write fails, before the new mode reaches the disk, the next
+     * launch finds "a choice was made but the mode is missing" and reads Offline only with the reset notice. It can never read the old, possibly more permissive, value or Automatic by accident.
+     */
+    private fun begin(m: ModelPrivacy): Long = synchronized(this) {
+        loaded = Loaded(m, false); state.value = m; resetState.value = false
+        try {
+            if (sentinel !== prefs) sentinel.edit().putBoolean(K_INIT, true).apply()
+            prefs.edit().remove(K_MODE).putBoolean(K_INIT, true).apply()
+        } catch (e: Exception) { PcLog.w(TAG, "privacy begin failed") }
+        ++version
     }
 
+    /** Step 2: the durable write (sentinel first, then the mode), each retried once; a fixed token is logged on failure. False = the disk may still say "reset" (safe: Offline only). Superseded writes are skipped. */
+    private fun durable(m: ModelPrivacy, v: Long): Boolean = synchronized(writeLock) {
+        if (v != version) return@synchronized true // a newer choice owns the disk now
+        try { com.rokid.context.ai.OfflineOnlyNet.evictPools() } catch (e: Exception) { }
+        fun commitTwice(write: () -> Boolean): Boolean = try { write() || write() } catch (e: Exception) { false }
+        val ok = (sentinel === prefs || commitTwice { sentinel.edit().putBoolean(K_INIT, true).commit() }) &&
+            commitTwice { prefs.edit().putString(K_MODE, m.name).putBoolean(K_INIT, true).commit() }
+        if (!ok) PcLog.w(TAG, "privacy write failed")
+        ok
+    }
+
+    /** Sets the mode: in memory at once, durable in the background (a failed or killed write reads back as "reset", never as Automatic). */
+    fun set(m: ModelPrivacy) { val v = begin(m); writer.execute { durable(m, v) } }
+
+    /** Like [set] but returns only after the write was attempted on [writer-independent] IO: true = durable. The UI shows "Saving" meanwhile; switching TO Offline only should use this. */
+    suspend fun setAndWait(m: ModelPrivacy): Boolean { val v = begin(m); return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { durable(m, v) } }
+
     companion object {
+        private const val TAG = "PcPrivacy"
         const val PREFS = "ai_backend"
         const val SENTINEL_PREFS = "ai_backend_init"
         private const val K_MODE = "mode"

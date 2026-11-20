@@ -42,7 +42,10 @@ open class DataSaverBlockedException(
  * Model privacy "Offline only" refused a call to a remote endpoint before anything was sent (no key read, no provider built). A [DataSaverBlockedException] so every caller parks the work without using
  * an attempt (the pipeline, the queue drain, the Ask path), but it is never counted in the data saver's skipped totals (it is not a data cost) and never retried as text or on a remote fallback.
  */
-class OfflineOnlyRefusedException : DataSaverBlockedException(com.rokid.context.core.net.ModelPrivacyPolicy.R_OFFLINE_ONLY) {
+class OfflineOnlyRefusedException(
+    /** Set when the primary was refused and the on-device/LAN fallback WAS tried but is unavailable right now (a box asleep): the work still parks without an attempt, but the user-facing text is "AI unavailable", not "needs an on-device model". */
+    val fallbackKind: FailureKind? = null,
+) : DataSaverBlockedException(com.rokid.context.core.net.ModelPrivacyPolicy.R_OFFLINE_ONLY) {
     init { counted = true }
 }
 

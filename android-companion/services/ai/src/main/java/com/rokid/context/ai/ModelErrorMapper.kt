@@ -7,7 +7,7 @@ import java.io.IOException
 /** Model failures → what people see (spec §6.3). By type and [FailureKind] only; Diagnostics logs keep the detail. */
 object ModelErrorMapper {
     fun toUserFacing(t: Throwable): UserFacingError = when (t) {
-        is OfflineOnlyRefusedException -> UserFacingErrors.AiNeedsOnDevice
+        is OfflineOnlyRefusedException -> if (t.fallbackKind != null) UserFacingErrors.AiUnavailable else UserFacingErrors.AiNeedsOnDevice
         is ModelCallException -> when (t.kind) {
             FailureKind.NOT_SET -> UserFacingErrors.AiNotSet
             FailureKind.AUTH -> UserFacingErrors.AiKeyRejected
