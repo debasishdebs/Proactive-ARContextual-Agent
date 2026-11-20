@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** The zone state could not be pushed to the glasses right now because the data link did not accept it (no glasses connected yet). Expected, not a fault: the publish stays pending and the glasses' hello pushes the current state at link-up. */
+class ZonePublishDeferred : IllegalStateException("zone settings push not accepted")
+
 /** What the controller needs of the hub: the stored `zone:` pause records and a way to add, end and publish them. */
 interface ZoneSink {
     suspend fun activeZoneRecords(): List<PauseRecord>
@@ -89,6 +92,8 @@ class ZoneController(
     private var memoDirty = false
     private var lastEnforce: Pair<Boolean, Boolean>? = null
     private var publishPending = false
+    /** True once the "deferred" line was logged for the current pending publish (one line per episode, not one per fix). */
+    private var deferLogged = false
     /** Intervals of zones that were left while their record could not be stored: retried (as an interval) by every [tick]; meanwhile retained in [ZoneHold]. */
     private class Missed(val zoneId: String, val from: Long, val to: Long)
     private val exitedUnstored = ArrayList<Missed>()
@@ -357,7 +362,9 @@ class ZoneController(
         if (changed) publishPending = true
         if (publishPending || lastEnforce != key) {
             // Only a publish that went out counts: a failed one is retried by the next tick (the glasses may still be capturing).
-            try { sink.publish(); lastEnforce = key; publishPending = false } catch (e: CancellationException) { throw e } catch (e: Exception) { publishPending = true; log("zone publish failed cls=${e.javaClass.simpleName}") }
+            try { sink.publish(); lastEnforce = key; publishPending = false; deferLogged = false } catch (e: CancellationException) { throw e }
+            catch (e: ZonePublishDeferred) { publishPending = true; if (!deferLogged) { deferLogged = true; log("zone publish deferred reason=no_link") } } // expected without a glasses link; the phone's own fences never wait for it
+            catch (e: Exception) { publishPending = true; log("zone publish failed cls=${e.javaClass.simpleName}") }
         }
         saveMemo()
     }
