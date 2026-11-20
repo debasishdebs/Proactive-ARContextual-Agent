@@ -34,7 +34,7 @@ import kotlin.math.sqrt
  */
 class SigLipImageEmbedder(
     private val modelFile: File,
-    private val variant: String = "vision_quantized",
+    val variant: String = "vision_quantized",
     private val batchSize: Int = BATCH,
     /** (path, outputName, width) -> session; the default builds the real ORT session. Exists so a test can see what the default path asks for. */
     private val ortFactory: (String, String, Int) -> ImageSession = { p, o, w -> OrtImageSession(p, outputName = o, width = w) },
