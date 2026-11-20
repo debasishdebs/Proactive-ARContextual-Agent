@@ -63,6 +63,8 @@ sealed interface ExtractOutcome {
     data class Failed(
         val error: String, val countsAttempt: Boolean = true, override val unreadable: Set<String> = emptySet(),
         override val unseen: Set<String> = emptySet(), val maxAttempts: Int = FrameStateDao.MAX_ATTEMPTS,
+        /** Offline only refused the primary and the on-device/LAN fallback is unavailable right now: parked like a data-saver block, but only [com.rokid.context.work.FallbackParkCap.CAP] times per frame. */
+        val fallbackUnavailable: Boolean = false,
     ) : ExtractOutcome
 
     companion object {
@@ -78,6 +80,7 @@ sealed interface ExtractOutcome {
             val attempts = if (transient) RetryPolicy.MAX_ATTEMPTS else FrameStateDao.MAX_ATTEMPTS
             return when {
                 // Roaming data saver: nothing was sent and no attempt is used; the loop parks until the policy opens (Wi-Fi back, mode or abroad switch changed).
+                chain.any { it is com.rokid.context.ai.OfflineOnlyRefusedException && it.fallbackKind != null } -> Failed(DATA_SAVER, countsAttempt = false, fallbackUnavailable = true)
                 chain.any { it is com.rokid.context.ai.DataSaverBlockedException } -> Failed(DATA_SAVER, countsAttempt = false)
                 model.any { it.kind == FailureKind.NOT_SET || it.kind == FailureKind.AUTH } ->
                     Failed("provider ${model.first { it.kind == FailureKind.NOT_SET || it.kind == FailureKind.AUTH }.kind.name}", countsAttempt = false)
@@ -611,11 +614,14 @@ class KeyframePipeline(
     }
 
     /** [offerToNudges] false for the night job's calls: a week-old photo's memory is not a live moment (the fast-path nudge is never offered it). */
-    private suspend fun settle(frames: List<KeyframeCandidate>, claimId: String, o: ExtractOutcome, user: Boolean, offerToNudges: Boolean = true): Int {
+    private suspend fun settle(frames: List<KeyframeCandidate>, claimId: String, o0: ExtractOutcome, user: Boolean, offerToNudges: Boolean = true): Int {
         val now = clock()
-        frames.filter { it.frameId in o.unreadable }.forEach { states.fail(it.frameId, claimId, "unreadable", now, maxAttempts = 1) }
-        frames.filter { it.frameId in o.unseen && it.frameId !in o.unreadable }.forEach { states.fail(it.frameId, claimId, "unreadable", now) }
-        val rest = frames.filter { it.frameId !in o.unreadable && it.frameId !in o.unseen }
+        frames.filter { it.frameId in o0.unreadable }.forEach { states.fail(it.frameId, claimId, "unreadable", now, maxAttempts = 1) }
+        frames.filter { it.frameId in o0.unseen && it.frameId !in o0.unreadable }.forEach { states.fail(it.frameId, claimId, "unreadable", now) }
+        val rest = frames.filter { it.frameId !in o0.unreadable && it.frameId !in o0.unseen }
+        // A reachable but consistently failing on-device/LAN fallback must not park a frame forever: after FallbackParkCap.CAP parks it counts as an ordinary transient failure.
+        val o: ExtractOutcome = (o0 as? ExtractOutcome.Failed)?.takeIf { it.fallbackUnavailable && !it.countsAttempt && com.rokid.context.work.FallbackParkCap.over(rest.map { f -> f.frameId }) }
+            ?.copy(error = "fallback_unavailable", countsAttempt = true, maxAttempts = RetryPolicy.MAX_ATTEMPTS, fallbackUnavailable = false) ?: o0
         return when (o) {
             is ExtractOutcome.Saved -> {
                 pauseStepMs = 0L; pausedUntilMs = 0L
