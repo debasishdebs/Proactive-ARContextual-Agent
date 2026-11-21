@@ -323,15 +323,30 @@ class PinMomentLinksTest {
         assertEquals(listOf("Pin 2"), names())
     }
 
-    @Test fun aUserForgetWhileAnEarlierWipeIsStillPendingNeverCarriesTheWipesUncommittedPairs() = runBlocking<Unit> {
+    @Test fun aUserForgetOfAPinnedMomentWhileAWipeCommitWriteIsOwedIsRefusedAndNeverDropsTheWipeArming() = runBlocking<Unit> {
         val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
-        pendingFlag = true; db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op1) // epoch committed, never marked, process died: the flag stays set
+        pendingFlag = true; db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op1) // epoch committed, commit write never done, process alive: the flag stays set
+        val wipeArming = store.arming()!!
         fx.frame("c", (sec2 + 50) * 1000 + 5); fx.project(MomentId.format(sec2 + 50), MomentPartKind.FRAME to "c")
         assertTrue(store.write(store.pins() + pin(3, MomentId.format(sec2 + 50))))
-        var armedInside: Arming? = null
-        explicit(target = { l -> l.filter { it == MomentId.format(sec2 + 50) }.toSet() }, wipePending = { pendingFlag }) { armedInside = store.arming(); fx.service.forgetMoment("c") }
-        assertTrue("the user's Forget arms only its own pair", armedInside!!.dead.isEmpty() && armedInside!!.pairs.keys == setOf(ids[3]))
-        assertEquals("only the pin the user confirmed is deleted; the wipe's pins keep (their links are cleared)", listOf("Pin 0", "Pin 1", "Pin 2"), names())
+        var ran = false; var refused = false
+        try { explicit(target = { l -> l.filter { it == MomentId.format(sec2 + 50) }.toSet() }, wipePending = { pendingFlag }) { ran = true; fx.service.forgetMoment("c") } } catch (e: PinArmFailed) { refused = true }
+        assertTrue("the Forget is refused", refused); assertFalse("and never ran", ran)
+        assertEquals("the wipe's arming is untouched", wipeArming, store.arming())
+        assertEquals(4, store.pins().size)
+        val op2 = PinMomentLinks.beginWipeStore(store, alive, save, resume = true, wipePending = { pendingFlag }) // the resume still deletes the wipe's pins
+        assertEquals(2, resolve(self = op2)); PinMomentLinks.endWipe(op2)
+        assertEquals(listOf("Pin 2", "Pin 3"), names())
+    }
+
+    @Test fun aUserForgetWithNoPairsWhileAWipeCommitWriteIsOwedIsUnaffected() = runBlocking<Unit> {
+        val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        pendingFlag = true; PinMomentLinks.endWipe(op1)
+        val wipeArming = store.arming()!!
+        var ran = false
+        explicit(target = none, wipePending = { pendingFlag }) { ran = true }
+        assertTrue("a Forget that names no pin runs", ran)
+        assertEquals("the wipe's arming is untouched", wipeArming, store.arming())
     }
 
     @Test fun anOperationInFlightThatArmedNothingDoesNotBlockASweepOrAnotherForget() = runBlocking<Unit> {

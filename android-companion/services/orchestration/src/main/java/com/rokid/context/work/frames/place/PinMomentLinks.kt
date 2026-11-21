@@ -53,6 +53,7 @@ class PinCommitNotStored : Exception("pin removal not recorded")
  * | Delete all: before the epoch commit                                | uncommitted wipe arming       | abortWipe drops it; after a crash the next sweep/settle/Delete all drops it (no wipe pending); the pins stay |
  * | Delete all: epoch committed, before the commit write (or it fails) | uncommitted wipe arming       | the resume promotes it (dead = its armed pairs); the leftover keeps the resume |
  * | Delete all: after the commit write                                 | committed + dead set          | the resume keeps it and arms nothing new; settle deletes the dead set        |
+ * | a user Forget (with pairs) while that uncommitted wipe arming is pending | uncommitted wipe arming | the Forget is refused (PinArmFailed, "try again"): the arming is never replaced; a Forget with no pairs is unaffected |
  *
  * A Moment counts as gone when no stored photo of its second is left, or its second is tombstoned (`MomentDao.photoMomentsOf`): the rebuildable projection row is NOT the test. Log lines are literals plus
  * a count: never an id, name, note or position.
@@ -85,6 +86,7 @@ object PinMomentLinks {
                 resolveStore(store, alive, save, op, wipePending) // an earlier operation's leftovers are finished (committed) or dropped (not)
                 val pairs = targetPairs(store, alive, target).let { p -> if (allowedPins == null) p else p.filterKeys { it in allowedPins } } // inside the pin lock: only the pins the user confirmed
                 if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming (nothing is forgotten; try again)
+                if (pairs.isNotEmpty() && store.arming()?.let { it.kind == "wipe" && !it.committed } == true && wipePending()) throw PinArmFailed() // an earlier Delete all committed its epoch but its commit write is still owed: its arming (the pins it promised to delete) is never replaced; nothing is forgotten, try again after the resume
                 if (pairs.isNotEmpty()) { if (!store.arm(Arming(op, "forget", false, pairs, carried(store, wipePending, carryWipe = false)))) { store.disarm(); throw PinArmFailed() }; armed.add(op) }
             }
             val r = try { block() } catch (t: Throwable) { PlacePinning.underPinLock { dropIfOp(store, op) }; throw t }

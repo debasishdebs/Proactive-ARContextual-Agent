@@ -60,9 +60,9 @@ class SuggestionFeedTest {
 
     /** The gates live in `ProactiveDelivery.phoneFeed` (DeliveryTest); here the seam answers like it: the delivered, not withdrawn records of the store with the card, or nothing while a gate is closed. */
     private var gateOpen = true
-    private fun feed(render: suspend (SuggestionRecord, Long) -> RenderedCard? = { _, _ -> card }, ticks: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit), events: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.emptyFlow(), cards: (suspend (Long) -> List<ProactiveDelivery.FeedCard>)? = null) =
+    private fun feed(render: suspend (SuggestionRecord, Long) -> RenderedCard? = { _, _ -> card }, ticks: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit), events: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.emptyFlow(), cards: (suspend (Long) -> List<ProactiveDelivery.FeedCard>)? = null, data: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.emptyFlow()) =
         AndroidSuggestionFeed(app, { store }, settings, cards ?: { now -> if (!gateOpen) emptyList() else store.records().filter { Surface.PHONE.token in it.delivered }.mapNotNull { r -> render(r, now)?.let { ProactiveDelivery.FeedCard(r, it) } } },
-            SuggestionActions({ store }, { surfaces }, { ts }, SuggestionPublications()), { ZoneId.of("Asia/Kolkata") }, { ts }, ticks, events)
+            SuggestionActions({ store }, { surfaces }, { ts }, SuggestionPublications()), { ZoneId.of("Asia/Kolkata") }, { ts }, ticks, events, data)
 
     private fun items(f: AndroidSuggestionFeed, until: (List<SuggestionCardUi>) -> Boolean): List<SuggestionCardUi> = runBlocking { withTimeout(10_000) { f.items.first(until) } }
     private fun on() { settings.setMaster(true); settings.setDeliver(Surface.PHONE, true) }
@@ -102,6 +102,23 @@ class SuggestionFeedTest {
         gateOpen = false; tick.tryEmit(Unit) // a pause or a zone hold: no store change, only the next render
         assertTrue("no previously delivered text stays", items(f) { it.isEmpty() }.isEmpty())
         gateOpen = true; tick.tryEmit(Unit); items(f) { it.size == 1 }
+    }
+    @Test fun aMemoryOrFrameTableChangeRederivesOnceForABurstWithoutWaitingForTheTick() {
+        on(); store.add(rec("a"))
+        val data = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 64)
+        val never = kotlinx.coroutines.flow.flow<Unit> { emit(Unit); kotlinx.coroutines.awaitCancellation() }
+        var gone = false; val builds = java.util.concurrent.atomic.AtomicInteger()
+        val f = feed(ticks = never, data = data, cards = { _ -> builds.incrementAndGet(); if (gone) emptyList() else store.records().map { ProactiveDelivery.FeedCard(it, card) } })
+        val seen = java.util.concurrent.LinkedBlockingQueue<List<SuggestionCardUi>>()
+        val job = kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.Default) { f.items.collect { seen.put(it) } }
+        try {
+            assertEquals(1, seen.poll(10, java.util.concurrent.TimeUnit.SECONDS)!!.size)
+            Thread.sleep(300); seen.clear(); val before = builds.get()
+            gone = true; repeat(10) { assertTrue(data.tryEmit(Unit)) } // a burst of captures / a Forget
+            assertTrue("the card is gone without a tick", seen.poll(5, java.util.concurrent.TimeUnit.SECONDS)!!.isEmpty())
+            Thread.sleep(800)
+            assertEquals("one re-derive for the whole burst", before + 1, builds.get())
+        } finally { job.cancel() }
     }
     // ---- Codex v3.1 r2 P1-2: gate-CLOSE events clear the rendered card at once, not on the 10 s tick -------------------------------------------------------------
 

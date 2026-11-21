@@ -11,6 +11,9 @@ import com.rokid.context.phone.ui.settings.suggestions.SuggestionsModel
 import com.rokid.context.phone.ui.settings.suggestions.WhyUi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
+import com.rokid.context.phone.ui.list.tableChanges
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -52,7 +55,7 @@ interface SuggestionFeedSource {
  * every source, the place's zone and the zone fence, pause, driving (UNKNOWN is driving) and quiet hours with a fresh clock, all inside the fences). Any gate closed = an EMPTY list, so the rendered state is cleared
  * and no previously delivered text stays on screen. Every change of the store, of the switches and a periodic tick (a pause or a zone hold changes no store) re-derives the list.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class AndroidSuggestionFeed(
     private val app: Context,
     private val store: () -> SuggestionStore = { ProactiveGraph.store(app) },
@@ -68,11 +71,16 @@ class AndroidSuggestionFeed(
      * for [ticks]. Production: [SuggestionGateEvents.closes] and the quiet-hours timer. Cold: nothing runs unless Home collects.
      */
     private val gateEvents: Flow<Unit> = defaultGateEvents(),
+    /**
+     * CF-P3-4: a committed write to the memory or frame table (a Forget, a capture, Delete all) re-derives the list at once, so a card whose source was just forgotten does not wait for [ticks]. Debounced so a burst
+     * of captures re-derives once, not per frame. Cold: the database is opened only when Home collects.
+     */
+    private val dataChanges: Flow<Unit> = defaultDataChanges(app),
 ) : SuggestionFeedSource {
     override val items: Flow<List<SuggestionCardUi>> = flow {
         val s = store()
         val switches = combine(settings.master, settings.placeRecall, settings.deliverPhone) { _, _, _ -> true }.drop(1) // the first value is the current state, not a change
-        val triggers: Flow<Boolean> = merge(s.changes.map { false }, ticks.map { false }, switches, gateEvents.map { true })
+        val triggers: Flow<Boolean> = merge(s.changes.map { false }, ticks.map { false }, switches, gateEvents.map { true }, dataChanges.debounce(DATA_DEBOUNCE_MS).map { false })
         emitAll(triggers.transformLatest { close ->
             if (close) emit(emptyList()) // a gate closed (or a switch changed): nothing stays rendered while the list is derived again
             emit(build())
@@ -92,6 +100,10 @@ class AndroidSuggestionFeed(
 
     companion object {
         const val TICK_MS = 10_000L
+        const val DATA_DEBOUNCE_MS = 500L
+
+        /** Room's own change signal over the tables a card's sources live in. */
+        fun defaultDataChanges(app: Context): Flow<Unit> = flow { emitAll(com.rokid.context.memory.MemoryGraph.get(app).db.tableChanges("memory", "frame")) }
 
         /** The production close events: the process-wide [SuggestionGateEvents] (zone, pause, driving) and the quiet-hours boundary timer. */
         fun defaultGateEvents(
