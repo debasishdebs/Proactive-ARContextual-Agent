@@ -88,3 +88,7 @@ Recommendation: install `cand` for 22-23 Nov (smallest change from the installed
 ### X (offline VLM bake-off)
 - X-1: inconclusive; redo on a quiet Mac or the phone, score the answer token not the model's confidence. needs NU-I go/no-go. M. Group D.
 
+
+## J-P2 / CF-P3-4 outcome (295c7892, 2026-11-22 03:40)
+- Fix in 295c7892. Full verification: 14 of 15 rc=0; `:phone:testDebugUnitTest` rc=1 after a 5h16m run under memory pressure (AppShellTest idle timeout, PhoneLogSinkTest, FramesToPyFnIntegrationTest). Re-run alone: AppShellTest, PhoneLogSinkTest, FramesToPyFnIntegrationTest pass (rc=0, 32 s). Treated as load flakes (flake watch W); a clean full re-run is still owed.
+- Liveness (traced by me; Opus reviewer stalled): the refusal lasts while the epoch store says a wipe is pending, i.e. until the next start (`resumeIfPending` completes it) or another Delete all; it is not permanent. Opus review of this diff still owed (Codex after 21:36 on 21 Nov has passed: use the re-review package).
