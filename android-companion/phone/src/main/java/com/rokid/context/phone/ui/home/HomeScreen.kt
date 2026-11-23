@@ -69,6 +69,9 @@ import com.rokid.context.phone.ui.actions.ProposalCard
 /** A nudge whose source was forgotten (Forget redacts the row; its text is never shown). */
 const val REDACTED_NUDGE = "Removed \u2014 a source was forgotten"
 
+/** P3: the kept summary of a nudge or answer whose short-term details were removed by the nightly clean-up (expired, NOT forgotten: its text is never replaced). */
+fun expiredSourcesText(n: Int): String = "$n short-term detail${if (n == 1) " has" else "s have"} expired; the summary is kept"
+
 /** M5: an answer whose source was forgotten (the question is kept, the answer is erased). Shown with a button, never re-answered by itself. */
 const val ANSWER_FROM_FORGOTTEN = "Answered from a forgotten fact"
 const val ANSWER_ASKED_AGAIN = "Answered from a forgotten fact \u2014 asked again"

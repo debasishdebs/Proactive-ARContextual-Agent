@@ -191,6 +191,9 @@ class MemorySettingsViewModel(
                 " (skipped photos ${when (s.skippedPhotoDays) { 0 -> "at the next clean-up"; 1 -> "after 1 day"; else -> "after ${s.skippedPhotoDays} days" }}); " +
                 "captions and scene summaries stay until their own setting says otherwise."
 
+        /** P3: what the facts the glasses extract actually follow. Every extracted fact is short-term, so the Long-term window does not govern them. */
+        const val SHORT_TERM_FACTS_NOTE = "Details extracted from your photos are short-term: they follow the Short-term setting, not the Long-term one. Removing them never changes a nudge, an answer, a Moment or a place card that used them; only Forget does."
+
         const val UPGRADE_NOTE = "Photos you already have are kept at least 7 days from this update."
 
         /** Ruling 13 / fix round 1 I2: every photo taken before the update is kept 7 days from the stamp, whatever its kind; shown while that holds. */
@@ -244,6 +247,7 @@ fun MemorySettingsScreen(
                 ChoiceRow("Medium-term", medium.map { "$it days" }, medium.indexOf(s.mediumDays), { onMedium(medium[it]) }, tag = "retention_medium")
                 ChoiceRow("Long-term", long.map { "$it days" }, long.indexOf(s.longDays), { onLong(long[it]) }, tag = "retention_long")
                 NoticeText(MemorySettingsViewModel.retentionNote(s), tag = "retention_note")
+                NoticeText(MemorySettingsViewModel.SHORT_TERM_FACTS_NOTE, tag = "retention_short_facts_note")
             }
         }
         item {
