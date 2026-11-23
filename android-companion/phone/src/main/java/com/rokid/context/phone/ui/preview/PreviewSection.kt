@@ -260,7 +260,8 @@ private fun SourcesContent(s: PreviewSection.SourcesSection, host: PreviewHost) 
         s.items.forEach { SourceCardRow(it, host) }
         s.moreQuery?.let { q -> TextButton(onClick = { host.morePhotos(q) }, modifier = Modifier.padding(horizontal = 8.dp).testTag("more_photos")) { Text("More photos") } }
         if (s.missing > 0) {
-            Text("${s.missing} source${if (s.missing == 1) " is" else "s are"} no longer available", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            // P3: a source missing from a KEPT nudge or answer has expired (a user Forget would have redacted the whole item); "forgotten" wording is only for a user Forget
+            Text(com.rokid.context.phone.ui.home.expiredSourcesText(s.missing), style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
         }
     }
 }
