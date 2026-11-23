@@ -67,7 +67,7 @@ def write_tsv(path, header, rows):
 
 TRUTH_TEMPLATE = [  # label, target (pin name or SITE:<name> or -), start IST, end IST, source, testable
     ("SJ_ENTRY", "SalarJung Museum", "2026-11-21 17:09:30", "2026-11-21 17:13:00", "candidates-doc", "yes"),
-    ("SJ_FOUNDERS", "Salar jung Founders gallery", "2026-11-21 17:19:00", "2026-11-21 17:31:30", "candidates-doc+user(weak)", "yes"),
+    ("SJ_FOUNDERS", "Salar jung Founders gallery", "2026-11-21 17:19:00", "2026-11-21 17:27:00", "user-window(weakest,low-confidence)", "yes"),
     ("SJ_BRONZE", "Bronze Gallery SalarJung", "2026-11-21 17:32:00", "2026-11-21 17:40:00", "candidates-doc", "yes"),
     ("SJ_IVORY", "Ivory Room SJM", "2026-11-21 17:50:00", "2026-11-21 17:54:00", "candidates-doc", "yes"),
     ("SJ_EXTERIOR", "SalarJung Museum", "2026-11-21 18:04:00", "2026-11-21 18:10:00", "user", "yes"),
@@ -86,6 +86,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--from-ist", default="2026-11-21 00:00:00")
     ap.add_argument("--to-ist", default="2026-11-24 01:00:00")
+    ap.add_argument("--derive-sites", action="store_true", help="fill an EMPTY sites.tsv with ASSUMED sites (median of the nearest media fixes to each recorded 'Looked at' name that is not a pin); calibration only")
     a = ap.parse_args()
     dump, out = pathlib.Path(a.dump).expanduser(), pathlib.Path(a.out).expanduser()
     probe = out
@@ -152,12 +153,26 @@ def main():
     if not (out / "truth.tsv").exists():
         write_tsv(out / "truth.tsv", ["label", "target", "startMs", "endMs", "source", "testable"],
                   [[l, t, ist_ms(s), ist_ms(e), src, ok] for l, t, s, e, src, ok in TRUTH_TEMPLATE])
-    if not (out / "sites.tsv").exists():
-        write_tsv(out / "sites.tsv", ["id", "name", "kind", "lat", "lon", "radiusM", "src"], [])
+    sites_file = out / "sites.tsv"
+    if not sites_file.exists():
+        write_tsv(sites_file, ["id", "name", "kind", "lat", "lon", "radiusM", "src"], [])
+    derived = 0
+    if a.derive_sites and len(sites_file.read_text().splitlines()) <= 1:  # never overwrite sites the user filled by hand
+        pin_names = {p[1].lower() for p in pins}
+        sites = []
+        for name in sorted({h[2] for h in hist if h[2].lower() not in pin_names}):
+            times = [h[1] for h in hist if h[2] == name]
+            near = sorted((f for f in fixes if min(abs(f[0] - t) for t in times) <= 90 * 60_000), key=lambda f: min(abs(f[0] - t) for t in times))[:5]
+            if near:
+                lat = sorted(f[1] for f in near)[len(near) // 2]
+                lon = sorted(f[2] for f in near)[len(near) // 2]
+                sites.append([f"wd:ASSUMED{len(sites) + 1}", name, "attraction", lat, lon, 150, "ASSUMED"])
+        write_tsv(sites_file, ["id", "name", "kind", "lat", "lon", "radiusM", "src"], sites)
+        derived = len(sites)
 
     print(f"frames={len(frames)} dwell={sum(f[3] for f in frames)} withPhoto={sum(f[7] for f in frames)} withText={sum(1 for f in frames if f[9])}")
     print(f"fixes={len(fixes)} pins={len(pins)} pinTimes=" + ",".join(f"{s}:{sum(1 for p in pins if p[8] == s)}" for s in ("LOG", "INFERRED", "UNKNOWN")))
-    print(f"historical={len(hist)} out=mode700 (outside git)")
+    print(f"historical={len(hist)} assumedSites={derived} out=mode700 (outside git)")
 
 
 if __name__ == "__main__":
