@@ -175,6 +175,39 @@ class MemorySettingsTest {
         vm.cancelScope(); failedResult.cancelScope()
     }
 
+    // Codex pin r2 #3: when the pin lookup fails Delete all is still possible, with NO pin deleted.
+    @Test fun aFailedPinLookupOffersDeleteAllKeepPinsWithAnEmptyPinSet() {
+        var wipedWith: Set<String>? = null
+        val vm = pinVm({ com.rokid.context.work.frames.place.PinsGoing.FAILED }) { wipedWith = it }
+        vm.askDeleteAll(); withTimeout5 { vm.state.first { it.pinsChecked } }
+        vm.keepPinsAndDelete()
+        assertTrue(vm.state.value.deleteAllConfirmable); assertEquals(emptySet<String>(), vm.state.value.confirmedPinIds)
+        vm.confirmDeleteAll(); vm.confirmDeleteAll()
+        withTimeout5 { vm.state.first { it.notice == "Everything was deleted" } }
+        assertEquals(emptySet<String>(), wipedWith)
+        vm.cancelScope()
+    }
+
+    @Test fun keepPinsIsOnlyOfferedAfterAFailedLookupAndResetsWhenTheDialogCloses() {
+        val ok = pinVm({ com.rokid.context.work.frames.place.PinsGoing(1, listOf("Home"), setOf("pin-1")) }) {}
+        ok.askDeleteAll(); withTimeout5 { ok.state.first { it.pinsChecked } }
+        ok.keepPinsAndDelete(); assertTrue("no failed lookup: nothing changes", !ok.state.value.keepPins); assertEquals(setOf("pin-1"), ok.state.value.confirmedPinIds)
+        val bad = pinVm({ throw IllegalStateException("x") }) {}
+        bad.askDeleteAll(); withTimeout5 { bad.state.first { it.pinsChecked } }
+        bad.keepPinsAndDelete(); assertTrue(bad.state.value.keepPins)
+        bad.cancelDeleteAll(); assertTrue(!bad.state.value.keepPins); assertTrue(!bad.state.value.deleteAllConfirmable)
+        ok.cancelScope(); bad.cancelScope()
+    }
+
+    @Test fun theDialogShowsDeleteAllKeepPinsOnlyAfterAFailedLookup() {
+        var kept = 0
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 1, pinsChecked = true, pinsGoing = com.rokid.context.work.frames.place.PinsGoing.FAILED), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+            onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}, onKeepPinsDeleteAll = { kept++ }) } }
+        compose.onNodeWithTag("delete_confirm").assertIsNotEnabled()
+        compose.onNodeWithTag("delete_keep_pins").performClick()
+        assertEquals(1, kept)
+    }
+
     /** Review M7: the prefs-backed store is reached on the work dispatcher, not in the ViewModel factory on Main. */
     @Test fun theStoreIsNotReadWhenTheViewModelIsBuilt() {
         val vm = MemorySettingsViewModel({ storeReads++; store }, encryption, usedBytes = { 0L }, wipe = {}, export = { File("x") }, share = {},

@@ -118,6 +118,42 @@ class PlacePackTest {
         assertEquals(CellOutcome.FAILED, c.outcome); assertEquals(1, c.places.size)
     }
 
+    // Codex pin r2 #7: a stored partial cell whose refetch FAILS advances the backoff too (no refetch on every glance after 5 min).
+    @Test fun aFailedRefetchOfAStoredPartialCellBacksOffLikeAnotherPartialAnswer() = run {
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1")), complete = false) }
+        val p = pack(src)
+        val min = 60_000L
+        assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true))
+        t += 5 * min; src.failWith = IOException("429")
+        assertEquals(CellOutcome.FAILED, p.ensureCell(cell, true)); assertEquals(2, src.asked.size)
+        t += 10 * min - 1; assertEquals("the failure doubled the wait to 10 min", CellOutcome.FRESH, p.ensureCell(cell, true)); assertEquals(2, src.asked.size)
+        t += 1; assertEquals(CellOutcome.FAILED, p.ensureCell(cell, true)); assertEquals(3, src.asked.size)
+        t += 20 * min - 1; assertEquals(CellOutcome.FRESH, p.ensureCell(cell, true))
+        assertEquals("the stored places stay", 1, p.candidates(CHARMINAR_LAT, CHARMINAR_LON, true).places.size)
+    }
+
+    @Test fun aFailedFetchOfACellThatIsNotStoredDoesNotInventABackoff() = run {
+        val src = FakeSource(); src.failWith = IOException("down")
+        val p = pack(src)
+        assertEquals(CellOutcome.FAILED, p.ensureCell(cell, true)); assertEquals(CellOutcome.FAILED, p.ensureCell(cell, true))
+        assertEquals(2, src.asked.size); assertNull(db.dao().cell(cell))
+    }
+
+    // Codex pin r2 #8: an evicted cell is forgotten with its partial streak.
+    @Test fun anEvictedCellForgetsItsPartialStreak() = run {
+        val a = cellAt(1); val c = cellAt(3)
+        val src = FakeSource { CellFetch(twoIn(it).places, complete = false) }
+        val one = pack(src); one.ensureCell(a, true); val (_, oneCell) = one.size()
+        val tight = PlacePack(db, src, oneCell, { t }, { logs += it }, { pauses += it })
+        val min = 60_000L
+        t += 5 * min; assertEquals(CellOutcome.PARTIAL, tight.ensureCell(a, true)) // streak 1 in this pack
+        t += 5 * min; assertEquals(CellOutcome.PARTIAL, tight.ensureCell(a, true)) // streak 2
+        assertEquals(CellOutcome.PARTIAL, tight.ensureCell(c, true)) // c does not fit with a: a is evicted, with its cell and streak
+        assertNull(db.dao().cell(a))
+        assertEquals(CellOutcome.PARTIAL, tight.ensureCell(a, true)) // fetched again: a NEW streak (5 min), not streak 3 (20 min)
+        t += 5 * min; assertEquals(CellOutcome.PARTIAL, tight.ensureCell(a, true))
+    }
+
     @Test fun candidatesAreNearbyExpandedToSubPlacesAndStampedWithToday() = run {
         val far = fp("wd:Qsub", lat = CHARMINAR_LAT + 0.02, parent = "wd:Qsite") // 2 km away: only reachable through its parent
         val p = pack(FakeSource { CellFetch(listOf(fp("wd:Qsite"), far, fp("wd:Qother", lat = CHARMINAR_LAT + 0.03))) })

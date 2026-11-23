@@ -33,8 +33,10 @@ class PinForgetConfirmTest {
 
     private class FakePort(val p: SelectionPreview) : SelectionForgetPort {
         val forgot = ArrayList<Pair<Set<Ref>, String>>()
+        val pinsSeen = ArrayList<Set<String>>()
         override suspend fun preview(roots: Set<Ref>): SelectionPreview? = p
         override suspend fun forget(roots: Set<Ref>, token: String): Outcome { forgot += roots to token; return Outcome.DONE }
+        override suspend fun forget(roots: Set<Ref>, token: String, pins: Set<String>): Outcome { pinsSeen += pins; return forget(roots, token) }
     }
     private class Rig(port: FakePort) {
         var refreshes = 0
@@ -79,5 +81,21 @@ class PinForgetConfirmTest {
     @Test fun withPinsKeepsThePlanAndTheTokenUntouched() {
         val base = preview(hash = "same").withPins(3, listOf("A", "B", "C"))
         assertEquals("same", base.planHash); assertEquals("same", base.token(false)); assertEquals(3, base.pins); assertEquals(2, base.nodes)
+    }
+
+    // Codex pin r2 #1: the multi-select Forget is bound to the pins the dialog named, and to none when the pin lookup failed.
+    @Test fun theConfirmedForgetCarriesOnlyThePinIdsTheDialogNamed() {
+        val port = FakePort(preview(1, listOf("A")).withPins(1, listOf("A"), setOf("pin-1"), failed = false))
+        val r = Rig(port); r.ctl.enter("m1"); r.ctl.forgetSelected(); r.ctl.confirm()
+        assertEquals(listOf(setOf("pin-1")), port.pinsSeen)
+    }
+
+    @Test fun aFailedPinLookupConfirmsWithNoPinAtAll() {
+        val failed = preview().withPins(0, emptyList(), setOf("pin-9"), failed = true)
+        assertEquals(emptySet<String>(), failed.allowedPins)
+        val port = FakePort(failed)
+        val r = Rig(port); r.ctl.enter("m1"); r.ctl.forgetSelected(); r.ctl.confirm()
+        assertEquals(listOf(emptySet<String>()), port.pinsSeen)
+        assertEquals(emptySet<String>(), preview().allowedPins)
     }
 }

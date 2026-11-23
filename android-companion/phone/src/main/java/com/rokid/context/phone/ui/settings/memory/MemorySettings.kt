@@ -1,6 +1,7 @@
 package com.rokid.context.phone.ui.settings.memory
 
 import com.rokid.context.core.log.PcLog
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -58,8 +59,12 @@ data class MemorySettingsUiState(
     val pinsGoing: com.rokid.context.work.frames.place.PinsGoing = com.rokid.context.work.frames.place.PinsGoing.NONE,
     /** The pin lookup of the open Delete all dialog has finished (successfully or not). Until it did, and when it failed, neither dialog button proceeds: the pins that would go are unknown. */
     val pinsChecked: Boolean = false,
+    /** The pin lookup failed and the user chose "Delete all, keep pins": the wipe is bound to an EMPTY pin set (no pin is deleted), so Delete all is never impossible. */
+    val keepPins: Boolean = false,
 ) {
-    val deleteAllConfirmable: Boolean get() = pinsChecked && !pinsGoing.failed
+    val deleteAllConfirmable: Boolean get() = pinsChecked && (!pinsGoing.failed || keepPins)
+    /** The pin ids the wipe may delete: none when the lookup failed (keep pins), else exactly the ones the dialog named. */
+    val confirmedPinIds: Set<String> get() = if (pinsGoing.failed || keepPins) emptySet() else pinsGoing.ids
 }
 
 class MemorySettingsViewModel(
@@ -109,10 +114,12 @@ class MemorySettingsViewModel(
     }
 
     fun askDeleteAll() {
-        _state.update { it.copy(confirmStep = 1, notice = null, pinsGoing = com.rokid.context.work.frames.place.PinsGoing.NONE, pinsChecked = false) }
+        _state.update { it.copy(confirmStep = 1, notice = null, pinsGoing = com.rokid.context.work.frames.place.PinsGoing.NONE, pinsChecked = false, keepPins = false) }
         viewModelScope.launch { val n = runCatching { withContext(work) { pinsGoing() } }.getOrDefault(com.rokid.context.work.frames.place.PinsGoing.FAILED); _state.update { if (it.confirmStep == 0) it else it.copy(pinsGoing = n, pinsChecked = true) } }
     }
-    fun cancelDeleteAll() = _state.update { it.copy(confirmStep = 0) }
+    fun cancelDeleteAll() = _state.update { it.copy(confirmStep = 0, keepPins = false) }
+    /** The pin lookup failed: Delete all can still go ahead, with NO pin deleted (an empty confirmed set). */
+    fun keepPinsAndDelete() = _state.update { if (it.confirmStep > 0 && it.pinsChecked && it.pinsGoing.failed) it.copy(keepPins = true) else it }
     fun confirmDeleteAll() {
         if (!_state.value.deleteAllConfirmable) return // the pins that would go are not known (lookup running or failed): nothing proceeds
         when (_state.value.confirmStep) {
@@ -120,7 +127,7 @@ class MemorySettingsViewModel(
             2 -> {
                 // Review M5: an export still running blocks the wipe; say so rather than closing silently.
                 if (_state.value.busy) { _state.update { it.copy(confirmStep = 0, notice = "Export in progress — try again") }; return }
-                val confirmed = _state.value.pinsGoing.ids // the wipe deletes exactly the pins the dialog named
+                val confirmed = _state.value.confirmedPinIds // the wipe deletes exactly the pins the dialog named (none after a failed lookup)
                 _state.update { it.copy(confirmStep = 0) }
                 busy { withContext(work) { wipe(confirmed) }; _state.update { it.copy(notice = "Everything was deleted") }; refreshStorage() }
             }
@@ -225,6 +232,7 @@ fun MemorySettingsScreen(
     watchList: List<String> = WatchListStore.DEFAULTS,
     onWatchListSave: (List<String>) -> Unit = {},
     onWatchListReset: () -> Unit = {},
+    onKeepPinsDeleteAll: () -> Unit = {},
 ) {
     val s = state.settings
     SettingsPage("Memory", onBack, tag = "memory_settings") {
@@ -277,9 +285,14 @@ fun MemorySettingsScreen(
         AlertDialog(
             onDismissRequest = onCancelDeleteAll,
             title = { Text(if (state.confirmStep == 1) "Delete all memories?" else "Are you sure?") },
-            text = { Text((if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources and \"Send matching photos with questions\" also turn off, and your My car list is cleared." else "This can't be undone. Delete every memory, photo and answer?") + (if (state.pinsChecked && state.pinsGoing.failed) " Pinned places could not be checked: cancel and try again." else MemorySettingsCopy.pinsLine(state.pinsGoing.count, state.pinsGoing.names))) },
+            text = { Text((if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources and \"Send matching photos with questions\" also turn off, and your My car list is cleared." else "This can't be undone. Delete every memory, photo and answer?") + (if (state.pinsChecked && state.pinsGoing.failed) (if (state.keepPins) " Pinned places will be kept." else " Pinned places could not be checked: try again, or delete all and keep your pins.") else MemorySettingsCopy.pinsLine(state.pinsGoing.count, state.pinsGoing.names))) },
             confirmButton = { TextButton(onClick = onConfirmDeleteAll, enabled = state.deleteAllConfirmable, modifier = Modifier.testTag("delete_confirm")) { Text(if (state.confirmStep == 1) "Continue" else "Delete everything") } },
-            dismissButton = { TextButton(onClick = onCancelDeleteAll, modifier = Modifier.testTag("delete_cancel")) { Text("Cancel") } },
+            dismissButton = {
+                Row {
+                    if (state.pinsChecked && state.pinsGoing.failed && !state.keepPins) TextButton(onClick = onKeepPinsDeleteAll, modifier = Modifier.testTag("delete_keep_pins")) { Text("Delete all, keep pins") }
+                    TextButton(onClick = onCancelDeleteAll, modifier = Modifier.testTag("delete_cancel")) { Text("Cancel") }
+                }
+            },
         )
     }
 }

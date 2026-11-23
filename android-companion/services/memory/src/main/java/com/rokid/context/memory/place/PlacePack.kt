@@ -249,6 +249,7 @@ class PlacePack(
         val fetchStart = now()
         val got = try { zoneCheck(); src.fetchCell(cell) } catch (e: CancellationException) { throw e } catch (e: Exception) {
             log("cell fetch failed cls=${e.javaClass.simpleName} seeded=$seeded ms=${now() - fetchStart}")
+            backOffStoredPartial(cell, epoch)
             return CellOutcome.FAILED
         }
         if (wipeEpoch.get() != epoch) { log("cell fetch dropped: Delete all ran"); return CellOutcome.FAILED }
@@ -275,6 +276,20 @@ class PlacePack(
         return if (got.complete) CellOutcome.FETCHED else CellOutcome.PARTIAL
     }
 
+    /**
+     * A STORED partial cell whose refetch failed: it keeps its places, and the failure advances the same backoff as another partial answer (streak + a new retry time), so a free network that keeps failing
+     * (a 429, a dead source) is not hit again on every glance after 5 minutes. A cell that is not stored, or stored OK, is left alone (its own staleness already limits the retries).
+     */
+    private suspend fun backOffStoredPartial(cell: String, epoch: Long) {
+        try {
+            if (wipeEpoch.get() != epoch) return
+            val c = dao.cell(cell) ?: return
+            if (c.status != CELL_PARTIAL) return
+            partialStreak.merge(cell, 1) { a, b -> (a + b).coerceAtMost(MAX_STREAK) }
+            dao.putCell(CellEntity(cell, now(), CELL_PARTIAL))
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { log("partial cell backoff not stored cls=${e.javaClass.simpleName}") }
+    }
+
     /** Removes least-recently-used fetched places (never the cell just fetched) until the pack fits [budgetBytes]; forgets the cells they were in so those are fetched again. Returns the count. */
     private suspend fun evictToBudget(keepIds: List<String>, keepCell: String): Int {
         var total = dao.totalBytes()
@@ -285,7 +300,9 @@ class PlacePack(
             val drop = ArrayList<PlaceEntity>()
             for (p in batch) { if (total <= budgetBytes) break; drop += p; total -= p.bytes }
             eachChunk(drop.map { it.id }) { dao.deletePlaces(it) }
-            eachChunk(drop.map { Geohash5.encode(it.lat, it.lon) }.filter { it != keepCell }.distinct()) { dao.deleteCells(it) }
+            val cellsDropped = drop.map { Geohash5.encode(it.lat, it.lon) }.filter { it != keepCell }.distinct()
+            eachChunk(cellsDropped) { dao.deleteCells(it) }
+            cellsDropped.forEach { partialStreak.remove(it) } // an evicted cell is forgotten, with its backoff
             count += drop.size
         }
         return count

@@ -15,6 +15,8 @@ import java.time.LocalDate
 interface SelectionForgetPort {
     suspend fun preview(roots: Set<Ref>): SelectionPreview?
     suspend fun forget(roots: Set<Ref>, token: String): ForgetActions.Outcome
+    /** The confirmed Forget bound to the pins the dialog named ([pins]; empty = none). A port that knows no pins ignores them. */
+    suspend fun forget(roots: Set<Ref>, token: String, pins: Set<String>): ForgetActions.Outcome = forget(roots, token)
 }
 
 /** Where the multi-select Forget is: nothing, planning, asking the user, refused, or deleting. */
@@ -126,7 +128,7 @@ class SelectionController(
         val token = stage.preview.token(stage.acknowledged)
         set { it.copy(stage = ForgetStage.Running) }
         scope.launch {
-            val out = try { p.forget(roots, token) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { ForgetActions.Outcome.FAILED }
+            val out = try { p.forget(roots, token, stage.preview.allowedPins) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { ForgetActions.Outcome.FAILED }
             when (out) {
                 ForgetActions.Outcome.DONE, ForgetActions.Outcome.CACHE_CLEANUP_FAILED, ForgetActions.Outcome.PIN_CLEANUP_PENDING, ForgetActions.Outcome.PIN_NOT_REMOVED, ForgetActions.Outcome.CACHE_AND_PIN_PENDING, ForgetActions.Outcome.CACHE_AND_PIN_NOT_REMOVED -> {
                     set { it.copy(selection = Selection(), stage = ForgetStage.Idle, message = when (out) { ForgetActions.Outcome.PIN_CLEANUP_PENDING -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(true, false); ForgetActions.Outcome.PIN_NOT_REMOVED -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(false, false); ForgetActions.Outcome.CACHE_AND_PIN_PENDING -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(true, true); ForgetActions.Outcome.CACHE_AND_PIN_NOT_REMOVED -> com.rokid.context.phone.ui.memory.ForgetCopy.pinNotice(false, true); else -> SelectionText.forgot(roots.size) }) }

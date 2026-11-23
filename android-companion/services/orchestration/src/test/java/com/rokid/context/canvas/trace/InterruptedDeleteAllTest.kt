@@ -37,7 +37,7 @@ class InterruptedDeleteAllTest {
         FencedFiles.DELETE_ALL_DIRS.forEach { File(ctx.filesDir, it).deleteRecursively() }
     }
     @After fun tearDown() {
-        MemoryWipe.afterEpochCommit = {}
+        MemoryWipe.afterEpochCommit = {}; MemoryWipe.pinSettle = { c, op -> com.rokid.context.work.frames.place.PinMomentLinks.settle(c, op) }
         com.rokid.context.data.runtime.AppConfigStore.setPipelineEnabled(ctx, true); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null)
         FencedFiles.DELETE_ALL_DIRS.forEach { File(ctx.filesDir, it).deleteRecursively() }
     }
@@ -109,6 +109,19 @@ class InterruptedDeleteAllTest {
         MemoryWipe.afterEpochCommit = {}
         MemoryWipe.resumeIfPending(ctx)
         assertFalse(dir.exists()); assertFalse(epochStore().wipePending())
+    }
+
+    // Codex pin r2 #2: an owed pin deletion lives in the durable committed pin arming (retried by ForgetStartup.settle), so a failing pin cascade never keeps the whole wipe pending.
+    @Test fun aFailingPinCascadeNeverKeepsTheWholeWipePending() = runBlocking {
+        seed()
+        MemoryWipe.pinSettle = { _, _ -> null }
+        MemoryWipe.deleteAll(ctx)
+        assertFalse("a null pin cascade is not a wipe leftover", epochStore().wipePending())
+        MemoryWipe.pinSettle = { _, _ -> throw IllegalStateException("pins not rewritten") }
+        epochStore().commitWipe(System.currentTimeMillis())
+        assertTrue(MemoryWipe.resumeIfPending(ctx))
+        assertFalse("a throwing pin cascade is not a wipe leftover either: the next start does not re-run the full wipe", epochStore().wipePending())
+        assertFalse(MemoryWipe.resumeIfPending(ctx))
     }
 
     @Test fun aCompleteDeleteAllLeavesNoMarker() = runBlocking {

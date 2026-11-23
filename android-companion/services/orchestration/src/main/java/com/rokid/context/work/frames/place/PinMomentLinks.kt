@@ -227,7 +227,7 @@ object PinMomentLinks {
                     }
                 } else {
                     resolveStore(store, alive, save, op, wipePending) // a stale uncommitted wipe arming of an earlier run that never got to its epoch commit is dropped here
-                    val pairs = livePairs(store, alive).let { p -> if (confirmedPins == null) p else p.filterKeys { it in confirmedPins } } // only the pins the Delete all dialog named ([confirmedPins]; null = every live linked pin, for non-UI callers)
+                    val pairs = if (confirmedPins != null && confirmedPins.isEmpty()) emptyMap() else livePairs(store, alive).let { p -> if (confirmedPins == null) p else p.filterKeys { it in confirmedPins } } // an empty confirmed set ("keep pins") arms nothing and never needs the Moment lookup // only the pins the Delete all dialog named ([confirmedPins]; null = every live linked pin, for non-UI callers)
                     if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming
                     if (pairs.isNotEmpty()) { val prev = store.arming(); if (!store.arm(Arming(op, "wipe", false, pairs, carried(store, wipePending, carryWipe = true)))) { restoreArming(store, prev); throw PinArmFailed() }; armed.add(op) }
                 }

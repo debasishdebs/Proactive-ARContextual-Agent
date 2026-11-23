@@ -19,8 +19,12 @@ class SelectionPreview(
     val erasedPhotos: Set<String> = emptySet(),
     /** Slice 1.4.2: pinned places that reference a Moment this Forget removes (deleted with it): their number and the first names, for the dialog only. */
     val pins: Int = 0, val pinNames: List<String> = emptyList(),
+    /** The ids of exactly the pins named in the dialog, and whether the pin lookup FAILED (unknown): the Forget arms only [allowedPins]. */
+    val pinIds: Set<String> = emptySet(), val pinsFailed: Boolean = false,
 ) {
-    fun withPins(count: Int, names: List<String>) = SelectionPreview(roots, missing, nodes, counts, planHash, needsAck, tooLarge, erasedPhotos, count, names)
+    fun withPins(count: Int, names: List<String>, ids: Set<String> = emptySet(), failed: Boolean = false) = SelectionPreview(roots, missing, nodes, counts, planHash, needsAck, tooLarge, erasedPhotos, count, names, ids, failed)
+    /** The pins this confirmation may delete: exactly the named ones, none when the lookup failed. */
+    val allowedPins: Set<String> get() = if (pinsFailed) emptySet() else pinIds
     val ackHash: String get() = if (needsAck) planHash + SelectionLimits.ACK_SUFFIX else planHash
     /** The token the delete is confirmed with: the acknowledgement only when one is needed AND given. */
     fun token(acknowledged: Boolean): String = if (needsAck && acknowledged) ackHash else planHash
