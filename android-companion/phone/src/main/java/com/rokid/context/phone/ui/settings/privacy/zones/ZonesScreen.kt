@@ -126,7 +126,7 @@ class ZonesCallbacks(
 
 /** Settings > Privacy > Pause zones: the map, the zone list and the new-zone form. The engine ([com.rokid.context.phone.zone.ZoneController]) judges and pauses; this screen only edits zones. */
 @Composable
-fun ZonesRoute(deps: SettingsDeps, back: () -> Unit) {
+fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = null, seedMode: Boolean = false) {
     val make = deps.zoneEditor
     if (make == null) { SettingsPage("Pause zones", back, tag = "zones_unavailable") { item { NoticeText("Pause zones are not available in this build.") } }; return }
     val vm = viewModel { ZonesViewModel(make()) }
@@ -140,14 +140,21 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit) {
     }
     val offline = deps.offlineMap?.let { make -> remember { make() } }
     val online = deps.onlineMap?.let { make -> remember { make() } }?.let { d -> rememberOnlinePanel(d, ::granted, vm::requestLocation) }
-    if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online); return }
+    val seedPanel = seed?.let { c ->
+        val seedVm = viewModel(key = "seed_map") { SeedMapViewModel(c) }
+        val seedState by seedVm.state.collectAsStateWithLifecycle()
+        LaunchedEffect(seedVm) { seedVm.refresh() }
+        LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
+        SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage)
+    }
+    if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
     val mapUi by mapVm.ui.collectAsStateWithLifecycle()
     val reader by mapVm.reader.collectAsStateWithLifecycle()
     val link = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.link(u.toString()) }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.importCopy(u.toString()) }
     val panel = OfflineMapPanel(mapUi, reader, { link.launch(PICK_TYPES) }, { import.launch(PICK_TYPES) }, mapVm::remove, mapVm::dismissMessage)
-    ZonesScreen(state, ZonesCallbacks.of(vm, back), panel, online)
+    ZonesScreen(state, ZonesCallbacks.of(vm, back), panel, online, seedPanel)
 }
 
 /**
@@ -217,17 +224,31 @@ class OnlineMapPanel(
     val canCentre: Boolean = true,
 )
 
+/** What the zones screen needs to show seeded areas and pins and to seed the drawn box (null where the build has no Place Guide). [seedMode] = opened from Place Guide "Pick on the map". */
+class SeedPanel(
+    val ui: SeedMapUiState,
+    val seedMode: Boolean,
+    val seedBox: (com.rokid.context.memory.place.GeoBox?) -> Unit,
+    val confirmSeed: () -> Unit,
+    val cancelConfirm: () -> Unit,
+    val askRemove: (String) -> Unit,
+    val confirmRemove: () -> Unit,
+    val cancelRemove: () -> Unit,
+    val dismiss: () -> Unit,
+)
+
 private val LOCATION_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
 @Composable
-fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null, online: OnlineMapPanel? = null) {
-    SettingsPage("Pause zones", on.back, tag = "zones_screen") {
+fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null, online: OnlineMapPanel? = null, seed: SeedPanel? = null) {
+    val seedMode = seed?.seedMode == true
+    SettingsPage(if (seedMode) "Pick an area on the map" else "Pause zones", on.back, tag = "zones_screen") {
         item {
             SettingsCard {
-                Text("Capture pauses inside a red box and in the ring around it. " + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
-                ZoneMap(state, on, offline?.reader, online)
+                Text((if (seedMode) "Draw a box, then seed places for it. Seeded areas are blue, your pins purple, pause zones red. " else "Capture pauses inside a red box and in the ring around it. ") + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+                ZoneMap(state, on, offline?.reader, online, seed?.ui)
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = !state.protectedMode)
+                    SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = seedMode || !state.protectedMode)
                     if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
                 }
                 online?.note?.let { n -> NoticeText(n, tag = "zone_centre_note"); SecondaryAction("Dismiss", online.dismissNote, tag = "zone_centre_note_dismiss") }
@@ -243,9 +264,11 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             }
         }
         state.message?.let { m -> item { SettingsCard { NoticeText(m, error = state.messageIsError, tag = "zone_message"); SecondaryAction("Dismiss", on.dismissMessage, tag = "zone_message_dismiss") } } }
+        seed?.let { p -> item { SeedCard(state, p) } }
         online?.let { p -> item { OnlineMapCard(p) } }
         offline?.let { p -> item { OfflineMapCard(p) } }
-        item { NewZoneCard(state, on) }
+        if (!seedMode) item { NewZoneCard(state, on) }
+        seed?.let { p -> if (p.ui.areas.isNotEmpty()) item { SeededAreasCard(p) } }
         item {
             SettingsCard {
                 Text("Your zones", style = MaterialTheme.typography.titleMedium)
@@ -253,7 +276,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             }
         }
         state.rows.forEach { r -> item(key = "zone_${r.zone.id}") { ZoneRow(r, on) } }
-        item {
+        if (!seedMode) item {
             SettingsCard {
                 Text("Preset", style = MaterialTheme.typography.titleMedium)
                 NoticeText(ZoneWords.PRESET_NOTE, tag = "zone_preset_note")
@@ -272,6 +295,24 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             dismissButton = { TextButton(p.confirmFirst, Modifier.testTag("online_first_confirm")) { Text("Turn on and download tiles") } },
         )
     }
+    seed?.ui?.confirmCells?.let { n ->
+        AlertDialog(
+            onDismissRequest = seed.cancelConfirm, modifier = Modifier.testTag("seed_confirm_dialog"),
+            title = { Text("Seed a large area?") },
+            text = { Text(SeedEstimate.confirmText(n)) },
+            confirmButton = { Button(seed.cancelConfirm, Modifier.testTag("seed_confirm_cancel")) { Text("Cancel") } },
+            dismissButton = { TextButton(seed.confirmSeed, Modifier.testTag("seed_confirm_yes")) { Text("Seed it") } },
+        )
+    }
+    seed?.ui?.pendingRemoveId?.let {
+        AlertDialog(
+            onDismissRequest = seed.cancelRemove, modifier = Modifier.testTag("seed_remove_dialog"),
+            title = { Text("Remove seeded area?") },
+            text = { Text("The area is forgotten. Its places stay as ordinary fetched places and can be evicted by the pack budget.") },
+            confirmButton = { TextButton(seed.confirmRemove, Modifier.testTag("seed_remove_confirm")) { Text("Remove") } },
+            dismissButton = { TextButton(seed.cancelRemove, Modifier.testTag("seed_remove_cancel")) { Text("Keep") } },
+        )
+    }
     state.pendingDeleteId?.let { id ->
         val name = state.rows.firstOrNull { it.zone.id == id }?.zone?.name ?: "this zone"
         AlertDialog(
@@ -281,6 +322,33 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
             confirmButton = { TextButton(on.confirmDelete, Modifier.testTag("zone_delete_confirm")) { Text("Delete") } },
             dismissButton = { TextButton(on.cancelDelete, Modifier.testTag("zone_delete_cancel")) { Text("Keep") } },
         )
+    }
+}
+
+/** The box drawn above, its cell estimate and the seed button. The seed itself is the existing Place Guide seed, with its Offline only and Wi-Fi rules. */
+@Composable
+private fun SeedCard(state: ZonesUiState, p: SeedPanel) {
+    val box = SeedEstimate.boxOf(state.draft.box())
+    val cells = box?.let { SeedEstimate.cells(it) } ?: 0L
+    SettingsCard {
+        Text("Seed places in the box", style = MaterialTheme.typography.titleMedium)
+        NoticeText(SeedEstimate.line(box), error = SeedEstimate.level(cells) == SeedLevel.TOO_LARGE, tag = "seed_estimate")
+        PrimaryAction("Seed places in this box", { p.seedBox(box) }, tag = "seed_box", enabled = !p.ui.seeding && box != null && SeedEstimate.level(cells) != SeedLevel.TOO_LARGE)
+        p.ui.message?.let { m -> NoticeText(m, error = p.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", p.dismiss, tag = "seed_message_dismiss") }
+        NoticeText("Only the 5 km cell keys leave the phone, never your position. Seeding needs free Wi-Fi and is refused under Offline only.", tag = "seed_note")
+    }
+}
+
+@Composable
+private fun SeededAreasCard(p: SeedPanel) {
+    SettingsCard {
+        Text("Seeded areas", style = MaterialTheme.typography.titleMedium)
+        p.ui.areas.forEach { a ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(a.label, Modifier.weight(1f).testTag("seed_area_${a.id}"), style = MaterialTheme.typography.bodyMedium)
+                SecondaryAction("Remove", { p.askRemove(a.id) }, tag = "seed_remove_${a.id}")
+            }
+        }
     }
 }
 
@@ -368,7 +436,7 @@ private fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
 
 /** The tile-less map: plain background, a latitude/longitude grid, red boxes with their buffer ring, the draft box and (only with a fresh fix) a blue dot for the user. */
 @Composable
-private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null) {
+private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesReader? = null, online: OnlineMapPanel? = null, seed: SeedMapUiState? = null) {
     val measurer = rememberTextMeasurer()
     var size by remember { mutableStateOf(Size.Zero) }
     var vp by remember { mutableStateOf<MapViewport?>(null) }
@@ -376,10 +444,12 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
     var dragA by remember { mutableStateOf<Offset?>(null) }
     var dragB by remember { mutableStateOf<Offset?>(null) }
     val zones = state.rows.map { it.zone }
-    val fitSig = zones.map { it.id }
+    val areas = seed?.areas.orEmpty()
+    val pins = seed?.pins.orEmpty()
+    val fitSig = zones.map { it.id } + areas.map { it.id }
     LaunchedEffect(size, fitSig, fitKey) {
         if (size.width < 10f || size.height < 10f) return@LaunchedEffect
-        val boxes = zones.map { MapViewport.ringOf(it) }.ifEmpty { state.you?.let { listOf(MapViewport.grown(it.lat, it.lon, it.lat, it.lon, 2_000.0)) } ?: emptyList() }
+        val boxes = (zones.map { MapViewport.ringOf(it) } + areas.map { it.box }).ifEmpty { state.you?.let { listOf(MapViewport.grown(it.lat, it.lon, it.lat, it.lon, 2_000.0)) } ?: emptyList() }
         vp = MapViewport.fit(boxes, size.width, size.height)
     }
     // An offline PMTiles file wins; otherwise the opt-in online source (only while this screen is in the foreground); otherwise the plain grid.
@@ -406,7 +476,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
     }
     val offlineAttribution = remember(reader) { reader?.attribution() }
     val onlineShown = onlineSource != null && loaded >= 0 && cache != null && wanted.any { cache.peek(it) != null }
-    val summary = "Map with ${zones.size} pause zone" + (if (zones.size == 1) "" else "s") + if (state.you != null) " and your position" else ""
+    val summary = (if (seed == null) "Map with ${zones.size} pause zone" + (if (zones.size == 1) "" else "s") else "Map with " + SeedOverlays.legend(zones.size, areas.size, pins.size)) + if (state.you != null) " and your position" else ""
     Box(
         Modifier.fillMaxWidth().height(300.dp).clip(RoundedCornerShape(12.dp)).border(1.dp, PcColors.Line, RoundedCornerShape(12.dp))
             .onSizeChanged { size = Size(it.width.toFloat(), it.height.toFloat()); vp = vp?.resized(size.width, size.height) }
@@ -440,7 +510,9 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
                 painted = true
             }
             if (!painted) drawGrid(v, measurer)
+            for (a in areas) drawSeedArea(v, a)
             for (r in state.rows) drawZone(v, r.zone, measurer, active = r.zone.enabled)
+            for (p in pins) drawPin(v, p)
             state.draft.box()?.let { drawBox(v, it, ZoneRed, filled = false, dashed = true) }
             val a = dragA; val b = dragB
             if (a != null && b != null) drawRect(ZoneRed, Offset(min(a.x, b.x), min(a.y, b.y)), Size(abs(a.x - b.x), abs(a.y - b.y)), style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))))
@@ -452,6 +524,7 @@ private fun ZoneMap(state: ZonesUiState, on: ZonesCallbacks, reader: PmTilesRead
             onlineSource.logoText?.let { Text(it, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = PcColors.InkSoft, modifier = Modifier.padding(end = 4.dp).testTag("zone_map_logo")) }
             onlineSource.attribution?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft) }
         }
+        if (seed != null) Text(SeedOverlays.legend(zones.size, areas.size, pins.size), style = MaterialTheme.typography.labelSmall, color = PcColors.InkSoft, modifier = Modifier.align(Alignment.BottomStart).background(Color.White.copy(alpha = 0.8f)).padding(horizontal = 4.dp).testTag("zone_map_legend"))
         Row(Modifier.align(Alignment.TopEnd).padding(4.dp)) {
             MapButton("+", "zone_zoom_in") { vp = vp?.zoomed(1.6) }
             MapButton("-", "zone_zoom_out") { vp = vp?.zoomed(1 / 1.6) }
@@ -544,6 +617,33 @@ internal fun DrawScope.drawZone(v: MapViewport, z: PauseZone, tm: TextMeasurer, 
     drawBox(v, doubleArrayOf(z.south, z.west, z.north, z.east), c, filled = true, dashed = false)
     val p = v.toPx(z.north, z.west)
     drawLabel(tm, z.name, Offset(p.x + 4f, p.y + 2f), TextStyle(fontSize = 11.sp, color = Color(0xFF7A1010)), shift = true)
+}
+
+private val SeedBlue = Color(0xFF1E6FD9)
+private val SeedAmber = Color(0xFFE08A00)
+private val PinPurple = Color(0xFF7B3FC4)
+
+/** A seeded area: blue 15 % fill with a dotted edge (amber with a "!" when some cells failed, a long dash while seeding). Tiny on screen = a 16 dp chip so it still shows zoomed out. */
+internal fun DrawScope.drawSeedArea(v: MapViewport, a: SeedOverlay) {
+    val c = if (a.look == AreaLook.PARTIAL) SeedAmber else SeedBlue
+    val r = SeedOverlays.screenRect(v, a.box, SeedOverlays.MIN_SHAPE_DP.dp.toPx())
+    val tl = Offset(r[0], r[1]); val sz = Size(r[2], r[3])
+    drawRect(c.copy(alpha = 0.15f), tl, sz)
+    val dash = if (a.look == AreaLook.SEEDING) floatArrayOf(24f, 8f) else floatArrayOf(2f, 8f)
+    drawRect(c, tl, sz, style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(dash)))
+    if (a.look == AreaLook.PARTIAL) { // the badge: a filled amber disc with a white bar and dot
+        val cx = tl.x + sz.width - 8.dp.toPx(); val cy = tl.y + 8.dp.toPx()
+        drawCircle(SeedAmber, 7.dp.toPx(), Offset(cx, cy))
+        drawLine(Color.White, Offset(cx, cy - 4.dp.toPx()), Offset(cx, cy + 1.dp.toPx()), 2.dp.toPx())
+        drawCircle(Color.White, 1.2.dp.toPx(), Offset(cx, cy + 4.dp.toPx()))
+    }
+}
+
+/** A user pin: a purple dot with a white rim. No name is drawn. */
+internal fun DrawScope.drawPin(v: MapViewport, p: PinInfo) {
+    val q = v.toPx(p.lat, p.lon)
+    drawCircle(Color.White, 6.dp.toPx(), Offset(q.x, q.y))
+    drawCircle(PinPurple, 4.dp.toPx(), Offset(q.x, q.y))
 }
 
 private fun DrawScope.drawBox(v: MapViewport, b: DoubleArray, color: Color, filled: Boolean, dashed: Boolean) {
