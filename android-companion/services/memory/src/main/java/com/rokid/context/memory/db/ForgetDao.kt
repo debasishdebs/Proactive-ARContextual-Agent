@@ -261,6 +261,18 @@ abstract class ForgetDao {
     @Query("SELECT id FROM memory WHERE tier = :tier AND type NOT IN ('caption','cluster_summary') AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
     abstract suspend fun expiredIds(tier: String, beforeMs: Long, limit: Int): List<String>
 
+    /** P4 (counts-only retention plan line): how many memories [expiredIds] would return, uncapped. */
+    @Query("SELECT COUNT(*) FROM memory WHERE tier = :tier AND type NOT IN ('caption','cluster_summary') AND createdAt < :beforeMs")
+    abstract suspend fun countExpired(tier: String, beforeMs: Long): Int
+    /** P4: how many memories [expiredIdsOfType] would return, uncapped. */
+    @Query("SELECT COUNT(*) FROM memory WHERE type = :type AND createdAt < :beforeMs")
+    abstract suspend fun countExpiredOfType(type: String, beforeMs: Long): Int
+    /** P4: of the memories [expiredIds] would return, how many are cited by a live (not redacted) nudge or answer (a substring prefilter on the stored id lists, so an upper bound). Nothing is changed by expiry; the line says what is kept. */
+    @Query("SELECT COUNT(*) FROM nudge n WHERE n.redacted = 0 AND EXISTS (SELECT 1 FROM memory m WHERE m.tier = :tier AND m.type NOT IN ('caption','cluster_summary') AND m.createdAt < :beforeMs AND n.sourceIdsJson LIKE '%\"' || m.id || '\"%')")
+    abstract suspend fun countNudgesCitingExpired(tier: String, beforeMs: Long): Int
+    @Query("SELECT COUNT(*) FROM ask a WHERE a.redacted = 0 AND EXISTS (SELECT 1 FROM memory m WHERE m.tier = :tier AND m.type NOT IN ('caption','cluster_summary') AND m.createdAt < :beforeMs AND a.sourcesJson LIKE '%\"' || m.id || '\"%')")
+    abstract suspend fun countAsksCitingExpired(tier: String, beforeMs: Long): Int
+
     /** [likePattern] escapes `\`, `%` and `_` with `\`. It is only a prefilter: the caller parses the JSON exactly. */
     @Query("SELECT * FROM ask WHERE redacted = 0 AND sourcesJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCiting(likePattern: String): List<AskEntity>
     @Query("SELECT * FROM nudge WHERE redacted = 0 AND sourceIdsJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun nudgesCiting(likePattern: String): List<NudgeEntity>
