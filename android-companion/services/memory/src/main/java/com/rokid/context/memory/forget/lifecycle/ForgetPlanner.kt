@@ -36,7 +36,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
                 val marks = roots.filter { it.family == Family.MARK }.map { it.id }
                 if (marks.isNotEmpty()) s.marks(marks)
             }
-            Policy.Retention -> s.cascade(roots.filter { it.family == Family.MEMORY }.map { it.id }.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true)
+            Policy.Retention -> s.cascade(roots.filter { it.family == Family.MEMORY }.map { it.id }.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, redact = false)
             is Policy.RetentionPhotos -> s.expirePhotos(roots.filter { it.family == Family.PHOTO }.map { it.id }.distinct(), policy.requireLinked, policy.recheckSkipped)
             is Policy.Spans -> s.spans(policy)
         }
@@ -88,7 +88,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
         /** `ForgetService.cascade`. */
         suspend fun cascade(
             ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false,
-            extraCited: Set<String> = emptySet(), provenanceOnly: Boolean = false, bounded: Set<String>? = null, protect: Set<String>? = null,
+            extraCited: Set<String> = emptySet(), provenanceOnly: Boolean = false, bounded: Set<String>? = null, protect: Set<String>? = null, redact: Boolean = true,
         ) {
             val found = tx.chunked(ids) { fd.memories(it) }.filter { it.id !in goneMemories }
             if (found.isEmpty() && extraCited.isEmpty()) return
@@ -104,7 +104,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             goneMemories += forgotten
             hiddenFromMemories += invalidated
             val inside = if (bounded == null) frames else frames.filter { it in bounded }
-            dropHolding(inside, if (bounded == null) forgotten + invalidated else forgotten)
+            dropHolding(inside, if (!redact) emptyList() else if (bounded == null) forgotten + invalidated else forgotten)
             if (lockFrames) {
                 frames.forEach { put(Ref(Family.PHOTO, it), Fate.ERASE) }
                 dropCanvasOutputs(inside, null, radiusCascade = bounded == null)
@@ -114,6 +114,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             val uncited = inside.filter { f -> fd.memoryIdsOfFrame(f).none { it !in goneMemories } }
             val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
             val cited = forgotten + invalidated + extraCited + goneCites
+            if (!redact) return // system expiry (P0): nothing that cites an expired fact is redacted, expired or rebuilt
             val v2Rules = ForgetV2.on // the same rule the executor applies (AskRules): preview == delete
             val reached = AskRules.reach(cited, tx, v2Rules, skipAsks = nodes.keys.filter { it.family == Family.ANSWER }.map { it.id }.toSet(), skipNudges = nodes.keys.filter { it.family == Family.NUDGE }.map { it.id }.toSet())
             val asks = reached.asks; val nudges = reached.nudges

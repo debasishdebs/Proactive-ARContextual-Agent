@@ -326,6 +326,9 @@ fun DiagnosticsScreen(
     /** Z1: Ask is refused (and its answer is not delivered to the glasses) while a pause zone is active or the location is uncertain. Default ON; shown only with [developerMode]. */
     askZoneFence: Boolean = true,
     onAskZoneFence: (Boolean) -> Unit = {},
+    /** P0 retention fix: "Pause clean-up" skips the nightly expiry entirely. Default OFF; shown only with [developerMode]. */
+    pauseRetention: Boolean = false,
+    onPauseRetention: (Boolean) -> Unit = {},
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
     onMarkSuspect: (String) -> Unit = {},
     onMarkAllSuspects: () -> Unit = {},
@@ -432,6 +435,13 @@ fun DiagnosticsScreen(
                             Text("On (safer): inside, near or unsure about a pause zone, Ask answers \"Paused\" and nothing is sent to the glasses. Browsing on the phone still works.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = askZoneFence, onCheckedChange = onAskZoneFence, modifier = Modifier.testTag("ask_zone_fence_switch"))
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Pause clean-up", style = MaterialTheme.typography.titleSmall)
+                            Text("On: the nightly clean-up expires nothing (short-term details stay). Off (default): expired details are removed, but nudges, answers and Moments that used them are kept.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = pauseRetention, onCheckedChange = onPauseRetention, modifier = Modifier.testTag("pause_retention_switch"))
                     }
                     ChoiceRow("Record raw glasses sensors", rates.map { if (it == 0) "Off" else "$it Hz" }, rates.indexOf(sensorRecHz).coerceAtLeast(0), { onSensorRecHz(rates[it]) }, tag = "sensor_rec_rate")
                     if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")

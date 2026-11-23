@@ -457,22 +457,11 @@ class GoldenDeleteSetTest {
             added moment_tombstone: 68f6baa4, 68f6baa5
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
         """) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
+    /** P0: system expiry deletes the expired row (and its edge) and NOTHING that depends on it: no redaction, no dropped Moment, no shrunk Scene, no scrubbed proposal. */
     @Test fun retentionExpireFact() = golden("""
             deleted memory: mA
             deleted memory_source: mD|mA
-            deleted moment: 68f6baa4
-            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace
-            deleted object_audit: MOMENT|68f6baa4|1
-            deleted object_derived: MOMENT|68f6baa4|SUMMARY
-            deleted scene_part: sNear|MOMENT|68f6baa4
-            changed action_log: 1
-            changed ask: aCite
-            changed nudge: nCite
-            changed proposal: pAsk
-            changed scene: sNear
-            added action_log: 3
-            added object_audit: SCENE|sNear|1, SCENE|sNear|2, SCENE|sNear|3
-        """, on = V2Fates(null, "nCite")) { w.service.expire(listOf("mA")) }
+        """) { w.service.expire(listOf("mA")) }
     @Test fun retentionExpirePhoto() = golden("""
             deleted canvas_label: mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n

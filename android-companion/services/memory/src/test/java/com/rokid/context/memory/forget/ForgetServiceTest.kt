@@ -179,7 +179,8 @@ class ForgetServiceTest {
         assertTrue(r.invalidated.isEmpty())
         assertEquals(ReviewState.OK, state("B"))
         assertTrue(db.forgetDao().edgesFrom(listOf("B")).isEmpty())
-        assertTrue(db.askDao().byId("q1")!!.redacted)
+        assertFalse("P0: system expiry never redacts an answer that cited the expired fact", db.askDao().byId("q1")!!.redacted)
+        assertEquals("from A", db.askDao().byId("q1")!!.answer)
         assertFalse(db.askDao().byId("q2")!!.redacted)
     }
 
@@ -199,7 +200,7 @@ class ForgetServiceTest {
         assertEquals(ProposalState.EXECUTED.name, proposals.byId("p1")!!.state) // state kept: Undo still works by createdRef
     }
 
-    /** Final review C1: retention expiry leaves accepted (EXECUTING/EXECUTED) proposals whole; the rest are scrubbed. */
+    /** P0 (was final review C1): retention expiry leaves every proposal whole, accepted or not (it redacts no origin). */
     @Test fun expireLeavesAcceptedProposalsAlone() = runBlocking {
         mem("A")
         db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["A"]""", null, "phone_typed", false))
@@ -209,18 +210,14 @@ class ForgetServiceTest {
             db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 2, proposalId = id, transition = "X", detail = "Call mom"))
         }
         val r = service.expire(listOf("A"))
-        assertTrue(db.askDao().byId("q1")!!.redacted)
-        assertEquals(setOf("p3", "p4"), r.redactedProposals.toSet())
-        listOf("p1", "p2").forEach { id ->
+        assertFalse(db.askDao().byId("q1")!!.redacted)
+        assertTrue("P0: nothing is redacted, so no proposal is scrubbed", r.redactedProposals.isEmpty())
+        listOf("p1", "p2", "p3", "p4").forEach { id ->
             assertEquals(params, proposals.byId(id)!!.paramsJson)
             assertTrue(db.actionDao().logFor(id).any { "Call mom" in it.detail })
         }
         assertEquals(ProposalState.EXECUTED.name, proposals.byId("p1")!!.state)
-        assertEquals(ProposalState.EXPIRED.name, proposals.byId("p3")!!.state)
-        listOf("p3", "p4").forEach { id ->
-            assertEquals(ForgetService.REDACTED_PARAMS, proposals.byId(id)!!.paramsJson)
-            assertTrue(db.actionDao().logFor(id).none { "Call mom" in it.detail })
-        }
+        assertEquals(ProposalState.PENDING.name, proposals.byId("p3")!!.state)
     }
 
     // --- wave 3 Task 11 (S1, S2): photo cites and metadata-only moments -----------------------------------------------

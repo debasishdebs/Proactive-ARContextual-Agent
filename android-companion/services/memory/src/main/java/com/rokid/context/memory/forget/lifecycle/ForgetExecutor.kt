@@ -146,7 +146,7 @@ class ForgetExecutor internal constructor(
     internal suspend fun expire(ids: Collection<String>): ForgetService.Result = db.withTransaction {
         val plan = revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.Retention) }
         val c = ctx()
-        cascade(c, ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true).also { rebuildScenes(c, plan) }
+        cascade(c, ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true, redact = false) // P0: system expiry never redacts or drops a dependent, so no Scene is rebuilt either
     }
 
     /** Row 8, suspect descriptions: the memories go, the photos never do (`ForgetService.removeDescriptions`). The plan used for the revocation is the user plan (a superset: fail closed). */
@@ -191,7 +191,7 @@ class ForgetExecutor internal constructor(
     /** `ForgetService.cascade`: F (the memories), D (their descendants), the Moments holding them, the extraction lock, the redaction of what cited them. */
     private suspend fun cascade(
         c: DeleteCtx, ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(),
-        queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false, protect: Set<String>? = null,
+        queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false, protect: Set<String>? = null, redact: Boolean = true,
     ): ForgetService.Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return ForgetService.Result.EMPTY
@@ -206,7 +206,7 @@ class ForgetExecutor internal constructor(
         MemoryFamily.selfDelete(invalidated, Fate.REBUILD, c)
         val radiusCascade = bounded == null
         val inside = if (bounded == null) frames else frames.filter { it in bounded }
-        MomentFamily.dropHolding(c, inside, if (bounded == null) forgotten + invalidated else forgotten)
+        MomentFamily.dropHolding(c, inside, if (!redact) emptyList() else if (bounded == null) forgotten + invalidated else forgotten) // redact=false (system expiry): a Moment holding an expired fact stays
         var spans = emptyList<Triple<Long, Long, List<String>>>()
         if (lockFrames) {
             PhotoFamily.lock(frames, c); spans = dropCanvasOutputs(c, inside, null, radiusCascade)
@@ -221,11 +221,11 @@ class ForgetExecutor internal constructor(
         val cited = forgotten + invalidated + extraCited + goneCites
         val tx = PlanTx(db)
         val v2Rules = ForgetV2.on // M5: A1 (answers by their cited ids, "Answered from a forgotten fact"), A2 (history items), N1 (a hit nudge is erased); off = v1 redaction in place
-        val reached = AskRules.reach(cited, tx, v2Rules)
-        val asks = reached.asks; val nudges = reached.nudges
+        val reached = if (redact) AskRules.reach(cited, tx, v2Rules) else null // redact=false: nothing that cites an expired fact changes
+        val asks = reached?.asks.orEmpty(); val nudges = reached?.nudges.orEmpty()
         AnswerFamily.selfDelete(asks.toSet(), Fate.REBUILD, c)
         NudgeFamily.selfDelete(nudges.toSet(), if (v2Rules) Fate.ERASE else Fate.REBUILD, c)
-        val redactedProposals = ProposalFamily.expireAndScrub(c, asks + nudges, scrubAccepted)
+        val redactedProposals = if (redact) ProposalFamily.expireAndScrub(c, asks + nudges, scrubAccepted) else emptyList()
         PhotoFamily.deleteVectors(uncited, c)
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         if (queueOutbox) queueCleanup(c, files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans, phoneFilesOnly)

@@ -25,12 +25,17 @@ object DeveloperFlags {
     /** Multilingual Ask (design 2026-11-19, options A + B): the built-in Ask also runs the query condenser (and, when it is unavailable, the bundled lexicon). OFF by default; no UI. */
     const val MULTILINGUAL_ASK = "multilingual_ask"
 
+    /** P0 retention fix: "Pause clean-up". ON = the nightly [RetentionWorker] returns at once and expires nothing (safety valve for outings). OFF by default; Developer-only row in Diagnostics. */
+    const val PAUSE_RETENTION = "pause_retention"
+
     /** Place Guide shadow scoring (1.4.4 slice A): scores the candidates against the dwell photo on-device and adds content-free fields to the `place attempt` line. Never changes a card or a call. OFF by default; no UI. */
     const val PLACE_SHADOW_SCORE = "placeShadowScore"
 
     fun placeShadowScore(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_SCORE, false) }.getOrDefault(false)
     fun setPlaceShadowScore(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_SCORE, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() } // OFF: the in-memory shadow vectors go at once
 
+    fun pauseRetention(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PAUSE_RETENTION, false) }.getOrDefault(false)
+    fun setPauseRetention(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PAUSE_RETENTION, on).apply() }
     fun multilingualAsk(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MULTILINGUAL_ASK, false) }.getOrDefault(false)
     fun setMultilingualAsk(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MULTILINGUAL_ASK, on).apply() }
     fun forgetShadow(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(FORGET_SHADOW, false) }.getOrDefault(false)
