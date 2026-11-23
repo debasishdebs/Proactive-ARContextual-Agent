@@ -91,15 +91,15 @@ object MemoryWipe {
      * leaving the Memory screen mid-wipe (ViewModel cleared) must not stop it part-way; the caller sees its
      * cancellation only after the wipe has finished.
      */
-    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false): Int = withContext(Dispatchers.IO + NonCancellable) {
+    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false, confirmedPins: Set<String>? = null): Int = withContext(Dispatchers.IO + NonCancellable) {
         // The exclusive side of the DataOpGate: a running export is waited for (30 s), else DataOpGate.ExportInProgress and nothing is deleted (the caller says "try again").
-        DataOpGate.shared.delete { wipeNow(context, db, resume) }.also { runCatching { com.rokid.context.work.frames.place.PlaceRecovery.kick(context) } } // a place memory still marked is retried (its row is gone: the mark just clears)
+        DataOpGate.shared.delete { wipeNow(context, db, resume, confirmedPins) }.also { runCatching { com.rokid.context.work.frames.place.PlaceRecovery.kick(context) } } // a place memory still marked is retried (its row is gone: the mark just clears)
     }
 
-    private suspend fun wipeNow(context: Context, db: ContextDatabase, resume: Boolean): Int {
+    private suspend fun wipeNow(context: Context, db: ContextDatabase, resume: Boolean, confirmedPins: Set<String>?): Int {
         com.rokid.context.work.frames.place.ShadowCaches.clearAll() // the Place Guide shadow's in-memory vectors (derived from photos) go first, before anything is deleted; the Forget listeners clear them again at the end
         // Slice 1.4.2: the pins with a reference Moment are armed (durably, for THIS wipe) before anything is deleted; if that cannot be stored nothing is deleted (PinArmFailed). A resume keeps its earlier committed arming.
-        val pinOp = com.rokid.context.work.frames.place.PinMomentLinks.beginWipe(context, resume)
+        val pinOp = com.rokid.context.work.frames.place.PinMomentLinks.beginWipe(context, resume, confirmedPins)
         try { return wipeNowArmed(context, db, resume, pinOp) } finally { com.rokid.context.work.frames.place.PinMomentLinks.endWipe(pinOp) }
     }
 
@@ -115,7 +115,7 @@ object MemoryWipe {
             }
             pinsCommitted = runCatching { com.rokid.context.work.frames.place.PinMomentLinks.wipeCommitted(context, pinOp) }.getOrDefault(false) // from here on the wipe is real: a crash is finished from the committed arming
             afterEpochCommit(epoch)
-        }
+        } else pinsCommitted = com.rokid.context.work.frames.place.PinMomentLinks.resumePromoted(pinOp) // a resume whose promoted pin arming was not stored keeps the wipe pending: the pin deletion is still owed
         var leftovers = 0
         if (!pinsCommitted) { leftovers++; PcLog.w("MemoryWipe", "pin removal not marked: the resume completes it") } // the wipe stays pending, so the next start resumes and promotes the pin arming // artefacts that still exist after their deletion was attempted: the marker stays and the next start retries
         // Fix round 3: never import here (a failing import must not block Delete all). An import in progress is

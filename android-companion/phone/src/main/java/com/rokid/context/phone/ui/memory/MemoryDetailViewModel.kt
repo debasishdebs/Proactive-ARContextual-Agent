@@ -137,7 +137,7 @@ class MemoryDetailViewModel(
             var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false; var tooLarge = false; var pinPrep = false; var pinsChanged = false; var pinNotice: PinNotice? = null
             val ok = try {
                 if (kind.single) objectId != null && forget.forgetObject(kind, objectId)
-                else if (preview != null) forget.forgetScoped(kind, memoryId, frameId, preview.requested, (if (preview.needsAck) preview.ackHash else preview.planHash).ifEmpty { null }) // the scope the dialog showed
+                else if (preview != null) forget.forgetScopedPins(kind, memoryId, frameId, preview.requested, (if (preview.needsAck) preview.ackHash else preview.planHash).ifEmpty { null }, if (preview.pinsUnknown) emptySet() else preview.pinIds) // the scope and the pins the dialog showed: no other pin is deleted; a failed preview (below) or failed pin lookup deletes none
                 else when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId); else -> false }
             } catch (c: CancellationException) {
                 throw c

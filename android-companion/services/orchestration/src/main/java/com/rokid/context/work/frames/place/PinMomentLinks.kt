@@ -11,8 +11,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /** The pins a Forget would delete, for its confirmation: how many, and the first [NAMES_SHOWN] names as the pin list shows them. UI only: a name never goes into a log. */
-data class PinsGoing(val count: Int, val names: List<String>, /** The ids of exactly these pins: a confirmation is bound to this set, not to a count. */ val ids: Set<String> = emptySet()) {
-    companion object { const val NAMES_SHOWN = 5; val NONE = PinsGoing(0, emptyList()) }
+data class PinsGoing(val count: Int, val names: List<String>, /** The ids of exactly these pins: a confirmation is bound to this set, not to a count. */ val ids: Set<String> = emptySet(), /** True when the lookup itself failed: "no pins" is then UNKNOWN, not none, and a confirmation must not proceed on it. */ val failed: Boolean = false) {
+    companion object { const val NAMES_SHOWN = 5; val NONE = PinsGoing(0, emptyList()); val FAILED = PinsGoing(0, emptyList(), emptySet(), true) }
 }
 
 /** The pin removal of an explicit Forget could not be prepared (the durable arming was not stored or not readable back): the Forget is NOT run. */
@@ -33,7 +33,9 @@ class PinCommitNotStored : Exception("pin removal not recorded")
  *  - the UNDO of a mark (glasses voice or tap, or the phone's "Forget this mark", `ForgetActions.forgetMomentKeepPinsOutcome`): no dialog names pins, so it is not an explicit pin Forget. It runs the photo Forget with an
  *    EMPTY target (nothing armed); a pin on that Moment keeps its place and loses only its link ("Needs a Moment").
  *
- * While an explicit operation runs in this process the sweeps and [settle] leave everything alone (checked INSIDE the pin lock; the operation's own settle is exempt).
+ * While an explicit operation that HOLDS AN ARMING runs in this process the sweeps and [settle] leave everything alone (checked INSIDE the pin lock; the operation's own settle is exempt). An explicit operation whose
+ * target holds no pin pairs is in flight but arms nothing, so it does NOT block the sweeps or settle (there is no arming of it to protect); `busy` looks only at armed operations.
+ * A replacement arming that cannot be stored puts the OLDER arming back (never drops it); a resume whose promoted arming cannot be stored keeps the older one and the wipe keeps its pending marker.
  * A new arming MERGES an older unfinished committed one (its dead set is carried), it never overwrites it.
  *
  * INVARIANT: every stored arming has a resolution at the next start. A committed arming (any kind) is finished from its dead set and removed; an uncommitted forget arming is dropped (its carried dead set
@@ -87,7 +89,7 @@ object PinMomentLinks {
                 val pairs = targetPairs(store, alive, target).let { p -> if (allowedPins == null) p else p.filterKeys { it in allowedPins } } // inside the pin lock: only the pins the user confirmed
                 if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming (nothing is forgotten; try again)
                 if (pairs.isNotEmpty() && store.arming()?.let { it.kind == "wipe" && !it.committed } == true && wipePending()) throw PinArmFailed() // an earlier Delete all committed its epoch but its commit write is still owed: its arming (the pins it promised to delete) is never replaced; nothing is forgotten, try again after the resume
-                if (pairs.isNotEmpty()) { if (!store.arm(Arming(op, "forget", false, pairs, carried(store, wipePending, carryWipe = false)))) { store.disarm(); throw PinArmFailed() }; armed.add(op) }
+                if (pairs.isNotEmpty()) { val prev = store.arming(); if (!store.arm(Arming(op, "forget", false, pairs, carried(store, wipePending, carryWipe = false)))) { restoreArming(store, prev); throw PinArmFailed() }; armed.add(op) }
             }
             val r = try { block() } catch (t: Throwable) { PlacePinning.underPinLock { dropIfOp(store, op) }; throw t }
             try {
@@ -127,6 +129,15 @@ object PinMomentLinks {
         if (store.corrupt || linked.isEmpty()) return emptyMap()
         val live = alive(linked.mapNotNull { it.momentId }.distinct())
         return linked.filter { it.momentId in live }.associate { it.id to it.momentId!! }
+    }
+
+    /**
+     * A replacement arming could not be stored. SharedPreferences.commit() updates its in-memory map even when the disk write fails, so the failed write may look stored. The OLDER arming ([prev], read before the
+     * write) is put back, never dropped: it can be a committed dead set (pin deletion still owed) or an uncommitted wipe arming whose resume is pending. Only when there was none is the failed record removed.
+     */
+    private fun restoreArming(store: UserPinStore, prev: Arming?) {
+        if (prev == null) { store.disarm(); return }
+        if (!store.arm(prev)) PcLog.w("PcPlace", "older pin arming not restored")
     }
 
     /** The operation did not commit: its arming goes; a carried committed dead set is restored (never lost). */
@@ -195,14 +206,14 @@ object PinMomentLinks {
     // ---- Delete all ----
 
     /**
-     * Arms every pin that references a live Moment for the wipe about to start. A RESUME arms nothing new (a pin created after the crash is never armed): it keeps the earlier committed dead set, or promotes the
+     * Arms every pin that references a live Moment (or, with [confirmedPins], only those the confirmation named) for the wipe about to start. A RESUME arms nothing new (a pin created after the crash is never armed): it keeps the earlier committed dead set, or promotes the
      * earlier uncommitted wipe arming (the epoch did commit). Throws [PinArmFailed] before anything is deleted. Pair with [endWipe].
      */
-    suspend fun beginWipe(context: Context, resume: Boolean): String = beginWipeStore(PlaceGraph.pins(context), momentsOf(context), { PlaceGraph.savePins(context, it) }, resume, wipePendingOf(context))
+    suspend fun beginWipe(context: Context, resume: Boolean, confirmedPins: Set<String>? = null): String = beginWipeStore(PlaceGraph.pins(context), momentsOf(context), { PlaceGraph.savePins(context, it) }, resume, confirmedPins, wipePendingOf(context))
 
     private fun wipePendingOf(context: Context): () -> Boolean = { com.rokid.context.memory.db.DeletionEpochStore.of(context).wipePending() }
 
-    internal suspend fun beginWipeStore(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, save: suspend (List<UserPlace>) -> Boolean, resume: Boolean, wipePending: () -> Boolean = { false }): String {
+    internal suspend fun beginWipeStore(store: UserPinStore, alive: suspend (List<String>) -> Set<String>, save: suspend (List<UserPlace>) -> Boolean, resume: Boolean, confirmedPins: Set<String>? = null, wipePending: () -> Boolean = { false }): String {
         val op = UUID.randomUUID().toString()
         inflight.add(op)
         try {
@@ -210,12 +221,15 @@ object PinMomentLinks {
                 val old = store.arming()
                 if (resume) {
                     val dead = when { old == null -> emptyMap(); old.committed -> old.dead; old.kind == "wipe" && wipePending() -> old.dead + old.pairs; else -> old.dead } // promoted only when the epoch says the wipe committed
-                    if (dead.isNotEmpty()) { if (store.arm(Arming(op, "wipe", true, emptyMap(), dead))) armed.add(op) else PcLog.w("PcPlace", "pin arming not kept on resume") }
+                    if (dead.isNotEmpty()) {
+                        if (store.arm(Arming(op, "wipe", true, emptyMap(), dead))) armed.add(op)
+                        else { restoreArming(store, old); resumeNotPromoted.add(op); PcLog.w("PcPlace", "pin arming not kept on resume") } // the arming must not look committed in memory; the wipe keeps its pending marker (see [resumePromoted])
+                    }
                 } else {
                     resolveStore(store, alive, save, op, wipePending) // a stale uncommitted wipe arming of an earlier run that never got to its epoch commit is dropped here
-                    val pairs = livePairs(store, alive)
+                    val pairs = livePairs(store, alive).let { p -> if (confirmedPins == null) p else p.filterKeys { it in confirmedPins } } // only the pins the Delete all dialog named ([confirmedPins]; null = every live linked pin, for non-UI callers)
                     if (pairs.isNotEmpty() && busy(op)) throw PinArmFailed() // another explicit operation is armed right now: never overwrite its arming
-                    if (pairs.isNotEmpty()) { if (!store.arm(Arming(op, "wipe", false, pairs, carried(store, wipePending, carryWipe = true)))) { store.disarm(); throw PinArmFailed() }; armed.add(op) }
+                    if (pairs.isNotEmpty()) { val prev = store.arming(); if (!store.arm(Arming(op, "wipe", false, pairs, carried(store, wipePending, carryWipe = true)))) { restoreArming(store, prev); throw PinArmFailed() }; armed.add(op) }
                 }
             }
         } catch (t: Throwable) { inflight.remove(op); armed.remove(op); throw t }
@@ -234,7 +248,13 @@ object PinMomentLinks {
     /** The epoch could NOT be committed: nothing was deleted, so the arming is dropped (the pins stay). */
     suspend fun abortWipe(context: Context, op: String) { PlacePinning.underPinLock { dropIfOp(PlaceGraph.pins(context), op) } }
 
-    fun endWipe(op: String) { inflight.remove(op); armed.remove(op) }
+    fun endWipe(op: String) { inflight.remove(op); armed.remove(op); resumeNotPromoted.remove(op) }
+
+    /** Wipe operations whose RESUME could not store the promoted (committed) arming: the older arming was put back and its pin deletion is still owed. */
+    private val resumeNotPromoted: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** False when the resume of wipe [op] could not store its promoted arming: the wipe must keep its durable pending marker so the next start retries the pin deletion. */
+    fun resumePromoted(op: String): Boolean = op !in resumeNotPromoted
 
     // ---- settling, sweeps ----
 
@@ -244,7 +264,14 @@ object PinMomentLinks {
         val store = PlaceGraph.pins(context)
         val deleted = resolveStore(store, momentsOf(context), { PlaceGraph.savePins(context, it) }, op, wipePendingOf(context))
         sweepStore(store, momentsOf(context)) ?: return@underPinLock null
+        if (armingOwed(store, wipePendingOf(context))) return@underPinLock null // pin deletion is still owed (a committed arming that could not be finished, or the wipe's own unpromoted one): not done
         deleted
+    }
+
+    /** True while a stored arming still owes pin deletion: any committed one, or the pending wipe's uncommitted one. */
+    private fun armingOwed(store: UserPinStore, wipePending: () -> Boolean): Boolean {
+        val a = store.arming() ?: return false
+        return a.committed || (a.kind == "wipe" && wipePending())
     }
 
     /** Non-explicit removal: settles any leftover arming (so it never blocks), then clears every link whose Moment is gone (the pins stay). Skipped while an explicit operation runs in this process. */
@@ -275,7 +302,7 @@ object PinMomentLinks {
 
     /**
      * For the confirmation of an explicit Forget: how many pins would be deleted with it. [reach] answers which of the linked LIVE Moment ids the Forget leaves without a photo (null = every one: Delete all).
-     * Read only. Never throws (NONE when unreadable).
+     * Read only. Never throws ([PinsGoing.FAILED] when the lookup failed: unknown, not none).
      */
     suspend fun pinsGoing(context: Context, reach: (suspend (List<String>) -> Set<String>)? = null): PinsGoing = try {
         val pins = PlaceGraph.pins(context).pins().filter { it.momentId != null }
@@ -286,7 +313,7 @@ object PinMomentLinks {
             val going = if (reach == null) ids.toSet() else reach(live.toList())
             pins.filter { it.momentId in going }.let { g -> PinsGoing(g.size, g.take(PinsGoing.NAMES_SHOWN).map { it.name }, g.map { it.id }.toSet()) }
         }
-    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PinsGoing.NONE }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PinsGoing.FAILED }
 
     /** Registered once at start (ContextApp). Never throws: a failed sweep is repeated by the next removal, the next screen visit and the next start. */
     fun listener(context: Context): ForgetListener {

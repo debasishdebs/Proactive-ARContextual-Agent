@@ -199,6 +199,49 @@ class MemoryDetailViewModelTest {
         assertEquals(ForgetKind.MOMENT to com.rokid.context.memory.forget.ForgetScope.SCENE, ran)
     }
 
+    // Codex pin r1 #1: a photo Forget never deletes a pin the dialog did not name; a failed preview deletes none.
+    private fun pinPort(preview: suspend () -> ForgetPreview?, onPins: (Set<String>?) -> Unit) = object : MemoryForget {
+        override suspend fun forgetFact(memoryId: String) = true
+        override suspend fun forgetMoment(frameId: String): Boolean { onPins(null); return true } // the production forgetMoment passes emptySet(): no pin
+        override suspend fun preview(kind: ForgetKind, memoryId: String, frameId: String?) = preview()
+        override suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String?): Boolean { onPins(emptySet()); return true }
+        override suspend fun forgetScopedPins(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String?, confirmedPins: Set<String>): Boolean { onPins(confirmedPins); return true }
+    }
+
+    @Test fun aPhotoForgetPassesExactlyThePinsThePreviewNamedAndAFailedPreviewPassesNone() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
+        var got: Set<String>? = setOf("unset")
+        val ok = vm(pinPort({ sceneCounts(com.rokid.context.memory.forget.ForgetScope.PHOTO).copy(pins = 1, pinNames = listOf("Home"), pinIds = setOf("pin-1")) }, { got = it }))
+        withTimeout(5_000) { ok.state.first { it.found } }
+        ok.askForget(ForgetKind.MOMENT); withTimeout(5_000) { ok.state.first { it.forgetPreview != null } }
+        ok.confirmForget(); withTimeout(5_000) { ok.state.first { it.forgotten } }
+        assertEquals(setOf("pin-1"), got)
+
+        // the pin lookup failed inside a successful preview: the pins are unknown, none is passed
+        got = setOf("unset")
+        val unknown = vm(pinPort({ sceneCounts(com.rokid.context.memory.forget.ForgetScope.PHOTO).copy(pinIds = setOf("pin-1"), pinsUnknown = true) }, { got = it }))
+        withTimeout(5_000) { unknown.state.first { it.found } }
+        unknown.askForget(ForgetKind.MOMENT); withTimeout(5_000) { unknown.state.first { it.forgetPreview != null } }
+        unknown.confirmForget(); withTimeout(5_000) { unknown.state.first { it.forgotten } }
+        assertEquals(emptySet<String>(), got)
+
+        // the preview threw (Photo scope still confirms): the plain forgetMoment runs, whose production port arms no pin
+        got = setOf("unset")
+        val failed = vm(pinPort({ throw IllegalStateException("x") }, { got = it }))
+        withTimeout(5_000) { failed.state.first { it.found } }
+        failed.askForget(ForgetKind.MOMENT); withTimeout(5_000) { failed.state.first { it.forgetPreviewFailed } }
+        failed.confirmForget(); withTimeout(5_000) { failed.state.first { it.forgotten } }
+        assertEquals(null, got)
+    }
+
+    @Test fun productionMomentForgetNamesNoPinAndTheScopedOneCarriesTheConfirmedIds() {
+        val dir = java.io.File(System.getProperty("user.dir"))
+        val root = generateSequence(dir) { it.parentFile }.first { java.io.File(it, "phone/src/main/java").isDirectory }
+        val src = java.io.File(root, "phone/src/main/java/com/rokid/context/phone/ui/memory/ProductionForget.kt").readText()
+        assertTrue(src.lines().single { "override suspend fun forgetMoment" in it }.contains("confirmedPins = emptySet()"))
+        assertTrue(src.contains("confirmedPins = confirmedPins"))
+    }
+
     @Test fun aLargeRebuildNeedsTheTickAndSendsTheAcknowledgedToken() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, frameId = "f1"))
         var sent: String? = null

@@ -127,7 +127,15 @@ class UserPlaceTest {
         val stripped = UserPinStore.withoutLinks(raw)
         assertFalse("moment" in stripped); assertFalse("0000002a" in stripped)
         assertNull(UserPinStore.parse(stripped).single().momentId); assertEquals(p.name, UserPinStore.parse(stripped).single().name)
-        assertEquals("not json", UserPinStore.withoutLinks("not json"))
+    }
+
+    @Test fun malformedPinJsonIsNeverExportedUnsanitised() {
+        // truncated list that still holds a Moment id and an `at`: it must not come back verbatim
+        val bad = "[{\"id\":\"a\",\"name\":\"Home\",\"moment\":\"0000002a\",\"at\":123,"
+        val out = UserPinStore.withoutLinks(bad)
+        assertEquals("[]", out)
+        assertFalse("0000002a" in out); assertFalse("Home" in out)
+        assertEquals("[]", UserPinStore.withoutLinks("not json"))
     }
 
     @Test fun pinnedAtIsWrittenOnlyWhenSetReadBackAndOldPinsHaveNone() {

@@ -18,6 +18,12 @@ interface MemoryForget {
     suspend fun forgetScoped(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String? = null): Boolean =
         when (kind) { ForgetKind.FACT -> forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forgetMoment(frameId); else -> forgetObject(kind, memoryId) }
 
+    /**
+     * [forgetScoped] bound to the pins the dialog named ([confirmedPins], the ids of the preview): only those may be deleted with the Moment. The default ignores them (a port with no pins, e.g. a fake).
+     * A Forget that was NOT confirmed against a successful preview ([forgetMoment], [forgetFact]) deletes no pin.
+     */
+    suspend fun forgetScopedPins(kind: ForgetKind, memoryId: String, frameId: String?, scope: com.rokid.context.memory.forget.ForgetScope, planHash: String?, confirmedPins: Set<String>): Boolean = forgetScoped(kind, memoryId, frameId, scope, planHash)
+
     /** The Forget of one photo-less mark by [id] (kind MARK): same typed throws as the others. */
     suspend fun forgetObject(kind: ForgetKind, id: String): Boolean = false
 
@@ -45,6 +51,10 @@ data class ForgetPreview(
     val needsAck: Boolean = false, val ackHash: String = "",
     /** Slice 1.4.2: pinned places that reference a Moment this Forget removes: they are deleted with it ("also deletes N pins"). */
     val pins: Int = 0, val pinNames: List<String> = emptyList(),
+    /** The ids of exactly the pins named above; the confirmed Forget may delete only these. */
+    val pinIds: Set<String> = emptySet(),
+    /** The pin lookup failed: the pins are unknown and the Forget runs without deleting any pin. */
+    val pinsUnknown: Boolean = false,
 )
 
 /** The Forget was refused because too much is connected to it: nothing was deleted. */
