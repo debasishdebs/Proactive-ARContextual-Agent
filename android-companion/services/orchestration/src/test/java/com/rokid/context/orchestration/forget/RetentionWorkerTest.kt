@@ -98,13 +98,27 @@ class RetentionWorkerTest {
         assertEquals(listOf("f1"), graph.db.forgetDao().tombstoned(listOf("f1")))
     }
 
-    @Test fun redactsAsksCitingExpiredMemory() = runBlocking {
+    @Test fun keepsAsksCitingExpiredMemory() = runBlocking {
         mem("s_old", MemoryTier.SHORT, 25 * hour)
         graph.db.askDao().upsert(AskEntity("q1", 1, "q", "answer", """["s_old"]""", null, "phone_typed", false))
         work()
+        assertFalse(exists("s_old"))
         val ask = graph.db.askDao().byId("q1")!!
-        assertTrue(ask.redacted); assertEquals(ForgetService.REDACTED, ask.answer)
+        assertFalse(ask.redacted); assertEquals("answer", ask.answer)
     }
+
+    @Test fun pauseCleanUpSkipsTheWholeExpiry() = runBlocking {
+        mem("s_old", MemoryTier.SHORT, 25 * hour); mem("l_old", MemoryTier.LONG, 31 * 24 * hour)
+        DeveloperFlags.setPauseRetention(ctx, true)
+        try {
+            assertTrue(work() is ListenableWorker.Result.Success)
+            assertTrue(exists("s_old")); assertTrue(exists("l_old"))
+        } finally { DeveloperFlags.setPauseRetention(ctx, false) }
+        work()
+        assertFalse(exists("s_old")); assertFalse(exists("l_old"))
+    }
+
+    @Test fun pauseCleanUpIsOffByDefault() { assertFalse(DeveloperFlags.pauseRetention(ctx)) }
 
     @Test fun ensureRetentionSchedulesOneDailyJob() {
         OrchestrationScheduler(ctx).scheduleCritic()
@@ -158,13 +172,13 @@ class RetentionWorkerTest {
         val params = graph.proposals.byId(pid)!!.paramsJson
         work()
         assertFalse(exists("s_old"))
-        assertTrue(graph.db.askDao().byId("qa")!!.redacted)
+        assertFalse("P0: system expiry redacts nothing", graph.db.askDao().byId("qa")!!.redacted)
         assertEquals(1, alarms.scheduledAlarms.size)
         assertEquals("EXECUTED", graph.proposals.byId(pid)!!.state)
         assertEquals(params, graph.proposals.byId(pid)!!.paramsJson)
-        // a PENDING proposal of the same ask still expires and loses its text (spec 6.1.1: PENDING -> EXPIRED)
-        assertEquals("EXPIRED", graph.proposals.byId("pend_qa")!!.state)
-        assertEquals(ForgetService.REDACTED_PARAMS, graph.proposals.byId("pend_qa")!!.paramsJson)
+        // P0: the PENDING proposal of the same ask is no longer expired or scrubbed either (its origin is not redacted)
+        assertEquals("PENDING", graph.proposals.byId("pend_qa")!!.state)
+        assertTrue(graph.proposals.byId("pend_qa")!!.paramsJson != ForgetService.REDACTED_PARAMS)
     }
 
     @Test fun aUserForgetOfTheSameSourceStillCancelsIt() = runBlocking {

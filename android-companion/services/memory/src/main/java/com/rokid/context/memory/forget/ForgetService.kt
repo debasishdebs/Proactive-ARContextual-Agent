@@ -132,7 +132,7 @@ class ForgetService(
     }
 
     private suspend fun expireTx(ids: Collection<String>): Result = db.withTransaction {
-        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true) // routine retention: phone files only
+        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true, redact = false) // routine retention: phone files only; P0: system expiry never redacts a nudge or answer and never drops a Moment
     }
 
     /**
@@ -174,7 +174,7 @@ class ForgetService(
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
     /** [provenanceOnly] (codex r16): the memories go but no photo is touched (no lock, no tombstone, no file or Moment of their photos): a CARRIED invalidation. */
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false, redact: Boolean = true): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
@@ -194,7 +194,7 @@ class ForgetService(
         val radiusCascade = bounded == null
         // BOUNDED (Forget scope MOMENT / SCENE): only photos inside the planned spans lose outputs, files and Moments; a cited photo outside them is merely LOCKED below, and Moments elsewhere that hold a hidden derived fact are not dropped (the caller blanks and stales them).
         val inside = if (bounded == null) frames else frames.filter { it in bounded }
-        db.momentDao().dropHolding(inside, if (bounded == null) f + d else f) // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them
+        db.momentDao().dropHolding(inside, if (!redact) emptyList() else if (bounded == null) f + d else f) // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them
         // 4. Extraction lock.
         val now = clock()
         var spans = emptyList<Triple<Long, Long, List<String>>>()
@@ -212,8 +212,8 @@ class ForgetService(
         // (an answer recalled it before it had a caption memory). Retention ([scrubAccepted] false) keeps its rule: it never redacts photo cites.
         val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
         val cited = forgotten + invalidated + extraCited + goneCites // extraCited: `frame:<id>` photo cites (S1)
-        val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
-        val nudges = cited.flatMap { id -> dao.nudgesCiting(likeFor(id)) }.distinctBy { it.id }.filter { n -> parseIds(n.sourceIdsJson).any { it in cited } }
+        val asks = if (!redact) emptyList() else cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
+        val nudges = if (!redact) emptyList() else cited.flatMap { id -> dao.nudgesCiting(likeFor(id)) }.distinctBy { it.id }.filter { n -> parseIds(n.sourceIdsJson).any { it in cited } }
         asks.forEach { dao.redactAsk(it.id, REDACTED) }
         nudges.forEach { dao.redactNudge(it.id, REDACTED) }
         // 6. Proposals of redacted asks/nudges: PENDING expires (nested in this transaction); every proposal of those
