@@ -12,7 +12,7 @@ data class FetchedPlace(
     val lat: Double, val lon: Double, val radiusM: Int, val summary: String, val source: String, val sourceRev: String,
 )
 
-/** One cell's answer. [complete] is false when a source that may be missing (Overpass) did not answer: the cell then counts as fresh for a day only. */
+/** One cell's answer. [complete] is false when a source that may be missing (Overpass) did not answer: the cell then counts as fresh only for a short backoff ([PlacePack.partialFreshMs]: 5 min, doubling per consecutive partial answer up to 1 h). */
 data class CellFetch(val places: List<FetchedPlace>, val complete: Boolean = true)
 
 /**
@@ -33,11 +33,13 @@ data class PlaceCandidates(val places: List<PlaceEntity>, val outcome: CellOutco
 
 /**
  * What a seed did. [fetched] = [ok] + [partial] (cells stored); [partial] cells were stored without OSM extras (Overpass did not answer) and are fetched again by the next seed or
- * after a day; [failed] cells stored nothing even after the one retry; [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
+ * at a glance after their backoff (5 min up to 1 h); [failed] cells stored nothing even after the one retry; [skipped] were already fresh. [retried] counts the cells the retry pass took (whatever its outcome).
  */
 data class SeedResult(val cells: Int, val fetched: Int, val skipped: Int, val failed: Int, val places: Int, val partial: Int = 0, val retried: Int = 0) {
     val ok: Int get() = fetched - partial
-    val complete: Boolean get() = failed == 0
+    /** Cells that need another try: [failed] ones (nothing stored) plus [partial] ones (stored without OSM extras). A partial cell is NOT a seed success. */
+    val retryCells: Int get() = failed + partial
+    val complete: Boolean get() = failed == 0 && partial == 0
 }
 
 /**
@@ -66,6 +68,11 @@ class PlacePack(
     private val fetchLock = Mutex()
     /** Advanced by [deleteAll] before it takes [fetchLock]: a fetch that began earlier discards its answer instead of re-inserting what Delete all removed. */
     private val wipeEpoch = java.util.concurrent.atomic.AtomicLong(0)
+    /**
+     * Consecutive partial answers per cell (in memory only: a restart starts again at the 5 min step, which is the safe side). Drives [partialFreshMs]. Removed when the cell comes back
+     * complete and by Delete all / Clear fetched. Holds cell keys (5 km positions) in memory only: never logged, never stored.
+     */
+    private val partialStreak = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
     /** The pack's size (count, bytes), for the Trips screen. */
     suspend fun size(): Pair<Int, Long> = dao.placeCount() to dao.totalBytes()
@@ -191,7 +198,7 @@ class PlacePack(
             for (cell in failedCells) if (!count(seedOne(cell))) failed++
             log("seed retry cells=$retried recovered=${retried - failed}")
         }
-        dao.putArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0) AREA_DONE else AREA_PARTIAL))
+        dao.putArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0 && partial == 0) AREA_DONE else AREA_PARTIAL))
         val n = dao.placeCount()
         log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial skipped=$skipped failed=$failed fetched=$fetched places=$n")
         return SeedResult(cells.size, fetched, skipped, failed, n, partial, retried)
@@ -214,6 +221,7 @@ class PlacePack(
     }
 
     private suspend fun clearFetchedLocked(resetRecency: Boolean): Int {
+        partialStreak.clear()
         val removed = dao.deleteFetched()
         if (resetRecency) dao.resetRecency()
         val areas = dao.areas().map { it.box }
@@ -223,7 +231,7 @@ class PlacePack(
         return removed
     }
 
-    /** A stored cell that is kept instead of fetched again on a costly network: stored partial (the retry would be daily), or inside a seeded area. */
+    /** A stored cell that is kept instead of fetched again on a costly network: stored partial (the retry is every few minutes), or inside a seeded area. */
     private suspend fun keepWhileCostly(c: CellEntity): Boolean {
         if (c.status != CELL_OK) return true
         val b = Geohash5.bounds(c.geohash5) ?: return false
@@ -233,7 +241,7 @@ class PlacePack(
     private fun isFresh(c: CellEntity?): Boolean {
         if (c == null) return false
         val age = now() - c.fetchedAt
-        return age in 0 until (if (c.status == CELL_OK) FRESH_MS else PARTIAL_FRESH_MS)
+        return age in 0 until (if (c.status == CELL_OK) FRESH_MS else partialFreshMs(partialStreak[c.geohash5] ?: 1))
     }
 
     private suspend fun fetchAndStore(cell: String, src: CellSource, seeded: Boolean): CellOutcome {
@@ -260,6 +268,7 @@ class PlacePack(
                 row.copy(bytes = sizeOf(row))
             })
             dao.putCell(CellEntity(cell, t, if (got.complete) CELL_OK else CELL_PARTIAL))
+            if (got.complete) partialStreak.remove(cell) else partialStreak.merge(cell, 1) { a, b -> (a + b).coerceAtMost(MAX_STREAK) }
             evicted = evictToBudget(keepIds = clean.map { it.id }, keepCell = cell)
         }
         log("cell stored places=${clean.size} evicted=$evicted complete=${got.complete} seeded=$seeded ms=${now() - fetchStart}")
@@ -296,7 +305,15 @@ class PlacePack(
         const val MIN_BUDGET_BYTES = 1L
         const val DAY_MS = 86_400_000L
         const val FRESH_MS = 30 * DAY_MS
-        const val PARTIAL_FRESH_MS = DAY_MS
+        /**
+         * How long a PARTIAL cell (Overpass did not answer) counts as fresh: [PARTIAL_FRESH_MS] after the first partial answer, doubling with each consecutive partial answer for that cell
+         * (5, 10, 20, 40 min), capped at [PARTIAL_MAX_MS] (1 h). A complete answer resets it. The streak is kept in memory (a restart begins at 5 min again). A partial cell that kept places
+         * stays usable the whole time; it is only refetched at the next glance after the backoff. Was a flat 24 h, which left Overpass-less cells without restaurants all day.
+         */
+        const val PARTIAL_FRESH_MS = 5 * 60_000L
+        const val PARTIAL_MAX_MS = 60 * 60_000L
+        private const val MAX_STREAK = 10
+        fun partialFreshMs(streak: Int): Long = if (streak <= 1) PARTIAL_FRESH_MS else (PARTIAL_FRESH_MS shl (streak - 1).coerceAtMost(MAX_STREAK)).coerceAtMost(PARTIAL_MAX_MS)
         const val SUMMARY_MAX = 400
         const val NAME_MAX = 160
         const val MAX_SEED_CELLS = 4_000

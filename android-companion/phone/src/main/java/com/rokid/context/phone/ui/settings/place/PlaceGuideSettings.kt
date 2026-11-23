@@ -147,9 +147,10 @@ object PlaceGuideModel {
     /** The seed's answer as the screen says it: cells ok, seeded without OSM extras (Overpass did not answer) and failed (after one retry), then the pack size. */
     fun seedMessage(r: com.rokid.context.memory.place.SeedResult): String {
         val counts = "Cells: ${r.ok + r.skipped} ok, ${r.partial} seeded without OSM extras, ${r.failed} failed" + if (r.retried > 0) " (${r.retried} retried once)." else "."
-        val tail = when {
-            r.failed > 0 -> " Try again when online."
-            r.partial > 0 -> " Seed again later to add the OSM extras."
+        val tail = when { // a partial cell is not a success: it is refetched at a glance after a few minutes (up to an hour) and by the next seed
+            r.failed > 0 && r.partial > 0 -> " ${r.failed} of ${r.cells} areas failed and ${r.partial} lack OSM extras, will retry. Seed again when online to retry now."
+            r.failed > 0 -> " ${r.failed} of ${r.cells} areas failed, will retry. Seed again when online to retry now."
+            r.partial > 0 -> " ${r.partial} of ${r.cells} areas lack OSM extras, will retry. Seed again to retry now."
             else -> ""
         }
         return "$counts ${r.places} places in the pack.$tail"
