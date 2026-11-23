@@ -486,8 +486,22 @@ class PlaceFetchTest {
         val src = OverpassMirrorSource(listOf(a, b, c), pause = { waits += it }, log = { logs += it })
         assertEquals(listOf(el), src.elements(someBox))
         assertEquals(listOf(1, 1, 0), listOf(a.calls, b.calls, c.calls))
-        assertEquals(listOf(2_000L), waits) // backed off before the second mirror
+        assertTrue(waits.isEmpty()) // a 5xx goes straight to the next mirror
         assertEquals(listOf("overpass mirror failed idx=0 cls=PlaceHttpException"), logs)
+    }
+
+    @Test fun aRateLimitBacksOffBeforeTheNextMirror() = runTest {
+        val a = Mirror { throw PlaceHttpException(429) }; val b = Mirror { listOf(el) }
+        val waits = mutableListOf<Long>()
+        assertEquals(listOf(el), OverpassMirrorSource(listOf(a, b), pause = { waits += it }).elements(someBox))
+        assertEquals(listOf(2_000L), waits)
+    }
+
+    @Test fun theDefaultPerMirrorTimeoutIs25sAndATimeoutMovesOnAtOnce() = runTest {
+        val waits = mutableListOf<Long>()
+        val a = Mirror { kotlinx.coroutines.delay(1_000_000); emptyList() }; val b = Mirror { listOf(el) }
+        assertEquals(listOf(el), OverpassMirrorSource(listOf(a, b), pause = { waits += it }).elements(someBox))
+        assertEquals(25_000L, testScheduler.currentTime); assertTrue(waits.isEmpty())
     }
 
     @Test fun aHangingMirrorTimesOutAndTheNextOneIsUsed() = runTest {

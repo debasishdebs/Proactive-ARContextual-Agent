@@ -78,7 +78,7 @@ class PlacePackTest {
         assertEquals(CellOutcome.FETCHED, p.ensureCell(cell, true))
     }
 
-    @Test fun anIncompleteCellIsRefetchedAfterADayNotThirtyAndPlacesStayWithTheirFlags() = run {
+    @Test fun anIncompleteCellIsRefetchedAfterMinutesNotThirtyDaysAndPlacesStayWithTheirFlags() = run {
         var complete = false
         val src = FakeSource { CellFetch(listOf(fp("wd:Q1")), complete) }
         val p = pack(src)
@@ -88,6 +88,34 @@ class PlacePackTest {
         assertEquals(CellOutcome.FETCHED, p.ensureCell(cell, true))
         t += 29 * DAY
         assertEquals(CellOutcome.FRESH, p.ensureCell(cell, true))
+    }
+
+    @Test fun aPartialCellBacksOffFiveTenTwentyFortySixtyMinutesThenAResetOnComplete() = run {
+        var complete = false
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1")), complete) }
+        val p = pack(src)
+        val min = 60_000L
+        assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true))
+        t += 5 * min - 1; assertEquals(CellOutcome.FRESH, p.ensureCell(cell, true)) // 5 min after the first partial answer
+        t += 1; assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true)) // second partial answer: wait doubles
+        t += 10 * min - 1; assertEquals(CellOutcome.FRESH, p.ensureCell(cell, true))
+        t += 1; assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true))
+        t += 20 * min; assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true))
+        t += 40 * min; assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true))
+        t += 60 * min - 1; assertEquals("capped at one hour", CellOutcome.FRESH, p.ensureCell(cell, true))
+        t += 1; complete = true; assertEquals(CellOutcome.FETCHED, p.ensureCell(cell, true))
+        assertEquals(6, src.asked.size)
+        assertEquals(listOf(5 * min, 10 * min, 20 * min, 40 * min, 60 * min, 60 * min), (1..6).map { PlacePack.partialFreshMs(it) })
+        assertEquals(60 * min, PlacePack.partialFreshMs(500))
+    }
+
+    @Test fun aPartialCellThatKeptPlacesStaysUsableWhileItBacksOff() = run {
+        val src = FakeSource { CellFetch(listOf(fp("wd:Q1")), complete = false) }
+        val p = pack(src)
+        assertEquals(1, p.candidates(CHARMINAR_LAT, CHARMINAR_LON, true).places.size)
+        t += 6 * 60_000L; src.failWith = IOException("down") // refetch fails: the stored places are still served
+        val c = p.candidates(CHARMINAR_LAT, CHARMINAR_LON, true)
+        assertEquals(CellOutcome.FAILED, c.outcome); assertEquals(1, c.places.size)
     }
 
     @Test fun candidatesAreNearbyExpandedToSubPlacesAndStampedWithToday() = run {
@@ -196,7 +224,8 @@ class PlacePackTest {
         val src = FakeSource { c -> CellFetch(listOf(seedPlace(c)), complete = osmUp || c != cells.first()) }
         val p = pack(src)
         val r = p.seedArea("z", box)
-        assertEquals(1, r.partial); assertEquals(cells.size - 1, r.ok); assertEquals(0, r.failed); assertEquals(cells.size, r.fetched); assertTrue(r.complete)
+        assertEquals(1, r.partial); assertEquals(cells.size - 1, r.ok); assertEquals(0, r.failed); assertEquals(cells.size, r.fetched); assertFalse(r.complete); assertEquals(1, r.retryCells) // a partial cell is not a seed success
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status)
         assertEquals(0, r.retried); assertTrue(pauses.isEmpty())
         assertEquals(CELL_PARTIAL, db.dao().cell(cells.first())!!.status)
         assertEquals(CELL_OK, db.dao().cell(cells.last())!!.status)
@@ -335,6 +364,8 @@ class PlacePackTest {
         val p = pack(src)
         assertEquals(CellOutcome.PARTIAL, p.ensureCell(cell, true))
         t += 2 * DAY // past PARTIAL_FRESH_MS
+        assertEquals(CellOutcome.OFFLINE, p.ensureCell(cell, true, costly = true))
+        t += 30 * 60_000L // data saver: kept as it is however old, never fetched on a costly network
         assertEquals(CellOutcome.OFFLINE, p.ensureCell(cell, true, costly = true))
         assertEquals(1, src.asked.size)
         assertTrue(logs.any { it == "cell stale kept while costly seeded=false" })
