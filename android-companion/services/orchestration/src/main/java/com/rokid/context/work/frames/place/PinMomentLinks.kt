@@ -241,7 +241,7 @@ object PinMomentLinks {
 
     internal fun wipeCommittedStore(store: UserPinStore, op: String): Boolean {
         val a = store.arming() ?: return true
-        if (a.op != op) return false
+        if (a.op != op) return a.committed // an OLDER committed arming (an earlier Forget's owed pin deletion) is independent of this wipe's pending marker: it stays stored and settle retries it, so this wipe (which armed nothing) is not left pending for it
         return store.arm(Arming(op, a.kind, true, emptyMap(), a.dead + a.pairs))
     }
 

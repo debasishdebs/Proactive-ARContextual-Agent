@@ -184,16 +184,16 @@ class UserPinStore(private val prefs: SharedPreferences) {
         /** [raw] (the stored list) without any Moment link: what the settings export carries. An unreadable list is NOT returned (it could still carry a Moment id and a time): it exports as an empty list `[]`, so nothing unsanitised is ever shared. */
         fun withoutLinks(raw: String): String = try {
             val a = JSONArray(raw)
-            for (i in 0 until a.length()) a.optJSONObject(i)?.let { it.remove("moment"); it.remove("at") }
-            a.toString()
+            // Only explicitly permitted fields leave: each element is parsed to a pin, validated, stripped of its link and time and re-encoded. A non-object or invalid element (a nested array, a wrong type) is dropped; unknown keys never survive.
+            encode((0 until a.length()).mapNotNull { i -> (a.opt(i) as? JSONObject)?.let { o -> try { parseOne(o) } catch (e: Exception) { null } } }.filter { it.isValid }.map { it.copy(momentId = null, pinnedAt = null) })
         } catch (e: Exception) { "[]" }
+
+        private fun parseOne(o: JSONObject): UserPlace =
+            UserPlace(o.getString("id"), o.getString("name"), o.getString("kind"), o.getDouble("lat"), o.getDouble("lon"), o.getInt("r"), if (o.isNull("parent")) null else o.getString("parent"), o.optString("note", ""), if (o.isNull("moment")) null else o.optString("moment", "").takeIf { com.rokid.context.memory.moment.MomentId.parse(it) != null }, if (o.isNull("at")) null else o.optLong("at", 0L).takeIf { it > 0 }) // an unreadable link is no link: it never makes the list corrupt
 
         fun parse(raw: String): List<UserPlace> {
             val a = JSONArray(raw)
-            return (0 until a.length()).map { i ->
-                val o = a.getJSONObject(i)
-                UserPlace(o.getString("id"), o.getString("name"), o.getString("kind"), o.getDouble("lat"), o.getDouble("lon"), o.getInt("r"), if (o.isNull("parent")) null else o.getString("parent"), o.optString("note", ""), if (o.isNull("moment")) null else o.optString("moment", "").takeIf { com.rokid.context.memory.moment.MomentId.parse(it) != null }, if (o.isNull("at")) null else o.optLong("at", 0L).takeIf { it > 0 }) // an unreadable link is no link: it never makes the list corrupt
-            }
+            return (0 until a.length()).map { i -> parseOne(a.getJSONObject(i)) }
         }
     }
 }

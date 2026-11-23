@@ -142,7 +142,7 @@ object AutoStopMachine {
         AutoStopEvent.ManualStopped -> T(s.copy(saved = s.saved.copy(manualStop = true, hubLive = false, nearbyPendingAtMs = 0L), pendingStop = null))
         AutoStopEvent.NearbyCallBlocked -> {
             val c = s.claim
-            if (c == null) T(s) else T(s.copy(claim = null, saved = s.saved.copy(wakeProbe = false, nearbyPendingAtMs = now)), listOf(AutoStopEffect.ScheduleWake(RECOVER_CALL_RECHECK_MS, false)), reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+            if (c == null) T(s) else T(s.copy(claim = null, saved = s.saved.copy(wakeProbe = false, nearbyPendingAtMs = now, triggerStartsAtMs = s.saved.triggerStartsAtMs.filter { it != c.atMs })), listOf(AutoStopEffect.ScheduleWake(RECOVER_CALL_RECHECK_MS, false)), reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
         }
         AutoStopEvent.ExpectedStopped -> T(s.copy(saved = s.saved.copy(hubLive = false), pendingStop = null))
         is AutoStopEvent.PersistFailed -> persistFailed(s, now)

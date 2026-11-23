@@ -94,6 +94,15 @@ class GlassesNearbyTest {
         assertFalse(blocked.state.saved.wakeProbe); assertNull(blocked.state.claim); assertTrue(blocked.effects.any { it is AutoStopEffect.ScheduleWake })
     }
 
+    @Test fun aDeferredStartRefundsItsTriggerTimestampSoTheRetryIsNotDebounced() {
+        val r = nearby(stopped)
+        assertTrue(t0 in r.state.saved.triggerStartsAtMs)
+        val blocked = AutoStopMachine.reduce(r.state, AutoStopEvent.NearbyCallBlocked, t0 + 5)
+        assertFalse("no start was issued: the attempt is not counted", t0 in blocked.state.saved.triggerStartsAtMs)
+        val retry = AutoStopMachine.reduce(blocked.state, AutoStopEvent.ProcessStarted("process start", ok), t0 + 15_000)
+        assertTrue("the 15 s retry is not blocked by the 60 s debounce", starts(retry).single().nearby)
+    }
+
     @Test fun theEngineRepeatsTheCallCheckRightBeforeTheStart() {
         var idle = true; val started = java.util.concurrent.atomic.AtomicInteger()
         val gate = object : HubStartGate { override fun dueInMs(nowMs: Long) = 0L; override fun record(nowMs: Long) = true; override fun callIdle() = idle }
@@ -202,6 +211,17 @@ class GlassesNearbyTest {
         assertNull("too old", GlassesAclReceiver.pickRecentAcl(bonded, listOf(glassesAddr to t0 - GlassesAclReceiver.ACL_RECENT_MS - 1), t0))
         assertNull("not bonded", GlassesAclReceiver.pickRecentAcl(bonded, listOf("AA:BB:CC:00:00:09" to t0 - 1), t0))
         assertEquals("case-insensitive", glassesAddr, GlassesAclReceiver.pickRecentAcl(bonded, listOf(glassesAddr.lowercase() to t0 - 1), t0))
+    }
+
+    @Test fun aStillBondedStoredAddressIsReplacedOnlyByDeviceSpecificEvidence() {
+        val headset = "AA:BB:CC:00:00:02"; val bonded = listOf(glassesAddr, headset)
+        val d = GlassesAclReceiver.Companion
+        assertEquals("an unrelated headset's recent ACL never replaces a bonded stored address", GlassesAclReceiver.Companion.Decision.Keep, d.decide(glassesAddr, bonded, null, headset))
+        assertEquals("the name hint is device-specific evidence", GlassesAclReceiver.Companion.Decision.Remember(headset), d.decide(glassesAddr, bonded, headset, headset))
+        assertEquals("an ACL candidate fills an empty store", GlassesAclReceiver.Companion.Decision.Remember(glassesAddr), d.decide(null, bonded, null, glassesAddr))
+        assertEquals("and replaces a stored address that is no longer bonded", GlassesAclReceiver.Companion.Decision.Remember(headset), d.decide("AA:BB:CC:00:00:09", bonded, null, headset))
+        assertEquals(GlassesAclReceiver.Companion.Decision.Keep, d.decide(glassesAddr, bonded, null, null))
+        assertEquals(GlassesAclReceiver.Companion.Decision.Forget, d.decide("AA:BB:CC:00:00:09", bonded, null, null))
     }
 
     // ---- the receiver ----
