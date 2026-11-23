@@ -137,7 +137,8 @@ object ReplayReport {
         val seen = HashSet<String>(); val req = StringBuilder("frameId\tlines\n")
         for (g in groups) for (q in g.head.requests) if (seen.add(q.frameId + q.lines.joinToString("|"))) req.append("${q.frameId}\t${q.lines.joinToString(" ; ")}\n")
         File(outDir, "requests.tsv").writeText(req.toString())
-        outDir.walkTopDown().filter { it.isFile }.forEach { it.setReadable(false, false); it.setReadable(true, true); it.setWritable(true, true) }
+        outDir.walkTopDown().forEach { it.setReadable(false, false); it.setWritable(false, false); it.setExecutable(false, false); it.setReadable(true, true); it.setWritable(true, true); if (it.isDirectory) it.setExecutable(true, true) }
+        outDir.parentFile?.let { it.setReadable(false, false); it.setExecutable(false, false); it.setReadable(true, true); it.setWritable(true, true); it.setExecutable(true, true) }
     }
 
     /** The default set of runs (plan 7). */
