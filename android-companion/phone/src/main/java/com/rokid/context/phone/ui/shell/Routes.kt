@@ -54,6 +54,8 @@ object Routes {
     const val SETTINGS_PRIVACY = "settings/privacy"
     /** Settings -> Privacy -> Pause zones: the map, the zone list and the new-zone form. */
     const val SETTINGS_PRIVACY_ZONES = "settings/privacy/zones"
+    /** Place Guide "Pick on the map": the same screen with the seed card first and no new-zone form. Pause zones are unchanged under [SETTINGS_PRIVACY_ZONES]. */
+    const val SETTINGS_MAP_SEED = "settings/privacy/zones/seed"
     /** Settings -> Place Guide (Developer-visible): the switch and Seed this area. */
     const val SETTINGS_PLACE_GUIDE = "settings/place-guide"
     /** Settings -> Rokid Nexus (Developer-visible, v2.0): the HUD host choice, the connection state and the trust text. */

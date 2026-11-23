@@ -431,12 +431,12 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 }
 
 @Composable
-fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }, developerMode: Boolean = false) {
+fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }, developerMode: Boolean = false, pickOnMap: (() -> Unit)? = null) {
     val vm = viewModel { PlaceGuideViewModel(control, developerMode = developerMode) }
     val state by vm.state.collectAsStateWithLifecycle()
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap))
 }
 
 /** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */
@@ -450,6 +450,8 @@ class PlaceGuideActions(
     val setCardSide: (com.rokid.context.core.model.PlaceSide) -> Unit = {},
     val attachLatest: (String?) -> Unit = {}, val openMomentPicker: (String?) -> Unit = {}, val closeMomentPicker: () -> Unit = {}, val pickMoment: (MomentChoice) -> Unit = {},
     val pickerDay: (Int) -> Unit = {}, val pickerMore: () -> Unit = {}, val removeMoment: (String?) -> Unit = {}, val askSkipMoment: () -> Unit = {}, val cancelSkipMoment: () -> Unit = {}, val confirmSkipMoment: () -> Unit = {},
+    /** Opens the zones map to draw the box to seed; null hides the button (a build without the map). */
+    val pickOnMap: (() -> Unit)? = null,
 )
 
 @Composable
@@ -518,6 +520,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                     OutlinedTextField(e, { e = it }, label = { Text("East") }, singleLine = true, modifier = Modifier.weight(1f).testTag("seed_east"))
                 }
                 PrimaryAction("Seed this area", { onSeed(PlaceGuideModel.parseBox(s, w, n, e)) }, tag = "seed_area", enabled = !state.seeding)
+                on.pickOnMap?.let { pick -> SecondaryAction("Pick on the map", pick, tag = "seed_pick_on_map") }
                 SecondaryAction("Seed Hyderabad (Charminar, Golconda)", { onSeed(PlaceGuideModel.HYDERABAD) }, tag = "seed_hyderabad", enabled = !state.seeding)
                 SecondaryAction("Seed Ramoji Film City (23 Nov)", { onSeed(PlaceGuideModel.RAMOJI) }, tag = "seed_ramoji", enabled = !state.seeding)
                 for (p in PlaceGuideModel.TRIP_PRESETS) {

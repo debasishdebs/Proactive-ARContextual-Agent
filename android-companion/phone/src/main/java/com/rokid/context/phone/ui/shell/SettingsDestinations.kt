@@ -394,10 +394,17 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_PRIVACY) { PrivacyRoute(s, back, openZones = { nav.navigate(Routes.SETTINGS_PRIVACY_ZONES) }) }
-    composable(Routes.SETTINGS_PRIVACY_ZONES) { ZonesRoute(s, back) }
+    composable(Routes.SETTINGS_PRIVACY_ZONES) {
+        val app = LocalContext.current.applicationContext
+        ZonesRoute(s, back, seed = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) })
+    }
+    composable(Routes.SETTINGS_MAP_SEED) {
+        val app = LocalContext.current.applicationContext
+        ZonesRoute(s, back, seed = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) }, seedMode = true)
+    }
     composable(Routes.SETTINGS_PLACE_GUIDE) {
         val app = LocalContext.current.applicationContext
-        com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back, changingConfigurations = rememberIsChangingConfigurations(), developerMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle().value)
+        com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back, changingConfigurations = rememberIsChangingConfigurations(), developerMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle().value, pickOnMap = { nav.navigate(Routes.SETTINGS_MAP_SEED) })
     }
     composable(Routes.SETTINGS_DATA_SAVER) {
         val app = LocalContext.current.applicationContext
