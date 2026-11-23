@@ -23,6 +23,7 @@ class GlassesAclReceiver : BroadcastReceiver() {
         if (address.isNullOrBlank()) return
         // review r1 P3: the stored-address read (SharedPreferences) and the match are off Main, inside the async section
         ReceiverWork.run(runCatching { goAsync() }.getOrNull(), "glasses-acl") {
+            noteSeen(address, clock())
             if (!matches(address, pairedAddress(app))) return@run
             PcLog.i(TAG, "glasses_nearby acl")
             submit(app)
@@ -53,15 +54,36 @@ class GlassesAclReceiver : BroadcastReceiver() {
         fun learn(context: Context) {
             val app = context.applicationContext
             runCatching {
-                if (!com.rokid.context.phone.context.CarSource.hasBluetoothPermission(app)) return
-                val adapter = (app.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter ?: return
+                if (!com.rokid.context.phone.context.CarSource.hasBluetoothPermission(app)) { PcLog.i(TAG, "glasses_addr learn result=no_permission"); return }
+                val adapter = (app.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter ?: run { PcLog.i(TAG, "glasses_addr learn result=no_adapter"); return }
                 @Suppress("MissingPermission") // checked above
                 val bonded = adapter.bondedDevices.orEmpty().map { it.address to runCatching { it.name }.getOrNull() }
-                when (val a = pick(bonded)) {
-                    null -> CxrGlassesLink.forgetAddress(app)
+                val byName = pick(bonded)
+                // Fallback (trip gap 2: the name never said Rokid on the device): the ONE bonded device whose ACL connected in the minutes before this link came up.
+                val a = byName ?: pickRecentAcl(bonded.map { it.first }, seenSnapshot(), clock())
+                val how = if (byName != null) "name" else if (a != null) "acl_recent" else "none"
+                when (a) {
+                    // nothing identified now: a stored address stays while that device is still bonded (it may have been learned from an ACL connect); else it is forgotten
+                    null -> CxrGlassesLink.pairedAddress(app)?.let { st -> if (bonded.none { it.first.equals(st, ignoreCase = true) }) CxrGlassesLink.forgetAddress(app) }
                     else -> if (!a.equals(CxrGlassesLink.pairedAddress(app), ignoreCase = true)) CxrGlassesLink.rememberAddress(app, a)
                 }
+                PcLog.i(TAG, "glasses_addr learn result=$how bonded=${bonded.size}")
             }
+        }
+
+        // ---- the ACL connects seen in this process (memory only, never logged): the learn fallback ----
+        internal const val ACL_RECENT_MS = 3 * 60_000L
+        private const val ACL_KEEP = 8
+        @Volatile internal var clock: () -> Long = System::currentTimeMillis
+        private val seen = ArrayDeque<Pair<String, Long>>()
+        @Synchronized internal fun noteSeen(address: String, at: Long) { seen.addLast(address.uppercase() to at); while (seen.size > ACL_KEEP) seen.removeFirst() }
+        @Synchronized internal fun seenSnapshot(): List<Pair<String, Long>> = seen.toList()
+        @Synchronized internal fun resetSeenForTest() { seen.clear() }
+
+        /** The one bonded address with an ACL connect in the last [ACL_RECENT_MS]; none or several = null (never a guess). */
+        internal fun pickRecentAcl(bonded: List<String>, seen: List<Pair<String, Long>>, now: Long): String? {
+            val b = bonded.map { it.uppercase() }.toSet()
+            return seen.filter { (a, at) -> a.uppercase() in b && now - at in 0..ACL_RECENT_MS }.map { it.first.uppercase() }.distinct().singleOrNull()
         }
 
         internal fun pick(bonded: List<Pair<String, String?>>): String? =

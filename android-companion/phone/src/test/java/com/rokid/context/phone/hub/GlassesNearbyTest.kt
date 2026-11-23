@@ -36,7 +36,9 @@ class GlassesNearbyTest {
         val s = starts(r).single()
         assertFalse("an unmarked wake start: the guarded path, never a user start or a recovery", s.recover || s.controller); assertEquals("acl", s.via)
         assertTrue(r.state.saved.wakeProbe); assertEquals(0, r.state.saved.wakeStep); assertEquals(t0 + BackgroundPolicy.wakeDelayMs(0), r.state.saved.nextWakeAtMs)
-        assertEquals(listOf(AutoStopEffect.Line.WAKE_ATTEMPT), r.effects.filterIsInstance<AutoStopEffect.Log>().map { it.line })
+        assertEquals(listOf(AutoStopEffect.Line.TRIGGER_DECISION, AutoStopEffect.Line.WAKE_ATTEMPT), r.effects.filterIsInstance<AutoStopEffect.Log>().map { it.line })
+        assertEquals("kind=acl decision=allowed reason=ok starts_last_hour=1", r.effects.filterIsInstance<AutoStopEffect.Log>().first().via)
+        assertEquals(listOf(t0), r.state.saved.triggerStartsAtMs)
         // the start's result settles like a wake's: issued = in progress until the service is foreground
         val done = AutoStopMachine.reduce(r.state, AutoStopEvent.WakeResult(issued = true, serviceRunning = false), t0)
         assertEquals(AutoStopWake.Claim.STARTED, (done.reply as AutoStopClaimed).claim); assertEquals(t0, done.state.saved.wakeStartedAtMs)
@@ -104,6 +106,102 @@ class GlassesNearbyTest {
         assertEquals("kept for the call's end", t0, e2.machine.state()!!.saved.nearbyPendingAtMs)
         idle = true
         assertEquals(AutoStopWake.Claim.STARTED, (kotlinx.coroutines.runBlocking { engine.submit(AutoStopEvent.GlassesNearby()).await() } as AutoStopClaimed).claim); assertEquals(1, started.get())
+    }
+
+    // ---- hub auto-start (trip gap 2): every trigger kind, the denials, the debounce and the hourly cap ----
+
+    private fun trig(kind: String, snap: AutoStopSnapshot, w: WakeInputs? = ok, now: Long = t0, st: AutoStopState = AutoStopState()) =
+        AutoStopMachine.reduce(st.copy(saved = snap, wake = w), AutoStopEvent.GlassesNearby(kind, w), now)
+    private fun decision(r: Transition<AutoStopState, AutoStopEvent, AutoStopEffect>) =
+        r.effects.filterIsInstance<AutoStopEffect.Log>().firstOrNull { it.line == AutoStopEffect.Line.TRIGGER_DECISION }?.via
+
+    @Test fun theAclTriggerAndTheWatchTriggerEachStartAnAutoStoppedHubThroughTheGuardedPath() {
+        for (kind in listOf("acl", "watch")) {
+            val r = trig(kind, stopped)
+            val s = starts(r).single(); assertTrue(s.nearby); assertFalse(s.recover || s.controller); assertEquals(kind, s.via)
+            assertEquals("kind=$kind decision=allowed reason=ok starts_last_hour=1", decision(r))
+        }
+    }
+
+    @Test fun aManualStopIsNeverOverriddenByAnyTriggerAndItIsLogged() {
+        for (kind in listOf("acl", "watch")) {
+            val r = trig(kind, stopped.copy(manualStop = true))
+            assertTrue(starts(r).isEmpty()); assertTrue(r.state.saved.manualStop); assertEquals("kind=$kind decision=denied reason=manual_stop", decision(r))
+        }
+    }
+
+    @Test fun anExplicitPhonePauseIsNeverOverriddenAndTheLadderIsLeftAlone() {
+        for (kind in listOf("acl", "watch")) {
+            val r = trig(kind, stopped, ok.copy(phonePaused = true))
+            assertTrue(starts(r).isEmpty()); assertEquals("kind=$kind decision=denied reason=phone_paused", decision(r))
+            assertEquals(stopped.wakeStep, r.state.saved.wakeStep); assertEquals(stopped.nextWakeAtMs, r.state.saved.nextWakeAtMs); assertFalse(r.state.saved.wakeProbe)
+        }
+    }
+
+    @Test fun aHubThatIsNotAutoStoppedIsNotStartedByATrigger() {
+        val r = trig("watch", AutoStopSnapshot()); assertTrue(starts(r).isEmpty()); assertEquals("kind=watch decision=denied reason=not_auto_stopped", decision(r))
+    }
+
+    @Test fun theDebounceHoldsASecondStartWithinAMinuteAndLeavesTheLadderAlone() {
+        val first = trig("acl", stopped); assertEquals(1, starts(first).size)
+        val again = trig("watch", stopped.copy(triggerStartsAtMs = first.state.saved.triggerStartsAtMs), now = t0 + 30_000)
+        assertTrue(starts(again).isEmpty()); assertEquals("kind=watch decision=denied reason=debounce", decision(again)); assertEquals(stopped.nextWakeAtMs, again.state.saved.nextWakeAtMs)
+        assertEquals(1, starts(trig("watch", stopped.copy(triggerStartsAtMs = listOf(t0)), now = t0 + AutoStopMachine.TRIGGER_DEBOUNCE_MS)).size)
+    }
+
+    @Test fun theHourlyCapAllowsFourStartsAndTheFifthWaitsUntilTheOldestAgesOut() {
+        val four = (0 until 4).map { t0 + it * 2 * min }
+        val capped = trig("acl", stopped.copy(triggerStartsAtMs = four), now = t0 + 10 * min)
+        assertTrue(starts(capped).isEmpty()); assertEquals("kind=acl decision=denied reason=hourly_cap", decision(capped))
+        val later = trig("acl", stopped.copy(triggerStartsAtMs = four), now = t0 + 61 * min)
+        assertEquals(1, starts(later).size); assertEquals("pruned to the last hour plus this start", 4, later.state.saved.triggerStartsAtMs.size)
+    }
+
+    @Test fun deniedDecisionsAreLoggedAtMostOncePerMinute() {
+        val one = trig("watch", AutoStopSnapshot())
+        val two = trig("watch", AutoStopSnapshot(), now = t0 + 1_000, st = one.state)
+        assertEquals(1, one.effects.count { it is AutoStopEffect.Log }); assertEquals(0, two.effects.count { it is AutoStopEffect.Log })
+        val three = trig("watch", AutoStopSnapshot(), now = t0 + AutoStopMachine.TRIGGER_DENIED_LOG_MS, st = two.state)
+        assertEquals(1, three.effects.count { it is AutoStopEffect.Log })
+    }
+
+    @Test fun theTriggerStartsSurviveTheStore() {
+        val sp = app.getSharedPreferences("hub_auto_stop_test_triggers", Context.MODE_PRIVATE)
+        val store = PrefsAutoStopStore { sp }
+        store.save(AutoStopSnapshot(triggerStartsAtMs = listOf(5L, 9L)))
+        assertEquals(listOf(5L, 9L), store.load().triggerStartsAtMs)
+        store.save(AutoStopSnapshot()); assertEquals(emptyList<Long>(), store.load().triggerStartsAtMs)
+    }
+
+    @Test fun theWatchEntryIsRateLimitedAndSkippedWhileTheHubRuns() {
+        val seenEv = CopyOnWriteArrayList<AutoStopEvent>(); var now = 1_000_000L; var up = false
+        val savedClock = HubAutoStart.clock; val savedRun = HubAutoStart.running; val savedSub = HubAutoStart.submit
+        try {
+            HubAutoStart.resetForTest(); HubAutoStart.clock = { now }; HubAutoStart.running = { up }; HubAutoStart.submit = { _, e -> seenEv += e }
+            assertTrue(HubAutoStart.onWatchMessage(app)); assertEquals("watch", (seenEv.single() as AutoStopEvent.GlassesNearby).via)
+            now += 1_000; assertFalse(HubAutoStart.onWatchMessage(app))
+            now += HubAutoStart.WATCH_SUBMIT_EVERY_MS; up = true; assertFalse("the hub runs", HubAutoStart.onWatchMessage(app))
+            up = false; assertTrue(HubAutoStart.onWatchMessage(app)); assertEquals(2, seenEv.size)
+        } finally { HubAutoStart.clock = savedClock; HubAutoStart.running = savedRun; HubAutoStart.submit = savedSub; HubAutoStart.resetForTest() }
+    }
+
+    @Test fun theEngineReadsThePhonePauseForATriggerAndDeniesIt() {
+        val started = java.util.concurrent.atomic.AtomicInteger()
+        val e = AutoStopEngine(InMemoryAutoStopStore(stopped), { t0 }, SerialStateMachine.DIRECT, { ok }, { started.incrementAndGet(); true }, {}, { }, { }, phonePaused = { true })
+        val reply = kotlinx.coroutines.runBlocking { e.submit(AutoStopEvent.GlassesNearby("watch")).await() } as AutoStopClaimed
+        assertEquals(0, started.get()); assertEquals(AutoStopWake.Claim.NONE, reply.claim)
+    }
+
+    // ---- learning the glasses' address (trip gap 2: rokid_link had no glasses_address) ----
+
+    private val glassesAddr = "AA:BB:CC:00:00:01"
+    @Test fun theAddressIsLearnedFromTheOneBondedDeviceWithAnAclConnectJustBeforeTheLink() {
+        val bonded = listOf("AA:BB:CC:00:00:01", "AA:BB:CC:00:00:02")
+        assertEquals(glassesAddr, GlassesAclReceiver.pickRecentAcl(bonded, listOf(glassesAddr to t0 - 60_000), t0))
+        assertNull("two recent connects: never a guess", GlassesAclReceiver.pickRecentAcl(bonded, listOf("AA:BB:CC:00:00:01" to t0 - 1, "AA:BB:CC:00:00:02" to t0 - 2), t0))
+        assertNull("too old", GlassesAclReceiver.pickRecentAcl(bonded, listOf(glassesAddr to t0 - GlassesAclReceiver.ACL_RECENT_MS - 1), t0))
+        assertNull("not bonded", GlassesAclReceiver.pickRecentAcl(bonded, listOf("AA:BB:CC:00:00:09" to t0 - 1), t0))
+        assertEquals("case-insensitive", glassesAddr, GlassesAclReceiver.pickRecentAcl(bonded, listOf(glassesAddr.lowercase() to t0 - 1), t0))
     }
 
     // ---- the receiver ----

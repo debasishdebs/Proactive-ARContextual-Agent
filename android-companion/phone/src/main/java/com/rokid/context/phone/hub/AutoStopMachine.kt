@@ -9,6 +9,8 @@ data class WakeInputs(
     val callIdle: Boolean = true,
     /** Recovery only: ms until the persisted watchdog ladder allows a hub start (0 = now; includes the 60 s minimum since the last start). */
     val hubStartInMs: Long = 0L,
+    /** Trigger starts only: an explicit phone pause is active (stored record); a user pause is never overridden by a glasses / watch trigger. */
+    val phonePaused: Boolean = false,
 )
 
 /** What the live hub reports (cheap in-memory reads): running, link, wear, our app in front / last in front, an ask or a Run in flight. */
@@ -43,6 +45,8 @@ data class AutoStopState(
     val persistFailing: Boolean = false,
     /** When `persist_failed` was last logged (at most once a minute). */
     val persistLoggedAtMs: Long? = null,
+    /** When a denied start trigger was last logged (a watch message can arrive every second; one denial line per [TRIGGER_DENIED_LOG_MS]). Memory only. */
+    val triggerDeniedLoggedAtMs: Long? = null,
 )
 
 sealed interface AutoStopEvent {
@@ -84,7 +88,7 @@ sealed interface AutoStopEffect {
     data class ScheduleWake(val delayMs: Long, val controller: Boolean) : AutoStopEffect
     /** A fixed log line ([Line]), with the wake entry point [via] where it applies. */
     data class Log(val line: Line, val via: String = "") : AutoStopEffect
-    enum class Line { WAKE_ATTEMPT, WAKE_ALREADY_RUNNING, WAKE_REFUSED, WAKE_TIMED_OUT, PERSIST_FAILED, HUB_RECOVER_ATTEMPT, HUB_RECOVER_STARTED, HUB_RECOVER_REFUSED }
+    enum class Line { TRIGGER_DECISION, WAKE_ATTEMPT, WAKE_ALREADY_RUNNING, WAKE_REFUSED, WAKE_TIMED_OUT, PERSIST_FAILED, HUB_RECOVER_ATTEMPT, HUB_RECOVER_STARTED, HUB_RECOVER_REFUSED }
 }
 
 /** Replies: the controller's next sleep (null = until the next poke), or a process start's claim. */
@@ -109,6 +113,14 @@ object AutoStopMachine {
     const val RECOVER_CALL_RECHECK_MS = 15_000L
     /** An ACL connect deferred by a call is honoured for this long, then dropped (a bounded request, never an open-ended one). */
     const val NEARBY_PENDING_MS = 10 * 60_000L
+    /** Start triggers (glasses ACL connect, watch motion): at least this long between two starts, and at most [MAX_TRIGGER_STARTS_PER_HOUR] in a rolling hour. */
+    const val TRIGGER_DEBOUNCE_MS = 60_000L
+    const val MAX_TRIGGER_STARTS_PER_HOUR = 4
+    const val HOUR_MS = 60 * 60_000L
+    const val TRIGGER_DENIED_LOG_MS = 60_000L
+
+    /** The literal trigger kind for the log: the entry point with a retry suffix dropped. Fixed tokens only (acl, watch, link), never an address or id. */
+    private fun kindOf(via: String) = when { via.startsWith("acl") -> "acl"; via == "watch" -> "watch"; via == "link" -> "link"; else -> "other" }
 
     /** A pending stop's mark is rolled back first (it restores the hub-live flag it cleared: the service may well still run), then the user start's bookkeeping. */
     private fun userStarted(s0: AutoStopState): AutoStopState { val s = cancel(s0); return s.copy(
@@ -254,17 +266,38 @@ object AutoStopMachine {
      */
     private fun nearby(s0: AutoStopState, via: String, t: Long, deferred: Boolean = false): T {
         val w = s0.wake
+        val kind = kindOf(via)
         val stopped = s0.saved.autoStoppedAtMs != 0L && !s0.saved.manualStop
         val keep = s0.saved.nearbyPendingAtMs
         val cleared = s0.saved.copy(nearbyPendingAtMs = 0L)
         // a deferred retry does not restart the ladder again; a fresh signal does
         val base = if (deferred) cleared else cleared.copy(wakeStep = 0, nextWakeAtMs = if (s0.saved.autoStoppedAtMs != 0L) t + BackgroundPolicy.wakeDelayMs(0) else 0L)
         val s = s0.copy(saved = base)
-        if (!stopped || w == null || !w.linkAllowed || w.serviceRunning || s0.saved.wakeStartedAtMs != 0L || s0.pendingStop != null) return T(s, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        // Decision log (counts only, literal tokens): kind plus a fixed allowed / denied reason. Denials are throttled (a watch message can come every second).
+        fun deny(reason: String, st: AutoStopState): T {
+            val logIt = st.triggerDeniedLoggedAtMs.let { it == null || t - it >= TRIGGER_DENIED_LOG_MS || t < it }
+            val st2 = if (logIt) st.copy(triggerDeniedLoggedAtMs = t) else st
+            val fx = if (logIt) listOf<AutoStopEffect>(AutoStopEffect.Log(AutoStopEffect.Line.TRIGGER_DECISION, "kind=$kind decision=denied reason=$reason")) else emptyList()
+            return T(st2, fx, reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        }
+        if (s0.saved.manualStop) return deny("manual_stop", s)
+        if (!stopped) return deny("not_auto_stopped", s)
+        if (w == null) return deny("no_inputs", s)
+        if (!w.linkAllowed) return deny("link_not_allowed", s)
+        if (w.serviceRunning) return deny("service_running", s)
+        if (s0.saved.wakeStartedAtMs != 0L) return deny("wake_in_flight", s)
+        if (s0.pendingStop != null) return deny("stop_pending", s)
+        // An explicit phone pause is never overridden, debounce and the hourly cap: none of these touches the ladder (a trigger that cannot start must not push the ladder out).
+        val untouched = s0.copy(saved = cleared)
+        if (w.phonePaused) return deny("phone_paused", untouched)
+        val recent = s0.saved.triggerStartsAtMs.filter { t - it in 0 until HOUR_MS }
+        if (recent.any { t - it < TRIGGER_DEBOUNCE_MS }) return deny("debounce", untouched)
+        if (recent.size >= MAX_TRIGGER_STARTS_PER_HOUR) return deny("hourly_cap", untouched)
         // a call: the signal is KEPT (bounded) and looked at again after the call's settle, through the same guards
-        if (!w.callIdle) return T(s.copy(saved = base.copy(nearbyPendingAtMs = if (deferred && keep != 0L) keep else t)), listOf(AutoStopEffect.ScheduleWake(RECOVER_CALL_RECHECK_MS, false)), reply = AutoStopClaimed(AutoStopWake.Claim.NONE))
+        if (!w.callIdle) return deny("call_deferred", s.copy(saved = base.copy(nearbyPendingAtMs = if (deferred && keep != 0L) keep else t))).let { d -> d.copy(effects = d.effects + AutoStopEffect.ScheduleWake(RECOVER_CALL_RECHECK_MS, false)) }
         val c = WakeClaim(via, t, controller = false, exempt = w.exempt)
-        return T(s.copy(saved = base.copy(wakeProbe = true), claim = c), listOf(AutoStopEffect.Log(AutoStopEffect.Line.WAKE_ATTEMPT, via), AutoStopEffect.StartWake(via, false, nearby = true)))
+        val log = AutoStopEffect.Log(AutoStopEffect.Line.TRIGGER_DECISION, "kind=$kind decision=allowed reason=ok starts_last_hour=${recent.size + 1}")
+        return T(s.copy(saved = base.copy(wakeProbe = true, triggerStartsAtMs = recent + t), claim = c), listOf(log, AutoStopEffect.Log(AutoStopEffect.Line.WAKE_ATTEMPT, via), AutoStopEffect.StartWake(via, false, nearby = true)))
     }
 
     /**
