@@ -28,6 +28,8 @@ data class AutoStopSnapshot(
     val hubLive: Boolean = false,
     /** v1.1 review r1 P2-5: an ACL connect that arrived during a call and still waits for the call (and its settle) to end; 0 = none. Bounded by [AutoStopMachine.NEARBY_PENDING_MS]. */
     val nearbyPendingAtMs: Long = 0L,
+    /** Start triggers (glasses ACL connect, watch motion): the times of the starts they issued, newest last; pruned to the last hour. Debounce and the hourly cap read it. */
+    val triggerStartsAtMs: List<Long> = emptyList(),
 )
 
 /** Where the [AutoStopSnapshot] lives. [save] runs on the state machine's IO context, before the effects it guards; true = durable (false = the commit failed). */
@@ -60,13 +62,15 @@ class PrefsAutoStopStore(private val prefs: () -> SharedPreferences) : AutoStopS
             reason = BackgroundPolicy.Away.values().firstOrNull { it.token == p.getString("reason", null) }, awaySinceMs = p.getLong("away_since", 0L),
             wakeStep = p.getInt("wake_step", 0), nextWakeAtMs = p.getLong("wake_next_at", 0L), wakeProbe = p.getBoolean("wake_probe", false),
             wakeStartedAtMs = p.getLong("wake_started_at", 0L), hubLive = p.getBoolean("hub_live", false), nearbyPendingAtMs = p.getLong("nearby_pending_at", 0L),
+            triggerStartsAtMs = p.getString("trigger_starts", null)?.split(",")?.mapNotNull { it.toLongOrNull() }.orEmpty(),
         )
     }
 
     override fun save(s: AutoStopSnapshot): Boolean =
         prefs().edit().putBoolean("manual_stop", s.manualStop).putLong("auto_stopped_at", s.autoStoppedAtMs).putString("reason", s.reason?.token)
             .putLong("away_since", s.awaySinceMs).putInt("wake_step", s.wakeStep).putLong("wake_next_at", s.nextWakeAtMs).putBoolean("wake_probe", s.wakeProbe)
-            .putLong("wake_started_at", s.wakeStartedAtMs).putBoolean("hub_live", s.hubLive).putLong("nearby_pending_at", s.nearbyPendingAtMs).commit()
+            .putLong("wake_started_at", s.wakeStartedAtMs).putBoolean("hub_live", s.hubLive).putLong("nearby_pending_at", s.nearbyPendingAtMs)
+            .putString("trigger_starts", s.triggerStartsAtMs.takeIf { it.isNotEmpty() }?.joinToString(",")).commit()
 
     companion object {
         const val PREFS = "hub_auto_stop"

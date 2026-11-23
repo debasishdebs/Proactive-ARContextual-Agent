@@ -10,6 +10,8 @@ import com.google.android.gms.wearable.WearableListenerService
 class PcaWatchListener : WearableListenerService() {
     override fun onMessageReceived(event: MessageEvent) {
         val on = ContextSourceSettings.of(this).activeWatchSource == ContextSourceSettings.WATCH_APP
-        PcaWatchLink.handle(event.path, event.data, on)
+        val r = PcaWatchLink.handle(event.path, event.data, on)
+        // A watch message while the hub is not running (the active watch source says the user is active): the guarded start trigger, never a user start.
+        if (!r.ok && r.reason == "hub_off") com.rokid.context.phone.hub.HubAutoStart.onWatchMessage(applicationContext)
     }
 }

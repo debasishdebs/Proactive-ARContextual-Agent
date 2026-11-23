@@ -52,9 +52,15 @@ object AutoStopWake {
                 startWake = { ContextHubService.ensureRunning(app, wake = true) }, scheduleWake = { schedule(app, it) },
                 startRecover = { ContextHubService.ensureRunning(app, wake = true) }, // unmarked = guarded: no glasses connect except through the call guard and the hourly cap
                 hubStart = LadderHubStartGate(hubLadder(app)) { callIdle(app) },
+                phonePaused = { phonePaused(app) },
             )
         }.also { shared = it }
     }
+
+    /** An explicit (stored, active) phone pause exists; a start trigger never overrides it. Pause-zone records are not user pauses. Never throws (false = no pause known). */
+    internal fun phonePaused(app: Context): Boolean = runCatching {
+        runBlocking { HubPauses(com.rokid.context.memory.MemoryGraph.get(app).db.pauseDao()).stored().any { !it.pauseId.startsWith("zone:") } }
+    }.getOrDefault(false)
 
     /** Review hub-wp2 r2 P2: the process-wide owner of the hub restart ladder; the watchdog and the recovery gate both use THIS instance (never two caches of one record). */
     @Volatile private var ladder: HubLadder? = null

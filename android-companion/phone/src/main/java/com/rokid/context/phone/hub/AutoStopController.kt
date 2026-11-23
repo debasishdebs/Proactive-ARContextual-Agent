@@ -112,6 +112,8 @@ class AutoStopEngine(
     /** The recovery's inputs and record: the persisted watchdog ladder and the call guard ([HubStartGate]). */
     private val hubStart: HubStartGate = HubStartGate.None,
     private val clock: () -> Long = now,
+    /** An explicit phone pause is stored (a trigger start never overrides it). Read on the engine's IO context, only for a start trigger. */
+    private val phonePaused: () -> Boolean = { false },
 ) {
     /** The live hub's side: its inputs, its effects. */
     class HubPort(
@@ -154,8 +156,8 @@ class AutoStopEngine(
     private fun prepare(@Suppress("UNUSED_PARAMETER") s: AutoStopState, e: AutoStopEvent): AutoStopEvent = when (e) {
         is AutoStopEvent.Evaluate -> if (e.wake != null && e.hub != null) e else AutoStopEvent.Evaluate(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
         is AutoStopEvent.ConfirmStop -> if (e.wake != null && e.hub != null) e else AutoStopEvent.ConfirmStop(e.wake ?: wakeNow(), e.hub ?: port?.sample?.invoke())
-        is AutoStopEvent.ProcessStarted -> if (e.wake != null) e else e.copy(wake = wakeNow()?.let { it.copy(callIdle = hubStart.callIdle(), hubStartInMs = hubStart.dueInMs(clock())) })
-        is AutoStopEvent.GlassesNearby -> if (e.wake != null) e else e.copy(wake = wakeNow()?.let { it.copy(callIdle = hubStart.callIdle()) })
+        is AutoStopEvent.ProcessStarted -> if (e.wake != null) e else e.copy(wake = wakeNow()?.let { it.copy(callIdle = hubStart.callIdle(), hubStartInMs = hubStart.dueInMs(clock()), phonePaused = runCatching { phonePaused() }.getOrDefault(false)) })
+        is AutoStopEvent.GlassesNearby -> if (e.wake != null) e else e.copy(wake = wakeNow()?.let { it.copy(callIdle = hubStart.callIdle(), phonePaused = runCatching { phonePaused() }.getOrDefault(false)) })
         else -> e
     }
 
@@ -179,6 +181,7 @@ class AutoStopEngine(
             }
             is AutoStopEffect.ScheduleWake -> if (f.controller && p != null) p.scheduleWake(f.delayMs) else scheduleWake(f.delayMs)
             is AutoStopEffect.Log -> when (f.line) {
+                AutoStopEffect.Line.TRIGGER_DECISION -> log("auto_start trigger ${f.via}")
                 AutoStopEffect.Line.WAKE_ATTEMPT -> log("auto_stop wake attempt (${f.via})")
                 AutoStopEffect.Line.WAKE_ALREADY_RUNNING -> log("auto_stop wake: hub already running (${f.via})")
                 AutoStopEffect.Line.WAKE_REFUSED -> warn("auto_stop wake refused (${f.via})")
