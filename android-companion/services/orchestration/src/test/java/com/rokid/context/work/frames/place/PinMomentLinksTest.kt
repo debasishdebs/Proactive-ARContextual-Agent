@@ -307,6 +307,16 @@ class PinMomentLinksTest {
         assertEquals(0, resolve()); assertEquals(3, store.pins().size)
     }
 
+    @Test fun anOlderCommittedPinObligationIsIndependentOfANewWipesCommit() = runBlocking<Unit> {
+        val older = UserPinStore.Arming("older-forget", "forget", true, emptyMap(), mapOf(ids[0] to id1))
+        assertTrue(store.arm(older))
+        rawPrefs.edit().putString("pins", "not json").commit() // the pin list is unreadable: the fresh Delete all arms nothing
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        assertTrue("the completed wipe is not left pending for the older obligation", PinMomentLinks.wipeCommittedStore(store, op))
+        PinMomentLinks.endWipe(op)
+        assertEquals("the older obligation stays owed durably for settle", older, store.arming())
+    }
+
     @Test fun aFreshDeleteAllWhileAnEarlierWipeIsStillPendingCarriesTheEarlierPairs() = runBlocking<Unit> {
         // wipe 1: epoch committed, its commit write failed, the process died
         val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })

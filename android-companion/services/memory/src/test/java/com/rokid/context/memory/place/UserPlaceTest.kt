@@ -138,6 +138,18 @@ class UserPlaceTest {
         assertEquals("[]", UserPinStore.withoutLinks("not json"))
     }
 
+    @Test fun theExportKeepsOnlyPermittedFieldsAndDropsNonObjectOrInvalidElements() {
+        assertEquals("[]", UserPinStore.withoutLinks("[[{\"moment\":\"0000abcd\",\"at\":123}]]"))
+        val good = org.json.JSONArray(UserPinStore.encode(listOf(pin().copy(momentId = "0000002a", pinnedAt = 9L)))).getJSONObject(0)
+        good.put("extra", "secret-extra")
+        val mixed = org.json.JSONArray().put(org.json.JSONArray().put(org.json.JSONObject().put("moment", "0000abcd").put("at", 123))).put(good).put("junk").put(org.json.JSONObject().put("id", "x").put("moment", "0000abcd")).toString()
+        val out = UserPinStore.withoutLinks(mixed)
+        val arr = org.json.JSONArray(out)
+        assertEquals(1, arr.length())
+        assertEquals(setOf("id", "name", "kind", "lat", "lon", "r", "parent", "note"), arr.getJSONObject(0).keys().asSequence().toSet())
+        assertFalse("0000abcd" in out); assertFalse("0000002a" in out); assertFalse("secret-extra" in out)
+    }
+
     @Test fun pinnedAtIsWrittenOnlyWhenSetReadBackAndOldPinsHaveNone() {
         val store = UserPinStore(prefs)
         assertTrue(store.write(listOf(pin("Old"), pin("New").copy(pinnedAt = 1_800_000_000_000L))))

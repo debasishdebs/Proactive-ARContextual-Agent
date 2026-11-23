@@ -49,6 +49,8 @@ class UrlConnectionPlaceHttp(
      * (on the wire, before gzip is unpacked) are added to today's mobile-data count, only when that class was costly (mobile, roaming, unknown). Counts only, never a URL or content.
      */
     private val gate: DataGate = DataGate.ALLOW_ALL,
+    /** The connection factory (tests swap it for a fake slow stream). */
+    private val open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
 ) : PlaceHttp {
     private val lock = Mutex()
     private val lastByHost = HashMap<String, Long>()
@@ -57,6 +59,7 @@ class UrlConnectionPlaceHttp(
 
     override suspend fun postForm(url: String, form: Map<String, String>): String = send(url, formEncode(form))
 
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class) // invokeOnCompletion(onCancelling = true): the only hook that runs when cancellation STARTS, while the blocking read is still stuck
     private suspend fun send(url: String, body: String?): String {
         val u = URL(url)
         require(u.protocol == "https") { "place fetch is https only" }
@@ -70,7 +73,9 @@ class UrlConnectionPlaceHttp(
         return withContext(Dispatchers.IO) {
             val costlyAtStart = try { gate.costlyNow() } catch (e: Exception) { false } // the network class when the request starts
             val received = java.util.concurrent.atomic.AtomicLong(0)
-            val c = u.openConnection() as HttpURLConnection // not connected yet: no byte leaves before connect()
+            val c = open(u) // not connected yet: no byte leaves before connect()
+            // A real call deadline: when the caller's coroutine is cancelled (a withTimeout around the call fires) the connection is disconnected at once, so a blocking read of a slowly streaming answer ends now instead of when the server stops.
+            val cancelHook = coroutineContext[kotlinx.coroutines.Job]?.invokeOnCompletion(onCancelling = true) { runCatching { c.disconnect() } }
             val tripped = java.util.concurrent.atomic.AtomicBoolean(false)
             // Registered synchronously, and the registration IS the admission check (one step under the fence lock): a close before it throws, a close after it runs this hook on the
             // closing thread, so a blocked connect/read is torn down at once. No watcher coroutine whose start could be cancelled away.
@@ -107,7 +112,7 @@ class UrlConnectionPlaceHttp(
             } catch (e: IOException) {
                 if (tripped.get()) throw com.rokid.context.memory.place.ZoneFenced() else throw e
             } finally {
-                reg?.close(); c.disconnect()
+                cancelHook?.dispose(); reg?.close(); c.disconnect()
                 val rx = received.get()
                 if (rx > 0) try { gate.sentAt(DataKind.SMALL, 0L, rx, 0, costlyAtStart) } catch (e: Exception) { /* counting never breaks a fetch */ }
             }

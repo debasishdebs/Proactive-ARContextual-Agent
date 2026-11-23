@@ -62,12 +62,29 @@ class GlassesAclReceiver : BroadcastReceiver() {
                 // Fallback (trip gap 2: the name never said Rokid on the device): the ONE bonded device whose ACL connected in the minutes before this link came up.
                 val a = byName ?: pickRecentAcl(bonded.map { it.first }, seenSnapshot(), clock())
                 val how = if (byName != null) "name" else if (a != null) "acl_recent" else "none"
-                when (a) {
-                    // nothing identified now: a stored address stays while that device is still bonded (it may have been learned from an ACL connect); else it is forgotten
-                    null -> CxrGlassesLink.pairedAddress(app)?.let { st -> if (bonded.none { it.first.equals(st, ignoreCase = true) }) CxrGlassesLink.forgetAddress(app) }
-                    else -> if (!a.equals(CxrGlassesLink.pairedAddress(app), ignoreCase = true)) CxrGlassesLink.rememberAddress(app, a)
+                // a still-bonded stored address is replaced only by device-specific evidence (the name); a recent ACL connect alone may be any other headset
+                when (val d = decide(CxrGlassesLink.pairedAddress(app), bonded.map { it.first }, byName, a)) {
+                    is Decision.Remember -> CxrGlassesLink.rememberAddress(app, d.address)
+                    Decision.Forget -> CxrGlassesLink.forgetAddress(app)
+                    Decision.Keep -> {}
                 }
                 PcLog.i(TAG, "glasses_addr learn result=$how bonded=${bonded.size}")
+            }
+        }
+
+        internal sealed interface Decision { data class Remember(val address: String) : Decision; object Forget : Decision; object Keep : Decision }
+
+        /**
+         * What to do with the stored address. [byName] (the name hint: device-specific) may replace anything. [candidate] without a name is only the ACL fallback (any recently connected bonded device, possibly an unrelated headset): it fills an
+         * EMPTY or no-longer-bonded stored address, never replaces one that is still bonded. Nothing identified: the stored address stays while still bonded, else it is forgotten.
+         */
+        internal fun decide(stored: String?, bonded: List<String>, byName: String?, candidate: String?): Decision {
+            val storedBonded = stored != null && bonded.any { it.equals(stored, ignoreCase = true) }
+            return when {
+                byName != null -> if (byName.equals(stored, ignoreCase = true)) Decision.Keep else Decision.Remember(byName)
+                candidate != null -> if (storedBonded || candidate.equals(stored, ignoreCase = true)) Decision.Keep else Decision.Remember(candidate)
+                stored != null && !storedBonded -> Decision.Forget
+                else -> Decision.Keep
             }
         }
 
