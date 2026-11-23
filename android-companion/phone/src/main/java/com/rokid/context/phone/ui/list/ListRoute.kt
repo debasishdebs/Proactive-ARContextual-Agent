@@ -41,5 +41,6 @@ object SelectionGate {
 
 private class ProductionSelectionForget(private val context: android.content.Context) : SelectionForgetPort {
     override suspend fun preview(roots: Set<Ref>): SelectionPreview? = ForgetActions.previewSelection(context, roots)
-    override suspend fun forget(roots: Set<Ref>, token: String) = ForgetActions.forgetSelectionOutcome(context, roots, token, onForgotten = ForgetActions.dataRemoved)
+    override suspend fun forget(roots: Set<Ref>, token: String) = forget(roots, token, emptySet())
+    override suspend fun forget(roots: Set<Ref>, token: String, pins: Set<String>) = ForgetActions.forgetSelectionOutcome(context, roots, token, onForgotten = ForgetActions.dataRemoved, pins = pins)
 }

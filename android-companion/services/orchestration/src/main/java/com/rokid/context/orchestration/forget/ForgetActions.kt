@@ -59,7 +59,7 @@ object ForgetActions {
         run(context, onForgotten, { LoggedScope.FACT }, com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.MEMORY, memoryId), target = { emptySet() }) { it.forgetFact(memoryId) } // a fact Forget removes no photo: no pin goes
 
     suspend fun forgetMomentOutcome(context: Context, frameId: String, onForgotten: () -> Unit = {}): Outcome =
-        run(context, onForgotten, { LoggedScope.PHOTO }, com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, frameId), target = scopedTarget(context, ForgetTarget.Photo(frameId), ForgetScope.PHOTO)) { it.forgetMoment(frameId) }
+        run(context, onForgotten, { LoggedScope.PHOTO }, com.rokid.context.memory.forget.lifecycle.Ref(com.rokid.context.memory.forget.lifecycle.Family.PHOTO, frameId), target = scopedTarget(context, ForgetTarget.Photo(frameId), ForgetScope.PHOTO), allowedPins = emptySet()) { it.forgetMoment(frameId) } // no dialog names pins here: none is deleted
 
     /**
      * The photo Forget of a mark that is undone (glasses voice or tap, and the phone's "Forget this mark"): the same gated Forget as [forgetMomentOutcome], but it NEVER deletes a pin. An undo shows no dialog that
@@ -131,7 +131,7 @@ object ForgetActions {
             if (p == null || p.tooLarge || p.erasedPhotos.isEmpty()) p
             else { // slice 1.4.2: the pins whose Moment loses its last photo here go with it: named in the confirmation
                 val g = com.rokid.context.work.frames.place.PinMomentLinks.pinsGoing(context) { ids -> momentsFullyErased(graph.db.momentDao(), ids, p.erasedPhotos) }
-                if (g.count > 0) p.withPins(g.count, g.names) else p
+                if (g.count > 0 || g.failed) p.withPins(g.count, g.names, g.ids, g.failed) else p
             }
         } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e
         } catch (e: Exception) { PcLog.w(TAG, "selection preview failed: ${SafeLog.describe(e)}"); null }
@@ -142,10 +142,10 @@ object ForgetActions {
      * nothing runs ([Outcome.FAILED]). [Outcome.CONTENT_CHANGED] = the set differs from the previewed one, or a large selection was confirmed without its acknowledgement: nothing deleted, preview again.
      * [Outcome.TOO_LARGE] = above 5,000 roots or plan nodes: select fewer.
      */
-    suspend fun forgetSelectionOutcome(context: Context, roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>, token: String, onForgotten: () -> Unit = {}): Outcome {
+    suspend fun forgetSelectionOutcome(context: Context, roots: Set<com.rokid.context.memory.forget.lifecycle.Ref>, token: String, onForgotten: () -> Unit = {}, pins: Set<String> = emptySet()): Outcome {
         runCatching { MemoryGraph.get(context) } // installs the flag reader
         if (!com.rokid.context.memory.forget.lifecycle.ForgetV2.on) { PcLog.w(TAG, "selection forget not run: forgetV2 is off"); return Outcome.FAILED }
-        return run(context, onForgotten, { LoggedScope.SELECTION }, target = selectionTarget(context, roots)) { it.forgetSelection(roots, token) }
+        return run(context, onForgotten, { LoggedScope.SELECTION }, target = selectionTarget(context, roots), allowedPins = pins) { it.forgetSelection(roots, token) } // only the pins the confirmation named (none when its lookup failed)
     }
 
     /**

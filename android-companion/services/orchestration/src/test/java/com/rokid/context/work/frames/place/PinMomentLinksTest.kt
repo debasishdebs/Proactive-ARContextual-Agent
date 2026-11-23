@@ -531,6 +531,23 @@ class PinMomentLinksTest {
         } finally { com.rokid.context.memory.db.DeletionEpochStore.of(ctx).clearWipePending(); com.rokid.context.memory.MemoryGraph.resetForTests(null) }
     }
 
+    // ---- Codex pin r2 #2 / #3 ----
+
+    @Test fun aCommittedArmingWhoseDeletionKeepsFailingStaysArmedAndALaterStartFinishesIt() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        assertTrue(PinMomentLinks.wipeCommittedStore(store, op)); db.wipeDao().wipeMemory(); PinMomentLinks.endWipe(op)
+        assertEquals("a failing save deletes nothing", 0, PlacePinning.underPinLock { PinMomentLinks.resolveStore(store, alive, noSave, null) { pendingFlag } })
+        assertTrue("the committed arming is the durable marker of the owed deletion", store.arming()!!.committed); assertEquals(3, store.pins().size)
+        assertEquals("the next start (ForgetStartup.settle) deletes the promised pins", 2, resolve())
+        assertEquals(listOf("Pin 2"), names()); assertNull(store.arming())
+    }
+
+    @Test fun deleteAllWithAnEmptyConfirmedSetNeverLooksUpMoments() = runBlocking<Unit> {
+        val failing: suspend (List<String>) -> Set<String> = { throw IllegalStateException("db unreadable") }
+        val op = PinMomentLinks.beginWipeStore(store, failing, save, resume = false, confirmedPins = emptySet(), wipePending = { pendingFlag })
+        assertNull("nothing armed", store.arming()); assertEquals(3, store.pins().size); PinMomentLinks.endWipe(op)
+    }
+
     // ---- Codex pin r1 #1 / #2: arming is bound to the confirmed pin ids ----
 
     @Test fun aForgetWithNoConfirmedPinsArmsNothingAndKeepsEveryPin() = runBlocking<Unit> {
@@ -606,7 +623,7 @@ class PinMomentLinksTest {
         val why = com.rokid.context.memory.forget.DeletionGraph.PREFS.single { it.name == "place_pins" }.why
         assertTrue("the inventory entry must say an explicit Forget deletes the pin and an expiry only clears the link", "reference Moment" in why && "EXPLICIT" in why && "NEVER deleted by an expiry" in why)
         val wipe = src("MemoryWipe.kt")
-        assertTrue("Delete all arms first, marks the commit and settles at the end", "PinMomentLinks.beginWipe(context, resume, confirmedPins)" in wipe && "PinMomentLinks.wipeCommitted(context, pinOp)" in wipe && "PinMomentLinks.abortWipe(context, pinOp)" in wipe && "PinMomentLinks.settle(context, pinOp)" in wipe)
+        assertTrue("Delete all arms first, marks the commit and settles at the end", "PinMomentLinks.beginWipe(context, resume, confirmedPins)" in wipe && "PinMomentLinks.wipeCommitted(context, pinOp)" in wipe && "PinMomentLinks.abortWipe(context, pinOp)" in wipe && "PinMomentLinks.settle(c, op)" in wipe && "pinSettle(context, pinOp)" in wipe)
         val actions = src("ForgetActions.kt")
         assertTrue("every gated Forget runs inside the cascade with its target set", "PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }" in actions)
         assertTrue("an arming failure is a typed outcome", "Outcome.PIN_PREP_FAILED" in actions)

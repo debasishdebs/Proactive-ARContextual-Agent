@@ -79,6 +79,9 @@ object MemoryWipe {
         return true
     }
 
+    /** Test seam: the wipe's own pin cascade (a test makes it fail to prove a failing pin deletion never keeps the whole wipe pending). */
+    @Volatile internal var pinSettle: suspend (Context, String) -> Int? = { c, op -> com.rokid.context.work.frames.place.PinMomentLinks.settle(c, op) }
+
     /** Test seam: runs right after the deletion epoch is committed and before anything is deleted (a test throws here to model a crash). */
     @Volatile internal var afterEpochCommit: (DeletionEpoch) -> Unit = {}
 
@@ -184,9 +187,10 @@ object MemoryWipe {
             try { com.rokid.context.work.frames.place.PlaceGraph.deleteAll(context) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 leftovers++; PcLog.w("MemoryWipe", "place pack not cleared: ${SafeLog.describe(e)}")
             }
-            // Slice 1.4.2: a pin whose reference Moment was just wiped is forgotten with it (armed at the start of this wipe, also on its resume); a failure is a leftover, so the resume retries it.
-            try { if (com.rokid.context.work.frames.place.PinMomentLinks.settle(context, pinOp) == null) leftovers++ } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
-                leftovers++; PcLog.w("MemoryWipe", "pin cascade not done: ${SafeLog.describe(e)}")
+            // Slice 1.4.2: a pin whose reference Moment was just wiped is forgotten with it. Its deletion is owed by the DURABLE committed pin arming (marked above; a resume whose promotion was not stored already keeps the wipe
+            // pending), which ForgetStartup.settle retries at every start. A failure here is therefore NOT a wipe leftover: counting it would re-run the whole wipe (erasing newer memories) at every start for as long as the pin deletion fails.
+            try { if (pinSettle(context, pinOp) == null) PcLog.w("MemoryWipe", "pin cascade not finished: retried at the next start") } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                PcLog.w("MemoryWipe", "pin cascade not done: ${SafeLog.describe(e)}")
             }
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
