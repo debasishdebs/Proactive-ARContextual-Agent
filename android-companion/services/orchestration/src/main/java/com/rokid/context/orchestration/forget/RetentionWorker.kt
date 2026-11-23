@@ -84,10 +84,52 @@ internal class Retention(
     /** [deletedUndescribed] is 0 by construction (expiry requires a citing memory); it is kept as the Diagnostics counter that proves it. */
     data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0)
 
+    /** P4: what one pass would expire, counts per tier and kind only (never an id or a text). The `plan` line prints it; a test pins the numbers. */
+    data class Plan(
+        val shortDue: Int, val mediumDue: Int, val longDue: Int, val captionDue: Int, val clusterSummaryDue: Int, val skippedPhotosDue: Int, val photosDue: Int, val vectorsDue: Int, val legacyDue: Int,
+        /** Live nudges / answers that cite something due. Expiry keeps them whole; the number is the reassurance. */
+        val nudgesKept: Int, val answersKept: Int,
+    ) {
+        fun line() = "plan shortDue=$shortDue mediumDue=$mediumDue longDue=$longDue captionDue=$captionDue clusterSummaryDue=$clusterSummaryDue skippedPhotosDue=$skippedPhotosDue photosDue=$photosDue vectorsDue=$vectorsDue legacyDue=$legacyDue nudgesKept=$nudgesKept answersKept=$answersKept"
+    }
+
+    /** Read-only. Mirrors the selection of each step in [run] (the capped selects are counted up to [COUNT_CAP]). */
+    suspend fun plan(s: MemorySettings, nowMs: Long): Plan {
+        val dao = graph.db.forgetDao()
+        val since = if (s.perKindSince > 0L) s.perKindSince else nowMs
+        val short = nowMs - s.shortHours * HOUR; val medium = nowMs - s.mediumDays * DAY; val long = nowMs - s.longDays * DAY
+        fun forever(d: Int) = d == MemorySettings.FOREVER
+        val photos = if (forever(s.photoDays)) 0 else dao.linkedPhotosDue(since, s.photoDays * DAY, nowMs, PROTECT_MS, if (describeBeforeDeleteReady) 1 else 0, GRACE_DAYS * DAY, COUNT_CAP).size
+        val tiers = listOf(MemoryTier.SHORT to short, MemoryTier.MEDIUM to medium, MemoryTier.LONG to long)
+        return Plan(
+            shortDue = dao.countExpired(MemoryTier.SHORT.name, short), mediumDue = dao.countExpired(MemoryTier.MEDIUM.name, medium), longDue = dao.countExpired(MemoryTier.LONG.name, long),
+            captionDue = if (forever(s.captionDays)) 0 else dao.countExpiredOfType(CAPTION, nowMs - s.captionDays * DAY),
+            clusterSummaryDue = if (forever(s.clusterSummaryDays)) 0 else dao.countExpiredOfType(CLUSTER_SUMMARY, nowMs - s.clusterSummaryDays * DAY),
+            skippedPhotosDue = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, COUNT_CAP).size,
+            photosDue = photos,
+            vectorsDue = if (forever(s.imageVectorDays)) 0 else dao.vectorFramesBefore(nowMs - s.imageVectorDays * DAY, COUNT_CAP).size,
+            legacyDue = dao.orphanFramesBefore(long, COUNT_CAP).size,
+            nudgesKept = tiers.sumOf { (t, b) -> dao.countNudgesCitingExpired(t.name, b) },
+            answersKept = tiers.sumOf { (t, b) -> dao.countAsksCitingExpired(t.name, b) },
+        )
+    }
+
     suspend fun run(s: MemorySettings, nowMs: Long, onChunk: suspend (ForgetService.Result) -> Unit = {}): Summary {
         val dao = graph.db.forgetDao()
-        // 1. An unstamped clock means "this is the first run of the build": every per-kind deadline counts from now.
-        val since = if (s.perKindSince > 0L) s.perKindSince else nowMs
+        // P4: a counts-only plan line before anything is removed, a result line after (literal templates, numbers only: no id, no text).
+        runCatching { PcLog.milestone(LOG_TAG, plan(s, nowMs).line()) }
+        var memoriesExpired = 0; var photosExpired = 0; var nudgesRedacted = 0; var answersRedacted = 0
+        val track: suspend (ForgetService.Result) -> Unit = { r -> memoriesExpired += r.forgotten.size; photosExpired += r.expiredFrames; nudgesRedacted += r.redactedNudges; answersRedacted += r.redactedAsks; onChunk(r) }
+        val started = System.currentTimeMillis()
+        val summary = runPass(s, nowMs, since = if (s.perKindSince > 0L) s.perKindSince else nowMs, onChunk = track)
+        val secs = (System.currentTimeMillis() - started) / 1000
+        PcLog.milestone(LOG_TAG, "done memoriesExpired=$memoriesExpired photosExpired=$photosExpired skippedPhotosExpired=${summary.skippedDeleted} nudgesRedacted=$nudgesRedacted answersRedacted=$answersRedacted seconds=$secs")
+        return summary
+    }
+
+    private suspend fun runPass(s: MemorySettings, nowMs: Long, since: Long, onChunk: suspend (ForgetService.Result) -> Unit): Summary {
+        val dao = graph.db.forgetDao()
+        // 1. An unstamped clock means "this is the first run of the build": every per-kind deadline counts from now (`since`, computed by [run]).
         // 2. Tier windows (captions and cluster summaries are not tiered any more).
         val cutoffs = listOf(
             MemoryTier.SHORT to nowMs - s.shortHours * HOUR,
@@ -158,6 +200,9 @@ internal class Retention(
          */
         const val DESCRIBE_BEFORE_DELETE_READY = true
         private const val CHUNK = 200
+        /** The plan line counts the capped selects up to here. */
+        private const val COUNT_CAP = 100_000
+        const val LOG_TAG = "PcRetention"
         private const val MAX_ROUNDS = 50
         private const val HOUR = 3_600_000L
         private const val DAY = 24 * HOUR

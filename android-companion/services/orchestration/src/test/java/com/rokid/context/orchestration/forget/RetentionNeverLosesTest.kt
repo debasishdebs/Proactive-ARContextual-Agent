@@ -85,6 +85,19 @@ class RetentionNeverLosesTest {
     @Test fun retentionLosesNothingDependentLegacyPath() = runBlocking { ForgetV2.testOverride = false; seed(); run(); assertNothingLost() }
     @Test fun retentionLosesNothingDependentV2Path() = runBlocking { ForgetV2.testOverride = true; seed(); run(); assertNothingLost() }
 
+    /** P4: the plan is counts per tier and kind, read-only, and its line carries no id and no text. */
+    @Test fun planCountsPerTierAndKindAndLogsNoContent() = runBlocking {
+        seed()
+        val retention = Retention(graph, com.rokid.context.memory.forget.ForgetService(graph.db, graph.proposals))
+        val plan = retention.plan(com.rokid.context.memory.MemorySettings(), now)
+        assertEquals(3, plan.shortDue); assertEquals(0, plan.mediumDue); assertEquals(0, plan.longDue)
+        assertEquals(1, plan.nudgesKept); assertEquals(1, plan.answersKept)
+        val line = plan.line()
+        assertTrue(line, line.startsWith("plan shortDue=3 mediumDue=0 longDue=0 "))
+        listOf("fact1", "fact2", "fact3", "NUDGE TEXT", "ANSWER TEXT", "f1").forEach { assertFalse(line, it in line) }
+        assertEquals("planning wrote nothing", 3, graph.db.forgetDao().countExpired("SHORT", now - 24 * hour))
+    }
+
     /** Control: an explicit user Forget of the same fact still redacts. */
     @Test fun userForgetStillRedacts() = runBlocking {
         ForgetV2.testOverride = false; seed()
