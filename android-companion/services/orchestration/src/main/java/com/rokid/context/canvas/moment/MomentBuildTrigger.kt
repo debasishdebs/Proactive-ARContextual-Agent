@@ -152,13 +152,18 @@ object MomentTriggers {
 /** The process-wide Scene cadence (production wiring): the real builder on the app database, the same kill switch as the Moments. Run by `MomentCadenceWorker` after its Moment rebuild. */
 object SceneTriggers {
     @Volatile private var instance: SceneCadence? = null
+    @Volatile private var builderInstance: SceneBuilder? = null
+
+    /** The builder behind [get] (the developer routes run it directly: the same switch and fences). */
+    fun builder(context: Context): SceneBuilder { get(context); return builderInstance!! }
 
     fun get(context: Context): SceneCadence = instance ?: synchronized(this) {
         instance ?: run {
             val db = MemoryGraph.get(context).db
-            SceneCadence(db, SceneBuilder(db, enabled = { MomentStoreSwitch.DEFAULT_ENABLED }))
+            val builder = SceneBuilder(db, enabled = { MomentStoreSwitch.DEFAULT_ENABLED }).also { builderInstance = it }
+            SceneCadence(db, builder)
         }.also { instance = it }
     }
 
-    fun resetForTests() { synchronized(this) { instance = null } }
+    fun resetForTests() { synchronized(this) { instance = null; builderInstance = null } }
 }

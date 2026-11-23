@@ -98,4 +98,25 @@ class MomentRoutesTest {
         assertEquals("""{"stored":1,"deleted":0,"rejected":0}""", json(r)["window"].toString())
         assertEquals("the catch-up window (7 days before the fake now) holds nothing: no marker", "false", json(r)["catchUp"]!!.jsonObject["done"]!!.jsonPrimitive.content)
     }
+
+    /** P1: the day rebuild also rebuilds the Scenes of that day and reports them; the repair route is Developer-only, rate-limited, off (404) without a repairer, and answers counts only. */
+    @Test fun theDayRebuildReportsItsScenes() {
+        val sc = MomentRoutes({ dev }, fake, { ZoneOffset.UTC as ZoneId }, { now }, scenes = { _, _ -> com.rokid.context.canvas.moment.SceneBuilder.Report(7, 8, 9) })
+        assertEquals("""{"stored":7,"removed":8,"unchanged":9}""", json(call(sc)!!)["scenes"].toString())
+        assertNull("no scene rebuilder: no scenes key", json(call(routes(), day = "2026-10-25")!!)["scenes"])
+    }
+
+    @Test fun theRepairRouteRunsTheRepairAndAnswersCountsOnly() {
+        val ran = ArrayList<Long>()
+        val r = MomentRoutes({ dev }, fake, { ZoneOffset.UTC as ZoneId }, { now }, repair = { n -> ran += n; com.rokid.context.canvas.moment.MomentRepair.Report(30, 4, 100, 90, 12) })
+        val res = call(r, path = "/api/moments/repair", day = null)!!
+        assertEquals(200, res.status); assertEquals(listOf(now), ran)
+        assertEquals("""{"daysChecked":30,"daysRepaired":4,"missing":100,"momentsStored":90,"scenesStored":12}""", json(res).toString())
+        now += MomentRoutes.MIN_INTERVAL_MS - 1
+        assertEquals(429, call(r, path = "/api/moments/repair", day = null)!!.status)
+        dev = false
+        assertEquals(403, call(r, path = "/api/moments/repair", day = null)!!.status); assertEquals(1, ran.size)
+    }
+
+    @Test fun theRepairRouteDoesNotExistWithoutARepairer() { assertNull(call(routes(), path = "/api/moments/repair", day = null)) }
 }
