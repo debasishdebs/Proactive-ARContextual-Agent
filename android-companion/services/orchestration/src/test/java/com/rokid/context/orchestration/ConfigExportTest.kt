@@ -131,6 +131,15 @@ class ConfigExportTest {
         prefs(com.rokid.context.memory.place.UserPinStore.PREFS).edit().clear().commit()
     }
 
+    /** Codex pin r1 #5: a stored pin list that is malformed (but still holds a Moment id and a time) is never exported as it is. */
+    @Test fun malformedPinJsonIsNeverExportedUnsanitised() = runBlocking<Unit> {
+        val bad = "[{\"id\":\"a\",\"name\":\"Secret Spot\",\"moment\":\"0000abcd\",\"at\":1700000000000,"
+        assertTrue(prefs(com.rokid.context.memory.place.UserPinStore.PREFS).edit().putString("pins", bad).commit())
+        val text = ConfigExport.write(ctx, ai, nowMs = 10).readText()
+        assertFalse("the moment id is not exported", "0000abcd" in text); assertFalse("nor the name", "Secret Spot" in text); assertFalse("nor the time", "1700000000000" in text)
+        prefs(com.rokid.context.memory.place.UserPinStore.PREFS).edit().clear().commit()
+    }
+
     /** Wave B: the context hub's state (my-car addresses, the LiveFit digest) never enters the settings export. */
     @Test fun ctxHubStateIsNotExported() {
         assertFalse("ctx_hub_state" in ConfigExport.PREFS_FILES)

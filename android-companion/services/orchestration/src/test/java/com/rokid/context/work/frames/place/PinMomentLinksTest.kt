@@ -463,6 +463,89 @@ class PinMomentLinksTest {
         assertEquals(listOf("a", "b"), db.frameDao().all().map { it.id }.sorted())
     }
 
+    // ---- Codex pin r1 #3: a failed replacement arming never drops an older committed arming ----
+
+    /** A pin 3 whose Moment has no photo left, and a committed arming of an earlier Forget that still owes its deletion (the save was refused). */
+    private val goneId = "0000ffff"
+    private val olderCommitted get() = Arming("older", "forget", true, emptyMap(), mapOf(ids[3] to goneId))
+    private fun withGonePin() { assertTrue(store.write(store.pins() + pin(3, goneId))) }
+
+    @Test fun aFailedReplacementArmingKeepsTheOlderCommittedArmingOfAForget() = runBlocking<Unit> {
+        withGonePin(); assertTrue(store.arm(olderCommitted))
+        val fp = FailingPrefs(rawPrefs, failKey = UserPinStore.ARMED_KEY)
+        var ran = false
+        try { explicit(UserPinStore(fp), sv = noSave, target = { l -> l.filter { it == id2 }.toSet() }) { ran = true; fx.service.forgetMoment("b") }; org.junit.Assert.fail("expected PinArmFailed") } catch (e: PinArmFailed) { }
+        assertFalse(ran)
+        assertEquals("the pin deletion A still owes is not lost", olderCommitted, store.arming())
+        assertEquals(4, store.pins().size)
+    }
+
+    @Test fun aFailedReplacementArmingKeepsTheOlderCommittedArmingOfADeleteAll() = runBlocking<Unit> {
+        withGonePin(); assertTrue(store.arm(olderCommitted))
+        val fp = FailingPrefs(rawPrefs, failKey = UserPinStore.ARMED_KEY)
+        try { PinMomentLinks.beginWipeStore(UserPinStore(fp), alive, noSave, resume = false, wipePending = { pendingFlag }); org.junit.Assert.fail("expected PinArmFailed") } catch (e: PinArmFailed) { }
+        assertEquals(olderCommitted, store.arming())
+    }
+
+    @Test fun theRestoreWritesTheOlderArmingBackWhenTheFailedWriteHadReplacedIt() = runBlocking<Unit> {
+        withGonePin()
+        // a prefs whose FIRST arming commit "fails" after the new value already reached the file (the in-memory/disk mismatch SharedPreferences allows)
+        assertTrue(store.arm(olderCommitted))
+        val flaky = object : SharedPreferences by rawPrefs {
+            var failNext = true
+            override fun edit(): SharedPreferences.Editor { val e = rawPrefs.edit(); return object : SharedPreferences.Editor by e {
+                var isArm = false
+                override fun putString(key: String?, value: String?): SharedPreferences.Editor { isArm = key == UserPinStore.ARMED_KEY; e.putString(key, value); return this }
+                override fun commit(): Boolean { val ok = e.commit(); return if (isArm && failNext) { failNext = false; false } else ok }
+            } }
+        }
+        try { explicit(UserPinStore(flaky), sv = noSave, target = { l -> l.filter { it == id2 }.toSet() }) { fx.service.forgetMoment("b") }; org.junit.Assert.fail("expected PinArmFailed") } catch (e: PinArmFailed) { }
+        assertEquals("the new record was replaced by the older arming", olderCommitted, store.arming())
+    }
+
+    // ---- Codex pin r1 #4: a failed resume promotion neither looks committed nor lets the wipe clear its marker ----
+
+    @Test fun aFailedResumePromotionKeepsTheUncommittedWipeArmingAndReportsItUnpromoted() = runBlocking<Unit> {
+        val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
+        pendingFlag = true; PinMomentLinks.endWipe(op1) // epoch committed, the commit write never happened
+        val wipeArming = store.arming()!!
+        assertFalse(wipeArming.committed)
+        val fp = FailingPrefs(rawPrefs, failKey = UserPinStore.ARMED_KEY)
+        val op2 = PinMomentLinks.beginWipeStore(UserPinStore(fp), alive, save, resume = true, wipePending = { pendingFlag })
+        assertFalse("the wipe is told the promotion was not stored", PinMomentLinks.resumePromoted(op2))
+        assertEquals("the stored arming is still the uncommitted one", wipeArming, store.arming())
+        PinMomentLinks.endWipe(op2)
+        assertTrue("a later resume that can store it is promoted", PinMomentLinks.resumePromoted(op2))
+        val op3 = PinMomentLinks.beginWipeStore(store, alive, save, resume = true, wipePending = { pendingFlag })
+        assertTrue(PinMomentLinks.resumePromoted(op3)); assertTrue(store.arming()!!.committed)
+        PinMomentLinks.endWipe(op3)
+    }
+
+    @Test fun settleReportsNotDoneWhileAWipeArmingOwesPinDeletion() = runBlocking<Unit> {
+        val op1 = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { com.rokid.context.memory.db.DeletionEpochStore.of(ctx).wipePending() })
+        com.rokid.context.memory.db.DeletionEpochStore.of(ctx).commitWipe(System.currentTimeMillis()); PinMomentLinks.endWipe(op1)
+        com.rokid.context.memory.MemoryGraph.resetForTests(db)
+        try {
+            assertNull("an unpromoted pending wipe arming is not 'done': the wipe keeps its marker", PinMomentLinks.settle(ctx))
+            assertFalse(store.arming()!!.committed); assertEquals(3, store.pins().size)
+        } finally { com.rokid.context.memory.db.DeletionEpochStore.of(ctx).clearWipePending(); com.rokid.context.memory.MemoryGraph.resetForTests(null) }
+    }
+
+    // ---- Codex pin r1 #1 / #2: arming is bound to the confirmed pin ids ----
+
+    @Test fun aForgetWithNoConfirmedPinsArmsNothingAndKeepsEveryPin() = runBlocking<Unit> {
+        explicit(allowed = emptySet()) { fx.service.forgetMoment("a") }
+        assertEquals(3, store.pins().size); assertNull(store.arming())
+    }
+
+    @Test fun deleteAllArmsOnlyTheConfirmedPins() = runBlocking<Unit> {
+        val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, confirmedPins = setOf(ids[1]), wipePending = { pendingFlag })
+        assertEquals(mapOf(ids[1] to id2), store.arming()!!.pairs)
+        assertTrue(PinMomentLinks.wipeCommittedStore(store, op)); db.wipeDao().wipeMemory()
+        assertEquals(1, resolve(self = op)); PinMomentLinks.endWipe(op)
+        assertEquals("pin 0 was not named: it stays, its link is cleared", listOf("Pin 0", "Pin 2"), names())
+    }
+
     @Test fun withNothingToArmNoArmingIsNeededAndTheForgetRuns() = runBlocking<Unit> {
         val fp = FailingPrefs(rawPrefs, failKey = UserPinStore.ARMED_KEY)
         explicit(UserPinStore(fp), target = none) { fx.service.forgetMoment("a") }
@@ -523,7 +606,7 @@ class PinMomentLinksTest {
         val why = com.rokid.context.memory.forget.DeletionGraph.PREFS.single { it.name == "place_pins" }.why
         assertTrue("the inventory entry must say an explicit Forget deletes the pin and an expiry only clears the link", "reference Moment" in why && "EXPLICIT" in why && "NEVER deleted by an expiry" in why)
         val wipe = src("MemoryWipe.kt")
-        assertTrue("Delete all arms first, marks the commit and settles at the end", "PinMomentLinks.beginWipe(context, resume)" in wipe && "PinMomentLinks.wipeCommitted(context, pinOp)" in wipe && "PinMomentLinks.abortWipe(context, pinOp)" in wipe && "PinMomentLinks.settle(context, pinOp)" in wipe)
+        assertTrue("Delete all arms first, marks the commit and settles at the end", "PinMomentLinks.beginWipe(context, resume, confirmedPins)" in wipe && "PinMomentLinks.wipeCommitted(context, pinOp)" in wipe && "PinMomentLinks.abortWipe(context, pinOp)" in wipe && "PinMomentLinks.settle(context, pinOp)" in wipe)
         val actions = src("ForgetActions.kt")
         assertTrue("every gated Forget runs inside the cascade with its target set", "PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }" in actions)
         assertTrue("an arming failure is a typed outcome", "Outcome.PIN_PREP_FAILED" in actions)

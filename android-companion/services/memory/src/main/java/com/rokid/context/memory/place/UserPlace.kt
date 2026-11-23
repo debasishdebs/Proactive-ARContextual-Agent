@@ -181,12 +181,12 @@ class UserPinStore(private val prefs: SharedPreferences) {
             pins.forEach { p -> a.put(JSONObject().put("id", p.id).put("name", p.name).put("kind", p.kind).put("lat", p.lat).put("lon", p.lon).put("r", p.radiusM).put("parent", p.parentId ?: JSONObject.NULL).put("note", p.note).also { o -> if (p.momentId != null) o.put("moment", p.momentId); if (p.pinnedAt != null) o.put("at", p.pinnedAt) }) }
         }.toString()
 
-        /** [raw] (the stored list) without any Moment link: what the settings export carries. An unreadable list is returned as it is (the export never invents content). */
+        /** [raw] (the stored list) without any Moment link: what the settings export carries. An unreadable list is NOT returned (it could still carry a Moment id and a time): it exports as an empty list `[]`, so nothing unsanitised is ever shared. */
         fun withoutLinks(raw: String): String = try {
             val a = JSONArray(raw)
             for (i in 0 until a.length()) a.optJSONObject(i)?.let { it.remove("moment"); it.remove("at") }
             a.toString()
-        } catch (e: Exception) { raw }
+        } catch (e: Exception) { "[]" }
 
         fun parse(raw: String): List<UserPlace> {
             val a = JSONArray(raw)

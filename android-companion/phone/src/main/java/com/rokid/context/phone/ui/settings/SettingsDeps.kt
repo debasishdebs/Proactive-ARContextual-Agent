@@ -64,7 +64,8 @@ class SettingsDeps(
     private val lazyWatchList: Lazy<com.rokid.context.work.frames.scene.WatchListStore>,
     val encryption: EncryptionControl,
     val usedBytes: suspend () -> Long,
-    val wipe: suspend () -> Unit,
+    /** Delete all; the argument is the ids of the pins the dialog named (only those are deleted with the Moments). */
+    val wipe: suspend (Set<String>) -> Unit,
     val export: suspend () -> File,
     val share: (File) -> Unit,
     /** Diagnostics › Logs: this app's own recent log lines, key-looking lines dropped (Task 21). */
@@ -151,7 +152,7 @@ class SettingsDeps(
                 }
             },
             usedBytes = { StorageUsage.usedBytes(app) },
-            wipe = { com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAll(app) } },
+            wipe = { pins -> com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAll(app, confirmedPins = pins) } },
             export = { MemoryExport.write(app) },
             share = { f -> ShareFile.share(app, f) },
             logs = { LogReader.ownLines() },

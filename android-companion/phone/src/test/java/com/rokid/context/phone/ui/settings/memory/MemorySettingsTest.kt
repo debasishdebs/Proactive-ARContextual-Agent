@@ -3,6 +3,7 @@ package com.rokid.context.phone.ui.settings.memory
 import android.app.Application
 import android.content.Context
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -93,11 +94,20 @@ class MemorySettingsTest {
 
     @Test fun screenShowsTheSecondConfirm() {
         var confirmed = 0
-        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2, pinsChecked = true), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
             onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = { confirmed++ }, onCancelDeleteAll = {}, onOpenReview = {}) } }
         compose.onNodeWithText("This can't be undone. Delete every memory, photo and answer?").assertExists()
         compose.onNodeWithTag("delete_confirm").performClick()
         assertEquals(1, confirmed)
+    }
+
+    @Test fun theConfirmButtonIsDisabledUntilThePinLookupSucceeded() {
+        var confirmed = 0
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+            onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = { confirmed++ }, onCancelDeleteAll = {}, onOpenReview = {}) } }
+        compose.onNodeWithTag("delete_confirm").assertIsNotEnabled()
+        compose.onNodeWithTag("delete_confirm").performClick()
+        assertEquals(0, confirmed)
     }
 
     /** Review M6: the note says a restart applies it and how (the hub service keeps the process alive). */
@@ -129,6 +139,41 @@ class MemorySettingsTest {
         vm.cancelScope()
     }
     private fun <T> withTimeout5(block: suspend () -> T): T = runBlocking { withTimeout(5_000) { block() } }
+
+    // Codex pin r1 #2: Delete all never proceeds before the pin lookup succeeded, and the wipe is bound to the pins the dialog named.
+    private fun pinVm(lookup: suspend () -> com.rokid.context.work.frames.place.PinsGoing, onWipe: (Set<String>) -> Unit) = MemorySettingsViewModel(
+        { store }, encryption, usedBytes = { 0L }, wipe = { onWipe(it) }, export = { File("x") }, share = {}, reviewCount = flowOf(0), work = main.dispatcher, pinsGoing = lookup,
+    )
+
+    @Test fun deleteAllWaitsForThePinLookupAndWipesOnlyTheNamedPins() {
+        val gate = CompletableDeferred<com.rokid.context.work.frames.place.PinsGoing>()
+        var wipedWith: Set<String>? = null
+        val vm = pinVm({ gate.await() }) { wipedWith = it }
+        vm.askDeleteAll()
+        assertTrue(!vm.state.value.deleteAllConfirmable)
+        vm.confirmDeleteAll(); vm.confirmDeleteAll() // lookup still running: neither press does anything
+        assertEquals(1, vm.state.value.confirmStep); assertEquals(null, wipedWith)
+        gate.complete(com.rokid.context.work.frames.place.PinsGoing(1, listOf("Home"), setOf("pin-1")))
+        withTimeout5 { vm.state.first { it.deleteAllConfirmable } }
+        vm.confirmDeleteAll(); vm.confirmDeleteAll()
+        withTimeout5 { vm.state.first { it.notice == "Everything was deleted" } }
+        assertEquals(setOf("pin-1"), wipedWith)
+        vm.cancelScope()
+    }
+
+    @Test fun aFailedPinLookupKeepsDeleteAllDisabled() {
+        var wiped2 = 0
+        val vm = pinVm({ throw IllegalStateException("x") }) { wiped2++ }
+        vm.askDeleteAll()
+        withTimeout5 { vm.state.first { it.pinsChecked } }
+        assertTrue(!vm.state.value.deleteAllConfirmable)
+        vm.confirmDeleteAll(); vm.confirmDeleteAll()
+        assertEquals(1, vm.state.value.confirmStep); assertEquals(0, wiped2)
+        val failedResult = pinVm({ com.rokid.context.work.frames.place.PinsGoing.FAILED }) { wiped2++ }
+        failedResult.askDeleteAll(); withTimeout5 { failedResult.state.first { it.pinsChecked } }
+        assertTrue(!failedResult.state.value.deleteAllConfirmable)
+        vm.cancelScope(); failedResult.cancelScope()
+    }
 
     /** Review M7: the prefs-backed store is reached on the work dispatcher, not in the ViewModel factory on Main. */
     @Test fun theStoreIsNotReadWhenTheViewModelIsBuilt() {

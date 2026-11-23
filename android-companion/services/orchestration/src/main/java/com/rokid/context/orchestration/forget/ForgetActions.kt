@@ -74,11 +74,11 @@ object ForgetActions {
      * outcomes, same post-commit cleanup as every Forget (cached export, reminders, notifications, outbox, queue scrub, listeners); MOMENT and SCENE run the range-Forget code ([com.rokid.context.memory.forget.ScopedForget]).
      * The scope is read ONCE here ([scope] defaults to the setting) so the dialog's counts and the delete name the same scope.
      */
-    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, undoMark: (suspend (String) -> Unit)? = null, onForgotten: () -> Unit = {}): Outcome =
+    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, undoMark: (suspend (String) -> Unit)? = null, confirmedPins: Set<String> = emptySet(), onForgotten: () -> Unit = {}): Outcome =
         if (target is ForgetTarget.Mark) markOutcome(target.labelId, onForgotten, undoMark)
         else {
             var ran: ForgetScope? = null
-            run(context, onForgotten, { ran?.let { LoggedScope.valueOf(it.name) } ?: LoggedScope.PHOTO }, target = scopedTarget(context, target, scope)) { svc ->
+            run(context, onForgotten, { ran?.let { LoggedScope.valueOf(it.name) } ?: LoggedScope.PHOTO }, target = scopedTarget(context, target, scope), allowedPins = confirmedPins) { svc ->
                 val engine = ScopedForget(MemoryGraph.get(context).db, svc)
                 val plan = engine.plan(target, scope)
                 ran = plan.effective
@@ -110,13 +110,13 @@ object ForgetActions {
     }
 
     /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
-    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0, val tooLarge: Boolean = false, /** Slice 1.4.2: pins that reference a Moment this Forget removes: they are deleted with it (count and the first names, for the dialog). */ val pins: Int = 0, val pinNames: List<String> = emptyList(), val peerResults: Int = 0, val needsAck: Boolean = false, val ackHash: String = "")
+    data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0, val tooLarge: Boolean = false, /** Slice 1.4.2: pins that reference a Moment this Forget removes: they are deleted with it (count and the first names, for the dialog). */ val pins: Int = 0, val pinNames: List<String> = emptyList(), val peerResults: Int = 0, val needsAck: Boolean = false, val ackHash: String = "", /** The ids of exactly the pins the dialog named: the Forget arms only these. */ val pinIds: Set<String> = emptySet(), /** The pin lookup failed: the pins are unknown, so a pin-carrying confirmation never proceeds on it. */ val pinsUnknown: Boolean = false)
     suspend fun previewScoped(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get()): ScopedPreview = withContext(Dispatchers.IO) {
         val graph = MemoryGraph.get(context)
         val engine = ScopedForget(graph.db, ForgetService(graph.db, graph.proposals))
         val plan = engine.plan(target, scope); val c = engine.preview(plan)
         val pins = com.rokid.context.work.frames.place.PinMomentLinks.pinsGoing(context) { ids -> engine.momentsReached(plan, ids) }
-        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash, c.outside, c.tooLarge, pins.count, pins.names, c.peerResults, c.needsAck, c.ackHash)
+        ScopedPreview(plan.effective, c.photos, c.memories, c.marks, c.moments, c.scenesRemoved, c.scenesShrunk, c.planHash, c.outside, c.tooLarge, pins.count, pins.names, c.peerResults, c.needsAck, c.ackHash, pins.ids, pins.failed)
     }
 
     /**
@@ -281,11 +281,11 @@ object ForgetActions {
     private suspend fun momentsFullyErased(md: com.rokid.context.memory.db.MomentDao, ids: Collection<String>, erased: Set<String>): Set<String> =
         ids.filter { id -> val s = com.rokid.context.memory.moment.MomentId.parse(id); s != null && md.frameIdsBetween(s * 1000, s * 1000 + 999).let { f -> f.isNotEmpty() && erased.containsAll(f) } }.toSet()
 
-    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref? = null, target: suspend (List<String>) -> Set<String>, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
+    private suspend fun run(context: Context, onForgotten: () -> Unit, kind: () -> LoggedScope, shadowRoot: com.rokid.context.memory.forget.lifecycle.Ref? = null, target: suspend (List<String>) -> Set<String>, allowedPins: Set<String>? = null, op: suspend (ForgetService) -> ForgetService.Result): Outcome =
         withContext(Dispatchers.IO + NonCancellable) {
             try {
                 var pending = false; var notRemoved = false
-                val o = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }) { runLocked(context, onForgotten, kind, shadowRoot, op) } } // slice 1.4.2: a pin whose Moment this Forget removes goes with it
+                val o = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = allowedPins) { runLocked(context, onForgotten, kind, shadowRoot, op) } } // slice 1.4.2: a pin whose Moment this Forget removes goes with it
                 withPinNotice(o, pending, notRemoved)
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) {
                 PcLog.w(TAG, "forget not run: pin removal not prepared")
