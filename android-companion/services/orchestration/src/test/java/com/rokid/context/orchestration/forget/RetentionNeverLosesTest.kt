@@ -448,23 +448,27 @@ class RetentionNeverLosesTest {
         ids.forEach { assertNotNull(graph.db.forgetDao().frame(it)) }
     }
 
-    /** K6 + r2-7: the worker evicts under Pause ON (real files on disk, a 10 MB cap), and says so with a counts-only line. */
-    @Test fun theWorkerEvictsUnderPause() = runBlocking {
+    /** Codex v3 r1 interim safety: with Pause ON the worker deletes NOTHING, quota eviction included (a 10 MB cap over 18 MB of photos); with Pause OFF the same world evicts the three oldest. */
+    @Test fun theWorkerEvictsNothingUnderPauseAndEvictsWhenPauseIsOff() = runBlocking {
         ForgetV2.testOverride = false
         val (ids, _) = quotaWorld()
-        DeveloperFlags.setPauseRetention(ctx, true)
         com.rokid.context.memory.MemorySettingsStore.get(ctx).update { it.copy(quotaMb = 10, photoDays = MemorySettings.FOREVER) }
         val dir = java.io.File(ctx.filesDir, com.rokid.context.data.frames.RokidFrameInbox.FRAME_DIRS.first()).also { it.mkdirs() }
         ids.forEach { id ->
             val f = java.io.File(dir, "$id.jpg"); java.io.RandomAccessFile(f, "rw").use { it.setLength(3L * 1024 * 1024) }
             graph.db.openHelper.writableDatabase.execSQL("UPDATE frame SET path = '${f.absolutePath}' WHERE id = '$id'")
         }
+        DeveloperFlags.setPauseRetention(ctx, true)
+        val before = snapshot()
+        assertTrue(TestListenableWorkerBuilder<RetentionWorker>(ctx).build().doWork() is ListenableWorker.Result.Success)
+        ids.forEach { assertNotNull("$it stays under Pause", graph.db.forgetDao().frame(it)); assertTrue(java.io.File(dir, "$it.jpg").exists()) }
+        assertEquals("nothing marked, nothing deleted under Pause", emptyList<String>(), metaKeys("rx:f:")); assertEquals(before, snapshot())
+        DeveloperFlags.setPauseRetention(ctx, false)
         assertTrue(TestListenableWorkerBuilder<RetentionWorker>(ctx).build().doWork() is ListenableWorker.Result.Success) // 18 MB over a 10 MB cap: down to 9 MB = 3 photos
         val gone = ids.filter { graph.db.forgetDao().frame(it) == null }
         assertEquals("the three oldest are gone", listOf("q1", "q2", "q3"), gone)
         gone.forEach { assertFalse("$it's JPEG was deleted", java.io.File(dir, "$it.jpg").exists()) }
         assertEquals("text untouched", 6, graph.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM memory").use { c -> c.moveToFirst(); c.getInt(0) })
-        DeveloperFlags.setPauseRetention(ctx, false)
     }
 
     // ---- WP1 (K8): the one-shot migration ----------------------------------------------------------------------------------------------------------------------------------------------
