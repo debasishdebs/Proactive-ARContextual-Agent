@@ -63,7 +63,41 @@ object PlaceGraph {
     fun history(context: Context): PlaceCardHistory {
         historyRef?.let { return it }
         val app = context.applicationContext
-        return synchronized(this) { historyRef ?: PlaceCardHistory(pack(app).cardLogDao, log = { PcLog.i(TAG, it) }, enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeCardHistory(app) }).also { historyRef = it } }
+        return synchronized(this) {
+            historyRef ?: PlaceCardHistory(
+                pack(app).cardLogDao, log = { PcLog.i(TAG, it) }, enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeCardHistory(app) },
+                owed = PrefsHistoryOwed(owedPrefs(app)),
+                pinActive = { id -> pins(app).pins().any { it.id == id } }, // P1-4: asked under the history's write lock, after the pin store was written
+            ).also { historyRef = it }
+        }
+    }
+
+    private fun owedPrefs(app: Context) = app.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE)
+
+    /** True while a history deletion (Forget, Delete all, pin removal) is still owed. Reads one prefs key; never opens `places.db`. */
+    fun historyOwed(context: Context): Boolean = PrefsHistoryOwed(owedPrefs(context.applicationContext)).all().isNotEmpty()
+
+    /**
+     * Finishes the history deletions an earlier Forget / Delete all could not complete (called at every start and right after a Forget): true = nothing is owed. When `places.db` does not exist there is
+     * nothing to delete and the obligation is dropped. Off Main.
+     */
+    suspend fun settleHistory(context: Context): Boolean {
+        val app = context.applicationContext
+        if (!historyOwed(app)) return true
+        val h = existingHistory(app)
+        if (h == null) { owedPrefs(app).edit().remove(PrefsHistoryOwed.KEY).commit(); return true }
+        return h.retryOwed()
+    }
+
+    /**
+     * A user pin was removed (P1-4): attempts in flight that may hold it are fenced out (their publication, memory and history are refused), the card on the glasses is withdrawn, and the history rows that
+     * name it are deleted under the history's write lock. The pin store is already written when this runs, so a row inserted after it is refused by the history's active-pin check.
+     */
+    internal suspend fun pinsRemoved(history: PlaceCardHistory, gone: Collection<String>) {
+        if (gone.isEmpty()) return
+        fence.trip()
+        port.clear()
+        history.onPinRemoved(gone)
     }
 
     /** The history for a Forget: null when nothing was ever stored (no `places.db` file and no pack in this process), so a Forget never creates the database. */
@@ -104,7 +138,7 @@ object PlaceGraph {
         if (!pins(context).write(list)) return false
         p.replaceUserPlaces(list)
         val gone = before - list.map { it.id }.toSet() // a pin that disappeared takes its history rows (and the cluster rows that list it) with it
-        if (gone.isNotEmpty()) history(context).onPinRemoved(gone)
+        if (gone.isNotEmpty()) try { pinsRemoved(history(context), gone) } catch (e: HistoryDeletionPending) { /* owed: retried at the next start; the pin removal itself stands */ }
         return true
     }
 
@@ -125,8 +159,11 @@ object PlaceGraph {
         port.clear() // the card goes first, and a card still being made is fenced out
         val app = context.applicationContext
         if (pack == null && !app.getDatabasePath(PlacesDatabase.NAME).exists()) return
-        pack(app).deleteAll()
+        // The history is cleared (or its deletion recorded as owed) whatever happens to the pack; either failure is thrown, so Delete all does not report done while private rows may remain.
+        var packFailure: Exception? = null
+        try { pack(app).deleteAll() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { packFailure = e }
         history(app).clearAll("delete_all")
+        packFailure?.let { throw it }
     }
 
     fun installForTests(p: PlacePack?) { synchronized(this) { pack = p; pinsSynced = false; historyRef = null; appContext = null } }

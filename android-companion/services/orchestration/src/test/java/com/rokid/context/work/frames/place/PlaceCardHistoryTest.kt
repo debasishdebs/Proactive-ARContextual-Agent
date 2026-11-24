@@ -9,6 +9,7 @@ import com.rokid.context.memory.place.PlaceKinds
 import com.rokid.context.memory.place.PlacePack
 import com.rokid.context.memory.place.PlacesDatabase
 import com.rokid.context.memory.place.UserPlace
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -185,5 +186,100 @@ class PlaceCardHistoryTest {
         assertNull(h.add(ev())); assertTrue(h.recent().isEmpty()); assertFalse(h.markDelivery("c", CardDelivery.SENT))
         assertTrue(logs.contains("place history add failed")); assertTrue(logs.contains("place history read failed"))
         logs.forEach { l -> assertFalse(l, l.contains("closed")) } // the exception text is never logged
+    }
+
+    // ---- Codex place fixes r1: P1-4 / P1-5 ----
+
+    /** Fails the deletions while [fail] is set; everything else is the real DAO. */
+    private class FlakyDao(private val real: com.rokid.context.memory.place.PlacesDao) : com.rokid.context.memory.place.PlacesDao by real {
+        @Volatile var fail = true
+        override suspend fun deleteCardLogBetween(from: Long, to: Long): Int { if (fail) throw IllegalStateException("db"); return real.deleteCardLogBetween(from, to) }
+        override suspend fun deleteCardLogForFrames(frameIds: List<String>): Int { if (fail) throw IllegalStateException("db"); return real.deleteCardLogForFrames(frameIds) }
+        override suspend fun deleteCardLogForPin(pinId: String): Int { if (fail) throw IllegalStateException("db"); return real.deleteCardLogForPin(pinId) }
+        override suspend fun deleteAllCardLog(): Int { if (fail) throw IllegalStateException("db"); return real.deleteAllCardLog() }
+    }
+
+    private fun failing(owed: HistoryOwed) = FlakyDao(pack.cardLogDao).let { it to PlaceCardHistory(it, clock = { now }, log = { logs += it }, newId = { "h${++seq}" }, owed = owed) }
+
+    @Test fun deleteAllFailure_propagates_staysOwed_andIsRetriedAtStart() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        h.add(ev()); h.add(ev(HistoryKind.POSSIBLE))
+        var thrown = false
+        try { h.clearAll() } catch (_: HistoryDeletionPending) { thrown = true }
+        assertTrue("a failed deletion is not swallowed", thrown); assertTrue(h.hasOwed()); assertEquals("the private rows are still there", 2, pack.cardLogDao.cardLogCount())
+        dao.fail = false; now += 5_000; h.add(ev(place = "wd:Q7")) // a row made AFTER the Delete all must survive the retry
+        assertTrue(PlaceCardHistory(dao, clock = { now }, owed = owed).retryOwed())
+        assertEquals(listOf("wd:Q7"), pack.cardLogDao.recentCardLog(10).map { it.placeId }); assertFalse(owed.all().isNotEmpty())
+    }
+
+    @Test fun forgetRangeFramesAndPinFailures_allStayOwed_untilRetried() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        h.add(ev(frame = "f1")); h.add(ev(HistoryKind.PIN, place = pin(1).id)); h.add(ev())
+        for (op in listOf<suspend () -> Unit>({ h.onFramesForgotten(listOf("f1")) }, { h.onRangeForgotten(0, now + 1) }, { h.onPinRemoved(listOf(pin(1).id)) })) {
+            var thrown = false; try { op() } catch (_: HistoryDeletionPending) { thrown = true }; assertTrue(thrown)
+        }
+        assertEquals(3, owed.all().size); assertEquals(3, pack.cardLogDao.cardLogCount())
+        dao.fail = false
+        assertTrue(h.retryOwed()); assertEquals(0, pack.cardLogDao.cardLogCount()); assertTrue(owed.all().isEmpty())
+        logs.forEach { l -> assertFalse(l, l.contains("f1")); assertFalse(l, l.contains("user:")) }
+    }
+
+    @Test fun retryThatFailsAgain_keepsTheObligation() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        h.add(ev(frame = "f1"))
+        try { h.onFramesForgotten(listOf("f1")) } catch (_: HistoryDeletionPending) { }
+        assertFalse(h.retryOwed()); assertTrue(h.hasOwed()); dao.fail = false; assertTrue(h.retryOwed()); assertFalse(h.hasOwed())
+    }
+
+    @Test fun forgetListener_failureIsOwedDurably_andTheForgetActionsAnswerSeesIt() = runBlocking {
+        val prefs = ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE); prefs.edit().clear().commit()
+        val dao = FlakyDao(pack.cardLogDao); val h = PlaceCardHistory(dao, clock = { now }, log = { logs += it }, owed = PrefsHistoryOwed(prefs))
+        PlaceGraph.installHistoryForTests(h)
+        h.add(ev(frame = "f1"))
+        ForgetListeners.framesForgotten(listOf("f1")) // the listener bus swallows, the obligation does not
+        assertTrue(PlaceGraph.historyOwed(ctx)); assertFalse("Forget is not done while a row may remain", PlaceGraph.settleHistory(ctx))
+        dao.fail = false
+        assertTrue(PlaceGraph.settleHistory(ctx)); assertFalse(PlaceGraph.historyOwed(ctx)); assertEquals(0, pack.cardLogDao.cardLogCount())
+        prefs.edit().clear().commit(); Unit
+    }
+
+    @Test fun deleteAll_throwsWhileHistoryRowsMayRemain() = runBlocking {
+        val prefs = ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE); prefs.edit().clear().commit()
+        val dao = FlakyDao(pack.cardLogDao); PlaceGraph.installHistoryForTests(PlaceCardHistory(dao, clock = { now }, owed = PrefsHistoryOwed(prefs)))
+        pack.cardLogDao.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("r1", now, "wd:Q1", "T", "PHOTO", null, null, null, null, CardDelivery.PENDING))
+        var thrown = false
+        try { PlaceGraph.deleteAll(ctx) } catch (_: HistoryDeletionPending) { thrown = true }
+        assertTrue("Delete all must not report done", thrown); assertTrue(PlaceGraph.historyOwed(ctx))
+        dao.fail = false; assertTrue(PlaceGraph.settleHistory(ctx)); assertEquals(0, pack.cardLogDao.cardLogCount()); prefs.edit().clear().commit(); Unit
+    }
+
+    @Test fun insertionAfterPinRemoval_isRefused_andSerialisedWithTheDeletion() = runBlocking {
+        val active = mutableSetOf(pin(1).id)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val h = PlaceCardHistory(pack.cardLogDao, clock = { now }, log = { logs += it }, newId = { "h${++seq}" }, pinActive = { gate.await(); it in active })
+        val adding = async { h.add(ev(HistoryKind.PIN, place = pin(1).id)) }
+        kotlinx.coroutines.yield()
+        active.remove(pin(1).id) // the pin store was written
+        val removing = async { h.onPinRemoved(listOf(pin(1).id)) }
+        gate.complete(Unit)
+        adding.await(); removing.await()
+        assertTrue("no row of a removed pin survives, in either order", pack.cardLogDao.recentCardLog(10).none { it.placeId == pin(1).id })
+        assertNull("a later insertion for the removed pin is refused", h.add(ev(HistoryKind.PIN_CLUSTER, place = "wd:Q1", members = listOf(pin(1).id, pin(2).id))))
+        assertNotNull(h.add(ev(HistoryKind.PHOTO, place = "wd:Q1")))
+    }
+
+    @Test fun guardRefusal_insertsNothing() = runBlocking {
+        assertNull(history.add(ev(), guard = { false })); assertEquals(0, pack.cardLogDao.cardLogCount())
+        assertNotNull(history.add(ev(), guard = { true }))
+    }
+
+    @Test fun pinsRemoved_fencesAttemptsInFlight_withdrawsTheCard_andDeletesRows() = runBlocking {
+        val p1 = pin(1)
+        history.add(ev(HistoryKind.PIN, place = p1.id))
+        val ticket = PlaceGraph.fence.ticket(); val epoch = PlaceGraph.port.epoch()
+        PlaceGraph.pinsRemoved(history, listOf(p1.id))
+        assertFalse("an attempt that holds the pin can no longer publish, store or add history", ticket.isOpen())
+        assertTrue(PlaceGraph.port.epoch() > epoch); assertEquals(null, PlaceGraph.port.publishIfId(PlaceCard("x", "t", "l", "s", PlaceConfidence.PIN, "f"), epoch))
+        assertTrue(history.recent().isEmpty())
     }
 }
