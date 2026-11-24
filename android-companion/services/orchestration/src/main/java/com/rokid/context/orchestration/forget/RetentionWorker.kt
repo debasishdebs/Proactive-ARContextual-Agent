@@ -12,14 +12,13 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.MemoryMaintenance
 import com.rokid.context.memory.MemorySettings
 import com.rokid.context.memory.MemorySettingsStore
-import com.rokid.context.memory.forget.ExpiredLineage
 import com.rokid.context.memory.forget.ForgetRadius
 import com.rokid.context.memory.forget.ForgetService
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Retention v3 (design 2026-11-24): retention NEVER deletes a memory row, an edge or text; only an explicit user Forget does. Daily, unique [NAME] (KEEP), scheduled by `OrchestrationScheduler.ensureRetention`. In order:
- *  1. the one-shot migration ([RetentionMigration]: purge the `lin:` lineage keys of older builds, mark the photos that expired before the marker existed);
+ *  1. the one-shot migration ([RetentionMigration]: purge any stray `lin:` key; no marker backfill, an unmarked tombstone is forgotten);
  *  2. the file-retry sweep ([FrameSweep.sweep]): ALWAYS, also under Pause (it finishes deletes that already committed, including a user Forget's JPEGs);
  *  3. when "Pause clean-up" (Developer, default ON) is ON: a counts-only line, and NOTHING below runs (with Pause ON retention deletes nothing, quota eviction included);
  *  4. quota eviction ([Retention.runQuota]), only while Pause is OFF: the oldest eligible photos once the cap is exceeded, never text, never a photo of explicit importance;
@@ -59,9 +58,6 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         } else {
             // Codex v3 r1 interim safety: quota eviction deletes photos, so it is one of the deleting steps and runs only while Pause is OFF.
             retention.runQuota(settings, now, onChunk)
-            // Codex v3 r1 P1-3: the legacy lineage of older builds is dropped only when no dependent of it survives (counts-only line)
-            val lineageDropped = runCatching { graph.db.withTransaction { ExpiredLineage.prune(graph.db) } }.getOrDefault(0)
-            if (lineageDropped > 0) PcLog.milestone(TAG, "legacy lineage dropped lineageDropped=$lineageDropped")
             val summary = retention.run(settings, now, onChunk)
             PipelineStatsStore.addRetentionDeletes(applicationContext, summary.skippedDeleted, summary.deletedUndescribed)
         }

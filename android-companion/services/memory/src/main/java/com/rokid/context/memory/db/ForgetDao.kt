@@ -298,14 +298,6 @@ abstract class ForgetDao {
     /** Quota eviction (K6): the photos captured within `[fromMs, toMs]` (the second of a pinned Moment). */
     @Query("SELECT id FROM frame WHERE ts >= :fromMs AND ts <= :toMs") abstract suspend fun frameIdsBetween(fromMs: Long, toMs: Long): List<String>
 
-    /**
-     * Retention v3 one-shot, PROVEN expiries only (Codex v3 r1 P1-2): tombstoned photos that have metadata, no `frame` row AND a surviving description (a memory or a non-CARRIED `frame_source` row still cites them), after [afterId].
-     * The shape of every expiry before the marker existed. A photo whose last description was forgotten later is tombstone + metadata + no row too, but is cited by nothing: it cannot be told from a Forget and stays "forgotten".
-     */
-    @Query("SELECT t.frameId FROM forget_tombstone t JOIN frame_meta m ON m.frameId = t.frameId WHERE NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = t.frameId) " +
-        "AND (EXISTS (SELECT 1 FROM memory mm WHERE mm.frameId = t.frameId) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = t.frameId AND fs.role != 'CARRIED')) AND t.frameId > :afterId ORDER BY t.frameId LIMIT :limit")
-    abstract suspend fun legacyExpiredFrameIds(afterId: String, limit: Int): List<String>
-
     /** [likePattern] escapes `\`, `%` and `_` with `\`. It is only a prefilter: the caller parses the JSON exactly. */
     @Query("SELECT * FROM ask WHERE redacted = 0 AND sourcesJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCiting(likePattern: String): List<AskEntity>
     @Query("SELECT * FROM nudge WHERE redacted = 0 AND sourceIdsJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun nudgesCiting(likePattern: String): List<NudgeEntity>

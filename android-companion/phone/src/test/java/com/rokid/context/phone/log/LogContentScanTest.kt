@@ -72,7 +72,7 @@ class LogContentScanTest {
         // Retention v3 (RetentionWorker plan / done / paused / quota / migration lines, PlaceCardHistory expire line, MomentRepair done line, tags PcRetention / PcMoments / PcPlace): Int locals that hold counts or seconds; never an id or a text.
         // There is no memory expiry any more, so the old per-tier and redaction counters (shortDue, mediumDue, longDue, captionDue, clusterSummaryDue, nudgesKept, answersKept, memoriesExpired, nudgesRedacted, answersRedacted) are gone.
         "demoteDue", "skippedPhotosDue", "photosDue", "vectorsDue", "legacyDue", "quotaDue", "demoted", "photosExpired", "skippedPhotosExpired", "quotaEvicted", "backfilled", "marked", "seconds",
-        "lineageKept", "lineageDropped", "repairedDays", "missingSeconds", "momentsStored", "scenesBuilt", "unscenedMoments",
+        "strayLineagePurged", "repairedDays", "missingSeconds", "momentsStored", "scenesBuilt", "unscenedMoments",
         "reps.values.sumOf { it.size }", "counts.closed.joinToString(\",\").ifEmpty { \"-\" }", "runCatching { l.isWearingCheckOn() }",
     )
     private val SAFE_PATTERNS = listOf(
