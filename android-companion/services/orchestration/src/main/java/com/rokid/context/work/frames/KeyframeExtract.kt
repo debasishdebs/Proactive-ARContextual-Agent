@@ -90,6 +90,7 @@ internal object KeyframeExtract {
         )
         return when (saved) {
             is ExtractSaveResult.Saved -> {
+                try { KeyframeGraph.placeTextMatch?.onCaptions(batch.output.captions) } catch (e: Exception) { com.rokid.context.core.log.PcLog.w("PcPlace", "text match hook failed") } // F5b: text only, behind its own flags and the zone fence
                 if (live != null) {
                     // the extraction is saved: now (and only now) the canvas effects of this batch are committed, fenced; never throws, no-op without a publish
                     withContext(NonCancellable) { LiveExtract.commit(live, liveBatch.effects, generation, sent.toSet()) }

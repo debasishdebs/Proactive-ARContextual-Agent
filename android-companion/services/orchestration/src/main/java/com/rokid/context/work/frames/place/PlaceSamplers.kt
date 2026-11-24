@@ -121,6 +121,18 @@ object PlaceSamplers {
         )
     }
 
+    /** F5b: the quoted-sign matcher over the user's own pins. It shares the sampler's process-wide [flight] (the last good fix, the once-per-place and visit state). */
+    fun createTextMatch(app: Context, scope: CoroutineScope, zoneBlocked: suspend () -> Boolean, onCard: (PlaceCard) -> Unit, fence: ZoneFence = PlaceGraph.fence): PlaceTextMatch =
+        PlaceTextMatch(
+            scope = scope, flight = flight, store = RoomPlaceFrameStore { MemoryGraph.get(app).db },
+            captured = { ids -> withContext(Dispatchers.IO) { MemoryGraph.get(app).db.frameMetaDao().byIds(ids).associate { it.frameId to (it.capturedAtMs ?: it.createdAt) } } },
+            pins = { withContext(Dispatchers.IO) { PlaceGraph.pins(app).pins().map { it.toEntity() } } },
+            enabled = { PlaceGuideSettings.of(app).enabled }, textOn = { DeveloperFlags.placeTextMatch(app) }, zoneBlocked = zoneBlocked,
+            clock = System::currentTimeMillis, elapsed = android.os.SystemClock::elapsedRealtime, generation = { MemoryWipe.generation.get() }, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
+            cards = PlaceGraph.port, onCard = onCard, history = { e -> PlaceGraph.history(app).add(e) }, historyOn = { DeveloperFlags.placeCardHistory(app) }, fence = fence,
+            log = { PcLog.i(TAG, it) },
+        )
+
     /** The shadow scorer over the ACTIVE image-text space (today only the on-device Nomic bundle, and only when the user bound it); absent space = `shadow=na`. Reads the flag on every attempt. */
     internal fun shadowFor(app: Context, zoneBlocked: suspend () -> Boolean, photoOf: suspend (String) -> com.rokid.context.orchestration.ExtractPhoto?): PlaceShadow {
         val spaces by lazy { com.rokid.context.work.frames.scene.SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }

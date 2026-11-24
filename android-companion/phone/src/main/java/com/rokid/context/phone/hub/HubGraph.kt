@@ -199,9 +199,11 @@ object HubGraph {
         // Z1: Ask's zone fence reads the controller's flags (approach/enforcing include an unreadable zone list and ZoneHold); a read error is 'blocked' (AskZoneFence).
         com.rokid.context.orchestration.AskZoneFence.extraBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } }
         val placeFixes = com.rokid.context.phone.place.PlaceFixProvider.create(app) { com.rokid.context.phone.zone.ZoneGraph.peek() }
+        val placeZoneBlocked: suspend () -> Boolean = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || pauses.zoneRecords().isNotEmpty() }
+        com.rokid.context.work.frames.KeyframeGraph.placeTextMatch = com.rokid.context.work.frames.place.PlaceSamplers.createTextMatch(app, ctxScope, zoneBlocked = placeZoneBlocked, onCard = com.rokid.context.work.frames.place.PlaceGraph.port::publish)
         com.rokid.context.work.frames.KeyframeGraph.placeSampler = com.rokid.context.work.frames.place.PlaceSamplers.create(
             app, ctxScope, fix = placeFixes::fresh,
-            zoneBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || pauses.zoneRecords().isNotEmpty() },
+            zoneBlocked = placeZoneBlocked,
             zones = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
             onCard = com.rokid.context.work.frames.place.PlaceGraph.port::publish,
         )
