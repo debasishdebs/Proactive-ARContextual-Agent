@@ -545,6 +545,11 @@ run_fixtures() {
   eq "pins: list of non-objects" bad "$(printf '<map><string name="pins">[1,2]</string></map>\n' | pins_counts)"
   eq "pins: null moment counts as without" "1 0 1" "$(printf '<map><string name="pins">[{"id":"a","moment":null}]</string></map>\n' | pins_counts)"
   eq "pins: empty input" bad "$(printf '' | pins_counts)"
+  eq "table count: number" 12 "$(table_count_state 12)"
+  eq "table count: zero" 0 "$(table_count_state 0)"
+  eq "table count: empty" unreadable "$(table_count_state '')"
+  eq "table count: error text" unreadable "$(table_count_state 'Error: no such table')"
+  eq "expected db version" 18 "$EXPECT_DB_VERSION"
   eq "dbmode: plaintext" plaintext "$(db_mode3 'SQLite format 3' false)"
   eq "dbmode: plaintext header, flag true" inconsistent "$(db_mode3 'SQLite format 3' true)"
   eq "dbmode: plaintext header, no flag" inconsistent "$(db_mode3 'SQLite format 3' '')"
@@ -810,8 +815,16 @@ check_trip_prefs() {
   esac
 }
 
+EXPECT_DB_VERSION=18
+# row count of a v18 table: a number only (never a row); empty or non-numeric = UNKNOWN
+table_count_state() { case "$1" in ''|*[!0-9]*) echo unreadable ;; *) echo "$1" ;; esac; }
+res_table_count() { # table count
+  local c; c="$(table_count_state "$2")"
+  if [ "$c" = unreadable ]; then res UNKNOWN "db rows $1" "count unreadable (table missing or db not v$EXPECT_DB_VERSION)"; else res PASS "db rows $1" "rows=$c (count only)"; fi
+}
+
 check_trip_db() { # serial: only a COPY, only when the app's own flag says plaintext
-  local s="$1" d hdr enc mode uv ic
+  local s="$1" d hdr enc mode uv ic d_cnt_ml d_cnt_pc
   [ -n "$TMP" ] || { res UNKNOWN "db version" "no temp dir"; return; }
   d="$TMP/db"; mkdir -p "$d"
   A "$s" exec-out run-as "$PHONE_PKG" cat databases/context.db > "$d/context.db" 2>/dev/null || true
@@ -828,9 +841,13 @@ check_trip_db() { # serial: only a COPY, only when the app's own flag says plain
   [ -s "$d/context.db-wal" ] || rm -f "$d/context.db-wal"
   uv="$(sqlite3 "$d/context.db" 'PRAGMA user_version;' 2>/dev/null | tr -d '\r[:space:]')" || uv=""
   ic="$(sqlite3 "$d/context.db" 'PRAGMA integrity_check;' 2>/dev/null | tr -d '\r')" || ic=""
+  d_cnt_ml="$(sqlite3 "$d/context.db" 'SELECT COUNT(*) FROM moment_location;' 2>/dev/null | tr -d '\r[:space:]')" || d_cnt_ml=""
+  d_cnt_pc="$(sqlite3 "$d/context.db" 'SELECT COUNT(*) FROM place_card_log;' 2>/dev/null | tr -d '\r[:space:]')" || d_cnt_pc=""
   rm -rf "$d"
   case "$uv" in ''|*[!0-9]*) res UNKNOWN "db version" "user_version unreadable"; return ;; esac
-  if [ "$uv" = 17 ]; then res PASS "db version" "user_version=17"; else res FAIL "db version" "user_version=$uv (expected 17)"; fi
+  if [ "$uv" = "$EXPECT_DB_VERSION" ]; then res PASS "db version" "user_version=$uv"; else res FAIL "db version" "user_version=$uv (expected $EXPECT_DB_VERSION)"; fi
+  res_table_count moment_location "$d_cnt_ml"
+  res_table_count place_card_log "$d_cnt_pc"
   if [ "$ic" = ok ]; then res PASS "db integrity" "integrity_check ok (copy)"
   elif [ -z "$ic" ]; then res UNKNOWN "db integrity" "integrity_check gave no answer"
   else res FAIL "db integrity" "integrity_check on the copy did not say ok"; fi

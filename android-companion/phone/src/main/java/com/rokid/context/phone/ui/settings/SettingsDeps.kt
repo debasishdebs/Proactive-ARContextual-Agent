@@ -118,6 +118,8 @@ class SettingsDeps(
     val onlineMap: (() -> com.rokid.context.phone.ui.settings.privacy.zones.tiles.OnlineMapDeps)? = null,
     /** Settings > Privacy > "Save location with Moments" (v18): the switch, the count and "Delete saved locations". Null where not wired (tests): the card is then hidden. */
     val momentLocation: com.rokid.context.phone.ui.settings.privacy.MomentLocationControl? = null,
+    /** Whether the default network has internet access (the zones map goes read-only while false). Tests default to online. */
+    val networkOnline: () -> kotlinx.coroutines.flow.Flow<Boolean> = { kotlinx.coroutines.flow.flowOf(true) },
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -191,6 +193,7 @@ class SettingsDeps(
             offlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapDeps(com.rokid.context.phone.ui.settings.privacy.zones.tiles.AndroidMapFiles(app), com.rokid.context.phone.ui.settings.privacy.zones.tiles.OfflineMapStore.get(app)) },
             onlineMap = { com.rokid.context.phone.ui.settings.privacy.zones.online.OnlineMapGraph.get(app).deps },
             momentLocation = com.rokid.context.phone.ui.settings.privacy.AppMomentLocation(app),
+            networkOnline = { com.rokid.context.phone.ui.settings.privacy.zones.networkOnlineFlow(app) },
             locationGranted = {
                 listOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)
                     .any { androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
