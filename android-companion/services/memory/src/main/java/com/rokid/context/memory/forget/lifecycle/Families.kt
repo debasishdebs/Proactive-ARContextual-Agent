@@ -40,12 +40,22 @@ internal object PhotoFamily : ForgetFamily {
      * Call it AFTER the memories are deleted (a photo that another memory still cites is not queued).
      */
     suspend fun requeueSolo(ids: Collection<String>, ctx: DeleteCtx): Int = ids.toList().distinct().chunked(CHUNK).sumOf { ctx.db.forgetDao().requeueSolo(it, ctx.now) }
-    /** The extraction lock: a tombstoned photo is never extracted again. */
+    /** The extraction lock of a USER Forget: a tombstoned photo is never extracted again. Call [unmark] after the radius cleanup that reads the photo's capture time. */
     suspend fun lock(ids: Collection<String>, ctx: DeleteCtx) { ids.forEach { ctx.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity(it, ctx.now)) } }
+    /** Retention v3 (r2-3): a user Forget clears the expired-photo marker in the same transaction as its tombstone, so a forgotten photo is never read as expired. */
+    suspend fun unmark(ids: Collection<String>, ctx: DeleteCtx) = com.rokid.context.memory.forget.ExpiryMarks.clear(ctx.db.canvasSlice3Dao(), ids)
     /** The image vectors of [ids] (a photo no surviving memory cites any more). */
     suspend fun deleteVectors(ids: Collection<String>, ctx: DeleteCtx) { ids.toList().chunked(CHUNK).forEach { ctx.db.forgetDao().deleteFrameVectorsFor(it) } }
-    /** Retention expiry: only the `frame` row goes; its metadata, vector, state and sources stay (the photo is a described moment). */
-    suspend fun expireRows(ids: Collection<String>, ctx: DeleteCtx) { ids.forEach { ctx.db.forgetDao().deleteFrame(it) } }
+    /**
+     * Retention expiry of one photo: the extraction lock (tombstone), the durable expired-photo marker ([com.rokid.context.memory.forget.ExpiryMarks], carrying the capture time) and the `frame` row, in the caller's ONE transaction. Its
+     * metadata, vector, state and sources stay (the photo is a described moment).
+     */
+    suspend fun expire(id: String, captureTs: Long?, ctx: DeleteCtx) {
+        val dao = ctx.db.forgetDao()
+        dao.insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity(id, ctx.now))
+        com.rokid.context.memory.forget.ExpiryMarks.mark(ctx.db.canvasSlice3Dao(), id, ctx.now, captureTs)
+        dao.deleteFrame(id)
+    }
     /** ERASE: the frame row with its sources, vector, metadata and state (the tombstone is written by [lock]). Never a REBUILD or DROP. */
     override suspend fun selfDelete(ids: Set<String>, fate: Fate, ctx: DeleteCtx) {
         require(fate == Fate.ERASE) { "a photo is only erased" }

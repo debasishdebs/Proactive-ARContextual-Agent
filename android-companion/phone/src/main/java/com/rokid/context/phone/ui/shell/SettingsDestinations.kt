@@ -302,7 +302,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         val watchList by s.watchList.items.collectAsStateWithLifecycle()
         MemorySettingsScreen(
-            state, onBack = back, onShort = vm::setShort, onMedium = vm::setMedium, onLong = vm::setLong, onQuota = vm::setQuota,
+            state, onBack = back, onRecall = vm::setRecall, onQuota = vm::setQuota,
             onEncryption = { vm.setEncryption(it) }, onExport = vm::export, onAskDeleteAll = vm::askDeleteAll, onConfirmDeleteAll = vm::confirmDeleteAll,
             onCancelDeleteAll = vm::cancelDeleteAll, onKeepPinsDeleteAll = vm::keepPinsAndDelete, onOpenReview = { nav.navigate(Routes.SETTINGS_MEMORY_REVIEW) },
             onPhotoDays = vm::setPhotoDays, onSkippedPhotoDays = vm::setSkippedPhotoDays, onCaptionDays = vm::setCaptionDays,

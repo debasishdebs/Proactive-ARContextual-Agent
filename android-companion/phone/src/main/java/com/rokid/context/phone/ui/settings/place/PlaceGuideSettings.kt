@@ -448,7 +448,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 
     private suspend fun buildDetail(h: PlaceHistoryControl, r: com.rokid.context.memory.place.PlaceCardLogEntity, message: String? = null): PlaceHistoryDetail {
         val line = runCatching { h.line(r) }.getOrNull()
-        val photo = r.frameId?.let { runCatching { h.photoPath(it) }.getOrNull() }
+        val photo = r.frameId?.takeIf { !r.photoGone }?.let { runCatching { h.photoPath(it) }.getOrNull() } // retention v3: a gone photo is never loaded (its id is kept only as lineage)
         return PlaceHistoryDetail(r.toUi(), line, photo, h.showAgainBlock(r) ?: if (line == null) PlaceHistoryModel.GONE_LINE else null, message)
     }
 

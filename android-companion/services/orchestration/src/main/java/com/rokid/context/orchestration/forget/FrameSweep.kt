@@ -45,6 +45,18 @@ object FrameSweep {
     private const val CHUNK = 500
 
     /**
+     * Retention v3 (M1, bounded): the expiry markers of the tombstones this prune is about to delete go in the SAME transaction. A tombstone is pruned only when no `frame` row, memory or `frame_source` row remains
+     * (a skipped photo, never a described one), so a marker never outlives what it explains. The candidates are read with the prune's own conditions before it runs.
+     */
+    internal suspend fun pruneWithMarkers(db: com.rokid.context.memory.db.ContextDatabase, beforeMs: Long, keep: List<String>): Int = androidx.room.withTransaction(db) {
+        val dao = db.forgetDao()
+        val going = dao.prunableTombstones(beforeMs, keep)
+        val n = dao.pruneTombstones(beforeMs, keep)
+        if (n > 0) going.chunked(CHUNK).forEach { com.rokid.context.memory.forget.ExpiryMarks.clear(db.canvasSlice3Dao(), it) }
+        n
+    }
+
+    /**
      * Deletes leftover JPEGs of tombstoned frames, then prunes tombstones nothing needs ([TOMBSTONE_KEEP_MS]). Set-based
      * (final review I2): one query for kept rows, one per [CHUNK] files on disk for rowless ids, one delete; no per-tombstone
      * queries.
@@ -61,7 +73,7 @@ object FrameSweep {
         // A rowless frame's JPEG that could not be deleted keeps its tombstone, so the next sweep still finds it.
         val stuck = rowless.filter { id -> byId[id].orEmpty().any { it.exists() } }
         if (stuck.size <= CHUNK) {
-            runCatching { dao.pruneTombstones(nowMs - TOMBSTONE_KEEP_MS, stuck.ifEmpty { listOf("") }) }
+            runCatching { pruneWithMarkers(MemoryGraph.get(context).db, nowMs - TOMBSTONE_KEEP_MS, stuck.ifEmpty { listOf("") }) }
                 .onFailure { PcLog.w(TAG, "tombstones not pruned (next sweep retries): ${it.javaClass.simpleName}") }
         }
         deleted

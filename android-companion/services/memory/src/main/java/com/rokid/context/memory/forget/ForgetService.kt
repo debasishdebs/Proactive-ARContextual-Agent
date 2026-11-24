@@ -68,6 +68,7 @@ class ForgetService(
         val radiusCascade = bounded == null
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
+        val capturedAt = ExpiryMarks.captureTs(dao, db.canvasSlice3Dao(), listOf(frameId)) // retention v3 (r2-4): read before the rows and the expiry marker go; an expired photo still has a capture time
         val ids = dao.memoryIdsOfFrame(frameId)
         // codex r16: memories only DERIVED from this photo (CARRIED, e.g. a batch mate's caption) are a provenance invalidation: their text, vectors, edges and
         // descendants go and what cites them is redacted, but the photos THEY cite are never locked, tombstoned or deleted
@@ -77,13 +78,14 @@ class ForgetService(
             // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan canvas rows (safer default). No frame_source row
             // can exist here: memoryIdsOfFrame already lists them, so an orphan one takes the main path below.
             dropCanvasOutputs(listOf(frameId), null, radiusCascade)
-            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, lineageFrames = listOf(frameId)).with(invalidatedCarried)
+            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded).with(invalidatedCarried)
         }
-        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded, lineageFrames = listOf(frameId))
+        val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded)
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         db.momentDao().dropHolding(listOf(frameId), ids) // source-to-projection cleanup: no stored Moment keeps a reference to what Forget removed
-        val spans = dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts), radiusCascade)
+        val spans = dropCanvasOutputs(listOf(frameId), capturedAt, radiusCascade)
+        ExpiryMarks.clear(db.canvasSlice3Dao(), listOf(frameId)) // retention v3 (r2-3): a forgotten photo is never read as expired
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
         val out = r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct()).with(invalidatedCarried)
@@ -115,25 +117,12 @@ class ForgetService(
     }
 
     /**
-     * Retention expiry (retention r1): the rows, vectors and edges of [ids] go, but NOTHING that depended on them is touched: no ask or nudge is redacted, no Moment or Scene dropped, no canvas output, mark or
-     * radius cascade runs, no listener is told. Before the rows go their lineage (which photo, which edges) is written to `canvas_meta` ([ExpiredLineage]) so a LATER user Forget still finds the dependents.
-     * Derived memories are left alone: each one expires on its own tier window.
-     * Final review C1: retention is storage hygiene, not a user removal, so an accepted proposal (EXECUTING/EXECUTED)
-     * keeps its params, log and armed alarm; it is not listed in [Result.redactedProposals]. PENDING still expires.
-     */
-    suspend fun expire(ids: Collection<String>): Result = notifying { if (v2) executor.expire(ids) else expireTx(ids) }
-
-    /**
      * Row 8 (suspect descriptions): removes the marked suspect [ids] (their rows, vectors and edges; the derived summaries built on them are invalidated and rebuilt; asks and nudges that cited them are
      * redacted). Never touches a photo: no tombstone, no JPEG or vector delete (keyframes are kept; the caller proved a replacement exists or the photo is already gone), accepted proposals keep their params.
      */
     suspend fun removeDescriptions(ids: Collection<String>): Result = notifying {
         if (v2) return@notifying executor.removeDescriptions(ids)
         db.withTransaction { cascade(ids.distinct(), lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true) }
-    }
-
-    private suspend fun expireTx(ids: Collection<String>): Result = db.withTransaction {
-        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true, redact = false) // routine retention: phone files only; P0: system expiry never redacts a nudge or answer and never drops a Moment
     }
 
     /**
@@ -168,6 +157,7 @@ class ForgetService(
             if (!accept(id)) continue
             expiredIds += id
             dao.insertTombstone(ForgetTombstoneEntity(id, now))
+            ExpiryMarks.mark(db.canvasSlice3Dao(), id, now, frame.ts) // retention v3 (r2-3, r2-6): the durable marker, in the SAME transaction as the tombstone and the row delete
             dao.deleteFrame(id)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
@@ -190,26 +180,17 @@ class ForgetService(
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
     /** [provenanceOnly] (codex r16): the memories go but no photo is touched (no lock, no tombstone, no file or Moment of their photos): a CARRIED invalidation. */
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false, redact: Boolean = true, lineageFrames: List<String> = emptyList()): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(), queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
-        if (found.isEmpty() && extraCited.isEmpty() && lineageFrames.isEmpty()) return Result.EMPTY
+        if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
         // Frames cited by F: memory.frameId plus frame_source rows (a 3-photo batch cites 3). Each is locked at once.
         val citedFrames = (found.mapNotNull { it.frameId } + forgotten.toList().chunked(CHUNK).flatMap { dao.sourceFramesOf(it) }).distinct()
         // Retention expiry of a memory ([keepKeyframes]) never owns a keyframe (a frame with frame_meta): no tombstone, no JPEG or vector
         // delete. Photos live and die by the photo rules (expirePhotos). Legacy frames and the user's Forget keep the full cascade.
         val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) citedFrames - citedFrames.chunked(CHUNK).flatMap { dao.keyframeIds(it) }.toSet() else citedFrames
-        // Retention r1 (P1-4): expiry (redact = false) writes the lineage of what it deletes before the rows go; a user Forget reads it, so the dependents it kept are still found, expired sources included.
-        val meta = db.canvasSlice3Dao()
-        val lineageSeed = if (redact && lockFrames) (citedFrames + lineageFrames).distinct().filter { bounded == null || it in bounded } else emptyList()
-        val lineage = if (redact) ExpiredLineage.reach(meta, forgotten, lineageSeed) else ExpiredLineage.Reach.EMPTY
-        if (!redact && found.isNotEmpty()) {
-            val fl = forgotten.toList()
-            ExpiredLineage.record(meta, found, fl.chunked(CHUNK).flatMap { dao.frameSourceRowsOf(it) }, fl.chunked(CHUNK).flatMap { dao.edgesFrom(it) }, fl.chunked(CHUNK).flatMap { dao.edgesTo(it) })
-        }
-        val derivedLive = lineage.derived.toList().chunked(CHUNK).flatMap { dao.memories(it) }.map { it.id }.toSet() - forgotten
         // 1. Closure, before any edge goes.
-        val invalidated = if (!invalidateDescendants) emptySet() else ((forgotten + derivedLive).toList().chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() + derivedLive) - forgotten
+        val invalidated = if (!invalidateDescendants) emptySet() else forgotten.toList().chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() - forgotten
         val f = forgotten.toList()
         val d = invalidated.toList()
         // 2. F: rows, vectors (all spaces), every edge touching F.
@@ -219,14 +200,15 @@ class ForgetService(
         val radiusCascade = bounded == null
         // BOUNDED (Forget scope MOMENT / SCENE): only photos inside the planned spans lose outputs, files and Moments; a cited photo outside them is merely LOCKED below, and Moments elsewhere that hold a hidden derived fact are not dropped (the caller blanks and stales them).
         val inside = if (bounded == null) frames else frames.filter { it in bounded }
-        // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them. System expiry (redact = false) drops none: not for a memory and not for a locked legacy frame.
-        if (redact) db.momentDao().dropHolding(inside, (if (bounded == null) f + d else f) + lineage.expired)
+        // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them.
+        db.momentDao().dropHolding(inside, if (bounded == null) f + d else f)
         // 4. Extraction lock.
         val now = clock()
         var spans = emptyList<Triple<Long, Long, List<String>>>()
         if (lockFrames) {
             frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }
-            if (redact) spans = dropCanvasOutputs(inside, null, radiusCascade) // retention r1 (P1-2): no canvas outputs, marks, Moments or radius cascade for an expiry
+            spans = dropCanvasOutputs(inside, null, radiusCascade)
+            ExpiryMarks.clear(db.canvasSlice3Dao(), frames) // retention v3 (r2-3): a user Forget never leaves an expiry marker behind (after the radius cleanup, which reads the marker's capture time)
             if (bounded != null) { // a locked photo outside the spans keeps itself, but the stored run outputs and DONE helper results of it may carry the forgotten fact's text: scrubbed
                 val outside = frames - inside.toSet()
                 if (outside.isNotEmpty()) { db.canvasDao().deleteCanvasOutputsForFrames(outside); db.canvasSlice3Dao().scrubOutputsOfLockedFrames(outside, now) }
@@ -238,9 +220,9 @@ class ForgetService(
         // rc1 fix: a user's Forget that deletes a photo (a Forget fact of its last caption) also redacts the answers that cited the photo itself as `frame:<id>`
         // (an answer recalled it before it had a caption memory). Retention ([scrubAccepted] false) keeps its rule: it never redacts photo cites.
         val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
-        val cited = forgotten + invalidated + extraCited + goneCites + lineage.expired + derivedLive // extraCited: `frame:<id>` photo cites (S1)
-        val asks = if (!redact) emptyList() else cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
-        val nudges = if (!redact) emptyList() else cited.flatMap { id -> dao.nudgesCiting(likeFor(id)) }.distinctBy { it.id }.filter { n -> parseIds(n.sourceIdsJson).any { it in cited } }
+        val cited = forgotten + invalidated + extraCited + goneCites // extraCited: `frame:<id>` photo cites (S1)
+        val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
+        val nudges = cited.flatMap { id -> dao.nudgesCiting(likeFor(id)) }.distinctBy { it.id }.filter { n -> parseIds(n.sourceIdsJson).any { it in cited } }
         asks.forEach { dao.redactAsk(it.id, REDACTED) }
         nudges.forEach { dao.redactNudge(it.id, REDACTED) }
         // 6. Proposals of redacted asks/nudges: PENDING expires (nested in this transaction); every proposal of those
@@ -259,7 +241,6 @@ class ForgetService(
                 redactedProposals.chunked(CHUNK).forEach { c -> actions.scrubLogs(c); actions.scrubParams(c, REDACTED_PARAMS) }
             }
         }
-        if (redact && lineage.keys.isNotEmpty()) ExpiredLineage.consume(meta, lineage)
         uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         if (queueOutbox) queueCleanup(files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans, phoneFilesOnly) // same transaction as the delete
@@ -297,7 +278,7 @@ class ForgetService(
      * cascade to marks or Moments outside them. The photo's own outputs are still deleted.
      */
     private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null, radiusCascade: Boolean = true, expired: Boolean = false): List<Triple<Long, Long, List<String>>> {
-        val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { dao.frame(it)?.ts }
+        val capturedAt = capturedAtOrNull ?: ExpiryMarks.captureTs(dao, db.canvasSlice3Dao(), frameIds) // retention v3 (r2-4): frame.ts, frame_meta, then the expiry marker
         // A mark carries no frame id (the glasses tap does not know which photo it is near), so the link between a photo and the marks and traces of its moment is TIME:
         // everything within the [ForgetRadius] (default PHOTO_LINK_MS) of a forgotten photo goes with it (marks, traces, and the results that read them), through the same durable range fence as a
         // range Forget. Conservative on purpose: a privacy action errs on deleting a little more.

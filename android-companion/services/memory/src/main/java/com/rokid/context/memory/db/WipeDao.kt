@@ -52,8 +52,8 @@ abstract class WipeDao {
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'canvas\\_save:%' ESCAPE '\\'") protected abstract suspend fun canvasSaveMarkers()
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_undone:%' ESCAPE '\\' OR `key` LIKE 'mark\\_claim:%' ESCAPE '\\'") protected abstract suspend fun markUndoneMarkers()
-    /** Retention lineage (`ExpiredLineage`): ids of expired memories per photo and per edge. Ids only, but they name what was forgotten-by-expiry, so Delete all removes them. */
-    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'lin:%'") protected abstract suspend fun retentionLineage()
+    /** Retention lineage of older builds (`lin:`, no longer written) and the expired-photo markers (`rx:`, `ExpiryMarks`): ids and times only, but they name what retention expired, so Delete all removes them. */
+    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'lin:%' OR `key` LIKE 'rx:%'") protected abstract suspend fun retentionLineage()
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'momentForgetRanges'") protected abstract suspend fun momentClearForgetRanges(): Int
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES ('frame_forget_rev', '0')") protected abstract suspend fun slice3InitForgetRev()
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'frame_forget_rev'") protected abstract suspend fun slice3BumpForgetRev(): Int

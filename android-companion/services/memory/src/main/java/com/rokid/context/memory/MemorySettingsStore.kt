@@ -7,12 +7,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Settings → Memory (spec §2.4, §P6.1): retention per tier (24 h / 7 d / 30 d defaults), per kind of data (photo 7 d, skipped photo 1 d,
- * caption / scene summary / image vector forever = [FOREVER]) and the soft storage quota (250 MB). [perKindSince] is stamped by the first
+ * Settings → Memory (spec §2.4, §P6.1; retention v3): the Quick recall window [recallHours] (after it a SHORT fact loses only its text vector; NOTHING deletes text but a user Forget), per kind of data (photo 7 d, skipped photo 1 d,
+ * image vector forever = [FOREVER]) and the storage cap. [mediumDays], [longDays], [captionDays] and [clusterSummaryDays] are READ and kept (a downgrade reads sane values) but ignored: retention never deletes a memory row. [perKindSince] is stamped by the first
  * retention run of the build that has per-kind retention (Ruling 13): photo deadlines count from `max(capture time, perKindSince)`.
  */
 data class MemorySettings(
-    val shortHours: Int = 24, val mediumDays: Int = 7, val longDays: Int = 30, val quotaMb: Int = 250,
+    val recallHours: Int = 24, val mediumDays: Int = 7, val longDays: Int = 30, val quotaMb: Int = 250,
     val photoDays: Int = 7, val skippedPhotoDays: Int = 1, val captionDays: Int = FOREVER, val clusterSummaryDays: Int = FOREVER,
     val imageVectorDays: Int = FOREVER, val perKindSince: Long = 0L,
     /** When the last retention run started: a long gap, or a clock behind it, renews [perKindSince] (fix round 1, I3). */
@@ -44,7 +44,8 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
             val old = state.value
             val e = prefs.edit()
             fun put(key: String, new: Int, was: Int) { if (prefs.contains(key) || new != was) e.putInt(key, new) }
-            put("short_hours", n.shortHours, old.shortHours); put("medium_days", n.mediumDays, old.mediumDays); put("long_days", n.longDays, old.longDays)
+            // retention v3: Quick recall lives under its NEW key; `short_hours` is never written again, so a downgrade to the candidate (whose clean() maps 72 / 168 to 24) still reads the last legal value
+            put("recall_hours", n.recallHours, old.recallHours); put("medium_days", n.mediumDays, old.mediumDays); put("long_days", n.longDays, old.longDays)
             put("quota_mb", n.quotaMb, old.quotaMb); put("photo_days", n.photoDays, old.photoDays); put("skipped_photo_days", n.skippedPhotoDays, old.skippedPhotoDays)
             put("caption_days", n.captionDays, old.captionDays); put("cluster_summary_days", n.clusterSummaryDays, old.clusterSummaryDays)
             put("image_vector_days", n.imageVectorDays, old.imageVectorDays)
@@ -73,14 +74,14 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
     private fun read(): MemorySettings {
         val d = MemorySettings()
         return clean(MemorySettings(
-            prefs.getInt("short_hours", d.shortHours), prefs.getInt("medium_days", d.mediumDays), prefs.getInt("long_days", d.longDays), prefs.getInt("quota_mb", d.quotaMb),
+            prefs.getInt("recall_hours", prefs.getInt("short_hours", d.recallHours)), prefs.getInt("medium_days", d.mediumDays), prefs.getInt("long_days", d.longDays), prefs.getInt("quota_mb", d.quotaMb),
             prefs.getInt("photo_days", d.photoDays), prefs.getInt("skipped_photo_days", d.skippedPhotoDays), prefs.getInt("caption_days", d.captionDays),
             prefs.getInt("cluster_summary_days", d.clusterSummaryDays), prefs.getInt("image_vector_days", d.imageVectorDays), prefs.getLong("per_kind_since", 0L), prefs.getLong("per_kind_last_run", 0L),
         ))
     }
 
     private fun clean(s: MemorySettings) = MemorySettings(
-        shortHours = s.shortHours.takeIf { it in SHORT_HOURS } ?: 24,
+        recallHours = s.recallHours.takeIf { it in RECALL_HOURS } ?: 24,
         mediumDays = s.mediumDays.takeIf { it in MEDIUM_DAYS } ?: 7,
         longDays = s.longDays.takeIf { it in LONG_DAYS } ?: 30,
         quotaMb = s.quotaMb.coerceIn(QUOTA_MB.first, QUOTA_MB.last),
@@ -94,7 +95,8 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
     )
 
     companion object {
-        val SHORT_HOURS = listOf(12, 24, 48)
+        /** Quick recall choices: 12 / 24 / 48 / 72 h / 7 d. */
+        val RECALL_HOURS = listOf(12, 24, 48, 72, 168)
         val MEDIUM_DAYS = listOf(3, 7, 14)
         val LONG_DAYS = listOf(30, 90, 365)
         val QUOTA_MB = 10..2_000

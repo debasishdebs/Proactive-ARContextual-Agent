@@ -92,6 +92,15 @@ abstract class ForgetDao {
     )
     abstract suspend fun pruneTombstones(beforeMs: Long, keep: List<String>): Int
 
+    /** The ids [pruneTombstones] would delete with the same arguments (read in the same transaction, so the expiry markers of exactly those go with them). */
+    @Query(
+        "SELECT frameId FROM forget_tombstone WHERE createdAt < :beforeMs AND frameId NOT IN (:keep) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = forget_tombstone.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = forget_tombstone.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = forget_tombstone.frameId AND fs.role != 'CARRIED')",
+    )
+    abstract suspend fun prunableTombstones(beforeMs: Long, keep: List<String>): List<String>
+
     /**
      * Forget lifecycle F1 / F5 (`forgetV2` only, rulings 2026-11-17): a SURVIVING photo whose memory was erased (it was carried or shared with a forgotten photo) goes back to PENDING with the solo marker, so the
      * ordinary extraction pipeline (with its provenance, power and pause gates) describes it ALONE. Only a photo that still has its `frame` row, is not tombstoned and has no memory left; never one being worked on.
@@ -153,6 +162,8 @@ abstract class ForgetDao {
     @Query("SELECT COUNT(*) FROM memory a WHERE a.id != :selfId AND a.imageDelivered = 1 AND " + DESCRIBES + " AND (a.frameId = :frameId OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = a.id AND fs.frameId = :frameId AND fs.role IN ('FACT','CLUSTER_REP')))")
     abstract suspend fun describedWithProof(frameId: String, selfId: String): Int
 
+    /** Retention v3 (r2-4): the capture time of a photo from whatever is left of it (`frame.ts`, then `frame_meta.capturedAtMs`, then `frame_meta.createdAt`), or null. */
+    @Query("SELECT COALESCE((SELECT ts FROM frame WHERE id = :id), (SELECT COALESCE(capturedAtMs, createdAt) FROM frame_meta WHERE frameId = :id))") abstract suspend fun captureTsOf(id: String): Long?
     @Query("SELECT * FROM frame WHERE id = :id") abstract suspend fun frame(id: String): FrameEntity?
     @Query("DELETE FROM frame WHERE id = :id") abstract suspend fun deleteFrame(id: String): Int
 
@@ -246,10 +257,6 @@ abstract class ForgetDao {
     )
     abstract suspend fun expireCaptionQueued(since: Long, ageMs: Long, nowMs: Long): Int
 
-    /** Memories of [type] created before [beforeMs], in any review state. */
-    @Query("SELECT id FROM memory WHERE type = :type AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
-    abstract suspend fun expiredIdsOfType(type: String, beforeMs: Long, limit: Int): List<String>
-
     /**
      * Image vectors of keyframes created before [beforeMs] (by `frame_meta.createdAt`), all spaces. Returns the frame ids whose vectors were
      * deleted; [markVectorsExpired] then stops the backfill from re-embedding them.
@@ -259,21 +266,41 @@ abstract class ForgetDao {
     @Query("UPDATE frame_meta SET imageVectorSpace = 'expired' WHERE frameId IN (:frameIds) AND (imageVectorSpace IS NULL OR imageVectorSpace != 'unembeddable')")
     abstract suspend fun markVectorsExpired(frameIds: List<String>): Int
 
-    /** Retention: memories of [tier] created before [beforeMs], in any review state. Captions and cluster summaries have their own kinds (Ruling 12). */
-    @Query("SELECT id FROM memory WHERE tier = :tier AND type NOT IN ('caption','cluster_summary') AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
-    abstract suspend fun expiredIds(tier: String, beforeMs: Long, limit: Int): List<String>
+    /**
+     * Retention v3 DEMOTION: SHORT facts (never a caption or a cluster summary) created before [beforeMs] that still have a text vector in any space. Their rows, edges and text are NEVER touched: only the vectors go
+     * ([deleteVectorsFor]), so they leave the semantic pool and the scan stays bounded, while a nudge, answer, Moment or card that cites them keeps its source.
+     */
+    @Query("SELECT m.id FROM memory m WHERE m.tier = 'SHORT' AND m.type NOT IN ('caption','cluster_summary') AND m.createdAt < :beforeMs AND EXISTS (SELECT 1 FROM memory_vector v WHERE v.memoryId = m.id) ORDER BY m.createdAt, m.id LIMIT :limit")
+    abstract suspend fun demotableFactIds(beforeMs: Long, limit: Int): List<String>
+    /** Counts-only plan line: how many facts [demotableFactIds] would return, uncapped. */
+    @Query("SELECT COUNT(*) FROM memory m WHERE m.tier = 'SHORT' AND m.type NOT IN ('caption','cluster_summary') AND m.createdAt < :beforeMs AND EXISTS (SELECT 1 FROM memory_vector v WHERE v.memoryId = m.id)")
+    abstract suspend fun countDemotable(beforeMs: Long): Int
 
-    /** P4 (counts-only retention plan line): how many memories [expiredIds] would return, uncapped. */
-    @Query("SELECT COUNT(*) FROM memory WHERE tier = :tier AND type NOT IN ('caption','cluster_summary') AND createdAt < :beforeMs")
-    abstract suspend fun countExpired(tier: String, beforeMs: Long): Int
-    /** P4: how many memories [expiredIdsOfType] would return, uncapped. */
-    @Query("SELECT COUNT(*) FROM memory WHERE type = :type AND createdAt < :beforeMs")
-    abstract suspend fun countExpiredOfType(type: String, beforeMs: Long): Int
-    /** P4: of the memories [expiredIds] would return, how many are cited by a live (not redacted) nudge or answer (a substring prefilter on the stored id lists, so an upper bound). Nothing is changed by expiry; the line says what is kept. */
-    @Query("SELECT COUNT(*) FROM nudge n WHERE n.redacted = 0 AND EXISTS (SELECT 1 FROM memory m WHERE m.tier = :tier AND m.type NOT IN ('caption','cluster_summary') AND m.createdAt < :beforeMs AND n.sourceIdsJson LIKE '%\"' || m.id || '\"%')")
-    abstract suspend fun countNudgesCitingExpired(tier: String, beforeMs: Long): Int
-    @Query("SELECT COUNT(*) FROM ask a WHERE a.redacted = 0 AND EXISTS (SELECT 1 FROM memory m WHERE m.tier = :tier AND m.type NOT IN ('caption','cluster_summary') AND m.createdAt < :beforeMs AND a.sourcesJson LIKE '%\"' || m.id || '\"%')")
-    abstract suspend fun countAsksCitingExpired(tier: String, beforeMs: Long): Int
+    /**
+     * Retention v3 QUOTA EVICTION (K6): the oldest keyframe photos a memory DESCRIBES ([DESCRIBED_BY_EXTRACTION]: describe-before-delete holds), with a `frame` row, not tombstoned, captured before [olderThanMs], that carry NO
+     * explicit importance: no `place` memory cites them, no mark lies within [radiusMs] of their capture time, no accepted (EXECUTING / EXECUTED) proposal's nudge or answer cites them or a memory of them. [protectedIds] (photos named
+     * by place cards or pins, which live outside this database; pass at least one id) are excluded as well. Oldest first, so a failed chunk is retried by the next pass.
+     */
+    @Query(
+        "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
+            "WHERE f.ts < :olderThanMs AND s.state NOT IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED') AND f.id NOT IN (:protectedIds) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) AND " + DESCRIBED_BY_EXTRACTION +
+            "AND NOT EXISTS (SELECT 1 FROM memory pm WHERE pm.type = 'place' AND (pm.frameId = f.id OR EXISTS (SELECT 1 FROM frame_source pf WHERE pf.memoryId = pm.id AND pf.frameId = f.id))) " +
+            "AND NOT EXISTS (SELECT 1 FROM canvas_label l WHERE l.atMs BETWEEN f.ts - :radiusMs AND f.ts + :radiusMs) " +
+            "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN nudge n ON n.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND (n.sourceIdsJson LIKE '%\"' || f.id || '\"%' " +
+            "OR EXISTS (SELECT 1 FROM memory cm WHERE cm.frameId = f.id AND n.sourceIdsJson LIKE '%\"' || cm.id || '\"%'))) " +
+            "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN ask a ON a.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND (a.sourcesJson LIKE '%\"' || f.id || '\"%' " +
+            "OR EXISTS (SELECT 1 FROM memory cm WHERE cm.frameId = f.id AND a.sourcesJson LIKE '%\"' || cm.id || '\"%'))) " +
+            "ORDER BY f.ts, f.id LIMIT :limit",
+    )
+    abstract suspend fun quotaPhotosDue(olderThanMs: Long, radiusMs: Long, protectedIds: List<String>, limit: Int): List<String>
+
+    /** Quota eviction (K6): the photos captured within `[fromMs, toMs]` (the second of a pinned Moment). */
+    @Query("SELECT id FROM frame WHERE ts >= :fromMs AND ts <= :toMs") abstract suspend fun frameIdsBetween(fromMs: Long, toMs: Long): List<String>
+
+    /** Retention v3 one-shot: tombstoned photos that have metadata but no `frame` row (the shape of every expiry before the marker existed; a user Forget of a moment deletes the metadata too), after [afterId]. */
+    @Query("SELECT t.frameId FROM forget_tombstone t JOIN frame_meta m ON m.frameId = t.frameId WHERE NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = t.frameId) AND t.frameId > :afterId ORDER BY t.frameId LIMIT :limit")
+    abstract suspend fun legacyExpiredFrameIds(afterId: String, limit: Int): List<String>
 
     /** [likePattern] escapes `\`, `%` and `_` with `\`. It is only a prefilter: the caller parses the JSON exactly. */
     @Query("SELECT * FROM ask WHERE redacted = 0 AND sourcesJson LIKE :likePattern ESCAPE '\\'") abstract suspend fun asksCiting(likePattern: String): List<AskEntity>

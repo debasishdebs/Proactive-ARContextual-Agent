@@ -28,9 +28,13 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES (:key, :value)") protected abstract suspend fun insertMetaIgnore(key: String, value: String)
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = :key") protected abstract suspend fun incrementMeta(key: String): Int
 
-    /** Retention lineage (`ExpiredLineage`): several keys at once / delete several keys. Callers chunk at 500. */
+    /** Several canvas_meta keys at once / delete several keys (expiry markers). Callers chunk at 500. */
     @Query("SELECT * FROM canvas_meta WHERE `key` IN (:keys)") abstract suspend fun metas(keys: List<String>): List<CanvasMetaEntity>
     @Query("DELETE FROM canvas_meta WHERE `key` IN (:keys)") abstract suspend fun deleteMetaKeys(keys: List<String>): Int
+
+    /** Expiry markers (`ExpiryMarks`): how many keys lie in `[fromKey, toKey)`; marker keys by prefix (pruning, one-shot purges). */
+    @Query("SELECT COUNT(*) FROM canvas_meta WHERE `key` >= :fromKey AND `key` < :toKey") abstract suspend fun countMetaBetween(fromKey: String, toKey: String): Int
+    @Query("DELETE FROM canvas_meta WHERE `key` LIKE :likePattern ESCAPE '\\'") abstract suspend fun deleteMetaLike(likePattern: String): Int
 
     /** Writes a durable key (kept by Delete all; hold no user data: the M1 evidence flag, plan JSON of a publish group). */
     @Query("INSERT OR REPLACE INTO canvas_meta (`key`, value) VALUES (:key, :value)") abstract suspend fun putMeta(key: String, value: String)
