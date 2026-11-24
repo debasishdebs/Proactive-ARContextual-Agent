@@ -214,9 +214,18 @@ object ForgetActions {
         return cacheClean && historyClean
     }
 
-    /** A committed Forget whose cleanup did not finish: a cached export (production builds only) or an owed place-history deletion (always). */
-    private fun cleanupFailed(context: Context, clean: Boolean): Boolean =
-        !clean && (com.rokid.context.orchestration.MemoryExport.productionBuild(context) || com.rokid.context.work.frames.place.PlaceGraph.historyOwed(context))
+    /**
+     * A committed Forget whose cleanup did not finish: a cached export (production builds only) or an owed place-history deletion (always). The history obligations are checked AFTER the pin cascade (which can add
+     * one) and finished once more here; any that is still owed means private rows may remain, whatever [clean] said before the cascade.
+     */
+    internal suspend fun cleanupFailed(context: Context, clean: Boolean): Boolean {
+        val place = com.rokid.context.work.frames.place.PlaceGraph
+        if (place.historyOwed(context)) {
+            val settled = try { place.settleHistory(context) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { false }
+            if (!settled || place.historyOwed(context)) return true
+        }
+        return !clean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)
+    }
 
     /** The cleanup after a committed RANGE Forget (the coordinator calls it inside the delete gate): the same as a fact or photo Forget. False = a cached export could not be deleted. */
     suspend fun afterRange(context: Context, r: ForgetService.Result): Boolean {

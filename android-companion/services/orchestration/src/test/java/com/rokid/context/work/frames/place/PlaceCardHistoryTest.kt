@@ -282,4 +282,81 @@ class PlaceCardHistoryTest {
         assertTrue(PlaceGraph.port.epoch() > epoch); assertEquals(null, PlaceGraph.port.publishIfId(PlaceCard("x", "t", "l", "s", PlaceConfidence.PIN, "f"), epoch))
         assertTrue(history.recent().isEmpty())
     }
+
+    // ---- Codex place fixes r3 ----
+
+    /** SharedPreferences whose commit() can be made to return false (a full disk); everything else is the real thing. */
+    private class FlakyPrefs(private val real: android.content.SharedPreferences) : android.content.SharedPreferences by real {
+        @Volatile var failCommit = false
+        override fun edit(): android.content.SharedPreferences.Editor = object : android.content.SharedPreferences.Editor by real.edit() {
+            private val e = real.edit()
+            override fun putStringSet(k: String?, v: MutableSet<String>?) = apply { e.putStringSet(k, v) }
+            override fun remove(k: String?) = apply { e.remove(k) }
+            override fun commit(): Boolean = if (failCommit) false else e.commit()
+            override fun apply() { e.apply() }
+        }
+    }
+
+    /** P1-4: a commit() that returns false is reported, never assumed; the obligation is still held for this process and the Forget fails while the deletion cannot finish. */
+    @Test fun owedObligationThatCannotBePersisted_isReported_keptInMemory_andFailsTheForget() = runBlocking {
+        val real = ctx.getSharedPreferences("owed_r3", Context.MODE_PRIVATE); real.edit().clear().commit(); PrefsHistoryOwed.clearMemory()
+        val prefs = FlakyPrefs(real); prefs.failCommit = true
+        val owed = PrefsHistoryOwed(prefs)
+        assertFalse("add reports the failed commit", owed.add("a:1"))
+        assertEquals("not on disk", emptySet<String>(), real.getStringSet(PrefsHistoryOwed.KEY, emptySet()))
+        assertEquals("but held for this process", setOf("a:1"), owed.all()); owed.remove("a:1"); PrefsHistoryOwed.clearMemory()
+        val (dao, h) = failing(owed)
+        h.add(ev(frame = "f1"))
+        var thrown = false; try { h.onFramesForgotten(listOf("f1")) } catch (_: HistoryDeletionPending) { thrown = true }
+        assertTrue("the Forget fails: the deletion failed and the obligation is not durable", thrown); assertTrue(h.hasOwed()); assertEquals(1, pack.cardLogDao.cardLogCount())
+        dao.fail = false; prefs.failCommit = false
+        assertTrue(h.retryOwed()); assertEquals(0, pack.cardLogDao.cardLogCount()); assertFalse(h.hasOwed())
+        real.edit().clear().commit(); PrefsHistoryOwed.clearMemory(); Unit
+    }
+
+    @Test fun anObligationThatCannotBePersistedButFinishedRightAway_doesNotFailTheForget() = runBlocking {
+        val real = ctx.getSharedPreferences("owed_r3", Context.MODE_PRIVATE); real.edit().clear().commit(); PrefsHistoryOwed.clearMemory()
+        val prefs = FlakyPrefs(real); prefs.failCommit = true
+        val h = PlaceCardHistory(pack.cardLogDao, clock = { now }, log = { logs += it }, newId = { "h${++seq}" }, owed = PrefsHistoryOwed(prefs))
+        h.add(ev(frame = "f1")); h.onFramesForgotten(listOf("f1"))
+        assertEquals(0, pack.cardLogDao.cardLogCount()); assertFalse(h.hasOwed()); PrefsHistoryOwed.clearMemory(); Unit
+    }
+
+    /** P1-3: the pin store is written, the mirror then fails: attempts are fenced at once and the history deletion still runs. */
+    @Test fun mirrorFailureAfterThePinStoreWrite_stillFencesAndDeletesTheHistory() = runBlocking {
+        val p1 = pin(1)
+        history.add(ev(HistoryKind.PIN, place = p1.id))
+        val ticket = PlaceGraph.fence.ticket()
+        var fencedBeforeMirror = false
+        var thrown = false
+        try { PlaceGraph.afterPinWrite(history, listOf(p1.id)) { fencedBeforeMirror = !ticket.isOpen(); throw IllegalStateException("mirror") } } catch (e: IllegalStateException) { thrown = true }
+        assertTrue("the mirror failure is reported", thrown); assertTrue("fenced BEFORE the mirror write could suspend", fencedBeforeMirror)
+        assertTrue("the rows are gone anyway", history.recent().isEmpty()); assertFalse(history.hasOwed())
+    }
+
+    @Test fun mirrorFailure_withAFailingHistoryDeletion_leavesTheObligationOwed() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        val p1 = pin(1); h.add(ev(HistoryKind.PIN, place = p1.id))
+        try { PlaceGraph.afterPinWrite(h, listOf(p1.id)) { throw IllegalStateException("mirror") } } catch (_: IllegalStateException) { }
+        assertTrue("armed before the mirror, kept after both failed", owed.all().isNotEmpty()); assertEquals(1, pack.cardLogDao.cardLogCount())
+        dao.fail = false; assertTrue(h.retryOwed()); assertEquals(0, pack.cardLogDao.cardLogCount())
+    }
+
+    /** P1-2: a pin cascade whose history deletion fails must not let the Forget report done, even though the cleanup was clean before the cascade. */
+    @Test fun pinCascadeHistoryFailure_isNotReportedDone() = runBlocking {
+        val prefs = ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE); prefs.edit().clear().commit(); PrefsHistoryOwed.clearMemory()
+        val dao = FlakyDao(pack.cardLogDao); dao.fail = false
+        PlaceGraph.installHistoryForTests(PlaceCardHistory(dao, clock = { now }, log = { logs += it }, owed = PrefsHistoryOwed(prefs), pinActive = { id -> PlaceGraph.pins(ctx).pins().any { it.id == id } }))
+        val p1 = pin(1); val p2 = pin(2)
+        assertTrue(PlaceGraph.savePins(ctx, listOf(p1, p2)))
+        pack.cardLogDao.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("r1", now, p1.id, "T", "PIN", null, null, null, null, CardDelivery.PENDING))
+        assertFalse("nothing owed before the cascade", PlaceGraph.historyOwed(ctx))
+        dao.fail = true
+        assertTrue("the cascade's removal succeeds; its history deletion is swallowed in savePins", PlaceGraph.savePins(ctx, listOf(p2)))
+        assertTrue(PlaceGraph.historyOwed(ctx)); assertEquals(1, pack.cardLogDao.cardLogCount())
+        assertTrue("so the Forget reports cleanup pending although the cache was clean", com.rokid.context.orchestration.forget.ForgetActions.cleanupFailed(ctx, true))
+        dao.fail = false
+        assertFalse("settled: done again", com.rokid.context.orchestration.forget.ForgetActions.cleanupFailed(ctx, true)); assertEquals(0, pack.cardLogDao.cardLogCount())
+        prefs.edit().clear().commit(); PrefsHistoryOwed.clearMemory(); Unit
+    }
 }
