@@ -44,7 +44,7 @@ class TripReplaySyntheticTest {
     }
 
     @Test fun siteExterior_weakFirstFrame_doesNotBlockTheGoodOne() {
-        val r = replay(RunSpec(FirstWeakOracle, FixScenario.Outdoor10))
+        val r = replay(RunSpec(FirstWeakOracle, FixScenario.Outdoor10, noPinFirst = true))
         val rows = rowsIn(r, siteA.first, siteA.last)
         assertEquals(listOf(PlaceOutcome.NONE, PlaceOutcome.MATCHED, PlaceOutcome.DUPLICATE), rows.map { it.outcome })
         assertEquals("Site A", rows[1].chosenName); assertTrue(rows[1].isCard)
@@ -53,30 +53,18 @@ class TripReplaySyntheticTest {
 
     @Test fun nestedRoomPins_indoorFix_neverShowsAWrongRoom() {
         val scenarios = listOf(FixScenario.AsRecorded, FixScenario.Outdoor10, FixScenario.Indoor60, FixScenario.Stale, FixScenario.AssumedPin(60f))
-        val overlays = listOf(Overlays.HEAD, Overlays.F1, Overlays.ALL)
+        val overlays = listOf(Overlays.HEAD, Overlays.ALL)
         for (sc in scenarios) for (ov in overlays) {
             val r = replay(RunSpec(Oracle, sc, overlays = ov))
             for (row in rowsIn(r, rooms.first, rooms.last)) {
                 if (row.isCard) assertEquals("${r.spec.label}", "Room A2", row.chosenName)
-                if (row.f1.startsWith("card")) assertEquals("${r.spec.label}", "card Room A2", row.f1)
+                assertTrue("a room pin never gets a single pin-first card while its neighbour is close", row.f1 != "card" || row.chosenName == "Room A2")
             }
         }
         val indoor = rowsIn(replay(RunSpec(Oracle, FixScenario.Indoor60)), rooms.first, rooms.last)
         assertTrue(indoor.all { it.outcome == PlaceOutcome.STALE_FIX && it.reason == "fix_inaccurate" })
         val outdoor = rowsIn(replay(RunSpec(Oracle, FixScenario.Outdoor10)), rooms.first, rooms.last)
         assertTrue("an outdoor fix in the room gives a card", outdoor.any { it.isCard })
-    }
-
-    @Test fun nestedRoomPins_f1_ambiguousInsteadOfGuess() {
-        val a1 = bundle.pins.first { it.name == "Room A1" }; val a2 = bundle.pins.first { it.name == "Room A2" }
-        val mid = (a1.lat + a2.lat) / 2
-        val pins = bundle.pins.filter { it.name.startsWith("Room") }
-        val rule = PinFirstRule()
-        val d = rule.decide(T0, com.rokid.context.work.frames.place.PlaceFix(mid, a1.lon, 3_000, 10f), pins)
-        assertEquals("ambiguous(2)", d.text)
-        val c = PinFirstRule().decide(T0, com.rokid.context.work.frames.place.PlaceFix(a2.lat, a2.lon, 3_000, 10f), pins)
-        assertEquals("card Room A2", c.text)
-        assertEquals("-", PinFirstRule().decide(T0, com.rokid.context.work.frames.place.PlaceFix(a2.lat, a2.lon, 3_000, 40f), pins).text) // acc > 25
     }
 
     @Test fun seatedShow_dedupeV2_oneCardPerPlaceWhileStaying() {
@@ -87,13 +75,16 @@ class TripReplaySyntheticTest {
     }
 
     @Test fun pinCreatedAfterFacade_retryLooksAgainAtTheFrameInView() {
-        val r = replay(RunSpec(Oracle, FixScenario.Outdoor10))
+        val r = replay(RunSpec(Oracle, FixScenario.Outdoor10, noPinFirst = true))
         val rows = rowsIn(r, facade.first, facade.last)
         assertEquals(listOf(PlaceOutcome.NO_CANDIDATES, PlaceOutcome.NO_CANDIDATES, PlaceOutcome.SEEN), rows.map { it.outcome })
         val extra = r.rows.filter { it.extra == "+F4" }
         assertEquals(1, extra.size)
         assertEquals(PlaceOutcome.MATCHED, extra[0].outcome); assertEquals("Site D", extra[0].chosenName); assertEquals(X + 1_000, extra[0].pokeMs)
         assertTrue(extra[0].attemptLine.contains("retry=pin_created"))
+        // with pin-first on, the new pin under the wearer's feet is a card at once, with no call
+        val pf = replay(RunSpec(Oracle, FixScenario.Outdoor10)).rows.single { it.extra == "+F4" }
+        assertEquals(PlaceOutcome.PIN_FIRST, pf.outcome); assertTrue(pf.isPinCard); assertFalse(pf.isCall); assertEquals("Site D", pf.chosenName)
     }
 
     @Test fun indoorAfterOneGoodFix_reusesWhileStill_neverWithoutAGoodFix() {
@@ -152,7 +143,7 @@ class TripReplaySyntheticTest {
 
     @Test fun historicalStage_reproducesRecordedMatches() {
         val h = bundle.historical.single()
-        val r = replay(RunSpec(Historical, FixScenario.Outdoor10))
+        val r = replay(RunSpec(Historical, FixScenario.Outdoor10, legacyDedupe = true))
         val row = r.rows.first { it.frameId == h.frameId }
         assertEquals(PlaceOutcome.MATCHED, row.outcome); assertEquals(h.name, row.chosenName)
         val cal = ReplayReport.calibrate(bundle, r)
@@ -161,7 +152,7 @@ class TripReplaySyntheticTest {
 
     @Test fun oracle_reportsTruthNotInCandidates() {
         val b = bundle.copy(truth = bundle.truth.map { if (it.label == "SITE_EXT") it.copy(target = "Nowhere") else it })
-        val rows = rowsIn(replay(RunSpec(Oracle, FixScenario.Outdoor10), b), siteA.first, siteA.last)
+        val rows = rowsIn(replay(RunSpec(Oracle, FixScenario.Outdoor10, noPinFirst = true), b), siteA.first, siteA.last)
         assertEquals("truth_not_in_candidates", rows[0].note)   // the model was asked once; the later frames are DUPLICATE and never reach it
         assertTrue(rows.none { it.isCard })
     }

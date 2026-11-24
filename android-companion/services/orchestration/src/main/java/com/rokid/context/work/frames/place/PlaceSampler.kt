@@ -25,6 +25,9 @@ import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** One recent card of the history, as the sampler seeds its in-memory dedupe and visits at a process start: place, wall time, kind name and cluster members (no position, no text). */
+data class PlaceSeed(val placeId: String, val at: Long, val kind: String = "", val members: List<String> = emptyList())
+
 /** A fix as the sampler needs it: where, how old and how accurate. Held in a local only; never stored or logged. */
 data class PlaceFix(val lat: Double, val lon: Double, val ageMs: Long, val accuracyM: Float)
 
@@ -83,7 +86,7 @@ data class BackendChoice(val backend: Backend?, val reason: ResolveReason, val m
 /** Why [PlaceSampler.retryRecent] was called: a pin was just saved, or the place pack of the cell arrived after a miss. */
 enum class RetryReason { PIN_CREATED, CELL_RETRY }
 
-enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED, NOT_ADMITTED }
+enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED, NOT_ADMITTED, PIN_FIRST }
 
 /**
  * Process-wide single-flight and spacing state shared by every [PlaceSampler] (the hub makes a new one at each restart): one run at a time, one model call per [PlaceSampler.MIN_CALL_GAP_MS],
@@ -107,6 +110,8 @@ class PlaceFlight {
     internal data class CardAt(val lat: Double, val lon: Double, val at: Long)
     private val lastCard = LinkedHashMap<String, CardAt>()
     @Volatile internal var seeded = false
+    /** F1: the visits of pin-first cards (in memory only). */
+    internal val visits = PinVisits()
 
     internal fun noteCard(placeId: String, c: CardAt) = synchronized(lastCard) {
         lastCard.remove(placeId); lastCard[placeId] = c
@@ -187,6 +192,8 @@ class PlaceSampler(
     private val shadowScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     /** F6: the card history sink (S1 seam; the default drops every event). Holds no coordinates. */
     private val history: suspend (PlaceHistoryEvent) -> Unit = {},
+    /** The Developer flag of the history (production: `placeCardHistory`): false = no row is written and the line says `hist=off`. */
+    private val historyOn: () -> Boolean = { true },
     /** Developer switches, read synchronously per attempt. Defaults OFF keep every older test unchanged; production passes the real flags. */
     private val pinFirstOn: () -> Boolean = { false },
     private val fixReuseOn: () -> Boolean = { false },
@@ -195,7 +202,7 @@ class PlaceSampler(
     /** The user pins among the candidates of an attempt (identity: S5 uses the pins inside `found.places`). */
     private val pinsNear: (List<PlaceEntity>) -> List<PlaceEntity> = { it },
     /** F3: the places that had a card in the last 30 min (place id, time), read once at the first attempt after a process start (position unknown). */
-    private val seedRecent: suspend (sinceMs: Long) -> List<Pair<String, Long>> = { emptyList() },
+    private val seedRecent: suspend (sinceMs: Long) -> List<PlaceSeed> = { emptyList() },
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
@@ -212,8 +219,9 @@ class PlaceSampler(
         var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
         /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
+        var cluster: PinFirst.Decision.Cluster? = null; var clusterParents: List<String?> = emptyList(); var clusterFrame = ""; var gen = 0L; var epoch = 0L
         var v2 = false; var fxLat = Double.NaN; var fxLon = Double.NaN; var fxAcc = 0f; var nowAt = 0L
-        var fixSrc = "-"; var fixRealAgeB = "-"; var pinFirst = "-"; var weakWin = "-"; var retry = "-"; var hist = "-"; var textHit = "-"
+        var cardId: String? = null; var fixSrc = "-"; var fixRealAgeB = "-"; var pinFirst = "-"; var weakWin = "-"; var retry = "-"; var hist = "-"; var textHit = "-"
         /** null = shadow off (the line is unchanged); "err", "na" or "ok". */
         var shadow: String? = null; var shadowOut: ShadowOutcome? = null; var shadowRank = "na"; var shadowAgrees = "na"
         var shadowPending: kotlinx.coroutines.Deferred<ShadowOutcome?>? = null; var shadowStartedAt = 0L; var shadowChoice: String? = null
@@ -345,8 +353,17 @@ class PlaceSampler(
     }
 
     private suspend fun attempt(ticket: ZoneTicket, retry: Retry? = null): PlaceOutcome {
+        val o = attemptCore(ticket, retry)
+        val c = tr.cluster ?: return o
+        // F1: the model path (it may confirm one room) had its chance; only when it showed no card is the honest "several pins" card shown.
+        if (tr.card == "shown" || tr.card == "suppressed" || o == PlaceOutcome.DISABLED || o == PlaceOutcome.ZONE || o == PlaceOutcome.DROPPED) return o
+        return clusterCard(c, o, ticket)
+    }
+
+    private suspend fun attemptCore(ticket: ZoneTicket, retry: Retry?): PlaceOutcome {
         val gen = generation()
         val cardEpoch = cards?.epoch() ?: 0L
+        tr.gen = gen; tr.epoch = cardEpoch
         // The zone gate comes first: nothing below runs while a zone is active, approaching or unreadable.
         stopped(gen, ticket)?.let { return it }
         val now = clock()
@@ -390,7 +407,7 @@ class PlaceSampler(
         if (tr.fixSrc == "fresh") flight.good = PlaceFlight.GoodFix(fx.lat, fx.lon, fx.accuracyM, elapsed() - fx.ageMs, f.sessionId, now - fx.ageMs, gen) // the zone judged it first: a zone fix is never kept
         stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
         if (f.frameId !in handled) remember(f.frameId)
-        if (tr.v2) seedFromHistory(now)
+        if (tr.v2 || pinFirstOn()) seedFromHistory(now)
         val picked = backend()
         val online = picked.backend == Backend.ONLINE // Offline only is never online: the pack is not fetched from the network and no photo or name is sent
         tr.online = online.toString(); tr.mode = picked.mode.name; tr.backend = picked.backend?.name?.lowercase() ?: "none"; tr.resolve = picked.reason.token; tr.label = picked.label
@@ -402,6 +419,18 @@ class PlaceSampler(
             // F4: a pack that could not be read or fetched is not "nothing here": the frame is tried again at the next poke (the cell may have arrived by then). FRESH or FETCHED and empty stays handled.
             if (retryOn() && found.outcome in PACK_MISS) { handled.remove(f.frameId); cellRetryFrame = f.frameId }
             tr.reason = "pack_empty"; return PlaceOutcome.NO_CANDIDATES
+        }
+        tr.pinFirst = "off"
+        if (pinFirstOn()) {
+            flight.visits.update(fx.lat, fx.lon, now)
+            val pins = pinsNear(found.places).filter { UserPlace.isUserId(it.id) }.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) }
+            val d = PinFirst.decide(fx, tr.fixSrc, pins, flight.visits, now)
+            tr.pinFirst = d.token
+            when (d) {
+                is PinFirst.Decision.Single -> return pinFirstCard(d.pin, d.distanceM, f.frameId, gen, cardEpoch, ticket, now)
+                is PinFirst.Decision.Cluster -> { tr.cluster = d; tr.clusterFrame = f.frameId; tr.clusterParents = d.members.map { m -> m.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name } } }
+                else -> {}
+            }
         }
         if (retry == null) flight.lastAttempt?.let { a ->
             val d = Geo.distanceM(fx.lat, fx.lon, a.lat, a.lon)
@@ -499,6 +528,7 @@ class PlaceSampler(
             if (suppressedHere(place.id)) { keep = true; tr.reason = "matched"; return PlaceOutcome.MATCHED } // the memory is kept and revealed, only the card is withheld
             if (!publish(PlaceCards.photo(place, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
             noteCard(place.id)
+            record(HistoryKind.PHOTO, place.id, place.name, emptyList(), frameId, null)
             keep = true
             tr.reason = "matched"
             return PlaceOutcome.MATCHED
@@ -530,7 +560,9 @@ class PlaceSampler(
     private suspend fun publish(card: PlaceCard, epoch: Long, gen: Long, frameId: String, ticket: ZoneTicket): Boolean {
         if (stopped(gen, ticket, frameId) != null) { tr.card = "dropped"; tr.cardWhy = tr.reason; return false } // the suspending checks (zone records, tombstone) come first; the synchronous ones below come last
         val h = cards
-        val shown = fence.act(ticket) { if (!live(gen)) false else if (h != null) h.publishIf(card, epoch) else { onCard(card); true } } == true
+        var newId: String? = null
+        val shown = fence.act(ticket) { if (!live(gen)) false else if (h != null) h.publishIfId(card, epoch)?.also { newId = it } != null else { onCard(card); true } } == true
+        if (shown) tr.cardId = newId
         if (shown) { tr.card = "shown"; tr.cardWhy = "-" } else { tr.card = "dropped"; tr.cardWhy = "withdrawn_or_fenced"; tr.reason = "card_dropped" }
         return shown
     }
@@ -544,8 +576,45 @@ class PlaceSampler(
         if (suppressedHere(first.first.id)) { tr.reason = "nearby_card"; return PlaceOutcome.NEARBY }
         if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
         noteCard(first.first.id)
+        record(HistoryKind.NEARBY, first.first.id, first.first.name, emptyList(), frameId, null)
         tr.reason = "nearby_card"
         return PlaceOutcome.NEARBY
+    }
+
+    // ---- F1 pin-first ----
+
+    private fun spotOf(p: PlaceEntity) = PinVisits.Spot(p.id, p.lat, p.lon, p.radiusM)
+
+    /** A single pin the fix is inside: its card, with no model call, no photo and no memory. Fenced like every card. */
+    private suspend fun pinFirstCard(pin: PlaceEntity, distanceM: Double, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket, now: Long): PlaceOutcome {
+        tr.chosen = pin.id; tr.distB = bucketM(distanceM)
+        if (!publish(PlaceCards.pin(pin, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+        noteCard(pin.id)
+        flight.visits.begin(listOf(spotOf(pin)), now)
+        record(HistoryKind.PIN, pin.id, pin.name, emptyList(), frameId, null)
+        tr.reason = "pin_first"
+        return PlaceOutcome.PIN_FIRST
+    }
+
+    /** The "several pins" card of a cluster when the model path showed none. The outcome of the model path is kept; the line says `pinFirst=cluster(n)` and `card=shown`. */
+    private suspend fun clusterCard(c: PinFirst.Decision.Cluster, o: PlaceOutcome, ticket: ZoneTicket): PlaceOutcome {
+        if (suppressedHere(c.inside.id)) return o
+        val card = PlaceCards.cluster(c.members, tr.clusterParents, tr.clusterFrame)
+        if (!publish(card, tr.epoch, tr.gen, tr.clusterFrame, ticket)) return o
+        noteCard(c.inside.id)
+        flight.visits.begin(c.members.map(::spotOf), tr.nowAt)
+        tr.chosen = c.members.take(12).joinToString(",") { it.id } // ids only
+        record(HistoryKind.PIN_CLUSTER, c.inside.id, card.title, c.members.map { it.id }, tr.clusterFrame, null)
+        return o
+    }
+
+    // ---- card history (F6) ----
+
+    /** One history row for the card this attempt just published (or a POSSIBLE row for a low-confidence answer). Never blocks or changes the card: a failure is `hist=fail`. */
+    private suspend fun record(kind: HistoryKind, placeId: String, title: String, members: List<String>, frameId: String?, confPct: Int?) {
+        if (!historyOn()) { tr.hist = "off"; return }
+        try { history(PlaceHistoryEvent(kind, placeId, title, members, frameId, if (kind == HistoryKind.POSSIBLE) null else tr.cardId, confPct)); tr.hist = "ok" }
+        catch (c: CancellationException) { throw c } catch (_: Exception) { tr.hist = "fail" }
     }
 
     // ---- F2 fix reuse ----
@@ -581,7 +650,7 @@ class PlaceSampler(
 
     /** A card was published (or suppressed as already shown): it consumes the card dedupe, records the place's card and ends the weak streak. */
     private fun noteCard(placeId: String) {
-        if (!tr.v2 || tr.fxLat.isNaN()) return
+        if (tr.fxLat.isNaN()) return
         flight.lastAttempt = PlaceFlight.Attempt(tr.fxLat, tr.fxLon, tr.nowAt)
         flight.noteCard(placeId, PlaceFlight.CardAt(tr.fxLat, tr.fxLon, tr.nowAt))
         flight.weak = null
@@ -602,7 +671,12 @@ class PlaceSampler(
     private suspend fun seedFromHistory(now: Long) {
         if (flight.seeded) return
         flight.seeded = true
-        try { for ((id, at) in seedRecent(now - ONCE_PER_PLACE_MS)) if (flight.cardAt(id) == null) flight.noteCard(id, PlaceFlight.CardAt(Double.NaN, Double.NaN, at)) } catch (c: CancellationException) { flight.seeded = false; throw c } catch (_: Exception) { }
+        try {
+            for (r in seedRecent(now - PinFirst.VISIT_MAX_MS)) {
+                if (now - r.at <= ONCE_PER_PLACE_MS && flight.cardAt(r.placeId) == null) flight.noteCard(r.placeId, PlaceFlight.CardAt(Double.NaN, Double.NaN, r.at))
+                if (r.kind == "PIN" || r.kind == "PIN_CLUSTER") flight.visits.begin((r.members.ifEmpty { listOf(r.placeId) }).map { PinVisits.Spot(it, Double.NaN, Double.NaN, 0) }, r.at)
+            }
+        } catch (c: CancellationException) { flight.seeded = false; throw c } catch (_: Exception) { }
     }
 
     /** A provider or network failure (transient, auth, rejected): the only thing that may show the "nearby · not checked" card online. Policy (NOT_SET), invalid output and anything unknown do not. */

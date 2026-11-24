@@ -54,12 +54,12 @@ object ReplayReport {
         return Calibration(checked, ok, none, misses, trusted)
     }
 
-    /** Wrong-place cards: a published card (or an F1 card) for a place other than the truth span's target, at a frame inside a span. */
+    /** Wrong-place cards: a published card (single, pin-first or cluster) for a place other than the truth span's target, at a frame inside a span. */
     fun wrongCards(bundle: ReplayBundle, r: ReplayResult): List<ReplayRow> = r.rows.filter { row ->
         val span = row.frameCapMs?.let { bundle.spanAt(it) } ?: return@filter false
         val target = span.targetName
         // H3: a cluster card is wrong only when the span's target is not a member of it.
-        (row.isCard && (target == null || target !in row.names)) || (row.f1.startsWith("card ") && row.f1.removePrefix("card ") != target)
+        (row.isCard && (target == null || target !in row.names))
     }
 
     fun spanVerdict(span: TruthSpan, rows: List<ReplayRow>): String {
@@ -82,7 +82,7 @@ object ReplayReport {
 
     /** The per-place table for one group (plan 7): consecutive SEEN / NO_FRAME rows are collapsed. */
     fun placeTable(span: TruthSpan, g: ReplayGroup): String {
-        val cols = listOf("F1", "ALL")
+        val cols = listOf("PF", "ALL")
         val byOverlay = g.overlays.mapValues { (_, res) -> res.rows.filter { it.extra.isEmpty() }.associateBy { it.pokeMs } }
         val head = g.head.rows.filter { it.extra.isEmpty() && it.frameCapMs?.let { c -> c in span } == true }
         val sb = StringBuilder("| IST | Frame | Motion | Pos | HEAD | ${cols.joinToString(" | ")} | Truth |\n|---|---|---|---|---|${cols.joinToString("|") { "---" }}|---|\n")
@@ -94,7 +94,7 @@ object ReplayReport {
             val n = j - i + 1
             val cells = cols.map { c ->
                 val o = byOverlay[c]?.get(r.pokeMs)
-                if (c == "F1") (byOverlay[c]?.get(r.pokeMs)?.f1 ?: "-").let { d -> if (d == "-") "-" else d } else cell(r, o)
+                if (c == "PF") r.f1 else cell(r, o)
             }
             sb.append("| ${ist(r.pokeMs)}${if (n > 1) " .. ${ist(head[j].pokeMs)}" else ""} | ${r.frameId?.takeLast(6) ?: "-"} | ${r.motion} | ${r.pos}${if (r.assumed) " (ASSUMED)" else ""} | ${headCell(r)}${if (n > 1) " x$n" else ""} | ${cells.joinToString(" | ")} | ${span.label} |\n")
             i = j + 1
@@ -136,9 +136,8 @@ object ReplayReport {
             sb.append("Run totals: HEAD ${totals(g.head)}" + g.overlays.entries.joinToString("") { ", ${it.key} ${totals(it.value)}" } + "\n\n")
             for (span in bundle.truth) {
                 val cards = { r: ReplayResult -> r.rows.count { it.isCard && it.frameCapMs?.let { c -> c in span } == true && span.targetName in it.names } }
-                val f1Cards = { r: ReplayResult -> r.rows.count { it.extra.isEmpty() && it.f1.startsWith("card ") && it.frameCapMs?.let { c -> c in span } == true && it.f1 == "card ${span.targetName}" } }
                 sb.append("- ${span.label}: ${spanVerdict(span, g.head.rows)}")
-                if (span.isTestable || span.assumedFixOnly) sb.append(" | cards HEAD ${cards(g.head)}" + g.overlays.entries.joinToString("") { (k, v) -> ", $k ${cards(v)}${if (k == "F1" || k == "ALL") "/F1 card ${f1Cards(v)}" else ""}" })
+                if (span.isTestable || span.assumedFixOnly) sb.append(" | cards HEAD ${cards(g.head)}" + g.overlays.entries.joinToString("") { (k, v) -> ", $k ${cards(v)}" })
                 sb.append("\n")
             }
         }
@@ -170,7 +169,7 @@ object ReplayReport {
         fun group(title: String, stage: MatchStage, sc: FixScenario, act: Activation = Activation.AS_CREATED, withSites: Boolean = false, overlays: Boolean = true): ReplayGroup {
             val head = runner.run(scope, RunSpec(stage, sc, act, Overlays.HEAD, sites = withSites, legacyDedupe = stage === Historical))
             val ov = if (!overlays) emptyMap() else linkedMapOf(
-                "F1" to Overlays.F1, "ALL" to Overlays.ALL,
+                "ALL" to Overlays.ALL,
             ).mapValues { (_, o) -> runner.run(scope, RunSpec(if (o == Overlays.ALL && stage === Oracle) CaptionTextOrOracle else stage, sc, act, o, sites = withSites)) }
             return ReplayGroup(title, head, ov)
         }
@@ -186,7 +185,7 @@ object ReplayReport {
         return groups to calibrate(bundle, cal.head)
     }
 
-    /** ALL = F1 with the F5 text matcher where it has a hit (H1): a frame whose caption names no candidate falls through to the oracle. */
+    /** ALL = the same sampler with the F5 text matcher where it has a hit (H1): a frame whose caption names no candidate falls through to the oracle. */
     internal object CaptionTextOrOracle : MatchStage {
         override val label = "CaptionText+Oracle"
         override fun create(bundle: ReplayBundle): ReplayMatcher {
