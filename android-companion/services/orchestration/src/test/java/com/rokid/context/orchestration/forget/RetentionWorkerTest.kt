@@ -49,6 +49,7 @@ class RetentionWorkerTest {
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
+        DeveloperFlags.setPauseRetention(ctx, false) // the candidate ships paused by default; these tests exercise the expiry itself
     }
 
     @After fun tearDown() { AppConfigStore.setPipelineEnabled(ctx, true); graph.db.close(); MemoryGraph.resetForTests(null) }
@@ -118,7 +119,14 @@ class RetentionWorkerTest {
         assertFalse(exists("s_old")); assertFalse(exists("l_old"))
     }
 
-    @Test fun pauseCleanUpIsOffByDefault() { assertFalse(DeveloperFlags.pauseRetention(ctx)) }
+    /** The retention-fix candidate ships paused: with no stored choice the switch reads ON, and a fresh install's nightly run expires nothing until the user turns it OFF. */
+    @Test fun pauseCleanUpIsOnByDefaultAndAFreshRunExpiresNothing() = runBlocking {
+        ctx.getSharedPreferences("pc_dev", Context.MODE_PRIVATE).edit().remove(DeveloperFlags.PAUSE_RETENTION).commit()
+        assertTrue(DeveloperFlags.pauseRetention(ctx))
+        mem("s_old", MemoryTier.SHORT, 25 * hour)
+        assertTrue(work() is ListenableWorker.Result.Success)
+        assertTrue("paused by default: nothing expires", exists("s_old"))
+    }
 
     @Test fun ensureRetentionSchedulesOneDailyJob() {
         OrchestrationScheduler(ctx).scheduleCritic()

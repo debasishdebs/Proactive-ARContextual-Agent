@@ -69,6 +69,10 @@ class LogContentScanTest {
         "worker", "running", "enqueued", "heapMb", "maxMb", "powerSave", "idle", "exempt", "foreground",
         // Roaming data saver (DataSaverGraph, tag PcData): the cost class name (FREE / HOME_MOBILE / ROAMING / UNKNOWN / OFFLINE) and, in "skipped", the kind name, the Skipped enum value and the fixed reason token of the decision; never a host, endpoint, country or content.
         "cost.name",
+        // Retention (RetentionWorker plan / done / paused lines, MomentRepair done line, tag PcRetention / PcMoments): Int locals that hold counts or seconds; never an id or a text.
+        "shortDue", "mediumDue", "longDue", "captionDue", "clusterSummaryDue", "skippedPhotosDue", "photosDue", "vectorsDue", "legacyDue", "nudgesKept", "answersKept",
+        "memoriesExpired", "photosExpired", "skippedPhotosExpired", "nudgesRedacted", "answersRedacted", "seconds",
+        "repairedDays", "missingSeconds", "momentsStored", "scenesBuilt", "unscenedMoments",
         "reps.values.sumOf { it.size }", "counts.closed.joinToString(\",\").ifEmpty { \"-\" }", "runCatching { l.isWearingCheckOn() }",
     )
     private val SAFE_PATTERNS = listOf(

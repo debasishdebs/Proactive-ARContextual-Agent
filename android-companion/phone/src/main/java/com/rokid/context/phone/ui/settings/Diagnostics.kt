@@ -326,8 +326,8 @@ fun DiagnosticsScreen(
     /** Z1: Ask is refused (and its answer is not delivered to the glasses) while a pause zone is active or the location is uncertain. Default ON; shown only with [developerMode]. */
     askZoneFence: Boolean = true,
     onAskZoneFence: (Boolean) -> Unit = {},
-    /** P0 retention fix: "Pause clean-up" skips the nightly expiry entirely. Default OFF; shown only with [developerMode]. */
-    pauseRetention: Boolean = false,
+    /** P0 retention fix: "Pause clean-up" skips the nightly expiry entirely. Default ON in the retention-fix candidate (nothing expires until it is turned OFF); shown only with [developerMode]. */
+    pauseRetention: Boolean = true,
     onPauseRetention: (Boolean) -> Unit = {},
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
     onMarkSuspect: (String) -> Unit = {},
@@ -439,7 +439,7 @@ fun DiagnosticsScreen(
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Pause clean-up", style = MaterialTheme.typography.titleSmall)
-                            Text("On: the nightly clean-up expires nothing (short-term details stay). Off (default): expired details are removed, but nudges, answers and Moments that used them are kept.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                            Text("Clean-up is paused while this is on (default): the nightly clean-up expires nothing and short-term details stay. Turn it off to let expired details and photos be removed; nudges, answers and Moments that used them are kept.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = pauseRetention, onCheckedChange = onPauseRetention, modifier = Modifier.testTag("pause_retention_switch"))
                     }
