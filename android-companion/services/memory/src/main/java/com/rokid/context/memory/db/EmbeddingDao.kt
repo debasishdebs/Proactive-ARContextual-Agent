@@ -32,6 +32,12 @@ private const val NOT_FORGOTTEN = "AND NOT EXISTS (SELECT 1 FROM forget_tombston
 
 private const val INDEXER_OWNS = "AND NOT EXISTS (SELECT 1 FROM frame_meta m2 JOIN frame_state s ON s.frameId = m2.frameId WHERE m2.frameId = f.id AND m2.routedAt IS NULL AND s.state = 'PENDING')"
 
+/**
+ * Retention v3 DEMOTION: a SHORT fact (never a caption or a cluster summary) older than the Quick recall window has lost its text vector on purpose. It is not "missing": the backfill never re-embeds it, the coverage and
+ * the space swap do not count it. A query rule, so there is no per-memory marker and the rule moves with the setting. `:recallSince` = now - the window; 0 = nothing is demoted (tests, a fresh install).
+ */
+private const val NOT_DEMOTED = "AND NOT (m.tier = 'SHORT' AND m.type NOT IN ('caption','cluster_summary') AND m.createdAt < :recallSince) "
+
 @Dao
 abstract class EmbeddingDao {
     @Query("SELECT * FROM embedding_space WHERE state IN ('ACTIVE','STALE') ORDER BY createdAt DESC LIMIT 1") abstract suspend fun current(): EmbeddingSpaceEntity?
@@ -62,21 +68,22 @@ abstract class EmbeddingDao {
     @Upsert abstract suspend fun putVector(v: MemoryVectorEntity)
 
     @Query(
-        "SELECT m.id AS id, m.text AS text FROM memory m WHERE m.reviewState != 'INVALIDATED' AND NOT EXISTS " +
+        "SELECT m.id AS id, m.text AS text FROM memory m WHERE m.reviewState != 'INVALIDATED' " + NOT_DEMOTED + "AND NOT EXISTS " +
             "(SELECT 1 FROM memory_vector v WHERE v.memoryId = m.id AND v.spaceId = :spaceId) ORDER BY m.createdAt DESC LIMIT :limit",
     )
-    abstract suspend fun missing(spaceId: String, limit: Int): List<EmbedInput>
+    abstract suspend fun missing(spaceId: String, limit: Int, recallSince: Long): List<EmbedInput>
 
     @Query(
-        "SELECT COUNT(*) FROM memory m WHERE m.reviewState != 'INVALIDATED' AND NOT EXISTS " +
+        "SELECT COUNT(*) FROM memory m WHERE m.reviewState != 'INVALIDATED' " + NOT_DEMOTED + "AND NOT EXISTS " +
             "(SELECT 1 FROM memory_vector v WHERE v.memoryId = m.id AND v.spaceId = :spaceId)",
     )
-    abstract suspend fun missingCount(spaceId: String): Int
+    abstract suspend fun missingCount(spaceId: String, recallSince: Long): Int
 
     @Query("SELECT COUNT(*) FROM memory_vector v JOIN memory m ON m.id = v.memoryId WHERE v.spaceId = :spaceId AND m.reviewState != 'INVALIDATED'")
     abstract suspend fun coveredCount(spaceId: String): Int
 
-    @Query("SELECT COUNT(*) FROM memory WHERE reviewState != 'INVALIDATED'") abstract suspend fun eligibleCount(): Int
+    @Query("SELECT COUNT(*) FROM memory m WHERE m.reviewState != 'INVALIDATED' " + NOT_DEMOTED)
+    abstract suspend fun eligibleCount(recallSince: Long): Int
 
     @Query("UPDATE embedding_space SET state = :state WHERE id = :id") abstract suspend fun setState(id: String, state: String)
     @Insert(onConflict = OnConflictStrategy.ABORT) protected abstract suspend fun insertSpace(s: EmbeddingSpaceEntity)
@@ -227,9 +234,9 @@ abstract class EmbeddingDao {
      * (the caller stamps `retiredAt`), or null when the swap is refused.
      */
     @Transaction
-    open suspend fun swapRetiring(buildingId: String, requireImageCoverage: Boolean = false): List<String>? {
+    open suspend fun swapRetiring(buildingId: String, requireImageCoverage: Boolean = false, recallSince: Long = 0L): List<String>? {
         val b = space(buildingId)?.takeIf { it.state == SpaceState.BUILDING } ?: return null
-        if (missingCount(buildingId) > 0) return null
+        if (missingCount(buildingId, recallSince) > 0) return null
         if (requireImageCoverage && (missingImageCount(buildingId) > 0 || imageSwapHealth(buildingId) != ImageSwapHealth.OK)) return null
         // Every other ACTIVE/STALE row goes, not just the newest: exactly one ACTIVE afterwards, never two.
         val old = servingExcept(b.id)

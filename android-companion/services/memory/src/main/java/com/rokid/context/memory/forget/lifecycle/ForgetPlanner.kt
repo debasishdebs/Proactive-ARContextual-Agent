@@ -5,7 +5,7 @@ import com.rokid.context.memory.db.CanvasSlice3Dao
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.MomentPartKind
 import com.rokid.context.memory.db.TraceClock
-import com.rokid.context.memory.forget.ExpiredLineage
+import com.rokid.context.memory.forget.ExpiryMarks
 import com.rokid.context.memory.forget.ForgetRadius
 import com.rokid.context.memory.forget.ForgetService
 import com.rokid.context.memory.forget.MomentForget
@@ -37,7 +37,6 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
                 val marks = roots.filter { it.family == Family.MARK }.map { it.id }
                 if (marks.isNotEmpty()) s.marks(marks)
             }
-            Policy.Retention -> s.cascade(roots.filter { it.family == Family.MEMORY }.map { it.id }.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true, redact = false)
             is Policy.RetentionPhotos -> s.expirePhotos(roots.filter { it.family == Family.PHOTO }.map { it.id }.distinct(), policy.requireLinked, policy.recheckSkipped)
             is Policy.Spans -> s.spans(policy)
         }
@@ -89,37 +88,32 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
         /** `ForgetService.cascade`. */
         suspend fun cascade(
             ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false,
-            extraCited: Set<String> = emptySet(), provenanceOnly: Boolean = false, bounded: Set<String>? = null, protect: Set<String>? = null, redact: Boolean = true, lineageFrames: List<String> = emptyList(),
+            extraCited: Set<String> = emptySet(), provenanceOnly: Boolean = false, bounded: Set<String>? = null, protect: Set<String>? = null,
         ) {
             val found = tx.chunked(ids) { fd.memories(it) }.filter { it.id !in goneMemories }
-            if (found.isEmpty() && extraCited.isEmpty() && lineageFrames.isEmpty()) return
+            if (found.isEmpty() && extraCited.isEmpty()) return
             val forgotten = found.map { it.id }.toSet()
             val citedFrames = (found.mapNotNull { it.frameId } + tx.chunked(forgotten) { fd.sourceFramesOf(it) }).distinct()
             // F1 / F5 (`forgetV2`, [protect] = the photos this Forget forgets): a cited photo that is NOT forgotten survives (never locked or deleted) and is rebuilt from its own pixels
             val forgottenFrames = if (protect == null) citedFrames else citedFrames.filter { it in protect }
             val survivors = if (protect == null) emptyList() else citedFrames - forgottenFrames.toSet()
             val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) forgottenFrames - tx.chunked(forgottenFrames) { fd.keyframeIds(it) }.toSet() else forgottenFrames
-            // retention r1 (P1-4): the lineage of expired memories a user Forget reaches (the same read the executor does)
-            val lineageSeed = if (redact && lockFrames) (citedFrames + lineageFrames).distinct().filter { bounded == null || it in bounded } else emptyList()
-            val lineage = if (redact) ExpiredLineage.reach(s3, forgotten, lineageSeed) else ExpiredLineage.Reach.EMPTY
-            val derivedLive = tx.chunked(lineage.derived.toList()) { fd.memories(it) }.map { it.id }.filter { it !in goneMemories }.toSet() - forgotten
-            val invalidated = if (!invalidateDescendants) emptySet() else (descendants(forgotten + derivedLive) + derivedLive) - forgotten
+            val invalidated = if (!invalidateDescendants) emptySet() else descendants(forgotten) - forgotten
             forgotten.forEach { put(Ref(Family.MEMORY, it), Fate.ERASE) }
             invalidated.forEach { put(Ref(Family.MEMORY, it), Fate.REBUILD) }
             goneMemories += forgotten
             hiddenFromMemories += invalidated
             val inside = if (bounded == null) frames else frames.filter { it in bounded }
-            if (redact) dropHolding(inside, (if (bounded == null) forgotten + invalidated else forgotten) + lineage.expired)
+            dropHolding(inside, if (bounded == null) forgotten + invalidated else forgotten)
             if (lockFrames) {
                 frames.forEach { put(Ref(Family.PHOTO, it), Fate.ERASE) }
-                if (redact) dropCanvasOutputs(inside, null, radiusCascade = bounded == null) // retention r1 (P1-2): an expiry plans no canvas outputs, mark, Moment or radius cascade
+                dropCanvasOutputs(inside, null, radiusCascade = bounded == null)
                 if (bounded != null) { val outside = (frames - inside.toSet()).toSet(); runResults(outside); fence(outside) }
             }
             if (survivors.isNotEmpty()) survivorsRebuilt(survivors)
             val uncited = inside.filter { f -> fd.memoryIdsOfFrame(f).none { it !in goneMemories } }
             val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
-            val cited = forgotten + invalidated + extraCited + goneCites + lineage.expired + derivedLive
-            if (!redact) return // system expiry (P0): nothing that cites an expired fact is redacted, expired or rebuilt
+            val cited = forgotten + invalidated + extraCited + goneCites
             val v2Rules = ForgetV2.on // the same rule the executor applies (AskRules): preview == delete
             val reached = AskRules.reach(cited, tx, v2Rules, skipAsks = nodes.keys.filter { it.family == Family.ANSWER }.map { it.id }.toSet(), skipNudges = nodes.keys.filter { it.family == Family.NUDGE }.map { it.id }.toSet())
             val asks = reached.asks; val nudges = reached.nudges
@@ -174,18 +168,19 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
             val radiusCascade = bounded == null
             val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
             val frame = if (frameId in goneFrames) null else fd.frame(frameId)
+            val capturedAt = if (frameId in goneFrames) emptyList() else ExpiryMarks.captureTs(fd, s3, listOf(frameId)) // retention v3 (r2-4): the same capture-time fallback as the delete
             val ids = fd.memoryIdsOfFrame(frameId).filter { it !in goneMemories }
             val carried = fd.carriedMemoryIdsOfFrame(frameId).filter { it !in goneMemories } - ids.toSet()
             if (carried.isNotEmpty()) cascade(carried, lockFrames = false, provenanceOnly = true, protect = protect)
             if (frame == null && ids.isEmpty() && (frameId in goneFrames || fd.photoRowCount(frameId) == 0)) {
                 dropCanvasOutputs(listOf(frameId), null, radiusCascade)
-                cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, protect = protect, lineageFrames = listOf(frameId))
+                cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, protect = protect)
                 return
             }
-            cascade(ids, lockFrames = true, extraCited = cites, bounded = bounded, protect = protect, lineageFrames = listOf(frameId))
+            cascade(ids, lockFrames = true, extraCited = cites, bounded = bounded, protect = protect)
             put(Ref(Family.PHOTO, frameId), Fate.ERASE)
             dropHolding(listOf(frameId), ids)
-            dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts), radiusCascade)
+            dropCanvasOutputs(listOf(frameId), capturedAt, radiusCascade)
             goneFrames += frameId
         }
 
@@ -253,7 +248,7 @@ class ForgetPlanner(private val db: ContextDatabase, private val radiusMs: () ->
 
         /** `ForgetService.dropCanvasOutputs`. */
         private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null, radiusCascade: Boolean = true) {
-            val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { f -> if (f in goneFrames) null else fd.frame(f)?.ts }
+            val capturedAt = capturedAtOrNull ?: ExpiryMarks.captureTs(fd, s3, frameIds.filter { it !in goneFrames })
             val spans = (if (radiusCascade) capturedAt else emptyList()).map { (it - radius)..(it + radius) }.let(CanvasSlice3Dao::mergeRanges)
             spans.forEach { range(it.first, it.last); dropBetween(it.first, it.last) }
             runResults(frameIds.toSet())

@@ -56,7 +56,7 @@ data class AreaEntity(
 
 /**
  * One row of the phone-only place card history (spec 2026-11-24 B1). TEXT and numbers only: no coordinates and no card line (the line is re-read from the pack or the pin by [placeId]).
- * [delivery] is one of [CardDelivery]. [frameId] is the photo link: user Forget deletes the row, photo retention only clears the link ([photoGone] = 1). Never exported, never backed up.
+ * [delivery] is one of [CardDelivery]. [frameId] is the photo link: user Forget deletes the row, photo retention only sets [photoGone] = 1 and keeps the id as private lineage. Never exported, never backed up.
  */
 @Entity(tableName = "place_card_log", indices = [Index("at"), Index("frameId")])
 data class PlaceCardLogEntity(
@@ -135,8 +135,11 @@ interface PlacesDao {
     @Query("UPDATE place_card_log SET delivery = :state WHERE cardId = :cardId") suspend fun setCardDelivery(cardId: String, state: String): Int
     @Query("UPDATE place_card_log SET delivery = :state WHERE cardId = :cardId AND delivery = 'PENDING'") suspend fun setCardDeliveryIfPending(cardId: String, state: String): Int
     @Query("DELETE FROM place_card_log WHERE id = :id") suspend fun deleteCardLog(id: String): Int
+    /** Quota eviction (K6): the photos a card of the history is about (explicit importance). */
+    @Query("SELECT DISTINCT frameId FROM place_card_log WHERE frameId IS NOT NULL") suspend fun cardLogFrameIds(): List<String>
     @Query("DELETE FROM place_card_log WHERE frameId IN (:frameIds)") suspend fun deleteCardLogForFrames(frameIds: List<String>): Int
-    @Query("UPDATE place_card_log SET frameId = NULL, photoGone = 1 WHERE frameId IN (:frameIds)") suspend fun unlinkCardLogFrames(frameIds: List<String>): Int
+    /** Photo retention (retention v3, M3): only `photoGone = 1`. The `frameId` stays as PRIVATE lineage, so a later user Forget of the photo still matches [deleteCardLogForFrames]; a renderer must not load a photo when `photoGone` is 1. */
+    @Query("UPDATE place_card_log SET photoGone = 1 WHERE frameId IN (:frameIds)") suspend fun markCardLogPhotoGone(frameIds: List<String>): Int
     @Query("DELETE FROM place_card_log WHERE at BETWEEN :from AND :to") suspend fun deleteCardLogBetween(from: Long, to: Long): Int
     @Query("DELETE FROM place_card_log") suspend fun deleteAllCardLog(): Int
     /** Rows of one pin: its own rows and the cluster rows that list it. */

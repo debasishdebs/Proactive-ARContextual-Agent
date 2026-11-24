@@ -107,6 +107,23 @@ abstract class MomentDao : DerivedStaleDao() {
         if (tombstonedAmong(listOf(id)).isNotEmpty()) return@mapNotNull null
         firstFrameBetween(sec * 1000, sec * 1000 + 999)?.let { PhotoMomentRow(id, it.path, it.ts) }
     }
+    /** Retention v3 (r2-9): how many expiry markers (`rx:t:<capture ms>:<frameId>`, `ExpiryMarks`) lie in `[fromKey, toKey)`. */
+    @Query("SELECT COUNT(*) FROM canvas_meta WHERE `key` >= :fromKey AND `key` < :toKey") protected abstract suspend fun expiredMarksBetween(fromKey: String, toKey: String): Int
+
+    /**
+     * The Moment ids of [ids] that are still alive for a PIN: a stored photo of the second ([photoMomentsOf]) OR a photo of that second that retention EXPIRED (the durable marker). A photo the user forgot has no marker (a
+     * Forget clears it in its own transaction), so a Forget still ends the link; expiry alone never does.
+     */
+    @Transaction open suspend fun momentsAliveOrExpired(ids: List<String>): Set<String> {
+        val live = photoMomentsOf(ids).map { it.momentId }.toSet()
+        val rest = ids.distinct().filter { it !in live }
+        val tomb = if (rest.isEmpty()) emptySet() else tombstonedAmong(rest).toSet()
+        val expired = rest.filter { it !in tomb }.filter { id ->
+            val sec = com.rokid.context.memory.moment.MomentId.parse(id) ?: return@filter false
+            expiredMarksBetween(com.rokid.context.memory.forget.ExpiryMarks.tKey(sec * 1000, ""), com.rokid.context.memory.forget.ExpiryMarks.tKey(sec * 1000 + 1000, "")) > 0
+        }
+        return live + expired
+    }
     /** Slice 1.4.4 B1: the FIRST photo frame of Moment [id] (the one [photoMomentsOf] shows as the thumbnail), or null when the Moment id is invalid, its second is tombstoned or no photo of it is left. Read-only. */
     @Transaction open suspend fun photoFrameOf(id: String): FrameEntity? {
         val sec = com.rokid.context.memory.moment.MomentId.parse(id) ?: return null

@@ -57,7 +57,7 @@ class PinCommitNotStored : Exception("pin removal not recorded")
  * | Delete all: after the commit write                                 | committed + dead set          | the resume keeps it and arms nothing new; settle deletes the dead set        |
  * | a user Forget (with pairs) while that uncommitted wipe arming is pending | uncommitted wipe arming | the Forget is refused (PinArmFailed, "try again"): the arming is never replaced; a Forget with no pairs is unaffected |
  *
- * A Moment counts as gone when no stored photo of its second is left, or its second is tombstoned (`MomentDao.photoMomentsOf`): the rebuildable projection row is NOT the test. Log lines are literals plus
+ * A Moment counts as gone when no stored photo of its second is left AND none of its second was merely expired by retention (the durable marker), or its second is tombstoned (`MomentDao.momentsAliveOrExpired`): the rebuildable projection row is NOT the test. Log lines are literals plus
  * a count: never an id, name, note or position.
  */
 object PinMomentLinks {
@@ -68,7 +68,7 @@ object PinMomentLinks {
     /** True when ANOTHER operation holds an arming: only then is its arming at risk of being overwritten or acted on. An operation in flight that armed nothing (no pins in its target) does not block anyone. */
     private fun busy(self: String?): Boolean = armed.any { it != self }
 
-    private fun momentsOf(context: Context): suspend (List<String>) -> Set<String> = { ids -> MemoryGraph.get(context).db.momentDao().photoMomentsOf(ids).map { it.momentId }.toSet() }
+    private fun momentsOf(context: Context): suspend (List<String>) -> Set<String> = { ids -> MemoryGraph.get(context).db.momentDao().momentsAliveOrExpired(ids) } // retention v3 (r2-9): a Moment whose photo only EXPIRED keeps its pin link; a user Forget clears the expiry marker, so it ends it
 
     // ---- explicit Forget ----
 
@@ -309,7 +309,7 @@ object PinMomentLinks {
         if (pins.isEmpty()) PinsGoing.NONE
         else {
             val ids = pins.mapNotNull { it.momentId }.distinct()
-            val live = MemoryGraph.get(context).db.momentDao().photoMomentsOf(ids).map { it.momentId }.toSet()
+            val live = MemoryGraph.get(context).db.momentDao().momentsAliveOrExpired(ids)
             val going = if (reach == null) ids.toSet() else reach(live.toList())
             pins.filter { it.momentId in going }.let { g -> PinsGoing(g.size, g.take(PinsGoing.NAMES_SHOWN).map { it.name }, g.map { it.id }.toSet()) }
         }

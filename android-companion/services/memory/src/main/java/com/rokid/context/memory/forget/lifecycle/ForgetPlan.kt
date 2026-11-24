@@ -22,8 +22,6 @@ class ForgetPlan(val nodes: Map<Ref, Fate>, val revisions: Map<Ref, String> = em
 sealed interface Policy {
     /** A user Forget of a fact, a photo or a mark (`ForgetService.forgetFacts` / `forgetMoment`, the mark undo). */
     data object User : Policy
-    /** Retention expiry of memories (`ForgetService.expire`): no REBUILD of descendants, accepted proposals kept, keyframes kept. */
-    data object Retention : Policy
     /** Retention expiry of photos (`ForgetService.expirePhotos`). */
     data class RetentionPhotos(val requireLinked: Boolean = false, val recheckSkipped: Boolean = false) : Policy
     /**

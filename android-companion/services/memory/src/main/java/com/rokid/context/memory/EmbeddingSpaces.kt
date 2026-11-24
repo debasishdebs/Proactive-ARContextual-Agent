@@ -50,6 +50,8 @@ class EmbeddingSpaces(
     private val retired: RetiredClock = InMemoryRetiredClock(),
     private val now: () -> Long = System::currentTimeMillis,
 ) {
+    /** Retention v3: `now - the Quick recall window`; a SHORT fact older than this has lost its text vector on purpose and is neither backfilled nor counted ([EmbeddingDao] NOT_DEMOTED). 0 = nothing is demoted. */
+    @Volatile var recallSince: () -> Long = { 0L }
     suspend fun current(): EmbeddingSpaceEntity? = dao.current()
     suspend fun queryable(): EmbeddingSpaceEntity? = dao.current()?.takeIf { it.state == SpaceState.ACTIVE }
     suspend fun building(): EmbeddingSpaceEntity? = dao.building()
@@ -60,7 +62,7 @@ class EmbeddingSpaces(
     /** False when the space is gone or no longer writable (RETIRED/STALE); throws on a dimension mismatch. */
     suspend fun put(memoryId: String, spaceId: String, vector: FloatArray): Boolean =
         dao.putChecked(MemoryVectorEntity(memoryId, spaceId, VectorCodec.encode(vector)), vector.size)
-    suspend fun missing(spaceId: String, limit: Int): List<EmbedInput> = dao.missing(spaceId, limit)
+    suspend fun missing(spaceId: String, limit: Int): List<EmbedInput> = dao.missing(spaceId, limit, recallSince())
     /** Stored photos with no image vector in [spaceId], newest first, `unembeddable` ones excluded. */
     suspend fun missingImages(spaceId: String, limit: Int): List<String> = dao.missingImageIds(spaceId, limit)
     suspend fun missingImageCount(spaceId: String): Int = dao.missingImageCount(spaceId)
@@ -74,10 +76,10 @@ class EmbeddingSpaces(
     /** Log-only: photos currently marked `unembeddable`. */
     suspend fun unembeddableImages(): Int = dao.unembeddablePhotoCount()
     suspend fun markUnembeddable(frameId: String) = dao.markUnembeddable(frameId, now())
-    suspend fun coverage(spaceId: String): Coverage = Coverage(dao.coveredCount(spaceId), dao.eligibleCount())
+    suspend fun coverage(spaceId: String): Coverage = Coverage(dao.coveredCount(spaceId), dao.eligibleCount(recallSince()))
     /** [requireImages]: the building embedder declares IMAGE, so every stored photo (bar `unembeddable` ones) needs a vector in [buildingId] (Ruling 15). */
     suspend fun swapIfComplete(buildingId: String, requireImages: Boolean = false): Boolean {
-        val old = dao.swapRetiring(buildingId, requireImages) ?: return false
+        val old = dao.swapRetiring(buildingId, requireImages, recallSince()) ?: return false
         old.forEach { retired.markRetired(it, now()) }
         return true
     }

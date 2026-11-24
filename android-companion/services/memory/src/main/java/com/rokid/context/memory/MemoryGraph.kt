@@ -21,6 +21,7 @@ class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredC
     val shopping = db.shoppingDao()
     val notes = db.noteDao()
     val spaces = EmbeddingSpaces(db.embeddingDao(), retired)
+    @Volatile private var recallWired = false
     val vectorIndex: com.rokid.context.memory.retrieval.VectorIndex = com.rokid.context.memory.retrieval.BruteForceVectorIndex(db.embeddingDao())
 
     companion object {
@@ -33,7 +34,13 @@ class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredC
          */
         fun get(context: Context, encryptionRequested: () -> Boolean = { false }): MemoryGraph {
             com.rokid.context.memory.forget.lifecycle.ForgetV2.install(context) // Forget lifecycle M4: the flag reader, once per process; OFF unless the developer flag is set
-            return getInstance(context, encryptionRequested)
+            return getInstance(context, encryptionRequested).also { g ->
+                if (!g.recallWired) { // retention v3: the Quick recall window decides which SHORT facts the backfill leaves without a vector
+                    g.recallWired = true
+                    val app = context.applicationContext
+                    g.spaces.recallSince = { System.currentTimeMillis() - MemorySettingsStore.get(app).settings.value.recallHours * 3_600_000L }
+                }
+            }
         }
         private fun getInstance(context: Context, encryptionRequested: () -> Boolean): MemoryGraph =
             instance ?: synchronized(this) {

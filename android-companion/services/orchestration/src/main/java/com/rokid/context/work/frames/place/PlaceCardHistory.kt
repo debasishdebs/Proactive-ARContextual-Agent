@@ -102,6 +102,9 @@ class PlaceCardHistory(
         removed
     }
 
+    /** Quota eviction (K6): the photos the history names. Throws when the database cannot be read (the caller then evicts nothing: fail closed). */
+    suspend fun photoIds(): List<String> = dao.cardLogFrameIds()
+
     /** A user Forget of these photos: their rows go. */
     suspend fun onFramesForgotten(frameIds: List<String>) = safe("forget", Unit) {
         val removed = frameIds.distinct().chunked(CHUNK).sumOf { dao.deleteCardLogForFrames(it) }
@@ -109,10 +112,10 @@ class PlaceCardHistory(
         bump()
     }
 
-    /** Photo retention: only the photo link goes (`frameId` = null, `photoGone` = 1); the row stays. */
+    /** Photo retention: only `photoGone` = 1; the row stays WITH its `frameId` (private lineage, so a later Forget of the photo still deletes it; the UI never loads a photo of a gone row). */
     suspend fun onPhotosExpired(frameIds: List<String>) = safe("expire", Unit) {
-        val unlinked = frameIds.distinct().chunked(CHUNK).sumOf { dao.unlinkCardLogFrames(it) }
-        log("place history expire frames=${frameIds.size} unlinked=$unlinked")
+        val marked = frameIds.distinct().chunked(CHUNK).sumOf { dao.markCardLogPhotoGone(it) }
+        log("place history expire frames=${frameIds.size} marked=$marked")
         bump()
     }
 

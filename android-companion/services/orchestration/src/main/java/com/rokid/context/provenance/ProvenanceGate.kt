@@ -117,13 +117,14 @@ class ProvenanceGate(
     }
 
     /**
-     * Retention r1 (finding 5): the photos among [ids] that a user FORGOT. Expiry also tombstones a photo (the extraction lock) but keeps its `frame_meta`, so a tombstoned photo that still has metadata merely expired and
-     * is NOT returned: a record that cites an expired photo (a suggestion) stays live. A tombstoned photo with no metadata (forgotten, or a legacy frame) is returned.
+     * Retention v3 (r2-3, r2-6): the photos among [ids] that a user FORGOT = tombstoned AND NOT marked expired. Expiry tombstones a photo too (the extraction lock) but writes the durable expired-photo marker in the same
+     * transaction ([com.rokid.context.memory.forget.ExpiryMarks]); every user Forget clears it. "Expired" versus "forgotten" is data, not an inference from `frame_meta`: a fact Forget keeps the metadata and is still forgotten,
+     * a legacy frame has none and an expired one is still expired. It fails closed: when the marker cannot be read every tombstoned photo counts as forgotten.
      */
     suspend fun forgottenFrames(ids: Set<String>): Set<String> {
         val tombstoned = goneFrames(ids, requirePresent = false)
         if (tombstoned.isEmpty()) return emptySet()
-        val expired = tombstoned.toList().chunked(MAX_IN).flatMap { db.forgetDao().keyframeIds(it) }.toSet()
+        val expired = try { com.rokid.context.memory.forget.ExpiryMarks.marked(db.canvasSlice3Dao(), tombstoned) } catch (c: CancellationException) { throw c } catch (_: Exception) { emptySet() }
         return tombstoned - expired
     }
 

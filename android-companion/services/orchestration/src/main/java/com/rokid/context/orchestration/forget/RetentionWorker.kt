@@ -12,16 +12,18 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.MemoryMaintenance
 import com.rokid.context.memory.MemorySettings
 import com.rokid.context.memory.MemorySettingsStore
-import com.rokid.context.memory.db.MemoryTier
+import com.rokid.context.memory.forget.ForgetRadius
 import com.rokid.context.memory.forget.ForgetService
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Retention (spec §2.4 windows; carry: shown but never enforced). Daily, unique [NAME] (KEEP), scheduled by
- * `OrchestrationScheduler.ensureRetention`. SHORT older than `shortHours`, MEDIUM older than `mediumDays`, LONG older
- * than `longDays` (by `createdAt`, any review state) expire in chunks of [CHUNK] (ForgetService.expire: P0, system expiry never redacts a nudge or answer and never drops a Moment; PENDING
- * proposals are left alone too, the extraction lock stays, no descendant invalidation). JPEGs are deleted per chunk and swept (FrameSweep). Frames older than `longDays` that no memory points at are forgotten as a
- * moment. It runs while capture is paused: it only removes data.
+ * Retention v3 (design 2026-11-24): retention NEVER deletes a memory row, an edge or text; only an explicit user Forget does. Daily, unique [NAME] (KEEP), scheduled by `OrchestrationScheduler.ensureRetention`. In order:
+ *  1. the one-shot migration ([RetentionMigration]: purge the `lin:` lineage keys of older builds, mark the photos that expired before the marker existed);
+ *  2. the file-retry sweep ([FrameSweep.sweep]): ALWAYS, also under Pause (it finishes deletes that already committed, including a user Forget's JPEGs);
+ *  3. quota eviction ([Retention.runQuota]): ALWAYS, also under Pause (it is the storage bound): the oldest eligible photos once the cap is exceeded, never text, never a photo of explicit importance;
+ *  4. when "Pause clean-up" (Developer) is ON: a counts-only line, and nothing below runs;
+ *  5. the deleting steps ([Retention.run]): demotion of SHORT facts past the Quick recall window (their TEXT VECTOR only), skipped photos, photos by their own setting, image vectors, legacy orphan frames.
+ * It runs while capture is paused.
  */
 class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result = try {
@@ -37,26 +39,28 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
     private suspend fun retain(): Result {
         val graph = MemoryGraph.get(applicationContext)
         val service = ForgetService(graph.db, graph.proposals)
-        // P0: the Developer "Pause clean-up" switch skips the whole nightly expiry (default ON for the retention-fix candidate: nothing expires until the user turns it OFF). One counts-only line says so.
-        if (DeveloperFlags.pauseRetention(applicationContext)) {
-            val p = runCatching { Retention(graph, service).plan(MemorySettingsStore.get(applicationContext).settings.value, System.currentTimeMillis()) }.getOrNull()
-            if (p == null) { PcLog.milestone(TAG, "retention paused: nothing expires") } else {
-                val shortDue = p.shortDue; val mediumDue = p.mediumDue; val longDue = p.longDue; val photosDue = p.photosDue + p.skippedPhotosDue
-                PcLog.milestone(TAG, "retention paused: nothing expires, would be due shortDue=$shortDue mediumDue=$mediumDue longDue=$longDue photosDue=$photosDue")
-            }
-            return Result.success()
-        }
-        var removed = false
-        // Fix round 1 I3: each chunk's photos are deleted right after its transaction, not at the end of the pass.
         val now = System.currentTimeMillis()
         // Ruling 13: the first run of this build stamps the per-kind clock; photo deadlines count from max(capture time, stamp).
         val settings = MemorySettingsStore.get(applicationContext).stampPerKindSince(now)
-        val summary = Retention(graph, service).run(settings, now) { r ->
-            removed = true
-            ForgetActions.apply(applicationContext, r)
-        }
-        PipelineStatsStore.addRetentionDeletes(applicationContext, summary.skippedDeleted, summary.deletedUndescribed)
+        var removed = false
+        val onChunk: suspend (ForgetService.Result) -> Unit = { r -> removed = true; ForgetActions.apply(applicationContext, r) }
+        runCatching { RetentionMigration.runOnce(graph.db, now) }.onFailure { PcLog.w(TAG, "retention migration failed (next run retries): ${SafeLog.describe(it)}") }
+        // r2-7: the file-retry sweep always runs: Pause must never strand a user's Forget JPEGs.
         FrameSweep.sweep(applicationContext)
+        val retention = Retention(graph, service, usedBytes = { StorageMeter.usedBytes(applicationContext) }, protectedFrames = { QuotaProtection.frames(applicationContext) })
+        // K6 / r2-7: quota eviction is the storage bound and runs under Pause as well.
+        retention.runQuota(settings, now, onChunk)
+        if (DeveloperFlags.pauseRetention(applicationContext)) {
+            // P0: the Developer "Pause clean-up" switch skips the DELETING steps only (default ON for the retention candidate). One counts-only line says what would be due.
+            val p = runCatching { retention.plan(settings, now) }.getOrNull()
+            if (p == null) { PcLog.milestone(TAG, "retention paused: deleting steps skipped") } else {
+                val demoteDue = p.demoteDue; val photosDue = p.photosDue + p.skippedPhotosDue; val vectorsDue = p.vectorsDue
+                PcLog.milestone(TAG, "retention paused: deleting steps skipped, would be due demoteDue=$demoteDue photosDue=$photosDue vectorsDue=$vectorsDue")
+            }
+        } else {
+            val summary = retention.run(settings, now, onChunk)
+            PipelineStatsStore.addRetentionDeletes(applicationContext, summary.skippedDeleted, summary.deletedUndescribed)
+        }
         if (removed) {
             ForgetActions.scrubQueue(applicationContext)
             runCatching { MemoryMaintenance.checkpoint(graph.db) }
@@ -72,14 +76,12 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
 }
 
 /**
- * One retention pass (spec §P6; Rulings 8, 11-14), in order: (1) the per-kind clock [MemorySettings.perKindSince] (0 = unstamped: this pass
- * counts as the first run, so nothing is deleted by a per-kind deadline); (2) the SHORT/MEDIUM/LONG tier windows, which leave captions and
- * cluster summaries alone; (3) captions and cluster summaries by their own windows (FOREVER = never); (4) ordinary skipped photos (shed,
- * semantic near-dup, non-representative cluster members; never a representative or a key moment) after `skippedPhotoDays`; (5) every other
- * keyframe photo after `photoDays` while a memory cites it (a described-before-delete one after a further [GRACE_DAYS]; one no memory cites never); (6) image vectors after `imageVectorDays`; (7) the
- * legacy orphan pass for frames that have no `frame_meta` ([ForgetService.expireOrphanFrames]: tombstone, `frame` row and JPEG only). Expiry deletes the rows with their edges and vectors and never invalidates
- * descendants: each derived memory expires on its own window. A photo goes through [ForgetService.expirePhotos] (frame row, JPEG and
- * sidecar; the tombstone lets the sweep retry a failed delete). [onChunk] gets each committed chunk.
+ * One retention pass (spec §P6; retention v3). Photos and vectors only; text is never deleted. In [run], in order: (1) the per-kind clock [MemorySettings.perKindSince] (0 = unstamped: this pass counts as the first run, so nothing is
+ * deleted by a per-kind deadline); (2) DEMOTION: a SHORT fact older than the Quick recall window loses its TEXT VECTOR (its row, text and edges stay: provenance, Moments, cards, nudges and answers keep it); (3) a key-moment photo still
+ * waiting for its caption after 14 days becomes a skipped photo; (4) ordinary skipped photos (shed, semantic near-dup, non-representative cluster members; never a representative or a key moment) after `skippedPhotoDays`; (5) every other
+ * keyframe photo after `photoDays` while a memory cites it (a described-before-delete one after a further [GRACE_DAYS]; one no memory cites never); (6) image vectors after `imageVectorDays`; (7) the legacy orphan pass for frames that have
+ * no `frame_meta` ([ForgetService.expireOrphanFrames]: tombstone, expiry marker, `frame` row and JPEG only). A photo goes through [ForgetService.expirePhotos] (tombstone, expiry marker, frame row, JPEG and sidecar in ONE transaction; the
+ * tombstone lets the sweep retry a failed delete). [runQuota] is the separate, bounded storage cap. [onChunk] gets each committed chunk.
  */
 internal class Retention(
     private val graph: MemoryGraph,
@@ -87,86 +89,103 @@ internal class Retention(
     private val describeBeforeDeleteReady: Boolean = DESCRIBE_BEFORE_DELETE_READY,
     /** Test seam: runs after the skipped-photo selection and before its expiry (a describe can commit in between). */
     private val beforeSkippedExpiry: suspend (List<String>) -> Unit = {},
+    /** Bytes the app's memory uses now (database plus photo folders). Measured again after every quota chunk. */
+    private val usedBytes: suspend () -> Long = { 0L },
+    /** The photos of explicit importance that live outside `context.db` (place cards, pins). Null = unreadable: quota eviction then does NOTHING (fail closed). */
+    private val protectedFrames: suspend () -> Set<String>? = { emptySet() },
 ) {
     /** [deletedUndescribed] is 0 by construction (expiry requires a citing memory); it is kept as the Diagnostics counter that proves it. */
-    data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0)
+    data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0, val demoted: Int = 0, val photosExpired: Int = 0)
 
-    /** P4: what one pass would expire, counts per tier and kind only (never an id or a text). The `plan` line prints it; a test pins the numbers. */
+    /** P4: what one pass would do, counts only (never an id or a text). The `plan` line prints it; a test pins the numbers. */
     data class Plan(
-        val shortDue: Int, val mediumDue: Int, val longDue: Int, val captionDue: Int, val clusterSummaryDue: Int, val skippedPhotosDue: Int, val photosDue: Int, val vectorsDue: Int, val legacyDue: Int,
-        /** Live nudges / answers that cite something due. Expiry keeps them whole; the number is the reassurance. */
-        val nudgesKept: Int, val answersKept: Int,
+        val demoteDue: Int, val skippedPhotosDue: Int, val photosDue: Int, val vectorsDue: Int, val legacyDue: Int, val quotaDue: Int,
     ) {
-        fun line() = "plan shortDue=$shortDue mediumDue=$mediumDue longDue=$longDue captionDue=$captionDue clusterSummaryDue=$clusterSummaryDue skippedPhotosDue=$skippedPhotosDue photosDue=$photosDue vectorsDue=$vectorsDue legacyDue=$legacyDue nudgesKept=$nudgesKept answersKept=$answersKept"
+        fun line() = "plan demoteDue=$demoteDue skippedPhotosDue=$skippedPhotosDue photosDue=$photosDue vectorsDue=$vectorsDue legacyDue=$legacyDue quotaDue=$quotaDue"
     }
 
-    /** Read-only. Mirrors the selection of each step in [run] (the capped selects are counted up to [COUNT_CAP]). */
+    /** Read-only. Mirrors the selection of each step in [run] and [runQuota] (the capped selects are counted up to [COUNT_CAP]). */
     suspend fun plan(s: MemorySettings, nowMs: Long): Plan {
         val dao = graph.db.forgetDao()
         val since = if (s.perKindSince > 0L) s.perKindSince else nowMs
-        val short = nowMs - s.shortHours * HOUR; val medium = nowMs - s.mediumDays * DAY; val long = nowMs - s.longDays * DAY
         fun forever(d: Int) = d == MemorySettings.FOREVER
         val photos = if (forever(s.photoDays)) 0 else dao.linkedPhotosDue(since, s.photoDays * DAY, nowMs, PROTECT_MS, if (describeBeforeDeleteReady) 1 else 0, GRACE_DAYS * DAY, COUNT_CAP).size
-        val tiers = listOf(MemoryTier.SHORT to short, MemoryTier.MEDIUM to medium, MemoryTier.LONG to long)
+        val over = runCatching { s.quotaBytes > 0 && usedBytes() > s.quotaBytes }.getOrDefault(false)
+        val protect = if (over) runCatching { protectedFrames() }.getOrNull() else null
         return Plan(
-            shortDue = dao.countExpired(MemoryTier.SHORT.name, short), mediumDue = dao.countExpired(MemoryTier.MEDIUM.name, medium), longDue = dao.countExpired(MemoryTier.LONG.name, long),
-            captionDue = if (forever(s.captionDays)) 0 else dao.countExpiredOfType(CAPTION, nowMs - s.captionDays * DAY),
-            clusterSummaryDue = if (forever(s.clusterSummaryDays)) 0 else dao.countExpiredOfType(CLUSTER_SUMMARY, nowMs - s.clusterSummaryDays * DAY),
+            demoteDue = dao.countDemotable(nowMs - s.recallHours * HOUR),
             skippedPhotosDue = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, COUNT_CAP).size,
             photosDue = photos,
             vectorsDue = if (forever(s.imageVectorDays)) 0 else dao.vectorFramesBefore(nowMs - s.imageVectorDays * DAY, COUNT_CAP).size,
-            legacyDue = dao.orphanFramesBefore(long, COUNT_CAP).size,
-            nudgesKept = tiers.sumOf { (t, b) -> dao.countNudgesCitingExpired(t.name, b) },
-            answersKept = tiers.sumOf { (t, b) -> dao.countAsksCitingExpired(t.name, b) },
+            legacyDue = if (forever(s.photoDays)) 0 else dao.orphanFramesBefore(nowMs - s.photoDays * DAY, COUNT_CAP).size,
+            quotaDue = if (protect == null) 0 else dao.quotaPhotosDue(nowMs - QUOTA_MIN_AGE_DAYS * DAY, ForgetRadius.ms(), protectList(protect), COUNT_CAP).size,
         )
     }
 
     suspend fun run(s: MemorySettings, nowMs: Long, onChunk: suspend (ForgetService.Result) -> Unit = {}): Summary {
-        val dao = graph.db.forgetDao()
         // P4: a counts-only plan line before anything is removed, a result line after (literal templates, numbers only: no id, no text).
         runCatching {
             val p = plan(s, nowMs)
-            val shortDue = p.shortDue; val mediumDue = p.mediumDue; val longDue = p.longDue; val captionDue = p.captionDue; val clusterSummaryDue = p.clusterSummaryDue
-            val skippedPhotosDue = p.skippedPhotosDue; val photosDue = p.photosDue; val vectorsDue = p.vectorsDue; val legacyDue = p.legacyDue; val nudgesKept = p.nudgesKept; val answersKept = p.answersKept
-            PcLog.milestone(LOG_TAG, "plan shortDue=$shortDue mediumDue=$mediumDue longDue=$longDue captionDue=$captionDue clusterSummaryDue=$clusterSummaryDue skippedPhotosDue=$skippedPhotosDue photosDue=$photosDue vectorsDue=$vectorsDue legacyDue=$legacyDue nudgesKept=$nudgesKept answersKept=$answersKept")
+            val demoteDue = p.demoteDue; val skippedPhotosDue = p.skippedPhotosDue; val photosDue = p.photosDue; val vectorsDue = p.vectorsDue; val legacyDue = p.legacyDue; val quotaDue = p.quotaDue
+            PcLog.milestone(LOG_TAG, "plan demoteDue=$demoteDue skippedPhotosDue=$skippedPhotosDue photosDue=$photosDue vectorsDue=$vectorsDue legacyDue=$legacyDue quotaDue=$quotaDue")
         }
-        var memoriesExpired = 0; var photosExpired = 0; var nudgesRedacted = 0; var answersRedacted = 0
-        val track: suspend (ForgetService.Result) -> Unit = { r -> memoriesExpired += r.forgotten.size; photosExpired += r.expiredFrames; nudgesRedacted += r.redactedNudges; answersRedacted += r.redactedAsks; onChunk(r) }
+        var photosExpired = 0
+        val track: suspend (ForgetService.Result) -> Unit = { r -> photosExpired += r.expiredFrames; onChunk(r) }
         val started = System.currentTimeMillis()
         val summary = runPass(s, nowMs, since = if (s.perKindSince > 0L) s.perKindSince else nowMs, onChunk = track)
         val secs = (System.currentTimeMillis() - started) / 1000
         val skippedPhotosExpired = summary.skippedDeleted
+        val demoted = summary.demoted
         val seconds = secs
-        PcLog.milestone(LOG_TAG, "done memoriesExpired=$memoriesExpired photosExpired=$photosExpired skippedPhotosExpired=$skippedPhotosExpired nudgesRedacted=$nudgesRedacted answersRedacted=$answersRedacted seconds=$seconds")
-        return summary
+        PcLog.milestone(LOG_TAG, "done demoted=$demoted photosExpired=$photosExpired skippedPhotosExpired=$skippedPhotosExpired seconds=$seconds")
+        return summary.copy(photosExpired = photosExpired)
     }
+
+    /**
+     * K6 quota eviction. Over the cap ([MemorySettings.quotaBytes], at most 2000 MB), the OLDEST eligible photos go until the usage is at 90% of the cap: described keyframes captured at least [QUOTA_MIN_AGE_DAYS] days ago, never a
+     * photo of explicit importance (a place memory, a mark within the radius, an accepted proposal's source, a place card, a pin), never text. Each photo goes through [ForgetService.expirePhotos] (tombstone, expiry marker, row, JPEG),
+     * so a Moment keeps its FRAME part and "Photo expired". Bounded: chunks of [CHUNK], at most [QUOTA_ROUNDS] rounds, stops when nothing is eligible. Returns the number of photos evicted. Counts-only log lines.
+     */
+    suspend fun runQuota(s: MemorySettings, nowMs: Long, onChunk: suspend (ForgetService.Result) -> Unit = {}): Int {
+        val cap = s.quotaBytes
+        if (cap <= 0) return 0
+        var used = runCatching { usedBytes() }.getOrElse { return 0 }
+        if (used <= cap) return 0
+        val protect = runCatching { protectedFrames() }.getOrNull()
+        if (protect == null) { PcLog.milestone(LOG_TAG, "quota over, protection unreadable: nothing evicted"); return 0 }
+        val target = cap / 10 * 9
+        val dao = graph.db.forgetDao()
+        var evicted = 0
+        for (round in 0 until QUOTA_ROUNDS) {
+            if (used <= target) break
+            val ids = dao.quotaPhotosDue(nowMs - QUOTA_MIN_AGE_DAYS * DAY, ForgetRadius.ms(), protectList(protect), CHUNK)
+            if (ids.isEmpty()) break
+            val r = service.expirePhotos(ids, requireLinked = true) // a photo no memory describes any more is skipped inside the transaction
+            evicted += r.expiredFrames
+            onChunk(r)
+            if (r.expiredFrames == 0) break
+            used = runCatching { usedBytes() }.getOrElse { break }
+        }
+        val quotaEvicted = evicted
+        if (used > cap) PcLog.milestone(LOG_TAG, "quota over, nothing evictable quotaEvicted=$quotaEvicted") else PcLog.milestone(LOG_TAG, "quota evicted quotaEvicted=$quotaEvicted")
+        return evicted
+    }
+
+    /** An `IN (...)` list is never empty (SQLite) and never above the bind limit. */
+    private fun protectList(ids: Set<String>): List<String> = ids.toList().take(MAX_PROTECT).ifEmpty { listOf("") }
 
     private suspend fun runPass(s: MemorySettings, nowMs: Long, since: Long, onChunk: suspend (ForgetService.Result) -> Unit): Summary {
         val dao = graph.db.forgetDao()
         // 1. An unstamped clock means "this is the first run of the build": every per-kind deadline counts from now (`since`, computed by [run]).
-        // 2. Tier windows (captions and cluster summaries are not tiered any more).
-        val cutoffs = listOf(
-            MemoryTier.SHORT to nowMs - s.shortHours * HOUR,
-            MemoryTier.MEDIUM to nowMs - s.mediumDays * DAY,
-            MemoryTier.LONG to nowMs - s.longDays * DAY,
-        )
-        for ((tier, before) in cutoffs) {
-            for (round in 0 until MAX_ROUNDS) {
-                val ids = dao.expiredIds(tier.name, before, CHUNK)
-                if (ids.isEmpty()) break
-                onChunk(service.expire(ids))
-            }
+        // 2. DEMOTION (retention v3): SHORT facts past the Quick recall window lose their TEXT VECTOR only; row, text, edges and every citation stay. A caption or a cluster summary is never demoted.
+        var demoted = 0
+        for (round in 0 until MAX_ROUNDS) {
+            val ids = dao.demotableFactIds(nowMs - s.recallHours * HOUR, CHUNK)
+            if (ids.isEmpty()) break
+            graph.db.withTransaction { dao.deleteVectorsFor(ids) }
+            demoted += ids.size
         }
-        // 3. Captions and cluster summaries.
-        for ((type, days) in listOf(CAPTION to s.captionDays, CLUSTER_SUMMARY to s.clusterSummaryDays)) {
-            if (days == MemorySettings.FOREVER) continue
-            for (round in 0 until MAX_ROUNDS) {
-                val ids = dao.expiredIdsOfType(type, nowMs - days * DAY, CHUNK)
-                if (ids.isEmpty()) break
-                onChunk(service.expire(ids))
-            }
-        }
-        // 3b. A key-moment photo still waiting for its caption after 14 days becomes a skipped photo.
+        // 3. A key-moment photo still waiting for its caption after 14 days becomes a skipped photo.
         dao.expireCaptionQueued(since, CAPTION_QUEUE_DAYS * DAY, nowMs)
         // 4. Ordinary skipped photos.
         var skipped = 0
@@ -198,13 +217,14 @@ internal class Retention(
                 graph.db.withTransaction { dao.deleteFrameVectorsFor(ids); dao.markVectorsExpired(ids) }
             }
         }
-        // 7. Legacy frames (no frame_meta): forgotten as a moment once older than longDays and uncited.
+        // 7. Legacy frames (no frame_meta): expired once older than the Photos setting and uncited.
         for (round in 0 until MAX_ROUNDS) {
-            val frames = dao.orphanFramesBefore(nowMs - s.longDays * DAY, CHUNK)
+            if (s.photoDays == MemorySettings.FOREVER) break // legacy photos follow the Photos setting
+            val frames = dao.orphanFramesBefore(nowMs - s.photoDays * DAY, CHUNK)
             if (frames.isEmpty()) break
-            onChunk(service.expireOrphanFrames(frames)) // retention r1 (P1-3): its own path, no cascade of any kind (no CARRIED invalidation, redaction, radius or Moment drop)
+            onChunk(service.expireOrphanFrames(frames)) // its own path, no cascade of any kind; the expiry marker keeps it "expired", not "forgotten"
         }
-        return Summary(skipped, 0)
+        return Summary(skipped, 0, demoted)
     }
 
     companion object {
@@ -218,6 +238,10 @@ internal class Retention(
         private const val COUNT_CAP = 100_000
         const val LOG_TAG = "PcRetention"
         private const val MAX_ROUNDS = 50
+        /** At most this many quota rounds per run (a bound: 50 x 200 = 10,000 photos). */
+        private const val QUOTA_ROUNDS = 50
+        /** SQLite binds at most 32,766 variables: the protected list is capped well below it. */
+        private const val MAX_PROTECT = 20_000
         private const val HOUR = 3_600_000L
         private const val DAY = 24 * HOUR
         /** Spec §P6.4: a photo described for describe-before-delete is kept this long past its deadline. */
@@ -225,7 +249,7 @@ internal class Retention(
         /** Photos that existed when per-kind retention started are kept this long after the stamp, whatever their kind (I2). */
         private const val PROTECT_MS = 7 * 24 * HOUR
         private const val CAPTION_QUEUE_DAYS = 14L
-        private const val CAPTION = "caption"
-        private const val CLUSTER_SUMMARY = "cluster_summary"
+        /** K6: quota eviction never touches a photo younger than this. */
+        const val QUOTA_MIN_AGE_DAYS = 14L
     }
 }

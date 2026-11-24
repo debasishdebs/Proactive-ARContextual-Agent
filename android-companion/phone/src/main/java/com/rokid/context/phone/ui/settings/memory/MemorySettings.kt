@@ -90,9 +90,7 @@ class MemorySettingsViewModel(
         viewModelScope.launch { refreshEncryption() }
     }
 
-    fun setShort(h: Int) = edit { it.copy(shortHours = h) }
-    fun setMedium(d: Int) = edit { it.copy(mediumDays = d) }
-    fun setLong(d: Int) = edit { it.copy(longDays = d) }
+    fun setRecall(h: Int) = edit { it.copy(recallHours = h) }
     fun setQuota(mb: Int) = edit { it.copy(quotaMb = mb) }
     fun setPhotoDays(d: Int) = edit { it.copy(photoDays = d) }
     fun setSkippedPhotoDays(d: Int) = edit { it.copy(skippedPhotoDays = d) }
@@ -183,16 +181,21 @@ class MemorySettingsViewModel(
         const val ENCRYPTION_ON_NOTE = "Turns on after Proactive Context restarts. $RESTART_HINT"
         const val ENCRYPTION_OFF_NOTE = "Turns off after Proactive Context restarts. $RESTART_HINT"
 
-        /** S1: the daily RetentionWorker enforces these windows (by creation time) and the per-kind ones below (spec §P6.1). */
+        /** Retention v3 (K2): what Quick recall does. Clean-up never deletes text; only Forget does. */
         fun retentionNote(s: com.rokid.context.memory.MemorySettings): String =
-            "Once a day, short-term memories older than ${s.shortHours} h, medium-term older than ${s.mediumDays} days and " +
-                "long-term older than ${s.longDays} days are removed. " +
-                (if (s.photoDays == MemorySettings.FOREVER) "Photos are kept" else "Photos are removed ${keepLabel(s.photoDays)} after they were taken") +
-                " (skipped photos ${when (s.skippedPhotoDays) { 0 -> "at the next clean-up"; 1 -> "after 1 day"; else -> "after ${s.skippedPhotoDays} days" }}); " +
-                "captions and scene summaries stay until their own setting says otherwise."
+            "Details from your photos stay in quick recall for ${recallLabel(s.recallHours)}. After that they are kept for your Moments, cards, nudges and answers, and for questions about a day, but leave everyday search. " +
+                "Nothing you saw is deleted by clean-up; only Forget removes text. Photos follow the Photos setting and the storage cap."
 
-        /** P3: what the facts the glasses extract actually follow. Every extracted fact is short-term, so the Long-term window does not govern them. */
-        const val SHORT_TERM_FACTS_NOTE = "Details extracted from your photos are short-term: they follow the Short-term setting, not the Long-term one. Removing them never changes a nudge, an answer, a Moment or a place card that used them; only Forget does."
+        fun recallLabel(h: Int): String = if (h % 24 == 0 && h >= 168) "${h / 24} days" else "$h h"
+
+        /** Retention v3 (K2, K6): what the storage cap does. */
+        const val CAP_NOTE = "Over the cap, the oldest photos are removed first (never text, never a photo you marked, pinned or got a place card for, and none younger than 14 days). It also runs while Pause clean-up is on."
+
+        /** Retention v3 (K4): Auto-delete details is designed but NOT in this build. */
+        const val NO_AUTO_DELETE_NOTE = "There is no automatic text deletion in this version. Only Forget removes details."
+
+        /** Retention v3 (K5): shown once, on the first launch of the build that stops clean-up from deleting text. */
+        const val ONE_TIME_NOTICE = "Clean-up no longer deletes the details of your photos. Forget removes them; you can turn on Auto-delete in Settings → Memory"
 
         const val UPGRADE_NOTE = "Photos you already have are kept at least 7 days from this update."
 
@@ -217,9 +220,7 @@ class MemorySettingsViewModel(
 fun MemorySettingsScreen(
     state: MemorySettingsUiState,
     onBack: () -> Unit,
-    onShort: (Int) -> Unit,
-    onMedium: (Int) -> Unit,
-    onLong: (Int) -> Unit,
+    onRecall: (Int) -> Unit,
     onQuota: (Int) -> Unit,
     onEncryption: (Boolean) -> Unit,
     onExport: () -> Unit,
@@ -241,13 +242,11 @@ fun MemorySettingsScreen(
     SettingsPage("Memory", onBack, tag = "memory_settings") {
         item {
             SettingsCard {
-                Text("Keep memories", style = MaterialTheme.typography.titleMedium)
-                val short = MemorySettingsStore.SHORT_HOURS; val medium = MemorySettingsStore.MEDIUM_DAYS; val long = MemorySettingsStore.LONG_DAYS
-                ChoiceRow("Short-term", short.map { "$it h" }, short.indexOf(s.shortHours), { onShort(short[it]) }, tag = "retention_short")
-                ChoiceRow("Medium-term", medium.map { "$it days" }, medium.indexOf(s.mediumDays), { onMedium(medium[it]) }, tag = "retention_medium")
-                ChoiceRow("Long-term", long.map { "$it days" }, long.indexOf(s.longDays), { onLong(long[it]) }, tag = "retention_long")
+                Text("Quick recall", style = MaterialTheme.typography.titleMedium)
+                val recall = MemorySettingsStore.RECALL_HOURS
+                ChoiceRow("Quick recall", recall.map { MemorySettingsViewModel.recallLabel(it) }, recall.indexOf(s.recallHours), { onRecall(recall[it]) }, tag = "retention_recall")
                 NoticeText(MemorySettingsViewModel.retentionNote(s), tag = "retention_note")
-                NoticeText(MemorySettingsViewModel.SHORT_TERM_FACTS_NOTE, tag = "retention_short_facts_note")
+                NoticeText(MemorySettingsViewModel.NO_AUTO_DELETE_NOTE, tag = "retention_no_auto_delete_note")
             }
         }
         item {
@@ -257,10 +256,7 @@ fun MemorySettingsScreen(
                 fun label(d: Int, zero: String = "0 days") = MemorySettingsViewModel.keepLabel(d, zero)
                 ChoiceRow("Photos", photo.map { label(it) }, photo.indexOf(s.photoDays), { onPhotoDays(photo[it]) }, tag = "retention_photo")
                 ChoiceRow("Skipped photos", skipped.map { label(it, "Next clean-up") }, skipped.indexOf(s.skippedPhotoDays), { onSkippedPhotoDays(skipped[it]) }, tag = "retention_skipped")
-                ChoiceRow("Captions", kind.map { label(it) }, kind.indexOf(s.captionDays), { onCaptionDays(kind[it]) }, tag = "retention_caption")
-                ChoiceRow("Scene summaries", kind.map { label(it) }, kind.indexOf(s.clusterSummaryDays), { onClusterSummaryDays(kind[it]) }, tag = "retention_summary")
                 ChoiceRow("Image vectors", kind.map { label(it) }, kind.indexOf(s.imageVectorDays), { onImageVectorDays(kind[it]) }, tag = "retention_vector")
-                if (MemorySettingsViewModel.vectorsShorterThanCaptions(s)) NoticeText(MemorySettingsViewModel.VECTOR_WARNING, tag = "retention_vector_warning")
                 MemorySettingsViewModel.upgradeNote(s)?.let { NoticeText(it, tag = "retention_upgrade_note") }
             }
         }
@@ -268,9 +264,10 @@ fun MemorySettingsScreen(
             SettingsCard {
                 Text("Storage", style = MaterialTheme.typography.titleMedium)
                 NoticeText(state.storage, tag = "storage_used")
-                val quotas = listOf(50, 100, 250, 500, 1_000)
+                val quotas = listOf(50, 100, 250, 500, 1_000, 2_000)
                 val options = (quotas + s.quotaMb).distinct().sorted()
-                ChoiceRow("Soft limit", options.map { "$it MB" }, options.indexOf(s.quotaMb), { onQuota(options[it]) }, tag = "quota")
+                ChoiceRow("Storage cap", options.map { "$it MB" }, options.indexOf(s.quotaMb), { onQuota(options[it]) }, tag = "quota")
+                NoticeText(MemorySettingsViewModel.CAP_NOTE, tag = "quota_note")
                 SwitchRow("Encrypt memory", "Protects the memory database with a key kept in this phone", state.encryptionOn, onEncryption, tag = "encryption")
                 state.encryptionNote?.let { NoticeText(it, tag = "encryption_note") }
             }
