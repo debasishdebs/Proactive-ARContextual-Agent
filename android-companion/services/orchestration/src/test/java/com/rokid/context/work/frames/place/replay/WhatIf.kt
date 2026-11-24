@@ -8,27 +8,21 @@ import com.rokid.context.work.frames.place.PlaceOutcome
  * Test-side what-ifs (plan section 6). Each changes exactly one thing AROUND the real sampler; none changes app code. When a fix is built for real its overlay is deleted and the same replay
  * must give the same verdict (the overlay is the executable spec). F5 is the [CaptionText] match stage.
  */
-data class Overlays(val f1: Boolean = false, val f2Ms: Long? = null, val f3: Char? = null, val f4: Boolean = false) {
+data class Overlays(val f1: Boolean = false, val f2Ms: Long? = null, val f4: Boolean = false) {
     val label: String get() = when {
         this == HEAD -> "HEAD"
         this == ALL -> "ALL"
-        else -> listOfNotNull(if (f1) "F1" else null, f2Ms?.let { "F2(${it / 60_000}min)" }, f3?.let { "F3$it" }, if (f4) "F4" else null).joinToString("+")
+        else -> listOfNotNull(if (f1) "F1" else null, f2Ms?.let { "F2(${it / 60_000}min)" }, if (f4) "F4" else null).joinToString("+")
     }
-
-    /** F3 a/b: the weak outcomes whose attempt must not consume the dedupe window. */
-    fun f3Restores(o: PlaceOutcome) = f3 != null && o in WEAK
 
     companion object {
         val HEAD = Overlays()
         val F1 = Overlays(f1 = true)
         fun f2(min: Long) = Overlays(f2Ms = min * 60_000)
-        val F3A = Overlays(f3 = 'a')
-        val F3B = Overlays(f3 = 'b')
         val F4 = Overlays(f4 = true)
-        /** F1 + F2(10 min) + F3a + F4 (+ F5 is the CaptionText stage, chosen by the run). */
-        val ALL = Overlays(f1 = true, f2Ms = 10 * 60_000, f3 = 'a', f4 = true)
-        val SINGLES = listOf(F1, f2(10), F3A, F4)
-        private val WEAK = setOf(PlaceOutcome.NONE, PlaceOutcome.LOW_CONFIDENCE, PlaceOutcome.CONTRACT, PlaceOutcome.FAILED)
+        /** F1 + F2(10 min) + F4 (F3 is built into the sampler; + F5 is the CaptionText stage, chosen by the run). */
+        val ALL = Overlays(f1 = true, f2Ms = 10 * 60_000, f4 = true)
+        val SINGLES = listOf(F1, f2(10), F4)
     }
 }
 

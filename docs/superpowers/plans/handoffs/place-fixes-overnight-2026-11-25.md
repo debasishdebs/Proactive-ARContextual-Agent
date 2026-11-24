@@ -9,7 +9,12 @@
 - B1 acceptance.tsv: ~/Desktop/rokid/backups/replay-out/run-2026-11-24T05-52-06/acceptance.tsv (outside git).
 - B1 vs B0: HEAD totals unchanged (OUTDOOR_10M 17 cards, wrong 0; F1 overlay wrong 1; StubNone 28 calls 0 cards; INDOOR_60M and STALE HEAD 0 cards; calibration 5/6 TRUSTED). New INDOOR_MEDIA_GOOD HEAD baseline: 12 cards, 20 calls, wrong 0.
 - S1 done: F7 fields on the attempt line, constructor seams, PlaceFrame motion/sessionId, movedSince, six DeveloperFlags (ON). Place + replay tests green.
-- Next step: S2 (F3 dedupe v2).
+- S2 done (F3 dedupe v2, F3 overlay deleted; replay runs dedupe v2 always, Historical stages run legacy dedupe because they feed NONE for every unrecorded frame). Place + replay tests green.
+  - S2 replay (counts; run dir run-2026-11-24T06-08-30): wrong 0 in every HEAD run; calibration TRUSTED 5/6; INDOOR_60M, STALE, ASSUMED_PIN_60M 0 cards; NO_FRAME 169.
+  - OUTDOOR_10M: SJ_ENTRY 1, SJ_BRONZE 1, SJ_IVORY 1, SJ_EXTERIOR 1, GOLCONDA_LS 1. AS_RECORDED SJ_EXTERIOR 1.
+  - ASSUMED_PIN_10M: RAMOJI 6 cards (71 calls), ANTERA 4 cards (51 calls), GOLCONDA_LS 1. StubNone x OUTDOOR_10M: 35 calls (limit 42), 0 cards.
+  - NOT MET at S2: OUTDOOR_10M SJ_IVORY >= 2 (got 1; B1 also 1; once-per-place suppression keeps the second Ivory card out; the spec's earlier 2 came from the F4 overlay, S3 may recover it). Report to controller.
+- Next step: S3 (F4 retry on pin / cell).
 
 ## Step log (counts only, no names / coordinates / ids)
 | Step | Status | Commit | Notes |

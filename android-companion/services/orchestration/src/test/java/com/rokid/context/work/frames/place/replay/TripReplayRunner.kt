@@ -13,6 +13,8 @@ data class RunSpec(
     val stage: MatchStage, val scenario: FixScenario, val activation: Activation = Activation.AS_CREATED, val overlays: Overlays = Overlays.HEAD,
     /** Track search window N (plan 4.1). */
     val nMs: Long = ReplayTrack.FIVE_MIN, val sites: Boolean = false,
+    /** Calibration only: the Historical stage answers NONE for every frame the trip did not record, which is not what the real model did; the calibration therefore runs the dedupe of the build that made the trip. */
+    val legacyDedupe: Boolean = false,
 ) { val label: String get() = "${stage.label} x ${scenario.label} x ${activation.name}${if (sites) " +sites" else ""} x ${overlays.label}" }
 
 /** One poke of the replay. [extra] is "" for a frame poke, "+F4" for the extra poke at a pin's creation. */
@@ -67,6 +69,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             saveMemory = { true }, onCard = {}, clock = { now }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
             backend = { BackendChoice.ONLINE }, admit = { true }, photoAllowed = { true }, zones = { emptyList() }, flight = flight,
             log = { logs += it }, stats = {}, elapsed = { now },
+            dedupeV2On = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
         )
 
         val main = sampler()
@@ -79,22 +82,17 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
         for (ev in events) {
             now = ev.t
             var s = main
-            if (ev.extra == "+F4") { s = sampler(); flight.lastAttempt = null } // a fresh sampler: `handled` is empty; pin creation is an explicit user act
+            if (ev.extra == "+F4") { s = sampler(); flight.lastAttempt = null; flight.weak = null } // a fresh sampler: `handled` is empty; pin creation is an explicit user act
             store.lastReturned = null; lastFix = null; matcher.note = null
             val f1Decision = f1?.let { rule ->
                 val frame = store.peek(now - PlaceSampler.RECENT_MS)
                 rule.decide(now, fixSource.fixAt(now, frame).fix, pack.activePins()).text
             } ?: "-"
-            val prevAttempt = flight.lastAttempt
             val mark = logs.size
             s.poke(); scope.runCurrent()
             val line = logs.drop(mark).lastOrNull { it.startsWith("place attempt ") } ?: ""
             val kv = KV.findAll(line).associate { it.groupValues[1] to it.groupValues[2] }
             val outcome = kv["outcome"]?.let { runCatching { PlaceOutcome.valueOf(it) }.getOrNull() }
-            if (outcome != null && spec.overlays.f3Restores(outcome)) {
-                if (spec.overlays.f3 == 'a') flight.lastAttempt = prevAttempt
-                else flight.lastAttempt?.let { a -> flight.lastAttempt = PlaceFlight.Attempt(a.lat, a.lon, now - PlaceSampler.DEDUPE_MS + 30_000L) }
-            }
             val fr = store.lastReturned
             val fx = lastFix
             val chosen = kv["chosen"]?.takeIf { it != "-" }.orEmpty()
