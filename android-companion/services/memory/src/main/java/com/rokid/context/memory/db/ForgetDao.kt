@@ -278,7 +278,7 @@ abstract class ForgetDao {
 
     /**
      * Retention v3 QUOTA EVICTION (K6): the oldest keyframe photos a memory DESCRIBES ([DESCRIBED_BY_EXTRACTION]: describe-before-delete holds), with a `frame` row, not tombstoned, captured before [olderThanMs], that carry NO
-     * explicit importance: no `place` memory cites them, no mark lies within [radiusMs] of their capture time, no accepted (EXECUTING / EXECUTED) proposal's nudge or answer cites them or a memory of them. [protectedIds] (photos named
+     * explicit importance: no `place` memory cites them, no mark lies within [radiusMs] of their capture time, no accepted (EXECUTING / EXECUTED) proposal's nudge or answer cites them or a memory of them (`memory.frameId` OR any `frame_source` row: a batch fact's secondary photo, Codex v3 r1 P1-9). [protectedIds] (photos named
      * by place cards or pins, which live outside this database; pass at least one id) are excluded as well. Oldest first, so a failed chunk is retried by the next pass.
      */
     @Query(
@@ -288,9 +288,9 @@ abstract class ForgetDao {
             "AND NOT EXISTS (SELECT 1 FROM memory pm WHERE pm.type = 'place' AND (pm.frameId = f.id OR EXISTS (SELECT 1 FROM frame_source pf WHERE pf.memoryId = pm.id AND pf.frameId = f.id))) " +
             "AND NOT EXISTS (SELECT 1 FROM canvas_label l WHERE l.atMs BETWEEN f.ts - :radiusMs AND f.ts + :radiusMs) " +
             "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN nudge n ON n.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND ((n.sourceIdsJson LIKE '%\"' || f.id || '\"%' OR n.sourceIdsJson LIKE '%\"frame:' || f.id || '\"%') " +
-            "OR EXISTS (SELECT 1 FROM memory cm WHERE cm.frameId = f.id AND n.sourceIdsJson LIKE '%\"' || cm.id || '\"%'))) " +
+            "OR EXISTS (SELECT 1 FROM memory cm WHERE (cm.frameId = f.id OR EXISTS (SELECT 1 FROM frame_source cfs WHERE cfs.memoryId = cm.id AND cfs.frameId = f.id)) AND n.sourceIdsJson LIKE '%\"' || cm.id || '\"%'))) " +
             "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN ask a ON a.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND ((a.sourcesJson LIKE '%\"' || f.id || '\"%' OR a.sourcesJson LIKE '%\"frame:' || f.id || '\"%') " +
-            "OR EXISTS (SELECT 1 FROM memory cm WHERE cm.frameId = f.id AND a.sourcesJson LIKE '%\"' || cm.id || '\"%'))) " +
+            "OR EXISTS (SELECT 1 FROM memory cm WHERE (cm.frameId = f.id OR EXISTS (SELECT 1 FROM frame_source cfs WHERE cfs.memoryId = cm.id AND cfs.frameId = f.id)) AND a.sourcesJson LIKE '%\"' || cm.id || '\"%'))) " +
             "ORDER BY f.ts, f.id LIMIT :limit",
     )
     abstract suspend fun quotaPhotosDue(olderThanMs: Long, radiusMs: Long, protectedIds: List<String>, limit: Int): List<String>
@@ -298,8 +298,12 @@ abstract class ForgetDao {
     /** Quota eviction (K6): the photos captured within `[fromMs, toMs]` (the second of a pinned Moment). */
     @Query("SELECT id FROM frame WHERE ts >= :fromMs AND ts <= :toMs") abstract suspend fun frameIdsBetween(fromMs: Long, toMs: Long): List<String>
 
-    /** Retention v3 one-shot: tombstoned photos that have metadata but no `frame` row (the shape of every expiry before the marker existed; a user Forget of a moment deletes the metadata too), after [afterId]. */
-    @Query("SELECT t.frameId FROM forget_tombstone t JOIN frame_meta m ON m.frameId = t.frameId WHERE NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = t.frameId) AND t.frameId > :afterId ORDER BY t.frameId LIMIT :limit")
+    /**
+     * Retention v3 one-shot, PROVEN expiries only (Codex v3 r1 P1-2): tombstoned photos that have metadata, no `frame` row AND a surviving description (a memory or a non-CARRIED `frame_source` row still cites them), after [afterId].
+     * The shape of every expiry before the marker existed. A photo whose last description was forgotten later is tombstone + metadata + no row too, but is cited by nothing: it cannot be told from a Forget and stays "forgotten".
+     */
+    @Query("SELECT t.frameId FROM forget_tombstone t JOIN frame_meta m ON m.frameId = t.frameId WHERE NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = t.frameId) " +
+        "AND (EXISTS (SELECT 1 FROM memory mm WHERE mm.frameId = t.frameId) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = t.frameId AND fs.role != 'CARRIED')) AND t.frameId > :afterId ORDER BY t.frameId LIMIT :limit")
     abstract suspend fun legacyExpiredFrameIds(afterId: String, limit: Int): List<String>
 
     /** [likePattern] escapes `\`, `%` and `_` with `\`. It is only a prefilter: the caller parses the JSON exactly. */

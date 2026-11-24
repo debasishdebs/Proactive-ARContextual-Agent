@@ -187,6 +187,8 @@ class MomentForget(
             projected += inSpan; between += inSpan
             frames += md.frameIdsBetween(span.first, span.last); frames += md.metaFrameIdsBetween(span.first, span.last)
             memories += md.memoryIdsCreatedBetween(span.first, span.last); labels += md.labelIdsBetween(span.first, span.last)
+            // Codex v3 r1 P1-4: a photo retention expired has no `frame` row and, when it was a legacy one, no `frame_meta` either: its expiry marker (by capture time) still names it, so the Forget reaches its cites and history
+            frames += ExpiryMarks.idsBetween(db.canvasSlice3Dao(), span.first, span.last)
         }
         requestedSeconds.forEach { projected += MomentId.format(it) }
         if (!bounded) projected.toList().chunked(CHUNK).forEach { c ->
@@ -199,6 +201,11 @@ class MomentForget(
                     else -> Unit // OTHER and the reserved SENSOR have no source store yet
                 }
             }
+        }
+        if (bounded) { // projection sources of the scoped Forget: the FRAME parts of the Moments in the spans that name an expired photo (the marker keeps it "expired", so it is a source of the Moment even without a row)
+            val fromProjection = LinkedHashSet<String>()
+            between.toList().chunked(CHUNK).forEach { c -> md.partsOf(c).filter { it.kind == MomentPartKind.FRAME }.forEach { fromProjection += it.refId } }
+            frames += ExpiryMarks.marked(db.canvasSlice3Dao(), fromProjection)
         }
         frames.toList().chunked(CHUNK).forEach { c -> memories += md.memoryIdsOfFrames(c) }
         // a mark LINKED to an in-set photo goes with the photo whatever its own time (the photo's Forget deletes it): it is part of the set, previewed and hashed

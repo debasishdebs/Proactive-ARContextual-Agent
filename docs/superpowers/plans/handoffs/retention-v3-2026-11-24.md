@@ -70,3 +70,26 @@ Explicit Forget tests are unweakened: `ForgetServiceTest`, `GoldenDeleteSetTest`
 - `canvas_meta`: 0 rows with key `lin:%` after the first retention run; `retention_v3_done` present; the `rx:f:` count equals the photos expired after the install plus the earlier ones with metadata and no `frame` row.
 - Settings, Memory: one "Quick recall" row (12 / 24 / 48 / 72 h / 7 d, 48 h kept), no Medium / Long / Captions / Scene summaries rows, a "Storage cap" row with 2000 MB, the notes of section 2. Home shows the one-time banner once.
 - With Pause ON and the cap exceeded: photos are evicted oldest first (log line `quota evicted quotaEvicted=N`), text untouched.
+
+## Round 2 (branch `ret-v3-r2`, Codex v3 r1: `docs/superpowers/reviews/2026-11/codex-retention-v3-r1.md`, 9 P1, 3 P2, 2 P3)
+
+Interim safety (own commit): with Pause clean-up ON the worker deletes NOTHING, quota eviction included; only the file-retry sweep of already-queued files runs. Ruling K6 changed: quota runs only while Pause is OFF. Test `theWorkerEvictsNothingUnderPauseAndEvictsWhenPauseIsOff`.
+
+| # | Fix | Test (RetentionNeverLosesTest unless noted) |
+|---|---|---|
+| P1-1 | `expirePhotos` / `expireOrphanFrames` (service, executor) and the planner refuse a photo that already carries a tombstone, re-checked inside the expiry's own transaction (so a quota selection made before a concurrent Forget is safe) | `expiryNeverWritesTheMarkerOverAUserTombstone` |
+| P1-2 | Migration backfills only PROVEN expiries (tombstone + metadata + no row + a memory / non-CARRIED source still cites it); ambiguous tombstones stay forgotten | `migrationMarksOnlyProvenExpiriesAndKeepsTheLegacyLineage` |
+| P1-3 | `lin:` keys are no longer purged. `ExpiredLineage` (reach / consume / prune) is restored read-side: service, executor and planner cascades consult it in a user Forget (cited set + live derived memories invalidated), a Forget consumes what it used, the worker prunes keys with no surviving dependent (unredacted answer / nudge, Moment holding, live derived memory). Never written by this build | `aUserForgetStillReachesWhatSurvivedALegacyExpiryThroughTheKeptLineage`, `theLegacyLineageIsDroppedOnlyWhenNoDependentSurvives` |
+| P1-4 | `MomentForget.discover` includes expiry-marker ids by capture time (`ExpiryMarks.idsBetween`) and, for the scoped Forget, the expired FRAME parts of projected Moments; preview, hash, planner and executor share it | `aScopedForgetReachesAnExpiredLegacyPhotoThroughItsMarker` |
+| P1-5 | `InvalidMomentPurge`: expiry-backed Moments (marker, or tombstone + metadata + citing memory) are never invalid; the orphan-memory Forget at startup is REMOVED. Preserved: the 19 Nov cleanup of Moments with no timestamp / dead photo (Moments only, tombstoned second, Scenes shrink). Dropped: deleting memories whose source frames are gone | `InvalidMomentPurgeTest.noMemoryIsDeletedAndNothingIsRedactedByTheStartupPurge`, `aMomentOfAnExpiredPhotoIsNeverClassifiedInvalid` (marker-count log now `memories=0`) |
+| P1-6 | `purgeLowSignalMemories` and `purgeNonRokidMemories` deleted; replaced by read-only `lowSignalMemoryIds` / `nonPipelineMemoryIds`; Reprocess and MainActivity no longer delete text; Diagnostics chip says "Deletes nothing: old details stay until you Forget them" | `PipelineRecordsTest` (`nonPipelineMemoriesAreListedAndNeverDeleted`, `lowSignalMemoriesAreListedAndNeverDeleted`, phase 5 / orphan tests) |
+| P1-7 | `QuotaProtection.frames` throws when the pin store is corrupt, so quota evicts nothing | `corruptPinPreferencesFailTheProtectionReadAndQuotaEvictsNothing` |
+| P1-8 | A protected set above 20,000 ids = fail closed (nothing evicted, counts-only line); no silent `take` | `aProtectionSetAboveTheBindLimitEvictsNothing` |
+| P1-9 | `quotaPhotosDue` resolves accepted-proposal citations through `memory.frameId` OR any `frame_source` row | `anAcceptedProposalProtectsTheSecondaryPhotosOfABatchFact` |
+| P2-10 | `EmbeddingDao.putChecked(v, size, recallSince)` re-checks the demotion rule inside its transaction; `EmbeddingSpaces.put` passes the live window | `EmbeddingFenceTest.putCheckedRefusesAVectorForADemotedFactButNotForOtherRows` |
+| P2-11 | Time-window questions run the windowed lexical search in SEMANTIC mode and add the facts that have no vector | `DemotedRetrievalTest.aTimeWindowQuestionReachesDemotedFactsInSemanticModeToo` |
+| P2-12 | `FrameSweep.pruneWithMarkers` keeps tombstone and markers of a photo a stored Moment still holds; the sweep also keeps the markers of the second of a pinned Moment (unreadable pins = no prune) | `aRetainedMomentKeepsTheExpiryEvidenceOfItsPhoto` (pin side is code only, no test) |
+| P3-13 | Diagnostics Pause copy, `expiredSourcesText` ("n older detail(s) no longer available; the summary is kept"), memory detail tier label "Quick recall" | `MemoryDetailTest.aShortFactIsLabelledQuickRecall`, `PreviewScreenTest` |
+| P3-14 | `ForgetPolicyConformanceTest.aUserForgetOfAFactPlansTheDerivedMemoryAsRebuild` restores the user REBUILD assertion (both modes) | same |
+
+Not done: the pin half of P2-12 has no test (needs a pin store fixture); no device test; the quota concurrency is covered by the in-transaction tombstone check, not by an interleaving test.

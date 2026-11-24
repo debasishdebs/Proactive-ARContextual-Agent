@@ -7,9 +7,9 @@ import com.rokid.context.memory.forget.ExpiryMarks
 
 /**
  * The one-shot migration of retention v3 (K8), run by the first retention run of the build under a `canvas_meta` done marker. Nothing here deletes user text.
- *  1. Purges every `lin:` key (the expired-memory lineage of the builds before v3; retention no longer writes or reads it).
- *  2. Marks the photos that expired BEFORE the marker existed: a tombstone with `frame_meta` and no `frame` row is the shape of every earlier photo expiry (a user Forget of a moment deletes its metadata too), so those photos stay
- *     "expired", not "forgotten" (a suggestion that cites one is not withdrawn by this build). A tombstone with no metadata and no row cannot be told apart and stays "forgotten" (fail closed).
+ *  1. KEEPS every `lin:` key (the expired-memory lineage of the builds before v3): a later user Forget reads it (ExpiredLineage.reach) until no dependent of it survives.
+ *  2. Marks the photos that PROVABLY expired BEFORE the marker existed: a tombstone with `frame_meta`, no `frame` row and a memory that still cites it (a photo whose last description was forgotten later has the same
+ *     tombstone and metadata but nothing cites it, so it cannot be told from a Forget). Those photos stay "expired", not "forgotten". Every ambiguous tombstone (no metadata, or nothing cites it) stays "forgotten" (fail closed).
  * Counts-only log line.
  */
 internal object RetentionMigration {
@@ -19,7 +19,8 @@ internal object RetentionMigration {
     suspend fun runOnce(db: ContextDatabase, nowMs: Long) {
         val s3 = db.canvasSlice3Dao()
         if (s3.meta(DONE) != null) return
-        val purged = db.withTransaction { s3.deleteMetaLike("lin:%") }
+        // Codex v3 r1 P1-3: the legacy `lin:` lineage is NOT purged here: while an answer, nudge or summary that depends on an expired memory survives, a later user Forget still needs it (ExpiredLineage.prune drops it when none is left)
+        val lineageKept = s3.countMetaBetween("lin:", "lin;")
         var backfilled = 0
         var after = ""
         while (true) {
@@ -30,6 +31,6 @@ internal object RetentionMigration {
             after = ids.last()
         }
         s3.putMeta(DONE, nowMs.toString())
-        PcLog.milestone("PcRetention", "migration purged=$purged backfilled=$backfilled")
+        PcLog.milestone("PcRetention", "migration lineageKept=$lineageKept backfilled=$backfilled")
     }
 }
