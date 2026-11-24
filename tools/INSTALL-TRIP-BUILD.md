@@ -56,7 +56,7 @@ Each check prints PASS / WARN / FAIL / UNKNOWN with a reason; exit 0 = no FAIL, 
 7. Call state, clock skew (WARN above 120 s), airplane/Bluetooth/Wi-Fi, battery (WARN below 50%), free storage (WARN below 2 GB).
 8. Glasses: installed, version/sha, process. Link state is not observable read-only: always UNKNOWN, confirm on the phone.
 
-9. Trip-build checks (phone, debuggable builds via `run-as`; otherwise one UNKNOWN; counts and enums only, never a log line, name or id; fixtures 169 total with `--fixtures`):
+9. Trip-build checks (phone, debuggable builds via `run-as`; otherwise one UNKNOWN; counts and enums only, never a log line, name or id; fixtures 176 total with `--fixtures`; a failed or truncated log segment read makes every log-derived check UNKNOWN, never PASS):
    - `log segments`: `files/logs` has `pca.log` (+ `pca.log.N`), total under 300 MB (FAIL at or above; WARN if `pca.log` is missing).
    - `detailed log`: inferred from the logs (the app-start milestone is always written, the hourly `PcDiag heartbeat` only while Detailed log is on): heartbeat within 70 min = ON; none after more than 70 min of running = OFF; shorter run = UNKNOWN; stale heartbeat = WARN.
    - `log forbidden shapes` (last `pca.log`): lines with a coordinate-like decimal pair or `http` = FAIL, `@` only = WARN; counts only.
