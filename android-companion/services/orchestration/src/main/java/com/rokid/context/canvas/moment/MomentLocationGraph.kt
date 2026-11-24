@@ -35,6 +35,10 @@ object MomentLocationGraph {
         this.zoneFix = zoneFix; this.zones = zones; this.zoneBlocked = zoneBlocked
     }
 
+    /** The installed zone view, for the WP5 import route; fail closed (blocked, null zones) until the hub installs it. */
+    suspend fun zoneBlockedNow(): Boolean = zoneBlocked()
+    suspend fun zonesNow(): List<PauseZone>? = zones()
+
     private fun recorder(app: Context) = MomentLocationRecorder(
         MemoryGraph.get(app).db, wall = System::currentTimeMillis, elapsed = SystemClock::elapsedRealtime,
         enabled = { DeveloperFlags.momentLocation(app) },

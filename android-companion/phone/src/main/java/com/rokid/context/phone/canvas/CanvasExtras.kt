@@ -46,6 +46,14 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 moments = { f, t, n -> com.rokid.context.canvas.moment.MomentTriggers.builder(app).rebuildDay(f, t, n) },
                 momentScenes = { f, t -> com.rokid.context.canvas.moment.SceneTriggers.builder(app).rebuildWindow(f, t) },
                 momentRepair = { n -> com.rokid.context.canvas.moment.MomentRepair(db, com.rokid.context.canvas.moment.MomentTriggers.builder(app), com.rokid.context.canvas.moment.SceneTriggers.builder(app)).run(n) },
+                momentLocationImport = com.rokid.context.phone.canvas.api.MomentLocationRoutes(
+                    devMode::value, settingOn = { com.rokid.context.orchestration.forget.DeveloperFlags.momentLocation(app) },
+                    zoneBlocked = { HubGraph.get(app); com.rokid.context.canvas.moment.MomentLocationGraph.zoneBlockedNow() },
+                    import = com.rokid.context.canvas.moment.MomentLocationImport(
+                        db, System::currentTimeMillis, { com.rokid.context.orchestration.forget.DeveloperFlags.momentLocation(app) },
+                        { HubGraph.get(app); com.rokid.context.canvas.moment.MomentLocationGraph.zonesNow() }, { MemoryWipe.generation.get() },
+                    ),
+                ),
                 sender = { HubGraph.get(app); HubGraph.planSender }, collect = { HubGraph.get(app); HubGraph.collectSession },
                 importer = TraceImport(dao, com.rokid.context.canvas.trace.FencedFiles(db, app.filesDir), fence, onImported = com.rokid.context.canvas.moment.MomentTriggers.get(app)::onTraceImported),
                 stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR).also(File::mkdirs) } },
@@ -86,6 +94,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             momentScenes: (suspend (Long, Long) -> com.rokid.context.canvas.moment.SceneBuilder.Report)? = null,
             /** P1: `POST /api/moments/repair`, the one-shot Moment and Scene repair; null = 404. */
             momentRepair: (suspend (Long) -> com.rokid.context.canvas.moment.MomentRepair.Report)? = null,
+            /** v18 WP5: `POST /api/moments/locations/import`, the GPS backfill import; null = not registered (404). */
+            momentLocationImport: com.rokid.context.phone.canvas.api.MomentLocationRoutes? = null,
             /** v0.9.7 A: the signal configuration store (`/api/signals`); null = the routes are not registered. */
             signals: com.rokid.context.phone.ui.settings.capture.SignalConfigStore? = null,
             /** v0.9.8 slice D: the device capability store (`/api/devices`); null = the routes are not registered. */
@@ -105,6 +115,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 if (sweeps != null) SweepRoutes(sweeps).let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(planRoutes::handle))
                 if (moments != null) MomentRoutes(devMode::value, moments, scenes = momentScenes, repair = momentRepair).let { add(ApiExtra(it::handle)) }
+                momentLocationImport?.let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
                 signals?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.SignalRoutes(it, signalTry)::handle)) }
                 devices?.let { add(ApiExtra(com.rokid.context.phone.canvas.api.DeviceRoutes(it)::handle)) }
