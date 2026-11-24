@@ -3,6 +3,7 @@ package com.rokid.context.connectors.place
 import com.rokid.context.core.net.ModelPrivacy
 import com.rokid.context.memory.place.Geohash5
 import com.rokid.context.memory.place.PlaceOfflineOnly
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
@@ -30,8 +31,8 @@ class PlaceHttpOfflineOnlyTest {
     @Test fun theModeIsReadForEveryRequestSoAFlipMidFetchStopsTheNextOne() {
         val asked = AtomicInteger()
         val opened = AtomicInteger()
-        // Asked twice per request (before the host-gap wait and after it): the flip lands after the first request's two asks.
-        val http = UrlConnectionPlaceHttp(minGapMs = 0, open = { opened.incrementAndGet(); throw java.io.IOException("no network in a unit test") }, privacy = { if (asked.incrementAndGet() <= 2) ModelPrivacy.AUTO else ModelPrivacy.OFFLINE_ONLY })
+        // Asked three times per request (before the host-gap wait, after it, and on the IO thread before the connection): the flip lands after the first request's two asks.
+        val http = UrlConnectionPlaceHttp(minGapMs = 0, open = { opened.incrementAndGet(); throw java.io.IOException("no network in a unit test") }, privacy = { if (asked.incrementAndGet() <= 3) ModelPrivacy.AUTO else ModelPrivacy.OFFLINE_ONLY })
         runBlocking {
             runCatching { http.get("https://a.example/x") } // admitted: reaches the connection factory
             assertFailsWith<PlaceOfflineOnly> { http.get("https://a.example/y") }
@@ -44,13 +45,13 @@ class PlaceHttpOfflineOnlyTest {
         val queueing = object : kotlinx.coroutines.CoroutineDispatcher() {
             override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { queued.add(block) }
         }
-        @Volatile var mode = ModelPrivacy.AUTO
+        val mode = java.util.concurrent.atomic.AtomicReference(ModelPrivacy.AUTO)
         val opened = AtomicInteger()
-        val http = UrlConnectionPlaceHttp(minGapMs = 0, open = { opened.incrementAndGet(); error("must not connect") }, privacy = { mode }, io = queueing)
+        val http = UrlConnectionPlaceHttp(minGapMs = 0, open = { opened.incrementAndGet(); error("must not connect") }, privacy = { mode.get() }, io = queueing)
         runBlocking {
-            val call = kotlinx.coroutines.async { runCatching { http.get("https://a.example/x") } }
+            val call = async { runCatching { http.get("https://a.example/x") } }
             while (queued.isEmpty()) kotlinx.coroutines.yield() // the request passed both checks and now waits for an IO thread
-            mode = ModelPrivacy.OFFLINE_ONLY // the user enables Offline only while it waits
+            mode.set(ModelPrivacy.OFFLINE_ONLY) // the user enables Offline only while it waits
             while (true) queued.poll()?.run() ?: break
             assertTrue(call.await().exceptionOrNull() is PlaceOfflineOnly)
         }
