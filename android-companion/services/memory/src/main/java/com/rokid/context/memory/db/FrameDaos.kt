@@ -207,6 +207,17 @@ abstract class FrameStateDao {
     @Query("UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'FAILED_FINAL' AND COALESCE(lastError, '') != 'describe_failed'")
     abstract suspend fun retryAllFinal(nowMs: Long): Int
 
+    /**
+     * WP9: FAILED_FINAL frames that failed ONLY for the network's or the provider's reasons (lastError `timeout`, or `TRANSIENT` = 429/5xx) go back to PENDING with attempts 0,
+     * newest first, at most [limit]. Content or policy failures (REJECTED, INVALID_OUTPUT, cluster_failed, describe_failed, abandoned ...) stay final, and a forgotten (tombstoned) frame is never revived.
+     */
+    @Query(
+        "UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE frameId IN (" +
+            "SELECT s.frameId FROM frame_state s WHERE s.state = 'FAILED_FINAL' AND s.lastError IN ('timeout', 'TRANSIENT') " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY s.updatedAt DESC LIMIT :limit)",
+    )
+    abstract suspend fun reviveTransientFinal(nowMs: Long, limit: Int): Int
+
     /** Photos parked as `describe_failed` (5 failed night describes): they go back into the night queue's reach (never to the live loop). Returns how many. */
     @Query("UPDATE frame_state SET state = 'FAILED_FINAL', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'FAILED_FINAL' AND lastError = 'describe_failed'")
     abstract suspend fun retryDescribeFailed(nowMs: Long): Int
