@@ -58,6 +58,11 @@ object DeveloperFlags {
     fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, false) }.getOrDefault(false)
     fun setPlaceCardHistory(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_CARD_HISTORY, on).apply() }
 
+    /** Map zones P1 (design 2026-11-24): the full-height Map zones screen (draw, Pause / Seed sheet, overview). OFF BY DEFAULT (also OFF when the prefs cannot be read): OFF = the shipped Pause zones screen, unchanged. Pause zone semantics are the same either way. */
+    const val MAP_ZONES_V2 = "mapZonesV2"
+    fun mapZonesV2(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MAP_ZONES_V2, false) }.getOrDefault(false)
+    fun setMapZonesV2(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MAP_ZONES_V2, on).apply() }
+
     fun pauseRetention(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PAUSE_RETENTION, true) }.getOrDefault(true)
     fun setPauseRetention(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PAUSE_RETENTION, on).apply() }
     fun multilingualAsk(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MULTILINGUAL_ASK, false) }.getOrDefault(false)

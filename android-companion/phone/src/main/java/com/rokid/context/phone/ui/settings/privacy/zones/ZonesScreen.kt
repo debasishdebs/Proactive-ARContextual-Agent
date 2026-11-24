@@ -162,7 +162,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
  * one-shot "Centre on me". Location is read ONLY here, on the tap, with the existing permission; the result is held in screen state and never stored or logged.
  */
 @Composable
-private fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPermission: () -> Unit): OnlineMapPanel {
+internal fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPermission: () -> Unit): OnlineMapPanel {
     val ui by d.model.ui.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var foreground by remember { mutableStateOf(false) }
@@ -196,7 +196,7 @@ private fun rememberOnlinePanel(d: OnlineMapDeps, granted: () -> Boolean, askPer
 }
 
 /** A PMTiles file has no registered MIME type, so the picker is not narrowed. */
-private val PICK_TYPES = arrayOf("*/*")
+internal val PICK_TYPES = arrayOf("*/*")
 
 /** What the zones screen needs to offer the offline map (null where the build has none). [reader] is the open archive, null for the plain grid. */
 class OfflineMapPanel(
@@ -237,7 +237,7 @@ class SeedPanel(
     val dismiss: () -> Unit,
 )
 
-private val LOCATION_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+internal val LOCATION_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
 @Composable
 fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null, online: OnlineMapPanel? = null, seed: SeedPanel? = null) {
@@ -353,7 +353,7 @@ private fun SeededAreasCard(p: SeedPanel) {
 }
 
 @Composable
-private fun OnlineMapCard(p: OnlineMapPanel) {
+internal fun OnlineMapCard(p: OnlineMapPanel) {
     SettingsCard {
         Text("Street map", style = MaterialTheme.typography.titleMedium)
         if (!p.ui.available) { NoticeText(OnlineMapWords.UNAVAILABLE, tag = "online_unavailable"); return@SettingsCard }
@@ -366,7 +366,7 @@ private fun OnlineMapCard(p: OnlineMapPanel) {
 }
 
 @Composable
-private fun OfflineMapCard(p: OfflineMapPanel) {
+internal fun OfflineMapCard(p: OfflineMapPanel) {
     val u = p.ui
     SettingsCard {
         Text("Offline map", style = MaterialTheme.typography.titleMedium)
@@ -408,7 +408,7 @@ private fun NewZoneCard(state: ZonesUiState, on: ZonesCallbacks) {
 }
 
 @Composable
-private fun ZoneRow(r: ZoneRowUi, on: ZonesCallbacks) {
+internal fun ZoneRow(r: ZoneRowUi, on: ZonesCallbacks) {
     val z = r.zone
     SettingsCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -424,7 +424,7 @@ private fun ZoneRow(r: ZoneRowUi, on: ZonesCallbacks) {
 }
 
 @Composable
-private fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
+internal fun StateChip(chip: ZoneChip, modifier: Modifier = Modifier) {
     val (bg, fg) = when (chip.level) {
         ChipLevel.OFF -> PcColors.ChipSlate
         ChipLevel.CLEAR -> PcColors.ChipMint
@@ -559,7 +559,7 @@ private const val ONLINE_PARALLEL = 4
 private const val CENTRE_HALF_SPAN_M = 250.0
 
 /** The open PMTiles archive as a tile source: it never goes online and its attribution is drawn from the archive itself. */
-private class ReaderTiles(private val r: PmTilesReader) : RasterTileSource {
+internal class ReaderTiles(private val r: PmTilesReader) : RasterTileSource {
     override val minZoom get() = r.minZoom
     override val maxZoom get() = r.maxZoom
     override val attribution: String? get() = null
@@ -654,7 +654,7 @@ private fun DrawScope.drawBox(v: MapViewport, b: DoubleArray, color: Color, fill
 }
 
 /** Decodes one raster tile with a pixel cap: reads the size first, subsamples past 16 megapixels, refuses absurd sizes. Returns null (plain grid) on anything unusable. */
-private fun decodeTileBounded(b: ByteArray): ImageBitmap? {
+internal fun decodeTileBounded(b: ByteArray): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(b, 0, b.size, bounds)
     val sample = TileDecode.sampleSize(bounds.outWidth, bounds.outHeight)

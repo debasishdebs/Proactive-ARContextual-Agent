@@ -329,6 +329,9 @@ fun DiagnosticsScreen(
     /** P0 retention fix: "Pause clean-up" skips the nightly expiry entirely. Default ON in the retention-fix candidate (nothing expires until it is turned OFF); shown only with [developerMode]. */
     pauseRetention: Boolean = true,
     onPauseRetention: (Boolean) -> Unit = {},
+    /** Map zones P1: the new full-height Map zones screen. Default OFF (the shipped Pause zones screen); shown only with [developerMode]. */
+    mapZonesV2: Boolean = false,
+    onMapZonesV2: (Boolean) -> Unit = {},
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
     onMarkSuspect: (String) -> Unit = {},
     onMarkAllSuspects: () -> Unit = {},
@@ -442,6 +445,13 @@ fun DiagnosticsScreen(
                             Text("While this is on (default) the nightly clean-up deletes nothing: no photo is removed, nothing leaves Quick recall and the Storage cap is not enforced. Turn it off to let clean-up run: older details leave Quick recall (nothing is deleted, Forget is the only way text goes), photos are removed by their Photos setting, and only over the Storage cap the oldest photos go first.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = pauseRetention, onCheckedChange = onPauseRetention, modifier = Modifier.testTag("pause_retention_switch"))
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Map zones screen (new)", style = MaterialTheme.typography.titleSmall)
+                            Text("Off (default): Settings > Privacy > Pause zones is the screen you know. On: the new full-height map where you draw an area and choose Pause or Seed. Pause zones are saved, checked and enforced exactly the same either way.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        }
+                        Switch(checked = mapZonesV2, onCheckedChange = onMapZonesV2, modifier = Modifier.testTag("map_zones_v2_switch"))
                     }
                     ChoiceRow("Record raw glasses sensors", rates.map { if (it == 0) "Off" else "$it Hz" }, rates.indexOf(sensorRecHz).coerceAtLeast(0), { onSensorRecHz(rates[it]) }, tag = "sensor_rec_rate")
                     if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")

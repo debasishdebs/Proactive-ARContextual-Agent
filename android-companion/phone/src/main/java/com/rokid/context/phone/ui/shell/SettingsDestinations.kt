@@ -329,6 +329,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val devSessionHours by dev.sessionHours.collectAsStateWithLifecycle()
         var askZoneFenceOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.AskZoneFence.isEnabled(app)) }
         var pauseRetentionOn by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.pauseRetention(app)) }
+        var mapZonesV2On by remember { androidx.compose.runtime.mutableStateOf(com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app)) }
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
         var ctxTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
@@ -348,6 +349,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onDevSessionHours = { h -> dev.setSessionHours(h); CanvasGraph.get(app).revokeAll() }, // the new rule starts clean: every current pairing ends
             askZoneFence = askZoneFenceOn, onAskZoneFence = { on -> com.rokid.context.orchestration.AskZoneFence.setEnabled(app, on); askZoneFenceOn = on },
             pauseRetention = pauseRetentionOn, onPauseRetention = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setPauseRetention(app, on); pauseRetentionOn = on },
+            mapZonesV2 = mapZonesV2On, onMapZonesV2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesV2(app, on); mapZonesV2On = on },
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
             onSensorRecHz = { hz -> s.hud.update { it.copy(sensorRecHz = hz).normalized() } },
             contextHub = contextHub,
@@ -396,11 +398,15 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_PRIVACY) { PrivacyRoute(s, back, openZones = { nav.navigate(Routes.SETTINGS_PRIVACY_ZONES) }) }
     composable(Routes.SETTINGS_PRIVACY_ZONES) {
         val app = LocalContext.current.applicationContext
-        ZonesRoute(s, back, seed = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) })
+        val seedControl = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) }
+        if (remember { com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app) }) com.rokid.context.phone.ui.settings.mapzones.MapZonesRoute(s, back, seed = seedControl) // Developer flag mapZonesV2, default OFF
+        else ZonesRoute(s, back, seed = seedControl)
     }
     composable(Routes.SETTINGS_MAP_SEED) {
         val app = LocalContext.current.applicationContext
-        ZonesRoute(s, back, seed = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) }, seedMode = true)
+        val seedControl = remember { com.rokid.context.phone.place.AndroidSeedMapControl(app, com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }) }
+        if (remember { com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app) }) com.rokid.context.phone.ui.settings.mapzones.MapZonesRoute(s, back, seed = seedControl, seedMode = true)
+        else ZonesRoute(s, back, seed = seedControl, seedMode = true)
     }
     composable(Routes.SETTINGS_PLACE_GUIDE) {
         val app = LocalContext.current.applicationContext
