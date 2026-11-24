@@ -156,4 +156,52 @@ class EmbeddingClientDataSaverTest {
         assertEquals("not a byte left", 0, requests)
         assertEquals("the reservation was released (nothing sent)", "settle:0:0", g.events.last())
     }
+
+    // ---- Codex data-saver r3: P1-1, P1-2, P1-3 for embeddings ----
+
+    private class R3Gate : DataGate {
+        var lan = false
+        var costly = true
+        var failReserve = false
+        val reserveThreads = mutableListOf<Thread>()
+        val sent = mutableListOf<Boolean>()
+        override fun decide(kind: DataKind, reach: EndpointReach): DataDecision = if (lan && reach == EndpointReach.LAN) DataDecision(true, "lan") else DataDecision.ALLOW
+        override fun skipped(kind: DataKind, what: Skipped, d: DataDecision) {}
+        override fun costlyNow() = costly
+        override fun reserve(kind: DataKind, txBytes: Long, photos: Int): com.rokid.context.core.net.DataReservation { reserveThreads += Thread.currentThread(); return if (failReserve) com.rokid.context.core.net.DataReservation.FAILED else com.rokid.context.core.net.DataReservation(kind, txBytes, photos, 1) }
+        override fun sentAt(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) { sent += costlyAtStart }
+    }
+
+    @Test fun aLanEmbeddingBatchTakesNoReservationEvenWhenReservationsWouldFail() = kotlinx.coroutines.runBlocking {
+        val g = R3Gate().also { it.lan = true; it.failReserve = true }
+        EmbeddingClient(http, dataGate = g).embed(remote("https://192.168.1.5:11434"), "m", "k", listOf("a", "b"))
+        assertTrue(g.reserveThreads.isEmpty()); assertTrue("nothing counted as costly", g.sent.all { !it })
+        // a remote batch on the same costly network is still refused when its reservation fails
+        val e = runCatching { EmbeddingClient(http, dataGate = g).embed(remote(), "m", "k", listOf("a", "b")) }.exceptionOrNull()
+        assertTrue(e.toString(), e is DataSaverBlockedException)
+    }
+
+    @Test fun aBatchAdmittedOnFreeWifiThatEndsOnACostlyNetworkIsCountedAsCostly() = kotlinx.coroutines.runBlocking {
+        val g = R3Gate().also { it.costly = false }
+        val c = EmbeddingClient(OkHttpClient.Builder().addInterceptor(Interceptor { chain ->
+            g.costly = true // the connection turned out to be on a costly network
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(reply.toResponseBody("application/json".toMediaType())).build()
+        }).build(), dataGate = g)
+        c.embed(remote(), "m", "k", listOf("a", "b"))
+        assertEquals(listOf(true), g.sent)
+    }
+
+    @Test fun aBatchThatStaysOnFreeWifiIsNotCounted() = kotlinx.coroutines.runBlocking {
+        val g = R3Gate().also { it.costly = false }
+        EmbeddingClient(http, dataGate = g).embed(remote(), "m", "k", listOf("a", "b"))
+        assertTrue(g.sent.all { !it })
+    }
+
+    @Test fun theEmbeddingReservationCommitDoesNotRunOnTheCallingThread() = kotlinx.coroutines.runBlocking {
+        val g = R3Gate()
+        val caller = Thread.currentThread()
+        EmbeddingClient(http, dataGate = g).embed(remote(), "m", "k", listOf("a", "b"))
+        assertEquals(1, g.reserveThreads.size)
+        assertTrue(g.reserveThreads.none { it === caller })
+    }
 }

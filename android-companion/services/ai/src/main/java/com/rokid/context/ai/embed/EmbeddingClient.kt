@@ -76,7 +76,7 @@ class EmbeddingClient(
         }
         val kind = if (inputs.size <= SMALL_MAX_TEXTS && inputs.sumOf { it.length } <= SMALL_MAX_CHARS) DataKind.SMALL else DataKind.BULK_OTHER
         val counted = reach(e) != EndpointReach.DEVICE && !com.rokid.context.ai.EndpointReaches.isLoopback(e)
-        admit(e, kind)
+        val admitted = admit(e, kind)
         val sent = key.takeIf { e.kind == EndpointKind.AZURE_OPENAI || e.kind == EndpointKind.OPENAI_COMPAT }
         KeyTransport.requireSecure(url, sent)
         val request = Request.Builder().url(url).post(body.toString().toRequestBody("application/json".toMediaType())).apply {
@@ -86,7 +86,7 @@ class EmbeddingClient(
                 else -> Unit
             }
         }.build()
-        val reply = roundTrip(e, kind, request, counted)
+        val reply = roundTrip(e, kind, request, counted, admitted.reason == DataPolicy.R_LAN)
         if (!reply.ok) throw ProviderHttpException(reply.code, "Embedding", reply.text)
         val text = reply.text
         val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrElse { throw ProviderResponseException("Embedding reply wasn't JSON") }
@@ -140,10 +140,10 @@ class EmbeddingClient(
     suspend fun revision(e: Endpoint, model: String): String? {
         if (e.kind != EndpointKind.OLLAMA) return null
         com.rokid.context.ai.OfflineOnlyGuard.require(privacy, e)
-        admit(e, DataKind.SMALL)
+        val admitted = admit(e, DataKind.SMALL)
         val counted = reach(e) != EndpointReach.DEVICE && !com.rokid.context.ai.EndpointReaches.isLoopback(e)
         val request = Request.Builder().url("${e.baseUrl.trimEnd('/')}/api/tags").get().build()
-        val reply = roundTrip(e, DataKind.SMALL, request, counted)
+        val reply = roundTrip(e, DataKind.SMALL, request, counted, admitted.reason == DataPolicy.R_LAN)
         if (reply.code == 404) return null // an older server without /api/tags: no revision to report
         if (!reply.ok) throw ProviderHttpException(reply.code, "Embedding", reply.text)
         val text = reply.text
@@ -160,19 +160,29 @@ class EmbeddingClient(
      * (a commit that fails, or an untrusted counter, refuses the send), the transport asks the data saver again right before the connect (the reservation excluded), the call runs on the cancellable transport
      * ([executeFenced]: cancelling the coroutine aborts the socket) and a watcher re-asks every second so a network that turns costly under a running batch aborts it. Bytes are settled in `finally`.
      */
-    private suspend fun roundTrip(e: Endpoint, kind: DataKind, request: Request, counted: Boolean): Reply {
+    private suspend fun roundTrip(e: Endpoint, kind: DataKind, request: Request, counted: Boolean, lanFree: Boolean): Reply {
         val tx = (request.body?.contentLength() ?: 0L).coerceAtLeast(0)
-        val costlyAtStart = counted && safeCostly()
-        val reservation = if (costlyAtStart) try { dataGate.reserve(kind, tx + com.rokid.context.ai.DataBytes.ENVELOPE, 0) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { DataReservation.FAILED } else null
+        // Codex r3 P1-2: a call the policy allowed for FREE (LAN on Wi-Fi or Ethernet, [DataPolicy.R_LAN]) takes no reservation and counts nothing: unreadable counters or a failed commit never block it.
+        val costlyAtStart = counted && !lanFree && safeCostly()
+        // Codex r3 P1-1: costly at ANY sample (admission, pre-connect guard, watcher ticks, settle) counts the bytes as costly, so a FREE admission that ends up on a costly network is not recorded as zero.
+        val sawCostly = java.util.concurrent.atomic.AtomicBoolean(costlyAtStart)
+        val lanNow = java.util.concurrent.atomic.AtomicBoolean(lanFree)
+        val sample: (DataDecision?) -> Unit = { d ->
+            if (d != null) lanNow.set(d.reason == DataPolicy.R_LAN) // null = reuse the latest decision (the settlement asks nothing new)
+            if (counted && !lanNow.get() && safeCostly()) sawCostly.set(true)
+        }
+        // Codex r3 P1-3: the durable commit runs on an IO thread, never on the caller's.
+        val reservation = if (costlyAtStart) try { withContext(Dispatchers.IO) { dataGate.reserve(kind, tx + com.rokid.context.ai.DataBytes.ENVELOPE, 0) } } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { DataReservation.FAILED } else null
         if (reservation?.failed == true) throw DataSaverBlockedException(DataPolicy.R_UNREADABLE, kind, Skipped.BULK).also { it.counted = false }
         var rx = 0L
         var unsent = false
         val guard = com.rokid.context.model.provider.TransportGuard {
             val d = decideNow(e, kind, reservation)
+            sample(d)
             if (!d.allowed) throw com.rokid.context.ai.PreConnectBlockedException(d.reason, kind, Skipped.BULK)
         }
         try {
-            return if (counted) watching(e, kind, reservation) { transport(request, guard) { rx = it } } else transport(request, null) { rx = it }
+            return if (counted) watching(e, kind, reservation, sample) { transport(request, guard) { rx = it } } else transport(request, null) { rx = it }
         } catch (t: Throwable) {
             unsent = t is com.rokid.context.ai.PreConnectBlockedException || com.rokid.context.ai.TrafficClass.provablyUnsent(t) // a stall, timeout, cancel or abort keeps the request counted
             throw t
@@ -180,8 +190,11 @@ class EmbeddingClient(
             val sentTx = if (unsent) 0L else tx
             val sentRx = if (unsent) 0L else rx
             try {
-                if (reservation != null) dataGate.settle(reservation, sentTx, sentRx, 0)
-                else if (counted && !unsent) dataGate.sentAt(kind, sentTx, sentRx, 0, costlyAtStart)
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                    sample(null) // the last sample, at settlement
+                    if (reservation != null) dataGate.settle(reservation, sentTx, sentRx, 0)
+                    else if (counted && !unsent) dataGate.sentAt(kind, sentTx, sentRx, 0, sawCostly.get())
+                }
             } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { }
         }
     }
@@ -199,13 +212,14 @@ class EmbeddingClient(
         try { dataGate.decideExcluding(kind, reach(e), own) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { DataDecision(false, DataPolicy.R_UNKNOWN) }
 
     /** Runs [block] and re-asks the data saver about the CURRENT network every second; when it says no (own reservation excluded) the call is cancelled and fails as a counted [DataSaverBlockedException]. */
-    private suspend fun <T> watching(e: Endpoint, kind: DataKind, own: DataReservation?, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
+    private suspend fun <T> watching(e: Endpoint, kind: DataKind, own: DataReservation?, sample: (DataDecision?) -> Unit, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
         val abort = java.util.concurrent.atomic.AtomicReference<DataDecision?>(null)
         val work = async { try { block() } catch (t: Throwable) { if (abort.get() != null && t !is kotlin.coroutines.cancellation.CancellationException) throw kotlin.coroutines.cancellation.CancellationException("data saver abort") else throw t } }
         val watch = launch {
             while (true) {
                 kotlinx.coroutines.delay(watchMs)
                 val d = decideNow(e, kind, own)
+                sample(d)
                 if (!d.allowed) { abort.set(d); work.cancel(); return@launch }
             }
         }
@@ -221,9 +235,9 @@ class EmbeddingClient(
     private fun safeCostly(): Boolean = try { dataGate.costlyNow() } catch (_: Exception) { true }
 
     /** The data saver's decision for this endpoint and kind; a refusal is counted once and thrown as the same exception the router uses (retryable, nothing was sent). A gate that throws refuses (fail closed). */
-    private fun admit(e: Endpoint, kind: DataKind) {
+    private fun admit(e: Endpoint, kind: DataKind): DataDecision {
         val d = try { dataGate.decide(kind, reach(e)) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Exception) { DataDecision(false, DataPolicy.R_UNKNOWN) }
-        if (d.allowed) return
+        if (d.allowed) return d
         try { dataGate.skipped(kind, Skipped.BULK, d) } catch (_: Exception) { }
         throw DataSaverBlockedException(d.reason, kind, Skipped.BULK).also { it.counted = true }
     }
