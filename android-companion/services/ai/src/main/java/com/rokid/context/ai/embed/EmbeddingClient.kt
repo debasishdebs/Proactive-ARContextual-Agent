@@ -4,6 +4,7 @@ import com.rokid.context.ai.DataSaverBlockedException
 import com.rokid.context.ai.Endpoint
 import com.rokid.context.core.net.DataDecision
 import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.DataReservation
 import com.rokid.context.core.net.DataPolicy
 import com.rokid.context.core.net.EndpointReach
 import com.rokid.context.core.net.Skipped
@@ -17,6 +18,8 @@ import com.rokid.context.model.provider.LlamaCppNativeProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.sync.Mutex
@@ -48,6 +51,8 @@ class EmbeddingClient(
      * response bytes are counted. On-device and loopback endpoints are exempt, like everywhere else. Allows everything by default (tests, tools).
      */
     private val dataGate: com.rokid.context.core.net.DataGate = com.rokid.context.core.net.DataGate.ALLOW_ALL,
+    /** How often a running remote batch re-asks the data saver about the current network (tests shorten it). */
+    private val watchMs: Long = 1_000L,
 ) {
     /** Owns native work so a timed-out, uninterruptible call keeps running here without blocking or overlapping anyone. */
     private val nativeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -81,25 +86,9 @@ class EmbeddingClient(
                 else -> Unit
             }
         }.build()
-        val txBytes = (request.body?.contentLength() ?: 0L).coerceAtLeast(0)
-        val costlyAtStart = counted && safeCostly()
-        var rxBytes = 0L
-        var count = true
-        val text = try {
-            withContext(Dispatchers.IO) {
-                http.newCall(request).execute().use { r ->
-                    val t = r.body?.string().orEmpty()
-                    rxBytes = t.toByteArray(Charsets.UTF_8).size.toLong()
-                    if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", t)
-                    t
-                }
-            }
-        } catch (t: Throwable) {
-            if (com.rokid.context.ai.TrafficClass.provablyUnsent(t)) count = false // a stall, timeout or cancel keeps the request counted
-            throw t
-        } finally {
-            if (count && counted) try { dataGate.sentAt(kind, txBytes, rxBytes, 0, costlyAtStart) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { }
-        }
+        val reply = roundTrip(e, kind, request, counted)
+        if (!reply.ok) throw ProviderHttpException(reply.code, "Embedding", reply.text)
+        val text = reply.text
         val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrElse { throw ProviderResponseException("Embedding reply wasn't JSON") }
         val raw: List<JsonArray> = try {
             (json["embeddings"] as? JsonArray)?.map { it as? JsonArray ?: throw ProviderResponseException("Embedding wasn't a list of numbers") }
@@ -153,21 +142,79 @@ class EmbeddingClient(
         com.rokid.context.ai.OfflineOnlyGuard.require(privacy, e)
         admit(e, DataKind.SMALL)
         val counted = reach(e) != EndpointReach.DEVICE && !com.rokid.context.ai.EndpointReaches.isLoopback(e)
-        val costlyAtStart = counted && safeCostly()
         val request = Request.Builder().url("${e.baseUrl.trimEnd('/')}/api/tags").get().build()
-        val text = withContext(Dispatchers.IO) {
-            http.newCall(request).execute().use { r ->
-                val t = r.body?.string().orEmpty()
-                if (counted) try { dataGate.sentAt(DataKind.SMALL, 300, t.toByteArray(Charsets.UTF_8).size.toLong(), 0, costlyAtStart) } catch (_: Exception) { }
-                if (r.code == 404) return@use null // an older server without /api/tags: no revision to report
-                if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", t)
-                t
-            }
-        } ?: return null
+        val reply = roundTrip(e, DataKind.SMALL, request, counted)
+        if (reply.code == 404) return null // an older server without /api/tags: no revision to report
+        if (!reply.ok) throw ProviderHttpException(reply.code, "Embedding", reply.text)
+        val text = reply.text
         val models = runCatching { Json.parseToJsonElement(text).jsonObject["models"] as? JsonArray }.getOrNull()
             ?: throw ProviderResponseException("Model list wasn't understood")
         return models.map { it.jsonObject }.firstOrNull { (it["name"] as? JsonPrimitive)?.content in setOf(model, "$model:latest") }
             ?.let { (it["digest"] as? JsonPrimitive)?.content }
+    }
+
+    private class Reply(val code: Int, val ok: Boolean, val text: String)
+
+    /**
+     * Codex data-saver r2 P1-6: the ONE remote round trip of the embedding client, on the same terms as a model call. While the network is costly a durable RESERVATION is taken before a byte leaves
+     * (a commit that fails, or an untrusted counter, refuses the send), the transport asks the data saver again right before the connect (the reservation excluded), the call runs on the cancellable transport
+     * ([executeFenced]: cancelling the coroutine aborts the socket) and a watcher re-asks every second so a network that turns costly under a running batch aborts it. Bytes are settled in `finally`.
+     */
+    private suspend fun roundTrip(e: Endpoint, kind: DataKind, request: Request, counted: Boolean): Reply {
+        val tx = (request.body?.contentLength() ?: 0L).coerceAtLeast(0)
+        val costlyAtStart = counted && safeCostly()
+        val reservation = if (costlyAtStart) try { dataGate.reserve(kind, tx + com.rokid.context.ai.DataBytes.ENVELOPE, 0) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { DataReservation.FAILED } else null
+        if (reservation?.failed == true) throw DataSaverBlockedException(DataPolicy.R_UNREADABLE, kind, Skipped.BULK).also { it.counted = false }
+        var rx = 0L
+        var unsent = false
+        val guard = com.rokid.context.model.provider.TransportGuard {
+            val d = decideNow(e, kind, reservation)
+            if (!d.allowed) throw com.rokid.context.ai.PreConnectBlockedException(d.reason, kind, Skipped.BULK)
+        }
+        try {
+            return if (counted) watching(e, kind, reservation) { transport(request, guard) { rx = it } } else transport(request, null) { rx = it }
+        } catch (t: Throwable) {
+            unsent = t is com.rokid.context.ai.PreConnectBlockedException || com.rokid.context.ai.TrafficClass.provablyUnsent(t) // a stall, timeout, cancel or abort keeps the request counted
+            throw t
+        } finally {
+            val sentTx = if (unsent) 0L else tx
+            val sentRx = if (unsent) 0L else rx
+            try {
+                if (reservation != null) dataGate.settle(reservation, sentTx, sentRx, 0)
+                else if (counted && !unsent) dataGate.sentAt(kind, sentTx, sentRx, 0, costlyAtStart)
+            } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { }
+        }
+    }
+
+    private suspend fun transport(request: Request, guard: com.rokid.context.model.provider.TransportGuard?, rxOut: (Long) -> Unit): Reply =
+        withContext(if (guard != null) Dispatchers.IO + guard else Dispatchers.IO) {
+            com.rokid.context.model.provider.executeFenced(http, request).use { r ->
+                val t = r.body?.string().orEmpty()
+                rxOut(t.toByteArray(Charsets.UTF_8).size.toLong())
+                Reply(r.code, r.isSuccessful, t)
+            }
+        }
+
+    private fun decideNow(e: Endpoint, kind: DataKind, own: DataReservation?): DataDecision =
+        try { dataGate.decideExcluding(kind, reach(e), own) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { DataDecision(false, DataPolicy.R_UNKNOWN) }
+
+    /** Runs [block] and re-asks the data saver about the CURRENT network every second; when it says no (own reservation excluded) the call is cancelled and fails as a counted [DataSaverBlockedException]. */
+    private suspend fun <T> watching(e: Endpoint, kind: DataKind, own: DataReservation?, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
+        val abort = java.util.concurrent.atomic.AtomicReference<DataDecision?>(null)
+        val work = async { try { block() } catch (t: Throwable) { if (abort.get() != null && t !is kotlin.coroutines.cancellation.CancellationException) throw kotlin.coroutines.cancellation.CancellationException("data saver abort") else throw t } }
+        val watch = launch {
+            while (true) {
+                kotlinx.coroutines.delay(watchMs)
+                val d = decideNow(e, kind, own)
+                if (!d.allowed) { abort.set(d); work.cancel(); return@launch }
+            }
+        }
+        try { work.await() }
+        catch (c: kotlin.coroutines.cancellation.CancellationException) {
+            val d = abort.get()
+            if (d != null && isActive) throw DataSaverBlockedException(d.reason, kind, Skipped.BULK).also { it.counted = true }
+            throw c
+        } finally { watch.cancel() }
     }
 
     private fun reach(e: Endpoint): EndpointReach = com.rokid.context.ai.EndpointReaches.of(e)
