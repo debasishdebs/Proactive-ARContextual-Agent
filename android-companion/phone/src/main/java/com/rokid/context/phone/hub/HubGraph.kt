@@ -268,6 +268,7 @@ object HubGraph {
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
             devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
+            placeDelivery = { id, st -> scope.launch(Dispatchers.IO) { runCatching { val h = com.rokid.context.work.frames.place.PlaceGraph.history(app); if (st == com.rokid.context.memory.place.CardDelivery.SENT) h.markDelivery(id, st) else h.markIfPending(id, st) } } }, // B3: the phone-only card history
             placeCards = com.rokid.context.work.frames.place.PlaceGraph.port.card, placeClear = com.rokid.context.work.frames.place.PlaceGraph.port::clear, placeSide = { Hub.gatedPlaceSide(devMode.value) { com.rokid.context.work.frames.place.PlaceGuideSettings.of(app).cardSide } }, placeClearIf = com.rokid.context.work.frames.place.PlaceGraph.port::clearIf,
             suggestionCards = SuggestionHud.holder.card, suggestionClearIf = SuggestionHud.holder::clearIf,
             onSuggestionDismissed = { id -> scope.launch(Dispatchers.IO) { runCatching { com.rokid.context.orchestration.proactive.ProactiveGraph.actions(app).dismiss(id) } } },
