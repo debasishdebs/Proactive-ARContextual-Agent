@@ -22,7 +22,7 @@ object MarkGraph {
                 fence = { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) },
                 wallClock = System::currentTimeMillis,
                 log = MarkRecorder.pcLog,
-                onRecorded = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
+                onRecorded = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it); com.rokid.context.canvas.moment.MomentLocationGraph.poke(ctx) }, // v18 WP4: a mark may take a held fix too
                 onChanged = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
                 // an undone mark's photo goes through the one gated Forget path (tombstone, Moment cleanup, outbox); a running export refuses it and the undo is resent
                 forgetPhotoOutcome = { frameId -> com.rokid.context.orchestration.forget.ForgetActions.forgetMomentKeepPinsOutcome(ctx, frameId) }, // the typed outcome is kept: a cached export left behind reaches the phone as the cache-left notice; // never deletes a pin (it only clears the link): an undo has no dialog that names pins (coverage map O6)

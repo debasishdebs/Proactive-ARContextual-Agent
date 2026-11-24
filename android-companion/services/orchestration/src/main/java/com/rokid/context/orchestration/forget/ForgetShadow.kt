@@ -58,6 +58,11 @@ object DeveloperFlags {
     fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, true) }.getOrDefault(false) // v18: ON by default; a read failure counts as OFF
     fun setPlaceCardHistory(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_CARD_HISTORY, on).apply() }
 
+    /** Moment location (v18 WP4): save an OPTIONAL location with a new Moment, from a fix the phone already holds. ON BY DEFAULT (owner ruling 2026-11-25); a prefs read that fails counts as OFF. Switching it OFF writes nothing new and keeps the saved rows until the user taps "Delete saved locations". */
+    const val MOMENT_LOCATION = "momentLocation"
+    fun momentLocation(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MOMENT_LOCATION, true) }.getOrDefault(false)
+    fun setMomentLocation(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(MOMENT_LOCATION, on).apply() }
+
     /** Map zones P1 (design 2026-11-24): the full-height Map zones screen (draw, Pause / Seed sheet, overview). OFF BY DEFAULT (also OFF when the prefs cannot be read): OFF = the shipped Pause zones screen, unchanged. Pause zone semantics are the same either way. */
     const val MAP_ZONES_V2 = "mapZonesV2"
     fun mapZonesV2(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MAP_ZONES_V2, false) }.getOrDefault(false)

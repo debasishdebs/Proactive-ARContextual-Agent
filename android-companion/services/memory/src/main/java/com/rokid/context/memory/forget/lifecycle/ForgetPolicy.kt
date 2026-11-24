@@ -181,6 +181,9 @@ object ForgetPolicy {
             cells = mapOf(ForgetChild.PLACE_HISTORY to r(F, "PlaceCardHistory.kt:1 delete -> PlaceCardLog.kt deleteCardLog: the user's \"Delete from history\" of one row"))),
         SideDelete("PLACE_HISTORY_PRUNE", explicit = false, entryPoints = listOf(".deleteCardLogBefore(", ".trimCardLogTo("), callers = listOf("PlaceCardHistory.kt"),
             cells = mapOf(ForgetChild.PLACE_HISTORY to r(F, "PlaceCardHistory.kt:1 prune -> PlaceCardLog.kt deleteCardLogBefore / trimCardLogTo: rows older than 90 days and beyond the newest 500, once a day inside the insert transaction"))),
+        // The Moment location setting (v18 WP4): the user switched "Save location with Moments" off and chose "Delete saved locations".
+        SideDelete("MOMENT_LOCATION_SETTING_OFF", explicit = true, entryPoints = listOf(".deleteAllMomentLocations("), callers = listOf("MomentLocationGraph.kt"),
+            cells = mapOf(ForgetChild.MOMENT_LOCATION to r(F, "MomentLocationGraph.kt:62 deleteAll -> MomentLocation.kt:61 deleteAllMomentLocations: every saved Moment location, under DataOpGate.shared.delete; Privacy settings, after the switch is off"))),
         SideDelete("CANVAS_RUN_PRUNE", explicit = false, entryPoints = listOf(".pruneRuns("), callers = listOf("CanvasRunner.kt"),
             cells = mapOf(
                 ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:50 pruneRuns -> :39 deleteRun: runs beyond the newest KEEP_RUNS (CanvasRunner.kt pruneAfterStart, right after a new run is registered, outside the runner lock) under DataOpGate.shared.delete; skipped while an export, save or upload holds the gate"),

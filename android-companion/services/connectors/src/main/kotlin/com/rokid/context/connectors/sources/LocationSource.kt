@@ -13,7 +13,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 
-data class Fix(val lat: Double, val lon: Double, val timeMs: Long)
+data class Fix(val lat: Double, val lon: Double, val timeMs: Long, val accuracyM: Float? = null)
 data class Place(val subLocality: String?, val locality: String?, val adminArea: String?)
 
 /**
@@ -66,8 +66,8 @@ class LocationSource(
         @SuppressLint("MissingPermission") // EnabledSources/SourcesGraph check ACCESS_COARSE_LOCATION first; a revoke throws → caught
         fun lastKnown(context: Context): () -> Fix? = {
             val lm = context.getSystemService(LocationManager::class.java)
-            val loc = lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) ?: lm?.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-            loc?.let { Fix(it.latitude, it.longitude, it.time) }
+            val loc = try { lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) ?: lm?.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER) } catch (_: SecurityException) { null } // a revoked permission: no fix
+            loc?.let { Fix(it.latitude, it.longitude, it.time, if (it.hasAccuracy()) it.accuracy else null) }
         }
 
         @Suppress("DEPRECATION") // the listener API is 33+; minSdk is 29 and this always runs on IO with a timeout

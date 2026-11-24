@@ -200,6 +200,13 @@ object HubGraph {
         com.rokid.context.orchestration.AskZoneFence.extraBlocked = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } }
         val placeFixes = com.rokid.context.phone.place.PlaceFixProvider.create(app) { com.rokid.context.phone.zone.ZoneGraph.peek() }
         val placeZoneBlocked: suspend () -> Boolean = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || pauses.zoneRecords().isNotEmpty() }
+        // v18 WP4: the Moment location recorder reads the zone stream's held fix and the same zone predicate as Place Guide; it never asks for a fix.
+        com.rokid.context.canvas.moment.MomentLocationGraph.install(
+            zoneFix = { com.rokid.context.phone.zone.ZoneGraph.peek()?.lastFix()?.let { com.rokid.context.canvas.moment.HeldFix(it.lat, it.lon, it.accuracyM, it.timeMs, elapsedClock = true) } },
+            zones = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
+            zoneBlocked = placeZoneBlocked,
+        )
+        com.rokid.context.work.frames.KeyframeGraph.momentLocation = { com.rokid.context.canvas.moment.MomentLocationGraph.poke(app) }
         com.rokid.context.work.frames.KeyframeGraph.placeTextMatch = com.rokid.context.work.frames.place.PlaceSamplers.createTextMatch(app, ctxScope, zoneBlocked = placeZoneBlocked, onCard = com.rokid.context.work.frames.place.PlaceGraph.port::publish)
         com.rokid.context.work.frames.KeyframeGraph.placeSampler = com.rokid.context.work.frames.place.PlaceSamplers.create(
             app, ctxScope, fix = placeFixes::fresh,

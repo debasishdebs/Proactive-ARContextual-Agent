@@ -82,6 +82,8 @@ object KeyframeGraph {
     @Volatile var intentSampler: com.rokid.context.work.frames.intent.IntentSampler? = null
     /** Place Guide: the matcher the hub installs; poked after each committed frame like [intentSampler] (it does nothing unless the switch is on and the frame is a dwell photo). */
     @Volatile var placeSampler: com.rokid.context.work.frames.place.PlaceSampler? = null
+    /** v18 WP4: the Moment location recorder's poke (the hub installs it; null until then). Poked after each committed frame like [placeSampler]; it does nothing when the setting is off. */
+    @Volatile var momentLocation: (() -> Unit)? = null
     /** F5b: told the captions of every saved extraction batch; matches a quoted sign name against the user's own pins. Null until the hub makes it. */
     @Volatile var placeTextMatch: com.rokid.context.work.frames.place.PlaceTextMatch? = null
 
@@ -201,6 +203,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
         pipeline.start(scope); pipeline.signal()
         try { KeyframeGraph.intentSampler?.poke() } catch (e: Exception) { PcLog.w(TAG, "intent poke failed: ${e.javaClass.simpleName}") }
         try { KeyframeGraph.placeSampler?.poke() } catch (e: Exception) { PcLog.w(TAG, "place poke failed: ${e.javaClass.simpleName}") }
+        try { KeyframeGraph.momentLocation?.invoke() } catch (e: Exception) { PcLog.w(TAG, "moment location poke failed: ${e.javaClass.simpleName}") }
     }
 
     /**
