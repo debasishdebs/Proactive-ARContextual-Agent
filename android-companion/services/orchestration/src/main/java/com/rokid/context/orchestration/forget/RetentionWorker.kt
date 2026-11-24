@@ -20,8 +20,8 @@ import kotlin.coroutines.cancellation.CancellationException
  * Retention v3 (design 2026-11-24): retention NEVER deletes a memory row, an edge or text; only an explicit user Forget does. Daily, unique [NAME] (KEEP), scheduled by `OrchestrationScheduler.ensureRetention`. In order:
  *  1. the one-shot migration ([RetentionMigration]: purge the `lin:` lineage keys of older builds, mark the photos that expired before the marker existed);
  *  2. the file-retry sweep ([FrameSweep.sweep]): ALWAYS, also under Pause (it finishes deletes that already committed, including a user Forget's JPEGs);
- *  3. quota eviction ([Retention.runQuota]): ALWAYS, also under Pause (it is the storage bound): the oldest eligible photos once the cap is exceeded, never text, never a photo of explicit importance;
- *  4. when "Pause clean-up" (Developer) is ON: a counts-only line, and nothing below runs;
+ *  3. when "Pause clean-up" (Developer, default ON) is ON: a counts-only line, and NOTHING below runs (with Pause ON retention deletes nothing, quota eviction included);
+ *  4. quota eviction ([Retention.runQuota]), only while Pause is OFF: the oldest eligible photos once the cap is exceeded, never text, never a photo of explicit importance;
  *  5. the deleting steps ([Retention.run]): demotion of SHORT facts past the Quick recall window (their TEXT VECTOR only), skipped photos, photos by their own setting, image vectors, legacy orphan frames.
  * It runs while capture is paused.
  */
@@ -48,16 +48,16 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         // r2-7: the file-retry sweep always runs: Pause must never strand a user's Forget JPEGs.
         FrameSweep.sweep(applicationContext)
         val retention = Retention(graph, service, usedBytes = { StorageMeter.usedBytes(applicationContext) }, protectedFrames = { QuotaProtection.frames(applicationContext) })
-        // K6 / r2-7: quota eviction is the storage bound and runs under Pause as well.
-        retention.runQuota(settings, now, onChunk)
         if (DeveloperFlags.pauseRetention(applicationContext)) {
-            // P0: the Developer "Pause clean-up" switch skips the DELETING steps only (default ON for the retention candidate). One counts-only line says what would be due.
+            // P0: the Developer "Pause clean-up" switch skips EVERY deleting step, quota eviction included (default ON for the retention candidate). One counts-only line says what would be due.
             val p = runCatching { retention.plan(settings, now) }.getOrNull()
             if (p == null) { PcLog.milestone(TAG, "retention paused: deleting steps skipped") } else {
                 val demoteDue = p.demoteDue; val photosDue = p.photosDue + p.skippedPhotosDue; val vectorsDue = p.vectorsDue
                 PcLog.milestone(TAG, "retention paused: deleting steps skipped, would be due demoteDue=$demoteDue photosDue=$photosDue vectorsDue=$vectorsDue")
             }
         } else {
+            // Codex v3 r1 interim safety: quota eviction deletes photos, so it is one of the deleting steps and runs only while Pause is OFF.
+            retention.runQuota(settings, now, onChunk)
             val summary = retention.run(settings, now, onChunk)
             PipelineStatsStore.addRetentionDeletes(applicationContext, summary.skippedDeleted, summary.deletedUndescribed)
         }
