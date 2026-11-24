@@ -21,6 +21,8 @@ abstract class MomentDao : DerivedStaleDao() {
     @Query("SELECT * FROM moment_part WHERE momentId = :id ORDER BY kind, refId") abstract suspend fun parts(id: String): List<MomentPartEntity>
     @Query("SELECT * FROM moment_part WHERE momentId IN (:ids) ORDER BY momentId, kind, refId") abstract suspend fun partsOf(ids: List<String>): List<MomentPartEntity>
     @Query("SELECT momentId FROM moment WHERE momentId >= :fromId AND momentId <= :toId ORDER BY momentId") abstract suspend fun momentIdsBetween(fromId: String, toId: String): List<String>
+    /** The refs among [refIds] that a stored Moment holds as a part of one of [kinds] (Codex v3 r1 P2-12: a held photo keeps its expiry evidence). */
+    @Query("SELECT DISTINCT refId FROM moment_part WHERE kind IN (:kinds) AND refId IN (:refIds)") abstract suspend fun heldRefs(kinds: List<String>, refIds: List<String>): List<String>
     @Query("SELECT DISTINCT momentId FROM moment_part WHERE kind IN (:kinds) AND refId IN (:refIds)") abstract suspend fun momentIdsHolding(kinds: List<String>, refIds: List<String>): List<String>
     @Query("DELETE FROM moment_part WHERE momentId IN (:ids)") abstract suspend fun deleteParts(ids: List<String>)
     /** The text copy of a Moment that survives while a source it showed was hidden: gone until the next build rewrites it. */

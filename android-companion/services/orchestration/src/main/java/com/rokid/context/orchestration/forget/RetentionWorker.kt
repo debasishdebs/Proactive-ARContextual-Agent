@@ -12,6 +12,7 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.MemoryMaintenance
 import com.rokid.context.memory.MemorySettings
 import com.rokid.context.memory.MemorySettingsStore
+import com.rokid.context.memory.forget.ExpiredLineage
 import com.rokid.context.memory.forget.ForgetRadius
 import com.rokid.context.memory.forget.ForgetService
 import kotlin.coroutines.cancellation.CancellationException
@@ -58,6 +59,9 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         } else {
             // Codex v3 r1 interim safety: quota eviction deletes photos, so it is one of the deleting steps and runs only while Pause is OFF.
             retention.runQuota(settings, now, onChunk)
+            // Codex v3 r1 P1-3: the legacy lineage of older builds is dropped only when no dependent of it survives (counts-only line)
+            val lineageDropped = runCatching { graph.db.withTransaction { ExpiredLineage.prune(graph.db) } }.getOrDefault(0)
+            if (lineageDropped > 0) PcLog.milestone(TAG, "legacy lineage dropped lineageDropped=$lineageDropped")
             val summary = retention.run(settings, now, onChunk)
             PipelineStatsStore.addRetentionDeletes(applicationContext, summary.skippedDeleted, summary.deletedUndescribed)
         }
@@ -113,7 +117,7 @@ internal class Retention(
         fun forever(d: Int) = d == MemorySettings.FOREVER
         val photos = if (forever(s.photoDays)) 0 else dao.linkedPhotosDue(since, s.photoDays * DAY, nowMs, PROTECT_MS, if (describeBeforeDeleteReady) 1 else 0, GRACE_DAYS * DAY, COUNT_CAP).size
         val over = runCatching { s.quotaBytes > 0 && usedBytes() > s.quotaBytes }.getOrDefault(false)
-        val protect = if (over) runCatching { protectedFrames() }.getOrNull() else null
+        val protect = if (over) runCatching { protectedFrames() }.getOrNull()?.takeIf { it.size <= MAX_PROTECT } else null
         return Plan(
             demoteDue = dao.countDemotable(nowMs - s.recallHours * HOUR),
             skippedPhotosDue = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, COUNT_CAP).size,
@@ -155,6 +159,7 @@ internal class Retention(
         if (used <= cap) return 0
         val protect = runCatching { protectedFrames() }.getOrNull()
         if (protect == null) { PcLog.milestone(LOG_TAG, "quota over, protection unreadable: nothing evicted"); return 0 }
+        if (protect.size > MAX_PROTECT) { PcLog.milestone(LOG_TAG, "quota over, protection set too large: nothing evicted"); return 0 } // fail closed: the bound parameters of one query cannot carry it
         val target = cap / 10 * 9
         val dao = graph.db.forgetDao()
         var evicted = 0
@@ -181,8 +186,8 @@ internal class Retention(
 
     private fun photoBytes(path: String?): Long = if (path.isNullOrBlank()) 0L else runCatching { java.io.File(path).let { if (it.isFile) it.length() else 0L } }.getOrDefault(0L)
 
-    /** An `IN (...)` list is never empty (SQLite) and never above the bind limit. */
-    private fun protectList(ids: Set<String>): List<String> = ids.toList().take(MAX_PROTECT).ifEmpty { listOf("") }
+    /** An `IN (...)` list is never empty (SQLite). Codex v3 r1 P1-8: the caller has already refused a set above [MAX_PROTECT] (the bind limit): a protected photo never loses its protection silently. */
+    private fun protectList(ids: Set<String>): List<String> = ids.toList().ifEmpty { listOf("") }
 
     private suspend fun runPass(s: MemorySettings, nowMs: Long, since: Long, onChunk: suspend (ForgetService.Result) -> Unit): Summary {
         val dao = graph.db.forgetDao()

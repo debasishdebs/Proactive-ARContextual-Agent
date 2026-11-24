@@ -15,7 +15,11 @@ internal object QuotaProtection {
         val out = LinkedHashSet<String>()
         PlaceGraph.existingHistory(app)?.let { out += it.photoIds() }
         val fd = MemoryGraph.get(app).db.forgetDao()
-        PlaceGraph.pins(app).pins().mapNotNull { it.momentId }.distinct().forEach { id ->
+        val store = PlaceGraph.pins(app)
+        val pins = store.pins()
+        // Codex v3 r1 P1-7: an unreadable or corrupt pin list reads as EMPTY; that must never look like "nothing is pinned": the caller evicts nothing
+        check(!store.corrupt) { "pin preferences unreadable" }
+        pins.mapNotNull { it.momentId }.distinct().forEach { id ->
             val sec = MomentId.parse(id) ?: return@forEach
             out += fd.frameIdsBetween(sec * 1000, sec * 1000 + 999)
         }

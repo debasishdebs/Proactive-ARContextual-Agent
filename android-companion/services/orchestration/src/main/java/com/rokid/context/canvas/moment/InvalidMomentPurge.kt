@@ -5,13 +5,14 @@ import com.rokid.context.core.log.PcLog
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.MomentPartKind
 import com.rokid.context.memory.db.MomentTombstoneEntity
+import com.rokid.context.memory.forget.ExpiryMarks
 import com.rokid.context.memory.forget.ForgetService
 import com.rokid.context.memory.moment.MomentValidity
 import com.rokid.context.orchestration.DataOpGate
 
 /**
  * The ONE-TIME purge of invalid Moments (v0.9.6; user rulings 2026-10-25). At the first start after the upgrade it deletes every stored Moment that is not valid ([MomentValidity]: no timestamp,
- * or no live photo, except a MARK Moment with an explicit error reason) and the memories whose source frames no longer exist. Destructive on purpose (the app is a debug build).
+ * or no live photo, except a MARK Moment with an explicit error reason) and NOTHING else: since retention v3 (Codex v3 r1 P1-5) no memory is deleted and no Moment of an expired photo is invalid. Destructive only for Moments that never had a photo or whose photo is dead.
  *
  * It goes through the existing delete paths, not raw SQL: the whole run is a DELETE on the [DataOpGate] (it waits for a running export and is DEFERRED, nothing deleted, marker not stored, when the
  * export outlasts the wait); the Moments leave through `MomentDao.remove` (parts, sensor rows, audit, derived fields, trace deps; every Scene holding one shrinks and hides its derived fields) in one
@@ -51,7 +52,15 @@ class InvalidMomentPurge(
         val md = db.momentDao()
         val all = md.allMoments()
         val parts = all.map { it.momentId }.chunked(CHUNK).flatMap { md.partsOf(it) }.groupBy { it.momentId }
-        val live = parts.values.flatten().filter { it.kind == MomentPartKind.FRAME }.map { it.refId }.distinct().chunked(CHUNK).flatMap { md.liveCapturedFrameIds(it) }.toSet()
+        val frameRefs = parts.values.flatten().filter { it.kind == MomentPartKind.FRAME }.map { it.refId }.distinct()
+        // Codex v3 r1 P1-5: a photo that RETENTION expired has no `frame` row but is not a dead photo: its Moment is retained content (it shows "Photo expired"). Expiry-backed = the durable marker, or (a marker the one-shot migration has not
+        // written yet) metadata and a description that still cites it while no `frame` row is left (a Forget deletes the descriptions with the photo): the shape of every expiry. A Moment of such a photo is never classified invalid.
+        val expiryBacked = frameRefs.chunked(CHUNK).flatMap { c ->
+            val marked = ExpiryMarks.marked(db.canvasSlice3Dao(), c)
+            val legacy = db.forgetDao().keyframeIds(c).filter { id -> db.forgetDao().remainingRefs(id) > 0 }
+            marked + legacy
+        }.toSet()
+        val live = frameRefs.chunked(CHUNK).flatMap { md.liveCapturedFrameIds(it) }.toSet() + expiryBacked
         val invalid = all.filter { m ->
             !MomentValidity.isValid(m.momentId, m.momentType, m.errorReason, parts[m.momentId].orEmpty().any { it.kind == MomentPartKind.FRAME && it.refId in live })
         }.map { it.momentId }
@@ -64,13 +73,11 @@ class InvalidMomentPurge(
             }
             md.remove(invalid)
         }
-        val orphans = md.orphanMemoryIds()
-        var cascade = ForgetService.Result.EMPTY
-        for (c in orphans.chunked(MEMORY_CHUNK)) cascade = merge(cascade, service.forgetFacts(c))
-        if (orphans.isNotEmpty()) after(cascade)
+        // Codex v3 r1 P1-5: NO memory is deleted here any more. The 19 Nov build also ran every memory whose source frames no longer exist through Forget at the first start (redacting the answers, nudges and summaries that cite
+        // it); with retention v3 a photo without a `frame` row is routine (expired), so that implicit startup deletion is gone. Memories leave only through an explicit, previewed Forget.
         testFaultBeforeMarker?.invoke()
         db.canvasSlice3Dao().putMeta(KEY, clock().toString())
-        val scanned = all.size; val deleted = invalid.size; val memories = orphans.size
+        val scanned = all.size; val deleted = invalid.size; val memories = 0
         PcLog.i(TAG, "invalid purge done: scanned=$scanned deleted=$deleted memories=$memories")
         return Result(Status.DONE, scanned, deleted, memories)
     }

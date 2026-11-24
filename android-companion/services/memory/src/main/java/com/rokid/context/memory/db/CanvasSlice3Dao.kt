@@ -34,6 +34,8 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
 
     /** Expiry markers (`ExpiryMarks`): how many keys lie in `[fromKey, toKey)`; marker keys by prefix (pruning, one-shot purges). */
     @Query("SELECT COUNT(*) FROM canvas_meta WHERE `key` >= :fromKey AND `key` < :toKey") abstract suspend fun countMetaBetween(fromKey: String, toKey: String): Int
+    /** The keys in `[fromKey, toKey)` with their values, at most [limit] (legacy lineage pruning). */
+    @Query("SELECT * FROM canvas_meta WHERE `key` >= :fromKey AND `key` < :toKey ORDER BY `key` LIMIT :limit") abstract suspend fun metasBetween(fromKey: String, toKey: String, limit: Int): List<CanvasMetaEntity>
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE :likePattern ESCAPE '\\'") abstract suspend fun deleteMetaLike(likePattern: String): Int
 
     /** Writes a durable key (kept by Delete all; hold no user data: the M1 evidence flag, plan JSON of a publish group). */

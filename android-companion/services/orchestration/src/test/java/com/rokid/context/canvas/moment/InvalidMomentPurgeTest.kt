@@ -116,19 +116,31 @@ class InvalidMomentPurgeTest {
         assertNotNull("the mark is a record of its own: kept", db.canvasSlice3Dao().label("mk-1"))
     }
 
-    @Test fun memoriesWhoseSourceFramesNoLongerExistAreDeletedThroughTheForgetCascadeAndTheRestStay() = runBlocking<Unit> {
+    /** Codex v3 r1 P1-5: the purge no longer deletes any memory (the 19 Nov build ran orphans through Forget at startup); nothing is redacted, nothing is told to the caller. */
+    @Test fun noMemoryIsDeletedAndNothingIsRedactedByTheStartupPurge() = runBlocking<Unit> {
         fx.frame("live", MS + 5)
         fx.frame("exp", MS + 9); db.forgetDao().deleteFrame("exp"); db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("exp", 1)) // what photo retention leaves: tombstone + frame_meta, no frame row
         fx.memory("expired", "exp")
         fx.memory("onLive", "live"); fx.memory("typed", null); fx.memory("orphan", "gone"); fx.memory("viaSource", null, derived = true); fx.memory("viaLive", null, derived = true); fx.memory("child", null, derived = true)
         db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("viaSource", "gone2", null, "FACT"), com.rokid.context.memory.db.FrameSourceEntity("viaLive", "live", null, "FACT")))
         db.forgetDao().insertEdges(listOf(MemorySourceEntity("child", "orphan")))
+        db.askDao().upsert(com.rokid.context.memory.db.AskEntity("a1", 1, "q", "ANSWER", """["orphan"]""", null, "test", false))
         val r = purge().runOnce()
         val left = db.openHelper.readableDatabase.query("SELECT id FROM memory WHERE reviewState != 'INVALIDATED' ORDER BY id").use { c -> generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList() }
-        assertEquals("a photo-less typed memory, the ones with a live photo and the one whose photo retention expired (frame_meta kept) stay; the derived child of a forgotten memory is invalidated by the cascade", listOf("expired", "onLive", "typed", "viaLive"), left)
-        assertEquals(2, r.memoriesDeleted)
-        assertEquals("the cascade result reaches the caller (files, export cache, re-summarise)", 1, after.size)
-        assertTrue(after.single().forgotten.containsAll(listOf("orphan", "viaSource")))
+        assertEquals("every memory stays, the derived child included", listOf("child", "expired", "onLive", "orphan", "typed", "viaLive", "viaSource"), left)
+        assertEquals(0, r.memoriesDeleted); assertTrue("no cascade result reaches the caller", after.isEmpty())
+        assertEquals("the answer citing the orphan is not redacted", 0, db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM ask WHERE redacted = 1").use { c -> c.moveToFirst(); c.getInt(0) })
+    }
+
+    /** Codex v3 r1 P1-5: a Moment whose photo retention expired (marker, or tombstone + metadata + a citing memory) is retained content, never invalid; a Moment of a really dead photo still goes. */
+    @Test fun aMomentOfAnExpiredPhotoIsNeverClassifiedInvalid() = runBlocking<Unit> {
+        fx.frame("expM", MS + 20); db.forgetDao().deleteFrame("expM"); db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("expM", 1))
+        com.rokid.context.memory.forget.ExpiryMarks.mark(db.canvasSlice3Dao(), "expM", 5, MS + 20)
+        fx.frame("expL", MS + 21); db.forgetDao().deleteFrame("expL"); db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("expL", 1)); fx.memory("capL", "expL") // an expiry of an older build: no marker yet
+        val m1 = MomentId.format(SEC + 20); val m2 = MomentId.format(SEC + 21)
+        moment(m1, MomentType.FRAME, "expM"); moment(m2, MomentType.FRAME, "expL"); moment(deadPhoto, MomentType.FRAME, "gone")
+        purge().runOnce()
+        assertEquals("the retained Moments stay, the dead-photo one goes", setOf(m1, m2), stored())
     }
 
     @Test fun itRunsOnceTheMarkerIsStoredAndALaterInvalidMomentIsLeftAlone() = runBlocking<Unit> {
@@ -162,14 +174,14 @@ class InvalidMomentPurgeTest {
         assertNull("no marker after a failure", db.canvasSlice3Dao().meta(InvalidMomentPurge.KEY))
         p.testFaultBeforeMarker = null
         assertEquals(InvalidMomentPurge.Status.DONE, p.runOnce().status)
-        assertEquals(null, db.memoryViewDao().byId("orphan")?.takeIf { it.reviewState != com.rokid.context.memory.db.ReviewState.INVALIDATED })
+        assertNotNull("the orphan fact is never deleted by the purge", db.memoryViewDao().byId("orphan")?.takeIf { it.reviewState != com.rokid.context.memory.db.ReviewState.INVALIDATED })
     }
 
     @Test fun itLogsCountsOnlyAsLiteralLines() = runBlocking<Unit> {
         world(); fx.memory("orphan", "gone")
         purge().runOnce()
         val l = lines().filter { it.startsWith("invalid purge") }
-        assertEquals(l.toString(), listOf("invalid purge start", "invalid purge done: scanned=6 deleted=4 memories=1"), l)
+        assertEquals(l.toString(), listOf("invalid purge start", "invalid purge done: scanned=6 deleted=4 memories=0"), l)
         assertTrue(lines().none { m -> listOf(plainMark, validFrame, "orphan", "live", "gone").any { it in m } })
     }
 }
