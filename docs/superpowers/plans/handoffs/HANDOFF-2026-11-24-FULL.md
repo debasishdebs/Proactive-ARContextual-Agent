@@ -2,6 +2,9 @@
 
 Owner: the user (Debasish). Repo: ~/Desktop/rokid/proactive-context-agent, branch `feat/v101-ask-eval` (LOCAL; only ROADMAP.md was ever pushed). Android app: phone + Rokid glasses + optional watch. Nothing from 19-24 Nov is installed except what was installed on 19 Nov (build 18c1b76a).
 
+## 0f. 25 Nov 01:40: MOMENTS REPAIRED + 9 PINS ATTACHED (the user said go)
+Moments for 19-22 Nov had been dropped by the OLD build's nightly retention (proof: 24 Nov 03:45 dump already lacked them; install changed nothing). Backup first: backups/pca-phone-pre-repair-20261125-0130.tar. Ran POST /api/moments/repair (paired via tools/m1-run.sh): missing 3324, stored 3322 Moments + 937 Scenes; per day now 19:311 20:592 21:967 22:763 23:856 24:570 (= frames). integrity ok. Pins: force-stop, wrote shared_prefs/place_pins.xml with a `moment` id for all 9 (original saved as backups/place_pins.xml.pre-attach-20261125); Golconda = Moment 6b01a354 (19:27:40, seated audience at the projection show, picked from captions; 9 s from the caption frame). Pinned Moment id = hex of capture epoch seconds.
+
 ## 0e. 25 Nov 01:00: TRAIN20 INSTALLED on phone + glasses (the user said go at ~00:44)
 Installed 6a78899e on both; glasses connected (user confirmed). Backup: ~/Desktop/rokid/backups/pca-phone-pre-trip-20261125-0044.tar (+ .apk = old 18c1b76a). `retention paused` logged 00:49:32 = old 00:50 clean-up pre-empted. Counts after: memory 18716, frame 5121, moment 1788, forget_tombstone 10284 (-68 = existing rowless-tombstone sweep, harmless), Room v17, pins 9. Installer verify printed 'not verified' only due to a tr locale bug on the glasses log (checked by hand: running, no errors). Remaining for the user: attach 9 pins to Moments (pin-moment-candidates), grant calendar/contacts only if wanted, home roaming dry run before 1 Dec. Everything else = after-Sikkim backlog.
 
