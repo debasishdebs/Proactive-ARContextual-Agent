@@ -78,6 +78,19 @@ class PlaceSamplerTest {
         assertEquals(0, fixCalls + candidateCalls + matchCalls.size); assertTrue(cards.isEmpty()); assertTrue(outcomes.isEmpty())
     }
 
+    @Test fun attemptLine_newFieldsPresentAndContentFree() = runTest {
+        poke()
+        val line = logs.last { it.startsWith("place attempt ") }
+        for (k in listOf("fixSrc", "fixRealAgeB", "pinFirst", "weakWin", "retry", "hist", "textHit")) assertTrue(k, Regex("""\b$k=\S+""").containsMatchIn(line))
+        assertTrue("fixSrc=fresh" in line)
+        assertTrue(line.length < 1024)
+        assertFalse(line.contains("Charminar"))
+        assertFalse(Regex("""\d{5,}""").containsMatchIn(line.replace(Regex("""(ids|chosen)=\S+"""), "")))
+        val ids = (1..12).map { place("wd:Q$it", "Place $it", north(it * 10.0)) }
+        places = ids; poke()
+        assertTrue(logs.last { it.startsWith("place attempt ") }.length < 1024)
+    }
+
     @Test fun anActiveOrApproachingZoneNeverReadsAFixNorCallsTheNetworkOrTheModel() = runTest {
         zone = true; poke()
         assertEquals(listOf(PlaceOutcome.ZONE), outcomes)

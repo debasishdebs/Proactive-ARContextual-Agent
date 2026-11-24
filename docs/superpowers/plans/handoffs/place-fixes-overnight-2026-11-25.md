@@ -8,7 +8,8 @@
 - Last completed step: H1-H5 (7a87aceb) and B1 real replay.
 - B1 acceptance.tsv: ~/Desktop/rokid/backups/replay-out/run-2026-11-24T05-52-06/acceptance.tsv (outside git).
 - B1 vs B0: HEAD totals unchanged (OUTDOOR_10M 17 cards, wrong 0; F1 overlay wrong 1; StubNone 28 calls 0 cards; INDOOR_60M and STALE HEAD 0 cards; calibration 5/6 TRUSTED). New INDOOR_MEDIA_GOOD HEAD baseline: 12 cards, 20 calls, wrong 0.
-- Next step: S1 (F7 fields + seams).
+- S1 done: F7 fields on the attempt line, constructor seams, PlaceFrame motion/sessionId, movedSince, six DeveloperFlags (ON). Place + replay tests green.
+- Next step: S2 (F3 dedupe v2).
 
 ## Step log (counts only, no names / coordinates / ids)
 | Step | Status | Commit | Notes |

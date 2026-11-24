@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import com.rokid.context.memory.place.ZoneFence
 import com.rokid.context.memory.place.ZoneTicket
 import com.rokid.context.memory.place.currentZoneTicket
+import com.rokid.context.orchestration.forget.DeveloperFlags
 import java.util.Locale
 
 /** Room behind [PlaceFrameStore]. The capture time is `frame_meta.capturedAtMs ?: frame.ts`, never the receive time. */
@@ -34,8 +35,10 @@ class RoomPlaceFrameStore(private val db: () -> com.rokid.context.memory.db.Cont
     override suspend fun newestDwell(sinceReceivedMs: Long): PlaceFrame? {
         val m = db().frameMetaDao().newestDwell(sinceReceivedMs) ?: return null
         val cap = m.capturedAtMs ?: db().frameDao().byIds(listOf(m.frameId)).firstOrNull()?.ts?.takeIf { it > 0 }
-        return PlaceFrame(m.frameId, cap)
+        return PlaceFrame(m.frameId, cap, m.motion, m.sessionId)
     }
+
+    override suspend fun movedSince(sinceReceivedMs: Long): Boolean = db().frameMetaDao().movedSince(sinceReceivedMs)
 
     override suspend fun tombstoned(frameId: String): Boolean = com.rokid.context.provenance.ProvenanceGate(db()).goneFrames(setOf(frameId), requirePresent = false).isNotEmpty()
 }
@@ -111,6 +114,8 @@ object PlaceSamplers {
             shadow = { id, hits, live -> shadowOf.score(id, hits, live) },
             shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app).also { on -> if (!on) ShadowCaches.clearAll() } }, // the flag going OFF empties the in-memory vectors at the next attempt (the setter does it at once)
             onAttemptEnd = share::clear,
+            pinFirstOn = { DeveloperFlags.placePinFirst(app) }, fixReuseOn = { DeveloperFlags.placeFixReuse(app) },
+            dedupeV2On = { DeveloperFlags.placeDedupeV2(app) }, retryOn = { DeveloperFlags.placeRetryOnPin(app) },
         )
     }
 
