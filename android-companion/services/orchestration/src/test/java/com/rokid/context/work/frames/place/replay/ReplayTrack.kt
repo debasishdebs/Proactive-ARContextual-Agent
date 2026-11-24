@@ -56,6 +56,8 @@ sealed class FixScenario(val label: String) {
     object Outdoor10 : FixScenario("OUTDOOR_10M")
     object Indoor60 : FixScenario("INDOOR_60M")
     object Stale : FixScenario("STALE")
+    /** H4: "some good fixes, mostly bad": a good fix (acc 15, its real age) when a media fix lies at most 60 s before t (causal); else near(t, N) at acc 60 and age 3 s; else UNKNOWN. */
+    object IndoorMediaGood : FixScenario("INDOOR_MEDIA_GOOD") { const val GOOD_MAX_AGE_MS = 60_000L }
     /** Antera / Ramoji style spans (truth testable = assumed-fix-only): the target's centre, labelled ASSUMED on every row; other frames use near(t, N) at [accM]. */
     data class AssumedPin(val accM: Float) : FixScenario("ASSUMED_PIN_${accM.toInt()}M")
 }
@@ -75,6 +77,10 @@ class ReplayFixSource(private val bundle: ReplayBundle, private val track: Repla
             FixScenario.Outdoor10 -> { pos = track.near(t, nMs); acc = 10f; age = 3_000 }
             FixScenario.Indoor60 -> { pos = track.near(t, nMs); acc = 60f; age = 3_000 }
             FixScenario.Stale -> { pos = track.near(t, nMs); acc = 10f; age = 61_000 }
+            FixScenario.IndoorMediaGood -> {
+                val c = track.causal(t)
+                if (c != null && c.dtMs <= FixScenario.IndoorMediaGood.GOOD_MAX_AGE_MS) { pos = c; acc = 15f; age = c.dtMs } else { pos = track.near(t, nMs); acc = 60f; age = 3_000 }
+            }
             is FixScenario.AssumedPin -> { pos = assumedCentre(t) ?: track.near(t, nMs); acc = scenario.accM; age = 3_000 }
         }
         if (pos != null && scenario == FixScenario.Stale) age = maxOf(61_000L, pos.dtMs)

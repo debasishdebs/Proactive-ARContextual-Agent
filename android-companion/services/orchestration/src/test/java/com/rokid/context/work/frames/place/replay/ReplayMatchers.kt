@@ -66,14 +66,14 @@ object CaptionText : MatchStage {
     override fun create(bundle: ReplayBundle): ReplayMatcher = object : BaseMatcher() {
         override suspend fun match(frameId: String, lines: List<String>): PlaceMatchResult {
             val text = bundle.framesById[frameId]?.text.orEmpty()
-            if (text.isBlank()) return result("NONE", 0.9f)
+            if (text.isBlank()) { note = "caption_no_hit"; return result("NONE", 0.9f) }
             val tt = tokens(text); val compact = letters(text)
             val hit = lines.indices.filter { i ->
                 val name = lineName(lines[i])
                 val distinctive = tokens(name).filter { it.length >= 4 && it !in STOP }
                 distinctive.any { it in tt } || (letters(name).length >= 6 && compact.contains(letters(name)))
             }
-            if (hit.size != 1) { if (hit.size > 1) note = "caption_ambiguous"; return result("NONE", 0.9f) }
+            if (hit.size != 1) { note = if (hit.size > 1) "caption_ambiguous" else "caption_no_hit"; return result("NONE", 0.9f) }
             return result((hit[0] + 1).toString(), 0.8f)
         }
     }
