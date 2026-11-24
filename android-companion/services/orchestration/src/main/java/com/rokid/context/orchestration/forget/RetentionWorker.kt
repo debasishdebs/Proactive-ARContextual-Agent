@@ -35,10 +35,17 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
     }
 
     private suspend fun retain(): Result {
-        // P0: the Developer "Pause clean-up" switch skips the whole nightly expiry (a safety valve for outings).
-        if (DeveloperFlags.pauseRetention(applicationContext)) { PcLog.milestone(TAG, "retention paused"); return Result.success() }
         val graph = MemoryGraph.get(applicationContext)
         val service = ForgetService(graph.db, graph.proposals)
+        // P0: the Developer "Pause clean-up" switch skips the whole nightly expiry (default ON for the retention-fix candidate: nothing expires until the user turns it OFF). One counts-only line says so.
+        if (DeveloperFlags.pauseRetention(applicationContext)) {
+            val p = runCatching { Retention(graph, service).plan(MemorySettingsStore.get(applicationContext).settings.value, System.currentTimeMillis()) }.getOrNull()
+            if (p == null) { PcLog.milestone(TAG, "retention paused: nothing expires") } else {
+                val shortDue = p.shortDue; val mediumDue = p.mediumDue; val longDue = p.longDue; val photosDue = p.photosDue + p.skippedPhotosDue
+                PcLog.milestone(TAG, "retention paused: nothing expires, would be due shortDue=$shortDue mediumDue=$mediumDue longDue=$longDue photosDue=$photosDue")
+            }
+            return Result.success()
+        }
         var removed = false
         // Fix round 1 I3: each chunk's photos are deleted right after its transaction, not at the end of the pass.
         val now = System.currentTimeMillis()
@@ -70,7 +77,7 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
  * cluster summaries alone; (3) captions and cluster summaries by their own windows (FOREVER = never); (4) ordinary skipped photos (shed,
  * semantic near-dup, non-representative cluster members; never a representative or a key moment) after `skippedPhotoDays`; (5) every other
  * keyframe photo after `photoDays` while a memory cites it (a described-before-delete one after a further [GRACE_DAYS]; one no memory cites never); (6) image vectors after `imageVectorDays`; (7) the
- * legacy orphan pass for frames that have no `frame_meta`. Expiry deletes the rows with their edges and vectors and never invalidates
+ * legacy orphan pass for frames that have no `frame_meta` ([ForgetService.expireOrphanFrames]: tombstone, `frame` row and JPEG only). Expiry deletes the rows with their edges and vectors and never invalidates
  * descendants: each derived memory expires on its own window. A photo goes through [ForgetService.expirePhotos] (frame row, JPEG and
  * sidecar; the tombstone lets the sweep retry a failed delete). [onChunk] gets each committed chunk.
  */
@@ -117,13 +124,20 @@ internal class Retention(
     suspend fun run(s: MemorySettings, nowMs: Long, onChunk: suspend (ForgetService.Result) -> Unit = {}): Summary {
         val dao = graph.db.forgetDao()
         // P4: a counts-only plan line before anything is removed, a result line after (literal templates, numbers only: no id, no text).
-        runCatching { PcLog.milestone(LOG_TAG, plan(s, nowMs).line()) }
+        runCatching {
+            val p = plan(s, nowMs)
+            val shortDue = p.shortDue; val mediumDue = p.mediumDue; val longDue = p.longDue; val captionDue = p.captionDue; val clusterSummaryDue = p.clusterSummaryDue
+            val skippedPhotosDue = p.skippedPhotosDue; val photosDue = p.photosDue; val vectorsDue = p.vectorsDue; val legacyDue = p.legacyDue; val nudgesKept = p.nudgesKept; val answersKept = p.answersKept
+            PcLog.milestone(LOG_TAG, "plan shortDue=$shortDue mediumDue=$mediumDue longDue=$longDue captionDue=$captionDue clusterSummaryDue=$clusterSummaryDue skippedPhotosDue=$skippedPhotosDue photosDue=$photosDue vectorsDue=$vectorsDue legacyDue=$legacyDue nudgesKept=$nudgesKept answersKept=$answersKept")
+        }
         var memoriesExpired = 0; var photosExpired = 0; var nudgesRedacted = 0; var answersRedacted = 0
         val track: suspend (ForgetService.Result) -> Unit = { r -> memoriesExpired += r.forgotten.size; photosExpired += r.expiredFrames; nudgesRedacted += r.redactedNudges; answersRedacted += r.redactedAsks; onChunk(r) }
         val started = System.currentTimeMillis()
         val summary = runPass(s, nowMs, since = if (s.perKindSince > 0L) s.perKindSince else nowMs, onChunk = track)
         val secs = (System.currentTimeMillis() - started) / 1000
-        PcLog.milestone(LOG_TAG, "done memoriesExpired=$memoriesExpired photosExpired=$photosExpired skippedPhotosExpired=${summary.skippedDeleted} nudgesRedacted=$nudgesRedacted answersRedacted=$answersRedacted seconds=$secs")
+        val skippedPhotosExpired = summary.skippedDeleted
+        val seconds = secs
+        PcLog.milestone(LOG_TAG, "done memoriesExpired=$memoriesExpired photosExpired=$photosExpired skippedPhotosExpired=$skippedPhotosExpired nudgesRedacted=$nudgesRedacted answersRedacted=$answersRedacted seconds=$seconds")
         return summary
     }
 
@@ -188,7 +202,7 @@ internal class Retention(
         for (round in 0 until MAX_ROUNDS) {
             val frames = dao.orphanFramesBefore(nowMs - s.longDays * DAY, CHUNK)
             if (frames.isEmpty()) break
-            frames.forEach { onChunk(service.forgetMoment(it, redactCites = false, phoneFilesOnly = true)) }
+            onChunk(service.expireOrphanFrames(frames)) // retention r1 (P1-3): its own path, no cascade of any kind (no CARRIED invalidation, redaction, radius or Moment drop)
         }
         return Summary(skipped, 0)
     }

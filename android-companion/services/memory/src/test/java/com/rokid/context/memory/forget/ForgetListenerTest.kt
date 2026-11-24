@@ -47,10 +47,11 @@ class ForgetListenerTest {
         assertEquals("the label was already gone when the listener ran", 0, rowsLeftWhenTold)
     }
 
-    @Test fun retentionPhotoExpiryTellsItToo() = runBlocking {
+    /** Retention r1 (P1-5): an expiry is not a Forget, so it tells no listener (a listener withdraws what a Forget removed; an expired photo's suggestions, cards and surfaces stay). */
+    @Test fun retentionPhotoExpiryTellsNobody() = runBlocking {
         frame("a"); mem("ma", "a"); frame("b"); mem("mb", "b")
         service.expirePhotos(listOf("a", "b"))
-        assertEquals(setOf("a", "b"), seen.flatten().toSet())
+        assertTrue(seen.isEmpty())
     }
 
     @Test fun forgetFactsWithTheLockTellsItAndNothingForgottenTellsNobody() = runBlocking {
@@ -87,11 +88,12 @@ class ForgetListenerTest {
         assertTrue("a mark redelivered for that moment is refused", !dao.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk-near", "MOMENT", "tap", "MOMENT", photoAt + 4_000, createdAt = 2), fence()))
     }
 
-    @Test fun retentionExpiryOfAPhotoDoesTheSame() = runBlocking {
+    /** Retention r1: an expired photo deletes no mark and fences no time range (that is a user Forget's radius cascade). */
+    @Test fun retentionExpiryOfAPhotoKeepsTheMarksAroundItAndFencesNothing() = runBlocking {
         db.frameDao().insertIgnore(FrameEntity("p2", 700_000, "/p2.jpg", "rokid_glasses")); mem("mp2", "p2")
         db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk", "MOMENT", "tap", "MOMENT", 701_000, createdAt = 1), fence())
         service.expirePhotos(listOf("p2"))
-        assertNull(db.canvasSlice3Dao().label("mk"))
+        assertTrue(db.canvasSlice3Dao().label("mk") != null)
     }
 
     // ---- B1: retention expiry has its own callbacks, defaulting to the Forget ones ----

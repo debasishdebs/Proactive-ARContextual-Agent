@@ -127,11 +127,11 @@ class MarkPhotoLinkDaoTest {
         assertEquals(listOf(mark, "$mark:i"), dao.momentMarksBetween(MS, MS + 999, pendingSince = 100_001).map { it.labelId })
     }
 
-    /** Retention expiry already deletes the labels of an expired photo (existing lineage): the mark goes with its photo, it never becomes a bare Moment. */
-    @Test fun whenThePhotoExpiresTheMarkGoesWithItAndNoMomentRemains() = runBlocking<Unit> {
+    /** Retention r1: expiry is storage only, so the user's mark stays when its photo expires; with no photo row it is not a bare Moment (the safety net below). */
+    @Test fun whenThePhotoExpiresTheMarkStaysAndMakesNoBareMoment() = runBlocking<Unit> {
         insertMark(); commit("p1", MS + 100, ref)
         fx.service.expirePhotos(listOf("p1"))
-        assertNull(dao.label(mark)); assertTrue(dao.momentMarksBetween(MS, MS + 999, 0).isEmpty())
+        assertTrue(dao.label(mark) != null); assertTrue(dao.momentMarksBetween(MS, MS + 999, 0).isEmpty())
     }
 
     /** The safety net behind that: a mark that says `ok` while its photo row is gone (any other path) makes no Moment either. */

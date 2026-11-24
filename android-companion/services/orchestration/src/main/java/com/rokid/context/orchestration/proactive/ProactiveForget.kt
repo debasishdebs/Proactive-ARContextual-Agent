@@ -8,7 +8,7 @@ class SourceLiveness(private val provenance: ProvenanceGate, private val pinIds:
     suspend fun dead(sourceIds: Collection<String>): Set<String> {
         val dead = HashSet<String>()
         provenance.goneMemories(SourceIds.memories(sourceIds).toSet()).forEach { dead += SourceIds.mem(it) }
-        provenance.goneFrames(SourceIds.frames(sourceIds).toSet(), requirePresent = false).forEach { dead += SourceIds.frame(it) }
+        provenance.forgottenFrames(SourceIds.frames(sourceIds).toSet()).forEach { dead += SourceIds.frame(it) }
         provenance.goneMarks(SourceIds.marks(sourceIds).toSet()).forEach { dead += SourceIds.mark(it) }
         val pins = SourceIds.pins(sourceIds)
         if (pins.isNotEmpty()) { val live = pinIds(); pins.filter { live == null || it !in live }.forEach { dead += SourceIds.pin(it) } }
@@ -17,7 +17,7 @@ class SourceLiveness(private val provenance: ProvenanceGate, private val pinIds:
 }
 
 /**
- * Per-suggestion Forget linkage (design 2.4, ruling 6). Any user Forget, a photo or range forget and retention expiry withdraw every record that cites a source that is no longer live, so a forgotten place memory,
+ * Per-suggestion Forget linkage (design 2.4, ruling 6). Any user Forget or a photo or range forget withdraws every record that cites a source that is no longer live (retention r1: an EXPIRED photo, which keeps its metadata, is still live, and retention notifies nobody), so a forgotten place memory,
  * pin or mark cannot come back as a suggestion; when liveness cannot be read, every record is withdrawn (fail closed; the never list stays). Delete all clears the store (records, the never list, counters) and
  * resets the switches. A withdrawn record is also taken off every live surface (v3.1).
  */
