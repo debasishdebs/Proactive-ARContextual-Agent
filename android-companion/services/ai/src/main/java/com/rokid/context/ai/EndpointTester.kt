@@ -30,6 +30,8 @@ class EndpointTester(
     private val callTimeoutMs: Long = 60_000,
     /** Model privacy: Test of a remote endpoint is refused under Offline only ("nothing leaves"), whatever the test would send. */
     private val privacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.AUTO },
+    /** The roaming data saver (Codex data-saver r1 P2-8): a Test is SMALL traffic, admitted by the endpoint's reach (refused when "Small requests on roaming" is off) and counted. Allows everything by default (tests). */
+    private val dataGate: com.rokid.context.core.net.DataGate = com.rokid.context.core.net.DataGate.ALLOW_ALL,
 ) {
     private val testClient: OkHttpClient = client.newBuilder()
         .connectTimeout(connectTimeoutMs, TimeUnit.MILLISECONDS)
@@ -37,7 +39,7 @@ class EndpointTester(
         .writeTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
         .callTimeout(callTimeoutMs, TimeUnit.MILLISECONDS)
         .build()
-    private val embeddings = EmbeddingClient(testClient, nativeTimeoutMs = callTimeoutMs, privacy = privacy)
+    private val embeddings = EmbeddingClient(testClient, nativeTimeoutMs = callTimeoutMs, privacy = privacy, dataGate = dataGate)
 
     /** Owns native chat work, so a timed-out, uninterruptible call keeps running here, one at a time, without blocking Test. */
     private val nativeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -46,6 +48,11 @@ class EndpointTester(
     suspend fun test(endpointId: String, model: String): TestResult {
         val e = repo.byId(endpointId) ?: return TestResult(false, 0, "Endpoint not found")
         if (runCatching { OfflineOnlyGuard.require(privacy, e) }.isFailure) return TestResult(false, 0, OFFLINE_ONLY_MESSAGE)
+        val verdict = try { dataGate.decide(com.rokid.context.core.net.DataKind.SMALL, EndpointReaches.of(e)) } catch (c: CancellationException) { throw c } catch (_: Exception) { com.rokid.context.core.net.DataDecision(false, "unknown_network") }
+        if (!verdict.allowed) {
+            try { dataGate.skipped(com.rokid.context.core.net.DataKind.SMALL, com.rokid.context.core.net.Skipped.BULK, verdict) } catch (_: Exception) { }
+            return TestResult(false, 0, DATA_SAVER_MESSAGE)
+        }
         val key = repo.keyFor(e)
         val start = System.nanoTime()
         return runCatching {
@@ -53,7 +60,14 @@ class EndpointTester(
                 val dim = embeddings.embed(e, model, key, listOf("ok")).single().size
                 TestResult(true, elapsed(start), "OK · $dim dimensions")
             } else {
-                chat(e, model, key) // the reply is never shown: model text is provider text
+                val counted = EndpointReaches.of(e) != com.rokid.context.core.net.EndpointReach.DEVICE && !EndpointReaches.isLoopback(e)
+                val costly = counted && try { dataGate.costlyNow() } catch (_: Exception) { true }
+                val tx = DataBytes.requestBytes(com.rokid.context.model.ModelRequest(PROMPT))
+                val reply = try { chat(e, model, key) } catch (t: Throwable) { // the reply is never shown: model text is provider text
+                    if (counted && !TrafficClass.provablyUnsent(t)) countTest(tx, 0, costly)
+                    throw t
+                }
+                if (counted) countTest(tx, DataBytes.ENVELOPE + reply.toByteArray(Charsets.UTF_8).size, costly)
                 TestResult(true, elapsed(start), "OK")
             }
         }.getOrElse { if (it is CancellationException) throw it; TestResult(false, elapsed(start), humanize(it)) }
@@ -69,10 +83,15 @@ class EndpointTester(
         finally { work.cancel() }
     }
 
+    private fun countTest(tx: Long, rx: Long, costlyAtStart: Boolean) {
+        try { dataGate.sentAt(com.rokid.context.core.net.DataKind.SMALL, tx, rx, 0, costlyAtStart) } catch (_: Exception) { }
+    }
+
     private fun elapsed(startNs: Long) = (System.nanoTime() - startNs) / 1_000_000
 
     companion object {
         private const val PROMPT = "Reply only with OK"
+        const val DATA_SAVER_MESSAGE = "Data saver: not tested on this connection (small requests are off on roaming)"
         const val OFFLINE_ONLY_MESSAGE = "Offline only is on: remote endpoints are not tested"
 
         private const val MAX_CAUSES = 8
