@@ -174,6 +174,7 @@ class ForgetService(
         // the experiment canvas outputs of the photo (items, scores, live traces) go with it; nothing a user sees depends on them
         if (canvasOutputs) expiredIds.chunked(CHUNK).forEach { db.canvasDao().deleteCanvasOutputsForFrames(it) }
         queueCleanup(paths, emptyList(), emptyList(), phoneFilesOnly = true) // routine retention is storage hygiene: phone files only (glasses and helper rows are for user Forgets)
+        if (expiredIds.isNotEmpty()) addPending(expiredIds, emptyList(), expired = true) // told ONLY onPhotosExpired, after the commit (notifying); never a forget callback
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expiredIds.size)
     }
 
@@ -278,7 +279,7 @@ class ForgetService(
         val ids = all.filter { !it.expired }.flatMap { it.frames }.distinct()
         if (ids.isNotEmpty()) ForgetListeners.framesForgotten(ids)
         val expiredIds = all.filter { it.expired }.flatMap { it.frames }.distinct()
-        if (expiredIds.isNotEmpty()) ForgetListeners.photosExpired(expiredIds) // retention: listeners default to the same as a Forget, the place card history only unlinks the photo
+        if (expiredIds.isNotEmpty()) ForgetListeners.photosExpired(expiredIds) // retention: expiry-aware listeners only (the place card history unlinks the photo); never a forget callback
         all.filter { !it.expired }.flatMap { it.spans }.groupBy { it.first to it.second }.forEach { (r, v) -> ForgetListeners.rangeForgotten(r.first, r.second, v.flatMap { it.third }.distinct()) } // files and glasses follow the time link
         all.filter { it.expired }.flatMap { it.spans }.groupBy { it.first to it.second }.forEach { (r, v) -> ForgetListeners.rangeExpired(r.first, r.second, v.flatMap { it.third }.distinct()) }
         return r

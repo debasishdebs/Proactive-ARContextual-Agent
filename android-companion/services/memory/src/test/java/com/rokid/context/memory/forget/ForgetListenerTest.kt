@@ -96,15 +96,21 @@ class ForgetListenerTest {
         assertTrue(db.canvasSlice3Dao().label("mk") != null)
     }
 
-    // ---- B1: retention expiry has its own callbacks, defaulting to the Forget ones ----
+    // ---- B1: system expiry never calls an explicit-forget callback; only the expiry-aware callbacks hear it ----
 
-    @Test fun existingListeners_stillGetFramesForgottenAndRangeForgottenOnExpiry() = runBlocking {
-        val ranges = ArrayList<Pair<Long, Long>>()
-        ForgetListeners.register(object : ForgetListener { override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { ranges += fromMs to toMs } })
-        frame("e1"); mem("me1", "e1")
+    @Test fun existingListeners_getNothingOnExpiry() = runBlocking {
+        val ranges = ArrayList<Pair<Long, Long>>(); var deleteAll = 0; var userForget = 0
+        ForgetListeners.register(object : ForgetListener {
+            override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { ranges += fromMs to toMs }
+            override suspend fun onDeleteAll() { deleteAll++ }
+            override suspend fun onUserForget() { userForget++ }
+        })
+        frame("e1"); mem("me1", "e1"); frame("e2")
         service.expirePhotos(listOf("e1"))
-        assertEquals("the default of onPhotosExpired is onFramesForgotten", listOf("e1"), seen.flatten())
-        assertEquals("the default of onRangeExpired is onRangeForgotten", 1, ranges.size)
+        service.expireOrphanFrames(listOf("e2"))
+        assertTrue("onFramesForgotten is never called by expiry", seen.isEmpty())
+        assertTrue("onRangeForgotten is never called by expiry", ranges.isEmpty())
+        assertEquals(0, deleteAll); assertEquals(0, userForget)
     }
 
     @Test fun aListenerThatOverridesTheExpiryCallbacksIsToldAboutExpiryOnlyThere() = runBlocking {
@@ -115,11 +121,14 @@ class ForgetListenerTest {
             override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { rangeForgotten += fromMs }
             override suspend fun onRangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) { rangeExpired += fromMs }
         })
-        frame("x1"); mem("mx1", "x1"); frame("x2"); mem("mx2", "x2")
+        frame("x1"); mem("mx1", "x1"); frame("x2"); mem("mx2", "x2"); frame("x3")
         service.expirePhotos(listOf("x1"))
-        assertEquals(listOf("x1"), expired); assertTrue(forgotten.isEmpty()); assertTrue(rangeForgotten.isEmpty()); assertEquals(1, rangeExpired.size)
-        expired.clear(); rangeExpired.clear()
+        service.expireOrphanFrames(listOf("x3"))
+        assertEquals(listOf("x1", "x3"), expired); assertTrue(forgotten.isEmpty()); assertTrue(rangeForgotten.isEmpty()); assertTrue("expiry fences no range", rangeExpired.isEmpty())
+        assertTrue("the plain listener still heard nothing", seen.isEmpty())
+        expired.clear()
         service.forgetMoment("x2")
         assertEquals(listOf("x2"), forgotten); assertTrue(expired.isEmpty()); assertEquals(1, rangeForgotten.size); assertTrue(rangeExpired.isEmpty())
+        assertEquals("explicit Forget still calls the forget callback", listOf(listOf("x2")), seen)
     }
 }
