@@ -1,4 +1,13 @@
-# Overnight status (resume section first) - UPDATED 2026-11-24 15:40 IST
+# Overnight status (resume section first) - UPDATED 2026-11-24 17:45 IST
+
+## STATE NOW (supersedes the 15:40 block below)
+- LATEST FULL BUILD: train16 at git bb49cb5b, staged at ~/Desktop/rokid/backups/apks-v110-train16-bb49cb5b (README, SHA256SUMS), verified 15/15 rc=0 (verify-final.txt start 17:17). NOT INSTALLED. train14/15 are superseded. Branch feat/v101-ask-eval tip = bb49cb5b + docs.
+- The user's phone (adb-RZCY902F76K-nmSM2g._adb-tls-connect._tcp) and glasses (1901092545029120, USB) were both connected at 16:35; installer dry run (train14) clean. WAITING FOR THE USER'S EXPLICIT "go" to run tools/install-trip-build.sh --go with train16 (or 15). DEADLINE: before Thu 26 Nov 00:50 IST. Trip Tue 1 Dec 05:00.
+- In flight at 17:45: Codex re-check of mark r3 / mp r3 / map P1 r2 (docs/superpowers/reviews/2026-11/codex-train16-recheck.md); emulator rehearsal of train16 (agent a12792d5f5a24d040, doc handoffs/emulator-smoke-train16-2026-11-24.md, touches scratchpad/emu_done when done).
+- Remaining queue: card history into context.db (Room v18, design 2026-11-24-card-history-in-context-db-design.md; bundle moment_location; after Sikkim), GPS backfill tool tools/replay/backfill_gps.py (secondary), retention v3 Auto-delete (K4, later), seed-area names (places.db v2 names, R9), map offline tile download (MapTiler terms R1), FallbackParkCap persistence, glasses-app-closes backlog, Codex units never re-reviewed (shadow/siglip/diag, ds1-3, tools).
+- The laptop slept 06:32-12:03 on 24 Nov (battery); keep it on power.
+
+# (older block) UPDATED 2026-11-24 15:40 IST
 
 ## STATE NOW
 - Branch feat/v101-ask-eval tip cdef4c7e (+ docs): full verification 15/15 rc=0 (verify-final.txt start 15:12). Candidate staged (NOT INSTALLED): ~/Desktop/rokid/backups/apks-v110-train13-cdef4c7e (README, SHA256SUMS). Installed on the user's phone: 18c1b76a (19 Nov) with retention settings changed by the user/me to 48h/14d(medium)/photos Forever/long 365/cap 2000 MB.
