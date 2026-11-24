@@ -1,4 +1,15 @@
-# Overnight status (resume section first) - written 2026-11-24 ~05:45 IST
+# Overnight status (resume section first) - UPDATED 2026-11-24 15:40 IST
+
+## STATE NOW
+- Branch feat/v101-ask-eval tip cdef4c7e (+ docs): full verification 15/15 rc=0 (verify-final.txt start 15:12). Candidate staged (NOT INSTALLED): ~/Desktop/rokid/backups/apks-v110-train13-cdef4c7e (README, SHA256SUMS). Installed on the user's phone: 18c1b76a (19 Nov) with retention settings changed by the user/me to 48h/14d(medium)/photos Forever/long 365/cap 2000 MB.
+- DEADLINE: install the candidate BEFORE Thu 26 Nov 00:50 IST (the old build's nightly run expires 23 Nov facts and drops Moments). The user needs to say go; phone connected; installer tools/install-trip-build.sh dry run first, --go only on the user's explicit go. Trip: Tue 1 Dec 05:00 (Sikkim/Darjeeling 1-6 Dec); the old '26 Nov install freeze' is dropped (Andaman plan).
+- In flight: emulator rehearsal agent (ab5be69f979617627, branch emu13, result doc handoffs/emulator-smoke-train13-2026-11-24.md); Codex place r4 re-check (docs/superpowers/reviews/2026-11/codex-place-fixes-r4.md).
+- Laptop slept 06:32-12:03 (battery): nothing ran then. Keep it on power.
+- Accepted residuals (documented, not fixed): retry-supersede deleting trailing facts (pre-existing in 18c1b76a, backlog P2); leftover JPEG sweep under Pause (rows already deleted by the old build).
+- Older Codex units still NOT READY and unfixed: mark (2 P1), mp/Offline-only (2 P1; feature not used), see open-backlog-2026-11-21.md.
+- Next: read emulator + Codex r4 results; fix any P1 (Sonnet in worktree, run_wt.sh lock); rebuild/stage train14 if code changes; update ROADMAP rows; ask the user for the install go (before Wed night).
+
+## (older notes below)
 
 Goal (user): fixes planned, overnight, maps + pins + v2 groundwork, fully tested; emulator if no device; Opus for design/plan/RCA, Sonnet for build/test, Codex sol for reviews. 8 GB Mac: ONE Gradle job at a time (run_wt.sh lock in the session scratchpad), never the emulator while Gradle runs. No install on the phone without the user's explicit go.
 
