@@ -48,6 +48,25 @@ Test names are in `services/orchestration/src/test/java/com/rokid/context/orches
 
 Explicit Forget tests are unweakened: `ForgetServiceTest`, `GoldenDeleteSetTest` (all user cases), `userForgetStillRedactsAfterRetentionRan`, the `RetentionWorkerTest.aUserForgetOfTheSameSourceStillCancelsIt` control. The only deleted tests are the ones that tested the removed memory-expiry path (`ForgetServiceTest.expireLeavesDescendantsAlone`, `expireLeavesAcceptedProposalsAlone`, the tier-window cases of `RetentionWorkerTest`, `GoldenDeleteSetTest.retentionExpireFact`, `ForgetPlannerShadowTest.retentionExpireFact`, `PhotoExpiryTest.expireOf...`), each replaced by a "kept" assertion.
 
-## Status
+## Status (2026-11-24)
 
-(updated after each WP, see the commit list in the final report)
+- WP1 (no text expiry, demotion), WP2 (expiry marker, photo-side fixes), WP4 (pause / quota split, bounded quota eviction) and WP5 (settings, copy, one-time notice) are implemented on `ret-v3`. WP3 (retrieval) was merged from `feat/v101-ask-eval` (`a1df00ca`) and `RecallWindow.of` now reads `recallHours`.
+- The four WPs share `RetentionWorker`, `ForgetService` and `ForgetExecutor`, so they were committed together (see the log of `ret-v3`), not one commit per WP.
+- Full unit suites green on this branch: `:services:memory:testDebugUnitTest`, `:services:orchestration:testDebugUnitTest`, `:phone:testDebugUnitTest` (rc=0). No emulator, adb or install.
+- Pause clean-up stays default ON (K7). It is flipped by a later switch after the device test.
+
+## Not done
+
+- K4 Auto-delete details (design placeholder only; no key, no UI, default Off). The notice and the settings copy do not promise it.
+- K7 (Pause default OFF).
+- The device test of the design (section 8): restore the 24 Nov dump on the emulator, advance the clock, run retention, check 0 memories deleted, 0 redactions, 0 `lin:` keys, about 3.4k demoted, Moments for 23-24 Nov present. Then the same on the phone after a fresh dump.
+- `RetrievalScaleBench` (instrumented).
+- The memory detail screen still labels a fact's tier "Short-term" (the tier is now a recall hint; the label was not renamed).
+- `ProvenanceGate`'s "marker read failed => fail closed" branch has no injected-failure test (the DAO cannot be faulted from a unit test without a fake).
+- A late text vector written for a fact that is already past the window (an embedding job that raced the demotion) is not refused by `EmbeddingDao.putChecked`; the next retention run demotes it again.
+
+## Device-test checklist additions
+
+- `canvas_meta`: 0 rows with key `lin:%` after the first retention run; `retention_v3_done` present; the `rx:f:` count equals the photos expired after the install plus the earlier ones with metadata and no `frame` row.
+- Settings, Memory: one "Quick recall" row (12 / 24 / 48 / 72 h / 7 d, 48 h kept), no Medium / Long / Captions / Scene summaries rows, a "Storage cap" row with 2000 MB, the notes of section 2. Home shows the one-time banner once.
+- With Pause ON and the cap exceeded: photos are evicted oldest first (log line `quota evicted quotaEvicted=N`), text untouched.
