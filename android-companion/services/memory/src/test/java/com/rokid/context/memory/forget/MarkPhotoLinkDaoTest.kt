@@ -186,4 +186,10 @@ class MarkPhotoLinkDaoTest {
         db.wipeDao().wipeMemory(1_000)
         assertNull(dao.meta("mark_undone:$mark"))
     }
+
+    @Test fun deleteAllRemovesTheCleanupOwedKeys() = runBlocking<Unit> {
+        dao.putMeta("mark_cleanup_owed:$mark", "f1"); dao.putMeta("keepme", "x")
+        db.wipeDao().wipeMemory(1_000)
+        assertNull("delete all", dao.meta("mark_cleanup_owed:$mark")); assertEquals("x", dao.meta("keepme"))
+    }
 }

@@ -144,4 +144,34 @@ class MarkUndoGateTest {
         plain.onListenStart(t0 + 10_000)
         assertEquals(false, plain.applyVoice(listOf(VoiceMark.Undo), true, t0 + 12_000))
     }
+
+    private fun commitPhoto(id: String) = runBlocking {
+        val db = MemoryGraph.get(ctx).db
+        val meta = com.rokid.context.memory.db.FrameMetaEntity(id, "w_$id", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = t0, markRef = null)
+        com.rokid.context.memory.FrameIntake(db).commit(com.rokid.context.memory.db.FrameEntity(id, t0, "/p/$id.jpg", "rokid_glasses"), com.rokid.context.memory.FrameRows(meta, com.rokid.context.memory.db.FrameStateEntity(id, "PENDING", 0, null, null, null, 1)))
+    }
+
+    /** Codex train16 recheck #1: a settled obligation is pruned; one whose file or export is still owed, or whose frame still has a row, is kept. */
+    @Test fun aSettledCleanupObligationIsPrunedAndAnUnsettledOneIsKept() = runBlocking<Unit> {
+        val p = MarkRecorder.CLEANUP_OWED_PREFIX
+        commitPhoto("live")
+        dao.putMeta(p + "m1", "gone-clean"); dao.putMeta(p + "m2", "gone-file-left"); dao.putMeta(p + "m3", "live"); dao.putMeta(p + "m4", "gone-check-fails")
+        val n = MarkRecorder.pruneSettledOwed(dao) { f -> if (f == "gone-check-fails") error("io") else f == "gone-file-left" || f == "live" }
+        assertEquals(1, n)
+        assertNull(dao.meta(p + "m1")); assertEquals("gone-file-left", dao.meta(p + "m2")); assertEquals("live", dao.meta(p + "m3")); assertEquals("gone-check-fails", dao.meta(p + "m4"))
+    }
+
+    @Test fun aCompletedUndoPrunesAnAbandonedSettledObligation() = runBlocking<Unit> {
+        val r = photoRecorder({ false }, com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE)
+        dao.putMeta(MarkRecorder.CLEANUP_OWED_PREFIX + "mk:old", "gone")
+        r.undoMark("mk:e:1")
+        assertNull("settled and abandoned: pruned by the next cleanup check", dao.meta(MarkRecorder.CLEANUP_OWED_PREFIX + "mk:old"))
+    }
+
+    @Test fun aCompletedUndoKeepsAnAbandonedObligationThatIsStillOwed() = runBlocking<Unit> {
+        val r = photoRecorder({ true }, com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE)
+        dao.putMeta(MarkRecorder.CLEANUP_OWED_PREFIX + "mk:old", "gone")
+        r.undoMark("mk:e:1")
+        assertEquals("gone", dao.meta(MarkRecorder.CLEANUP_OWED_PREFIX + "mk:old"))
+    }
 }

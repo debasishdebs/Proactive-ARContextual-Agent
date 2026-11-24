@@ -202,9 +202,13 @@ class MarkRecorder(
             }
         }
         dao.deleteMetaKeys(listOf(owedKey)) // delivered with this return: the notice is the caller's now
+        pruneSettledOwed() // abandoned obligations (an undo never retried) cannot accumulate
         l?.atMs?.let(onChanged)
         return photo
     }
+
+    /** Deletes every settled `mark_cleanup_owed:` key (see [pruneSettledOwed] in the companion). Never throws. */
+    private suspend fun pruneSettledOwed() { cleanupOwed?.let { check -> try { pruneSettledOwed(dao, check) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { log("owed prune failed") } } }
 
     /** What a phone-origin mark would do about its photo right now: null = ask the glasses, else the reason token. Instant and pure; the caller uses it for the reply and passes it to [applyVoice]. */
     fun phonePhotoDecision(): String? = phonePhoto?.reasonNow() ?: if (phonePhoto == null) MarkPhotoReason.PHONE_MARK else null
@@ -295,6 +299,18 @@ class MarkRecorder(
         fun logTo(port: LogPort): (String) -> Unit = { port.log(Level.I, "PcMarks", it) }
         /** `canvas_meta` key (no schema change): an undone mark whose photo Forget committed with a cleanup notice not yet handed to the caller. The value is the photo's frame id. */
         const val CLEANUP_OWED_PREFIX = "mark_cleanup_owed:"
+        private const val OWED_PRUNE_BATCH = 50
+
+        /**
+         * Prunes settled cleanup obligations: a key whose frame has no row and for which [stillOwed] (no photo file or sidecar left, no cached export pending) says clean is deleted; an unsettled one is kept.
+         * A failing [stillOwed] keeps the key. Production callers: the end of every mark undo and the daily retention pass. Returns how many keys were deleted.
+         */
+        suspend fun pruneSettledOwed(dao: CanvasSlice3Dao, stillOwed: suspend (frameId: String) -> Boolean): Int {
+            val settled = dao.owedCleanupWithoutFrame(OWED_PRUNE_BATCH).filter { m ->
+                try { !stillOwed(m.value) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { false }
+            }.map { it.key }
+            return if (settled.isEmpty()) 0 else dao.deleteMetaKeys(settled)
+        }
         const val JOIN_MS = 3_000L
         const val UNDO_WINDOW_MS = 120_000L
         private const val PRUNE_MS = 60_000L
