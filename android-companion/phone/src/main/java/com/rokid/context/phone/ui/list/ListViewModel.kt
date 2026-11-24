@@ -29,6 +29,10 @@ class ListViewModel(
 ) : ViewModel() {
     /** Set by the route on every composition: the navigation that a row's tap runs (a NavController is never held here). */
     @Volatile var openPreview: (String) -> Unit = {}
+    /** The date and time filter (saved, so a rotation or a process death keeps it). Only a list over a period has one. */
+    private val _filter = MutableStateFlow(if (scope != null) RangeFilter.decode(saved.get<String>(KEY_FILTER)) else null)
+    val filter: StateFlow<DateTimeRange?> get() = _filter
+    val canFilter: Boolean = scope != null
     val source = RecordListSource(kind, ids, data, zone, today, onPreview = { openPreview(it) }, scope = scope)
 
     /** The broken-down view of a period's Moments; null for every other list. */
@@ -53,8 +57,24 @@ class ListViewModel(
     val view: StateFlow<ListViewMode> get() = _view
 
     init {
+        _filter.value?.let { r -> val ms = RangeFilter.millis(r, zone()); source.setFilter(ms); breakdown?.setFilter(ms) }
         source.startIn(viewModelScope, saved)
         if (_view.value == ListViewMode.BREAKDOWN) breakdown?.start(viewModelScope)
+    }
+
+    /** Shows only the items from [start] to [end] (both included, to the minute). False, and nothing changes, when [start] is after [end] or this list has no period. */
+    fun applyFilter(start: java.time.LocalDateTime, end: java.time.LocalDateTime): Boolean {
+        if (!canFilter) return false
+        val r = RangeFilter.of(start, end) ?: return false
+        set(r); return true
+    }
+
+    fun clearFilter() { if (canFilter) set(null) }
+
+    private fun set(r: DateTimeRange?) {
+        _filter.value = r; saved[KEY_FILTER] = r?.let(RangeFilter::encode) ?: ""
+        val ms = r?.let { RangeFilter.millis(it, zone()) }
+        source.setFilter(ms); breakdown?.setFilter(ms)
     }
 
     fun setView(mode: ListViewMode) {
@@ -67,5 +87,5 @@ class ListViewModel(
     fun nextPage(d: LocalDate, startMs: Long) { breakdown?.let { viewModelScope.launch { it.nextPage(d, startMs) } } }
     fun previousPage(d: LocalDate, startMs: Long) { breakdown?.let { viewModelScope.launch { it.previousPage(d, startMs) } } }
 
-    private companion object { const val KEY_VIEW = "list.view" }
+    companion object { private const val KEY_VIEW = "list.view"; internal const val KEY_FILTER = "list.filter" }
 }
