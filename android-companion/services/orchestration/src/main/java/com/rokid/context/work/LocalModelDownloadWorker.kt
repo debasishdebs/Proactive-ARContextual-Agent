@@ -19,6 +19,7 @@ import com.rokid.context.core.net.Skipped
 import com.rokid.context.data.models.LocalModelStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -145,10 +146,24 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
     /** Stopped by WorkManager, or the coroutine cancelled (Cancel, REPLACE): no further byte may reach the .part. */
     private suspend fun stopped() = isStopped || !currentCoroutineContext().isActive
 
-    /** Cancels [call] the moment this worker is stopped, so a read blocked on a slow link ends at once. */
+    /** Set when the policy watcher below closed the running transfer (reset for each file). */
+    private val policyClosed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Cancels [call] the moment this worker is stopped, so a read blocked on a slow link ends at once. Codex data saver r2 P1-7: it also re-asks the shared policy every [policyWatchMs] (quietly: no
+     * count) and cancels the call when it closes (hotspot metering switched on, roaming, the daily limit), because a read blocked on a slow link would otherwise never reach the per-chunk check.
+     */
     private suspend fun <T> cancelOnStop(call: Call, block: suspend () -> T): T = coroutineScope {
+        policyClosed.set(false)
         val watcher = launch { try { awaitCancellation() } finally { call.cancel() } }
-        try { block() } finally { watcher.cancel() }
+        val policy = launch {
+            while (true) {
+                delay(policyWatchMs)
+                val open = try { gate.decide(DataKind.BULK_OTHER, EndpointReach.REMOTE).allowed } catch (e: Exception) { false }
+                if (!open) { policyClosed.set(true); call.cancel(); return@launch }
+            }
+        }
+        try { block() } finally { watcher.cancel(); policy.cancel() }
     }
 
     /** Appends the body to [part]; null when it ended and the .part is ready to verify, else the outcome. */
@@ -156,7 +171,9 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         var have = from
         // Bytes read and not yet reported to the data saver ledger: reported every [REPORT_BYTES] and, from the finally block, whatever is left (a cancelled, failed or closed transfer is counted too).
         var unreported = 0L
-        val costlyAtStart = try { gate.costlyNow() } catch (e: Exception) { true }
+        // Codex r2 P1-7: the cost class is NOT latched for the transfer. Every interval (a read, reported every [REPORT_BYTES]) is classified by the CURRENT network: an interval is counted when the network was costly at any read in it.
+        fun costlyNow(): Boolean = try { gate.costlyNow() } catch (e: Exception) { true }
+        var intervalCostly = costlyNow()
         try {
         call.execute().use { response ->
             if (!response.request.url.isHttps) return Outcome.Fail(MSG_FAILED, "not_https")
@@ -179,8 +196,10 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                         var lastReported = -1
                         while (true) {
                             if (stopped()) return Outcome.Retry
+                            if (!intervalCostly) intervalCostly = costlyNow()
                             val n = input.read(buf)
                             if (n < 0) break
+                            if (!intervalCostly) intervalCostly = costlyNow() // the class right after the bytes arrived
                             if (stopped()) return Outcome.Retry // stopped while the read was blocked: drop the chunk
                             if (have + n > model.bytes) { part.delete(); return Outcome.Fail(MSG_NOT_VERIFIED, "too_long") }
                             out.write(buf, 0, n)
@@ -188,7 +207,8 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                             unreported += n
                             if (unreported >= REPORT_BYTES) {
                                 val bytes = unreported; unreported = 0
-                                gate.sentAt(DataKind.BULK_OTHER, 0L, bytes, 0, costlyAtStart)
+                                gate.sentAt(DataKind.BULK_OTHER, 0L, bytes, 0, intervalCostly)
+                                intervalCostly = costlyNow()
                                 if (!admitted()) return Outcome.Closed // the policy closed mid-transfer (daily limit, roaming, hotspot): stop now, the .part stays
                             }
                             val percent = ((before + have) * 100 / total).toInt()
@@ -201,9 +221,12 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                 }
             }
         }
+        } catch (e: IOException) {
+            if (policyClosed.get()) { admitted(); return Outcome.Closed } // the policy watcher cancelled the socket: counted once as a refusal, the .part stays
+            throw e
         } finally {
             val bytes = unreported
-            if (bytes > 0) try { gate.sentAt(DataKind.BULK_OTHER, 0L, bytes, 0, costlyAtStart) } catch (e: Exception) { }
+            if (bytes > 0) try { gate.sentAt(DataKind.BULK_OTHER, 0L, bytes, 0, intervalCostly || costlyNow()) } catch (e: Exception) { }
         }
         return null
     }
@@ -246,6 +269,8 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
 
         @VisibleForTesting internal var resolve: (String) -> LocalModel? = LocalModels::byId
         @VisibleForTesting internal var client: () -> OkHttpClient = { Http.downloadClient() }
+        /** How often a running download re-asks the shared policy (tests shorten it). */
+        @VisibleForTesting internal var policyWatchMs: Long = 1_000L
         @VisibleForTesting internal var freeBytes: (File) -> Long = { it.usableSpace }
 
         @VisibleForTesting internal var gateOf: (Context) -> DataGate = { com.rokid.context.ai.datasaver.DataSaverGraph.get(it) }
@@ -256,6 +281,7 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
             resolve = LocalModels::byId
             client = { Http.downloadClient() }
             freeBytes = { it.usableSpace }
+            policyWatchMs = 1_000L
         }
     }
 }

@@ -81,8 +81,11 @@ class LocalModelDownloadWorkerTest {
             return if (open && counted < closeAfterBytes) com.rokid.context.core.net.DataDecision.ALLOW else com.rokid.context.core.net.DataDecision(false, reason)
         }
         override fun skipped(kind: com.rokid.context.core.net.DataKind, what: com.rokid.context.core.net.Skipped, d: com.rokid.context.core.net.DataDecision) { skippedCalls++ }
-        override fun costlyNow() = true
-        override fun sentAt(kind: com.rokid.context.core.net.DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) { counted += rxBytes }
+        /** Codex r2 P1-7: scripted network class; by default costly, [costlyWhen] can make it depend on what was counted so far. */
+        var costlyWhen: (Long) -> Boolean = { true }
+        val flags = mutableListOf<Pair<Long, Boolean>>()
+        override fun costlyNow() = costlyWhen(counted)
+        override fun sentAt(kind: com.rokid.context.core.net.DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) { flags += rxBytes to costlyAtStart; counted += rxBytes }
     }
 
     /** Codex data saver r1 P1-5: a closed policy (roaming, unknown network, daily limit) sends no byte; the work waits for Wi-Fi and the refusal is counted. */
@@ -112,6 +115,30 @@ class LocalModelDownloadWorkerTest {
         assertFalse("not finished", store.fileFor(model).exists())
         assertTrue("the .part stays for the resume", part().length() >= 256 * 1024L && part().length() < data.size)
         assertEquals("counted bytes equal the bytes on disk", part().length(), gate.counted)
+        assertEquals(1, gate.skippedCalls)
+    }
+
+    /** Codex data saver r2 P1-7: the class is read for every interval, not latched at the start: a download that began on unmetered Wi-Fi and moved to a metered hotspot counts the later bytes. */
+    @Test fun aNetworkThatTurnsCostlyMidTransferIsCountedFromThenOn() = runBlocking {
+        val gate = FakeGate(open = true).also { it.costlyWhen = { counted -> counted > 0 } } // free for the first interval, costly after it
+        LocalModelDownloadWorker.gateOf = { gate }
+        server.enqueue(MockResponse().setBody(body()))
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+        assertEquals(data.size.toLong(), gate.counted)
+        assertEquals("the first interval began free", false, gate.flags.first().second)
+        assertTrue("every later interval is counted as costly: ${gate.flags}", gate.flags.drop(1).isNotEmpty() && gate.flags.drop(1).all { it.second })
+    }
+
+    /** Codex data saver r2 P1-7: a read blocked on a slow link is cancelled when the policy closes under it (it never reaches the per-chunk check). */
+    @Test fun thePolicyClosingDuringAStalledReadCancelsTheSocket() = runBlocking {
+        LocalModelDownloadWorker.policyWatchMs = 100L
+        val gate = FakeGate(open = true); LocalModelDownloadWorker.gateOf = { gate }
+        server.enqueue(MockResponse().setBody(body()).throttleBody(512, 1, java.util.concurrent.TimeUnit.SECONDS)) // far slower than a chunk
+        Thread { Thread.sleep(500); gate.open = false }.start()
+        val t0 = System.nanoTime()
+        assertEquals(ListenableWorker.Result.success(), runWorker()) // closed: replaced by a Wi-Fi-only request
+        assertTrue("stopped within seconds, not after the whole body", (System.nanoTime() - t0) < 8_000_000_000L)
+        assertFalse(store.fileFor(model).exists())
         assertEquals(1, gate.skippedCalls)
     }
 
