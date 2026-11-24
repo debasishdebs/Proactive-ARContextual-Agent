@@ -37,6 +37,13 @@ class MemoryDetailTest {
 
     private fun vm(id: String) = MemoryDetailViewModel(id, graph.timeline, graph.memoryEdits, zone = { Fixtures.ZONE }).also { vms += it }
 
+    /** Codex v3 r1 P3-13: a SHORT fact is labelled with its v3 meaning (Quick recall, nothing is deleted when it leaves it), never "Short-term". */
+    @Test fun aShortFactIsLabelledQuickRecall() {
+        val m = Fixtures.memory("m2", "Keys on shelf", Fixtures.at(TODAY, 8, 5), frameId = "f1", tags = "keys").copy(tier = MemoryTier.SHORT)
+        assertEquals("Quick recall", MemoryDetailModel.build(m, Fixtures.frame("f1", Fixtures.at(TODAY, 8), path = "/f1.jpg"), Fixtures.ZONE).tierLabel)
+        assertEquals("1 older detail is no longer available; the summary is kept", com.rokid.context.phone.ui.home.expiredSourcesText(1))
+    }
+
     @Test fun modelLabels() {
         val m = Fixtures.memory("m1", "Keys on shelf", Fixtures.at(TODAY, 8, 5), frameId = "f1", tags = "keys, hallway", review = ReviewState.NEEDS_REVIEW)
             .copy(tier = MemoryTier.LONG)

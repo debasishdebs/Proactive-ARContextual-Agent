@@ -116,7 +116,7 @@ object PipelineRecords {
     /**
      * One extracted fact (spec §4.4 VISION_EXTRACT / EXPLICIT_REMEMBER) or a summary, indexed for search. False (nothing
      * written) when Delete all ran after [generation] was read: a queue job passes the value it read before its claim.
-     * Ids must keep the `rokid_` prefix (and not `rokid_review_`) or [purgeNonRokidMemories] / [purgeLowSignalMemories] drop them
+     * Ids must keep the `rokid_` prefix (and not `rokid_review_`) or [nonPipelineMemoryIds] / [lowSignalMemoryIds] list them as removable
      * (the keyframe pipeline's are `rokid_kf_<claimId>_<n>`; the earlier `kf_` ones are still kept, see [isPipelineMemoryId]).
      * [sourceIds] (Phase 7): the memories this one was derived from. Their `memory_source` edges are written in the
      * same transaction, so a later Forget of a source cascades here. When any source was forgotten (missing or
@@ -191,10 +191,11 @@ object PipelineRecords {
     /** Memory ids this app writes: `rokid_*`, plus the `kf_<claimId>_` ids an earlier build gave pipeline facts (final review C1). */
     fun isPipelineMemoryId(id: String) = id.startsWith("rokid_", ignoreCase = true) || id.startsWith("kf_", ignoreCase = true)
 
-    suspend fun purgeNonRokidMemories(context: Context) {
-        val g = graph(context)
-        deleteMemories(g, g.memories.all().filterNot { isPipelineMemoryId(it.id) }.map { it.id })
-    }
+    /**
+     * READ ONLY (Codex v3 r1 P1-6). The ids of the memories this app did not write (`isPipelineMemoryId` false). Nothing is deleted: an automatic text purge at every launch was removed with retention v3, because only an
+     * explicit, previewed Forget deletes text. A caller that wants these gone offers them to the user as a Forget.
+     */
+    suspend fun nonPipelineMemoryIds(context: Context): List<String> = graph(context).memories.all().filterNot { isPipelineMemoryId(it.id) }.map { it.id }
 
     /** Memories and their `frame_source` rows (a leftover one would pin a photo for ever). */
     private suspend fun deleteMemories(g: MemoryGraph, ids: List<String>) {
@@ -219,15 +220,9 @@ object PipelineRecords {
         }
     }
 
-    suspend fun purgeLowSignalMemories(context: Context) {
-        val g = graph(context)
-        deleteMemories(
-            g,
-            g.memories.all().filter { m ->
-                m.id.startsWith("rokid_review_", ignoreCase = true) || LOW_SIGNAL.any { m.text.lowercase().contains(it) }
-            }.map { it.id },
-        )
-    }
+    /** READ ONLY (Codex v3 r1 P1-6): the ids of the review markers and low-signal memories the old "Reprocess old photos" purge deleted. It deletes nothing now; removing them is an explicit, previewed Forget. */
+    suspend fun lowSignalMemoryIds(context: Context): List<String> =
+        graph(context).memories.all().filter { m -> m.id.startsWith("rokid_review_", ignoreCase = true) || LOW_SIGNAL.any { m.text.lowercase().contains(it) } }.map { it.id }
 
     /** Final review I3: puts these frames back to PENDING when no memory of theirs is left, so the pipeline extracts them again. Returns how many moved. */
     suspend fun requeueFramesWithoutMemories(context: Context, frameIds: List<String>, nowMs: Long = System.currentTimeMillis()): Int {

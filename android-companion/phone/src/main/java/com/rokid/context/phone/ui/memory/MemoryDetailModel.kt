@@ -55,7 +55,7 @@ object MemoryDetailModel {
         found = true,
         text = m.text,
         tags = m.tags.split(',').map { it.trim() }.filter { it.isNotEmpty() },
-        tierLabel = when (m.tier) { MemoryTier.SHORT -> "Short-term"; MemoryTier.MEDIUM -> "Medium-term"; MemoryTier.LONG -> "Long-term" },
+        tierLabel = when (m.tier) { MemoryTier.SHORT -> "Quick recall"; MemoryTier.MEDIUM -> "Medium-term"; MemoryTier.LONG -> "Long-term" },
         confidence = m.confidence,
         reviewLabel = when (m.reviewState) { ReviewState.OK -> "Reviewed"; ReviewState.NEEDS_REVIEW -> "Needs review"; ReviewState.INVALIDATED -> "Hidden" },
         trusted = m.trusted,

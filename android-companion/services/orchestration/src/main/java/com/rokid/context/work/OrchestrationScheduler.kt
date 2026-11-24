@@ -200,8 +200,8 @@ class OrchestrationScheduler(
             )
         }
 
-        PipelineRecords.purgeLowSignalMemories(context)
-        // Final review I3: what the purge emptied is rebuilt. Frames left with no memory go back to PENDING (the keyframe pipeline's
+        // Codex v3 r1 P1-6: Reprocess no longer deletes the low-signal memories (an explicit, previewed Forget is the only text deletion).
+        // Final review I3: Frames left with no memory go back to PENDING (the keyframe pipeline's
         // states; the legacy jobs below also claim them, manual runs ignoring the grace), instead of staying EXTRACTED with nothing.
         val requeued = PipelineRecords.requeueFramesWithoutMemories(context, selected.map { it.id })
         if (requeued > 0) runCatching { com.rokid.context.work.frames.KeyframeGraph.get(context).signal() }

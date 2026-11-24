@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
                 QueueRuntimeStore.purgeSynthetic(this@MainActivity)
                 PipelineRecords.purgeNonRokidFrames(this@MainActivity)
                 PipelineRecords.purgeSyntheticTraces(this@MainActivity)
-                PipelineRecords.purgeNonRokidMemories(this@MainActivity)
+                // Codex v3 r1 P1-6: no automatic memory purge at launch any more (only an explicit, previewed Forget deletes text)
                 // Phase 7 Stream F: photo sweep, pending re-summarise, retention schedule (whatever the pipeline state).
                 val app = applicationContext
                 com.rokid.context.orchestration.forget.ForgetStartup.run(app) { com.rokid.context.phone.hub.HubGraph.get(app).refresh() }

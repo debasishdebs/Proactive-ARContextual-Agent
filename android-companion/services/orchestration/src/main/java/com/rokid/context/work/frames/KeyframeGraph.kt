@@ -408,7 +408,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
         fun factPrefix(claimId: String) = "$ID_ROOT${claimId}_"
 
         /**
-         * Must start with `rokid_` (PipelineRecords.purgeNonRokidMemories deletes everything else on every launch) and must not start
+         * Must start with `rokid_` (the id family this app writes; PipelineRecords.nonPipelineMemoryIds lists everything else, nothing is deleted automatically) and must not start
          * with `rokid_review_`. Builds before the final review saved `kf_<claimId>_<n>`; the purges still treat [LEGACY_ID_ROOT] as theirs.
          */
         const val ID_ROOT = "rokid_kf_"

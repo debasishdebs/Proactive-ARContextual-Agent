@@ -58,8 +58,8 @@ class HistoricalBackfillTest {
         assertEquals(1, OrchestrationScheduler(ctx).enqueueHistoricalPhotoBackfill().queuedJobs)
     }
 
-    /** Final review I3: "Reprocess old photos" rebuilds what its purge emptied: such frames go back to PENDING, good ones stay as they are. */
-    @Test fun reprocessRequeuesFramesWhoseLowSignalMemoriesWerePurged() = runBlocking {
+    /** Codex v3 r1 P1-6: "Reprocess old photos" no longer purges low-signal memories (only an explicit, previewed Forget deletes text): every memory stays and a frame that still has one is not requeued. */
+    @Test fun reprocessDeletesNoMemoryAndLeavesDescribedFramesAlone() = runBlocking {
         val g = MemoryGraph.get(ctx); val db = g.db
         for (id in listOf("bad", "good")) {
             val jpeg = File(ctx.filesDir, "$id.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
@@ -72,8 +72,8 @@ class HistoricalBackfillTest {
             com.rokid.context.memory.db.MemoryTier.SHORT, com.rokid.context.memory.db.ReviewState.OK)
         db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("rokid_kf_a_0", "bad", null, "FACT"), com.rokid.context.memory.db.FrameSourceEntity("rokid_kf_b_0", "good", null, "FACT")))
         OrchestrationScheduler(ctx).enqueueHistoricalPhotoBackfill()
-        assertEquals("PENDING", db.frameStateDao().get("bad")!!.state); assertEquals(0, db.frameStateDao().get("bad")!!.attempts)
+        assertEquals("EXTRACTED", db.frameStateDao().get("bad")!!.state)
         assertEquals("EXTRACTED", db.frameStateDao().get("good")!!.state)
-        assertEquals(setOf("rokid_kf_b_0"), g.memories.all().map { it.id }.toSet())
+        assertEquals(setOf("rokid_kf_a_0", "rokid_kf_b_0"), g.memories.all().map { it.id }.toSet())
     }
 }

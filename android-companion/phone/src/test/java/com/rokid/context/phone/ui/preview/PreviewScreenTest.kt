@@ -311,7 +311,7 @@ class PreviewScreenTest {
         compose.onNodeWithText("Where are my keys?").assertIsDisplayed()
         compose.onNodeWithText("On the hallway shelf.").assertIsDisplayed()
         compose.onNodeWithText("proposal card for a1").assertIsDisplayed()
-        compose.onNodeWithText("1 short-term detail has expired; the summary is kept").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("1 older detail is no longer available; the summary is kept").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Typed note").performScrollTo().performClick()
         assertEquals(listOf("memory:m2"), opened)
     }
