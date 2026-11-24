@@ -190,7 +190,8 @@ class SeedMapViewModel(private val control: SeedMapControl, private val work: Co
         _state.update { it.copy(seeding = true, message = "Fetching places…", messageIsError = false) }
         viewModelScope.launch(work) {
             val r = control.seed(box)
-            _state.update { it.copy(seeding = false, message = r.fold({ o -> o.message }, { t -> seedFailureText(t) }), messageIsError = r.isFailure) }
+            val byRemoval = (r.exceptionOrNull() as? com.rokid.context.memory.place.SeedStopped)?.reason == "area removed" // the removal's own message says it
+            _state.update { if (byRemoval) it.copy(seeding = false) else it.copy(seeding = false, message = r.fold({ o -> o.message }, { t -> seedFailureText(t) }), messageIsError = r.isFailure) }
             refresh()
         }
     }
