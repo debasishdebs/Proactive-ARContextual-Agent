@@ -93,3 +93,16 @@ Interim safety (own commit): with Pause clean-up ON the worker deletes NOTHING, 
 | P3-14 | `ForgetPolicyConformanceTest.aUserForgetOfAFactPlansTheDerivedMemoryAsRebuild` restores the user REBUILD assertion (both modes) | same |
 
 Not done: the pin half of P2-12 has no test (needs a pin store fixture); no device test; the quota concurrency is covered by the in-transaction tombstone check, not by an interleaving test.
+
+## Round 3 (branch `ret-v3-r3`, Codex v3 r2: `docs/superpowers/reviews/2026-11/codex-retention-v3-r2.md`, 6 P1)
+
+Fact base: the installed phone build (19 Nov, 18c1b76a) never ran a branch that wrote `lin:` lineage keys or `rx:` markers. On every real install there are no `lin:` keys and no `rx:` markers; the only legacy state is plain tombstones in `forget_tombstone`. Round 3 is therefore a simplification, not more machinery.
+
+| Finding | Fix | Proof |
+|---|---|---|
+| P1-2, P1-3, P1-4 (lineage prune, one-direction reach, seeding from unrelated photos) | Removed structurally: `ExpiredLineage` is deleted, with every read, seed, consume and prune of `lin:` keys in `ForgetService`, `ForgetExecutor`, `ForgetPlanner`, `RetentionWorker` and the `lineageFrames` parameter. The migration only purges stray `lin:` keys once (expected 0, counts-only log `strayLineagePurged=N`). Delete all still wipes `lin:` and `rx:` keys. | `noMemoryExpiryEntryPointExists` (class gone), `migrationMarksNothingAndAPreExistingTombstoneIsNeverReadAsExpired`, `deleteAllWipesTheMarkers`; the explicit-Forget tests are unchanged |
+| P1-1 (backfill turns a forgotten photo into expired) | Removed: `RetentionMigration` writes no marker and `ForgetDao.legacyExpiredFrameIds` is deleted. A tombstone without an `rx:` marker is FORGOTTEN (ambiguous = forgotten, fail closed). Only a new expiry of this build carries a marker, written in the same transaction as its tombstone. | same migration test (user Forget of one description of f1, a metadata + no row + cited tombstone, a metadata-only tombstone and a bare tombstone are all forgotten, zero `rx:` keys); `expiryNeverWritesTheMarkerOverAUserTombstone`, `forgottenVersusExpiredIsDataNotAnInferenceFromMetadata` |
+| P1-5 (20,000 silent cap in `ExpiryMarks.idsBetween`) | The read pages by key until a short page: no cap, no truncation; the page size is an injectable parameter (default 1,000). Range and scoped Forget (`MomentForget.discover`) and the pin sweep use it. | `theMarkerRangeReadReturnsEveryMarkerAboveTheOldCap` (20,150 markers, page sizes 997, 1,000, 4,000 and 20,150 return the full set, and the two markers just outside the range are excluded) |
+| P1-6 (retry with fewer facts deletes trailing facts) | NOT changed: pre-existing since 92e8a943 (15 Oct), present in the installed build. Logged as P2 in `open-backlog-2026-11-21.md` with the scenario and the proposed fix (keep facts, mark superseded). | n/a |
+
+Consequence: a photo that old builds expired and whose descriptions survive is, after this build, treated as forgotten (never as expired). That only ever makes a later Forget broader, never narrower. LogContentScan SAFE_NAMES: `lineageKept`, `lineageDropped` replaced by `strayLineagePurged`.
