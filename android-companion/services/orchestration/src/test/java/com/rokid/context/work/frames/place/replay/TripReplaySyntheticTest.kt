@@ -57,7 +57,7 @@ class TripReplaySyntheticTest {
         for (sc in scenarios) for (ov in overlays) {
             val r = replay(RunSpec(Oracle, sc, overlays = ov))
             for (row in rowsIn(r, rooms.first, rooms.last)) {
-                if (row.isCard) assertEquals("${r.spec.label}", "Room A2", row.chosenName)
+                if (row.isCard) assertTrue("${r.spec.label}: a card names Room A2 (a cluster card lists both rooms, never a guessed single room)", "Room A2" in row.names)
                 assertTrue("a room pin never gets a single pin-first card while its neighbour is close", row.f1 != "card" || row.chosenName == "Room A2")
             }
         }
@@ -164,5 +164,29 @@ class TripReplaySyntheticTest {
         assertTrue(threw)
         assertTrue(ReplayBundle.FILES.all { it.endsWith(".tsv") })
         assertNotNull(SyntheticBundle.dir())
+    }
+
+    /** P3-9: the production-flag acceptance holds on the synthetic bundle, and the checker really catches a cluster call or a pin id in a line. */
+    @Test fun productionAcceptance_passesOnSyntheticRuns_andDetectsViolations() {
+        var groups: List<ReplayGroup> = emptyList(); var cal: Calibration? = null
+        runTest { ReplayReport.defaultGroups(bundle, this).let { groups = it.first; cal = it.second } }
+        assertEquals(emptyList<String>(), ReplayReport.productionViolations(bundle, groups))
+        val summary = ReplayReport.summary(bundle, groups, cal)
+        assertTrue(summary.contains("## Legacy calibration") && summary.contains("## Production-flag acceptance") && summary.contains("PASS"))
+        assertTrue("the calibration says it is the legacy build", cal!!.line().startsWith("LEGACY build"))
+        val g = groups.first { !it.head.spec.legacyDedupe }
+        val bad = g.head.rows.first().copy(pinFirst = "cluster(2)", call = "made", attemptLine = "place attempt chosen=user:abc")
+        val dirty = listOf(g.copy(head = g.head.copy(rows = listOf(bad))))
+        val v = ReplayReport.productionViolations(bundle, dirty)
+        assertTrue(v.any { it.contains("model call") } && v.any { it.contains("user-pin id") })
+        assertTrue(ReplayReport.summary(bundle, dirty, cal).contains("FAIL"))
+    }
+
+    /** P1-1/P1-2 in the harness: a cluster is a card with no call, and no attempt line of any run carries a pin id. */
+    @Test fun clusterRows_neverCall_andLinesCarryNoPinIds() {
+        val r = replay(RunSpec(Oracle, FixScenario.Outdoor10))
+        assertTrue(r.rows.filter { it.isClusterCard }.none { it.isCall })
+        assertTrue(r.rows.none { it.attemptLine.contains("user:") })
+        assertTrue("the ids come from the sampler seam", r.rows.any { it.isCard && it.names.isNotEmpty() })
     }
 }

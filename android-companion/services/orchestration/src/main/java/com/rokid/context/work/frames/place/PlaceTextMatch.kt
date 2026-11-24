@@ -96,20 +96,22 @@ class PlaceTextMatch(
             if (historyOn()) try { history(PlaceHistoryEvent(HistoryKind.TEXT, h.pin.id, h.pin.name, emptyList(), h.frameId, null, null, CardDelivery.NOT_SENT_LATE)) } catch (c: CancellationException) { throw c } catch (_: Exception) { }
             result(recent.size, quoted, 1, "history"); return
         }
-        // the same rules as every card: once per place while staying, and one card per visit of a pin
-        val c = flight.cardAt(h.pin.id)
-        val shownHere = c != null && now - c.at in 0..PlaceSampler.ONCE_PER_PLACE_MS && (c.lat.isNaN() || Geo.distanceM(good.lat, good.lon, c.lat, c.lon) <= PlaceSampler.DEDUPE_M + good.accM)
-        if (shownHere || flight.visits.has(listOf(h.pin.id), now)) { result(recent.size, quoted, 1, "none"); return }
-        val card = PlaceCards.pin(h.pin, h.frameId).copy(sourceLabel = PlaceCardRebuild.SIGN_LABEL)
-        var newId: String? = null
-        val shown = fence.act(ticket) {
-            if (!(enabled() && pipelineOn() && generation() == gen)) false
-            else if (cards != null) cards.publishIfId(card, epoch)?.also { newId = it } != null else { onCard(card); true }
-        } == true
-        if (!shown) { result(recent.size, quoted, 1, "none"); return }
-        flight.noteCard(h.pin.id, PlaceFlight.CardAt(good.lat, good.lon, now))
-        flight.visits.begin(listOf(PinVisits.Spot(h.pin.id, h.pin.lat, h.pin.lon, h.pin.radiusM)), now)
-        if (historyOn()) try { history(PlaceHistoryEvent(HistoryKind.TEXT, h.pin.id, h.pin.name, emptyList(), h.frameId, newId, null)) } catch (c2: CancellationException) { throw c2 } catch (_: Exception) { }
+        // the same rules as every card, claimed ATOMICALLY with the sampler's pin cards: once per place while staying, one card per visit of a pin, and no second attempt holding the same pin
+        val ids = listOf(h.pin.id)
+        val shownHere = { _: String, c: PlaceFlight.CardAt? -> c != null && now - c.at in 0..PlaceSampler.ONCE_PER_PLACE_MS && (c.lat.isNaN() || Geo.distanceM(good.lat, good.lon, c.lat, c.lon) <= PlaceSampler.DEDUPE_M + good.accM) }
+        if (!flight.reserve(ids, now, shownHere)) { result(recent.size, quoted, 1, "none"); return }
+        try {
+            val card = PlaceCards.pin(h.pin, h.frameId).copy(sourceLabel = PlaceCardRebuild.SIGN_LABEL)
+            var newId: String? = null
+            val shown = fence.act(ticket) {
+                if (!(enabled() && pipelineOn() && generation() == gen)) false
+                else if (cards != null) cards.publishIfId(card, epoch)?.also { newId = it } != null else { onCard(card); true }
+            } == true
+            if (!shown) { result(recent.size, quoted, 1, "none"); return }
+            flight.noteCard(h.pin.id, PlaceFlight.CardAt(good.lat, good.lon, now))
+            flight.visits.begin(listOf(PinVisits.Spot(h.pin.id, h.pin.lat, h.pin.lon, h.pin.radiusM)), now)
+            if (historyOn()) try { history(PlaceHistoryEvent(HistoryKind.TEXT, h.pin.id, h.pin.name, emptyList(), h.frameId, newId, null)) } catch (c2: CancellationException) { throw c2 } catch (_: Exception) { }
+        } finally { flight.unreserve(ids) }
         result(recent.size, quoted, 1, "card")
     }
 

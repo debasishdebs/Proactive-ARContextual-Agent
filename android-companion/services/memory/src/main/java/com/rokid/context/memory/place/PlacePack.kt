@@ -56,7 +56,11 @@ suspend fun seedAdmitCheck() {
 enum class CellOutcome { FRESH, FETCHED, PARTIAL, OFFLINE, FAILED }
 
 /** What a glance asks for: the candidates (already expanded to sub-places) and how the cell stood. */
-data class PlaceCandidates(val places: List<PlaceEntity>, val outcome: CellOutcome)
+data class PlaceCandidates(
+    val places: List<PlaceEntity>, val outcome: CellOutcome,
+    /** EVERY active user pin within reach (no cap), nearest first: the pin-first ambiguity is judged against these, not against the capped model list in [places]. Empty = not supplied (the pins in [places] are used). */
+    val nearbyPins: List<PlaceEntity> = emptyList(),
+)
 
 /**
  * What a seed did. [fetched] = [ok] + [partial] (cells stored); [partial] cells were stored without OSM extras (Overpass did not answer) and are fetched again by the next seed or
@@ -184,7 +188,8 @@ class PlacePack(
         if (all.isNotEmpty()) { val day = day(); eachChunk(all.map { it.id }) { dao.touch(it, day) } }
         val pins = all.count { UserPlace.isUserId(it.id) }
         log("pack lookup cell=${outcome.name} online=$networkUp inWindow=${inBox.size} hits=${hits.size} expanded=${all.size} pins=$pins ms=${now() - t0}") // counts and the cell's state only: never the cell key (a 5 km position) or a place
-        return PlaceCandidates(all, outcome)
+        val everyPin = Geo.candidates(inBox.filter { UserPlace.isUserId(it.id) }, lat, lon, limit = Int.MAX_VALUE).map { it.place } // uncapped: the model list keeps only PIN_SLOTS of them
+        return PlaceCandidates(all, outcome, everyPin)
     }
 
     /** The pack places (never user pins) whose edge is within [maxGapM] of (lat, lon): the sites a new pin may hang under, nearest first, at most [limit]. Reads only; the position is not kept. */
