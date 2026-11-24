@@ -85,19 +85,21 @@ class PipelineRecordsTest {
         assertEquals("a b c", r[1].text)
     }
 
-    @Test fun purgeNonRokidKeepsOnlyRokidIds() = runBlocking {
+    /** Codex v3 r1 P1-6: the launch purge is gone. The non-pipeline ids are only LISTED; every memory stays (only an explicit, previewed Forget deletes text). */
+    @Test fun nonPipelineMemoriesAreListedAndNeverDeleted() = runBlocking {
         PipelineRecords.appendMemory(ctx, "other_1", "short_term", "x", 0.1, 1)
         PipelineRecords.appendMemory(ctx, "rokid_mem_3", "short_term", "y", 0.1, 2)
-        PipelineRecords.purgeNonRokidMemories(ctx)
-        assertEquals(listOf("rokid_mem_3"), PipelineRecords.recentMemories(ctx, 10).map { it.id })
+        assertEquals(listOf("other_1"), PipelineRecords.nonPipelineMemoryIds(ctx))
+        assertEquals(setOf("other_1", "rokid_mem_3"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
     }
 
-    @Test fun purgeLowSignalDropsReviewsAndMarkers() = runBlocking {
+    /** Codex v3 r1 P1-6: what "Reprocess old photos" used to delete is only listed now. */
+    @Test fun lowSignalMemoriesAreListedAndNeverDeleted() = runBlocking {
         PipelineRecords.appendMemory(ctx, "rokid_review_1", "review", "needs review", 0.1, 1)
         PipelineRecords.appendMemory(ctx, "rokid_mem_4", "short_term", "Metadata only frame", 0.1, 2)
         PipelineRecords.appendMemory(ctx, "rokid_mem_5", "short_term", "Milk carton nearly empty", 0.8, 3)
-        PipelineRecords.purgeLowSignalMemories(ctx)
-        assertEquals(listOf("rokid_mem_5"), PipelineRecords.recentMemories(ctx, 10).map { it.id })
+        assertEquals(setOf("rokid_review_1", "rokid_mem_4"), PipelineRecords.lowSignalMemoryIds(ctx).toSet())
+        assertEquals(3, PipelineRecords.recentMemories(ctx, 10).size)
     }
 
     @Test fun oneLineCollapsesEveryKindOfLineBreak() = runBlocking {
@@ -110,8 +112,7 @@ class PipelineRecordsTest {
         PipelineRecords.appendFact(ctx, "rokid_mem_abc_0", "f1", "Milk carton on the counter", "object", listOf("kitchen"), 0.9, MemoryTier.SHORT, ReviewState.OK, createdAt = 1)
         PipelineRecords.appendFact(ctx, "rokid_mem_abc_1", "f1", "Maybe a cat", "object", emptyList(), 0.3, MemoryTier.SHORT, ReviewState.NEEDS_REVIEW, createdAt = 2)
         PipelineRecords.appendFact(ctx, "rokid_mem_def", null, "A quiet morning in the kitchen", "summary", emptyList(), 0.8, MemoryTier.MEDIUM, ReviewState.OK, createdAt = 3)
-        PipelineRecords.purgeNonRokidMemories(ctx)
-        PipelineRecords.purgeLowSignalMemories(ctx)
+        assertEquals(emptyList<String>(), PipelineRecords.nonPipelineMemoryIds(ctx))
         assertEquals(setOf("rokid_mem_abc_0", "rokid_mem_abc_1", "rokid_mem_def"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
     }
 
@@ -177,7 +178,6 @@ class PipelineRecordsTest {
         com.rokid.context.data.runtime.QueueRuntimeStore.purgeSynthetic(ctx)
         PipelineRecords.purgeNonRokidFrames(ctx)
         PipelineRecords.purgeSyntheticTraces(ctx)
-        PipelineRecords.purgeNonRokidMemories(ctx)
         com.rokid.context.orchestration.forget.FrameSweep.sweep(ctx)
 
         assertEquals(setOf(prefix + "0", prefix + "c0", "kf_old_0"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
@@ -185,8 +185,7 @@ class PipelineRecordsTest {
         assertEquals(listOf("f1"), g.frameSourceDao().forMemory(prefix + "0").map { it.frameId })
         assertEquals("EXTRACTED", g.frameStateDao().get("f1")!!.state)
         assertEquals(listOf("f1"), PipelineRecords.allFrames(ctx).map { it.id })
-        // and the low-signal purge (used by Reprocess) keeps them too
-        PipelineRecords.purgeLowSignalMemories(ctx)
+        // and Reprocess deletes no memory at all now
         assertEquals(3, PipelineRecords.recentMemories(ctx, 10).size)
         assertTrue(PipelineRecords.isPipelineMemoryId(prefix + "c0") && !prefix.startsWith("rokid_review_"))
         // dropFactsFrom still sees `<prefix><n>` and `<prefix>c<n>`
@@ -208,8 +207,7 @@ class PipelineRecordsTest {
 
         PipelineRecords.appendFact(ctx, "rokid_review_1", "f9", "needs review", "note", emptyList(), 0.1, MemoryTier.SHORT, ReviewState.NEEDS_REVIEW, createdAt = 1)
         db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("rokid_review_1", "f9", null, "FACT")))
-        PipelineRecords.purgeLowSignalMemories(ctx)
-        assertTrue("a purged memory no longer pins a photo", db.frameSourceDao().forMemory("rokid_review_1").isEmpty())
+        assertTrue("the low-signal memory is listed, not purged: it keeps its photo link", "rokid_review_1" in PipelineRecords.lowSignalMemoryIds(ctx) && db.frameSourceDao().forMemory("rokid_review_1").isNotEmpty())
     }
 
     /** Final review I3: Reprocess puts a frame back to PENDING only when it has no memory left and was not forgotten. */

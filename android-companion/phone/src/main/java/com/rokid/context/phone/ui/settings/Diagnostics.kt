@@ -404,7 +404,7 @@ fun DiagnosticsScreen(
             Column {
                 ChipRow(Icons.Outlined.AutoAwesome, PcColors.ChipMint, "Summarize now", "Summarize the latest frames", onClick = onSummarizeNow, enabled = !state.busy)
                 ChipRow(Icons.Outlined.PhotoCamera, PcColors.ChipAmber, "Run capture pipeline now", "Ingest new glasses frames, then summarize", onClick = onCaptureNow, enabled = !state.busy)
-                ChipRow(Icons.Outlined.History, PcColors.ChipRose, "Reprocess old photos", "Re-summarize up to 90 stored photos", onClick = onReprocess, enabled = !state.busy)
+                ChipRow(Icons.Outlined.History, PcColors.ChipRose, "Reprocess old photos", "Re-summarize up to 90 stored photos. Deletes nothing: old details stay until you Forget them", onClick = onReprocess, enabled = !state.busy)
             }
         }
         state.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(20.dp)) }
@@ -439,7 +439,7 @@ fun DiagnosticsScreen(
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Pause clean-up", style = MaterialTheme.typography.titleSmall)
-                            Text("Clean-up is paused while this is on (default): the nightly clean-up expires nothing and short-term details stay. Turn it off to let expired details and photos be removed; nudges, answers and Moments that used them are kept.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                            Text("While this is on (default) the nightly clean-up deletes nothing: no photo is removed, nothing leaves Quick recall and the Storage cap is not enforced. Turn it off to let clean-up run: older details leave Quick recall (nothing is deleted, Forget is the only way text goes), photos are removed by their Photos setting, and only over the Storage cap the oldest photos go first.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         }
                         Switch(checked = pauseRetention, onCheckedChange = onPauseRetention, modifier = Modifier.testTag("pause_retention_switch"))
                     }
