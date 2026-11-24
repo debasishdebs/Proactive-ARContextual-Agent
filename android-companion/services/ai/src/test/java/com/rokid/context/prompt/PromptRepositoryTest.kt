@@ -156,4 +156,26 @@ class PromptRepositoryTest {
         assertEquals(1, active.version)
         assertEquals(BuiltInPromptSeeds.template(PromptKey.ANSWER).trim(), active.template)
     }
+
+    /** A save that lands while the migration is loading its seed always wins: the migration is a compare-and-set against the text it inspected. */
+    @Test fun aSaveBetweenInspectAndWriteIsNotOverwrittenByTheUpgrade() = runBlocking {
+        for (keep in listOf(true, false)) {
+            val d = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
+            try {
+                settings.setKeepVersions(keep)
+                d.promptDao().seedIfAbsent(PromptKey.ANSWER.name, "old answer seed", "{\"old\":true}", 1)
+                val entered = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+                val slow = PromptSeeds { k -> entered.countDown(); check(release.await(10, java.util.concurrent.TimeUnit.SECONDS)); BuiltInPromptSeeds.template(k) }
+                val upgrading = PromptRepository(d.promptDao(), slow, settings, now = { clock++ },
+                    previousDefaults = mapOf(PromptKey.ANSWER to setOf(PromptDefaults.fingerprint("old answer seed", "{\"old\":true}"))))
+                val migration = async(kotlinx.coroutines.Dispatchers.Default) { upgrading.active(PromptKey.ANSWER) }
+                check(entered.await(10, java.util.concurrent.TimeUnit.SECONDS)) // the migration has inspected the old default and is suspended loading the seed
+                upgrading.save(PromptKey.ANSWER, draft("custom"), "mine", true)
+                release.countDown()
+                migration.await()
+                val active = upgrading.active(PromptKey.ANSWER)
+                assertTrue("keep=$keep", active.template.endsWith("custom")); assertEquals("mine", active.note)
+            } finally { d.close() }
+        }
+    }
 }

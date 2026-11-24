@@ -185,8 +185,22 @@ class UserPinStore(private val prefs: SharedPreferences) {
         fun withoutLinks(raw: String): String = try {
             val a = JSONArray(raw)
             // Only explicitly permitted fields leave: each element is parsed to a pin, validated, stripped of its link and time and re-encoded. A non-object or invalid element (a nested array, a wrong type) is dropped; unknown keys never survive.
-            encode((0 until a.length()).mapNotNull { i -> (a.opt(i) as? JSONObject)?.let { o -> try { parseOne(o) } catch (e: Exception) { null } } }.filter { it.isValid }.map { it.copy(momentId = null, pinnedAt = null) })
+            encode((0 until a.length()).mapNotNull { i -> (a.opt(i) as? JSONObject)?.let { o -> try { parseStrict(o) } catch (e: Exception) { null } } }.filter { it.isValid }.map { it.copy(momentId = null, pinnedAt = null) })
         } catch (e: Exception) { "[]" }
+
+        /**
+         * The EXPORT parse: every exported field must be a real JSON scalar of its own type (strings JSON strings, numbers JSON numbers, `parent` a string or null, `note` a string when present). Nothing is coerced,
+         * so an object, array, boolean or number in a string field (`"note":{"moment":"0000abcd"}`) drops the whole element rather than exporting its text. `moment` and `at` are never read here: they never leave.
+         * Null = drop. (The app's own store keeps the lenient [parse]; it is never rewritten from this.)
+         */
+        internal fun parseStrict(o: JSONObject): UserPlace? {
+            fun str(k: String): String? = o.opt(k) as? String
+            fun num(k: String): Double? = (o.opt(k) as? Number)?.toDouble()
+            val r = o.opt("r").let { if (it is Int) it else if (it is Long && it in Int.MIN_VALUE..Int.MAX_VALUE) it.toInt() else null } ?: return null
+            val parent = o.opt("parent").let { if (it == null || it === JSONObject.NULL) null else (it as? String) ?: return null }
+            val note = if (o.has("note")) str("note") ?: return null else ""
+            return UserPlace(str("id") ?: return null, str("name") ?: return null, str("kind") ?: return null, num("lat") ?: return null, num("lon") ?: return null, r, parent, note)
+        }
 
         private fun parseOne(o: JSONObject): UserPlace =
             UserPlace(o.getString("id"), o.getString("name"), o.getString("kind"), o.getDouble("lat"), o.getDouble("lon"), o.getInt("r"), if (o.isNull("parent")) null else o.getString("parent"), o.optString("note", ""), if (o.isNull("moment")) null else o.optString("moment", "").takeIf { com.rokid.context.memory.moment.MomentId.parse(it) != null }, if (o.isNull("at")) null else o.optLong("at", 0L).takeIf { it > 0 }) // an unreadable link is no link: it never makes the list corrupt
