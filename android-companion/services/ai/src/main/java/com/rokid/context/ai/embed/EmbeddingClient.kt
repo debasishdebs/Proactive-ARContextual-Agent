@@ -172,7 +172,7 @@ class EmbeddingClient(
             if (counted && !lanNow.get() && safeCostly()) sawCostly.set(true)
         }
         // Codex r3 P1-3: the durable commit runs on an IO thread, never on the caller's.
-        val reservation = if (costlyAtStart) try { withContext(Dispatchers.IO) { dataGate.reserve(kind, tx + com.rokid.context.ai.DataBytes.ENVELOPE, 0) } } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { DataReservation.FAILED } else null
+        val reservation = if (costlyAtStart) com.rokid.context.ai.datasaver.reserveOwned(dataGate, kind, tx + com.rokid.context.ai.DataBytes.ENVELOPE, 0) else null // Codex r4 P2-4: a cancellation during the commit releases the token
         if (reservation?.failed == true) throw DataSaverBlockedException(DataPolicy.R_UNREADABLE, kind, Skipped.BULK).also { it.counted = false }
         var rx = 0L
         var unsent = false

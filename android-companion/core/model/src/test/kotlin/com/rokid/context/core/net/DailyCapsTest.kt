@@ -207,4 +207,50 @@ class DailyCapsTest {
         now = java.time.ZonedDateTime.of(2026, 10, 26, 0, 1, 0, 0, zone).toInstant()
         assertEquals(0, l.today().bytes)
     }
+
+    // ---- Codex r4 P1-3: reads never wait for a reservation's disk commit ----
+
+    /** A store whose durable commit blocks until released (a slow disk) and which is safe for concurrent readers, like SharedPreferences. */
+    private class BlockingStore : CounterStore {
+        val m = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        @Volatile var block = false
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        override fun getLong(key: String, default: Long) = m[key] ?: default
+        override fun putLongs(values: Map<String, Long>) { m.putAll(values) }
+        override fun putLongsDurable(values: Map<String, Long>): Boolean {
+            m.putAll(values)
+            if (block) { entered.countDown(); release.await() }
+            return true
+        }
+    }
+
+    @Test fun aReadReturnsWhileAReservationsDiskCommitIsBlocked() {
+        val st = BlockingStore(); val l = MobileDataLedger(st) { 7 }
+        l.add(DataKind.SMALL, 100, 0)
+        st.block = true
+        val writer = Thread { l.reserve(DataKind.PHOTO, 5_000, 1) }.also { it.start() }
+        assertTrue(st.entered.await(5, java.util.concurrent.TimeUnit.SECONDS), "the commit started")
+        val reader = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val read = reader.submit<Triple<Long, Long, Boolean>> { Triple(l.today().bytes, l.dayNow(), true) }
+            val got = read.get(5, java.util.concurrent.TimeUnit.SECONDS) // would time out if the reader waited for the commit lock
+            assertEquals(7L, got.second)
+            assertTrue(got.first >= 100)
+        } finally { st.release.countDown(); writer.join(5_000); reader.shutdownNow() }
+    }
+
+    @Test fun concurrentReservationsAreAllCountedAndTheCapStillRefuses() {
+        val st = BlockingStore(); val l = MobileDataLedger(st) { 7 }
+        val n = 40; val each = 1_000L
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+        try {
+            val tokens = (1..n).map { pool.submit<DataReservation> { l.reserve(DataKind.PHOTO, each, 1) } }.map { it.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+            assertTrue(tokens.none { it.failed })
+            assertEquals(DayUsage(n * each, n.toLong()), l.today().usage, "no reservation was lost")
+            val cap = DailyLimit(n * each, n.toLong())
+            assertTrue(DailyCaps.reached(cap, l.today().usage), "the cap is reached at exactly the reserved total")
+            assertFalse(DataPolicy.decide(DataKind.PHOTO, EndpointReach.REMOTE, NetworkCost.HOME_MOBILE, Transport.CELLULAR, DataSaverSettings(dailyLimitOn = true, limitMb = 1, limitPhotos = n), l.today().usage, false).allowed)
+        } finally { pool.shutdownNow() }
+    }
 }
