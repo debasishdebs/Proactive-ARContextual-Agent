@@ -107,7 +107,7 @@ class DataSaverScreenTest {
         compose.onNodeWithTag("data_saver_abroad").performClick()
         compose.onNodeWithTag("data_saver_small_roaming").performClick()
         compose.onNodeWithTag("data_saver_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("data_saver_status"))
-        compose.onNodeWithTag("data_saver_status_0").assertTextContains("waiting for Wi-Fi now: 9", substring = true)
+        compose.onNodeWithTag("data_saver_status_0").assertTextContains("9 photos waiting for Wi-Fi", substring = true)
         compose.onNodeWithTag("data_saver_status").assertTextContains("Counts only", substring = true)
         assertEquals(true, abroad); assertEquals(false, small); assertEquals(null, mode)
     }
@@ -151,7 +151,7 @@ class DataSaverScreenTest {
         compose.onNodeWithTag("data_saver_sent").assertTextContains("Sent today on mobile data: 1.9 MB / 5 photos", substring = true)
         compose.onNodeWithTag("data_saver_limit_line").assertTextContains("10.0 MB and 30 photos", substring = true)
         compose.onNodeWithTag("data_saver_today_title").assertTextContains("Blocked today", substring = true)
-        compose.onNodeWithTag("data_saver_status_0").assertTextContains("waiting for Wi-Fi now: 4", substring = true)
+        compose.onNodeWithTag("data_saver_status_0").assertTextContains("4 photos waiting for Wi-Fi", substring = true)
     }
 
     @Test fun aWifiStuckWithoutValidationSaysSoAndOnlyThen() {
