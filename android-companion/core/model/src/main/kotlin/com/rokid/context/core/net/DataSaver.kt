@@ -38,7 +38,7 @@ enum class NetworkCost { FREE, HOME_MOBILE, ROAMING, UNKNOWN, OFFLINE,
 
 object NetworkCosts {
     /** Fail closed: anything the phone does not say clearly is costly. [abroad] is the user's "I'm abroad" switch: it forces every cellular network (and a metered Wi-Fi, a likely hotspot) to ROAMING. */
-    fun classify(s: NetSnapshot, settings: DataSaverSettings): NetworkCost = classify(s, settings.abroad, settings.wifiMeteredAbroad)
+    fun classify(s: NetSnapshot, settings: DataSaverSettings): NetworkCost = classify(s, settings.abroad, settings.wifiMeteredAbroad && !settings.hotspotRuleUnreadable)
 
     fun classify(s: NetSnapshot, abroad: Boolean, wifiMeteredAbroad: Boolean = false): NetworkCost {
         if (!s.known) return NetworkCost.UNKNOWN
@@ -130,6 +130,11 @@ data class DataSaverSettings(
      * request on a costly network (mobile, roaming, unknown, Android Data Saver) until the value is written again. Wi-Fi that classifies as free, LAN and on-device traffic are not affected.
      */
     val unreadable: Boolean = false,
+    /**
+     * The "I'm abroad" or the Wi-Fi-as-metered switch could not be read (Codex r2 P1-3). Their protective values (abroad on, hotspot-as-metered on) apply to CELLULAR networks, but they are NOT evidence that
+     * a Wi-Fi network is a hotspot: a Wi-Fi network the platform independently validates as unmetered and not roaming stays FREE ([NetworkCosts.classify] skips the hotspot rule), while [unreadable] still refuses every costly send.
+     */
+    val hotspotRuleUnreadable: Boolean = false,
 ) {
     /** The mode that is applied. Slice 2: "Anywhere" is honoured while abroad (under the daily cap of [DailyCaps]); it was held to "Wi-Fi and home mobile data" in slice 1 for want of a cap. */
     val effectiveMode: DataMode get() = mode
@@ -279,6 +284,11 @@ interface DataGate {
     fun skipped(kind: DataKind, what: Skipped, d: DataDecision)
     /** True while the network is mobile, roaming or unknown (stored place cells are then kept instead of re-fetched). */
     fun costlyNow(): Boolean
+    /**
+     * [decide] for a request that is ALREADY admitted and holds [own] (its reservation is part of today's usage): the reservation is taken out of the usage first, so a request whose own bytes reach the cap is not
+     * cancelled for it (Codex r2 P2-8). Default: the plain decision.
+     */
+    fun decideExcluding(kind: DataKind, reach: EndpointReach = EndpointReach.REMOTE, own: DataReservation?): DataDecision = decide(kind, reach)
     /** The decision for a USER-class photo call the user said "Send over mobile data once" to (see [SendOnce]). Default: the plain decision. */
     fun decideOnce(kind: DataKind, reach: EndpointReach = EndpointReach.REMOTE): DataDecision = decide(kind, reach)
     /**
@@ -293,6 +303,7 @@ interface DataGate {
      * interrupted (a stall after the upload, a timeout, a cancel, process death) can never leave zero usage behind. Null = nothing reserved (Wi-Fi, on-device, or a gate that does not count).
      */
     fun reserve(kind: DataKind, txBytes: Long, photos: Int): DataReservation? = null
+    // A reservation with `failed = true` ([DataReservation.FAILED]) means: refuse this costly send (the commit failed, or a counter is unreadable).
     /** Reconciles a [reserve] with what the call really sent: releases the reservation and counts [txBytes] + [rxBytes] and [photos]. Passing the reserved numbers back keeps the conservative count. Default no-op. */
     fun settle(r: DataReservation, txBytes: Long, rxBytes: Long, photos: Int) {}
     /** Re-reads the network facts that can change without a capability callback (Android Data Saver status, SIM and network country) and restarts a failed network watch. Cheap; default no-op. */
@@ -308,12 +319,19 @@ interface DataGate {
 }
 
 /** What [DataGate.reserve] counted up front (numbers only). [day] is the ledger day it was counted on; a settle on a later day leaves that day's count as it was. */
-data class DataReservation(val kind: DataKind, val bytes: Long, val photos: Int, val day: Long)
+data class DataReservation(val kind: DataKind, val bytes: Long, val photos: Int, val day: Long, val failed: Boolean = false) {
+    companion object {
+        /** [DataGate.reserve] could not persist the reservation (or could not trust the counters): the costly send must be refused (Codex r2 P1-4, P1-5). */
+        val FAILED = DataReservation(DataKind.SMALL, 0, 0, 0, failed = true)
+    }
+}
 
 /** Where a counter value lives. Prefs in the app; a map in tests. */
 interface CounterStore {
     fun getLong(key: String, default: Long): Long
     fun putLongs(values: Map<String, Long>)
+    /** Same, but returns only after the values are on disk; false = the write was not persisted (Codex r2 P1-5). The default (a map in tests) is durable by nature. */
+    fun putLongsDurable(values: Map<String, Long>): Boolean { putLongs(values); return true }
 }
 
 /**
@@ -360,7 +378,10 @@ class MobileDataLedger(private val store: CounterStore, private val epochDay: ()
     private fun key(k: DataKind) = "mobile_bytes_" + k.name.lowercase()
 
     /** Adds one call. Returns today's totals after it. */
-    @Synchronized fun add(kind: DataKind, bytes: Long, photos: Int): Today {
+    @Synchronized fun add(kind: DataKind, bytes: Long, photos: Int): Today = addWith(kind, bytes, photos, durable = false) ?: read()
+
+    /** The shared add: [durable] commits to disk and returns null when that failed. */
+    private fun addWith(kind: DataKind, bytes: Long, photos: Int, durable: Boolean): Today? {
         val stored = store.getLong(DAY, -1)
         val today = epochDay()
         val day = if (stored < 0 || today > stored) today else stored
@@ -371,7 +392,7 @@ class MobileDataLedger(private val store: CounterStore, private val epochDay: ()
         values[PHOTOS] = base(PHOTOS)
         values[key(kind)] = values.getValue(key(kind)) + bytes.coerceAtLeast(0)
         values[PHOTOS] = values.getValue(PHOTOS) + photos.coerceAtLeast(0)
-        store.putLongs(values)
+        if (durable) { if (!store.putLongsDurable(values)) return null } else store.putLongs(values)
         return read()
     }
 
@@ -386,7 +407,7 @@ class MobileDataLedger(private val store: CounterStore, private val epochDay: ()
 
     /** Counts a reservation up front (like [add]) and returns the token that [settle] needs. */
     @Synchronized fun reserve(kind: DataKind, bytes: Long, photos: Int): DataReservation {
-        add(kind, bytes, if (kind == DataKind.PHOTO) photos else 0)
+        addWith(kind, bytes, if (kind == DataKind.PHOTO) photos else 0, durable = true) ?: return DataReservation.FAILED // not on disk: the caller refuses the send
         return DataReservation(kind, bytes.coerceAtLeast(0), if (kind == DataKind.PHOTO) photos.coerceAtLeast(0) else 0, dayNow())
     }
 

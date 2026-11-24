@@ -31,13 +31,15 @@ class DataSaverStore(private val prefs: SharedPreferences) {
         val mode = safe(DataMode.WIFI_ONLY) {
             DataMode.parse(prefs.getString(K_MODE, null)) // an unknown (newer) value still reads as the default; only a wrong TYPE is unreadable
         }
-        val abroad = safe(true) { prefs.getBoolean(K_ABROAD, false) }
+        var abroadBad = false
+        val abroad = safe(true) { try { prefs.getBoolean(K_ABROAD, false) } catch (e: Exception) { abroadBad = true; throw e } }
         val small = safe(false) { prefs.getBoolean(K_SMALL, true) }
         val limitOn = safe(true) { prefs.getBoolean(K_LIMIT_ON, false) }
         val mb = safe(DailyCaps.DEFAULT_MB) { prefs.getInt(K_LIMIT_MB, DailyCaps.DEFAULT_MB) }.let { if (it in 0..1024) it else DailyCaps.DEFAULT_MB }
         val photos = safe(DailyCaps.DEFAULT_PHOTOS) { prefs.getInt(K_LIMIT_PHOTOS, DailyCaps.DEFAULT_PHOTOS) }.let { if (it in 0..10_000) it else DailyCaps.DEFAULT_PHOTOS }
-        val metered = safe(true) { prefs.getBoolean(K_WIFI_METERED, false) }
-        return DataSaverSettings(mode, abroad, small, limitOn, mb, photos, metered, unreadable = bad || badCounters.isNotEmpty())
+        var meteredBad = false
+        val metered = safe(true) { try { prefs.getBoolean(K_WIFI_METERED, false) } catch (e: Exception) { meteredBad = true; throw e } }
+        return DataSaverSettings(mode, abroad, small, limitOn, mb, photos, metered, unreadable = bad || badCounters.isNotEmpty(), hotspotRuleUnreadable = abroadBad || meteredBad)
     }
 
     /** Counter keys whose stored value had the wrong type (read as their default); cleared as each is written again. A non-empty set makes the settings [DataSaverSettings.unreadable]. */
@@ -82,6 +84,15 @@ class DataSaverStore(private val prefs: SharedPreferences) {
         if (expected == 0L || blockedRaw() != expected) false else { prefs.edit().remove(K_BLOCKED).apply(); true }
     }
 
+    /**
+     * Codex r2 P1-4: checks EVERY stored usage counter (`mobile_*`) for a wrong type right now, not only the ones a read happens to touch, and flips the settings to unreadable when one is found.
+     * The graph calls it before it snapshots the settings for a decision, so the admission that discovers a corrupt counter is the one that refuses.
+     */
+    fun validateCounters() {
+        val found = try { prefs.all.filter { (k, v) -> k.startsWith("mobile_") && v !is Long }.keys } catch (e: Exception) { emptySet<String>() }
+        if (found.isNotEmpty() && found.any { badCounters.add(it) }) state.value = read()
+    }
+
     /** The counters live in the same file under their own keys. */
     val counters: CounterStore = object : CounterStore {
         override fun getLong(key: String, default: Long): Long = try { prefs.getLong(key, default) } catch (e: Exception) {
@@ -91,6 +102,12 @@ class DataSaverStore(private val prefs: SharedPreferences) {
         override fun putLongs(values: Map<String, Long>) {
             prefs.edit().also { e -> values.forEach { (k, v) -> e.remove(k); e.putLong(k, v) } }.apply()
             if (values.keys.any { badCounters.remove(it) }) state.value = read()
+        }
+        /** Codex r2 P1-5: `commit()` (synchronous) so a reservation is on disk BEFORE the request leaves; false = not persisted and the caller refuses the costly send. */
+        override fun putLongsDurable(values: Map<String, Long>): Boolean {
+            val ok = try { prefs.edit().also { e -> values.forEach { (k, v) -> e.remove(k); e.putLong(k, v) } }.commit() } catch (e: Exception) { false }
+            if (ok && values.keys.any { badCounters.remove(it) }) state.value = read()
+            return ok
         }
     }
 
