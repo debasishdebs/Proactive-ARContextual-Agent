@@ -12,6 +12,13 @@ interface ForgetListener {
     suspend fun onFramesForgotten(frameIds: List<String>) {}
     suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) {}
     suspend fun onDeleteAll() {}
+    /**
+     * RETENTION expiry of photos COMMITTED (the photo files go; everything described about them stays). Defaults to [onFramesForgotten], so every existing listener behaves as before.
+     * A listener whose data must outlive the photo (the place card history keeps its rows and only drops the photo link) overrides it.
+     */
+    suspend fun onPhotosExpired(frameIds: List<String>) = onFramesForgotten(frameIds)
+    /** The time link of a retention expiry (marks and traces within the radius of an expired photo). Defaults to [onRangeForgotten]; a listener that is not touched by routine retention overrides it. */
+    suspend fun onRangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) = onRangeForgotten(fromMs, toMs, traceIds)
     /** A user Forget of any kind (a fact, a photo, a moment, a mark, a multi-select, a scoped range) COMMITTED. Carries no ids: a listener that must withdraw what it shows only needs to know it happened (Nexus bridge, v2.0). Not called for retention expiry. */
     suspend fun onUserForget() {}
 }
@@ -25,6 +32,8 @@ object ForgetListeners {
     val registered: List<ForgetListener> get() = all.toList()
 
     suspend fun framesForgotten(ids: List<String>) = each { it.onFramesForgotten(ids) }
+    suspend fun photosExpired(ids: List<String>) = each { it.onPhotosExpired(ids) }
+    suspend fun rangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) = each { it.onRangeExpired(fromMs, toMs, traceIds) }
     suspend fun rangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>, except: ForgetListener? = null) = each(except) { it.onRangeForgotten(fromMs, toMs, traceIds) }
     suspend fun deleteAll() = each { it.onDeleteAll() }
     suspend fun userForget() = each { it.onUserForget() }

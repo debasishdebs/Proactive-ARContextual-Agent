@@ -51,6 +51,10 @@ class PlaceCardHolder : PlacePort {
     fun publishIf(card: PlaceCard, epoch: Long): Boolean =
         synchronized(lock) { if (epochValue != epoch) false else { _card.value = card.copy(cardId = "pc${++seq}"); true } }
 
+    /** [publishIf] that returns the new card's id (null = nothing published): the history row of a "Show on glasses again" names it. */
+    fun publishIfId(card: PlaceCard, epoch: Long): String? =
+        synchronized(lock) { if (epochValue != epoch) null else "pc${++seq}".also { _card.value = card.copy(cardId = it) } }
+
     /** Clears the card only if it is still the instance [cardId] (a newer card with the same title stays). Withdrawals fence attempts in flight only when something was cleared. */
     fun clearIf(cardId: String): Boolean = synchronized(lock) {
         if (_card.value?.cardId == cardId) { epochValue++; _card.value = null; true } else false

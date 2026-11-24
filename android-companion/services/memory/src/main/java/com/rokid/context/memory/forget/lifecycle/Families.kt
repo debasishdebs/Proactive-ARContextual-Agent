@@ -321,7 +321,7 @@ internal object ObjectFamily : ForgetFamily { override val family = Family.OBJEC
  */
 internal object PlacePackFamily : ForgetFamily {
     override val family = Family.PLACE_PACK
-    override val tables = listOf("place", "cell", "area")
+    override val tables = listOf("place", "cell", "area", "place_card_log")
     override val prefs = listOf("place_guide", "place_pins")
 }
 

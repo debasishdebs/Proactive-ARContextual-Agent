@@ -53,7 +53,7 @@ class ForgetExecutor internal constructor(
     private val leases: Leases = Leases.shared,
 ) {
     private val dao = db.forgetDao()
-    private fun ctx(now: Long = clock()) = DeleteCtx(db, proposals, now) { f, s -> service.addPending(f, s) }
+    private fun ctx(now: Long = clock()) = DeleteCtx(db, proposals, now) { f, s, e -> service.addPending(f, s, e) }
 
     /** Re-plans inside the transaction and revokes what the plan reaches. Never throws except cancellation: a planner failure revokes every lease. */
     private suspend fun revoke(plan: suspend (ForgetPlanner) -> ForgetPlan): ForgetPlan? = try {
@@ -172,7 +172,7 @@ class ForgetExecutor internal constructor(
         }
         MomentFamily.dropHolding(c, expiredIds, emptyList()) // a Moment with no live photo is not a Moment
         val wire = expiredIds.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId } // frame_meta stays on expiry
-        val spans = dropCanvasOutputs(c, expiredIds, expiredTimes)
+        val spans = dropCanvasOutputs(c, expiredIds, expiredTimes, expired = true)
         rebuildScenes(c, plan)
         queueCleanup(c, paths, wire, spans, phoneFilesOnly = true) // routine retention is storage hygiene: phone files only
         ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expiredIds.size)
@@ -233,7 +233,7 @@ class ForgetExecutor internal constructor(
     }
 
     /** `ForgetService.dropCanvasOutputs`: the marks and traces within the radius of each photo (a durable range fence), the run results and the slice outputs of the photos. Returns the spans fenced. */
-    private suspend fun dropCanvasOutputs(c: DeleteCtx, frameIds: List<String>, capturedAtOrNull: List<Long>? = null, radiusCascade: Boolean = true): List<Triple<Long, Long, List<String>>> {
+    private suspend fun dropCanvasOutputs(c: DeleteCtx, frameIds: List<String>, capturedAtOrNull: List<Long>? = null, radiusCascade: Boolean = true, expired: Boolean = false): List<Triple<Long, Long, List<String>>> {
         val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { dao.frame(it)?.ts }
         val radius = ForgetRadius.ms() // read once per Forget
         val spans = (if (radiusCascade) capturedAt else emptyList()).map { (it - radius)..(it + radius) }.let(CanvasSlice3Dao::mergeRanges).map { r ->
@@ -241,7 +241,7 @@ class ForgetExecutor internal constructor(
             MomentFamily.dropBetween(c, r.first, r.last)
             Triple(r.first, r.last, o.tombstonedTraceIds)
         }
-        if (frameIds.isNotEmpty() || spans.isNotEmpty()) c.notifyAfterCommit(frameIds, spans)
+        if (frameIds.isNotEmpty() || spans.isNotEmpty()) c.notifyAfterCommit(frameIds, spans, expired)
         RunResultFamily.selfDelete(frameIds.toSet(), Fate.DROP, c)
         RunResultFamily.dropSliceOutputs(c, frameIds)
         return spans

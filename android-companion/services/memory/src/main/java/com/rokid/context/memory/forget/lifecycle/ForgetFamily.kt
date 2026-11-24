@@ -26,9 +26,10 @@ interface ForgetFamily {
 }
 
 /** What a selfDelete may use: the database, the proposal repository, the Forget's clock reading and the post-commit notification queue of the [com.rokid.context.memory.forget.ForgetService]. */
-class DeleteCtx(val db: ContextDatabase, val proposals: com.rokid.context.memory.ProposalRepository, val now: Long, private val pending: (List<String>, List<Triple<Long, Long, List<String>>>) -> Unit) {
+class DeleteCtx(val db: ContextDatabase, val proposals: com.rokid.context.memory.ProposalRepository, val now: Long, private val pending: (List<String>, List<Triple<Long, Long, List<String>>>, Boolean) -> Unit) {
     /** Registers the photos and time spans a listener is told about after the commit. */
-    fun notifyAfterCommit(frames: List<String>, spans: List<Triple<Long, Long, List<String>>>) = pending(frames, spans)
+    /** [expired] = a retention expiry: listeners are told through [com.rokid.context.memory.forget.ForgetListener.onPhotosExpired] / `onRangeExpired`, not as a user Forget. */
+    fun notifyAfterCommit(frames: List<String>, spans: List<Triple<Long, Long, List<String>>>, expired: Boolean = false) = pending(frames, spans, expired)
 }
 
 /** Read-only access for planning. Reads only: a plan never writes, takes no lock and starts no transaction. */
