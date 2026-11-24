@@ -47,9 +47,29 @@ data class MapZonesUiState(
     /** Counts up on every successful pause save: the screen asks for location permission then if it is missing (as the shipped screen does). */
     val savedTick: Int = 0,
     val locationGranted: Boolean = true,
+    /** The draft a save in flight was submitted from; its completion is matched against this, never against whatever draft is on screen by then. */
+    val submitted: SubmittedDraft? = null,
 ) {
     val box: DoubleArray? get() = shape?.let { ShapeEdit.box(it) }
     val hasDraft: Boolean get() = shape != null
+}
+
+/** What one save was started from (the shape, the fields and which stored zone it replaces). */
+data class SubmittedDraft(val shape: DrawnShape?, val name: String, val bufferText: String, val editingId: String?)
+
+/**
+ * The state after a save returned. [text] is the refusal wording (null = saved OK). The result belongs to the SUBMITTED draft: if that draft is still the one on screen the sheet reacts (closes on OK, shows the
+ * refusal inside the sheet); if the screen holds a different draft by now, a success leaves that newer draft alone and a refusal is shown as a message (never lost, never put on the wrong sheet).
+ */
+internal fun MapZonesUiState.afterSave(sub: SubmittedDraft, zoneName: String, text: String?): MapZonesUiState {
+    val same = shape == sub.shape && name == sub.name && bufferText == sub.bufferText && editingId == sub.editingId
+    val done = copy(saving = false, submitted = null)
+    return if (text == null) {
+        val msg = "Zone \"$zoneName\" saved." + if (locationGranted) "" else " Location is not allowed yet: until it is, capture stays paused (fail closed)."
+        if (same) MapZonesUiState(layers = layers, locationGranted = locationGranted, savedTick = savedTick + 1, message = msg)
+        else done.copy(savedTick = savedTick + 1, message = msg, messageIsError = false)
+    } else if (same) done.copy(sheetError = text)
+    else done.copy(message = "Zone \"$zoneName\" was not saved. $text", messageIsError = true)
 }
 
 class MapZonesViewModel(
@@ -62,15 +82,18 @@ class MapZonesViewModel(
 
     fun setLocationGranted(granted: Boolean) = _state.update { it.copy(locationGranted = granted) }
 
+    /** Draft navigation and edits do nothing while a save is in flight: the draft the save was submitted from stays what is on screen until the answer arrives. */
+    private fun edit(f: (MapZonesUiState) -> MapZonesUiState) = _state.update { if (it.saving) it else f(it) }
+
     private fun protectedNow(): Boolean = editor.snapshot.value.protectedMode
 
     // --- drawing ---
-    fun beginDraw() = _state.update { it.copy(drawing = true, message = null) }
+    fun beginDraw() = edit { it.copy(drawing = true, message = null) }
 
-    fun setKind(kind: ShapeKind) = _state.update { s ->
+    fun setKind(kind: ShapeKind) = edit { s ->
         val shape = s.shape
-        if (shape == null || shape.kind == kind) return@update s.copy(kind = kind)
-        val b = ShapeEdit.box(shape) ?: return@update s.copy(kind = kind)
+        if (shape == null || shape.kind == kind) return@edit s.copy(kind = kind)
+        val b = ShapeEdit.box(shape) ?: return@edit s.copy(kind = kind)
         val next: DrawnShape? = when (kind) {
             ShapeKind.RECT -> DrawnShape.Rect(b[0], b[1], b[2], b[3])
             ShapeKind.CIRCLE -> {
@@ -83,22 +106,22 @@ class MapZonesViewModel(
     }
 
     /** A new shape from a long-press drag or the "+ Draw area" default. Anything unusable is ignored. */
-    fun place(shape: DrawnShape?) = _state.update { s ->
+    fun place(shape: DrawnShape?) = edit { s ->
         if (shape == null || ShapeEdit.box(shape) == null) s.copy(drawing = false, message = "That area is too small. Drag a larger one.", messageIsError = true)
         else s.copy(shape = shape, kind = shape.kind, drawing = false, sheet = SheetMode.NONE, selected = null, sheetError = null, message = null)
     }
 
     /** A handle or body drag on the draft. */
-    fun reshape(shape: DrawnShape) = _state.update { s -> if (s.shape != null && ShapeEdit.box(shape) != null) s.copy(shape = shape, sheetError = null) else s }
+    fun reshape(shape: DrawnShape) = edit { s -> if (s.shape != null && ShapeEdit.box(shape) != null) s.copy(shape = shape, sheetError = null) else s }
 
     /** Drops the draft, the sheet and any edit. Makes no store call. */
-    fun cancelDraw() = _state.update { it.copy(shape = null, drawing = false, sheet = SheetMode.NONE, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheetError = null, saving = false) }
+    fun cancelDraw() = edit { it.copy(shape = null, drawing = false, sheet = SheetMode.NONE, editingId = null, name = "", bufferText = PauseZone.DEFAULT_BUFFER_M.toString(), sheetError = null, saving = false) }
 
     // --- the sheet ---
-    fun next() = _state.update { if (it.shape != null && ShapeEdit.box(it.shape) != null) it.copy(sheet = if (it.editingId != null) SheetMode.PAUSE else SheetMode.CHOOSE, sheetError = null) else it }
+    fun next() = edit { if (it.shape != null && ShapeEdit.box(it.shape) != null) it.copy(sheet = if (it.editingId != null) SheetMode.PAUSE else SheetMode.CHOOSE, sheetError = null) else it }
 
     /** Pause or Seed. Pause is refused while the saved zones cannot be read (the sheet says why); Seed stays available (it does not create capture). */
-    fun choose(mode: SheetMode) = _state.update {
+    fun choose(mode: SheetMode) = edit {
         when {
             mode == SheetMode.PAUSE && protectedNow() -> it.copy(sheetError = ZoneWords.PROTECTED_BANNER)
             mode == SheetMode.PAUSE || mode == SheetMode.SEED -> it.copy(sheet = mode, sheetError = null)
@@ -106,10 +129,10 @@ class MapZonesViewModel(
         }
     }
 
-    fun back() = _state.update { it.copy(sheet = if (it.sheet == SheetMode.CHOOSE || it.editingId != null) SheetMode.NONE else SheetMode.CHOOSE, sheetError = null) }
+    fun back() = edit { it.copy(sheet = if (it.sheet == SheetMode.CHOOSE || it.editingId != null) SheetMode.NONE else SheetMode.CHOOSE, sheetError = null) }
 
-    fun setName(v: String) = _state.update { it.copy(name = v, sheetError = null) }
-    fun setBuffer(v: String) = _state.update { it.copy(bufferText = v, sheetError = null) }
+    fun setName(v: String) = edit { it.copy(name = v, sheetError = null) }
+    fun setBuffer(v: String) = edit { it.copy(bufferText = v, sheetError = null) }
 
     /** The cell estimate for the drawn shape (Seed sheet). */
     fun seedBox(): GeoBox? = SeedEstimate.boxOf(_state.value.box)
@@ -123,6 +146,7 @@ class MapZonesViewModel(
     fun savePause() {
         val s = _state.value
         if (s.saving) return
+        if (protectedNow()) { _state.update { it.copy(sheetError = ZoneWords.PROTECTED_BANNER) }; return } // re-evaluated at every tap: saving is off whenever the saved zones cannot be read
         val box = s.box
         if (box == null) { _state.update { it.copy(sheetError = "Draw an area first.") }; return }
         val o = ShapeEdit.outward(box)
@@ -133,14 +157,12 @@ class MapZonesViewModel(
             is DraftResult.Error -> _state.update { it.copy(sheetError = r.text) }
             is DraftResult.Ok -> {
                 val zone = if (existing != null) r.zone.copy(enabled = existing.enabled, preset = existing.preset) else r.zone
-                _state.update { it.copy(saving = true, sheetError = null) }
+                val sub = SubmittedDraft(s.shape, s.name, s.bufferText, s.editingId)
+                _state.update { it.copy(saving = true, sheetError = null, submitted = sub) }
                 viewModelScope.launch(work) {
                     val change = editor.upsert(zone)
                     val text = ZoneWords.refusal(change, "replaced")
-                    _state.update {
-                        if (text != null) it.copy(saving = false, sheetError = text)
-                        else MapZonesUiState(layers = it.layers, locationGranted = it.locationGranted, savedTick = it.savedTick + 1, message = "Zone \"${zone.name}\" saved." + if (it.locationGranted) "" else " Location is not allowed yet: until it is, capture stays paused (fail closed).")
-                    }
+                    _state.update { it.afterSave(sub, zone.name, text) }
                 }
             }
         }
@@ -151,6 +173,7 @@ class MapZonesViewModel(
 
     /** Loads a stored pause zone into the editor as a draft with the same id. Refused while the saved zones cannot be read. The stored zone keeps pausing until the save returns OK. */
     fun editPause(id: String) {
+        if (_state.value.saving) return
         if (protectedNow()) { _state.update { it.copy(message = ZoneWords.PROTECTED_BANNER, messageIsError = true) }; return }
         val z = editor.snapshot.value.zones.firstOrNull { it.id == id } ?: editor.storedZones().firstOrNull { it.id == id }
         if (z == null) { _state.update { it.copy(message = ZoneWords.refusal(ZoneChange.NOT_FOUND, "replaced"), messageIsError = true) }; return }
@@ -161,3 +184,6 @@ class MapZonesViewModel(
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
 }
+
+/** Whether the Save button of the Pause sheet is on: not while a save runs, and never while the saved zones cannot be read (the caller passes the LIVE protected state each time it draws). */
+object PauseSave { fun enabled(saving: Boolean, unreadable: Boolean) = !saving && !unreadable }

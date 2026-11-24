@@ -43,15 +43,24 @@ object CircleBox {
     /** The box is grown by this much so it always holds the whole circle, even where the flat metre-to-degree rule is a little short of the sphere (never less, only more). */
     const val SAFETY = 1.01
 
-    /** The smallest box that holds the whole circle, as (south, west, north, east); null when the circle is unusable (not finite, not positive, or it would cross the 180 degree line or pass the Mercator limit at the centre). */
+    /** Web-mercator y of [lat] in degrees (the unit the map view uses), and its inverse. */
+    fun merc(lat: Double): Double = Math.toDegrees(kotlin.math.ln(kotlin.math.tan(Math.PI / 4 + Math.toRadians(lat) / 2)))
+    fun unmerc(m: Double): Double = Math.toDegrees(kotlin.math.atan(kotlin.math.sinh(Math.toRadians(m))))
+
+    /** The box that holds the whole circle AS DRAWN on the web-mercator map (and the sphere's circle), as (south, west, north, east); null when the circle is unusable (not finite, not positive, or it would cross the 180 degree line or pass the Mercator limit at the centre). */
     fun of(lat: Double, lon: Double, radiusM: Double): DoubleArray? {
         if (!lat.isFinite() || !lon.isFinite() || !radiusM.isFinite() || radiusM <= 0.0) return null
         if (abs(lat) > MapViewport.MAX_LAT || abs(lon) > 180.0) return null
-        val dLat = radiusM / METRES_PER_DEG * SAFETY
-        val dLon = radiusM / (METRES_PER_DEG * max(cos(Math.toRadians(lat)), 0.01)) * SAFETY
-        val w = lon - dLon; val e = lon + dLon
+        // The circle the user SEES is a circle in map-pixel space: its radius is r / (111320 cos(lat)) degrees of longitude, and on the web-mercator map the same distance north or south is the same number of mercator degrees. So the box is taken from that rendered circle: longitude +- rho, and latitude by inverting the mercator at M(lat) +- rho. (A flat rule r / 111320 degrees falls short of the rendered edge by several km at 60 degrees north or south.) Never less, only more: grown by SAFETY, and a latitude past the map limit is taken to the pole.
+        val rho = radiusM / (METRES_PER_DEG * max(cos(Math.toRadians(lat)), 0.01)) * SAFETY
+        val w = lon - rho; val e = lon + rho
         if (w < -180.0 || e > 180.0) return null // a box across the 180 degree line is not supported
-        return doubleArrayOf(max(lat - dLat, -90.0), w, min(lat + dLat, 90.0), e)
+        val m = merc(lat); val mLimit = merc(MapViewport.MAX_LAT)
+        val s = if (m - rho <= -mLimit) -90.0 else max(unmerc(m - rho), -90.0)
+        val n = if (m + rho >= mLimit) 90.0 else min(unmerc(m + rho), 90.0)
+        // Outward-only guard: never smaller than the flat rule either (physical distance on the sphere).
+        val flat = radiusM / METRES_PER_DEG * SAFETY
+        return doubleArrayOf(min(s, max(lat - flat, -90.0)), w, max(n, min(lat + flat, 90.0)), e)
     }
 }
 
