@@ -68,6 +68,11 @@ class MarkRecorder(
      * that carries a notice (a cached export that could not be deleted) is handed back by [undoMark] so the phone can show it instead of a plain "done".
      */
     private val forgetPhotoOutcome: (suspend (frameId: String) -> com.rokid.context.orchestration.forget.ForgetActions.Outcome)? = null,
+    /**
+     * Whether cleanup of an undone mark's photo is STILL owed (production: `ForgetActions.cleanupStillOwed`: retries the cached export / photo file). Used on the retry path of an undo whose photo Forget already
+     * committed with a cleanup notice (the link is gone then, so the retry finds no frame): the cache-left outcome is returned until this says clean. Null = a remembered obligation is treated as still owed.
+     */
+    private val cleanupOwed: (suspend (frameId: String) -> Boolean)? = null,
     /** v0.9.7 slice D: null (tests of other behaviour) = a phone-origin mark has no photo (`phone_mark_no_photo`, as before). */
     private val phonePhoto: PhonePhotoRequester? = null,
     /** v0.9.7 slice D: a phone call is active right now (the existing call detection); a mark made then carries the `call` tag in its provenance. */
@@ -168,13 +173,23 @@ class MarkRecorder(
         testAfterUndoFence?.invoke()
         val frame = dao.label(target)?.frameId
         var photo: com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome? = null
+        val owedKey = CLEANUP_OWED_PREFIX + target
         if (frame != null) {
             val viaOutcome = forgetPhotoOutcome
             if (viaOutcome != null) {
                 val o = viaOutcome(frame)
                 if (!o.committed) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
                 photo = com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome(o)
+                // the photo Forget committed with a cleanup notice: remembered, because the next step (the gate) can still refuse and the retry will find the link gone
+                if (o != com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE) dao.putMeta(owedKey, frame)
             } else if (!forgetPhoto(frame)) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
+        } else {
+            // retry after a refused second gate step: the photo Forget already committed and its cleanup obligation must not be lost
+            val owedFrame = dao.meta(owedKey)
+            if (owedFrame != null) {
+                val check = cleanupOwed
+                if (check == null || check(owedFrame)) photo = com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome(com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED)
+            }
         }
         // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
         DataOpGate.shared.delete {
@@ -186,6 +201,7 @@ class MarkRecorder(
                 dao.deleteLabel(target); dao.deleteLabel("$target:i")
             }
         }
+        dao.deleteMetaKeys(listOf(owedKey)) // delivered with this return: the notice is the caller's now
         l?.atMs?.let(onChanged)
         return photo
     }
@@ -194,7 +210,7 @@ class MarkRecorder(
     fun phonePhotoDecision(): String? = phonePhoto?.reasonNow() ?: if (phonePhoto == null) MarkPhotoReason.PHONE_MARK else null
 
     /** The recognised utterance carried these commands (in spoken order). [glasses] false = a phone-mic ask. */
-    suspend fun applyVoice(commands: List<VoiceMark>, glasses: Boolean, nowMs: Long) =
+    suspend fun applyVoice(commands: List<VoiceMark>, glasses: Boolean, nowMs: Long): Boolean =
         applyVoice(commands, if (glasses) MarkOrigin.GLASSES_VOICE else MarkOrigin.PHONE_VOICE, nowMs, if (glasses) null else phonePhotoDecision())
 
     /**
@@ -202,7 +218,8 @@ class MarkRecorder(
      * when [phonePhotoReason] is null, asks the glasses for its photo through [phonePhoto] (one request per new mark; a request that cannot be sent leaves `glasses_not_connected`). [PHONE_CHAT][MarkOrigin.PHONE_CHAT]
      * never reuses an earlier listen.
      */
-    suspend fun applyVoice(commands: List<VoiceMark>, origin: MarkOrigin, nowMs: Long, phonePhotoReason: String?) = lock.withLock {
+    suspend fun applyVoice(commands: List<VoiceMark>, origin: MarkOrigin, nowMs: Long, phonePhotoReason: String?): Boolean = lock.withLock {
+        var cleanupLeft = false
         val glasses = origin.glasses
         val l = (if (origin == MarkOrigin.PHONE_CHAT) null else listen?.takeIf { it.glasses == glasses }) ?: Listen(nowMs, glasses = glasses).also { if (origin != MarkOrigin.PHONE_CHAT) listen = it }
         val f = fence()
@@ -214,14 +231,16 @@ class MarkRecorder(
             VoiceMark.Undo -> {
                 val target = momentId ?: l.bound ?: newestUndoable(nowMs)
                 if (target != null) {
-                    removeMark(target) // typed ExportInProgress when an export blocks it (the caller logs it); the mark's photo goes with it
+                    val undone = removeMark(target) // typed ExportInProgress when an export blocks it (the caller logs it); the mark's photo goes with it
                     unjoined.removeAll { it.id == target }
                     if (l.bound == target) l.bound = null
                     momentId = null
+                    if (undone != null && undone.outcome != com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE && undone.outcome.committed) cleanupLeft = true
                     log("mark undone by voice")
                 }
             }
         }
+        cleanupLeft
     }
 
     /** The utterance was an ordinary question: a tap mark bound to this listen stays, flagged `ask_tap` (excluded from recall by default). */
@@ -274,6 +293,8 @@ class MarkRecorder(
         /** The production log: event names only, through the one logger (pca.log), never android.util.Log. */
         val pcLog: (String) -> Unit = logTo(PcLog)
         fun logTo(port: LogPort): (String) -> Unit = { port.log(Level.I, "PcMarks", it) }
+        /** `canvas_meta` key (no schema change): an undone mark whose photo Forget committed with a cleanup notice not yet handed to the caller. The value is the photo's frame id. */
+        const val CLEANUP_OWED_PREFIX = "mark_cleanup_owed:"
         const val JOIN_MS = 3_000L
         const val UNDO_WINDOW_MS = 120_000L
         private const val PRUNE_MS = 60_000L

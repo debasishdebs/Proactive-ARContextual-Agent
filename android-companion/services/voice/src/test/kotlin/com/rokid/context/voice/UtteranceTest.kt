@@ -7,9 +7,9 @@ import kotlin.test.assertTrue
 
 /** v0.9.7 slice D: the ONE text backend. Same text, same result, whatever the source; the effects are behind [UtteranceCommands]. */
 class UtteranceTest {
-    private class Fake(var noPhoto: String? = null, var failure: CommandFailure? = null) : UtteranceCommands {
+    private class Fake(var noPhoto: String? = null, var failure: CommandFailure? = null, var cleanup: Boolean = false) : UtteranceCommands {
         val applied = ArrayList<Triple<List<MarkCommand>, UtteranceSource, Long>>(); val asks = ArrayList<UtteranceSource>()
-        override suspend fun apply(commands: List<MarkCommand>, source: UtteranceSource, nowMs: Long): CommandOutcome { applied += Triple(commands, source, nowMs); return CommandOutcome(noPhoto, failure) }
+        override suspend fun apply(commands: List<MarkCommand>, source: UtteranceSource, nowMs: Long): CommandOutcome { applied += Triple(commands, source, nowMs); return CommandOutcome(noPhoto, failure, cleanup) }
         override fun onAsk(source: UtteranceSource) { asks += source }
     }
 
@@ -75,6 +75,12 @@ class UtteranceTest {
         assertEquals(UtteranceResult.Handled(Utterance.COULDNT_UNDO), u(Fake(failure = CommandFailure.OTHER)).handle("undo the mark", UtteranceSource.GLASSES_VOICE, true))
         assertEquals(UtteranceResult.Handled(Utterance.COULDNT_UNDO), u(Fake(failure = CommandFailure.OTHER)).handle("undo mark and what is this", UtteranceSource.PHONE_CHAT, true), "a failed write is never followed by an ask")
         assertEquals(UtteranceResult.Handled(Utterance.COULDNT_MARK), u(Fake(failure = CommandFailure.OTHER)).handle("mark this moment", UtteranceSource.PHONE_CHAT, true))
+    }
+
+    @Test fun anUndoWithCleanupOwedIsNotAPlainUndoneAndAnUploadBlockHasItsOwnCopy() = kotlinx.coroutines.runBlocking<Unit> {
+        assertEquals(UtteranceResult.Handled(Utterance.UNDONE_CLEANUP_PENDING), u(Fake(cleanup = true)).handle("undo mark", UtteranceSource.GLASSES_VOICE, true))
+        assertEquals(UtteranceResult.Handled(Utterance.UNDONE), u(Fake()).handle("undo mark", UtteranceSource.GLASSES_VOICE, true))
+        assertEquals(UtteranceResult.Handled("Couldn't undo: a photo upload is running. Try again in a minute."), u(Fake(failure = CommandFailure.UPLOAD_BUSY)).handle("undo mark", UtteranceSource.PHONE_VOICE, true))
     }
 
     @Test fun aSwitchedOffMicIgnoresThatSurfacesVoiceWithATruthfulReplyButNotTypedText() = kotlinx.coroutines.runBlocking<Unit> {

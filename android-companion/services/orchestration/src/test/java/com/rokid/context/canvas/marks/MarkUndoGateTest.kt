@@ -93,4 +93,55 @@ class MarkUndoGateTest {
         kotlinx.coroutines.withTimeout(10_000) { cleanup.await() }
         assertNull("deleted once the export finished", c.run("w1"))
     }
+
+    private val CACHE_LEFT = com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED
+
+    /** A photo mark `mk:e:1` linked to frame `p1`; the photo Forget (faked) removes the link row like the real one and returns [outcome]. */
+    private suspend fun photoRecorder(owed: () -> Boolean, outcome: com.rokid.context.orchestration.forget.ForgetActions.Outcome = CACHE_LEFT): MarkRecorder {
+        val r = MarkRecorder(dao, { DaoFence(0, epoch, { 0 }, { epoch }) }, { t0 }, { },
+            forgetPhotoOutcome = { dao.deleteLabel("mk:e:1"); outcome }, cleanupOwed = { owed() })
+        dao.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk:e:1", "MOMENT", "tap", "MOMENT", t0, frameId = "p1", createdAt = t0, photo = "linked"), DaoFence(0, epoch, { 0 }, { epoch }))
+        return r
+    }
+
+    /** Codex mark r2 P1-3: the photo Forget committed with cache-left, the second gate step was refused: the retry (no frame any more) keeps returning the cache-left outcome until clean. */
+    @Test fun aRetryAfterARefusedSecondGateStepStillReportsTheCleanupOwedUntilItIsClean() = runBlocking<Unit> {
+        var owed = true
+        val r = photoRecorder({ owed })
+        // the photo Forget commits (label gone); an export then blocks the gate acquisition of the second step
+        val failed = duringAnExport { r.undoMark("mk:e:1") }
+        assertTrue(failed.exceptionOrNull() is DataOpGate.ExportInProgress)
+        assertNull("the photo Forget already removed the link", dao.label("mk:e:1"))
+        assertEquals("the retry hands the notice back, not a plain DONE", CACHE_LEFT, r.undoMark("mk:e:1")?.outcome)
+        // delivered once; a later retry with the cleanup finished says nothing owed
+        assertNull(r.undoMark("mk:e:1"))
+    }
+
+    @Test fun aRetryWhoseCleanupFinishedInTheMeantimeReportsNoNotice() = runBlocking<Unit> {
+        var owed = true
+        val r = photoRecorder({ owed })
+        duringAnExport { r.undoMark("mk:e:1") }
+        owed = false
+        assertNull("clean: a plain done", r.undoMark("mk:e:1"))
+    }
+
+    @Test fun aRetryWithTheCleanupStillOwedKeepsReportingItWhileTheGateKeepsRefusing() = runBlocking<Unit> {
+        val r = photoRecorder({ true })
+        duringAnExport { r.undoMark("mk:e:1") }
+        val again = duringAnExport { r.undoMark("mk:e:1") }
+        assertTrue(again.exceptionOrNull() is DataOpGate.ExportInProgress)
+        assertEquals(CACHE_LEFT, r.undoMark("mk:e:1")?.outcome)
+    }
+
+    /** Codex mark r2 P1-1: the voice undo reports a committed cleanup notice (true), a plain undo reports none. */
+    @Test fun aVoiceUndoWhosePhotoForgetLeftCleanupReportsItToTheCaller() = runBlocking<Unit> {
+        val r = photoRecorder({ true })
+        r.onListenStart(t0)
+        // bind the pre-made photo mark to the listen
+        r.onMark(mark(1), at(t0 + 100))
+        assertTrue(r.applyVoice(listOf(VoiceMark.Undo), true, t0 + 2_000))
+        val plain = photoRecorder({ false }, com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE)
+        plain.onListenStart(t0 + 10_000)
+        assertEquals(false, plain.applyVoice(listOf(VoiceMark.Undo), true, t0 + 12_000))
+    }
 }

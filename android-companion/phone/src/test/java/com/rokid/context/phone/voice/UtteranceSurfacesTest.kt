@@ -168,6 +168,38 @@ class UtteranceSurfacesTest {
         assertEquals(before, marks())
     }
 
+    /** A phone-origin mark with a committed photo `pX`, made through [u]; returns nothing, the recorder [rec] is already installed by the caller. */
+    private suspend fun photoMark(u: Utterance, pid: String) {
+        u.asInterceptor().intercept("mark this moment", VoiceSource.PHONE, true); rec.awaitIdle()
+        val id = graph.db.canvasSlice3Dao().labels().single().labelId
+        val meta = com.rokid.context.memory.db.FrameMetaEntity(pid, "w_$pid", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = now + 500, markRef = id.removePrefix("mk:"))
+        com.rokid.context.memory.FrameIntake(graph.db).commit(com.rokid.context.memory.db.FrameEntity(pid, now + 500, "/p/$pid.jpg", "rokid_glasses"), com.rokid.context.memory.FrameRows(meta, com.rokid.context.memory.db.FrameStateEntity(pid, "PENDING", 0, null, null, null, 1)))
+    }
+
+    private val noPhone = object : com.rokid.context.canvas.marks.PhonePhotoRequester { override fun reasonNow(): String? = null; override suspend fun request(markRef: String) = true }
+
+    /** Codex mark r2 P1-1: a voice undo whose photo Forget committed but left cleanup owed is never "mark undone": the reply says the cleanup finishes by itself (every surface shares the reply). */
+    @Test fun aVoiceUndoWithCleanupStillOwedSaysSoInsteadOfAPlainMarkUndone() = runBlocking<Unit> {
+        rec = MarkRecorder(graph.db.canvasSlice3Dao(), { DaoFence(0, epoch, { 0 }, { epoch }) }, { now },
+            forgetPhotoOutcome = { com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED }, phonePhoto = noPhone)
+        val u = Utterance(MarkUtteranceCommands({ rec }, scope), { now })
+        photoMark(u, "pc")
+        assertEquals(Utterance.UNDONE_CLEANUP_PENDING, viaChatWith(u, "undo the mark").reply)
+        assertEquals("mark undone; some cleanup will finish automatically", Utterance.UNDONE_CLEANUP_PENDING)
+        assertTrue("the mark itself is gone", marks().isEmpty())
+    }
+
+    /** Codex mark r2 P3-4: an upload holding the gate is its own failure with accurate copy (it is a subclass of the save failure and used to read "a save is running"). */
+    @Test fun anUndoBlockedByAPhotoUploadSaysAnUploadIsRunningNotASave() = runBlocking<Unit> {
+        rec = MarkRecorder(graph.db.canvasSlice3Dao(), { DaoFence(0, epoch, { 0 }, { epoch }) }, { now },
+            forgetPhoto = { throw com.rokid.context.orchestration.DataOpGate.UploadInProgress() }, phonePhoto = noPhone)
+        val u = Utterance(MarkUtteranceCommands({ rec }, scope), { now })
+        photoMark(u, "pu")
+        val before = marks()
+        assertEquals("Couldn't undo: a photo upload is running. Try again in a minute.", viaChatWith(u, "undo the mark").reply)
+        assertEquals(before, marks())
+    }
+
     private suspend fun viaChatWith(u: Utterance, text: String): Outcome {
         val vm = HomeViewModel(FakeGlassesStatusSource(), FakePipelineControl(), graph.timeline, graph.asks, graph.nudges, AskService { AskOutcome.Failed("x") },
             clock = flowOf(Fixtures.NOW), storagePct = flowOf(10), zone = { Fixtures.ZONE }, utterance = u)

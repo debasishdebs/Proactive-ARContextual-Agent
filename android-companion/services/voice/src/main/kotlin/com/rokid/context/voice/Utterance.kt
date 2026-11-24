@@ -32,8 +32,9 @@ sealed interface UtteranceResult {
 }
 
 /** Why a command did not take effect (the reply says so; nothing is silently lost). */
-enum class CommandFailure { EXPORT_BUSY, SAVE_BUSY, OTHER }
-data class CommandOutcome(val noPhotoReason: String? = null, val failure: CommandFailure? = null)
+enum class CommandFailure { EXPORT_BUSY, SAVE_BUSY, UPLOAD_BUSY, OTHER }
+/** [cleanupPending] = an undo committed but some private cleanup (a cached export or a photo file) is still owed: the reply says so instead of a plain "mark undone". */
+data class CommandOutcome(val noPhotoReason: String? = null, val failure: CommandFailure? = null, val cleanupPending: Boolean = false)
 
 /** The effects of the matched commands. Implemented over the mark recorder; must not block (the writes run on the implementation's own scope). */
 interface UtteranceCommands {
@@ -90,7 +91,7 @@ class Utterance(
         val out = commands.apply(parsed.commands, source, clock())
         out.failure?.let { return UtteranceResult.Handled(failureReply(parsed.commands, it)) } // a failed write is never confirmed, and nothing else is asked
         val rest = parsed.askText
-        return if (rest == null) UtteranceResult.Handled(reply(parsed.commands, out.noPhotoReason)) else UtteranceResult.Ask(rest)
+        return if (rest == null) UtteranceResult.Handled(reply(parsed.commands, out.noPhotoReason, out.cleanupPending)) else UtteranceResult.Ask(rest)
     }
 
     /** The [VoicePipeline] seam over [handle] (the pipeline has no command logic of its own). */
@@ -117,12 +118,13 @@ class Utterance(
         else when (f) {
             CommandFailure.EXPORT_BUSY -> "Couldn't undo: an export is running. Try again in a minute."
             CommandFailure.SAVE_BUSY -> "Couldn't undo: a save is running. Try again in a minute."
+            CommandFailure.UPLOAD_BUSY -> "Couldn't undo: a photo upload is running. Try again in a minute."
             CommandFailure.OTHER -> COULDNT_UNDO
         }
 
-    private fun reply(cmds: List<MarkCommand>, noPhoto: String?): String {
+    private fun reply(cmds: List<MarkCommand>, noPhoto: String?, cleanupPending: Boolean): String {
         val last = cmds.last()
-        if (last is MarkCommand.Undo) return UNDONE
+        if (last is MarkCommand.Undo) return if (cleanupPending) UNDONE_CLEANUP_PENDING else UNDONE
         val intent = cmds.firstNotNullOfOrNull { (it as? MarkCommand.Mark)?.intent ?: (it as? MarkCommand.Retro)?.intent }
         val base = if (intent != null) "marked · $intent" else MARKED
         return if (noPhoto == null) base else "$base (no photo: ${reasonWords(noPhoto)})"
@@ -143,5 +145,5 @@ class Utterance(
         const val PAUSED_PHONE_ONLY = "Paused on the phone; the glasses will follow when they reconnect"; const val RESUMED_PHONE_ONLY = "Your phone pause was cleared; the glasses will follow when they reconnect"
         const val ALREADY_PAUSED = "Already paused by you"; const val ALREADY_CAPTURING = "No pause is set on the phone"
         const val COULDNT_PAUSE = "Couldn't pause capture. Try again."; const val COULDNT_RESUME = "Couldn't resume capture. Try again."
-        const val MARKED = "✓ marked"; const val UNDONE = "mark undone"; const val COULDNT_UNDO = "Couldn't undo the mark. Try again."; const val COULDNT_MARK = "Couldn't mark this moment. Try again." }
+        const val MARKED = "✓ marked"; const val UNDONE = "mark undone"; const val UNDONE_CLEANUP_PENDING = "mark undone; some cleanup will finish automatically"; const val COULDNT_UNDO = "Couldn't undo the mark. Try again."; const val COULDNT_MARK = "Couldn't mark this moment. Try again." }
 }
