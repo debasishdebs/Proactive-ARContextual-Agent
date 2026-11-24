@@ -123,6 +123,8 @@ class Hub(
     private val placeClear: () -> Unit = {},
     /** B2: where the place card sits on the glasses HUD (Settings > Place Guide, Developer mode). CENTRE (the default) sends nothing extra. */
     private val placeSide: () -> com.rokid.context.core.model.PlaceSide = { com.rokid.context.core.model.PlaceSide.CENTRE },
+    /** B3: the delivery state of a place card (spec 2026-11-24): SENT when a state frame carrying it was sent, NOT_SENT_* when it ended (12 s, replaced, withdrawn) without one. [cardId] is the card's own id; [state] a [com.rokid.context.memory.place.CardDelivery] value. Writes the phone-only card history. */
+    private val placeDelivery: (cardId: String, state: String) -> Unit = { _, _ -> },
     /** Clears the card only if it is still the instance [cardId]; false = a different (newer) card or none, nothing cleared. Atomic in production (PlaceCardHolder.clearIf). */
     private val placeClearIf: (cardId: String) -> Boolean = { id -> if (placeCards.value?.cardId == id) { placeClear(); true } else false },
     /** v3.1: the delivered suggestion card (the same wire overlay as a place card, id `sg_...`); [suggestionClearIf] drops it by id; [onSuggestionDismissed] = the wearer dismissed it by head motion (feedback + withdraw everywhere). */
@@ -658,16 +660,42 @@ class Hub(
             ),
         )
         set(markDirty = false) { it.copy(lastFrame = frame) }
-        if (s.link.carriesData && link.send(Channels.STATE, Wire.encode(frame))) actions.onShown(frame.overlay)
+        if (s.link.carriesData && link.send(Channels.STATE, Wire.encode(frame))) { actions.onShown(frame.overlay); onPlaceFrameSent(frame.overlay) }
     }
 
     private var placeExpiry: Job? = null
 
+    /** The card whose delivery is not settled yet (a place card, never a suggestion). Guarded by [placeLock]. */
+    private var placePending: String? = null
+    private val placeLock = Any()
+
+    /** B3: a state frame carrying the pending place card was sent: SENT, once. (A sent frame is the phone's delivery; a glasses dismissal is not proof of anything and changes nothing.) */
+    private fun onPlaceFrameSent(o: Overlay?) {
+        val id = (o as? Overlay.Nudge)?.place?.id ?: return
+        val hit = synchronized(placeLock) { if (placePending == id) { placePending = null; true } else false }
+        if (hit) placeDelivery(id, com.rokid.context.memory.place.CardDelivery.SENT)
+    }
+
+    /** B3: the card ended (12 s, replaced or withdrawn) and no frame carried it: why it never reached the glasses. */
+    private fun resolvePlacePending() {
+        val id = synchronized(placeLock) { placePending.also { placePending = null } } ?: return
+        val d = com.rokid.context.memory.place.CardDelivery
+        val why = when {
+            !_state.value.link.carriesData -> d.NOT_SENT_LINK
+            hudHost() == com.rokid.context.core.model.HudHost.NEXUS -> d.NOT_SENT_HOST
+            zoneApproach() || zoneEnforce() -> d.NOT_SENT_ZONE
+            else -> d.NOT_SENT_BUSY // another message (an answer, a toast) had the glasses
+        }
+        placeDelivery(id, why)
+    }
+
     private fun onPlaceCard(c: com.rokid.context.work.frames.place.PlaceCard?) {
         placeExpiry?.cancel(); placeExpiry = null
+        resolvePlacePending() // the card before this one (replaced, withdrawn or expired) that no frame carried
         if (c != null) {
             if (c.confidence == com.rokid.context.work.frames.place.PlaceConfidence.PHOTO) PcLog.i(TAG, "place card up (photo)") else PcLog.i(TAG, "place card up (nearby)")
-            placeExpiry = scope.launch { delay(PlaceCardInfo.SHOW_MS); placeClear() }
+            if (c.cardId.isNotEmpty()) synchronized(placeLock) { placePending = c.cardId }
+            placeExpiry = scope.launch { delay(PlaceCardInfo.SHOW_MS); resolvePlacePending(); placeClear() }
         }
         broadcaster.markDirty()
     }

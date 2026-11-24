@@ -111,6 +111,7 @@ class HubTest {
         placeCards: kotlinx.coroutines.flow.StateFlow<com.rokid.context.work.frames.place.PlaceCard?> = MutableStateFlow(null),
         placeClear: () -> Unit = {},
         placeSide: () -> com.rokid.context.core.model.PlaceSide = { com.rokid.context.core.model.PlaceSide.CENTRE },
+        placeDelivery: (String, String) -> Unit = { _, _ -> },
         suggestionCards: kotlinx.coroutines.flow.StateFlow<SuggestionHudHolder.Shown?> = MutableStateFlow(null),
         suggestionClearIf: (String) -> Boolean = { false },
         onSuggestionDismissed: (String) -> Unit = {},
@@ -128,7 +129,7 @@ class HubTest {
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
             phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onMarkPhoto = onMarkPhoto, onGlassesListenStart = onGlassesListenStart,
             reopenEnabled = reopenEnabled, paired = paired, onPositiveSignal = onPositiveSignal, inFront = inFront,
-            placeCards = placeCards, placeClear = placeClear, placeSide = placeSide, suggestionCards = suggestionCards, suggestionClearIf = suggestionClearIf, onSuggestionDismissed = onSuggestionDismissed, zoneApproach = zoneApproach, hudHost = hudHost, onStopped = onStopped,
+            placeCards = placeCards, placeClear = placeClear, placeSide = placeSide, placeDelivery = placeDelivery, suggestionCards = suggestionCards, suggestionClearIf = suggestionClearIf, onSuggestionDismissed = onSuggestionDismissed, zoneApproach = zoneApproach, hudHost = hudHost, onStopped = onStopped,
         )
             .also { if (start) { it.start(userInitiated = true); runCurrent() } }
     }
@@ -970,6 +971,59 @@ class HubTest {
         hub(link, placeCards = cards, zoneApproach = { true }); link.emitReady(); runCurrent()
         cards.value = placeCard; advanceTimeBy(300)
         assertNull(link.lastFrame().overlay)
+    }
+
+    // ---- B3: the delivery state of a place card (the phone-only card history) ----
+
+    private fun TestScope.deliveryRig(link: FakeGlassesLink, cards: MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>, got: MutableList<Pair<String, String>>, host: com.rokid.context.core.model.HudHost = com.rokid.context.core.model.HudHost.PCA, zone: () -> Boolean = { false }) =
+        hub(link, placeCards = cards, placeClear = { cards.value = null }, placeDelivery = { id, st -> got += id to st }, hudHost = { host }, zoneApproach = zone)
+
+    @Test fun placeDelivery_sentFrameMarksSentOnce() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null); val got = mutableListOf<Pair<String, String>>()
+        deliveryRig(link, cards, got); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(300)
+        assertEquals(listOf("pc1" to "SENT"), got)
+        advanceTimeBy(13_000) // heartbeat frames and the 12 s expiry add nothing: a sent card is settled
+        assertEquals(listOf("pc1" to "SENT"), got)
+    }
+
+    @Test fun placeDelivery_linkDown_notSentLink() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null); val got = mutableListOf<Pair<String, String>>()
+        deliveryRig(link, cards, got); link.setState(com.rokid.context.core.model.LinkState.CONNECTING); runCurrent() // the link carries no data
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(13_000)
+        assertEquals(listOf("pc1" to "NOT_SENT_LINK"), got)
+    }
+
+    @Test fun placeDelivery_hostNexus_notSentHost() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null); val got = mutableListOf<Pair<String, String>>()
+        deliveryRig(link, cards, got, host = com.rokid.context.core.model.HudHost.NEXUS); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(13_000)
+        assertEquals(listOf("pc1" to "NOT_SENT_HOST"), got)
+    }
+
+    @Test fun placeDelivery_zone_notSentZone() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null); val got = mutableListOf<Pair<String, String>>()
+        deliveryRig(link, cards, got, zone = { true }); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(13_000)
+        assertEquals(listOf("pc1" to "NOT_SENT_ZONE"), got)
+    }
+
+    @Test fun placeDelivery_replacedWhileUnsent_resolvesTheOldOneOnly() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null); val got = mutableListOf<Pair<String, String>>()
+        deliveryRig(link, cards, got); link.setState(com.rokid.context.core.model.LinkState.CONNECTING); runCurrent() // link down
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(2_000)
+        cards.value = placeCard.copy(cardId = "pc2"); advanceTimeBy(2_000)
+        assertEquals(listOf("pc1" to "NOT_SENT_LINK"), got)
+        advanceTimeBy(13_000)
+        assertEquals(listOf("pc1" to "NOT_SENT_LINK", "pc2" to "NOT_SENT_LINK"), got)
+    }
+
+    @Test fun placeDelivery_aGlassesDismissalChangesNothing() = runTest {
+        val link = FakeGlassesLink(); val cards = MutableStateFlow<com.rokid.context.work.frames.place.PlaceCard?>(null); val got = mutableListOf<Pair<String, String>>()
+        deliveryRig(link, cards, got); link.emitReady(); runCurrent(); advanceTimeBy(300)
+        cards.value = placeCard.copy(cardId = "pc1"); advanceTimeBy(300)
+        link.emit(GlassesEvent.Cmd(Command.DismissPlace("Charminar", "pc1"))); runCurrent()
+        assertEquals("only the SENT of the frame, nothing for the dismissal", listOf("pc1" to "SENT"), got)
     }
 
     // ---- B2: the place / suggestion overlay carries the Place Guide card side (null for CENTRE, so the default frame is unchanged) ----
