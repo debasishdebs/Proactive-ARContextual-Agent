@@ -78,7 +78,7 @@ class NudgePreview(private val n: NudgeEntity, private val cited: Cited, private
     override fun sections() = if (n.redacted) listOf(TextSection(ctx.full(n.ts), REDACTED_NUDGE), AudioSection) else listOfNotNull(
         TextSection(ctx.full(n.ts), n.text),
         TextSection("Why", n.why).takeIf { n.why.isNotBlank() },
-        SourcesSection("Based on", cited.items).takeIf { cited.items.isNotEmpty() },
+        SourcesSection("Based on", cited.items, cited.missing).takeIf { cited.items.isNotEmpty() || cited.missing > 0 }, // retention r1: a nudge whose sources all expired still says so
         ProposalSection(n.id),
         AudioSection,
     )

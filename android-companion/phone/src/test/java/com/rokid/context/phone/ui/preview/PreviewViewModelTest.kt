@@ -40,6 +40,15 @@ class PreviewViewModelTest {
         assertNull(vm.state.value.item)
     }
 
+    /** Retention r1 (P3-9): a nudge whose every source expired keeps its "Based on" section, with the missing count, so the expiry wording shows. */
+    @Test fun aNudgeWhoseSourcesAllExpiredStillShowsTheBasedOnSectionWithTheMissingCount() = runBlocking<Unit> {
+        val data = FakeActivityData(nudges = listOf(Fixtures.nudge("n1", t).copy(sourceIdsJson = """["gone1","gone2"]""")), mems = emptyList())
+        val vm = vm(data, PreviewRef(RefKind.NUDGE, "n1"))
+        withTimeout(5_000) { vm.state.first { !it.loading && it.item != null } }
+        val based = vm.state.value.item!!.sections().filterIsInstance<PreviewSection.SourcesSection>().single()
+        assertEquals(0, based.items.size); assertEquals(2, based.missing)
+    }
+
     @Test fun aSlowOlderLoadNeverOverwritesTheNewerRedactedOne() = runBlocking<Unit> {
         val data = FakeActivityData(asks = listOf(Fixtures.ask("a1", t, sources = """["m1"]""", rating = 1)), mems = listOf(Fixtures.memory("m1", "Keys", t)))
         val vm = vm(data, PreviewRef(RefKind.ASK, "a1"))
