@@ -69,6 +69,8 @@ class PinMomentLinksTest {
     }
     @After fun tearDown() { ForgetListeners.clearForTests(); db.close(); rawPrefs.edit().clear().commit() }
 
+    /** A photo that is simply gone (not forgotten, not expired: no tombstone, no expiry marker), so the Moment of its second has no photo left. Retention v3 expiry no longer makes a Moment dead for a pin (r2-9). */
+    private suspend fun lose(vararg frames: String) = frames.forEach { db.forgetDao().deleteFrame(it) }
     private fun names() = store.pins().map { it.name }
     private fun links() = store.pins().map { it.momentId }
     private val pairs get() = mapOf(ids[0] to id1, ids[1] to id2)
@@ -94,7 +96,7 @@ class PinMomentLinksTest {
     }
 
     @Test fun aMomentOutsideTheTargetThatGoesForAnotherReasonDuringTheOperationKeepsItsPin() = runBlocking<Unit> {
-        explicit(target = only1) { fx.service.forgetMoment("a"); fx.service.expirePhotos(listOf("b")) } // b expires (retention) while the operation runs
+        explicit(target = only1) { fx.service.forgetMoment("a"); lose("b") } // b is lost while the operation runs
         assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull("link cleared, pin kept", store.pins().first().momentId)
     }
 
@@ -117,13 +119,13 @@ class PinMomentLinksTest {
         ForgetListeners.clearForTests()
         assertTrue(store.arm(Arming("old", "forget", true, emptyMap(), mapOf(ids[0] to id1))))
         fx.service.forgetMoment("a") // the Forget committed, the cascade did not run (crash)
-        fx.service.expirePhotos(listOf("b")) // later, retention takes pin 1's Moment
+        lose("b") // later, pin 1's Moment loses its photo
         assertEquals(1, resolve())
         assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull(store.arming())
     }
 
     @Test fun aRangeResumeKeepsItsExactSetEvenThoughNoRangeFilterIsLeft() = runBlocking<Unit> {
-        // the range armed only pin 0 and committed with dead {pin 0}; pin 1's Moment is also gone now (retention): the resume must not take it
+        // the range armed only pin 0 and committed with dead {pin 0}; pin 1's Moment is also gone now (lost): the resume must not take it
         ForgetListeners.clearForTests()
         assertTrue(store.arm(Arming("rng", "forget", true, emptyMap(), mapOf(ids[0] to id1))))
         fx.service.forgetMoment("a"); fx.service.forgetMoment("b")
@@ -135,7 +137,7 @@ class PinMomentLinksTest {
         ForgetListeners.clearForTests()
         assertTrue(store.arm(Arming("never", "forget", false, pairs)))
         fx.service.forgetMoment("a") // a Forget by another path; the old arming never committed
-        explicit(target = none) { fx.service.expirePhotos(listOf("b")) }
+        explicit(target = none) { lose("b") }
         assertEquals(3, store.pins().size); assertNull(store.arming())
     }
 
@@ -190,7 +192,7 @@ class PinMomentLinksTest {
         val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
         PinMomentLinks.abortWipeStore(store, op); PinMomentLinks.endWipe(op) // commitWipe threw: nothing was deleted
         assertNull(store.arming())
-        fx.service.expirePhotos(listOf("b")) // retention: the listener sweep clears the link
+        lose("b") // photo lost: the listener sweep clears the link
         explicit(target = only1) { fx.service.forgetMoment("a") } // an unrelated explicit Forget of the other Moment
         assertEquals(listOf("Pin 1", "Pin 2"), names()); assertNull("pin 1 keeps no link but is NOT deleted", store.pins().first().momentId)
     }
@@ -283,7 +285,7 @@ class PinMomentLinksTest {
 
     @Test fun aCrashBeforeTheEpochCommitThenASweepDropsTheStaleWipeArmingAndClearsTheLinks() = runBlocking<Unit> {
         val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag }); PinMomentLinks.endWipe(op) // dies before commitWipe: no wipe pending
-        fx.service.expirePhotos(listOf("a", "b")) // retention
+        lose("a", "b") // photos lost
         sweep()
         assertNull(store.arming()); assertEquals(3, store.pins().size); assertTrue("links are cleared, not kept for ever", links().all { it == null })
     }
@@ -291,7 +293,7 @@ class PinMomentLinksTest {
     @Test fun aStaleWipeArmingThenRetentionThenAFreshDeleteAllDeletesOnlyPinsOfThatDeleteAll() = runBlocking<Unit> {
         ForgetListeners.clearForTests()
         val stale = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag }); PinMomentLinks.endWipe(stale)
-        fx.service.expirePhotos(listOf("b")) // retention takes pin 1's Moment while the stale arming sits there (no sweep ran)
+        lose("b") // pin 1's Moment loses its photo while the stale arming sits there (no sweep ran)
         val op = PinMomentLinks.beginWipeStore(store, alive, save, resume = false, wipePending = { pendingFlag })
         assertEquals("the stale arming is gone; only pin 0 (alive now) is armed", mapOf(ids[0] to id1), store.arming()!!.pairs)
         assertTrue(PinMomentLinks.wipeCommittedStore(store, op)); db.wipeDao().wipeMemory()
