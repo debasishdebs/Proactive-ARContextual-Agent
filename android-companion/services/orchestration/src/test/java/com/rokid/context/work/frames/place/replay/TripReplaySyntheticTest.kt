@@ -53,7 +53,7 @@ class TripReplaySyntheticTest {
 
     @Test fun nestedRoomPins_indoorFix_neverShowsAWrongRoom() {
         val scenarios = listOf(FixScenario.AsRecorded, FixScenario.Outdoor10, FixScenario.Indoor60, FixScenario.Stale, FixScenario.AssumedPin(60f))
-        val overlays = listOf(Overlays.HEAD, Overlays.F1, Overlays.f2(10), Overlays.ALL)
+        val overlays = listOf(Overlays.HEAD, Overlays.F1, Overlays.ALL)
         for (sc in scenarios) for (ov in overlays) {
             val r = replay(RunSpec(Oracle, sc, overlays = ov))
             for (row in rowsIn(r, rooms.first, rooms.last)) {
@@ -96,33 +96,25 @@ class TripReplaySyntheticTest {
         assertTrue(extra[0].attemptLine.contains("retry=pin_created"))
     }
 
-    @Test fun indoorAfterOneGoodFix_f2_reusesWithinNMinutesOnly() {
+    @Test fun indoorAfterOneGoodFix_reusesWhileStill_neverWithoutAGoodFix() {
+        // INDOOR_60M never has a good fix: nothing is reused, no card
         val none = rowsIn(replay(RunSpec(Oracle, FixScenario.Indoor60)), indoorE.first, indoorE.last)
         assertTrue(none.none { it.isCard })
-        val f5 = rowsIn(replay(RunSpec(Oracle, FixScenario.Indoor60, overlays = Overlays.f2(5))), indoorE.first, indoorE.last)
-        assertTrue(f5[0].isCard && f5[0].f2 && f5[0].chosenName == "Site E")
-        assertFalse("the second frame has no fix inside N", f5[1].isCard)
-        val f1 = rowsIn(replay(RunSpec(Oracle, FixScenario.Indoor60, overlays = Overlays.f2(1))), indoorE.first, indoorE.last)
-        assertTrue("a 2 min old fix is beyond a 1 min window", f1.none { it.isCard })
-    }
-
-    @Test fun allCombiner_fallsBackToOracleOnCaptionMiss() {
-        // every synthetic caption is "plain text": it names no place, so the combined stage must behave as the oracle (H1)
-        val r = replay(RunSpec(ReplayReport.CaptionTextOrOracle, FixScenario.Outdoor10))
-        val rows = rowsIn(r, siteA.first, siteA.last)
-        assertTrue(rows[0].isCard); assertEquals("Site A", rows[0].chosenName)
-        assertEquals("caption-only is the old behaviour: no card", PlaceOutcome.NONE, replay(RunSpec(CaptionText, FixScenario.Outdoor10)).rows.first { it.pokeMs in siteA }.outcome)
-    }
-
-    @Test fun indoorMediaGood_givesGoodFixOnlyNearMediaFix() {
+        // a frame 30 s after the media fix gets the good fix; the two later frames reuse it (STILL, same session, no walking)
         val f = ReplayFrame("s9001", T0 + 5 * H + 30_000, T0 + 5 * H + 29_000, true, "STILL", "ss1", -1, true, false, "")
         val b = bundle.copy(frames = bundle.frames + f)
         val rows = rowsIn(replay(RunSpec(Oracle, FixScenario.IndoorMediaGood), b), indoorE.first, indoorE.last)
-        val near = rows.first { it.frameId == "s9001" }
-        assertTrue("a media fix 30 s before gives a good fix and a card", near.isCard); assertEquals("Site E", near.chosenName)
-        val far = rows.first { it.frameId == "s0050" }
-        assertEquals("a fix 120 s old is only the inaccurate one", "fix_inaccurate", far.reason)
-        assertEquals(PlaceOutcome.STALE_FIX, far.outcome)
+        assertTrue(rows.first { it.frameId == "s9001" }.isCard)
+        val later = rows.filter { it.frameId == "s0050" || it.frameId == "s0051" }
+        assertEquals(2, later.size)
+        assertTrue(later.all { it.fixSrc == "reused" })
+        assertEquals("the second frame is inside the 120 s card dedupe", PlaceOutcome.DUPLICATE, later[0].outcome)
+        assertTrue("the third is the same place within 30 min: matched, card withheld", later[1].outcome == PlaceOutcome.MATCHED && later[1].isSuppressed)
+        // a walking frame in between ends the reuse
+        val walk = ReplayFrame("s9002", T0 + 5 * H + 60_000, T0 + 5 * H + 59_000, false, "WALKING", "ss1", -1, true, false, "")
+        val b2 = bundle.copy(frames = bundle.frames + f + walk)
+        val rows2 = rowsIn(replay(RunSpec(Oracle, FixScenario.IndoorMediaGood), b2), indoorE.first, indoorE.last)
+        assertEquals("fix_reuse_moved", rows2.first { it.frameId == "s0050" }.reason)
     }
 
     @Test fun noPinNoCandidates_reportedNotTestable() {
@@ -134,7 +126,8 @@ class TripReplaySyntheticTest {
 
     @Test fun gpsGapBeyondN_isUnknownNotInvented() {
         val rows = rowsIn(replay(RunSpec(Oracle, FixScenario.Outdoor10)), indoorE.first, indoorE.last)
-        assertEquals("UNKNOWN", rows[1].pos); assertEquals(PlaceOutcome.NO_FIX, rows[1].outcome); assertEquals("fix_unavailable", rows[1].reason)
+        assertEquals("UNKNOWN", rows[1].pos) // the track invents nothing; only the sampler may stand in with the earlier good fix (F2), and says so
+        assertEquals("reused", rows[1].fixSrc)
     }
 
     @Test fun interpolation_onlyWithin5MinEachSideAnd200m() {

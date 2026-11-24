@@ -54,7 +54,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
         var now = 0L
         val store = ReplayFrameStore(bundle.frames, { now })
         val pack = ReplayPinPack(bundle, spec.activation, spec.sites) { now }
-        val fixSource = ReplayFixSource(bundle, track, spec.scenario, spec.nMs, spec.overlays.f2Ms)
+        val fixSource = ReplayFixSource(bundle, track, spec.scenario, spec.nMs)
         val matcher = spec.stage.create(bundle)
         val flight = PlaceFlight()
         val logs = ArrayList<String>()
@@ -70,7 +70,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             saveMemory = { true }, onCard = {}, clock = { now }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
             backend = { BackendChoice.ONLINE }, admit = { true }, photoAllowed = { true }, zones = { emptyList() }, flight = flight,
             log = { logs += it }, stats = {}, elapsed = { now },
-            dedupeV2On = { !spec.legacyDedupe }, retryOn = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
+            dedupeV2On = { !spec.legacyDedupe }, retryOn = { !spec.legacyDedupe }, fixReuseOn = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
         )
 
         val main = sampler()

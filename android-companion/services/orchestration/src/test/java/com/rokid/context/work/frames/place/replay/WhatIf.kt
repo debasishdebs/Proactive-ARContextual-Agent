@@ -8,20 +8,19 @@ import com.rokid.context.work.frames.place.PlaceOutcome
  * Test-side what-ifs (plan section 6). Each changes exactly one thing AROUND the real sampler; none changes app code. When a fix is built for real its overlay is deleted and the same replay
  * must give the same verdict (the overlay is the executable spec). F5 is the [CaptionText] match stage.
  */
-data class Overlays(val f1: Boolean = false, val f2Ms: Long? = null) {
+data class Overlays(val f1: Boolean = false) {
     val label: String get() = when {
         this == HEAD -> "HEAD"
         this == ALL -> "ALL"
-        else -> listOfNotNull(if (f1) "F1" else null, f2Ms?.let { "F2(${it / 60_000}min)" }).joinToString("+")
+        else -> listOfNotNull(if (f1) "F1" else null).joinToString("+")
     }
 
     companion object {
         val HEAD = Overlays()
         val F1 = Overlays(f1 = true)
-        fun f2(min: Long) = Overlays(f2Ms = min * 60_000)
-        /** F1 + F2(10 min) (F3 and F4 are built into the sampler; + F5 is the CaptionText stage, chosen by the run). */
-        val ALL = Overlays(f1 = true, f2Ms = 10 * 60_000)
-        val SINGLES = listOf(F1, f2(10))
+        /** F1 only (F2, F3 and F4 are built into the sampler; + F5 is the CaptionText stage, chosen by the run). */
+        val ALL = Overlays(f1 = true)
+        val SINGLES = listOf(F1)
     }
 }
 

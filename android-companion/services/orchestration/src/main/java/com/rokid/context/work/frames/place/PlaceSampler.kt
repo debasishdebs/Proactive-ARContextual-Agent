@@ -95,6 +95,10 @@ class PlaceFlight {
     @Volatile internal var lastAttempt: Attempt? = null
     internal data class Attempt(val lat: Double, val lon: Double, val at: Long)
 
+    /** F2: the newest fix that passed the strict gate and the zone check, in memory only: where, how accurate, when (monotonic), in which capture session, and when its frames were received (for [PlaceFrameStore.movedSince]). */
+    internal data class GoodFix(val lat: Double, val lon: Double, val accM: Float, val atElapsed: Long, val sessionId: String?, val receivedAtMs: Long, val generation: Long)
+    @Volatile internal var good: GoodFix? = null
+
     /** F3: the last weak answer (NONE, CONTRACT, LOW_CONFIDENCE): where, when and how many in a row. In memory only. */
     internal data class Weak(val lat: Double, val lon: Double, val at: Long, val streak: Int)
     @Volatile internal var weak: Weak? = null
@@ -258,7 +262,7 @@ class PlaceSampler(
         fence.launch(scope) { try { delay(afterMs.coerceIn(0L, MIN_CALL_GAP_MS)) } finally { delayedPending.set(false) }; start(r) }
     }
 
-    fun close() { closed = true; job?.cancel(); tr.shadowPending?.cancel(); shadowScope.coroutineContext[Job]?.cancel() }
+    fun close() { closed = true; flight.good = null; job?.cancel(); tr.shadowPending?.cancel(); shadowScope.coroutineContext[Job]?.cancel() }
 
     private fun live(gen: Long) = !closed && enabled() && pipelineOn() && generation() == gen
 
@@ -357,15 +361,33 @@ class PlaceSampler(
         else if (cellRetryFrame == f.frameId) { tr.retry = "cell_retry"; cellRetryFrame = null }
         if (retry == null && f.frameId in handled) { tr.reason = "already_handled"; return PlaceOutcome.SEEN }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the fix is asked for
-        val fx = fix() ?: run { tr.reason = "fix_unavailable"; return PlaceOutcome.NO_FIX }
-        tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM); tr.fixSrc = "fresh"
-        tr.v2 = dedupeV2On(); tr.fxLat = fx.lat; tr.fxLon = fx.lon; tr.fxAcc = fx.accuracyM; tr.nowAt = now
-        if (fx.ageMs < 0 || fx.ageMs > MAX_FIX_AGE_MS || fx.accuracyM.isNaN() || fx.accuracyM > MAX_FIX_ACCURACY_M || !fx.lat.isFinite() || !fx.lon.isFinite()) {
-            tr.reason = if (fx.ageMs < 0) "fix_age_negative" else if (fx.ageMs > MAX_FIX_AGE_MS) "fix_too_old" else if (!fx.lat.isFinite() || !fx.lon.isFinite()) "fix_not_finite" else "fix_inaccurate"
-            return PlaceOutcome.STALE_FIX
+        val raw = fix()
+        if (raw != null) { tr.fixAgeB = bucketAgeMs(raw.ageMs); tr.accB = bucketAccuracyM(raw.accuracyM) }
+        val strictReason = when {
+            raw == null -> "fix_unavailable"
+            raw.ageMs < 0 -> "fix_age_negative"
+            raw.ageMs > MAX_FIX_AGE_MS -> "fix_too_old"
+            raw.accuracyM.isNaN() || raw.accuracyM > MAX_FIX_ACCURACY_M -> "fix_inaccurate"
+            !raw.lat.isFinite() || !raw.lon.isFinite() -> "fix_not_finite"
+            else -> null
         }
+        val fx: PlaceFix
+        if (strictReason == null) { fx = raw!!; tr.fixSrc = "fresh" }
+        else {
+            // F2: indoors the fix is often missing or too old or too coarse while the wearer has not moved: the last good fix may stand in for it (only the candidate list and the zone judgement use it; pin-first never does).
+            val re = if (fixReuseOn()) reusedFix(f, raw, gen) else null
+            if (re?.fix == null) {
+                tr.reason = re?.refusal ?: strictReason
+                if (raw != null) { tr.fixSrc = "none" } else tr.fixSrc = "none"
+                return if (raw == null) PlaceOutcome.NO_FIX else PlaceOutcome.STALE_FIX
+            }
+            fx = re.fix; tr.fixSrc = "reused"; tr.fixRealAgeB = bucketRealAgeMs(re.realAgeMs); tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM)
+        }
+        if (tr.fixSrc == "fresh") { tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM) }
+        tr.v2 = dedupeV2On(); tr.fxLat = fx.lat; tr.fxLon = fx.lon; tr.fxAcc = fx.accuracyM; tr.nowAt = now
         // S2: the fix is judged against the zones itself (box + buffer + approach margin, accuracy against the user, unreadable zones block), before the cell fetch or any upload.
         if (com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(try { zones() } catch (c: CancellationException) { throw c } catch (e: Exception) { null }, fx.lat, fx.lon, fx.accuracyM)) { tr.reason = "zone_fix"; return PlaceOutcome.ZONE }
+        if (tr.fixSrc == "fresh") flight.good = PlaceFlight.GoodFix(fx.lat, fx.lon, fx.accuracyM, elapsed() - fx.ageMs, f.sessionId, now - fx.ageMs, gen) // the zone judged it first: a zone fix is never kept
         stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
         if (f.frameId !in handled) remember(f.frameId)
         if (tr.v2) seedFromHistory(now)
@@ -526,6 +548,25 @@ class PlaceSampler(
         return PlaceOutcome.NEARBY
     }
 
+    // ---- F2 fix reuse ----
+
+    private class Reuse(val fix: PlaceFix?, val refusal: String?, val realAgeMs: Long)
+
+    /** The last good fix as a stand-in for the current one, or the fixed reason it is refused (null refusal = there was nothing to reuse). */
+    private suspend fun reusedFix(f: PlaceFrame, current: PlaceFix?, gen: Long): Reuse {
+        val g = flight.good?.takeIf { it.generation == gen } ?: return Reuse(null, null, 0)
+        val age = (elapsed() - g.atElapsed).coerceAtLeast(0L)
+        fun no(r: String) = Reuse(null, r, age)
+        if (age > FIX_REUSE_MAX_MS) return no("fix_reuse_too_old")
+        if (f.motion != "STILL") return no("fix_reuse_not_still")
+        if (f.sessionId == null || f.sessionId != g.sessionId) return no("fix_reuse_session")
+        if (store.movedSince(g.receivedAtMs)) return no("fix_reuse_moved")
+        val eff = g.accM + REUSE_GROWTH_M_PER_MIN * (age / 60_000f)
+        if (eff > MAX_FIX_ACCURACY_M) return no("fix_reuse_inaccurate")
+        if (current != null && current.lat.isFinite() && current.lon.isFinite() && !current.accuracyM.isNaN() && Geo.distanceM(current.lat, current.lon, g.lat, g.lon) > current.accuracyM + eff) return no("fix_reuse_conflict")
+        return Reuse(PlaceFix(g.lat, g.lon, 0L, eff), null, age)
+    }
+
     // ---- F3 dedupe v2 ----
 
     /** A call reached a verdict that is no card (NONE, CONTRACT, LOW_CONFIDENCE): opens or lengthens the short back-off window. FAILED, NOT_ADMITTED and DROPPED set nothing. */
@@ -602,6 +643,8 @@ class PlaceSampler(
         const val MIN_CALL_GAP_MS = 20_000L
         const val DEDUPE_MS = 120_000L
         private val PACK_MISS = setOf(com.rokid.context.memory.place.CellOutcome.FAILED, com.rokid.context.memory.place.CellOutcome.OFFLINE, com.rokid.context.memory.place.CellOutcome.PARTIAL)
+        const val FIX_REUSE_MAX_MS = 10 * 60_000L
+        const val REUSE_GROWTH_M_PER_MIN = 4f
         const val DEDUPE_M = 30.0
         const val ONCE_PER_PLACE_MS = 30 * 60_000L
         const val WEAK_STREAK_RESET_MS = 10 * 60_000L

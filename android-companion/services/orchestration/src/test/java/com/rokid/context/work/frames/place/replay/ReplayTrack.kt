@@ -67,7 +67,7 @@ data class FixResult(val fix: PlaceFix?, val pos: TrackPos?, val accM: Float, va
     val assumed get() = pos?.assumed == true
 }
 
-class ReplayFixSource(private val bundle: ReplayBundle, private val track: ReplayTrack, private val scenario: FixScenario, private val nMs: Long = ReplayTrack.FIVE_MIN, private val f2Ms: Long? = null) {
+class ReplayFixSource(private val bundle: ReplayBundle, private val track: ReplayTrack, private val scenario: FixScenario, private val nMs: Long = ReplayTrack.FIVE_MIN) {
     /** The fix for the frame [f] at replay time [now]. */
     fun fixAt(now: Long, f: ReplayFrame?): FixResult {
         val t = f?.createdAt ?: now
@@ -85,11 +85,6 @@ class ReplayFixSource(private val bundle: ReplayBundle, private val track: Repla
         }
         if (pos != null && scenario == FixScenario.Stale) age = maxOf(61_000L, pos.dtMs)
         if (pos == null) return FixResult(null, null, acc, false)
-        // F2: a stale or inaccurate fix on a STILL dwell frame is replaced by a good fix from at most f2Ms earlier (age forced to 0).
-        if (f2Ms != null && f != null && f.motion == "STILL" && (acc > PlaceSampler.MAX_FIX_ACCURACY_M || age > PlaceSampler.MAX_FIX_AGE_MS)) {
-            val good = track.causal(t)
-            if (good != null && good.dtMs <= f2Ms) return FixResult(PlaceFix(good.lat, good.lon, 0, 15f), good, 15f, true)
-        }
         return FixResult(PlaceFix(pos.lat, pos.lon, age, acc), pos, acc, false)
     }
 
