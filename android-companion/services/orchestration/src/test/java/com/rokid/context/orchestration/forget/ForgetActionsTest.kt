@@ -17,6 +17,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -151,6 +152,38 @@ class ForgetActionsTest {
         assertTrue(rows.none { "1234" in it.payload || "diary" in it.payload || "Secret" in it.payload })
         assertTrue(rows.single { it.id == live.id }.payload.contains("remember the milk"))
         q.clearAll(ctx)
+    }
+
+    /**
+     * Codex mark r2 P1-2: a Forget whose photo file could not be deleted is a committed cleanup-pending result (never plain DONE / "Forgotten" while the JPEG remains), in a debug build too;
+     * the tombstone stays and the sweep (start-up, retention) removes the file once it can be.
+     */
+    @Test fun aPhotoForgetWhoseJpegCannotBeDeletedReportsCleanupPendingAndTheSweepFinishesIt() = runBlocking<Unit> {
+        com.rokid.context.orchestration.MemoryExport.productionBuild = { false } // the file report does not depend on the production-build gate of the cached export
+        val dir = File(ctx.filesDir, "rokid_archive").apply { mkdirs() }
+        val jpg = File(dir, "stuck.jpg").apply { writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("stuck", 1, jpg.absolutePath, "rokid_glasses"))
+        mem("m1", "stuck")
+        try {
+            assertTrue("a read-only folder makes the delete fail", dir.setWritable(false))
+            assumeTrue("the delete really fails here (not root)", runCatching { File(dir, "probe").createNewFile() }.getOrDefault(false).not())
+            val o = ForgetActions.forgetMomentOutcome(ctx, "stuck")
+            assertEquals(ForgetActions.Outcome.CACHE_CLEANUP_FAILED, o)
+            assertTrue("committed: the Forget itself went through", o.committed)
+            assertTrue("the photo file is still there", jpg.exists())
+            dir.setWritable(true)
+            assertEquals("the sweep retries and removes it", 1, FrameSweep.sweep(ctx))
+            assertFalse(jpg.exists())
+        } finally { dir.setWritable(true); com.rokid.context.orchestration.MemoryExport.productionBuild = com.rokid.context.orchestration.MemoryExport.defaultProductionBuild }
+    }
+
+    @Test fun aPhotoForgetWhoseJpegIsDeletedIsPlainDone() = runBlocking<Unit> {
+        com.rokid.context.orchestration.MemoryExport.productionBuild = { false }
+        val jpg = File(ctx.filesDir, "rokid_archive/ok.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("ok", 1, jpg.absolutePath, "rokid_glasses"))
+        mem("m1", "ok")
+        try { assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetMomentOutcome(ctx, "ok")); assertFalse(jpg.exists()) }
+        finally { com.rokid.context.orchestration.MemoryExport.productionBuild = com.rokid.context.orchestration.MemoryExport.defaultProductionBuild }
     }
 
     /** Fix round 1 I3: the sweep deletes JPEGs of tombstoned frames, never of a frame a memory still uses. */

@@ -27,6 +27,10 @@ object FrameSweep {
         WipeFence.mutex.withLock { deleteNow(paths) }
     }
 
+    /** True when a JPEG or sidecar of frame [frameId] is still on disk. */
+    fun fileLeft(context: Context, frameId: String): Boolean =
+        RokidFrameInbox.FRAME_DIRS.any { dir -> File(context.filesDir, dir).listFiles()?.any { it.isFile && it.nameWithoutExtension.removeSuffix(".meta") == frameId } == true }
+
     private fun deleteNow(paths: Collection<String>): Int =
         paths.distinct().count { p ->
             val f = File(p)

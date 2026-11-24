@@ -112,6 +112,16 @@ object ForgetActions {
         }
     }
 
+    /**
+     * The retry path of a mark undo whose photo Forget already committed with a cleanup notice (the recorder remembers it): is cleanup still owed for [frameId]? A cached export is retried here; a JPEG or sidecar still
+     * on disk is swept. True = still owed (the retry keeps returning the cache-left outcome until it is clean). Counts only; nothing new is deleted: the same retries the start-up runs.
+     */
+    suspend fun cleanupStillOwed(context: Context, frameId: String): Boolean = withContext(Dispatchers.IO) {
+        if (com.rokid.context.orchestration.MemoryExport.cleanupPending(context)) runCatching { com.rokid.context.orchestration.MemoryExport.deleteCached(context) }
+        runCatching { FrameSweep.sweep(context) }
+        (com.rokid.context.orchestration.MemoryExport.cleanupPending(context) && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) || FrameSweep.fileLeft(context, frameId)
+    }
+
     /** What a mark undo returns when its photo Forget committed with a notice: the recorder passes the photo Forget's typed [outcome] through (no ids, no text). */
     class MarkPhotoOutcome(val outcome: Outcome)
 
@@ -185,7 +195,12 @@ object ForgetActions {
     val removals = java.util.concurrent.atomic.AtomicLong(0)
 
     /** After a committed cascade: files, then the re-summarise. A failure here is logged; the Forget itself succeeded. Returns false when a cached memory export could not be deleted. */
-    internal suspend fun apply(context: Context, r: ForgetService.Result): Boolean {
+    internal suspend fun apply(context: Context, r: ForgetService.Result): Boolean = applyFull(context, r).let { it.cacheClean && it.filesClean }
+
+    /** What a committed cascade's cleanup left: [cacheClean] false = a cached export remains; [filesClean] false = a forgotten photo's JPEG or sidecar could not be deleted yet (the start-up and retention [FrameSweep.sweep] retries it). */
+    internal class Cleanup(val cacheClean: Boolean, val filesClean: Boolean)
+
+    internal suspend fun applyFull(context: Context, r: ForgetService.Result): Cleanup {
         removals.incrementAndGet() // the cascade is committed
         runCatching { LeaseRevocation.after(r) } // M3: the second line behind the revocation before the delete (retention and range come through here too)
         if (r.redactedAskIds.isNotEmpty()) {
@@ -205,7 +220,8 @@ object ForgetActions {
                 PcLog.w(TAG, "notifications not cancelled: ${SafeLog.describe(e)}")
             }
         }
-        FrameSweep.delete(r.framesToDelete)
+        // a deletion that failed is owed (the tombstone keeps it for the sweep) and is reported, never plain "Forgotten" while the photo file remains
+        val filesClean = FrameSweep.delete(r.framesToDelete) >= r.framesToDelete.distinct().size
         // GAP-1: a cached memory export still holds the forgotten text; the next export regenerates it.
         val cacheClean = com.rokid.context.orchestration.MemoryExport.deleteCached(context)
         if (r.invalidated.isNotEmpty()) {
@@ -217,7 +233,7 @@ object ForgetActions {
         }
         // P1-5: a place-card-history deletion the listener could not finish is retried now. Whether THIS Forget reports it is decided by [cleanupFailed] (scope check): an unrelated, permanently failing token must not fail every Forget.
         try { com.rokid.context.work.frames.place.PlaceGraph.settleHistory(context) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { /* still owed */ }
-        return cacheClean
+        return Cleanup(cacheClean, filesClean)
     }
 
     /**
@@ -225,7 +241,8 @@ object ForgetActions {
      * one) and finished once more here; a deletion THIS Forget attempted that is still owed means private rows may remain, whatever [clean] said before the cascade. An older failing token (another Forget's) is retried
      * but not reported here (P2-3).
      */
-    internal suspend fun cleanupFailed(context: Context, clean: Boolean): Boolean {
+    internal suspend fun cleanupFailed(context: Context, clean: Boolean, filesClean: Boolean = true): Boolean {
+        if (!filesClean) return true // a forgotten photo's file remains: reported in every build (the sweep retries it)
         val place = com.rokid.context.work.frames.place.PlaceGraph
         if (place.historyOwed(context)) {
             try { place.settleHistory(context) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { /* still owed */ }
@@ -237,12 +254,16 @@ object ForgetActions {
     /** The cleanup after a committed RANGE Forget (the coordinator calls it inside the delete gate): the same as a fact or photo Forget. False = a cached export could not be deleted. */
     suspend fun afterRange(context: Context, r: ForgetService.Result): Boolean {
         logDone(LoggedScope.RANGE, r)
-        val clean = apply(context, r)
+        val c = applyFull(context, r)
+        rangeFilesLeft = !c.filesClean // read by [forgetRangeOutcome] (both run inside the same delete gate)
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }
         runCatching(dataRemoved)
-        return clean
+        return c.cacheClean
     }
+
+    /** Set by [afterRange] inside the delete gate: a range Forget's photo file could not be deleted. */
+    @Volatile private var rangeFilesLeft = false
 
     /** A time-range Forget with the typed outcome (the coordinator must have been built with `afterCascade = { afterRange(ctx, it) }`). */
     suspend fun forgetRangeOutcome(context: Context, coordinator: com.rokid.context.canvas.plan.CanvasForgetCoordinator, fromMs: Long, toMs: Long, confirmedPins: Set<String>? = null): Outcome =
@@ -253,11 +274,12 @@ object ForgetActions {
                 val going = previewRangePins(context, fromMs, toMs)
                 if (rangeNeedsConfirmation(going.ids, confirmedPins)) { PcLog.w(TAG, "range forget not run: pins not confirmed"); return@withContext Outcome.PINS_NOT_CONFIRMED }
                 var pending = false; var notRemoved = false
+                rangeFilesLeft = false
                 // only the pins the user confirmed are armed (checked again inside the pin lock): a pin linked after the check is never deleted
                 // the arming is stored INSIDE the DataOpGate (with the Forget, not before it)
                 val r = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PlaceGraph.beginHistoryScope(); com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = confirmedPins ?: emptySet()) { coordinator.forgetRangeLocked(fromMs, toMs) } } // slice 1.4.2: pins of the Moments in the range go with them
                 runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
-                withPinNotice(if (cleanupFailed(context, r.cacheClean)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE, pending, notRemoved)
+                withPinNotice(if (cleanupFailed(context, r.cacheClean, !rangeFilesLeft)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE, pending, notRemoved)
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) { Outcome.PIN_PREP_FAILED
             } catch (e: DataOpGate.UploadInProgress) { Outcome.UPLOAD_IN_PROGRESS
             } catch (e: DataOpGate.WriteInProgress) { Outcome.SAVE_IN_PROGRESS
@@ -353,14 +375,14 @@ object ForgetActions {
         // Committed: everything after this is best effort and never turns the Forget into a failure.
         runCatching { logDone(kind(), r) }
         runCatching { ForgetShadow.after(shadow, kind(), r) }
-        val cacheClean = apply(context, r)
+        val cleanup = applyFull(context, r)
         scrubQueue(context)
         runCatching { MemoryMaintenance.checkpoint(MemoryGraph.get(context).db) }
         runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
         runCatching(onForgotten)
         runCatching { com.rokid.context.work.frames.place.PlaceRecovery.kick(context) } // a place memory still marked is retried now
-        if (cleanupFailed(context, cacheClean)) {
-            PcLog.w(TAG, "forget done, cached export not deleted")
+        if (cleanupFailed(context, cleanup.cacheClean, cleanup.filesClean)) {
+            PcLog.w(TAG, "forget done, cleanup pending (cached export or photo file)")
             return Outcome.CACHE_CLEANUP_FAILED
         }
         return Outcome.DONE
