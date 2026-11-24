@@ -116,6 +116,17 @@ class ProvenanceGate(
         return ids - (present - tombstoned)
     }
 
+    /**
+     * Retention r1 (finding 5): the photos among [ids] that a user FORGOT. Expiry also tombstones a photo (the extraction lock) but keeps its `frame_meta`, so a tombstoned photo that still has metadata merely expired and
+     * is NOT returned: a record that cites an expired photo (a suggestion) stays live. A tombstoned photo with no metadata (forgotten, or a legacy frame) is returned.
+     */
+    suspend fun forgottenFrames(ids: Set<String>): Set<String> {
+        val tombstoned = goneFrames(ids, requirePresent = false)
+        if (tombstoned.isEmpty()) return emptySet()
+        val expired = tombstoned.toList().chunked(MAX_IN).flatMap { db.forgetDao().keyframeIds(it) }.toSet()
+        return tombstoned - expired
+    }
+
     suspend fun goneMemories(ids: Set<String>): Set<String> = if (ids.isEmpty()) emptySet() else ForgetFence.goneAmong(db, ids)
 
     suspend fun goneMarks(ids: Set<String>): Set<String> = ids.filter { db.canvasSlice3Dao().label(it) == null }.toSet()

@@ -36,6 +36,8 @@ abstract class ForgetDao {
     /** Frames cited by [memoryIds] through `frame_source` (their `memory.frameId` comes from the memory rows). */
     /** The photos [memoryIds] cite. A `CARRIED` row (codex r15: a photo the memory may be derived from, e.g. a batch mate) is not a citation: Forget of the memory never locks or deletes that photo. */
     @Query("SELECT DISTINCT frameId FROM frame_source WHERE memoryId IN (:memoryIds) AND role != 'CARRIED'") abstract suspend fun sourceFramesOf(memoryIds: List<String>): List<String>
+    /** Every `frame_source` row of [memoryIds], any role: the retention lineage records which photo each expired memory belonged to. */
+    @Query("SELECT * FROM frame_source WHERE memoryId IN (:memoryIds)") abstract suspend fun frameSourceRowsOf(memoryIds: List<String>): List<FrameSourceEntity>
     @Query("DELETE FROM frame_source WHERE memoryId IN (:memoryIds)") abstract suspend fun deleteFrameSourcesFor(memoryIds: List<String>): Int
     @Query("DELETE FROM frame_vector WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameVectorsFor(frameIds: List<String>): Int
     @Query("DELETE FROM frame_meta WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameMetaFor(frameIds: List<String>): Int

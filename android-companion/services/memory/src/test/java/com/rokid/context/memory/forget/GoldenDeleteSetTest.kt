@@ -461,26 +461,16 @@ class GoldenDeleteSetTest {
     @Test fun retentionExpireFact() = golden("""
             deleted memory: mA
             deleted memory_source: mD|mA
+            added canvas_meta: lin:d:mA, lin:f:fA
         """) { w.service.expire(listOf("mA")) }
+    /** Retention r1: photo expiry is storage only: the frame row and the photo's own experiment canvas outputs go; no Moment, Scene, mark or radius cascade, no fence. */
     @Test fun retentionExpirePhoto() = golden("""
-            deleted canvas_label: mkLinked, mkNear, mkNear:i
             deleted canvas_live_trace: 7|fA|n, 7|fB|n
             deleted canvas_run_item: r|fA|n, r|fB|n
             deleted canvas_score: r|fA|n, r|fB|n
             deleted frame: fA
-            deleted moment: 68f6baa4, 68f6baa5
-            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
-            deleted object_audit: MOMENT|68f6baa4|1
-            deleted object_derived: MOMENT|68f6baa4|SUMMARY
-            deleted scene: sNear
-            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
-            changed canvas_meta: labelRev
-            changed canvas_trace: trNear
-            changed scene: sMixed
-            added canvas_meta: forgetRanges, frame_forget_rev, scene_seq_floor
             added cleanup_outbox: 1, 2
             added forget_tombstone: fA
-            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
         """) { w.service.expirePhotos(listOf("fA"), requireLinked = true) }
     @Test fun deleteAll() = golden("""
             deleted ask: aCite, aDep, aFrame, aKeep

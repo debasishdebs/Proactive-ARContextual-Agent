@@ -125,9 +125,12 @@ class ForgetCanvasTest {
         assertEquals(null, s.replay("r-f2")!!.resultJson)
     }
 
-    @Test fun retentionPhotoExpiryReachesTheSameTables() = runBlocking {
+    /** Retention r1 (P1-1): photo expiry is storage only. The experiment canvas outputs of the photo go (see photoExpiryUsesTheSameCascade); the mark / label of the photo and its helper job stay. */
+    @Test fun retentionPhotoExpiryLeavesTheLabelsAndHelperJobsOfThePhoto() = runBlocking {
         frame("f1"); mem("m1", "f1"); sliceRows("f1")
+        val rev0 = db.canvasSlice3Dao().frameForgetRev()
         service.expirePhotos(listOf("f1"))
-        assertEquals(0, sliceLeft("f1"))
+        assertEquals("the label and the open helper job stay", 2, sliceLeft("f1"))
+        assertEquals("no Forget fence moved", rev0, db.canvasSlice3Dao().frameForgetRev())
     }
 }

@@ -174,10 +174,11 @@ class HelperDeletionTest {
         assertTrue(dao.frameForgetRev() > rev0); assertEquals("VOIDED", state("j1")); assertEquals(listOf("j1"), cleanupIds())
     }
 
-    @Test fun retentionPhotoExpiryMovesTheFenceAndVoids() = runBlocking {
+    /** Retention r1: an expiry is storage hygiene, not a Forget: it moves no fence and voids no helper job. */
+    @Test fun retentionPhotoExpiryMovesNoFenceAndVoidsNothing() = runBlocking {
         frame("f-j1"); mem("m1", "f-j1"); f.insert("j1"); val rev0 = dao.frameForgetRev()
         service.expirePhotos(listOf("f-j1"))
-        assertTrue(dao.frameForgetRev() > rev0); assertEquals("VOIDED", state("j1")); assertEquals(listOf("j1"), cleanupIds())
+        assertEquals(rev0, dao.frameForgetRev()); assertTrue("VOIDED" != state("j1")); assertTrue(cleanupIds().isEmpty())
     }
 
     // ---- Delete all ----

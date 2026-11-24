@@ -10,6 +10,7 @@ import com.rokid.context.memory.forget.CleanupOutbox
 import com.rokid.context.memory.forget.ForgetContentChanged
 import com.rokid.context.memory.forget.ForgetNeedsAck
 import com.rokid.context.memory.forget.ForgetTooLarge
+import com.rokid.context.memory.forget.ExpiredLineage
 import com.rokid.context.memory.forget.ForgetRadius
 import com.rokid.context.memory.forget.ForgetService
 import com.rokid.context.memory.forget.MomentForget
@@ -96,9 +97,9 @@ class ForgetExecutor internal constructor(
         val invalidatedCarried = if (carried.isEmpty()) ForgetService.Result.EMPTY else cascade(c, carried, lockFrames = false, provenanceOnly = true, queueOutbox = false, protect = protect)
         if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
             dropCanvasOutputs(c, listOf(frameId), null, radiusCascade)
-            return@withTransaction cascade(c, emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, protect = protect).with(invalidatedCarried).also { if (top) rebuildScenes(c, plan) }
+            return@withTransaction cascade(c, emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, protect = protect, lineageFrames = listOf(frameId)).with(invalidatedCarried).also { if (top) rebuildScenes(c, plan) }
         }
-        val r = cascade(c, ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded, protect = protect)
+        val r = cascade(c, ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded, protect = protect, lineageFrames = listOf(frameId))
         val wire = db.momentDao().wireIds(listOf(frameId)).map { it.wireFrameId } // read before frame_meta goes
         PhotoFamily.lock(listOf(frameId), c)
         MomentFamily.dropHolding(c, listOf(frameId), ids)
@@ -156,26 +157,40 @@ class ForgetExecutor internal constructor(
         cascade(c, ids.distinct(), lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true).also { rebuildScenes(c, plan) }
     }
 
-    /** Photo expiry (`ForgetService.expirePhotosTx`, Ruling 11): the frame row goes with a tombstone, everything described about it stays. */
+    /** Photo expiry (`ForgetService.expirePhotosTx`, Ruling 11): the frame row goes with a tombstone, everything described about it stays. Storage only (retention r1): no Moment, Scene, mark, trace or run output is touched and no radius cascade runs. */
     internal suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): ForgetService.Result = db.withTransaction {
-        val plan = revoke { it.plan(frameIds.map { id -> Ref(Family.PHOTO, id) }.toSet(), Policy.RetentionPhotos(requireLinked, recheckSkipped)) }
+        revoke { it.plan(frameIds.map { id -> Ref(Family.PHOTO, id) }.toSet(), Policy.RetentionPhotos(requireLinked, recheckSkipped)) }
         val c = ctx()
-        val paths = mutableListOf<String>(); val expiredIds = mutableListOf<String>(); val expiredTimes = mutableListOf<Long>()
+        val paths = mutableListOf<String>(); var expired = 0; val expiredIds = mutableListOf<String>()
         for (id in frameIds.distinct()) {
             val frame = dao.frame(id) ?: continue
             if (requireLinked && dao.describedRefs(id) == 0) continue
             if (recheckSkipped && dao.stillSkippedPhoto(id) == 0) continue
-            expiredIds += id; expiredTimes += frame.ts
+            expired++; expiredIds += id
             PhotoFamily.lock(listOf(id), c)
             PhotoFamily.expireRows(listOf(id), c)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
-        MomentFamily.dropHolding(c, expiredIds, emptyList()) // a Moment with no live photo is not a Moment
-        val wire = expiredIds.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId } // frame_meta stays on expiry
-        val spans = dropCanvasOutputs(c, expiredIds, expiredTimes, expired = true)
-        rebuildScenes(c, plan)
-        queueCleanup(c, paths, wire, spans, phoneFilesOnly = true) // routine retention is storage hygiene: phone files only
-        ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expiredIds.size)
+        RunResultFamily.selfDelete(expiredIds.toSet(), Fate.DROP, c) // the experiment canvas outputs of the photo go with it; nothing a user sees depends on them
+        queueCleanup(c, paths, emptyList(), emptyList(), phoneFilesOnly = true) // routine retention is storage hygiene: phone files only
+        ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
+    }
+
+    /** Retention of legacy frames nothing cites (`ForgetService.expireOrphanFramesTx`): the tombstone, the `frame` row and the JPEG; no cascade of any kind. */
+    internal suspend fun expireOrphanFrames(frameIds: List<String>): ForgetService.Result = db.withTransaction {
+        revoke { it.plan(frameIds.map { id -> Ref(Family.PHOTO, id) }.toSet(), Policy.RetentionPhotos()) }
+        val c = ctx()
+        val paths = mutableListOf<String>(); var expired = 0
+        for (id in frameIds.distinct()) {
+            val frame = dao.frame(id) ?: continue
+            if (dao.remainingRefs(id) != 0 || dao.keyframeIds(listOf(id)).isNotEmpty()) continue
+            expired++
+            PhotoFamily.lock(listOf(id), c)
+            PhotoFamily.expireRows(listOf(id), c)
+            frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
+        }
+        queueCleanup(c, paths, emptyList(), emptyList(), phoneFilesOnly = true)
+        ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 
     // ---- marks ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -191,25 +206,35 @@ class ForgetExecutor internal constructor(
     /** `ForgetService.cascade`: F (the memories), D (their descendants), the Moments holding them, the extraction lock, the redaction of what cited them. */
     private suspend fun cascade(
         c: DeleteCtx, ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet(),
-        queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false, protect: Set<String>? = null, redact: Boolean = true,
+        queueOutbox: Boolean = true, phoneFilesOnly: Boolean = false, bounded: Set<String>? = null, provenanceOnly: Boolean = false, protect: Set<String>? = null, redact: Boolean = true, lineageFrames: List<String> = emptyList(),
     ): ForgetService.Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
-        if (found.isEmpty() && extraCited.isEmpty()) return ForgetService.Result.EMPTY
+        if (found.isEmpty() && extraCited.isEmpty() && lineageFrames.isEmpty()) return ForgetService.Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
         val citedFrames = (found.mapNotNull { it.frameId } + forgotten.toList().chunked(CHUNK).flatMap { dao.sourceFramesOf(it) }).distinct()
         // F1 / F5 (`forgetV2`, [protect] = the photos this Forget forgets): a cited photo that is NOT forgotten is a survivor, never locked, deleted or tombstoned
         val forgottenFrames = if (protect == null) citedFrames else citedFrames.filter { it in protect }
         val survivors = if (protect == null) emptyList() else citedFrames - forgottenFrames.toSet()
         val frames = if (provenanceOnly) emptyList() else if (keepKeyframes) forgottenFrames - forgottenFrames.chunked(CHUNK).flatMap { dao.keyframeIds(it) }.toSet() else forgottenFrames
-        val invalidated = if (!invalidateDescendants) emptySet() else forgotten.chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() - forgotten
+        // Retention r1 (P1-4): see ForgetService.cascade: expiry records the lineage of what it deletes, a user Forget reads it
+        val meta = db.canvasSlice3Dao()
+        val lineageSeed = if (redact && lockFrames) (citedFrames + lineageFrames).distinct().filter { bounded == null || it in bounded } else emptyList()
+        val lineage = if (redact) ExpiredLineage.reach(meta, forgotten, lineageSeed) else ExpiredLineage.Reach.EMPTY
+        if (!redact && found.isNotEmpty()) {
+            val fl = forgotten.toList()
+            ExpiredLineage.record(meta, found, fl.chunked(CHUNK).flatMap { dao.frameSourceRowsOf(it) }, fl.chunked(CHUNK).flatMap { dao.edgesFrom(it) }, fl.chunked(CHUNK).flatMap { dao.edgesTo(it) })
+        }
+        val derivedLive = lineage.derived.toList().chunked(CHUNK).flatMap { dao.memories(it) }.map { it.id }.toSet() - forgotten
+        val invalidated = if (!invalidateDescendants) emptySet() else ((forgotten + derivedLive).toList().chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() + derivedLive) - forgotten
         MemoryFamily.selfDelete(forgotten, Fate.ERASE, c)
         MemoryFamily.selfDelete(invalidated, Fate.REBUILD, c)
         val radiusCascade = bounded == null
         val inside = if (bounded == null) frames else frames.filter { it in bounded }
-        MomentFamily.dropHolding(c, inside, if (!redact) emptyList() else if (bounded == null) forgotten + invalidated else forgotten) // redact=false (system expiry): a Moment holding an expired fact stays
+        if (redact) MomentFamily.dropHolding(c, inside, (if (bounded == null) forgotten + invalidated else forgotten) + lineage.expired) // redact=false (system expiry): no Moment is dropped, for a memory or a locked legacy frame
         var spans = emptyList<Triple<Long, Long, List<String>>>()
         if (lockFrames) {
-            PhotoFamily.lock(frames, c); spans = dropCanvasOutputs(c, inside, null, radiusCascade)
+            PhotoFamily.lock(frames, c)
+            if (redact) spans = dropCanvasOutputs(c, inside, null, radiusCascade) // retention r1 (P1-2): an expiry runs no canvas outputs, mark, Moment or radius cascade
             if (bounded != null) { val outside = frames - inside.toSet(); if (outside.isNotEmpty()) RunResultFamily.scrubLocked(c, outside) }
         }
         if (survivors.isNotEmpty()) { // the stored outputs of a survivor may carry the forgotten text (scrubbed); one with no description left is described again, alone
@@ -218,7 +243,7 @@ class ForgetExecutor internal constructor(
         }
         val uncited = inside.filter { dao.remainingRefs(it) == 0 } // the photo goes only when no surviving memory cites it
         val goneCites = if (scrubAccepted) uncited.map { PHOTO_CITE_PREFIX + it } else emptyList()
-        val cited = forgotten + invalidated + extraCited + goneCites
+        val cited = forgotten + invalidated + extraCited + goneCites + lineage.expired + derivedLive
         val tx = PlanTx(db)
         val v2Rules = ForgetV2.on // M5: A1 (answers by their cited ids, "Answered from a forgotten fact"), A2 (history items), N1 (a hit nudge is erased); off = v1 redaction in place
         val reached = if (redact) AskRules.reach(cited, tx, v2Rules) else null // redact=false: nothing that cites an expired fact changes
@@ -226,6 +251,7 @@ class ForgetExecutor internal constructor(
         AnswerFamily.selfDelete(asks.toSet(), Fate.REBUILD, c)
         NudgeFamily.selfDelete(nudges.toSet(), if (v2Rules) Fate.ERASE else Fate.REBUILD, c)
         val redactedProposals = if (redact) ProposalFamily.expireAndScrub(c, asks + nudges, scrubAccepted) else emptyList()
+        if (redact && lineage.keys.isNotEmpty()) ExpiredLineage.consume(meta, lineage)
         PhotoFamily.deleteVectors(uncited, c)
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         if (queueOutbox) queueCleanup(c, files, uncited.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId }, spans, phoneFilesOnly)

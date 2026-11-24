@@ -4,7 +4,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Slice 3a (S58): the seam through which `:services:memory` tells the layers above it that data was deleted, so files and devices (which memory does not own) follow.
- * [ForgetService] and retention's `expirePhotos` call [onFramesForgotten] AFTER their transaction committed; a rolled-back transaction notifies nothing.
+ * [ForgetService] calls [onFramesForgotten] AFTER a user Forget committed; a rolled-back transaction notifies nothing. Retention expiry (photos, legacy frames, memories) is storage hygiene and notifies NO listener (retention r1).
  * [onRangeForgotten] and [onDeleteAll] are called by the coordinator that performed them. Implementations must be idempotent and must not throw (a throwing
  * listener is swallowed so it can never undo or block a deletion that already committed). Memory has no dependency on orchestration: this interface is the whole contract.
  */

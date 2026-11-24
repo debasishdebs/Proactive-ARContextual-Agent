@@ -52,6 +52,8 @@ abstract class WipeDao {
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'canvas\\_save:%' ESCAPE '\\'") protected abstract suspend fun canvasSaveMarkers()
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_undone:%' ESCAPE '\\' OR `key` LIKE 'mark\\_claim:%' ESCAPE '\\'") protected abstract suspend fun markUndoneMarkers()
+    /** Retention lineage (`ExpiredLineage`): ids of expired memories per photo and per edge. Ids only, but they name what was forgotten-by-expiry, so Delete all removes them. */
+    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'lin:%'") protected abstract suspend fun retentionLineage()
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'momentForgetRanges'") protected abstract suspend fun momentClearForgetRanges(): Int
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES ('frame_forget_rev', '0')") protected abstract suspend fun slice3InitForgetRev()
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'frame_forget_rev'") protected abstract suspend fun slice3BumpForgetRev(): Int
@@ -82,7 +84,7 @@ abstract class WipeDao {
         ackedOutbox(); momentWipeCleanup(now); objectAudit(); objectDerived(); sceneParts(); scenes(); momentSensor(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
-        slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); canvasSaveMarkers(); markUndoneMarkers(); slice3BumpLabelRev()
+        slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); canvasSaveMarkers(); markUndoneMarkers(); retentionLineage(); slice3BumpLabelRev()
         slice3WildcardCleanup(now) // 3b: every device-side copy is told to discard; the job rows above are gone, the cleanup table is kept.
         slice3InitForgetRev(); slice3BumpForgetRev() // 3b: frame_forget_rev moves in THIS transaction too: a runner that captured the new generation and epoch (MemoryWipe.deleteAll moves both first) but loaded an old photo must still be refused
         scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()

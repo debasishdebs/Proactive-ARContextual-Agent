@@ -598,9 +598,10 @@ class PinMomentLinksTest {
 
     // ---- non-explicit removal: the pin is NEVER deleted, only its link ----
 
-    @Test fun retentionExpiryClearsTheLinkAndKeepsThePin() = runBlocking<Unit> {
+    /** Retention r1 (P1-1): photo expiry is storage only; the Moment a pin points at stays (it shows "Photo expired"), so the pin keeps its link and its anchor. */
+    @Test fun retentionExpiryKeepsTheLinkAndThePin() = runBlocking<Unit> {
         fx.service.expirePhotos(listOf("b"))
-        assertEquals(listOf("Pin 0", "Pin 1", "Pin 2"), names()); assertEquals(listOf(id1, null, null), links())
+        assertEquals(listOf("Pin 0", "Pin 1", "Pin 2"), names()); assertEquals(listOf(id1, id2, null), links())
     }
 
     @Test fun theSweepIsIdempotentAndAnUnreadablePinListIsLeftAlone() = runBlocking<Unit> {

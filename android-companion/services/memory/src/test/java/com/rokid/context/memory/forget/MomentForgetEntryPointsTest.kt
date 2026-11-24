@@ -34,7 +34,8 @@ class MomentForgetEntryPointsTest {
     // --- source-to-projection cleanup at the existing entry points ---
     @Test fun forgetMomentOfAPhotoDropsItsStoredMoment() = runBlocking<Unit> { projected(); fx.service.forgetMoment("a"); assertTrue(db.momentDao().allMoments().isEmpty()) }
     @Test fun forgetFactDropsTheMomentsHoldingTheMemory() = runBlocking<Unit> { projected(); fx.service.forgetFact("m1"); assertTrue(db.momentDao().allMoments().isEmpty()) }
-    @Test fun photoRetentionExpiryDropsTheMomentBecauseItHasNoLivePhoto() = runBlocking<Unit> { projected(); fx.service.expirePhotos(listOf("a")); assertTrue(db.momentDao().allMoments().isEmpty()) }
+    /** Retention r1 (P1-1): photo expiry is storage only; the stored Moment stays (with its FRAME part, shown as "Photo expired"). */
+    @Test fun photoRetentionExpiryKeepsTheMoment() = runBlocking<Unit> { projected(); fx.service.expirePhotos(listOf("a")); assertEquals(1, db.momentDao().allMoments().size) }
     @Test fun aCanvasRangeForgetDropsTheMomentsOfThatTime() = runBlocking<Unit> {
         projected(); CanvasSlice3Forget(db).forgetRange(MS, MS + 999)
         assertTrue(db.momentDao().allMoments().isEmpty())
@@ -43,7 +44,7 @@ class MomentForgetEntryPointsTest {
     private val far = com.rokid.context.memory.moment.MomentId.format(MomentForgetFixture.SEC + 5000)
     @Test fun aStaleMomentNamingAForgottenPhotoIsDropped() = runBlocking<Unit> { fx.frame("a", MS + 5); fx.project(far, MomentPartKind.FRAME to "a"); fx.service.forgetMoment("a"); assertTrue(db.momentDao().allMoments().isEmpty()) }
     @Test fun aStaleMomentNamingAForgottenMemoryIsDropped() = runBlocking<Unit> { fx.frame("a", MS + 5); fx.memory("m1", "a"); fx.project(far, MomentPartKind.MEMORY to "m1"); fx.service.forgetFact("m1"); assertTrue(db.momentDao().allMoments().isEmpty()) }
-    @Test fun aStaleMomentNamingAnExpiredPhotoIsDropped() = runBlocking<Unit> { fx.frame("a", MS + 5); fx.project(far, MomentPartKind.FRAME to "a"); fx.service.expirePhotos(listOf("a")); assertTrue(db.momentDao().allMoments().isEmpty()) }
+    @Test fun aMomentNamingAnExpiredPhotoIsKept() = runBlocking<Unit> { fx.frame("a", MS + 5); fx.project(far, MomentPartKind.FRAME to "a"); fx.service.expirePhotos(listOf("a")); assertEquals(1, db.momentDao().allMoments().size) }
     @Test fun aNeighbourMomentOutsideEverythingIsKept() = runBlocking<Unit> {
         projected(); fx.frame("z", MS + 500_000); fx.project(com.rokid.context.memory.moment.MomentId.format(MomentForgetFixture.SEC + 500), MomentPartKind.FRAME to "z")
         fx.service.forgetMoment("a")
