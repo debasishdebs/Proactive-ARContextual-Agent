@@ -279,6 +279,7 @@ class ResidueOracleTest {
         h.db.memoryDao().insert(MemoryEntity(oldMem, null, oldText, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, System.currentTimeMillis() - 3 * 24 * 3_600_000L, false, oldText))
         File(app.cacheDir, "exports/proactive-context-memories-2.json").writeText("{\"memories\":[{\"id\":\"$oldMem\",\"text\":\"$oldText\"}]}") // an export made before the expiry
         assertTrue(residue(listOf(oldMem, oldText)).isNotEmpty())
+        DeveloperFlags.setPauseRetention(app, false) // the candidate ships paused by default
         runBlocking { TestListenableWorkerBuilder<RetentionWorker>(app).build().doWork() }
         assertClean("retention expiry", listOf(oldMem, oldText))
     }
