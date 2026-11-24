@@ -41,6 +41,8 @@ data class DataSaverUiState(
     val why: String = "",
     /** Size on disk of those waiting photos, in bytes (0 = unknown or none). */
     val waitingBytes: Long = 0,
+    /** Photos parked for Wi-Fi and storage is nearly full: new photos are not admitted until space is freed or Wi-Fi returns (nothing is deleted). */
+    val storagePaused: Boolean = false,
 )
 
 /** All the screen's words and rules, pure so a JVM test pins them. Nothing here names a country, a network or a place. */
@@ -126,6 +128,8 @@ object DataSaverModel {
     fun waitingLine(waiting: Int, bytes: Long): String =
         "$waiting ${if (waiting == 1) "photo" else "photos"} waiting for Wi-Fi" + if (bytes > 0) ", ${"%.1f".format(java.util.Locale.US, bytes / 1_048_576.0)} MB" else ""
 
+    const val STORAGE_LOW = "Storage is almost full: new photos are paused until you free space or Wi-Fi returns. Waiting photos are kept."
+
     fun todayLines(t: SkippedLedger.Today, waiting: Int = 0, waitingBytes: Long = 0): List<String> = listOf(
         waitingLine(waiting, waitingBytes),
         "Blocked photo-upload calls today: ${t.uploadsQueued} (a call carries up to 3 photos and is tried again later)",
@@ -193,6 +197,7 @@ fun DataSaverScreen(
                 NoticeText(DataSaverModel.sentLine(state.mobile), tag = "data_saver_sent")
                 DataSaverModel.limitLine(state.limit)?.let { NoticeText(it, tag = "data_saver_limit_line") }
                 NoticeText(DataSaverModel.TODAY_TITLE, tag = "data_saver_today_title")
+                if (state.storagePaused) NoticeText(DataSaverModel.STORAGE_LOW, tag = "data_saver_storage_low")
                 DataSaverModel.todayLines(state.today, state.waiting, state.waitingBytes).forEachIndexed { i, line -> NoticeText(line, tag = "data_saver_status_$i") }
                 NoticeText(DataSaverModel.CAP_NOTE, tag = "data_saver_cap_note")
                 NoticeText(DataSaverModel.COUNTED_NOTE, tag = "data_saver_counted_note")
