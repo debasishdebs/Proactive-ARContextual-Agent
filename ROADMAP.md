@@ -88,3 +88,16 @@ Rokid-Coder is a fork of the Rokid Nexus hub that shows Claude Code and Codex se
 ## Not planned for now
 
 Accessibility polish (v2/v3 at most), answer-latency work (about 8 s is accepted until v2), LiveFit (separate app, no PCA dependency).
+
+## Versioning (agreed 25 Nov 2026)
+Feature batches are minor releases, fixes are patches (1.x.y). Release branches `rel-1.x` are pushed to GitHub when verified and reviewed (`tools/dev/push_clean.sh rel-1.x rel-1.x`).
+| Version | Contents |
+|---|---|
+| 1.5.0 | date-range filter on lists, MapTiler street map key |
+| 1.6.0 | Room v18: card history, Moment location, GPS backfill, offline notice on the zones map, network-return trigger |
+| 1.7.0 | test place, photo/URL import, embedding match |
+| 1.8.0 | Retention P2, map zones P1 |
+| 1.9.x | canvas line (old v2.1-v2.5) |
+| 1.10.0 | offline vision model (old 1.4.5) |
+| 2.0.x | Nexus plugin line (old v1.5-v2.0 rows below are Nexus plugin versions) |
+| 3.0 | proactive agent loop |
