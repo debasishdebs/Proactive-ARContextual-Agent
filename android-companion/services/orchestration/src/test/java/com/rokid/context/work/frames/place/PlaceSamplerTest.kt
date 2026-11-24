@@ -63,7 +63,10 @@ class PlaceSamplerTest {
     private val store = object : PlaceFrameStore {
         override suspend fun newestDwell(sinceReceivedMs: Long) = frame
         override suspend fun tombstoned(frameId: String) = tomb
+        override suspend fun movedSince(sinceReceivedMs: Long) = moved
     }
+    private var moved = false
+    private var reuse = false
 
     private fun sampler(scope: TestScope) = PlaceSampler(
         scope = scope, store = store, fix = { fixCalls++; fix },
@@ -71,7 +74,7 @@ class PlaceSamplerTest {
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
-        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry },
+        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -194,6 +197,57 @@ class PlaceSamplerTest {
     @Test fun packFreshEmpty_staysHandled() = runTest {
         retry = true; places = emptyList(); cell = CellOutcome.FRESH; val s = sampler(this); poke(s); poke(s)
         assertEquals(PlaceOutcome.SEEN, outcomes.last())
+    }
+
+    // ---- S4: F2 fix reuse ----
+    private fun still(id: String, session: String = "s1") { frame = PlaceFrame(id, now - 5_000, "STILL", session) }
+
+    private suspend fun TestScope.firstGood(acc: Float = 10f) { reuse = true; still("f1"); fix = PlaceFix(LAT, LON, 3_000, acc); poke(); assertEquals(PlaceOutcome.MATCHED, outcomes.last()) }
+
+    @Test fun fixReuse_stillSameSessionWithin10min() = runTest {
+        firstGood(); now += 180_000; still("f2"); fix = null; poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(lastLine().contains("fixSrc=reused") && lastLine().contains("fixRealAgeB=le5min"))
+    }
+
+    @Test fun fixReuse_off_isHeadBehaviour() = runTest {
+        firstGood(); reuse = false; now += 180_000; still("f2"); fix = null; poke()
+        assertEquals(PlaceOutcome.NO_FIX, outcomes.last()); assertTrue(lastLine().contains("reason=fix_unavailable"))
+    }
+
+    @Test fun fixReuse_blockedByWalkingFrame() = runTest {
+        firstGood(); now += 180_000; still("f2"); fix = null; moved = true; poke()
+        assertEquals(PlaceOutcome.NO_FIX, outcomes.last()); assertTrue(lastLine().contains("reason=fix_reuse_moved"))
+    }
+
+    @Test fun fixReuse_blockedOtherSession() = runTest {
+        firstGood(); now += 180_000; still("f2", "s2"); fix = null; poke()
+        assertTrue(lastLine().contains("reason=fix_reuse_session"))
+        now += 1_000; frame = PlaceFrame("f3", now - 5_000, "WALKING", "s1"); poke(); assertTrue(lastLine().contains("reason=fix_reuse_not_still"))
+    }
+
+    @Test fun fixReuse_accuracyGrowsAndExpires() = runTest {
+        firstGood(); now += 9 * 60_000L; still("f2"); fix = null; poke()
+        assertTrue("10 m + 4 m/min x 9 = 46 m is still usable", lastLine().contains("fixSrc=reused") && lastLine().contains("fixRealAgeB=le10min"))
+        now += 2 * 60_000L; still("f3"); poke()
+        assertTrue(lastLine().contains("reason=fix_reuse_too_old"))
+    }
+
+    @Test fun fixReuse_inaccurateAfterGrowth() = runTest {
+        firstGood(30f); now += 6 * 60_000L; still("f2"); fix = null; poke()
+        assertTrue(lastLine().contains("reason=fix_reuse_inaccurate"))
+    }
+
+    @Test fun fixReuse_conflictWithFarCurrentFix() = runTest {
+        firstGood(); now += 180_000; still("f2"); fix = PlaceFix(north(500.0), LON, 3_000, 60f); poke()
+        assertEquals(PlaceOutcome.STALE_FIX, outcomes.last()); assertTrue(lastLine().contains("reason=fix_reuse_conflict"))
+    }
+
+    @Test fun fixReuse_zoneUsesEffectiveAccuracy() = runTest {
+        firstGood(); zoneList = listOf(zoneAt(LAT, LON)); now += 180_000; still("f2"); fix = null; poke()
+        assertEquals(PlaceOutcome.ZONE, outcomes.last()); assertTrue(lastLine().contains("reason=zone_fix"))
+        // a good fix inside a zone is never stored
+        flight = PlaceFlight(); reuse = true; still("f9"); fix = PlaceFix(LAT, LON, 3_000, 10f); poke()
+        assertEquals(null, flight.good)
     }
 
     @Test fun anActiveOrApproachingZoneNeverReadsAFixNorCallsTheNetworkOrTheModel() = runTest {

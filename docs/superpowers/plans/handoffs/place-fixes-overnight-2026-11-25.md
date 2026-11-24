@@ -18,7 +18,11 @@
   - S3 replay (counts; run dir run-2026-11-24T06-2x, newest): wrong 0 in every HEAD run; calibration TRUSTED 5/6; INDOOR_60M/STALE 0 cards; StubNone x OUTDOOR_10M 37 calls (limit 42), 0 cards.
   - ASSUMED_PIN_10M: ANTERA_FACADE 1 card (the retry), ANTERA 4, RAMOJI 6, GOLCONDA_LS 1. OUTDOOR_10M: SJ_BRONZE 1, SJ_IVORY 1.
   - NOT MET: OUTDOOR_10M SJ_BRONZE >= 2 and SJ_IVORY >= 2. The spec's S2 once-per-place-per-30-min suppression applies to every card kind, so a second card for the same place inside a short span cannot appear; the numbers 4 and 2 came from the overlay before S2. S2 and S3 criteria contradict each other here; kept S2 (no card storm). Controller decision needed.
-- Next step: S4 (F2 fix reuse).
+- S4 done: PlaceFlight.good + reusedFix (10 min, STILL, same session, !movedSince, 4 m/min growth <= 50 m, conflict check), refusal reason tokens, fixSrc/fixRealAgeB on the line, F2 overlay deleted (only F1 overlay left). Place + replay tests green.
+  - S4 replay (run dir run-2026-11-24T12-22-58): wrong 0 in every HEAD run; calibration TRUSTED 5/6; INDOOR_60M, STALE 0 cards; StubNone 38 calls, 0 cards; SJ_FOUNDERS 0 cards (report only); AS_RECORDED/OUTDOOR/INDOOR_MEDIA_GOOD calls rose by ~7 (reused-fix attempts).
+  - NOT MET: INDOOR_MEDIA_GOOD cards >= B1+1 in two spans: cards are 6 total (Bronze 3, Ivory 1, Exterior 1, Golconda 1) vs B1 12; once-per-place suppression (S2) caps cards, so F2's gain shows as attempts (calls) not extra cards. Same S2-contradiction as OUTDOOR Bronze/Ivory. Controller decision needed.
+- Controller message (rebase onto feat/v101-ask-eval 543f1031+, which has Track B history, Track C prompt): next = rebase, then S5 (use PlaceConfidence.PIN in PlaceCardRebuild), S6 via PlaceCardHistory, S7. No polling/delay() in ViewModel/settings files.
+- Next step: commit S4, rebase, verify S1-S4 tests, S5.
 
 ## Step log (counts only, no names / coordinates / ids)
 | Step | Status | Commit | Notes |
