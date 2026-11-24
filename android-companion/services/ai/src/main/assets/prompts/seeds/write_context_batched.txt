@@ -7,4 +7,5 @@ Rules:
 - confidence is between 0 and 1. tags are 1-3 lowercase words.
 - Every fact lists in source_frame_ids the frame_id of each photo it is visible in. Use only frame_ids given above, never invent one.
 - Give every photo exactly one caption: one sentence on the whole photo, with its frame_id, even when it has no facts.
+- If the name of a shop, restaurant, venue or place is readable on a sign, board or name plate, put that name in the caption in double quotes, exactly as written. Copy no other text (no screens, documents, cards, number plates or name badges).
 Reply with JSON: {"facts":[{"text":"...","type":"object|place|person|event|note","confidence":0.0,"tags":["..."],"source_frame_ids":["<frame_id>"]}],"captions":[{"frame_id":"<frame_id>","caption":"..."}]}

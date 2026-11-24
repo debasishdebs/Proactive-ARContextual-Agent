@@ -66,12 +66,19 @@ class SeedAssetsTest {
     @Test fun shippedVisionDefaultIsPinnedAndThePreProvenanceOneUpgrades() {
         val seeds = AssetPromptSeeds(ApplicationProvider.getApplicationContext())
         val current = PromptDefaults.fingerprint(seeds.template(PromptKey.VISION_EXTRACT).trim(), com.rokid.context.ai.contract.DefaultSchemas.text(PromptKey.VISION_EXTRACT))
-        assertEquals("df262c3711776a9a2a48b6f7b5a433ebceb4b0328b7879533a7b75bac1d4d8da", current)
+        assertEquals("61e9802bf57e464756b998889ac7890411aef04e4da1aa20ed34a98f01681bd9", current)
         // The old hash is recomputed from a committed copy of the OLD seed + OLD facts schema text, not re-asserted as a constant.
         fun res(name: String) = checkNotNull(javaClass.classLoader!!.getResourceAsStream("prompts_old/$name")).bufferedReader().readText()
         val old = PromptDefaults.fingerprint(res("vision_extract_seed.txt").trim(), res("vision_extract_facts_schema.json").trimEnd('\n'))
         assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains(old))
         assertEquals(false, old == current)
+        // The seed before the sign-text rule (v2): recomputed from its committed copy, and still upgraded.
+        val v2 = PromptDefaults.fingerprint(res("vision_extract_seed_v2.txt").trim(), com.rokid.context.ai.contract.DefaultSchemas.text(PromptKey.VISION_EXTRACT))
+        assertEquals("df262c3711776a9a2a48b6f7b5a433ebceb4b0328b7879533a7b75bac1d4d8da", v2)
+        assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains(v2))
+        assertEquals(false, v2 == current)
+        val seed = seeds.template(PromptKey.VISION_EXTRACT)
+        assertEquals(true, seed.contains("double quotes") && seed.contains("Copy no other text"))
         assertEquals(false, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains(current))
     }
 }
