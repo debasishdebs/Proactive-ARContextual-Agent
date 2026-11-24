@@ -134,13 +134,15 @@ class MemoryDetailViewModel(
         local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null, preview = null) } }
         if (!start) return
         viewModelScope.launch {
-            var exportBlocked = false; var saveBlocked = false; var cacheLeft = false; var changed = false; var tooLarge = false; var pinPrep = false; var pinsChanged = false; var pinNotice: PinNotice? = null
+            var exportBlocked = false; var saveBlocked = false; var uploadBlocked = false; var cacheLeft = false; var changed = false; var tooLarge = false; var pinPrep = false; var pinsChanged = false; var pinNotice: PinNotice? = null
             val ok = try {
                 if (kind.single) objectId != null && forget.forgetObject(kind, objectId)
                 else if (preview != null) forget.forgetScopedPins(kind, memoryId, frameId, preview.requested, (if (preview.needsAck) preview.ackHash else preview.planHash).ifEmpty { null }, if (preview.pinsUnknown) emptySet() else preview.pinIds) // the scope and the pins the dialog showed: no other pin is deleted; a failed preview (below) or failed pin lookup deletes none
                 else when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId); else -> false }
             } catch (c: CancellationException) {
                 throw c
+            } catch (e: com.rokid.context.orchestration.DataOpGate.UploadInProgress) {
+                uploadBlocked = true; false
             } catch (e: com.rokid.context.orchestration.DataOpGate.WriteInProgress) {
                 saveBlocked = true; false
             } catch (e: ContentChanged) {
@@ -162,7 +164,7 @@ class MemoryDetailViewModel(
             }
             local.update {
                 if (ok) it.copy(forgetting = false, forgotten = true, message = pinNotice?.let { n -> ForgetCopy.pinNotice(n.pending, n.cacheLeft) } ?: if (cacheLeft) ForgetCopy.CACHE_LEFT else null)
-                else it.copy(forgetting = false, message = if (changed) ForgetCopy.CONTENT_CHANGED else if (tooLarge) ForgetScopeCopy.TOO_LARGE else if (pinPrep) ForgetCopy.PIN_PREP_FAILED else if (pinsChanged) ForgetCopy.PINS_CHANGED else if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
+                else it.copy(forgetting = false, message = if (changed) ForgetCopy.CONTENT_CHANGED else if (tooLarge) ForgetScopeCopy.TOO_LARGE else if (pinPrep) ForgetCopy.PIN_PREP_FAILED else if (pinsChanged) ForgetCopy.PINS_CHANGED else if (uploadBlocked) ForgetCopy.UPLOAD_RUNNING else if (saveBlocked) ForgetCopy.SAVE_RUNNING else if (exportBlocked) ForgetCopy.EXPORT_RUNNING else ForgetCopy.FAILED)
             }
             if (changed && !kind.single) openDialog(kind, frameId) // review again: the dialog opens once more with the NEW counts, the message stays
         }

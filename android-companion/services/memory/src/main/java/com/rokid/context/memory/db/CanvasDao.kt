@@ -46,8 +46,11 @@ abstract class CanvasDao {
      */
     @Transaction open suspend fun deleteWatchRuns(): Int = watchRunIds().also { ids -> ids.forEach { deleteRun(it) } }.size
 
-    /** Keeps the newest [keep] runs (by startedAt) and deletes the rest with their items and scores. */
-    @Transaction open suspend fun pruneRuns(keep: Int) { runIdsBeyond(keep).forEach { deleteRun(it) } }
+    /**
+     * Keeps the newest [keep] runs and deletes the rest with their items and scores. "Newest" is the insertion order (the SQLite rowid, monotonic, no schema change), NOT startedAt: a phone clock
+     * set back must not make a new run look old. A run in [protectedIds] (just registered, or live) is never deleted whatever its position.
+     */
+    @Transaction open suspend fun pruneRuns(keep: Int, protectedIds: Set<String> = emptySet()) { runIdsBeyond(keep).filter { it !in protectedIds }.forEach { deleteRun(it) } }
 
     @Upsert abstract suspend fun upsertItem(i: CanvasRunItemEntity)
     @Query("SELECT * FROM canvas_run_item WHERE runId = :id") abstract suspend fun items(id: String): List<CanvasRunItemEntity>
@@ -224,7 +227,7 @@ abstract class CanvasDao {
     @Query("DELETE FROM canvas_score WHERE runId = :id") protected abstract suspend fun deleteScores(id: String)
     @Query("DELETE FROM canvas_run WHERE runId = :id") protected abstract suspend fun deleteRunRow(id: String)
     @Query("SELECT DISTINCT runId FROM canvas_run_item WHERE frameId LIKE 'watch:%'") protected abstract suspend fun watchRunIds(): List<String>
-    @Query("SELECT runId FROM canvas_run ORDER BY startedAt DESC, runId DESC LIMIT -1 OFFSET :keep") protected abstract suspend fun runIdsBeyond(keep: Int): List<String>
+    @Query("SELECT runId FROM canvas_run ORDER BY rowid DESC LIMIT -1 OFFSET :keep") protected abstract suspend fun runIdsBeyond(keep: Int): List<String>
     @Query("DELETE FROM canvas_run_item WHERE frameId IN (:frameIds)") abstract suspend fun deleteItemsForFrames(frameIds: List<String>): Int
     @Query("DELETE FROM canvas_score WHERE frameId IN (:frameIds)") abstract suspend fun deleteScoresForFrames(frameIds: List<String>): Int
     @Query("DELETE FROM canvas_live_trace WHERE frameId IN (:frameIds)") abstract suspend fun deleteTracesForFrames(frameIds: List<String>): Int

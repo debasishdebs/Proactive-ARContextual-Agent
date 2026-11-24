@@ -260,6 +260,19 @@ class CanvasDaoTest {
         assertNull(dao.run("a"))
     }
 
+    @Test fun pruneOrdersByInsertionNotClockAndNeverDeletesProtectedRuns() = runBlocking {
+        // a clock set back: the newest inserted row has the smallest startedAt
+        listOf("a" to 300L, "b" to 200L, "c" to 100L).forEach { (id, at) -> dao.insertRun(run(id, at = at)); dao.upsertItem(item(id, "f")); dao.upsertScore(score(id, "f")) }
+        dao.pruneRuns(2)
+        assertNull(dao.run("a")); assertEquals(0, dao.items("a").size)
+        assertEquals(setOf("b", "c"), dao.runs(10).map { it.runId }.toSet())
+        // a protected (registered or live) run is kept with its rows even beyond the cut
+        dao.insertRun(run("d", at = 1)); dao.insertRun(run("e", at = 1)); dao.upsertItem(item("b", "g")); dao.upsertScore(score("b", "g"))
+        dao.pruneRuns(2, setOf("b"))
+        assertEquals(setOf("b", "d", "e"), dao.runs(10).map { it.runId }.toSet())
+        assertNull(dao.run("c")); assertEquals(2, dao.items("b").size); assertEquals(2, dao.scores("b").size)
+    }
+
     @Test fun recentAsksNewestFirst() = runBlocking {
         listOf(1L, 3L, 2L).forEach { db.askDao().upsert(AskEntity("a$it", it, "q", "a", "[]", null, "app", false)) }
         assertEquals(listOf("a3", "a2"), dao.recentAsks(2).map { it.id })

@@ -125,6 +125,7 @@ class MemoryDetailViewModelTest {
         val cases = listOf<Pair<() -> Boolean, String>>(
             { throw com.rokid.context.orchestration.DataOpGate.ExportInProgress() } to ForgetCopy.EXPORT_RUNNING,
             { throw com.rokid.context.orchestration.DataOpGate.WriteInProgress() } to ForgetCopy.SAVE_RUNNING,
+            { throw com.rokid.context.orchestration.DataOpGate.UploadInProgress() } to ForgetCopy.UPLOAD_RUNNING,
             { throw CacheCleanupFailed() } to ForgetCopy.CACHE_LEFT,
             { false } to ForgetCopy.FAILED,
         )

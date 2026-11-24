@@ -192,12 +192,16 @@ class CanvasRunner(
     /**
      * The prune of old runs is a delete: it takes the [com.rokid.context.orchestration.DataOpGate]. A running export, Save or photo upload holds it off (bounded wait, 30 s): the prune is skipped
      * and the next run prunes again. It runs AFTER the new run is registered and OUTSIDE the runner lock's critical path (its own coroutine), so a run start never waits for the gate. The new run's
-     * row is already in, so the newest [KEEP_RUNS] rows are kept (the same set the prune before the insert kept). Best effort: nothing it throws reaches the run.
+     * row is already in and PROTECTED (with every active run), so the newest [KEEP_RUNS] rows are kept (the same set the prune before the insert kept). Best effort: nothing it throws reaches the run.
      */
-    private fun pruneAfterStart(scope: CoroutineScope) {
+    private fun pruneAfterStart(scope: CoroutineScope, vararg registered: String) {
         scope.launch {
             try {
-                com.rokid.context.orchestration.DataOpGate.shared.delete { dao.pruneRuns(KEEP_RUNS) }
+                com.rokid.context.orchestration.DataOpGate.shared.delete {
+                    // Protected from the prune whatever the wall clock says (it may have been set back): the runs this call registered and every run live now (the active run, an A/B group's two runs).
+                    val keepIds = registered.toMutableSet().also { p -> _active.value?.let(p::add); group?.let { p.add(it.runA); p.add(it.runB) } }
+                    dao.pruneRuns(KEEP_RUNS, keepIds)
+                }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: com.rokid.context.orchestration.DataOpGate.UploadInProgress) {
@@ -392,7 +396,7 @@ class CanvasRunner(
             cancelled.set(null)
             _active.value = runId
             launched = true
-            pruneAfterStart(scope)
+            pruneAfterStart(scope, runId)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, keys, ssel = SceneSel(ids, bound))
@@ -462,7 +466,7 @@ class CanvasRunner(
             cancelled.set(null)
             _active.value = runId
             launched = true
-            pruneAfterStart(scope)
+            pruneAfterStart(scope, runId)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, keys, wsel = WatchSel(fromMs, toMs, bound))
@@ -509,7 +513,7 @@ class CanvasRunner(
             cancelled.set(null)
             _active.value = runId
             launched = true
-            pruneAfterStart(scope)
+            pruneAfterStart(scope, runId)
             // ATOMIC: the body runs (and its finally releases the runner) even if the scope is cancelled before the job starts.
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
@@ -558,7 +562,7 @@ class CanvasRunner(
             cancelled.set(null)
             _active.value = runId
             launched = true
-            pruneAfterStart(scope)
+            pruneAfterStart(scope, runId)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, keys, MomentSel(ids, bound))
@@ -614,7 +618,7 @@ class CanvasRunner(
             group = g
             _active.value = g.runA
             launched = true
-            pruneAfterStart(scope)
+            pruneAfterStart(scope, g.runA, g.runB)
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     val first = execute(g.runA, a, ia)

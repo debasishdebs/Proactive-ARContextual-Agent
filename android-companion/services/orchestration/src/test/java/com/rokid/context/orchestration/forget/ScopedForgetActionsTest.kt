@@ -90,6 +90,8 @@ class ScopedForgetActionsTest {
         assertEquals(listOf("mk:1:2"), undone)
         assertEquals(ForgetActions.Outcome.EXPORT_IN_PROGRESS, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Mark("m"), undoMark = { throw DataOpGate.ExportInProgress() }))
         assertEquals(ForgetActions.Outcome.SAVE_IN_PROGRESS, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Mark("m"), undoMark = { throw DataOpGate.WriteInProgress() }))
+        assertEquals("an upload block is its own outcome, not a save", ForgetActions.Outcome.UPLOAD_IN_PROGRESS, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Mark("m"), undoMark = { throw DataOpGate.UploadInProgress() }))
+        assertEquals("the photo's cache-left notice survives the undo", ForgetActions.Outcome.CACHE_CLEANUP_FAILED, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Mark("m"), undoMark = { ForgetActions.MarkPhotoOutcome(ForgetActions.Outcome.CACHE_CLEANUP_FAILED) }))
         assertEquals(ForgetActions.Outcome.FAILED, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Mark("m"), undoMark = { error("x") }))
         assertEquals("no recorder, nothing removed", ForgetActions.Outcome.FAILED, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Mark("m")))
     }
