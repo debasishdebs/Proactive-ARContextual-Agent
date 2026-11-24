@@ -339,6 +339,20 @@ class OnlineTileSourceTest {
         assertEquals("the received bytes (12 header + 100) are counted as big-download bytes", 112L, g.ledger.today().bulkBytes)
     }
 
+    /** Codex data saver r1 P2-9: a partial body followed by an IOException is still counted (from the finally block). */
+    @Test fun aPartialResponseFollowedByAnIOExceptionStillCountsTheReceivedBytes() {
+        val provider = OnlineProvider.mapTiler(key)
+        val transport = object : TileTransport {
+            override fun get(url: String, userAgent: String): TileResponse = throw java.io.IOException("unused")
+            override fun get(url: String, userAgent: String, onBytes: (Long) -> Unit): TileResponse { onBytes(16_384); onBytes(8_192); throw java.io.IOException("reset") }
+            override fun cancelAll() {}
+        }
+        val g = PolicyGate(com.rokid.context.core.net.NetworkCost.HOME_MOBILE)
+        val src = OnlineTileSource(provider, transport, OnlineTileDiskCache(File(tmp.root, "g9"), provider.cacheId, OnlineTileDiskCache.MAX_BYTES, clock = { now }), "TestAgent/1", clock = { now }, dataGate = g).also { it.start() }
+        assertNull(src.tile(k1))
+        assertEquals("the 24 KB that arrived before the reset are counted", 24_576L, g.ledger.today().bulkBytes)
+    }
+
     @Test fun onWifiTilesAreFetchedAndNotCounted() {
         val t = FakeTransport(mutableListOf(ok()))
         val g = PolicyGate(com.rokid.context.core.net.NetworkCost.FREE)

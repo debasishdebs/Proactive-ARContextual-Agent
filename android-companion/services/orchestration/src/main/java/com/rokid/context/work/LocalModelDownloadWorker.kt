@@ -12,6 +12,10 @@ import com.rokid.context.ai.local.LocalModel
 import com.rokid.context.ai.local.LocalModels
 import com.rokid.context.ai.local.ModelFile
 import com.rokid.context.ai.local.ModelFileVerifier
+import com.rokid.context.core.net.DataGate
+import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.EndpointReach
+import com.rokid.context.core.net.Skipped
 import com.rokid.context.data.models.LocalModelStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
@@ -41,6 +45,8 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
     private sealed interface Outcome {
         data object Done : Outcome
         data object Retry : Outcome
+        /** The data saver closed (roaming, unknown network, daily limit, hotspot, Offline only): the .part stays and the work waits for Wi-Fi. */
+        data object Closed : Outcome
         data class Fail(val message: String, val reason: String) : Outcome
     }
 
@@ -51,6 +57,8 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         // "I'm abroad" was switched on after this download was queued with "Allow mobile data": a local foreign SIM does not report roaming, so no byte goes over a metered network until it is off (Wi-Fi still runs).
         // Not a retry (that would keep the mobile-data request, back off for hours and use up attempts): the work is replaced by a Wi-Fi-only one, which WorkManager starts when Wi-Fi is there. The .part is kept.
         if (LocalModelStore.abroad(applicationContext) && meteredNow()) { LocalModelStore(applicationContext).waitForWifi(model); return Result.success().also { modelEvent(id, "abroad_metered_wait_wifi") } }
+        // The shared data saver admission (BULK_OTHER: daily caps, hotspot / metered-Wi-Fi override, ledger) is asked before the first byte and again while bytes flow. Fail closed: roaming or an unknown network never downloads.
+        if (!admitted()) return waitForWifiNow(model)
         val outcome = try {
             // One writer per model file: a replacement waits until the stopped worker has let go of the .part.
             withContext(Dispatchers.IO) { downloadAll(model) }
@@ -59,9 +67,32 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         }
         return when (outcome) {
             Outcome.Done -> Result.success().also { modelEvent(id, "done") }
+            Outcome.Closed -> waitForWifiNow(model)
             Outcome.Retry -> if (runAttemptCount + 1 >= MAX_ATTEMPTS) fail(id, MSG_FAILED, "gave_up") else Result.retry()
             is Outcome.Fail -> fail(id, outcome.message, outcome.reason)
         }
+    }
+
+    private val gate: DataGate by lazy { gateOf(applicationContext) }
+
+    /** One admission check of the shared gate for a bulk model download (a remote host). A refusal is counted once in the "other big jobs" ledger. */
+    private fun admitted(): Boolean {
+        val d = try { gate.decide(DataKind.BULK_OTHER, EndpointReach.REMOTE) } catch (e: Exception) { return false } // an unreadable gate is closed
+        if (!d.allowed) { gate.skipped(DataKind.BULK_OTHER, Skipped.BULK, d); return false }
+        return true
+    }
+
+    /**
+     * The policy is closed: replace the work with a Wi-Fi-only one (a fresh request, the .part is kept). A closed answer on a network WorkManager itself calls unmetered (a Wi-Fi blip before validation) would replace the work
+     * in a loop, so a second closure within [REPLACE_GAP_MS] is a plain retry (the work's own backoff) instead.
+     */
+    private fun waitForWifiNow(model: LocalModel): Result {
+        val now = System.currentTimeMillis()
+        val last = lastWait.put(model.id, now)
+        modelEvent(model.id, "data_saver_closed")
+        if (last != null && now - last < REPLACE_GAP_MS) return Result.retry()
+        LocalModelStore(applicationContext).waitForWifi(model)
+        return Result.success()
     }
 
     private fun meteredNow(): Boolean = try { applicationContext.getSystemService(android.net.ConnectivityManager::class.java)?.isActiveNetworkMetered != false } catch (e: Exception) { true }
@@ -96,6 +127,7 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
 
         val have = part.length()
         if (have < model.bytes) {
+            if (!admitted()) return Outcome.Closed
             val request = Request.Builder().url(model.url).apply { if (have > 0) header("Range", "bytes=$have-") }.build()
             val call = client().newCall(request)
             cancelOnStop(call) { transfer(call, id, model, part, have, before, total) }?.let { return it }
@@ -122,6 +154,10 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
     /** Appends the body to [part]; null when it ended and the .part is ready to verify, else the outcome. */
     private suspend fun transfer(call: Call, id: String, model: ModelFile, part: File, from: Long, before: Long, total: Long): Outcome? {
         var have = from
+        // Bytes read and not yet reported to the data saver ledger: reported every [REPORT_BYTES] and, from the finally block, whatever is left (a cancelled, failed or closed transfer is counted too).
+        var unreported = 0L
+        val costlyAtStart = try { gate.costlyNow() } catch (e: Exception) { true }
+        try {
         call.execute().use { response ->
             if (!response.request.url.isHttps) return Outcome.Fail(MSG_FAILED, "not_https")
             val append = when (response.code) {
@@ -149,6 +185,12 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                             if (have + n > model.bytes) { part.delete(); return Outcome.Fail(MSG_NOT_VERIFIED, "too_long") }
                             out.write(buf, 0, n)
                             have += n
+                            unreported += n
+                            if (unreported >= REPORT_BYTES) {
+                                val bytes = unreported; unreported = 0
+                                gate.sentAt(DataKind.BULK_OTHER, 0L, bytes, 0, costlyAtStart)
+                                if (!admitted()) return Outcome.Closed // the policy closed mid-transfer (daily limit, roaming, hotspot): stop now, the .part stays
+                            }
                             val percent = ((before + have) * 100 / total).toInt()
                             if (percent != lastReported) {
                                 lastReported = percent
@@ -158,6 +200,10 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                     }
                 }
             }
+        }
+        } finally {
+            val bytes = unreported
+            if (bytes > 0) try { gate.sentAt(DataKind.BULK_OTHER, 0L, bytes, 0, costlyAtStart) } catch (e: Exception) { }
         }
         return null
     }
@@ -183,6 +229,11 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         private const val SPACE_FACTOR = 1.2
         private const val MAX_ATTEMPTS = 6
         private const val BUFFER = 64 * 1024
+        /** Bytes read between two reports to the data saver (and two policy re-checks). */
+        private const val REPORT_BYTES = 256 * 1024L
+        private const val REPLACE_GAP_MS = 60_000L
+        /** Last time a closed policy replaced a model's work (process-wide). */
+        private val lastWait = ConcurrentHashMap<String, Long>()
         /** Per model file, process-wide (only this process writes filesDir/models). */
         private val writers = ConcurrentHashMap<String, Mutex>()
 
@@ -197,7 +248,11 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         @VisibleForTesting internal var client: () -> OkHttpClient = { Http.downloadClient() }
         @VisibleForTesting internal var freeBytes: (File) -> Long = { it.usableSpace }
 
+        @VisibleForTesting internal var gateOf: (Context) -> DataGate = { com.rokid.context.ai.datasaver.DataSaverGraph.get(it) }
+
         @VisibleForTesting internal fun resetForTests() {
+            gateOf = { com.rokid.context.ai.datasaver.DataSaverGraph.get(it) }
+            lastWait.clear()
             resolve = LocalModels::byId
             client = { Http.downloadClient() }
             freeBytes = { it.usableSpace }
