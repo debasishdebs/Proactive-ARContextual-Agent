@@ -13,6 +13,7 @@ import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DeletionEpoch
 import com.rokid.context.memory.db.FrameSourceEntity
+import com.rokid.context.memory.db.MomentLocationEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.NudgeEntity
@@ -87,6 +88,22 @@ class GoldenWorld(val db: ContextDatabase, now: Long = 1_000) {
         sd.replace(scene("sNear", tA, tB + 999), listOf(momA, momB).map { ScenePartEntity("sNear", ScenePartKind.MOMENT, it, "r", MomentId.startMs(it)!!) })
         sd.replace(scene("sMixed", tB, tFar + 999), listOf(momB, momFar).map { ScenePartEntity("sMixed", ScenePartKind.MOMENT, it, "r", MomentId.startMs(it)!!) })
         check(md.momentIdsBetween(momA, momFar).size == 3)
+    }
+
+    /** The second ids of the two lone marks of [seedLocations] (each a second of its own, outside every radius). */
+    val momLone = MomentId.ofMs(base + 2_000_000); val momLone2 = MomentId.ofMs(base + 2_500_000)
+
+    /**
+     * v18 WP2, called AFTER [seed] and only by the tests that pin `moment_location` (every other golden keeps its literal). One row per Moment id, as the recorder writes them: [momA] FRAME fA at tA, [momB] FRAME fB at tB,
+     * [momFar] FRAME fFar at tFar, [momLone] MARK mkLone and [momLone2] MARK mkLone2 (two marks with no photo, each in a second of its own). The delta names the rows by their Moment id.
+     */
+    suspend fun seedLocations() {
+        val e = DeletionEpoch("i", 1, 0); val f = DaoFence(0, e, { 0 }, { e })
+        db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity("mkLone", "MOMENT", "tap", "MOMENT", base + 2_000_000, createdAt = 1), f)
+        db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity("mkLone2", "MOMENT", "tap", "MOMENT", base + 2_500_000, createdAt = 1), f)
+        fun row(id: String, at: Long, kind: String, anchor: String) = MomentLocationEntity(id, at, kind, anchor, 12.5, 77.5, 20.0, 1_000, "ZONE_STREAM", null, null, 1)
+        listOf(row(momA, tA, "FRAME", "fA"), row(momB, tB, "FRAME", "fB"), row(momFar, tFar, "FRAME", "fFar"), row(momLone, base + 2_000_000, "MARK", "mkLone"), row(momLone2, base + 2_500_000, "MARK", "mkLone2"))
+            .forEach { db.momentLocationDao().insertIfAbsent(it) }
     }
 
     /** The delta of [op] on a freshly seeded world. */

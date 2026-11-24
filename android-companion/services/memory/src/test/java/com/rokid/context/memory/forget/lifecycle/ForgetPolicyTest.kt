@@ -32,6 +32,7 @@ class ForgetPolicyTest {
         ForgetChild.OBJECT to listOf(K, K, K, K, K),
         ForgetChild.PLACE_PACK to listOf(K, C, K, K, K),
         ForgetChild.PLACE_CARD to listOf(K, C, K, K, K),
+        ForgetChild.MOMENT_LOCATION to listOf(F, F, K, K, K), // v18 WP2: only a user Forget and Delete all delete a Moment's saved location
         ForgetChild.CONFIG to listOf(K, C, K, K, K),
         ForgetChild.CONTROL to listOf(C, C, C, C, C),
         ForgetChild.EMBEDDING to listOf(F, F, C, F, F),

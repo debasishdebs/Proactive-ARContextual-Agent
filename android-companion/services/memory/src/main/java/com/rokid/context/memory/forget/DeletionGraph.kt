@@ -51,6 +51,7 @@ object DeletionGraph {
         w("moment_part", "Moment membership edges (ids and revisions only)"),
         w("moment_tombstone", "forgotten seconds; the deletion epoch is the fence after Delete all, as with the frame tombstones"),
         w("moment_trace_dep", "reserved trace dependencies of a Moment; empty until a trace writer exists"),
+        w("moment_location", "optional Moment location (phone fix or media backfill); user Forget of the photo, the mark, any user span, the Moment and Delete all delete it in the same transaction; retention, sweep, purge and Moment rebuilds keep it"),
         w("moment_sensor", "per-second sensor features of a Moment (numbers, state names and a source trace id; no raw samples); deleted with the Moment, with its trace, by every Forget that selects by time, and by Delete all"),
         w("object_audit", "append-only audit of Moment-family objects: ids, op names, times and step names only, no content; deleted with its object and by Delete all"),
         w("object_derived", "derived SUMMARY, CAPTION and EMBEDDING fields of Moment-family objects; deleted with the object and by Delete all"),
