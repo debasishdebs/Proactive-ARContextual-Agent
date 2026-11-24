@@ -1,0 +1,8 @@
+VERDICT: NOT READY
+
+1. [P1] android-companion/phone/src/main/java/com/rokid/context/phone/place/AndroidPlaceGuideControl.kt:90 - New entry inherits a seed path that checks Offline only/free Wi-Fi only at startup; subsequent requests continue after privacy/network changes because PlaceHttp never calls gate.decide - Recheck privacy, free Wi-Fi and BULK_OTHER admission before every seed request.
+2. [P2] android-companion/phone/src/main/java/com/rokid/context/phone/place/AndroidPlaceGuideControl.kt:91 - Remove deletes only the area row; places retain seeded=true and remain exempt from eviction/Clear fetched despite the dialog promising ordinary fetched places - Transactionally clear seeded flags for places no longer covered by remaining seeded areas, preserving pins.
+3. [P2] android-companion/phone/src/main/java/com/rokid/context/phone/ui/settings/privacy/zones/SeedOverlays.kt:205 - Removing an existing area while reseeding it reports success, then seedArea’s final putArea resurrects it - Serialize removal with seeding or cancel and await the matching seed before deleting.
+4. [P3] android-companion/phone/src/test/java/com/rokid/context/phone/ui/settings/privacy/zones/SeedPanelScreenTest.kt:25 - Seed/confirm callbacks are no-ops; tests cannot catch broken confirmation wiring, cap disabling or removal confirmation - Exercise those controls with recorded callbacks and state transitions.
+
+Static review only; no files edited, Gradle, adb or tools scripts run.
