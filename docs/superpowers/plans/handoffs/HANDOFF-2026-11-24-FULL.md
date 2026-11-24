@@ -2,6 +2,9 @@
 
 Owner: the user (Debasish). Repo: ~/Desktop/rokid/proactive-context-agent, branch `feat/v101-ask-eval` (LOCAL; only ROADMAP.md was ever pushed). Android app: phone + Rokid glasses + optional watch. Nothing from 19-24 Nov is installed except what was installed on 19 Nov (build 18c1b76a).
 
+## 0e. 25 Nov 01:00: TRAIN20 INSTALLED on phone + glasses (the user said go at ~00:44)
+Installed 6a78899e on both; glasses connected (user confirmed). Backup: ~/Desktop/rokid/backups/pca-phone-pre-trip-20261125-0044.tar (+ .apk = old 18c1b76a). `retention paused` logged 00:49:32 = old 00:50 clean-up pre-empted. Counts after: memory 18716, frame 5121, moment 1788, forget_tombstone 10284 (-68 = existing rowless-tombstone sweep, harmless), Room v17, pins 9. Installer verify printed 'not verified' only due to a tr locale bug on the glasses log (checked by hand: running, no errors). Remaining for the user: attach 9 pins to Moments (pin-moment-candidates), grant calendar/contacts only if wanted, home roaming dry run before 1 Dec. Everything else = after-Sikkim backlog.
+
 ## 0d. 24 Nov ~23:40: train20 STAGED + EMULATOR REHEARSAL PASSED
 Staged: ~/Desktop/rokid/backups/apks-v110-train20-6a78899e. Rehearsal (handoffs/emulator-smoke-train20-2026-11-24.md, commit 763a72a6): counts identical, no crash, Ask + embeddings OK on free Wi-Fi, Ask OK on non-roaming mobile; NOT tested: public host, roaming, real Azure. ONLY REMAINING STEP: reconnect phone + glasses -> installer dry run with --apks apks-v110-train20-6a78899e -> the user's "go" -> --go -> post-install checks. Deadline Thu 26 Nov 00:50 IST.
 
