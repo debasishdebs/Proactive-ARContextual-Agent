@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SAFE install helper for the trip build (bash 3.2 compatible). DRY-RUN BY DEFAULT: real actions only with --go.
 #   tools/install-trip-build.sh --phone <serial> --glasses <serial> [--watch <serial>] --apks <dir> [--tag <tag>] [--go]
-#        [--allow-emulator] [--allow-downgrade] [--accept-unverified-signature [--i-understand-no-signature-check]]
+#        [--allow-emulator] [--allow-downgrade] [--accept-unverified-signature [--i-understand-no-signature-check]] [--accept-unverified-form-factor]
 #   tools/install-trip-build.sh --self-test --phone emulator-5554 --apks <dir> [--go]    (emulator only, phone only; runs the fixtures first)
 #   tools/install-trip-build.sh --fixtures                                                (refusal fixtures only, no device, no adb)
 # Exit codes: 2 = REFUSED, 3 = installed but NOT verified or log scan FAILED (glasses not installed), other nonzero = failure, 0 = success.
@@ -22,7 +22,7 @@ SCAN_SECS="${PCA_SCAN_SECS:-60}"
 RETRY_SLEEP="${PCA_RETRY_SLEEP:-1}"
 
 PHONE="" GLASSES="" WATCH="" APKS="" TAG="" GO=0 ALLOW_EMU=0 ALLOW_DOWN=0 SELFTEST=0 PLAIN_OK=0
-ACCEPT_UNSIG=0 UNDERSTAND_NOSIG=0 FIXTURES=0
+ACCEPT_UNSIG=0 UNDERSTAND_NOSIG=0 FIXTURES=0 ACCEPT_UNFORM=0
 TMP="" FXDIR="" WATCH_VC="" wvc=""
 BACKUP_TAR="" PREV_APK="" BACKUP_VALID=0
 PHASE=preflight    # preflight | backup | installing | installed
@@ -199,6 +199,55 @@ apk_cert() { # apk -> validated cert SHA-256, or return 1
   [[ "$d" =~ $re ]] || return 1
   printf '%s\n' "$d"
 }
+apk_badging() { # apk -> aapt/aapt2 'dump badging' text (fails when no aapt is available)
+  [ -n "$AAPT" ] || return 1
+  "$AAPT" dump badging "$1" 2>/dev/null
+}
+apk_manifest() { # apk -> AndroidManifest.xml xmltree text (aapt2 and aapt take different argument shapes)
+  [ -n "$AAPT" ] || return 1
+  case "$AAPT" in
+    *aapt2) "$AAPT" dump xmltree --file AndroidManifest.xml "$1" 2>/dev/null ;;
+    *) "$AAPT" dump xmltree "$1" AndroidManifest.xml 2>/dev/null ;;
+  esac
+}
+form_unverified() { # label reason : refuses unless --accept-unverified-form-factor was passed
+  if [ "$ACCEPT_UNFORM" = 1 ]; then
+    echo "!!!!! WARNING: $1: FORM FACTOR NOT VERIFIED ($2). Continuing ONLY because --accept-unverified-form-factor was passed. A watch APK shares applicationId $PHONE_PKG with the phone app and would REPLACE it. !!!!!"
+    return 0
+  fi
+  die "$1: cannot verify the APK form factor ($2). Refusing. (Override, NOT recommended: --accept-unverified-form-factor)"
+}
+check_form() { # file role(phone|glasses|watch) label : the APK content must match the role BEFORE any install (the watch and phone share applicationId)
+  local f="$1" role="$2" label="$3" bad man launch want_launch has_watch=0 comp_watch=0
+  bad="$(apk_badging "$f")" || bad=""
+  if [ -z "$bad" ]; then form_unverified "$label" "aapt/aapt2 dump badging unavailable or failed"; return 0; fi
+  man="$(apk_manifest "$f")" || man=""
+  if [ -z "$man" ]; then form_unverified "$label" "aapt/aapt2 dump xmltree of AndroidManifest.xml unavailable or failed"; return 0; fi
+  case "$bad" in *"uses-feature: name='android.hardware.type.watch'"*|*"uses-feature-not-required: name='android.hardware.type.watch'"*) has_watch=1 ;; esac
+  case "$man" in *android.hardware.type.watch*) has_watch=1 ;; esac
+  case "$man" in *com.rokid.context.watch*|*MotionPassiveService*|*MotionReceiver*|*wearable.standalone*) comp_watch=1 ;; esac
+  launch="$(printf '%s\n' "$bad" | sed -n "s/^launchable-activity: name='\([^']*\)'.*/\1/p" | sed -n 1p)"
+  case "$role" in
+    phone)
+      want_launch=com.rokid.context.MainActivity
+      [ "$has_watch" = 0 ] || die "$label APK declares uses-feature android.hardware.type.watch: it is a WATCH build staged as the phone app and would REPLACE the phone app. Refusing"
+      [ "$comp_watch" = 0 ] || die "$label APK contains watch-only components (com.rokid.context.watch / MotionPassiveService / MotionReceiver / wearable.standalone): it is a WATCH build. Refusing"
+      ;;
+    glasses)
+      want_launch=com.rokid.context.glasses.MainActivity
+      [ "$has_watch" = 0 ] || die "$label APK declares uses-feature android.hardware.type.watch: not a glasses build. Refusing"
+      [ "$comp_watch" = 0 ] || die "$label APK contains watch-only components: not a glasses build. Refusing"
+      ;;
+    watch)
+      want_launch=com.rokid.context.watch.MainActivity
+      [ "$has_watch" = 1 ] || die "$label APK does not declare uses-feature android.hardware.type.watch: not a watch build. Refusing"
+      ;;
+    *) die "check_form: unknown role '$role'" ;;
+  esac
+  [ "$launch" = "$want_launch" ] || die "$label APK launchable activity is '$launch', expected '$want_launch' (wrong form factor). Refusing"
+  say "$label: form factor verified ($role: launchable activity $launch)"
+  return 0
+}
 inst_vc() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | sed -n 1p; }
 inst_vn() { A "$1" shell dumpsys package "$2" 2>/dev/null | tr -d '\r' | sed -n 's/.*versionName=//p' | sed -n 1p; }
 
@@ -342,6 +391,7 @@ check_apk() { # file pkg label -> sets APK_VC
   case "$APK_VC" in ''|*[!0-9]*) die "cannot read versionCode of $f" ;; esac
   h="$(sha256_of "$f")" || die "cannot compute a valid SHA-256 of $f"
   say "$label: $(basename "$f") package=$p versionCode=$APK_VC sha256=$h"
+  check_form "$f" "$label" "$label"
 }
 check_installed() { # serial pkg apk label : version (no downgrade) + signature
   local s="$1" pkg="$2" apk="$3" label="$4" ivc ivn
@@ -657,11 +707,17 @@ va() { # arg-rule fixture
   if [ -n "${FX_ENV-}" ]; then PCA_SELFTEST_CALLSTATE="$FX_ENV"; else unset PCA_SELFTEST_CALLSTATE; fi
   validate_args
 }
+frm() { # form-factor fixture: FX_ROLE, FX_BAD (badging text), FX_MAN (xmltree text), FX_ACCF override
+  AAPT=/x/aapt2; ACCEPT_UNFORM="${FX_ACCF:-0}"
+  apk_badging() { [ -n "$FX_BAD" ] || return 1; printf '%b' "$FX_BAD"; }
+  apk_manifest() { [ -n "$FX_MAN" ] || return 1; printf '%b' "$FX_MAN"; }
+  check_form /x.apk "$FX_ROLE" "$FX_ROLE"
+}
 run_fixtures() {
   FXDIR="$(mktemp -d "${TMPDIR:-/tmp}/install-trip-fx.XXXXXX")" || die "no temp dir for fixtures"
   say "fixtures (no adb, no device):"
   local ok='mCallState=0\n'
-  export FX_T0 FX_SNAP FX_SNAPR FX_PID0 FX_PID1 FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV
+  export FX_T0 FX_SNAP FX_SNAPR FX_PID0 FX_PID1 FX_OUT FX_RC FX_FS FX_PID FX_FREE FX_OVR FX_GO FX_SIGNER FX_ACC FX_HAVE FX_WANT FX_PULL FX_PHONE FX_GL FX_ST FX_PL FX_UND FX_AE FX_ENV FX_ROLE FX_BAD FX_MAN FX_ACCF
   FX_RC=0
   FX_OUT="  mCallState=0\n  mCallState=0\n";            fx "call guard: all slots 0 passes" ok cg
   FX_OUT='mCallState=0junk\n';                          fx "call guard: mCallState=0junk" refuse cg
@@ -904,6 +960,33 @@ SIGS
   FXI_wch_chars=; FXI_wch_feat=android.hardware.type.watch; fx "watch: pm features with watch passes" ok iso_watch_install
   FXI_wch_chars=phone; FXI_wch_feat=; fx "watch: no watch markers refuses" refuse iso_watch_install
   FXI_wch_chars=watch
+  # form factor (the watch and phone share applicationId com.rokid.context): content must match the role before ANY install
+  local PB="package: name='com.rokid.context' versionCode='4'\nlaunchable-activity: name='com.rokid.context.MainActivity'  label=''\n  uses-feature: name='android.hardware.bluetooth'\n"
+  local PM="N: android=http://schemas.android.com/apk/res/android\n  E: manifest\n    E: application\n      E: activity\n        A: android:name(0x01010003)=\"com.rokid.context.MainActivity\"\n"
+  local WB="package: name='com.rokid.context' versionCode='41'\nlaunchable-activity: name='com.rokid.context.watch.MainActivity'  label=''\n  uses-feature: name='android.hardware.type.watch'\n"
+  local WM="  E: manifest\n    E: uses-feature\n      A: android:name(0x01010003)=\"android.hardware.type.watch\"\n    E: service\n      A: android:name(0x01010003)=\"com.rokid.context.watch.motion.MotionPassiveService\"\n"
+  local GB="package: name='com.rokid.context.glasses' versionCode='4'\nlaunchable-activity: name='com.rokid.context.glasses.MainActivity'  label=''\n  uses-feature: name='android.hardware.camera'\n"
+  local GM="  E: manifest\n    E: activity\n      A: android:name(0x01010003)=\"com.rokid.context.glasses.MainActivity\"\n"
+  FX_ACCF=0
+  FX_ROLE=phone;   FX_BAD="$PB"; FX_MAN="$PM"; fx "form: real-shaped phone APK passes" ok frm
+  FX_ROLE=glasses; FX_BAD="$GB"; FX_MAN="$GM"; fx "form: real-shaped glasses APK passes" ok frm
+  FX_ROLE=watch;   FX_BAD="$WB"; FX_MAN="$WM"; fx "form: real-shaped watch APK passes as watch" ok frm
+  FX_ROLE=phone;   FX_BAD="$WB"; FX_MAN="$WM"; fx "form: WATCH APK staged as phone-debug.apk refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD="$PB  uses-feature: name='android.hardware.type.watch'\n"; FX_MAN="$PM"; fx "form: phone APK declaring the watch feature in badging refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD="$PB"; FX_MAN="$PM    E: uses-feature\n      A: android:name(0x01010003)=\"android.hardware.type.watch\"\n"; fx "form: phone APK declaring the watch feature in the manifest refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD="$PB"; FX_MAN="$PM    E: service\n      A: android:name(0x01010003)=\"com.rokid.context.watch.motion.MotionPassiveService\"\n"; fx "form: phone APK with the watch motion service refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD="$PB"; FX_MAN="$PM    E: meta-data\n      A: android:name(0x01010003)=\"com.google.android.wearable.standalone\"\n"; fx "form: phone APK with wearable.standalone refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD="package: name='com.rokid.context' versionCode='4'\nlaunchable-activity: name='com.rokid.context.other.MainActivity'\n"; FX_MAN="$PM"; fx "form: phone APK with an unexpected launchable activity refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD="package: name='com.rokid.context' versionCode='4'\n"; FX_MAN="$PM"; fx "form: phone APK without a launchable activity refuses" refuse frm
+  FX_ROLE=glasses; FX_BAD="$WB"; FX_MAN="$WM"; fx "form: watch APK staged as glasses-debug.apk refuses" refuse frm
+  FX_ROLE=glasses; FX_BAD="package: name='com.rokid.context' versionCode='4'\nlaunchable-activity: name='com.rokid.context.MainActivity'\n"; FX_MAN="$PM"; fx "form: phone APK staged as glasses (no glasses launchable) refuses" refuse frm
+  FX_ROLE=glasses; FX_BAD="$GB  uses-feature: name='android.hardware.type.watch'\n"; FX_MAN="$GM"; fx "form: glasses APK declaring watch refuses" refuse frm
+  FX_ROLE=watch;   FX_BAD="$PB"; FX_MAN="$PM"; fx "form: phone APK staged as watch-debug.apk refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD=; FX_MAN="$PM"; fx "form: badging unavailable refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD="$PB"; FX_MAN=; fx "form: xmltree unavailable refuses" refuse frm
+  FX_ROLE=phone;   FX_BAD=; FX_MAN=; FX_ACCF=1; fx "form: aapt unavailable passes only with --accept-unverified-form-factor" ok frm
+  FX_ROLE=phone;   FX_BAD="$WB"; FX_MAN="$WM"; FX_ACCF=1; fx "form: the override does not excuse a verified watch APK as phone" refuse frm
+  FX_ACCF=0
   say "fixtures: $FX_PASS passed, $FX_FAIL failed"
   [ "$FX_FAIL" = 0 ]
 }
@@ -923,6 +1006,7 @@ while [ $# -gt 0 ]; do
     --allow-plaintext-db) PLAIN_OK=1; shift ;;
     --accept-unverified-signature) ACCEPT_UNSIG=1; shift ;;
     --i-understand-no-signature-check) UNDERSTAND_NOSIG=1; shift ;;
+    --accept-unverified-form-factor) ACCEPT_UNFORM=1; shift ;;
     --fixtures) FIXTURES=1; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
