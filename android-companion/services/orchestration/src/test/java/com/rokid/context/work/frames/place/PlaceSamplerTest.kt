@@ -47,6 +47,8 @@ class PlaceSamplerTest {
     private var retry = false
     private var cell = CellOutcome.FRESH
     private var seed: List<PlaceSeed> = emptyList()
+    private var nearby: List<PlaceEntity> = emptyList()
+    private val chosenIds = mutableListOf<List<String>>()
 
     private var fixCalls = 0
     private var candidateCalls = 0
@@ -72,11 +74,11 @@ class PlaceSamplerTest {
 
     private fun sampler(scope: TestScope) = PlaceSampler(
         scope = scope, store = store, fix = { fixCalls++; fix },
-        candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, cell) },
+        candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, cell, nearby) },
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
-        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf }, history = { historyEvents += it },
+        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf }, history = { historyEvents += it }, chosenSink = { chosenIds += it },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -153,7 +155,7 @@ class PlaceSamplerTest {
     }
 
     @Test fun seededFromHistory_suppressesAfterRestart() = runTest {
-        v2 = true; seed = listOf(PlaceSeed("wd:Q1", T0 - 60_000)); poke()
+        v2 = true; seed = listOf(PlaceSeed("wd:Q1", T0 - 60_000, "PHOTO")); poke()
         assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(cards.isEmpty()); assertTrue(lastLine().contains("card=suppressed"))
     }
 
@@ -293,18 +295,82 @@ class PlaceSamplerTest {
         assertTrue(lastLine().contains("fixSrc=reused") && lastLine().contains("pinFirst=not_fresh")); assertTrue(outcomes.last() != PlaceOutcome.PIN_FIRST)
     }
 
-    @Test fun cluster_modelMatchedRoom_noClusterCard() = runTest {
-        pf = true; places = listOf(userPin(pinA, "Room A1", LAT, 15), userPin(pinB, "Room A2", north(30.0), 20)); reply = match1; poke()
-        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size); assertEquals(PlaceConfidence.PHOTO, cards[0].confidence)
-        assertTrue(lastLine().contains("pinFirst=cluster(2)"))
+    private val twoRooms get() = listOf(userPin(pinA, "Room A1", LAT, 15), userPin(pinB, "Room A2", north(30.0), 20))
+
+    /** Codex place fixes r1 P1-1: several pins is answered at once: the fenced cluster card, no photo upload, no model call, no memory (whatever the model would have said). */
+    @Test fun cluster_answersAtOnce_noPhotoNoCallNoMemory() = runTest {
+        pf = true; places = twoRooms; reply = match1; poke()
+        assertEquals(0, matchCalls.size); assertTrue(memories.isEmpty())
+        assertEquals(PlaceOutcome.PIN_FIRST, outcomes.last()); assertEquals(1, cards.size)
+        assertEquals(PlaceConfidence.PIN, cards[0].confidence); assertTrue(cards[0].title.contains("pins", ignoreCase = true))
+        assertTrue(lastLine().contains("card=shown") && lastLine().contains("pinFirst=cluster(2)") && lastLine().contains("call=none"))
+        assertEquals(listOf(pinA, pinB), chosenIds.last().sorted())
+        reply = none; again(121_000, "f2"); poke(); assertTrue(lastLine().contains("pinFirst=visit")); assertEquals("one cluster card per visit (a visit falls through to the model path, which here says NONE)", 1, cards.size)
     }
 
-    @Test fun cluster_modelNone_clusterCard() = runTest {
-        pf = true; places = listOf(userPin(pinA, "Room A1", LAT, 15), userPin(pinB, "Room A2", north(30.0), 20)); reply = none; poke()
-        assertEquals(PlaceOutcome.NONE, outcomes.last()); assertEquals(1, cards.size)
-        assertEquals(PlaceConfidence.PIN, cards[0].confidence); assertTrue(cards[0].title.contains("pins", ignoreCase = true))
-        assertTrue(lastLine().contains("card=shown") && lastLine().contains("pinFirst=cluster(2)") && lastLine().contains("chosen=$pinA,$pinB"))
-        again(121_000, "f2"); poke(); assertEquals("one cluster card per visit", 1, cards.size)
+    @Test fun cluster_zoneAndStopFenceStillRunFirst() = runTest {
+        pf = true; places = twoRooms; zone = true; poke()
+        assertEquals(PlaceOutcome.ZONE, outcomes.last()); assertTrue(cards.isEmpty()); assertEquals(0, candidateCalls)
+        zone = false; zoneList = listOf(zoneAt(LAT, LON)); again(1_000, "f2"); poke()
+        assertEquals(PlaceOutcome.ZONE, outcomes.last()); assertTrue(cards.isEmpty()); assertEquals(0, matchCalls.size)
+        zoneList = emptyList(); enabled = false; again(1_000, "f3"); poke()
+        assertTrue(cards.isEmpty())
+    }
+
+    @Test fun cluster_withdrawnWhileDeciding_noCard() = runTest {
+        pf = true; places = twoRooms
+        val holder = PlaceCardHolder(); val published = mutableListOf<PlaceCard>()
+        val s = PlaceSampler(scope = this, store = store, fix = { fix }, candidates = { _, _, _ -> holder.clear(); PlaceCandidates(places, cell) }, match = { _, _ -> matchCalls += "x" to emptyList(); reply },
+            saveMemory = { true }, onCard = { published += it }, clock = { now }, enabled = { true }, zoneBlocked = { false }, networkUp = { true }, zones = { emptyList() }, pinFirstOn = { true }, cards = holder, log = { logs += it })
+        s.poke(); runCurrent()
+        assertTrue("a Forget between the epoch capture and the publication refuses the card", holder.card.value == null); assertEquals(0, matchCalls.size)
+    }
+
+    /** P1-2: no user-pin identifier in any log line, whatever the path; counts and the word `pin` instead. */
+    @Test fun logs_neverCarryAUserPinId() = runTest {
+        pf = true; places = twoRooms; poke()                                     // cluster card
+        pf = false; places = listOf(userPin(pinA, "Room A1", LAT, 15), place("wd:Q9", "Other", north(60.0))); again(121_000, "f2"); reply = match1; poke() // model path with a pin among the candidates
+        pf = true; places = listOf(userPin(pinA, "Test pin", LAT, 30)); again(2 * 3_600_000L, "f3"); poke()     // single pin card
+        val all = logs.joinToString("\n")
+        assertFalse(all, all.contains("user:") || all.contains("00000000-0000"))
+        assertTrue(all.contains("pinCand=") && all.contains("chosen=pin") && all.contains("ids=wd:Q9"))
+        assertTrue("the replay seam still gets the ids", chosenIds.flatten().contains(pinA))
+    }
+
+    /** P2-8: the ambiguity is judged against EVERY eligible nearby pin, also one the capped pack list left out. */
+    @Test fun pinFirst_neighbourOutsideTheCappedList_makesACluster() = runTest {
+        pf = true; places = listOf(userPin(pinA, "Room A1", LAT, 15)); nearby = listOf(userPin(pinA, "Room A1", LAT, 15), userPin(pinB, "Room A2", north(30.0), 20)); poke()
+        assertTrue(lastLine().contains("pinFirst=cluster(2)")); assertEquals(1, cards.size); assertTrue(cards[0].title.contains("pins", ignoreCase = true)); assertEquals(0, matchCalls.size)
+    }
+
+    /** P2-6: the sampler asks the shared reservation: a pin another path (the sign text) holds is not carded a second time, and the claim is released. */
+    @Test fun pinCard_refusedWhileAnotherPathHoldsThePin_thenReleased() = runTest {
+        pf = true; places = listOf(userPin(pinA, "Test pin", LAT, 30))
+        assertTrue(flight.reserve(listOf(pinA), now))
+        poke(); assertTrue(cards.isEmpty()); assertTrue(lastLine().contains("card=suppressed"))
+        flight.unreserve(listOf(pinA)); again(121_000, "f2"); poke()
+        assertEquals(1, cards.size)
+        assertTrue("released after the card", flight.reserve(listOf(pinB), now)) // an unrelated pin is free, and nothing is left reserved for pinA beyond its visit
+        flight.unreserve(listOf(pinB))
+    }
+
+    @Test fun clusterCard_refusedWhileAnotherPathHoldsAMember() = runTest {
+        pf = true; places = twoRooms
+        assertTrue(flight.reserve(listOf(pinB), now)); poke()
+        assertTrue(cards.isEmpty()); assertTrue(lastLine().contains("card=suppressed") && lastLine().contains("pinFirst=cluster(2)"))
+    }
+
+    /** P2-7: only an actual card event seeds the dedupe after a restart. */
+    @Test fun seed_possibleAndUnsentTextRows_doNotSuppress() = runTest {
+        v2 = true
+        seed = listOf(PlaceSeed("wd:Q1", T0 - 60_000, "POSSIBLE"), PlaceSeed("wd:Q1", T0 - 50_000, "TEXT", delivery = com.rokid.context.memory.place.CardDelivery.NOT_SENT_LATE))
+        poke()
+        assertEquals(1, cards.size); assertTrue(lastLine().contains("card=shown"))
+    }
+
+    @Test fun seed_sentTextRowAndRealCards_suppress() = runTest {
+        v2 = true; seed = listOf(PlaceSeed("wd:Q1", T0 - 60_000, "TEXT", delivery = com.rokid.context.memory.place.CardDelivery.SENT)); poke()
+        assertTrue(cards.isEmpty()); assertTrue(lastLine().contains("card=suppressed"))
     }
 
     // ---- S6: LOW_CONFIDENCE is never silent ----
@@ -584,8 +650,8 @@ class PlaceSamplerTest {
         places = listOf(place(PIN, "SECRET-NAME-XYZ", summary = "SECRET-NOTE-XYZ", kind = "user_pin"), place("wd:Q9", "Other Landmark", lat = north(300.0)))
         poke()
         val line = logs.single { it.startsWith("place attempt ") }
-        assertTrue(line, line.contains("outcome=MATCHED reason=matched call=made online=true cell=FRESH cand=2 ids=$PIN,wd:Q9 "))
-        assertTrue(line, line.contains("frameAgeS=5 fixAgeB=le5s accB=le10m ") && line.contains("chosen=$PIN distB=lt25m confPct=86 "))
+        assertTrue(line, line.contains("outcome=MATCHED reason=matched call=made online=true cell=FRESH cand=2 ids=wd:Q9 pinCand=1 "))
+        assertTrue(line, line.contains("frameAgeS=5 fixAgeB=le5s accB=le10m ") && line.contains("chosen=pin distB=lt25m confPct=86 "))
         assertTrue(line, line.contains("card=shown cardWhy=- reveal=ok err=-"))
         assertTrue(line, Regex("candMs=\\d+ callMs=\\d+ totalMs=\\d+").containsMatchIn(line))
         val all = logs.joinToString("\n")

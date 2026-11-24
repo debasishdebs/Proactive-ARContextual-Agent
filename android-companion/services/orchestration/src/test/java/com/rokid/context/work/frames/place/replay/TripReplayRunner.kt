@@ -31,7 +31,7 @@ data class ReplayRow(
 ) {
     /** H2: a card is `card=shown` on the attempt line, not an outcome name (a MATCHED may be `card=suppressed`). */
     val isCard get() = card == "shown"
-    val isPinCard get() = isCard && outcome?.name == "PIN_FIRST"
+    val isPinCard get() = isCard && outcome?.name == "PIN_FIRST" && !pinFirst.startsWith("cluster(")
     val isClusterCard get() = isCard && pinFirst.startsWith("cluster(")
     val isSuppressed get() = card == "suppressed"
     val isCall get() = call == "made"
@@ -62,6 +62,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
         val logs = ArrayList<String>()
         val requests = ArrayList<ReplayRequest>()
         var lastFix: FixResult? = null
+        var lastChosen: List<String> = emptyList()
 
         fun sampler() = PlaceSampler(
             scope = scope, store = store,
@@ -70,7 +71,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             match = { id, lines -> requests += ReplayRequest(id, lines); matcher.match(id, lines) },
             saveMemory = { true }, onCard = {}, clock = { now }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
             backend = { BackendChoice.ONLINE }, admit = { true }, photoAllowed = { true }, zones = { emptyList() }, flight = flight,
-            log = { logs += it }, stats = {}, elapsed = { now },
+            log = { logs += it }, stats = {}, elapsed = { now }, chosenSink = { lastChosen = it },
             dedupeV2On = { !spec.legacyDedupe }, retryOn = { !spec.legacyDedupe }, pinFirstOn = { !spec.legacyDedupe && !spec.noPinFirst }, fixReuseOn = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
         )
 
@@ -83,7 +84,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
         val rows = ArrayList<ReplayRow>(events.size)
         for (ev in events) {
             now = ev.t
-            store.lastReturned = null; lastFix = null; matcher.note = null
+            store.lastReturned = null; lastFix = null; lastChosen = emptyList(); matcher.note = null
             val mark = logs.size
             if (ev.extra == "+F4") main.retryRecent(RetryReason.PIN_CREATED, ev.pinId) else main.poke()
             scope.runCurrent()
@@ -92,7 +93,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             val outcome = kv["outcome"]?.let { runCatching { PlaceOutcome.valueOf(it) }.getOrNull() }
             val fr = store.lastReturned
             val fx = lastFix
-            val chosen = kv["chosen"]?.takeIf { it != "-" }.orEmpty()
+            val chosen = lastChosen.joinToString(",") // the ids come from the sampler seam: the log line never carries a user-pin id (P1-2)
             rows += ReplayRow(
                 now, ev.extra, fr?.frameId, fr?.capturedAt, fr?.motion ?: ev.frame?.motion ?: "-",
                 if (fx == null) "-" else if (fx.pos == null) "UNKNOWN" else fx.pos.label() + " acc=${fx.accM.toInt()}", fx?.assumed == true, fx?.f2 == true,

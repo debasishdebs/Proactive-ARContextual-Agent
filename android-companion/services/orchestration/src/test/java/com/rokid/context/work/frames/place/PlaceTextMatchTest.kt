@@ -90,6 +90,24 @@ class PlaceTextMatchTest {
         assertEquals(0, capturedCalls); assertTrue(cards.isEmpty() && events.isEmpty() && logs.isEmpty())
     }
 
+    /** P2-6: the sign path claims the pin through the SAME reservation as the sampler's cards: while another attempt holds it, no second card; afterwards the claim is released. */
+    @Test fun reservationHeldByAnotherAttempt_noSecondCard_andReleasedAfterTheCard() = runTest {
+        good(); val id = pins.single().id
+        assertTrue(flight.reserve(listOf(id), now)) // e.g. the sampler's pin-first card for the same pin is being published
+        run("\"Kestrel Souvenir House\""); assertTrue(cards.isEmpty() && events.isEmpty()); assertTrue(logs.single().endsWith("result=none"))
+        flight.unreserve(listOf(id)); logs.clear()
+        run("\"Kestrel Souvenir House\""); assertEquals(1, cards.size)
+        assertTrue("the claim is released (a different path may reserve other pins) and the visit now holds this one", flight.reserve(listOf("user:other"), now) && !flight.reserve(listOf(id), now))
+    }
+
+    @Test fun twoOverlappingMatchers_exactlyOneCard() = runTest {
+        good()
+        val a = matcher(this); val b = matcher(this)
+        val cap = listOf(FrameCaption("f0", "\"Kestrel Souvenir House\""))
+        a.onCaptions(cap); b.onCaptions(cap); runCurrent()
+        assertEquals(1, cards.size)
+    }
+
     @Test fun replay_captionStage_quotedOnly() {
         assertEquals(listOf("Kestrel Souvenir House"), TextMatch.quotedSpans("sign \"Kestrel Souvenir House\" here"))
         assertEquals(listOf("Blue Door"), TextMatch.quotedSpans("sign “Blue Door” here"))

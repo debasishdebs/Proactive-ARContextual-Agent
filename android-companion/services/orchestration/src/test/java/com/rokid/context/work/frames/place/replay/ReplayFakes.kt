@@ -53,7 +53,8 @@ class ReplayPinPack(private val bundle: ReplayBundle, private val activation: Ac
         val all = pins + if (sitesOn) bundle.sites.map { entity(it) } else emptyList()
         val hits = Geo.candidates(all, lat, lon).map { it.place }
         val expanded = if (hits.isEmpty()) hits else Geo.expandSubPlaces(hits, pins.filter { it.parentId != null })
-        return PlaceCandidates(expanded, CellOutcome.FRESH)
+        // like the pack: every pin within reach, uncapped, for the pin-first ambiguity (P2-8)
+        return PlaceCandidates(expanded, CellOutcome.FRESH, Geo.candidates(pins, lat, lon, limit = Int.MAX_VALUE).map { it.place })
     }
 
     /** The name of a place id of this pack (for the report). */

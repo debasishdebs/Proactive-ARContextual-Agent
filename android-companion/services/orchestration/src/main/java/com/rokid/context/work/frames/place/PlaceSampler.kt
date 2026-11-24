@@ -26,7 +26,7 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** One recent card of the history, as the sampler seeds its in-memory dedupe and visits at a process start: place, wall time, kind name and cluster members (no position, no text). */
-data class PlaceSeed(val placeId: String, val at: Long, val kind: String = "", val members: List<String> = emptyList())
+data class PlaceSeed(val placeId: String, val at: Long, val kind: String = "", val members: List<String> = emptyList(), val delivery: String = "")
 
 /** A fix as the sampler needs it: where, how old and how accurate. Held in a local only; never stored or logged. */
 data class PlaceFix(val lat: Double, val lon: Double, val ageMs: Long, val accuracyM: Float)
@@ -112,6 +112,17 @@ class PlaceFlight {
     @Volatile internal var seeded = false
     /** F1: the visits of pin-first cards (in memory only). */
     internal val visits = PinVisits()
+
+    /**
+     * ONE atomic visit/card reservation shared by the sampler and [PlaceTextMatch]: the check (a live visit, a card of the place under 30 min ago per [shownHere], or another attempt holding the pin) and the claim happen
+     * under one lock, so two overlapping attempts can never both card the same pin. The holder calls [unreserve] when its card is published and its visit begun (or when it gave up).
+     */
+    private val gate = Any()
+    private val reserved = HashSet<String>()
+    internal fun reserve(ids: Collection<String>, now: Long, shownHere: (String, CardAt?) -> Boolean = { _, _ -> false }): Boolean = synchronized(gate) {
+        if (ids.any { it in reserved } || visits.has(ids, now) || ids.any { shownHere(it, cardAt(it)) }) false else { reserved += ids; true }
+    }
+    internal fun unreserve(ids: Collection<String>) = synchronized(gate) { reserved -= ids.toSet() }
 
     internal fun noteCard(placeId: String, c: CardAt) = synchronized(lastCard) {
         lastCard.remove(placeId); lastCard[placeId] = c
@@ -203,23 +214,26 @@ class PlaceSampler(
     private val pinsNear: (List<PlaceEntity>) -> List<PlaceEntity> = { it },
     /** F3: the places that had a card in the last 30 min (place id, time), read once at the first attempt after a process start (position unknown). */
     private val seedRecent: suspend (sinceMs: Long) -> List<PlaceSeed> = { emptyList() },
+    /** Test and replay seam: the ids the attempt chose, handed over once when it ends. NEVER logged (a user-pin id is private). */
+    internal val chosenSink: (List<String>) -> Unit = {},
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
     private val handled = ArrayDeque<String>()
 
     /**
-     * The decision record of the attempt in flight, logged as ONE `place attempt ...` line when it ends. Only ids (`wd:`, `osm:`, `user:<uuid>`), counts, buckets, durations and fixed reason tokens:
-     * never a name, note, summary, coordinate, photo or frame id. The single-flight [PlaceFlight] is released once the card is decided, so a LATER attempt can start while this one settles its shadow: each attempt creates and logs its OWN Trace ([runAttempt]); [tr] only points at the newest one.
+     * The decision record of the attempt in flight, logged as ONE `place attempt ...` line when it ends. Only public ids (`wd:`, `osm:`), counts (`pinCand` = how many user pins), buckets, durations and fixed reason tokens (`chosen=pin` for a user pin):
+     * never a user-pin id, a name, note, summary, coordinate, photo or frame id. The single-flight [PlaceFlight] is released once the card is decided, so a LATER attempt can start while this one settles its shadow: each attempt creates and logs its OWN Trace ([runAttempt]); [tr] only points at the newest one.
      */
     private class Trace(val startedAt: Long) {
-        var reason = "-"; var call = "none"; var online = "-"; var cell = "-"; var cand = 0; var ids = "-"
+        var reason = "-"; var call = "none"; var online = "-"; var cell = "-"; var cand = 0; var ids = "-"; var pinCand = 0
         var frameAgeS = -1L; var fixAgeB = "-"; var accB = "-"; var candMs = -1L; var callMs = -1L
         var chosen = "-"; var distB = "-"; var confPct = -1; var dedupeAgeS = -1L; var dedupeDistB = "-"; var callGapS = -1L
         var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
         /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
-        var cluster: PinFirst.Decision.Cluster? = null; var clusterParents: List<String?> = emptyList(); var clusterFrame = ""; var gen = 0L; var epoch = 0L
+        /** The place ids this attempt chose (a model pick, a pin card, a cluster, the nearest): handed to [chosenSink] ONLY; user-pin ids are never written to the log. */
+        var chosenIds: List<String> = emptyList()
         var v2 = false; var fxLat = Double.NaN; var fxLon = Double.NaN; var fxAcc = 0f; var nowAt = 0L
         var cardId: String? = null; var fixSrc = "-"; var fixRealAgeB = "-"; var pinFirst = "-"; var weakWin = "-"; var retry = "-"; var hist = "-"; var textHit = "-"
         /** null = shadow off (the line is unchanged); "err", "na" or "ok". */
@@ -276,9 +290,10 @@ class PlaceSampler(
 
     private fun finish(o: PlaceOutcome, t: Trace = tr) {
         stats(o)
+        try { chosenSink(t.chosenIds) } catch (_: Exception) { }
         log("place outcome=${o.name}")
         val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
-        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION} fixSrc=${t.fixSrc} fixRealAgeB=${t.fixRealAgeB} pinFirst=${t.pinFirst} weakWin=${t.weakWin} retry=${t.retry} hist=${t.hist} textHit=${t.textHit}${shadowFields(t)}")
+        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} pinCand=${t.pinCand} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION} fixSrc=${t.fixSrc} fixRealAgeB=${t.fixRealAgeB} pinFirst=${t.pinFirst} weakWin=${t.weakWin} retry=${t.retry} hist=${t.hist} textHit=${t.textHit}${shadowFields(t)}")
     }
 
     /** The content-free shadow fields: buckets, a rank, a boolean and a duration. Empty when the shadow flag is off, so the line is then byte-identical to before. */
@@ -353,17 +368,8 @@ class PlaceSampler(
     }
 
     private suspend fun attempt(ticket: ZoneTicket, retry: Retry? = null): PlaceOutcome {
-        val o = attemptCore(ticket, retry)
-        val c = tr.cluster ?: return o
-        // F1: the model path (it may confirm one room) had its chance; only when it showed no card is the honest "several pins" card shown.
-        if (tr.card == "shown" || tr.card == "suppressed" || o == PlaceOutcome.DISABLED || o == PlaceOutcome.ZONE || o == PlaceOutcome.DROPPED) return o
-        return clusterCard(c, o, ticket)
-    }
-
-    private suspend fun attemptCore(ticket: ZoneTicket, retry: Retry?): PlaceOutcome {
         val gen = generation()
         val cardEpoch = cards?.epoch() ?: 0L
-        tr.gen = gen; tr.epoch = cardEpoch
         // The zone gate comes first: nothing below runs while a zone is active, approaching or unreadable.
         stopped(gen, ticket)?.let { return it }
         val now = clock()
@@ -423,12 +429,14 @@ class PlaceSampler(
         tr.pinFirst = "off"
         if (pinFirstOn()) {
             flight.visits.update(fx.lat, fx.lon, now)
-            val pins = pinsNear(found.places).filter { UserPlace.isUserId(it.id) }.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) }
+            // P2-8: the ambiguity is judged against EVERY active pin within reach (the pack passes them uncapped), never against the capped model list
+            val pins = pinsNear((found.places + found.nearbyPins).distinctBy { it.id }).filter { UserPlace.isUserId(it.id) }.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) }
             val d = PinFirst.decide(fx, tr.fixSrc, pins, flight.visits, now)
             tr.pinFirst = d.token
             when (d) {
                 is PinFirst.Decision.Single -> return pinFirstCard(d.pin, d.distanceM, f.frameId, gen, cardEpoch, ticket, now)
-                is PinFirst.Decision.Cluster -> { tr.cluster = d; tr.clusterFrame = f.frameId; tr.clusterParents = d.members.map { m -> m.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name } } }
+                // P1-1: several pins is answered at once with the fenced cluster card: no photo upload, no model call, no memory.
+                is PinFirst.Decision.Cluster -> return clusterCard(d, d.members.map { m -> m.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name } }, f.frameId, gen, cardEpoch, ticket, now)
                 else -> {}
             }
         }
@@ -442,7 +450,7 @@ class PlaceSampler(
             if (now - w.at in 0..win && Geo.distanceM(fx.lat, fx.lon, w.lat, w.lon) <= DEDUPE_M) { tr.weakWin = (win / 1000).toString(); tr.reason = "weak_backoff"; return PlaceOutcome.DUPLICATE }
         }
         val hits = cutKeepingPins(found.places.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) })
-        tr.cand = hits.size; tr.ids = idList(hits.map { it.first.id })
+        tr.cand = hits.size; tr.ids = idList(hits.map { it.first.id }.filter { !UserPlace.isUserId(it) }); tr.pinCand = hits.count { UserPlace.isUserId(it.first.id) }
         // The spacing is judged NOW (after any lengthy fetch), against the end of the previous call, on the monotonic clock.
         val sinceCall = elapsed() - flight.lastCallAt
         tr.callGapS = if (flight.lastCallAt < 0) -1L else (sinceCall / 1000).coerceAtLeast(0L)
@@ -476,7 +484,7 @@ class PlaceSampler(
         tr.confPct = (res.output.confidence * 100).toInt()
         if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; return weak(PlaceOutcome.NONE) }
         val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; return weak(PlaceOutcome.CONTRACT) }
-        tr.chosen = hits[idx - 1].first.id; tr.distB = bucketM(hits[idx - 1].second)
+        setChosen(hits[idx - 1].first); tr.distB = bucketM(hits[idx - 1].second)
         tr.shadowChoice = tr.chosen
         val floor = picked.backend ?: Backend.ONLINE // the floor of the backend that made the call
         if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"
@@ -573,9 +581,9 @@ class PlaceSampler(
     /** The nearest place's card when it is unique within [NEARBY_M] (edge distance); otherwise nothing. */
     private suspend fun fallback(hits: List<Pair<PlaceEntity, Double>>, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket): PlaceOutcome {
         val first = hits.firstOrNull() ?: run { tr.reason = "no_hits"; return PlaceOutcome.NOTHING_NEARBY }
-        tr.chosen = first.first.id; tr.distB = bucketM(first.second)
-        if (gap(first.first, first.second) > NEARBY_M) { tr.reason = "nearest_beyond_${NEARBY_M.toInt()}m"; tr.chosen = "-"; return PlaceOutcome.NOTHING_NEARBY }
-        if (hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M) { tr.reason = "ambiguous_second_within_${NEARBY_M.toInt()}m"; tr.chosen = "-"; return PlaceOutcome.NOTHING_NEARBY }
+        setChosen(first.first); tr.distB = bucketM(first.second)
+        if (gap(first.first, first.second) > NEARBY_M) { tr.reason = "nearest_beyond_${NEARBY_M.toInt()}m"; setChosen(null); return PlaceOutcome.NOTHING_NEARBY }
+        if (hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M) { tr.reason = "ambiguous_second_within_${NEARBY_M.toInt()}m"; setChosen(null); return PlaceOutcome.NOTHING_NEARBY }
         if (suppressedHere(first.first.id)) { tr.reason = "nearby_card"; return PlaceOutcome.NEARBY }
         if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
         noteCard(first.first.id)
@@ -588,27 +596,46 @@ class PlaceSampler(
 
     private fun spotOf(p: PlaceEntity) = PinVisits.Spot(p.id, p.lat, p.lon, p.radiusM)
 
-    /** A single pin the fix is inside: its card, with no model call, no photo and no memory. Fenced like every card. */
-    private suspend fun pinFirstCard(pin: PlaceEntity, distanceM: Double, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket, now: Long): PlaceOutcome {
-        tr.chosen = pin.id; tr.distB = bucketM(distanceM)
-        if (!publish(PlaceCards.pin(pin, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
-        noteCard(pin.id)
-        flight.visits.begin(listOf(spotOf(pin)), now)
-        record(HistoryKind.PIN, pin.id, pin.name, emptyList(), frameId, null)
-        tr.reason = "pin_first"
-        return PlaceOutcome.PIN_FIRST
+    /** The log token of the chosen place (a user pin is only `pin`, never its id) and the ids for the [chosenSink]. */
+    private fun setChosen(p: PlaceEntity?) { tr.chosenIds = listOfNotNull(p?.id); tr.chosen = if (p == null) "-" else if (UserPlace.isUserId(p.id)) "pin" else p.id }
+
+    /** What a refused reservation looks like in the trace: the card was not shown because another path holds, or just showed, this pin. */
+    private fun reservedElsewhere(): PlaceOutcome {
+        tr.reason = "card_reserved"; tr.card = "suppressed"; tr.cardWhy = "already_shown_here"
+        if (!tr.fxLat.isNaN()) flight.lastAttempt = PlaceFlight.Attempt(tr.fxLat, tr.fxLon, tr.nowAt)
+        flight.weak = null
+        return PlaceOutcome.DUPLICATE
     }
 
-    /** The "several pins" card of a cluster when the model path showed none. The outcome of the model path is kept; the line says `pinFirst=cluster(n)` and `card=shown`. */
-    private suspend fun clusterCard(c: PinFirst.Decision.Cluster, o: PlaceOutcome, ticket: ZoneTicket): PlaceOutcome {
-        if (suppressedHere(c.inside.id)) return o
-        val card = PlaceCards.cluster(c.members, tr.clusterParents, tr.clusterFrame)
-        if (!publish(card, tr.epoch, tr.gen, tr.clusterFrame, ticket)) return o
-        noteCard(c.inside.id)
-        flight.visits.begin(c.members.map(::spotOf), tr.nowAt)
-        tr.chosen = c.members.take(12).joinToString(",") { it.id } // ids only
-        record(HistoryKind.PIN_CLUSTER, c.inside.id, card.title, c.members.map { it.id }, tr.clusterFrame, null)
-        return o
+    /** A single pin the fix is inside: its card, with no model call, no photo and no memory. Fenced like every card; the visit/card claim is atomic with the other card paths. */
+    private suspend fun pinFirstCard(pin: PlaceEntity, distanceM: Double, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket, now: Long): PlaceOutcome {
+        setChosen(pin); tr.distB = bucketM(distanceM)
+        val ids = listOf(pin.id)
+        if (!flight.reserve(ids, now)) return reservedElsewhere()
+        try {
+            if (!publish(PlaceCards.pin(pin, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+            noteCard(pin.id)
+            flight.visits.begin(listOf(spotOf(pin)), now)
+            record(HistoryKind.PIN, pin.id, pin.name, emptyList(), frameId, null)
+            tr.reason = "pin_first"
+            return PlaceOutcome.PIN_FIRST
+        } finally { flight.unreserve(ids) }
+    }
+
+    /** The "several pins" card of a cluster, returned AT ONCE (no photo, no model call): never a guessed room. The line says `pinFirst=cluster(n)` and `card=shown`. */
+    private suspend fun clusterCard(c: PinFirst.Decision.Cluster, parents: List<String?>, frameId: String, gen: Long, epoch: Long, ticket: ZoneTicket, now: Long): PlaceOutcome {
+        tr.chosenIds = c.members.map { it.id }
+        val ids = c.members.map { it.id }
+        if (!flight.reserve(ids, now) { id, cd -> id == c.inside.id && shownHere(cd) }) return reservedElsewhere()
+        try {
+            val card = PlaceCards.cluster(c.members, parents, frameId)
+            if (!publish(card, epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+            noteCard(c.inside.id)
+            flight.visits.begin(c.members.map(::spotOf), now)
+            record(HistoryKind.PIN_CLUSTER, c.inside.id, card.title, ids, frameId, null)
+            tr.reason = "pin_first_cluster"
+            return PlaceOutcome.PIN_FIRST
+        } finally { flight.unreserve(ids) }
     }
 
     // ---- card history (F6) ----
@@ -660,11 +687,14 @@ class PlaceSampler(
     }
 
     /** One card per place while the wearer stays: true (and the trace says so) when this place had a card under 30 min ago within 30 m + the fix accuracy of that card's fix (a seeded row without a position: by place and time alone). */
-    private fun suppressedHere(placeId: String): Boolean {
-        if (!tr.v2 || tr.fxLat.isNaN()) return false
-        val c = flight.cardAt(placeId) ?: return false
+    private fun shownHere(c: PlaceFlight.CardAt?): Boolean {
+        if (!tr.v2 || tr.fxLat.isNaN() || c == null) return false
         if (tr.nowAt - c.at !in 0..ONCE_PER_PLACE_MS) return false
-        if (!c.lat.isNaN() && Geo.distanceM(tr.fxLat, tr.fxLon, c.lat, c.lon) > DEDUPE_M + tr.fxAcc) return false
+        return c.lat.isNaN() || Geo.distanceM(tr.fxLat, tr.fxLon, c.lat, c.lon) <= DEDUPE_M + tr.fxAcc
+    }
+
+    private fun suppressedHere(placeId: String): Boolean {
+        if (!shownHere(flight.cardAt(placeId))) return false
         tr.card = "suppressed"; tr.cardWhy = "already_shown_here"
         flight.lastAttempt = PlaceFlight.Attempt(tr.fxLat, tr.fxLon, tr.nowAt)
         flight.weak = null
@@ -676,10 +706,18 @@ class PlaceSampler(
         flight.seeded = true
         try {
             for (r in seedRecent(now - PinFirst.VISIT_MAX_MS)) {
+                // P2-7: only an ACTUAL card event seeds the dedupe: a POSSIBLE row, or a late sign-text row that was never sent to the glasses, showed nothing.
+                if (!isCardEvent(r)) continue
                 if (now - r.at <= ONCE_PER_PLACE_MS && flight.cardAt(r.placeId) == null) flight.noteCard(r.placeId, PlaceFlight.CardAt(Double.NaN, Double.NaN, r.at))
-                if (r.kind == "PIN" || r.kind == "PIN_CLUSTER") flight.visits.begin((r.members.ifEmpty { listOf(r.placeId) }).map { PinVisits.Spot(it, Double.NaN, Double.NaN, 0) }, r.at)
+                if (r.kind == "PIN" || r.kind == "PIN_CLUSTER" || r.kind == "TEXT") flight.visits.begin((r.members.ifEmpty { listOf(r.placeId) }).map { PinVisits.Spot(it, Double.NaN, Double.NaN, 0) }, r.at)
             }
         } catch (c: CancellationException) { flight.seeded = false; throw c } catch (_: Exception) { }
+    }
+
+    private fun isCardEvent(r: PlaceSeed): Boolean = when (r.kind) {
+        "PHOTO", "NEARBY", "PIN", "PIN_CLUSTER" -> true
+        "TEXT" -> r.delivery != com.rokid.context.memory.place.CardDelivery.NOT_SENT_LATE
+        else -> false
     }
 
     /** A provider or network failure (transient, auth, rejected): the only thing that may show the "nearby · not checked" card online. Policy (NOT_SET), invalid output and anything unknown do not. */

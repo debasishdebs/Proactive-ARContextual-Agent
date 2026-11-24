@@ -16,7 +16,8 @@ usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 REPORT_AWK='
 function isnum(s) { return s ~ /^-?[0-9]+$/ && length(s) <= 9 }
 function tok(s) { return (s ~ /^[a-z0-9_]+$/ && length(s) <= 40) ? s : "(garbled)" }
-function isid(s) { return s ~ /^(wd|osm|user):[A-Za-z0-9_.\/-]+$/ && length(s) <= 60 }
+function isid(s) { return s ~ /^(wd|osm):[A-Za-z0-9_.\/-]+$/ && length(s) <= 60 }
+function islegacypin(s) { return s ~ /^user:/ }   # a line of an older build: a user-pin id is never read into the report, never printed
 function secs(t,   a) { split(t, a, ":"); return a[1] * 3600 + a[2] * 60 + a[3] }
 function doy(d,   a, m, n, i) { split(d, a, "-"); m = a[1] + 0; n = a[2] + 0; for (i = 1; i < m; i++) n += dim[i]; return n }
 function lab(id) { return (id in label) ? "  " label[id] : "" }
@@ -79,12 +80,15 @@ index($0, "place attempt") == 0 { next }
   if (isnum(f["totalMs"]) && f["totalMs"] + 0 >= 0) { ntm++; tmv[ntm] = f["totalMs"] + 0 }
   # ids
   nid = split(("ids" in f) ? f["ids"] : "", il, ",")
-  for (i = 1; i <= nid; i++) { if (isid(il[i])) { offered[il[i]]++; seenid[il[i]] = 1 } else if (il[i] ~ /^\+[0-9]+$/) trunc++; else if (il[i] != "-" && il[i] != "") badid++ }
+  for (i = 1; i <= nid; i++) { if (isid(il[i])) { offered[il[i]]++; seenid[il[i]] = 1 } else if (il[i] ~ /^\+[0-9]+$/) trunc++; else if (islegacypin(il[i])) legacypin++; else if (il[i] != "-" && il[i] != "") badid++ }
+  # user pins are counted only (pinCand = how many were offered, chosen=pin): the logger no longer writes their ids
+  if (isnum(f["pinCand"]) && f["pinCand"] + 0 >= 0 && f["pinCand"] + 0 <= 99 && f["pinCand"] + 0 > 0) { pinatt++; pinoffered += f["pinCand"] + 0 }
   ch = ("chosen" in f) ? f["chosen"] : "-"
-  if (isid(ch)) { chosen[ch]++; seenid[ch] = 1; if (o == "MATCHED" && f["card"] == "shown") matched[ch]++
+  if (ch == "pin" || islegacypin(ch)) { pinchosen++; if (o == "MATCHED" && f["card"] == "shown") pinmatched++ }
+  else if (isid(ch)) { chosen[ch]++; seenid[ch] = 1; if (o == "MATCHED" && f["card"] == "shown") matched[ch]++
     if (isnum(f["confPct"]) && f["confPct"] + 0 >= 0 && f["confPct"] + 0 <= 100) { v = f["confPct"] + 0; b = (v < 50) ? "00-49" : (v >= 90 ? "90-100" : (int(v / 10) * 10) "-" (int(v / 10) * 10 + 9)); conf[b]++; nconf++ } }
   else if (ch != "-" && ch != "") badid++
-  if (o == "MATCHED" && f["card"] == "shown" && !isid(ch)) matchedNoId++
+  if (o == "MATCHED" && f["card"] == "shown" && !isid(ch) && ch != "pin" && !islegacypin(ch)) matchedNoId++
   # dedupe / rate limit
   if (isnum(f["callGapS"]) && f["callGapS"] + 0 >= 0) { ngs++; gsv[ngs] = f["callGapS"] + 0 }
   if (isnum(f["dedupeAgeS"]) && f["dedupeAgeS"] + 0 >= 0) ndd++
@@ -135,6 +139,8 @@ END {
   for (k in seenid) if (!(k in offered)) { offered[k] = 0 }
   nids = sortkeys(offered, ik); if (nids == 0) print "  (none)"
   for (j = 1; j <= nids; j++) printf "  %-28s offered=%d chosen=%d matched_card=%d%s\n", ik[j], offered[ik[j]], chosen[ik[j]] + 0, matched[ik[j]] + 0, lab(ik[j])
+  printf "  user pins (counts only, no ids): attempts_with_pins=%d pins_offered=%d chosen=%d matched_card=%d\n", pinatt + 0, pinoffered + 0, pinchosen + 0, pinmatched + 0
+  if (legacypin + 0 > 0) printf "  note: %d user-pin identifiers from an older build were ignored (never printed)\n", legacypin
   if (trunc + 0 > 0) printf "  note: %d id lists were truncated by the logger (+N tail); those ids are not counted as offered\n", trunc
   if (badid + 0 > 0) printf "  note: %d malformed ids ignored\n", badid
   if (matchedNoId + 0 > 0) printf "  note: %d MATCHED+card=shown attempts had no valid chosen id\n", matchedNoId
@@ -189,7 +195,7 @@ fixtures() {
   local pass=0 fail=0 out
   check() { if [ "$2" = "$3" ]; then pass=$((pass + 1)); echo "  fixture ok      : $1"; else fail=$((fail + 1)); echo "  FIXTURE FAILED  : $1"; echo "    want: $2"; echo "    got : $3"; fi; }
   has() { printf '%s\n' "$2" | grep -c -- "$3"; }
-  local A='11-19 21:00:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made online=true cell=FRESH cand=3 ids=wd:Q1,osm:node/5,user:ab-12 frameAgeS=2 fixAgeB=le5s accB=le10m candMs=12 callMs=900 totalMs=1200 chosen=wd:Q1 distB=lt25m confPct=95 dedupeAgeS=-1 dedupeDistB=- callGapS=-1 card=shown cardWhy=- reveal=ok err=-'
+  local A='11-19 21:00:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made online=true cell=FRESH cand=3 ids=wd:Q1,osm:node/5 pinCand=1 frameAgeS=2 fixAgeB=le5s accB=le10m candMs=12 callMs=900 totalMs=1200 chosen=wd:Q1 distB=lt25m confPct=95 dedupeAgeS=-1 dedupeDistB=- callGapS=-1 card=shown cardWhy=- reveal=ok err=-'
   local B='11-19 21:10:00.000 I PcPlace place attempt outcome=NEARBY reason=nearby_card call=skipped_offline online=false cell=STALE cand=2 ids=wd:Q1,wd:Q2 frameAgeS=3 fixAgeB=le5s accB=le25m candMs=5 callMs=-1 totalMs=40 chosen=wd:Q2 distB=lt50m confPct=-1 dedupeAgeS=-1 dedupeDistB=- callGapS=-1 card=shown cardWhy=- reveal=ok err=-'
   local C='11-19 22:30:00.000 I PcPlace place attempt outcome=LOW_CONFIDENCE reason=low_confidence call=made online=true cell=FRESH cand=2 ids=wd:Q1,wd:Q2 frameAgeS=1 fixAgeB=le5s accB=le10m candMs=9 callMs=1500 totalMs=1800 chosen=wd:Q2 distB=lt100m confPct=42 dedupeAgeS=-1 dedupeDistB=- callGapS=600 card=none cardWhy=- reveal=- err=-'
   local D='11-19 22:31:00.000 I PcPlace place attempt outcome=NOT_ADMITTED reason=not_admitted call=skipped_not_admitted online=true cell=FRESH cand=1 ids=wd:Q1 frameAgeS=1 fixAgeB=le5s accB=le10m candMs=3 callMs=-1 totalMs=20 chosen=- distB=- confPct=-1 dedupeAgeS=-1 dedupeDistB=- callGapS=-1 card=none cardWhy=- reveal=- err=-'
@@ -223,7 +229,7 @@ fixtures() {
   check "a day with no lines says so" "no place attempt lines in range" "$(printf '%s\n' "$out" | tail -1)"
 
   # hostile / garbled / missing
-  local HOSTILE; HOSTILE="$(printf '%s\n' 'x' '' '   ' '11-19 23:00:00.000 I PcPlace place attempt' '11-19 23:00:01.000 I PcPlace place attempt outcome=BOGUS reason=Foo/Bar-SECRETNAME call=made ids=Hello,wd:Q1,<script>,+4 World callMs=abc totalMs=99999999999 chosen=/etc/passwd confPct=999 card=shown cardWhy=x' '11-19 23:00:02.000 I PcPlace place attempt outcome=MATCHED outcome=NONE reason=ok=ok=ok ids===,,, chosen=wd:Q7 confPct=-5 card=SHOWN' 'garbage place attempt outcome=MATCHED' '11-19 23:00:03.000 I PcPlace place attempt outcome=DROPPED card=dropped')"
+  local HOSTILE; HOSTILE="$(printf '%s\n' 'x' '' '   ' '11-19 23:00:00.000 I PcPlace place attempt' '11-19 23:00:01.000 I PcPlace place attempt outcome=BOGUS reason=Foo/Bar-SECRETNAME call=made ids=Hello,wd:Q1,<script>,+4,user:leak-1 World callMs=abc totalMs=99999999999 chosen=/etc/passwd confPct=999 card=shown cardWhy=x' '11-19 23:00:02.000 I PcPlace place attempt outcome=MATCHED outcome=NONE reason=ok=ok=ok ids===,,, chosen=wd:Q7 confPct=-5 card=SHOWN' 'garbage place attempt outcome=MATCHED' '11-19 23:00:03.000 I PcPlace place attempt outcome=DROPPED card=dropped')"
   out="$(printf '%s\n' "$HOSTILE" | report_stdin)"
   check "hostile lines: counted, never crash (1 unparseable, 3 parsed)" "place attempt lines: 3 parsed, 1 unparseable; pack lookup lines: 0" "$(printf '%s\n' "$out" | sed -n 1p)"
   check "garbled reason/outcome printed as tokens, not text" "1" "$(has x "$out" '(unknown) (garbled)')"
@@ -267,11 +273,14 @@ fixtures() {
   check "shadow: by score bucket" "scoreTop=lt300 agrees=1 disagrees=1|scoreTop=ge900 agrees=1 disagrees=0" "$(printf '%s\n' "$out" | grep '^  scoreTop=' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
   check "shadow: by margin bucket" "margin=lt10 agrees=0 disagrees=1|margin=ge100 agrees=2 disagrees=0" "$(printf '%s\n' "$out" | grep '^  margin=' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
   check "shadow: chosenRank and embedMs" "chosenRank by score: 1=2 2=1 3=0 4=0 5+=0|embedMs n=4 p50=120 p95=160 max=160" "$(printf '%s\n' "$out" | grep -E '^  (chosenRank|embedMs)' | sed 's/^ *//' | tr -s ' ' | tr '\n' '|' | sed 's/|$//')"
-  local M1='11-20 10:06:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=user:abc,wd:Q1,wd:Q2 chosen=user:abc card=shown shadow=ok shCh=image scoreTop=ge900 margin=ge100 chosenRank=1 agrees=true shMixed=2 embedMs=150'
-  local M2='11-20 10:07:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=user:abc,wd:Q1 chosen=wd:Q1 card=shown shadow=ok shCh=image scoreTop=lt600 margin=lt25 chosenRank=na agrees=na shMixed=1 embedMs=170'
-  local M3='11-20 10:08:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=user:abc chosen=wd:Q1 card=shown shadow=ok shCh=image scoreTop=lt600 margin=lt25 chosenRank=2 agrees=false shMixed=0 embedMs=130'
+  local M1='11-20 10:06:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=wd:Q1,wd:Q2 pinCand=1 chosen=pin card=shown shadow=ok shCh=image scoreTop=ge900 margin=ge100 chosenRank=1 agrees=true shMixed=2 embedMs=150'
+  local M2='11-20 10:07:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made ids=wd:Q1 pinCand=1 chosen=wd:Q1 card=shown shadow=ok shCh=image scoreTop=lt600 margin=lt25 chosenRank=na agrees=na shMixed=1 embedMs=170'
+  local M3='11-20 10:08:00.000 I PcPlace place attempt outcome=MATCHED reason=matched call=made pinCand=1 chosen=wd:Q1 card=shown shadow=ok shCh=image scoreTop=lt600 margin=lt25 chosenRank=2 agrees=false shMixed=0 embedMs=130'
   out="$(printf '%s\n' "$SHALL" "$M1" "$M2" "$M3" | report_stdin)"
   check "shadow: mixed attempts are shown apart" "unmixed (no pack place dropped from the ranking): agrees=2 disagrees=2|mixed (shMixed>0, pack places dropped from the image ranking): agrees=1 disagrees=0" "$(printf '%s\n' "$out" | grep -E '^  (unmixed|mixed) ' | sed 's/^ *//' | tr '\n' '|' | sed 's/|$//')"
+  check "user pins: counted only (pinCand, chosen=pin), no id anywhere" "  user pins (counts only, no ids): attempts_with_pins=3 pins_offered=3 chosen=1 matched_card=1" "$(printf '%s\n' "$out" | grep '^  user pins')"
+  out="$(printf '%s\n' "$A" "$HOSTILE" | report_stdin)"
+  check "an older line with a user-pin id: counted as ignored, never printed" "1|0" "$(printf '%s\n' "$out" | grep -c 'user-pin identifiers from an older build were ignored')|$(printf '%s\n' "$out" | grep -c 'leak-1')"
   out="$(printf '%s\n' 'x' '11-20 10:00:00.000 I PcPlace place attempt outcome=MATCHED shadow=ok agrees=true shMixed=/etc/passwd chosenRank=1 shCh=image' | report_stdin)"
   check "shadow: a garbled shMixed counts as unmixed and is never echoed" "0" "$(has x "$out" -i 'passwd')"
   out="$(printf '%s\n' "$ALL" | report_stdin)"

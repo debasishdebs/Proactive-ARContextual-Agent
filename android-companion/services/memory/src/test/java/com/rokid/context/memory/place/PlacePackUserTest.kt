@@ -85,6 +85,19 @@ class PlacePackUserTest {
         assertEquals("Mirror Wall note.", c.places.first { it.id == farChild.id }.summary)
     }
 
+    /** Codex place fixes r1 P2-8: the capped model list keeps only [Geo.PIN_SLOTS] pins, but `nearbyPins` holds EVERY pin within reach for the pin-first ambiguity. */
+    @Test fun nearbyPinsHoldsEveryPinWithinReach_notOnlyTheCappedSlots() = run {
+        val p = pack()
+        val pins = (1..5).map { pin("Room $it", metresNorth(200.0 + it * 4.0), LON) }
+        val farPin = pin("Far room", metresNorth(900.0), LON)
+        p.replaceUserPlaces(pins + farPin)
+        val fetchedNear = (1..10).map { PlaceEntity("wd:Q$it", null, "P$it", PlaceKinds.MONUMENT, metresNorth(it * 1.0), LON, 50, "s", "wikipedia:en", "x", 1, false, false, 0, 10) }
+        db.dao().putPlaces(fetchedNear)
+        val c = p.candidates(LAT, LON, networkUp = false)
+        assertTrue("the model list keeps at most the pin slots when pack places crowd it", c.places.count { UserPlace.isUserId(it.id) } <= Geo.PIN_SLOTS)
+        assertEquals("every pin within reach is judged for ambiguity", pins.map { it.id }.toSet(), c.nearbyPins.map { it.id }.toSet())
+    }
+
     @Test fun aPinKeepsItsSlotWhenMoreThanEightPackPlacesAreNearer() {
         val fetchedNear = (1..10).map { PlaceEntity("wd:Q$it", null, "P$it", PlaceKinds.MONUMENT, metresNorth(it * 5.0), LON, 50, "s", "wikipedia:en", "x", 1, false, false, 0, 10) }
         val mine = pin("Mine", metresNorth(240.0), LON).toEntity()
