@@ -593,7 +593,7 @@ class PinMomentLinksTest {
         assertTrue(ForgetActions.rangeNeedsConfirmation(two, null)); assertTrue(ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0])))
         assertTrue("same count, other pins", ForgetActions.rangeNeedsConfirmation(two, setOf(ids[0], ids[2])))
         val actions = src("ForgetActions.kt")
-        assertTrue("the range arming is stored inside the DataOpGate", "DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange)" in actions && "forgetRangeLocked" in actions)
+        assertTrue("the range arming is stored inside the DataOpGate", "DataOpGate.shared.delete { com.rokid.context.work.frames.place.PlaceGraph.beginHistoryScope(); com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange)" in actions && "forgetRangeLocked" in actions)
         assertTrue("the arming is bound to the confirmed set", "allowedPins = confirmedPins ?: emptySet()" in actions)
         assertTrue("the refusal runs before the cascade", actions.indexOf("rangeNeedsConfirmation(going.ids, confirmedPins)") in 1 until actions.indexOf("PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }"))
     }

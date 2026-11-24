@@ -257,5 +257,28 @@ class MemoryWipeTest {
         } finally { com.rokid.context.work.frames.place.PlaceGraph.installForTests(null); pdb.close(); prefs.edit().clear().commit(); com.rokid.context.work.frames.place.PrefsHistoryOwed.clearMemory() }
     }
 
+    /** Codex place r3 P1-2: Delete all with place-history deletion still owed returns the typed cleanup-pending outcome (the UI must not say "Everything was deleted"); the wipe marker still clears and the obligation stays owed. */
+    @Test fun deleteAllWithHistoryDeletionOwedReturnsCleanupPending_andTheMarkerStillClears() = runBlocking<Unit> {
+        val prefs = ctx.getSharedPreferences(com.rokid.context.work.frames.place.PlaceGuideSettings.PREFS, Context.MODE_PRIVATE); prefs.edit().clear().commit()
+        com.rokid.context.work.frames.place.PrefsHistoryOwed.clearMemory()
+        val pdb = com.rokid.context.memory.place.PlacesDatabase.inMemory(ctx); val pack = com.rokid.context.memory.place.PlacePack(pdb, null)
+        var fail = true
+        val real = pack.cardLogDao
+        val dao = object : com.rokid.context.memory.place.PlacesDao by real {
+            override suspend fun deleteCardLogBetween(from: Long, to: Long): Int { if (fail) throw IllegalStateException("db"); return real.deleteCardLogBetween(from, to) }
+        }
+        com.rokid.context.work.frames.place.PlaceGraph.installForTests(pack)
+        com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(com.rokid.context.work.frames.place.PlaceCardHistory(dao, owed = com.rokid.context.work.frames.place.PrefsHistoryOwed(prefs)))
+        try {
+            real.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("r1", 1L, "wd:Q1", "T", "PHOTO", null, null, null, null, com.rokid.context.memory.place.CardDelivery.PENDING))
+            assertEquals(com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED, MemoryWipe.deleteAllOutcome(ctx))
+            assertFalse(com.rokid.context.memory.db.DeletionEpochStore.of(ctx).wipePending())
+            assertTrue(com.rokid.context.work.frames.place.PlaceGraph.historyOwed(ctx)); assertEquals(1, real.cardLogCount())
+            fail = false
+            assertTrue(com.rokid.context.work.frames.place.PlaceGraph.settleHistory(ctx)); assertEquals(0, real.cardLogCount())
+            assertEquals("nothing owed: plain DONE", com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE, MemoryWipe.deleteAllOutcome(ctx))
+        } finally { com.rokid.context.work.frames.place.PlaceGraph.installForTests(null); pdb.close(); prefs.edit().clear().commit(); com.rokid.context.work.frames.place.PrefsHistoryOwed.clearMemory() }
+    }
+
     private fun g() = MemoryGraph.get(ctx)
 }

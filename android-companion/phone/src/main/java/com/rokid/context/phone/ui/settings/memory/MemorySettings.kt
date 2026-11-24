@@ -72,7 +72,8 @@ class MemorySettingsViewModel(
     private val store: () -> MemorySettingsStore,
     private val encryption: EncryptionControl,
     private val usedBytes: suspend () -> Long,
-    private val wipe: suspend (Set<String>) -> Unit,
+    /** Returns the wipe's typed outcome in production ([com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED] = history deletion still owed); tests may return anything. */
+    private val wipe: suspend (Set<String>) -> Any?,
     private val export: suspend () -> File,
     private val share: (File) -> Unit,
     reviewCount: Flow<Int>,
@@ -127,7 +128,12 @@ class MemorySettingsViewModel(
                 if (_state.value.busy) { _state.update { it.copy(confirmStep = 0, notice = "Export in progress — try again") }; return }
                 val confirmed = _state.value.confirmedPinIds // the wipe deletes exactly the pins the dialog named (none after a failed lookup)
                 _state.update { it.copy(confirmStep = 0) }
-                busy { withContext(work) { wipe(confirmed) }; _state.update { it.copy(notice = "Everything was deleted") }; refreshStorage() }
+                busy {
+                    val result = withContext(work) { wipe(confirmed) }
+                    // Codex place r3 P2: while a place-history deletion is still owed, never say everything was deleted (it finishes automatically, at start and at the next Forget).
+                    val pending = result == com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED
+                    _state.update { it.copy(notice = if (pending) DELETE_ALL_PENDING_NOTICE else "Everything was deleted") }; refreshStorage()
+                }
             }
         }
     }
@@ -178,6 +184,8 @@ class MemorySettingsViewModel(
         private const val TAG = "MemorySettings"
         /** Task 14 applies the change when the database next opens; the hub service keeps the process alive (review M6). */
         private const val RESTART_HINT = "Restart the app to apply: Android Settings › Apps › Proactive Context › Force stop, then open it again."
+        /** Delete all went through but a place-history deletion is still owed: it finishes automatically (at the next start and at the next Forget). */
+        const val DELETE_ALL_PENDING_NOTICE = "Deleted. Some cleanup will finish automatically."
         const val ENCRYPTION_ON_NOTE = "Turns on after Proactive Context restarts. $RESTART_HINT"
         const val ENCRYPTION_OFF_NOTE = "Turns off after Proactive Context restarts. $RESTART_HINT"
 

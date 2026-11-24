@@ -52,6 +52,18 @@ class MemorySettingsTest {
         work = main.dispatcher,
     )
 
+    /** Codex place r3 P1-2: Delete all with a place-history deletion still owed never says "Everything was deleted". */
+    @Test fun deleteAllWithCleanupPendingSaysSomeCleanupWillFinishAutomatically() = runBlocking {
+        val vm = MemorySettingsViewModel(
+            { store }, encryption, usedBytes = { 0L }, wipe = { com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED }, export = { File("x") }, share = {}, reviewCount = flowOf(0),
+            work = main.dispatcher, pinsGoing = { com.rokid.context.work.frames.place.PinsGoing.NONE },
+        )
+        vm.askDeleteAll(); withTimeout(5_000) { vm.state.first { it.pinsChecked } }
+        vm.confirmDeleteAll(); vm.confirmDeleteAll()
+        val n = withTimeout(5_000) { vm.state.first { it.notice != null } }.notice
+        assertEquals(MemorySettingsViewModel.DELETE_ALL_PENDING_NOTICE, n)
+    }
+
     @Test fun settingsEncryptionExportAndTheDoubleConfirm() = runBlocking {
         val vm = vm()
         val s0 = withTimeout(5_000) { vm.state.first { it.storage.isNotEmpty() } }

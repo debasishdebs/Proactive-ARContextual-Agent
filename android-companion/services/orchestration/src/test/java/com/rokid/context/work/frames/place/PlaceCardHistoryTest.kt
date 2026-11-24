@@ -359,4 +359,60 @@ class PlaceCardHistoryTest {
         assertFalse("settled: done again", com.rokid.context.orchestration.forget.ForgetActions.cleanupFailed(ctx, true)); assertEquals(0, pack.cardLogDao.cardLogCount())
         prefs.edit().clear().commit(); PrefsHistoryOwed.clearMemory(); Unit
     }
+
+    // ---- Codex place r3 P2-3: compaction and scope ----
+
+    private suspend fun tryOwe(op: suspend () -> Unit) { try { op() } catch (_: HistoryDeletionPending) { } }
+
+    @Test fun aDeleteAllTokenSubsumesEverythingArmedBeforeIt_andStillDeletesAllOfIt() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        h.add(ev(frame = "f1")); h.add(ev(HistoryKind.PIN, place = pin(1).id)); h.add(ev())
+        tryOwe { h.onFramesForgotten(listOf("f1")) }; tryOwe { h.onRangeForgotten(0, now + 1) }; tryOwe { h.onPinRemoved(listOf(pin(1).id)) }
+        assertEquals(3, owed.all().size)
+        now += 1_000; tryOwe { h.clearAll() }
+        assertEquals("one Delete all token replaces the frame, range and pin tokens", 1, owed.all().size); assertTrue(owed.all().single().startsWith("a:"))
+        assertEquals("the rows are still there until the retry", 3, pack.cardLogDao.cardLogCount())
+        dao.fail = false; now += 1_000; h.add(ev(place = "wd:Q9")) // made after the Delete all: survives
+        assertTrue(h.retryOwed()); assertEquals(listOf("wd:Q9"), pack.cardLogDao.recentCardLog(10).map { it.placeId }); assertTrue(owed.all().isEmpty())
+    }
+
+    @Test fun aWiderRangeAndAnOlderDeleteAllSubsumeNarrowerTokens_butADisjointRangeStays() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        tryOwe { h.onRangeForgotten(10, 20) }; tryOwe { h.onRangeForgotten(50, 60) }; tryOwe { h.onRangeForgotten(0, 30) }
+        assertEquals(setOf("r:50:60", "r:0:30"), owed.all())
+        tryOwe { h.onRangeForgotten(0, 100) }
+        assertEquals(setOf("r:0:100"), owed.all())
+        // a Delete all token older than a later one: the later covers it
+        now = 5_000; tryOwe { h.clearAll() }; now = 9_000; tryOwe { h.clearAll() }
+        assertTrue(owed.all().contains("a:9000")); assertFalse(owed.all().contains("a:5000")); assertFalse(owed.all().contains("r:0:100"))
+        dao.fail = false; assertTrue(h.retryOwed()); assertTrue(owed.all().isEmpty())
+    }
+
+    @Test fun anOwedSetOfAnOlderBuildIsCompactedAtRetry_withoutLosingDeletionScope() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        h.add(ev(frame = "f1"))
+        listOf("r:0:10", "r:2:3", "r:100:200", "a:50", "a:20", "f:f1").forEach { owed.add(it) }
+        dao.fail = false; assertTrue(h.retryOwed()) // exec of the survivors
+        assertTrue(owed.all().isEmpty()); assertEquals("the frame token (no time) still ran", 0, pack.cardLogDao.cardLogCount())
+        listOf("r:0:10", "r:2:3", "a:50", "a:20", "r:100:200", "f:f2").forEach { owed.add(it) }
+        dao.fail = true; assertFalse(h.retryOwed())
+        assertEquals("f and the widest time tokens only", setOf("a:50", "r:100:200", "f:f2"), owed.all())
+    }
+
+    @Test fun anUnrelatedPermanentlyFailingTokenDoesNotMakeALaterOperationReportPending() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (dao, h) = failing(owed)
+        tryOwe { h.onFramesForgotten(listOf("old")) }
+        assertTrue(h.hasOwed())
+        h.beginScope(); assertFalse("an earlier Forget's token is not this operation's", h.scopePending())
+        assertFalse("startup still retries it (and it keeps failing)", h.retryOwed()); assertFalse(h.scopePending())
+        h.beginScope(); tryOwe { h.onFramesForgotten(listOf("mine")) }
+        assertTrue("the operation that attempted a failing deletion reports it", h.scopePending())
+        dao.fail = false; assertTrue(h.retryOwed()); assertFalse(h.scopePending())
+    }
+
+    @Test fun aDeleteAllThatSubsumedAFailedScopeTokenStillReportsPending() = runBlocking {
+        val owed = InMemoryHistoryOwed(); val (_, h) = failing(owed)
+        h.beginScope(); tryOwe { h.onFramesForgotten(listOf("mine")) }; now += 10; tryOwe { h.clearAll() }
+        assertEquals(1, owed.all().size); assertTrue(h.scopePending())
+    }
 }

@@ -94,22 +94,32 @@ object MemoryWipe {
      * leaving the Memory screen mid-wipe (ViewModel cleared) must not stop it part-way; the caller sees its
      * cancellation only after the wipe has finished.
      */
-    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false, confirmedPins: Set<String>? = null): Int = withContext(Dispatchers.IO + NonCancellable) {
+    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false, confirmedPins: Set<String>? = null): Int = deleteAllResult(context, db, resume, confirmedPins).deleted
+
+    /** Delete all with the typed outcome: DONE, or CACHE_CLEANUP_FAILED when place-history deletions are still owed (everything else is deleted; the owed deletion is retried on its own, the wipe marker is cleared). */
+    suspend fun deleteAllOutcome(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false, confirmedPins: Set<String>? = null): com.rokid.context.orchestration.forget.ForgetActions.Outcome =
+        if (deleteAllResult(context, db, resume, confirmedPins).historyPending) com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED else com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE
+
+    /** [deleted] frame files; [historyPending] = place-history rows may still remain (owed, retried at every start; NOT a wipe leftover). */
+    class WipeResult(val deleted: Int, val historyPending: Boolean)
+
+    private suspend fun deleteAllResult(context: Context, db: ContextDatabase, resume: Boolean, confirmedPins: Set<String>?): WipeResult = withContext(Dispatchers.IO + NonCancellable) {
         // The exclusive side of the DataOpGate: a running export is waited for (30 s), else DataOpGate.ExportInProgress and nothing is deleted (the caller says "try again").
         DataOpGate.shared.delete { wipeNow(context, db, resume, confirmedPins) }.also { runCatching { com.rokid.context.work.frames.place.PlaceRecovery.kick(context) } } // a place memory still marked is retried (its row is gone: the mark just clears)
     }
 
-    private suspend fun wipeNow(context: Context, db: ContextDatabase, resume: Boolean, confirmedPins: Set<String>?): Int {
+    private suspend fun wipeNow(context: Context, db: ContextDatabase, resume: Boolean, confirmedPins: Set<String>?): WipeResult {
         com.rokid.context.work.frames.place.ShadowCaches.clearAll() // the Place Guide shadow's in-memory vectors (derived from photos) go first, before anything is deleted; the Forget listeners clear them again at the end
         // Slice 1.4.2: the pins with a reference Moment are armed (durably, for THIS wipe) before anything is deleted; if that cannot be stored nothing is deleted (PinArmFailed). A resume keeps its earlier committed arming.
         val pinOp = com.rokid.context.work.frames.place.PinMomentLinks.beginWipe(context, resume, confirmedPins)
         try { return wipeNowArmed(context, db, resume, pinOp) } finally { com.rokid.context.work.frames.place.PinMomentLinks.endWipe(pinOp) }
     }
 
-    private suspend fun wipeNowArmed(context: Context, db: ContextDatabase, resume: Boolean, pinOp: String): Int = withContext(Dispatchers.IO + NonCancellable) {
+    private suspend fun wipeNowArmed(context: Context, db: ContextDatabase, resume: Boolean, pinOp: String): WipeResult = withContext(Dispatchers.IO + NonCancellable) {
         // S57: the persisted deletion epoch (`counter + 1`, `wipedAtMs`) is committed BEFORE anything is deleted, so a crash or power loss mid-wipe still
         // leaves a durable record that everything recorded under the old counter is stale. If it cannot be committed nothing is deleted.
         // The same commit writes the "wipe pending" marker: if the process dies before the cleanup below finished, the next start finishes it ([resumeIfPending]).
+        com.rokid.context.work.frames.place.PlaceGraph.beginHistoryScope() // inside the gate: only history deletions THIS wipe attempts (or that cover them) are reported as pending
         var pinsCommitted = true
         if (!resume) {
             val epoch = try { DeletionEpochStore.of(context).commitWipe(System.currentTimeMillis()) } catch (t: Throwable) {
@@ -195,12 +205,14 @@ object MemoryWipe {
             try { if (pinSettle(context, pinOp) == null) PcLog.w("MemoryWipe", "pin cascade not finished: retried at the next start") } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 PcLog.w("MemoryWipe", "pin cascade not done: ${SafeLog.describe(e)}")
             }
+            // Codex place r4 P1-2: history deletions still owed (Delete all's own, or a pin cascade's) are retried once more and reported as cleanup pending, never as "everything deleted". The marker below still clears (no whole-wipe re-run).
+            val historyPending = try { com.rokid.context.orchestration.forget.ForgetActions.cleanupFailed(context, true) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { true }
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             // Slice 3a (S58): files and devices follow through the registered listeners (the glasses get the NEW epoch). After everything above; never throws.
             if (leftovers == 0) DeletionEpochStore.of(context).clearWipePending() else PcLog.w("MemoryWipe", "Delete all left $leftovers artefact(s): the cleanup is retried at the next start")
             com.rokid.context.memory.forget.ForgetListeners.deleteAll()
-            deleted
+            WipeResult(deleted, historyPending)
         } finally {
             if (AppConfigStore.isPipelineEnabled(context)) scheduler.resumePipeline()
         }
