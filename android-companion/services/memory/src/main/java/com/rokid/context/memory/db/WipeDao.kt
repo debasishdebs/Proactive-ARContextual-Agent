@@ -75,6 +75,8 @@ abstract class WipeDao {
     @Query("DELETE FROM moment_sensor") protected abstract suspend fun momentSensor()
     // Moment locations (Room v18, v18 WP2). WIPED: an optional phone fix per Moment.
     @Query("DELETE FROM moment_location") protected abstract suspend fun momentLocation()
+    // Place card history (Room v18, WP3). WIPED: titles and times of the cards the user saw.
+    @Query("DELETE FROM place_card_log") protected abstract suspend fun placeHistory()
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     /** Delete all at the current time (the wildcard cleanup row is stamped with it). */
@@ -83,7 +85,7 @@ abstract class WipeDao {
     @Transaction
     open suspend fun wipeMemory(now: Long): List<String> {
         val proposals = proposalIds()
-        ackedOutbox(); momentWipeCleanup(now); objectAudit(); objectDerived(); sceneParts(); scenes(); momentSensor(); momentLocation(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
+        ackedOutbox(); momentWipeCleanup(now); objectAudit(); objectDerived(); sceneParts(); scenes(); momentSensor(); momentLocation(); placeHistory(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); canvasSaveMarkers(); markUndoneMarkers(); retentionLineage(); slice3BumpLabelRev()

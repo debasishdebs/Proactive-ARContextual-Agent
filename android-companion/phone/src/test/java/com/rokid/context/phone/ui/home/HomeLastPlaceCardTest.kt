@@ -10,7 +10,7 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.memory.place.CardDelivery
-import com.rokid.context.memory.place.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.phone.ui.status.StatusUi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -58,38 +58,35 @@ class HomeLastPlaceCardTest {
     }
 
     @Test fun theSourceFollowsHistoryChangesNotATimer() = kotlinx.coroutines.runBlocking {
-        val db = com.rokid.context.memory.place.PlacesDatabase.inMemory(graphCtx)
-        val pack = com.rokid.context.memory.place.PlacePack(db, null)
+        val db = com.rokid.context.memory.MemoryGraph.get(graphCtx).db
         var at = System.currentTimeMillis()
-        val history = com.rokid.context.work.frames.place.PlaceCardHistory(pack.cardLogDao, clock = { at }, newId = { "n$at" })
-        com.rokid.context.work.frames.place.PlaceGraph.installForTests(pack); com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(history)
+        val history = com.rokid.context.work.frames.place.PlaceCardHistory(db, clock = { at }, newId = { "n$at" })
+        com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(history)
         try {
-            com.rokid.context.orchestration.forget.DeveloperFlags.setPlaceCardHistory(graphCtx, true) // the history tests set the flag ON explicitly (production default: OFF)
-            val source = com.rokid.context.phone.place.AndroidPlaceCardHomeSource(graphCtx)
+            val source = com.rokid.context.phone.place.AndroidPlaceCardHomeSource(graphCtx) // the production default is ON (v18)
             val seen = kotlinx.coroutines.flow.MutableStateFlow<LastPlaceCard?>(null)
             val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch { source.last.collect { seen.value = it } }
-            history.add(com.rokid.context.work.frames.place.PlaceHistoryEvent(com.rokid.context.work.frames.place.HistoryKind.PIN, "user:x", "Site A", cardId = "c1"))
+            history.add(com.rokid.context.work.frames.place.PlaceHistoryEvent(com.rokid.context.work.frames.place.HistoryKind.PIN, "user:x", "Site A", cardId = "c1", authority = history.capture()))
             withTimeout(10_000) { seen.first { it?.title == "Site A" && it.body.contains("waiting") } }
             history.markDelivery("c1", CardDelivery.SENT)
             withTimeout(10_000) { seen.first { it?.body?.contains("sent to glasses") == true } }
-            history.clearAll()
+            db.placeCardLogDao().deleteAllCardLog(); com.rokid.context.work.frames.place.PlaceCardHistory.notifyChanged() // what a Forget or Delete all does inside its own transaction, then the listener tells the screens
             withTimeout(10_000) { seen.first { it == null } }
             job.cancel()
-        } finally { graphCtx.getSharedPreferences(com.rokid.context.orchestration.forget.DeveloperFlags.PREFS, android.content.Context.MODE_PRIVATE).edit().clear().commit(); com.rokid.context.work.frames.place.PlaceGraph.installForTests(null); db.close() }
+        } finally { graphCtx.getSharedPreferences(com.rokid.context.orchestration.forget.DeveloperFlags.PREFS, android.content.Context.MODE_PRIVATE).edit().clear().commit(); com.rokid.context.work.frames.place.PlaceGraph.installForTests(null) }
     }
 
-    @Test fun withTheDefaultOffTheSourceShowsNothingEvenWithAStoredRow() = kotlinx.coroutines.runBlocking {
-        graphCtx.getSharedPreferences(com.rokid.context.orchestration.forget.DeveloperFlags.PREFS, android.content.Context.MODE_PRIVATE).edit().clear().commit()
-        val db = com.rokid.context.memory.place.PlacesDatabase.inMemory(graphCtx)
-        val pack = com.rokid.context.memory.place.PlacePack(db, null)
-        val history = com.rokid.context.work.frames.place.PlaceCardHistory(pack.cardLogDao, newId = { "n1" })
-        com.rokid.context.work.frames.place.PlaceGraph.installForTests(pack); com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(history)
+    @Test fun withTheFlagOffTheSourceShowsNothingEvenWithAStoredRow() = kotlinx.coroutines.runBlocking {
+        val db = com.rokid.context.memory.MemoryGraph.get(graphCtx).db
+        val history = com.rokid.context.work.frames.place.PlaceCardHistory(db, newId = { "n1" })
+        com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(history)
         try {
-            history.add(com.rokid.context.work.frames.place.PlaceHistoryEvent(com.rokid.context.work.frames.place.HistoryKind.PIN, "user:x", "Site A", cardId = "c1"))
-            assertEquals(1, pack.cardLogDao.cardLogCount())
+            history.add(com.rokid.context.work.frames.place.PlaceHistoryEvent(com.rokid.context.work.frames.place.HistoryKind.PIN, "user:x", "Site A", cardId = "c1", authority = history.capture()))
+            assertEquals(1, db.placeCardLogDao().cardLogCount())
+            com.rokid.context.orchestration.forget.DeveloperFlags.setPlaceCardHistory(graphCtx, false)
             val first = withTimeout(10_000) { com.rokid.context.phone.place.AndroidPlaceCardHomeSource(graphCtx).last.first() }
             assertNull("flag off: no Last place card row", first)
-        } finally { com.rokid.context.work.frames.place.PlaceGraph.installForTests(null); db.close() }
+        } finally { graphCtx.getSharedPreferences(com.rokid.context.orchestration.forget.DeveloperFlags.PREFS, android.content.Context.MODE_PRIVATE).edit().clear().commit(); com.rokid.context.work.frames.place.PlaceGraph.installForTests(null) }
     }
 
     @Test fun noRowWhenThereIsNoRecentCard() {

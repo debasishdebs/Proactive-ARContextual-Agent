@@ -53,9 +53,9 @@ object DeveloperFlags {
     fun placeTextMatch(context: Context) = flag(context, PLACE_TEXT_MATCH)
     fun setPlaceTextMatch(context: Context, on: Boolean) = setFlag(context, PLACE_TEXT_MATCH, on)
 
-    /** Place card history on the phone (spec 2026-11-24 F6): a phone-only list in `places.db`. OFF BY DEFAULT (also OFF when the prefs cannot be read): no row is ever written and the UI hides the list. Every Forget / Delete all deletion path runs regardless of this flag (rows of an earlier run are still deleted). Redesign pending: move the log into context.db so Forget deletes it in the same transaction. */
+    /** Place card history on the phone (v18): a phone-only list in `context.db` (`place_card_log`). ON BY DEFAULT; a prefs read that fails counts as OFF (no row written, the UI hides the list). Every Forget / Delete all deletes its rows inside its own transaction whatever this says. */
     const val PLACE_CARD_HISTORY = "placeCardHistory"
-    fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, false) }.getOrDefault(false)
+    fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, true) }.getOrDefault(false) // v18: ON by default; a read failure counts as OFF
     fun setPlaceCardHistory(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_CARD_HISTORY, on).apply() }
 
     /** Map zones P1 (design 2026-11-24): the full-height Map zones screen (draw, Pause / Seed sheet, overview). OFF BY DEFAULT (also OFF when the prefs cannot be read): OFF = the shipped Pause zones screen, unchanged. Pause zone semantics are the same either way. */

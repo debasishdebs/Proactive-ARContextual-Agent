@@ -96,12 +96,12 @@ object MemoryWipe {
      */
     suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false, confirmedPins: Set<String>? = null): Int = deleteAllResult(context, db, resume, confirmedPins).deleted
 
-    /** Delete all with the typed outcome: DONE, or CACHE_CLEANUP_FAILED when place-history deletions are still owed (everything else is deleted; the owed deletion is retried on its own, the wipe marker is cleared). */
+    /** Delete all with the typed outcome: DONE, or CACHE_CLEANUP_FAILED when some cleanup is still pending: a leftover artefact or a pin cascade that did not finish (everything else is deleted; the rest is retried at the next start). The place card history never makes it pending (v18: its rows go inside wipeMemory's transaction). */
     suspend fun deleteAllOutcome(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false, confirmedPins: Set<String>? = null): com.rokid.context.orchestration.forget.ForgetActions.Outcome =
-        if (deleteAllResult(context, db, resume, confirmedPins).historyPending) com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED else com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE
+        if (deleteAllResult(context, db, resume, confirmedPins).cleanupPending) com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED else com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE
 
-    /** [deleted] frame files; [historyPending] = place-history rows may still remain (owed, retried at every start; NOT a wipe leftover). */
-    class WipeResult(val deleted: Int, val historyPending: Boolean)
+    /** [deleted] frame files; [cleanupPending] = `leftovers > 0 || pinSettle(...) == null` (r4 P1-5): some cleanup is retried at the next start, so the UI must not say "Everything was deleted". */
+    class WipeResult(val deleted: Int, val cleanupPending: Boolean)
 
     private suspend fun deleteAllResult(context: Context, db: ContextDatabase, resume: Boolean, confirmedPins: Set<String>?): WipeResult = withContext(Dispatchers.IO + NonCancellable) {
         // The exclusive side of the DataOpGate: a running export is waited for (30 s), else DataOpGate.ExportInProgress and nothing is deleted (the caller says "try again").
@@ -119,7 +119,6 @@ object MemoryWipe {
         // S57: the persisted deletion epoch (`counter + 1`, `wipedAtMs`) is committed BEFORE anything is deleted, so a crash or power loss mid-wipe still
         // leaves a durable record that everything recorded under the old counter is stale. If it cannot be committed nothing is deleted.
         // The same commit writes the "wipe pending" marker: if the process dies before the cleanup below finished, the next start finishes it ([resumeIfPending]).
-        com.rokid.context.work.frames.place.PlaceGraph.beginHistoryScope() // inside the gate: only history deletions THIS wipe attempts (or that cover them) are reported as pending
         var pinsCommitted = true
         if (!resume) {
             val epoch = try { DeletionEpochStore.of(context).commitWipe(System.currentTimeMillis()) } catch (t: Throwable) {
@@ -194,25 +193,23 @@ object MemoryWipe {
             // Slice 3a privacy: the persisted capture-plan state and the Collect session window go too.
             WIPED_PREFS.forEach { if (!clearWipedPrefs(context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE), it)) leftovers++ }
             // Place Guide: the fetched places and their recency go; seeded areas stay and pause zones are never touched (they are not in places.db).
-            try { com.rokid.context.work.frames.place.PlaceGraph.deleteAll(context) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: com.rokid.context.work.frames.place.HistoryDeletionPending) {
-                // P1-1: the history deletion is a bounded OWED obligation (durable, retried at every start by ForgetStartup.settleHistory). It is NOT a wipe leftover: counting it would keep wipePending and re-run the whole wipe, erasing newer memories, at every start.
-                PcLog.w("MemoryWipe", "place history deletion owed: retried at the next start")
-            } catch (e: Exception) {
+            try { com.rokid.context.work.frames.place.PlaceGraph.deleteAll(context) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 leftovers++; PcLog.w("MemoryWipe", "place pack not cleared: ${SafeLog.describe(e)}")
             }
             // Slice 1.4.2: a pin whose reference Moment was just wiped is forgotten with it. Its deletion is owed by the DURABLE committed pin arming (marked above; a resume whose promotion was not stored already keeps the wipe
             // pending), which ForgetStartup.settle retries at every start. A failure here is therefore NOT a wipe leftover: counting it would re-run the whole wipe (erasing newer memories) at every start for as long as the pin deletion fails.
-            try { if (pinSettle(context, pinOp) == null) PcLog.w("MemoryWipe", "pin cascade not finished: retried at the next start") } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
-                PcLog.w("MemoryWipe", "pin cascade not done: ${SafeLog.describe(e)}")
+            var pinPending = false
+            try { if (pinSettle(context, pinOp) == null) { pinPending = true; PcLog.w("MemoryWipe", "pin cascade not finished: retried at the next start") } } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                pinPending = true; PcLog.w("MemoryWipe", "pin cascade not done: ${SafeLog.describe(e)}")
             }
-            // Codex place r4 P1-2: history deletions still owed (Delete all's own, or a pin cascade's) are retried once more and reported as cleanup pending, never as "everything deleted". The marker below still clears (no whole-wipe re-run).
-            val historyPending = try { com.rokid.context.orchestration.forget.ForgetActions.cleanupFailed(context, true) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { true }
+            // r4 P1-5: the cleanup is pending when an artefact is left or the pin cascade did not finish; the place card history is deleted by wipeMemory itself and never pending. The marker below still clears for the pin part (no whole-wipe re-run).
+            val cleanupPending = leftovers > 0 || pinPending
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             // Slice 3a (S58): files and devices follow through the registered listeners (the glasses get the NEW epoch). After everything above; never throws.
             if (leftovers == 0) DeletionEpochStore.of(context).clearWipePending() else PcLog.w("MemoryWipe", "Delete all left $leftovers artefact(s): the cleanup is retried at the next start")
             com.rokid.context.memory.forget.ForgetListeners.deleteAll()
-            WipeResult(deleted, historyPending)
+            WipeResult(deleted, cleanupPending)
         } finally {
             if (AppConfigStore.isPipelineEnabled(context)) scheduler.resumePipeline()
         }

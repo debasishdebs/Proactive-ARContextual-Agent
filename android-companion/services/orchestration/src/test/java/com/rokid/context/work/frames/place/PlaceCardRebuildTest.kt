@@ -1,7 +1,7 @@
 package com.rokid.context.work.frames.place
 
 import com.rokid.context.memory.place.CardDelivery
-import com.rokid.context.memory.place.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.memory.place.PlaceEntity
 import com.rokid.context.memory.place.PlaceKinds
 import org.junit.Assert.assertEquals

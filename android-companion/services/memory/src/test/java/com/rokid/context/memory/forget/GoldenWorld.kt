@@ -14,6 +14,7 @@ import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DeletionEpoch
 import com.rokid.context.memory.db.FrameSourceEntity
 import com.rokid.context.memory.db.MomentLocationEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.NudgeEntity
@@ -104,6 +105,15 @@ class GoldenWorld(val db: ContextDatabase, now: Long = 1_000) {
         fun row(id: String, at: Long, kind: String, anchor: String) = MomentLocationEntity(id, at, kind, anchor, 12.5, 77.5, 20.0, 1_000, "ZONE_STREAM", null, null, 1)
         listOf(row(momA, tA, "FRAME", "fA"), row(momB, tB, "FRAME", "fB"), row(momFar, tFar, "FRAME", "fFar"), row(momLone, base + 2_000_000, "MARK", "mkLone"), row(momLone2, base + 2_500_000, "MARK", "mkLone2"))
             .forEach { db.momentLocationDao().insertIfAbsent(it) }
+    }
+
+    /**
+     * v18 WP3, called AFTER [seed] and only by the tests that pin `place_card_log`. One row per card: h1 of fA at tA, h2 of fB at tB, h3 of fFar at tFar, h4 with no photo at tFar + 1 h (outside every span the goldens use).
+     * (The user's `fA` Forget deletes h1; a range over the first two seconds deletes h1 and h2 by time.)
+     */
+    suspend fun seedHistory() {
+        fun row(id: String, at: Long, frame: String?) = PlaceCardLogEntity(id, at, "wd:Q1", "Site", "PHOTO", null, frame, null, "c$id", "SENT", 0)
+        listOf(row("h1", tA, "fA"), row("h2", tB, "fB"), row("h3", tFar, "fFar"), row("h4", tFar + 3_600_000, null)).forEach { db.placeCardLogDao().put(it) }
     }
 
     /** The delta of [op] on a freshly seeded world. */

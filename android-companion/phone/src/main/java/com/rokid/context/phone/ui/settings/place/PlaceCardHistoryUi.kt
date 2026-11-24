@@ -15,7 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.rokid.context.memory.place.CardDelivery
-import com.rokid.context.memory.place.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SecondaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
@@ -61,7 +61,7 @@ data class PlaceHistoryDetail(val row: PlaceHistoryRowUi, val line: String?, val
 data class ShowAgainEnv(val placeGuideOn: Boolean, val zoneBlocked: Boolean, val glassesConnected: Boolean)
 
 object PlaceHistoryModel {
-    const val OFF_LINE = "Card history is off (Developer)"
+    const val OFF_LINE = "Card history is off"
     const val EMPTY = "No place cards yet"
     const val SECTION = "Recent place cards"
     const val NOTE = "Every place card is kept here on this phone, also when the glasses screen was off. Forgetting its photo, a range Forget, Delete all and deleting its pin remove the rows. Not in any backup or export."

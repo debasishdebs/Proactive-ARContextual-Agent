@@ -19,18 +19,15 @@ import com.rokid.context.memory.forget.ForgetTarget
 import com.rokid.context.memory.moment.MomentId
 import com.rokid.context.memory.moment.MomentType
 import com.rokid.context.memory.place.CardDelivery
-import com.rokid.context.memory.place.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.memory.place.PlaceKinds
 import com.rokid.context.memory.place.PlacePack
-import com.rokid.context.memory.place.PlacesDao
 import com.rokid.context.memory.place.PlacesDatabase
 import com.rokid.context.memory.place.UserPlace
 import com.rokid.context.orchestration.DataOpGate
 import com.rokid.context.orchestration.MemoryExport
-import com.rokid.context.work.frames.place.PlaceCardHistory
 import com.rokid.context.work.frames.place.PlaceGraph
 import com.rokid.context.work.frames.place.PlaceGuideSettings
-import com.rokid.context.work.frames.place.PrefsHistoryOwed
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -42,7 +39,10 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
 
-/** Codex place r3 P1-1 / P2-3: an ordinary Forget re-checks its place-history obligations AFTER the pin cascade, and only a deletion THIS Forget attempted makes it report cleanup pending. */
+/**
+ * v18 (CH 8, r4 P1-5): the place card history lives in `context.db`, so a Forget or Delete all deletes its rows INSIDE its own transaction and the history can never make either of them pending. The pin cascade
+ * of a Forget (a pin goes with its Moment) deletes the pin's rows through [PlaceGraph.savePins] before the pin store is written.
+ */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class PlaceHistoryForgetOutcomeTest {
@@ -55,30 +55,19 @@ class PlaceHistoryForgetOutcomeTest {
     private val pdb = PlacesDatabase.inMemory(ctx)
     private val pack = PlacePack(pdb, null)
     private val prefs get() = ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE)
-
-    /** Fails the history deletions while the flags are set. */
-    private class Flaky(private val real: PlacesDao) : PlacesDao by real {
-        @Volatile var failPin = false
-        @Volatile var failFrames = false
-        override suspend fun deleteCardLogForPin(pinId: String): Int { if (failPin) throw IllegalStateException("db"); return real.deleteCardLogForPin(pinId) }
-        override suspend fun deleteCardLogForFrames(frameIds: List<String>): Int { if (failFrames) throw IllegalStateException("db"); return real.deleteCardLogForFrames(frameIds) }
-    }
-    private lateinit var dao: Flaky
+    private val log get() = graph.db.placeCardLogDao()
 
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx); MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
-        DataOpGate.shared = DataOpGate(waitMs = 200); MemoryExport.productionBuild = { false } // only the history can fail a Forget here
-        prefs.edit().clear().commit(); PrefsHistoryOwed.clearMemory()
+        DataOpGate.shared = DataOpGate(waitMs = 200); MemoryExport.productionBuild = { false } // only the history could fail a Forget here
+        prefs.edit().clear().commit()
         ctx.getSharedPreferences(com.rokid.context.memory.place.UserPinStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit()
-        dao = Flaky(pack.cardLogDao)
-        PlaceGraph.installForTests(pack); PlaceGraph.attach(ctx)
-        PlaceGraph.installHistoryForTests(PlaceCardHistory(dao, owed = PrefsHistoryOwed(prefs), pinActive = { id -> PlaceGraph.pins(ctx).pins().any { it.id == id } }))
-        PlaceGraph.registerListeners()
+        PlaceGraph.installForTests(pack); PlaceGraph.registerListeners()
     }
 
     @After fun tearDown() {
         MemoryExport.productionBuild = MemoryExport.defaultProductionBuild; DataOpGate.shared = original
-        PlaceGraph.installForTests(null); pdb.close(); prefs.edit().clear().commit(); PrefsHistoryOwed.clearMemory(); graph.db.close(); MemoryGraph.resetForTests(null)
+        PlaceGraph.installForTests(null); pdb.close(); prefs.edit().clear().commit(); graph.db.close(); MemoryGraph.resetForTests(null)
     }
 
     private suspend fun world() {
@@ -89,33 +78,26 @@ class PlaceHistoryForgetOutcomeTest {
         val mid = MomentId.format(sec)
         graph.db.momentDao().replace(MomentEntity(mid, 1, 1, "h", 1, MomentType.FRAME), listOf(MomentPartEntity(mid, MomentPartKind.FRAME, "a1", "r", 1)))
         assertTrue(PlaceGraph.savePins(ctx, listOf(UserPlace(pinId, "Pin", PlaceKinds.MONUMENT, 7.9, 80.7, momentId = mid))))
-        pack.cardLogDao.putCardLog(PlaceCardLogEntity("r1", 1L, pinId, "T", "PIN", null, null, null, null, CardDelivery.PENDING))
+        log.put(PlaceCardLogEntity("r1", 1L, pinId, "T", "PIN", null, null, null, null, CardDelivery.PENDING))
+        log.put(PlaceCardLogEntity("r2", ms + 5, "wd:Q1", "T", "PHOTO", null, "a1", null, null, CardDelivery.SENT))
     }
 
-    @Test fun anOrdinaryForgetWhosePinCascadeCannotDeleteItsHistoryRowsIsNotDone() = runBlocking<Unit> {
-        world(); dao.failPin = true
-        val o = ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.PHOTO, confirmedPins = setOf(pinId))
-        assertEquals("the pin went with its Moment; its history row may remain", ForgetActions.Outcome.CACHE_CLEANUP_FAILED, o)
-        assertTrue(PlaceGraph.historyOwed(ctx)); assertEquals(1, pack.cardLogDao.cardLogCount())
-        dao.failPin = false; assertTrue(PlaceGraph.settleHistory(ctx)); assertEquals(0, pack.cardLogDao.cardLogCount())
-    }
-
-    @Test fun theSameForgetIsDoneWhenTheCascadeHistoryDeletionWorks() = runBlocking<Unit> {
+    @Test fun anOrdinaryForgetThatTakesAPinWithItsMomentIsDoneAndItsHistoryRowsAreGone() = runBlocking<Unit> {
         world()
-        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.PHOTO, confirmedPins = setOf(pinId)))
-        assertEquals(0, pack.cardLogDao.cardLogCount()); assertFalse(PlaceGraph.historyOwed(ctx))
+        assertEquals("history is never pending", ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.PHOTO, confirmedPins = setOf(pinId)))
+        assertEquals("the pin's own row and the photo's row are both gone", 0, log.cardLogCount())
+        assertTrue(PlaceGraph.pins(ctx).pins().none { it.id == pinId })
     }
 
-    @Test fun anUnrelatedForgetIsNotFailedForeverByAnEarlierPermanentlyFailingToken() = runBlocking<Unit> {
-        world(); dao.failFrames = true
-        // an earlier operation left a frame deletion owed that never succeeds
-        try { PlaceGraph.history(ctx).onFramesForgotten(listOf("old")) } catch (_: com.rokid.context.work.frames.place.HistoryDeletionPending) { }
-        assertTrue(PlaceGraph.historyOwed(ctx))
-        graph.db.memoryDao().insert(MemoryEntity("mx", null, "other", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, ms + 9, false, "other"))
-        assertEquals("a fact Forget does not touch that token", ForgetActions.Outcome.DONE, ForgetActions.forgetFactOutcome(ctx, "mx"))
-        assertTrue("still owed: startup retries it", PlaceGraph.historyOwed(ctx))
-        // the Forget whose own deletion fails does report it
-        assertEquals(ForgetActions.Outcome.CACHE_CLEANUP_FAILED, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.PHOTO))
-        dao.failFrames = false; assertTrue(PlaceGraph.settleHistory(ctx))
+    @Test fun aForgetThatKeepsThePinOnlyDeletesTheRowOfThePhoto() = runBlocking<Unit> {
+        world()
+        assertEquals(ForgetActions.Outcome.DONE, ForgetActions.forgetScopedOutcome(ctx, ForgetTarget.Photo("a1"), ForgetScope.PHOTO))
+        assertEquals(listOf("r1"), log.recentCardLog(10).map { it.id })
+    }
+
+    @Test fun deleteAllDeletesTheHistoryAndIsDone() = runBlocking<Unit> {
+        world()
+        assertEquals(ForgetActions.Outcome.DONE, com.rokid.context.orchestration.MemoryWipe.deleteAllOutcome(ctx))
+        assertEquals(0, log.cardLogCount())
     }
 }

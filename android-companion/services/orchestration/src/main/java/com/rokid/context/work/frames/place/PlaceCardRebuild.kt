@@ -1,6 +1,6 @@
 package com.rokid.context.work.frames.place
 
-import com.rokid.context.memory.place.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.memory.place.PlaceEntity
 
 /**

@@ -33,6 +33,7 @@ class ForgetPolicyTest {
         ForgetChild.PLACE_PACK to listOf(K, C, K, K, K),
         ForgetChild.PLACE_CARD to listOf(K, C, K, K, K),
         ForgetChild.MOMENT_LOCATION to listOf(F, F, K, K, K), // v18 WP2: only a user Forget and Delete all delete a Moment's saved location
+        ForgetChild.PLACE_HISTORY to listOf(F, F, L, K, K), // v18 WP3: a user Forget and Delete all delete the rows; photo expiry only unlinks the photo
         ForgetChild.CONFIG to listOf(K, C, K, K, K),
         ForgetChild.CONTROL to listOf(C, C, C, C, C),
         ForgetChild.EMBEDDING to listOf(F, F, C, F, F),
@@ -144,6 +145,9 @@ class ForgetPolicyTest {
         "WATCH_OFF" to (false to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
         "CANVAS_RUN_DELETE" to (true to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
         "MARK_UNDO" to (true to mapOf(ForgetChild.MARK to F, ForgetChild.PIN to L)),
+        "PLACE_HISTORY_PIN_REMOVAL" to (true to mapOf(ForgetChild.PLACE_HISTORY to F)),
+        "PLACE_HISTORY_ROW_DELETE" to (true to mapOf(ForgetChild.PLACE_HISTORY to F)),
+        "PLACE_HISTORY_PRUNE" to (false to mapOf(ForgetChild.PLACE_HISTORY to F)),
         "CANVAS_RUN_PRUNE" to (false to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
     )
 

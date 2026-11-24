@@ -56,6 +56,8 @@ class PlaceTextMatch(
     private val onCard: (PlaceCard) -> Unit = {},
     private val history: suspend (PlaceHistoryEvent) -> Unit = {},
     private val historyOn: () -> Boolean = { true },
+    /** CH 6: the history authority, captured at the START of a run (before the frames are read). */
+    private val historyAuthority: suspend () -> HistoryAuthority = { HistoryAuthority.NONE },
     private val fence: ZoneFence = ZoneFence(),
     private val log: (String) -> Unit = {},
 ) {
@@ -72,6 +74,7 @@ class PlaceTextMatch(
         if (zoneBlocked()) return // a zone: nothing is read
         if (!textOn()) { result(0, 0, 0, "off"); return }
         val gen = generation(); val epoch = cards?.epoch() ?: 0L
+        val auth = if (historyOn()) try { historyAuthority() } catch (c: CancellationException) { throw c } catch (_: Exception) { null } else null // null = no history row this run (fail closed)
         val now = clock()
         val times = captured(captions.map { it.frameId })
         val recent = captions.filter { c -> times[c.frameId]?.let { it in now - RECENT_MS..now + SKEW_MS } == true && !store.tombstoned(c.frameId) }
@@ -93,7 +96,7 @@ class PlaceTextMatch(
         val h = hits.values.first()
         val fresh = now - h.capAt <= LIVE_MS && !store.movedSince(h.capAt)
         if (!fresh) {
-            if (historyOn()) try { history(PlaceHistoryEvent(HistoryKind.TEXT, h.pin.id, h.pin.name, emptyList(), h.frameId, null, null, CardDelivery.NOT_SENT_LATE)) } catch (c: CancellationException) { throw c } catch (_: Exception) { }
+            if (historyOn() && auth != null) try { history(PlaceHistoryEvent(HistoryKind.TEXT, h.pin.id, h.pin.name, emptyList(), h.frameId, null, null, CardDelivery.NOT_SENT_LATE, auth)) } catch (c: CancellationException) { throw c } catch (_: Exception) { }
             result(recent.size, quoted, 1, "history"); return
         }
         // the same rules as every card, claimed ATOMICALLY with the sampler's pin cards: once per place while staying, one card per visit of a pin, and no second attempt holding the same pin
@@ -110,7 +113,7 @@ class PlaceTextMatch(
             if (!shown) { result(recent.size, quoted, 1, "none"); return }
             flight.noteCard(h.pin.id, PlaceFlight.CardAt(good.lat, good.lon, now))
             flight.visits.begin(listOf(PinVisits.Spot(h.pin.id, h.pin.lat, h.pin.lon, h.pin.radiusM)), now)
-            if (historyOn()) try { history(PlaceHistoryEvent(HistoryKind.TEXT, h.pin.id, h.pin.name, emptyList(), h.frameId, newId, null)) } catch (c2: CancellationException) { throw c2 } catch (_: Exception) { }
+            if (historyOn() && auth != null) try { history(PlaceHistoryEvent(HistoryKind.TEXT, h.pin.id, h.pin.name, emptyList(), h.frameId, newId, null, null, auth)) } catch (c2: CancellationException) { throw c2 } catch (_: Exception) { }
         } finally { flight.unreserve(ids) }
         result(recent.size, quoted, 1, "card")
     }

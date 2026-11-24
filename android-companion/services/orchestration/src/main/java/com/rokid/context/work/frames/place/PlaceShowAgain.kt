@@ -1,6 +1,6 @@
 package com.rokid.context.work.frames.place
 
-import com.rokid.context.memory.place.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import com.rokid.context.memory.place.PlaceEntity
 import kotlinx.coroutines.CancellationException
 
@@ -9,7 +9,7 @@ import kotlinx.coroutines.CancellationException
  *
  * The authority is captured BEFORE anything suspends: the holder's epoch (every withdrawal advances it) and the wipe generation. After the rebuild's reads (which suspend) the row, its provenance and both
  * authorities are asked AGAIN, and the card is published with the CAPTURED epoch, so a Forget or Delete all that ran during the reads can never be followed by the card. The history row of the new card is
- * inserted under the history's write lock with the same revalidation as its guard; if the guard fails after the card was shown, the card is withdrawn again.
+ * inserted by the guarded [PlaceCardHistory.add] (authority captured at the start); if a Forget or Delete all came in between after the card was shown, the card is withdrawn again.
  */
 class PlaceShowAgain(
     private val holder: PlaceCardHolder,
@@ -24,20 +24,18 @@ class PlaceShowAgain(
 ) {
     suspend fun run(row: PlaceCardLogEntity): Boolean {
         val epoch = holder.epoch(); val gen = generation() // captured first: nothing below may take a newer one
+        val authority = try { history().capture() } catch (c: CancellationException) { throw c } catch (_: Exception) { return false } // CH 6: the history authority is captured at the START, before the rebuild's reads
         val rebuilt = PlaceCardRebuild.card(row, places(row)) ?: return false
         if (!rowAlive(row)) return false
         if (generation() != gen || holder.epoch() != epoch || fenceBlocked()) return false
         val id = holder.publishIfId(rebuilt, epoch) ?: return false // the epoch check is in the same synchronous step as the publication
         val kind = runCatching { HistoryKind.valueOf(row.kind) }.getOrDefault(HistoryKind.PHOTO)
-        var refused = false
-        try {
-            history().add(
-                PlaceHistoryEvent(kind = kind, placeId = row.placeId, title = row.title, members = PlaceCardRebuild.members(row), frameId = row.frameId, cardId = id),
-                // the card's own publication advanced the epoch by none (publishIfId does not): any later advance is a withdrawal
-                guard = { (rowAlive(row) && generation() == gen && holder.epoch() == epoch).also { ok -> if (!ok) refused = true } },
-            )
+        val rowId = try {
+            // the guarded insert refuses the row when a Forget, Delete all or fence moved since [authority] was captured
+            history().add(PlaceHistoryEvent(kind = kind, placeId = row.placeId, title = row.title, members = PlaceCardRebuild.members(row), frameId = row.frameId, cardId = id, authority = authority))
         } catch (c: CancellationException) { holder.clearIf(id); throw c }
-        if (refused) { holder.clearIf(id); return false } // a Forget or Delete all came first: no card and no row
+        // the card's own publication advanced the epoch by none (publishIfId does not): any later advance is a withdrawal
+        if (!(rowAlive(row) && generation() == gen && holder.epoch() == epoch)) { holder.clearIf(id); rowId?.let { history().delete(it) }; return false } // a Forget or Delete all came first: no card and no row
         return true
     }
 }

@@ -133,7 +133,7 @@ class AndroidPlaceHistoryControl(
 ) : com.rokid.context.phone.ui.settings.place.PlaceHistoryControl {
     private fun history() = PlaceGraph.history(app)
     override val historyOn: Boolean get() = com.rokid.context.orchestration.forget.DeveloperFlags.placeCardHistory(app)
-    private suspend fun placesOf(row: com.rokid.context.memory.place.PlaceCardLogEntity) =
+    private suspend fun placesOf(row: com.rokid.context.memory.db.PlaceCardLogEntity) =
         PlaceGraph.readyPack(app).placesByIds(com.rokid.context.work.frames.place.PlaceCardRebuild.idsOf(row))
 
     override val changes: kotlinx.coroutines.flow.Flow<Unit> = com.rokid.context.work.frames.place.PlaceCardHistory.changes.map { }
@@ -141,7 +141,7 @@ class AndroidPlaceHistoryControl(
     /** Off: nothing is read and `places.db` is never opened for the list. */
     override suspend fun rows() = if (!historyOn) emptyList() else history().recent()
 
-    override suspend fun line(row: com.rokid.context.memory.place.PlaceCardLogEntity): String? =
+    override suspend fun line(row: com.rokid.context.memory.db.PlaceCardLogEntity): String? =
         com.rokid.context.work.frames.place.PlaceCardRebuild.card(row, placesOf(row))?.line
 
     override suspend fun photoPath(frameId: String): String? =
@@ -149,11 +149,11 @@ class AndroidPlaceHistoryControl(
 
     override suspend fun delete(id: String) = history().delete(id)
 
-    override fun showAgainBlock(row: com.rokid.context.memory.place.PlaceCardLogEntity): String? =
+    override fun showAgainBlock(row: com.rokid.context.memory.db.PlaceCardLogEntity): String? =
         if (!historyOn) com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.OFF_LINE else
         com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.showAgainBlock(row.kind, row.frameId, row.photoGone == 1, com.rokid.context.phone.ui.settings.place.ShowAgainEnv(enabled(), zoneBlocked(), glassesConnected()))
 
-    override suspend fun showAgain(row: com.rokid.context.memory.place.PlaceCardLogEntity): Boolean {
+    override suspend fun showAgain(row: com.rokid.context.memory.db.PlaceCardLogEntity): Boolean {
         if (!historyOn || showAgainBlock(row) != null) return false
         // P1-3: the epoch and the wipe generation are captured BEFORE the pack is read (PlaceShowAgain), and the row, its photo and both authorities are asked again right before the fenced publication and the insertion.
         return com.rokid.context.work.frames.place.PlaceShowAgain(

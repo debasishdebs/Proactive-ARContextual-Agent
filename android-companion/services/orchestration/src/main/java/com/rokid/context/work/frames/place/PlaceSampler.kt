@@ -205,6 +205,8 @@ class PlaceSampler(
     private val history: suspend (PlaceHistoryEvent) -> Unit = {},
     /** The Developer flag of the history (production: `placeCardHistory`): false = no row is written and the line says `hist=off`. */
     private val historyOn: () -> Boolean = { true },
+    /** CH 6: the history authority (`frame_forget_rev`, wipe generation, fence epoch), captured at the START of an attempt, before the frame, the fix or the pins are read. */
+    private val historyAuthority: suspend () -> HistoryAuthority = { HistoryAuthority.NONE },
     /** Developer switches, read synchronously per attempt. Defaults OFF keep every older test unchanged; production passes the real flags. */
     private val pinFirstOn: () -> Boolean = { false },
     private val fixReuseOn: () -> Boolean = { false },
@@ -235,7 +237,7 @@ class PlaceSampler(
         /** The place ids this attempt chose (a model pick, a pin card, a cluster, the nearest): handed to [chosenSink] ONLY; user-pin ids are never written to the log. */
         var chosenIds: List<String> = emptyList()
         var v2 = false; var fxLat = Double.NaN; var fxLon = Double.NaN; var fxAcc = 0f; var nowAt = 0L
-        var cardId: String? = null; var fixSrc = "-"; var fixRealAgeB = "-"; var pinFirst = "-"; var weakWin = "-"; var retry = "-"; var hist = "-"; var textHit = "-"
+        var cardId: String? = null; var fixSrc = "-"; var fixRealAgeB = "-"; var pinFirst = "-"; var weakWin = "-"; var retry = "-"; var hist = "-"; var textHit = "-"; var authority: HistoryAuthority? = null
         /** null = shadow off (the line is unchanged); "err", "na" or "ok". */
         var shadow: String? = null; var shadowOut: ShadowOutcome? = null; var shadowRank = "na"; var shadowAgrees = "na"
         var shadowPending: kotlinx.coroutines.Deferred<ShadowOutcome?>? = null; var shadowStartedAt = 0L; var shadowChoice: String? = null
@@ -370,6 +372,7 @@ class PlaceSampler(
     private suspend fun attempt(ticket: ZoneTicket, retry: Retry? = null): PlaceOutcome {
         val gen = generation()
         val cardEpoch = cards?.epoch() ?: 0L
+        tr.authority = if (historyOn()) try { historyAuthority() } catch (c: CancellationException) { throw c } catch (_: Exception) { null } else null // null = no history row for this attempt (fail closed)
         // The zone gate comes first: nothing below runs while a zone is active, approaching or unreadable.
         stopped(gen, ticket)?.let { return it }
         val now = clock()
@@ -654,7 +657,8 @@ class PlaceSampler(
     /** One history row for the card this attempt just published (or a POSSIBLE row for a low-confidence answer). Never blocks or changes the card: a failure is `hist=fail`. */
     private suspend fun record(kind: HistoryKind, placeId: String, title: String, members: List<String>, frameId: String?, confPct: Int?) {
         if (!historyOn()) { tr.hist = "off"; return }
-        try { history(PlaceHistoryEvent(kind, placeId, title, members, frameId, if (kind == HistoryKind.POSSIBLE) null else tr.cardId, confPct)); tr.hist = "ok" }
+        val auth = tr.authority ?: run { tr.hist = "fail"; return }
+        try { history(PlaceHistoryEvent(kind, placeId, title, members, frameId, if (kind == HistoryKind.POSSIBLE) null else tr.cardId, confPct, null, auth)); tr.hist = "ok" }
         catch (c: CancellationException) { throw c } catch (_: Exception) { tr.hist = "fail" }
     }
 

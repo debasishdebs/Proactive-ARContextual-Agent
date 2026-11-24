@@ -235,49 +235,24 @@ class MemoryWipeTest {
         assertTrue("written once possible", WipeFence.fence(ctx.filesDir) is WipeFence.Fence.At)
     }
 
-    /** Codex place r3 P1-1: a persistent place-history deletion failure is an OWED obligation, not a wipe leftover: the wipe is marked done (no whole-wipe re-run at every start) and the history is retried on its own. */
-    @Test fun aPersistentHistoryDeleteFailureDoesNotKeepTheWipePending() = runBlocking<Unit> {
-        val prefs = ctx.getSharedPreferences(com.rokid.context.work.frames.place.PlaceGuideSettings.PREFS, Context.MODE_PRIVATE); prefs.edit().clear().commit()
-        com.rokid.context.work.frames.place.PrefsHistoryOwed.clearMemory()
-        val pdb = com.rokid.context.memory.place.PlacesDatabase.inMemory(ctx); val pack = com.rokid.context.memory.place.PlacePack(pdb, null)
-        var fail = true
-        val real = pack.cardLogDao
-        val dao = object : com.rokid.context.memory.place.PlacesDao by real {
-            override suspend fun deleteCardLogBetween(from: Long, to: Long): Int { if (fail) throw IllegalStateException("db"); return real.deleteCardLogBetween(from, to) }
-        }
-        com.rokid.context.work.frames.place.PlaceGraph.installForTests(pack)
-        com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(com.rokid.context.work.frames.place.PlaceCardHistory(dao, owed = com.rokid.context.work.frames.place.PrefsHistoryOwed(prefs)))
-        try {
-            real.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("r1", 1L, "wd:Q1", "T", "PHOTO", null, null, null, null, com.rokid.context.memory.place.CardDelivery.PENDING))
-            MemoryWipe.deleteAll(ctx)
-            assertFalse("the history failure is not a wipe leftover", com.rokid.context.memory.db.DeletionEpochStore.of(ctx).wipePending())
-            assertTrue("the history deletion is owed on its own", com.rokid.context.work.frames.place.PlaceGraph.historyOwed(ctx))
-            fail = false
-            assertTrue(com.rokid.context.work.frames.place.PlaceGraph.settleHistory(ctx)); assertEquals(0, real.cardLogCount())
-        } finally { com.rokid.context.work.frames.place.PlaceGraph.installForTests(null); pdb.close(); prefs.edit().clear().commit(); com.rokid.context.work.frames.place.PrefsHistoryOwed.clearMemory() }
+    /** v18 (CH 4): Delete all deletes the place card history inside `wipeMemory`'s own transaction, so it is never owed and never makes the wipe pending. */
+    @Test fun deleteAllDeletesThePlaceHistoryAndIsDone() = runBlocking<Unit> {
+        g().db.placeCardLogDao().put(com.rokid.context.memory.db.PlaceCardLogEntity("r1", 1L, "wd:Q1", "T", "PHOTO", null, null, null, null, com.rokid.context.memory.place.CardDelivery.PENDING))
+        assertEquals(com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE, MemoryWipe.deleteAllOutcome(ctx))
+        assertEquals(0, g().db.placeCardLogDao().cardLogCount())
+        assertFalse(com.rokid.context.memory.db.DeletionEpochStore.of(ctx).wipePending())
     }
 
-    /** Codex place r3 P1-2: Delete all with place-history deletion still owed returns the typed cleanup-pending outcome (the UI must not say "Everything was deleted"); the wipe marker still clears and the obligation stays owed. */
-    @Test fun deleteAllWithHistoryDeletionOwedReturnsCleanupPending_andTheMarkerStillClears() = runBlocking<Unit> {
-        val prefs = ctx.getSharedPreferences(com.rokid.context.work.frames.place.PlaceGuideSettings.PREFS, Context.MODE_PRIVATE); prefs.edit().clear().commit()
-        com.rokid.context.work.frames.place.PrefsHistoryOwed.clearMemory()
-        val pdb = com.rokid.context.memory.place.PlacesDatabase.inMemory(ctx); val pack = com.rokid.context.memory.place.PlacePack(pdb, null)
-        var fail = true
-        val real = pack.cardLogDao
-        val dao = object : com.rokid.context.memory.place.PlacesDao by real {
-            override suspend fun deleteCardLogBetween(from: Long, to: Long): Int { if (fail) throw IllegalStateException("db"); return real.deleteCardLogBetween(from, to) }
-        }
-        com.rokid.context.work.frames.place.PlaceGraph.installForTests(pack)
-        com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(com.rokid.context.work.frames.place.PlaceCardHistory(dao, owed = com.rokid.context.work.frames.place.PrefsHistoryOwed(prefs)))
+    /** r4 P1-5: the pending flag is `leftovers > 0 || pinSettle(...) == null`: a pin cascade that did not finish is reported as cleanup pending (the UI never says "Everything was deleted"); the marker still clears. */
+    @Test fun deleteAllWithAPinCascadeNotFinishedReturnsCleanupPending() = runBlocking<Unit> {
+        val saved = MemoryWipe.pinSettle
         try {
-            real.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("r1", 1L, "wd:Q1", "T", "PHOTO", null, null, null, null, com.rokid.context.memory.place.CardDelivery.PENDING))
+            MemoryWipe.pinSettle = { _, _ -> null }
             assertEquals(com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED, MemoryWipe.deleteAllOutcome(ctx))
             assertFalse(com.rokid.context.memory.db.DeletionEpochStore.of(ctx).wipePending())
-            assertTrue(com.rokid.context.work.frames.place.PlaceGraph.historyOwed(ctx)); assertEquals(1, real.cardLogCount())
-            fail = false
-            assertTrue(com.rokid.context.work.frames.place.PlaceGraph.settleHistory(ctx)); assertEquals(0, real.cardLogCount())
-            assertEquals("nothing owed: plain DONE", com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE, MemoryWipe.deleteAllOutcome(ctx))
-        } finally { com.rokid.context.work.frames.place.PlaceGraph.installForTests(null); pdb.close(); prefs.edit().clear().commit(); com.rokid.context.work.frames.place.PrefsHistoryOwed.clearMemory() }
+            MemoryWipe.pinSettle = { _, _ -> 0 }
+            assertEquals(com.rokid.context.orchestration.forget.ForgetActions.Outcome.DONE, MemoryWipe.deleteAllOutcome(ctx))
+        } finally { MemoryWipe.pinSettle = saved }
     }
 
     private fun g() = MemoryGraph.get(ctx)
