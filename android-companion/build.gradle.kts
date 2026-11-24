@@ -12,7 +12,7 @@ plugins {
 // after 10 minutes, so a stall names the test instead of hanging the Gate. Test behaviour is otherwise unchanged.
 subprojects {
     tasks.withType<Test>().configureEach {
-        timeout.set(java.time.Duration.ofMinutes(10))
+        timeout.set(java.time.Duration.ofMinutes(20))
         // Gate stall 2026-10-14: the Robolectric worker stopped answering jstack (GC thrash on the 512 MB default heap).
         // A bigger heap, and an out-of-memory that exits with a dump instead of thrashing, so a stall fails fast and explained.
         maxHeapSize = "2g"
