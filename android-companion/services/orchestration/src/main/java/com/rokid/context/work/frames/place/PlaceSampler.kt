@@ -479,7 +479,10 @@ class PlaceSampler(
         tr.chosen = hits[idx - 1].first.id; tr.distB = bucketM(hits[idx - 1].second)
         tr.shadowChoice = tr.chosen
         val floor = picked.backend ?: Backend.ONLINE // the floor of the backend that made the call
-        if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"; return weak(PlaceOutcome.LOW_CONFIDENCE) }
+        if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"
+            // S6: never silent. The answer is kept as a phone-only "possible" row (no glasses card, no memory, no card dedupe consumed).
+            record(HistoryKind.POSSIBLE, hits[idx - 1].first.id, hits[idx - 1].first.name, emptyList(), f.frameId, tr.confPct)
+            return weak(PlaceOutcome.LOW_CONFIDENCE) }
         val place = hits[idx - 1].first
         val parent = place.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name }
         return commit(place, parent, res, f.frameId, gen, cardEpoch, ticket)
