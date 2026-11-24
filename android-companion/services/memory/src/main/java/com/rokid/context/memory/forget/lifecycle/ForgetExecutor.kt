@@ -173,6 +173,7 @@ class ForgetExecutor internal constructor(
         }
         RunResultFamily.selfDelete(expiredIds.toSet(), Fate.DROP, c) // the experiment canvas outputs of the photo go with it; nothing a user sees depends on them
         queueCleanup(c, paths, emptyList(), emptyList(), phoneFilesOnly = true) // routine retention is storage hygiene: phone files only
+        if (expiredIds.isNotEmpty()) c.notifyAfterCommit(expiredIds, emptyList(), expired = true) // told ONLY onPhotosExpired after the commit
         ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 
@@ -180,16 +181,17 @@ class ForgetExecutor internal constructor(
     internal suspend fun expireOrphanFrames(frameIds: List<String>): ForgetService.Result = db.withTransaction {
         revoke { it.plan(frameIds.map { id -> Ref(Family.PHOTO, id) }.toSet(), Policy.RetentionPhotos()) }
         val c = ctx()
-        val paths = mutableListOf<String>(); var expired = 0
+        val paths = mutableListOf<String>(); var expired = 0; val expiredIds = mutableListOf<String>()
         for (id in frameIds.distinct()) {
             val frame = dao.frame(id) ?: continue
             if (dao.remainingRefs(id) != 0 || dao.keyframeIds(listOf(id)).isNotEmpty()) continue
-            expired++
+            expired++; expiredIds += id
             PhotoFamily.lock(listOf(id), c)
             PhotoFamily.expireRows(listOf(id), c)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
         queueCleanup(c, paths, emptyList(), emptyList(), phoneFilesOnly = true)
+        if (expiredIds.isNotEmpty()) c.notifyAfterCommit(expiredIds, emptyList(), expired = true) // told ONLY onPhotosExpired after the commit
         ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 

@@ -86,6 +86,24 @@ class PlaceCardHistoryTest {
         assertTrue(logs.contains("place history expire frames=1 unlinked=1"))
     }
 
+    /** End to end through the real memory ForgetService: expiry only unlinks the photo (row stays), a user Forget deletes the row. */
+    @Test fun realForgetService_expiryKeepsRowUnlinked_userForgetDeletesRow() = runBlocking {
+        val mdb = com.rokid.context.memory.db.DatabaseFactory.inMemory(ctx)
+        try {
+            val svc = com.rokid.context.memory.forget.ForgetService(mdb, com.rokid.context.memory.ProposalRepository(mdb.proposalDao(), mdb.actionDao(), mdb)) { 1_000 }
+            listOf("f1", "f2").forEach { mdb.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity(it, 1, "/$it.jpg", "rokid_glasses")) }
+            history.add(ev(frame = "f1")); history.add(ev(frame = "f2"))
+            svc.expirePhotos(listOf("f1"))
+            val rows = history.recent()
+            assertEquals("expiry keeps both rows", 2, rows.size)
+            val gone = rows.single { it.photoGone == 1 }
+            assertNull(gone.frameId); assertEquals("f2", rows.single { it.photoGone == 0 }.frameId)
+            svc.forgetMoment("f2")
+            assertEquals("a user Forget deletes the row", 1, history.recent().size)
+            assertEquals(1, history.recent().single().photoGone)
+        } finally { mdb.close() }
+    }
+
     @Test fun retentionRangeNeverDeletesRows_userRangeDoes() = runBlocking {
         history.add(ev()); val at = now
         ForgetListeners.rangeExpired(at - 10, at + 10, emptyList())

@@ -13,12 +13,13 @@ interface ForgetListener {
     suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) {}
     suspend fun onDeleteAll() {}
     /**
-     * RETENTION expiry of photos COMMITTED (the photo files go; everything described about them stays). Defaults to [onFramesForgotten], so every existing listener behaves as before.
-     * A listener whose data must outlive the photo (the place card history keeps its rows and only drops the photo link) overrides it.
+     * RETENTION expiry of photos COMMITTED (the photo files go; everything described about them stays). A NO-OP by default: expiry is storage only and must NEVER reach the explicit-forget callbacks
+     * ([onFramesForgotten], [onRangeForgotten], ...), because listeners withdraw suggestions, previews and marks on those. Only a listener whose data holds a link to the photo
+     * (the place card history keeps its rows and only drops the photo link) overrides it.
      */
-    suspend fun onPhotosExpired(frameIds: List<String>) = onFramesForgotten(frameIds)
-    /** The time link of a retention expiry (marks and traces within the radius of an expired photo). Defaults to [onRangeForgotten]; a listener that is not touched by routine retention overrides it. */
-    suspend fun onRangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) = onRangeForgotten(fromMs, toMs, traceIds)
+    suspend fun onPhotosExpired(frameIds: List<String>) {}
+    /** The time link of a retention expiry (marks and traces within the radius of an expired photo). A NO-OP by default (never the forget callback); routine retention fences no range today. */
+    suspend fun onRangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) {}
     /** A user Forget of any kind (a fact, a photo, a moment, a mark, a multi-select, a scoped range) COMMITTED. Carries no ids: a listener that must withdraw what it shows only needs to know it happened (Nexus bridge, v2.0). Not called for retention expiry. */
     suspend fun onUserForget() {}
 }
