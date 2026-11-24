@@ -29,7 +29,8 @@
   - ANTERA_FACADE + ANTERA ASSUMED_PIN_10M: 2 pin-first cards (one per pin; they are two different pins), 5 cards total; spec says exactly 1: NOT MET as written (needs controller view; facade pin and Antera pin are separate pins).
   - StubNone x OUTDOOR_10M: PHOTO cards 0, pin 2 + cluster 1; calls 37 (<= 42 from S2 but NOT <= B1's 28; the S2 weak back-off allows more calls than the old 120 s block).
   - OUTDOOR_10M SJ_IVORY still 1 (needs 2; same S2 contradiction).
-- Next step: S6 (LOW_CONFIDENCE possible rows), then S7.
+- S6 done: a LOW_CONFIDENCE answer with a valid number writes a POSSIBLE row via the history seam (delivery NOT_SENT_POSSIBLE comes from PlaceCardHistory), no card, no memory, no dedupe consumed; floor unchanged (online 0.5, offline 0.7). Tests: online054_and058_publish, offlineFloor_documented, lowConfidence_writesPossibleRowOnly. Replay counts unchanged (no low-confidence stage in the harness).
+- Next step: S7 (F5b quoted-sign text match).
 
 ## Step log (counts only, no names / coordinates / ids)
 | Step | Status | Commit | Notes |

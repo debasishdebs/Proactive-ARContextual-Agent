@@ -67,6 +67,7 @@ class PlaceSamplerTest {
     }
     private var moved = false
     private var pf = false
+    private val historyEvents = mutableListOf<PlaceHistoryEvent>()
     private var reuse = false
 
     private fun sampler(scope: TestScope) = PlaceSampler(
@@ -75,7 +76,7 @@ class PlaceSamplerTest {
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
-        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf },
+        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf }, history = { historyEvents += it },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -304,6 +305,30 @@ class PlaceSamplerTest {
         assertEquals(PlaceConfidence.PIN, cards[0].confidence); assertTrue(cards[0].title.contains("pins", ignoreCase = true))
         assertTrue(lastLine().contains("card=shown") && lastLine().contains("pinFirst=cluster(2)") && lastLine().contains("chosen=$pinA,$pinB"))
         again(121_000, "f2"); poke(); assertEquals("one cluster card per visit", 1, cards.size)
+    }
+
+    // ---- S6: LOW_CONFIDENCE is never silent ----
+    @Test fun online054_and058_publish() = runTest {
+        reply = PlaceMatchResult(PlaceMatchOutput("1", 0.54f), true); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(lastLine().contains("card=shown")); assertEquals(1, cards.size)
+        reply = PlaceMatchResult(PlaceMatchOutput("1", 0.58f), true); now += 121_000; fresh("f2"); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(2, cards.size)
+    }
+
+    @Test fun offlineFloor_documented() {
+        assertEquals(0.5f, com.rokid.context.core.net.BackendThresholds.minConfidence(com.rokid.context.core.net.Backend.ONLINE), 0f)
+        assertEquals(0.7f, com.rokid.context.core.net.BackendThresholds.minConfidence(com.rokid.context.core.net.Backend.OFFLINE), 0f)
+    }
+
+    @Test fun lowConfidence_writesPossibleRowOnly() = runTest {
+        v2 = true; reply = PlaceMatchResult(PlaceMatchOutput("1", 0.40f), true); poke()
+        assertEquals(PlaceOutcome.LOW_CONFIDENCE, outcomes.last()); assertTrue(cards.isEmpty()); assertTrue(memories.isEmpty())
+        val e = historyEvents.single()
+        assertEquals(HistoryKind.POSSIBLE, e.kind); assertEquals("wd:Q1", e.placeId); assertEquals(40, e.confPct); assertEquals("f1", e.frameId); assertEquals(null, e.cardId)
+        assertTrue(lastLine().contains("hist=ok"))
+        // it does not consume the card dedupe (v2): the next good answer still gets its card
+        reply = match1; again(31_000, "f2"); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size)
     }
 
     @Test fun anActiveOrApproachingZoneNeverReadsAFixNorCallsTheNetworkOrTheModel() = runTest {
