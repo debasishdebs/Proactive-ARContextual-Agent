@@ -26,6 +26,8 @@ import java.util.Locale
 
 /** What the history list needs from the card history and the glasses path (production: [com.rokid.context.phone.place.AndroidPlaceGuideControl]; tests: fakes). */
 interface PlaceHistoryControl {
+    /** Emits whenever the stored history changed (and once on subscribe): the screen re-reads then, no polling. */
+    val changes: kotlinx.coroutines.flow.Flow<Unit> get() = kotlinx.coroutines.flow.emptyFlow()
     /** Newest first, at most 500. */
     suspend fun rows(): List<PlaceCardLogEntity>
     /** The card line, re-read from the pack or the pin by place id; null = the place is no longer in the pack. */

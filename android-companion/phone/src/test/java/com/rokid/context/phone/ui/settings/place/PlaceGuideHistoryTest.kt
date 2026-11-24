@@ -4,6 +4,7 @@ import com.rokid.context.memory.place.CardDelivery
 import com.rokid.context.memory.place.PlaceCardLogEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -28,6 +29,8 @@ class PlaceGuideHistoryTest {
         PlaceCardLogEntity(id, at, place, "Site $id", kind, members, frame, conf, "c-$id", delivery, gone)
 
     private class FakeHistory(var rows: List<PlaceCardLogEntity>) : PlaceHistoryControl {
+        val events = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+        override val changes: kotlinx.coroutines.flow.Flow<Unit> get() = events
         var lines = mutableMapOf<String, String?>()
         var photos = mutableSetOf<String>()
         var env = ShowAgainEnv(placeGuideOn = true, zoneBlocked = false, glassesConnected = true)
@@ -50,6 +53,22 @@ class PlaceGuideHistoryTest {
     }
 
     private fun vm(h: FakeHistory?) = PlaceGuideViewModel(control(h), d).also { d.scheduler.advanceUntilIdle() }
+
+    @Test fun aStoreChangeEventRefreshesTheListAndDetailWithoutAnyTimer() {
+        val h = FakeHistory(listOf(row("a", 100, delivery = CardDelivery.PENDING), row("b", 200)))
+        val v = vm(h)
+        val job = kotlinx.coroutines.CoroutineScope(d).launch { v.historyChanges.collect { v.refreshHistory() } }
+        d.scheduler.advanceUntilIdle()
+        v.openHistory("a"); d.scheduler.advanceUntilIdle()
+        h.rows = listOf(row("a", 100, delivery = CardDelivery.SENT), row("b", 200))
+        h.events.tryEmit(Unit); d.scheduler.advanceUntilIdle()
+        assertEquals("sent to glasses", v.state.value.history.first { it.id == "a" }.deliveryText)
+        assertEquals("sent to glasses", v.state.value.historyDetail!!.row.deliveryText)
+        h.rows = h.rows.filterNot { it.id == "a" } // a Forget: the open detail closes at once
+        h.events.tryEmit(Unit); d.scheduler.advanceUntilIdle()
+        assertNull(v.state.value.historyDetail); assertEquals(listOf("b"), v.state.value.history.map { it.id })
+        job.cancel()
+    }
 
     @Test fun emptyState() {
         val v = vm(FakeHistory(emptyList()))

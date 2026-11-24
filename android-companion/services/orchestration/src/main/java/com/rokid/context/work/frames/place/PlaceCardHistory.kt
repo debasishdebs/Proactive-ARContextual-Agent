@@ -3,6 +3,8 @@ package com.rokid.context.work.frames.place
 import com.rokid.context.memory.place.CardDelivery
 import com.rokid.context.memory.place.PlaceCardLogEntity
 import com.rokid.context.memory.place.PlacesDao
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
@@ -55,6 +57,7 @@ class PlaceCardHistory(
             )
             dao.putCardLog(row)
             log("place history add kind=${e.kind.name} delivery=$delivery rows=${dao.cardLogCount()}")
+            bump()
             prune(onlyOncePerDay = true)
             row.id
         }
@@ -66,7 +69,7 @@ class PlaceCardHistory(
      */
     suspend fun markDelivery(cardId: String, state: String): Boolean = safe("mark", false) {
         val ok = dao.setCardDelivery(cardId, state) > 0
-        if (!ok) remember(cardId, state)
+        if (!ok) remember(cardId, state) else bump()
         ok
     }
 
@@ -74,6 +77,7 @@ class PlaceCardHistory(
     suspend fun markIfPending(cardId: String, state: String): Boolean = safe("mark", false) {
         val ok = dao.setCardDeliveryIfPending(cardId, state) > 0
         if (!ok && dao.cardLogByCard(cardId) == null) remember(cardId, state)
+        if (ok) bump()
         ok
     }
 
@@ -83,7 +87,7 @@ class PlaceCardHistory(
 
     suspend fun recent(limit: Int = MAX_ROWS): List<PlaceCardLogEntity> = safe("read", emptyList()) { dao.recentCardLog(limit.coerceIn(1, MAX_ROWS)) }
     suspend fun get(id: String): PlaceCardLogEntity? = safe("read", null as PlaceCardLogEntity?) { dao.cardLog(id) }
-    suspend fun delete(id: String): Boolean = safe("delete", false) { dao.deleteCardLog(id) > 0 }
+    suspend fun delete(id: String): Boolean = safe("delete", false) { (dao.deleteCardLog(id) > 0).also { if (it) bump() } }
 
     /** Rows since [sinceMs] (wall clock), newest first: seeds the in-memory dedupe and visits at process start. */
     suspend fun seedRecent(sinceMs: Long): List<PlaceCardLogEntity> = safe("read", emptyList()) { dao.cardLogSince(sinceMs) }
@@ -94,7 +98,7 @@ class PlaceCardHistory(
         if (onlyOncePerDay && lastPruneDay.get() == today) return@safe 0
         lastPruneDay.set(today)
         val removed = dao.deleteCardLogBefore(clock() - RETAIN_MS) + dao.trimCardLogTo(MAX_ROWS)
-        if (removed > 0) log("place history prune removed=$removed")
+        if (removed > 0) { log("place history prune removed=$removed"); bump() }
         removed
     }
 
@@ -102,32 +106,45 @@ class PlaceCardHistory(
     suspend fun onFramesForgotten(frameIds: List<String>) = safe("forget", Unit) {
         val removed = frameIds.distinct().chunked(CHUNK).sumOf { dao.deleteCardLogForFrames(it) }
         log("place history forget frames=${frameIds.size} removed=$removed")
+        bump()
     }
 
     /** Photo retention: only the photo link goes (`frameId` = null, `photoGone` = 1); the row stays. */
     suspend fun onPhotosExpired(frameIds: List<String>) = safe("expire", Unit) {
         val unlinked = frameIds.distinct().chunked(CHUNK).sumOf { dao.unlinkCardLogFrames(it) }
         log("place history expire frames=${frameIds.size} unlinked=$unlinked")
+        bump()
     }
 
     suspend fun onRangeForgotten(fromMs: Long, toMs: Long) = safe("range", Unit) {
         log("place history range removed=${dao.deleteCardLogBetween(fromMs, toMs)}")
+        bump()
     }
 
     /** Delete all: every row goes. */
     suspend fun clearAll(reason: String = "delete_all") = safe("clear", Unit) {
         log("place history cleared reason=$reason removed=${dao.deleteAllCardLog()}")
+        bump()
     }
 
     /** Pins were removed: their rows and the cluster rows that list them go. */
     suspend fun onPinRemoved(pinIds: Collection<String>) = safe("pin", Unit) {
         val removed = pinIds.distinct().sumOf { dao.deleteCardLogForPin(it) }
         log("place history pin removed=$removed")
+        bump()
     }
 
     private suspend fun readyLine() { if (!opened) { opened = true; log("place history ready rows=${dao.cardLogCount()}") } }
 
+    private fun bump() { _changes.value = _changes.value + 1 }
+
     companion object {
+        private val _changes = MutableStateFlow(0L)
+        /**
+         * Process-wide change counter: bumped after every committed write (add, delivery update, delete, Forget, retention, Delete all, pin removal). Event-driven UIs (the Place Guide list, Home's
+         * "Last place card") collect it instead of polling; a new collector gets the current value at once, which doubles as the refresh on resume.
+         */
+        val changes: StateFlow<Long> get() = _changes
         const val TITLE_MAX = 80
         const val MAX_ROWS = 500
         const val RETAIN_MS = 90L * 24 * 3_600_000
