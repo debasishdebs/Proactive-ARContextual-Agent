@@ -41,13 +41,34 @@ object OfflineOnlyNet {
         }
     }
 
-    /** Pure rule (testable with a fake route): AUTO passes; otherwise the route must exist, be DIRECT, and its connected address must be [OfflineOnlyDns.isOwnNetwork]. */
-    fun check(m: ModelPrivacy, route: Route?) {
+    /**
+     * Whether a VPN network is up on this phone (any network with TRANSPORT_VPN, which covers the active one and an always-on VPN that captures the private ranges). A private address behind a VPN can be a REMOTE host
+     * (a tunnel to another site), so while this is true Offline only allows only addresses on this phone itself (loopback). Set once by the app ([androidVpnProbe]); false until then (unit tests, the JVM). A probe that
+     * throws counts as "VPN up" (fail closed). There is no "allow VPN LAN" option: it is refused and documented (PRIVACY.md); one can be added later as an explicit user choice.
+     */
+    @Volatile var vpnProbe: () -> Boolean = { false }
+    fun vpnNow(): Boolean = try { vpnProbe() } catch (e: Exception) { true }
+
+    /** The production probe: true when any known network has the VPN transport. */
+    @Suppress("DEPRECATION")
+    fun androidVpnProbe(app: android.content.Context): () -> Boolean = {
+        val cm = app.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        cm.allNetworks.any { cm.getNetworkCapabilities(it)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true }
+    }
+
+    /**
+     * Pure rule (testable with a fake route): AUTO passes; otherwise the route must exist, be DIRECT, and its connected address must be [OfflineOnlyDns.isOwnNetwork] AND, while a VPN is up ([vpn]), loopback.
+     */
+    fun check(m: ModelPrivacy, route: Route?, vpn: Boolean = vpnNow()) {
         if (m == ModelPrivacy.AUTO) return
         val sa: InetSocketAddress? = route?.socketAddress
-        val ok = route != null && route.proxy.type() == Proxy.Type.DIRECT && sa != null && !sa.isUnresolved && sa.address != null && OfflineOnlyDns.isOwnNetwork(sa.address)
-        if (!ok) {
+        val own = route != null && route.proxy.type() == Proxy.Type.DIRECT && sa != null && !sa.isUnresolved && sa.address != null && OfflineOnlyDns.isOwnNetwork(sa.address)
+        if (!own) {
             PcLog.i("OfflineOnly", "offline_only_refused_route")
+            throw OfflineOnlyRefusedException()
+        }
+        if (vpn && !sa!!.address.isLoopbackAddress) {
+            PcLog.i("OfflineOnly", "offline_only_refused_vpn")
             throw OfflineOnlyRefusedException()
         }
     }

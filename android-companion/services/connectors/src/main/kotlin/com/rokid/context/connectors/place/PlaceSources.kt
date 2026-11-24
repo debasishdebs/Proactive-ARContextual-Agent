@@ -204,7 +204,8 @@ class OverpassMirrorSource(
                 return r
             } catch (e: TimeoutCancellationException) {
                 log("overpass mirror failed idx=$i cls=timeout")
-            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e } catch (e: com.rokid.context.memory.place.PlaceOfflineOnly) { throw e // Offline only: no other mirror is tried and no cooldown is recorded
+            } catch (e: Exception) {
                 rateLimited = e is PlaceHttpException && e.code == 429
                 log("overpass mirror failed idx=$i cls=${e.javaClass.simpleName}")
             }

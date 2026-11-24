@@ -127,6 +127,20 @@ class ClusterCallTest {
         listOf("c1_4", "c1_5").forEach { assertEquals("NEAR_DUP", st(it).state); assertEquals("cluster_failed", st(it).lastError) }
     }
 
+    /** mp-r2 P2: the cluster path carries the fallback flag, so a reachable but always-failing LAN fallback parks a cluster CAP times and then counts an attempt (it used to park forever). */
+    @Test fun aClusterWhoseFallbackKeepsFailingIsParkedCapTimesThenCountsAnAttempt() = runBlocking {
+        com.rokid.context.work.FallbackParkCap.resetForTests()
+        cluster("c1")
+        val p = pipeline(completing { throw com.rokid.context.ai.OfflineOnlyRefusedException(fallbackKind = com.rokid.context.ai.FailureKind.TRANSIENT) })
+        repeat(com.rokid.context.work.FallbackParkCap.CAP) { p.drainOnce(); now += 2 * 60 * 60_000L }
+        assertEquals("parked CAP times: no attempt used", 0, cl("c1").attempts)
+        assertEquals("CLOSED", cl("c1").state)
+        p.drainOnce(); now += 2 * 60 * 60_000L
+        assertEquals("the next one is an ordinary transient failure", 1, cl("c1").attempts)
+        assertEquals("fallback_unavailable", cl("c1").lastError)
+        com.rokid.context.work.FallbackParkCap.resetForTests()
+    }
+
     @Test fun nonFinalFailureKeepsMembersAndBacksOff() = runBlocking {
         cluster("c1", attempts = 1)
         pipeline(completing { ClusterOutcome.Failed("boom") }).drainOnce()

@@ -17,6 +17,7 @@ class ContextApp : Application() {
         )?.let { com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.log.LogWipeListener(it.wiper, it.ready)) }
         // Model privacy (Offline only): the DNS guard of every model client reads the stored mode; the first load of the prefs files happens on IO, never here.
         com.rokid.context.ai.OfflineOnlyDns.globalMode = { com.rokid.context.ai.resolve.ModelPrivacyStore.get(this).current() }
+        com.rokid.context.ai.OfflineOnlyNet.vpnProbe = com.rokid.context.ai.OfflineOnlyNet.androidVpnProbe(this) // Offline only refuses non-loopback private addresses while a VPN is up
         Thread { try { com.rokid.context.ai.resolve.ModelPrivacyStore.get(this).warm() } catch (_: Exception) { } }.start()
         // Fix wave I5: stamp the process start before any worker can claim a frame (the start release spares newer claims).
         com.rokid.context.work.frames.ProcessStart.wallMs

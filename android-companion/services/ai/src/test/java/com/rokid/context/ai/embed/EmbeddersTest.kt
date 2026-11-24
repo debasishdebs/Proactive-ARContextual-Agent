@@ -75,6 +75,37 @@ class EmbeddersTest {
         assertNull(embedders.forSpace(space))
     }
 
+    /** mp-r2 P2: under Offline only a remote EMBED endpoint is refused BEFORE its key is read from the vault, in both factories. */
+    @Test fun offlineOnlyRefusesARemoteEndpointBeforeTheKeyIsRead() = runTest {
+        val reads = java.util.concurrent.atomic.AtomicInteger()
+        val counting = object : com.rokid.context.ai.KeyVault {
+            override fun get(ref: String): String? { reads.incrementAndGet(); return "SECRET" }
+            override fun put(ref: String, key: String) {}
+            override fun remove(ref: String) {}
+        }
+        val eps = EndpointRepository(db.endpointDao(), counting)
+        val offline = Embedders(eps, bindings, privacy = { com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY })
+        db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity("oa", "OA", "OPENAI_COMPAT", "https://api.example.com", null, "m", EndpointRepository.keyRef("oa"), "EMBEDDINGS", 1))
+        bindings.set(RoleBinding(Role.EMBED, "oa", "m")).getOrThrow()
+        assertTrue(runCatching { offline.forBinding() }.exceptionOrNull() is com.rokid.context.ai.OfflineOnlyRefusedException)
+        val spec = EmbeddingSpec("oa", EndpointKind.OPENAI_COMPAT, "https://api.example.com", null, "m", null, null, 2, true, "", "", 2_000)
+        assertNull(offline.forSpace(EmbeddingSpaceEntity("s", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1)))
+        assertEquals("the vault was never asked", 0, reads.get())
+        // a throwing mode reader fails closed too
+        assertTrue(runCatching { Embedders(eps, bindings, privacy = { error("prefs") }).forBinding() }.exceptionOrNull() is com.rokid.context.ai.OfflineOnlyRefusedException)
+        assertEquals(0, reads.get())
+    }
+
+    @Test fun offlineOnlyStillServesALoopbackSpace() = runTest {
+        ollamaAt(a)
+        val spec = EmbeddingSpec("ol", EndpointKind.OLLAMA, a.url("/").toString().trimEnd('/'), null, "nomic-embed-text", null, null, 2, true, "", "", 2_000)
+        val space = EmbeddingSpaceEntity("s1", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1)
+        a.enqueue(MockResponse().setBody("""{"embeddings":[[1,0]]}"""))
+        val off = Embedders(endpoints, bindings, EmbeddingClient(privacy = { com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY }), privacy = { com.rokid.context.core.net.ModelPrivacy.OFFLINE_ONLY })
+        off.forSpace(space)!!.embedQuery("q")
+        assertEquals(1, a.requestCount)
+    }
+
     @Test fun forSpaceIsUnavailableOnceTheEndpointKindChanged() = runTest {
         ollamaAt(a)
         val url = a.url("/").toString().trimEnd('/')

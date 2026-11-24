@@ -53,6 +53,9 @@ suspend fun seedAdmitCheck() {
     if (why != null) throw SeedStopped(why)
 }
 
+/** A place request refused because Model privacy is Offline only (or unreadable: fail closed). Typed so the pack treats it as "no network" ([CellOutcome.OFFLINE]), never as a failure to retry or back off. */
+class PlaceOfflineOnly : java.io.IOException("offline_only")
+
 enum class CellOutcome { FRESH, FETCHED, PARTIAL, OFFLINE, FAILED }
 
 /** What a glance asks for: the candidates (already expanded to sub-places) and how the cell stood. */
@@ -330,7 +333,10 @@ class PlacePack(
     private suspend fun fetchAndStore(cell: String, src: CellSource, seeded: Boolean): CellOutcome {
         val epoch = wipeEpoch.get()
         val fetchStart = now()
-        val got = try { zoneCheck(); src.fetchCell(cell) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+        val got = try { zoneCheck(); src.fetchCell(cell) } catch (e: CancellationException) { throw e } catch (e: PlaceOfflineOnly) {
+            log("cell fetch refused offline_only seeded=$seeded") // not a failure: nothing was sent, nothing is backed off
+            return CellOutcome.OFFLINE
+        } catch (e: Exception) {
             log("cell fetch failed cls=${e.javaClass.simpleName} seeded=$seeded ms=${now() - fetchStart}")
             backOffStoredPartial(cell, epoch)
             return CellOutcome.FAILED

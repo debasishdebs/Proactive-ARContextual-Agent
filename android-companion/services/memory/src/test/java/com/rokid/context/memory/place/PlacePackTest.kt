@@ -444,6 +444,15 @@ class PlacePackTest {
         assertTrue(logs.toString(), logs.none { Regex("""\d+\.\d{3}""").containsMatchIn(it) })
     }
 
+    @Test fun aRefusalByOfflineOnlyIsTheOfflineOutcomeAndStoresNothing() = run {
+        val src = FakeSource().also { it.failWith = PlaceOfflineOnly() }
+        val p = pack(src)
+        assertEquals(CellOutcome.OFFLINE, p.ensureCell(Geohash5.encode(CHARMINAR_LAT, CHARMINAR_LON), networkUp = true))
+        assertEquals(1, src.asked.size)
+        assertEquals(0, db.dao().placeCount())
+        assertTrue(logs.toString(), logs.none { Regex("""\d+\.\d{3}""").containsMatchIn(it) })
+    }
+
     @Test fun anAdmissionThatThrowsFailsClosed() = run {
         val src = FakeSource { c -> CellFetch(listOf(cornerPlace(c))) }
         val e = runCatching { pack(src).seedArea("z", GeoBox(17.30, 78.40, 17.31, 78.41), admit = { throw IllegalStateException("unreadable") }) }.exceptionOrNull()

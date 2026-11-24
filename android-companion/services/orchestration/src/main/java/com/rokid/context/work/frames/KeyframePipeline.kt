@@ -137,7 +137,11 @@ sealed interface ClusterOutcome {
     data object Stale : ClusterOutcome
 
     /** As [ExtractOutcome.Failed], for every cluster of the call. */
-    data class Failed(val error: String, val countsAttempt: Boolean = true, val maxAttempts: Int = FrameStateDao.MAX_ATTEMPTS) : ClusterOutcome
+    data class Failed(
+        val error: String, val countsAttempt: Boolean = true, val maxAttempts: Int = FrameStateDao.MAX_ATTEMPTS,
+        /** As [ExtractOutcome.Failed.fallbackUnavailable]: Offline only refused the primary and the on-device/LAN fallback is unavailable; the park is counted per cluster by [com.rokid.context.work.FallbackParkCap]. */
+        val fallbackUnavailable: Boolean = false,
+    ) : ClusterOutcome
 }
 
 /**
@@ -540,7 +544,7 @@ class KeyframePipeline(
             throw c
         } catch (e: Exception) {
             PcLog.i(TAG, "cluster call failed: ${e.javaClass.simpleName}")
-            ExtractOutcome.classify(e, online()).let { ClusterOutcome.Failed(it.error, it.countsAttempt, it.maxAttempts) }
+            ExtractOutcome.classify(e, online()).let { ClusterOutcome.Failed(it.error, it.countsAttempt, it.maxAttempts, it.fallbackUnavailable) }
         }
         return Step.Done(settleClusters(sent, claimId, outcome))
     }
@@ -588,22 +592,33 @@ class KeyframePipeline(
                 PcLog.i(PIPE_TAG, "released=${sent.size} clusters stale")
                 0
             }
-            is ClusterOutcome.Failed -> {
-                if (o.countsAttempt) {
-                    sent.forEach { failCluster(it.clusterId, claimId, o.error, now, o.maxAttempts) }
-                    PcLog.i(PIPE_TAG, "failed class=${o.error} clusters=${sent.size}")
-                } else {
-                    sent.forEach { clusters.release(it.clusterId, claimId, now) }
-                    PcLog.i(PIPE_TAG, "released=${sent.size} clusters reason=${o.error}")
-                    if (o.error == ExtractOutcome.DATA_SAVER) pausedUntilMs = now + if (dataSaverBlocked()) DATA_SAVER_PAUSE_MS else DATA_SAVER_BLIP_PAUSE_MS
-                    else {
-                        pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
-                        pausedUntilMs = now + pauseStepMs
-                    }
-                }
-                0
+            is ClusterOutcome.Failed -> settleFailedClusters(sent, claimId, o.capFallback(sent), now)
+        }
+    }
+
+    /**
+     * A reachable but consistently failing on-device/LAN fallback must not park a cluster forever either: after FallbackParkCap.CAP parks it counts as an ordinary transient failure (same rule as [settle]).
+     * Each call that parks counts one park per cluster, so it is applied exactly once per failed call.
+     */
+    private fun ClusterOutcome.Failed.capFallback(sent: List<FrameClusterEntity>): ClusterOutcome.Failed =
+        if (fallbackUnavailable && !countsAttempt && com.rokid.context.work.FallbackParkCap.over(sent.map { it.clusterId }))
+            copy(error = "fallback_unavailable", countsAttempt = true, maxAttempts = RetryPolicy.MAX_ATTEMPTS, fallbackUnavailable = false)
+        else this
+
+    private suspend fun settleFailedClusters(sent: List<FrameClusterEntity>, claimId: String, o: ClusterOutcome.Failed, now: Long): Int {
+        if (o.countsAttempt) {
+            sent.forEach { failCluster(it.clusterId, claimId, o.error, now, o.maxAttempts) }
+            PcLog.i(PIPE_TAG, "failed class=${o.error} clusters=${sent.size}")
+        } else {
+            sent.forEach { clusters.release(it.clusterId, claimId, now) }
+            PcLog.i(PIPE_TAG, "released=${sent.size} clusters reason=${o.error}")
+            if (o.error == ExtractOutcome.DATA_SAVER) pausedUntilMs = now + if (dataSaverBlocked()) DATA_SAVER_PAUSE_MS else DATA_SAVER_BLIP_PAUSE_MS
+            else {
+                pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
+                pausedUntilMs = now + pauseStepMs
             }
         }
+        return 0
     }
 
     /** Fix wave K5: the AI budget describes about 15 photos a minute; a bigger backlog is thinned (see [FrameStateDao.shedOldestNonDwell]). */
