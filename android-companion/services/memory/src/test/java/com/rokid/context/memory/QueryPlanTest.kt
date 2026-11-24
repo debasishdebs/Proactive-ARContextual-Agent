@@ -30,7 +30,7 @@ class QueryPlanTest {
     }
 
     @Test fun lexicalCursorHasNoTempSort() {
-        val plan = plan(RetrievalDao.LEXICAL_CURSOR_SQL, "milk", 0.0)
+        val plan = plan(RetrievalDao.LEXICAL_CURSOR_SQL, "milk", 0.0, Long.MIN_VALUE)
         assertTrue(plan.toString(), plan.none { "TEMP B-TREE" in it })
         assertTrue(plan.toString(), plan.any { "VIRTUAL TABLE" in it && "memory_fts" in it })
         assertTrue(plan.toString(), plan.any { it.startsWith("SEARCH") && "memory USING INTEGER PRIMARY KEY (rowid=?)" in it })

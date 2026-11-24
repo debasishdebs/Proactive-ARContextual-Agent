@@ -94,9 +94,9 @@ class LexicalRetrieverTest {
 
     private class SpyDao(private val real: RetrievalDao) : RetrievalDao by real {
         var opens = 0; var rowsRead = 0; var cursor: Cursor? = null; var onRow: (Int) -> Unit = {}
-        override fun lexicalCursor(match: String, minConfidence: Double): Cursor {
+        override fun lexicalCursor(match: String, minConfidence: Double, recallSince: Long): Cursor {
             opens++
-            return object : CursorWrapper(real.lexicalCursor(match, minConfidence)) {
+            return object : CursorWrapper(real.lexicalCursor(match, minConfidence, recallSince)) {
                 override fun moveToNext(): Boolean = super.moveToNext().also { if (it) { rowsRead++; onRow(rowsRead) } }
             }.also { cursor = it }
         }
@@ -109,7 +109,7 @@ class LexicalRetrieverTest {
         val rnd = java.util.Random(7)
         bulk(2_000) { i -> (0..(rnd.nextInt(12))).joinToString(" ") { words[rnd.nextInt(words.size)] } + " milk" + " x$i" }
         val match = com.rokid.context.memory.db.SearchNormalizer.toAnyMatchQuery("milk fridge keys")!!
-        val all = db.retrievalDao().lexicalCursor(match, 0.0).use { c ->
+        val all = db.retrievalDao().lexicalCursor(match, 0.0, Long.MIN_VALUE).use { c ->
             buildList { while (c.moveToNext()) add(Hit(c.getString(1), Bm25.score(Bm25.ints(c.getBlob(2))))) }
         }
         assertEquals(2_000, all.size)

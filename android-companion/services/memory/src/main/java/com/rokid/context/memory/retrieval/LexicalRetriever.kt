@@ -1,5 +1,6 @@
 package com.rokid.context.memory.retrieval
 
+import com.rokid.context.memory.db.Demotion
 import com.rokid.context.memory.db.RetrievalDao
 import com.rokid.context.memory.db.SearchNormalizer
 import kotlinx.coroutines.CoroutineDispatcher
@@ -15,15 +16,18 @@ import kotlin.coroutines.coroutineContext
  */
 class LexicalRetriever(private val dao: RetrievalDao, private val io: CoroutineDispatcher = Dispatchers.IO) {
     /** [notAfterMs] (S34): only memories created at or before it are candidates, applied in the query, before [limit]. Null = today's behaviour. */
-    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null, window: EventWindow? = null): List<Hit> {
+    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null, window: EventWindow? = null, recallSince: Long? = null): List<Hit> {
         if (limit <= 0) return emptyList()
         val match = SearchNormalizer.toAnyMatchQuery(query) ?: return emptyList()
         return withContext(io) {
             val top = TopHits(limit)
+            // [recallSince] (retention v3 WP3): demoted facts (SHORT, older than the Quick recall window, no vector) are not candidates of a default search, which bounds the Kotlin
+            // BM25 work by recent facts plus LONG. A [window] search is not narrowed: a time-window question reaches demoted facts, bounded by its window.
+            val since = recallSince ?: Demotion.NO_WINDOW
             val cursor = when {
                 window != null -> dao.lexicalCursorWindow(match, minConfidence, notAfterMs ?: Long.MAX_VALUE, window.fromMs, window.toMs) // [window]: event time, before [limit]
-                notAfterMs == null -> dao.lexicalCursor(match, minConfidence)
-                else -> dao.lexicalCursorUntil(match, minConfidence, notAfterMs)
+                notAfterMs == null -> dao.lexicalCursor(match, minConfidence, since)
+                else -> dao.lexicalCursorUntil(match, minConfidence, notAfterMs, since)
             }
             try {
                 val idCol = cursor.getColumnIndexOrThrow("id")
