@@ -61,6 +61,8 @@ data class PlaceGuideUiState(
     val enabled: Boolean = false, val cardSide: com.rokid.context.core.model.PlaceSide = com.rokid.context.core.model.PlaceSide.CENTRE, val developerMode: Boolean = false, val seeding: Boolean = false, val message: String? = null, val messageIsError: Boolean = false, val packSummary: String = "",
     val stats: PackStats? = null, val budgetMb: Int = 50, val confirmClear: Boolean = false,
     val pins: List<UserPlace> = emptyList(), val moments: Map<String, MomentChoice> = emptyMap(), val momentPicker: MomentPicker? = null, val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
+    /** B2: the phone-only place card history (newest first), how many rows the list shows, and the open detail. */
+    val history: List<PlaceHistoryRowUi> = emptyList(), val historyShown: Int = PlaceHistoryModel.PAGE, val historyDetail: PlaceHistoryDetail? = null,
 )
 
 /**
@@ -116,6 +118,8 @@ interface PlaceGuideControl {
     suspend fun momentsOf(ids: List<String>): Map<String, MomentChoice> = emptyMap()
     /** The photo Moments of one day ([fromMs] inclusive, [toMs] exclusive), newest first, [limit] of them older than [beforeId] (keyset paging, no offset); forgotten ones are never listed. */
     suspend fun momentsBetween(fromMs: Long, toMs: Long, limit: Int, beforeId: String?): List<MomentChoice> = emptyList()
+    /** B2: the place card history; null = not available on this build. */
+    val history: PlaceHistoryControl? get() = null
     /** Attaches (or with null removes) the Moment link of an existing pin. */
     suspend fun setMoment(pinId: String, momentId: String?): Boolean = false
     /** Clears the links of Moments that were forgotten (read-time repair; the Forget listener does it at the time). */
@@ -424,6 +428,63 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 
     private fun refreshSummary() { viewModelScope.launch(work) { refreshSummaryNow() } }
 
+    // ---- B2: the place card history ----
+
+    /** Re-reads the list (and the open detail: a Forget while it is shown closes it, a delivery change updates it). Called on resume and every few seconds while the screen is up. */
+    fun refreshHistory() { viewModelScope.launch(work) { refreshHistoryNow() } }
+
+    private suspend fun refreshHistoryNow() {
+        val h = control.history ?: return
+        val rows = runCatching { h.rows() }.getOrDefault(emptyList())
+        val ui = rows.map { it.toUi() }
+        val open = _state.value.historyDetail
+        val detail = if (open == null) null else rows.firstOrNull { it.id == open.row.id }?.let { buildDetail(h, it, open.message) }
+        _state.update { it.copy(history = ui, historyDetail = if (open == null) it.historyDetail else detail) }
+    }
+
+    private suspend fun buildDetail(h: PlaceHistoryControl, r: com.rokid.context.memory.place.PlaceCardLogEntity, message: String? = null): PlaceHistoryDetail {
+        val line = runCatching { h.line(r) }.getOrNull()
+        val photo = r.frameId?.let { runCatching { h.photoPath(it) }.getOrNull() }
+        return PlaceHistoryDetail(r.toUi(), line, photo, h.showAgainBlock(r) ?: if (line == null) PlaceHistoryModel.GONE_LINE else null, message)
+    }
+
+    fun openHistory(id: String) {
+        val h = control.history ?: return
+        viewModelScope.launch(work) {
+            val row = runCatching { h.rows() }.getOrDefault(emptyList()).firstOrNull { it.id == id } ?: return@launch
+            val d = buildDetail(h, row)
+            _state.update { it.copy(historyDetail = d) }
+        }
+    }
+
+    fun closeHistory() { _state.update { it.copy(historyDetail = null) } }
+    fun historyMore() { _state.update { it.copy(historyShown = it.historyShown + PlaceHistoryModel.PAGE) } }
+
+    fun deleteHistory() {
+        val h = control.history ?: return
+        val id = _state.value.historyDetail?.row?.id ?: return
+        viewModelScope.launch(work) {
+            runCatching { h.delete(id) }
+            _state.update { it.copy(historyDetail = null) }
+            refreshHistoryNow()
+        }
+    }
+
+    /** "Show on glasses again": a user act (never a re-identification). The result is said in the detail; the list shows the new row. */
+    fun showAgain() {
+        val h = control.history ?: return
+        val d = _state.value.historyDetail ?: return
+        if (d.busy) return
+        _state.update { it.copy(historyDetail = d.copy(busy = true, message = null)) }
+        viewModelScope.launch(work) {
+            val row = runCatching { h.rows() }.getOrDefault(emptyList()).firstOrNull { it.id == d.row.id }
+            val ok = row != null && h.showAgainBlock(row) == null && runCatching { h.showAgain(row) }.getOrDefault(false)
+            val msg = if (ok) "Sent to the glasses." else "Not shown: it could not be sent right now."
+            _state.update { s -> s.copy(historyDetail = s.historyDetail?.copy(busy = false, message = msg)) }
+            refreshHistoryNow()
+        }
+    }
+
     private suspend fun refreshSummaryNow() {
         val s = runCatching { control.summary() }.getOrDefault("")
         val st = runCatching { control.stats() }.getOrNull()
@@ -431,16 +492,19 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         val pins = runCatching { control.pinning?.pins() }.getOrNull().orEmpty()
         val moments = runCatching { control.momentsOf(pins.mapNotNull { it.momentId }) }.getOrDefault(emptyMap())
         _state.update { it.copy(packSummary = s, stats = st, pins = pins, moments = moments) }
+        refreshHistoryNow()
     }
 }
 
 @Composable
-fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }, developerMode: Boolean = false, pickOnMap: (() -> Unit)? = null) {
+fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }, developerMode: Boolean = false, pickOnMap: (() -> Unit)? = null, openFrame: ((String) -> Unit)? = null) {
     val vm = viewModel { PlaceGuideViewModel(control, developerMode = developerMode) }
     val state by vm.state.collectAsStateWithLifecycle()
+    // B2: the history follows Forgets and delivery changes while the screen is up (a few seconds, only while it is composed).
+    androidx.compose.runtime.LaunchedEffect(vm) { while (true) { kotlinx.coroutines.delay(3_000); vm.refreshHistory() } }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
-    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap))
+    PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame))
 }
 
 /** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */
@@ -456,6 +520,9 @@ class PlaceGuideActions(
     val pickerDay: (Int) -> Unit = {}, val pickerMore: () -> Unit = {}, val removeMoment: (String?) -> Unit = {}, val askSkipMoment: () -> Unit = {}, val cancelSkipMoment: () -> Unit = {}, val confirmSkipMoment: () -> Unit = {},
     /** Opens the zones map to draw the box to seed; null hides the button (a build without the map). */
     val pickOnMap: (() -> Unit)? = null,
+    /** B2: the place card history: open a row, close the detail, show more rows, "Show on glasses again", "Delete from history", and "Open Moment" (a live frame; null hides the button). */
+    val openHistory: (String) -> Unit = {}, val closeHistory: () -> Unit = {}, val historyMore: () -> Unit = {}, val showAgain: () -> Unit = {}, val deleteHistory: () -> Unit = {},
+    val openMoment: ((String) -> Unit)? = null,
 )
 
 @Composable
@@ -469,6 +536,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 if (state.packSummary.isNotEmpty()) NoticeText(state.packSummary, tag = "place_guide_pack")
             }
         }
+        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore)
         if (state.developerMode) item {
             SettingsCard {
                 Text("Card position (Developer)", style = MaterialTheme.typography.titleMedium)
@@ -542,6 +610,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
         confirmButton = { TextButton(on.confirmClear, Modifier.testTag("pack_clear_confirm")) { Text("Clear") } },
         dismissButton = { TextButton(on.cancelClear, Modifier.testTag("pack_clear_cancel")) { Text("Keep") } },
     )
+    state.historyDetail?.let { d -> PlaceHistoryDetailDialog(d, java.time.ZoneId.systemDefault(), on.closeHistory, on.showAgain, on.deleteHistory, on.openMoment) }
     state.pinDialog?.let { d -> PinDialog(d, on) }
     state.momentPicker?.let { pk -> MomentPickerDialog(pk, on) }
 }

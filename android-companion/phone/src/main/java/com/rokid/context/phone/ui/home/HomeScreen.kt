@@ -110,6 +110,8 @@ fun HomeScreen(
     onDismissLimited: () -> Unit = {},
     /** v3.1: what the buttons on a suggestion card do. */
     onSuggestion: SuggestionActionsUi = SuggestionActionsUi.None,
+    /** B2: the "Last place card" row opens the Place Guide list. */
+    onOpenPlaceCards: () -> Unit = {},
 ) {
     var whyId by remember { mutableStateOf<String?>(null) }
     val leave by rememberUpdatedState(onLeave)
@@ -150,6 +152,13 @@ fun HomeScreen(
             )
         }
         item { AskHero(state, onQuestionChange, onAsk, onOpenAsk, onMic, onRequestMic, onOpenAppSettings) }
+        state.lastPlaceCard?.let { p ->
+            item(key = "last_place_card") {
+                Column(Modifier.testTag("last_place_card")) {
+                    FeedCard(icon = Icons.Outlined.LocationOn, colors = PcColors.ChipViolet, meta = p.meta, title = p.title, body = p.body, onClick = onOpenPlaceCards)
+                }
+            }
+        }
         item { SectionLabel("For you") }
         if (state.feed.isEmpty()) {
             item {

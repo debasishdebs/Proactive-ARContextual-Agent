@@ -1,6 +1,7 @@
 package com.rokid.context.phone.place
 
 import android.content.Context
+import com.rokid.context.core.model.carriesData
 import com.rokid.context.memory.place.GeoBox
 import com.rokid.context.memory.place.PackStats
 import com.rokid.context.phone.ui.settings.place.MomentChoice
@@ -88,6 +89,9 @@ class AndroidPlaceGuideControl(
     override suspend fun setMoment(pinId: String, momentId: String?): Boolean = pinning.setMoment(pinId, momentId)
     /** A link whose Moment was forgotten is cleared whenever the screen reads the pins (the Forget listener does it at the time; this also covers a crash in between). */
     override suspend fun sweepMoments() { com.rokid.context.work.frames.place.PinMomentLinks.sweep(app) }
+
+    /** B2: the place card history. */
+    override val history: com.rokid.context.phone.ui.settings.place.PlaceHistoryControl by lazy { AndroidPlaceHistoryControl(app) }
 }
 
 /** The seed's admission, asked before every cell and every request: null = go on, else the short reason to stop. Fails closed (an unreadable state stops the seed). */
@@ -113,4 +117,45 @@ class AndroidSeedMapControl(private val app: Context, private val guide: PlaceGu
     override suspend fun pins() = guide.pinning?.pins().orEmpty().map { com.rokid.context.phone.ui.settings.privacy.zones.PinInfo(it.lat, it.lon, it.radiusM) }
     override suspend fun seed(box: GeoBox) = guide.seed(box)
     override suspend fun remove(id: String) { PlaceGraph.readyPack(app).removeArea(id) }
+}
+
+/**
+ * The production [com.rokid.context.phone.ui.settings.place.PlaceHistoryControl] (B2): the phone-only place card history in `places.db`, the card line re-read from the pack by place id, the photo only while its
+ * frame row still exists, and "Show on glasses again" through the same fenced holder the sampler publishes through. Never logs a name, an id or a position.
+ */
+class AndroidPlaceHistoryControl(
+    private val app: Context,
+    private val zoneBlocked: () -> Boolean = { com.rokid.context.phone.zone.ZoneGraph.get(app).let { z -> z.approach || z.enforcing } || PlaceGraph.fence.blocked() },
+    private val glassesConnected: () -> Boolean = { com.rokid.context.phone.hub.HubGraph.get(app).state.value.link.carriesData },
+    private val enabled: () -> Boolean = { com.rokid.context.work.frames.place.PlaceGuideSettings.of(app).enabled },
+) : com.rokid.context.phone.ui.settings.place.PlaceHistoryControl {
+    private fun history() = PlaceGraph.history(app)
+    private suspend fun placesOf(row: com.rokid.context.memory.place.PlaceCardLogEntity) =
+        PlaceGraph.readyPack(app).placesByIds(com.rokid.context.work.frames.place.PlaceCardRebuild.idsOf(row))
+
+    override suspend fun rows() = history().recent()
+
+    override suspend fun line(row: com.rokid.context.memory.place.PlaceCardLogEntity): String? =
+        com.rokid.context.work.frames.place.PlaceCardRebuild.card(row, placesOf(row))?.line
+
+    override suspend fun photoPath(frameId: String): String? =
+        com.rokid.context.memory.MemoryGraph.get(app).db.frameDao().byIds(listOf(frameId)).firstOrNull()?.path?.takeIf { it.isNotBlank() && java.io.File(it).exists() }
+
+    override suspend fun delete(id: String) = history().delete(id)
+
+    override fun showAgainBlock(row: com.rokid.context.memory.place.PlaceCardLogEntity): String? =
+        com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.showAgainBlock(row.kind, row.frameId, row.photoGone == 1, com.rokid.context.phone.ui.settings.place.ShowAgainEnv(enabled(), zoneBlocked(), glassesConnected()))
+
+    override suspend fun showAgain(row: com.rokid.context.memory.place.PlaceCardLogEntity): Boolean {
+        if (showAgainBlock(row) != null) return false
+        val card = com.rokid.context.work.frames.place.PlaceCardRebuild.card(row, placesOf(row)) ?: return false
+        if (PlaceGraph.fence.blocked()) return false // the fence's own word, read again at the moment of publication
+        val id = PlaceGraph.port.publishIfId(card, PlaceGraph.port.epoch()) ?: return false
+        // A user act: a new card id and a new history row of the same kind (the hub reports its delivery like any card).
+        history().add(com.rokid.context.work.frames.place.PlaceHistoryEvent(
+            kind = runCatching { com.rokid.context.work.frames.place.HistoryKind.valueOf(row.kind) }.getOrDefault(com.rokid.context.work.frames.place.HistoryKind.PHOTO),
+            placeId = row.placeId, title = row.title, members = com.rokid.context.work.frames.place.PlaceCardRebuild.members(row), frameId = row.frameId, cardId = id,
+        ))
+        return true
+    }
 }
