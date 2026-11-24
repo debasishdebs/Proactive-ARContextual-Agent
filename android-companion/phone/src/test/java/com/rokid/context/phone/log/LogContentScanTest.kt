@@ -34,7 +34,7 @@ class LogContentScanTest {
         "GlassesWatchdog.kt" to setOf("it"), "AutoStopController.kt" to setOf("it"), "GlassesWearEstimate.kt" to setOf("it"), "AutoStopWake.kt" to setOf("it"), "StateBroadcaster.kt" to setOf("it"), "CxrGlassesLink.kt" to setOf("it"), "SessionSlot.kt" to setOf("it"),
         "AndroidSpeaker.kt" to setOf("it.wire"), "GlassesRuntime.kt" to setOf("\"ptt: \$it\""),
         "PhoneExitDiagnostics.kt" to setOf("\"\${format(records, System.currentTimeMillis(), AutoStopWake.exempt(context), live)}\""), // file-scoped: numeric fields and controlled flags only (review hub-wp2 r2)
-        "ZoneGraph.kt" to setOf("it"), // zone log lines: counts, state and reason names, a class name (ZoneController); never a zone name or a coordinate
+        "ZoneGraph.kt" to setOf("it"), "MomentLocationGraph.kt" to setOf("it"), // Moment location: the recorder's one counts-only line, // zone log lines: counts, state and reason names, a class name (ZoneController); never a zone name or a coordinate
         "PlaceGraph.kt" to setOf("it"), "PlaceSamplers.kt" to setOf("it"), "AndroidPlaceGuideControl.kt" to setOf("it"), // AndroidPlaceGuideControl: the pin log lines ("pin created count=<n>", literals) // Place Guide: pack log lines (counts, outcome and class names) and "place outcome=<NAME>" from the sampler; never a name, coordinate or summary
         "NexusGraph.kt" to setOf("it"), // Nexus bridge: the sink's literal lines (event, slot, reason and result names, counts); never card text (NexusLogContentScanTest)
         "WatchLinkState.kt" to setOf("it"), // WatchDropLog: only "watch drop reason=<fixed token> n=<count>"
@@ -49,6 +49,7 @@ class LogContentScanTest {
 
     /** Names that hold a count, an enum/state name, a wire channel name or a fixed call-site constant (each reviewed; `what`/`how`/`why`/`cmd`/`channel` are literals at their call sites). */
     private val SAFE_NAMES = setOf(
+        "saved", "skippedLine", // MomentLocationRecorder: the saved count and "<fixed reason token>:<count>" pairs; never an id or a coordinate
         "appended", "attempt", "attempts", "backfill", "capacity", "channel", "cls", "cmd", "code", "deleted", "described", "done", "extracted", "failed", "how", "left", "leftovers",
         "loadedDistractors", "memories", "missing", "n", "objects", "ok", "parsed", "pending", "purged", "reason", "rejected", "remote", "report", "resumed", "saved", "scanned", "source",
         "state", "stored", "streak", "swept", "transient", "types", "versionNo", "w", "wearing", "what", "why", "written", "health", "catalogId", "origin", "wearCheck", "s", "o.error", "d.reason",

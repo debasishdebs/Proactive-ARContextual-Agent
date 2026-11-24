@@ -1,6 +1,8 @@
 package com.rokid.context.phone.ui.settings.privacy
 
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,6 +49,19 @@ object BatteryPolicy {
     val text = "Processing defers at or below $PHONE_DEFER_PCT % phone battery · glasses stop capture at or below $GLASSES_STOP_PCT %"
 }
 
+/** The "Save location with Moments" card: the switch, the count of saved locations and the "Delete saved locations" offer after the switch went off. */
+data class MomentLocationUi(val on: Boolean, val count: Int, val offerDelete: Boolean = false) {
+    val countLine: String get() = if (count == 1) "1 Moment has a saved location" else "$count Moments have a saved location"
+}
+
+/** What the Moment location card needs: the setting (a failed read counts as off), the saved count and the one delete. The route binds the real one. */
+interface MomentLocationControl {
+    fun isOn(): Boolean
+    fun setOn(on: Boolean)
+    suspend fun count(): Int
+    suspend fun deleteAll(): Int
+}
+
 /** One line on screen; [ids] = every record it stands for (all are resumed by "Resume all shown"). */
 data class PauseRow(val id: String, val label: String, val ids: Set<String> = setOf(id))
 
@@ -55,6 +70,8 @@ data class PrivacyUiState(
     val quietEnabled: Boolean = false,
     val fromMinute: Int = PrivacyModel.DEFAULT_FROM,
     val toMinute: Int = PrivacyModel.DEFAULT_TO,
+    /** Null where the Moment location setting is not wired (tests, previews): the card is then not shown. */
+    val momentLocation: MomentLocationUi? = null,
 ) {
     val quietError: String? get() = if (quietEnabled && fromMinute == toMinute) PrivacyModel.EQUAL_BOUNDS else null
     val canSave: Boolean get() = quietEnabled && quietError == null
@@ -107,6 +124,7 @@ class PrivacyViewModel(
     private val hud: HudSettingsControl,
     private val clock: () -> Long = System::currentTimeMillis,
     private val work: CoroutineDispatcher = Dispatchers.Default,
+    private val momentLoc: MomentLocationControl? = null,
 ) : ViewModel() {
     private data class Draft(val enabled: Boolean, val from: Int, val to: Int)
 
@@ -114,12 +132,41 @@ class PrivacyViewModel(
         hud.settings.value.quietHours.let { q -> Draft(q != null, q?.startMinute ?: PrivacyModel.DEFAULT_FROM, q?.endMinute ?: PrivacyModel.DEFAULT_TO) },
     )
 
-    val state: StateFlow<PrivacyUiState> = combine(control.activePauses, draft) { pauses, d ->
-        PrivacyUiState(PrivacyModel.rows(pauses), d.enabled, d.from, d.to)
+    private val loc = MutableStateFlow(momentLoc?.let { MomentLocationUi(on = it.isOn(), count = 0) })
+
+    /** The Moment location card's own state (also part of [state]). */
+    val locationState: StateFlow<MomentLocationUi?> = loc
+
+    init { refreshLocationCount() }
+
+    val state: StateFlow<PrivacyUiState> = combine(control.activePauses, draft, loc) { pauses, d, l ->
+        PrivacyUiState(PrivacyModel.rows(pauses), d.enabled, d.from, d.to, l)
     }.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000),
-        PrivacyUiState(quietEnabled = draft.value.enabled, fromMinute = draft.value.from, toMinute = draft.value.to),
+        PrivacyUiState(quietEnabled = draft.value.enabled, fromMinute = draft.value.from, toMinute = draft.value.to, momentLocation = loc.value),
     )
+
+    private fun refreshLocationCount() {
+        val c = momentLoc ?: return
+        viewModelScope.launch(work) { val n = runCatching { c.count() }.getOrDefault(0); loc.value = loc.value?.copy(count = n) }
+    }
+
+    /** Switching OFF stops new saves at once and offers to delete what is saved; switching ON just saves from now on. */
+    fun setMomentLocation(on: Boolean) {
+        val c = momentLoc ?: return
+        c.setOn(on)
+        val hadRows = (loc.value?.count ?: 0) > 0
+        loc.value = loc.value?.copy(on = on, offerDelete = !on && hadRows)
+        refreshLocationCount()
+    }
+
+    fun keepSavedLocations() { loc.value = loc.value?.copy(offerDelete = false) }
+
+    fun deleteSavedLocations() {
+        val c = momentLoc ?: return
+        loc.value = loc.value?.copy(offerDelete = false)
+        viewModelScope.launch(work) { runCatching { c.deleteAll() }; refreshLocationCount() }
+    }
 
     fun pauseFor(minutes: Int?) = control.pauseUntil(minutes?.let { clock() + it * 60_000L })
 
@@ -154,10 +201,14 @@ class PrivacyCallbacks(
     val quietTo: (Int) -> Unit,
     val saveQuiet: () -> Unit,
     val openZones: () -> Unit = {},
+    val momentLocation: (Boolean) -> Unit = {},
+    val keepLocations: () -> Unit = {},
+    val deleteLocations: () -> Unit = {},
 ) {
     companion object {
         fun of(vm: PrivacyViewModel, back: () -> Unit, openZones: () -> Unit = {}) = PrivacyCallbacks(
             back, vm::pauseFor, vm::resumeShown, vm::setQuietEnabled, vm::setQuietFrom, vm::setQuietTo, vm::saveQuietHours, openZones,
+            vm::setMomentLocation, vm::keepSavedLocations, vm::deleteSavedLocations,
         )
     }
 }
@@ -165,13 +216,22 @@ class PrivacyCallbacks(
 /** Settings › Privacy route: the VM over the shared pause control ([SettingsDeps.pauses]) and the hub's HUD settings. */
 @Composable
 fun PrivacyRoute(deps: SettingsDeps, back: () -> Unit, openZones: () -> Unit = {}) {
-    val vm = viewModel { PrivacyViewModel(deps.pauses, deps.hud) }
+    val vm = viewModel { PrivacyViewModel(deps.pauses, deps.hud, momentLoc = deps.momentLocation) }
     val state by vm.state.collectAsStateWithLifecycle()
     PrivacyScreen(state, PrivacyCallbacks.of(vm, back, openZones))
 }
 
 @Composable
 fun PrivacyScreen(state: PrivacyUiState, on: PrivacyCallbacks) {
+    if (state.momentLocation?.offerDelete == true) {
+        AlertDialog(
+            onDismissRequest = on.keepLocations, modifier = Modifier.testTag("moment_location_dialog"),
+            title = { Text("Delete saved locations?") },
+            text = { Text("New Moments will not save a location. The ones already saved stay until you delete them. Deleting does not change the Moments or their photos.") },
+            confirmButton = { TextButton(on.deleteLocations, Modifier.testTag("moment_location_delete")) { Text("Delete saved locations") } },
+            dismissButton = { TextButton(on.keepLocations, Modifier.testTag("moment_location_keep")) { Text("Keep them") } },
+        )
+    }
     SettingsPage("Privacy", on.back, tag = "privacy_settings") {
         item {
             SettingsCard {
@@ -202,6 +262,14 @@ fun PrivacyScreen(state: PrivacyUiState, on: PrivacyCallbacks) {
                 }
             }
         }
+        state.momentLocation?.let { l ->
+            item {
+                SettingsCard {
+                    SwitchRow("Save location with Moments", "From a fix the phone already has. Never inside a pause zone. Not exported or sent.", l.on, on.momentLocation, tag = "moment_location_switch")
+                    NoticeText(l.countLine, tag = "moment_location_count")
+                }
+            }
+        }
         item {
             SettingsCard {
                 Text("Pause zones", style = MaterialTheme.typography.titleMedium)
@@ -216,4 +284,12 @@ fun PrivacyScreen(state: PrivacyUiState, on: PrivacyCallbacks) {
             }
         }
     }
+}
+
+/** The production [MomentLocationControl]: the Developer flag file (`pc_dev`) for the switch, the one graph for the count and the delete. */
+class AppMomentLocation(private val app: android.content.Context) : MomentLocationControl {
+    override fun isOn() = com.rokid.context.orchestration.forget.DeveloperFlags.momentLocation(app)
+    override fun setOn(on: Boolean) = com.rokid.context.orchestration.forget.DeveloperFlags.setMomentLocation(app, on)
+    override suspend fun count() = com.rokid.context.canvas.moment.MomentLocationGraph.count(app)
+    override suspend fun deleteAll() = com.rokid.context.canvas.moment.MomentLocationGraph.deleteAll(app)
 }

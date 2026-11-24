@@ -148,6 +148,7 @@ class ForgetPolicyTest {
         "PLACE_HISTORY_PIN_REMOVAL" to (true to mapOf(ForgetChild.PLACE_HISTORY to F)),
         "PLACE_HISTORY_ROW_DELETE" to (true to mapOf(ForgetChild.PLACE_HISTORY to F)),
         "PLACE_HISTORY_PRUNE" to (false to mapOf(ForgetChild.PLACE_HISTORY to F)),
+        "MOMENT_LOCATION_SETTING_OFF" to (true to mapOf(ForgetChild.MOMENT_LOCATION to F)),
         "CANVAS_RUN_PRUNE" to (false to mapOf(ForgetChild.RUN_RESULT to F, ForgetChild.CONTROL to F)),
     )
 

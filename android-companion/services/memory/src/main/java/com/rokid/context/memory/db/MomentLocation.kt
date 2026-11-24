@@ -30,10 +30,25 @@ data class MomentLocationEntity(
     val savedAt: Long,
 )
 
+/** An anchor the recorder may attach a location to: a photo (`frame_meta.frameId`) or a mark (`canvas_label.labelId`) and its capture time. */
+data class MomentAnchor(val anchorId: String, val atMs: Long)
+
 @Dao
 abstract class MomentLocationDao {
     @Query("SELECT * FROM moment_location WHERE momentId IN (:ids)") protected abstract suspend fun ofChunk(ids: List<String>): List<MomentLocationEntity>
     @Query("SELECT COUNT(*) FROM moment_location") abstract suspend fun count(): Int
+
+    // --- the live recorder (WP4): candidates and the in-transaction guards. Read-only; no coordinates leave these rows. ---
+    /** Photos captured at or after [from] (phone clock). A frame without `capturedAtMs` is never a candidate. */
+    @Query("SELECT frameId AS anchorId, capturedAtMs AS atMs FROM frame_meta WHERE capturedAtMs IS NOT NULL AND capturedAtMs >= :from ORDER BY capturedAtMs, frameId")
+    abstract suspend fun framesSince(from: Long): List<MomentAnchor>
+    /** Marks (kind MOMENT, never the `:i` intent row of a mark) at or after [from]. */
+    @Query("SELECT labelId AS anchorId, atMs AS atMs FROM canvas_label WHERE kind = 'MOMENT' AND labelId NOT LIKE '%:i' AND atMs >= :from ORDER BY atMs, labelId")
+    abstract suspend fun marksSince(from: Long): List<MomentAnchor>
+    @Query("SELECT COUNT(*) FROM frame_meta WHERE frameId = :id") abstract suspend fun frameAnchorExists(id: String): Int
+    @Query("SELECT COUNT(*) FROM canvas_label WHERE labelId = :id AND kind = 'MOMENT'") abstract suspend fun markAnchorExists(id: String): Int
+    @Query("SELECT COUNT(*) FROM forget_tombstone WHERE frameId = :id") abstract suspend fun frameTombstoned(id: String): Int
+    @Query("SELECT COUNT(*) FROM moment_tombstone WHERE momentId = :id") abstract suspend fun momentTombstoned(id: String): Int
 
     /** INSERT OR IGNORE: the first writer wins and a backfill never overwrites a row. Returns the new rowid, or -1 when the row was already there. */
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertIfAbsent(row: MomentLocationEntity): Long
