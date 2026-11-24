@@ -45,11 +45,13 @@ class PlaceShadow(
 
     /** [live] is the attempt's own liveness (ticket, switch, pipeline, wipe generation): asked again after the photo is read and after the embed; false drops the result. */
     suspend fun score(frameId: String, hits: List<Pair<PlaceEntity, Double>>, live: () -> Boolean = { true }): ShadowOutcome {
+        if (!live()) return ShadowOutcome.DROPPED // before the embedder is acquired (it may load a model) and before anything is allocated: a fenced attempt, or a flag turned OFF after launch, does no work
         val e = embedder() ?: return ShadowOutcome.UNAVAILABLE
         val jpeg = photo(frameId) ?: return ShadowOutcome.UNAVAILABLE
         if (!live()) return ShadowOutcome.DROPPED
         val t0 = elapsed()
         val q = e.embedImage(jpeg)
+        if (!live()) return ShadowOutcome.DROPPED // before the text batch and the cache
         val texts = anchors(e, hits)
         // The pins' reference vectors are asked together, so one cold miss costs one wait, not one per pin. Any failure of one pin leaves only that pin without an image channel.
         val pins = hits.map { it.first }.filter { UserPlace.isUserId(it.id) }

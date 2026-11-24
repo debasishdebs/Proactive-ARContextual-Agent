@@ -130,6 +130,18 @@ class ForgetService(
     }
 
     /**
+     * The suspect sweep's removal: like [removeDescriptions], but every id is re-validated INSIDE the deletion transaction ([SuspectRecheck]): an Undo (mark cleared) or a change of the photos
+     * between the sweep's selection and this call keeps that memory. An id that no longer qualifies is skipped, never deleted.
+     */
+    suspend fun removeSuspectDescriptions(ids: Collection<String>, mode: SuspectRecheck): Result = notifying {
+        if (v2) return@notifying executor.removeSuspectDescriptions(ids, mode)
+        db.withTransaction {
+            val live = ids.distinct().filter { dao.suspectStillEligible(it, mode) }
+            if (live.isEmpty()) Result.EMPTY else cascade(live, lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true)
+        }
+    }
+
+    /**
      * Photo expiry (Ruling 11), one transaction: each of [frameIds] that still has a `frame` row is tombstoned (the extraction lock, and the
      * marker the sweep retries a failed delete from) and loses its `frame` row. `frame_meta`, `frame_vector`, `frame_state`, `frame_source`,
      * the memories and everything derived from them stay. [Result.framesToDelete] lists each photo's JPEG and its `.meta.json` sidecar for
@@ -330,4 +342,17 @@ class ForgetService(
         }.getOrDefault(emptySet())
     }
 
+}
+
+/** Why the sweep selected a suspect: [EXPIRED] = every photo is gone; [REPLACED] = every stored photo has another description with delivery proof. Re-checked inside the deletion transaction. */
+enum class SuspectRecheck { EXPIRED, REPLACED }
+
+/** True when [id] is still a marked suspect AND the selection condition of [mode] still holds (the same rules the sweep's queries use). Call inside the deletion transaction. */
+internal suspend fun com.rokid.context.memory.db.ForgetDao.suspectStillEligible(id: String, mode: SuspectRecheck): Boolean {
+    if (isMarkedSuspect(id) == 0) return false
+    val photos = storedPhotosOf(id)
+    return when (mode) {
+        SuspectRecheck.EXPIRED -> photos.isEmpty()
+        SuspectRecheck.REPLACED -> photos.isNotEmpty() && photos.all { describedWithProof(it, id) > 0 }
+    }
 }

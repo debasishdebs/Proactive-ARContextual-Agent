@@ -90,6 +90,44 @@ class PlaceSamplerShadowTest {
         assertEquals(0, hookCalls); assertEquals(0, refAsks); assertEquals(0, embeds); assertFalse(attempt().contains("shadow"))
     }
 
+    @Test fun turningTheFlagOffAfterLaunchNeverAcquiresTheEmbedderNorRunsInference() = runTest {
+        var acquisitions = 0; var embeds = 0; var refAsks = 0
+        val e = object : ImageTextEmbedder {
+            override val spaceId = "x"; override val dim = 2
+            override suspend fun embedImage(bytes: ByteArray): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
+            override suspend fun embedText(text: String): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
+        }
+        val real = PlaceShadow(embedder = { acquisitions++; e }, photo = { ByteArray(1) }, imageRefs = { _, _, _ -> refAsks++; emptyMap() }, elapsed = { 0L })
+        // the flag is ON at launch (the shadow is queued on its own dispatcher); it goes OFF during the model call, BEFORE the queued work gets to run
+        matchImpl = { flag = false; delay(callMs); reply }
+        run(sampler(this) { id, hits, live -> real.score(id, hits, live) })
+        assertEquals(1, hookCalls)
+        assertEquals("embedder acquired", 0, acquisitions); assertEquals("inference ran", 0, embeds); assertEquals(0, refAsks)
+        assertFalse(attempt(), attempt().contains("shadow")); assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size)
+    }
+
+    @Test fun aFlagTurnedOffMidAttemptLogsNoShadowFieldEvenFromAHookThatScores() = runTest {
+        callMs = 3_000
+        matchImpl = { delay(100); flag = false; delay(callMs); reply }
+        run(sampler(this) { _, _, _ -> scored(800, 500) })
+        assertFalse(attempt(), attempt().contains("shadow")); assertEquals(PlaceOutcome.MATCHED, outcomes.last())
+    }
+
+    @Test fun theShadowChecksLivenessBeforeTheEmbedderAndBeforeInference() = runTest {
+        var acquisitions = 0; var embeds = 0
+        val e = object : ImageTextEmbedder {
+            override val spaceId = "x"; override val dim = 2
+            override suspend fun embedImage(bytes: ByteArray): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
+            override suspend fun embedText(text: String): FloatArray { embeds++; return floatArrayOf(1f, 0f) }
+        }
+        val real = PlaceShadow(embedder = { acquisitions++; e }, photo = { ByteArray(1) }, elapsed = { 0L })
+        assertEquals(ShadowOutcome.Kind.DROPPED, real.score("f", listOf(pl("wd:Q1", "A") to 1.0)) { false }.kind)
+        assertEquals(0, acquisitions); assertEquals(0, embeds)
+        var n = 0 // alive before the embedder, dead after the photo and before the image is embedded
+        assertEquals(ShadowOutcome.Kind.DROPPED, real.score("f", listOf(pl("wd:Q1", "A") to 1.0)) { n++ < 1 }.kind)
+        assertEquals(0, embeds)
+    }
+
     @Test fun flagOnWithALongCallAndAFastScoreIsOkNotErr() = runTest {
         callMs = 3_000
         run(sampler(this) { _, _, _ -> delay(400); scored(800, 500) })
