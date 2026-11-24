@@ -43,3 +43,17 @@ Never install without an explicit go; never uninstall the phone app; never delet
 
 ## 7. How to continue cheaply (no new research)
 Read in this order, nothing else: this file -> ROADMAP.md -> handoffs/overnight-2026-11-25-status.md -> the exact design doc for the step you do. Do not spawn exploration agents; do not re-run Codex reviews of units already READY/closed (the review files list closures). Do only: free disk/devices -> dry run -> `--go` install -> post-install checks; then the after-Sikkim items one design doc at a time with a single Sonnet worktree agent per step.
+
+## 8. Goals carried forward (set these again after /compact or in a new account)
+The session had two /goal conditions (Stop-hook style). Re-set them with `/goal <text>`:
+1. `if prev goal is met, continue on remaining tasks related to maps and pins and other pending items towards v2 fully tested (if devices are unavailable because I'll go to sleep then use the emulator). Use Opus for design, plan, RCA. Sonnet for building, testing and Codex for reviews. Do not stop at night at all`
+   Honest note: as of 24 Nov 22:10 every item reachable without the user is done; the hook kept firing only because the remaining steps need the user (disk, devices, "go"). If the goal keeps blocking a stop, set a narrower one: `finish when train16 is installed on the phone and post-install checks pass, or the user says stop`.
+2. (older, achieved) `make sure queued tasks in overnight-queue-2026-11-20.md are finished`.
+Roles: Opus = design/plan/RCA, Sonnet = build/test (one worktree agent per step), Codex sol medium = reviews (Opus low-effort only if Codex quota is out). Clock: Tue 24 Nov 2026 ~22:10 IST when written.
+
+## 9. Resume prompt (paste into the new session)
+"Read docs/superpowers/plans/handoffs/HANDOFF-2026-11-24-FULL.md in ~/Desktop/rokid/proactive-context-agent, then ROADMAP.md and handoffs/overnight-2026-11-25-status.md. Do no new research and spawn no exploration agents. First check `df -h ~` and `adb devices -l`. If the disk has > 4 GB free and the phone + glasses are listed, run the installer dry run for train16 (apks-v110-train16-bb49cb5b) and show me the output; install with --go only after I say go. Never delete my backups, never touch Rokid-Coder. After the install, run the post-install checks and compare counts."
+
+## 10. Quick state table (24 Nov ~22:10)
+Branch tip 6a78899e (+ docs/tools commits) = train20, verified 15/15. Staged APK folders: train16 bb49cb5b (install first), train17 aaca794a, train18 c573c05e, train19 65e1e34f. Worktrees under .claude/worktrees/ are disposable (all work is cherry-picked onto the branch); `git worktree prune` after deleting. Nothing is running in the background. The branch is unpushed: ask the user before pushing (remote origin = git@github.com:debasishdebs/Proactive-ARContextual-Agent.git, their personal GitHub; they may want a backup push before leaving ServiceNow on 27 Nov).
+Cost note for the next session: the 24 Nov spend came from 60+ parallel agents (100k-500k tokens each), an 800k-token main chat re-read every turn, and repeated review rounds; avoid all three.
