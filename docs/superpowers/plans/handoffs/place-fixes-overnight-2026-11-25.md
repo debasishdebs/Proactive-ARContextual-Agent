@@ -30,7 +30,9 @@
   - StubNone x OUTDOOR_10M: PHOTO cards 0, pin 2 + cluster 1; calls 37 (<= 42 from S2 but NOT <= B1's 28; the S2 weak back-off allows more calls than the old 120 s block).
   - OUTDOOR_10M SJ_IVORY still 1 (needs 2; same S2 contradiction).
 - S6 done: a LOW_CONFIDENCE answer with a valid number writes a POSSIBLE row via the history seam (delivery NOT_SENT_POSSIBLE comes from PlaceCardHistory), no card, no memory, no dedupe consumed; floor unchanged (online 0.5, offline 0.7). Tests: online054_and058_publish, offlineFloor_documented, lowConfidence_writesPossibleRowOnly. Replay counts unchanged (no low-confidence stage in the harness).
-- Next step: S7 (F5b quoted-sign text match).
+- S7 done: PlaceTextMatch + TextMatch (quoted spans, pin match), hook in KeyframeExtract after a saved batch, KeyframeGraph.placeTextMatch, PlaceSamplers.createTextMatch, HubGraph wiring; flag placeTextMatch (default ON). Replay CaptionText stage = quoted spans only: replay counts identical to S5 (0 text hits on the trip data), calibration TRUSTED 5/6. Tests green (PlaceTextMatchTest, replay, sampler), phone compiles.
+- ALL STEPS DONE. Not done / open: emulator checks E1-E5 and real-device checks, the one Codex review pass, graphify update, the spec's contradictory criteria listed above (OUTDOOR SJ_BRONZE/IVORY >= 2 vs S2 once-per-place; INDOOR_MEDIA_GOOD cards >= B1+1; ANTERA exactly 1 pin-first; StubNone calls <= B1 28).
+- Next step: review pass and controller decisions.
 
 ## Step log (counts only, no names / coordinates / ids)
 | Step | Status | Commit | Notes |

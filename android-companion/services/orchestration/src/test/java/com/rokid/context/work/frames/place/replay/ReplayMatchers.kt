@@ -2,6 +2,7 @@ package com.rokid.context.work.frames.place.replay
 
 import com.rokid.context.ai.contract.PlaceMatchOutput
 import com.rokid.context.work.frames.place.PlaceMatchResult
+import com.rokid.context.work.frames.place.TextMatch
 
 /** The `match` seam of the sampler. [note] is set by each call for the report ("truth_not_in_candidates", "hist_name_not_in_candidates", ...). */
 interface ReplayMatcher {
@@ -57,22 +58,17 @@ object Oracle : MatchStage {
     }
 }
 
-/** F5: matches the trip's own stored caption/object text of the frame against the candidate names. No new model call. Several distinct matches are ambiguous: NONE. */
+/**
+ * F5b: matches the QUOTED spans of the trip's own stored caption text of the frame against the candidate names (the real [TextMatch] rules). A caption without a quoted span, or a span that names no candidate, is no hit (`caption_no_hit`).
+ * Several distinct matches are ambiguous: NONE. No new model call.
+ */
 object CaptionText : MatchStage {
     override val label = "CaptionText"
-    private val STOP = setOf("museum", "gallery", "room", "fort", "show", "light", "sound", "kitchen", "bar")
-    private fun letters(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
-    private fun tokens(s: String) = s.lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }.toSet()
     override fun create(bundle: ReplayBundle): ReplayMatcher = object : BaseMatcher() {
         override suspend fun match(frameId: String, lines: List<String>): PlaceMatchResult {
-            val text = bundle.framesById[frameId]?.text.orEmpty()
-            if (text.isBlank()) { note = "caption_no_hit"; return result("NONE", 0.9f) }
-            val tt = tokens(text); val compact = letters(text)
-            val hit = lines.indices.filter { i ->
-                val name = lineName(lines[i])
-                val distinctive = tokens(name).filter { it.length >= 4 && it !in STOP }
-                distinctive.any { it in tt } || (letters(name).length >= 6 && compact.contains(letters(name)))
-            }
+            val spans = TextMatch.quotedSpans(bundle.framesById[frameId]?.text.orEmpty())
+            if (spans.isEmpty()) { note = "caption_no_hit"; return result("NONE", 0.9f) }
+            val hit = lines.indices.filter { i -> spans.any { TextMatch.names(lineName(lines[i]), it) } }
             if (hit.size != 1) { note = if (hit.size > 1) "caption_ambiguous" else "caption_no_hit"; return result("NONE", 0.9f) }
             return result((hit[0] + 1).toString(), 0.8f)
         }

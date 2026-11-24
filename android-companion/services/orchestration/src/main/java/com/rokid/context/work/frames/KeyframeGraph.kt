@@ -82,6 +82,8 @@ object KeyframeGraph {
     @Volatile var intentSampler: com.rokid.context.work.frames.intent.IntentSampler? = null
     /** Place Guide: the matcher the hub installs; poked after each committed frame like [intentSampler] (it does nothing unless the switch is on and the frame is a dwell photo). */
     @Volatile var placeSampler: com.rokid.context.work.frames.place.PlaceSampler? = null
+    /** F5b: told the captions of every saved extraction batch; matches a quoted sign name against the user's own pins. Null until the hub makes it. */
+    @Volatile var placeTextMatch: com.rokid.context.work.frames.place.PlaceTextMatch? = null
 
     /**
      * Test override of the canvas intent sink. [FrameIntentSink.None] (the default) means the production writer: [com.rokid.context.work.frames.intent.FrameIntentWriter]
