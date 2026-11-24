@@ -35,12 +35,12 @@ data class DataSaverUiState(
     val limitReached: Boolean = false,
     /** Frames the data saver is holding for Wi-Fi right now (the live count of frames parked by it; it does not grow with every recheck). */
     val waiting: Int = 0,
-    /** Size on disk of those waiting photos, in bytes (0 = unknown or none). */
-    val waitingBytes: Long = 0,
     /** Wi-Fi connected and unmetered but not validated for over 10 minutes. */
     val stuck: Boolean = false,
     /** Why the network is ROAMING: [NetworkCosts.WHY_ABROAD], [NetworkCosts.WHY_REPORTED], [NetworkCosts.WHY_COUNTRY] or "". */
     val why: String = "",
+    /** Size on disk of those waiting photos, in bytes (0 = unknown or none). */
+    val waitingBytes: Long = 0,
 )
 
 /** All the screen's words and rules, pure so a JVM test pins them. Nothing here names a country, a network or a place. */
