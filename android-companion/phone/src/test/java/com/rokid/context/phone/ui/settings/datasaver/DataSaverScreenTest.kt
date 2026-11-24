@@ -84,9 +84,10 @@ class DataSaverScreenTest {
     @Test fun anywhereExplainsTheAbroadCapAndTodayLinesAreCountsOnly() {
         assertTrue(DataSaverModel.modeNote(DataMode.ANYWHERE).contains("10 MB or 30 photos"))
         assertTrue(DataSaverModel.modeNote(DataMode.ANYWHERE).contains("no limit unless you set one"))
-        val lines = DataSaverModel.todayLines(SkippedLedger.Today(4, 2, 1), waiting = 7)
+        val lines = DataSaverModel.todayLines(SkippedLedger.Today(4, 2, 1), waiting = 7, waitingBytes = 5_242_880L)
         assertEquals(4, lines.size)
-        assertEquals("Photos waiting for Wi-Fi now: 7", lines[0])
+        assertEquals("7 photos waiting for Wi-Fi, 5.0 MB", lines[0])
+        assertEquals("1 photo waiting for Wi-Fi", DataSaverModel.waitingLine(1, 0))
         assertTrue(lines[1].contains(": 4 ") && lines[2].endsWith(": 2") && lines[3].endsWith(": 1"))
         assertFalse((lines + DataSaverModel.COUNTS_ONLY).any { it.contains("http") || it.contains("host") })
     }
@@ -164,11 +165,11 @@ class DataSaverScreenTest {
         assertTrue(com.rokid.context.phone.ui.settings.place.seedFailureText(java.io.IOException("x")).startsWith("Could not fetch places"))
     }
 
-    @Test fun theProtectedBacklogCapIsDocumentedOnTheScreen() {
-        assertTrue(DataSaverModel.CAP_NOTE.contains("300"))
+    @Test fun waitingPhotosAreNeverThinnedAndTheScreenSaysSo() {
+        assertTrue(DataSaverModel.CAP_NOTE.contains("never thinned or deleted"))
         compose.setContent { PcTheme { DataSaverScreen(DataSaverUiState(), {}, {}, {}, {}) } }
         compose.onNodeWithTag("data_saver_settings").performScrollToNode(androidx.compose.ui.test.hasTestTag("data_saver_status"))
-        compose.onNodeWithTag("data_saver_cap_note").assertTextContains("300", substring = true)
+        compose.onNodeWithTag("data_saver_cap_note").assertTextContains("never thinned or deleted", substring = true)
     }
 
     @Test fun theAbroadSwitchShowsOnWhenSet() {

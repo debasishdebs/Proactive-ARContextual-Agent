@@ -377,7 +377,7 @@ abstract class ForgetDao {
             "(EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source x WHERE x.frameId = f.id AND x.role != 'CARRIED')) AND NOT $DESCRIBED_BY_EXTRACTION"
         /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
         const val SKIPPED_PHOTO =
-            "AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +
+            "AND COALESCE(s.lastError, '') != 'data_saver' AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " + // a frame parked for Wi-Fi is never a skipped photo
                 NOT_A_REP + NOT_DESCRIBED + CLUSTER_SETTLED
         /** Photo retention applies to every keyframe not owed work, not forgotten, not a skipped photo (those follow [SKIPPED_PHOTO]'s window). */
         const val PHOTO_ELIGIBLE =

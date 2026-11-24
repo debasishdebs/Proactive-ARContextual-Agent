@@ -257,6 +257,22 @@ class RetentionWorkerTest {
         assertTrue(exists("m_sum"))
     }
 
+    /** Codex data saver r1 P1-3: an undescribed photo parked for Wi-Fi (PENDING, lastError data_saver) survives every retention path, far past every deadline and over the quota. */
+    @Test fun anUndescribedParkedPhotoSurvivesRetentionAndQuotaEviction() = runBlocking {
+        val old = t0 - 200 * day
+        val files = (1..5).map { photo("park$it", old + it, "PENDING", salience = 0.1f, lastError = "data_saver", updatedAt = old) }
+        // a defensive case: even a skipped-looking frame still carrying the parked marker is never a skipped photo
+        val odd = photo("odd", old, "NEAR_DUP", salience = 0.0f, lastError = "data_saver", updatedAt = old)
+        val far = t0 + 400 * day
+        val summary = pass(settings(since = t0 - 300 * day), far)
+        val evicted = Retention(graph, ForgetService(graph.db, graph.proposals) { far }, usedBytes = { 100L * 1024 * 1024 }, protectedFrames = { emptySet() })
+            .runQuota(MemorySettings(quotaMb = 1), far) { r -> FrameSweep.delete(r.framesToDelete) }
+        assertEquals(0, summary.skippedDeleted); assertEquals(0, summary.photosExpired); assertEquals(0, evicted)
+        (1..5).forEach { assertNotNull("park$it row", frameRow("park$it")) }
+        assertNotNull(frameRow("odd"))
+        assertTrue(files.all { it.exists() } && odd.exists())
+    }
+
     /** S4: retention selected the skipped photos, then the user's describe committed, then retention resumes: the described photo is kept. */
     @Test fun retentionPausedAfterSelectionKeepsJustDescribedPhoto() = runBlocking {
         val old = t0 + 30 * 60_000L

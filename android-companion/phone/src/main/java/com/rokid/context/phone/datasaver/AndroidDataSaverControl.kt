@@ -44,9 +44,11 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
         graph.refresh() // re-reads Android Data Saver and the country facts too
         flow.value = read()
         scope.launch { // the waiting count is a database read: off the main thread
-            val n = try { com.rokid.context.memory.MemoryGraph.get(app).db.frameStateDao().dataSaverParkedCount() } catch (e: Exception) { return@launch }
+            val dao = try { com.rokid.context.memory.MemoryGraph.get(app).db.frameStateDao() } catch (e: Exception) { return@launch }
+            val n = try { dao.dataSaverParkedCount() } catch (e: Exception) { return@launch }
+            val bytes = if (n > 0 && graph.heldBack()) try { dao.dataSaverParkedPaths().sumOf { java.io.File(it).let { f -> if (f.isFile) f.length() else 0L } } } catch (e: Exception) { 0L } else 0L
             // after Wi-Fi returns the parked frames are no longer held back, they are uploading: show only frames still blocked
-            flow.value = flow.value.copy(waiting = if (graph.heldBack()) n else 0)
+            flow.value = flow.value.copy(waiting = if (graph.heldBack()) n else 0, waitingBytes = bytes)
         }
     }
 
