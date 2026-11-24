@@ -26,8 +26,10 @@ class TripReplayRealDataTest {
         var groups: List<ReplayGroup> = emptyList(); var cal: Calibration? = null
         runTest(timeout = kotlin.time.Duration.parse("30m")) { ReplayReport.defaultGroups(bundle, this).let { groups = it.first; cal = it.second } }
         ReplayReport.write(out, bundle, groups, cal)
-        println("REPLAY runs=${groups.size + groups.sumOf { it.overlays.size }} frames=${bundle.frames.size} spans=${bundle.truth.size} calibration=${cal?.let { "${it.reproduced}/${it.checked} trusted=${it.trusted}" }}")
+        val bad = ReplayReport.productionViolations(bundle, groups)
+        println("REPLAY runs=${groups.size + groups.sumOf { it.overlays.size }} frames=${bundle.frames.size} spans=${bundle.truth.size} legacyCalibration=${cal?.let { "${it.reproduced}/${it.checked} trusted=${it.trusted}" }} productionViolations=${bad.size}")
         assertTrue(File(out, "summary.md").isFile)
+        assertTrue("production-flag acceptance failed: $bad", bad.isEmpty()) // P3-9: asserted against the shipped flags, apart from the legacy calibration
     }
 }
 

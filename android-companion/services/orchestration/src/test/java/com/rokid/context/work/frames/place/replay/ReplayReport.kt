@@ -13,7 +13,7 @@ import java.time.format.DateTimeFormatter
 data class ReplayGroup(val title: String, val head: ReplayResult, val overlays: Map<String, ReplayResult> = emptyMap())
 
 data class Calibration(val checked: Int, val reproduced: Int, val notCalibratable: Int, val misses: List<String>, val trusted: Boolean) {
-    fun line() = "historical records: ${checked + notCalibratable}, with a position: $checked, reproduced as MATCHED: $reproduced, without a position (not calibratable): $notCalibratable, " +
+    fun line() = "LEGACY build (dedupe v2, retry, fix reuse and pin-first all OFF) - not the reviewed configuration. historical records: ${checked + notCalibratable}, with a position: $checked, reproduced as MATCHED: $reproduced, without a position (not calibratable): $notCalibratable, " +
         "other: ${misses.size} -> ${if (trusted) "TRUSTED" else "UNTRUSTED"}"
 }
 
@@ -106,6 +106,28 @@ object ReplayReport {
 
     private fun histogram(r: ReplayResult) = r.rows.groupingBy { it.verdict }.eachCount().entries.sortedByDescending { it.value }.take(14).joinToString("\n") { "- ${it.key}: ${it.value}" }
 
+    /**
+     * P3-9: invariants of the reviewed (production-flag) configuration, asserted over every non-legacy run of the report (HEAD and overlays). Empty = pass. Counts and fixed words only.
+     * (1) a cluster card never makes a model call and never answers with anything but the pin-first outcome; (2) the attempt log never contains a user-pin id; (3) two model calls are never closer than the call gap.
+     */
+    fun productionViolations(bundle: ReplayBundle, groups: List<ReplayGroup>): List<String> {
+        val out = ArrayList<String>()
+        for (g in groups) for ((name, r) in listOf("HEAD" to g.head) + g.overlays.map { it.key to it.value }) {
+            if (r.spec.legacyDedupe) continue
+            val tag = "${g.title.take(60)} / $name"
+            val clusterCalls = r.rows.count { it.pinFirst.startsWith("cluster(") && it.isCall }
+            if (clusterCalls > 0) out += "$tag: $clusterCalls cluster decision(s) made a model call"
+            val clusterOther = r.rows.count { it.pinFirst.startsWith("cluster(") && it.outcome != PlaceOutcome.PIN_FIRST && !(it.outcome == PlaceOutcome.DUPLICATE && it.isSuppressed) }
+            if (clusterOther > 0) out += "$tag: $clusterOther cluster decision(s) did not answer at once"
+            val leaks = r.rows.count { it.attemptLine.contains("user:") }
+            if (leaks > 0) out += "$tag: $leaks attempt line(s) carry a user-pin id"
+            val calls = r.rows.filter { it.isCall }.map { it.pokeMs }
+            val tooClose = calls.zipWithNext().count { (a, b) -> b - a in 0 until com.rokid.context.work.frames.place.PlaceSampler.MIN_CALL_GAP_MS }
+            if (tooClose > 0) out += "$tag: $tooClose model call(s) closer than the call gap"
+        }
+        return out
+    }
+
     /** H5: `calls=<n> pinCards=<n> clusterCards=<n> suppressed=<n>` of a whole run. */
     fun totals(r: ReplayResult) = "calls=${r.rows.count { it.isCall }} pinCards=${r.rows.count { it.isPinCard }} clusterCards=${r.rows.count { it.isClusterCard }} suppressed=${r.rows.count { it.isSuppressed }}"
 
@@ -125,9 +147,13 @@ object ReplayReport {
     fun summary(bundle: ReplayBundle, groups: List<ReplayGroup>, calibration: Calibration?): String {
         val sb = StringBuilder("# Trip replay summary\n\nREAL DATA. This folder stays on this Mac (never in git).\n\n## Fidelity limits\n")
         LIMITS.forEach { sb.append("- $it\n") }
-        sb.append("\n## Calibration (Historical stage, assumed sites)\n${calibration?.line() ?: "not run"}\n")
+        // P3-9: the calibration runs the LEGACY build (every F1-F4 switch off, as the trip was made): it checks the harness against what really happened, and says nothing about the production flags.
+        sb.append("\n## Legacy calibration (Historical stage, assumed sites; harness check only)\n${calibration?.line() ?: "not run"}\n")
         calibration?.misses?.forEach { sb.append("- not reproduced: $it\n") }
-        if (calibration != null && !calibration.trusted) sb.append("\n**Every verdict below is UNTRUSTED (calibration failed).**\n")
+        if (calibration != null && !calibration.trusted) sb.append("\n**The legacy calibration failed: the harness does not reproduce the recorded trip.**\n")
+        val bad = productionViolations(bundle, groups)
+        sb.append("\n## Production-flag acceptance (dedupe v2, retry, fix reuse and pin-first ON, as shipped)\n")
+        sb.append(if (bad.isEmpty()) "PASS: no violations.\n" else "FAIL: ${bad.size} violation(s)\n" + bad.joinToString("") { "- $it\n" })
         sb.append("\nKnown divergence (printed, not a failure): a constant ASSUMED fix makes a second card within 120 s / 30 m a DUPLICATE where the real phone had moved.\n")
         for (g in groups) {
             sb.append("\n## ${g.title}\n")
