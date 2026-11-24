@@ -46,7 +46,7 @@ class PlaceSamplerTest {
     private var v2 = false
     private var retry = false
     private var cell = CellOutcome.FRESH
-    private var seed: List<Pair<String, Long>> = emptyList()
+    private var seed: List<PlaceSeed> = emptyList()
 
     private var fixCalls = 0
     private var candidateCalls = 0
@@ -66,6 +66,7 @@ class PlaceSamplerTest {
         override suspend fun movedSince(sinceReceivedMs: Long) = moved
     }
     private var moved = false
+    private var pf = false
     private var reuse = false
 
     private fun sampler(scope: TestScope) = PlaceSampler(
@@ -74,7 +75,7 @@ class PlaceSamplerTest {
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
-        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse },
+        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -151,7 +152,7 @@ class PlaceSamplerTest {
     }
 
     @Test fun seededFromHistory_suppressesAfterRestart() = runTest {
-        v2 = true; seed = listOf("wd:Q1" to T0 - 60_000); poke()
+        v2 = true; seed = listOf(PlaceSeed("wd:Q1", T0 - 60_000)); poke()
         assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(cards.isEmpty()); assertTrue(lastLine().contains("card=suppressed"))
     }
 
@@ -248,6 +249,61 @@ class PlaceSamplerTest {
         // a good fix inside a zone is never stored
         flight = PlaceFlight(); reuse = true; still("f9"); fix = PlaceFix(LAT, LON, 3_000, 10f); poke()
         assertEquals(null, flight.good)
+    }
+
+    // ---- S5: F1 pin-first ----
+    private val pinA = "user:00000000-0000-0000-0000-00000000000a"
+    private val pinB = "user:00000000-0000-0000-0000-00000000000b"
+    private fun userPin(id: String, name: String, lat: Double, radius: Int) = place(id, name, lat, LON, radius, summary = "A note").copy(source = "user")
+
+    @Test fun pinFirst_single_noCallNoMemory() = runTest {
+        pf = true; v2 = true; places = listOf(userPin(pinA, "Test pin", LAT, 30)); poke()
+        assertEquals(PlaceOutcome.PIN_FIRST, outcomes.last()); assertEquals(0, matchCalls.size); assertTrue(memories.isEmpty())
+        assertEquals(1, cards.size); assertEquals(PlaceConfidence.PIN, cards[0].confidence); assertTrue(lastLine().contains("pinFirst=card") && lastLine().contains("call=none"))
+        again(121_000, "f2"); poke()
+        assertTrue("one card per visit", lastLine().contains("pinFirst=visit")); assertEquals(1, cards.size)
+    }
+
+    @Test fun pinFirst_off_isHeadBehaviour() = runTest {
+        pf = false; places = listOf(userPin(pinA, "Test pin", LAT, 30)); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(lastLine().contains("pinFirst=off"))
+    }
+
+    @Test fun offlineOnly_pinFirstStillCards_noCall() = runTest {
+        pf = true; online = false; places = listOf(userPin(pinA, "Test pin", LAT, 30)); poke()
+        assertEquals(PlaceOutcome.PIN_FIRST, outcomes.last()); assertEquals(0, matchCalls.size); assertEquals(1, cards.size)
+    }
+
+    @Test fun zone_blocksPinFirst() = runTest {
+        pf = true; zone = true; places = listOf(userPin(pinA, "Test pin", LAT, 30)); poke()
+        assertEquals(PlaceOutcome.ZONE, outcomes.last()); assertTrue(cards.isEmpty())
+        zone = false; zoneList = listOf(zoneAt(LAT, LON)); again(1_000, "f2"); poke()
+        assertEquals(PlaceOutcome.ZONE, outcomes.last()); assertTrue(cards.isEmpty())
+    }
+
+    @Test fun smallRadius_noPinCard() = runTest {
+        pf = true; places = listOf(userPin(pinA, "Object", LAT, 10)); poke()
+        assertTrue(lastLine().contains("pinFirst=small_radius")); assertEquals(PlaceOutcome.MATCHED, outcomes.last())
+    }
+
+    @Test fun fixReuse_neverUsedByPinFirst() = runTest {
+        reuse = true; pf = false; still("f1"); poke()
+        pf = true; places = listOf(userPin(pinA, "Test pin", LAT, 30)); now += 180_000; still("f2"); fix = null; poke()
+        assertTrue(lastLine().contains("fixSrc=reused") && lastLine().contains("pinFirst=not_fresh")); assertTrue(outcomes.last() != PlaceOutcome.PIN_FIRST)
+    }
+
+    @Test fun cluster_modelMatchedRoom_noClusterCard() = runTest {
+        pf = true; places = listOf(userPin(pinA, "Room A1", LAT, 15), userPin(pinB, "Room A2", north(30.0), 20)); reply = match1; poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size); assertEquals(PlaceConfidence.PHOTO, cards[0].confidence)
+        assertTrue(lastLine().contains("pinFirst=cluster(2)"))
+    }
+
+    @Test fun cluster_modelNone_clusterCard() = runTest {
+        pf = true; places = listOf(userPin(pinA, "Room A1", LAT, 15), userPin(pinB, "Room A2", north(30.0), 20)); reply = none; poke()
+        assertEquals(PlaceOutcome.NONE, outcomes.last()); assertEquals(1, cards.size)
+        assertEquals(PlaceConfidence.PIN, cards[0].confidence); assertTrue(cards[0].title.contains("pins", ignoreCase = true))
+        assertTrue(lastLine().contains("card=shown") && lastLine().contains("pinFirst=cluster(2)") && lastLine().contains("chosen=$pinA,$pinB"))
+        again(121_000, "f2"); poke(); assertEquals("one cluster card per visit", 1, cards.size)
     }
 
     @Test fun anActiveOrApproachingZoneNeverReadsAFixNorCallsTheNetworkOrTheModel() = runTest {

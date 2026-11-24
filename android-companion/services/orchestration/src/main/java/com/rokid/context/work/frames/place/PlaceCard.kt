@@ -9,7 +9,9 @@ import java.util.Date
 import java.util.Locale
 
 /** How sure the card is: [PHOTO] = the vision model picked this place from the photo; [NEARBY] = only the nearest place, not checked against the photo. */
-enum class PlaceConfidence(val wire: String) { PHOTO("photo"), NEARBY("nearby") }
+enum class PlaceConfidence(val wire: String) { PHOTO("photo"), NEARBY("nearby"),
+    /** The user's own pin(s) at this position: no photo was analysed (F1). The glasses render it like [PHOTO]: the wire label is the card text. */
+    PIN("pin") }
 
 /**
  * What the wearer sees (spec 2026-11-16 §B4). Every field is built from the place pack by [PlaceCards]; the model never writes card text (it only picks a candidate number).
@@ -78,6 +80,20 @@ object PlaceCards {
     /** A photo-confirmed card: the first sentence of the pack summary and where the pack got it. */
     fun photo(p: PlaceEntity, frameId: String): PlaceCard =
         PlaceCard(p.id, p.name, (if (p.source == USER_SOURCE) userLine(p.summary) else firstSentence(p.summary)).ifEmpty { kindLabel(p.kind) }, sourceLabel(p), PlaceConfidence.PHOTO, frameId)
+
+    const val PIN_SOURCE = "Your pin · here"
+    const val CLUSTER_SOURCE = "Your pins · here"
+
+    /** F1: the card of the user's own pin, from the pin alone: its name, its note (or "Your pin"). No model, no photo. */
+    fun pin(p: PlaceEntity, frameId: String): PlaceCard =
+        PlaceCard(p.id, p.name, userLine(p.summary).ifEmpty { "Your pin" }, PIN_SOURCE, PlaceConfidence.PIN, frameId)
+
+    /** F1: close pins give one honest "several pins" card, never a guessed room. [members] nearest first; [parentNames] the site of each member (null = none). */
+    fun cluster(members: List<PlaceEntity>, parentNames: List<String?>, frameId: String): PlaceCard {
+        val label = ClusterLabel.of(members.map { it.name }, parentNames)
+        val title = if (label == ClusterLabel.FALLBACK) "Several pins" else "$label · several pins"
+        return PlaceCard(members.first().id, title.take(80), members.take(3).joinToString(" · ") { it.name }.take(LINE_MAX), CLUSTER_SOURCE, PlaceConfidence.PIN, frameId)
+    }
 
     /** The text of a user place: the user's own note, whole (it is at most 140 characters), on one line. It is never summarised or rewritten. */
     fun userLine(note: String): String = note.replace(Regex("\\s+"), " ").trim().take(LINE_MAX)

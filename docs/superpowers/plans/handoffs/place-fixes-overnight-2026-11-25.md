@@ -22,7 +22,14 @@
   - S4 replay (run dir run-2026-11-24T12-22-58): wrong 0 in every HEAD run; calibration TRUSTED 5/6; INDOOR_60M, STALE 0 cards; StubNone 38 calls, 0 cards; SJ_FOUNDERS 0 cards (report only); AS_RECORDED/OUTDOOR/INDOOR_MEDIA_GOOD calls rose by ~7 (reused-fix attempts).
   - NOT MET: INDOOR_MEDIA_GOOD cards >= B1+1 in two spans: cards are 6 total (Bronze 3, Ivory 1, Exterior 1, Golconda 1) vs B1 12; once-per-place suppression (S2) caps cards, so F2's gain shows as attempts (calls) not extra cards. Same S2-contradiction as OUTDOOR Bronze/Ivory. Controller decision needed.
 - Controller message (rebase onto feat/v101-ask-eval 543f1031+, which has Track B history, Track C prompt): next = rebase, then S5 (use PlaceConfidence.PIN in PlaceCardRebuild), S6 via PlaceCardHistory, S7. No polling/delay() in ViewModel/settings files.
-- Next step: commit S4, rebase, verify S1-S4 tests, S5.
+- REBASED onto feat/v101-ask-eval 543f1031 (one conflict in DeveloperFlags resolved: kept Track B's placeCardHistory flag and pauseRetention default ON). My duplicate PlaceHistory.kt removed; the sampler now writes history rows through Track B's PlaceCardHistory (PlaceSamplers.create: history = PlaceGraph.history(app).add, seedRecent from existingHistory) and uses publishIfId for the cardId.
+- S5 done: PinFirst.kt (decide, PinVisits, ClusterLabel), PlaceCards.pin/cluster, PlaceConfidence.PIN (also in PlaceCardRebuild), PlaceOutcome.PIN_FIRST, sampler single card (no call/photo/memory, offline ok) and cluster card after the model path; PinFirstRule overlay deleted. Tests green (PinFirstTest, PlaceSamplerTest, replay).
+  - S5 replay (run dir run-2026-11-24T12-30-07): wrong 0 in every HEAD run; calibration TRUSTED 5/6; INDOOR_60M/STALE 0 cards; Historical x OUTDOOR_10M recorded match reproduced (1 card); SJ spans: 0 single pin-first cards, cluster cards allowed (OUTDOOR_10M SJ_BRONZE 2 cards, 2 of them cluster).
+  - GOLCONDA_LS: 1 card per run, exactly 1 pin-first per visit (AS_RECORDED, OUTDOOR_10M, ASSUMED_PIN_10M, ALWAYS); total <= 2.
+  - ANTERA_FACADE + ANTERA ASSUMED_PIN_10M: 2 pin-first cards (one per pin; they are two different pins), 5 cards total; spec says exactly 1: NOT MET as written (needs controller view; facade pin and Antera pin are separate pins).
+  - StubNone x OUTDOOR_10M: PHOTO cards 0, pin 2 + cluster 1; calls 37 (<= 42 from S2 but NOT <= B1's 28; the S2 weak back-off allows more calls than the old 120 s block).
+  - OUTDOOR_10M SJ_IVORY still 1 (needs 2; same S2 contradiction).
+- Next step: S6 (LOW_CONFIDENCE possible rows), then S7.
 
 ## Step log (counts only, no names / coordinates / ids)
 | Step | Status | Commit | Notes |

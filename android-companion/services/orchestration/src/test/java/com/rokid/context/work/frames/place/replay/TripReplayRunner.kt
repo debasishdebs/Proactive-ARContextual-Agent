@@ -16,12 +16,14 @@ data class RunSpec(
     val nMs: Long = ReplayTrack.FIVE_MIN, val sites: Boolean = false,
     /** Calibration only: the Historical stage answers NONE for every frame the trip did not record, which is not what the real model did; the calibration therefore runs the dedupe of the build that made the trip. */
     val legacyDedupe: Boolean = false,
+    /** Tests of the older paths (dedupe, retry, reuse) switch the pin-first card off so the model path is exercised; the real replay always has it on. */
+    val noPinFirst: Boolean = false,
 ) { val label: String get() = "${stage.label} x ${scenario.label} x ${activation.name}${if (sites) " +sites" else ""} x ${overlays.label}" }
 
 /** One poke of the replay. [extra] is "" for a frame poke, "+F4" for the extra poke at a pin's creation. */
 data class ReplayRow(
     val pokeMs: Long, val extra: String, val frameId: String?, val frameCapMs: Long?, val motion: String, val pos: String, val assumed: Boolean, val f2: Boolean,
-    val outcome: PlaceOutcome?, val reason: String, val chosenId: String, val chosenName: String, val f1: String, val note: String, val attemptLine: String,
+    val outcome: PlaceOutcome?, val reason: String, val chosenId: String, val chosenName: String, val f1: String /* the `pinFirst=` token of the line */, val note: String, val attemptLine: String,
     /** Parsed from the attempt line (H2): `card=`, `cardWhy=`, `call=`, `pinFirst=`, `fixSrc=`. */
     val card: String = "-", val cardWhy: String = "-", val call: String = "-", val pinFirst: String = "-", val fixSrc: String = "-",
     /** The names of every place the card names (one for a single card, the members for a cluster card; `chosen=` then holds comma-separated ids). */
@@ -60,7 +62,6 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
         val logs = ArrayList<String>()
         val requests = ArrayList<ReplayRequest>()
         var lastFix: FixResult? = null
-        val f1 = if (spec.overlays.f1) PinFirstRule() else null
 
         fun sampler() = PlaceSampler(
             scope = scope, store = store,
@@ -70,7 +71,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             saveMemory = { true }, onCard = {}, clock = { now }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
             backend = { BackendChoice.ONLINE }, admit = { true }, photoAllowed = { true }, zones = { emptyList() }, flight = flight,
             log = { logs += it }, stats = {}, elapsed = { now },
-            dedupeV2On = { !spec.legacyDedupe }, retryOn = { !spec.legacyDedupe }, fixReuseOn = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
+            dedupeV2On = { !spec.legacyDedupe }, retryOn = { !spec.legacyDedupe }, pinFirstOn = { !spec.legacyDedupe && !spec.noPinFirst }, fixReuseOn = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
         )
 
         val main = sampler()
@@ -83,10 +84,6 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
         for (ev in events) {
             now = ev.t
             store.lastReturned = null; lastFix = null; matcher.note = null
-            val f1Decision = f1?.let { rule ->
-                val frame = store.peek(now - PlaceSampler.RECENT_MS)
-                rule.decide(now, fixSource.fixAt(now, frame).fix, pack.activePins()).text
-            } ?: "-"
             val mark = logs.size
             if (ev.extra == "+F4") main.retryRecent(RetryReason.PIN_CREATED, ev.pinId) else main.poke()
             scope.runCurrent()
@@ -99,7 +96,7 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             rows += ReplayRow(
                 now, ev.extra, fr?.frameId, fr?.capturedAt, fr?.motion ?: ev.frame?.motion ?: "-",
                 if (fx == null) "-" else if (fx.pos == null) "UNKNOWN" else fx.pos.label() + " acc=${fx.accM.toInt()}", fx?.assumed == true, fx?.f2 == true,
-                outcome, kv["reason"] ?: "-", chosen, chosen.split(',').mapNotNull { id -> pack.nameOf(id) }.joinToString(" + "), f1Decision, matcher.note.orEmpty(), line,
+                outcome, kv["reason"] ?: "-", chosen, chosen.split(',').mapNotNull { id -> pack.nameOf(id) }.joinToString(" + "), kv["pinFirst"] ?: "-", matcher.note.orEmpty(), line,
                 kv["card"] ?: "-", kv["cardWhy"] ?: "-", kv["call"] ?: "-", kv["pinFirst"] ?: "-", kv["fixSrc"] ?: "-",
                 chosen.split(',').mapNotNull { id -> pack.nameOf(id) },
             )

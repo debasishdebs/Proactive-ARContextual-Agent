@@ -25,14 +25,14 @@ object PlaceCardRebuild {
             KIND_CLUSTER -> {
                 val named = members(row).mapNotNull { id -> places.firstOrNull { it.id == id }?.name }
                 if (named.isEmpty()) null
-                else PlaceCard(row.placeId, row.title, named.take(3).joinToString(" · ").take(PlaceCards.LINE_MAX), PINS_LABEL, PlaceConfidence.PHOTO, frame)
+                else PlaceCard(row.placeId, row.title, named.take(3).joinToString(" · ").take(PlaceCards.LINE_MAX), PINS_LABEL, PlaceConfidence.PIN, frame)
             }
             else -> {
                 val p = places.firstOrNull { it.id == row.placeId } ?: return null
                 when (row.kind) {
                     "NEARBY" -> PlaceCard(p.id, p.name, PlaceCards.kindLabel(p.kind), PlaceCards.NEARBY_LABEL, PlaceConfidence.NEARBY, frame)
-                    "PIN" -> PlaceCard(p.id, p.name, PlaceCards.userLine(p.summary).ifEmpty { PIN_FALLBACK_LINE }, PIN_LABEL, PlaceConfidence.PHOTO, frame)
-                    "TEXT" -> PlaceCard(p.id, p.name, PlaceCards.userLine(p.summary).ifEmpty { PIN_FALLBACK_LINE }, SIGN_LABEL, PlaceConfidence.PHOTO, frame)
+                    "PIN" -> PlaceCard(p.id, p.name, PlaceCards.userLine(p.summary).ifEmpty { PIN_FALLBACK_LINE }, PIN_LABEL, PlaceConfidence.PIN, frame)
+                    "TEXT" -> PlaceCard(p.id, p.name, PlaceCards.userLine(p.summary).ifEmpty { PIN_FALLBACK_LINE }, SIGN_LABEL, PlaceConfidence.PIN, frame)
                     else -> PlaceCards.photo(p, frame) // PHOTO (POSSIBLE is never rebuilt as a card)
                 }
             }

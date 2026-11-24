@@ -114,6 +114,8 @@ object PlaceSamplers {
             shadow = { id, hits, live -> shadowOf.score(id, hits, live) },
             shadowEnabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeShadowScore(app).also { on -> if (!on) ShadowCaches.clearAll() } }, // the flag going OFF empties the in-memory vectors at the next attempt (the setter does it at once)
             onAttemptEnd = share::clear,
+            history = { e -> PlaceGraph.history(app).add(e) }, historyOn = { DeveloperFlags.placeCardHistory(app) },
+            seedRecent = { since -> PlaceGraph.existingHistory(app)?.seedRecent(since)?.map { PlaceSeed(it.placeId, it.at, it.kind, it.members?.split(',')?.filter { m -> m.isNotEmpty() }.orEmpty()) }.orEmpty() },
             pinFirstOn = { DeveloperFlags.placePinFirst(app) }, fixReuseOn = { DeveloperFlags.placeFixReuse(app) },
             dedupeV2On = { DeveloperFlags.placeDedupeV2(app) }, retryOn = { DeveloperFlags.placeRetryOnPin(app) },
         )
