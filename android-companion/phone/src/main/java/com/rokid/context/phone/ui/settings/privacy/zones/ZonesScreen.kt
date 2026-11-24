@@ -138,6 +138,7 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
     LaunchedEffect(state.requestPermission) {
         if (state.requestPermission) { vm.permissionPromptShown(); launcher.launch(LOCATION_PERMISSIONS) }
     }
+    val networkOnline by remember(deps) { deps.networkOnline() }.collectAsStateWithLifecycle(true)
     val offline = deps.offlineMap?.let { make -> remember { make() } }
     val online = deps.onlineMap?.let { make -> remember { make() } }?.let { d -> rememberOnlinePanel(d, ::granted, vm::requestLocation) }
     val seedPanel = seed?.let { c ->
@@ -147,14 +148,14 @@ fun ZonesRoute(deps: SettingsDeps, back: () -> Unit, seed: SeedMapControl? = nul
         LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { seedVm.refresh() }
         SeedPanel(seedState, seedMode, seedVm::requestSeed, seedVm::confirmSeed, seedVm::cancelConfirm, seedVm::askRemove, seedVm::confirmRemove, seedVm::cancelRemove, seedVm::dismissMessage)
     }
-    if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel); return }
+    if (offline == null) { ZonesScreen(state, ZonesCallbacks.of(vm, back), null, online, seedPanel, networkOnline); return }
     val mapVm = viewModel(key = "offline_map") { OfflineMapViewModel(offline.files, offline.store) }
     val mapUi by mapVm.ui.collectAsStateWithLifecycle()
     val reader by mapVm.reader.collectAsStateWithLifecycle()
     val link = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.link(u.toString()) }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) mapVm.importCopy(u.toString()) }
     val panel = OfflineMapPanel(mapUi, reader, { link.launch(PICK_TYPES) }, { import.launch(PICK_TYPES) }, mapVm::remove, mapVm::dismissMessage)
-    ZonesScreen(state, ZonesCallbacks.of(vm, back), panel, online, seedPanel)
+    ZonesScreen(state, ZonesCallbacks.of(vm, back), panel, online, seedPanel, networkOnline)
 }
 
 /**
@@ -240,18 +241,22 @@ class SeedPanel(
 internal val LOCATION_PERMISSIONS = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
 
 @Composable
-fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null, online: OnlineMapPanel? = null, seed: SeedPanel? = null) {
+fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPanel? = null, online: OnlineMapPanel? = null, seed: SeedPanel? = null, networkOnline: Boolean = true) {
     val seedMode = seed?.seedMode == true
+    // Offline: drawing and the new-zone form are read-only. Viewing, pause and the guard are untouched. A drawing in progress is cancelled.
+    LaunchedEffect(networkOnline, state.drawing) { if (!networkOnline && state.drawing) on.setDrawing(false) }
+    val mapState = if (networkOnline) state else state.copy(drawing = false)
     SettingsPage(if (seedMode) "Pick an area on the map" else "Pause zones", on.back, tag = "zones_screen") {
         item {
             SettingsCard {
                 Text((if (seedMode) "Draw a box, then seed places for it. Seeded areas are blue, your pins purple, pause zones red. " else "Capture pauses inside a red box and in the ring around it. ") + if (offline?.reader != null) "The map is drawn from your offline file." else if (online?.source != null) "The map is drawn from online street tiles; the grid shows where they are missing." else "The map has no tiles; the grid shows latitude and longitude.", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
-                ZoneMap(state, on, offline?.reader, online, seed?.ui)
+                ZoneMap(mapState, on, offline?.reader, online, seed?.ui)
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = seedMode || !state.protectedMode)
+                    SecondaryAction(if (state.drawing) "Cancel drawing" else "Draw a box", { on.setDrawing(!state.drawing) }, tag = "zone_draw", enabled = networkOnline && (seedMode || !state.protectedMode))
                     if (online?.canCentre == true) SecondaryAction("Centre on me", online.centreOnMe, tag = "zone_centre", enabled = !online.centreBusy)
                 }
                 online?.note?.let { n -> NoticeText(n, tag = "zone_centre_note"); SecondaryAction("Dismiss", online.dismissNote, tag = "zone_centre_note_dismiss") }
+                if (!networkOnline) NoticeText(ZoneWords.OFFLINE_NOTICE, tag = "zone_offline")
                 if (state.drawing) NoticeText("Drag on the map from one corner to the opposite corner.", tag = "zone_draw_hint")
                 if (state.you == null) NoticeText("Your position is not shown: there is no fresh location fix.", tag = "zone_no_fix")
             }
@@ -267,7 +272,7 @@ fun ZonesScreen(state: ZonesUiState, on: ZonesCallbacks, offline: OfflineMapPane
         seed?.let { p -> item { SeedCard(state, p) } }
         online?.let { p -> item { OnlineMapCard(p) } }
         offline?.let { p -> item { OfflineMapCard(p) } }
-        if (!seedMode) item { NewZoneCard(state, on) }
+        if (!seedMode) item { NewZoneCard(state, on, networkOnline) }
         seed?.let { p -> if (p.ui.areas.isNotEmpty()) item { SeededAreasCard(p) } }
         item {
             SettingsCard {
@@ -387,22 +392,23 @@ internal fun OfflineMapCard(p: OfflineMapPanel) {
 }
 
 @Composable
-private fun NewZoneCard(state: ZonesUiState, on: ZonesCallbacks) {
+private fun NewZoneCard(state: ZonesUiState, on: ZonesCallbacks, networkOnline: Boolean) {
+    val fieldsOn = networkOnline && !state.protectedMode
     val d = state.draft
     SettingsCard {
         Text("New zone", style = MaterialTheme.typography.titleMedium)
-        TextFieldRow("Name", d.name, { v -> on.editDraft { it.copy(name = v) } }, tag = "zone_name", enabled = !state.protectedMode)
+        TextFieldRow("Name", d.name, { v -> on.editDraft { it.copy(name = v) } }, tag = "zone_name", enabled = fieldsOn)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.weight(1f)) { TextFieldRow("South (lat)", d.south, { v -> on.editDraft { it.copy(south = v) } }, tag = "zone_south", number = true) }
-            Box(Modifier.weight(1f)) { TextFieldRow("North (lat)", d.north, { v -> on.editDraft { it.copy(north = v) } }, tag = "zone_north", number = true) }
+            Box(Modifier.weight(1f)) { TextFieldRow("South (lat)", d.south, { v -> on.editDraft { it.copy(south = v) } }, tag = "zone_south", number = true, enabled = fieldsOn) }
+            Box(Modifier.weight(1f)) { TextFieldRow("North (lat)", d.north, { v -> on.editDraft { it.copy(north = v) } }, tag = "zone_north", number = true, enabled = fieldsOn) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.weight(1f)) { TextFieldRow("West (lon)", d.west, { v -> on.editDraft { it.copy(west = v) } }, tag = "zone_west", number = true) }
-            Box(Modifier.weight(1f)) { TextFieldRow("East (lon)", d.east, { v -> on.editDraft { it.copy(east = v) } }, tag = "zone_east", number = true) }
+            Box(Modifier.weight(1f)) { TextFieldRow("West (lon)", d.west, { v -> on.editDraft { it.copy(west = v) } }, tag = "zone_west", number = true, enabled = fieldsOn) }
+            Box(Modifier.weight(1f)) { TextFieldRow("East (lon)", d.east, { v -> on.editDraft { it.copy(east = v) } }, tag = "zone_east", number = true, enabled = fieldsOn) }
         }
-        TextFieldRow("Buffer (metres, 0 to 50,000)", d.buffer, { v -> on.editDraft { it.copy(buffer = v) } }, tag = "zone_buffer", number = true)
+        TextFieldRow("Buffer (metres, 0 to 50,000)", d.buffer, { v -> on.editDraft { it.copy(buffer = v) } }, tag = "zone_buffer", number = true, enabled = fieldsOn)
         state.draftError?.let { NoticeText(it, error = true, tag = "zone_draft_error") }
-        PrimaryAction("Add zone", on.save, tag = "zone_save", enabled = !state.protectedMode)
+        PrimaryAction("Add zone", on.save, tag = "zone_save", enabled = fieldsOn)
         SecondaryAction("Clear", on.clearDraft, tag = "zone_clear", enabled = !d.isEmpty)
     }
 }
