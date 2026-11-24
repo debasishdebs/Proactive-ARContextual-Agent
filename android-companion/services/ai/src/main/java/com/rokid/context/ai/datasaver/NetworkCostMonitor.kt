@@ -20,10 +20,8 @@ data class RawCaps(
  * service, a SecurityException, no first reading yet, or a transport we cannot place all give readings the policy treats as costly.
  * [onChange] runs after every new reading (callback thread); it must be cheap.
  *
- * VPN assumption (documented, UNVERIFIED on a device): Android 10+ copies the underlying network's transports onto a VPN network, so a VPN over Wi-Fi reports WIFI + VPN. Its metered and
- * roaming bits are the VPN's own (VPNs are metered by default). We therefore never trust a VPN's own bits for "free": when the default network is a VPN carrying Wi-Fi we look at the real
- * (non-VPN) Wi-Fi network instead, and call it FREE only if THAT network is validated, unmetered and not roaming; if no such network is found the VPN's own (metered) reading is used, which is
- * the safe direction. A VPN that reports no underlying transport at all is [Transport.OTHER], i.e. unknown.
+ * VPN rule (UNVERIFIED on a device): a VPN's own metered / validated / roaming bits are never trusted for "free". The VPN network's [NetworkCapabilities.getUnderlyingNetworks] (API 31+) says what it
+ * really rides on; the costliest of those decides ([resolveVpn]). When they cannot be read (Android 10-11, none declared, any failure) the network is UNKNOWN, which is treated as costly.
  */
 class NetworkCostMonitor(private val app: Context, private val clock: () -> Long = System::currentTimeMillis, private val onChange: () -> Unit) {
     @Volatile var snapshot: NetSnapshot = NetSnapshot.UNKNOWN
@@ -80,7 +78,9 @@ class NetworkCostMonitor(private val app: Context, private val clock: () -> Long
     private fun read(cm: ConnectivityManager, caps: NetworkCapabilities?): NetSnapshot {
         if (caps == null) return NetSnapshot(known = true, transport = Transport.NONE, validated = false, notMetered = false, notRoaming = true)
         val raw = raw(caps)
-        val effective = if (raw.vpn && raw.wifi) underlyingWifi(cm) ?: raw else raw
+        if (!raw.vpn) return snapshotOf(raw, raw, countryMismatch(), restrictBackground(cm))
+        // A VPN's own bits are the VPN's (it may declare itself unmetered and validated whatever it rides on): only the networks it REALLY runs over count. Not provable = unknown = costly.
+        val effective = resolveVpn(underlyingOf(cm, caps)) ?: return NetSnapshot(true, Transport.OTHER, raw.validated, notMetered = false, notRoaming = false, countryMismatch = countryMismatch(), restrictBackground = restrictBackground(cm))
         return snapshotOf(effective, raw, countryMismatch(), restrictBackground(cm))
     }
 
@@ -91,13 +91,16 @@ class NetworkCostMonitor(private val app: Context, private val clock: () -> Long
         notRoaming = c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING),
     )
 
-    /** The real Wi-Fi network under a VPN: a validated, non-VPN Wi-Fi network with internet. Null when none is found (then the VPN's own reading stands). */
-    @Suppress("DEPRECATION")
-    private fun underlyingWifi(cm: ConnectivityManager): RawCaps? = try {
-        cm.allNetworks.mapNotNull { cm.getNetworkCapabilities(it) }
-            .filter { it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) }
-            .map(::raw).let { l -> l.firstOrNull { it.validated } ?: l.firstOrNull() }
-    } catch (e: Exception) { null }
+    /**
+     * The capabilities of the networks this VPN actually runs over, from the VPN network's own [NetworkCapabilities.getUnderlyingNetworks] (a system API since Android 12, read by reflection). Null = cannot be known: Android 10-11, the platform refusing the hidden call, a VPN that
+     * declares none (it then follows the system default, which is not provable), or any failure. We never guess from "some Wi-Fi is connected": that network may not carry the VPN.
+     */
+    private fun underlyingOf(cm: ConnectivityManager, vpnCaps: NetworkCapabilities): List<RawCaps>? = try {
+        // getUnderlyingNetworks() is not in the public SDK (a system API since Android 12): read it by reflection where the platform lets us, and treat any refusal as "not known".
+        val nets = if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) null
+        else NetworkCapabilities::class.java.getMethod("getUnderlyingNetworks").invoke(vpnCaps) as? List<*>
+        nets?.map { n -> raw(cm.getNetworkCapabilities(n as Network) ?: return null) }
+    } catch (e: Throwable) { null }
 
     /** SIM country vs network country. Only the boolean leaves this function; both empty (no SIM, airplane mode) is "no mismatch". */
     private fun countryMismatch(): Boolean = try {
@@ -112,6 +115,18 @@ class NetworkCostMonitor(private val app: Context, private val clock: () -> Long
 
     companion object {
         private const val TAG = "PcData"
+
+        /**
+         * The reading to trust for a VPN, from the capabilities of its real underlying networks ([underlying]; null or empty = not known). Null = classify UNKNOWN (costly). With several, the COSTLIEST wins
+         * (a VPN that may switch between Wi-Fi and mobile data is as expensive as mobile data): mobile data, then anything not provably free, then validated unmetered non-roaming Wi-Fi or Ethernet.
+         * A nested VPN, or a network that is neither Wi-Fi, Ethernet nor mobile, cannot be placed: unknown.
+         */
+        fun resolveVpn(underlying: List<RawCaps>?): RawCaps? {
+            if (underlying.isNullOrEmpty()) return null
+            if (underlying.any { it.vpn || !(it.wifi || it.ethernet || it.cellular) }) return null
+            fun free(c: RawCaps) = (c.wifi || c.ethernet) && !c.cellular && c.validated && c.notMetered && c.notRoaming
+            return underlying.firstOrNull { it.cellular } ?: underlying.firstOrNull { !free(it) } ?: underlying.first()
+        }
 
         /**
          * The pure mapping. [effective] carries the validated / metered / roaming bits to trust (the real Wi-Fi under a VPN, else the default network itself); [defaultCaps] decides the transport.
