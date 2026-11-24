@@ -89,6 +89,7 @@ object DeletionGraph {
         s("place", "fetched places (public text) are deleted by Delete all and their recency reset; seeded areas, what they seeded and pinned places stay (`PlacePack.deleteAll`)"),
         s("cell", "fetched 5 km cells: Delete all removes the cells that no seeded area covers"),
         k("area", "seeded download areas (a bounding box and a state): the user's own download choice; Delete all keeps them"),
+        s("place_card_log", "the phone-only place card history (title, kind, time, delivery; no position, no card line): a user Forget of the photo, a range Forget, Delete all and the removal of its pin delete the rows; photo retention only clears the photo link (frameId), memory expiry touches nothing; 90 days / 500 rows"),
     )
 
     /** Phone SharedPreferences names (without `.xml`). */

@@ -34,6 +34,11 @@ object DeveloperFlags {
     fun placeShadowScore(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_SCORE, false) }.getOrDefault(false)
     fun setPlaceShadowScore(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_SCORE, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() } // OFF: the in-memory shadow vectors go at once
 
+    /** Place card history on the phone (spec 2026-11-24 F6): a phone-only list in `places.db`. ON by default; OFF stops new rows and hides nothing already stored (Forget still deletes them). */
+    const val PLACE_CARD_HISTORY = "placeCardHistory"
+    fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, true) }.getOrDefault(true)
+    fun setPlaceCardHistory(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_CARD_HISTORY, on).apply() }
+
     fun pauseRetention(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PAUSE_RETENTION, false) }.getOrDefault(false)
     fun setPauseRetention(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PAUSE_RETENTION, on).apply() }
     fun multilingualAsk(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(MULTILINGUAL_ASK, false) }.getOrDefault(false)

@@ -22,7 +22,7 @@ class FamilyInventoryTest {
     private val placeTables = tablesOf("com.rokid.context.memory.place.PlacesDatabase")
     private val all = contextTables + placeTables
 
-    @Test fun theScanFindsBothDatabases() { assertTrue(contextTables.size >= 50); assertEquals(setOf("place", "cell", "area"), placeTables.toSet()) }
+    @Test fun theScanFindsBothDatabases() { assertTrue(contextTables.size >= 50); assertEquals(setOf("place", "cell", "area", "place_card_log"), placeTables.toSet()) }
 
     @Test fun everyTableHasExactlyOneOwner() {
         val owners = all.associateWith { t -> Families.ALL.filter { t in it.tables }.map { it.family } }
@@ -59,10 +59,11 @@ class FamilyInventoryTest {
     // ---- the Place Guide surface (places.db, the pause zones, the published card) ----
 
     @Test fun thePlacePackIsNotPhotoDerivedAndDeleteAllKeepsItsSeededAreas() {
-        assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("cell")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("area"))
+        assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("cell")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("area")); assertEquals(Family.PLACE_PACK, Families.ownerOfTable("place_card_log"))
         val fate = DeletionGraph.TABLES.associate { it.name to it.fate }
         assertEquals("fetched places and recency are cleared", DeletionGraph.Fate.SCRUBBED, fate["place"]); assertEquals(DeletionGraph.Fate.SCRUBBED, fate["cell"])
         assertEquals("seeded areas are kept", DeletionGraph.Fate.KEPT, fate["area"])
+        assertEquals("the card history is cleared by Delete all (places.db, like the pack)", DeletionGraph.Fate.SCRUBBED, fate["place_card_log"])
     }
 
     @Test fun pauseZonePrefsAreNeverDeletedByAForgetOrDeleteAll() {

@@ -26,13 +26,52 @@ object PlaceGraph {
     /** The zone controller's word: [active] = some zone is approached, entered, recorded or unreadable. Closes the fence and withdraws the card at once; released when clear. */
     fun protect(active: Boolean) { if (active) { if (!fence.held) { fence.hold(); port.clear() } } else fence.release() }
 
-    init {
-        // A published card holds photo-derived content: Forget of its photo withdraws it, a range Forget or Delete all withdraws every card (committed deletions only; fenced against publication by the holder's epoch).
-        com.rokid.context.memory.forget.ForgetListeners.register(object : com.rokid.context.memory.forget.ForgetListener {
-            override suspend fun onFramesForgotten(frameIds: List<String>) { fence.trip(); port.withdrawFrames(frameIds) }
-            override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { fence.trip(); port.clear() }
-            override suspend fun onDeleteAll() { fence.trip(); port.clear() }
-        })
+    private val cardListener = object : com.rokid.context.memory.forget.ForgetListener {
+        override suspend fun onFramesForgotten(frameIds: List<String>) { fence.trip(); port.withdrawFrames(frameIds) }
+        override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { fence.trip(); port.clear() }
+        override suspend fun onDeleteAll() { fence.trip(); port.clear() }
+    }
+
+    // The phone-only card history (B1): a user Forget of a photo deletes its rows, photo retention only drops the photo link and keeps the row (expiry-independent), a range Forget deletes the rows of the range
+    // (not for the time link of a retention expiry), Delete all clears the table. Memory expiry (SHORT / LONG) touches nothing.
+    private val historyListener = object : com.rokid.context.memory.forget.ForgetListener {
+        override suspend fun onFramesForgotten(frameIds: List<String>) { historyIfOpen()?.onFramesForgotten(frameIds) }
+        override suspend fun onPhotosExpired(frameIds: List<String>) { historyIfOpen()?.onPhotosExpired(frameIds) }
+        override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { historyIfOpen()?.onRangeForgotten(fromMs, toMs) }
+        override suspend fun onRangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) { /* routine retention never deletes history rows */ }
+        override suspend fun onDeleteAll() { historyIfOpen()?.clearAll("delete_all") }
+    }
+
+    init { registerListeners() }
+
+    /** Registers the two Forget listeners (idempotent). A published card holds photo-derived content: Forget of its photo withdraws it, a range Forget or Delete all withdraws every card (committed deletions only; fenced against publication by the holder's epoch). */
+    fun registerListeners() {
+        com.rokid.context.memory.forget.ForgetListeners.register(cardListener)
+        com.rokid.context.memory.forget.ForgetListeners.register(historyListener)
+    }
+
+    @Volatile private var appContext: Context? = null
+    @Volatile private var historyRef: PlaceCardHistory? = null
+
+    /** Gives the process-wide history listener the application context (called once by the Application). Without it (or without a `places.db` file) the listener has nothing to delete. */
+    fun attach(context: Context) { appContext = context.applicationContext }
+
+    /** The card history, built lazily over the pack's database. Off Main (the first call reads the Keystore). */
+    fun history(context: Context): PlaceCardHistory {
+        historyRef?.let { return it }
+        val app = context.applicationContext
+        return synchronized(this) { historyRef ?: PlaceCardHistory(pack(app).cardLogDao, log = { PcLog.i(TAG, it) }, enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeCardHistory(app) }).also { historyRef = it } }
+    }
+
+    /** The history for a Forget: null when nothing was ever stored (no `places.db` file and no pack in this process), so a Forget never creates the database. */
+    private fun historyIfOpen(): PlaceCardHistory? = appContext?.let { existingHistory(it) }
+
+    /** The history only when `places.db` exists (or is open in this process): a reader such as Home never creates the database. */
+    fun existingHistory(context: Context): PlaceCardHistory? {
+        historyRef?.let { return it }
+        val app = context.applicationContext
+        if (pack == null && !app.getDatabasePath(PlacesDatabase.NAME).exists()) return null
+        return history(app)
     }
 
     /** The user's pinned places (prefs `place_pins`, the source of truth: kept by Delete all, exported on request; EXCLUDED from backup and device transfer, see UserPlace.kt and BackupRulesTest). */
@@ -58,8 +97,11 @@ object PlaceGraph {
     /** Stores [list] as the pins and mirrors it into the pack. False = refused or not stored (nothing changes). */
     suspend fun savePins(context: Context, list: List<com.rokid.context.memory.place.UserPlace>): Boolean {
         val p = readyPack(context)
+        val before = runCatching { pins(context).pins().map { it.id } }.getOrDefault(emptyList())
         if (!pins(context).write(list)) return false
         p.replaceUserPlaces(list)
+        val gone = before - list.map { it.id }.toSet() // a pin that disappeared takes its history rows (and the cluster rows that list it) with it
+        if (gone.isNotEmpty()) history(context).onPinRemoved(gone)
         return true
     }
 
@@ -81,9 +123,11 @@ object PlaceGraph {
         val app = context.applicationContext
         if (pack == null && !app.getDatabasePath(PlacesDatabase.NAME).exists()) return
         pack(app).deleteAll()
+        history(app).clearAll("delete_all")
     }
 
-    fun installForTests(p: PlacePack?) { synchronized(this) { pack = p; pinsSynced = false } }
+    fun installForTests(p: PlacePack?) { synchronized(this) { pack = p; pinsSynced = false; historyRef = null; appContext = null } }
+    fun installHistoryForTests(h: PlaceCardHistory?) { historyRef = h }
 }
 
 /** The Place Guide switch: default OFF. Read on every frame, so a plain SharedPreferences read. Also the pack budget (per device, like the switch: not exported, not backed up). */

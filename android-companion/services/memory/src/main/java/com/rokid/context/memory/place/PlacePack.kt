@@ -90,6 +90,9 @@ class PlacePack(
     private val pause: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
 ) {
     private val dao = db.dao()
+
+    /** The DAO of the phone-only card history (`place_card_log`), same file and key as the pack. */
+    val cardLogDao: PlacesDao get() = dao
     /** The budget in bytes: [setBudget] changes it (the Place Guide screen offers 25/50/100/200 MB). */
     @Volatile var budgetBytes: Long = budgetBytes.coerceAtLeast(MIN_BUDGET_BYTES); private set
     private val fetchLock = Mutex()

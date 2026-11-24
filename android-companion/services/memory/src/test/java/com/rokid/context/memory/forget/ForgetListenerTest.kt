@@ -93,4 +93,31 @@ class ForgetListenerTest {
         service.expirePhotos(listOf("p2"))
         assertNull(db.canvasSlice3Dao().label("mk"))
     }
+
+    // ---- B1: retention expiry has its own callbacks, defaulting to the Forget ones ----
+
+    @Test fun existingListeners_stillGetFramesForgottenAndRangeForgottenOnExpiry() = runBlocking {
+        val ranges = ArrayList<Pair<Long, Long>>()
+        ForgetListeners.register(object : ForgetListener { override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { ranges += fromMs to toMs } })
+        frame("e1"); mem("me1", "e1")
+        service.expirePhotos(listOf("e1"))
+        assertEquals("the default of onPhotosExpired is onFramesForgotten", listOf("e1"), seen.flatten())
+        assertEquals("the default of onRangeExpired is onRangeForgotten", 1, ranges.size)
+    }
+
+    @Test fun aListenerThatOverridesTheExpiryCallbacksIsToldAboutExpiryOnlyThere() = runBlocking {
+        val forgotten = ArrayList<String>(); val expired = ArrayList<String>(); val rangeForgotten = ArrayList<Long>(); val rangeExpired = ArrayList<Long>()
+        ForgetListeners.register(object : ForgetListener {
+            override suspend fun onFramesForgotten(frameIds: List<String>) { forgotten += frameIds }
+            override suspend fun onPhotosExpired(frameIds: List<String>) { expired += frameIds }
+            override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { rangeForgotten += fromMs }
+            override suspend fun onRangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) { rangeExpired += fromMs }
+        })
+        frame("x1"); mem("mx1", "x1"); frame("x2"); mem("mx2", "x2")
+        service.expirePhotos(listOf("x1"))
+        assertEquals(listOf("x1"), expired); assertTrue(forgotten.isEmpty()); assertTrue(rangeForgotten.isEmpty()); assertEquals(1, rangeExpired.size)
+        expired.clear(); rangeExpired.clear()
+        service.forgetMoment("x2")
+        assertEquals(listOf("x2"), forgotten); assertTrue(expired.isEmpty()); assertEquals(1, rangeForgotten.size); assertTrue(rangeExpired.isEmpty())
+    }
 }

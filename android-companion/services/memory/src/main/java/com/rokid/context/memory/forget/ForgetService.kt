@@ -166,7 +166,7 @@ class ForgetService(
         }
         db.momentDao().dropHolding(expiredIds, emptyList()) // a Moment with no live photo is not a Moment
         val wire = expiredIds.chunked(CHUNK).flatMap { db.momentDao().wireIds(it) }.map { it.wireFrameId } // frame_meta stays on expiry
-        val spans = dropCanvasOutputs(expiredIds, expiredTimes) // S25: frame retention uses the same cascade, once for the whole set
+        val spans = dropCanvasOutputs(expiredIds, expiredTimes, expired = true) // S25: frame retention uses the same cascade, once for the whole set
         queueCleanup(paths, wire, spans, phoneFilesOnly = true) // same transaction as the expiry; routine retention is storage hygiene: phone files only (glasses and helper rows are for user Forgets)
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
@@ -239,18 +239,21 @@ class ForgetService(
     }
 
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
-    private class Pending(val frames: List<String>, val spans: List<Triple<Long, Long, List<String>>>)
+    private class Pending(val frames: List<String>, val spans: List<Triple<Long, Long, List<String>>>, val expired: Boolean = false)
     private val pendingFrames = java.util.concurrent.ConcurrentLinkedQueue<Pending>()
     /** The executor's way to register what listeners are told after the commit (the same queue [dropCanvasOutputs] fills). */
-    internal fun addPending(frames: List<String>, spans: List<Triple<Long, Long, List<String>>>) { pendingFrames.add(Pending(frames, spans)) }
+    internal fun addPending(frames: List<String>, spans: List<Triple<Long, Long, List<String>>>, expired: Boolean = false) { pendingFrames.add(Pending(frames, spans, expired)) }
 
     /** Runs [tx]; only after it committed are the registered [ForgetListener]s told which photos went (a rolled-back transaction tells nobody). */
     internal suspend fun notifying(tx: suspend () -> Result): Result {
         val r = try { tx() } catch (e: Throwable) { pendingFrames.clear(); throw e }
         val all = generateSequence { pendingFrames.poll() }.toList()
-        val ids = all.flatMap { it.frames }.distinct()
+        val ids = all.filter { !it.expired }.flatMap { it.frames }.distinct()
         if (ids.isNotEmpty()) ForgetListeners.framesForgotten(ids)
-        all.flatMap { it.spans }.groupBy { it.first to it.second }.forEach { (r, v) -> ForgetListeners.rangeForgotten(r.first, r.second, v.flatMap { it.third }.distinct()) } // files and glasses follow the time link
+        val expiredIds = all.filter { it.expired }.flatMap { it.frames }.distinct()
+        if (expiredIds.isNotEmpty()) ForgetListeners.photosExpired(expiredIds) // retention: listeners default to the same as a Forget, the place card history only unlinks the photo
+        all.filter { !it.expired }.flatMap { it.spans }.groupBy { it.first to it.second }.forEach { (r, v) -> ForgetListeners.rangeForgotten(r.first, r.second, v.flatMap { it.third }.distinct()) } // files and glasses follow the time link
+        all.filter { it.expired }.flatMap { it.spans }.groupBy { it.first to it.second }.forEach { (r, v) -> ForgetListeners.rangeExpired(r.first, r.second, v.flatMap { it.third }.distinct()) }
         return r
     }
 
@@ -265,7 +268,7 @@ class ForgetService(
      * [radiusCascade] false (the Forget scope MOMENT / SCENE, whose planned spans ALREADY include the radius): no per-photo radius cascade, so the deletion set is exactly the previewed spans and a photo at the edge cannot
      * cascade to marks or Moments outside them. The photo's own outputs are still deleted.
      */
-    private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null, radiusCascade: Boolean = true): List<Triple<Long, Long, List<String>>> {
+    private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null, radiusCascade: Boolean = true, expired: Boolean = false): List<Triple<Long, Long, List<String>>> {
         val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { dao.frame(it)?.ts }
         // A mark carries no frame id (the glasses tap does not know which photo it is near), so the link between a photo and the marks and traces of its moment is TIME:
         // everything within the [ForgetRadius] (default PHOTO_LINK_MS) of a forgotten photo goes with it (marks, traces, and the results that read them), through the same durable range fence as a
@@ -276,7 +279,7 @@ class ForgetService(
             db.momentDao().dropBetween(r.first, r.last) // the marks of that time are gone: so are the stored Moments that held them
             Triple(r.first, r.last, o.tombstonedTraceIds)
         }
-        if (frameIds.isNotEmpty() || spans.isNotEmpty()) pendingFrames.add(Pending(frameIds, spans))
+        if (frameIds.isNotEmpty() || spans.isNotEmpty()) pendingFrames.add(Pending(frameIds, spans, expired))
         db.canvasDao().deleteCanvasOutputsForFrames(frameIds) // items, scores and live traces, batch-wide (S25)
         db.canvasSlice3Dao().deleteSliceOutputsForFrames(frameIds, clock()) // slice 3a: labels of the photos, the results that read them, helper jobs that carry them
         return spans
