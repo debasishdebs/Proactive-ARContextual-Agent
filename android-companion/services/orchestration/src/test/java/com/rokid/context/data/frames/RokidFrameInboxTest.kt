@@ -70,6 +70,29 @@ class RokidFrameInboxTest {
         assertNull(states.get("pc")!!.lastError)
     }
 
+    /** Codex data saver r2 P2-9: with photos parked for Wi-Fi and free storage low, no new frame is admitted and nothing is deleted; it resumes when space is back or Wi-Fi returns. */
+    @Test fun lowFreeStoragePausesNewFramesWhileParkedAndNeverDeletesAnything() = runBlocking {
+        archive.mkdirs()
+        val parkedOne = File(archive, "keep.jpg").apply { writeBytes(byteArrayOf(1, 2)) }
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, parkedOne, "rokid_glasses", nowMs = { now }, sceneActive = { false }, parkedForDataSaver = { true }))
+        try {
+            ParkedStorageGuard.freeBytes = { ParkedStorageGuard.MIN_FREE_BYTES - 1 }
+            val low = File(archive, "low.jpg").apply { writeBytes(byteArrayOf(3, 4)) }
+            assertEquals(InboxResult.FAILED, RokidFrameInbox.ingestFile(ctx, low, "rokid_glasses", nowMs = { now }, sceneActive = { false }, parkedForDataSaver = { true }))
+            assertTrue("the paused flag is on for the status line", ParkedStorageGuard.paused())
+            assertTrue("the refused file is kept", low.exists()); assertEquals("no row was written", 1, rows())
+            val states = MemoryGraph.get(ctx).db.frameStateDao()
+            assertEquals("the parked photo is untouched", "data_saver", states.get("keep")!!.lastError); assertTrue(parkedOne.exists())
+            // Wi-Fi is back (nothing would be parked): admitted as usual even with low space
+            val wifi = File(archive, "wifi.jpg").apply { writeBytes(byteArrayOf(5, 6)) }
+            assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, wifi, "rokid_glasses", nowMs = { now }, sceneActive = { false }, parkedForDataSaver = { false }))
+            assertFalse(ParkedStorageGuard.paused())
+            // space freed: parked frames are admitted again
+            ParkedStorageGuard.freeBytes = { ParkedStorageGuard.MIN_FREE_BYTES }
+            assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, low, "rokid_glasses", nowMs = { now }, sceneActive = { false }, parkedForDataSaver = { true }))
+        } finally { ParkedStorageGuard.resetForTests() }
+    }
+
     @Test fun theProductionProbeUsesTheDebouncedHeldBackDecision() {
         var net = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.WIFI, validated = false, notMetered = true, notRoaming = true, unvalidatedSinceMs = System.currentTimeMillis() - 2_000)
         ctx.getSharedPreferences(com.rokid.context.ai.datasaver.DataSaverStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit()

@@ -288,6 +288,9 @@ object RokidFrameInbox {
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
         PcLog.i(TAG, "ingestFile exists=${file.exists()} size=${file.length()}")
         val now = nowMs()
+        // Codex r2 P2-9: while photos are parked for Wi-Fi and free storage is low, no NEW frame is admitted (the file stays where it is, nothing is deleted; the next pass retries).
+        val wouldPark = try { parkedForDataSaver() } catch (_: Exception) { false }
+        if (ParkedStorageGuard.refuses(context, wouldPark)) return InboxResult.FAILED
         val routeFirst = try { sceneActive() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
         val rows = FrameRows(
             // routedAt stays NULL only when the scene indexer is active (an IMAGE-capable embedder is bound, vectors available, Ruling 2):
@@ -301,7 +304,7 @@ object RokidFrameInbox {
                 // ReceiptStore. Without a receipt the mtime is not a capture time, so it stays unknown.
                 capturedAtMs = if (receipt != null) file.lastModified().takeIf { it in 1..now } else null,   // a time after the receive time is a clock error
             ),
-            FrameStateEntity(frameId = frameId, state = "PENDING", attempts = 0, lastError = if (try { parkedForDataSaver() } catch (_: Exception) { false }) "data_saver" else null, claimedAt = null, claimId = null, updatedAt = now),
+            FrameStateEntity(frameId = frameId, state = "PENDING", attempts = 0, lastError = if (wouldPark) "data_saver" else null, claimedAt = null, claimId = null, updatedAt = now),
         )
         val appended = try {
             appendFrame(
