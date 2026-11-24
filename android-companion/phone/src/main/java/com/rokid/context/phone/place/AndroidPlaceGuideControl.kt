@@ -44,9 +44,16 @@ class AndroidPlaceGuideControl(
             com.rokid.context.core.log.PcLog.i("PcData", "seed refused: not free wifi")
             throw com.rokid.context.phone.ui.settings.place.SeedNeedsWifiException()
         }
+        // The same questions are asked again before EVERY cell and every request of the seed (the pack and PlaceHttp call the admission): privacy, free Wi-Fi and the data saver can all change mid-seed.
+        admission()?.let { throw com.rokid.context.memory.place.SeedStopped(it) }
         val id = String.format(Locale.ROOT, "seed:%.3f,%.3f,%.3f,%.3f", box.south, box.west, box.north, box.east)
-        val r = PlaceGraph.readyPack(app).seedArea(id, box)
+        val r = PlaceGraph.readyPack(app).seedArea(id, box, admit = ::admission)
         com.rokid.context.phone.ui.settings.place.PlaceGuideModel.seedOutcome(r)
+    }
+
+    private fun admission(): String? {
+        val saver = com.rokid.context.ai.datasaver.DataSaverGraph.get(app)
+        return SeedGate.check({ com.rokid.context.ai.resolve.ModelPrivacyStore.get(app).current() }, saver::costNow, saver)
     }
 
     override suspend fun summary(): String {
@@ -81,6 +88,23 @@ class AndroidPlaceGuideControl(
     override suspend fun setMoment(pinId: String, momentId: String?): Boolean = pinning.setMoment(pinId, momentId)
     /** A link whose Moment was forgotten is cleared whenever the screen reads the pins (the Forget listener does it at the time; this also covers a crash in between). */
     override suspend fun sweepMoments() { com.rokid.context.work.frames.place.PinMomentLinks.sweep(app) }
+}
+
+/** The seed's admission, asked before every cell and every request: null = go on, else the short reason to stop. Fails closed (an unreadable state stops the seed). */
+object SeedGate {
+    const val OFFLINE_ONLY = "offline only"
+    const val NOT_FREE_WIFI = "not on free Wi-Fi"
+    const val DATA_SAVER = "data saver"
+    const val UNREADABLE = "state unreadable"
+
+    fun check(privacy: () -> com.rokid.context.core.net.ModelPrivacy, cost: () -> com.rokid.context.core.net.NetworkCost, gate: com.rokid.context.core.net.DataGate): String? = try {
+        when {
+            privacy() != com.rokid.context.core.net.ModelPrivacy.AUTO -> OFFLINE_ONLY
+            cost() != com.rokid.context.core.net.NetworkCost.FREE -> NOT_FREE_WIFI
+            !gate.decide(com.rokid.context.core.net.DataKind.BULK_OTHER).allowed -> DATA_SAVER
+            else -> null
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { UNREADABLE }
 }
 
 /** The zones map's view of Place Guide: the seeded areas and pins to draw, and the existing seed path ([guide].seed, with its Offline only and Wi-Fi refusals) for a drawn box. */

@@ -2,6 +2,15 @@ package com.rokid.context.memory.place
 
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.max
@@ -25,6 +34,24 @@ fun interface CellSource {
 
 /** The pack as the budget screen shows it. [pinned] counts user pins; [seeded] and [fetched] exclude pinned rows. */
 data class PackStats(val pinned: Int, val seeded: Int, val fetched: Int, val bytes: Long, val budgetBytes: Long)
+
+/**
+ * A seed was stopped before it finished ([reason] is a fixed short phrase, never a position or a place name): the privacy mode, the free Wi-Fi rule or the data saver no longer admit it, or the
+ * area was removed. A cancellation, so it unwinds every fetch like the zone fence does. The message IS the reason (a recovered copy of the exception keeps it).
+ */
+class SeedStopped(val reason: String) : CancellationException(reason)
+
+/** The seed's admission, in the coroutine context of a running [PlacePack.seedArea]: [check] returns null while the seed may go on, else the reason it must stop. Asked before every cell and every request. */
+class SeedAdmission(val check: () -> String?) : AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<SeedAdmission>
+}
+
+/** Throws [SeedStopped] when the running seed (if any) is no longer admitted; a no-op outside a seed. Fails closed: a check that throws stops the seed. Does not suspend. */
+suspend fun seedAdmitCheck() {
+    val a = coroutineContext[SeedAdmission] ?: return
+    val why = try { a.check() } catch (e: CancellationException) { throw e } catch (e: Exception) { "state unreadable" }
+    if (why != null) throw SeedStopped(why)
+}
 
 enum class CellOutcome { FRESH, FETCHED, PARTIAL, OFFLINE, FAILED }
 
@@ -66,6 +93,8 @@ class PlacePack(
     /** The budget in bytes: [setBudget] changes it (the Place Guide screen offers 25/50/100/200 MB). */
     @Volatile var budgetBytes: Long = budgetBytes.coerceAtLeast(MIN_BUDGET_BYTES); private set
     private val fetchLock = Mutex()
+    /** The running seed per area id (its own child job): [removeArea] cancels and awaits it so a seed's last write cannot bring a removed area back. */
+    private val seeds = java.util.concurrent.ConcurrentHashMap<String, Job>()
     /** Advanced by [deleteAll] before it takes [fetchLock]: a fetch that began earlier discards its answer instead of re-inserting what Delete all removed. */
     private val wipeEpoch = java.util.concurrent.atomic.AtomicLong(0)
     /**
@@ -166,17 +195,46 @@ class PlacePack(
      * Fetches the blue zone [bbox] cell by cell and marks everything found seeded. A cell that is already fresh is not fetched again but its places are marked. A cell that fails is
      * counted and the rest go on: the area ends [AREA_PARTIAL] and can be seeded again. [onProgress] gets (cells done, cells total).
      */
-    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
+    suspend fun seedArea(blueZoneId: String, bbox: GeoBox, admit: () -> String? = { null }, onProgress: (Int, Int) -> Unit = { _, _ -> }): SeedResult {
         val cells = Geohash5.cellsCovering(bbox)
         val src = source
         if (cells.isEmpty() || cells.size > MAX_SEED_CELLS || src == null) { log("seed refused cells=${cells.size}"); return SeedResult(cells.size, 0, 0, if (src == null) cells.size else 0, 0) }
-        dao.putArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
+        val mine = Job(currentCoroutineContext()[Job])
+        seeds[blueZoneId] = mine
+        var stopped: String? = null
+        val result: SeedResult? = try {
+            withContext(mine + SeedAdmission(admit)) {
+                try { seedBody(blueZoneId, bbox, cells, src, onProgress) } catch (e: SeedStopped) {
+                    stopped = e.reason
+                    writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_PARTIAL))
+                    null
+                }
+            }
+        } catch (e: CancellationException) {
+            // Only this seed's own job was cancelled (the area was removed): say so. A cancelled caller stays a plain cancellation.
+            if (mine.isCancelled && currentCoroutineContext().isActive) throw SeedStopped("area removed")
+            throw e
+        } finally {
+            seeds.remove(blueZoneId, mine); mine.cancel()
+        }
+        stopped?.let { log("seed stopped"); throw SeedStopped(it) } // one of a few fixed phrases: nothing about a position
+        return result!!
+    }
+
+    /** The area row, written under the fetch lock and only while this seed is still wanted: a removal cancels the seed first, so its last write cannot bring the area back. */
+    private suspend fun writeArea(row: AreaEntity) = fetchLock.withLock { currentCoroutineContext().ensureActive(); dao.putArea(row) }
+
+    private suspend fun seedBody(blueZoneId: String, bbox: GeoBox, cells: List<String>, src: CellSource, onProgress: (Int, Int) -> Unit): SeedResult {
+        writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), AREA_SEEDING))
         var fetched = 0; var skipped = 0; var partial = 0; var done = 0
         val failedCells = ArrayList<String>()
-        suspend fun seedOne(cell: String): CellOutcome = fetchLock.withLock {
-            // A PARTIAL cell (stored without OSM extras) is not "fresh" for a seed: seeding again tries it again.
-            val c = dao.cell(cell)
-            if (c?.status == CELL_OK && isFresh(c)) CellOutcome.FRESH else fetchAndStore(cell, src, seeded = true)
+        suspend fun seedOne(cell: String): CellOutcome {
+            seedAdmitCheck() // before the cell's lock; each request asks again in the HTTP layer
+            return fetchLock.withLock {
+                // A PARTIAL cell (stored without OSM extras) is not "fresh" for a seed: seeding again tries it again.
+                val c = dao.cell(cell)
+                if (c?.status == CELL_OK && isFresh(c)) CellOutcome.FRESH else { seedAdmitCheck(); fetchAndStore(cell, src, seeded = true) }
+            }
         }
         fun count(outcome: CellOutcome): Boolean = when (outcome) {
             CellOutcome.FETCHED -> { fetched++; true }
@@ -198,14 +256,30 @@ class PlacePack(
             for (cell in failedCells) if (!count(seedOne(cell))) failed++
             log("seed retry cells=$retried recovered=${retried - failed}")
         }
-        dao.putArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0 && partial == 0) AREA_DONE else AREA_PARTIAL))
+        writeArea(AreaEntity(blueZoneId, bbox.south, bbox.west, bbox.north, bbox.east, now(), if (failed == 0 && partial == 0) AREA_DONE else AREA_PARTIAL))
         val n = dao.placeCount()
         log("seed done cells=${cells.size} ok=${fetched - partial} partial=$partial skipped=$skipped failed=$failed fetched=$fetched places=$n")
         return SeedResult(cells.size, fetched, skipped, failed, n, partial, retried)
     }
 
-    /** Forgets a seeded area (the user deleted the blue zone). Its places stay until evicted: they are ordinary fetched places from now on. */
-    suspend fun removeArea(blueZoneId: String) { dao.deleteArea(blueZoneId) }
+    /**
+     * Forgets a seeded area (the user removed it). A seed of that very area is cancelled and awaited first, so its last write cannot bring the area back. Then, in one transaction, the area row
+     * goes and every place that no remaining seeded area covers stops being seeded: those are ordinary fetched places from now on (evictable, removed by Clear fetched). Pins are a separate
+     * flag and stay.
+     */
+    suspend fun removeArea(blueZoneId: String) {
+        seeds[blueZoneId]?.cancelAndJoin()
+        fetchLock.withLock {
+            val left = db.withTransaction {
+                dao.deleteArea(blueZoneId)
+                dao.clearSeeded()
+                val rest = dao.areas()
+                for (a in rest) for (c in Geohash5.cellsCovering(a.box)) Geohash5.bounds(c)?.let { dao.markSeeded(it.south, it.north, it.west, it.east) }
+                rest.size
+            }
+            log("area removed remaining=$left")
+        }
+    }
 
     suspend fun pin(id: String, pinned: Boolean): Boolean = dao.setPinned(id, pinned) > 0
 

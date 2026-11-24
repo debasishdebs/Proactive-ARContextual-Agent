@@ -25,7 +25,7 @@ private fun fp(id: String, lat: Double = CHARMINAR_LAT, lon: Double = CHARMINAR_
     FetchedPlace(id, parent, name, kind, lat, lon, 60, summary, "wikipedia:en", "page:1")
 
 /** Counts calls and serves a scripted answer per cell. */
-private class FakeSource(var answer: (String) -> CellFetch = { CellFetch(emptyList()) }) : CellSource {
+private class FakeSource(var answer: suspend (String) -> CellFetch = { CellFetch(emptyList()) }) : CellSource {
     val asked = mutableListOf<String>()
     var failWith: Exception? = null
     override suspend fun fetchCell(cell: String): CellFetch { asked += cell; failWith?.let { throw it }; return answer(cell) }
@@ -427,5 +427,70 @@ class PlacePackTest {
         p.candidates(CHARMINAR_LAT, CHARMINAR_LON, networkUp = true, costly = true)
         assertEquals(n, src.asked.size)
         assertTrue(logs.none { it.contains(cell) })
+    }
+
+    // ---- map P0 fix: seed admission, area removal ----
+    private fun cornerPlace(c: String) = fp("$c:p", lat = Geohash5.bounds(c)!!.south + 0.01, lon = Geohash5.bounds(c)!!.west + 0.01)
+
+    @Test fun aSeedStopsWhenTheAdmissionIsWithdrawnMidwayAndSaysWhy() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        assertTrue(Geohash5.cellsCovering(box).size > 1)
+        var open = true
+        val src = FakeSource { c -> open = false; CellFetch(listOf(cornerPlace(c))) } // the privacy mode flips after the first cell
+        val e = runCatching { pack(src).seedArea("z", box, admit = { if (open) null else "offline only" }) }.exceptionOrNull()
+        assertTrue(e is SeedStopped); assertEquals("offline only", (e as SeedStopped).reason)
+        assertEquals(1, src.asked.size) // no second cell was requested
+        assertEquals(AREA_PARTIAL, db.dao().areas().single().status) // not a silent partial: the area says it did not finish
+        assertTrue(logs.toString(), logs.none { Regex("""\d+\.\d{3}""").containsMatchIn(it) })
+    }
+
+    @Test fun anAdmissionThatThrowsFailsClosed() = run {
+        val src = FakeSource { c -> CellFetch(listOf(cornerPlace(c))) }
+        val e = runCatching { pack(src).seedArea("z", GeoBox(17.30, 78.40, 17.31, 78.41), admit = { throw IllegalStateException("unreadable") }) }.exceptionOrNull()
+        assertTrue(e is SeedStopped); assertTrue(src.asked.isEmpty())
+    }
+
+    @Test fun removingAnAreaClearsTheSeededFlagOfItsPlacesButKeepsPinsAndOtherAreas() = run {
+        val src = FakeSource { c -> CellFetch(listOf(cornerPlace(c))) }
+        val p = pack(src)
+        val boxA = GeoBox(17.30, 78.40, 17.31, 78.41); val boxB = GeoBox(10.00, 78.40, 10.01, 78.41)
+        p.seedArea("a", boxA); p.seedArea("b", boxB)
+        val aIds = Geohash5.cellsCovering(boxA).map { "$it:p" }
+        val bIds = Geohash5.cellsCovering(boxB).map { "$it:p" }
+        assertTrue(p.pin(aIds.first(), true))
+        p.removeArea("a")
+        val all = db.dao().inBox(-90.0, 90.0, -180.0, 180.0).associateBy { it.id }
+        assertTrue(aIds.all { !all.getValue(it).seeded }); assertTrue(all.getValue(aIds.first()).pinned)
+        assertTrue(bIds.all { all.getValue(it).seeded })
+        assertEquals(listOf("b"), db.dao().areas().map { it.blueZoneId })
+        // the places are ordinary fetched places now: Clear fetched removes the unpinned ones; the pin and the other area stay
+        assertEquals(aIds.size - 1, p.clearFetched())
+        assertEquals((bIds + aIds.first()).toSet(), db.dao().inBox(-90.0, 90.0, -180.0, 180.0).map { it.id }.toSet())
+    }
+
+    @Test fun aPlaceStillCoveredByAnotherSeededAreaStaysSeeded() = run {
+        val p = pack(FakeSource { c -> CellFetch(listOf(cornerPlace(c))) })
+        p.seedArea("a", GeoBox(17.30, 78.40, 17.31, 78.41))
+        p.seedArea("a2", GeoBox(17.305, 78.405, 17.315, 78.415)) // overlaps the same cell
+        p.removeArea("a")
+        assertTrue(db.dao().inBox(-90.0, 90.0, -180.0, 180.0).all { it.seeded })
+        p.removeArea("a2")
+        assertTrue(db.dao().inBox(-90.0, 90.0, -180.0, 180.0).none { it.seeded })
+    }
+
+    @Test fun removingAnAreaThatIsBeingSeededCancelsTheSeedFirstSoItIsNotBroughtBack() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val src = FakeSource { c -> release.await(); CellFetch(listOf(cornerPlace(c))) }
+        val p = pack(src)
+        @Suppress("OPT_IN_USAGE")
+        val seed = kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.Default) { runCatching { p.seedArea("z", box) } }
+        kotlinx.coroutines.withTimeout(10_000) { while (src.asked.isEmpty()) kotlinx.coroutines.delay(10) } // the seed is inside its first fetch
+        p.removeArea("z")
+        val r = seed.await().exceptionOrNull()
+        assertTrue(r is SeedStopped); assertEquals("area removed", (r as SeedStopped).reason)
+        assertTrue(db.dao().areas().isEmpty()) // the seed's last write did not resurrect it
+        release.complete(Unit)
+        assertTrue(db.dao().areas().isEmpty())
     }
 }

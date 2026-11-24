@@ -70,6 +70,7 @@ class UrlConnectionPlaceHttp(
             if (wait > 0) pause(wait)
             lastByHost[u.host] = clock()
         }
+        com.rokid.context.memory.place.seedAdmitCheck() // a seed's request: privacy, free Wi-Fi and the data saver are asked again before EVERY request (a no-op outside a seed)
         return withContext(Dispatchers.IO) {
             val costlyAtStart = try { gate.costlyNow() } catch (e: Exception) { false } // the network class when the request starts
             val received = java.util.concurrent.atomic.AtomicLong(0)

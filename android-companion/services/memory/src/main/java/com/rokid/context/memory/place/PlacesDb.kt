@@ -65,6 +65,7 @@ interface PlacesDao {
     @Query("SELECT * FROM place WHERE parentId IN (:parentIds)") suspend fun childrenOf(parentIds: List<String>): List<PlaceEntity>
     @Query("UPDATE place SET lastUsedDay = :day WHERE id IN (:ids)") suspend fun touch(ids: List<String>, day: Int)
     @Query("UPDATE place SET seeded = 1 WHERE lat BETWEEN :south AND :north AND lon BETWEEN :west AND :east") suspend fun markSeeded(south: Double, north: Double, west: Double, east: Double): Int
+    @Query("UPDATE place SET seeded = 0 WHERE seeded = 1 AND substr(id, 1, 5) <> 'user:'") suspend fun clearSeeded(): Int
     @Query("UPDATE place SET pinned = :pinned WHERE id = :id AND substr(id, 1, 5) <> 'user:'") suspend fun setPinned(id: String, pinned: Boolean): Int
     @Query("SELECT * FROM place WHERE substr(id, 1, 5) = 'user:'") suspend fun userPlaces(): List<PlaceEntity>
     @Query("DELETE FROM place WHERE substr(id, 1, 5) = 'user:' AND id NOT IN (:keep)") suspend fun deleteUserExcept(keep: List<String>): Int
