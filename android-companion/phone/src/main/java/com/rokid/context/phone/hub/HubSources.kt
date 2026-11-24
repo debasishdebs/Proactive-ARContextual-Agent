@@ -17,7 +17,11 @@ interface HubSources {
 
 /** Phase 3 sources: Room memories, the legacy queue file and summary traces. */
 class LegacyHubSources(private val context: Context) : HubSources {
-    override suspend fun today(): List<MemoryLine> = MemoryGraph.get(context).memories.recent(24).asSequence()
+    // Retention v3 WP3: a demoted fact (SHORT, past the Quick recall window, no vector) is not a Home line; it stays in Moment / photo detail.
+    override suspend fun today(): List<MemoryLine> = MemoryGraph.get(context).db.retrievalDao().recentVisible(
+        24, Long.MAX_VALUE,
+        com.rokid.context.memory.retrieval.RecallWindow.of(com.rokid.context.memory.MemorySettingsStore.get(context)).sinceMs(System.currentTimeMillis()) ?: com.rokid.context.memory.db.Demotion.NO_WINDOW,
+    ).asSequence()
         .filter { it.reviewState == ReviewState.OK && !it.type.contains("review", ignoreCase = true) }
         .take(8)
         .map { MemoryLine(it.id, it.createdAt, it.text.take(80)) }

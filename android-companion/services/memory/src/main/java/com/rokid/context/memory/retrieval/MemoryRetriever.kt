@@ -20,6 +20,8 @@ class MemoryRetriever(
     private val lexical: LexicalRetriever,
     private val semantic: SemanticRetriever,
     private val memories: MemoryViewDao,
+    /** The Quick recall window (retention v3 WP3); [RecallWindow.NONE] = nothing is demoted, today's behaviour. */
+    private val recall: RecallWindow = RecallWindow.NONE,
 ) {
     /**
      * [poolOverride] (recall only, <= [MAX_POOL_OVERRIDE]) replaces the clamped `topK`; null keeps today's behaviour.
@@ -39,7 +41,8 @@ class MemoryRetriever(
      */
     private suspend fun retrieveNow(query: String, s: RetrievalSettings, nowMs: Long, notAfterMs: Long?, window: EventWindow?): RetrievalResult {
         val pool = if (window == null) maxOf(s.topK * 5, 40) else maxOf(s.topK * 5, 40, WINDOW_POOL)
-        val lex = if (s.mode == RetrievalMode.SEMANTIC) emptyList() else lexical.search(query, pool, s.minConfidence, notAfterMs, window)
+        val since = if (window == null) recall.sinceMs(nowMs) else null // a time-window question is not narrowed: it reaches demoted facts
+        val lex = if (s.mode == RetrievalMode.SEMANTIC) emptyList() else lexical.search(query, pool, s.minConfidence, notAfterMs, window, since)
         // Semantic cosine is in [-1, 1]; shift to [0, 1] so recency and fusion only ever see non-negative scores.
         val semSearch = if (s.mode == RetrievalMode.LEXICAL) null else semantic.searchOrOff(query, pool, s.minConfidence, notAfterMs, window)
         val sem = semSearch?.hits?.map { Hit(it.id, (it.score + 1) / 2) }
@@ -47,7 +50,7 @@ class MemoryRetriever(
         val off = if (unavailable) semSearch?.off ?: SemanticOff.QUERY_FAILED else null
         val (scores, used) = when {
             s.mode == RetrievalMode.LEXICAL -> lex.associate { it.id to it.score } to RetrievalMode.LEXICAL
-            sem == null -> (if (s.mode == RetrievalMode.SEMANTIC) lexical.search(query, pool, s.minConfidence, notAfterMs, window) else lex).associate { it.id to it.score } to RetrievalMode.LEXICAL
+            sem == null -> (if (s.mode == RetrievalMode.SEMANTIC) lexical.search(query, pool, s.minConfidence, notAfterMs, window, since) else lex).associate { it.id to it.score } to RetrievalMode.LEXICAL
             s.mode == RetrievalMode.SEMANTIC -> sem.associate { it.id to it.score } to RetrievalMode.SEMANTIC
             else -> s.fusion.fuse(lex, sem, notEmbedded(semSearch?.spaceId, lex, sem)) to RetrievalMode.HYBRID
         }
