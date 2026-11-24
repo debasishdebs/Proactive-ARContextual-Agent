@@ -13,6 +13,7 @@ import com.rokid.context.core.net.NetworkCost
 import com.rokid.context.core.net.NetworkCosts
 import com.rokid.context.core.net.Skipped
 import com.rokid.context.core.net.Transport
+import kotlinx.coroutines.asCoroutineDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -248,5 +249,23 @@ class DataSaverGraphTest {
         store.markBlocked(1_000 + DataSaverStore.MARK_REFRESH_MS - 1) // inside the window: the value does not move
         assertEquals(read, store.blockedSince())
         assertTrue(store.clearBlocked(read))
+    }
+
+    @Test fun theMonitorsRefreshCallbackOnlySchedulesOffTheCallingThread() {
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + pool.asCoroutineDispatcher())
+            val caller = Thread.currentThread()
+            val ran = java.util.concurrent.CountDownLatch(1)
+            var ranOn: Thread? = null
+            val gate = java.util.concurrent.CountDownLatch(1)
+            val hook = DataSaverGraph.refreshOffMain(scope) { gate.await(5, java.util.concurrent.TimeUnit.SECONDS); ranOn = Thread.currentThread(); ran.countDown() }
+            hook() // like NetworkCostMonitor.start(): returns at once even though the refresh would block
+            assertEquals("not run synchronously", 1L, ran.count)
+            gate.countDown()
+            assertTrue(ran.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertTrue(ranOn !== caller)
+            DataSaverGraph.refreshOffMain(scope) { error("boom") }() // a throwing refresh never escapes
+        } finally { pool.shutdownNow() }
     }
 }

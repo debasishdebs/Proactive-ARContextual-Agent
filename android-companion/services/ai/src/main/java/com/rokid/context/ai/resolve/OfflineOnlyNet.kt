@@ -59,15 +59,16 @@ object OfflineOnlyNet {
     /**
      * Pure rule (testable with a fake route): AUTO passes; otherwise the route must exist, be DIRECT, and its connected address must be [OfflineOnlyDns.isOwnNetwork] AND, while a VPN is up ([vpn]), loopback.
      */
-    fun check(m: ModelPrivacy, route: Route?, vpn: Boolean = vpnNow()) {
-        if (m == ModelPrivacy.AUTO) return
+    fun check(m: ModelPrivacy, route: Route?, vpn: Boolean? = null) {
+        if (m == ModelPrivacy.AUTO) return // before any probe: the default path does no extra work
+        val vpnUp = vpn ?: vpnNow()
         val sa: InetSocketAddress? = route?.socketAddress
         val own = route != null && route.proxy.type() == Proxy.Type.DIRECT && sa != null && !sa.isUnresolved && sa.address != null && OfflineOnlyDns.isOwnNetwork(sa.address)
         if (!own) {
             PcLog.i("OfflineOnly", "offline_only_refused_route")
             throw OfflineOnlyRefusedException()
         }
-        if (vpn && !sa!!.address.isLoopbackAddress) {
+        if (vpnUp && !sa!!.address.isLoopbackAddress) {
             PcLog.i("OfflineOnly", "offline_only_refused_vpn")
             throw OfflineOnlyRefusedException()
         }

@@ -199,7 +199,9 @@ class DataSaverGraph internal constructor(
         private fun create(app: Context): DataSaverGraph {
             val store = DataSaverStore.of(app)
             lateinit var graph: DataSaverGraph
-            val monitor = NetworkCostMonitor(app) { graph.refreshState() }
+            // The monitor calls this synchronously from start() for an active network (and on the caller's thread): hop to IO so the first Model privacy load never runs on main.
+            val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val monitor = NetworkCostMonitor(app, onChange = refreshOffMain(ioScope) { graph.refreshState() })
             val privacy = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)
             graph = DataSaverGraph(store, { monitor.snapshot }, reread = monitor::reread, privacy = privacy::current)
             monitor.start()
@@ -212,6 +214,9 @@ class DataSaverGraph internal constructor(
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch { privacy.mode.drop(1).collect { graph.refreshState() } }
             return graph
         }
+
+        /** A refresh callback that only schedules [block] on [scope] and returns at once (a throwing block is swallowed: a refresh never breaks the network watch). */
+        internal fun refreshOffMain(scope: CoroutineScope, block: () -> Unit): () -> Unit = { scope.launch { try { block() } catch (e: Exception) { } } }
 
         fun resetForTests(graph: DataSaverGraph?) { synchronized(this) { instance = graph } }
 

@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /** Model privacy is asked before EVERY place request, not once per cell: a fetch started in Automatic stops sending the moment Offline only is set. */
 class PlaceHttpOfflineOnlyTest {
@@ -36,6 +37,24 @@ class PlaceHttpOfflineOnlyTest {
             assertFailsWith<PlaceOfflineOnly> { http.get("https://a.example/y") }
         }
         assertEquals(1, opened.get())
+    }
+
+    @Test fun aModeFlipWhileTheRequestIsQueuedForIoStopsItBeforeTheConnection() {
+        val queued = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        val queueing = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { queued.add(block) }
+        }
+        @Volatile var mode = ModelPrivacy.AUTO
+        val opened = AtomicInteger()
+        val http = UrlConnectionPlaceHttp(minGapMs = 0, open = { opened.incrementAndGet(); error("must not connect") }, privacy = { mode }, io = queueing)
+        runBlocking {
+            val call = kotlinx.coroutines.async { runCatching { http.get("https://a.example/x") } }
+            while (queued.isEmpty()) kotlinx.coroutines.yield() // the request passed both checks and now waits for an IO thread
+            mode = ModelPrivacy.OFFLINE_ONLY // the user enables Offline only while it waits
+            while (true) queued.poll()?.run() ?: break
+            assertTrue(call.await().exceptionOrNull() is PlaceOfflineOnly)
+        }
+        assertEquals(0, opened.get())
     }
 
     @Test fun anOverpassMirrorLoopDoesNotTryTheOtherMirrorsOnARefusal() {
