@@ -36,9 +36,17 @@ class PlacePinningTest {
 
     private fun pinning() = PlacePinning(
         fix = { fixCalls++; fix }, zoneBlocked = { zone }, zones = { zoneList }, schedule = { d, r -> timers += d to r; { cancelled++ } }, nearby = { _, _ -> sites }, load = { stored }, save = { if (saveOk) { stored = it; true } else false },
-        elapsed = { now }, newId = { "user:00000000-0000-0000-0000-%012d".format(++ids) }, log = { logs += it },
+        elapsed = { now }, newId = { "user:00000000-0000-0000-0000-%012d".format(++ids) }, log = { logs += it }, onCreated = { created += it },
     )
+    private val created = mutableListOf<String>()
     private val form = PlacePinning.KINDS.let { PinForm("  Mirror   Wall ", PlaceKinds.ARCHAEOLOGICAL_SITE, 60, "wd:Q1", "Polished wall,\nold graffiti.") }
+
+    @Test fun create_emitsPinCreatedOnlyOnSave() = runBlocking {
+        val p = pinning(); p.begin().getOrThrow()
+        saveOk = false; assertTrue(p.create(form) is PinResult.Refused); assertTrue(created.isEmpty())
+        saveOk = true; p.begin().getOrThrow(); val r = p.create(form) as PinResult.Saved
+        assertEquals(listOf(r.place.id), created)
+    }
 
     @Test fun aFreshFixOutsideEveryZoneMakesAPinWithCleanWordsAndTheNearbySitesAreOffered() = runBlocking {
         val p = pinning()

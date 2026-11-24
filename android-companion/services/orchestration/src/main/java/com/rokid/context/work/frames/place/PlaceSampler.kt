@@ -80,6 +80,9 @@ data class BackendChoice(val backend: Backend?, val reason: ResolveReason, val m
     }
 }
 
+/** Why [PlaceSampler.retryRecent] was called: a pin was just saved, or the place pack of the cell arrived after a miss. */
+enum class RetryReason { PIN_CREATED, CELL_RETRY }
+
 enum class PlaceOutcome { DISABLED, ZONE, NO_FRAME, STALE_FRAME, SEEN, NO_FIX, STALE_FIX, NO_CANDIDATES, DUPLICATE, RATE_LIMITED, BUSY, MATCHED, NONE, CONTRACT, LOW_CONFIDENCE, NEARBY, NOTHING_NEARBY, DROPPED, FAILED, NOT_ADMITTED }
 
 /**
@@ -215,16 +218,44 @@ class PlaceSampler(
     }
     @Volatile private var tr = Trace(0)
 
+    /** One pending retry request (F4). [delayed] = it is the single delayed re-run after RATE_LIMITED. */
+    private class Retry(val reason: RetryReason, val pinId: String?, var delayed: Boolean = false)
+    private val pendingRetry = java.util.concurrent.atomic.AtomicReference<Retry?>(null)
+    private val delayedPending = AtomicBoolean(false)
+    @Volatile private var cellRetryFrame: String? = null
+
     /** A frame was stored. Cheap and non-blocking; the work runs on [scope]. */
-    fun poke() {
+    fun poke() = start(null)
+
+    /**
+     * F4: look again at the frame in view after an explicit user act (a pin was just saved) or a pack miss. Like [poke], but the attempt skips the `handled` check, the card dedupe and the weak window once; every other gate
+     * (zone, fix, fence, the call gap, [admit]) is unchanged. A busy single-flight queues ONE retry that runs when the current attempt ends; a RATE_LIMITED retry is re-run once at the end of the call gap.
+     * For [RetryReason.PIN_CREATED] the attempt goes on only when [pinId] is among the candidates (a pin made far away is no call).
+     */
+    fun retryRecent(reason: RetryReason, pinId: String? = null) {
+        if (closed || !enabled() || !retryOn()) return
+        start(Retry(reason, pinId))
+    }
+
+    private fun start(retry: Retry?) {
         if (closed || !enabled()) return
-        if (!flight.busy.compareAndSet(false, true)) { finish(PlaceOutcome.BUSY, Trace(elapsed()).also { it.reason = "single_flight" }); return }
+        if (!flight.busy.compareAndSet(false, true)) {
+            if (retry != null) pendingRetry.set(retry) else finish(PlaceOutcome.BUSY, Trace(elapsed()).also { it.reason = "single_flight" })
+            return
+        }
         // The single-flight is held until the card is decided, not through the shadow settle (a poke then is not logged BUSY). Released once per poke, by whichever of the two comes first.
         val held = AtomicBoolean(true)
         val release = { if (held.compareAndSet(true, false)) flight.busy.set(false) }
-        val j = fence.launch(scope) { runAttempt(release) }
+        val j = fence.launch(scope) { runAttempt(release, retry) }
         job = j
-        j.invokeOnCompletion { release() }
+        j.invokeOnCompletion { release(); pendingRetry.getAndSet(null)?.let { r -> if (!closed) start(r) } }
+    }
+
+    /** At most one delayed re-run of a retry that hit the call gap. */
+    private fun scheduleRetry(r: Retry, afterMs: Long) {
+        if (r.delayed || !delayedPending.compareAndSet(false, true)) return
+        r.delayed = true
+        fence.launch(scope) { try { delay(afterMs.coerceIn(0L, MIN_CALL_GAP_MS)) } finally { delayedPending.set(false) }; start(r) }
     }
 
     fun close() { closed = true; job?.cancel(); tr.shadowPending?.cancel(); shadowScope.coroutineContext[Job]?.cancel() }
@@ -250,14 +281,14 @@ class PlaceSampler(
     private fun mixedField(t: Trace, r: com.rokid.context.memory.retrieval.CandidateScorer.Result): String =
         " shMixed=${if (r.channel == com.rokid.context.memory.retrieval.CandidateScorer.Channel.IMAGE) t.shadowPackIds.count { r.rankOf(it) == null } else 0}"
 
-    private suspend fun runAttempt(release: () -> Unit) {
+    private suspend fun runAttempt(release: () -> Unit, retry: Retry?) {
         val ticket = coroutineContext[ZoneTicket] ?: fence.ticket()
         val mine = Trace(elapsed()) // a later poke may replace [tr] while this attempt settles its shadow: this attempt always logs its own trace
         tr = mine
         var decided: PlaceOutcome? = null
         try {
             sweep()
-            val o = attempt(ticket)
+            val o = attempt(ticket, retry)
             decided = o
             release()
             try { settleShadow(mine) } catch (c: CancellationException) { mine.shadow = null; mine.shadowPending?.cancel(); finish(o, mine); throw c } // the card is out: the line keeps the REAL outcome
@@ -309,7 +340,7 @@ class PlaceSampler(
         else -> "not_live"
     }
 
-    private suspend fun attempt(ticket: ZoneTicket): PlaceOutcome {
+    private suspend fun attempt(ticket: ZoneTicket, retry: Retry? = null): PlaceOutcome {
         val gen = generation()
         val cardEpoch = cards?.epoch() ?: 0L
         // The zone gate comes first: nothing below runs while a zone is active, approaching or unreadable.
@@ -322,7 +353,9 @@ class PlaceSampler(
             tr.reason = if (cap == null) "no_capture_time" else if (cap < now - RECENT_MS) "frame_too_old" else if (cap > now + SKEW_MS) "frame_in_future" else "tombstoned"
             return PlaceOutcome.STALE_FRAME
         }
-        if (f.frameId in handled) { tr.reason = "already_handled"; return PlaceOutcome.SEEN }
+        if (retry != null) tr.retry = if (retry.reason == RetryReason.PIN_CREATED) "pin_created" else "cell_retry"
+        else if (cellRetryFrame == f.frameId) { tr.retry = "cell_retry"; cellRetryFrame = null }
+        if (retry == null && f.frameId in handled) { tr.reason = "already_handled"; return PlaceOutcome.SEEN }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the fix is asked for
         val fx = fix() ?: run { tr.reason = "fix_unavailable"; return PlaceOutcome.NO_FIX }
         tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM); tr.fixSrc = "fresh"
@@ -334,7 +367,7 @@ class PlaceSampler(
         // S2: the fix is judged against the zones itself (box + buffer + approach margin, accuracy against the user, unreadable zones block), before the cell fetch or any upload.
         if (com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(try { zones() } catch (c: CancellationException) { throw c } catch (e: Exception) { null }, fx.lat, fx.lon, fx.accuracyM)) { tr.reason = "zone_fix"; return PlaceOutcome.ZONE }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
-        remember(f.frameId)
+        if (f.frameId !in handled) remember(f.frameId)
         if (tr.v2) seedFromHistory(now)
         val picked = backend()
         val online = picked.backend == Backend.ONLINE // Offline only is never online: the pack is not fetched from the network and no photo or name is sent
@@ -342,13 +375,18 @@ class PlaceSampler(
         val packAt = elapsed()
         val found = candidates(fx.lat, fx.lon, online)
         tr.candMs = (elapsed() - packAt).coerceAtLeast(0L); tr.cell = found.outcome.name; tr.cand = found.places.size
-        if (found.places.isEmpty()) { tr.reason = "pack_empty"; return PlaceOutcome.NO_CANDIDATES }
-        flight.lastAttempt?.let { a ->
+        if (retry?.reason == RetryReason.PIN_CREATED && (retry.pinId == null || found.places.none { it.id == retry.pinId })) { tr.retry = "pin_not_near"; tr.reason = "retry_pin_not_near"; return PlaceOutcome.NO_CANDIDATES }
+        if (found.places.isEmpty()) {
+            // F4: a pack that could not be read or fetched is not "nothing here": the frame is tried again at the next poke (the cell may have arrived by then). FRESH or FETCHED and empty stays handled.
+            if (retryOn() && found.outcome in PACK_MISS) { handled.remove(f.frameId); cellRetryFrame = f.frameId }
+            tr.reason = "pack_empty"; return PlaceOutcome.NO_CANDIDATES
+        }
+        if (retry == null) flight.lastAttempt?.let { a ->
             val d = Geo.distanceM(fx.lat, fx.lon, a.lat, a.lon)
             tr.dedupeAgeS = (now - a.at) / 1000; tr.dedupeDistB = bucketM(d)
             if (now - a.at in 0..DEDUPE_MS && d <= DEDUPE_M) { tr.reason = "same_place_recently"; return PlaceOutcome.DUPLICATE }
         }
-        if (tr.v2) flight.weak?.let { w ->
+        if (tr.v2 && retry == null) flight.weak?.let { w ->
             val win = weakWindowMs(w.streak)
             if (now - w.at in 0..win && Geo.distanceM(fx.lat, fx.lon, w.lat, w.lon) <= DEDUPE_M) { tr.weakWin = (win / 1000).toString(); tr.reason = "weak_backoff"; return PlaceOutcome.DUPLICATE }
         }
@@ -358,7 +396,7 @@ class PlaceSampler(
         val sinceCall = elapsed() - flight.lastCallAt
         tr.callGapS = if (flight.lastCallAt < 0) -1L else (sinceCall / 1000).coerceAtLeast(0L)
         val callOk = online && sinceCall >= MIN_CALL_GAP_MS
-        if (online && !callOk) { tr.reason = "call_gap_${MIN_CALL_GAP_MS / 1000}s"; return PlaceOutcome.RATE_LIMITED }
+        if (online && !callOk) { tr.reason = "call_gap_${MIN_CALL_GAP_MS / 1000}s"; if (retry != null) scheduleRetry(retry, MIN_CALL_GAP_MS - sinceCall); return PlaceOutcome.RATE_LIMITED }
         if (!tr.v2) flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now) // v2: only a published (or suppressed) card consumes the card dedupe
         stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
         if (!callOk) { // Offline only without an on-device model keeps the pack-only fallback (no photo analysis, nothing leaves the phone) and says why in the log
@@ -563,6 +601,7 @@ class PlaceSampler(
         const val MAX_FIX_ACCURACY_M = 50f
         const val MIN_CALL_GAP_MS = 20_000L
         const val DEDUPE_MS = 120_000L
+        private val PACK_MISS = setOf(com.rokid.context.memory.place.CellOutcome.FAILED, com.rokid.context.memory.place.CellOutcome.OFFLINE, com.rokid.context.memory.place.CellOutcome.PARTIAL)
         const val DEDUPE_M = 30.0
         const val ONCE_PER_PLACE_MS = 30 * 60_000L
         const val WEAK_STREAK_RESET_MS = 10 * 60_000L

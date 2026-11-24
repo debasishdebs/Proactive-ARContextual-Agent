@@ -14,7 +14,11 @@
   - OUTDOOR_10M: SJ_ENTRY 1, SJ_BRONZE 1, SJ_IVORY 1, SJ_EXTERIOR 1, GOLCONDA_LS 1. AS_RECORDED SJ_EXTERIOR 1.
   - ASSUMED_PIN_10M: RAMOJI 6 cards (71 calls), ANTERA 4 cards (51 calls), GOLCONDA_LS 1. StubNone x OUTDOOR_10M: 35 calls (limit 42), 0 cards.
   - NOT MET at S2: OUTDOOR_10M SJ_IVORY >= 2 (got 1; B1 also 1; once-per-place suppression keeps the second Ivory card out; the spec's earlier 2 came from the F4 overlay, S3 may recover it). Report to controller.
-- Next step: S3 (F4 retry on pin / cell).
+- S3 done: PlaceSampler.retryRecent(PIN_CREATED|CELL_RETRY, pinId), PlaceGraph.pinCreated, PlacePinning.onCreated, HubGraph collector; pack-miss frames leave `handled`. F4 overlay deleted; replay calls the real retryRecent at each pin's creation (not in the legacy Historical runs). Place + replay tests green, phone compiles.
+  - S3 replay (counts; run dir run-2026-11-24T06-2x, newest): wrong 0 in every HEAD run; calibration TRUSTED 5/6; INDOOR_60M/STALE 0 cards; StubNone x OUTDOOR_10M 37 calls (limit 42), 0 cards.
+  - ASSUMED_PIN_10M: ANTERA_FACADE 1 card (the retry), ANTERA 4, RAMOJI 6, GOLCONDA_LS 1. OUTDOOR_10M: SJ_BRONZE 1, SJ_IVORY 1.
+  - NOT MET: OUTDOOR_10M SJ_BRONZE >= 2 and SJ_IVORY >= 2. The spec's S2 once-per-place-per-30-min suppression applies to every card kind, so a second card for the same place inside a short span cannot appear; the numbers 4 and 2 came from the overlay before S2. S2 and S3 criteria contradict each other here; kept S2 (no card storm). Controller decision needed.
+- Next step: S4 (F2 fix reuse).
 
 ## Step log (counts only, no names / coordinates / ids)
 | Step | Status | Commit | Notes |

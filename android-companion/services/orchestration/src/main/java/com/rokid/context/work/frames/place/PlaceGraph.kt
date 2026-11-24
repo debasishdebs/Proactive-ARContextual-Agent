@@ -17,6 +17,9 @@ object PlaceGraph {
     @Volatile private var pack: PlacePack? = null
     val port: PlaceCardHolder = PlaceCardHolder()
 
+    /** F4: the id of a pin that was just saved (only by the pin dialog; imports, edits and restores never emit). One buffered value: two pins within a moment give one retry. */
+    val pinCreated = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 1)
+
     /**
      * THE zone fence of Place Guide, shared by the sampler, the pack's fetches, the upload, the memory write and the card. The zone controller [protect]s it; the switch, Delete all and Forget
      * trip it. Everything in flight is cancelled by it.

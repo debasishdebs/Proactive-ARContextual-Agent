@@ -74,6 +74,7 @@ class AndroidPlaceGuideControl(
             load = { PlaceGraph.pins(app).pins() }, save = { PlaceGraph.savePins(app, it) },
             elapsed = android.os.SystemClock::elapsedRealtime, log = { com.rokid.context.core.log.PcLog.i("PcPlace", it) },
             momentAlive = { id -> momentDao().photoMomentsOf(listOf(id)).isNotEmpty() },
+            onCreated = { id -> PlaceGraph.pinCreated.tryEmit(id) },
         )
     }
 

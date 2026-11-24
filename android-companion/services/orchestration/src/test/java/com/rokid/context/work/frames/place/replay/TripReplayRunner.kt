@@ -4,6 +4,7 @@ import com.rokid.context.work.frames.place.BackendChoice
 import com.rokid.context.work.frames.place.PlaceFlight
 import com.rokid.context.work.frames.place.PlaceOutcome
 import com.rokid.context.work.frames.place.PlaceSampler
+import com.rokid.context.work.frames.place.RetryReason
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -47,7 +48,7 @@ data class ReplayResult(val spec: RunSpec, val rows: List<ReplayRow>, val reques
 class TripReplayRunner(private val bundle: ReplayBundle) {
     private val track = ReplayTrack(bundle.fixes)
 
-    private data class Event(val t: Long, val frame: ReplayFrame?, val extra: String)
+    private data class Event(val t: Long, val frame: ReplayFrame?, val extra: String, val pinId: String? = null)
 
     fun run(scope: TestScope, spec: RunSpec): ReplayResult {
         var now = 0L
@@ -69,27 +70,26 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             saveMemory = { true }, onCard = {}, clock = { now }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
             backend = { BackendChoice.ONLINE }, admit = { true }, photoAllowed = { true }, zones = { emptyList() }, flight = flight,
             log = { logs += it }, stats = {}, elapsed = { now },
-            dedupeV2On = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
+            dedupeV2On = { !spec.legacyDedupe }, retryOn = { !spec.legacyDedupe }, // S2 is built: the replay runs the real dedupe v2
         )
 
         val main = sampler()
         val events = ArrayList<Event>()
         for (f in bundle.frames) events += Event(f.createdAt, f, "")
-        if (spec.overlays.f4 && spec.activation == Activation.AS_CREATED) for (p in bundle.pins) if (p.activeFrom > 0) events += Event(p.activeFrom + 1_000, null, "+F4")
+        if (spec.activation == Activation.AS_CREATED && !spec.legacyDedupe) for (p in bundle.pins) if (p.activeFrom > 0) events += Event(p.activeFrom + 1_000, null, "+F4", p.id) // the pin dialog's save: the real retryRecent(PIN_CREATED)
         events.sortWith(compareBy({ it.t }, { if (it.extra.isEmpty()) 0 else 1 }))
 
         val rows = ArrayList<ReplayRow>(events.size)
         for (ev in events) {
             now = ev.t
-            var s = main
-            if (ev.extra == "+F4") { s = sampler(); flight.lastAttempt = null; flight.weak = null } // a fresh sampler: `handled` is empty; pin creation is an explicit user act
             store.lastReturned = null; lastFix = null; matcher.note = null
             val f1Decision = f1?.let { rule ->
                 val frame = store.peek(now - PlaceSampler.RECENT_MS)
                 rule.decide(now, fixSource.fixAt(now, frame).fix, pack.activePins()).text
             } ?: "-"
             val mark = logs.size
-            s.poke(); scope.runCurrent()
+            if (ev.extra == "+F4") main.retryRecent(RetryReason.PIN_CREATED, ev.pinId) else main.poke()
+            scope.runCurrent()
             val line = logs.drop(mark).lastOrNull { it.startsWith("place attempt ") } ?: ""
             val kv = KV.findAll(line).associate { it.groupValues[1] to it.groupValues[2] }
             val outcome = kv["outcome"]?.let { runCatching { PlaceOutcome.valueOf(it) }.getOrNull() }

@@ -82,7 +82,7 @@ object ReplayReport {
 
     /** The per-place table for one group (plan 7): consecutive SEEN / NO_FRAME rows are collapsed. */
     fun placeTable(span: TruthSpan, g: ReplayGroup): String {
-        val cols = listOf("F1", "F2", "F4", "ALL")
+        val cols = listOf("F1", "F2", "ALL")
         val byOverlay = g.overlays.mapValues { (_, res) -> res.rows.filter { it.extra.isEmpty() }.associateBy { it.pokeMs } }
         val head = g.head.rows.filter { it.extra.isEmpty() && it.frameCapMs?.let { c -> c in span } == true }
         val sb = StringBuilder("| IST | Frame | Motion | Pos | HEAD | ${cols.joinToString(" | ")} | Truth |\n|---|---|---|---|---|${cols.joinToString("|") { "---" }}|---|\n")
@@ -99,8 +99,8 @@ object ReplayReport {
             sb.append("| ${ist(r.pokeMs)}${if (n > 1) " .. ${ist(head[j].pokeMs)}" else ""} | ${r.frameId?.takeLast(6) ?: "-"} | ${r.motion} | ${r.pos}${if (r.assumed) " (ASSUMED)" else ""} | ${headCell(r)}${if (n > 1) " x$n" else ""} | ${cells.joinToString(" | ")} | ${span.label} |\n")
             i = j + 1
         }
-        for ((name, res) in g.overlays) for (e in res.rows.filter { it.extra.isNotEmpty() && it.frameCapMs?.let { c -> c in span } == true })
-            sb.append("| ${ist(e.pokeMs)} ${e.extra} | ${e.frameId?.takeLast(6) ?: "-"} | ${e.motion} | ${e.pos} | - | ${cols.joinToString(" | ") { c -> if (c == name || (c == "F4" && name == "ALL")) e.verdict + if (e.isCard) " [${e.chosenName}]" else "" else "-" }} | ${span.label} |\n")
+        for (e in g.head.rows.filter { it.extra.isNotEmpty() && it.frameCapMs?.let { c -> c in span } == true })
+            sb.append("| ${ist(e.pokeMs)} ${e.extra} | ${e.frameId?.takeLast(6) ?: "-"} | ${e.motion} | ${e.pos} | ${e.verdict}${if (e.isCard) " [${e.chosenName}]" else ""} | ${cols.joinToString(" | ") { "-" }} | ${span.label} |\n")
         return sb.toString()
     }
 
@@ -170,7 +170,7 @@ object ReplayReport {
         fun group(title: String, stage: MatchStage, sc: FixScenario, act: Activation = Activation.AS_CREATED, withSites: Boolean = false, overlays: Boolean = true): ReplayGroup {
             val head = runner.run(scope, RunSpec(stage, sc, act, Overlays.HEAD, sites = withSites, legacyDedupe = stage === Historical))
             val ov = if (!overlays) emptyMap() else linkedMapOf(
-                "F1" to Overlays.F1, "F2" to Overlays.f2(10), "F4" to Overlays.F4, "ALL" to Overlays.ALL,
+                "F1" to Overlays.F1, "F2" to Overlays.f2(10), "ALL" to Overlays.ALL,
             ).mapValues { (_, o) -> runner.run(scope, RunSpec(if (o == Overlays.ALL && stage === Oracle) CaptionTextOrOracle else stage, sc, act, o, sites = withSites)) }
             return ReplayGroup(title, head, ov)
         }
@@ -186,7 +186,7 @@ object ReplayReport {
         return groups to calibrate(bundle, cal.head)
     }
 
-    /** ALL = F1+F2+F4 with the F5 text matcher where it has a hit (H1): a frame whose caption names no candidate falls through to the oracle. */
+    /** ALL = F1+F2 with the F5 text matcher where it has a hit (H1): a frame whose caption names no candidate falls through to the oracle. */
     internal object CaptionTextOrOracle : MatchStage {
         override val label = "CaptionText+Oracle"
         override fun create(bundle: ReplayBundle): ReplayMatcher {
