@@ -1,6 +1,12 @@
 package com.rokid.context.ai.embed
 
+import com.rokid.context.ai.DataSaverBlockedException
 import com.rokid.context.ai.Endpoint
+import com.rokid.context.core.net.DataDecision
+import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.DataPolicy
+import com.rokid.context.core.net.EndpointReach
+import com.rokid.context.core.net.Skipped
 import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.Http
 import com.rokid.context.ai.KeyTransport
@@ -37,6 +43,11 @@ class EmbeddingClient(
     private val native: (String, List<String>, Boolean) -> List<FloatArray> = { path, texts, normalize -> LlamaCppNativeProvider.embed(path, texts, normalize) },
     /** Model privacy, read at every call: under OFFLINE_ONLY a REMOTE endpoint is refused before anything is sent (the on-device model and the user's own network still work). A reader that throws counts as OFFLINE_ONLY. */
     private val privacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.AUTO },
+    /**
+     * The roaming data saver (Codex data-saver r1 P1-2): every remote batch is admitted by its ACTUAL endpoint reach and traffic kind (one or two short texts = SMALL, a batch = BULK_OTHER) and its request and
+     * response bytes are counted. On-device and loopback endpoints are exempt, like everywhere else. Allows everything by default (tests, tools).
+     */
+    private val dataGate: com.rokid.context.core.net.DataGate = com.rokid.context.core.net.DataGate.ALLOW_ALL,
 ) {
     /** Owns native work so a timed-out, uninterruptible call keeps running here without blocking or overlapping anyone. */
     private val nativeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -58,6 +69,9 @@ class EmbeddingClient(
                 put("model", JsonPrimitive(model)); put("input", strings(inputs)); dimensions?.let { put("dimensions", JsonPrimitive(it)) }
             }
         }
+        val kind = if (inputs.size <= SMALL_MAX_TEXTS && inputs.sumOf { it.length } <= SMALL_MAX_CHARS) DataKind.SMALL else DataKind.BULK_OTHER
+        val counted = reach(e) != EndpointReach.DEVICE && !com.rokid.context.ai.EndpointReaches.isLoopback(e)
+        admit(e, kind)
         val sent = key.takeIf { e.kind == EndpointKind.AZURE_OPENAI || e.kind == EndpointKind.OPENAI_COMPAT }
         KeyTransport.requireSecure(url, sent)
         val request = Request.Builder().url(url).post(body.toString().toRequestBody("application/json".toMediaType())).apply {
@@ -67,12 +81,24 @@ class EmbeddingClient(
                 else -> Unit
             }
         }.build()
-        val text = withContext(Dispatchers.IO) {
-            http.newCall(request).execute().use { r ->
-                val t = r.body?.string().orEmpty()
-                if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", t)
-                t
+        val txBytes = (request.body?.contentLength() ?: 0L).coerceAtLeast(0)
+        val costlyAtStart = counted && safeCostly()
+        var rxBytes = 0L
+        var count = true
+        val text = try {
+            withContext(Dispatchers.IO) {
+                http.newCall(request).execute().use { r ->
+                    val t = r.body?.string().orEmpty()
+                    rxBytes = t.toByteArray(Charsets.UTF_8).size.toLong()
+                    if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", t)
+                    t
+                }
             }
+        } catch (t: Throwable) {
+            if (com.rokid.context.ai.TrafficClass.provablyUnsent(t)) count = false // a stall, timeout or cancel keeps the request counted
+            throw t
+        } finally {
+            if (count && counted) try { dataGate.sentAt(kind, txBytes, rxBytes, 0, costlyAtStart) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Throwable) { }
         }
         val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrElse { throw ProviderResponseException("Embedding reply wasn't JSON") }
         val raw: List<JsonArray> = try {
@@ -125,10 +151,14 @@ class EmbeddingClient(
     suspend fun revision(e: Endpoint, model: String): String? {
         if (e.kind != EndpointKind.OLLAMA) return null
         com.rokid.context.ai.OfflineOnlyGuard.require(privacy, e)
+        admit(e, DataKind.SMALL)
+        val counted = reach(e) != EndpointReach.DEVICE && !com.rokid.context.ai.EndpointReaches.isLoopback(e)
+        val costlyAtStart = counted && safeCostly()
         val request = Request.Builder().url("${e.baseUrl.trimEnd('/')}/api/tags").get().build()
         val text = withContext(Dispatchers.IO) {
             http.newCall(request).execute().use { r ->
                 val t = r.body?.string().orEmpty()
+                if (counted) try { dataGate.sentAt(DataKind.SMALL, 300, t.toByteArray(Charsets.UTF_8).size.toLong(), 0, costlyAtStart) } catch (_: Exception) { }
                 if (r.code == 404) return@use null // an older server without /api/tags: no revision to report
                 if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", t)
                 t
@@ -140,10 +170,24 @@ class EmbeddingClient(
             ?.let { (it["digest"] as? JsonPrimitive)?.content }
     }
 
+    private fun reach(e: Endpoint): EndpointReach = com.rokid.context.ai.EndpointReaches.of(e)
+    private fun safeCostly(): Boolean = try { dataGate.costlyNow() } catch (_: Exception) { true }
+
+    /** The data saver's decision for this endpoint and kind; a refusal is counted once and thrown as the same exception the router uses (retryable, nothing was sent). A gate that throws refuses (fail closed). */
+    private fun admit(e: Endpoint, kind: DataKind) {
+        val d = try { dataGate.decide(kind, reach(e)) } catch (c: kotlin.coroutines.cancellation.CancellationException) { throw c } catch (_: Exception) { DataDecision(false, DataPolicy.R_UNKNOWN) }
+        if (d.allowed) return
+        try { dataGate.skipped(kind, Skipped.BULK, d) } catch (_: Exception) { }
+        throw DataSaverBlockedException(d.reason, kind, Skipped.BULK).also { it.counted = true }
+    }
+
     private fun strings(xs: List<String>) = JsonArray(xs.map { JsonPrimitive(it) })
 
     companion object {
         /** Texts per on-device call: 8 of up to 2,000 chars (about 512 tokens each) on bge-small stay well inside 60 s. */
         const val NATIVE_BATCH = 8
+        /** A query, a canary or an Endpoint Test: at most this many short texts is SMALL traffic; anything bigger is a BULK_OTHER batch. */
+        const val SMALL_MAX_TEXTS = 2
+        const val SMALL_MAX_CHARS = 4_000
     }
 }
