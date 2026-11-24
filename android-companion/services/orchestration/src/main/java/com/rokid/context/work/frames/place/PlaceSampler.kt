@@ -29,12 +29,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 data class PlaceFix(val lat: Double, val lon: Double, val ageMs: Long, val accuracyM: Float)
 
 /** A dwell photo: its id and when it was captured (phone clock, null = unknown). */
-data class PlaceFrame(val frameId: String, val capturedAtMs: Long?)
+data class PlaceFrame(val frameId: String, val capturedAtMs: Long?, val motion: String? = null, val sessionId: String? = null)
 
 interface PlaceFrameStore {
     /** The newest dwell photo received at or after [sinceReceivedMs]. */
     suspend fun newestDwell(sinceReceivedMs: Long): PlaceFrame?
     suspend fun tombstoned(frameId: String): Boolean
+    /** True when a WALKING or VEHICLE frame was received at or after [sinceReceivedMs] (F2 fix reuse). A query only. */
+    suspend fun movedSince(sinceReceivedMs: Long): Boolean = false
 }
 
 /** The model's answer and whether the router proved the photo reached it. */
@@ -159,6 +161,15 @@ class PlaceSampler(
     private val onAttemptEnd: () -> Unit = {},
     /** Detached from the attempt on purpose: an embed that cannot be cancelled must not hold the attempt (its late result is dropped). */
     private val shadowScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    /** F6: the card history sink (S1 seam; the default drops every event). Holds no coordinates. */
+    private val history: suspend (PlaceHistoryEvent) -> Unit = {},
+    /** Developer switches, read synchronously per attempt. Defaults OFF keep every older test unchanged; production passes the real flags. */
+    private val pinFirstOn: () -> Boolean = { false },
+    private val fixReuseOn: () -> Boolean = { false },
+    private val dedupeV2On: () -> Boolean = { false },
+    private val retryOn: () -> Boolean = { false },
+    /** The user pins among the candidates of an attempt (identity: S5 uses the pins inside `found.places`). */
+    private val pinsNear: (List<PlaceEntity>) -> List<PlaceEntity> = { it },
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
@@ -174,6 +185,8 @@ class PlaceSampler(
         var chosen = "-"; var distB = "-"; var confPct = -1; var dedupeAgeS = -1L; var dedupeDistB = "-"; var callGapS = -1L
         var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
+        /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
+        var fixSrc = "-"; var fixRealAgeB = "-"; var pinFirst = "-"; var weakWin = "-"; var retry = "-"; var hist = "-"; var textHit = "-"
         /** null = shadow off (the line is unchanged); "err", "na" or "ok". */
         var shadow: String? = null; var shadowOut: ShadowOutcome? = null; var shadowRank = "na"; var shadowAgrees = "na"
         var shadowPending: kotlinx.coroutines.Deferred<ShadowOutcome?>? = null; var shadowStartedAt = 0L; var shadowChoice: String? = null
@@ -202,7 +215,7 @@ class PlaceSampler(
         stats(o)
         log("place outcome=${o.name}")
         val totalMs = (elapsed() - t.startedAt).coerceAtLeast(0L)
-        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION}${shadowFields(t)}")
+        log("place attempt outcome=${o.name} reason=${t.reason} call=${t.call} online=${t.online} cell=${t.cell} cand=${t.cand} ids=${t.ids} frameAgeS=${t.frameAgeS} fixAgeB=${t.fixAgeB} accB=${t.accB} candMs=${t.candMs} callMs=${t.callMs} totalMs=$totalMs chosen=${t.chosen} distB=${t.distB} confPct=${t.confPct} dedupeAgeS=${t.dedupeAgeS} dedupeDistB=${t.dedupeDistB} callGapS=${t.callGapS} card=${t.card} cardWhy=${t.cardWhy} reveal=${t.reveal} err=${t.err} mode=${t.mode} backend=${t.backend} resolve=${t.resolve} label=${t.label} thrV=${BackendThresholds.VERSION} fixSrc=${t.fixSrc} fixRealAgeB=${t.fixRealAgeB} pinFirst=${t.pinFirst} weakWin=${t.weakWin} retry=${t.retry} hist=${t.hist} textHit=${t.textHit}${shadowFields(t)}")
     }
 
     /** The content-free shadow fields: buckets, a rank, a boolean and a duration. Empty when the shadow flag is off, so the line is then byte-identical to before. */
@@ -292,7 +305,7 @@ class PlaceSampler(
         if (f.frameId in handled) { tr.reason = "already_handled"; return PlaceOutcome.SEEN }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the fix is asked for
         val fx = fix() ?: run { tr.reason = "fix_unavailable"; return PlaceOutcome.NO_FIX }
-        tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM)
+        tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM); tr.fixSrc = "fresh"
         if (fx.ageMs < 0 || fx.ageMs > MAX_FIX_AGE_MS || fx.accuracyM.isNaN() || fx.accuracyM > MAX_FIX_ACCURACY_M || !fx.lat.isFinite() || !fx.lon.isFinite()) {
             tr.reason = if (fx.ageMs < 0) "fix_age_negative" else if (fx.ageMs > MAX_FIX_AGE_MS) "fix_too_old" else if (!fx.lat.isFinite() || !fx.lon.isFinite()) "fix_not_finite" else "fix_inaccurate"
             return PlaceOutcome.STALE_FIX
@@ -457,6 +470,8 @@ class PlaceSampler(
         /** Log buckets: never an exact position. Distances are metres to a candidate's centre. */
         internal fun bucketM(m: Double): String = when { m < 25 -> "lt25m"; m < 50 -> "lt50m"; m < 100 -> "lt100m"; m < 250 -> "lt250m"; m < 500 -> "lt500m"; m < 1000 -> "lt1km"; m < 5000 -> "lt5km"; else -> "ge5km" }
         internal fun bucketAgeMs(ms: Long): String = when { ms < 0 -> "negative"; ms <= 5_000 -> "le5s"; ms <= 15_000 -> "le15s"; ms <= 30_000 -> "le30s"; ms <= 60_000 -> "le60s"; else -> "gt60s" }
+        /** The real age of a reused fix (F2): the buckets above plus le5min and le10min. */
+        internal fun bucketRealAgeMs(ms: Long): String = if (ms <= 60_000) bucketAgeMs(ms) else if (ms <= 300_000) "le5min" else if (ms <= 600_000) "le10min" else "gt10min"
         internal fun bucketAccuracyM(m: Float): String = when { m.isNaN() -> "nan"; m <= 10f -> "le10m"; m <= 25f -> "le25m"; m <= 50f -> "le50m"; m <= 100f -> "le100m"; else -> "gt100m" }
         /** At most 12 ids (nearest first) and how many more: keeps the line under the 1 KiB cap. */
         internal fun idList(ids: List<String>): String = if (ids.isEmpty()) "-" else ids.take(12).joinToString(",") + if (ids.size > 12) ",+${ids.size - 12}" else ""

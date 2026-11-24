@@ -11,7 +11,7 @@ import com.rokid.context.work.frames.place.PlaceFrameStore
  * The frame store of the replay: the same query as `FrameMetaDao.newestDwell` evaluated as of replay time [now] (plan 4.3): the dwell row with the greatest
  * `createdAt` in `[since, now]`, ties by frameId, not tombstoned at [now]. The capture time is `capturedAt`.
  */
-class ReplayFrameStore(frames: List<ReplayFrame>, private val now: () -> Long) : PlaceFrameStore {
+class ReplayFrameStore(private val frames: List<ReplayFrame>, private val now: () -> Long) : PlaceFrameStore {
     private val dwell = frames.filter { it.dwell }.sortedWith(compareBy({ it.createdAt }, { it.frameId }))
     private val byId = frames.associateBy { it.frameId }
     /** The frame the sampler was last given (reset by the runner before each poke). */
@@ -27,7 +27,8 @@ class ReplayFrameStore(frames: List<ReplayFrame>, private val now: () -> Long) :
         return null
     }
 
-    override suspend fun newestDwell(sinceReceivedMs: Long): PlaceFrame? = peek(sinceReceivedMs)?.also { lastReturned = it }?.let { PlaceFrame(it.frameId, it.capturedAt) }
+    override suspend fun newestDwell(sinceReceivedMs: Long): PlaceFrame? = peek(sinceReceivedMs)?.also { lastReturned = it }?.let { PlaceFrame(it.frameId, it.capturedAt, it.motion, it.sessionId) }
+    override suspend fun movedSince(sinceReceivedMs: Long): Boolean = now().let { t -> frames.any { it.createdAt in sinceReceivedMs..t && (it.motion == "WALKING" || it.motion == "VEHICLE") } }
     override suspend fun tombstoned(frameId: String): Boolean = byId[frameId]?.let { tombstonedNow(it) } ?: false
     private fun tombstonedNow(f: ReplayFrame) = f.tombAt != -1L && f.tombAt <= now()
 }

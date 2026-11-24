@@ -400,6 +400,10 @@ interface FrameMetaDao {
     @Query("SELECT * FROM frame_meta WHERE dwell = 1 AND createdAt >= :sinceMs AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_meta.frameId) ORDER BY createdAt DESC, frameId LIMIT 1")
     suspend fun newestDwell(sinceMs: Long): FrameMetaEntity?
 
+    /** Place Guide F2: whether any WALKING or VEHICLE frame was received at or after [sinceMs] (a query only, no schema change). */
+    @Query("SELECT EXISTS(SELECT 1 FROM frame_meta WHERE createdAt >= :sinceMs AND motion IN ('WALKING','VEHICLE'))")
+    suspend fun movedSince(sinceMs: Long): Boolean
+
     /** Wave 3: sets the capture time of a photo (phone clock). Returns the rows changed. */
     @Query("UPDATE frame_meta SET capturedAtMs = :capturedAtMs WHERE frameId = :frameId")
     suspend fun setCapturedAt(frameId: String, capturedAtMs: Long): Int

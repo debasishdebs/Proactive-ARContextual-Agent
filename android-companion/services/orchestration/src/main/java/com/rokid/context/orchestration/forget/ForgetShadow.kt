@@ -13,7 +13,7 @@ import com.rokid.context.memory.forget.lifecycle.Ref
 
 /**
  * Developer-only switches, kept in the Developer mode preference file (`pc_dev`): per-device, off after a restore (the file is excluded from backup and device transfer, `backup_rules.xml` and
- * `data_extraction_rules.xml`) and never part of a settings export. Every switch is OFF by default and has no UI.
+ * `data_extraction_rules.xml`) and never part of a settings export. Every switch has no UI; the place-fix switches are ON by default, the rest OFF.
  */
 object DeveloperFlags {
     /** The same file as the phone's `DeveloperModeStore` (a test in the phone module pins the two names together). */
@@ -33,6 +33,25 @@ object DeveloperFlags {
 
     fun placeShadowScore(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_SHADOW_SCORE, false) }.getOrDefault(false)
     fun setPlaceShadowScore(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_SHADOW_SCORE, on).apply(); if (!on) com.rokid.context.work.frames.place.ShadowCaches.clearAll() } // OFF: the in-memory shadow vectors go at once
+
+    /** Place fixes (spec 2026-11-24 section 2): each is ON by default and has no UI; OFF restores the older behaviour. */
+    const val PLACE_PIN_FIRST = "placePinFirst"
+    const val PLACE_FIX_REUSE = "placeFixReuse"
+    const val PLACE_DEDUPE_V2 = "placeDedupeV2"
+    const val PLACE_RETRY_ON_PIN = "placeRetryOnPin"
+    const val PLACE_TEXT_MATCH = "placeTextMatch"
+    private fun flag(context: Context, key: String): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(key, true) }.getOrDefault(true)
+    private fun setFlag(context: Context, key: String, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(key, on).apply() }
+    fun placePinFirst(context: Context) = flag(context, PLACE_PIN_FIRST)
+    fun setPlacePinFirst(context: Context, on: Boolean) = setFlag(context, PLACE_PIN_FIRST, on)
+    fun placeFixReuse(context: Context) = flag(context, PLACE_FIX_REUSE)
+    fun setPlaceFixReuse(context: Context, on: Boolean) = setFlag(context, PLACE_FIX_REUSE, on)
+    fun placeDedupeV2(context: Context) = flag(context, PLACE_DEDUPE_V2)
+    fun setPlaceDedupeV2(context: Context, on: Boolean) = setFlag(context, PLACE_DEDUPE_V2, on)
+    fun placeRetryOnPin(context: Context) = flag(context, PLACE_RETRY_ON_PIN)
+    fun setPlaceRetryOnPin(context: Context, on: Boolean) = setFlag(context, PLACE_RETRY_ON_PIN, on)
+    fun placeTextMatch(context: Context) = flag(context, PLACE_TEXT_MATCH)
+    fun setPlaceTextMatch(context: Context, on: Boolean) = setFlag(context, PLACE_TEXT_MATCH, on)
 
     /** Place card history on the phone (spec 2026-11-24 F6): a phone-only list in `places.db`. ON by default; OFF stops new rows and hides nothing already stored (Forget still deletes them). */
     const val PLACE_CARD_HISTORY = "placeCardHistory"
