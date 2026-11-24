@@ -2,6 +2,9 @@
 
 Owner: the user (Debasish). Repo: ~/Desktop/rokid/proactive-context-agent, branch `feat/v101-ask-eval` (LOCAL; only ROADMAP.md was ever pushed). Android app: phone + Rokid glasses + optional watch. Nothing from 19-24 Nov is installed except what was installed on 19 Nov (build 18c1b76a).
 
+## 0i. REMIND THE USER IN THE MORNING (25 Nov)
+(1) Offline vision spike: standalone test app from ~/Desktop/rokid/sample_vllm_llamacpp_android.txt, SmolVLM2-500M, ~4-6 h agent work, needs the user's yes/no (assessment: handoffs/offline-vlm-links-2026-11-25.md). (2) Fresh phone pull for the Saturday migration rehearsal. Open these first in the first morning message.
+
 ## 0h. 25 Nov ~03:00: map decisions
 Offline maps/tile download CANCELLED (zones are coordinates / 5 km cell keys; the map is only a drawing surface; MapTiler free terms forbid bulk download, handoffs/maptiler-terms-2026-11-25.md). Map screen UX (user): when OFFLINE show a plain 'You are offline. Go online to draw or change zones.' instead of the plain-grid drawing mode; map editing disabled offline. No extra safety work: the main Pause button already works offline and zone list actions need no network (user: do not over-engineer). RULING 25 Nov: KEEP the zone guard (a zone cannot be edited, disabled or deleted while INSIDE; ZoneController BLOCKED_INSIDE), no change. PMTiles sideload stays in the code, to be deprecated later. Room v18 plan: docs/superpowers/plans/2026-11-25-room-v18-location-plan.md, 6 owner questions awaiting answer (defaults proposed).
 
