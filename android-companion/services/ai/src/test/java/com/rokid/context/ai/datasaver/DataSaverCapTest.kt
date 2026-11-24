@@ -262,4 +262,75 @@ class DataSaverCapTest {
         assertEquals(NetworkCost.FREE, g.costNow())
         assertTrue(g.decide(DataKind.PHOTO, EndpointReach.REMOTE).allowed)
     }
+
+    // ---- Codex data-saver r1: P1-6 reservation, P1-7 unreadable settings ----
+
+    @Test fun aReservationCountsBeforeTheRequestSurvivesAProcessDeathAndIsReconciledWithTheRealBytes() {
+        val p = prefs("res1")
+        val g = DataSaverGraph(DataSaverStore(p), { roaming }, epochDay = { 100L })
+        val r = g.reserve(DataKind.PHOTO, 3 * mb, 2)!!
+        assertEquals("counted before a byte leaves", 3 * mb, g.mobile.today().bytes); assertEquals(2L, g.mobile.today().photos)
+        // the process dies mid-upload: a fresh graph over the same file still sees the conservative count
+        val reborn = DataSaverGraph(DataSaverStore(p), { roaming }, epochDay = { 100L })
+        assertEquals(3 * mb, reborn.mobile.today().bytes); assertEquals(2L, reborn.mobile.today().photos)
+        // a normal finish replaces the reservation by the real numbers, never counting both
+        g.settle(r, 2 * mb, 1000, 1)
+        assertEquals(2 * mb + 1000, g.mobile.today().bytes); assertEquals(1L, g.mobile.today().photos)
+    }
+
+    @Test fun aSettleWithTheReservedNumbersKeepsTheConservativeCountAndNeverGoesBelowZero() {
+        val g = graph("res2", { roaming })
+        val r = g.reserve(DataKind.PHOTO, 1000, 1)!!
+        g.settle(r, 1000, 0, 1)
+        assertEquals(1000L, g.mobile.today().bytes); assertEquals(1L, g.mobile.today().photos)
+        val r2 = g.reserve(DataKind.SMALL, 500, 0)!!
+        g.settle(r2, 0, 0, 0) // released: nothing left the phone
+        assertEquals(1000L, g.mobile.today().bytes)
+    }
+
+    @Test fun reservationsCountTowardTheDailyLimitSoQueuedUploadsCannotEvadeIt() {
+        val g = graph("res3", { roaming }) { setMode(DataMode.ANYWHERE); setAbroad(true) }
+        assertTrue(g.decide(DataKind.PHOTO, EndpointReach.REMOTE).allowed)
+        g.reserve(DataKind.PHOTO, 11 * mb, 1) // an upload in flight that never finished
+        assertFalse("the in-flight reservation uses the 10 MB day up", g.decide(DataKind.PHOTO, EndpointReach.REMOTE).allowed)
+    }
+
+    @Test fun nothingIsReservedOnFreeWifi() {
+        val g = graph("res4", { wifi })
+        assertNull(g.reserve(DataKind.PHOTO, 5 * mb, 3)); assertEquals(0L, g.mobile.today().bytes)
+    }
+
+    @Test fun aWrongTypedSettingNeverThrowsAndRefusesCostlyTrafficButNotWifi() {
+        val p = prefs("unread1")
+        p.edit().putString("abroad", "yes").putBoolean("mode", true).putString("daily_limit_mb", "ten").commit() // every one the wrong type
+        val store = DataSaverStore(p) // must not throw
+        val s = store.settings.value
+        assertTrue(s.unreadable)
+        assertEquals("protective values", DataSaverSettings(mode = DataMode.WIFI_ONLY, abroad = true, unreadable = true), s)
+        var snap = home
+        val g = DataSaverGraph(store, { snap }, epochDay = { 100L })
+        for (k in DataKind.entries) {
+            assertFalse(k.name, g.decide(k, EndpointReach.REMOTE).allowed)
+            assertEquals(DataPolicy.R_UNREADABLE, g.decide(k, EndpointReach.REMOTE).reason)
+        }
+        assertTrue("an on-device model is not network traffic", g.decide(DataKind.SMALL, EndpointReach.DEVICE).allowed)
+        snap = roaming
+        assertFalse(g.decide(DataKind.SMALL, EndpointReach.REMOTE).allowed)
+        // writing the keys again heals it
+        store.setMode(DataMode.WIFI_AND_HOME_MOBILE); store.setAbroad(false); store.setLimitMb(10)
+        assertFalse(store.settings.value.unreadable)
+    }
+
+    @Test fun aWrongTypedCounterReadsAsDefaultAndMakesTheSettingsUnreadableUntilItIsWrittenAgain() {
+        val p = prefs("unread2")
+        p.edit().putString("mobile_day", "monday").commit()
+        val store = DataSaverStore(p)
+        val g = DataSaverGraph(store, { home }, epochDay = { 100L })
+        assertEquals("reads as a fresh day, no crash", 0L, g.mobile.today().bytes)
+        assertTrue(store.settings.value.unreadable)
+        assertFalse(g.decide(DataKind.PHOTO, EndpointReach.REMOTE).allowed)
+        g.sent(DataKind.SMALL, 10, 10, 0) // writes the day key again
+        assertFalse(store.settings.value.unreadable)
+        assertTrue(g.decide(DataKind.PHOTO, EndpointReach.REMOTE).allowed)
+    }
 }

@@ -18,6 +18,10 @@ import com.rokid.context.model.PassThroughGate
 import com.rokid.context.model.PayloadSources
 import com.rokid.context.model.PhotoLiveness
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * What a routed call returned, and from where (the test bed shows latency + tokens; RoleRunner logs the endpoint).
@@ -243,6 +247,7 @@ class ModelRouter(
         // Roaming data saver (slice 1): a pure pre-check BEFORE any permit, upload slot or provider call, so a blocked call spends no budget token and never reaches the liveness logic.
         // It is not retried as text (a photo call that is blocked stays a photo call), and nothing is sent. The fallback is only tried when it is on-device or on the LAN (its own check passes).
         val dataKind = if (canSend) DataKind.PHOTO else DataKind.SMALL
+        val sendOnce = callClass == CallClass.USER && kotlin.coroutines.coroutineContext[SendOnce.Key] != null
         var dataDecision = dataGate.decide(dataKind, reachOf(e))
         // Slice 2 "Send once": a USER-class photo call the user confirmed on the phone (the SendOnce element is put on the coroutine by the screen's own tap) is asked again as "once". Nothing else can carry it.
         if (!dataDecision.allowed && canSend && callClass == CallClass.USER && kotlin.coroutines.coroutineContext[SendOnce.Key] != null) dataDecision = dataGate.decideOnce(dataKind, reachOf(e))
@@ -261,16 +266,31 @@ class ModelRouter(
             val photos = r.images.size
             val kind = if (photos > 0) DataKind.PHOTO else DataKind.SMALL // the text-only retry of a photo call is a text call
             val tx = DataBytes.requestBytes(r)
+            // Codex data-saver r1 P1-1: the admission above can be minutes old (the permit wait, the liveness slot): the policy, the caps and the CURRENT network are asked again right here, immediately before the
+            // request leaves. A photo admitted on Wi-Fi that now sits on roaming is dropped unsent (and, below, a call that is already running is aborted when the network turns costly under it).
+            val again = if (reachOf(e) == EndpointReach.DEVICE) DataDecision.ALLOW else decideNow(e, kind, photos, callClass, sendOnce) // an on-device model is never gated
+            if (!again.allowed) throw DataSaverBlockedException(again.reason, kind, if (photos > 0) Skipped.UPLOAD_QUEUED else Skipped.BULK)
             val counted = reachOf(e) != EndpointReach.DEVICE && !EndpointReaches.isLoopback(e)
             val costlyAtStart = counted && dataGate.costlyNow()
-            val reply = try { p.complete(r) }
-            catch (c: CancellationException) { throw c }
+            // P1-6: an admission RESERVATION is counted (persisted) before a byte leaves: whatever happens next (a stall after a complete upload, a timeout, a cancel, process death) the usage is not zero.
+            val reservation = if (costlyAtStart) safeReserve(kind, tx + DataBytes.ENVELOPE, photos) else null
+            fun report(rxBytes: Long, countedPhotos: Int, countedTx: Long = tx) {
+                if (reservation != null) safeSettle(reservation, countedTx, rxBytes, countedPhotos)
+                else if (counted && (countedTx > 0 || rxBytes > 0)) safeSent(kind, countedTx, rxBytes, countedPhotos, costlyAtStart)
+            }
+            val reply = try { if (counted) watchingNetwork(e, kind, photos, callClass, sendOnce) { p.complete(r) } else p.complete(r) }
             catch (t: Throwable) {
-                if (counted && (t is ProviderHttpException || t is ProviderResponseException || t is kotlinx.serialization.SerializationException)) safeSent(kind, tx, 0, 0, costlyAtStart)
+                // Only a failure that proves nothing left (DNS, connect, TLS handshake, config) releases the reservation. An HTTP error or an unusable 2xx counts the request (never a photo). Anything else (a timeout or
+                // stall after the upload, a cancel, our own abort, an unknown error) keeps the conservative count: the request, and its photos, may well have been received.
+                when {
+                    TrafficClass.provablyUnsent(t) -> report(0, 0, countedTx = 0)
+                    TrafficClass.receivedAnswer(t) -> report(0, 0)
+                    else -> report(0, photos)
+                }
                 throw t
             }
             // outside the try above: a throwing ledger can neither count the call twice nor discard a paid reply
-            if (counted) safeSent(kind, tx, DataBytes.replyBytes(reply), photos, costlyAtStart)
+            report(DataBytes.replyBytes(reply), photos)
             return reply
         }
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) {
@@ -288,7 +308,9 @@ class ModelRouter(
         }
         var delivered = false
         val reply = if (canSend) {
-            try { gated(request).also { delivered = true } } catch (c: CancellationException) { throw c } catch (f: PhotoForgottenException) { throw f } catch (t: Throwable) {
+            try { gated(request).also { delivered = true } } catch (c: CancellationException) { throw c } catch (f: PhotoForgottenException) { throw f }
+            catch (d: DataSaverBlockedException) { throw d } // the saver closed the gate right before the request (or under it): a photo call stays a photo call, never a text retry
+            catch (t: Throwable) {
                 if (request.requireImages) {   // a text-only retry would guess without the photo (codex r9 P1-2)
                     PcLog.w(TAG, "vision_refused_no_text_retry ${SafeLog.describe(t)}")
                     throw t
@@ -308,11 +330,49 @@ class ModelRouter(
         try { dataGate.sentAt(kind, tx, rx, photos, costlyAtStart) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") }
     }
 
+    /** The policy for one request right now. A USER-class photo call the user sent "once" is asked again as "once" (same rule as the admission). */
+    private fun decideNow(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean): DataDecision {
+        val reach = reachOf(e)
+        val d = dataGate.decide(kind, reach)
+        return if (!d.allowed && photos > 0 && callClass == CallClass.USER && sendOnce) dataGate.decideOnce(kind, reach) else d
+    }
+
+    /**
+     * Runs one provider call and, while it runs, asks the policy about the CURRENT network every [NET_WATCH_MS]. When the network turns costly and this call is not allowed there, the call is cancelled and fails with
+     * [DataSaverBlockedException] (the request may have been partly sent: the caller keeps the conservative reservation). Best effort: the socket is not bound to the admitted network, so bytes already on the wire stay counted.
+     */
+    private suspend fun <T> watchingNetwork(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
+        val abort = java.util.concurrent.atomic.AtomicReference<DataDecision?>(null)
+        val work = async { block() }
+        val watch = launch {
+            while (true) {
+                delay(NET_WATCH_MS)
+                val d = try { decideNow(e, kind, photos, callClass, sendOnce) } catch (c: CancellationException) { throw c } catch (t: Throwable) { DataDecision(false, DataPolicy.R_UNKNOWN) } // an unreadable state fails closed
+                if (!d.allowed) { abort.set(d); work.cancel(); return@launch }
+            }
+        }
+        try { work.await() }
+        catch (c: CancellationException) {
+            val d = abort.get()
+            if (d != null && isActive) { PcLog.i(TAG, "request aborted: network became costly kind=${kind.name}"); throw DataSaverBlockedException(d.reason, kind, if (photos > 0) Skipped.UPLOAD_QUEUED else Skipped.BULK) }
+            throw c
+        } finally { watch.cancel() }
+    }
+
+    private fun safeReserve(kind: DataKind, tx: Long, photos: Int): com.rokid.context.core.net.DataReservation? =
+        try { dataGate.reserve(kind, tx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}"); null }
+
+    private fun safeSettle(r: com.rokid.context.core.net.DataReservation, tx: Long, rx: Long, photos: Int) {
+        try { dataGate.settle(r, tx, rx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") } // the reservation stays counted
+    }
+
     private fun reachOf(e: Endpoint): EndpointReach = EndpointReaches.of(e)
 
     internal companion object {
         const val TAG = "ModelRouter"
         const val MAX_PROVIDER_TEXT = 200
+        /** How often a running provider call re-asks the data saver about the current network. */
+        const val NET_WATCH_MS = 1_000L
         const val NEEDS_VISION = "This call needs a vision endpoint and its photo"
         /** True when [t] failed only because a photo-only request met an endpoint that cannot deliver images (also when [route] wrapped that one failure). */
         fun needsVision(t: Throwable?): Boolean = t is ModelCallException && t.kind == FailureKind.NOT_SET &&
@@ -373,4 +433,16 @@ internal object DataBytes {
     fun requestBytes(r: ModelRequest): Long = ENVELOPE + r.prompt.toByteArray(Charsets.UTF_8).size + r.images.sumOf { it.base64Data.length.toLong() }
     fun replyBytes(r: com.rokid.context.model.ModelReply): Long = ENVELOPE + r.text.toByteArray(Charsets.UTF_8).size
     const val ENVELOPE = 512L
+}
+
+/** How a failed provider call is counted by the byte ledger (shared by the router, the embedding client and Endpoint Test). */
+internal object TrafficClass {
+    /** The failure proves no request body left the phone: name resolution, connect, TLS handshake, a refused cleartext address, or our own config error. */
+    fun provablyUnsent(t: Throwable): Boolean = generateSequence(t) { it.cause?.takeIf { c -> c !== it } }.take(6).any {
+        it is java.net.UnknownHostException || it is java.net.ConnectException || it is java.net.NoRouteToHostException ||
+            it is javax.net.ssl.SSLHandshakeException || it is java.net.UnknownServiceException || it is ProviderConfigException
+    } && !(t is java.net.SocketTimeoutException)
+
+    /** The server demonstrably received the request and answered: an HTTP error status, or a 2xx whose reply could not be used. The request counts, a photo does not. */
+    fun receivedAnswer(t: Throwable): Boolean = t is ProviderHttpException || t is ProviderResponseException || t is kotlinx.serialization.SerializationException
 }
