@@ -58,6 +58,7 @@ object Routes {
     const val SETTINGS_MAP_SEED = "settings/privacy/zones/seed"
     /** Settings -> Place Guide (Developer-visible): the switch and Seed this area. */
     const val SETTINGS_PLACE_GUIDE = "settings/place-guide"
+    const val SETTINGS_PLACE_CARDS = "settings/place-cards"
     /** Settings -> Rokid Nexus (Developer-visible, v2.0): the HUD host choice, the connection state and the trust text. */
     const val SETTINGS_NEXUS = "settings/nexus"
     /** Settings -> Suggestions (shadow) (Developer-visible, v3.0): the master switch (OFF), the would-show log, why, counters. Nothing is delivered. */
@@ -85,7 +86,7 @@ object Routes {
         SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_DEVICE_CAPABILITIES, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL,
         SETTINGS_FLOWS, SETTINGS_LOCAL_MODELS, SETTINGS_NEARBY, SETTINGS_CANVAS,
         SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS, SETTINGS_PRIVACY, SETTINGS_SOURCES, SETTINGS_ACTIONS, SETTINGS_SHOPPING,
-        SETTINGS_NOTES, SETTINGS_PLACE_GUIDE, SETTINGS_NEXUS, SETTINGS_SUGGESTIONS, SETTINGS_DATA_SAVER, SETTINGS_MODEL_PRIVACY,
+        SETTINGS_NOTES, SETTINGS_PLACE_GUIDE, SETTINGS_PLACE_CARDS, SETTINGS_NEXUS, SETTINGS_SUGGESTIONS, SETTINGS_DATA_SAVER, SETTINGS_MODEL_PRIVACY,
     )
 
     enum class Tab(val route: String, val label: String) { HOME("home", "Home"), ACTIVITY("activity", "Activity"), SETTINGS("settings", "Settings") }

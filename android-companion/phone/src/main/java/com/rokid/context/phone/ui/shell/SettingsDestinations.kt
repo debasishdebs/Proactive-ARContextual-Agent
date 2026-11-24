@@ -408,6 +408,11 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         if (remember { com.rokid.context.orchestration.forget.DeveloperFlags.mapZonesV2(app) }) com.rokid.context.phone.ui.settings.mapzones.MapZonesRoute(s, back, seed = seedControl, seedMode = true)
         else ZonesRoute(s, back, seed = seedControl, seedMode = true)
     }
+    composable(Routes.SETTINGS_PLACE_CARDS) {
+        val app = LocalContext.current.applicationContext
+        com.rokid.context.phone.ui.settings.place.PlaceCardsRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back,
+            openFrame = { id -> nav.navigate(com.rokid.context.phone.ui.preview.previewMoment(listOf(com.rokid.context.phone.ui.preview.PreviewRef.of(com.rokid.context.phone.ui.preview.RefKind.FRAME, id))).route) })
+    }
     composable(Routes.SETTINGS_PLACE_GUIDE) {
         val app = LocalContext.current.applicationContext
         com.rokid.context.phone.ui.settings.place.PlaceGuideRoute(remember { com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) } }, back, changingConfigurations = rememberIsChangingConfigurations(), developerMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle().value, pickOnMap = { nav.navigate(Routes.SETTINGS_MAP_SEED) },
