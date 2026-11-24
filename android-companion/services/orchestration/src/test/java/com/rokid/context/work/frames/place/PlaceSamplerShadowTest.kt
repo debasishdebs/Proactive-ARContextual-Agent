@@ -34,6 +34,7 @@ class PlaceSamplerShadowTest {
     private var reply: PlaceMatchResult? = PlaceMatchResult(PlaceMatchOutput("1", 0.9f), true)
     private var callMs = 100L
     private var flag = true
+    private var net = true
     private var hookCalls = 0
     private var places = listOf(pl("wd:Q1", "Charminar"), pl("wd:Q2", "Mecca Masjid"))
     private var dwellFrame = "f1"
@@ -57,7 +58,7 @@ class PlaceSamplerShadowTest {
                 override suspend fun tombstoned(frameId: String) = false
             },
             fix = { PlaceFix(fixLat, 78.47, 3_000, 10f) }, candidates = { _, _, _ -> PlaceCandidates(places, CellOutcome.FRESH) },
-            match = { id, _ -> matchImpl(id) }, saveMemory = { true }, onCard = { cards += it }, clock = { T0 }, enabled = { true }, zoneBlocked = { false }, networkUp = { true },
+            match = { id, _ -> matchImpl(id) }, saveMemory = { true }, onCard = { cards += it }, clock = { T0 }, enabled = { true }, zoneBlocked = { false }, networkUp = { net },
             log = { logs += it }, stats = { outcomes += it }, elapsed = { scope.testScheduler.currentTime }, flight = flight,
             shadow = hook?.let { h -> { id, hits, live -> hookCalls++; h(id, hits, live) } }, shadowEnabled = { flag }, shadowScope = d, onAttemptEnd = { attemptEnds++ },
         )
@@ -327,5 +328,40 @@ class PlaceSamplerShadowTest {
     @Test fun buckets() {
         assertEquals("lt200", PlaceShadow.scoreBucket(-5)); assertEquals("lt300", PlaceShadow.scoreBucket(250)); assertEquals("ge900", PlaceShadow.scoreBucket(900))
         assertEquals("na", PlaceShadow.marginBucket(null)); assertEquals("lt10", PlaceShadow.marginBucket(0)); assertEquals("ge100", PlaceShadow.marginBucket(100))
+    }
+
+    // ---- Codex place fixes r3 ----
+
+    private val pinId = "user:00000000-0000-0000-0000-000000000001"
+
+    /** P3-7: the private pin id stays internal for the scoring; only the log token is redacted, so the agreement is decided (not `na`). */
+    @Test fun aChosenPinIsScoredByItsPrivateIdButLoggedOnlyAsPin() = runTest {
+        places = listOf(pl(pinId, "Room A"), pl("wd:Q2", "Mecca Masjid"))
+        val q = floatArrayOf(1f, 0f); fun v(m: Int) = floatArrayOf(m / 1000f, Math.sqrt(1.0 - (m / 1000.0) * (m / 1000.0)).toFloat())
+        run(sampler(this) { _, _, _ -> ShadowOutcome.scored(CandidateScorer.score(q, listOf(CandidateScorer.Candidate(pinId, textAnchor = v(800)), CandidateScorer.Candidate("wd:Q2", textAnchor = v(300)))), 42L) })
+        val l = attempt()
+        assertTrue(l, l.contains("chosen=pin")); assertFalse("no pin id in the log", l.contains("user:"))
+        assertTrue(l, l.contains("chosenRank=1 agrees=true"))
+    }
+
+    /** P2-5: the photo-match path shares the one reservation: while another path holds the place, no second card is published (the memory stays). */
+    @Test fun thePhotoMatchPathHonoursTheSharedReservation() = runTest {
+        places = listOf(pl("wd:Q1", "Charminar"))
+        assertTrue(flight.reserve(listOf("wd:Q1"), T0)) // e.g. the sign-text path is publishing this place right now
+        run(sampler(this, null))
+        assertTrue("no second card", cards.isEmpty()); assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(attempt().contains("card=suppressed"))
+        flight.unreserve(listOf("wd:Q1"))
+        logs.clear(); outcomes.clear(); flight = PlaceFlight(); run(sampler(this, null))
+        assertEquals("free again: the card is shown and the reservation is released", 1, cards.size); assertTrue(flight.reserve(listOf("wd:Q1"), T0 + 1))
+    }
+
+    /** P2-5: the offline nearby fallback shares it too. */
+    @Test fun theNearbyFallbackHonoursTheSharedReservation() = runTest {
+        places = listOf(pl("wd:Q1", "Charminar")); net = false
+        assertTrue(flight.reserve(listOf("wd:Q1"), T0))
+        run(sampler(this, null))
+        assertTrue("no second card", cards.isEmpty()); assertEquals(PlaceOutcome.DUPLICATE, outcomes.last())
+        flight.unreserve(listOf("wd:Q1")); logs.clear(); outcomes.clear(); flight = PlaceFlight(); run(sampler(this, null))
+        assertEquals(1, cards.size); assertEquals(PlaceOutcome.NEARBY, outcomes.last()); assertTrue(flight.reserve(listOf("wd:Q1"), T0 + 1))
     }
 }

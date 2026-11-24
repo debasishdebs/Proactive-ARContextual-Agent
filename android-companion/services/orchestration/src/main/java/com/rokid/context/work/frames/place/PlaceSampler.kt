@@ -485,7 +485,7 @@ class PlaceSampler(
         if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; return weak(PlaceOutcome.NONE) }
         val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; return weak(PlaceOutcome.CONTRACT) }
         setChosen(hits[idx - 1].first); tr.distB = bucketM(hits[idx - 1].second)
-        tr.shadowChoice = tr.chosen
+        tr.shadowChoice = tr.chosenIds.firstOrNull() // P3-7: the private id stays internal for the scorer's ranking; the log only ever prints the redacted `chosen` token
         val floor = picked.backend ?: Backend.ONLINE // the floor of the backend that made the call
         if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"
             // S6: never silent. The answer is kept as a phone-only "possible" row (no glasses card, no memory, no card dedupe consumed).
@@ -537,8 +537,13 @@ class PlaceSampler(
             // A zone that became active while the memory was being saved (after its last in-transaction check): the memory goes again and no card is shown.
             if (stopped(gen, ticket, frameId) != null) { tr.card = "dropped"; tr.cardWhy = tr.reason; return PlaceOutcome.DROPPED }
             if (suppressedHere(place.id)) { keep = true; tr.reason = "matched"; return PlaceOutcome.MATCHED } // the memory is kept and revealed, only the card is withheld
-            if (!publish(PlaceCards.photo(place, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
-            noteCard(place.id)
+            // P2-5: the one reservation shared by every automatic card path (pin, cluster, text, photo match, nearby): another path holding or just showing this place withholds only the card
+            val ids = listOf(place.id)
+            if (!flight.reserve(ids, tr.nowAt)) { keep = true; tr.reason = "matched"; tr.card = "suppressed"; tr.cardWhy = "already_shown_here"; return PlaceOutcome.MATCHED }
+            try {
+                if (!publish(PlaceCards.photo(place, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+                noteCard(place.id)
+            } finally { flight.unreserve(ids) }
             record(HistoryKind.PHOTO, place.id, place.name, emptyList(), frameId, null)
             keep = true
             tr.reason = "matched"
@@ -585,8 +590,12 @@ class PlaceSampler(
         if (gap(first.first, first.second) > NEARBY_M) { tr.reason = "nearest_beyond_${NEARBY_M.toInt()}m"; setChosen(null); return PlaceOutcome.NOTHING_NEARBY }
         if (hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M) { tr.reason = "ambiguous_second_within_${NEARBY_M.toInt()}m"; setChosen(null); return PlaceOutcome.NOTHING_NEARBY }
         if (suppressedHere(first.first.id)) { tr.reason = "nearby_card"; return PlaceOutcome.NEARBY }
-        if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
-        noteCard(first.first.id)
+        val ids = listOf(first.first.id)
+        if (!flight.reserve(ids, tr.nowAt)) return reservedElsewhere() // P2-5: the shared reservation
+        try {
+            if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+            noteCard(first.first.id)
+        } finally { flight.unreserve(ids) }
         record(HistoryKind.NEARBY, first.first.id, first.first.name, emptyList(), frameId, null)
         tr.reason = "nearby_card"
         return PlaceOutcome.NEARBY
