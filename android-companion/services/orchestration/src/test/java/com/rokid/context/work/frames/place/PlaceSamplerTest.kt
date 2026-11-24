@@ -42,6 +42,8 @@ class PlaceSamplerTest {
     private var thrown: Exception? = null
     private var saved = true
     private var photoOk = true
+    private var v2 = false
+    private var seed: List<Pair<String, Long>> = emptyList()
 
     private var fixCalls = 0
     private var candidateCalls = 0
@@ -66,6 +68,7 @@ class PlaceSamplerTest {
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
+        dedupeV2On = { v2 }, seedRecent = { seed },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -89,6 +92,61 @@ class PlaceSamplerTest {
         val ids = (1..12).map { place("wd:Q$it", "Place $it", north(it * 10.0)) }
         places = ids; poke()
         assertTrue(logs.last { it.startsWith("place attempt ") }.length < 1024)
+    }
+
+    // ---- S2: dedupe v2 ----
+    private fun again(afterMs: Long, id: String) { now += afterMs; fresh(id) }
+    private val match1 = PlaceMatchResult(PlaceMatchOutput("1", 0.86f), true)
+    private val none = PlaceMatchResult(PlaceMatchOutput("NONE", 0.9f), true)
+    private fun lastLine() = logs.last { it.startsWith("place attempt ") }
+
+    @Test fun weakNone_doesNotConsumeCardDedupe() = runTest {
+        v2 = true; reply = none; poke()
+        assertEquals(PlaceOutcome.NONE, outcomes.last())
+        reply = match1; again(31_000, "f2"); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size)
+    }
+
+    @Test fun notAdmitted_setsNoWindow() = runTest {
+        v2 = true; admit = false; poke()
+        assertEquals(PlaceOutcome.NOT_ADMITTED, outcomes.last()); assertEquals(null, flight.weak)
+        admit = true; again(1_000, "f2"); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last())
+    }
+
+    @Test fun weakBackoff_doublesTo120sThenResetsOnMove() = runTest {
+        v2 = true; reply = none; poke()
+        again(25_000, "f2"); poke()
+        assertEquals(PlaceOutcome.DUPLICATE, outcomes.last()); assertTrue(lastLine().contains("reason=weak_backoff") && lastLine().contains("weakWin=30"))
+        again(10_000, "f3"); poke(); assertEquals(PlaceOutcome.NONE, outcomes.last()); assertEquals(2, flight.weak!!.streak)
+        again(50_000, "f4"); poke(); assertEquals(PlaceOutcome.DUPLICATE, outcomes.last()); assertTrue(lastLine().contains("weakWin=60"))
+        again(20_000, "f5"); poke(); assertEquals(PlaceOutcome.NONE, outcomes.last()); assertEquals(3, flight.weak!!.streak)
+        assertEquals(120_000L, PlaceSampler.weakWindowMs(3)); assertEquals(120_000L, PlaceSampler.weakWindowMs(9))
+        fix = PlaceFix(north(100.0), LON, 3_000, 10f); again(21_000, "f6"); poke()
+        assertEquals(PlaceOutcome.NONE, outcomes.last()); assertEquals(1, flight.weak!!.streak)
+    }
+
+    @Test fun samePlaceWithin30m_cardSuppressedMemoryRevealed() = runTest {
+        v2 = true; poke(); assertEquals(1, cards.size)
+        again(121_000, "f2"); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size)
+        assertTrue(lastLine().contains("card=suppressed cardWhy=already_shown_here")); assertTrue(lastLine().contains("reveal=ok"))
+        assertEquals(2, memories.size)
+    }
+
+    @Test fun samePlaceAfter30min_cardsAgain() = runTest {
+        v2 = true; poke(); again(31 * 60_000L, "f2"); poke()
+        assertEquals(2, cards.size)
+    }
+
+    @Test fun movedAway_cardsAgain() = runTest {
+        v2 = true; poke(); fix = PlaceFix(north(200.0), LON, 3_000, 10f); again(121_000, "f2"); poke()
+        assertEquals(2, cards.size)
+    }
+
+    @Test fun seededFromHistory_suppressesAfterRestart() = runTest {
+        v2 = true; seed = listOf("wd:Q1" to T0 - 60_000); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(cards.isEmpty()); assertTrue(lastLine().contains("card=suppressed"))
     }
 
     @Test fun anActiveOrApproachingZoneNeverReadsAFixNorCallsTheNetworkOrTheModel() = runTest {

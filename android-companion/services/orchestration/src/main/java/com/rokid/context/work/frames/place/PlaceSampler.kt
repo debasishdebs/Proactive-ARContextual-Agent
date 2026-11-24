@@ -91,6 +91,23 @@ class PlaceFlight {
     @Volatile internal var lastCallAt = Long.MIN_VALUE / 2
     @Volatile internal var lastAttempt: Attempt? = null
     internal data class Attempt(val lat: Double, val lon: Double, val at: Long)
+
+    /** F3: the last weak answer (NONE, CONTRACT, LOW_CONFIDENCE): where, when and how many in a row. In memory only. */
+    internal data class Weak(val lat: Double, val lon: Double, val at: Long, val streak: Int)
+    @Volatile internal var weak: Weak? = null
+
+    /** F3: where and when a place last had a card. [lat] is NaN for a row seeded from the history after a restart (position unknown: suppresses by place and time alone). */
+    internal data class CardAt(val lat: Double, val lon: Double, val at: Long)
+    private val lastCard = LinkedHashMap<String, CardAt>()
+    @Volatile internal var seeded = false
+
+    internal fun noteCard(placeId: String, c: CardAt) = synchronized(lastCard) {
+        lastCard.remove(placeId); lastCard[placeId] = c
+        lastCard.entries.removeAll { c.at - it.value.at > PlaceSampler.ONCE_PER_PLACE_MS }
+        while (lastCard.size > 64) lastCard.remove(lastCard.keys.first())
+    }
+    internal fun cardAt(placeId: String): CardAt? = synchronized(lastCard) { lastCard[placeId] }
+    internal fun clearCards() = synchronized(lastCard) { lastCard.clear() }
 }
 
 /**
@@ -170,6 +187,8 @@ class PlaceSampler(
     private val retryOn: () -> Boolean = { false },
     /** The user pins among the candidates of an attempt (identity: S5 uses the pins inside `found.places`). */
     private val pinsNear: (List<PlaceEntity>) -> List<PlaceEntity> = { it },
+    /** F3: the places that had a card in the last 30 min (place id, time), read once at the first attempt after a process start (position unknown). */
+    private val seedRecent: suspend (sinceMs: Long) -> List<Pair<String, Long>> = { emptyList() },
 ) {
     @Volatile private var closed = false
     @Volatile private var job: Job? = null
@@ -186,6 +205,7 @@ class PlaceSampler(
         var card = "none"; var cardWhy = "-"; var reveal = "-"; var err = "-"
         var mode = "-"; var backend = "-"; var resolve = "-"; var label = "-"
         /** F7 fields (default "-"): where the fix came from, how old a reused fix really was, the pin-first decision, the weak back-off window, the retry reason, the history write, the text hit. */
+        var v2 = false; var fxLat = Double.NaN; var fxLon = Double.NaN; var fxAcc = 0f; var nowAt = 0L
         var fixSrc = "-"; var fixRealAgeB = "-"; var pinFirst = "-"; var weakWin = "-"; var retry = "-"; var hist = "-"; var textHit = "-"
         /** null = shadow off (the line is unchanged); "err", "na" or "ok". */
         var shadow: String? = null; var shadowOut: ShadowOutcome? = null; var shadowRank = "na"; var shadowAgrees = "na"
@@ -306,6 +326,7 @@ class PlaceSampler(
         stopped(gen, ticket, f.frameId)?.let { return it } // before the fix is asked for
         val fx = fix() ?: run { tr.reason = "fix_unavailable"; return PlaceOutcome.NO_FIX }
         tr.fixAgeB = bucketAgeMs(fx.ageMs); tr.accB = bucketAccuracyM(fx.accuracyM); tr.fixSrc = "fresh"
+        tr.v2 = dedupeV2On(); tr.fxLat = fx.lat; tr.fxLon = fx.lon; tr.fxAcc = fx.accuracyM; tr.nowAt = now
         if (fx.ageMs < 0 || fx.ageMs > MAX_FIX_AGE_MS || fx.accuracyM.isNaN() || fx.accuracyM > MAX_FIX_ACCURACY_M || !fx.lat.isFinite() || !fx.lon.isFinite()) {
             tr.reason = if (fx.ageMs < 0) "fix_age_negative" else if (fx.ageMs > MAX_FIX_AGE_MS) "fix_too_old" else if (!fx.lat.isFinite() || !fx.lon.isFinite()) "fix_not_finite" else "fix_inaccurate"
             return PlaceOutcome.STALE_FIX
@@ -314,6 +335,7 @@ class PlaceSampler(
         if (com.rokid.context.core.model.zone.ZoneEvaluator.blocksPoint(try { zones() } catch (c: CancellationException) { throw c } catch (e: Exception) { null }, fx.lat, fx.lon, fx.accuracyM)) { tr.reason = "zone_fix"; return PlaceOutcome.ZONE }
         stopped(gen, ticket, f.frameId)?.let { return it } // before the pack may fetch
         remember(f.frameId)
+        if (tr.v2) seedFromHistory(now)
         val picked = backend()
         val online = picked.backend == Backend.ONLINE // Offline only is never online: the pack is not fetched from the network and no photo or name is sent
         tr.online = online.toString(); tr.mode = picked.mode.name; tr.backend = picked.backend?.name?.lowercase() ?: "none"; tr.resolve = picked.reason.token; tr.label = picked.label
@@ -326,6 +348,10 @@ class PlaceSampler(
             tr.dedupeAgeS = (now - a.at) / 1000; tr.dedupeDistB = bucketM(d)
             if (now - a.at in 0..DEDUPE_MS && d <= DEDUPE_M) { tr.reason = "same_place_recently"; return PlaceOutcome.DUPLICATE }
         }
+        if (tr.v2) flight.weak?.let { w ->
+            val win = weakWindowMs(w.streak)
+            if (now - w.at in 0..win && Geo.distanceM(fx.lat, fx.lon, w.lat, w.lon) <= DEDUPE_M) { tr.weakWin = (win / 1000).toString(); tr.reason = "weak_backoff"; return PlaceOutcome.DUPLICATE }
+        }
         val hits = cutKeepingPins(found.places.map { it to Geo.distanceM(fx.lat, fx.lon, it.lat, it.lon) })
         tr.cand = hits.size; tr.ids = idList(hits.map { it.first.id })
         // The spacing is judged NOW (after any lengthy fetch), against the end of the previous call, on the monotonic clock.
@@ -333,7 +359,7 @@ class PlaceSampler(
         tr.callGapS = if (flight.lastCallAt < 0) -1L else (sinceCall / 1000).coerceAtLeast(0L)
         val callOk = online && sinceCall >= MIN_CALL_GAP_MS
         if (online && !callOk) { tr.reason = "call_gap_${MIN_CALL_GAP_MS / 1000}s"; return PlaceOutcome.RATE_LIMITED }
-        flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now)
+        if (!tr.v2) flight.lastAttempt = PlaceFlight.Attempt(fx.lat, fx.lon, now) // v2: only a published (or suppressed) card consumes the card dedupe
         stopped(gen, ticket, f.frameId)?.let { return it } // before the upload (the router asks again inside its permit)
         if (!callOk) { // Offline only without an on-device model keeps the pack-only fallback (no photo analysis, nothing leaves the phone) and says why in the log
             tr.reason = if (picked.needsOnDeviceModel) "offline_only_no_local_model" else "offline"; tr.call = if (picked.needsOnDeviceModel) "skipped_offline_only" else "skipped_offline"
@@ -359,12 +385,12 @@ class PlaceSampler(
         if (!res.delivered) { tr.reason = "photo_not_delivered"; return PlaceOutcome.FAILED } // the photo was not proven to have reached the model: not a photo match, not a nearby guess either
         val choice = res.output.choice
         tr.confPct = (res.output.confidence * 100).toInt()
-        if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; return PlaceOutcome.NONE }
-        val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; return PlaceOutcome.CONTRACT }
+        if (choice.equals(NONE, ignoreCase = true)) { tr.reason = "model_none"; return weak(PlaceOutcome.NONE) }
+        val idx = choice.toIntOrNull()?.takeIf { it in 1..hits.size && it.toString() == choice } ?: run { tr.reason = "choice_out_of_range"; return weak(PlaceOutcome.CONTRACT) }
         tr.chosen = hits[idx - 1].first.id; tr.distB = bucketM(hits[idx - 1].second)
         tr.shadowChoice = tr.chosen
         val floor = picked.backend ?: Backend.ONLINE // the floor of the backend that made the call
-        if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"; return PlaceOutcome.LOW_CONFIDENCE }
+        if (res.output.confidence < BackendThresholds.minConfidence(floor)) { tr.reason = "confidence_below_${BackendThresholds.minConfidencePct(floor)}"; return weak(PlaceOutcome.LOW_CONFIDENCE) }
         val place = hits[idx - 1].first
         val parent = place.parentId?.let { pid -> found.places.firstOrNull { it.id == pid }?.name }
         return commit(place, parent, res, f.frameId, gen, cardEpoch, ticket)
@@ -410,7 +436,9 @@ class PlaceSampler(
             if (!saved) { tr.reason = "memory_not_saved"; tr.card = "dropped"; tr.cardWhy = "memory_not_saved"; return PlaceOutcome.DROPPED }
             // A zone that became active while the memory was being saved (after its last in-transaction check): the memory goes again and no card is shown.
             if (stopped(gen, ticket, frameId) != null) { tr.card = "dropped"; tr.cardWhy = tr.reason; return PlaceOutcome.DROPPED }
+            if (suppressedHere(place.id)) { keep = true; tr.reason = "matched"; return PlaceOutcome.MATCHED } // the memory is kept and revealed, only the card is withheld
             if (!publish(PlaceCards.photo(place, frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+            noteCard(place.id)
             keep = true
             tr.reason = "matched"
             return PlaceOutcome.MATCHED
@@ -453,9 +481,49 @@ class PlaceSampler(
         tr.chosen = first.first.id; tr.distB = bucketM(first.second)
         if (gap(first.first, first.second) > NEARBY_M) { tr.reason = "nearest_beyond_${NEARBY_M.toInt()}m"; tr.chosen = "-"; return PlaceOutcome.NOTHING_NEARBY }
         if (hits.size > 1 && gap(hits[1].first, hits[1].second) <= NEARBY_M) { tr.reason = "ambiguous_second_within_${NEARBY_M.toInt()}m"; tr.chosen = "-"; return PlaceOutcome.NOTHING_NEARBY }
+        if (suppressedHere(first.first.id)) { tr.reason = "nearby_card"; return PlaceOutcome.NEARBY }
         if (!publish(PlaceCards.nearby(first.first, gap(first.first, first.second), frameId), epoch, gen, frameId, ticket)) return PlaceOutcome.DROPPED
+        noteCard(first.first.id)
         tr.reason = "nearby_card"
         return PlaceOutcome.NEARBY
+    }
+
+    // ---- F3 dedupe v2 ----
+
+    /** A call reached a verdict that is no card (NONE, CONTRACT, LOW_CONFIDENCE): opens or lengthens the short back-off window. FAILED, NOT_ADMITTED and DROPPED set nothing. */
+    private fun weak(o: PlaceOutcome): PlaceOutcome {
+        if (!tr.v2 || tr.fxLat.isNaN()) return o
+        val prev = flight.weak
+        val streak = if (prev != null && tr.nowAt - prev.at in 0..WEAK_STREAK_RESET_MS && Geo.distanceM(tr.fxLat, tr.fxLon, prev.lat, prev.lon) <= DEDUPE_M) prev.streak + 1 else 1
+        flight.weak = PlaceFlight.Weak(tr.fxLat, tr.fxLon, tr.nowAt, streak)
+        tr.weakWin = (weakWindowMs(streak) / 1000).toString()
+        return o
+    }
+
+    /** A card was published (or suppressed as already shown): it consumes the card dedupe, records the place's card and ends the weak streak. */
+    private fun noteCard(placeId: String) {
+        if (!tr.v2 || tr.fxLat.isNaN()) return
+        flight.lastAttempt = PlaceFlight.Attempt(tr.fxLat, tr.fxLon, tr.nowAt)
+        flight.noteCard(placeId, PlaceFlight.CardAt(tr.fxLat, tr.fxLon, tr.nowAt))
+        flight.weak = null
+    }
+
+    /** One card per place while the wearer stays: true (and the trace says so) when this place had a card under 30 min ago within 30 m + the fix accuracy of that card's fix (a seeded row without a position: by place and time alone). */
+    private fun suppressedHere(placeId: String): Boolean {
+        if (!tr.v2 || tr.fxLat.isNaN()) return false
+        val c = flight.cardAt(placeId) ?: return false
+        if (tr.nowAt - c.at !in 0..ONCE_PER_PLACE_MS) return false
+        if (!c.lat.isNaN() && Geo.distanceM(tr.fxLat, tr.fxLon, c.lat, c.lon) > DEDUPE_M + tr.fxAcc) return false
+        tr.card = "suppressed"; tr.cardWhy = "already_shown_here"
+        flight.lastAttempt = PlaceFlight.Attempt(tr.fxLat, tr.fxLon, tr.nowAt)
+        flight.weak = null
+        return true
+    }
+
+    private suspend fun seedFromHistory(now: Long) {
+        if (flight.seeded) return
+        flight.seeded = true
+        try { for ((id, at) in seedRecent(now - ONCE_PER_PLACE_MS)) if (flight.cardAt(id) == null) flight.noteCard(id, PlaceFlight.CardAt(Double.NaN, Double.NaN, at)) } catch (c: CancellationException) { flight.seeded = false; throw c } catch (_: Exception) { }
     }
 
     /** A provider or network failure (transient, auth, rejected): the only thing that may show the "nearby · not checked" card online. Policy (NOT_SET), invalid output and anything unknown do not. */
@@ -496,6 +564,10 @@ class PlaceSampler(
         const val MIN_CALL_GAP_MS = 20_000L
         const val DEDUPE_MS = 120_000L
         const val DEDUPE_M = 30.0
+        const val ONCE_PER_PLACE_MS = 30 * 60_000L
+        const val WEAK_STREAK_RESET_MS = 10 * 60_000L
+        /** 30 s x 2^(streak-1), at most 120 s. */
+        internal fun weakWindowMs(streak: Int): Long = minOf(30_000L shl (streak - 1).coerceIn(0, 4), 120_000L)
         const val NEARBY_M = 100.0
         const val MAX_LIST = 16
         const val SHADOW_BUDGET_MS = 2_500L

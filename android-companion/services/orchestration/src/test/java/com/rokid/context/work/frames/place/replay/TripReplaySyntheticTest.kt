@@ -43,27 +43,17 @@ class TripReplaySyntheticTest {
         }
     }
 
-    @Test fun siteExterior_weakFirstFrameConsumesDedupe_atHead() {
+    @Test fun siteExterior_weakFirstFrame_doesNotBlockTheGoodOne() {
         val r = replay(RunSpec(FirstWeakOracle, FixScenario.Outdoor10))
         val rows = rowsIn(r, siteA.first, siteA.last)
-        assertEquals(listOf(PlaceOutcome.NONE, PlaceOutcome.DUPLICATE, PlaceOutcome.DUPLICATE), rows.map { it.outcome })
-        assertEquals("same_place_recently", rows[1].reason)
-        assertTrue(rows.none { it.isCard })
-    }
-
-    @Test fun siteExterior_f3_cardInsideWindow() {
-        val r = replay(RunSpec(FirstWeakOracle, FixScenario.Outdoor10, overlays = Overlays.F3A))
-        val rows = rowsIn(r, siteA.first, siteA.last)
-        assertEquals(PlaceOutcome.NONE, rows[0].outcome)
-        assertEquals(PlaceOutcome.MATCHED, rows[1].outcome); assertEquals("Site A", rows[1].chosenName)
-        // variant b: the weak attempt only blocks for 30 s, the second frame is 60 s later
-        val b = rowsIn(replay(RunSpec(FirstWeakOracle, FixScenario.Outdoor10, overlays = Overlays.F3B)), siteA.first, siteA.last)
-        assertEquals(PlaceOutcome.MATCHED, b[1].outcome)
+        assertEquals(listOf(PlaceOutcome.NONE, PlaceOutcome.MATCHED, PlaceOutcome.DUPLICATE), rows.map { it.outcome })
+        assertEquals("Site A", rows[1].chosenName); assertTrue(rows[1].isCard)
+        assertEquals("same_place_recently", rows[2].reason)
     }
 
     @Test fun nestedRoomPins_indoorFix_neverShowsAWrongRoom() {
         val scenarios = listOf(FixScenario.AsRecorded, FixScenario.Outdoor10, FixScenario.Indoor60, FixScenario.Stale, FixScenario.AssumedPin(60f))
-        val overlays = listOf(Overlays.HEAD, Overlays.F1, Overlays.f2(10), Overlays.F3A, Overlays.F4, Overlays.ALL)
+        val overlays = listOf(Overlays.HEAD, Overlays.F1, Overlays.f2(10), Overlays.F4, Overlays.ALL)
         for (sc in scenarios) for (ov in overlays) {
             val r = replay(RunSpec(Oracle, sc, overlays = ov))
             for (row in rowsIn(r, rooms.first, rooms.last)) {
@@ -89,13 +79,11 @@ class TripReplaySyntheticTest {
         assertEquals("-", PinFirstRule().decide(T0, com.rokid.context.work.frames.place.PlaceFix(a2.lat, a2.lon, 3_000, 40f), pins).text) // acc > 25
     }
 
-    @Test fun seatedShow_f1f3_oneCardPerVisit_noStorm() {
+    @Test fun seatedShow_dedupeV2_oneCardPerPlaceWhileStaying() {
         val head = rowsIn(replay(RunSpec(Oracle, FixScenario.Outdoor10)), show.first, show.last)
-        assertTrue("HEAD repeats the card every few minutes", head.count { it.isCard } >= 5)
-        val f13 = replay(RunSpec(Oracle, FixScenario.Outdoor10, overlays = Overlays(f1 = true, f3 = 'a')))
-        val rows = rowsIn(f13, show.first, show.last)
-        assertEquals(1, rows.count { it.f1.startsWith("card") })
-        assertTrue(rows.count { it.f1 == "visit" } >= 30)
+        assertTrue("no storm: at most one card per 30 min", head.count { it.isCard } in 1..2)
+        assertTrue("the rest are suppressed or duplicates", head.count { it.isSuppressed } + head.count { it.outcome == PlaceOutcome.DUPLICATE } >= 20)
+        assertTrue(head.filter { it.isSuppressed }.all { it.cardWhy == "already_shown_here" && it.outcome == PlaceOutcome.MATCHED })
     }
 
     @Test fun pinCreatedAfterFacade_headSeesNoCandidatesThenSeen() {
