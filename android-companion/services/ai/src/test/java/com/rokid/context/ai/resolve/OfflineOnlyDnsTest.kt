@@ -2,6 +2,7 @@ package com.rokid.context.ai.resolve
 
 import com.rokid.context.ai.Http
 import com.rokid.context.ai.OfflineOnlyDns
+import com.rokid.context.ai.OfflineOnlyNet
 import com.rokid.context.ai.OfflineOnlyRefusedException
 import com.rokid.context.core.net.DataPolicy
 import com.rokid.context.core.net.ModelPrivacy
@@ -32,8 +33,33 @@ class OfflineOnlyDnsTest {
     }
 
     @Test fun anEmptyAnswerIsRefusedAndAFailingResolverStaysAnUnknownHost() {
-        assertTrue(refused { OfflineOnlyDns({ ModelPrivacy.OFFLINE_ONLY }, dnsOf { emptyList() }).lookup("x.local") })
-        assertTrue(runCatching { OfflineOnlyDns({ ModelPrivacy.OFFLINE_ONLY }, dnsOf { throw UnknownHostException("x") }).lookup("x.local") }.exceptionOrNull() is UnknownHostException)
+        assertTrue(refused { OfflineOnlyDns({ ModelPrivacy.OFFLINE_ONLY }, dnsOf { emptyList() }).lookup("x.lan") })
+        assertTrue(runCatching { OfflineOnlyDns({ ModelPrivacy.OFFLINE_ONLY }, dnsOf { throw UnknownHostException("x") }).lookup("x.lan") }.exceptionOrNull() is UnknownHostException)
+    }
+
+    /** mp-r2 P3: a `.local` name is refused BEFORE the resolver is asked (a unicast lookup would send the name off the phone); Automatic still resolves it. */
+    @Test fun aLocalNameIsRefusedWithoutAnyLookupUnderOfflineOnly() {
+        var lookups = 0
+        val counting = dnsOf { lookups++; listOf(ip("192.168.1.5")) }
+        for (h in listOf("box.local", "BOX.LOCAL.", "a.b.local")) assertTrue(h, refused { OfflineOnlyDns({ ModelPrivacy.OFFLINE_ONLY }, counting).lookup(h) })
+        assertTrue(refused { OfflineOnlyDns({ error("prefs") }, counting).lookup("box.local") })
+        assertEquals("the resolver never saw a name", 0, lookups)
+        assertEquals(listOf(ip("192.168.1.5")), OfflineOnlyDns({ ModelPrivacy.AUTO }, counting).lookup("box.local"))
+        assertEquals(1, lookups)
+    }
+
+    /** mp-r2 P1-2: while a VPN is up no name is looked up (only localhost is allowed). */
+    @Test fun aVpnRefusesEveryNameButLocalhostBeforeLookup() {
+        val before = OfflineOnlyNet.vpnProbe
+        try {
+            OfflineOnlyNet.vpnProbe = { true }
+            var lookups = 0
+            val counting = dnsOf { lookups++; listOf(ip("127.0.0.1")) }
+            assertTrue(refused { OfflineOnlyDns({ ModelPrivacy.OFFLINE_ONLY }, counting).lookup("nas.lan") })
+            assertEquals(0, lookups)
+            assertEquals(listOf(ip("127.0.0.1")), OfflineOnlyDns({ ModelPrivacy.OFFLINE_ONLY }, counting).lookup("localhost"))
+            assertEquals(listOf(ip("127.0.0.1")), OfflineOnlyDns({ ModelPrivacy.AUTO }, counting).lookup("nas.lan")) // Automatic is unchanged
+        } finally { OfflineOnlyNet.vpnProbe = before }
     }
 
     @Test fun ownNetworkAddressesPass() {

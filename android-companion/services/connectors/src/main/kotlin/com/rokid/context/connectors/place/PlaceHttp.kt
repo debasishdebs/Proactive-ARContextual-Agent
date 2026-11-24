@@ -8,6 +8,8 @@ import com.rokid.context.memory.place.currentZoneTicket
 import kotlinx.coroutines.withContext
 import com.rokid.context.core.net.DataGate
 import com.rokid.context.core.net.DataKind
+import com.rokid.context.core.net.ModelPrivacy
+import com.rokid.context.memory.place.PlaceOfflineOnly
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -51,6 +53,11 @@ class UrlConnectionPlaceHttp(
     private val gate: DataGate = DataGate.ALLOW_ALL,
     /** The connection factory (tests swap it for a fake slow stream). */
     private val open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
+    /**
+     * The live Model privacy mode, asked before EVERY request (a cell fetch is up to a dozen requests, and Overpass carries the cell's bounding box): anything but AUTO refuses with
+     * [PlaceOfflineOnly], and a reader that throws counts as Offline only (fail closed). Production passes the store; the default is AUTO only so tests of the other rules need no store.
+     */
+    private val privacy: () -> ModelPrivacy = { ModelPrivacy.AUTO },
 ) : PlaceHttp {
     private val lock = Mutex()
     private val lastByHost = HashMap<String, Long>()
@@ -59,10 +66,16 @@ class UrlConnectionPlaceHttp(
 
     override suspend fun postForm(url: String, form: Map<String, String>): String = send(url, formEncode(form))
 
+    private fun privacyGate() {
+        val m = try { privacy() } catch (e: Exception) { ModelPrivacy.OFFLINE_ONLY }
+        if (m != ModelPrivacy.AUTO) throw PlaceOfflineOnly()
+    }
+
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class) // invokeOnCompletion(onCancelling = true): the only hook that runs when cancellation STARTS, while the blocking read is still stuck
     private suspend fun send(url: String, body: String?): String {
         val u = URL(url)
         require(u.protocol == "https") { "place fetch is https only" }
+        privacyGate()
         val ticket = currentZoneTicket()
         ticket?.check()
         lock.withLock {
@@ -70,6 +83,7 @@ class UrlConnectionPlaceHttp(
             if (wait > 0) pause(wait)
             lastByHost[u.host] = clock()
         }
+        privacyGate() // asked again after any wait for the host gap: the mode may have changed while this request queued
         com.rokid.context.memory.place.seedAdmitCheck() // a seed's request: privacy, free Wi-Fi and the data saver are asked again before EVERY request (a no-op outside a seed)
         return withContext(Dispatchers.IO) {
             val costlyAtStart = try { gate.costlyNow() } catch (e: Exception) { false } // the network class when the request starts

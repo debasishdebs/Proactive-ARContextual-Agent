@@ -65,6 +65,42 @@ class OfflineOnlyNetTest {
         assertTrue(refused(ModelPrivacy.OFFLINE_ONLY, Route(address, socks, InetSocketAddress.createUnresolved("box.local", 11434))))
     }
 
+    /** mp-r2 P1-2: a private address behind a VPN may be a remote host: only loopback passes while one is up; Automatic never checks. */
+    @Test fun whileAVpnIsUpOnlyLoopbackPassesUnderOfflineOnly() {
+        fun vpnRefused(ip: String) = runCatching { OfflineOnlyNet.check(ModelPrivacy.OFFLINE_ONLY, route(ip), vpn = true) }.exceptionOrNull() is OfflineOnlyRefusedException
+        for (ip in listOf("192.168.1.5", "10.0.0.2", "172.16.0.9", "fd12::1", "fe80::1", "169.254.1.1")) assertTrue(ip, vpnRefused(ip))
+        for (ip in listOf("127.0.0.1", "::1")) assertFalse(ip, vpnRefused(ip))
+        OfflineOnlyNet.check(ModelPrivacy.AUTO, route("192.168.1.5"), vpn = true) // Automatic: unchanged
+        OfflineOnlyNet.check(ModelPrivacy.OFFLINE_ONLY, route("192.168.1.5"), vpn = false)
+    }
+
+    @Test fun theGuardAsksTheVpnProbeAndAProbeThatThrowsCountsAsVpn() {
+        val before = OfflineOnlyNet.vpnProbe
+        try {
+            val guard = OfflineOnlyNet.Guard { ModelPrivacy.OFFLINE_ONLY }
+            OfflineOnlyNet.vpnProbe = { false }
+            assertEquals(200, guard.intercept(FakeChain(FakeConnection(route("192.168.1.5")))).code)
+            OfflineOnlyNet.vpnProbe = { true }
+            val lan = FakeChain(FakeConnection(route("192.168.1.5")))
+            assertTrue(runCatching { guard.intercept(lan) }.exceptionOrNull() is OfflineOnlyRefusedException); assertEquals(0, lan.proceeded)
+            assertEquals(200, guard.intercept(FakeChain(FakeConnection(route("127.0.0.1")))).code)
+            OfflineOnlyNet.vpnProbe = { error("no connectivity service") }
+            assertTrue(runCatching { guard.intercept(FakeChain(FakeConnection(route("192.168.1.5")))) }.exceptionOrNull() is OfflineOnlyRefusedException)
+        } finally { OfflineOnlyNet.vpnProbe = before }
+    }
+
+    @Test fun anEndpointOnALanAddressIsRefusedByTheGuardWhileAVpnIsUpButALoopbackOneIsNot() {
+        val before = OfflineOnlyNet.vpnProbe
+        try {
+            OfflineOnlyNet.vpnProbe = { true }
+            fun refusedEp(url: String) = runCatching { com.rokid.context.ai.OfflineOnlyGuard.require({ ModelPrivacy.OFFLINE_ONLY }, ep(EndpointKind.OLLAMA, url)) }.exceptionOrNull() is OfflineOnlyRefusedException
+            assertTrue(refusedEp("http://192.168.1.5:11434"))
+            assertFalse(refusedEp("http://127.0.0.1:11434"))
+            OfflineOnlyNet.vpnProbe = { false }
+            assertFalse(refusedEp("http://192.168.1.5:11434"))
+        } finally { OfflineOnlyNet.vpnProbe = before }
+    }
+
     @Test fun noRouteIsRefusedAndAutoNeverChecks() {
         assertTrue(refused(ModelPrivacy.OFFLINE_ONLY, null))
         assertFalse(refused(ModelPrivacy.AUTO, route("8.8.8.8")))

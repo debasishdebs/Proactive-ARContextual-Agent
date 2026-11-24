@@ -2,6 +2,7 @@ package com.rokid.context.ai.embed
 
 import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.EndpointRepository
+import com.rokid.context.ai.OfflineOnlyGuard
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBindingRepository
 import com.rokid.context.ai.UrlNormalizer
@@ -18,6 +19,8 @@ class Embedders(
     private val client: EmbeddingClient = EmbeddingClient(),
     /** Gaps G6: the phone's power, for the on-device (LLAMACPP_LOCAL) gate. */
     private val power: () -> PowerState = { PowerState.UNGATED },
+    /** Model privacy, read at every call (a reader that throws counts as Offline only); AUTO by default for tests. */
+    private val privacy: () -> com.rokid.context.core.net.ModelPrivacy = { com.rokid.context.core.net.ModelPrivacy.AUTO },
 ) : SpaceEmbedderProvider {
     /** Whether the EMBED binding is the on-device model (no network, no probe): the reindex battery gate. */
     suspend fun bindingIsLocal(): Boolean {
@@ -29,6 +32,8 @@ class Embedders(
     suspend fun forBinding(): EndpointEmbedder? {
         val b = bindings.get(Role.EMBED) ?: return null
         val e = endpoints.byId(b.endpointId) ?: return null
+        // Offline only FIRST: a remote endpoint is refused before its key is read from the vault (and before any probe).
+        OfflineOnlyGuard.require(privacy, e)
         // Gaps G6: even the probe is an on-device model run.
         if (e.kind == EndpointKind.LLAMACPP_LOCAL && !LocalModelPower.bulkAllowed(power())) throw LocalModelPausedException()
         val key = endpoints.keyFor(e)
@@ -53,6 +58,8 @@ class Embedders(
         val spec = EmbeddingSpec.fromConfig(space.configJson) ?: return null
         val e = endpoints.byId(spec.endpointId) ?: return null
         if (!sameTarget(e.kind, e.baseUrl, spec.kind, spec.baseUrl)) return null
+        // Offline only FIRST: a refused (remote) endpoint is unavailable like a moved one (lexical fallback), and its key is never read.
+        if (runCatching { OfflineOnlyGuard.require(privacy, e) }.isFailure) return null
         return gated(EndpointEmbedder(spec, e.copy(apiVersion = spec.apiVersion), endpoints.keyFor(e), client))
     }
 

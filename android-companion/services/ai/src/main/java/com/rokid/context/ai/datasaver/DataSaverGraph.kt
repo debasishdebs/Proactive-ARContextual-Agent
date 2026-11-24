@@ -203,7 +203,8 @@ class DataSaverGraph internal constructor(
             val privacy = com.rokid.context.ai.resolve.ModelPrivacyStore.get(app)
             graph = DataSaverGraph(store, { monitor.snapshot }, reread = monitor::reread, privacy = privacy::current)
             monitor.start()
-            graph.refreshState()
+            // The first refresh reads the Model privacy mode (current() waits for the first prefs load): off the caller's thread, which is often main (Settings). Until it ends the state is the constructor's.
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { try { graph.refreshState() } catch (e: Exception) { } }
             graph.startMidnightWatch()
             // A mode or abroad change can open the gate as well.
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch { store.settings.drop(1).collect { graph.refreshState() } }

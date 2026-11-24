@@ -42,7 +42,7 @@ class AiGraph(
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
     val router = ModelRouter(bindings, endpoints, providers, gate, dataGate, privacy)
     val tester = EndpointTester(endpoints, providers, privacy = privacy)
-    val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, client = com.rokid.context.ai.embed.EmbeddingClient(privacy = privacy), power = power)
+    val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, client = com.rokid.context.ai.embed.EmbeddingClient(privacy = privacy), power = power, privacy = privacy)
     val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
         com.rokid.context.memory.retrieval.LexicalRetriever(memory.db.retrievalDao()),
         com.rokid.context.memory.retrieval.SemanticRetriever(memory.spaces, memory.vectorIndex, embedders).apply { embedBound = { bindings.get(Role.EMBED) != null } },

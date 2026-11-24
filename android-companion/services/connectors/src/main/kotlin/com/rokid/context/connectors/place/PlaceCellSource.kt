@@ -90,7 +90,8 @@ class PlaceCellSource(
                         osmPlaces += FetchedPlace("osm:${el.shortId}", null, name, kind, el.lat, el.lon, (el.radiusM ?: PlaceKinds.defaultRadiusM(kind)).coerceIn(10, PlaceKinds.MAX_RADIUS_M), "", "osm", "osm:${el.type}")
                     }
                 }
-            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e } catch (e: com.rokid.context.memory.place.PlaceOfflineOnly) { throw e // the mode changed mid-fetch: the whole cell is refused, not stored as a partial
+            } catch (e: Exception) {
                 complete = false
                 log("overpass failed cls=${e.javaClass.simpleName}")
             }
