@@ -44,6 +44,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         when (a) {
             BannerAction.FIX_AI -> nav.navigate(Routes.SETTINGS_ENDPOINTS)
             BannerAction.REBUILD_INDEX -> deps.settings.rebuildIndex()
+            BannerAction.DISMISS_NOTICE -> deps.retentionNotice.dismiss()
             else -> apply(a)
         }
     }

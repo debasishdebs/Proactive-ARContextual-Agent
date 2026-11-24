@@ -93,6 +93,8 @@ internal class Retention(
     private val usedBytes: suspend () -> Long = { 0L },
     /** The photos of explicit importance that live outside `context.db` (place cards, pins). Null = unreadable: quota eviction then does NOTHING (fail closed). */
     private val protectedFrames: suspend () -> Set<String>? = { emptySet() },
+    /** Quota eviction takes at most this many photos per round (and stops inside a round as soon as their files cover what is over). */
+    private val quotaChunk: Int = QUOTA_CHUNK,
 ) {
     /** [deletedUndescribed] is 0 by construction (expiry requires a citing memory); it is kept as the Diagnostics counter that proves it. */
     data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0, val demoted: Int = 0, val photosExpired: Int = 0)
@@ -144,7 +146,7 @@ internal class Retention(
     /**
      * K6 quota eviction. Over the cap ([MemorySettings.quotaBytes], at most 2000 MB), the OLDEST eligible photos go until the usage is at 90% of the cap: described keyframes captured at least [QUOTA_MIN_AGE_DAYS] days ago, never a
      * photo of explicit importance (a place memory, a mark within the radius, an accepted proposal's source, a place card, a pin), never text. Each photo goes through [ForgetService.expirePhotos] (tombstone, expiry marker, row, JPEG),
-     * so a Moment keeps its FRAME part and "Photo expired". Bounded: chunks of [CHUNK], at most [QUOTA_ROUNDS] rounds, stops when nothing is eligible. Returns the number of photos evicted. Counts-only log lines.
+     * so a Moment keeps its FRAME part and "Photo expired". Bounded: rounds of at most [quotaChunk] photos, at most [QUOTA_ROUNDS] rounds, stops when nothing is eligible. Returns the number of photos evicted. Counts-only log lines.
      */
     suspend fun runQuota(s: MemorySettings, nowMs: Long, onChunk: suspend (ForgetService.Result) -> Unit = {}): Int {
         val cap = s.quotaBytes
@@ -158,18 +160,26 @@ internal class Retention(
         var evicted = 0
         for (round in 0 until QUOTA_ROUNDS) {
             if (used <= target) break
-            val ids = dao.quotaPhotosDue(nowMs - QUOTA_MIN_AGE_DAYS * DAY, ForgetRadius.ms(), protectList(protect), CHUNK)
+            val ids = dao.quotaPhotosDue(nowMs - QUOTA_MIN_AGE_DAYS * DAY, ForgetRadius.ms(), protectList(protect), quotaChunk)
             if (ids.isEmpty()) break
-            val r = service.expirePhotos(ids, requireLinked = true) // a photo no memory describes any more is skipped inside the transaction
+            // oldest first, and no more than the files of these photos need to cover what is over the target (a photo whose size is unknown counts 0: the round is then bounded by [quotaChunk])
+            val need = used - target
+            var covered = 0L
+            val take = ArrayList<String>()
+            for (id in ids) { take += id; covered += photoBytes(dao.frame(id)?.path); if (covered >= need) break }
+            val r = service.expirePhotos(take, requireLinked = true) // a photo no memory describes any more is skipped inside the transaction
             evicted += r.expiredFrames
+            val freed = r.framesToDelete.sumOf { photoBytes(it) } // read before the caller deletes the files
             onChunk(r)
             if (r.expiredFrames == 0) break
-            used = runCatching { usedBytes() }.getOrElse { break }
+            used = if (freed > 0) used - freed else runCatching { usedBytes() }.getOrNull() ?: break
         }
         val quotaEvicted = evicted
         if (used > cap) PcLog.milestone(LOG_TAG, "quota over, nothing evictable quotaEvicted=$quotaEvicted") else PcLog.milestone(LOG_TAG, "quota evicted quotaEvicted=$quotaEvicted")
         return evicted
     }
+
+    private fun photoBytes(path: String?): Long = if (path.isNullOrBlank()) 0L else runCatching { java.io.File(path).let { if (it.isFile) it.length() else 0L } }.getOrDefault(0L)
 
     /** An `IN (...)` list is never empty (SQLite) and never above the bind limit. */
     private fun protectList(ids: Set<String>): List<String> = ids.toList().take(MAX_PROTECT).ifEmpty { listOf("") }
@@ -180,10 +190,9 @@ internal class Retention(
         // 2. DEMOTION (retention v3): SHORT facts past the Quick recall window lose their TEXT VECTOR only; row, text, edges and every citation stay. A caption or a cluster summary is never demoted.
         var demoted = 0
         for (round in 0 until MAX_ROUNDS) {
-            val ids = dao.demotableFactIds(nowMs - s.recallHours * HOUR, CHUNK)
-            if (ids.isEmpty()) break
-            graph.db.withTransaction { dao.deleteVectorsFor(ids) }
-            demoted += ids.size
+            val n = service.demoteFacts(nowMs - s.recallHours * HOUR, CHUNK)
+            if (n == 0) break
+            demoted += n
         }
         // 3. A key-moment photo still waiting for its caption after 14 days becomes a skipped photo.
         dao.expireCaptionQueued(since, CAPTION_QUEUE_DAYS * DAY, nowMs)
@@ -234,12 +243,14 @@ internal class Retention(
          */
         const val DESCRIBE_BEFORE_DELETE_READY = true
         private const val CHUNK = 200
+        /** One quota round evicts at most this many photos (about 1 MB of JPEGs), so the usage never overshoots the target by more than that. */
+        private const val QUOTA_CHUNK = 25
         /** The plan line counts the capped selects up to here. */
         private const val COUNT_CAP = 100_000
         const val LOG_TAG = "PcRetention"
         private const val MAX_ROUNDS = 50
-        /** At most this many quota rounds per run (a bound: 50 x 200 = 10,000 photos). */
-        private const val QUOTA_ROUNDS = 50
+        /** At most this many quota rounds per run (a bound: 400 x 25 = 10,000 photos). */
+        private const val QUOTA_ROUNDS = 400
         /** SQLite binds at most 32,766 variables: the protected list is capped well below it. */
         private const val MAX_PROTECT = 20_000
         private const val HOUR = 3_600_000L

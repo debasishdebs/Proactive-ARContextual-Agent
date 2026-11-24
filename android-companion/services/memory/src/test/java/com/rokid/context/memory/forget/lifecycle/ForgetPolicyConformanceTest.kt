@@ -49,16 +49,11 @@ class ForgetPolicyConformanceTest {
 
     @Test fun aMomentScopedForgetFollowsTheUserRows() = both { check("scope", ForgetSourceKind.SCOPE, ForgetPlanner(db).planMoments(listOf(w.momA))) }
 
-    @Test fun retentionOfMemoriesFollowsTheExpiryRows() = both { check("retention", ForgetSourceKind.SYSTEM_EXPIRY, ForgetPlanner(db).plan(setOf(Ref(Family.MEMORY, "mA")), Policy.Retention)) }
-
     @Test fun photoExpiryFollowsTheExpiryRows() = both { check("photo expiry", ForgetSourceKind.SYSTEM_EXPIRY, ForgetPlanner(db).plan(setOf(Ref(Family.PHOTO, "fA")), Policy.RetentionPhotos())) }
 
-    /** Retention keeps the accepted proposals and does not rebuild descendants; the table says CASCADE for both, the planner proves the rows differ from the user cascade. */
-    @Test fun retentionDoesNotRebuildDescendantsAndTheUserCascadeDoes() = runBlocking {
-        w.seed(); ForgetV2.testOverride = false
-        val user = ForgetPlanner(db).plan(setOf(Ref(Family.MEMORY, "mA")), Policy.User); val retention = ForgetPlanner(db).plan(setOf(Ref(Family.MEMORY, "mA")), Policy.Retention)
-        assertTrue("user: the derived memory mD is rebuilt", user.nodes[Ref(Family.MEMORY, "mD")] == Fate.REBUILD)
-        assertTrue("retention: mD is untouched", Ref(Family.MEMORY, "mD") !in retention.nodes)
-        assertTrue("the table gives MEMORY FORGET for both", ForgetPolicy.action(ForgetChild.MEMORY, ForgetSourceKind.SINGLE) == PolicyAction.FORGET && ForgetPolicy.action(ForgetChild.MEMORY, ForgetSourceKind.SYSTEM_EXPIRY) == PolicyAction.FORGET)
+    /** Retention v3: a memory is never deleted by retention, so the table says KEEP for it (only a user Forget, a sweep of suspect descriptions or Delete all removes one). */
+    @Test fun retentionNeverDeletesAMemory() {
+        assertTrue(ForgetPolicy.action(ForgetChild.MEMORY, ForgetSourceKind.SYSTEM_EXPIRY) == PolicyAction.KEEP)
+        assertTrue(ForgetPolicy.action(ForgetChild.MEMORY, ForgetSourceKind.SINGLE) == PolicyAction.FORGET)
     }
 }

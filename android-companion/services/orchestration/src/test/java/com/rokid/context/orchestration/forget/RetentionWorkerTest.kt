@@ -59,22 +59,22 @@ class RetentionWorkerTest {
     private fun work() = runBlocking { TestListenableWorkerBuilder<RetentionWorker>(ctx).build().doWork() }
     private suspend fun exists(id: String) = graph.db.memoryViewDao().byId(id) != null
 
-    /** Defaults: SHORT 24 h, MEDIUM 7 d, LONG 30 d (MemorySettings). */
-    @Test fun tiersUseTheirWindows() = runBlocking {
+    /** Retention v3 (K1, K3): no tier window deletes anything any more; the old SHORT / MEDIUM / LONG ages leave every memory in place. */
+    @Test fun noTierWindowDeletesAMemory() = runBlocking {
         mem("s_old", MemoryTier.SHORT, 25 * hour); mem("s_new", MemoryTier.SHORT, 23 * hour)
-        mem("m_kept", MemoryTier.MEDIUM, 6 * 24 * hour); mem("m_old", MemoryTier.MEDIUM, 8 * 24 * hour, review = ReviewState.NEEDS_REVIEW)
-        mem("l_old", MemoryTier.LONG, 31 * 24 * hour); mem("l_new", MemoryTier.LONG, 29 * 24 * hour)
+        mem("m_old", MemoryTier.MEDIUM, 8 * 24 * hour, review = ReviewState.NEEDS_REVIEW)
+        mem("l_old", MemoryTier.LONG, 400 * 24 * hour)
         assertTrue(work() is ListenableWorker.Result.Success)
-        assertFalse(exists("s_old")); assertTrue(exists("s_new"))
-        assertTrue(exists("m_kept")); assertFalse(exists("m_old"))
-        assertFalse(exists("l_old")); assertTrue(exists("l_new"))
+        listOf("s_old", "s_new", "m_old", "l_old").forEach { assertTrue("$it is kept", exists(it)) }
     }
 
     @Test fun runsWhileCaptureIsPaused() = runBlocking {
         AppConfigStore.setPipelineEnabled(ctx, false)
-        mem("s_old", MemoryTier.SHORT, 25 * hour)
+        val jpg = File(ctx.filesDir, "rokid_archive/old.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("f_old", now - 31 * 24 * hour, jpg.absolutePath, "rokid_glasses"))
         work()
-        assertFalse(exists("s_old"))
+        assertNull(graph.db.forgetDao().frame("f_old"))
+        assertFalse(jpg.exists())
     }
 
     @Test fun oldFrameWithoutMemoriesDeleted() = runBlocking {
@@ -90,42 +90,44 @@ class RetentionWorkerTest {
         assertTrue(kept.exists() && graph.db.forgetDao().frame("f_new") != null)
     }
 
-    @Test fun lastExpiredMemoryOfAFrameDeletesItsJpegAndLocksIt() = runBlocking {
+    /** Retention v3: an old fact never takes its photo, its JPEG or its lock with it (there is no memory expiry). */
+    @Test fun anOldFactKeepsItsFrameAndJpeg() = runBlocking {
         val jpg = File(ctx.filesDir, "rokid_archive/f1.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
         graph.db.frameDao().insertIgnore(FrameEntity("f1", now - 2 * hour, jpg.absolutePath, "rokid_glasses"))
         mem("s_old", MemoryTier.SHORT, 25 * hour, frameId = "f1")
         work()
-        assertFalse(jpg.exists())
-        assertEquals(listOf("f1"), graph.db.forgetDao().tombstoned(listOf("f1")))
+        assertTrue(jpg.exists()); assertTrue(exists("s_old"))
+        assertEquals(emptyList<String>(), graph.db.forgetDao().tombstoned(listOf("f1")))
     }
 
-    @Test fun keepsAsksCitingExpiredMemory() = runBlocking {
+    @Test fun keepsAsksCitingAnOldFact() = runBlocking {
         mem("s_old", MemoryTier.SHORT, 25 * hour)
         graph.db.askDao().upsert(AskEntity("q1", 1, "q", "answer", """["s_old"]""", null, "phone_typed", false))
         work()
-        assertFalse(exists("s_old"))
+        assertTrue(exists("s_old"))
         val ask = graph.db.askDao().byId("q1")!!
-        assertFalse(ask.redacted); assertEquals("answer", ask.answer)
+        assertFalse(ask.redacted); assertEquals("answer", ask.answer); assertEquals("""["s_old"]""", ask.sourcesJson)
     }
 
-    @Test fun pauseCleanUpSkipsTheWholeExpiry() = runBlocking {
-        mem("s_old", MemoryTier.SHORT, 25 * hour); mem("l_old", MemoryTier.LONG, 31 * 24 * hour)
+    @Test fun pauseCleanUpSkipsTheDeletingSteps() = runBlocking {
+        val jpg = File(ctx.filesDir, "rokid_archive/old.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("f_old", now - 31 * 24 * hour, jpg.absolutePath, "rokid_glasses"))
         DeveloperFlags.setPauseRetention(ctx, true)
         try {
             assertTrue(work() is ListenableWorker.Result.Success)
-            assertTrue(exists("s_old")); assertTrue(exists("l_old"))
+            assertNotNull(graph.db.forgetDao().frame("f_old")); assertTrue(jpg.exists())
         } finally { DeveloperFlags.setPauseRetention(ctx, false) }
         work()
-        assertFalse(exists("s_old")); assertFalse(exists("l_old"))
+        assertNull(graph.db.forgetDao().frame("f_old"))
     }
 
-    /** The retention-fix candidate ships paused: with no stored choice the switch reads ON, and a fresh install's nightly run expires nothing until the user turns it OFF. */
     @Test fun pauseCleanUpIsOnByDefaultAndAFreshRunExpiresNothing() = runBlocking {
         ctx.getSharedPreferences("pc_dev", Context.MODE_PRIVATE).edit().remove(DeveloperFlags.PAUSE_RETENTION).commit()
         assertTrue(DeveloperFlags.pauseRetention(ctx))
-        mem("s_old", MemoryTier.SHORT, 25 * hour)
+        val jpg = File(ctx.filesDir, "rokid_archive/old.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("f_old", now - 31 * 24 * hour, jpg.absolutePath, "rokid_glasses"))
         assertTrue(work() is ListenableWorker.Result.Success)
-        assertTrue("paused by default: nothing expires", exists("s_old"))
+        assertNotNull("paused by default: nothing expires", graph.db.forgetDao().frame("f_old")); assertTrue(jpg.exists())
     }
 
     @Test fun ensureRetentionSchedulesOneDailyJob() {
@@ -138,16 +140,16 @@ class RetentionWorkerTest {
         assertFalse(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(RetentionWorker.NAME).get().single().state.isFinished)
     }
 
-    /** Fix round 1 C1: expiry never invalidates descendants; a MEDIUM summary outlives its SHORT sources. */
-    @Test fun summaryOutlivesItsShortSources() = runBlocking {
+    /** Retention v3: nothing is expired, so a summary and the sources it was built on all stay, with their edges. */
+    @Test fun summaryAndItsSourcesStayTogether() = runBlocking {
         mem("src", MemoryTier.SHORT, 25 * hour)
         mem("sum_young", MemoryTier.MEDIUM, 25 * hour)
         mem("sum_old", MemoryTier.MEDIUM, 8 * 24 * hour)
         graph.db.forgetDao().insertEdges(listOf(com.rokid.context.memory.db.MemorySourceEntity("sum_young", "src"), com.rokid.context.memory.db.MemorySourceEntity("sum_old", "src")))
         work()
-        assertFalse(exists("src"))
+        assertTrue(exists("src")); assertTrue(exists("sum_old"))
         assertEquals(ReviewState.OK, graph.db.memoryViewDao().byId("sum_young")!!.reviewState)
-        assertFalse(exists("sum_old"))
+        assertEquals(2, graph.db.forgetDao().edgesTo(listOf("src")).size)
         assertTrue(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(ResummarizeWorker.NAME).get().isEmpty())
     }
 
@@ -179,8 +181,8 @@ class RetentionWorkerTest {
         val (pid, alarms) = acceptedReminder("qa", "s_old")
         val params = graph.proposals.byId(pid)!!.paramsJson
         work()
-        assertFalse(exists("s_old"))
-        assertFalse("P0: system expiry redacts nothing", graph.db.askDao().byId("qa")!!.redacted)
+        assertTrue(exists("s_old"))
+        assertFalse("retention redacts nothing", graph.db.askDao().byId("qa")!!.redacted)
         assertEquals(1, alarms.scheduledAlarms.size)
         assertEquals("EXECUTED", graph.proposals.byId(pid)!!.state)
         assertEquals(params, graph.proposals.byId(pid)!!.paramsJson)
@@ -333,19 +335,16 @@ class RetentionWorkerTest {
         graph.db.memoryDao().insert(MemoryEntity("capS", null, "t", "caption", "", MemoryTier.SHORT, 1.0, ReviewState.OK, false, now - 400 * day, false, "t"))
         mem("plain", MemoryTier.LONG, 31 * day)
         assertTrue(work() is ListenableWorker.Result.Success)
-        assertTrue(exists("cap") && exists("sum") && exists("capS"))
-        assertFalse(exists("plain"))
+        assertTrue(exists("cap") && exists("sum") && exists("capS") && exists("plain"))
     }
 
-    @Test fun captionRetentionHonoured() = runBlocking {
+    /** Retention v3: the per-kind Caption / Scene summary days are READ but ignored (folded into the later Auto-delete); nothing deletes them. */
+    @Test fun captionAndSummaryDaysAreIgnored() = runBlocking {
         fun m(id: String, type: String, age: Long) = MemoryEntity(id, null, "t", type, "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - age, false, "t")
         graph.db.memoryDao().insert(m("c_old", "caption", 31 * day)); graph.db.memoryDao().insert(m("c_new", "caption", 29 * day))
         graph.db.memoryDao().insert(m("s_old", "cluster_summary", 91 * day)); graph.db.memoryDao().insert(m("s_new", "cluster_summary", 89 * day))
-        pass(settings(caption = 30, summary = 90), t0)
-        assertFalse(exists("c_old")); assertTrue(exists("c_new"))
-        assertFalse(exists("s_old")); assertTrue(exists("s_new"))
-        pass(settings(), t0 + 1000 * day) // FOREVER: never
-        assertTrue(exists("c_new") && exists("s_new"))
+        pass(settings(caption = 30, summary = 90), t0 + 1000 * day)
+        listOf("c_old", "c_new", "s_old", "s_new").forEach { assertTrue("$it is kept", exists(it)) }
     }
 
     @Test fun imageVectorRetention() = runBlocking {
@@ -436,36 +435,35 @@ class RetentionWorkerTest {
         graph.db.memoryDao().insert(MemoryEntity(id, frameId, "t", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, at - ageMs, false, "t"))
             .also { graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity(id, frameId, null, "FACT"))) }
 
-    /** C1: a SHORT fact expiring at 24 h must not tombstone the photo, delete its JPEG or its vectors; the photo rule then runs. */
-    @Test fun memoryExpiryNeverTouchesKeyframePhoto() = runBlocking {
+    /** C1: an old SHORT fact is demoted (vector only); it never tombstones the photo or deletes its JPEG or vectors; the photo rule then runs on its own. */
+    @Test fun anOldFactNeverTouchesItsKeyframePhoto() = runBlocking {
         val jpg = photo("kf", now - 2 * hour, "EXTRACTED", linked = true) // has a caption (LONG, forever)
         fact("fact_kf", "kf", 25 * hour)
         assertTrue(work() is ListenableWorker.Result.Success)
-        assertFalse(exists("fact_kf")); assertTrue(exists("m_kf"))
+        assertTrue(exists("fact_kf")); assertTrue(exists("m_kf"))
         assertTrue(jpg.exists()); assertNotNull(frameRow("kf"))
         assertNotNull(graph.db.frameVectorDao().get("kf", "sp")); assertNotNull(graph.db.frameMetaDao().get("kf")); assertNotNull(graph.db.frameStateDao().get("kf"))
         assertTrue(graph.db.forgetDao().tombstoned(listOf("kf")).isEmpty())
         val since = MemorySettingsStore.get(ctx).settings.value.perKindSince
         pass(MemorySettingsStore.get(ctx).settings.value, since + 8 * day)
         assertNull(frameRow("kf")); assertFalse(jpg.exists()) // photoDays, through expirePhotos
-        assertNotNull(graph.db.frameVectorDao().get("kf", "sp")); assertNotNull(graph.db.frameMetaDao().get("kf")); assertTrue(exists("m_kf"))
+        assertNotNull(graph.db.frameVectorDao().get("kf", "sp")); assertNotNull(graph.db.frameMetaDao().get("kf")); assertTrue(exists("m_kf")); assertTrue(exists("fact_kf"))
     }
 
-    /** C1(b): the last citing memory expiring must not delete the photo or its vectors. */
-    @Test fun lastCitingMemoryExpiringKeepsPhotoAndVectors() = runBlocking {
+    @Test fun theLastCitingFactIsKeptWithPhotoAndVectors() = runBlocking {
         val jpg = photo("only", now - 2 * hour, "EXTRACTED")
         fact("fact_only", "only", 25 * hour)
         work()
-        assertFalse(exists("fact_only"))
+        assertTrue(exists("fact_only"))
         assertTrue(jpg.exists()); assertNotNull(frameRow("only")); assertNotNull(graph.db.frameVectorDao().get("only", "sp"))
         assertTrue(graph.db.forgetDao().tombstoned(listOf("only")).isEmpty())
     }
 
-    @Test fun captionExpiryBeforePhotoExpiryKeepsPhotoAndVector() = runBlocking {
+    @Test fun captionIsKeptAndPhotoFollowsItsOwnRule() = runBlocking {
         val ts = t0 + hour
         val jpg = photo("cp", ts, "EXTRACTED", linked = true)
         pass(settings(photo = 90, caption = 30), t0 + 31 * day)
-        assertFalse(exists("m_cp")) // the caption's own rule
+        assertTrue(exists("m_cp")) // the caption setting is ignored
         assertTrue(jpg.exists()); assertNotNull(frameRow("cp")); assertNotNull(graph.db.frameVectorDao().get("cp", "sp"))
         assertTrue(graph.db.forgetDao().tombstoned(listOf("cp")).isEmpty())
     }
@@ -478,7 +476,7 @@ class RetentionWorkerTest {
         graph.db.memoryDao().insert(MemoryEntity("sumx", "rep", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - 40 * day, false, "t"))
         graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("sumx", "rep", "cr", "CLUSTER_REP"), FrameSourceEntity("sumx", "mb", "cr", "CLUSTER_MEMBER")))
         pass(settings(summary = 30), t0 + 12 * hour)
-        assertFalse(exists("sumx"))
+        assertTrue(exists("sumx"))
         assertTrue(rep.exists() && frameRow("rep") != null) // a representative, not a skipped photo
         assertTrue(graph.db.forgetDao().tombstoned(listOf("rep", "mb")).isEmpty())
         pass(settings(summary = 30), t0 + 26 * hour)
@@ -548,8 +546,8 @@ class RetentionWorkerTest {
         tombstone("tk")
         graph.db.memoryDao().insert(MemoryEntity("fact_tk", "tk", "t", "note", "", MemoryTier.MEDIUM, 0.8, ReviewState.OK, false, now - 8 * day, false, "t"))
         graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("fact_tk", "tk", null, "FACT")))
-        assertTrue(work() is ListenableWorker.Result.Success) // expires the fact, then sweeps
-        assertFalse(exists("fact_tk"))
+        assertTrue(work() is ListenableWorker.Result.Success) // keeps the fact, then sweeps
+        assertTrue(exists("fact_tk"))
         FrameSweep.sweep(ctx, now + 30 * day)
         ForgetStartup.run(ctx) {}
         assertTrue(jpg.exists()); assertNotNull(frameRow("tk"))
@@ -564,7 +562,7 @@ class RetentionWorkerTest {
         graph.db.memoryDao().insert(MemoryEntity("sumy", "r1", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - 40 * day, false, "t"))
         graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("sumy", "r1", "cx", "CLUSTER_REP"), FrameSourceEntity("sumy", "m1", "cx", "CLUSTER_MEMBER")))
         pass(settings(summary = 30), t0 + hour)
-        assertFalse(exists("sumy"))
+        assertTrue(exists("sumy"))
         FrameSweep.sweep(ctx, t0 + 40 * day); ForgetStartup.run(ctx) {}
         assertTrue(r1.exists() && m1.exists()); assertNotNull(frameRow("r1")); assertNotNull(frameRow("m1"))
         assertNotNull(graph.db.frameVectorDao().get("r1", "sp"))

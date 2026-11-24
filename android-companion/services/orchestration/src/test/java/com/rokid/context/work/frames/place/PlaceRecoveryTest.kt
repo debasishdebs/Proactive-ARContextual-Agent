@@ -51,7 +51,7 @@ class PlaceRecoveryTest {
         val search = graph.memories.search("charminar", 10).any { it.id == mid }
         val list = graph.db.memoryViewDao().observeRecentVisible(50).first().any { it.id == mid }
         val export = graph.db.exportDao().memoryPage(0, 50).any { it.id == mid }
-        val embed = graph.db.embeddingDao().missing("any", 50).any { it.id == mid }
+        val embed = graph.db.embeddingDao().missing("any", 50, 0L).any { it.id == mid }
         return search || list || export || embed
     }
 
@@ -59,7 +59,7 @@ class PlaceRecoveryTest {
         frame("f1")
         assertTrue(PlaceMemory.save(ctx, request("f1"), pending = true))
         assertEquals("the row exists (so a rollback can find it)", 1, graph.db.memoryDao().count())
-        assertFalse(readableAnywhere("f1")); assertEquals(0, graph.db.embeddingDao().eligibleCount())
+        assertFalse(readableAnywhere("f1")); assertEquals(0, graph.db.embeddingDao().eligibleCount(0L))
         assertTrue(PlaceMemory.reveal(ctx, "f1", MemoryWipe.generation.get()))
         assertTrue(readableAnywhere("f1"))
     }

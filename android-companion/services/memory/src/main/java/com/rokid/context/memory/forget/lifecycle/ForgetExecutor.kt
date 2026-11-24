@@ -97,7 +97,8 @@ class ForgetExecutor internal constructor(
         val carried = dao.carriedMemoryIdsOfFrame(frameId) - ids.toSet()
         val invalidatedCarried = if (carried.isEmpty()) ForgetService.Result.EMPTY else cascade(c, carried, lockFrames = false, provenanceOnly = true, queueOutbox = false, protect = protect)
         if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
-            dropCanvasOutputs(c, listOf(frameId), null, radiusCascade)
+            dropCanvasOutputs(c, listOf(frameId), capturedAt, radiusCascade)
+            PhotoFamily.unmark(listOf(frameId), c) // retention v3 (r2-3): an expired photo with nothing left is still forgotten by this Forget
             return@withTransaction cascade(c, emptyList(), lockFrames = true, extraCited = cites, bounded = bounded, protect = protect).with(invalidatedCarried).also { if (top) rebuildScenes(c, plan) }
         }
         val r = cascade(c, ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded, protect = protect)
@@ -144,6 +145,16 @@ class ForgetExecutor internal constructor(
     }
 
     // ---- retention --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    /**
+     * Retention v3 DEMOTION (the one place a retention step removes memory data): the TEXT VECTORS of SHORT facts created before [beforeMs] (never a caption or a cluster summary), at most [limit] facts, in ONE transaction. The memory
+     * rows, their text, edges, frame links and every citation are NEVER touched: only the vectors go, so the facts leave the semantic pool and the scan stays bounded. Returns how many facts were demoted.
+     */
+    internal suspend fun demoteFacts(beforeMs: Long, limit: Int): Int = db.withTransaction {
+        val ids = dao.demotableFactIds(beforeMs, limit)
+        ids.chunked(CHUNK).forEach { dao.deleteVectorsFor(it) }
+        ids.size
+    }
 
     /** Row 8, suspect descriptions: the memories go, the photos never do (`ForgetService.removeDescriptions`). The plan used for the revocation is the user plan (a superset: fail closed). */
     internal suspend fun removeDescriptions(ids: Collection<String>): ForgetService.Result = db.withTransaction {

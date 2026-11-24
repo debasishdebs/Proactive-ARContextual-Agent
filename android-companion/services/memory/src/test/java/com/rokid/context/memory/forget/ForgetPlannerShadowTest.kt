@@ -89,6 +89,5 @@ class ForgetPlannerShadowTest {
     @Test fun momentForgetById() = shadow({ planner.planMoments(listOf(w.momA)) }) { w.fx.forget.forgetMoments(listOf(w.momA)) }
     @Test fun momentScopeSpans() = shadow({ planner.planScoped(listOf(w.tA..w.tA + 999)) }) { w.fx.forget.forgetSpans(listOf(w.tA..w.tA + 999)) }
     @Test fun sceneScopeSpans() = shadow({ planner.planScoped(listOf(w.tA..w.tB + 999), listOf("sNear")) }) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
-    @Test fun retentionExpireFact() = shadow({ planner.plan(roots(A), Policy.Retention) }) { w.service.expire(listOf("mA")) }
     @Test fun retentionExpirePhoto() = shadow({ planner.plan(roots(Ref(Family.PHOTO, "fA")), Policy.RetentionPhotos(requireLinked = true)) }) { w.service.expirePhotos(listOf("fA"), requireLinked = true) }
 }

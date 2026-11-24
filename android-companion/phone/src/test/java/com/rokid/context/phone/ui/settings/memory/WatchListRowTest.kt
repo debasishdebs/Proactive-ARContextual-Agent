@@ -50,7 +50,7 @@ class WatchListRowTest {
             PcTheme {
                 val items by store.items.collectAsState()
                 MemorySettingsScreen(
-                    MemorySettingsUiState(), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {}, onEncryption = {}, onExport = {},
+                    MemorySettingsUiState(), onBack = {}, onRecall = {}, onQuota = {}, onEncryption = {}, onExport = {},
                     onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {},
                     watchList = items, onWatchListSave = store::set, onWatchListReset = store::reset,
                 )

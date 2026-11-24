@@ -62,6 +62,8 @@ class PhoneDeps(
     val activitySort: com.rokid.context.phone.ui.activity.ActivitySortStore = com.rokid.context.phone.ui.activity.InMemoryActivitySort(),
     /** G7: Android Battery Saver (asks are paused while it is on). */
     val batterySaver: Flow<Boolean> = flowOf(false),
+    /** Retention v3 (K5): the one-time notice that clean-up no longer deletes text. */
+    val retentionNotice: RetentionNoticeControl = RetentionNoticeControl.None,
     /** G3: Home's limited-mode banner. */
     val limitedMode: com.rokid.context.phone.ui.home.LimitedModeControl = com.rokid.context.phone.ui.home.LimitedModeControl.None,
     /** Find a photo (wave 3): recall, describe on demand, stored paths and the Room change signal. */
@@ -117,6 +119,7 @@ class PhoneDeps(
                 onMicGranted = voice::onForeground,
                 activitySort = com.rokid.context.phone.ui.activity.PrefsActivitySort(app),
                 batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app),
+                retentionNotice = RetentionNoticeControl.prefs(app),
                 limitedMode = com.rokid.context.phone.ui.home.PrefsLimitedMode.forApp(app),
                 photoSearch = com.rokid.context.phone.ui.photos.PhotoSearchDeps.create(app),
                 utterance = voice.utterance,

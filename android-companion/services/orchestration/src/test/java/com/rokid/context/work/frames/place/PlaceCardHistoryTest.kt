@@ -91,16 +91,18 @@ class PlaceCardHistoryTest {
         assertTrue(logs.contains("place history forget frames=1 removed=1"))
     }
 
-    @Test fun photoExpiry_unlinksKeepsRow() = runBlocking {
+    @Test fun photoExpiry_marksGoneKeepsRowAndItsLineage() = runBlocking {
         history.add(ev(frame = "f1"))
         ForgetListeners.photosExpired(listOf("f1"))
         val r = history.recent().single()
-        assertNull(r.frameId); assertEquals(1, r.photoGone)
-        assertTrue(logs.contains("place history expire frames=1 unlinked=1"))
+        assertEquals("retention v3 (r2-5): the frame id stays as private lineage", "f1", r.frameId); assertEquals(1, r.photoGone)
+        assertTrue(logs.contains("place history expire frames=1 marked=1"))
+        ForgetListeners.framesForgotten(listOf("f1")) // a later user Forget of the expired photo still deletes the row
+        assertTrue(history.recent().isEmpty())
     }
 
-    /** End to end through the real memory ForgetService: expiry only unlinks the photo (row stays), a user Forget deletes the row. */
-    @Test fun realForgetService_expiryKeepsRowUnlinked_userForgetDeletesRow() = runBlocking {
+    /** End to end through the real memory ForgetService: expiry only marks the photo gone (row and its lineage stay), a user Forget deletes the row, also for the expired photo. */
+    @Test fun realForgetService_expiryKeepsRowAndLineage_userForgetDeletesRow() = runBlocking {
         val mdb = com.rokid.context.memory.db.DatabaseFactory.inMemory(ctx)
         try {
             val svc = com.rokid.context.memory.forget.ForgetService(mdb, com.rokid.context.memory.ProposalRepository(mdb.proposalDao(), mdb.actionDao(), mdb)) { 1_000 }
@@ -110,10 +112,12 @@ class PlaceCardHistoryTest {
             val rows = history.recent()
             assertEquals("expiry keeps both rows", 2, rows.size)
             val gone = rows.single { it.photoGone == 1 }
-            assertNull(gone.frameId); assertEquals("f2", rows.single { it.photoGone == 0 }.frameId)
+            assertEquals("the frame id stays as private lineage (r2-5)", "f1", gone.frameId); assertEquals("f2", rows.single { it.photoGone == 0 }.frameId)
             svc.forgetMoment("f2")
             assertEquals("a user Forget deletes the row", 1, history.recent().size)
             assertEquals(1, history.recent().single().photoGone)
+            svc.forgetMoment("f1")
+            assertTrue("a user Forget of the EXPIRED photo deletes its row too", history.recent().isEmpty())
         } finally { mdb.close() }
     }
 

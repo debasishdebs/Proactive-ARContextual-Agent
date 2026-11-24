@@ -28,7 +28,7 @@ import com.rokid.context.phone.ui.preview.previewMoment
 @Composable
 fun HomeRoute(deps: PhoneDeps, nav: NavController, onBanner: (BannerAction, (BannerAction) -> Unit) -> Unit) {
     val appContext = LocalContext.current.applicationContext
-    val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice, batterySaver = deps.batterySaver, limitedMode = deps.limitedMode, utterance = deps.utterance, askAgainOf = deps.askAgain, suggestions = deps.suggestionFeed, placeCards = com.rokid.context.phone.place.AndroidPlaceCardHomeSource(appContext, zone = deps.zone)) }
+    val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice, batterySaver = deps.batterySaver, retentionNotice = deps.retentionNotice.pending, limitedMode = deps.limitedMode, utterance = deps.utterance, askAgainOf = deps.askAgain, suggestions = deps.suggestionFeed, placeCards = com.rokid.context.phone.place.AndroidPlaceCardHomeSource(appContext, zone = deps.zone)) }
     androidx.lifecycle.compose.LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.onResume() }
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current.findActivity()

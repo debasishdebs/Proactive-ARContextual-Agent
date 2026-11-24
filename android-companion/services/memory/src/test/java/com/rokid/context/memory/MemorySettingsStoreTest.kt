@@ -18,10 +18,10 @@ class MemorySettingsStoreTest {
         val store = MemorySettingsStore(prefs)
         assertEquals(MemorySettings(24, 7, 30, 250), store.settings.value)
         assertEquals(250L * 1024 * 1024, store.settings.value.quotaBytes)
-        store.update { it.copy(shortHours = 48, mediumDays = 14, longDays = 90, quotaMb = 5_000) }
+        store.update { it.copy(recallHours = 48, mediumDays = 14, longDays = 90, quotaMb = 5_000) }
         assertEquals(MemorySettings(48, 14, 90, 2_000), MemorySettingsStore(prefs).settings.value)
-        store.update { it.copy(shortHours = 3) }
-        assertEquals(24, store.settings.value.shortHours) // not one of the offered windows → default
+        store.update { it.copy(recallHours = 3) }
+        assertEquals(24, store.settings.value.recallHours) // not one of the offered windows → default
     }
 
     /** Task 8 (spec P6.1): per-kind defaults, the offered choices, FOREVER = -1, and the first-run stamp. */
@@ -115,7 +115,7 @@ class MemorySettingsStoreTest {
         val second = Thread { store.update { it.copy(mediumDays = 14, quotaMb = 300) } }
         store.update { s ->
             second.start(); second.join(300) // without the lock the second edit runs (and is overwritten) right here
-            s.copy(shortHours = 48, quotaMb = 200)
+            s.copy(recallHours = 48, quotaMb = 200)
         }
         second.join()
         assertEquals(MemorySettings(48, 14, 30, 300), store.settings.value) // second edit last: its quota wins
@@ -157,7 +157,7 @@ class MemorySettingsStoreTest {
         store.stampPerKindSince(1_000_000L); store.stampPerKindSince(2_000_000L)
         assertEquals(false, prefs.contains("quota_mb"))
         assertEquals(250, MemorySettingsStore(prefs).settings.value.quotaMb)
-        store.update { it.copy(shortHours = 48) } // editing another setting does not store it either
+        store.update { it.copy(recallHours = 48) } // editing another setting does not store it either
         assertEquals(false, prefs.contains("quota_mb")); assertEquals(250, MemorySettingsStore(prefs).settings.value.quotaMb)
     }
 
@@ -170,5 +170,22 @@ class MemorySettingsStoreTest {
         val fresh = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_user_choice", Context.MODE_PRIVATE).also { it.edit().clear().commit() })
         fresh.update { it.copy(quotaMb = 100) } // the user picks 100 on a 250 default: that choice is stored
         assertEquals(100, MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_user_choice", Context.MODE_PRIVATE)).settings.value.quotaMb)
+    }
+
+    /** Retention v3 (K2, SettingsMigrationTest): an upgrade keeps the user's 48 h as Quick recall, a new choice goes to the NEW key and never to `short_hours` (the candidate's clean() would turn 72 / 168 into 24). */
+    @Test fun settingsMigrationKeepsTheUsersWindowAndNeverWritesShortHoursAgain() {
+        val p = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_v3_migration", Context.MODE_PRIVATE)
+        p.edit().clear().putInt("short_hours", 48).putInt("medium_days", 14).putInt("long_days", 365).putInt("photo_days", MemorySettings.FOREVER).putInt("quota_mb", 2_000).commit()
+        val store = MemorySettingsStore(p)
+        assertEquals("the user's 48 h survives as Quick recall", 48, store.settings.value.recallHours)
+        assertEquals("the old per-tier values are read and kept (a downgrade reads sane values)", listOf(14, 365), listOf(store.settings.value.mediumDays, store.settings.value.longDays))
+        assertEquals(2_000, store.settings.value.quotaMb)
+        store.update { it.copy(recallHours = 168) }
+        assertEquals(168, MemorySettingsStore(p).settings.value.recallHours)
+        assertEquals("short_hours keeps its last legal value", 48, p.getInt("short_hours", -1))
+        assertEquals(168, p.getInt("recall_hours", -1))
+        assertEquals(listOf(12, 24, 48, 72, 168), MemorySettingsStore.RECALL_HOURS)
+        p.edit().putInt("recall_hours", 5).commit()
+        assertEquals("an illegal stored value falls back to the default", 24, MemorySettingsStore(p).settings.value.recallHours)
     }
 }

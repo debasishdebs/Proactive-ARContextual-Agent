@@ -274,14 +274,18 @@ class ResidueOracleTest {
         assertTrue("another mark survives", h.dao3.label(mark) != null)
     }
 
-    @Test fun retentionExpiryLeavesNothingThatNamesTheExpiredFact() = runBlocking {
+    /** Retention v3: retention never deletes a fact (the old test asserted the opposite); only an explicit Forget does, and it still leaves nothing that names the fact. */
+    @Test fun retentionKeepsAnOldFactAndAnExplicitForgetStillLeavesNothingThatNamesIt() = runBlocking {
         world()
         h.db.memoryDao().insert(MemoryEntity(oldMem, null, oldText, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, System.currentTimeMillis() - 3 * 24 * 3_600_000L, false, oldText))
-        File(app.cacheDir, "exports/proactive-context-memories-2.json").writeText("{\"memories\":[{\"id\":\"$oldMem\",\"text\":\"$oldText\"}]}") // an export made before the expiry
+        File(app.cacheDir, "exports/proactive-context-memories-2.json").writeText("{\"memories\":[{\"id\":\"$oldMem\",\"text\":\"$oldText\"}]}") // an export made before the Forget
         assertTrue(residue(listOf(oldMem, oldText)).isNotEmpty())
-        DeveloperFlags.setPauseRetention(app, false) // the candidate ships paused by default
+        DeveloperFlags.setPauseRetention(app, false)
         runBlocking { TestListenableWorkerBuilder<RetentionWorker>(app).build().doWork() }
-        assertClean("retention expiry", listOf(oldMem, oldText))
+        assertTrue("retention kept the old fact", h.db.memoryViewDao().byId(oldMem) != null)
+        assertTrue("and its text is still where it was", residue(listOf(oldMem, oldText)).isNotEmpty())
+        assertTrue(ForgetActions.forgetFact(app, oldMem))
+        assertClean("explicit Forget of the old fact", listOf(oldMem, oldText))
     }
 
     @Test fun deleteAllLeavesNothingThatNamesAnything() = runBlocking {
@@ -583,7 +587,7 @@ class ResidueOracleTest {
             deleted scene_part: S68f6b0ea|MOMENT|68f6b0ea, S68f6b464|MOMENT|68f6b464, S68f6b6bc|MOMENT|68f6b6bc
             changed canvas_meta: labelRev
             added canvas_helper_cleanup: 1
-            added canvas_meta: frame_forget_rev
+            added canvas_meta: frame_forget_rev, retention_v3_done
             added cleanup_outbox: 1
         """) { MemoryWipe.deleteAll(app) } }
 

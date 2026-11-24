@@ -56,6 +56,21 @@ class EmbeddingSpacesTest {
         assertEquals(listOf("m9"), spaces.missing(b.id, 10).map { it.id })
     }
 
+    /** Retention v3 (WP1): a SHORT fact past the Quick recall window lost its text vector on purpose. The backfill never re-embeds it, the coverage and the space swap do not count it; a LONG memory and a young SHORT fact still are. */
+    @Test fun aDemotedFactIsNeverBackfilledCountedOrAllowedToBlockASwap() = runBlocking {
+        fun at(id: String, tier: MemoryTier, createdAt: Long, type: String = "note") = MemoryEntity(id, null, "text $id", type, "", tier, 0.8, ReviewState.OK, false, createdAt, false, "")
+        memories.add(at("old_short", MemoryTier.SHORT, 100)); memories.add(at("young_short", MemoryTier.SHORT, 900)); memories.add(at("old_long", MemoryTier.LONG, 100)); memories.add(at("old_short_caption", MemoryTier.SHORT, 100, "caption"))
+        val a = start("fpD")
+        spaces.recallSince = { 500L } // the window starts at 500: old_short is past it
+        assertEquals(setOf("young_short", "old_long", "old_short_caption"), spaces.missing(a.id, 10).map { it.id }.toSet())
+        assertEquals(Coverage(0, 3), spaces.coverage(a.id))
+        spaces.put("young_short", a.id, v); spaces.put("old_long", a.id, v); spaces.put("old_short_caption", a.id, v)
+        assertEquals(Coverage(3, 3), spaces.coverage(a.id))
+        assertTrue("the demoted fact has no vector and the swap does not wait for one", spaces.swapIfComplete(a.id))
+        spaces.recallSince = { 0L } // no window: the same fact is an ordinary missing one again
+        assertEquals(listOf("old_short"), spaces.missing(a.id, 10).map { it.id })
+    }
+
     @Test fun atMostOneBuildingAndSameFingerprintIsResumed() = runBlocking {
         val a = start("fpA")
         assertEquals(a.id, start("fpA").id)

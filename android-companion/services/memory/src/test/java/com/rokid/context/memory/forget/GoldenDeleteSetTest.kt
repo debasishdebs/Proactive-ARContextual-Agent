@@ -457,18 +457,13 @@ class GoldenDeleteSetTest {
             added moment_tombstone: 68f6baa4, 68f6baa5
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
         """) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
-    /** P0: system expiry deletes the expired row (and its edge) and NOTHING that depends on it: no redaction, no dropped Moment, no shrunk Scene, no scrubbed proposal. */
-    @Test fun retentionExpireFact() = golden("""
-            deleted memory: mA
-            deleted memory_source: mD|mA
-            added canvas_meta: lin:d:mA, lin:f:fA
-        """) { w.service.expire(listOf("mA")) }
-    /** Retention r1: photo expiry is storage only: the frame row and the photo's own experiment canvas outputs go; no Moment, Scene, mark or radius cascade, no fence. */
+    /** Retention v3: photo expiry is storage only: the frame row and the photo's own experiment canvas outputs go; the expiry marker is written (rx:f:, and rx:t: by capture time); no Moment, Scene, mark or radius cascade, no fence. There is no memory expiry: a fact is never deleted by retention. */
     @Test fun retentionExpirePhoto() = golden("""
             deleted canvas_live_trace: 7|fA|n, 7|fB|n
             deleted canvas_run_item: r|fA|n, r|fB|n
             deleted canvas_score: r|fA|n, r|fB|n
             deleted frame: fA
+            added canvas_meta: rx:f:fA, rx:t:1761000100000:fA
             added cleanup_outbox: 1, 2
             added forget_tombstone: fA
         """) { w.service.expirePhotos(listOf("fA"), requireLinked = true) }
