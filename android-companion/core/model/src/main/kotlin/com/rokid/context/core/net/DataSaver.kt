@@ -377,8 +377,15 @@ class MobileDataLedger(private val store: CounterStore, private val epochDay: ()
 
     private fun key(k: DataKind) = "mobile_bytes_" + k.name.lowercase()
 
+    /**
+     * Codex r4 P1-3: serialises the WRITERS only (the read-modify-write of [add], [reserve], [settle], [firstNoticeToday]), including the synchronous disk commit of a reservation, so concurrent reservations never
+     * lose an update and the persisted total stays exact. The READERS ([today], [dayNow]) never take it: they read the store directly (an in-memory read in the app), so a Main-thread status read or the router's
+     * admission is never blocked behind a disk commit. A read that overlaps a write sees the state just before or just after it (a write replaces every key of the day in one map).
+     */
+    private val writeLock = Any()
+
     /** Adds one call. Returns today's totals after it. */
-    @Synchronized fun add(kind: DataKind, bytes: Long, photos: Int): Today = addWith(kind, bytes, photos, durable = false) ?: read()
+    fun add(kind: DataKind, bytes: Long, photos: Int): Today = synchronized(writeLock) { addWith(kind, bytes, photos, durable = false) ?: read() }
 
     /** The shared add: [durable] commits to disk and returns null when that failed. */
     private fun addWith(kind: DataKind, bytes: Long, photos: Int, durable: Boolean): Today? {
@@ -396,40 +403,42 @@ class MobileDataLedger(private val store: CounterStore, private val epochDay: ()
         return read()
     }
 
-    @Synchronized fun today(): Today {
+    /** Lock-free (see [writeLock]). */
+    fun today(): Today {
         val stored = store.getLong(DAY, -1)
         if (stored < 0 || epochDay() > stored) return Today(0, 0, 0, 0)
         return read()
     }
 
-    /** The ledger day a count made now belongs to (same rule as [add]). */
-    @Synchronized fun dayNow(): Long { val stored = store.getLong(DAY, -1); val today = epochDay(); return if (stored < 0 || today > stored) today else stored }
+    /** The ledger day a count made now belongs to (same rule as [add]). Lock-free. */
+    fun dayNow(): Long { val stored = store.getLong(DAY, -1); val today = epochDay(); return if (stored < 0 || today > stored) today else stored }
 
-    /** Counts a reservation up front (like [add]) and returns the token that [settle] needs. */
-    @Synchronized fun reserve(kind: DataKind, bytes: Long, photos: Int): DataReservation {
-        addWith(kind, bytes, if (kind == DataKind.PHOTO) photos else 0, durable = true) ?: return DataReservation.FAILED // not on disk: the caller refuses the send
-        return DataReservation(kind, bytes.coerceAtLeast(0), if (kind == DataKind.PHOTO) photos.coerceAtLeast(0) else 0, dayNow())
+    /** Counts a reservation up front (like [add]) and returns the token that [settle] needs. The disk commit happens under the writer lock only. */
+    fun reserve(kind: DataKind, bytes: Long, photos: Int): DataReservation = synchronized(writeLock) {
+        if (addWith(kind, bytes, if (kind == DataKind.PHOTO) photos else 0, durable = true) == null) DataReservation.FAILED // not on disk: the caller refuses the send
+        else DataReservation(kind, bytes.coerceAtLeast(0), if (kind == DataKind.PHOTO) photos.coerceAtLeast(0) else 0, dayNow())
     }
 
     /** Replaces the reserved numbers by the real ones (never below zero). A reservation from an earlier day is left as counted on that day. */
-    @Synchronized fun settle(r: DataReservation, bytes: Long, photos: Int) {
-        if (r.day != dayNow()) return
-        val dBytes = bytes.coerceAtLeast(0) - r.bytes
-        val dPhotos = (if (r.kind == DataKind.PHOTO) photos.coerceAtLeast(0) else 0) - r.photos
-        val bk = key(r.kind)
-        store.putLongs(mapOf(bk to (store.getLong(bk, 0) + dBytes).coerceAtLeast(0), PHOTOS to (store.getLong(PHOTOS, 0) + dPhotos).coerceAtLeast(0)))
+    fun settle(r: DataReservation, bytes: Long, photos: Int) {
+        synchronized(writeLock) {
+            if (r.day != dayNow()) return
+            val dBytes = bytes.coerceAtLeast(0) - r.bytes
+            val dPhotos = (if (r.kind == DataKind.PHOTO) photos.coerceAtLeast(0) else 0) - r.photos
+            val bk = key(r.kind)
+            store.putLongs(mapOf(bk to (store.getLong(bk, 0) + dBytes).coerceAtLeast(0), PHOTOS to (store.getLong(PHOTOS, 0) + dPhotos).coerceAtLeast(0)))
+        }
     }
 
     private fun read(): Today = Today(store.getLong(key(DataKind.PHOTO), 0), store.getLong(key(DataKind.BULK_OTHER), 0), store.getLong(key(DataKind.SMALL), 0), store.getLong(PHOTOS, 0))
 
     /** True the first time it is called on a day (the "limit reached" log happens once a day). Follows the same day rule. */
-    @Synchronized fun firstNoticeToday(): Boolean {
+    fun firstNoticeToday(): Boolean = synchronized(writeLock) {
         val stored = store.getLong(DAY, -1)
         val today = epochDay()
         val day = if (stored < 0 || today > stored) today else stored
-        if (store.getLong(NOTICE_DAY, -1) >= day) return false // given today (or on a later day: the clock was set back)
-        store.putLongs(mapOf(NOTICE_DAY to day))
-        return true
+        if (store.getLong(NOTICE_DAY, -1) >= day) false // given today (or on a later day: the clock was set back)
+        else { store.putLongs(mapOf(NOTICE_DAY to day)); true }
     }
 
     companion object { const val DAY = "mobile_day"; const val PHOTOS = "mobile_photos"; const val NOTICE_DAY = "mobile_notice_day" }

@@ -384,9 +384,9 @@ class ModelRouter(
     }
 
     /** Codex r3 P1-3: the durable commit runs on an IO thread, never on the caller's (often Main). */
-    private suspend fun safeReserve(kind: DataKind, tx: Long, photos: Int): com.rokid.context.core.net.DataReservation? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        try { dataGate.reserve(kind, tx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}"); com.rokid.context.core.net.DataReservation.FAILED } // fail closed: no durable count, no costly send
-    }
+    private suspend fun safeReserve(kind: DataKind, tx: Long, photos: Int): com.rokid.context.core.net.DataReservation? = 
+        // Codex r4 P2-4: ownership of the committed token is captured inside the IO block, a cancellation releases it; a throwing gate fails closed (no durable count, no costly send).
+        com.rokid.context.ai.datasaver.reserveOwned(dataGate, kind, tx, photos) { t -> PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") }
 
     private suspend fun safeSettle(r: com.rokid.context.core.net.DataReservation, tx: Long, rx: Long, photos: Int) = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.IO) {
         try { dataGate.settle(r, tx, rx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") } // the reservation stays counted
