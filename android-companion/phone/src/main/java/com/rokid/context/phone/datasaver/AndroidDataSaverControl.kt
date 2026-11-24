@@ -48,9 +48,7 @@ class AndroidDataSaverControl(private val app: Context, private val graph: DataS
             val n = try { dao.dataSaverParkedCount() } catch (e: Exception) { return@launch }
             val bytes = if (n > 0 && graph.heldBack()) try { dao.dataSaverParkedPaths().sumOf { java.io.File(it).let { f -> if (f.isFile) f.length() else 0L } } } catch (e: Exception) { 0L } else 0L
             // after Wi-Fi returns the parked frames are no longer held back, they are uploading: show only frames still blocked
-            val held = graph.heldBack()
-            val paused = try { com.rokid.context.data.frames.ParkedStorageGuard.refuses(app, held) } catch (e: Exception) { false } // re-reads the free space: pauses and resumes without waiting for a new photo
-            flow.value = flow.value.copy(waiting = if (held) n else 0, waitingBytes = bytes, storagePaused = paused)
+            flow.value = flow.value.copy(waiting = if (graph.heldBack()) n else 0, waitingBytes = bytes)
         }
     }
 
