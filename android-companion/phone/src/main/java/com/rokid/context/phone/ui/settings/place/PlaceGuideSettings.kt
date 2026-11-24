@@ -449,7 +449,7 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
         _state.update { it.copy(history = ui, historyOn = on, historyDetail = if (!on) null else if (open == null) it.historyDetail else detail) }
     }
 
-    private suspend fun buildDetail(h: PlaceHistoryControl, r: com.rokid.context.memory.place.PlaceCardLogEntity, message: String? = null): PlaceHistoryDetail {
+    private suspend fun buildDetail(h: PlaceHistoryControl, r: com.rokid.context.memory.db.PlaceCardLogEntity, message: String? = null): PlaceHistoryDetail {
         val line = runCatching { h.line(r) }.getOrNull()
         val photo = r.frameId?.takeIf { r.photoGone == 0 }?.let { runCatching { h.photoPath(it) }.getOrNull() } // retention v3: a gone photo is never loaded (its id is kept only as lineage)
         return PlaceHistoryDetail(r.toUi(), line, photo, h.showAgainBlock(r) ?: if (line == null) PlaceHistoryModel.GONE_LINE else null, message)
@@ -515,6 +515,29 @@ fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfig
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
     PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame))
+}
+
+/**
+ * "Place cards" (v18, owner decision): the card history list as a normal Settings entry, visible without Developer mode. It reuses the Place Guide view model and the same list, detail dialog, "Show on glasses again",
+ * "Open Moment" and "Delete from history"; nothing else of the Place Guide (pins, seeding, card position) is on this page.
+ */
+@Composable
+fun PlaceCardsRoute(control: PlaceGuideControl, back: () -> Unit, openFrame: ((String) -> Unit)? = null) {
+    val vm = viewModel { PlaceGuideViewModel(control) }
+    val state by vm.state.collectAsStateWithLifecycle()
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.LaunchedEffect(vm, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { vm.historyChanges.collect { vm.refreshHistory() } }
+    }
+    PlaceCardsScreen(state, back, PlaceGuideActions(openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame))
+}
+
+@Composable
+fun PlaceCardsScreen(state: PlaceGuideUiState, back: () -> Unit, on: PlaceGuideActions = PlaceGuideActions()) {
+    SettingsPage("Place cards", back, tag = "place_cards_settings") {
+        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn)
+    }
+    state.historyDetail?.let { d -> PlaceHistoryDetailDialog(d, java.time.ZoneId.systemDefault(), on.closeHistory, on.showAgain, on.deleteHistory, on.openMoment) }
 }
 
 /** A disposed route drops the pin draft unless the disposal is a configuration change (rotation); [PlaceGuideViewModel.onCleared] still cancels when the screen is really left. */

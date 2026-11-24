@@ -67,6 +67,15 @@ class SettingsRootTest {
         assertEquals(listOf(Routes.SETTINGS_PHONE_INPUTS), opened)
     }
 
+    @Test fun placeCardsRowIsThereWithoutDeveloperMode() {
+        val opened = mutableListOf<String>()
+        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked", "Every 5 min"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }, developerMode = false) } }
+        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Place cards"))
+        compose.onNodeWithText("Cards you were shown for places").assertIsDisplayed()
+        compose.onNodeWithText("Place cards").performClick()
+        assertEquals(listOf(Routes.SETTINGS_PLACE_CARDS), opened)
+    }
+
     @Test fun connectorsAndPrivacyRowsOpen() {
         val opened = mutableListOf<String>()
         compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked", "Every 5 min"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }) } }

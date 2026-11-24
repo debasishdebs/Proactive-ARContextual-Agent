@@ -131,6 +131,7 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
         ),
         "Memory & system" to listOf(
             SettingRow(Icons.Outlined.Memory, PcColors.ChipViolet, "Memory", "Retention, storage, encryption, export", Routes.SETTINGS_MEMORY),
+            SettingRow(Icons.Outlined.Search, PcColors.ChipMint, "Place cards", "Cards you were shown for places", Routes.SETTINGS_PLACE_CARDS),
             SettingRow(Icons.Outlined.MonitorHeart, PcColors.ChipCoral, "Diagnostics", "Queues, summarizer tracker, manual runs", Routes.SETTINGS_DIAGNOSTICS),
         ),
     )
