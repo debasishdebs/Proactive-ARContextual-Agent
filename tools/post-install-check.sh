@@ -312,6 +312,22 @@ FX_PASS=0 FX_FAIL=0
 eq() { # name expected actual
   if [ "$2" = "$3" ]; then FX_PASS=$((FX_PASS + 1)); else FX_FAIL=$((FX_FAIL + 1)); echo "  FIXTURE FAILED: $1 (want '$2', got '$3')"; fi
 }
+fxlogs() { # size_of_pca.log.1_read size_of_pca.log_read rc_seg1 rc_main : mocked adb (no device); prints "TRIP_LOGS=n STATUS:label ..."
+  local out
+  TMP="$(mktemp -d "${TMPDIR:-/tmp}/pic-fx.XXXXXX")"; PHONE_PKG=com.x; TRIP_LOGS=0; FX_R1="$1"; FX_R2="$2"; FX_C1="$3"; FX_C2="$4"
+  rc_shell() { REMOTE_RC=0; REMOTE_OUT="$(printf "$FXL_LS")"; return 0; }
+  A() { case "$*" in *files/logs/pca.log.1) head -c "$FX_R1" < /dev/zero | tr '\0' 'x'; return "$FX_C1" ;; *files/logs/pca.log) head -c "$FX_R2" < /dev/zero | tr '\0' 'x'; return "$FX_C2" ;; esac; }
+  res() { printf '%s:%s\n' "$1" "$2"; }
+  check_trip_logs s > "$TMP/o" 2>&1; out="$(tr '\n' ' ' < "$TMP/o" | sed 's/ *$//')"
+  printf 'TRIP_LOGS=%s %s' "$TRIP_LOGS" "$out"
+  rm -rf "$TMP"
+}
+fxlogs_content() { # the content checks after an incomplete read (TRIP_LOGS stays 0)
+  fxlogs "$1" "$2" 0 0 >/dev/null
+  TMP="$(mktemp -d "${TMPDIR:-/tmp}/pic-fx.XXXXXX")"; res() { printf '%s:%s\n' "$1" "$2"; }
+  check_trip_log_content | tr '\n' ' ' | sed 's/ *$//'
+  rm -rf "$TMP"
+}
 run_fixtures() {
   ADB=/bin/echo   # adb_safe allow-list fixtures must never reach a real adb
   local D1 D2 D3 P
@@ -537,6 +553,15 @@ run_fixtures() {
   eq "dbmode: encrypted header, no flag" encrypted "$(db_mode3 'abcdefghijklmno' '')"
   eq "safe: run-as via shell ls -l is read-only and allowed" "-s S shell run-as com.x ls -l files/logs; echo __PCA_RC=\$?" "$(adb_safe S shell "run-as com.x ls -l files/logs; echo __PCA_RC=\$?" 2>/dev/null)"
   eq "safe: shell rm of a log still refused" 97 "$(adb_safe S shell 'run-as com.x rm files/logs/pca.log' >/dev/null 2>&1; echo $?)"
+  # --- log segment reads: a failed or truncated read must never turn into PASS
+  FXL_LS='total 9\n-rw------- 1 u u 40 2026-11-20 10:00 pca.log.1\n-rw------- 1 u u 40 2026-11-20 10:00 pca.log\n'
+  eq "logs: complete read leaves TRIP_LOGS=1" "TRIP_LOGS=1 PASS:log segments" "$(fxlogs 40 40 0 0)"
+  eq "logs: truncated oldest segment is UNKNOWN, not read" "TRIP_LOGS=0 PASS:log segments UNKNOWN:log read" "$(fxlogs 10 40 0 0)"
+  eq "logs: truncated pca.log is UNKNOWN, not read" "TRIP_LOGS=0 PASS:log segments UNKNOWN:log read" "$(fxlogs 40 3 0 0)"
+  eq "logs: failed adb read of a segment is UNKNOWN" "TRIP_LOGS=0 PASS:log segments UNKNOWN:log read" "$(fxlogs 40 40 1 0)"
+  eq "logs: failed read of pca.log is UNKNOWN" "TRIP_LOGS=0 PASS:log segments UNKNOWN:log read" "$(fxlogs 40 40 0 1)"
+  eq "logs: a read longer than ls (active log grew) is fine" "TRIP_LOGS=1 PASS:log segments" "$(fxlogs 60 50 0 0)"
+  eq "logs: incomplete read makes every log-derived check UNKNOWN" "UNKNOWN:detailed log UNKNOWN:log forbidden shapes UNKNOWN:data saver (PcData) UNKNOWN:place attempts" "$(fxlogs_content 10 40)"
   say "fixtures: $FX_PASS passed, $FX_FAIL failed"
   [ "$FX_FAIL" = 0 ]
 }
@@ -704,7 +729,7 @@ pref_read() { # file-name-without-.xml -> PREF_TXT; 0 = read, 1 = unreadable
 }
 
 check_trip_logs() { # serial -> builds $TMP/all.log (every segment, oldest first) and $TMP/main.log (pca.log)
-  local s="$1" ls_out sc n bytes ign hasmain names f
+  local s="$1" ls_out sc n bytes ign hasmain names f want got bad=""
   rc_shell "$s" "run-as $PHONE_PKG ls -l files/logs" || { res UNKNOWN "log segments" "ls files/logs failed (adb)"; return; }
   if [ "$REMOTE_RC" != 0 ]; then res UNKNOWN "log segments" "files/logs not listable"; return; fi
   sc="$(printf '%s\n' "$REMOTE_OUT" | seg_scan)"; set -- $sc; n="$1"; bytes="$2"; ign="$3"; hasmain="$4"
@@ -716,18 +741,26 @@ check_trip_logs() { # serial -> builds $TMP/all.log (every segment, oldest first
   : > "$TMP/all.log"; : > "$TMP/main.log"
   names="$(printf '%s\n' "$ls_out" | awk 'NF == 8 {print $8}' | seg_order)"
   for f in $names; do
-    A "$s" exec-out run-as "$PHONE_PKG" cat "files/logs/$f" 2>/dev/null | tr -d '\r' > "$TMP/seg.part" || true
+    want="$(printf '%s\n' "$ls_out" | awk -v n="$f" 'NF == 8 && $8 == n && $5 ~ /^[0-9]+$/ {print $5; exit}')"
+    # no pipe: the adb status must not be hidden by tr. A failed read, or fewer bytes than ls reported (truncated), means the logs are INCOMPLETE:
+    # nothing derived from them may be PASS, so TRIP_LOGS stays 0 and every log-derived check reports UNKNOWN.
+    if ! A "$s" exec-out run-as "$PHONE_PKG" cat "files/logs/$f" > "$TMP/seg.raw" 2>/dev/null; then bad=failed; break; fi
+    got="$(wc -c < "$TMP/seg.raw" | tr -d ' ')"
+    case "$got:$want" in *[!0-9:]*|:*|*:) bad=unmeasured; break ;; esac
+    if [ "$got" -lt "$want" ]; then bad=truncated; break; fi
+    tr -d '\r' < "$TMP/seg.raw" > "$TMP/seg.part"
     cat "$TMP/seg.part" >> "$TMP/all.log"
     if [ "$f" = pca.log ]; then cp "$TMP/seg.part" "$TMP/main.log"; fi
   done
-  rm -f "$TMP/seg.part"
+  rm -f "$TMP/seg.part" "$TMP/seg.raw"
+  if [ -n "$bad" ]; then res UNKNOWN "log read" "a log segment read $bad: logs incomplete, log-derived checks are UNKNOWN"; return; fi
   TRIP_LOGS=1
 }
 
 check_trip_log_content() {
   local st hb ran gap fc lat http at pc tot line cost pl
   if [ "${TRIP_LOGS:-0}" != 1 ]; then
-    res UNKNOWN "detailed log" "log not read"; res UNKNOWN "log forbidden shapes" "log not read"; res UNKNOWN "data saver (PcData)" "log not read"; res UNKNOWN "place attempts" "log not read"; return
+    res UNKNOWN "detailed log" "log not read or incomplete"; res UNKNOWN "log forbidden shapes" "log not read"; res UNKNOWN "data saver (PcData)" "log not read"; res UNKNOWN "place attempts" "log not read"; return
   fi
   set -- $(diag_state < "$TMP/all.log"); st="$1"; hb="$2"; ran="$3"; gap="$4"
   if [ "$st" != Y ]; then res UNKNOWN "detailed log" "no PcDiag app-start milestone in the retained log"
