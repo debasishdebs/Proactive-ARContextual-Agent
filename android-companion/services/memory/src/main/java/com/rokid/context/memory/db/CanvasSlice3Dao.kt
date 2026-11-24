@@ -82,6 +82,8 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
      * any of that is invalidated. Idempotent. 3b: in the SAME transaction `frame_forget_rev` moves, every open helper job (also one still awaiting its tap) is voided with its
      * payload and ids dropped, and one cleanup row per job is written (see [moveFrameForgetFence]); it tombstones TRACES only, never a frame.
      */
+    @Query("DELETE FROM moment_location WHERE atMs BETWEEN :from AND :to") protected abstract suspend fun deleteMomentLocationsBetween(from: Long, to: Long): Int
+
     @Transaction open suspend fun forgetRangeTx(fromMs: Long, toMs: Long, now: Long): ForgetOutcome {
         addForgetRange(fromMs, toMs)
         val jobs = moveFrameForgetFence(now)
@@ -89,6 +91,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         ids.forEach { tombstoneTrace(it, now) }
         purgeSensorBetween(fromMs, toMs, now, "forget") // the sensor rows of the range go whichever trace they came from
         val labels = deleteLabelsBetween(fromMs, toMs)
+        deleteMomentLocationsBetween(fromMs, toMs) // v18 WP2: the saved locations of the range go with it
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
         return ForgetOutcome(ids, labels, invalid, jobs)
     }
@@ -155,9 +158,12 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         for (id in labelIds.distinct()) { val t = "mf:$id"; deleteScoresOfLineageToken(t); deleteItemsOfLineageToken(t); deleteTracesOfLineageToken(t) }
     }
 
+    @Query("DELETE FROM moment_location WHERE anchorKind = 'MARK' AND anchorId = :id") protected abstract suspend fun deleteMomentLocationOfMark(id: String): Int
+
     /** Deletes one label; the results computed under the old labels (they embody it) are invalidated in the same transaction. */
     @Transaction open suspend fun deleteLabel(id: String): Boolean {
         val n = deleteLabelRow(id)
+        if (n > 0) deleteMomentLocationOfMark(id) // v18 WP2: the mark's saved location (user Forget only: the undo and the executor)
         if (n > 0) { deleteRunRowsOfLabels(listOf(id)); bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)); pruneMarkClaims() }
         return n > 0
     }

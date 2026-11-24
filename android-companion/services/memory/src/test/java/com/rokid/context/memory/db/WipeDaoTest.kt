@@ -15,6 +15,13 @@ class WipeDaoTest {
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     @After fun close() = db.close()
 
+    @Test fun momentLocationEmptyAfterWipe() = runBlocking {
+        db.momentLocationDao().insertIfAbsent(MomentLocationEntity("68f6baa4", 1, "FRAME", "f1", 12.5, 77.5, 20.0, 1_000, "ZONE_STREAM", null, null, 1))
+        assertEquals(1, db.momentLocationDao().count())
+        db.wipeDao().wipeMemory()
+        assertEquals(0, rowCount(db.openHelper.writableDatabase, "moment_location"))
+    }
+
     @Test fun deleteAllClearsFrameTablesKeepsNotes() = runBlocking {
         db.frameDao().insertIgnore(FrameEntity("f1", 1, "/f1.jpg", "rokid_glasses"))
         db.frameMetaDao().upsert(FrameMetaEntity("f1", "w1", "s", "UNKNOWN", false, null, null, null, 640, null, null, null, null, null, 1))

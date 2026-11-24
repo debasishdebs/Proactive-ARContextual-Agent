@@ -44,13 +44,13 @@ class GoldenDeleteSetTest {
     }
 
     /** [onFull]: the COMPLETE ON expectation of a path the Stage 2 rulings (F1, F3, F5, F6, 2026-11-17) change beyond the ask and nudge fates; the OFF expectation never changes. */
-    private fun golden(expected: String, on: V2Fates? = null, onFull: String? = null, op: suspend () -> Unit) = runBlocking {
+    private fun golden(expected: String, on: V2Fates? = null, onFull: String? = null, locations: Boolean = false, op: suspend () -> Unit) = runBlocking {
         for (v2 in listOf(false, true)) {
             ForgetV2.testOverride = v2
             val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
             try {
                 w = GoldenWorld(db)
-                w.seed()
+                w.seed(); if (locations) w.seedLocations()
                 val want = (if (v2 && onFull != null) onFull else if (v2 && on != null) on.apply(expected) else expected).trimIndent().trim(); val got = w.deltaOf(op).render()
                 if (want != got) throw AssertionError("forgetV2=$v2 delete set differs.\n--- expected\n$want\n--- actual\n$got") // the whole set, not JUnit's abbreviated diff
             } finally { db.close() }
@@ -458,6 +458,78 @@ class GoldenDeleteSetTest {
             added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
         """) { w.fx.forget.forgetSpans(listOf(w.tA..w.tB + 999), listOf("sNear")) }
     /** Retention v3: photo expiry is storage only: the frame row and the photo's own experiment canvas outputs go; the expiry marker is written (rx:f:, and rx:t: by capture time); no Moment, Scene, mark or radius cascade, no fence. There is no memory expiry: a fact is never deleted by retention. */
+    /** v18 WP2: only the rows of [GoldenWorld.seedLocations] (and the marks it adds) are new here; a user Forget of the moment deletes the saved location of its photo and of every photo it locks, nothing else. */
+    @Test fun momentLocationRows() = golden("""
+            deleted canvas_label: mkFar, mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fA
+            deleted frame_meta: fA
+            deleted frame_source: mBatch|fA, mMulti|fA, mMulti|fFar, mPlace|fA
+            deleted memory: mA, mBatch, mMulti, mPlace
+            deleted memory_source: mD|mA
+            deleted moment: 68f6baa4, 68f6baa5, 68f6c5f8
+            deleted moment_location: 68f6baa4, 68f6baa5, 68f6c5f8
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch, 68f6c5f8|FRAME|fFar, 68f6c5f8|MEMORY|mFar
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sMixed, sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sMixed|MOMENT|68f6c5f8, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep, aFrame
+            changed canvas_meta: labelRev
+            changed canvas_trace: trFar, trNear
+            changed memory: mD
+            changed nudge: nCite
+            changed proposal: pAsk, pNudge
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, momentForgetRanges, scene_seq_floor
+            added cleanup_outbox: 1, 2, 3, 4, 5, 6
+            added forget_tombstone: fA, fFar
+            added moment_tombstone: 68f6baa4
+        """, onFull = """
+            deleted canvas_label: mkLinked, mkNear, mkNear:i
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n, 7|fFar|n
+            deleted canvas_run_item: r|fA|n, r|fB|n, r|fFar|n
+            deleted canvas_score: r|fA|n, r|fB|n, r|fFar|n
+            deleted frame: fA
+            deleted frame_meta: fA
+            deleted frame_source: mBatch|fA, mMulti|fA, mMulti|fFar, mPlace|fA
+            deleted memory: mA, mBatch, mMulti, mPlace
+            deleted memory_source: mD|mA
+            deleted moment: 68f6baa4, 68f6baa5
+            deleted moment_location: 68f6baa4, 68f6baa5
+            deleted moment_part: 68f6baa4|FRAME|fA, 68f6baa4|MARK|mkNear, 68f6baa4|MEMORY|mA, 68f6baa4|MEMORY|mPlace, 68f6baa5|FRAME|fB, 68f6baa5|MEMORY|mBatch
+            deleted nudge: nCite
+            deleted object_audit: MOMENT|68f6baa4|1
+            deleted object_derived: MOMENT|68f6baa4|SUMMARY
+            deleted scene: sNear
+            deleted scene_part: sMixed|MOMENT|68f6baa5, sNear|MOMENT|68f6baa4, sNear|MOMENT|68f6baa5
+            changed action_log: 1, 2
+            changed ask: aCite, aDep, aFrame
+            changed canvas_meta: labelRev
+            changed canvas_trace: trNear
+            changed memory: mD
+            changed proposal: pAsk, pNudge
+            changed scene: sMixed
+            added action_log: 3
+            added canvas_meta: forgetRanges, frame_forget_rev, momentForgetRanges, scene_seq_floor
+            added cleanup_outbox: 1, 2, 3, 4, 5
+            added forget_tombstone: fA
+            added moment_tombstone: 68f6baa4
+            added object_audit: SCENE|sMixed|1, SCENE|sMixed|2, SCENE|sMixed|3
+        """, locations = true) { w.fx.forget.forgetMoments(listOf(w.momA)) }
+    /** The same rows are KEPT by photo expiry (the golden of `retentionExpirePhoto` with the rows seeded: no `moment_location` line). */
+    @Test fun momentLocationRowsKeptByExpiry() = golden("""
+            deleted canvas_live_trace: 7|fA|n, 7|fB|n
+            deleted canvas_run_item: r|fA|n, r|fB|n
+            deleted canvas_score: r|fA|n, r|fB|n
+            deleted frame: fA
+            added canvas_meta: rx:f:fA, rx:t:1761000100000:fA
+            added cleanup_outbox: 1, 2
+            added forget_tombstone: fA
+        """, locations = true) { w.service.expirePhotos(listOf("fA"), requireLinked = true) }
     @Test fun retentionExpirePhoto() = golden("""
             deleted canvas_live_trace: 7|fA|n, 7|fB|n
             deleted canvas_run_item: r|fA|n, r|fB|n

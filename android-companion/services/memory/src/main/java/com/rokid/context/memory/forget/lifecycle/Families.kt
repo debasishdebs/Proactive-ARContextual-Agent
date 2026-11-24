@@ -21,7 +21,7 @@ internal object SideEffectRefs {
 object Families {
     val ALL: List<ForgetFamily> = listOf(
         PhotoFamily, MemoryFamily, MomentFamily, SceneFamily, DerivedFieldFamily, MarkFamily, TraceFamily, RunResultFamily,
-        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
+        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
     )
 
     fun of(f: Family): ForgetFamily = ALL.first { it.family == f }
@@ -168,6 +168,17 @@ internal object DerivedFieldFamily : ForgetFamily {
     suspend fun freshObjects(kind: String, ids: Collection<String>, tx: PlanTx): List<String> = tx.chunked(ids) { c ->
         tx.strings("SELECT DISTINCT objectId FROM object_derived WHERE objectKind = ? AND objectId IN (${c.joinToString(",") { "?" }}) AND staleSince IS NULL", listOf<Any>(kind) + c)
     }
+}
+
+/**
+ * The optional saved location of a Moment (v18 WP2): a leaf, never a [MomentFamily] table, because `MomentDao.remove` also runs for builder removals (`step = "build"`) and a rebuild must KEEP the row. It is not
+ * enumerated by the planner ([DesignDivergence] MOMENT_LOCATION_NOT_PLANNED): the user-Forget step code deletes it by photo or mark anchor, by second and by time, inside the transaction that already deletes the source.
+ * Expiry, the sweep, the invalid-Moment purge and the rebuilds keep it.
+ */
+internal object MomentLocationFamily : ForgetFamily {
+    override val family = Family.MOMENT_LOCATION
+    override val tables = listOf("moment_location")
+    override val selfDeletes = false
 }
 
 /** Marks (`canvas_label`: the tap, its intent row). */

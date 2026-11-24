@@ -278,6 +278,7 @@ class ForgetExecutor internal constructor(
         }
         if (frameIds.isNotEmpty() || spans.isNotEmpty()) c.notifyAfterCommit(frameIds, spans, expired)
         RunResultFamily.selfDelete(frameIds.toSet(), Fate.DROP, c)
+        if (!expired) { db.momentLocationDao().deleteForAnchors(frameIds); db.momentLocationDao().deleteForMoments(capturedAt.map(MomentId::ofMs)) } // v18 WP2: a USER Forget deletes the saved location of the photo and of its second; expiry keeps it
         RunResultFamily.dropSliceOutputs(c, frameIds)
         return spans
     }
@@ -300,6 +301,7 @@ class ForgetExecutor internal constructor(
         val md = db.momentDao(); val s3 = db.canvasSlice3Dao(); val c = ctx(now) // [now] is the MomentForget's own clock reading, as in v1
         // 1. Fences first: the durable range, then a tombstone per requested second (and the start of every span: the recency marker of a long range).
         spans.forEach { s3.addMomentForgetRange(it.first, it.last) }
+        db.momentLocationDao().deleteForMoments(requestedSeconds.map(MomentId::format)) // v18 WP2: user Forget only: the saved location of every requested second
         md.insertTombstones((requestedSeconds + spans.map { it.first / 1000 }).distinct().map { MomentTombstoneEntity(MomentId.format(it), now) })
         // 2. Independent discovery, unioned with the projection.
         val found = moments.discover(requestedSeconds, spans, bounded = byKey)

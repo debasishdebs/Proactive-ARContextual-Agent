@@ -9,7 +9,7 @@ enum class Family(val token: String) {
     PHOTO("photo"), MEMORY("memory"), MOMENT("moment"), SCENE("scene"), DERIVED_FIELD("derived"), MARK("mark"), TRACE("trace"), RUN_RESULT("run"),
     ANSWER("answer"), NUDGE("nudge"), PROPOSAL("proposal"),
     AUDIO("audio"), PERSON("person"), OBJECT("object"),
-    PLACE_PACK("placepack"), PLACE_CARD("placecard"), CONFIG("config"), CONTROL("control"),
+    MOMENT_LOCATION("momentloc"), PLACE_PACK("placepack"), PLACE_CARD("placecard"), CONFIG("config"), CONTROL("control"),
 }
 
 /** What a Forget does to a node: ERASE user data; REBUILD = content erased now (row kept, regenerated or left empty); DROP = a regenerable result removed. ERASE beats REBUILD, REBUILD beats DROP. */
