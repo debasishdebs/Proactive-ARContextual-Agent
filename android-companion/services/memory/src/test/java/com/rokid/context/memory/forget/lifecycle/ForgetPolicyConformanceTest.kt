@@ -51,6 +51,17 @@ class ForgetPolicyConformanceTest {
 
     @Test fun photoExpiryFollowsTheExpiryRows() = both { check("photo expiry", ForgetSourceKind.SYSTEM_EXPIRY, ForgetPlanner(db).plan(setOf(Ref(Family.PHOTO, "fA")), Policy.RetentionPhotos())) }
 
+    /** Codex v3 r1 P3-14 (restored from the removed retention test, independent of any retention behaviour): the USER plan of a fact rebuilds its descendant mD, and the table says FORGET for it. */
+    @Test fun aUserForgetOfAFactPlansTheDerivedMemoryAsRebuild() = runBlocking {
+        w.seed()
+        for (v2 in listOf(false, true)) {
+            ForgetV2.testOverride = v2
+            val user = ForgetPlanner(db).plan(setOf(Ref(Family.MEMORY, "mA")), Policy.User)
+            assertTrue("v2=$v2 user: the derived memory mD is rebuilt", user.nodes[Ref(Family.MEMORY, "mD")] == Fate.REBUILD)
+        }
+        assertTrue("the table gives MEMORY FORGET for a user source", ForgetPolicy.action(ForgetChild.MEMORY, ForgetSourceKind.SINGLE) == PolicyAction.FORGET)
+    }
+
     /** Retention v3: a memory is never deleted by retention, so the table says KEEP for it (only a user Forget, a sweep of suspect descriptions or Delete all removes one). */
     @Test fun retentionNeverDeletesAMemory() {
         assertTrue(ForgetPolicy.action(ForgetChild.MEMORY, ForgetSourceKind.SYSTEM_EXPIRY) == PolicyAction.KEEP)

@@ -42,7 +42,8 @@ class MemoryRetriever(
     private suspend fun retrieveNow(query: String, s: RetrievalSettings, nowMs: Long, notAfterMs: Long?, window: EventWindow?): RetrievalResult {
         val pool = if (window == null) maxOf(s.topK * 5, 40) else maxOf(s.topK * 5, 40, WINDOW_POOL)
         val since = if (window == null) recall.sinceMs(nowMs) else null // a time-window question is not narrowed: it reaches demoted facts
-        val lex = if (s.mode == RetrievalMode.SEMANTIC) emptyList() else lexical.search(query, pool, s.minConfidence, notAfterMs, window, since)
+        // Codex v3 r1 P2-11: a time-window question also runs the windowed lexical search in SEMANTIC mode (a demoted fact has no vector and is reachable only that way)
+        val lex = if (s.mode == RetrievalMode.SEMANTIC && window == null) emptyList() else lexical.search(query, pool, s.minConfidence, notAfterMs, window, since)
         // Semantic cosine is in [-1, 1]; shift to [0, 1] so recency and fusion only ever see non-negative scores.
         val semSearch = if (s.mode == RetrievalMode.LEXICAL) null else semantic.searchOrOff(query, pool, s.minConfidence, notAfterMs, window)
         val sem = semSearch?.hits?.map { Hit(it.id, (it.score + 1) / 2) }
@@ -51,7 +52,12 @@ class MemoryRetriever(
         val (scores, used) = when {
             s.mode == RetrievalMode.LEXICAL -> lex.associate { it.id to it.score } to RetrievalMode.LEXICAL
             sem == null -> (if (s.mode == RetrievalMode.SEMANTIC) lexical.search(query, pool, s.minConfidence, notAfterMs, window, since) else lex).associate { it.id to it.score } to RetrievalMode.LEXICAL
-            s.mode == RetrievalMode.SEMANTIC -> sem.associate { it.id to it.score } to RetrievalMode.SEMANTIC
+            s.mode == RetrievalMode.SEMANTIC -> {
+                val base = sem.associate { it.id to it.score }
+                // inside a window the facts that have NO vector in the active space (demoted or not embedded yet) join by their lexical score: a vector that merely scored low is not one of them
+                val noVector = if (window != null) notEmbedded(semSearch?.spaceId, lex, sem) else emptySet()
+                (base + lex.filter { it.id in noVector }.associate { it.id to it.score }) to RetrievalMode.SEMANTIC
+            }
             else -> s.fusion.fuse(lex, sem, notEmbedded(semSearch?.spaceId, lex, sem)) to RetrievalMode.HYBRID
         }
         if (scores.isEmpty()) return RetrievalResult(emptyList(), used, unavailable, off)

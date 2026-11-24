@@ -65,6 +65,8 @@ abstract class EmbeddingDao {
     @Query("SELECT memoryId FROM memory_vector WHERE spaceId = :spaceId AND memoryId IN (:ids)")
     abstract suspend fun embeddedAmong(spaceId: String, ids: List<String>): List<String>
     @Query("SELECT COUNT(*) FROM memory WHERE id = :id AND reviewState != 'INVALIDATED'") protected abstract suspend fun liveMemory(id: String): Int
+    /** 1 when the memory is demoted by the recall rule at [recallSince] (a SHORT fact, not a caption or cluster summary, created before it): its text vector must not be (re)written. */
+    @Query("SELECT COUNT(*) FROM memory WHERE id = :id AND tier = 'SHORT' AND type NOT IN ('caption','cluster_summary') AND createdAt < :recallSince") protected abstract suspend fun pastRecall(id: String, recallSince: Long): Int
     @Upsert abstract suspend fun putVector(v: MemoryVectorEntity)
 
     @Query(
@@ -98,10 +100,12 @@ abstract class EmbeddingDao {
      * from the space's `dim` is a caller bug and throws. A missing or INVALIDATED memory gets no vector (returns false): it would count towards coverage yet never be searchable.
      */
     @Transaction
-    open suspend fun putChecked(v: MemoryVectorEntity, size: Int): Boolean {
+    open suspend fun putChecked(v: MemoryVectorEntity, size: Int, recallSince: Long = 0L): Boolean {
         val s = space(v.spaceId)?.takeIf { it.state == SpaceState.BUILDING || it.state == SpaceState.ACTIVE } ?: return false
         // Phase 7 (fix round 1 I5): a vector computed before a Forget never lands for a deleted or INVALIDATED memory.
         if (liveMemory(v.memoryId) == 0) return false
+        // Codex v3 r1 P2-10: the recall eligibility is re-checked in THIS transaction, so a vector selected before the demotion cannot be restored after it (recallSince 0 = no recall window)
+        if (recallSince > 0L && pastRecall(v.memoryId, recallSince) != 0) return false
         require(size == s.dim) { "vector has $size dimensions, space expects ${s.dim}" }
         putVector(v)
         return true
