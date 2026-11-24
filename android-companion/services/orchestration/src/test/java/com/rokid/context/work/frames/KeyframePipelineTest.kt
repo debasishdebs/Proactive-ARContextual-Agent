@@ -600,16 +600,17 @@ class KeyframePipelineTest {
         assertEquals(0, (1..120).count { state("f$it") == "NEAR_DUP" })
     }
 
-    @Test fun onlyTheNewestThreeHundredParkedFramesAreProtectedTheRestShedAsNormal() = runBlocking {
+    /** Codex data saver r1 P1-3: a backlog longer than the old 300 cap keeps EVERY parked frame (retention would delete a shed, undescribed photo). */
+    @Test fun everyParkedFrameIsNeverShedEvenBeyondThreeHundred() = runBlocking {
         for (i in 1..500) seed("f$i", i * 1000L)
         db.frameStateDao().parkPendingForDataSaver()
         assertEquals(500, db.frameStateDao().dataSaverParkedCount())
-        assertEquals("the shed threshold ignores the protected set", 200, db.frameStateDao().unprotectedPendingCount())
+        assertEquals("the shed threshold ignores every parked frame", 0, db.frameStateDao().unprotectedPendingCount())
+        for (i in 1..60) seed("l$i", (1000 + i) * 1000L) // 60 ordinary frames: above the threshold, so shedding runs
         val p = blockedOnce(blocked = { false }, wasBlocked = { false })
         p.drainOnce()
-        val shed = (1..500).filter { state("f$it") == "NEAR_DUP" }
-        assertTrue("older frames beyond the cap are thinned", shed.isNotEmpty())
-        assertTrue("the newest 300 are all protected", shed.all { it <= 200 })
+        assertEquals("not one parked frame is shed", 0, (1..500).count { state("f$it") == "NEAR_DUP" || state("f$it") == "CAPTION_QUEUED" })
+        assertTrue("ordinary frames are still thinned", (1..60).any { state("l$it") == "NEAR_DUP" })
     }
 
     @Test fun liveFramesAreNotThinnedJustBecauseParkedOnesWait() = runBlocking {

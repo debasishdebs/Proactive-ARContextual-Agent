@@ -622,8 +622,12 @@ class KeyframePipeline(
     }
 
     /** Fix wave K5: the AI budget describes about 15 photos a minute; a bigger backlog is thinned (see [FrameStateDao.shedOldestNonDwell]). */
+    private var lastParkedLogged = 0
     private suspend fun shedBacklog(now: Long) {
-        if (states.unprotectedPendingCount() <= SHED_ABOVE) return // frames parked for Wi-Fi (up to the protected cap) do not make live frames look like a backlog
+        val parked = states.dataSaverParkedCount()
+        // Parked frames are never shed (undescribed photos wait for Wi-Fi however many there are): disk growth is reported by a count, not bounded by deleting. One counts-only line per 100-frame step.
+        if (parked / PARKED_LOG_STEP != lastParkedLogged / PARKED_LOG_STEP) { lastParkedLogged = parked; if (parked > 0) PcLog.i(PIPE_TAG, "parked=$parked") }
+        if (states.unprotectedPendingCount() <= SHED_ABOVE) return // frames parked for Wi-Fi do not make live frames look like a backlog
         val n = states.shedOldestNonDwell(SHED_KEEP_NEWEST, now)
         if (n > 0) PcLog.i(PIPE_TAG, "shed=$n")
     }
@@ -702,6 +706,7 @@ class KeyframePipeline(
         private const val MAX_FRUITLESS = 3
         /** Above this many PENDING frames the oldest non-dwell ones beyond the newest [SHED_KEEP_NEWEST] are skipped (fix wave K5). */
         const val SHED_ABOVE = 40
+        private const val PARKED_LOG_STEP = 100
         const val SHED_KEEP_NEWEST = 20
         const val ASK_WINDOW_MS = 60_000L
         /** An ask waits this long for frames the loop holds (the caller's own cap is 30 s as well). */

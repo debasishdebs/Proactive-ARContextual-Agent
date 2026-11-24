@@ -35,6 +35,8 @@ data class DataSaverUiState(
     val limitReached: Boolean = false,
     /** Frames the data saver is holding for Wi-Fi right now (the live count of frames parked by it; it does not grow with every recheck). */
     val waiting: Int = 0,
+    /** Size on disk of those waiting photos, in bytes (0 = unknown or none). */
+    val waitingBytes: Long = 0,
     /** Wi-Fi connected and unmetered but not validated for over 10 minutes. */
     val stuck: Boolean = false,
     /** Why the network is ROAMING: [NetworkCosts.WHY_ABROAD], [NetworkCosts.WHY_REPORTED], [NetworkCosts.WHY_COUNTRY] or "". */
@@ -57,7 +59,7 @@ object DataSaverModel {
     const val TODAY_TITLE = "Blocked today"
     const val COUNTS_ONLY = "Counts only. Photos stay on the phone and upload on Wi-Fi; the same photo can be counted by more than one call."
     const val COUNTED_NOTE = "Sent today counts model calls, Place Guide fetches and street-map tiles loaded on mobile data. Where photos would wait (roaming, unknown network, Android Data Saver, or your daily limit used up), the street map shows only tiles already saved on the phone."
-    const val CAP_NOTE = "Up to the newest 300 waiting photos are kept for Wi-Fi. In a longer backlog the older ones are thinned like any backlog (the salient ones are still described)."
+    const val CAP_NOTE = "Photos waiting for Wi-Fi are never thinned or deleted, however many pile up: they are described when Wi-Fi returns. They take space on the phone until then."
     const val LIMIT_ABROAD_NOTE = "While \"I'm abroad\" is on or the phone reports roaming, photos stop for the day at 10 MB or 30 photos (your own limit if lower) and wait for Wi-Fi. At home on Wi-Fi or home mobile data there is no limit unless you set one below."
 
     const val LIMIT_TITLE = "Daily limit on mobile data"
@@ -120,8 +122,12 @@ object DataSaverModel {
         else -> "Photos on any connection"
     }
 
-    fun todayLines(t: SkippedLedger.Today, waiting: Int = 0): List<String> = listOf(
-        "Photos waiting for Wi-Fi now: $waiting",
+    /** "N photos waiting for Wi-Fi, X MB" (MB with one decimal; the size part is left out when unknown). */
+    fun waitingLine(waiting: Int, bytes: Long): String =
+        "$waiting ${if (waiting == 1) "photo" else "photos"} waiting for Wi-Fi" + if (bytes > 0) ", ${"%.1f".format(java.util.Locale.US, bytes / 1_048_576.0)} MB" else ""
+
+    fun todayLines(t: SkippedLedger.Today, waiting: Int = 0, waitingBytes: Long = 0): List<String> = listOf(
+        waitingLine(waiting, waitingBytes),
         "Blocked photo-upload calls today: ${t.uploadsQueued} (a call carries up to 3 photos and is tried again later)",
         "Optional photo calls skipped (place matches, intent, Ask photos): ${t.dropped}",
         "Other big jobs left for Wi-Fi (night describe, text calls): ${t.bulk}",
@@ -187,7 +193,7 @@ fun DataSaverScreen(
                 NoticeText(DataSaverModel.sentLine(state.mobile), tag = "data_saver_sent")
                 DataSaverModel.limitLine(state.limit)?.let { NoticeText(it, tag = "data_saver_limit_line") }
                 NoticeText(DataSaverModel.TODAY_TITLE, tag = "data_saver_today_title")
-                DataSaverModel.todayLines(state.today, state.waiting).forEachIndexed { i, line -> NoticeText(line, tag = "data_saver_status_$i") }
+                DataSaverModel.todayLines(state.today, state.waiting, state.waitingBytes).forEachIndexed { i, line -> NoticeText(line, tag = "data_saver_status_$i") }
                 NoticeText(DataSaverModel.CAP_NOTE, tag = "data_saver_cap_note")
                 NoticeText(DataSaverModel.COUNTED_NOTE, tag = "data_saver_counted_note")
                 NoticeText(DataSaverModel.COUNTS_ONLY, tag = "data_saver_status")
