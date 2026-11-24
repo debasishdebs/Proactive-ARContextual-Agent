@@ -2,6 +2,9 @@
 
 Owner: the user (Debasish). Repo: ~/Desktop/rokid/proactive-context-agent, branch `feat/v101-ask-eval` (LOCAL; only ROADMAP.md was ever pushed). Android app: phone + Rokid glasses + optional watch. Nothing from 19-24 Nov is installed except what was installed on 19 Nov (build 18c1b76a).
 
+## 0a. UPDATE 24 Nov ~22:40: disk partly cleared
+The assistant removed 32 of its own agent git worktrees (they had grown to 12 GB; every commit was verified present on feat/v101-ask-eval by patch content or subject; branches kept; 10 stale worktrees under .claude/worktrees (3 GB, only untracked files) remain and can be removed with `git worktree remove --force`). Free disk went 1.2 GB -> ~11 GB: enough for the installer backup (1.7 GB) and for the emulator (7.3 GB) but only one at a time. DON'T create worktrees without removing them after the merge. The 38 old APK sets in backups/ (12 GB) are still the user's to delete.
+
 ## 0. The three things blocking the next step (all need the user)
 1. DISK: the Mac had ~2 GB free (97% full). The installer backup needs ~1.7 GB, the emulator ~7.3 GB. The user must delete old folders: `~/Desktop/rokid/backups/apks-v110-*` (38 superseded APK sets, ~12 GB; keep `apks-v110-cand-18c1b76a` = the installed build, and the newest train). The assistant is not allowed to delete the user's backups; the sandbox also denied deleting its own scratch.
 2. DEVICES: phone (`adb-RZCY902F76K-nmSM2g._adb-tls-connect._tcp`, wireless) and glasses (`1901092545029120`, USB) must be connected: `adb devices -l`.
