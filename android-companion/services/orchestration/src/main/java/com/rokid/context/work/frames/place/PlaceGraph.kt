@@ -10,6 +10,7 @@ import com.rokid.context.core.log.PcLog
 import com.rokid.context.memory.place.PlacePack
 import com.rokid.context.memory.place.PlacesDatabase
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** The process-wide place pack (`places.db`) and the card port. Built lazily, off Main: the first call reads the Keystore. */
 object PlaceGraph {
@@ -85,7 +86,7 @@ object PlaceGraph {
         val app = context.applicationContext
         if (!historyOwed(app)) return true
         val h = existingHistory(app)
-        if (h == null) { owedPrefs(app).edit().remove(PrefsHistoryOwed.KEY).commit(); return true }
+        if (h == null) { if (owedPrefs(app).edit().remove(PrefsHistoryOwed.KEY).commit()) PrefsHistoryOwed.clearMemory(); return !historyOwed(app) }
         return h.retryOwed()
     }
 
@@ -136,10 +137,24 @@ object PlaceGraph {
         val p = readyPack(context)
         val before = runCatching { pins(context).pins().map { it.id } }.getOrDefault(emptyList())
         if (!pins(context).write(list)) return false
-        p.replaceUserPlaces(list)
         val gone = before - list.map { it.id }.toSet() // a pin that disappeared takes its history rows (and the cluster rows that list it) with it
-        if (gone.isNotEmpty()) try { pinsRemoved(history(context), gone) } catch (e: HistoryDeletionPending) { /* owed: retried at the next start; the pin removal itself stands */ }
+        afterPinWrite(if (gone.isNotEmpty()) history(context) else null, gone) { p.replaceUserPlaces(list) }
         return true
+    }
+
+    /**
+     * P1-3: what follows a successful write of the pin store. The removal is a fact from here on: attempts that may hold the pin are fenced and the card withdrawn BEFORE anything can suspend, the history deletion
+     * is armed (durable) before the mirror write, and it runs even when the mirror fails or the caller is cancelled (the mirror failure is rethrown afterwards; the next start repairs the mirror).
+     */
+    internal suspend fun afterPinWrite(history: PlaceCardHistory?, gone: Collection<String>, mirror: suspend () -> Unit) {
+        if (history != null) {
+            fence.trip(); port.clear()
+            try { history.armPinRemoval(gone) } catch (e: HistoryDeletionPending) { /* not durable; still held in memory, and the deletion below runs now */ }
+        }
+        var mirrorFailure: Throwable? = null
+        try { mirror() } catch (e: Throwable) { mirrorFailure = e }
+        if (history != null) withContext(kotlinx.coroutines.NonCancellable) { try { pinsRemoved(history, gone) } catch (e: HistoryDeletionPending) { /* owed: retried at the next start; ForgetActions reports the cleanup as pending */ } }
+        mirrorFailure?.let { throw it }
     }
 
     fun pack(context: Context): PlacePack = pack ?: synchronized(this) { pack ?: build(context.applicationContext).also { pack = it } }
@@ -162,7 +177,7 @@ object PlaceGraph {
         // The history is cleared (or its deletion recorded as owed) whatever happens to the pack; either failure is thrown, so Delete all does not report done while private rows may remain.
         var packFailure: Exception? = null
         try { pack(app).deleteAll() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { packFailure = e }
-        history(app).clearAll("delete_all")
+        try { history(app).clearAll("delete_all") } catch (e: HistoryDeletionPending) { if (packFailure == null) throw e } // a pack failure is the more serious one and must not be masked
         packFailure?.let { throw it }
     }
 

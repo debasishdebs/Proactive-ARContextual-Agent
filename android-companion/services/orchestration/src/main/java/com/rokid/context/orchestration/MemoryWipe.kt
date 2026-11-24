@@ -184,7 +184,10 @@ object MemoryWipe {
             // Slice 3a privacy: the persisted capture-plan state and the Collect session window go too.
             WIPED_PREFS.forEach { if (!clearWipedPrefs(context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE), it)) leftovers++ }
             // Place Guide: the fetched places and their recency go; seeded areas stay and pause zones are never touched (they are not in places.db).
-            try { com.rokid.context.work.frames.place.PlaceGraph.deleteAll(context) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            try { com.rokid.context.work.frames.place.PlaceGraph.deleteAll(context) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: com.rokid.context.work.frames.place.HistoryDeletionPending) {
+                // P1-1: the history deletion is a bounded OWED obligation (durable, retried at every start by ForgetStartup.settleHistory). It is NOT a wipe leftover: counting it would keep wipePending and re-run the whole wipe, erasing newer memories, at every start.
+                PcLog.w("MemoryWipe", "place history deletion owed: retried at the next start")
+            } catch (e: Exception) {
                 leftovers++; PcLog.w("MemoryWipe", "place pack not cleared: ${SafeLog.describe(e)}")
             }
             // Slice 1.4.2: a pin whose reference Moment was just wiped is forgotten with it. Its deletion is owed by the DURABLE committed pin arming (marked above; a resume whose promotion was not stored already keeps the wipe

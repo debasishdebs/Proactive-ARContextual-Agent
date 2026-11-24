@@ -85,7 +85,8 @@ class PlaceCardHistory(
      */
     private suspend fun oweAll(what: String, ops: List<String>) {
         if (ops.isEmpty()) return
-        ops.forEach { owed.add(it) }
+        // P1-4: the obligation is verified durable BEFORE the work runs. A store that cannot persist it (after retries) still keeps it in memory for this process, and the Forget fails if the work does not finish.
+        val durable = ops.map { arm(it) }.all { it }
         var failed = false
         for (op in ops) {
             try { writeLock.withLock { exec(op) }; owed.remove(op) }
@@ -94,6 +95,23 @@ class PlaceCardHistory(
         }
         bump()
         if (failed) throw HistoryDeletionPending()
+        if (!durable) log("place history obligation not stored")
+    }
+
+    /** Records [op] as owed; true = it is durable. Retried a few times (a failed commit is transient more often than not). */
+    private fun arm(op: String): Boolean {
+        repeat(ARM_TRIES) { if (owed.add(op)) return true }
+        return false
+    }
+
+    /**
+     * Arms the deletion of the rows of these removed pins (durable, no database access) so an obligation exists BEFORE anything can suspend or fail. A pin removal whose obligation cannot even be stored throws
+     * [HistoryDeletionPending]: the caller reports the cleanup as not done.
+     */
+    fun armPinRemoval(pinIds: Collection<String>) {
+        var lost = false
+        pinIds.distinct().forEach { if (!arm("$OP_PIN:$it")) lost = true }
+        if (lost) throw HistoryDeletionPending()
     }
 
     private suspend fun exec(op: String) {
@@ -198,6 +216,7 @@ class PlaceCardHistory(
         const val RETAIN_MS = 90L * 24 * 3_600_000
         private const val DAY_MS = 24L * 3_600_000
         private const val CHUNK = 500
+        private const val ARM_TRIES = 3
         private const val EARLY_MAX = 32
         private const val OP_FRAMES = "f"
         private const val OP_RANGE = "r"
@@ -211,23 +230,42 @@ class HistoryDeletionPending : RuntimeException("place history deletion pending"
 
 /** The durable list of deletions still owed (op tokens carry frame ids, times or pin ids; never logged). */
 interface HistoryOwed {
-    fun add(op: String)
+    /** Records [op]; true = it is DURABLE (survives the process). False = it is held in memory only. */
+    fun add(op: String): Boolean
     fun remove(op: String)
     fun all(): Set<String>
 }
 
 class InMemoryHistoryOwed : HistoryOwed {
     private val ops = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    override fun add(op: String) { ops.add(op) }
+    override fun add(op: String): Boolean { ops.add(op); return true }
     override fun remove(op: String) { ops.remove(op) }
     override fun all(): Set<String> = ops.toSet()
 }
 
-/** Stored in the `place_guide` prefs (kept by Delete all, excluded from backup and device transfer), committed synchronously so an owed deletion survives the process. */
+/**
+ * Stored in the `place_guide` prefs (kept by Delete all, excluded from backup and device transfer), committed synchronously so an owed deletion survives the process. A commit that returns false is reported
+ * (never assumed): the op is then kept in a process-wide memory set so this process still retries it, and [add] says it is not durable.
+ */
 class PrefsHistoryOwed(private val prefs: android.content.SharedPreferences) : HistoryOwed {
-    private val lock = Any()
-    override fun add(op: String) { synchronized(lock) { prefs.edit().putStringSet(KEY, all() + op).commit() } }
-    override fun remove(op: String) { synchronized(lock) { val a = all(); if (op in a) prefs.edit().putStringSet(KEY, a - op).commit() } }
-    override fun all(): Set<String> = prefs.getStringSet(KEY, emptySet())?.toSet() ?: emptySet()
-    companion object { const val KEY = "history_deletions_owed" }
+    override fun add(op: String): Boolean = synchronized(LOCK) {
+        memory.add(op)
+        val ok = try { prefs.edit().putStringSet(KEY, stored() + op).commit() } catch (_: Exception) { false }
+        ok
+    }
+    override fun remove(op: String) = synchronized(LOCK) {
+        val had = op in stored()
+        val ok = if (had) (try { prefs.edit().putStringSet(KEY, stored() - op).commit() } catch (_: Exception) { false }) else true
+        if (ok) memory.remove(op) // a removal that did not commit keeps the op (a repeat of a finished deletion is harmless)
+        Unit
+    }
+    override fun all(): Set<String> = synchronized(LOCK) { stored() + memory }
+    private fun stored(): Set<String> = prefs.getStringSet(KEY, emptySet())?.toSet() ?: emptySet()
+    companion object {
+        const val KEY = "history_deletions_owed"
+        private val LOCK = Any()
+        private val memory = HashSet<String>()
+        /** Forgets the in-process copies (the obligation was dropped on purpose, or a test resets). */
+        fun clearMemory() = synchronized(LOCK) { memory.clear() }
+    }
 }
