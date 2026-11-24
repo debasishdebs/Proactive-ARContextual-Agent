@@ -209,8 +209,14 @@ object ForgetActions {
                 PcLog.w(TAG, "re-summarise not queued (start-up retries): ${SafeLog.describe(e)}")
             }
         }
-        return cacheClean
+        // P1-5: a place-card-history deletion the listener could not finish is retried now; while one is still owed the Forget is not reported done
+        val historyClean = try { com.rokid.context.work.frames.place.PlaceGraph.settleHistory(context) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { false }
+        return cacheClean && historyClean
     }
+
+    /** A committed Forget whose cleanup did not finish: a cached export (production builds only) or an owed place-history deletion (always). */
+    private fun cleanupFailed(context: Context, clean: Boolean): Boolean =
+        !clean && (com.rokid.context.orchestration.MemoryExport.productionBuild(context) || com.rokid.context.work.frames.place.PlaceGraph.historyOwed(context))
 
     /** The cleanup after a committed RANGE Forget (the coordinator calls it inside the delete gate): the same as a fact or photo Forget. False = a cached export could not be deleted. */
     suspend fun afterRange(context: Context, r: ForgetService.Result): Boolean {
@@ -235,7 +241,7 @@ object ForgetActions {
                 // the arming is stored INSIDE the DataOpGate (with the Forget, not before it)
                 val r = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = confirmedPins ?: emptySet()) { coordinator.forgetRangeLocked(fromMs, toMs) } } // slice 1.4.2: pins of the Moments in the range go with them
                 runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
-                withPinNotice(if (!r.cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE, pending, notRemoved)
+                withPinNotice(if (cleanupFailed(context, r.cacheClean)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE, pending, notRemoved)
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) { Outcome.PIN_PREP_FAILED
             } catch (e: DataOpGate.WriteInProgress) { Outcome.SAVE_IN_PROGRESS
             } catch (e: DataOpGate.ExportInProgress) { Outcome.EXPORT_IN_PROGRESS
@@ -331,7 +337,7 @@ object ForgetActions {
         runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
         runCatching(onForgotten)
         runCatching { com.rokid.context.work.frames.place.PlaceRecovery.kick(context) } // a place memory still marked is retried now
-        if (!cacheClean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)) {
+        if (cleanupFailed(context, cacheClean)) {
             PcLog.w(TAG, "forget done, cached export not deleted")
             return Outcome.CACHE_CLEANUP_FAILED
         }
@@ -348,6 +354,7 @@ object ForgetStartup {
         ForgetActions.dataRemoved = refresh
         runCatching { com.rokid.context.orchestration.MemoryExport.retryPending(context) } // a cached export an earlier Forget could not delete (bounded)
         runCatching { FrameSweep.sweep(context) }
+        runCatching { com.rokid.context.work.frames.place.PlaceGraph.settleHistory(context) } // P1-5: a place-history deletion an earlier Forget / Delete all could not finish is owed durably and retried at every start
         runCatching { com.rokid.context.work.frames.place.PinMomentLinks.settle(context) } // slice 1.4.2: a COMMITTED Forget or wipe a crash interrupted finishes its pin cascade; an arming that never committed is dropped
         // v0.9.6: the one-time purge of invalid Moments and orphan memories, BEFORE the cadence is scheduled so a rebuild cannot race it (it stores its own marker and does nothing afterwards)
         try {

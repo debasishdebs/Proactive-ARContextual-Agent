@@ -152,14 +152,14 @@ class AndroidPlaceHistoryControl(
 
     override suspend fun showAgain(row: com.rokid.context.memory.place.PlaceCardLogEntity): Boolean {
         if (showAgainBlock(row) != null) return false
-        val card = com.rokid.context.work.frames.place.PlaceCardRebuild.card(row, placesOf(row)) ?: return false
-        if (PlaceGraph.fence.blocked()) return false // the fence's own word, read again at the moment of publication
-        val id = PlaceGraph.port.publishIfId(card, PlaceGraph.port.epoch()) ?: return false
-        // A user act: a new card id and a new history row of the same kind (the hub reports its delivery like any card).
-        history().add(com.rokid.context.work.frames.place.PlaceHistoryEvent(
-            kind = runCatching { com.rokid.context.work.frames.place.HistoryKind.valueOf(row.kind) }.getOrDefault(com.rokid.context.work.frames.place.HistoryKind.PHOTO),
-            placeId = row.placeId, title = row.title, members = com.rokid.context.work.frames.place.PlaceCardRebuild.members(row), frameId = row.frameId, cardId = id,
-        ))
-        return true
+        // P1-3: the epoch and the wipe generation are captured BEFORE the pack is read (PlaceShowAgain), and the row, its photo and both authorities are asked again right before the fenced publication and the insertion.
+        return com.rokid.context.work.frames.place.PlaceShowAgain(
+            holder = PlaceGraph.port, history = ::history, places = ::placesOf, generation = { com.rokid.context.orchestration.MemoryWipe.generation.get() },
+            rowAlive = { r ->
+                history().get(r.id) != null && (r.frameId == null ||
+                    com.rokid.context.provenance.ProvenanceGate(com.rokid.context.memory.MemoryGraph.get(app).db).goneFrames(setOf(r.frameId!!), requirePresent = false).isEmpty())
+            },
+            fenceBlocked = { PlaceGraph.fence.blocked() },
+        ).run(row)
     }
 }
