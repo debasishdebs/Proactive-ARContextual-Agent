@@ -22,8 +22,10 @@ class AndroidPlaceCardHomeSource(
     private val now: () -> Long = System::currentTimeMillis,
     private val zone: () -> ZoneId = { ZoneId.systemDefault() },
     private val changes: Flow<*> = PlaceCardHistory.changes,
+    /** The Developer flag: off = no "Last place card" row (rows of an earlier run stay stored until Forgotten). */
+    private val on: () -> Boolean = { com.rokid.context.orchestration.forget.DeveloperFlags.placeCardHistory(app) },
 ) : PlaceCardHomeSource {
     override val last: Flow<LastPlaceCard?> = changes.map {
-        runCatching { PlaceGraph.existingHistory(app)?.recent(1)?.firstOrNull()?.let { LastPlaceCards.of(it, now(), zone()) } }.getOrNull()
+        if (!on()) null else runCatching { PlaceGraph.existingHistory(app)?.recent(1)?.firstOrNull()?.let { LastPlaceCards.of(it, now(), zone()) } }.getOrNull()
     }.distinctUntilChanged().flowOn(Dispatchers.IO)
 }

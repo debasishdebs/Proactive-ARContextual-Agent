@@ -28,6 +28,8 @@ import java.util.Locale
 interface PlaceHistoryControl {
     /** Emits whenever the stored history changed (and once on subscribe): the screen re-reads then, no polling. */
     val changes: kotlinx.coroutines.flow.Flow<Unit> get() = kotlinx.coroutines.flow.emptyFlow()
+    /** The Developer flag of the history (default OFF in production): off = the list shows one line and "Show on glasses again" is disabled. */
+    val historyOn: Boolean get() = true
     /** Newest first, at most 500. */
     suspend fun rows(): List<PlaceCardLogEntity>
     /** The card line, re-read from the pack or the pin by place id; null = the place is no longer in the pack. */
@@ -59,6 +61,7 @@ data class PlaceHistoryDetail(val row: PlaceHistoryRowUi, val line: String?, val
 data class ShowAgainEnv(val placeGuideOn: Boolean, val zoneBlocked: Boolean, val glassesConnected: Boolean)
 
 object PlaceHistoryModel {
+    const val OFF_LINE = "Card history is off (Developer)"
     const val EMPTY = "No place cards yet"
     const val SECTION = "Recent place cards"
     const val NOTE = "Every place card is kept here on this phone, also when the glasses screen was off. Forgetting its photo, a range Forget, Delete all and deleting its pin remove the rows. Not in any backup or export."
@@ -109,7 +112,11 @@ object PlaceHistoryModel {
 }
 
 /** The "Recent place cards" section of the Place Guide screen. */
-fun LazyListScope.placeHistoryItems(rows: List<PlaceHistoryRowUi>, shown: Int, zone: ZoneId, onOpen: (String) -> Unit, onMore: () -> Unit) {
+fun LazyListScope.placeHistoryItems(rows: List<PlaceHistoryRowUi>, shown: Int, zone: ZoneId, onOpen: (String) -> Unit, onMore: () -> Unit, historyOn: Boolean = true) {
+    if (!historyOn) {
+        item(key = "place_history_head") { SettingsCard { NoticeText(PlaceHistoryModel.OFF_LINE, tag = "place_history_off") } }
+        return
+    }
     item(key = "place_history_head") {
         SettingsCard {
             Text(PlaceHistoryModel.SECTION, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("place_history_title"))

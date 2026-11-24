@@ -13,7 +13,7 @@ import com.rokid.context.memory.forget.lifecycle.Ref
 
 /**
  * Developer-only switches, kept in the Developer mode preference file (`pc_dev`): per-device, off after a restore (the file is excluded from backup and device transfer, `backup_rules.xml` and
- * `data_extraction_rules.xml`) and never part of a settings export. Every switch has no UI; the place-fix switches are ON by default, the rest OFF.
+ * `data_extraction_rules.xml`) and never part of a settings export. Every switch has no UI; the place-fix switches are ON by default (except the place card history: OFF), the rest OFF.
  */
 object DeveloperFlags {
     /** The same file as the phone's `DeveloperModeStore` (a test in the phone module pins the two names together). */
@@ -53,9 +53,9 @@ object DeveloperFlags {
     fun placeTextMatch(context: Context) = flag(context, PLACE_TEXT_MATCH)
     fun setPlaceTextMatch(context: Context, on: Boolean) = setFlag(context, PLACE_TEXT_MATCH, on)
 
-    /** Place card history on the phone (spec 2026-11-24 F6): a phone-only list in `places.db`. ON by default; OFF stops new rows and hides nothing already stored (Forget still deletes them). */
+    /** Place card history on the phone (spec 2026-11-24 F6): a phone-only list in `places.db`. OFF BY DEFAULT (also OFF when the prefs cannot be read): no row is ever written and the UI hides the list. Every Forget / Delete all deletion path runs regardless of this flag (rows of an earlier run are still deleted). Redesign pending: move the log into context.db so Forget deletes it in the same transaction. */
     const val PLACE_CARD_HISTORY = "placeCardHistory"
-    fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, true) }.getOrDefault(true)
+    fun placeCardHistory(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PLACE_CARD_HISTORY, false) }.getOrDefault(false)
     fun setPlaceCardHistory(context: Context, on: Boolean) { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PLACE_CARD_HISTORY, on).apply() }
 
     fun pauseRetention(context: Context): Boolean = runCatching { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PAUSE_RETENTION, true) }.getOrDefault(true)

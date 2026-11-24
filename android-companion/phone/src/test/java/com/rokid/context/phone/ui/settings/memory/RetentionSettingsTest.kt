@@ -65,7 +65,7 @@ class RetentionSettingsTest {
         listOf("retention_short", "retention_medium", "retention_long", "retention_caption", "retention_summary", "retention_vector_warning").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
         compose.onNodeWithText("Photos you already have are kept at least 7 days from this update.").assertExists()
         compose.onNodeWithTag("retention_no_auto_delete_note").assertExists() // (the storage card is below the fold of the lazy list)
-        assertEquals(true, MemorySettingsViewModel.CAP_NOTE.contains("never text") && MemorySettingsViewModel.CAP_NOTE.contains("14 days") && MemorySettingsViewModel.CAP_NOTE.contains("Pause clean-up"))
+        assertEquals(true, MemorySettingsViewModel.CAP_NOTE.contains("never text") && MemorySettingsViewModel.CAP_NOTE.contains("14 days") && MemorySettingsViewModel.CAP_NOTE.contains("only when Pause clean-up is off") && !MemorySettingsViewModel.CAP_NOTE.contains("also runs"))
     }
 
     @Test fun theVectorWarningFunctionStillHoldsButTheRowIsGone() {

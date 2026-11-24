@@ -64,6 +64,8 @@ data class PlaceGuideUiState(
     val pins: List<UserPlace> = emptyList(), val moments: Map<String, MomentChoice> = emptyMap(), val momentPicker: MomentPicker? = null, val pinBusy: Boolean = false, val pinMessage: String? = null, val pinMessageIsError: Boolean = false, val pinDialog: PinDialogState? = null,
     /** B2: the phone-only place card history (newest first), how many rows the list shows, and the open detail. */
     val history: List<PlaceHistoryRowUi> = emptyList(), val historyShown: Int = PlaceHistoryModel.PAGE, val historyDetail: PlaceHistoryDetail? = null,
+    /** The history Developer flag (off by default): the list collapses to one line. */
+    val historyOn: Boolean = true,
 )
 
 /**
@@ -439,11 +441,12 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 
     private suspend fun refreshHistoryNow() {
         val h = control.history ?: return
-        val rows = runCatching { h.rows() }.getOrDefault(emptyList())
+        val on = h.historyOn
+        val rows = if (!on) emptyList() else runCatching { h.rows() }.getOrDefault(emptyList())
         val ui = rows.map { it.toUi() }
         val open = _state.value.historyDetail
         val detail = if (open == null) null else rows.firstOrNull { it.id == open.row.id }?.let { buildDetail(h, it, open.message) }
-        _state.update { it.copy(history = ui, historyDetail = if (open == null) it.historyDetail else detail) }
+        _state.update { it.copy(history = ui, historyOn = on, historyDetail = if (!on) null else if (open == null) it.historyDetail else detail) }
     }
 
     private suspend fun buildDetail(h: PlaceHistoryControl, r: com.rokid.context.memory.place.PlaceCardLogEntity, message: String? = null): PlaceHistoryDetail {
@@ -543,7 +546,7 @@ fun PlaceGuideScreen(state: PlaceGuideUiState, back: () -> Unit, onEnabled: (Boo
                 if (state.packSummary.isNotEmpty()) NoticeText(state.packSummary, tag = "place_guide_pack")
             }
         }
-        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore)
+        placeHistoryItems(state.history, state.historyShown, java.time.ZoneId.systemDefault(), on.openHistory, on.historyMore, state.historyOn)
         if (state.developerMode) item {
             SettingsCard {
                 Text("Card position (Developer)", style = MaterialTheme.typography.titleMedium)

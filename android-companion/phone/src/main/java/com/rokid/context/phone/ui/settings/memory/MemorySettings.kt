@@ -197,7 +197,7 @@ class MemorySettingsViewModel(
         fun recallLabel(h: Int): String = if (h % 24 == 0 && h >= 168) "${h / 24} days" else "$h h"
 
         /** Retention v3 (K2, K6): what the storage cap does. */
-        const val CAP_NOTE = "Over the cap, the oldest photos are removed first (never text, never a photo you marked, pinned or got a place card for, and none younger than 14 days). It also runs while Pause clean-up is on."
+        const val CAP_NOTE = "Over the cap, the oldest photos are removed first (never text, never a photo you marked, pinned or got a place card for, and none younger than 14 days). It is enforced only when Pause clean-up is off: with Pause clean-up on, nothing is deleted automatically."
 
         /** Retention v3 (K4): Auto-delete details is designed but NOT in this build. */
         const val NO_AUTO_DELETE_NOTE = "There is no automatic text deletion in this version. Only Forget removes details."

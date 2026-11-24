@@ -415,4 +415,64 @@ class PlaceCardHistoryTest {
         h.beginScope(); tryOwe { h.onFramesForgotten(listOf("mine")) }; now += 10; tryOwe { h.clearAll() }
         assertEquals(1, owed.all().size); assertTrue(h.scopePending())
     }
+
+    // ---- OFF by default (shipping candidate): no row is ever written, every deletion path still runs ----
+
+    private fun prodFlag() = com.rokid.context.orchestration.forget.DeveloperFlags
+    private fun devPrefs() = ctx.getSharedPreferences(com.rokid.context.orchestration.forget.DeveloperFlags.PREFS, Context.MODE_PRIVATE)
+
+    @Test fun theFlagIsOffByDefaultAndNoRowIsWritten() = runBlocking {
+        devPrefs().edit().clear().commit()
+        assertFalse("default OFF", prodFlag().placeCardHistory(ctx))
+        val h = PlaceCardHistory(pack.cardLogDao, clock = { now }, enabled = { prodFlag().placeCardHistory(ctx) }, newId = { "x${++seq}" })
+        assertNull(h.add(ev(HistoryKind.POSSIBLE))); assertNull(h.add(ev()))
+        assertEquals(0, pack.cardLogDao.cardLogCount())
+        assertFalse("a delivery report is a no-op", h.markDelivery("c", CardDelivery.SENT)); assertFalse(h.markIfPending("c", CardDelivery.NOT_SENT_LINK))
+        prodFlag().setPlaceCardHistory(ctx, true)
+        assertNotNull("explicitly ON writes", h.add(ev())); assertEquals(1, pack.cardLogDao.cardLogCount())
+        devPrefs().edit().clear().commit(); Unit
+    }
+
+    @Test fun anUnreadablePrefsFileMeansOff() {
+        val broken = object : android.content.ContextWrapper(ctx) {
+            override fun getApplicationContext(): Context = this
+            override fun getSharedPreferences(name: String?, mode: Int): android.content.SharedPreferences = throw IllegalStateException("prefs")
+        }
+        assertFalse(prodFlag().placeCardHistory(broken))
+    }
+
+    @Test fun withTheFlagOffForgetAndDeleteAllStillDeleteRowsOfAnEarlierRun() = runBlocking {
+        // rows written while the history was ON (an earlier run), the flag is now OFF
+        val off = PlaceCardHistory(pack.cardLogDao, clock = { now }, enabled = { false }, newId = { "x${++seq}" })
+        PlaceGraph.installHistoryForTests(off)
+        for (i in 1..3) pack.cardLogDao.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("o$i", now, "wd:Q1", "T", "PHOTO", null, "frame$i", null, "c$i", CardDelivery.SENT))
+        ForgetListeners.framesForgotten(listOf("frame1"))
+        assertEquals(listOf("o2", "o3"), pack.cardLogDao.recentCardLog(10).map { it.id }.sorted())
+        ForgetListeners.rangeForgotten(now - 1, now + 1, emptyList())
+        assertEquals(0, pack.cardLogDao.cardLogCount())
+        pack.cardLogDao.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("o9", now, "wd:Q1", "T", "PIN", null, null, null, "c9", CardDelivery.SENT))
+        ForgetListeners.deleteAll()
+        assertEquals("Delete all clears it with the flag off", 0, pack.cardLogDao.cardLogCount()); assertFalse(PlaceGraph.historyOwed(ctx))
+    }
+
+    @Test fun withTheFlagOffAndNoRowsAForgetWritesNoOwedToken() = runBlocking {
+        val prefs = ctx.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE); prefs.edit().clear().commit(); PrefsHistoryOwed.clearMemory()
+        val h = PlaceCardHistory(pack.cardLogDao, clock = { now }, enabled = { false }, owed = PrefsHistoryOwed(prefs))
+        assertFalse(h.mayHoldRows())
+        h.onFramesForgotten(listOf("a")); h.onRangeForgotten(1, 2); h.clearAll(); h.onPinRemoved(listOf("user:p"))
+        assertFalse("no obligation was written", prefs.contains(PrefsHistoryOwed.KEY)); assertFalse(h.hasOwed())
+        pack.cardLogDao.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("o1", now, "wd:Q1", "T", "PIN", null, null, null, "c", CardDelivery.SENT))
+        assertTrue("a stored row (earlier run) still arms and deletes", h.mayHoldRows())
+        h.clearAll(); assertEquals(0, pack.cardLogDao.cardLogCount()); assertFalse(h.hasOwed())
+    }
+
+    @Test fun anOwedDeletionWithNoPlacesDbIsDroppedAndNeverCreatesTheFile() = runBlocking {
+        PlaceGraph.installForTests(null); PlaceGraph.installHistoryForTests(null)
+        ctx.deleteDatabase(PlacesDatabase.NAME)
+        devPrefs().edit().clear().commit()
+        ForgetListeners.framesForgotten(listOf("f")); ForgetListeners.deleteAll()
+        assertTrue(PlaceGraph.settleHistory(ctx))
+        assertFalse("a Forget never creates places.db", ctx.getDatabasePath(PlacesDatabase.NAME).exists())
+        PlaceGraph.installForTests(pack); PlaceGraph.installHistoryForTests(history)
+    }
 }

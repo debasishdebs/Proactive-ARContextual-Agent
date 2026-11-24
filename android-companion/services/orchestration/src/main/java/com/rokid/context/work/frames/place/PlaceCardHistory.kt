@@ -37,6 +37,7 @@ class PlaceCardHistory(
     private val dao: PlacesDao,
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
+    /** The Developer flag; OFF = no row is written. Deletions ignore it. */
     private val enabled: () -> Boolean = { true },
     private val newId: () -> String = { UUID.randomUUID().toString() },
     /** The durable record of deletions this history still owes (P1-5). Production: a key in the `place_guide` prefs; the default is in memory (tests of the pure flow). */
@@ -80,11 +81,17 @@ class PlaceCardHistory(
     }
 
     /**
+     * False only when no row can exist: the flag is OFF (nothing is written) AND the table is empty. Then a Forget / Delete all / pin removal has nothing to delete and arms no token (`history_deletions_owed` stays untouched).
+     * A flag that is ON, a non-empty table or an unreadable table all say true (fail closed: the deletion is armed and run).
+     */
+    suspend fun mayHoldRows(): Boolean = enabled() || try { dao.cardLogCount() > 0 } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { true }
+
+    /**
      * Records every op in [ops] as OWED (durable) BEFORE running it, runs them under the write lock, and clears each op only when it succeeded. If any failed, the others still ran, the failed ones stay owed
      * and [HistoryDeletionPending] is thrown: a Forget / Delete all must not report done while private rows may remain. [retryOwed] finishes them at the next start.
      */
     private suspend fun oweAll(what: String, ops: List<String>) {
-        if (ops.isEmpty()) return
+        if (ops.isEmpty() || !mayHoldRows()) return // flag off and an empty table: nothing can be owed, no obligation token is written
         // P1-4: the obligation is verified durable BEFORE the work runs. A store that cannot persist it (after retries) still keeps it in memory for this process, and the Forget fails if the work does not finish.
         val durable = ops.map { arm(it) }.all { it }
         var failed = false
@@ -174,14 +181,14 @@ class PlaceCardHistory(
      * Sets the delivery state of the row of [cardId] (a card the Hub sent). The Hub can report a card before the sampler has written its row (publish comes first): the state is then remembered
      * (bounded, in memory, ids only) and used by [add] for that [cardId].
      */
-    suspend fun markDelivery(cardId: String, state: String): Boolean = safe("mark", false) {
+    suspend fun markDelivery(cardId: String, state: String): Boolean = if (!enabled()) false else safe("mark", false) {
         val ok = dao.setCardDelivery(cardId, state) > 0
         if (!ok) remember(cardId, state) else bump()
         ok
     }
 
     /** Sets [state] only when the row is still PENDING (the Hub's expiry or replacement path). Remembered like [markDelivery] when no row exists yet. */
-    suspend fun markIfPending(cardId: String, state: String): Boolean = safe("mark", false) {
+    suspend fun markIfPending(cardId: String, state: String): Boolean = if (!enabled()) false else safe("mark", false) {
         val ok = dao.setCardDeliveryIfPending(cardId, state) > 0
         if (!ok && dao.cardLogByCard(cardId) == null) remember(cardId, state)
         if (ok) bump()

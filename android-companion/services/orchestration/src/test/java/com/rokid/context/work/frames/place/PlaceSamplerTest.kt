@@ -71,6 +71,7 @@ class PlaceSamplerTest {
     private var pf = false
     private val historyEvents = mutableListOf<PlaceHistoryEvent>()
     private var reuse = false
+    private var histOn = true // the history tests set the flag ON explicitly; the production default is OFF
 
     private fun sampler(scope: TestScope) = PlaceSampler(
         scope = scope, store = store, fix = { fixCalls++; fix },
@@ -78,7 +79,7 @@ class PlaceSamplerTest {
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
-        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf }, history = { historyEvents += it }, chosenSink = { chosenIds += it },
+        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry }, fixReuseOn = { reuse }, pinFirstOn = { pf }, history = { historyEvents += it }, historyOn = { histOn }, chosenSink = { chosenIds += it },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -395,6 +396,13 @@ class PlaceSamplerTest {
         // it does not consume the card dedupe (v2): the next good answer still gets its card
         reply = match1; again(31_000, "f2"); poke()
         assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size)
+    }
+
+    @Test fun historyOff_neverCallsTheSinkNotEvenForAPossibleRow() = runTest {
+        histOn = false; v2 = true; reply = PlaceMatchResult(PlaceMatchOutput("1", 0.40f), true); poke()
+        assertEquals(PlaceOutcome.LOW_CONFIDENCE, outcomes.last()); assertTrue(historyEvents.isEmpty()); assertTrue(lastLine().contains("hist=off"))
+        reply = match1; again(31_000, "f2"); poke()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(1, cards.size); assertTrue("a card writes no row either", historyEvents.isEmpty())
     }
 
     @Test fun anActiveOrApproachingZoneNeverReadsAFixNorCallsTheNetworkOrTheModel() = runTest {
