@@ -232,7 +232,7 @@ def main():
     ap.add_argument("db", nargs="?", help="path to a copy of the phone's context.db")
     ap.add_argument("--csv", default=os.path.expanduser("~/Desktop/rokid/backups/trip-gps/trip_media_gps.csv"))
     ap.add_argument("--out", help="output folder, outside any git tree (created 0700)")
-    ap.add_argument("--window", type=int, choices=(2, 5, 10), default=5, help="minutes (default 5)")
+    ap.add_argument("--window", type=int, choices=(2, 5, 10, 15, 30, 60), default=5, help="minutes (default 5)")
     ap.add_argument("--keep-scratch", action="store_true")
     ap.add_argument("--fixtures", action="store_true", help="run the synthetic self-test and exit")
     a = ap.parse_args()
