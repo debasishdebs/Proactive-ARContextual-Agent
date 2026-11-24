@@ -4,7 +4,10 @@ import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.forget.AskSourceStates
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.NudgeEntity
+import com.rokid.context.phone.ui.settings.place.toUi
 import com.rokid.context.phone.ui.status.StatusUi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import com.rokid.context.voice.PhoneVoiceState
 import com.rokid.context.voice.VoiceStatus
 import java.time.Instant
@@ -71,6 +74,26 @@ object SuggestedQuestions {
     }
 }
 
+/** B2: the "Last place card" row of Home: the newest history row, only while it is under [LastPlaceCards.MAX_AGE_MS] old. Tapping it opens the Place Guide list. */
+data class LastPlaceCard(val id: String, val title: String, val meta: String, val body: String)
+
+/** Where Home reads the newest place card from (production: the card history in places.db; the default shows none). */
+interface PlaceCardHomeSource {
+    val last: Flow<LastPlaceCard?>
+    object None : PlaceCardHomeSource { override val last: Flow<LastPlaceCard?> = flowOf(null) }
+}
+
+object LastPlaceCards {
+    const val MAX_AGE_MS = 6L * 3_600_000
+
+    /** The Home row for [row] at [now] (phone time zone [zone]); null when the row is [MAX_AGE_MS] old or older. A future-dated row (a clock step) still shows. */
+    fun of(row: com.rokid.context.memory.place.PlaceCardLogEntity, now: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): LastPlaceCard? {
+        if (now - row.at >= MAX_AGE_MS) return null
+        val ui = row.toUi()
+        return LastPlaceCard(row.id, row.title, "Last place card \u00b7 ${com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.timeLabel(row.at, zone)}", com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.summary(ui))
+    }
+}
+
 data class HomeUiState(
     val status: StatusUi = StatusUi.Initial,
     val suggestions: List<String> = SuggestedQuestions.FALLBACKS,
@@ -87,6 +110,8 @@ data class HomeUiState(
     val limited: Boolean = false,
     /** v0.9.7 slice D: the short fixed reply of a command typed in the chat ("✓ marked", "mark undone"); no model was called. */
     val reply: String? = null,
+    /** B2: the newest place card (under 6 h old), or null. */
+    val lastPlaceCard: LastPlaceCard? = null,
 )
 
 /**

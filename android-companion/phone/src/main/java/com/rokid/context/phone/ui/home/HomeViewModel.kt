@@ -60,6 +60,8 @@ class HomeViewModel(
     private val askAgainOf: suspend (String) -> AskOutcome = { AskOutcome.Failed(AskActions.FAILED) },
     /** v3.1: delivered suggestions (the default shows none: every delivery switch is OFF on a fresh install). */
     private val suggestions: SuggestionFeedSource = SuggestionFeedSource.None,
+    /** B2: the newest place card of the phone-only card history; the default shows none. */
+    private val placeCards: PlaceCardHomeSource = PlaceCardHomeSource.None,
 ) : ViewModel() {
     private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null, val reply: String? = null)
 
@@ -101,7 +103,7 @@ class HomeViewModel(
 
     val state: StateFlow<HomeUiState> = combine(base, voice.state, micBlocked, photosToday, limitedMode.show) { s, v, blocked, n, limited ->
         s.copy(voice = HomeVoiceUi.from(v, blocked), photosToday = n, limited = limited)
-    }
+    }.combine(placeCards.last) { s, p -> s.copy(lastPlaceCard = p) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
     fun suggestionDismiss(id: String) = suggestions.dismiss(id)
