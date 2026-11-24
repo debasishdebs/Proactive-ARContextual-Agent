@@ -20,8 +20,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ObjectAuditEntity::class, ObjectDerivedEntity::class,
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
+        PlaceCardLogEntity::class, MomentLocationEntity::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -58,6 +59,8 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun momentDao(): MomentDao
     abstract fun objectDao(): ObjectDao
     abstract fun sceneDao(): SceneDao
+    abstract fun placeCardLogDao(): PlaceCardLogDao
+    abstract fun momentLocationDao(): MomentLocationDao
 }
 
 /**
@@ -353,5 +356,20 @@ val MIGRATION_15_16: Migration = object : Migration(15, 16) {
 val MIGRATION_16_17: Migration = object : Migration(16, 17) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE `ask` ADD COLUMN `sourceStates` TEXT DEFAULT NULL")
+    }
+}
+
+/**
+ * v17 -> v18 (v18 build spec WP1): two new tables and four indexes, nothing else. `place_card_log` moves the phone-only card history into context.db (its SQL is byte-identical to `MIGRATION_PLACES_1_2`);
+ * `moment_location` is the optional saved location of a Moment. No existing table changes, no row is touched; the SQL equals the exported `18.json`.
+ */
+val MIGRATION_17_18: Migration = object : Migration(17, 18) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `place_card_log` (`id` TEXT NOT NULL, `at` INTEGER NOT NULL, `placeId` TEXT NOT NULL, `title` TEXT NOT NULL, `kind` TEXT NOT NULL, `members` TEXT, `frameId` TEXT, `confPct` INTEGER, `cardId` TEXT, `delivery` TEXT NOT NULL, `photoGone` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`id`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_card_log_at` ON `place_card_log` (`at`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_place_card_log_frameId` ON `place_card_log` (`frameId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `moment_location` (`momentId` TEXT NOT NULL, `atMs` INTEGER NOT NULL, `anchorKind` TEXT NOT NULL, `anchorId` TEXT NOT NULL, `lat` REAL NOT NULL, `lon` REAL NOT NULL, `accuracyM` REAL NOT NULL, `fixAgeMs` INTEGER NOT NULL, `source` TEXT NOT NULL, `speedClass` TEXT, `method` TEXT, `savedAt` INTEGER NOT NULL, PRIMARY KEY(`momentId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_location_atMs` ON `moment_location` (`atMs`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_location_anchorId` ON `moment_location` (`anchorId`)")
     }
 }

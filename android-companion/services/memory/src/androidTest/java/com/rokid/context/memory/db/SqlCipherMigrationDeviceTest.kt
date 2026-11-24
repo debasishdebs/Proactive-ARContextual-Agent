@@ -92,7 +92,7 @@ class SqlCipherMigrationDeviceTest {
 
     private val schemaDir = "com.rokid.context.memory.db.ContextDatabase"
     /** The latest exported schema version: the chain must land here. */
-    private val latest = 17
+    private val latest = 18
 
     private fun schemaTables(version: Int): Set<String> {
         val json = inst.context.assets.open("$schemaDir/$version.json").bufferedReader().use { it.readText() }
