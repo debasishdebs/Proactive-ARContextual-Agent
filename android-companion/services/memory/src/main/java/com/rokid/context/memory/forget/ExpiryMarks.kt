@@ -58,22 +58,22 @@ object ExpiryMarks {
     }
 
     /**
-     * The ids of the photos with a marker captured within `[fromMs, toMs]` (inclusive), read by capture time from the `rx:t:` keys (Codex v3 r1 P1-4). A scoped Forget of a time span reaches an expired legacy photo (no `frame` row, no
-     * metadata) through this. Bounded: pages of [PAGE] keys, at most [MAX_IDS] ids.
+     * The ids of ALL the photos with a marker captured within `[fromMs, toMs]` (inclusive), read by capture time from the `rx:t:` keys. A scoped Forget of a time span reaches an expired photo (no `frame` row, possibly no
+     * metadata) through this, so the read is COMPLETE (Codex v3 r2 P1-5): it pages by key, [pageSize] keys at a time, until a short page. There is no cap that could silently leave a marker, and the answers citing its photo, behind.
      */
-    suspend fun idsBetween(dao: CanvasSlice3Dao, fromMs: Long, toMs: Long): Set<String> {
+    suspend fun idsBetween(dao: CanvasSlice3Dao, fromMs: Long, toMs: Long, pageSize: Int = PAGE): Set<String> {
+        val page = pageSize.coerceAtLeast(1)
         val out = LinkedHashSet<String>()
         var from = tKey(fromMs, ""); val to = tKey(toMs + 1, "")
-        while (out.size < MAX_IDS) {
-            val rows = dao.metasBetween(from, to, PAGE)
+        while (true) {
+            val rows = dao.metasBetween(from, to, page)
             rows.forEach { r -> r.key.substring(T.length + 14).takeIf { it.isNotEmpty() }?.let { out += it } } // "rx:t:" + 13 digits + ":" + id
-            if (rows.size < PAGE) break
+            if (rows.size < page) break
             from = rows.last().key + "\u0000"
         }
         return out
     }
     private const val PAGE = 1_000
-    private const val MAX_IDS = 20_000
 
     /** True when a photo captured within `[fromMs, toMs)` was expired (not forgotten). One range read. */
     suspend fun anyExpiredBetween(dao: CanvasSlice3Dao, fromMs: Long, toMs: Long): Boolean =

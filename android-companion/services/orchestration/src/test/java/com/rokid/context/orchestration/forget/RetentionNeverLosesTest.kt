@@ -26,7 +26,6 @@ import com.rokid.context.memory.db.SceneEntity
 import com.rokid.context.memory.db.ScenePartEntity
 import com.rokid.context.memory.db.ScenePartKind
 import com.rokid.context.memory.db.SceneRule
-import com.rokid.context.memory.forget.ExpiredLineage
 import com.rokid.context.memory.forget.ExpiryMarks
 import com.rokid.context.memory.forget.ForgetListener
 import com.rokid.context.memory.forget.ForgetListeners
@@ -191,7 +190,7 @@ class RetentionNeverLosesTest {
         assertTrue(ForgetService::class.java.methods.none { it.name == "expire" })
         assertTrue(com.rokid.context.memory.forget.lifecycle.ForgetExecutor::class.java.declaredMethods.none { it.name == "expire" })
         assertTrue(com.rokid.context.memory.forget.lifecycle.Policy::class.java.classes.none { it.simpleName == "Retention" })
-        assertTrue("the legacy lineage is read-only: nothing writes it", Class.forName("com.rokid.context.memory.forget.ExpiredLineage").declaredMethods.none { it.name == "record" })
+        assertTrue("the legacy lineage machinery is gone (Codex v3 r2 P1-2..P1-4)", runCatching { Class.forName("com.rokid.context.memory.forget.ExpiredLineage") }.isFailure)
     }
 
     /** The real worker, both modes: nothing lost, and the counts-only plan equals the run (`demoteDue` = `demoted`). */
@@ -475,26 +474,38 @@ class RetentionNeverLosesTest {
     // ---- WP1 (K8): the one-shot migration ----------------------------------------------------------------------------------------------------------------------------------------------
 
     /**
-     * K8 + Codex v3 r1 P1-2 / P1-3: the one-shot marks only PROVEN earlier expiries (tombstone + metadata + no row + a memory that still cites the photo); a photo whose last description was forgotten later (same tombstone and metadata, nothing
-     * cites it) and a tombstone with no metadata stay "forgotten". The legacy `lin:` keys are KEPT. Idempotent.
+     * K8, Codex v3 r2 P1-1: the one-shot writes NO marker: every tombstone that exists when this build starts is FORGOTTEN, even one shaped like an old expiry (metadata, no row, a surviving description), and one whose photo had a
+     * single description forgotten by the user. It purges the stray `lin:` keys (expected none) and keeps every other key. Idempotent.
      */
-    @Test fun migrationMarksOnlyProvenExpiriesAndKeepsTheLegacyLineage() = runBlocking {
+    @Test fun migrationMarksNothingAndAPreExistingTombstoneIsNeverReadAsExpired() = bothModes { v2 ->
         seed()
         val s3 = graph.db.canvasSlice3Dao()
         s3.putMeta("lin:f:x", "[\"a\"]"); s3.putMeta("lin:d:y", "[\"b\"]"); s3.putMeta("keep_me", "1")
-        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("sk", 1)); graph.db.forgetDao().deleteFrame("sk") // an expiry of the old build: tombstone + metadata, no frame row ...
-        graph.db.memoryDao().insert(MemoryEntity("skCap", "sk", "caption sk", "caption", "", MemoryTier.LONG, 0.8, ReviewState.OK, false, skTs, false, "caption sk")) // ... and a description that survived it: PROVEN
+        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("sk", 1)); graph.db.forgetDao().deleteFrame("sk") // shaped like an old expiry: tombstone + metadata, no frame row ...
+        graph.db.memoryDao().insert(MemoryEntity("skCap", "sk", "caption sk", "caption", "", MemoryTier.LONG, 0.8, ReviewState.OK, false, skTs, false, "caption sk")) // ... and a description that survived it
         val fx = MomentForgetFixture(graph.db, now)
         fx.frame("fg", now - 9 * day, wire = "wfg", capturedAt = now - 9 * day)
-        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("fg", 1)); graph.db.forgetDao().deleteFrame("fg") // metadata + tombstone + no row, but NOTHING cites it: an expired photo whose last fact the user forgot
-        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("ghost", 1)) // no metadata, no row: indistinguishable, stays forgotten (fail closed)
+        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("fg", 1)); graph.db.forgetDao().deleteFrame("fg") // metadata + tombstone + no row, nothing cites it
+        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("ghost", 1)) // no metadata, no row
+        ForgetService(graph.db, graph.proposals) { now }.forgetFact("fact1") // the user forgets ONE description of f1 (it keeps fact2 and cap1): f1 is tombstoned, its row and metadata stay
         RetentionMigration.runOnce(graph.db, now)
-        assertEquals("the legacy lineage is kept", listOf("lin:d:y", "lin:f:x"), metaKeys("lin:")); assertEquals("1", s3.meta("keep_me"))
-        assertEquals("only the proven expiry is marked", setOf("sk"), ExpiryMarks.marked(s3, listOf("sk", "fg", "ghost", "f1")))
-        assertEquals("a forgotten photo is never read as expired", setOf("fg", "ghost"), ProvenanceGate.forGraph(MemoryGraph.get(ctx)).forgottenFrames(setOf("sk", "fg", "ghost")))
+        assertEquals("v2=$v2 the stray lineage keys are purged", emptyList<String>(), metaKeys("lin:")); assertEquals("1", s3.meta("keep_me"))
+        assertEquals("no marker is written", emptyList<String>(), metaKeys("rx:"))
+        assertEquals("every pre-existing tombstone is forgotten, never expired", setOf("sk", "fg", "ghost", "f1"), ProvenanceGate.forGraph(MemoryGraph.get(ctx)).forgottenFrames(setOf("sk", "fg", "ghost", "f1")))
         assertNotNull(s3.meta(RetentionMigration.DONE))
         s3.putMeta("lin:f:z", "[]"); RetentionMigration.runOnce(graph.db, now)
-        assertEquals("one-shot: the done marker keeps it from running again", listOf("lin:d:y", "lin:f:x", "lin:f:z"), metaKeys("lin:"))
+        assertEquals("one-shot: the done marker keeps it from running again", listOf("lin:f:z"), metaKeys("lin:"))
+    }
+
+    /** Codex v3 r2 P1-5: the marker range read is COMPLETE: more than 20,000 markers, a page size that divides the count and one that does not, none dropped. */
+    @Test fun theMarkerRangeReadReturnsEveryMarkerAboveTheOldCap() = runBlocking {
+        val s3 = graph.db.canvasSlice3Dao()
+        val total = 20_150; val base = MomentForgetFixture.MS
+        graph.db.withTransaction { for (i in 0 until total) ExpiryMarks.mark(s3, "e%05d".format(i), now, base + i) }
+        ExpiryMarks.mark(s3, "outLow", now, base - 1); ExpiryMarks.mark(s3, "outHigh", now, base + total)
+        val want = (0 until total).map { "e%05d".format(it) }.toSet()
+        for (page in listOf(1_000, 997, 20_150, 4_000)) assertEquals("page $page", want, ExpiryMarks.idsBetween(s3, base, base + total - 1, pageSize = page))
+        assertEquals("default page size", want, ExpiryMarks.idsBetween(s3, base, base + total - 1))
     }
 
     // ---- WP2: Delete all, pruning ----------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -562,39 +573,6 @@ class RetentionNeverLosesTest {
         assertEquals("still forgotten, never expired", setOf("f1"), ProvenanceGate.forGraph(MemoryGraph.get(ctx)).forgottenFrames(setOf("f1")))
         val plan = ForgetPlanner(graph.db).plan(setOf(Ref(Family.PHOTO, "f1")), Policy.RetentionPhotos(requireLinked = true, recheckSkipped = false))
         assertTrue("the planner mirrors the refusal", plan.nodes.keys.none { it.family == Family.PHOTO && it.id == "f1" })
-    }
-
-    /** P1-3: the legacy `lin:` lineage is consulted by a later user Forget of the expired photo (answer redacted, live summary invalidated), then spent. Both modes; the preview names the same set. */
-    @Test fun aUserForgetStillReachesWhatSurvivedALegacyExpiryThroughTheKeptLineage() = bothModes { v2 ->
-        val fx = MomentForgetFixture(graph.db, now)
-        val s3 = graph.db.canvasSlice3Dao()
-        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("px", 1)) // an expired legacy photo: tombstone, no row; its fact eM was expired too
-        fx.memory("sumLive", null, derived = true) // a summary built on the expired fact eM
-        s3.putMeta("lin:f:px", """["eM"]"""); s3.putMeta("lin:d:eM", """["sumLive"]""")
-        graph.db.askDao().upsert(AskEntity("aL", 1, "q", "ANSWER", """["eM"]""", null, "test", false))
-        RetentionMigration.runOnce(graph.db, now)
-        assertEquals("kept by the migration", listOf("lin:d:eM", "lin:f:px"), metaKeys("lin:"))
-        assertEquals("kept by the prune while the answer and the summary survive", 0, ExpiredLineage.prune(graph.db)); assertEquals(2, metaKeys("lin:").size)
-        val plan = ForgetPlanner(graph.db).plan(setOf(Ref(Family.PHOTO, "px")), Policy.User)
-        assertTrue("v2=$v2 the preview names the answer", plan.nodes.keys.any { it.family == Family.ANSWER && it.id == "aL" })
-        assertTrue("and the summary", plan.nodes.keys.any { it.family == Family.MEMORY && it.id == "sumLive" })
-        ForgetService(graph.db, graph.proposals) { now }.forgetMoment("px")
-        assertEquals("the answer citing the expired source is redacted", 1, redactedCount("ask", "aL"))
-        assertEquals("the live summary built on it is invalidated", "INVALIDATED", reviewState("sumLive"))
-        assertEquals("the lineage is spent", emptyList<String>(), metaKeys("lin:"))
-    }
-
-    /** P1-3: the prune drops a key only when nothing depends on it; an unredacted citation or a live derived memory keeps it. */
-    @Test fun theLegacyLineageIsDroppedOnlyWhenNoDependentSurvives() = runBlocking {
-        ForgetV2.testOverride = false
-        val fx = MomentForgetFixture(graph.db, now); val s3 = graph.db.canvasSlice3Dao()
-        s3.putMeta("lin:f:p2", """["e2"]"""); s3.putMeta("lin:f:p3", """["e3"]"""); s3.putMeta("lin:d:e4", """["live4"]"""); s3.putMeta("lin:d:e5", """["gone5"]""")
-        graph.db.askDao().upsert(AskEntity("a3", 1, "q", "A", """["e3"]""", null, "test", false)); fx.memory("live4", null, derived = true)
-        assertEquals("only the keys with no dependent go (p2, e5)", 2, ExpiredLineage.prune(graph.db))
-        assertEquals(listOf("lin:d:e4", "lin:f:p3"), metaKeys("lin:"))
-        ForgetService(graph.db, graph.proposals) { now }.forgetFact("live4")
-        graph.db.openHelper.writableDatabase.execSQL("UPDATE ask SET sourcesJson = '[]', redacted = 1 WHERE id = 'a3'")
-        assertEquals("nothing depends on them any more", 2, ExpiredLineage.prune(graph.db)); assertEquals(emptyList<String>(), metaKeys("lin:"))
     }
 
     /** P1-4: a scoped Forget finds an expired legacy photo through its marker by capture time, previews it and, running, withdraws the suggestion and the answer citing it and clears the marker. */
