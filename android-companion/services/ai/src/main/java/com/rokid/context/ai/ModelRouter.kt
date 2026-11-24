@@ -10,6 +10,7 @@ import com.rokid.context.core.net.EndpointReach
 import com.rokid.context.core.net.SendOnce
 import com.rokid.context.core.net.Skipped
 import com.rokid.context.model.CallClass
+import com.rokid.context.model.provider.TransportGuard
 import com.rokid.context.model.CallGate
 import com.rokid.context.model.LanguageModel
 import com.rokid.context.model.ModelImageInput
@@ -274,16 +275,23 @@ class ModelRouter(
             val costlyAtStart = counted && dataGate.costlyNow()
             // P1-6: an admission RESERVATION is counted (persisted) before a byte leaves: whatever happens next (a stall after a complete upload, a timeout, a cancel, process death) the usage is not zero.
             val reservation = if (costlyAtStart) safeReserve(kind, tx + DataBytes.ENVELOPE, photos) else null
+            // Codex r2 P1-4/P1-5: a reservation that could not be made durable (or a counter that cannot be trusted) refuses the costly send: nothing leaves.
+            if (reservation?.failed == true) throw DataSaverBlockedException(DataPolicy.R_UNREADABLE, kind, if (photos > 0) Skipped.UPLOAD_QUEUED else Skipped.BULK)
+            // P1-1: asked again by the transport immediately before the connect (own reservation excluded, P2-8), and by the watcher while the call runs.
+            val guard = TransportGuard {
+                val d = decideNow(e, kind, photos, callClass, sendOnce, reservation)
+                if (!d.allowed) throw PreConnectBlockedException(d.reason, kind, if (photos > 0) Skipped.UPLOAD_QUEUED else Skipped.BULK)
+            }
             fun report(rxBytes: Long, countedPhotos: Int, countedTx: Long = tx) {
                 if (reservation != null) safeSettle(reservation, countedTx, rxBytes, countedPhotos)
                 else if (counted && (countedTx > 0 || rxBytes > 0)) safeSent(kind, countedTx, rxBytes, countedPhotos, costlyAtStart)
             }
-            val reply = try { if (counted) watchingNetwork(e, kind, photos, callClass, sendOnce) { p.complete(r) } else p.complete(r) }
+            val reply = try { if (counted) watchingNetwork(e, kind, photos, callClass, sendOnce, reservation) { kotlinx.coroutines.withContext(guard) { p.complete(r) } } else p.complete(r) }
             catch (t: Throwable) {
                 // Only a failure that proves nothing left (DNS, connect, TLS handshake, config) releases the reservation. An HTTP error or an unusable 2xx counts the request (never a photo). Anything else (a timeout or
                 // stall after the upload, a cancel, our own abort, an unknown error) keeps the conservative count: the request, and its photos, may well have been received.
                 when {
-                    TrafficClass.provablyUnsent(t) -> report(0, 0, countedTx = 0)
+                    t is PreConnectBlockedException || TrafficClass.provablyUnsent(t) -> report(0, 0, countedTx = 0)
                     TrafficClass.receivedAnswer(t) -> report(0, 0)
                     else -> report(0, photos)
                 }
@@ -331,9 +339,10 @@ class ModelRouter(
     }
 
     /** The policy for one request right now. A USER-class photo call the user sent "once" is asked again as "once" (same rule as the admission). */
-    private fun decideNow(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean): DataDecision {
+    private fun decideNow(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean, own: com.rokid.context.core.net.DataReservation? = null): DataDecision {
         val reach = reachOf(e)
-        val d = dataGate.decide(kind, reach)
+        // P2-8: a request that is already admitted and reserved is revalidated WITHOUT its own reservation, so reaching the cap with its own bytes never cancels it.
+        val d = dataGate.decideExcluding(kind, reach, own)
         return if (!d.allowed && photos > 0 && callClass == CallClass.USER && sendOnce) dataGate.decideOnce(kind, reach) else d
     }
 
@@ -341,13 +350,14 @@ class ModelRouter(
      * Runs one provider call and, while it runs, asks the policy about the CURRENT network every [NET_WATCH_MS]. When the network turns costly and this call is not allowed there, the call is cancelled and fails with
      * [DataSaverBlockedException] (the request may have been partly sent: the caller keeps the conservative reservation). Best effort: the socket is not bound to the admitted network, so bytes already on the wire stay counted.
      */
-    private suspend fun <T> watchingNetwork(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
+    private suspend fun <T> watchingNetwork(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean, own: com.rokid.context.core.net.DataReservation?, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
         val abort = java.util.concurrent.atomic.AtomicReference<DataDecision?>(null)
-        val work = async { block() }
+        // a call that fails AFTER our own abort (the socket was cancelled under it: an IOException "Canceled") is the abort, not a provider failure
+        val work = async { try { block() } catch (t: Throwable) { if (abort.get() != null && t !is CancellationException) throw CancellationException("data saver abort") else throw t } }
         val watch = launch {
             while (true) {
                 delay(NET_WATCH_MS)
-                val d = try { decideNow(e, kind, photos, callClass, sendOnce) } catch (c: CancellationException) { throw c } catch (t: Throwable) { DataDecision(false, DataPolicy.R_UNKNOWN) } // an unreadable state fails closed
+                val d = try { decideNow(e, kind, photos, callClass, sendOnce, own) } catch (c: CancellationException) { throw c } catch (t: Throwable) { DataDecision(false, DataPolicy.R_UNKNOWN) } // an unreadable state fails closed
                 if (!d.allowed) { abort.set(d); work.cancel(); return@launch }
             }
         }
@@ -360,7 +370,7 @@ class ModelRouter(
     }
 
     private fun safeReserve(kind: DataKind, tx: Long, photos: Int): com.rokid.context.core.net.DataReservation? =
-        try { dataGate.reserve(kind, tx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}"); null }
+        try { dataGate.reserve(kind, tx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}"); com.rokid.context.core.net.DataReservation.FAILED } // fail closed: no durable count, no costly send
 
     private fun safeSettle(r: com.rokid.context.core.net.DataReservation, tx: Long, rx: Long, photos: Int) {
         try { dataGate.settle(r, tx, rx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") } // the reservation stays counted

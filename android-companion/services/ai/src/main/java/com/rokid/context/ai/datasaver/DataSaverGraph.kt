@@ -4,6 +4,7 @@ import android.content.Context
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.core.net.DailyCaps
 import com.rokid.context.core.net.DailyLimit
+import com.rokid.context.core.net.DayUsage
 import com.rokid.context.core.net.DataDecision
 import com.rokid.context.core.net.DataGate
 import com.rokid.context.core.net.DataKind
@@ -73,9 +74,19 @@ class DataSaverGraph internal constructor(
         return decideWith(kind, reach, sendOnce = false)
     }
 
-    private fun decideWith(kind: DataKind, reach: EndpointReach, sendOnce: Boolean): DataDecision {
+    override fun decideExcluding(kind: DataKind, reach: EndpointReach, own: com.rokid.context.core.net.DataReservation?): DataDecision {
+        if (!ModelPrivacyPolicy.allows(try { privacy() } catch (e: Exception) { ModelPrivacy.OFFLINE_ONLY }, reach)) return DataDecision(false, ModelPrivacyPolicy.R_OFFLINE_ONLY)
+        return decideWith(kind, reach, sendOnce = false, own = own)
+    }
+
+    private fun decideWith(kind: DataKind, reach: EndpointReach, sendOnce: Boolean, own: com.rokid.context.core.net.DataReservation? = null): DataDecision {
+        // Codex r2 P1-4: the counters are read (and validated) FIRST: a wrong-typed counter found by [MobileDataLedger.today] flips the settings to unreadable, and THIS admission must see that, so the settings are snapshotted after.
+        store.validateCounters()
+        val counted = mobile.today()
+        // P2-8: the request's own reservation (counted today) is not usage the request itself should be judged by.
+        val usage = if (own != null && !own.failed && own.day == mobile.dayNow()) DayUsage((counted.usage.bytes - own.bytes).coerceAtLeast(0), (counted.usage.photos - own.photos).coerceAtLeast(0)) else counted.usage
         val s = settingsNow(); val snap = snapshotNow()
-        return DataPolicy.decide(kind, reach, NetworkCosts.classify(snap, s), snap.transport, s, mobile.today().usage, sendOnce)
+        return DataPolicy.decide(kind, reach, NetworkCosts.classify(snap, s), snap.transport, s, usage, sendOnce)
     }
 
     /** USER-class photo call the user sent "once" (the router checks the class and the [SendOnce] element). Offline only still refuses. Logged as a fixed line, no content. */
@@ -102,9 +113,12 @@ class DataSaverGraph internal constructor(
 
     /** Admission reservation (P1-6): counted in the persisted ledger BEFORE the request leaves, only while the network is costly. See [DataGate.reserve]. */
     override fun reserve(kind: DataKind, txBytes: Long, photos: Int): com.rokid.context.core.net.DataReservation? {
+        store.validateCounters(); mobile.today() // validates the counters first (P1-4): a corrupt one flips the settings to unreadable before the cost is read
         if (!NetworkCosts.isCostly(costNow())) return null
+        if (settingsNow().unreadable) return com.rokid.context.core.net.DataReservation.FAILED // costly traffic is refused while a stored value cannot be trusted
         val before = limitReachedNow()
         val r = mobile.reserve(kind, txBytes, photos)
+        if (r.failed) { PcLog.w(TAG, "reservation not persisted"); return r } // P1-5: the commit failed, the send is refused
         noteCounted(before)
         return r
     }

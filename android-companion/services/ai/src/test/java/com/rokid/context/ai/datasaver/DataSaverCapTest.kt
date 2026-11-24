@@ -306,7 +306,7 @@ class DataSaverCapTest {
         val store = DataSaverStore(p) // must not throw
         val s = store.settings.value
         assertTrue(s.unreadable)
-        assertEquals("protective values", DataSaverSettings(mode = DataMode.WIFI_ONLY, abroad = true, unreadable = true), s)
+        assertEquals("protective values", DataSaverSettings(mode = DataMode.WIFI_ONLY, abroad = true, unreadable = true, hotspotRuleUnreadable = true), s)
         var snap = home
         val g = DataSaverGraph(store, { snap }, epochDay = { 100L })
         for (k in DataKind.entries) {

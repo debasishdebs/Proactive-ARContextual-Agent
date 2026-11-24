@@ -38,6 +38,9 @@ open class DataSaverBlockedException(
     @Volatile var counted = false
 }
 
+/** The data saver's check right before the connect refused the request: nothing was sent (the router releases the reservation). */
+class PreConnectBlockedException(reason: String, dataKind: com.rokid.context.core.net.DataKind, what: com.rokid.context.core.net.Skipped) : DataSaverBlockedException(reason, dataKind, what)
+
 /**
  * Model privacy "Offline only" refused a call to a remote endpoint before anything was sent (no key read, no provider built). A [DataSaverBlockedException] so every caller parks the work without using
  * an attempt (the pipeline, the queue drain, the Ask path), but it is never counted in the data saver's skipped totals (it is not a data cost) and never retried as text or on a remote fallback.
