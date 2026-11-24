@@ -52,3 +52,10 @@ signing/
 
 # QnA eval runs hold personal answers and photo thumbnails: never committed
 tools/testdata/qna-eval/runs/
+
+# personal trip analysis (kept locally, never pushed)
+docs/superpowers/plans/handoffs/pin-moment-candidates-*.md
+docs/superpowers/plans/handoffs/trip-analysis-*.md
+docs/superpowers/plans/handoffs/trip-gap-analysis-*.md
+docs/superpowers/plans/handoffs/retention-redaction-analysis-*.md
+local.properties
