@@ -157,14 +157,21 @@ fun MapZonesScreen(
     val inside = zones.rows.any { it.inside }
     val fitBoxes = zones.rows.map { com.rokid.context.phone.ui.settings.privacy.zones.MapViewport.ringOf(it.zone) } + seedAreas.map { it.box }
     val reader = offline?.reader
+    // While a pause save is in flight the screen cannot be left: its answer (a refusal especially) must reach the sheet it was asked from.
+    androidx.activity.compose.BackHandler(enabled = ui.saving) { }
     Box(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag("mapzones_screen")) {
         MapCanvas(
             view, zones.rows, seedAreas, pins, items, layers, ui.shape, ui.selected, zones.you, fitBoxes, ui.kind, canDraw = ui.sheet == SheetMode.NONE,
-            summary = MapOverview.summary(zones.rows.size, seedAreas.size, pins.size, inside), reader = reader, online = online,
+            summary = MapSpeech.describe(MapOverview.summary(zones.rows.size, seedAreas.size, pins.size, inside), ui.shape, ShapeSteps.position(items, ui.selected, layers)), reader = reader, online = online,
             onNewShape = on.place, onReshape = on.reshape, onTap = on.tap, modifier = Modifier.fillMaxSize(),
+            access = MapAccessActions(
+                move = { d -> ui.shape?.let { on.reshape(ShapeSteps.move(it, d)) } },
+                resize = { g -> ui.shape?.let { on.reshape(ShapeSteps.resize(it, g)) } },
+                selectNext = { ShapeSteps.nextSelection(items, ui.selected, layers)?.let { on.select(it) } },
+            ),
         )
         Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(PcColors.SurfaceSoft.copy(alpha = 0.9f)).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(on.back, Modifier.testTag("mapzones_back")) { Text("Back") }
+            TextButton(on.back, Modifier.testTag("mapzones_back"), enabled = !ui.saving) { Text("Back") }
             Text("Map zones", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             TextButton({ view.zoom(1.6) }, Modifier.testTag("zone_zoom_in")) { Text("+") }
             TextButton({ view.zoom(1 / 1.6) }, Modifier.testTag("zone_zoom_out")) { Text("-") }
@@ -179,7 +186,7 @@ fun MapZonesScreen(
             seed?.ui?.message?.let { m -> NoticeText(m, error = seed.ui.messageIsError, tag = "seed_message"); SecondaryAction("Dismiss", seed.dismiss, tag = "seed_message_dismiss") }
             when {
                 ui.sheet == SheetMode.CHOOSE -> ChooseSheet(ui, zones, on)
-                ui.sheet == SheetMode.PAUSE -> PauseSheet(ui, on)
+                ui.sheet == SheetMode.PAUSE -> PauseSheet(ui, zones.protectedMode, on)
                 ui.sheet == SheetMode.SEED -> SeedSheet(ui, seed, seedLevel, on)
                 ui.shape != null -> DraftBar(ui, on)
                 else -> BrowseSheet(view, ui, zones, seed, offline, online, on, zoneOn, layers, pauseLocked, seedAreas.size, pins.size)
@@ -231,7 +238,7 @@ private fun DraftBar(ui: MapZonesUiState, on: MapZonesCallbacks) {
     }
     NoticeText(ShapeEdit.sizeText(shape), tag = "mapzones_size")
     PrimaryAction("Next", on.next, tag = "mapzones_next", enabled = ui.box != null)
-    SecondaryAction("Cancel", on.cancelDraw, tag = "mapzones_cancel")
+    SecondaryAction("Cancel", on.cancelDraw, tag = "mapzones_cancel", enabled = !ui.saving)
 }
 
 @Composable
@@ -246,14 +253,15 @@ private fun ChooseSheet(ui: MapZonesUiState, zones: ZonesUiState, on: MapZonesCa
 }
 
 @Composable
-private fun PauseSheet(ui: MapZonesUiState, on: MapZonesCallbacks) {
+private fun PauseSheet(ui: MapZonesUiState, unreadable: Boolean, on: MapZonesCallbacks) {
     Text(if (ui.editingId != null) "Change pause zone" else "Pause zone", style = MaterialTheme.typography.titleMedium)
     TextFieldRow("Name", ui.name, on.setName, tag = "zone_name")
     TextFieldRow("Ring (metres, 0 to 50,000)", ui.bufferText, on.setBuffer, tag = "zone_buffer", number = true)
     NoticeText("Capture pauses inside the box and the ring. Within 2 km more, the glasses hold capture if the link drops. If location is off or stale, capture pauses (fail closed)." + if (ui.shape?.kind == ShapeKind.CIRCLE) " A circle is saved as the box around it." else "", tag = "mapzones_pause_note")
     ui.sheetError?.let { NoticeText(it, error = true, tag = "mapzones_sheet_error") }
-    PrimaryAction(if (ui.saving) "Saving..." else "Save pause zone", on.savePause, tag = "mapzones_save_pause", enabled = !ui.saving)
-    SecondaryAction("Back", on.backSheet, tag = "mapzones_back_sheet")
+    if (unreadable) NoticeText("Pause cannot be saved while the saved zones cannot be read.", error = true, tag = "mapzones_save_disabled")
+    PrimaryAction(if (ui.saving) "Saving..." else "Save pause zone", on.savePause, tag = "mapzones_save_pause", enabled = PauseSave.enabled(ui.saving, unreadable))
+    SecondaryAction("Back", on.backSheet, tag = "mapzones_back_sheet", enabled = !ui.saving)
 }
 
 @Composable

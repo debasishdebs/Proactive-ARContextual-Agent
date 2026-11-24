@@ -51,6 +51,42 @@ class MapGeometryTest {
         }
     }
 
+    @Test fun circleBoxHoldsTheRenderedCircleOverGridOfLatitudesAndRadii() {
+        // The circle the user sees is a pixel-space circle of radius (box width / 2 / SAFETY) around the centre; unproject its edge with the viewport and require the saved box to hold it.
+        val lats = listOf(-84.0, -75.0, -60.0, -45.0, -10.0, 0.0, 10.0, 27.3, 45.0, 60.0, 70.0, 80.0, 84.9)
+        val radii = listOf(50.0, 500.0, 5_000.0, 50_000.0, 120_000.0, ShapeEdit.MAX_RADIUS_M)
+        var checked = 0
+        for (lat in lats) for (r in radii) for (lon in listOf(0.0, 88.6, -100.0, 150.0)) {
+            val b = CircleBox.of(lat, lon, r) ?: continue
+            val ppd = 300.0 / ((b[3] - b[1]) / 2 / CircleBox.SAFETY)
+            val vp = MapViewport(lat, lon, ppd, 1000f, 1000f)
+            val c = vp.toPx(lat, lon); val rpx = (vp.toPx(lat, b[3]).x - c.x) / CircleBox.SAFETY.toFloat()
+            for (deg in 0 until 360 step 3) {
+                val th = Math.toRadians(deg.toDouble())
+                val p = vp.toLatLon(c.x + rpx * cos(th).toFloat(), c.y + rpx * sin(th).toFloat())
+                val eps = 1e-4 // float pixel rounding
+                assertTrue("lat $lat lon $lon r $r deg $deg: ${p.lat},${p.lon} vs ${b.toList()}", p.lat >= b[0] - eps && p.lat <= b[2] + eps && p.lon >= b[1] - eps && p.lon <= b[3] + eps)
+            }
+            checked++
+        }
+        assertTrue(checked > 40)
+    }
+
+    @Test fun circleBoxAt60DegreesCoversTheRenderedSouthEdgeAtMaxRadius() {
+        val b = CircleBox.of(60.0, 10.0, ShapeEdit.MAX_RADIUS_M)!!
+        val rho = 200_000.0 / (CircleBox.METRES_PER_DEG * cos(Math.toRadians(60.0)))
+        val renderedSouth = CircleBox.unmerc(CircleBox.merc(60.0) - rho)
+        assertTrue("saved south ${b[0]} must be at or beyond the displayed edge $renderedSouth", b[0] <= renderedSouth)
+        assertTrue(b[2] >= CircleBox.unmerc(CircleBox.merc(60.0) + rho))
+    }
+
+    @Test fun circleBoxNearThePolesAndAntimeridianNeverShrinks() {
+        val polar = CircleBox.of(84.9, 0.0, ShapeEdit.MAX_RADIUS_M)!!
+        assertEquals(90.0, polar[2], 0.0) // the rendered circle passes the map limit: the box goes to the pole
+        assertNull(CircleBox.of(60.0, 179.0, ShapeEdit.MAX_RADIUS_M)) // would cross the antimeridian: refused, not clipped
+        val near = CircleBox.of(0.0, 178.0, 100_000.0)!!; assertTrue(near[3] <= 180.0)
+    }
+
     @Test fun circleBoxRefusesUnusableCircles() {
         assertNull(CircleBox.of(0.0, 0.0, 0.0)); assertNull(CircleBox.of(0.0, 0.0, -5.0))
         assertNull(CircleBox.of(Double.NaN, 0.0, 100.0)); assertNull(CircleBox.of(0.0, 0.0, Double.NaN)); assertNull(CircleBox.of(0.0, 0.0, Double.POSITIVE_INFINITY))

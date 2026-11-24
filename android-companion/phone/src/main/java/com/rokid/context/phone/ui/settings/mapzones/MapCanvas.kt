@@ -4,7 +4,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
@@ -37,7 +36,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -88,6 +89,9 @@ class MapViewState {
     fun fit() { fitKey++ }
 }
 
+/** The TalkBack custom actions: step the draft, resize it, and walk through the shapes. Each does what a drag does, with no gesture. */
+class MapAccessActions(val move: (StepDir) -> Unit, val resize: (Boolean) -> Unit, val selectNext: () -> Unit)
+
 private val MapBackground = Color(0xFFF3F1EA)
 private val DraftInk = Color(0xFF111827)
 private const val ONLINE_PARALLEL = 4
@@ -113,6 +117,7 @@ fun MapCanvas(
     onReshape: (DrawnShape) -> Unit,
     onTap: (TapTarget) -> Unit,
     modifier: Modifier = Modifier,
+    access: MapAccessActions? = null,
 ) {
     val measurer = rememberTextMeasurer()
     val fitSig = items.map { it.id }
@@ -158,7 +163,22 @@ fun MapCanvas(
     val onTapNow by rememberUpdatedState(onTap)
     var preview by remember { mutableStateOf<Pair<Offset, Offset>?>(null) }
 
-    Box(Modifier.then(modifier).onSizeChanged { view.size = Size(it.width.toFloat(), it.height.toFloat()); view.vp = view.vp?.resized(view.size.width, view.size.height) }.semantics { contentDescription = summary }.testTag("mapzones_map")) {
+    Box(Modifier.then(modifier).onSizeChanged { view.size = Size(it.width.toFloat(), it.height.toFloat()); view.vp = view.vp?.resized(view.size.width, view.size.height) }.semantics {
+        contentDescription = summary
+        access?.let { a ->
+            val acts = ArrayList<CustomAccessibilityAction>()
+            if (shape != null) {
+                acts += CustomAccessibilityAction("Move shape north") { a.move(StepDir.NORTH); true }
+                acts += CustomAccessibilityAction("Move shape south") { a.move(StepDir.SOUTH); true }
+                acts += CustomAccessibilityAction("Move shape east") { a.move(StepDir.EAST); true }
+                acts += CustomAccessibilityAction("Move shape west") { a.move(StepDir.WEST); true }
+                acts += CustomAccessibilityAction("Make shape larger") { a.resize(true); true }
+                acts += CustomAccessibilityAction("Make shape smaller") { a.resize(false); true }
+            }
+            if (items.any { it.type != ItemType.PIN }) acts += CustomAccessibilityAction("Select next shape") { a.selectNext(); true }
+            customActions = acts
+        }
+    }.testTag("mapzones_map")) {
         Canvas(
             Modifier.fillMaxSize().background(MapBackground).pointerInput(Unit) {
                 val touch = ShapeEdit.HANDLE_TOUCH_DP.dp.toPx()
@@ -183,13 +203,30 @@ fun MapCanvas(
                         }
                         return@awaitEachGesture
                     }
-                    val lp = awaitLongPressOrCancellation(down.id)
-                    if (lp != null) {
-                        if (!canDrawNow) return@awaitEachGesture
+                    // Arbitrate slop, extra fingers and the long-press time TOGETHER (see TouchArbiter): a second finger or a move past the slop is a pan / pinch at once; a lift first is a tap; only one finger held still draws.
+                    val slop = viewConfiguration.touchSlop
+                    val lpMs = viewConfiguration.longPressTimeoutMillis
+                    var decision = TouchDecision.WAIT
+                    var decidedEvent: androidx.compose.ui.input.pointer.PointerEvent? = null
+                    withTimeoutOrNull(lpMs) {
+                        while (decision == TouchDecision.WAIT) {
+                            val ev = awaitPointerEvent()
+                            val mine = ev.changes.firstOrNull { it.id == down.id }
+                            val moved = mine?.let { (it.position - down.position).getDistance() } ?: 0f
+                            decision = TouchArbiter.decide(ev.changes.count { it.pressed }, mine == null || !mine.pressed, moved, slop, 0L, lpMs)
+                            if (decision != TouchDecision.WAIT) decidedEvent = ev
+                        }
+                    }
+                    if (decision == TouchDecision.WAIT) decision = if (canDrawNow) TouchDecision.DRAW else TouchDecision.PAN
+                    if (decision == TouchDecision.TAP) {
+                        onTapNow(MapTap.at(itemsNow, v0, down.position.x, down.position.y, minShape, touch, layersNow))
+                        return@awaitEachGesture
+                    }
+                    if (decision == TouchDecision.DRAW) {
                         // Long press then drag: a new rectangle (corner to corner) or circle (centre to edge).
                         val start = down.position
                         preview = start to start
-                        drag(lp.id) { change -> preview = start to change.position; change.consume() }
+                        drag(down.id) { change -> preview = start to change.position; change.consume() }
                         val end = preview?.second ?: start
                         preview = null
                         val v = view.vp ?: return@awaitEachGesture
@@ -197,11 +234,14 @@ fun MapCanvas(
                         onNewShapeNow(if (kindNow == ShapeKind.RECT) ShapeEdit.rectFromDrag(a, b) else ShapeEdit.circleFromDrag(a, b))
                         return@awaitEachGesture
                     }
-                    val still = currentEvent.changes.firstOrNull { it.id == down.id }
-                    if (still == null || !still.pressed) {
-                        // A tap: select what is under the finger.
-                        onTapNow(MapTap.at(itemsNow, v0, down.position.x, down.position.y, minShape, touch, layersNow))
-                        return@awaitEachGesture
+                    // Pan / pinch: the event that decided it is applied first, then the rest of the gesture.
+                    decidedEvent?.let { ev ->
+                        val z = ev.calculateZoom(); val p = ev.calculatePan(); val c = ev.calculateCentroid()
+                        if ((z != 1f || p != Offset.Zero) && c.isSpecified) {
+                            view.vp = view.vp?.panned(p.x, p.y)?.zoomed(z.toDouble(), c.x, c.y)
+                            ev.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                        if (ev.changes.none { it.pressed }) return@awaitEachGesture
                     }
                     do {
                         val ev = awaitPointerEvent()
