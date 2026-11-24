@@ -1,0 +1,2 @@
+model,key,truth,candidates,raw,choice,conf,lat_s,prompt_ms,pred_ms,prompt_tokens,text_tokens,image_tokens,B_choice,B_p,B_lat_s,B_raw,rss_mb
+qwen3vl2b,charminar,3,1=Hussain Sagar Buddha / 2=Gulzar Houz / 3=Charminar / 4=Golconda Fort,"{""choice"": ""3"", ""confidence"": 0.95}",3,0.95,667.81,17601,478,595,143,452,3,0.997,547.18,3,479
