@@ -59,6 +59,7 @@ class LocalModelDownloadWorkerTest {
         LocalModelDownloadWorker.resolve = { id -> model.takeIf { it.id == id } }
         LocalModelDownloadWorker.client = { Http.downloadClient().newBuilder().sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager).build() }
         LocalModelDownloadWorker.freeBytes = { Long.MAX_VALUE }
+        LocalModelDownloadWorker.gateOf = { com.rokid.context.core.net.DataGate.ALLOW_ALL } // Wi-Fi at home: the shared admission is open
         store = LocalModelStore(ctx)
     }
 
@@ -71,6 +72,56 @@ class LocalModelDownloadWorkerTest {
     private fun part() = File(LocalModelStore.modelsDir(ctx), model.file + ".part")
     private fun body(from: Int = 0) = Buffer().write(data, from, data.size - from)
     private fun failure(message: String) = ListenableWorker.Result.failure(workDataOf(LocalModelDownloadWorker.KEY_MESSAGE to message))
+
+    /** A scripted gate: [open] answers every decide, every counted byte lands in [counted]; it closes once [closeAfterBytes] were counted. */
+    private class FakeGate(var open: Boolean, var reason: String = "roaming", val closeAfterBytes: Long = Long.MAX_VALUE) : com.rokid.context.core.net.DataGate {
+        var counted = 0L; var skippedCalls = 0
+        override fun decide(kind: com.rokid.context.core.net.DataKind, reach: com.rokid.context.core.net.EndpointReach): com.rokid.context.core.net.DataDecision {
+            assertEquals(com.rokid.context.core.net.DataKind.BULK_OTHER, kind)
+            return if (open && counted < closeAfterBytes) com.rokid.context.core.net.DataDecision.ALLOW else com.rokid.context.core.net.DataDecision(false, reason)
+        }
+        override fun skipped(kind: com.rokid.context.core.net.DataKind, what: com.rokid.context.core.net.Skipped, d: com.rokid.context.core.net.DataDecision) { skippedCalls++ }
+        override fun costlyNow() = true
+        override fun sentAt(kind: com.rokid.context.core.net.DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) { counted += rxBytes }
+    }
+
+    /** Codex data saver r1 P1-5: a closed policy (roaming, unknown network, daily limit) sends no byte; the work waits for Wi-Fi and the refusal is counted. */
+    @Test fun aClosedDataSaverMakesNoRequestAndWaitsForWifi() {
+        val gate = FakeGate(open = false, reason = "roaming"); LocalModelDownloadWorker.gateOf = { gate }
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+        assertEquals(0, server.requestCount)
+        assertEquals(1, gate.skippedCalls)
+        val live = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork("local_model_${model.id}").get().single { !it.state.isFinished }
+        assertEquals("replaced by a Wi-Fi-only request", NetworkType.UNMETERED, live.constraints.requiredNetworkType)
+        // closed again right away (a blip on a network WorkManager calls unmetered): a plain retry, not another replacement loop
+        assertEquals(ListenableWorker.Result.retry(), runWorker())
+    }
+
+    @Test fun openOnWifiCountsEveryByteAndDownloadsAsBefore() = runBlocking {
+        val gate = FakeGate(open = true); LocalModelDownloadWorker.gateOf = { gate }
+        server.enqueue(MockResponse().setBody(body()))
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+        assertArrayEquals(data, store.fileFor(model).readBytes())
+        assertEquals("all the bytes are counted", data.size.toLong(), gate.counted)
+    }
+
+    @Test fun thePolicyClosingMidTransferStopsAtOnceKeepsThePartAndCountsWhatCame() = runBlocking {
+        val gate = FakeGate(open = true, closeAfterBytes = 256 * 1024L); LocalModelDownloadWorker.gateOf = { gate }
+        server.enqueue(MockResponse().setBody(body()))
+        assertEquals(ListenableWorker.Result.success(), runWorker()) // replaced by a Wi-Fi-only request
+        assertFalse("not finished", store.fileFor(model).exists())
+        assertTrue("the .part stays for the resume", part().length() >= 256 * 1024L && part().length() < data.size)
+        assertEquals("counted bytes equal the bytes on disk", part().length(), gate.counted)
+        assertEquals(1, gate.skippedCalls)
+    }
+
+    @Test fun aFailedTransferStillCountsTheBytesThatArrived() {
+        val gate = FakeGate(open = true); LocalModelDownloadWorker.gateOf = { gate }
+        server.enqueue(MockResponse().setBody(body()).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+        assertEquals(ListenableWorker.Result.retry(), runWorker())
+        assertTrue(part().length() > 0)
+        assertEquals(part().length(), gate.counted)
+    }
 
     @Test fun fullDownloadVerifiesAndRenames() = runBlocking {
         server.enqueue(MockResponse().setBody(body()))

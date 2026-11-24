@@ -54,6 +54,15 @@ class TileResponse(val code: Int, val location: String? = null, val retryAfterSe
 /** The network seam of the tile source: tests swap it for a fake. */
 interface TileTransport {
     @Throws(IOException::class) fun get(url: String, userAgent: String): TileResponse
+    /**
+     * Same, reporting every chunk of body bytes to [onBytes] AS IT ARRIVES, so a partial response followed by an IOException (or a cancel) is still counted by the caller's finally block.
+     * Default for simple transports: the whole body, reported once after the call (a body cut at the read cap counts as cap + 1).
+     */
+    @Throws(IOException::class) fun get(url: String, userAgent: String, onBytes: (Long) -> Unit): TileResponse {
+        val r = get(url, userAgent)
+        onBytes((r.body?.size ?: if (r.code in 200..299) OnlineTileSource.MAX_TILE_BYTES + 1 else 0).toLong())
+        return r
+    }
     /** Tears down every request in flight (the screen left the foreground). */
     fun cancelAll()
 }
@@ -66,7 +75,9 @@ class UrlConnectionTileTransport(
 ) : TileTransport {
     private val open: MutableSet<HttpURLConnection> = Collections.synchronizedSet(HashSet())
 
-    override fun get(url: String, userAgent: String): TileResponse {
+    override fun get(url: String, userAgent: String): TileResponse = get(url, userAgent) { }
+
+    override fun get(url: String, userAgent: String, onBytes: (Long) -> Unit): TileResponse {
         val u = URL(url)
         if (u.protocol != "https") throw IOException("https only")
         val c = u.openConnection() as HttpURLConnection
@@ -86,6 +97,7 @@ class UrlConnectionTileTransport(
                 val buf = ByteArray(16 * 1024)
                 while (true) {
                     val n = ins.read(buf); if (n < 0) break
+                    onBytes(n.toLong()) // counted the moment it arrives: a later IOException still leaves these bytes reported
                     if (out.size() + n > maxBytes) return TileResponse(code, null, null, null)
                     out.write(buf, 0, n)
                 }
@@ -233,11 +245,16 @@ class OnlineTileSource(
             if (!takeSlot()) return null
             if (offline() || saverBlocks()) return null // immediately before the request (and before every redirect hop)
             val costly = costlyNow() // the network class when the request STARTS
-            val r = try { transport.get(url, userAgent) } catch (e: IOException) {
+            var received = 0L
+            val r = try {
+                transport.get(url, userAgent) { received += it }
+            } catch (e: IOException) {
                 if (!running || epoch != e0) return null
                 PcLog.i(TAG, "online tiles request failed"); return fail(k)
+            } finally {
+                // bytes actually received, from this finally block so a partial body followed by an IOException, a cancel (stop) or any failure is counted too
+                if (received > 0) counted(costly, received)
             }
-            counted(costly, (r.body?.size ?: if (r.code in 200..299) MAX_TILE_BYTES + 1 else 0).toLong()) // bytes actually received (a too-large body was cut at the cap)
             if (!running || epoch != e0) return null
             val code = r.code
             when {
