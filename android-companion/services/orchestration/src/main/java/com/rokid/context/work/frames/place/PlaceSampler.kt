@@ -711,7 +711,7 @@ class PlaceSampler(
     }
 
     private suspend fun seedFromHistory(now: Long) {
-        if (flight.seeded) return
+        if (flight.seeded || !historyOn()) return // history off: no rows were written, nothing to seed from
         flight.seeded = true
         try {
             for (r in seedRecent(now - PinFirst.VISIT_MAX_MS)) {

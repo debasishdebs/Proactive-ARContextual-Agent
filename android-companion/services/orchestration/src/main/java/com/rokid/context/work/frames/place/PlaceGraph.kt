@@ -144,7 +144,7 @@ object PlaceGraph {
         val before = runCatching { pins(context).pins().map { it.id } }.getOrDefault(emptyList())
         if (!pins(context).write(list)) return false
         val gone = before - list.map { it.id }.toSet() // a pin that disappeared takes its history rows (and the cluster rows that list it) with it
-        afterPinWrite(if (gone.isNotEmpty()) history(context) else null, gone) { p.replaceUserPlaces(list) }
+        afterPinWrite(if (gone.isNotEmpty()) history(context).takeIf { it.mayHoldRows() } else null, gone) { p.replaceUserPlaces(list) }
         return true
     }
 

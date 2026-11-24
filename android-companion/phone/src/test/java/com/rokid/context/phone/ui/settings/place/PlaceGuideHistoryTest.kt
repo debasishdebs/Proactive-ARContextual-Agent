@@ -37,7 +37,9 @@ class PlaceGuideHistoryTest {
         val shownAgain = mutableListOf<String>()
         var deleted = mutableListOf<String>()
         var showOk = true
-        override suspend fun rows() = rows.sortedByDescending { it.at }
+        var on = true
+        override val historyOn: Boolean get() = on
+        override suspend fun rows() = if (!on) emptyList() else rows.sortedByDescending { it.at }
         override suspend fun line(row: PlaceCardLogEntity) = if (row.id in lines) lines[row.id] else "A line for ${row.title}."
         override suspend fun photoPath(frameId: String) = if (frameId in photos) "/photo/$frameId.jpg" else null
         override suspend fun delete(id: String): Boolean { deleted += id; rows = rows.filterNot { it.id == id }; return true }
@@ -74,6 +76,13 @@ class PlaceGuideHistoryTest {
         val v = vm(FakeHistory(emptyList()))
         assertTrue(v.state.value.history.isEmpty())
         assertEquals("No place cards yet", PlaceHistoryModel.EMPTY)
+    }
+
+    @Test fun historyOffShowsNoRowsAndTheOneLineReason() {
+        val h = FakeHistory(listOf(row("a", 100))); h.on = false
+        val v = vm(h)
+        assertTrue(v.state.value.history.isEmpty()); assertFalse(v.state.value.historyOn)
+        assertEquals("Card history is off (Developer)", PlaceHistoryModel.OFF_LINE)
     }
 
     @Test fun noHistoryOnThisBuildShowsNothing() {
