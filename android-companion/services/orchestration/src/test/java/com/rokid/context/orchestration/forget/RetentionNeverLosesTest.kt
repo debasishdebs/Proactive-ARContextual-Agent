@@ -531,7 +531,7 @@ class RetentionNeverLosesTest {
 
     /** The enumerated user entry points that tombstone a photo, each clearing the marker in its own transaction; the list fails when a new public ForgetService method is added without being classified. */
     @Test fun everyUserPathThatTombstonesAPhotoClearsTheMarker() = bothModes { v2 ->
-        val known = setOf("forgetFact", "forgetFacts", "forgetMoment", "forgetSelection", "previewSelection", "removeDescriptions", "expirePhotos", "expireOrphanFrames", "getExecutor")
+        val known = setOf("forgetFact", "forgetFacts", "forgetMoment", "forgetSelection", "previewSelection", "removeDescriptions", "removeSuspectDescriptions", "expirePhotos", "expireOrphanFrames", "getExecutor")
         val actual = ForgetService::class.java.methods.map { it.name }.filter { '$' !in it }.filter { it.startsWith("forget") || it.startsWith("expire") || it.startsWith("remove") || it.startsWith("preview") || it == "getExecutor" }.toSet()
         assertTrue("an unclassified ForgetService entry point appeared: ${actual - known}", known.containsAll(actual))
         // each path, on its own world: expire the photo first, then forget through the path, the marker must be gone and the photo forgotten
