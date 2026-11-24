@@ -31,92 +31,47 @@ object PlaceGraph {
     fun protect(active: Boolean) { if (active) { if (!fence.held) { fence.hold(); port.clear() } } else fence.release() }
 
     private val cardListener = object : com.rokid.context.memory.forget.ForgetListener {
-        override suspend fun onFramesForgotten(frameIds: List<String>) { fence.trip(); port.withdrawFrames(frameIds) }
-        override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { fence.trip(); port.clear() }
-        override suspend fun onDeleteAll() { fence.trip(); port.clear() }
+        override suspend fun onFramesForgotten(frameIds: List<String>) { fence.trip(); port.withdrawFrames(frameIds); PlaceCardHistory.notifyChanged() }
+        override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { fence.trip(); port.clear(); PlaceCardHistory.notifyChanged() }
+        override suspend fun onPhotosExpired(frameIds: List<String>) { PlaceCardHistory.notifyChanged() }
+        override suspend fun onDeleteAll() { fence.trip(); port.clear(); PlaceCardHistory.notifyChanged() }
     }
 
-    // The phone-only card history (B1): a user Forget of a photo deletes its rows, photo retention only drops the photo link and keeps the row (expiry-independent), a range Forget deletes the rows of the range
-    // (not for the time link of a retention expiry), Delete all clears the table. Memory expiry (SHORT / LONG) touches nothing.
-    private val historyListener = object : com.rokid.context.memory.forget.ForgetListener {
-        override suspend fun onFramesForgotten(frameIds: List<String>) { historyIfOpen()?.onFramesForgotten(frameIds) }
-        override suspend fun onPhotosExpired(frameIds: List<String>) { historyIfOpen()?.onPhotosExpired(frameIds) }
-        override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { historyIfOpen()?.onRangeForgotten(fromMs, toMs) }
-        override suspend fun onRangeExpired(fromMs: Long, toMs: Long, traceIds: List<String>) { /* routine retention never deletes history rows */ }
-        override suspend fun onDeleteAll() { historyIfOpen()?.clearAll("delete_all") }
-    }
+    // The phone-only card history lives in context.db (v18): every Forget deletes or unlinks its rows INSIDE its own transaction, so there is no history listener and nothing is ever owed.
 
     init { registerListeners() }
 
-    /** Registers the two Forget listeners (idempotent). A published card holds photo-derived content: Forget of its photo withdraws it, a range Forget or Delete all withdraws every card (committed deletions only; fenced against publication by the holder's epoch). */
+    /** Registers the card Forget listener (idempotent). A published card holds photo-derived content: Forget of its photo withdraws it, a range Forget or Delete all withdraws every card (committed deletions only; fenced against publication by the holder's epoch). */
     fun registerListeners() {
         com.rokid.context.memory.forget.ForgetListeners.register(cardListener)
-        com.rokid.context.memory.forget.ForgetListeners.register(historyListener)
     }
 
-    @Volatile private var appContext: Context? = null
     @Volatile private var historyRef: PlaceCardHistory? = null
 
-    /** Gives the process-wide history listener the application context (called once by the Application). Without it (or without a `places.db` file) the listener has nothing to delete. */
-    fun attach(context: Context) { appContext = context.applicationContext }
+    /** Pins whose removal is in flight (savePins step 2..5): ids only, in memory, never logged. A history insert that names one is refused. */
+    internal val removing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
-    /** The card history, built lazily over the pack's database. Off Main (the first call reads the Keystore). */
+    /** The card history over `context.db`, built lazily. Off Main (the first call may open the database). */
     fun history(context: Context): PlaceCardHistory {
         historyRef?.let { return it }
         val app = context.applicationContext
         return synchronized(this) {
             historyRef ?: PlaceCardHistory(
-                pack(app).cardLogDao, log = { PcLog.i(TAG, it) }, enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeCardHistory(app) },
-                owed = PrefsHistoryOwed(owedPrefs(app)),
-                pinActive = { id -> pins(app).pins().any { it.id == id } }, // P1-4: asked under the history's write lock, after the pin store was written
+                com.rokid.context.memory.MemoryGraph.get(app).db, log = { PcLog.i(TAG, it) }, enabled = { com.rokid.context.orchestration.forget.DeveloperFlags.placeCardHistory(app) },
+                pinActive = { id -> pins(app).pins().any { it.id == id } }, removing = removing,
+                generation = { com.rokid.context.orchestration.MemoryWipe.generation.get() }, fenceEpoch = { fence.epoch() },
             ).also { historyRef = it }
         }
     }
 
-    private fun owedPrefs(app: Context) = app.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE)
-
-    /** True while a history deletion (Forget, Delete all, pin removal) is still owed. Reads one prefs key; never opens `places.db`. */
-    fun historyOwed(context: Context): Boolean = PrefsHistoryOwed(owedPrefs(context.applicationContext)).all().isNotEmpty()
-
-    /**
-     * Finishes the history deletions an earlier Forget / Delete all could not complete (called at every start and right after a Forget): true = nothing is owed. When `places.db` does not exist there is
-     * nothing to delete and the obligation is dropped. Off Main.
-     */
-    suspend fun settleHistory(context: Context): Boolean {
-        val app = context.applicationContext
-        if (!historyOwed(app)) return true
-        val h = existingHistory(app)
-        if (h == null) { if (owedPrefs(app).edit().remove(PrefsHistoryOwed.KEY).commit()) PrefsHistoryOwed.clearMemory(); return !historyOwed(app) }
-        return h.retryOwed()
+    /** CH 7: the owed-token key of the old places.db history is removed once at startup (the history now lives in context.db and nothing is owed). One commit, no database access. */
+    fun dropOwedKey(context: Context) {
+        val prefs = context.applicationContext.getSharedPreferences(PlaceGuideSettings.PREFS, Context.MODE_PRIVATE)
+        if (prefs.contains("history_deletions_owed")) prefs.edit().remove("history_deletions_owed").commit()
     }
 
-    /** A user Forget / Delete all begins (inside the DataOpGate): history deletions that failed before it are not this operation's to report (they stay owed and are retried). Never opens `places.db`. */
-    fun beginHistoryScope() { historyRef?.beginScope() }
-
-    /** True when a history deletion THIS operation attempted (or one covering it) is still owed: only then does its Forget / Delete all report cleanup pending. */
-    fun historyScopePending(): Boolean = historyRef?.scopePending() ?: false
-
-    /**
-     * A user pin was removed (P1-4): attempts in flight that may hold it are fenced out (their publication, memory and history are refused), the card on the glasses is withdrawn, and the history rows that
-     * name it are deleted under the history's write lock. The pin store is already written when this runs, so a row inserted after it is refused by the history's active-pin check.
-     */
-    internal suspend fun pinsRemoved(history: PlaceCardHistory, gone: Collection<String>) {
-        if (gone.isEmpty()) return
-        fence.trip()
-        port.clear()
-        history.onPinRemoved(gone)
-    }
-
-    /** The history for a Forget: null when nothing was ever stored (no `places.db` file and no pack in this process), so a Forget never creates the database. */
-    private fun historyIfOpen(): PlaceCardHistory? = appContext?.let { existingHistory(it) }
-
-    /** The history only when `places.db` exists (or is open in this process): a reader such as Home never creates the database. */
-    fun existingHistory(context: Context): PlaceCardHistory? {
-        historyRef?.let { return it }
-        val app = context.applicationContext
-        if (pack == null && !app.getDatabasePath(PlacesDatabase.NAME).exists()) return null
-        return history(app)
-    }
+    /** The card history; kept for the readers that must not build anything extra (Home, quota eviction). `context.db` always exists. */
+    fun existingHistory(context: Context): PlaceCardHistory? = history(context)
 
     /** The user's pinned places (prefs `place_pins`, the source of truth: kept by Delete all, exported on request; EXCLUDED from backup and device transfer, see UserPlace.kt and BackupRulesTest). */
     fun pins(context: Context): com.rokid.context.memory.place.UserPinStore =
@@ -138,29 +93,24 @@ object PlaceGraph {
         return p
     }
 
-    /** Stores [list] as the pins and mirrors it into the pack. False = refused or not stored (nothing changes). */
+    /**
+     * Stores [list] as the pins and mirrors it into the pack. False = refused or not stored (nothing changes, or only the history rows of a removed pin are gone: fail closed). The ORDER for a removed pin (CH 5):
+     * (1) `gone` = the ids that disappear; (2) they enter [removing] and the fence trips and the card is withdrawn; (3) their history rows are deleted in one Room transaction, and a failure refuses the removal;
+     * (4) the pin store is written, and a failure keeps the pin (its rows are already gone); (5) [removing] is cleared and the pack mirror follows.
+     */
     suspend fun savePins(context: Context, list: List<com.rokid.context.memory.place.UserPlace>): Boolean {
         val p = readyPack(context)
         val before = runCatching { pins(context).pins().map { it.id } }.getOrDefault(emptyList())
-        if (!pins(context).write(list)) return false
-        val gone = before - list.map { it.id }.toSet() // a pin that disappeared takes its history rows (and the cluster rows that list it) with it
-        afterPinWrite(if (gone.isNotEmpty()) history(context).takeIf { it.mayHoldRows() } else null, gone) { p.replaceUserPlaces(list) }
-        return true
-    }
-
-    /**
-     * P1-3: what follows a successful write of the pin store. The removal is a fact from here on: attempts that may hold the pin are fenced and the card withdrawn BEFORE anything can suspend, the history deletion
-     * is armed (durable) before the mirror write, and it runs even when the mirror fails or the caller is cancelled (the mirror failure is rethrown afterwards; the next start repairs the mirror).
-     */
-    internal suspend fun afterPinWrite(history: PlaceCardHistory?, gone: Collection<String>, mirror: suspend () -> Unit) {
-        if (history != null) {
+        val gone = before - list.map { it.id }.toSet()
+        if (gone.isEmpty()) { if (!pins(context).write(list)) return false; p.replaceUserPlaces(list); return true }
+        removing.addAll(gone)
+        try {
             fence.trip(); port.clear()
-            try { history.armPinRemoval(gone) } catch (e: HistoryDeletionPending) { /* not durable; still held in memory, and the deletion below runs now */ }
-        }
-        var mirrorFailure: Throwable? = null
-        try { mirror() } catch (e: Throwable) { mirrorFailure = e }
-        if (history != null) withContext(kotlinx.coroutines.NonCancellable) { try { pinsRemoved(history, gone) } catch (e: HistoryDeletionPending) { /* owed: retried at the next start; ForgetActions reports the cleanup as pending */ } }
-        mirrorFailure?.let { throw it }
+            try { history(context).deletePins(gone) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { PcLog.w(TAG, "place history pin rows not deleted: pin kept"); return false }
+            if (!pins(context).write(list)) { PcLog.i(TAG, "place history pin removed=${gone.size} pin_kept"); return false }
+        } finally { removing.removeAll(gone.toSet()) }
+        p.replaceUserPlaces(list)
+        return true
     }
 
     fun pack(context: Context): PlacePack = pack ?: synchronized(this) { pack ?: build(context.applicationContext).also { pack = it } }
@@ -180,14 +130,10 @@ object PlaceGraph {
         port.clear() // the card goes first, and a card still being made is fenced out
         val app = context.applicationContext
         if (pack == null && !app.getDatabasePath(PlacesDatabase.NAME).exists()) return
-        // The history is cleared (or its deletion recorded as owed) whatever happens to the pack; either failure is thrown, so Delete all does not report done while private rows may remain.
-        var packFailure: Exception? = null
-        try { pack(app).deleteAll() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { packFailure = e }
-        try { history(app).clearAll("delete_all") } catch (e: HistoryDeletionPending) { if (packFailure == null) throw e } // a pack failure is the more serious one and must not be masked
-        packFailure?.let { throw it }
+        pack(app).deleteAll() // the card history is cleared by MemoryWipe's wipeMemory transaction (context.db), not here
     }
 
-    fun installForTests(p: PlacePack?) { synchronized(this) { pack = p; pinsSynced = false; historyRef = null; appContext = null } }
+    fun installForTests(p: PlacePack?) { synchronized(this) { pack = p; pinsSynced = false; historyRef = null; removing.clear() } }
     fun installHistoryForTests(h: PlaceCardHistory?) { historyRef = h }
 }
 

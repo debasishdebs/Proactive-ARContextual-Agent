@@ -51,6 +51,7 @@ object DeletionGraph {
         w("moment_part", "Moment membership edges (ids and revisions only)"),
         w("moment_tombstone", "forgotten seconds; the deletion epoch is the fence after Delete all, as with the frame tombstones"),
         w("moment_trace_dep", "reserved trace dependencies of a Moment; empty until a trace writer exists"),
+        w("place_card_log", "phone-only place card history; user Forget of the photo, any user range (also a photo's radius) and Delete all delete its rows in the same transaction; photo retention sets photoGone and keeps frameId; pin removal deletes the pin's rows before the pin store is written; 90 days / 500 rows"),
         w("moment_location", "optional Moment location (phone fix or media backfill); user Forget of the photo, the mark, any user span, the Moment and Delete all delete it in the same transaction; retention, sweep, purge and Moment rebuilds keep it"),
         w("moment_sensor", "per-second sensor features of a Moment (numbers, state names and a source trace id; no raw samples); deleted with the Moment, with its trace, by every Forget that selects by time, and by Delete all"),
         w("object_audit", "append-only audit of Moment-family objects: ids, op names, times and step names only, no content; deleted with its object and by Delete all"),
@@ -90,7 +91,6 @@ object DeletionGraph {
         s("place", "fetched places (public text) are deleted by Delete all and their recency reset; seeded areas, what they seeded and pinned places stay (`PlacePack.deleteAll`)"),
         s("cell", "fetched 5 km cells: Delete all removes the cells that no seeded area covers"),
         k("area", "seeded download areas (a bounding box and a state): the user's own download choice; Delete all keeps them"),
-        s("place_card_log", "the phone-only place card history (title, kind, time, delivery; no position, no card line): a user Forget of the photo, a range Forget, Delete all and the removal of its pin delete the rows; photo retention only clears the photo link (frameId), memory expiry touches nothing; 90 days / 500 rows"),
     )
 
     /** Phone SharedPreferences names (without `.xml`). */

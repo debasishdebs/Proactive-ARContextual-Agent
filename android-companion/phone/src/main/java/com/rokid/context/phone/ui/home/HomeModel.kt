@@ -87,7 +87,7 @@ object LastPlaceCards {
     const val MAX_AGE_MS = 6L * 3_600_000
 
     /** The Home row for [row] at [now] (phone time zone [zone]); null when the row is [MAX_AGE_MS] old or older. A future-dated row (a clock step) still shows. */
-    fun of(row: com.rokid.context.memory.place.PlaceCardLogEntity, now: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): LastPlaceCard? {
+    fun of(row: com.rokid.context.memory.db.PlaceCardLogEntity, now: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): LastPlaceCard? {
         if (now - row.at >= MAX_AGE_MS) return null
         val ui = row.toUi()
         return LastPlaceCard(row.id, row.title, "Last place card \u00b7 ${com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.timeLabel(row.at, zone)}", com.rokid.context.phone.ui.settings.place.PlaceHistoryModel.summary(ui))

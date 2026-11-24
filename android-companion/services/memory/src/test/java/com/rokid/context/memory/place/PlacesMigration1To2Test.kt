@@ -1,15 +1,10 @@
 package com.rokid.context.memory.place
 
-import android.content.Context
-import androidx.room.Room
 import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -47,26 +42,5 @@ class PlacesMigration1To2Test {
         val idx = db.query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='place_card_log'").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
         assertTrue(idx.containsAll(listOf("index_place_card_log_at", "index_place_card_log_frameId")))
         db.close()
-    }
-
-    @Test fun theUpgradedFileOpensThroughRoomAndTheNewTableWorks() = runBlocking {
-        helper.createDatabase(name, 1).use { seedV1(it) }
-        val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val room = Room.databaseBuilder(ctx, PlacesDatabase::class.java, name).addMigrations(PlacesDatabase.MIGRATION_PLACES_1_2).allowMainThreadQueries().build()
-        try {
-            val dao = room.dao()
-            assertEquals(2, dao.placeCount()); assertEquals(1, dao.cells().size); assertEquals(1, dao.areas().size)
-            assertEquals(0, dao.cardLogCount())
-            dao.putCardLog(PlaceCardLogEntity("h1", 10, "wd:Q1", "Site A", "PHOTO", null, "f1", null, "c1", CardDelivery.PENDING))
-            val row = dao.cardLog("h1")!!
-            assertEquals(0, row.photoGone); assertNull(row.members)
-            assertEquals(1, dao.cardLogCount())
-        } finally { room.close() }
-    }
-
-    @Test fun aFreshV2DatabaseHasTheSameShape() = runBlocking {
-        val ctx = ApplicationProvider.getApplicationContext<Context>()
-        val room = PlacesDatabase.inMemory(ctx)
-        try { assertEquals(0, room.dao().cardLogCount()); assertEquals(0, room.dao().placeCount()) } finally { room.close() }
     }
 }

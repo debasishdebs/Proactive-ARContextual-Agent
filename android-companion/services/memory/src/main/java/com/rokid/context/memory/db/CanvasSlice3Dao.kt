@@ -76,14 +76,17 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
      */
     @Volatile internal var testFaultAfterFenceMove: (() -> Unit)? = null
 
+    @Query("DELETE FROM moment_location WHERE atMs BETWEEN :from AND :to") protected abstract suspend fun deleteMomentLocationsBetween(from: Long, to: Long): Int
+
+    @Query("DELETE FROM place_card_log WHERE `at` BETWEEN :from AND :to") protected abstract suspend fun deletePlaceHistoryBetween(from: Long, to: Long): Int
+
     /**
      * Forget of the time range [fromMs, toMs], in ONE transaction: the range is recorded as a durable fence FIRST (a mark, a voice command or a trace import for it is
      * refused from now on, whatever its delivery order), the live traces overlapping it are tombstoned, its marks are deleted, `labelRev` moves, and every result that read
      * any of that is invalidated. Idempotent. 3b: in the SAME transaction `frame_forget_rev` moves, every open helper job (also one still awaiting its tap) is voided with its
      * payload and ids dropped, and one cleanup row per job is written (see [moveFrameForgetFence]); it tombstones TRACES only, never a frame.
+     * User Forget only: it also deletes the saved Moment locations and the place card history rows of the span, so a new caller that is not a user Forget must not use it (the policy rows cite it).
      */
-    @Query("DELETE FROM moment_location WHERE atMs BETWEEN :from AND :to") protected abstract suspend fun deleteMomentLocationsBetween(from: Long, to: Long): Int
-
     @Transaction open suspend fun forgetRangeTx(fromMs: Long, toMs: Long, now: Long): ForgetOutcome {
         addForgetRange(fromMs, toMs)
         val jobs = moveFrameForgetFence(now)
@@ -92,6 +95,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         purgeSensorBetween(fromMs, toMs, now, "forget") // the sensor rows of the range go whichever trace they came from
         val labels = deleteLabelsBetween(fromMs, toMs)
         deleteMomentLocationsBetween(fromMs, toMs) // v18 WP2: the saved locations of the range go with it
+        deletePlaceHistoryBetween(fromMs, toMs) // v18 WP3: so do the place card history rows of the span (user Forget only)
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
         return ForgetOutcome(ids, labels, invalid, jobs)
     }

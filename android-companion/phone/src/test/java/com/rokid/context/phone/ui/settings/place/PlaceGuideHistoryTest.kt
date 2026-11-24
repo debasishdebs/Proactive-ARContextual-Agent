@@ -1,7 +1,7 @@
 package com.rokid.context.phone.ui.settings.place
 
 import com.rokid.context.memory.place.CardDelivery
-import com.rokid.context.memory.place.PlaceCardLogEntity
+import com.rokid.context.memory.db.PlaceCardLogEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -82,7 +82,7 @@ class PlaceGuideHistoryTest {
         val h = FakeHistory(listOf(row("a", 100))); h.on = false
         val v = vm(h)
         assertTrue(v.state.value.history.isEmpty()); assertFalse(v.state.value.historyOn)
-        assertEquals("Card history is off (Developer)", PlaceHistoryModel.OFF_LINE)
+        assertEquals("Card history is off", PlaceHistoryModel.OFF_LINE)
     }
 
     @Test fun noHistoryOnThisBuildShowsNothing() {

@@ -352,20 +352,18 @@ class RetentionNeverLosesTest {
 
     // ---- WP2 (place history) ------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-    /** r2-5: expiry only marks the card-history row gone and KEEPS its frame id as private lineage; a later Forget of the photo still deletes the row. */
-    @Test fun placeHistoryKeepsItsLineageThroughExpiryAndAForgetStillDeletesTheRow() = runBlocking {
-        val places = com.rokid.context.memory.place.PlacesDatabase.inMemory(ctx)
-        try {
-            val dao = places.dao()
-            val history = com.rokid.context.work.frames.place.PlaceCardHistory(dao)
-            dao.putCardLog(com.rokid.context.memory.place.PlaceCardLogEntity("h1", 1, "wd:Q1", "Site", "PHOTO", null, "pl", null, "c1", com.rokid.context.memory.place.CardDelivery.SENT))
-            history.onPhotosExpired(listOf("pl"))
-            val row = dao.cardLog("h1")!!
-            assertEquals("the lineage stays", "pl", row.frameId); assertEquals(1, row.photoGone)
-            assertEquals(listOf("pl"), history.photoIds())
-            history.onFramesForgotten(listOf("pl"))
-            assertNull("a later Forget of the expired photo deletes the photo-derived row", dao.cardLog("h1"))
-        } finally { places.close() }
+    /** r2-5 (v18, context.db): expiry only marks the card-history row gone and KEEPS its frame id as private lineage; a later Forget of the photo still deletes the row, in the same transaction. */
+    @Test fun placeHistoryKeepsItsLineageThroughExpiryAndAForgetStillDeletesTheRow() = bothModes { v2 ->
+        seed()
+        val dao = graph.db.placeCardLogDao()
+        val history = com.rokid.context.work.frames.place.PlaceCardHistory(graph.db)
+        dao.put(com.rokid.context.memory.db.PlaceCardLogEntity("h1", 1, "wd:Q1", "Site", "PHOTO", null, "pl", null, "c1", com.rokid.context.memory.place.CardDelivery.SENT))
+        retention() // expires pl
+        val row = dao.cardLog("h1")!!
+        assertEquals("v2=$v2 the lineage stays", "pl", row.frameId); assertEquals(1, row.photoGone)
+        assertEquals(listOf("pl"), history.photoIds())
+        ForgetService(graph.db, graph.proposals).forgetMoment("pl")
+        assertNull("v2=$v2 a later Forget of the expired photo deletes the photo-derived row", dao.cardLog("h1"))
     }
 
     // ---- WP4: pause / quota split -------------------------------------------------------------------------------------------------------------------------------------------------------

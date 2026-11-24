@@ -180,6 +180,7 @@ class ForgetService(
         }
         // the experiment canvas outputs of the photo (items, scores, live traces) go with it; nothing a user sees depends on them
         if (canvasOutputs) expiredIds.chunked(CHUNK).forEach { db.canvasDao().deleteCanvasOutputsForFrames(it) }
+        com.rokid.context.memory.forget.lifecycle.PlaceHistoryFamily.unlinkExpired(db, expiredIds) // v18 WP3: the place card history keeps its rows and only loses the photo link (photoGone = 1), in this transaction
         queueCleanup(paths, emptyList(), emptyList(), phoneFilesOnly = true) // routine retention is storage hygiene: phone files only (glasses and helper rows are for user Forgets)
         if (expiredIds.isNotEmpty()) addPending(expiredIds, emptyList(), expired = true) // told ONLY onPhotosExpired, after the commit (notifying); never a forget callback
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expiredIds.size)
@@ -308,6 +309,7 @@ class ForgetService(
         if (frameIds.isNotEmpty() || spans.isNotEmpty()) pendingFrames.add(Pending(frameIds, spans, expired))
         db.canvasDao().deleteCanvasOutputsForFrames(frameIds) // items, scores and live traces, batch-wide (S25)
         if (!expired) { db.momentLocationDao().deleteForAnchors(frameIds); db.momentLocationDao().deleteForMoments(capturedAt.map(com.rokid.context.memory.moment.MomentId::ofMs)) } // v18 WP2: a USER Forget deletes the saved location of the photo and of its second; expiry keeps it
+        if (!expired) com.rokid.context.memory.forget.lifecycle.PlaceHistoryFamily.eraseFrames(db, frameIds) // v18 WP3: a USER Forget deletes the place card history rows of the photos (same transaction); expiry unlinks them instead
         db.canvasSlice3Dao().deleteSliceOutputsForFrames(frameIds, clock()) // slice 3a: labels of the photos, the results that read them, helper jobs that carry them
         return spans
     }

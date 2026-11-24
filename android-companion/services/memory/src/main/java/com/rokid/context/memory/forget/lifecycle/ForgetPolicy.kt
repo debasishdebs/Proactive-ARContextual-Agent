@@ -21,7 +21,7 @@ enum class ForgetChild(val lifecycle: Family?, val fewItems: Boolean = false) {
     MARK(Family.MARK, fewItems = true), TRACE(Family.TRACE), RUN_RESULT(Family.RUN_RESULT),
     ANSWER(Family.ANSWER), NUDGE(Family.NUDGE), PROPOSAL(Family.PROPOSAL),
     AUDIO(Family.AUDIO), PERSON(Family.PERSON), OBJECT(Family.OBJECT),
-    MOMENT_LOCATION(Family.MOMENT_LOCATION), PLACE_PACK(Family.PLACE_PACK), PLACE_CARD(Family.PLACE_CARD), CONFIG(Family.CONFIG), CONTROL(Family.CONTROL),
+    MOMENT_LOCATION(Family.MOMENT_LOCATION), PLACE_HISTORY(Family.PLACE_HISTORY), PLACE_PACK(Family.PLACE_PACK), PLACE_CARD(Family.PLACE_CARD), CONFIG(Family.CONFIG), CONTROL(Family.CONTROL),
     /** memory_vector, frame_vector, embedding_space: today inside PHOTO / MEMORY ([MemoryFamily], [PhotoFamily] tables). */
     EMBEDDING(null),
     /** Frame JPEGs, `.meta.json` sidecars, trace folders and the cached export. There is no separate thumbnail store: thumbnails are rendered from the JPEG (`FrameImages.kt:134`), so they go with it. */
@@ -117,6 +117,10 @@ object ForgetPolicy {
         PolicyRow(ForgetChild.MOMENT_LOCATION,
             user = r(F, "FS:308 dropCanvasOutputs deleteForAnchors/deleteForMoments (not expired); FE:279 the same; CS3:91 forgetRangeTx deleteMomentLocationsBetween; CS3:163 deleteLabel; MF:249 and FE:303 deleteForMoments(requestedSeconds)"), deleteAll = r(F, "WD:84 DELETE FROM moment_location"),
             expiry = r(K, "FS:308 `!expired` guard; expiry never reaches CS3:91 (radiusCascade false) and keeps the row"), sweep = r(K, "FE:156 lockFrames=false: no dropCanvasOutputs; removeDescriptions never deletes a Moment location"), purge = r(K, "IMP:69 writes moment_tombstone only and MomentDao.remove; no moment_location delete (v18 build spec decision 4)")),
+        PolicyRow(ForgetChild.PLACE_HISTORY,
+            user = r(F, "FS:309 dropCanvasOutputs eraseFrames (not expired); FE:281 the same; CS3:97 forgetRangeTx deletePlaceHistoryBetween (every user span, also a photo's radius)"), deleteAll = r(F, "WD:88 DELETE FROM place_card_log"),
+            expiry = r(L, "FS:173 expireFrameRows, FE:190 expirePhotos and FE:210 expireOrphanFrames: unlinkExpired sets photoGone = 1 and keeps the frameId (private lineage: a later user Forget of the photo still deletes the row)"),
+            sweep = r(K, "FE:156 lockFrames=false: dropCanvasOutputs is never reached by removeDescriptions"), purge = r(K, "IMP:69 forgetFacts of orphan memories: no frame row and no capture time, so no frame and no span reach the history step")),
         PolicyRow(ForgetChild.PLACE_PACK,
             user = r(K, "FAM:322-325 'never a deletion target'"), deleteAll = r(C, "DG:28-86 TABLES: place/cell SCRUBBED, area KEPT (FamilyInventoryTest.thePlacePackIsNotPhotoDerivedAndDeleteAllKeepsItsSeededAreas)"),
             expiry = r(K, "FAM:322-325"), sweep = r(K, "FAM:322-325"), purge = r(K, "FAM:322-325")),
@@ -170,6 +174,13 @@ object ForgetPolicy {
                 ForgetChild.MARK to r(F, "MarkRecorder.kt:156-164 removeMark deletes the mark and its intent row (the user undid it); MarkGraph.kt:28 forgetPhoto"),
                 ForgetChild.PIN to r(L, "MarkGraph.kt:28 -> ForgetActions.forgetMomentKeepPinsOutcome: PinMomentLinks.explicit with an EMPTY target arms nothing, so a pin on the photo's Moment only has its link cleared by the sweep (PML:257-262); ruling O6: no dialog names pins, so an undo never deletes one"),
             )),
+        // The place card history (v18 WP3): three deletes that PlaceCardHistory.kt runs itself (the Forget sources above are the choke points inside the Forget transactions).
+        SideDelete("PLACE_HISTORY_PIN_REMOVAL", explicit = true, entryPoints = listOf(".deleteCardLogForPins("), callers = listOf("PlaceCardHistory.kt"),
+            cells = mapOf(ForgetChild.PLACE_HISTORY to r(F, "PlaceCardHistory.kt:1 deletePins -> PlaceCardLog.kt deleteCardLogForPins: the rows of a removed pin and the cluster rows that list it, before the pin store is written (PlaceGraph.savePins)"))),
+        SideDelete("PLACE_HISTORY_ROW_DELETE", explicit = true, entryPoints = listOf(".deleteCardLog("), callers = listOf("PlaceCardHistory.kt"),
+            cells = mapOf(ForgetChild.PLACE_HISTORY to r(F, "PlaceCardHistory.kt:1 delete -> PlaceCardLog.kt deleteCardLog: the user's \"Delete from history\" of one row"))),
+        SideDelete("PLACE_HISTORY_PRUNE", explicit = false, entryPoints = listOf(".deleteCardLogBefore(", ".trimCardLogTo("), callers = listOf("PlaceCardHistory.kt"),
+            cells = mapOf(ForgetChild.PLACE_HISTORY to r(F, "PlaceCardHistory.kt:1 prune -> PlaceCardLog.kt deleteCardLogBefore / trimCardLogTo: rows older than 90 days and beyond the newest 500, once a day inside the insert transaction"))),
         SideDelete("CANVAS_RUN_PRUNE", explicit = false, entryPoints = listOf(".pruneRuns("), callers = listOf("CanvasRunner.kt"),
             cells = mapOf(
                 ForgetChild.RUN_RESULT to r(F, "CanvasDao.kt:50 pruneRuns -> :39 deleteRun: runs beyond the newest KEEP_RUNS (CanvasRunner.kt pruneAfterStart, right after a new run is registered, outside the runner lock) under DataOpGate.shared.delete; skipped while an export, save or upload holds the gate"),

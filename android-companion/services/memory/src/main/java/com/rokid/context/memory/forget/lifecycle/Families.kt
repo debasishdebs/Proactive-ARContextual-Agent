@@ -21,7 +21,7 @@ internal object SideEffectRefs {
 object Families {
     val ALL: List<ForgetFamily> = listOf(
         PhotoFamily, MemoryFamily, MomentFamily, SceneFamily, DerivedFieldFamily, MarkFamily, TraceFamily, RunResultFamily,
-        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
+        AnswerFamily, NudgeFamily, ProposalFamily, AudioFamily, PersonFamily, ObjectFamily, MomentLocationFamily, PlaceHistoryFamily, PlacePackFamily, PlaceCardFamily, ConfigFamily, ControlFamily,
     )
 
     fun of(f: Family): ForgetFamily = ALL.first { it.family == f }
@@ -337,12 +337,31 @@ internal object PersonFamily : ForgetFamily { override val family = Family.PERSO
 internal object ObjectFamily : ForgetFamily { override val family = Family.OBJECT; override val tables = emptyList<String>(); override val reserved = true }
 
 /**
+ * The phone-only place card history (`place_card_log`, context.db v18, WP3): a leaf. A user Forget of the photo, any user span and Delete all delete its rows INSIDE the transaction that already deletes the source
+ * (`dropCanvasOutputs`, `forgetRangeTx`, `wipeMemory`); photo retention only sets `photoGone` and keeps the `frameId`; pin removal deletes the rows of the pin before the pin store is written (`PlaceCardHistory`). The
+ * planner does not enumerate it ([DesignDivergence] PLACE_HISTORY_NOT_PLANNED).
+ */
+internal object PlaceHistoryFamily : ForgetFamily {
+    override val family = Family.PLACE_HISTORY
+    override val tables = listOf("place_card_log")
+    // not a self-deleting family: the planner never plans it, the step code deletes it by photo and by time, and "Delete from history" is PlaceCardHistory.delete (a side delete)
+
+    /** A user Forget of these photos: their rows go (same transaction as the photo). */
+    suspend fun eraseFrames(db: com.rokid.context.memory.db.ContextDatabase, frameIds: Collection<String>): Int =
+        frameIds.distinct().chunked(CHUNK).sumOf { db.placeCardLogDao().deleteCardLogForFrames(it) }
+
+    /** Photo retention: `photoGone = 1`, the `frameId` stays as private lineage (a later user Forget of the photo still deletes the row). */
+    suspend fun unlinkExpired(db: com.rokid.context.memory.db.ContextDatabase, frameIds: Collection<String>): Int =
+        frameIds.distinct().chunked(CHUNK).sumOf { db.placeCardLogDao().markCardLogPhotoGone(it) }
+}
+
+/**
  * `places.db` (the fetched place pack): public place text (Wikipedia, Wikidata, OpenStreetMap), NOT derived from a photo, never reached by a Forget. Delete all clears the fetched places and the recency and keeps
  * seeded areas, what they seeded and pinned places (`PlacePack.deleteAll`). Its preference file is the Place Guide switch.
  */
 internal object PlacePackFamily : ForgetFamily {
     override val family = Family.PLACE_PACK
-    override val tables = listOf("place", "cell", "area", "place_card_log")
+    override val tables = listOf("place", "cell", "area")
     override val prefs = listOf("place_guide", "place_pins")
 }
 

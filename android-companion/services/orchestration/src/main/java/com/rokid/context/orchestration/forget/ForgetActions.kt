@@ -231,23 +231,15 @@ object ForgetActions {
                 PcLog.w(TAG, "re-summarise not queued (start-up retries): ${SafeLog.describe(e)}")
             }
         }
-        // P1-5: a place-card-history deletion the listener could not finish is retried now. Whether THIS Forget reports it is decided by [cleanupFailed] (scope check): an unrelated, permanently failing token must not fail every Forget.
-        try { com.rokid.context.work.frames.place.PlaceGraph.settleHistory(context) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { /* still owed */ }
         return Cleanup(cacheClean, filesClean)
     }
 
     /**
-     * A committed Forget whose cleanup did not finish: a cached export (production builds only) or an owed place-history deletion (always). The history obligations are checked AFTER the pin cascade (which can add
-     * one) and finished once more here; a deletion THIS Forget attempted that is still owed means private rows may remain, whatever [clean] said before the cascade. An older failing token (another Forget's) is retried
-     * but not reported here (P2-3).
+     * A committed Forget whose cleanup did not finish: a photo file that remains, or a cached export (production builds only). The place card history never makes a Forget pending: its rows go inside the
+     * Forget's own transaction (v18, WP3).
      */
     internal suspend fun cleanupFailed(context: Context, clean: Boolean, filesClean: Boolean = true): Boolean {
         if (!filesClean) return true // a forgotten photo's file remains: reported in every build (the sweep retries it)
-        val place = com.rokid.context.work.frames.place.PlaceGraph
-        if (place.historyOwed(context)) {
-            try { place.settleHistory(context) } catch (c: kotlinx.coroutines.CancellationException) { throw c } catch (e: Exception) { /* still owed */ }
-            if (place.historyScopePending()) return true
-        }
         return !clean && com.rokid.context.orchestration.MemoryExport.productionBuild(context)
     }
 
@@ -277,7 +269,7 @@ object ForgetActions {
                 rangeFilesLeft = false
                 // only the pins the user confirmed are armed (checked again inside the pin lock): a pin linked after the check is never deleted
                 // the arming is stored INSIDE the DataOpGate (with the Forget, not before it)
-                val r = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PlaceGraph.beginHistoryScope(); com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = confirmedPins ?: emptySet()) { coordinator.forgetRangeLocked(fromMs, toMs) } } // slice 1.4.2: pins of the Moments in the range go with them
+                val r = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, { ids -> ids.filter(inRange).toSet() }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = confirmedPins ?: emptySet()) { coordinator.forgetRangeLocked(fromMs, toMs) } } // slice 1.4.2: pins of the Moments in the range go with them
                 runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
                 withPinNotice(if (cleanupFailed(context, r.cacheClean, !rangeFilesLeft)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE, pending, notRemoved)
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) { Outcome.PIN_PREP_FAILED
@@ -330,9 +322,8 @@ object ForgetActions {
         withContext(Dispatchers.IO + NonCancellable) {
             try {
                 var pending = false; var notRemoved = false
-                val o0 = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PlaceGraph.beginHistoryScope(); com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = allowedPins) { runLocked(context, onForgotten, kind, shadowRoot, op) } } // slice 1.4.2: a pin whose Moment this Forget removes goes with it
-                // Codex place r3 P1-1: the outcome computed inside runLocked predates the pin cascade (explicit() ran it AFTER the block); history rows of a removed pin may still be owed, so a committed DONE is checked again.
-                val o = if (o0 == Outcome.DONE && cleanupFailed(context, true)) { PcLog.w(TAG, "forget done, history cleanup pending"); Outcome.CACHE_CLEANUP_FAILED } else o0
+                val o0 = DataOpGate.shared.delete { com.rokid.context.work.frames.place.PinMomentLinks.explicit(context, target, committed = { o: Outcome -> o.committed }, onPending = { pending = true }, onNotRemoved = { notRemoved = true }, allowedPins = allowedPins) { runLocked(context, onForgotten, kind, shadowRoot, op) } } // slice 1.4.2: a pin whose Moment this Forget removes goes with it
+                val o = o0
                 withPinNotice(o, pending, notRemoved)
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) {
                 PcLog.w(TAG, "forget not run: pin removal not prepared")
@@ -398,7 +389,7 @@ object ForgetStartup {
         ForgetActions.dataRemoved = refresh
         runCatching { com.rokid.context.orchestration.MemoryExport.retryPending(context) } // a cached export an earlier Forget could not delete (bounded)
         runCatching { FrameSweep.sweep(context) }
-        runCatching { com.rokid.context.work.frames.place.PlaceGraph.settleHistory(context) } // P1-5: a place-history deletion an earlier Forget / Delete all could not finish is owed durably and retried at every start
+        runCatching { com.rokid.context.work.frames.place.PlaceGraph.dropOwedKey(context) } // v18 (CH 7): the owed-token key of the old places.db history is removed once; the history now lives in context.db and nothing is ever owed
         runCatching { com.rokid.context.work.frames.place.PinMomentLinks.settle(context) } // slice 1.4.2: a COMMITTED Forget or wipe a crash interrupted finishes its pin cascade; an arming that never committed is dropped
         // v0.9.6: the one-time purge of invalid Moments and orphan memories, BEFORE the cadence is scheduled so a rebuild cannot race it (it stores its own marker and does nothing afterwards)
         try {

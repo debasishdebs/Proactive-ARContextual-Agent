@@ -6,8 +6,8 @@ import org.junit.Test
 
 /** The DESIGN_DIVERGENCE list is complete (the six the M0-M2 report found), described, and every entry names a golden test that exists. */
 class DesignDivergenceTest {
-    @Test fun sevenDivergencesEachPinnedByAGolden() {
-        assertEquals(7, DesignDivergence.ALL.size)
+    @Test fun eightDivergencesEachPinnedByAGolden() {
+        assertEquals(8, DesignDivergence.ALL.size)
         assertEquals(DesignDivergence.ALL.size, DesignDivergence.ALL.map { it.id }.toSet().size)
         val golden = Class.forName("com.rokid.context.memory.forget.GoldenDeleteSetTest").methods.map { it.name }.toSet()
         for (e in DesignDivergence.ALL) {

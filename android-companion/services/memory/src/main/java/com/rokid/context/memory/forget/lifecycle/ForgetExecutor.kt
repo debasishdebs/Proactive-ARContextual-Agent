@@ -188,6 +188,7 @@ class ForgetExecutor internal constructor(
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
         RunResultFamily.selfDelete(expiredIds.toSet(), Fate.DROP, c) // the experiment canvas outputs of the photo go with it; nothing a user sees depends on them
+        PlaceHistoryFamily.unlinkExpired(db, expiredIds) // v18 WP3: photoGone = 1, the frameId stays
         queueCleanup(c, paths, emptyList(), emptyList(), phoneFilesOnly = true) // routine retention is storage hygiene: phone files only
         if (expiredIds.isNotEmpty()) c.notifyAfterCommit(expiredIds, emptyList(), expired = true) // told ONLY onPhotosExpired after the commit
         ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
@@ -206,6 +207,7 @@ class ForgetExecutor internal constructor(
             PhotoFamily.expire(id, frame.ts, c)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
+        PlaceHistoryFamily.unlinkExpired(db, expiredIds) // v18 WP3: photoGone = 1, the frameId stays
         queueCleanup(c, paths, emptyList(), emptyList(), phoneFilesOnly = true)
         if (expiredIds.isNotEmpty()) c.notifyAfterCommit(expiredIds, emptyList(), expired = true) // told ONLY onPhotosExpired after the commit
         ForgetService.Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
@@ -279,6 +281,7 @@ class ForgetExecutor internal constructor(
         if (frameIds.isNotEmpty() || spans.isNotEmpty()) c.notifyAfterCommit(frameIds, spans, expired)
         RunResultFamily.selfDelete(frameIds.toSet(), Fate.DROP, c)
         if (!expired) { db.momentLocationDao().deleteForAnchors(frameIds); db.momentLocationDao().deleteForMoments(capturedAt.map(MomentId::ofMs)) } // v18 WP2: a USER Forget deletes the saved location of the photo and of its second; expiry keeps it
+        if (!expired) PlaceHistoryFamily.eraseFrames(db, frameIds) // v18 WP3: a USER Forget deletes the place card history rows of the photos (same transaction); expiry unlinks them instead
         RunResultFamily.dropSliceOutputs(c, frameIds)
         return spans
     }
