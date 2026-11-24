@@ -136,7 +136,7 @@ class SelectionController(
                 }
                 ForgetActions.Outcome.CONTENT_CHANGED -> plan(p, roots, changed = true)
                 ForgetActions.Outcome.TOO_LARGE -> set { it.copy(stage = ForgetStage.Refused(ForgetStage.Reason.TOO_LARGE, roots.size)) }
-                ForgetActions.Outcome.EXPORT_IN_PROGRESS, ForgetActions.Outcome.SAVE_IN_PROGRESS -> set { it.copy(stage = ForgetStage.Idle, message = SelectionText.BUSY) }
+                ForgetActions.Outcome.EXPORT_IN_PROGRESS, ForgetActions.Outcome.SAVE_IN_PROGRESS, ForgetActions.Outcome.UPLOAD_IN_PROGRESS -> set { it.copy(stage = ForgetStage.Idle, message = SelectionText.BUSY) }
                 ForgetActions.Outcome.PIN_PREP_FAILED -> set { it.copy(stage = ForgetStage.Idle, message = com.rokid.context.phone.ui.memory.ForgetCopy.PIN_PREP_FAILED) }
                 ForgetActions.Outcome.PINS_NOT_CONFIRMED -> set { it.copy(stage = ForgetStage.Idle, message = com.rokid.context.phone.ui.memory.ForgetCopy.PINS_CHANGED) }
                 ForgetActions.Outcome.FAILED -> set { it.copy(stage = ForgetStage.Idle, message = SelectionText.FAILED) }

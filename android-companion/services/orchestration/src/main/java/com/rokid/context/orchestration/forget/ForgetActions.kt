@@ -36,7 +36,7 @@ object ForgetActions {
      * held it (a save is short): nothing was forgotten, try again. [CACHE_CLEANUP_FAILED] = the Forget COMMITTED but, in a production build, a cached memory export that still holds text could not be
      * deleted: it is retried at the next start and the next Forget, and the caller says what remains. [TOO_LARGE] = the facts connected to a Moment/Scene Forget are beyond the depth/size cap: nothing was deleted. [CONTENT_CHANGED] = a scoped Forget was confirmed against a different set than the one previewed (new photos, marks or Moments in the span, a changed Scene): nothing was deleted, preview again.
      */
-    enum class Outcome { DONE, EXPORT_IN_PROGRESS, SAVE_IN_PROGRESS, CACHE_CLEANUP_FAILED, CONTENT_CHANGED, TOO_LARGE, FAILED,
+    enum class Outcome { DONE, EXPORT_IN_PROGRESS, SAVE_IN_PROGRESS, /** A photo upload held the gate beyond its timeout: nothing was forgotten (not a Canvas save). */ UPLOAD_IN_PROGRESS, CACHE_CLEANUP_FAILED, CONTENT_CHANGED, TOO_LARGE, FAILED,
         /** Slice 1.4.2: the removal of the pins that reference a Moment this Forget deletes could not be prepared: NOTHING was forgotten. */
         PIN_PREP_FAILED,
         /** Slice 1.4.2: a range Forget would delete pins and the caller did not pass the number of pins the user confirmed: nothing was forgotten. */
@@ -48,7 +48,7 @@ object ForgetActions {
         /** The two notices together with a cached export that could not be deleted. */
         CACHE_AND_PIN_PENDING, CACHE_AND_PIN_NOT_REMOVED;
         /** The Forget itself went through (the cached-export leftover does not undo it). */
-        val committed: Boolean get() = this != EXPORT_IN_PROGRESS && this != SAVE_IN_PROGRESS && this != CONTENT_CHANGED && this != TOO_LARGE && this != FAILED && this != PIN_PREP_FAILED && this != PINS_NOT_CONFIRMED
+        val committed: Boolean get() = this != EXPORT_IN_PROGRESS && this != SAVE_IN_PROGRESS && this != UPLOAD_IN_PROGRESS && this != CONTENT_CHANGED && this != TOO_LARGE && this != FAILED && this != PIN_PREP_FAILED && this != PINS_NOT_CONFIRMED
     }
 
     suspend fun forgetFact(context: Context, memoryId: String, onForgotten: () -> Unit = {}): Boolean = forgetFactOutcome(context, memoryId, onForgotten).committed
@@ -74,7 +74,7 @@ object ForgetActions {
      * outcomes, same post-commit cleanup as every Forget (cached export, reminders, notifications, outbox, queue scrub, listeners); MOMENT and SCENE run the range-Forget code ([com.rokid.context.memory.forget.ScopedForget]).
      * The scope is read ONCE here ([scope] defaults to the setting) so the dialog's counts and the delete name the same scope.
      */
-    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, undoMark: (suspend (String) -> Unit)? = null, confirmedPins: Set<String> = emptySet(), onForgotten: () -> Unit = {}): Outcome =
+    suspend fun forgetScopedOutcome(context: Context, target: ForgetTarget, scope: ForgetScope = ForgetScopeSetting.get(), expectedHash: String? = null, undoMark: (suspend (String) -> Any?)? = null, confirmedPins: Set<String> = emptySet(), onForgotten: () -> Unit = {}): Outcome =
         if (target is ForgetTarget.Mark) markOutcome(target.labelId, onForgotten, undoMark)
         else {
             var ran: ForgetScope? = null
@@ -90,14 +90,17 @@ object ForgetActions {
      * A mark is undone through the recorder's own undo ([undoMark]: the fence, the gated delete, the Moment of its second rebuilt): the same typed outcomes as every Forget. No delete logic here.
      * With no recorder given nothing is removed.
      */
-    private suspend fun markOutcome(labelId: String, onForgotten: () -> Unit, undoMark: (suspend (String) -> Unit)?): Outcome {
+    private suspend fun markOutcome(labelId: String, onForgotten: () -> Unit, undoMark: (suspend (String) -> Any?)?): Outcome {
         if (undoMark == null) return Outcome.FAILED
         return withContext(Dispatchers.IO + NonCancellable) {
             try {
-                undoMark(labelId)
+                val photo = undoMark(labelId)
                 runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
                 runCatching(onForgotten)
-                Outcome.DONE
+                // the mark's photo Forget committed but its notice is the user's to see (a cached export still holds text): never turned into a plain DONE
+                if (photo is MarkPhotoOutcome && photo.outcome != Outcome.DONE && photo.outcome.committed) photo.outcome else Outcome.DONE
+            } catch (e: DataOpGate.UploadInProgress) {
+                Outcome.UPLOAD_IN_PROGRESS
             } catch (e: DataOpGate.WriteInProgress) {
                 Outcome.SAVE_IN_PROGRESS
             } catch (e: DataOpGate.ExportInProgress) {
@@ -108,6 +111,9 @@ object ForgetActions {
             }
         }
     }
+
+    /** What a mark undo returns when its photo Forget committed with a notice: the recorder passes the photo Forget's typed [outcome] through (no ids, no text). */
+    class MarkPhotoOutcome(val outcome: Outcome)
 
     /** What [forgetScopedOutcome] would remove, for the confirm dialog (read only, no gate): the scope it really runs at and the counts. */
     data class ScopedPreview(val effective: ForgetScope, val photos: Int, val memories: Int, val marks: Int, val moments: Int, val scenesRemoved: Int, val scenesShrunk: Int, val planHash: String, val outside: Int = 0, val tooLarge: Boolean = false, /** Slice 1.4.2: pins that reference a Moment this Forget removes: they are deleted with it (count and the first names, for the dialog). */ val pins: Int = 0, val pinNames: List<String> = emptyList(), val peerResults: Int = 0, val needsAck: Boolean = false, val ackHash: String = "", /** The ids of exactly the pins the dialog named: the Forget arms only these. */ val pinIds: Set<String> = emptySet(), /** The pin lookup failed: the pins are unknown, so a pin-carrying confirmation never proceeds on it. */ val pinsUnknown: Boolean = false)
@@ -253,6 +259,7 @@ object ForgetActions {
                 runCatching { com.rokid.context.memory.forget.ForgetListeners.userForget() } // v2.0: whatever another surface (the Nexus bridge) shows is withdrawn
                 withPinNotice(if (cleanupFailed(context, r.cacheClean)) Outcome.CACHE_CLEANUP_FAILED else Outcome.DONE, pending, notRemoved)
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) { Outcome.PIN_PREP_FAILED
+            } catch (e: DataOpGate.UploadInProgress) { Outcome.UPLOAD_IN_PROGRESS
             } catch (e: DataOpGate.WriteInProgress) { Outcome.SAVE_IN_PROGRESS
             } catch (e: DataOpGate.ExportInProgress) { Outcome.EXPORT_IN_PROGRESS
             } catch (e: kotlinx.coroutines.CancellationException) { throw e
@@ -308,6 +315,9 @@ object ForgetActions {
             } catch (e: com.rokid.context.work.frames.place.PinArmFailed) {
                 PcLog.w(TAG, "forget not run: pin removal not prepared")
                 Outcome.PIN_PREP_FAILED
+            } catch (e: DataOpGate.UploadInProgress) {
+                PcLog.w(TAG, "forget not run: photo upload in progress")
+                Outcome.UPLOAD_IN_PROGRESS
             } catch (e: DataOpGate.WriteInProgress) {
                 PcLog.w(TAG, "forget not run: save in progress")
                 Outcome.SAVE_IN_PROGRESS

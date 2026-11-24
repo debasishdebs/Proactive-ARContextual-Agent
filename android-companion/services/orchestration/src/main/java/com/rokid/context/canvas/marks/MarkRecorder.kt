@@ -63,6 +63,11 @@ class MarkRecorder(
      * then throws, is not acknowledged and the glasses resend it. The default (tests of other behaviour) forgets nothing.
      */
     private val forgetPhoto: suspend (frameId: String) -> Boolean = { true },
+    /**
+     * The same photo Forget with its typed outcome (production: `forgetMomentKeepPinsOutcome`). When set it replaces [forgetPhoto]: an uncommitted outcome refuses the undo exactly as `false` does, and a committed outcome
+     * that carries a notice (a cached export that could not be deleted) is handed back by [undoMark] so the phone can show it instead of a plain "done".
+     */
+    private val forgetPhotoOutcome: (suspend (frameId: String) -> com.rokid.context.orchestration.forget.ForgetActions.Outcome)? = null,
     /** v0.9.7 slice D: null (tests of other behaviour) = a phone-origin mark has no photo (`phone_mark_no_photo`, as before). */
     private val phonePhoto: PhonePhotoRequester? = null,
     /** v0.9.7 slice D: a phone call is active right now (the existing call detection); a mark made then carries the `call` tag in its provenance. */
@@ -122,18 +127,19 @@ class MarkRecorder(
         true
     }
 
-    private suspend fun undoLocked(target: String) {
-        removeMark(target)
+    private suspend fun undoLocked(target: String): com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome? {
+        val photo = removeMark(target)
         unjoined.removeAll { it.id == target }
         if (listen?.bound == target) listen?.bound = null
         log("mark undone")
+        return photo
     }
 
     /**
      * The app's "Forget this mark" (the previewer of a photo-less mark): the same undo as a glasses `undo`, through [removeMark] (the fence, the gated delete, the Moment of its second rebuilt). Throws
      * [DataOpGate.ExportInProgress] / [DataOpGate.WriteInProgress] when the gate refuses; nothing is removed then and a retry repeats the steps.
      */
-    suspend fun undoMark(labelId: String) = lock.withLock { undoLocked(labelId) }
+    suspend fun undoMark(labelId: String): com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome? = lock.withLock { undoLocked(labelId) }
 
     /** Test seams of the undo race (a test commits a photo right after the mark was read / after the fence was written). Null in production. */
     @Volatile internal var testAfterUndoRead: (suspend () -> Unit)? = null
@@ -153,7 +159,7 @@ class MarkRecorder(
      * Removes mark [target] and its intent row and, with them, its PHOTO (the user undid the mark: its photo goes through the existing gated Forget path, tombstone and Moment cleanup included).
      * A photo still on its way is fenced by a `canvas_meta` marker the frame intake checks. Order: the photo first, so a refused Forget throws (nothing removed, the undo is resent) and a retry is idempotent.
      */
-    private suspend fun removeMark(target: String) {
+    private suspend fun removeMark(target: String): com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome? {
         val l = dao.label(target)
         testAfterUndoRead?.invoke()
         // THE FENCE FIRST, then the link is read again: the frame intake checks the marker inside its own transaction, and the two transactions are serialised, so a photo that committed before the fence is
@@ -161,7 +167,15 @@ class MarkRecorder(
         dao.putMeta(FrameIntake.MARK_UNDONE_PREFIX + target, wallClock().toString())
         testAfterUndoFence?.invoke()
         val frame = dao.label(target)?.frameId
-        if (frame != null && !forgetPhoto(frame)) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
+        var photo: com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome? = null
+        if (frame != null) {
+            val viaOutcome = forgetPhotoOutcome
+            if (viaOutcome != null) {
+                val o = viaOutcome(frame)
+                if (!o.committed) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
+                photo = com.rokid.context.orchestration.forget.ForgetActions.MarkPhotoOutcome(o)
+            } else if (!forgetPhoto(frame)) throw IllegalStateException("photo forget refused") // the marker stays: the resent undo repeats the steps
+        }
         // a delete: waits (30 s) for a running export and then throws DataOpGate.ExportInProgress (not acked: the glasses resend the undo)
         DataOpGate.shared.delete {
             val viaExecutor = deleteMarks
@@ -173,6 +187,7 @@ class MarkRecorder(
             }
         }
         l?.atMs?.let(onChanged)
+        return photo
     }
 
     /** What a phone-origin mark would do about its photo right now: null = ask the glasses, else the reason token. Instant and pure; the caller uses it for the reply and passes it to [applyVoice]. */

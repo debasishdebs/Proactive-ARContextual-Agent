@@ -37,6 +37,7 @@ fun productionMemoryForget(app: android.content.Context): MemoryForget = object 
             private fun done(o: ForgetActions.Outcome): Boolean = when (o) {
                 ForgetActions.Outcome.DONE -> true
                 ForgetActions.Outcome.EXPORT_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.ExportInProgress()
+                ForgetActions.Outcome.UPLOAD_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.UploadInProgress()
                 ForgetActions.Outcome.SAVE_IN_PROGRESS -> throw com.rokid.context.orchestration.DataOpGate.WriteInProgress()
                 ForgetActions.Outcome.CACHE_CLEANUP_FAILED -> throw CacheCleanupFailed()
                 ForgetActions.Outcome.CONTENT_CHANGED -> throw ContentChanged()

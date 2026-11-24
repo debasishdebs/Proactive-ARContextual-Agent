@@ -387,6 +387,18 @@ class CanvasRunnerTest {
         assertTrue("old25" in kept)
     }
 
+    /** Codex r1 P1-1: the phone clock was corrected backwards, so the 25 old rows carry startedAt far AHEAD of the new run's: the new run (and its history position) must survive the prune. */
+    @Test fun pruneKeepsNewRunWhenClockWentBackwards() = runBlocking<Unit> {
+        for (i in 1..25) dao.insertRun(CanvasRunEntity("old$i", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, 5_000_000L + i, 5_000_001L + i, "[]"))
+        val run = runAll(runner(liveFakes()), DefaultPipelines.liveExtract(), frames(1))
+        awaitPruned()
+        val kept = dao.runs(100).map { it.runId }
+        assertEquals(20, kept.size)
+        assertTrue("the new run must survive", run.runId in kept)
+        assertEquals("DONE", dao.run(run.runId)?.status)
+        assertFalse("old1" in kept)
+    }
+
     /** The prune runs after the start, in its own coroutine: wait (bounded) until it has trimmed the table to the kept 20. */
     private suspend fun awaitPruned() { withTimeout(10_000) { while (dao.runs(100).size > 20) delay(10) } }
 

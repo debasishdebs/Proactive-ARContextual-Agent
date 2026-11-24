@@ -114,6 +114,25 @@ class MarkPhotoRecorderTest {
         assertNull(dao.label("mk:e:1")); assertEquals(0, db.frameDao().count())
     }
 
+    private fun outcomeRec(o: com.rokid.context.orchestration.forget.ForgetActions.Outcome) =
+        MarkRecorder(dao, { DaoFence(0, epoch, { 0 }, { epoch }) }, { t0 }, {}, { recorded += it }, { changed += it }, forgetPhotoOutcome = { forgotten += it; o })
+
+    /** Codex mark r1 P1-2: a committed photo Forget whose cached export could not be deleted must reach the caller (not DONE), and the mark is still removed. */
+    @Test fun aCommittedPhotoForgetWithCacheLeftIsHandedBackByTheUndoAndTheMarkIsRemoved() = runBlocking<Unit> {
+        val r = outcomeRec(com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED)
+        r.onMark(mark(1), at(t0)); commitPhoto("p1", t0 + 1_400, "e:1")
+        val photo = r.undoMark("mk:e:1")
+        assertEquals(com.rokid.context.orchestration.forget.ForgetActions.Outcome.CACHE_CLEANUP_FAILED, photo?.outcome)
+        assertNull(dao.label("mk:e:1")); assertEquals(listOf("p1"), forgotten)
+    }
+
+    @Test fun anUncommittedPhotoForgetOutcomeRefusesTheUndoAndRemovesNothing() = runBlocking<Unit> {
+        val r = outcomeRec(com.rokid.context.orchestration.forget.ForgetActions.Outcome.EXPORT_IN_PROGRESS)
+        r.onMark(mark(1), at(t0)); commitPhoto("p1", t0 + 1_400, "e:1")
+        try { r.undoMark("mk:e:1"); org.junit.Assert.fail("must throw") } catch (e: IllegalStateException) { }
+        assertNotNull(dao.label("mk:e:1"))
+    }
+
     @Test fun undoingAMarkWhoseSecondaryPhotoIsStillOnItsWayRefusesThePhotoWhenItArrives() = runBlocking<Unit> {
         rec.onMark(mark(1), at(t0))
         assertTrue(rec.onMark(mark(2, photo = false, undo = 1), at(t0 + 800)))
