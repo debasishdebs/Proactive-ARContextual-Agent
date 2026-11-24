@@ -45,6 +45,19 @@ class PlaceCardHistoryTest {
 
     private fun pin(n: Int) = UserPlace("user:00000000-0000-0000-0000-%012d".format(n), "Room A$n", PlaceKinds.ARCHAEOLOGICAL_SITE, 7.957, 80.759, 20, null, "")
 
+    @Test fun everyCommittedWriteBumpsTheChangeCounterSoUisNeverPoll() = runBlocking {
+        var n = PlaceCardHistory.changes.value
+        fun assertBumped(what: String) { val v = PlaceCardHistory.changes.value; assertTrue(what, v > n); n = v }
+        val id = history.add(ev(card = "c1", frame = "f1"))!!; assertBumped("add")
+        history.markDelivery("c1", CardDelivery.SENT); assertBumped("delivery")
+        history.markDelivery("nope", CardDelivery.SENT); assertEquals("a failed update is no change", n, PlaceCardHistory.changes.value)
+        history.onFramesForgotten(listOf("f1")); assertBumped("forget")
+        history.add(ev()); n = PlaceCardHistory.changes.value
+        history.delete(history.recent().first().id); assertBumped("delete")
+        history.add(ev()); n = PlaceCardHistory.changes.value
+        history.clearAll(); assertBumped("clear")
+    }
+
     @Test fun addStoresRowsNewestFirstWithDerivedDelivery() = runBlocking {
         history.add(ev(card = "c1")); now += 1000; history.add(ev(HistoryKind.POSSIBLE).copy(confPct = 54))
         val rows = history.recent()

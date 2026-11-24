@@ -12,6 +12,9 @@ import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.memory.place.CardDelivery
 import com.rokid.context.memory.place.PlaceCardLogEntity
 import com.rokid.context.phone.ui.status.StatusUi
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -52,6 +55,26 @@ class HomeLastPlaceCardTest {
         compose.onNodeWithTag("last_place_card").assertIsDisplayed()
         compose.onNodeWithTag("last_place_card").performClick()
         assertEquals(1, opened)
+    }
+
+    @Test fun theSourceFollowsHistoryChangesNotATimer() = kotlinx.coroutines.runBlocking {
+        val db = com.rokid.context.memory.place.PlacesDatabase.inMemory(graphCtx)
+        val pack = com.rokid.context.memory.place.PlacePack(db, null)
+        var at = System.currentTimeMillis()
+        val history = com.rokid.context.work.frames.place.PlaceCardHistory(pack.cardLogDao, clock = { at }, newId = { "n$at" })
+        com.rokid.context.work.frames.place.PlaceGraph.installForTests(pack); com.rokid.context.work.frames.place.PlaceGraph.installHistoryForTests(history)
+        try {
+            val source = com.rokid.context.phone.place.AndroidPlaceCardHomeSource(graphCtx)
+            val seen = kotlinx.coroutines.flow.MutableStateFlow<LastPlaceCard?>(null)
+            val job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch { source.last.collect { seen.value = it } }
+            history.add(com.rokid.context.work.frames.place.PlaceHistoryEvent(com.rokid.context.work.frames.place.HistoryKind.PIN, "user:x", "Site A", cardId = "c1"))
+            withTimeout(10_000) { seen.first { it?.title == "Site A" && it.body.contains("waiting") } }
+            history.markDelivery("c1", CardDelivery.SENT)
+            withTimeout(10_000) { seen.first { it?.body?.contains("sent to glasses") == true } }
+            history.clearAll()
+            withTimeout(10_000) { seen.first { it == null } }
+            job.cancel()
+        } finally { com.rokid.context.work.frames.place.PlaceGraph.installForTests(null); db.close() }
     }
 
     @Test fun noRowWhenThereIsNoRecentCard() {

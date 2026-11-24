@@ -1,5 +1,6 @@
 package com.rokid.context.phone.place
 
+import kotlinx.coroutines.flow.map
 import android.content.Context
 import com.rokid.context.core.model.carriesData
 import com.rokid.context.memory.place.GeoBox
@@ -132,6 +133,8 @@ class AndroidPlaceHistoryControl(
     private fun history() = PlaceGraph.history(app)
     private suspend fun placesOf(row: com.rokid.context.memory.place.PlaceCardLogEntity) =
         PlaceGraph.readyPack(app).placesByIds(com.rokid.context.work.frames.place.PlaceCardRebuild.idsOf(row))
+
+    override val changes: kotlinx.coroutines.flow.Flow<Unit> = com.rokid.context.work.frames.place.PlaceCardHistory.changes.map { }
 
     override suspend fun rows() = history().recent()
 

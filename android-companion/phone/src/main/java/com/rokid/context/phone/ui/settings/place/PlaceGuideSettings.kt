@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.rokid.context.memory.place.GeoBox
@@ -430,7 +431,10 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 
     // ---- B2: the place card history ----
 
-    /** Re-reads the list (and the open detail: a Forget while it is shown closes it, a delivery change updates it). Called on resume and every few seconds while the screen is up. */
+    /** Re-reads the list (and the open detail: a Forget while it is shown closes it, a delivery change updates it). Called when the history changes and on resume (the route collects [historyChanges]); never on a timer. */
+    /** The history's change events (empty when this build has no history). */
+    val historyChanges: kotlinx.coroutines.flow.Flow<Unit> get() = control.history?.changes ?: kotlinx.coroutines.flow.emptyFlow()
+
     fun refreshHistory() { viewModelScope.launch(work) { refreshHistoryNow() } }
 
     private suspend fun refreshHistoryNow() {
@@ -500,8 +504,11 @@ class PlaceGuideViewModel(private val control: PlaceGuideControl, private val wo
 fun PlaceGuideRoute(control: PlaceGuideControl, back: () -> Unit, changingConfigurations: () -> Boolean = { false }, developerMode: Boolean = false, pickOnMap: (() -> Unit)? = null, openFrame: ((String) -> Unit)? = null) {
     val vm = viewModel { PlaceGuideViewModel(control, developerMode = developerMode) }
     val state by vm.state.collectAsStateWithLifecycle()
-    // B2: the history follows Forgets and delivery changes while the screen is up (a few seconds, only while it is composed).
-    androidx.compose.runtime.LaunchedEffect(vm) { while (true) { kotlinx.coroutines.delay(3_000); vm.refreshHistory() } }
+    // B2: the history follows Forgets and delivery changes through the store's change events, only while the screen is started; each (re)start re-reads once (the refresh on resume).
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.LaunchedEffect(vm, lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { vm.historyChanges.collect { vm.refreshHistory() } }
+    }
     // Leaving the screen drops an unused position and the draft; a rotation (configuration change) is not leaving: the ViewModel (name, note, kind, radius, in memory only, never in a bundle) and the in-memory fix with its timer stay, and Save re-checks the draft's age.
     androidx.compose.runtime.DisposableEffect(vm) { onDispose { if (dropsDraftOnDispose(changingConfigurations())) vm.cancelPin() } }
     PlaceGuideScreen(state, back, vm::setEnabled, vm::seed, PlaceGuideActions(vm::setBudget, vm::askClear, vm::confirmClear, vm::cancelClear, vm::beginPin, vm::editPin, vm::deletePin, vm::updatePinDialog, vm::savePin, vm::cancelPin, vm::seedPreset, vm::setCardSide, vm::attachLatest, vm::openMomentPicker, vm::closeMomentPicker, vm::pickMoment, vm::pickerDay, vm::pickerMore, vm::removeMoment, vm::askSkipMoment, vm::cancelSkipMoment, vm::confirmSkipMoment, pickOnMap, openHistory = vm::openHistory, closeHistory = vm::closeHistory, historyMore = vm::historyMore, showAgain = vm::showAgain, deleteHistory = vm::deleteHistory, openMoment = openFrame))
