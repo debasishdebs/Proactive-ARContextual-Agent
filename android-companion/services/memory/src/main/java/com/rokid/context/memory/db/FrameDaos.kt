@@ -239,10 +239,15 @@ abstract class FrameStateDao {
 
     @Query("DELETE FROM frame_state WHERE frameId IN (:frameIds)") abstract suspend fun deleteFor(frameIds: List<String>): Int
 
-    /** Guarded move from [from] to [to] (no claim involved): routing and cluster settlement. Returns rows changed. */
+    /**
+     * Guarded move from [from] to [to] (no claim involved): routing and cluster settlement. Returns rows changed.
+     * Roaming data saver (Codex r2 P1-2): a PENDING frame parked for Wi-Fi (`lastError = 'data_saver'`) is never moved by routing or dedupe to NEAR_DUP, IN_CLUSTER or CAPTION_QUEUED
+     * (those would overwrite the marker and make an undescribed photo a skipped or expiring one); it stays PENDING, parked and protected. Other moves (a described-on-demand EXTRACTED) are unaffected.
+     */
     @Query(
         "UPDATE frame_state SET state = :to, lastError = :lastError, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
-            "WHERE frameId IN (:frameIds) AND state = :from",
+            "WHERE frameId IN (:frameIds) AND state = :from " +
+            "AND NOT (state = 'PENDING' AND COALESCE(lastError, '') = 'data_saver' AND :to IN ('NEAR_DUP', 'IN_CLUSTER', 'CAPTION_QUEUED'))",
     )
     abstract suspend fun move(frameIds: List<String>, from: String, to: String, lastError: String?, nowMs: Long): Int
 
