@@ -58,6 +58,8 @@ class UrlConnectionPlaceHttp(
      * [PlaceOfflineOnly], and a reader that throws counts as Offline only (fail closed). Production passes the store; the default is AUTO only so tests of the other rules need no store.
      */
     private val privacy: () -> ModelPrivacy = { ModelPrivacy.AUTO },
+    /** Where the blocking connection work runs (tests pass a dispatcher they control to flip the mode while the request is queued). */
+    private val io: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
 ) : PlaceHttp {
     private val lock = Mutex()
     private val lastByHost = HashMap<String, Long>()
@@ -85,7 +87,8 @@ class UrlConnectionPlaceHttp(
         }
         privacyGate() // asked again after any wait for the host gap: the mode may have changed while this request queued
         com.rokid.context.memory.place.seedAdmitCheck() // a seed's request: privacy, free Wi-Fi and the data saver are asked again before EVERY request (a no-op outside a seed)
-        return withContext(Dispatchers.IO) {
+        return withContext(io) {
+            privacyGate() // the dispatch above may have queued: the mode is read once more on the IO thread, immediately before the connection is made (fail closed)
             val costlyAtStart = try { gate.costlyNow() } catch (e: Exception) { false } // the network class when the request starts
             val received = java.util.concurrent.atomic.AtomicLong(0)
             val c = open(u) // not connected yet: no byte leaves before connect()

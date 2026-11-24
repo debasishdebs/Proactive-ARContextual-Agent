@@ -139,6 +139,21 @@ class OfflineOnlyNetTest {
         assertTrue(runCatching { OfflineOnlyNet.Guard { error("prefs") }.intercept(FakeChain(FakeConnection(route("192.168.1.5", Proxy(Proxy.Type.HTTP, InetSocketAddress("1.2.3.4", 3128)))))) }.exceptionOrNull() is OfflineOnlyRefusedException)
     }
 
+    @Test fun autoThroughTheInterceptorNeverProbesTheVpn() {
+        val before = OfflineOnlyNet.vpnProbe
+        var probed = 0
+        try {
+            OfflineOnlyNet.vpnProbe = { probed++; error("probe must not run in AUTO") }
+            val chain = FakeChain(FakeConnection(route("8.8.8.8")))
+            assertEquals(200, OfflineOnlyNet.Guard { ModelPrivacy.AUTO }.intercept(chain).code)
+            assertEquals(1, chain.proceeded)
+            assertEquals("AUTO does no extra work", 0, probed)
+            // outside AUTO the (throwing) probe is read and fails closed
+            assertTrue(runCatching { OfflineOnlyNet.Guard { ModelPrivacy.OFFLINE_ONLY }.intercept(FakeChain(FakeConnection(route("192.168.1.5")))) }.exceptionOrNull() is OfflineOnlyRefusedException)
+            assertEquals(1, probed)
+        } finally { OfflineOnlyNet.vpnProbe = before }
+    }
+
     // ---- the proxy selector ----
 
     @Test fun underOfflineOnlyTheSystemProxyIsNeverUsedAndUnderAutoItIs() {
