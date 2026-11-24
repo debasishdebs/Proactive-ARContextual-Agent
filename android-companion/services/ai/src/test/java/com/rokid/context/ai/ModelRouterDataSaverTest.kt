@@ -59,6 +59,7 @@ class ModelRouterDataSaverTest {
         override fun decide(kind: DataKind, reach: EndpointReach): DataDecision {
             asked += kind to reach
             if (reach == EndpointReach.DEVICE) return DataDecision(true, "on_device")
+            if (reach == EndpointReach.LAN && lanFree) return DataDecision(true, "lan")
             val block = if (kind == DataKind.PHOTO) blockPhoto else blockSmall
             return if (block) DataDecision(false, "wifi_only") else DataDecision.ALLOW
         }
@@ -79,10 +80,15 @@ class ModelRouterDataSaverTest {
         }
         /** Reservations (P1-6): when [reserving], every costly call takes one up front and settles it afterwards. */
         var reserving = false
+        var failReserve = false
+        var lanFree = false
+        val reserveThreads = mutableListOf<Thread>()
         val reservations = mutableListOf<List<Any>>()
         val settlements = mutableListOf<List<Any>>()
         override fun reserve(kind: DataKind, txBytes: Long, photos: Int): com.rokid.context.core.net.DataReservation? {
+            reserveThreads += Thread.currentThread()
             if (!reserving || !costly) return null
+            if (failReserve) return com.rokid.context.core.net.DataReservation.FAILED
             reservations += listOf(kind, txBytes, photos)
             return com.rokid.context.core.net.DataReservation(kind, txBytes, photos, 1)
         }
@@ -442,5 +448,53 @@ class ModelRouterDataSaverTest {
         val job = launch { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
         started.await(); job.cancelAndJoin()
         assertEquals(listOf(listOf<Any>(DataKind.PHOTO, 517L, 0L, 1)), data.settlements)
+    }
+
+    // ---- Codex data-saver r3: P1-1 saw-costly, P1-2 LAN/free never reserve, P1-3 durable admission off the caller's thread ----
+
+    @Test fun aLanCallAllowedForFreeTakesNoReservationAndNeverFailsOnOne() = runTest {
+        ep("lan", url = "https://192.168.1.5:11434", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "lan", "m")).getOrThrow()
+        data.costly = true; data.reserving = true; data.failReserve = true; data.lanFree = true // a metered or unvalidated Wi-Fi, counters unreadable: a reservation would fail
+        val r = router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") }
+        assertEquals("lan/m", r.text)
+        assertTrue("no reservation was even asked for", data.reserveThreads.isEmpty())
+        assertTrue("and nothing was counted as costly", data.costlyAtStartLog.all { !it } && data.settlements.isEmpty())
+        // the same failing reservation still refuses a remote call on the costly network (fail closed for costly classes)
+        ep("rem", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "rem", "m")).getOrThrow()
+        assertTrue(err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") } } is DataSaverBlockedException)
+    }
+
+    @Test fun aLanCallOnMeteredUnvalidatedWifiWithUnreadableCountersStillGoesThrough() = runTest {
+        val app = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val p = app.getSharedPreferences("r3_lan", android.content.Context.MODE_PRIVATE); p.edit().clear().putString("mobile_bytes_small", "lots").commit()
+        val snap = com.rokid.context.core.net.NetSnapshot(true, com.rokid.context.core.net.Transport.WIFI, validated = false, notMetered = false, notRoaming = true)
+        val graph = com.rokid.context.ai.datasaver.DataSaverGraph(com.rokid.context.ai.datasaver.DataSaverStore(p), { snap }, epochDay = { 100L })
+        val r = ModelRouter(bindings, endpoints, providers, callGate, graph)
+        ep("lan", url = "https://192.168.1.5:11434", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "lan", "m")).getOrThrow()
+        assertEquals("lan/m", r.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") }.text)
+        assertEquals("nothing was added to the ledger", 0L, graph.mobile.today().usage.bytes)
+    }
+
+    @Test fun aCallAdmittedOnFreeWifiThatEndsOnACostlyNetworkIsCountedAsCostly() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        onGenerate = { data.costly = true } // the connection turned out to be on a costly network
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") }
+        assertEquals("the bytes count against the daily cap", listOf(true), data.costlyAtStartLog)
+        assertEquals(1, data.sentLog.size)
+    }
+
+    @Test fun aCallThatStaysOnFreeWifiIsStillNotCounted() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") }
+        assertTrue(data.costlyAtStartLog.all { !it })
+    }
+
+    @Test fun theReservationCommitDoesNotRunOnTheCallingThread() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        data.costly = true; data.reserving = true
+        val caller = Thread.currentThread()
+        router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("hello") }
+        assertEquals(1, data.reserveThreads.size)
+        assertTrue("the durable commit ran on an IO thread, not the caller", data.reserveThreads.none { it === caller } && data.reserveThreads[0].name.contains("DefaultDispatcher"))
     }
 }

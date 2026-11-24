@@ -272,21 +272,34 @@ class ModelRouter(
             val again = if (reachOf(e) == EndpointReach.DEVICE) DataDecision.ALLOW else decideNow(e, kind, photos, callClass, sendOnce) // an on-device model is never gated
             if (!again.allowed) throw DataSaverBlockedException(again.reason, kind, if (photos > 0) Skipped.UPLOAD_QUEUED else Skipped.BULK)
             val counted = reachOf(e) != EndpointReach.DEVICE && !EndpointReaches.isLoopback(e)
-            val costlyAtStart = counted && dataGate.costlyNow()
+            // Codex data-saver r3 P1-2: a call the policy allowed for FREE (a LAN host on Wi-Fi or Ethernet, reason [DataPolicy.R_LAN]) takes no reservation and counts nothing, whatever the Wi-Fi's own cost class says:
+            // only a call whose reach is costly-eligible reserves, so unreadable counters or a failed commit can never block LAN or free traffic.
+            val costlyAtStart = counted && again.reason != DataPolicy.R_LAN && dataGate.costlyNow()
+            // Codex r3 P1-1: "saw costly" = the network class was costly at ANY sample of this call (admission, pre-connect guard, watcher ticks, settle). A call admitted on FREE Wi-Fi that turns out to run on a costly network
+            // is conservatively counted as costly. The socket is not bound to the admitted network (known limit), so this is the best evidence there is.
+            val sawCostly = java.util.concurrent.atomic.AtomicBoolean(costlyAtStart)
+            val lastDecision = java.util.concurrent.atomic.AtomicReference<DataDecision>(again)
+            // a sample reads the network class now; a LAN host the policy allowed for free on Wi-Fi/Ethernet is never costly. null = reuse the latest decision (the settlement asks nothing new)
+            val sample: (DataDecision?) -> Unit = { d ->
+                if (d != null) lastDecision.set(d)
+                if (counted && lastDecision.get().reason != DataPolicy.R_LAN && (try { dataGate.costlyNow() } catch (c: CancellationException) { throw c } catch (_: Throwable) { true })) sawCostly.set(true)
+            }
             // P1-6: an admission RESERVATION is counted (persisted) before a byte leaves: whatever happens next (a stall after a complete upload, a timeout, a cancel, process death) the usage is not zero.
-            val reservation = if (costlyAtStart) safeReserve(kind, tx + DataBytes.ENVELOPE, photos) else null
+            val reservation = if (costlyAtStart) safeReserve(kind, tx + DataBytes.ENVELOPE, photos) else null // durable admission off the caller's thread (r3 P1-3)
             // Codex r2 P1-4/P1-5: a reservation that could not be made durable (or a counter that cannot be trusted) refuses the costly send: nothing leaves.
             if (reservation?.failed == true) throw DataSaverBlockedException(DataPolicy.R_UNREADABLE, kind, if (photos > 0) Skipped.UPLOAD_QUEUED else Skipped.BULK)
             // P1-1: asked again by the transport immediately before the connect (own reservation excluded, P2-8), and by the watcher while the call runs.
             val guard = TransportGuard {
                 val d = decideNow(e, kind, photos, callClass, sendOnce, reservation)
+                sample(d)
                 if (!d.allowed) throw PreConnectBlockedException(d.reason, kind, if (photos > 0) Skipped.UPLOAD_QUEUED else Skipped.BULK)
             }
-            fun report(rxBytes: Long, countedPhotos: Int, countedTx: Long = tx) {
+            suspend fun report(rxBytes: Long, countedPhotos: Int, countedTx: Long = tx) {
+                sample(null) // the last sample, at settlement
                 if (reservation != null) safeSettle(reservation, countedTx, rxBytes, countedPhotos)
-                else if (counted && (countedTx > 0 || rxBytes > 0)) safeSent(kind, countedTx, rxBytes, countedPhotos, costlyAtStart)
+                else if (counted && (countedTx > 0 || rxBytes > 0)) safeSent(kind, countedTx, rxBytes, countedPhotos, sawCostly.get())
             }
-            val reply = try { if (counted) watchingNetwork(e, kind, photos, callClass, sendOnce, reservation) { kotlinx.coroutines.withContext(guard) { p.complete(r) } } else p.complete(r) }
+            val reply = try { if (counted) watchingNetwork(e, kind, photos, callClass, sendOnce, reservation, sample) { kotlinx.coroutines.withContext(guard) { p.complete(r) } } else p.complete(r) }
             catch (t: Throwable) {
                 // Only a failure that proves nothing left (DNS, connect, TLS handshake, config) releases the reservation. An HTTP error or an unusable 2xx counts the request (never a photo). Anything else (a timeout or
                 // stall after the upload, a cancel, our own abort, an unknown error) keeps the conservative count: the request, and its photos, may well have been received.
@@ -334,7 +347,7 @@ class ModelRouter(
 
     /** On this phone (never gated), a box on the user's own network (free on Wi-Fi), or anything else. Reads the address only to classify it; the host is never logged. */
     /** The counter must never break a call: a throwing ledger is logged (fixed token) and dropped. */
-    private fun safeSent(kind: DataKind, tx: Long, rx: Long, photos: Int, costlyAtStart: Boolean) {
+    private suspend fun safeSent(kind: DataKind, tx: Long, rx: Long, photos: Int, costlyAtStart: Boolean) = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.IO) {
         try { dataGate.sentAt(kind, tx, rx, photos, costlyAtStart) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") }
     }
 
@@ -350,7 +363,7 @@ class ModelRouter(
      * Runs one provider call and, while it runs, asks the policy about the CURRENT network every [NET_WATCH_MS]. When the network turns costly and this call is not allowed there, the call is cancelled and fails with
      * [DataSaverBlockedException] (the request may have been partly sent: the caller keeps the conservative reservation). Best effort: the socket is not bound to the admitted network, so bytes already on the wire stay counted.
      */
-    private suspend fun <T> watchingNetwork(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean, own: com.rokid.context.core.net.DataReservation?, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
+    private suspend fun <T> watchingNetwork(e: Endpoint, kind: DataKind, photos: Int, callClass: CallClass, sendOnce: Boolean, own: com.rokid.context.core.net.DataReservation?, sample: (DataDecision?) -> Unit = {}, block: suspend () -> T): T = kotlinx.coroutines.coroutineScope {
         val abort = java.util.concurrent.atomic.AtomicReference<DataDecision?>(null)
         // a call that fails AFTER our own abort (the socket was cancelled under it: an IOException "Canceled") is the abort, not a provider failure
         val work = async { try { block() } catch (t: Throwable) { if (abort.get() != null && t !is CancellationException) throw CancellationException("data saver abort") else throw t } }
@@ -358,6 +371,7 @@ class ModelRouter(
             while (true) {
                 delay(NET_WATCH_MS)
                 val d = try { decideNow(e, kind, photos, callClass, sendOnce, own) } catch (c: CancellationException) { throw c } catch (t: Throwable) { DataDecision(false, DataPolicy.R_UNKNOWN) } // an unreadable state fails closed
+                sample(d)
                 if (!d.allowed) { abort.set(d); work.cancel(); return@launch }
             }
         }
@@ -369,10 +383,12 @@ class ModelRouter(
         } finally { watch.cancel() }
     }
 
-    private fun safeReserve(kind: DataKind, tx: Long, photos: Int): com.rokid.context.core.net.DataReservation? =
+    /** Codex r3 P1-3: the durable commit runs on an IO thread, never on the caller's (often Main). */
+    private suspend fun safeReserve(kind: DataKind, tx: Long, photos: Int): com.rokid.context.core.net.DataReservation? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         try { dataGate.reserve(kind, tx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}"); com.rokid.context.core.net.DataReservation.FAILED } // fail closed: no durable count, no costly send
+    }
 
-    private fun safeSettle(r: com.rokid.context.core.net.DataReservation, tx: Long, rx: Long, photos: Int) {
+    private suspend fun safeSettle(r: com.rokid.context.core.net.DataReservation, tx: Long, rx: Long, photos: Int) = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.IO) {
         try { dataGate.settle(r, tx, rx, photos) } catch (c: CancellationException) { throw c } catch (t: Throwable) { PcLog.w(TAG, "data counter failed: ${t.javaClass.simpleName}") } // the reservation stays counted
     }
 
