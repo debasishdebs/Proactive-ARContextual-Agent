@@ -10,6 +10,7 @@ import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.forget.ForgetService
+import com.rokid.context.memory.forget.SuspectRecheck
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.PayloadSources
 import com.rokid.context.orchestration.BulkGate
@@ -54,10 +55,10 @@ class SuspectSweepWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         val sweep = SuspectSweep(
             db = graph.db, pipeline = keyframes.pipeline, bulkAllowed = { gate.allowed() && DataSaverWorkGate.open(data, keyframes.photoReach()) },
             zoneBlocked = zoneSignal,
-            remove = { ids ->
+            remove = { ids, mode ->
                 // the exclusive side of the DataOpGate (an export in progress is waited for), like retention; the ForgetActions follow the committed cascade
                 DataOpGate.shared.delete {
-                    val r = service.removeDescriptions(ids)
+                    val r = service.removeSuspectDescriptions(ids, mode)
                     ForgetActions.apply(applicationContext, r)
                     r.forgotten.size
                 }
@@ -97,8 +98,8 @@ internal class SuspectSweep(
     private val bulkAllowed: () -> Boolean = { true },
     /** The Place Guide zone fence (production: [zoneSignal], the persisted-facts signal that works in a cold process): while held nothing is queued or described. */
     private val zoneBlocked: () -> Boolean = { false },
-    /** Removes the descriptions [ids] (ForgetService + the post-commit actions); returns how many were removed. */
-    private val remove: suspend (List<String>) -> Int,
+    /** Removes the descriptions [ids] (ForgetService + the post-commit actions); returns how many were removed. Every id is re-validated against [SuspectRecheck] INSIDE the deletion transaction (an Undo between selection and deletion keeps the memory). */
+    private val remove: suspend (List<String>, SuspectRecheck) -> Int,
     private val clock: () -> Long = System::currentTimeMillis,
     private val drainMs: Long = DRAIN_MS,
     /** At most this many model calls a night (a call carries up to 3 photos): the thousands of old rows drain over many nights, not one. */
@@ -114,7 +115,7 @@ internal class SuspectSweep(
     suspend fun run(): Outcome {
         val generation = MemoryWipe.generation.get()
         // 1. Expired photos: the description goes (no model call, so the battery gate does not apply).
-        val removedExpired = removeAll(dao.markedSuspectsExpired(SCAN), generation)
+        val removedExpired = removeAll(dao.markedSuspectsExpired(SCAN), generation, SuspectRecheck.EXPIRED)
         // 2. Suspects an earlier run (or the night job) already re-described.
         var replaced = replaceDescribed(generation)
         // 3. Stored photos: queue and describe, only on a charged, cool phone, never in a zone, never during a capture burst.
@@ -176,14 +177,14 @@ internal class SuspectSweep(
             val photos = dao.storedPhotosOf(memoryId)
             if (photos.isNotEmpty() && photos.all { dao.describedWithProof(it, memoryId) > 0 }) ready += memoryId
         }
-        return removeAll(ready, generation)
+        return removeAll(ready, generation, SuspectRecheck.REPLACED)
     }
 
-    private suspend fun removeAll(ids: List<String>, generation: Long): Int {
+    private suspend fun removeAll(ids: List<String>, generation: Long, mode: SuspectRecheck): Int {
         var n = 0
         for (chunk in ids.chunked(CHUNK)) {
             if (gate.check(PayloadSources.NONE, generation) != ProvenanceGate.Verdict.Live) break // Delete all ran: nothing left to do
-            n += remove(chunk)
+            n += remove(chunk, mode)
         }
         return n
     }

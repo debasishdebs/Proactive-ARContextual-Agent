@@ -473,7 +473,7 @@ class PlaceSampler(
         tr.call = "made"
         val callAt = elapsed()
         val sh = shadow
-        if (sh != null && shadowEnabled()) { tr.shadowStartedAt = elapsed(); tr.shadowPackIds = hits.map { it.first.id }.filter { !UserPlace.isUserId(it) }; tr.shadowPending = shadowScope.async { try { sh(f.frameId, hits) { ticket.isOpen() && live(gen) } } catch (c: CancellationException) { throw c } catch (_: Exception) { null } } }
+        if (sh != null && shadowEnabled()) { tr.shadowStartedAt = elapsed(); tr.shadowPackIds = hits.map { it.first.id }.filter { !UserPlace.isUserId(it) }; tr.shadowPending = shadowScope.async { try { sh(f.frameId, hits) { shadowEnabled() && ticket.isOpen() && live(gen) } } catch (c: CancellationException) { throw c } catch (_: Exception) { null } } }
         val res = try { match(f.frameId, lines) } catch (c: CancellationException) { throw c } catch (e: Exception) { genuineFailure = isGenuineCallFailure(e); tr.err = e.javaClass.simpleName; null }
         flight.lastCallAt = elapsed() // the permit wait and the call are over: the gap runs from here, not from the start of the attempt
         tr.callMs = (flight.lastCallAt - callAt).coerceAtLeast(0L)
@@ -502,6 +502,8 @@ class PlaceSampler(
      */
     private suspend fun settleShadow(t: Trace) {
         val pending = t.shadowPending ?: return
+        // The Developer flag went OFF after launch: the work is fenced (its liveness reads the flag) and cancelled here; the line then carries no shadow field, like a flag-off line.
+        if (!shadowEnabled()) { pending.cancel(); t.shadow = null; return }
         val out: ShadowOutcome? = try {
             if (pending.isCompleted) pending.getCompleted()
             else {

@@ -15,6 +15,7 @@ import com.rokid.context.memory.forget.ForgetRadius
 import com.rokid.context.memory.forget.ForgetService
 import com.rokid.context.memory.forget.MomentForget
 import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
+import com.rokid.context.memory.forget.suspectStillEligible
 import com.rokid.context.memory.moment.MomentId
 
 /**
@@ -161,6 +162,15 @@ class ForgetExecutor internal constructor(
         val plan = revoke { it.plan(ids.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.User) }
         val c = ctx()
         cascade(c, ids.distinct(), lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true).also { rebuildScenes(c, plan) }
+    }
+
+    /** `ForgetService.removeSuspectDescriptions`: the ids are re-validated inside this transaction (an Undo or a changed photo set since the sweep's selection skips the id), then removed like [removeDescriptions]. */
+    internal suspend fun removeSuspectDescriptions(ids: Collection<String>, mode: com.rokid.context.memory.forget.SuspectRecheck): ForgetService.Result = db.withTransaction {
+        val live = ids.distinct().filter { dao.suspectStillEligible(it, mode) }
+        if (live.isEmpty()) return@withTransaction ForgetService.Result.EMPTY
+        val plan = revoke { it.plan(live.map { id -> Ref(Family.MEMORY, id) }.toSet(), Policy.User) }
+        val c = ctx()
+        cascade(c, live, lockFrames = false, invalidateDescendants = true, scrubAccepted = false, keepKeyframes = true, phoneFilesOnly = true).also { rebuildScenes(c, plan) }
     }
 
     /** Photo expiry (`ForgetService.expirePhotosTx`, Ruling 11): the frame row goes with a tombstone, everything described about it stays. Storage only (retention r1): no Moment, Scene, mark, trace or run output is touched and no radius cascade runs. */

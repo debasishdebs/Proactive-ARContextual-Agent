@@ -91,7 +91,7 @@ class SuspectSweepTest {
     private val removed = mutableListOf<List<String>>()
     private fun sweep(p: KeyframePipeline = pipeline()) = SuspectSweep(
         db, p, bulkAllowed = { gate }, zoneBlocked = { zone },
-        remove = { ids -> removed += ids; ForgetService(db, graph.proposals) { clockMs }.removeDescriptions(ids).forgotten.size },
+        remove = { ids, mode -> removed += ids; ForgetService(db, graph.proposals) { clockMs }.removeSuspectDescriptions(ids, mode).forgotten.size },
         clock = { clockMs }, drainMs = 30_000L,
     )
     private suspend fun exists(id: String) = db.forgetDao().memories(listOf(id)).isNotEmpty()
@@ -106,6 +106,36 @@ class SuspectSweepTest {
         assertFalse(exists("old_gone")); assertTrue(exists("old_kept"))
         assertEquals(ReviewState.INVALIDATED, db.forgetDao().memories(listOf("sum")).single().reviewState) // its summary is rebuilt by the re-summarise job
         assertTrue(calls.isEmpty())
+    }
+
+    /** The user's Undo lands between the sweep's selection and its deletion: the delegate clears the marks (exactly what `unflag` does) and THEN deletes the ids the sweep had already selected. */
+    private fun undoingSweep(p: KeyframePipeline = pipeline()) = SuspectSweep(
+        db, p, bulkAllowed = { gate }, zoneBlocked = { zone },
+        remove = { ids, mode -> removed += ids; db.forgetDao().unflag(5L); ForgetService(db, graph.proposals) { clockMs }.removeSuspectDescriptions(ids, mode).forgotten.size },
+        clock = { clockMs }, drainMs = 30_000L,
+    )
+
+    @Test fun anUndoBetweenSelectionAndDeletionKeepsAnExpiredSuspect() = runBlocking {
+        suspect("gone", photoStored = false)
+        val o = undoingSweep().run()
+        assertEquals(listOf(listOf("old_gone")), removed.take(1)) // it WAS selected and handed to the deletion...
+        assertEquals(0, o.removedExpired); assertTrue("...but the unmarked memory survives", exists("old_gone"))
+        assertEquals(null, db.forgetDao().memories(listOf("old_gone")).single().reviewFlaggedAt)
+    }
+
+    @Test fun anUndoBetweenSelectionAndDeletionKeepsAReplacedSuspect() = runBlocking {
+        suspect("a")
+        val o = undoingSweep().run()
+        assertEquals(0, o.replaced); assertTrue("an unmarked memory is never deleted by the sweep", exists("old_a"))
+    }
+
+    @Test fun theDeletionTransactionRechecksEveryIdAndKeepsOnlyTheEligible() = runBlocking {
+        suspect("x", photoStored = false); suspect("y", photoStored = false, marked = false); suspect("z") // y: Undone, z: its photo is still stored (not expired)
+        val svc = ForgetService(db, graph.proposals) { clockMs }
+        val r = svc.removeSuspectDescriptions(listOf("old_x", "old_y", "old_z"), com.rokid.context.memory.forget.SuspectRecheck.EXPIRED)
+        assertEquals(1, r.forgotten.size); assertFalse(exists("old_x")); assertTrue(exists("old_y")); assertTrue(exists("old_z"))
+        val r2 = svc.removeSuspectDescriptions(listOf("old_z"), com.rokid.context.memory.forget.SuspectRecheck.REPLACED) // no replacement with delivery proof yet
+        assertEquals(0, r2.forgotten.size); assertTrue(exists("old_z"))
     }
 
     @Test fun storedPhotoIsReDescribedThenTheSuspectIsRemoved() = runBlocking {
@@ -161,7 +191,7 @@ class SuspectSweepTest {
     // S1: a cold process (the hub never ran, Place Guide's fence is in its default open state) judges the zones from the persisted facts.
     private fun coldSweep() = SuspectSweep(
         db, pipeline(), bulkAllowed = { gate }, zoneBlocked = SuspectSweepWorker.zoneSignal(ctx),
-        remove = { ids -> removed += ids; ForgetService(db, graph.proposals) { clockMs }.removeDescriptions(ids).forgotten.size },
+        remove = { ids, mode -> removed += ids; ForgetService(db, graph.proposals) { clockMs }.removeSuspectDescriptions(ids, mode).forgotten.size },
         clock = { clockMs }, drainMs = 30_000L,
     )
     private fun zonePrefs(zones: String?, protect: Boolean? = null) {

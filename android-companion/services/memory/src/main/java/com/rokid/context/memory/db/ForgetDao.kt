@@ -161,6 +161,9 @@ abstract class ForgetDao {
     /** How many other memories describe [frameId] WITH proof the image reached the model (`imageDelivered = 1`), unmarked and not [selfId]. */
     @Query("SELECT COUNT(*) FROM memory a WHERE a.id != :selfId AND a.imageDelivered = 1 AND " + DESCRIBES + " AND (a.frameId = :frameId OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.memoryId = a.id AND fs.frameId = :frameId AND fs.role IN ('FACT','CLUSTER_REP')))")
     abstract suspend fun describedWithProof(frameId: String, selfId: String): Int
+    /** 1 when [id] is STILL a marked suspect (the user has not undone the mark, the row is untouched): the sweep asks this again inside the deletion transaction. */
+    @Query("SELECT COUNT(*) FROM memory a WHERE a.id = :id AND " + MARKED_SUSPECT)
+    abstract suspend fun isMarkedSuspect(id: String): Int
 
     /** Retention v3 (r2-4): the capture time of a photo from whatever is left of it (`frame.ts`, then `frame_meta.capturedAtMs`, then `frame_meta.createdAt`), or null. */
     @Query("SELECT COALESCE((SELECT ts FROM frame WHERE id = :id), (SELECT COALESCE(capturedAtMs, createdAt) FROM frame_meta WHERE frameId = :id))") abstract suspend fun captureTsOf(id: String): Long?
