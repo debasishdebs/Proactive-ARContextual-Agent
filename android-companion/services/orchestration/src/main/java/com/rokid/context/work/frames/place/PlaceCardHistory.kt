@@ -91,17 +91,47 @@ class PlaceCardHistory(
         for (op in ops) {
             try { writeLock.withLock { exec(op) }; owed.remove(op) }
             catch (c: kotlinx.coroutines.CancellationException) { throw c }
-            catch (_: Exception) { failed = true; log("place history $what failed") }
+            catch (_: Exception) { failed = true; scopeFailed.add(op); log("place history $what failed") }
         }
         bump()
         if (failed) throw HistoryDeletionPending()
         if (!durable) log("place history obligation not stored")
     }
 
-    /** Records [op] as owed; true = it is durable. Retried a few times (a failed commit is transient more often than not). */
+    /**
+     * Records [op] as owed; true = it is durable. Retried a few times (a failed commit is transient more often than not). Once a token is durably stored, the tokens it makes redundant are dropped
+     * ([compact]): a Delete all token covers everything armed before it, a wider range covers a narrower one. Deletion scope and durability are unchanged: the covering token is stored BEFORE any covered one goes.
+     */
     private fun arm(op: String): Boolean {
-        repeat(ARM_TRIES) { if (owed.add(op)) return true }
+        repeat(ARM_TRIES) { if (owed.add(op)) { compactAfterArming(op); return true } }
         return false
+    }
+
+    /** The ops this Forget / Delete all attempted and could not finish (P2-3): only these make THAT operation report cleanup pending; an older, unrelated failing token does not. */
+    private val scopeFailed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** A user Forget / Delete all starts (under the DataOpGate): the failures of earlier operations no longer count for it. They stay owed and are retried at start and at the next Forget. */
+    fun beginScope() { scopeFailed.clear() }
+
+    /** True when a deletion THIS scope attempted (or one covering it) is still owed. */
+    fun scopePending(): Boolean { val now = owed.all(); return scopeFailed.any { f -> now.any { o -> covers(o, f) } } }
+
+    private fun compactAfterArming(op: String) {
+        val all = owed.all()
+        val covered = if (op.startsWith("$OP_ALL:")) all.filter { it != op && !coversByTime(it, op) } // everything armed before this Delete all has rows no newer than it
+        else all.filter { it != op && sameKindCovered(op, it) }
+        for (c in covered) {
+            if (c in scopeFailed) scopeFailed.add(op)
+            owed.remove(c)
+        }
+    }
+
+    private fun sameKindCovered(by: String, other: String): Boolean = by != other && covers(by, other)
+
+    /** Compacts the stored set by time scope only (a token of an unknown age is never dropped by a Delete all that may be older than it). */
+    private fun compactStored() {
+        val all = owed.all()
+        for (o in all) if (all.any { by -> by != o && coversByTime(by, o) }) owed.remove(o)
     }
 
     /**
@@ -130,6 +160,7 @@ class PlaceCardHistory(
 
     /** Runs every owed deletion again (at each start, after a failure). True = nothing is owed any more. Never throws except for cancellation. */
     suspend fun retryOwed(): Boolean {
+        compactStored()
         for (op in owed.all().sorted()) {
             try { writeLock.withLock { exec(op) }; owed.remove(op) }
             catch (c: kotlinx.coroutines.CancellationException) { throw c }
@@ -222,6 +253,21 @@ class PlaceCardHistory(
         private const val OP_RANGE = "r"
         private const val OP_ALL = "a"
         private const val OP_PIN = "p"
+
+        private fun range(op: String): Pair<Long, Long>? = when {
+            op.startsWith("$OP_RANGE:") -> op.split(':').takeIf { it.size == 3 }?.let { p -> val a = p[1].toLongOrNull(); val b = p[2].toLongOrNull(); if (a != null && b != null) a to b else null }
+            op.startsWith("$OP_ALL:") -> op.substringAfter(':').toLongOrNull()?.let { 0L to it }
+            else -> null
+        }
+
+        /** [by] deletes at least what [other] deletes, judged by time alone (all / range tokens). */
+        internal fun coversByTime(by: String, other: String): Boolean {
+            val a = range(by) ?: return false; val b = range(other) ?: return false
+            return a.first <= b.first && b.second <= a.second
+        }
+
+        /** [by] covers [other] or is it: equal tokens, or a time cover. (Frame and pin tokens carry no time; a Delete all drops them only at arming, see [compactAfterArming].) */
+        internal fun covers(by: String, other: String): Boolean = by == other || coversByTime(by, other)
     }
 }
 

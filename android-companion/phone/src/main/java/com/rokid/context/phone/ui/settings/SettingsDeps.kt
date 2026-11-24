@@ -152,7 +152,7 @@ class SettingsDeps(
                 }
             },
             usedBytes = { StorageUsage.usedBytes(app) },
-            wipe = { pins -> com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAll(app, confirmedPins = pins) } },
+            wipe = { pins -> com.rokid.context.phone.context.ContextSourceSettings.of(app).wipeThenClear { MemoryWipe.deleteAllOutcome(app, confirmedPins = pins) } },
             export = { MemoryExport.write(app) },
             share = { f -> ShareFile.share(app, f) },
             logs = { LogReader.ownLines() },

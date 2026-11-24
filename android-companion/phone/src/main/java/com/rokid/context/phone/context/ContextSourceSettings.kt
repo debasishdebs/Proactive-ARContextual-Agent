@@ -55,7 +55,7 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
     }
 
     /** Delete all: run the wipe, then clear personal state. */
-    suspend fun wipeThenClear(wipe: suspend () -> Unit) { try { wipe() } finally { clearPersonal() } }
+    suspend fun <T> wipeThenClear(wipe: suspend () -> T): T { try { return wipe() } finally { clearPersonal() } }
 
     companion object {
         const val PREFS = "ctx_hub_state"

@@ -90,6 +90,12 @@ object PlaceGraph {
         return h.retryOwed()
     }
 
+    /** A user Forget / Delete all begins (inside the DataOpGate): history deletions that failed before it are not this operation's to report (they stay owed and are retried). Never opens `places.db`. */
+    fun beginHistoryScope() { historyRef?.beginScope() }
+
+    /** True when a history deletion THIS operation attempted (or one covering it) is still owed: only then does its Forget / Delete all report cleanup pending. */
+    fun historyScopePending(): Boolean = historyRef?.scopePending() ?: false
+
     /**
      * A user pin was removed (P1-4): attempts in flight that may hold it are fenced out (their publication, memory and history are refused), the card on the glasses is withdrawn, and the history rows that
      * name it are deleted under the history's write lock. The pin store is already written when this runs, so a row inserted after it is refused by the history's active-pin check.
