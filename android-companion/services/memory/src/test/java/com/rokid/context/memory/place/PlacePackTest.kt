@@ -493,4 +493,20 @@ class PlacePackTest {
         release.complete(Unit)
         assertTrue(db.dao().areas().isEmpty())
     }
+
+    @Test fun twoConcurrentSeedsOfOneAreaThenRemovalLeavesTheAreaRemoved() = run {
+        val box = GeoBox(17.30, 78.40, 17.36, 78.46)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val src = FakeSource { c -> release.await(); CellFetch(listOf(cornerPlace(c))) }
+        val p = pack(src)
+        @Suppress("OPT_IN_USAGE")
+        val a = kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.Default) { runCatching { p.seedArea("z", box) } }
+        @Suppress("OPT_IN_USAGE")
+        val b = kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.Default) { runCatching { p.seedArea("z", box) } }
+        kotlinx.coroutines.withTimeout(10_000) { while (src.asked.isEmpty()) kotlinx.coroutines.delay(10) }; kotlinx.coroutines.delay(300) // one seed is inside its fetch, the other has registered (it may wait for the fetch lock)
+        p.removeArea("z")
+        release.complete(Unit)
+        assertTrue(a.await().exceptionOrNull() is SeedStopped); assertTrue(b.await().exceptionOrNull() is SeedStopped)
+        assertTrue(db.dao().areas().isEmpty()) // neither seed's last write brought the area back
+    }
 }

@@ -49,8 +49,8 @@ class PromptRepository(
             val template = withContext(Dispatchers.IO) { seeds.template(key) }.trim()
             val schema = DefaultSchemas.text(key)
             if (template == active.template && schema == active.outputSchema) return
-            if (settings.keepVersions.value) dao.appendAndActivate(key.name, template, schema, PromptDefaults.UPDATED_NOTE, false, now())
-            else dao.overwriteActive(key.name, template, schema, PromptDefaults.UPDATED_NOTE, false, now())
+            // Compare-and-set against the exact text inspected above: if a save landed while the seed was loading, the stored row no longer equals it and nothing is written (the user's save wins).
+            dao.casSaveAll(listOf(CasWrite(key.name, active.template, active.outputSchema, template, schema, PromptDefaults.UPDATED_NOTE, false)), settings.keepVersions.value, now())
         }
     }
 

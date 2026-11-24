@@ -97,7 +97,8 @@ class PlacePack(
     @Volatile var budgetBytes: Long = budgetBytes.coerceAtLeast(MIN_BUDGET_BYTES); private set
     private val fetchLock = Mutex()
     /** The running seed per area id (its own child job): [removeArea] cancels and awaits it so a seed's last write cannot bring a removed area back. */
-    private val seeds = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    /** EVERY running seed per area (two callers may seed one area at once): a removal cancels and joins all of them. */
+    private val seeds = java.util.concurrent.ConcurrentHashMap<String, Set<Job>>()
     /** Advanced by [deleteAll] before it takes [fetchLock]: a fetch that began earlier discards its answer instead of re-inserting what Delete all removed. */
     private val wipeEpoch = java.util.concurrent.atomic.AtomicLong(0)
     /**
@@ -203,7 +204,7 @@ class PlacePack(
         val src = source
         if (cells.isEmpty() || cells.size > MAX_SEED_CELLS || src == null) { log("seed refused cells=${cells.size}"); return SeedResult(cells.size, 0, 0, if (src == null) cells.size else 0, 0) }
         val mine = Job(currentCoroutineContext()[Job])
-        seeds[blueZoneId] = mine
+        seeds.merge(blueZoneId, setOf(mine)) { a, b -> a + b }
         var stopped: String? = null
         val result: SeedResult? = try {
             withContext(mine + SeedAdmission(admit)) {
@@ -218,7 +219,7 @@ class PlacePack(
             if (mine.isCancelled && currentCoroutineContext().isActive) throw SeedStopped("area removed")
             throw e
         } finally {
-            seeds.remove(blueZoneId, mine); mine.cancel()
+            seeds.compute(blueZoneId) { _, cur -> (cur.orEmpty() - mine).ifEmpty { null } }; mine.cancel()
         }
         stopped?.let { log("seed stopped"); throw SeedStopped(it) } // one of a few fixed phrases: nothing about a position
         return result!!
@@ -271,7 +272,7 @@ class PlacePack(
      * flag and stay.
      */
     suspend fun removeArea(blueZoneId: String) {
-        seeds[blueZoneId]?.cancelAndJoin()
+        while (true) { val running = seeds[blueZoneId]?.toList().orEmpty(); if (running.isEmpty()) break; running.forEach { it.cancel() }; running.forEach { it.join() } }
         fetchLock.withLock {
             val left = db.withTransaction {
                 dao.deleteArea(blueZoneId)

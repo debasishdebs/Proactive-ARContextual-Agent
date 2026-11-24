@@ -167,4 +167,36 @@ class UserPlaceTest {
         prefs.edit().putString(UserPinStore.ARMED_KEY, "garbage").commit()
         assertNull("an unreadable record is no arming", store.arming()); assertTrue(store.hasArmingRecord())
     }
+
+    @Test fun theExportRequiresRealJsonScalarTypesAndNeverCoercesAnObjectIntoText() {
+        fun good() = org.json.JSONArray(UserPinStore.encode(listOf(pin()))).getJSONObject(0)
+        fun export(mut: (org.json.JSONObject) -> Unit): org.json.JSONArray = org.json.JSONArray(UserPinStore.withoutLinks(org.json.JSONArray().put(good().also(mut)).toString()))
+        assertEquals(1, export { }.length())
+        // private values nested in a string field never leave, and the element is dropped whole
+        val nested = UserPinStore.withoutLinks(org.json.JSONArray().put(good().put("note", org.json.JSONObject().put("moment", "0000abcd").put("at", 123))).toString())
+        assertEquals("[]", nested); assertFalse("0000abcd" in nested)
+        assertEquals(0, export { it.put("note", 42) }.length())
+        assertEquals(0, export { it.put("note", true) }.length())
+        assertEquals(0, export { it.put("note", org.json.JSONArray().put("x")) }.length())
+        assertEquals(0, export { it.put("name", 7) }.length())
+        assertEquals(0, export { it.put("name", org.json.JSONArray().put("Home")) }.length())
+        assertEquals(0, export { it.put("kind", org.json.JSONObject()) }.length())
+        assertEquals(0, export { it.put("id", 5) }.length())
+        assertEquals(0, export { it.put("lat", "17.3") }.length())
+        assertEquals(0, export { it.put("lon", org.json.JSONArray().put(1)) }.length())
+        assertEquals(0, export { it.put("r", "60") }.length())
+        assertEquals(0, export { it.put("r", 60.5) }.length())
+        assertEquals(0, export { it.put("parent", 3) }.length())
+        assertEquals(0, export { it.put("parent", org.json.JSONObject().put("a", 1)) }.length())
+        assertEquals(1, export { it.put("parent", org.json.JSONObject.NULL) }.length())
+    }
+
+    @Test fun theStoreStaysLenientAndIsNotRewrittenByTheStrictExport() {
+        val raw = org.json.JSONArray(UserPinStore.encode(listOf(pin()))).also { it.getJSONObject(0).put("note", 42) }.toString()
+        prefs.edit().putString("pins", raw).commit()
+        val store = UserPinStore(prefs)
+        assertEquals("42", store.pins().single().note) // the app's own read is unchanged
+        assertEquals("[]", UserPinStore.withoutLinks(prefs.getString("pins", null)!!))
+        assertEquals(raw, prefs.getString("pins", null)) // exporting rewrote nothing
+    }
 }
