@@ -62,7 +62,7 @@ class EndpointTester(
             } else {
                 val counted = EndpointReaches.of(e) != com.rokid.context.core.net.EndpointReach.DEVICE && !EndpointReaches.isLoopback(e)
                 val costly = counted && try { dataGate.costlyNow() } catch (_: Exception) { true }
-                val tx = DataBytes.requestBytes(com.rokid.context.model.ModelRequest(PROMPT))
+                val tx = DataBytes.requestBytes(com.rokid.context.model.ModelRequest(PROMPT, sources = com.rokid.context.model.PayloadSources.NONE))
                 val reply = try { chat(e, model, key) } catch (t: Throwable) { // the reply is never shown: model text is provider text
                     if (counted && !TrafficClass.provablyUnsent(t)) countTest(tx, 0, costly)
                     throw t
