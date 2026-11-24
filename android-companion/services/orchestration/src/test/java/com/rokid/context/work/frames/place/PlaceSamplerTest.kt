@@ -8,6 +8,7 @@ import com.rokid.context.memory.place.PlaceCandidates
 import com.rokid.context.memory.place.PlaceEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -43,6 +44,8 @@ class PlaceSamplerTest {
     private var saved = true
     private var photoOk = true
     private var v2 = false
+    private var retry = false
+    private var cell = CellOutcome.FRESH
     private var seed: List<Pair<String, Long>> = emptyList()
 
     private var fixCalls = 0
@@ -64,11 +67,11 @@ class PlaceSamplerTest {
 
     private fun sampler(scope: TestScope) = PlaceSampler(
         scope = scope, store = store, fix = { fixCalls++; fix },
-        candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, CellOutcome.FRESH) },
+        candidates = { _, _, _ -> candidateCalls++; PlaceCandidates(places, cell) },
         match = { id, lines -> matchCalls += id to lines; thrown?.let { throw it }; reply },
         saveMemory = { memories += it; saved }, onCard = { cards += it }, clock = { now }, enabled = { enabled }, zoneBlocked = { zone }, networkUp = { online }, zones = { zoneList },
         admit = { admit }, photoAllowed = { photoOk }, generation = { gen }, flight = flight, log = { logs += it }, stats = { outcomes += it },
-        dedupeV2On = { v2 }, seedRecent = { seed },
+        dedupeV2On = { v2 }, seedRecent = { seed }, retryOn = { retry },
     )
 
     private fun TestScope.poke(s: PlaceSampler = sampler(this)) { s.poke(); runCurrent() }
@@ -147,6 +150,50 @@ class PlaceSamplerTest {
     @Test fun seededFromHistory_suppressesAfterRestart() = runTest {
         v2 = true; seed = listOf("wd:Q1" to T0 - 60_000); poke()
         assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(cards.isEmpty()); assertTrue(lastLine().contains("card=suppressed"))
+    }
+
+    // ---- S3: F4 retry ----
+    private val pinId = "user:00000000-0000-0000-0000-000000000001"
+    private fun TestScope.retryNow(pin: String? = pinId, s: PlaceSampler = sampler(this)) { s.retryRecent(RetryReason.PIN_CREATED, pin); runCurrent() }
+
+    @Test fun retryOnPin_bypassesSeenOnce() = runTest {
+        retry = true; places = emptyList(); val s = sampler(this); poke(s)
+        assertEquals(PlaceOutcome.NO_CANDIDATES, outcomes.last())
+        places = listOf(place(pinId, "Test pin", radius = 30)); poke(s)
+        assertEquals("the same frame without a retry is SEEN", PlaceOutcome.SEEN, outcomes.last())
+        retryNow(s = s)
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(lastLine().contains("retry=pin_created")); assertEquals(1, cards.size)
+    }
+
+    @Test fun retryOnPin_notNear_noCall() = runTest {
+        retry = true; retryNow("user:00000000-0000-0000-0000-0000000000ff")
+        assertEquals(PlaceOutcome.NO_CANDIDATES, outcomes.last()); assertTrue(lastLine().contains("reason=retry_pin_not_near") && lastLine().contains("retry=pin_not_near")); assertEquals(0, matchCalls.size)
+    }
+
+    @Test fun retryOff_isNoOp() = runTest {
+        retry = false; retryNow(); assertTrue(outcomes.isEmpty())
+    }
+
+    @Test fun retry_respectsZoneAndCallGap_delayedOnce() = runTest {
+        retry = true; places = listOf(place(pinId, "Test pin", radius = 30)); poke()
+        assertEquals(1, matchCalls.size)
+        again(5_000, "f2"); retryNow()
+        assertEquals(PlaceOutcome.RATE_LIMITED, outcomes.last()); assertEquals(1, matchCalls.size)
+        now += 20_000; advanceTimeBy(20_001); runCurrent()
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertEquals(2, matchCalls.size)
+        zone = true; retryNow(); assertEquals(PlaceOutcome.ZONE, outcomes.last()); assertEquals(2, matchCalls.size)
+    }
+
+    @Test fun packFailed_frameNotHandled_retriedNextPoke() = runTest {
+        retry = true; places = emptyList(); cell = CellOutcome.FAILED; val s = sampler(this); poke(s)
+        assertEquals(PlaceOutcome.NO_CANDIDATES, outcomes.last())
+        places = listOf(place("wd:Q1", "Charminar")); cell = CellOutcome.FRESH; poke(s)
+        assertEquals(PlaceOutcome.MATCHED, outcomes.last()); assertTrue(lastLine().contains("retry=cell_retry"))
+    }
+
+    @Test fun packFreshEmpty_staysHandled() = runTest {
+        retry = true; places = emptyList(); cell = CellOutcome.FRESH; val s = sampler(this); poke(s); poke(s)
+        assertEquals(PlaceOutcome.SEEN, outcomes.last())
     }
 
     @Test fun anActiveOrApproachingZoneNeverReadsAFixNorCallsTheNetworkOrTheModel() = runTest {

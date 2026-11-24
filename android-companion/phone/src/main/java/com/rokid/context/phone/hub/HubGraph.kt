@@ -24,6 +24,7 @@ import java.io.File
 /** Process-wide hub (no DI in v1). `ContextApp` has already initialised [MemoryGraph]. */
 object HubGraph {
     @Volatile private var hub: Hub? = null
+    @Volatile private var placeRetryJob: kotlinx.coroutines.Job? = null
 
     fun get(context: Context): Hub = hub ?: synchronized(this) { hub ?: build(context.applicationContext).also { hub = it } }
 
@@ -204,6 +205,9 @@ object HubGraph {
             zones = { com.rokid.context.phone.zone.ZoneGraph.get(app).zonesForCheck() },
             onCard = com.rokid.context.work.frames.place.PlaceGraph.port::publish,
         )
+        // F4: a pin the user just saved asks the sampler to look again at the frame in view (one retry; the collector ends with the hub's scope and is replaced at a restart).
+        placeRetryJob?.cancel()
+        placeRetryJob = ctxScope.launch { com.rokid.context.work.frames.place.PlaceGraph.pinCreated.collect { id -> com.rokid.context.work.frames.KeyframeGraph.placeSampler?.retryRecent(com.rokid.context.work.frames.place.RetryReason.PIN_CREATED, id) } }
         // Opt-in, default off. Calls only inside a vehicle episode a listed Bluetooth device started; never pauses or throttles capture.
         ctxRegistry.register(com.rokid.context.phone.context.ImageIntentSource(
             sinkFor = ctxHub::sinkFor, decision = { ctxHub.decision.value }, stats = ctxHub.stats,

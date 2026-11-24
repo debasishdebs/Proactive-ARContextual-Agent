@@ -53,7 +53,7 @@ class TripReplaySyntheticTest {
 
     @Test fun nestedRoomPins_indoorFix_neverShowsAWrongRoom() {
         val scenarios = listOf(FixScenario.AsRecorded, FixScenario.Outdoor10, FixScenario.Indoor60, FixScenario.Stale, FixScenario.AssumedPin(60f))
-        val overlays = listOf(Overlays.HEAD, Overlays.F1, Overlays.f2(10), Overlays.F4, Overlays.ALL)
+        val overlays = listOf(Overlays.HEAD, Overlays.F1, Overlays.f2(10), Overlays.ALL)
         for (sc in scenarios) for (ov in overlays) {
             val r = replay(RunSpec(Oracle, sc, overlays = ov))
             for (row in rowsIn(r, rooms.first, rooms.last)) {
@@ -86,18 +86,14 @@ class TripReplaySyntheticTest {
         assertTrue(head.filter { it.isSuppressed }.all { it.cardWhy == "already_shown_here" && it.outcome == PlaceOutcome.MATCHED })
     }
 
-    @Test fun pinCreatedAfterFacade_headSeesNoCandidatesThenSeen() {
-        val rows = rowsIn(replay(RunSpec(Oracle, FixScenario.Outdoor10)), facade.first, facade.last)
+    @Test fun pinCreatedAfterFacade_retryLooksAgainAtTheFrameInView() {
+        val r = replay(RunSpec(Oracle, FixScenario.Outdoor10))
+        val rows = rowsIn(r, facade.first, facade.last)
         assertEquals(listOf(PlaceOutcome.NO_CANDIDATES, PlaceOutcome.NO_CANDIDATES, PlaceOutcome.SEEN), rows.map { it.outcome })
-    }
-
-    @Test fun pinCreatedAfterFacade_f4_retriesFrameInView() {
-        val r = replay(RunSpec(Oracle, FixScenario.Outdoor10, overlays = Overlays.F4))
         val extra = r.rows.filter { it.extra == "+F4" }
         assertEquals(1, extra.size)
         assertEquals(PlaceOutcome.MATCHED, extra[0].outcome); assertEquals("Site D", extra[0].chosenName); assertEquals(X + 1_000, extra[0].pokeMs)
-        // HEAD has no such row
-        assertTrue(replay(RunSpec(Oracle, FixScenario.Outdoor10)).rows.none { it.extra == "+F4" })
+        assertTrue(extra[0].attemptLine.contains("retry=pin_created"))
     }
 
     @Test fun indoorAfterOneGoodFix_f2_reusesWithinNMinutesOnly() {

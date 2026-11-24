@@ -68,6 +68,8 @@ class PlacePinning(
     private val wallClock: () -> Long = System::currentTimeMillis,
     /** Runs [run] after [delayMs]; returns the cancel. Replaced by a fake in tests. */
     private val schedule: (delayMs: Long, run: () -> Unit) -> () -> Unit = DefaultTimer::schedule,
+    /** F4: told the id of a pin right after it was saved (the pin dialog's create only). */
+    private val onCreated: (String) -> Unit = {},
 ) {
     private class Draft(val lat: Double, val lon: Double, val accuracyM: Float, val at: Long) { @Volatile var cancelTimer: () -> Unit = {} }
     @Volatile private var draft: Draft? = null
@@ -111,6 +113,7 @@ class PlacePinning(
             if (!save(now + pin)) return@withLock PinResult.Refused(PinRefusal.NOT_STORED)
             log("pin created count=${now.size + 1}")
             if (pin.momentId != null) log("pin moment linked")
+            try { onCreated(pin.id) } catch (_: Exception) { }
             PinResult.Saved(pin)
         }
     }
