@@ -1,6 +1,6 @@
 # PCA roadmap
 
-Status as of **2026-11-20**. One row per version. Versions after 1.0.0 are plans, not promises; dates are targets.
+Status as of **2026-11-24**. One row per version. Versions after 1.0.0 are plans, not promises; dates are targets.
 
 Legend: `[x]` ✅ done and released/tagged · `[ ]` ⚪ ongoing (in progress, not tagged yet) · `[ ]` ❌ not done / TBD
 
@@ -38,6 +38,10 @@ Scopes below come from the git tag messages and the feature commits between tags
   - [ ] ⚪ **1.4.4** semantic ranking (slices A and B1 BUILT, shadow-only, flag off by default, in the staged train `eac23a5c`; SigLIP 2 and thresholds still to do): location, then embedding score of the pin's Moment, then the vision model only for borderline cases; thresholds tuned on an eval. Shadow mode first (scores logged, cards unchanged). Image scoring needs an image-text embedder: add a second, separate space (primary SigLIP 2 base patch16-224, Apache-2.0; fallback SigLIP v1 base; MobileCLIP/MobileCLIP2 excluded: research-only weights), kept only if it beats Nomic on the home pins and monuments; text space unchanged. Embedder milestones T (text tokenizer, 80/80 golden parity) and V (vision tower: preprocessing bit-exact vs HF, ONNX cosine >= 0.9999999999999986 vs python onnxruntime; `pooler_output` selected by name; the int8 model depends on batchmates so one image per run; JVM warm ~54 ms/image) are BUILT on the branch and not wired; remaining: text tower session + catalog/download + space registration + eval. Embedder work about 8-10.5 agent-days per the integration spike (`docs/superpowers/plans/2026-11-20-siglip2-integration-spike.md`: ~382 MB download, ONNX Runtime 1.31 opset 14 fits, BPE tokenizer 1-1.5 days in pure Kotlin, output 1 `pooler_output` not output 0; cheapest first milestone = vision tower only, 4-5 days), after the 26 Nov freeze; ranking logic 2-2.5 days (`docs/superpowers/plans/2026-11-20-image-embedder-comparison.md`).
   - [ ] ❌ **1.4.5** offline backend: small on-device vision model (shortlist Qwen3-VL-2B, SmolVLM2-2.2B; llama.cpp `mtmd`) behind the resolver. About 8.5 agent-days to a benchmarkable build plus a device session; speed is the main risk (15-35 s estimated until a dotprod/i8mm library build). Starts only after the embedding models are finalised (1.4.4: text embedder kept, plus a CLIP-family image-text embedder added). Starting models: Qwen3-VL-2B or SmolVLM2. Target before Sri Lanka, hard cutoff 20 Dec (`docs/superpowers/plans/2026-11-20-offline-vision-model-exploration.md`).
   - [ ] ⚪ **data saver** (slices 1 and 2 BUILT and verified in the staged train `eac23a5c` (counters, optional daily caps, Send once), review rounds READY; slice 2 P2 fix round in progress; needs the user's answers and an install before Sikkim)
+  - [ ] ⚪ **1.4.7 trip fixes (24 Nov, built on the branch, in verification and Codex review, not installed)**: hub auto-start from the glasses ACL connect and watch motion (guarded, never over a manual stop or a phone pause; the glasses address is learned so the Bluetooth wake can fire); retention no longer redacts or drops anything on system expiry (nudges, answers, Moments, Scenes), with a Developer "Pause clean-up" switch (default ON for this build), "expired" vs "forgotten" wording, counts-only plan/result logs and a one-shot Moment and Scene repair; pin/Forget fixes from five Codex and Opus rounds (confirmed pin ids bound to every Forget, strict pin export, durable owed pin deletions); partial place-cell backoff (5 min to 1 h, was 24 h) and faster Overpass failover; map zones screen phase P0 (seeded areas and pins on the map, draw a box and seed it with an estimate, remove areas, per-request privacy re-check); extract prompt asks for visible sign names; offline trip replay harness (real frames, pins and GPS through the real sampler).
+  - [ ] ⚪ **1.4.8 place fixes (in progress overnight 24-25 Nov)**: pin-first location card with an ambiguity rule, fix reuse while dwelling, dedupe that weak answers cannot consume, retry when a pin is created, card history on the phone (places.db v2, 90 days, survives retention) with "show on glasses again".
+  - [ ] ❌ **1.4.9 map zones P1-P3**: full-height screen with circle, handles, Pause/Seed type sheet, offline map download with size estimate (needs a ruling on MapTiler terms), and a Moments density layer once Moments carry a location.
+  - [ ] ❌ **Moment location (Room v18, optional setting, local only)** and GPS backfill from media EXIF where available, never forced.
   - [ ] ❌ **1.4.6** pack Moments: online and offline pack places turned into Moments so every source uses one matching path.
 - [ ] ❌ **v1.x chores**: real release signing key (after Sri Lanka), GitHub `release` environment, nightly photo-describe job zone fence (needs a ruling), Room v18 rulings as they arise.
 
@@ -72,6 +76,13 @@ Rokid-Coder is a fork of the Rokid Nexus hub that shows Claude Code and Codex se
 - [ ] ❌ **1.0**: published release; macOS and Windows where feasible.
 - [ ] ❌ **1.1**: Windows support at any cost; follow-ups from the hardware checks.
 - [ ] ❌ **PCA + Rokid-Coder link lease**: a design for arbitrating the shared glasses link, only if the half-day coexistence measurement shows contention (field evidence so far shows none).
+
+## Known backlog called out for v1.9 / v2
+
+- [ ] ❌ **Glasses app closes on the glasses** (about 23 short capture gaps of 1-8 min over the 21-23 Nov trip, roughly 10% of capture time; the phone reopens it after ~8 s but at most about twice an hour). Needs a glasses-side reason log before it can be fixed. Not scheduled before v1.9.
+- [ ] ❌ **Retention P2**: re-point dependents to a durable record before expiry, exempt place-card, mark and pin photos, a user-visible retention preview.
+- [ ] ❌ **Explicit phone pause** is not changed (user ruling): no reminder or prompt.
+- [ ] ❌ **Glasses pop-up delivery**: cards show only as a pop-up (12 s) when the glasses screen is on; the glasses do not report skipped pop-ups. Card history on the phone is the interim answer.
 
 ## Not planned for now
 
