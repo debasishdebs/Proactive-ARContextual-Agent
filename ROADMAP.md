@@ -99,5 +99,5 @@ Feature batches are minor releases, fixes are patches (1.x.y). Release branches 
 | 1.8.0 | Retention P2, map zones P1 |
 | 1.9.x | canvas line (old v2.1-v2.5) |
 | 1.10.0 | offline vision model (old 1.4.5) |
-| 2.0.x | Nexus plugin line (old v1.5-v2.0 rows below are Nexus plugin versions) |
+| 1.11.x | Nexus plugin line (old v1.5-v2.0 rows below are Nexus plugin versions; 2.x is reserved for after the 2.0 release) |
 | 3.0 | proactive agent loop |
