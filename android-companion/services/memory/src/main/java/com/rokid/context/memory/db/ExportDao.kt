@@ -32,6 +32,7 @@ interface ExportDao {
     @Query(
         "SELECT m.rowid AS rowid, m.id, m.text, m.type, m.tags, m.tier, m.confidence, m.reviewState, m.createdAt, m.frameId, m.imageDelivered, m.reviewFlaggedAt FROM memory m " +
             "WHERE m.rowid > :after AND ${ProvenanceSql.LIVE_DERIVED} " +
+            "AND NOT EXISTS (SELECT 1 FROM frame fi WHERE fi.id = m.frameId AND fi.source = '${FrameSources.DEV_IMPORT}') " + // WP8: a Developer-imported test photo is not a real capture
             "ORDER BY m.rowid LIMIT :limit",
     )
     suspend fun memoryPage(after: Long, limit: Int): List<MemoryExportRow>

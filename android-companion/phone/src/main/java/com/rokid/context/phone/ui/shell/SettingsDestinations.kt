@@ -349,6 +349,11 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onDevSessionHours = { h -> dev.setSessionHours(h); CanvasGraph.get(app).revokeAll() }, // the new rule starts clean: every current pairing ends
             askZoneFence = askZoneFenceOn, onAskZoneFence = { on -> com.rokid.context.orchestration.AskZoneFence.setEnabled(app, on); askZoneFenceOn = on },
             pauseRetention = pauseRetentionOn, onPauseRetention = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setPauseRetention(app, on); pauseRetentionOn = on },
+            testPlace = if (devOn) remember(app) {
+                com.rokid.context.phone.place.AndroidPlaceGuideControl(app) { com.rokid.context.phone.hub.ContextHubService.refreshLocationType(it) }.pinning
+                    ?.let { p -> com.rokid.context.phone.devtest.DevTestImport.create(app, p) }
+                    ?.let { c -> @androidx.compose.runtime.Composable { com.rokid.context.phone.devtest.DevTestPlaceSection(c) } }
+            } else null,
             mapZonesV2 = mapZonesV2On, onMapZonesV2 = { on -> com.rokid.context.orchestration.forget.DeveloperFlags.setMapZonesV2(app, on); mapZonesV2On = on },
             sensorRecHz = s.hud.settings.collectAsStateWithLifecycle().value.sensorRecHz,
             onSensorRecHz = { hz -> s.hud.update { it.copy(sensorRecHz = hz).normalized() } },
