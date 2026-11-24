@@ -15,6 +15,9 @@ abstract class MomentDao : DerivedStaleDao() {
     @Query("SELECT * FROM moment WHERE momentId = :id") abstract suspend fun moment(id: String): MomentEntity?
     @Query("SELECT * FROM moment ORDER BY momentId") abstract suspend fun allMoments(): List<MomentEntity>
     @Query("SELECT * FROM moment WHERE momentId >= :fromId AND momentId <= :toId ORDER BY momentId") abstract suspend fun momentsBetween(fromId: String, toId: String): List<MomentEntity>
+    /** Retention repair: the stored Moments in `[fromId, toId]` that no Scene holds (a Scene gap), oldest first. */
+    @Query("SELECT m.momentId FROM moment m WHERE m.momentId >= :fromId AND m.momentId <= :toId AND NOT EXISTS (SELECT 1 FROM scene_part p WHERE p.kind = 'MOMENT' AND p.refId = m.momentId) ORDER BY m.momentId")
+    abstract suspend fun momentIdsWithoutScene(fromId: String, toId: String): List<String>
     @Query("SELECT * FROM moment_part WHERE momentId = :id ORDER BY kind, refId") abstract suspend fun parts(id: String): List<MomentPartEntity>
     @Query("SELECT * FROM moment_part WHERE momentId IN (:ids) ORDER BY momentId, kind, refId") abstract suspend fun partsOf(ids: List<String>): List<MomentPartEntity>
     @Query("SELECT momentId FROM moment WHERE momentId >= :fromId AND momentId <= :toId ORDER BY momentId") abstract suspend fun momentIdsBetween(fromId: String, toId: String): List<String>

@@ -49,13 +49,52 @@ class MomentRepairTest {
 
     @Test fun aDayWithNothingMissingIsLeftAlone() = runBlocking<Unit> {
         fx.frame("a", MS + 5)
-        moments.build(listOf(MomentId.format(SEC)))
+        moments.build(listOf(MomentId.format(SEC))); scenes.rebuildWindow(MS, MS + 999) // the Moment and its Scene both exist
         val r = repair.run(now, days = 3)
-        assertEquals(0, r.daysRepaired); assertEquals(0, r.momentsStored)
+        assertEquals(0, r.daysRepaired); assertEquals(0, r.momentsStored); assertEquals(0, r.scenesMissing)
     }
 
     @Test fun aForgottenPhotoIsNotCounted() = runBlocking<Unit> {
         fx.frame("a", MS + 5); db.forgetDao().insertTombstone(ForgetTombstoneEntity("a", 1))
         assertEquals(0, repair.run(now, days = 3).missing)
+    }
+
+    /** Retention r1 finding 6: a Moment that exists keeps its stored content; only the missing second is built. */
+    @Test fun repairNeverOverwritesAMomentThatIsRetained() = runBlocking<Unit> {
+        fx.frame("a", MS + 5); fx.memory("m1", "a")
+        moments.build(listOf(MomentId.format(SEC)))
+        val kept = db.momentDao().moment(MomentId.format(SEC))!!.copy(text = "RETAINED TEXT, its source fact expired")
+        db.momentDao().replace(kept, db.momentDao().parts(kept.momentId))
+        fx.frame("b", MS + 3000) // the missing second
+        val r = repair.run(now, days = 3)
+        assertEquals(1, r.missing); assertEquals(1, r.momentsStored)
+        assertEquals("RETAINED TEXT, its source fact expired", db.momentDao().moment(MomentId.format(SEC))!!.text)
+        assertTrue(db.momentDao().moment(MomentId.format(SEC + 3)) != null)
+    }
+
+    /** Finding 7: a Scene gap is repaired on its own (Moments all present), and a run whose Scene pass failed is resumed by the next one. */
+    @Test fun sceneGapsAreRepairedIndependentlyAndAFailedScenePassIsResumed() = runBlocking<Unit> {
+        fx.frame("a", MS + 5); fx.frame("b", MS + 2000)
+        var failing = true
+        val flaky = SceneBuilder(db, enabled = { if (failing) throw IllegalStateException("scene pass failed") else true }, clock = { 5 })
+        val r1 = runCatching { MomentRepair(db, moments, flaky) { ZoneOffset.UTC }.run(now, days = 3) }
+        assertTrue("the Scene pass failed after the Moment pass committed", r1.isFailure)
+        assertEquals(2, db.momentDao().allMoments().size); assertEquals(0, db.sceneDao().sceneCount())
+        failing = false
+        val r2 = MomentRepair(db, moments, flaky) { ZoneOffset.UTC }.run(now, days = 3)
+        assertEquals("no Moment gap any more", 0, r2.missing); assertEquals(0, r2.momentsStored)
+        assertEquals(2, r2.scenesMissing); assertTrue(r2.scenesStored >= 1); assertTrue(db.sceneDao().sceneCount() >= 1)
+        assertEquals("then nothing is left", 0, repair.run(now, days = 3).scenesMissing)
+    }
+
+    /** Finding 8: the work is chunked (builds of a few seconds, Scenes one clock hour at a time) and the result is the same. */
+    @Test fun chunkedRepairBuildsEverySecondAndEveryHour() = runBlocking<Unit> {
+        for (i in 0 until 5) fx.frame("f$i", MS + i * 1000L + 5)
+        fx.frame("h2", MS + 3_600_000L + 5) // the next clock hour
+        val small = MomentRepair(db, moments, scenes, chunkSeconds = 2) { ZoneOffset.UTC }
+        val r = small.run(now + 2 * 3_600_000L, days = 3)
+        assertEquals(6, r.missing); assertEquals(6, r.momentsStored); assertEquals(6, db.momentDao().allMoments().size)
+        assertEquals(6, r.scenesMissing); assertTrue("one Scene pass per hour", r.scenesStored >= 2)
+        assertEquals(0, db.momentDao().momentIdsWithoutScene(MomentId.format(SEC - 10), MomentId.format(SEC + 10_000)).size)
     }
 }
