@@ -107,6 +107,20 @@ class PlacePinning(
         if (elapsed() - d.at > DRAFT_TTL_MS) return PinResult.Refused(PinRefusal.DRAFT_EXPIRED)
         if (zoneRefuses(d.lat, d.lon, d.accuracyM)) { log("pin refused zone"); return PinResult.Refused(PinRefusal.ZONE) }
         val pin = UserPlace(newId(), UserPlace.cleanName(form.name), form.kind, d.lat, d.lon, form.radiusM, form.parentId?.takeIf { it.isNotBlank() }, UserPlace.cleanNote(form.note), moment, wallClock())
+        return store(pin)
+    }
+
+    /**
+     * WP8 (Developer test place): a pin at TYPED coordinates, with no fix. The same zone refusal (the point itself, accuracy 0, and the controller's state) and the same validation as [create]. Never used by the normal pin dialog.
+     */
+    suspend fun createAt(lat: Double, lon: Double, form: PinForm): PinResult {
+        if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return PinResult.Refused(PinRefusal.INVALID)
+        if (zoneRefuses(lat, lon, 0f)) { log("pin refused zone"); return PinResult.Refused(PinRefusal.ZONE) }
+        val pin = UserPlace(newId(), UserPlace.cleanName(form.name), form.kind, lat, lon, form.radiusM, null, UserPlace.cleanNote(form.note), null, wallClock())
+        return store(pin)
+    }
+
+    private suspend fun store(pin: UserPlace): PinResult {
         return writeLock.withLock {
             val now = load()
             if (!pin.isValid || now.size >= com.rokid.context.memory.place.UserPinStore.MAX_PINS) return@withLock PinResult.Refused(PinRefusal.INVALID)

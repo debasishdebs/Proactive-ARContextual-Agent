@@ -35,6 +35,14 @@ data class FrameMetaEntity(
     @ColumnInfo(defaultValue = "NULL") val markRef: String? = null,
 )
 
+/**
+ * WP8: the frame `source` of a photo the Developer imported into a test place (a URL or the photo picker). It keeps the `rokid` prefix the pipeline requires, so the photo is described like any other, but it is
+ * never a real capture: the memory export leaves its memories out ([ExportDao]) and the detail screen says "Imported (test)". Nothing else reads it.
+ */
+object FrameSources {
+    const val DEV_IMPORT = "rokid_dev_import"
+}
+
 enum class FrameState { PENDING, EXTRACTING, EXTRACTED, CLUSTERED, NEAR_DUP, FAILED, FAILED_FINAL, IN_CLUSTER, CAPTION_QUEUED }
 
 enum class ClusterState { OPEN, CLOSED, SUMMARIZING, SUMMARIZED, FAILED, FAILED_FINAL }

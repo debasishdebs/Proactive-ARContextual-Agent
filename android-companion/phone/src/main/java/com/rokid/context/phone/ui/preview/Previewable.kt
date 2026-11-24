@@ -106,6 +106,7 @@ class MemoryPreview(private val m: MemoryEntity, private val frame: FrameEntity?
             "Confidence" to "${(m.confidence * 100).toInt()}%",
             d.tags.takeIf { it.isNotEmpty() }?.let { "Tags" to it.joinToString(" · ") },
             "Saved" to d.createdLabel,
+            if (d.imported) "Source" to "Imported (test photo)" else null,
         )),
         AudioSection,
     )

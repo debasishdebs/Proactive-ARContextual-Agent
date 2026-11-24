@@ -25,6 +25,8 @@ data class MemoryDetailUiState(
     /** Retention deleted the photo but kept the memory (Ruling 11): [MemoryDetailModel.PHOTO_EXPIRED] is shown in its place. */
     val photoExpired: Boolean = false,
     val frameId: String? = null,
+    /** WP8: the photo was imported by the Developer into a test place (not a real capture). */
+    val imported: Boolean = false,
     /** Non-null while editing. */
     val draft: String? = null,
     val message: String? = null,
@@ -64,6 +66,7 @@ object MemoryDetailModel {
         framePath = frame?.path,
         photoExpired = m.frameId != null && frame == null,
         frameId = m.frameId,
+        imported = frame?.source == com.rokid.context.memory.db.FrameSources.DEV_IMPORT,
     )
 }
 

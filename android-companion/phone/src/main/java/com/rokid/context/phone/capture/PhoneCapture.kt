@@ -74,31 +74,34 @@ class PhoneCapture(
 
     fun discard(file: File) { runCatching { file.delete() } }
 
-    suspend fun ingest(file: File): Boolean = withContext(io) {
+    suspend fun ingest(file: File): Boolean = ingestTo(file, SOURCE) != null
+
+    /** [ingest] with another frame [source] (it must keep the `rokid` prefix; WP8 uses it for Developer test photos): the scaled archive file that was handed to [enqueue], or null. */
+    suspend fun ingestTo(file: File, source: String): File? = withContext(io) {
         try {
-            if (!file.isFile || file.length() == 0L) return@withContext false
+            if (!file.isFile || file.length() == 0L) return@withContext null
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }.also { BitmapFactory.decodeFile(file.path, it) }
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext false
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
             var sample = 1
             while (bounds.outWidth / (sample * 2) >= MAX_WIDTH) sample *= 2
-            val decoded = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return@withContext false
+            val decoded = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return@withContext null
             val scaled = if (decoded.width <= MAX_WIDTH) decoded else
                 Bitmap.createScaledBitmap(decoded, MAX_WIDTH, (decoded.height.toLong() * MAX_WIDTH / decoded.width).toInt().coerceAtLeast(1), true)
-            val out = File(RokidFrameInbox.archiveDir(app).apply { mkdirs() }, "${SOURCE}_${clock()}.jpg")
+            val out = File(RokidFrameInbox.archiveDir(app).apply { mkdirs() }, "${source}_${clock()}.jpg")
             val buf = ByteArrayOutputStream()
             val ok = scaled.compress(Bitmap.CompressFormat.JPEG, QUALITY, buf)
             if (scaled !== decoded) scaled.recycle()
             decoded.recycle()
-            if (!ok) return@withContext false
+            if (!ok) return@withContext null
             // Gaps G1: sealed while "Encrypt memory" is on; written whole (temp, fsync, rename) so no reader sees half a file.
             AtomicJpegWriter.write(out, FrameImages.forDisk(buf.toByteArray()))
-            enqueue(out, SOURCE)
-            true
+            enqueue(out, source)
+            out
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
             PcLog.i(TAG, "capture ingest failed (${e.javaClass.simpleName})")
-            false
+            null
         } finally {
             discard(file)
         }

@@ -332,6 +332,8 @@ fun DiagnosticsScreen(
     /** Map zones P1: the new full-height Map zones screen. Default OFF (the shipped Pause zones screen); shown only with [developerMode]. */
     mapZonesV2: Boolean = false,
     onMapZonesV2: (Boolean) -> Unit = {},
+    /** WP8: the Developer "test place and test photos" section (null = not available). Shown only with [developerMode]. */
+    testPlace: (@Composable () -> Unit)? = null,
     /** Room v16 suspect descriptions: mark one, mark every one, undo the last marking. */
     onMarkSuspect: (String) -> Unit = {},
     onMarkAllSuspects: () -> Unit = {},
@@ -457,6 +459,7 @@ fun DiagnosticsScreen(
                     if (sensorRecHz > 0) NoticeText(SensorRecCopy.warning(sensorRecHz), error = true, tag = "sensor_rec_warning")
                     ChoiceRow("Keep canvas pairing", CanvasSessionCopy.HOURS.map { CanvasSessionCopy.label(it) }, CanvasSessionCopy.HOURS.indexOf(devSessionHours).coerceAtLeast(0), { onDevSessionHours(CanvasSessionCopy.HOURS[it]) }, tag = "dev_session_hours")
                     NoticeText(CanvasSessionCopy.note(devSessionHours), tag = "dev_session_note")
+                    testPlace?.invoke()
                 }
             }
             if (onOpenPhotoDimTest != null) {

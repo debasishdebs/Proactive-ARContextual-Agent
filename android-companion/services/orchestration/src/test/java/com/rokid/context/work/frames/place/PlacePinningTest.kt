@@ -58,6 +58,17 @@ class PlacePinningTest {
         assertEquals(listOf(r.place), stored)
     }
 
+    @Test fun createAtMakesAPinAtTypedCoordinatesAndNeverInsideAZone() = runBlocking {
+        val p = pinning()
+        val r = p.createAt(12.5, 77.25, PinForm("Shop", PlaceKinds.ATTRACTION, 60, null, "note")) as PinResult.Saved
+        assertEquals(12.5, r.place.lat, 0.0); assertEquals(77.25, r.place.lon, 0.0); assertNull(r.place.momentId); assertEquals(listOf(r.place.id), created)
+        assertEquals(PinRefusal.INVALID, (p.createAt(Double.NaN, 1.0, form) as PinResult.Refused).why)
+        assertEquals(PinRefusal.INVALID, (p.createAt(91.0, 1.0, form) as PinResult.Refused).why)
+        zone = true
+        assertEquals(PinRefusal.ZONE, (p.createAt(12.5, 77.25, form) as PinResult.Refused).why)
+        assertEquals(1, stored.size)
+    }
+
     @Test fun defaultRadiusIs60Metres() { assertEquals(60, UserPlace.DEFAULT_RADIUS_M); assertEquals(60, PinForm("x", PlaceKinds.VIEWPOINT).radiusM) }
 
     @Test fun insideOrNearAZoneOrWithAnUnknownZoneStateNothingIsPinned() = runBlocking {
