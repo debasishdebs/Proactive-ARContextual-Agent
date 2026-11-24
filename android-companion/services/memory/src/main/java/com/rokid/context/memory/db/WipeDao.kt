@@ -51,7 +51,7 @@ abstract class WipeDao {
     @Query("INSERT INTO canvas_helper_cleanup (jobId, reason, createdAt) VALUES ('*', 'delete_all', :now)") protected abstract suspend fun slice3WildcardCleanup(now: Long)
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'canvas\\_save:%' ESCAPE '\\'") protected abstract suspend fun canvasSaveMarkers()
-    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_undone:%' ESCAPE '\\' OR `key` LIKE 'mark\\_claim:%' ESCAPE '\\'") protected abstract suspend fun markUndoneMarkers()
+    @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_undone:%' ESCAPE '\\' OR `key` LIKE 'mark\\_claim:%' ESCAPE '\\' OR `key` LIKE 'mark\\_cleanup\\_owed:%' ESCAPE '\\'") protected abstract suspend fun markUndoneMarkers()
     /** Retention lineage of older builds (`lin:`, no longer written) and the expired-photo markers (`rx:`, `ExpiryMarks`): ids and times only, but they name what retention expired, so Delete all removes them. */
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'lin:%' OR `key` LIKE 'rx:%'") protected abstract suspend fun retentionLineage()
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'momentForgetRanges'") protected abstract suspend fun momentClearForgetRanges(): Int

@@ -188,6 +188,9 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
     // The allowance of a mark's photo through a pause is claimed DURABLY (canvas_meta `mark_claim:<labelId>` = the frame id): no in-memory eviction or restart can hand it to a second frame.
     @Query("DELETE FROM canvas_meta WHERE `key` LIKE 'mark\\_claim:%' ESCAPE '\\' AND substr(`key`, 12) NOT IN (SELECT labelId FROM canvas_label)") protected abstract suspend fun pruneMarkClaims(): Int
 
+    /** `mark_cleanup_owed:<labelId>` keys (value = a frame id) whose frame has no row any more: candidates for pruning once no file or cached export is left (the caller checks that). */
+    @Query("SELECT * FROM canvas_meta WHERE `key` LIKE 'mark\\_cleanup\\_owed:%' ESCAPE '\\' AND value NOT IN (SELECT id FROM frame) ORDER BY `key` LIMIT :limit") abstract suspend fun owedCleanupWithoutFrame(limit: Int): List<CanvasMetaEntity>
+
     /** True when [frameId] holds (or just took) the one claim of mark [labelId]; false when another frame id already does or the mark is no longer a live, pending, unlinked one (refused: the frame is dropped like a photo of an undone mark). Atomic: the first writer wins. */
     @Transaction open suspend fun claimMarkPhoto(labelId: String, frameId: String): Boolean {
         // validated INSIDE this transaction: a mark that was undone, forgotten or wiped between the admission's read and now (or that already has its photo) takes no claim and leaves no row behind

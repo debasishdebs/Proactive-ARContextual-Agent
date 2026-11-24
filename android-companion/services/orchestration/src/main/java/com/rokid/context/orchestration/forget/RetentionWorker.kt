@@ -47,6 +47,8 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         runCatching { RetentionMigration.runOnce(graph.db, now) }.onFailure { PcLog.w(TAG, "retention migration failed (next run retries): ${SafeLog.describe(it)}") }
         // r2-7: the file-retry sweep always runs: Pause must never strand a user's Forget JPEGs.
         FrameSweep.sweep(applicationContext)
+        // settled mark-undo cleanup obligations (`mark_cleanup_owed:`) are pruned here too, so an abandoned one cannot accumulate
+        runCatching { com.rokid.context.canvas.marks.MarkRecorder.pruneSettledOwed(graph.db.canvasSlice3Dao()) { ForgetActions.cleanupStillOwed(applicationContext, it) } }
         val retention = Retention(graph, service, usedBytes = { StorageMeter.usedBytes(applicationContext) }, protectedFrames = { QuotaProtection.frames(applicationContext) })
         if (DeveloperFlags.pauseRetention(applicationContext)) {
             // P0: the Developer "Pause clean-up" switch skips EVERY deleting step, quota eviction included (default ON for the retention candidate). One counts-only line says what would be due.
