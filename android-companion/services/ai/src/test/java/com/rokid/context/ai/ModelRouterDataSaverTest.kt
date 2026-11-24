@@ -15,6 +15,9 @@ import com.rokid.context.model.ModelProvider
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.core.net.SendOnce
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -38,13 +41,14 @@ class ModelRouterDataSaverTest {
     private var failWith: Throwable? = null
     private var onPermit: () -> Unit = {}
     private var onGenerate: () -> Unit = {}
+    private var onVision: suspend () -> Unit = {}
     private val callGate = object : CallGate {
         override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T { permits += callClass; onPermit(); return block() }
     }
     private val providers = ProviderBuilder { e, model, _ ->
         object : ModelProvider {
             override suspend fun generate(prompt: String): String { providerCalls += "${e.id}:text"; onGenerate(); failWith?.let { throw it }; if (e.id in failing) error("boom"); return "${e.id}/$model" }
-            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { providerCalls += "${e.id}:vision"; failWith?.let { throw it }; if (httpFailure) throw ProviderHttpException(500, "x", ""); return "${e.id}/vision" }
+            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { providerCalls += "${e.id}:vision"; onVision(); failWith?.let { throw it }; if (httpFailure) throw ProviderHttpException(500, "x", ""); return "${e.id}/vision" }
         }
     }
 
@@ -73,6 +77,16 @@ class ModelRouterDataSaverTest {
             if (throwOnSent) error("ledger down")
             sent(kind, txBytes, rxBytes, photos)
         }
+        /** Reservations (P1-6): when [reserving], every costly call takes one up front and settles it afterwards. */
+        var reserving = false
+        val reservations = mutableListOf<List<Any>>()
+        val settlements = mutableListOf<List<Any>>()
+        override fun reserve(kind: DataKind, txBytes: Long, photos: Int): com.rokid.context.core.net.DataReservation? {
+            if (!reserving || !costly) return null
+            reservations += listOf(kind, txBytes, photos)
+            return com.rokid.context.core.net.DataReservation(kind, txBytes, photos, 1)
+        }
+        override fun settle(r: com.rokid.context.core.net.DataReservation, txBytes: Long, rxBytes: Long, photos: Int) { settlements += listOf(r.kind, txBytes, rxBytes, photos) }
         var onceAsked = 0
         var allowOnce = false
         override fun decideOnce(kind: DataKind, reach: EndpointReach): DataDecision { onceAsked++; return if (allowOnce) DataDecision(true, "send_once") else decide(kind, reach) }
@@ -126,7 +140,7 @@ class ModelRouterDataSaverTest {
 
     @Test fun aFailedCallThatNeverReachedTheServerCountsNothingAndKeepsThePhotoCap() = runTest {
         ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
-        failing += "a" // IllegalStateException("boom"): a connect-style failure, nothing was received
+        failWith = java.net.ConnectException("refused") // a connect failure: nothing was sent
         err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
         assertTrue("no bytes for a request that did not go out", data.sentLog.isEmpty())
     }
@@ -188,7 +202,7 @@ class ModelRouterDataSaverTest {
             router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
             assertEquals(host, 0, data.sentAttempts)
             assertTrue(host, data.sentLog.isEmpty())
-            assertEquals("the data-saver gate still sees it as LAN: $host", listOf(DataKind.SMALL to EndpointReach.LAN), data.asked)
+            assertEquals("the data-saver gate still sees it as LAN: $host (admission, then the re-check right before the send)", listOf(DataKind.SMALL to EndpointReach.LAN, DataKind.SMALL to EndpointReach.LAN), data.asked)
         }
     }
 
@@ -209,13 +223,23 @@ class ModelRouterDataSaverTest {
         }
     }
 
-    @Test fun connectDnsTimeoutAndIoFailuresCountNothing() = runTest {
+    @Test fun connectAndDnsFailuresCountNothing() = runTest {
         ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
-        for (t in listOf(java.net.ConnectException("refused"), java.net.UnknownHostException("dns"), java.net.SocketTimeoutException("read timed out"), java.io.IOException("reset"), IllegalStateException("x"))) {
+        for (t in listOf(java.net.ConnectException("refused"), java.net.UnknownHostException("dns"))) {
             failWith = t
             err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
         }
         assertTrue(data.sentLog.isEmpty())
+    }
+
+    @Test fun aTimeoutOrAnUnknownIoFailureAfterTheRequestMayHaveGoneOutCountsItConservatively() = runTest {
+        ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        for (t in listOf(java.net.SocketTimeoutException("read timed out"), java.io.IOException("reset"), IllegalStateException("x"))) {
+            data.sentLog.clear()
+            failWith = t
+            err { router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") } }
+            assertEquals(t.toString(), listOf(listOf<Any>(DataKind.SMALL, 513L, 0L, 0)), data.sentLog)
+        }
     }
 
     @Test fun theNetworkClassIsReadAtThePermitNotBeforeTheWait() = runTest {
@@ -231,7 +255,7 @@ class ModelRouterDataSaverTest {
         data.costly = true
         var n = 0
         onPermit = { data.costly = (n++ == 0) } // costly at the vision attempt's permit, free by the text retry's
-        failWith = java.io.IOException("vision down") // the vision attempt fails with nothing counted; the text retry then succeeds
+        failWith = java.net.ConnectException("vision down") // the vision attempt fails with nothing counted; the text retry then succeeds
         onGenerate = { failWith = null }
         router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) }
         assertEquals("only the successful text retry is counted, with its own class", listOf(false), data.costlyAtStartLog)
@@ -251,7 +275,7 @@ class ModelRouterDataSaverTest {
         assertTrue(providerCalls.isEmpty())
         // marker and USER: goes out, counted
         val r = withContext(SendOnce) { router.complete(Role.VISION_EXTRACT, CallClass.USER) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
-        assertEquals("v/vision", r.text); assertEquals(1, data.onceAsked); assertEquals(1, data.sentLog.size)
+        assertEquals("v/vision", r.text); assertEquals("asked at admission and again right before the send", 2, data.onceAsked); assertEquals(1, data.sentLog.size)
         // the marker is per call chain: the next call without it is blocked again
         assertTrue(err { router.complete(Role.VISION_EXTRACT, CallClass.USER) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } } is DataSaverBlockedException)
     }
@@ -337,7 +361,7 @@ class ModelRouterDataSaverTest {
         ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
         router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) }
         router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q") }
-        assertEquals(listOf(DataKind.PHOTO, DataKind.SMALL), data.asked.map { it.first })
+        assertEquals(listOf(DataKind.PHOTO, DataKind.PHOTO, DataKind.SMALL, DataKind.SMALL), data.asked.map { it.first }) // each asked at admission and again right before the send
         assertEquals(listOf("v:vision", "v:text"), providerCalls)
     }
 
@@ -345,7 +369,7 @@ class ModelRouterDataSaverTest {
         ep("t", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
         data.blockPhoto = true // photos would be blocked, but this endpoint only gets the text
         router.complete(Role.SUMMARIZE, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) }
-        assertEquals(listOf(DataKind.SMALL), data.asked.map { it.first })
+        assertEquals(listOf(DataKind.SMALL, DataKind.SMALL), data.asked.map { it.first })
     }
 
     @Test fun privateAddressesAreAskedAsLanAndTheHostIsNeverPassedOn() = runTest {
@@ -355,11 +379,68 @@ class ModelRouterDataSaverTest {
         router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
         ep("cloud", url = "https://api.example.com", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "cloud", "m")).getOrThrow()
         router.complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }
-        assertEquals(listOf(EndpointReach.LAN, EndpointReach.LAN, EndpointReach.REMOTE), data.asked.map { it.second })
+        assertEquals(listOf(EndpointReach.LAN, EndpointReach.LAN, EndpointReach.LAN, EndpointReach.LAN, EndpointReach.REMOTE, EndpointReach.REMOTE), data.asked.map { it.second })
     }
 
     @Test fun theDefaultRouterAllowsEverything() = runTest {
         ep("a", caps = arrayOf(Capability.CHAT)); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
         assertFalse(ModelRouter(bindings, endpoints, providers).complete(Role.ANSWER, CallClass.USER) { ModelRequest("q") }.text.isEmpty())
+    }
+
+    // ---- Codex data-saver r1: P1-1 re-check at the send, P1-6 reservation ----
+
+    @Test fun aPhotoAdmittedOnWifiThatWaitsForItsPermitIsDroppedUnsentWhenTheNetworkBecomesCostly() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        onPermit = { data.blockPhoto = true } // admitted on Wi-Fi; by the time the permit is granted the phone is on roaming
+        val e = err { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) } }
+        assertTrue(e.toString(), e is DataSaverBlockedException)
+        assertTrue("nothing was uploaded", providerCalls.isEmpty())
+        assertTrue("and it was not retried as a text call either", data.sentLog.isEmpty())
+    }
+
+    @Test fun aRunningPhotoUploadIsAbortedWhenTheNetworkTurnsCostlyUnderIt() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.costly = true; data.reserving = true
+        onVision = { data.blockPhoto = true; kotlinx.coroutines.delay(10 * 60_000L) } // the network changes while the server is slow
+        val e = err { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive) } }
+        assertTrue(e.toString(), e is DataSaverBlockedException)
+        assertEquals("the call stayed a photo call: one provider call, no text retry", listOf("v:vision"), providerCalls)
+        assertEquals("an aborted upload keeps the conservative count: request bytes and its photo", listOf(listOf<Any>(DataKind.PHOTO, 517L, 0L, 1)), data.settlements)
+    }
+
+    @Test fun theReservationIsTakenBeforeTheRequestAndReconciledWithTheRealBytes() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.costly = true; data.reserving = true
+        onVision = { assertEquals("reserved before any byte left", 1, data.reservations.size) }
+        router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) }
+        assertEquals(listOf(listOf<Any>(DataKind.PHOTO, 517L + 512L, 1)), data.reservations)
+        assertEquals(listOf(listOf<Any>(DataKind.PHOTO, 517L, 520L, 1)), data.settlements)
+        assertTrue("the reservation replaces the plain counter, nothing is counted twice", data.sentLog.isEmpty())
+    }
+
+    @Test fun aStallAfterTheUploadKeepsTheReservationCountedWithItsPhoto() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.costly = true; data.reserving = true
+        failWith = java.net.SocketTimeoutException("read timed out") // the server took the whole photo, then went quiet
+        err { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
+        assertEquals(listOf(listOf<Any>(DataKind.PHOTO, 517L, 0L, 1)), data.settlements)
+    }
+
+    @Test fun aCallThatNeverConnectedReleasesItsReservation() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.costly = true; data.reserving = true
+        failWith = java.net.UnknownHostException("no dns")
+        err { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
+        assertEquals(listOf(listOf<Any>(DataKind.PHOTO, 0L, 0L, 0)), data.settlements)
+    }
+
+    @Test fun aCancelledUploadKeepsTheReservationCounted() = runTest {
+        ep("v", caps = arrayOf(Capability.CHAT, Capability.VISION)); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        data.costly = true; data.reserving = true
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        onVision = { started.complete(Unit); kotlinx.coroutines.delay(60_000L) }
+        val job = launch { router.complete(Role.VISION_EXTRACT, CallClass.EXTRACT) { ModelRequest("q", img, liveness = AllLive, requireImages = true) } }
+        started.await(); job.cancelAndJoin()
+        assertEquals(listOf(listOf<Any>(DataKind.PHOTO, 517L, 0L, 1)), data.settlements)
     }
 }

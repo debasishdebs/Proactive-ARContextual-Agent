@@ -125,6 +125,11 @@ data class DataSaverSettings(
     val limitPhotos: Int = DailyCaps.DEFAULT_PHOTOS,
     /** Slice 2: "Treat Wi-Fi as metered while I'm abroad" (a phone hotspot or pocket Wi-Fi). Default OFF; only has an effect while [abroad] is on. */
     val wifiMeteredAbroad: Boolean = false,
+    /**
+     * A persisted setting or counter could not be read (wrong type in the file). Fail closed: the unreadable switches read as their protective value, and [DataPolicy.decide] refuses every
+     * request on a costly network (mobile, roaming, unknown, Android Data Saver) until the value is written again. Wi-Fi that classifies as free, LAN and on-device traffic are not affected.
+     */
+    val unreadable: Boolean = false,
 ) {
     /** The mode that is applied. Slice 2: "Anywhere" is honoured while abroad (under the daily cap of [DailyCaps]); it was held to "Wi-Fi and home mobile data" in slice 1 for want of a cap. */
     val effectiveMode: DataMode get() = mode
@@ -200,6 +205,7 @@ object DataPolicy {
     const val R_ANDROID_SAVER = "android_data_saver"
     const val R_DAILY_LIMIT = "daily_limit"
     const val R_SEND_ONCE = "send_once"
+    const val R_UNREADABLE = "settings_unreadable"
 
     /**
      * The one decision. [transport] is only used to tell whether a LAN endpoint is reachable for free (Wi-Fi or Ethernet).
@@ -210,6 +216,7 @@ object DataPolicy {
         if (reach == EndpointReach.LAN && (transport == Transport.WIFI || transport == Transport.ETHERNET)) return DataDecision(true, R_LAN)
         if (cost == NetworkCost.FREE) return DataDecision(true, R_FREE)
         if (cost == NetworkCost.OFFLINE) return DataDecision(true, R_OFFLINE)
+        if (s.unreadable) return DataDecision(false, R_UNREADABLE) // fail closed for every costly class, whatever the kind: the stored switches cannot be trusted
         val blockedToken = when (cost) { NetworkCost.UNKNOWN -> R_UNKNOWN; NetworkCost.ROAMING -> R_ROAMING; NetworkCost.RESTRICTED -> R_ANDROID_SAVER; else -> R_HOME_MOBILE }
         return when (kind) {
             DataKind.SMALL ->
@@ -281,6 +288,13 @@ interface DataGate {
     fun sent(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int) {}
     /** Same, with the network class read when the call STARTED ([costlyAtStart], from [costlyNow]): the call counts where it began, whatever network it ends on. Default: [sent]. */
     fun sentAt(kind: DataKind, txBytes: Long, rxBytes: Long, photos: Int, costlyAtStart: Boolean) = sent(kind, txBytes, rxBytes, photos)
+    /**
+     * Admission RESERVATION taken just before a request leaves, while the network is costly: the request's bytes (and its photos) are counted at once in the persisted ledger, so a call that is
+     * interrupted (a stall after the upload, a timeout, a cancel, process death) can never leave zero usage behind. Null = nothing reserved (Wi-Fi, on-device, or a gate that does not count).
+     */
+    fun reserve(kind: DataKind, txBytes: Long, photos: Int): DataReservation? = null
+    /** Reconciles a [reserve] with what the call really sent: releases the reservation and counts [txBytes] + [rxBytes] and [photos]. Passing the reserved numbers back keeps the conservative count. Default no-op. */
+    fun settle(r: DataReservation, txBytes: Long, rxBytes: Long, photos: Int) {}
     /** Re-reads the network facts that can change without a capability callback (Android Data Saver status, SIM and network country) and restarts a failed network watch. Cheap; default no-op. */
     fun refresh() {}
 
@@ -292,6 +306,9 @@ interface DataGate {
         }
     }
 }
+
+/** What [DataGate.reserve] counted up front (numbers only). [day] is the ledger day it was counted on; a settle on a later day leaves that day's count as it was. */
+data class DataReservation(val kind: DataKind, val bytes: Long, val photos: Int, val day: Long)
 
 /** Where a counter value lives. Prefs in the app; a map in tests. */
 interface CounterStore {
@@ -362,6 +379,24 @@ class MobileDataLedger(private val store: CounterStore, private val epochDay: ()
         val stored = store.getLong(DAY, -1)
         if (stored < 0 || epochDay() > stored) return Today(0, 0, 0, 0)
         return read()
+    }
+
+    /** The ledger day a count made now belongs to (same rule as [add]). */
+    @Synchronized fun dayNow(): Long { val stored = store.getLong(DAY, -1); val today = epochDay(); return if (stored < 0 || today > stored) today else stored }
+
+    /** Counts a reservation up front (like [add]) and returns the token that [settle] needs. */
+    @Synchronized fun reserve(kind: DataKind, bytes: Long, photos: Int): DataReservation {
+        add(kind, bytes, if (kind == DataKind.PHOTO) photos else 0)
+        return DataReservation(kind, bytes.coerceAtLeast(0), if (kind == DataKind.PHOTO) photos.coerceAtLeast(0) else 0, dayNow())
+    }
+
+    /** Replaces the reserved numbers by the real ones (never below zero). A reservation from an earlier day is left as counted on that day. */
+    @Synchronized fun settle(r: DataReservation, bytes: Long, photos: Int) {
+        if (r.day != dayNow()) return
+        val dBytes = bytes.coerceAtLeast(0) - r.bytes
+        val dPhotos = (if (r.kind == DataKind.PHOTO) photos.coerceAtLeast(0) else 0) - r.photos
+        val bk = key(r.kind)
+        store.putLongs(mapOf(bk to (store.getLong(bk, 0) + dBytes).coerceAtLeast(0), PHOTOS to (store.getLong(PHOTOS, 0) + dPhotos).coerceAtLeast(0)))
     }
 
     private fun read(): Today = Today(store.getLong(key(DataKind.PHOTO), 0), store.getLong(key(DataKind.BULK_OTHER), 0), store.getLong(key(DataKind.SMALL), 0), store.getLong(PHOTOS, 0))

@@ -17,18 +17,36 @@ import kotlinx.coroutines.flow.asStateFlow
  * Defaults (nothing stored, or an unreadable value): Wi-Fi and home mobile data (roaming, unknown networks and abroad stay blocked), not abroad, text allowed on roaming.
  */
 class DataSaverStore(private val prefs: SharedPreferences) {
-    private val state = MutableStateFlow(read())
-    val settings: StateFlow<DataSaverSettings> = state.asStateFlow()
+    private val state: MutableStateFlow<DataSaverSettings>
+    val settings: StateFlow<DataSaverSettings>
 
-    private fun read() = DataSaverSettings(
-        mode = DataMode.parse(prefs.getString(K_MODE, null)),
-        abroad = prefs.getBoolean(K_ABROAD, false),
-        smallOnRoaming = prefs.getBoolean(K_SMALL, true),
-        dailyLimitOn = prefs.getBoolean(K_LIMIT_ON, false),
-        limitMb = prefs.getInt(K_LIMIT_MB, DailyCaps.DEFAULT_MB).let { if (it in 0..1024) it else DailyCaps.DEFAULT_MB },
-        limitPhotos = prefs.getInt(K_LIMIT_PHOTOS, DailyCaps.DEFAULT_PHOTOS).let { if (it in 0..10_000) it else DailyCaps.DEFAULT_PHOTOS },
-        wifiMeteredAbroad = prefs.getBoolean(K_WIFI_METERED, false),
-    )
+    /**
+     * Every key is read on its own and a wrong-typed value (a [ClassCastException] from the prefs file) is caught: the switch reads as its PROTECTIVE value (mode Wi-Fi only, abroad on,
+     * small-on-roaming off, own limit on, hotspot-as-metered on) and the whole reading says [DataSaverSettings.unreadable], which [com.rokid.context.core.net.DataPolicy] answers by refusing costly traffic.
+     * Never throws: graph construction can not crash on a bad file. Writing the key again (a setter) heals it.
+     */
+    private fun read(): DataSaverSettings {
+        var bad = false
+        fun <T> safe(protective: T, f: () -> T): T = try { f() } catch (e: Exception) { bad = true; protective }
+        val mode = safe(DataMode.WIFI_ONLY) {
+            DataMode.parse(prefs.getString(K_MODE, null)) // an unknown (newer) value still reads as the default; only a wrong TYPE is unreadable
+        }
+        val abroad = safe(true) { prefs.getBoolean(K_ABROAD, false) }
+        val small = safe(false) { prefs.getBoolean(K_SMALL, true) }
+        val limitOn = safe(true) { prefs.getBoolean(K_LIMIT_ON, false) }
+        val mb = safe(DailyCaps.DEFAULT_MB) { prefs.getInt(K_LIMIT_MB, DailyCaps.DEFAULT_MB) }.let { if (it in 0..1024) it else DailyCaps.DEFAULT_MB }
+        val photos = safe(DailyCaps.DEFAULT_PHOTOS) { prefs.getInt(K_LIMIT_PHOTOS, DailyCaps.DEFAULT_PHOTOS) }.let { if (it in 0..10_000) it else DailyCaps.DEFAULT_PHOTOS }
+        val metered = safe(true) { prefs.getBoolean(K_WIFI_METERED, false) }
+        return DataSaverSettings(mode, abroad, small, limitOn, mb, photos, metered, unreadable = bad || badCounters.isNotEmpty())
+    }
+
+    /** Counter keys whose stored value had the wrong type (read as their default); cleared as each is written again. A non-empty set makes the settings [DataSaverSettings.unreadable]. */
+    private val badCounters = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    init {
+        state = MutableStateFlow(read())
+        settings = state.asStateFlow()
+    }
 
     fun setMode(m: DataMode) = write { it.putString(K_MODE, m.name) }
     fun setAbroad(on: Boolean) = write { it.putBoolean(K_ABROAD, on) }
@@ -44,7 +62,8 @@ class DataSaverStore(private val prefs: SharedPreferences) {
     }
 
     /** When photo uploads were first seen blocked since the mark was last cleared (ms; 0 = not blocked). Persisted so a restart while roaming still knows the backlog was parked. */
-    fun blockedSince(): Long = prefs.getLong(K_BLOCKED, 0L)
+    fun blockedSince(): Long = blockedRaw()
+    private fun blockedRaw(): Long = try { prefs.getLong(K_BLOCKED, 0L) } catch (e: Exception) { 0L } // a wrong-typed mark reads as none; the next markBlocked overwrites it
     private val markLock = Any()
 
     /**
@@ -54,19 +73,25 @@ class DataSaverStore(private val prefs: SharedPreferences) {
      * shed (up to the protected cap). The mark only exists so a restart still knows the backlog was parked; it can be lost only in a window of milliseconds, and the frames themselves stay tagged.
      */
     fun markBlocked(nowMs: Long) = synchronized(markLock) {
-        val old = prefs.getLong(K_BLOCKED, 0L)
+        val old = blockedRaw()
         if (old == 0L || nowMs - old >= MARK_REFRESH_MS) prefs.edit().putLong(K_BLOCKED, maxOf(nowMs, old + 1)).apply()
     }
 
     /** Compare-and-clear: removes the mark only if it still equals [expected] (the value read before the backlog was parked). Returns whether it cleared. */
     fun clearBlocked(expected: Long): Boolean = synchronized(markLock) {
-        if (expected == 0L || prefs.getLong(K_BLOCKED, 0L) != expected) false else { prefs.edit().remove(K_BLOCKED).apply(); true }
+        if (expected == 0L || blockedRaw() != expected) false else { prefs.edit().remove(K_BLOCKED).apply(); true }
     }
 
     /** The counters live in the same file under their own keys. */
     val counters: CounterStore = object : CounterStore {
-        override fun getLong(key: String, default: Long) = prefs.getLong(key, default)
-        override fun putLongs(values: Map<String, Long>) { prefs.edit().also { e -> values.forEach { (k, v) -> e.putLong(k, v) } }.apply() }
+        override fun getLong(key: String, default: Long): Long = try { prefs.getLong(key, default) } catch (e: Exception) {
+            if (badCounters.add(key)) state.value = read() // a wrong-typed counter: reads as the default, and the settings say unreadable (costly traffic is refused) until it is written again
+            default
+        }
+        override fun putLongs(values: Map<String, Long>) {
+            prefs.edit().also { e -> values.forEach { (k, v) -> e.remove(k); e.putLong(k, v) } }.apply()
+            if (values.keys.any { badCounters.remove(it) }) state.value = read()
+        }
     }
 
     companion object {

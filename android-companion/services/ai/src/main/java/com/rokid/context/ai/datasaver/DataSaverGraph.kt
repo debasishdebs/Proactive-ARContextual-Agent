@@ -100,6 +100,28 @@ class DataSaverGraph internal constructor(
         }
     }
 
+    /** Admission reservation (P1-6): counted in the persisted ledger BEFORE the request leaves, only while the network is costly. See [DataGate.reserve]. */
+    override fun reserve(kind: DataKind, txBytes: Long, photos: Int): com.rokid.context.core.net.DataReservation? {
+        if (!NetworkCosts.isCostly(costNow())) return null
+        val before = limitReachedNow()
+        val r = mobile.reserve(kind, txBytes, photos)
+        noteCounted(before)
+        return r
+    }
+
+    override fun settle(r: com.rokid.context.core.net.DataReservation, txBytes: Long, rxBytes: Long, photos: Int) {
+        val before = limitReachedNow()
+        mobile.settle(r, txBytes + rxBytes, photos)
+        noteCounted(before)
+    }
+
+    private fun noteCounted(limitReachedBefore: Boolean) {
+        if (!limitReachedBefore && limitReachedNow()) {
+            if (mobile.firstNoticeToday()) PcLog.i(TAG, "daily limit reached")
+            refreshState()
+        }
+    }
+
     /**
      * Wakes at each local midnight: the day's counters start from zero, so a limit that held photo uploads is lifted and the open listeners (the parked keyframe loop) are woken.
      * Follows the injected clock and zone, so a test on virtual time drives it. Safe to call once; the production graph starts it at creation.
