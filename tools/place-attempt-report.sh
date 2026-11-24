@@ -40,7 +40,7 @@ function stats(name, a, n) {
 }
 BEGIN {
   split("31 28 31 30 31 30 31 31 30 31 30 31", dim, " ")
-  nk = split("DISABLED ZONE NO_FRAME STALE_FRAME SEEN NO_FIX STALE_FIX NO_CANDIDATES DUPLICATE RATE_LIMITED BUSY MATCHED NONE CONTRACT LOW_CONFIDENCE NEARBY NOTHING_NEARBY DROPPED FAILED NOT_ADMITTED", ko, " ")
+  nk = split("DISABLED ZONE NO_FRAME STALE_FRAME SEEN NO_FIX STALE_FIX NO_CANDIDATES DUPLICATE RATE_LIMITED BUSY MATCHED NONE CONTRACT LOW_CONFIDENCE NEARBY NOTHING_NEARBY DROPPED FAILED NOT_ADMITTED PIN_FIRST", ko, " ")
   for (i = 1; i <= nk; i++) known[ko[i]] = 1
   if (mapfile != "") { while ((getline ln < mapfile) > 0) { gsub(/\r/, "", ln); p = index(ln, "\t"); if (p > 1) { k = substr(ln, 1, p - 1); v = substr(ln, p + 1); gsub(/[^ -~]/, "", v); if (isid(k)) label[k] = v } } close(mapfile) }
 }
@@ -287,6 +287,13 @@ fixtures() {
   check "shadow: no shadow lines says so" "(no shadow lines: placeShadowScore was off)" "$(printf '%s\n' "$out" | grep 'no shadow lines' | sed 's/^ *//')"
   out="$(printf '%s\n' 'x' '11-20 10:00:00.000 I PcPlace place attempt outcome=MATCHED shadow=ok agrees=/etc/passwd scoreTop=SECRET_Name chosenRank=999 embedMs=abc shCh=Foo/Bar' | report_stdin)"
   check "shadow: hostile values never echoed" "0" "$(has x "$out" -i 'passwd\|SECRET_Name\|Foo/Bar')"
+  # PIN_FIRST: a single pin card and a cluster card (counts only; the pin is the token `pin`, never an id)
+  local PF1='11-24 09:00:00.000 I PcPlace place attempt outcome=PIN_FIRST reason=pin_first call=none online=true cell=FRESH cand=1 ids=- pinCand=1 frameAgeS=1 fixAgeB=le5s accB=le10m candMs=3 callMs=-1 totalMs=20 chosen=pin distB=lt25m confPct=-1 card=shown cardWhy=- reveal=- err=- pinFirst=single'
+  local PF2='11-24 09:05:00.000 I PcPlace place attempt outcome=PIN_FIRST reason=pin_first_cluster call=none online=true cell=FRESH cand=3 ids=- pinCand=3 frameAgeS=1 fixAgeB=le5s accB=le10m candMs=3 callMs=-1 totalMs=25 chosen=- distB=- confPct=-1 card=shown cardWhy=- reveal=- err=- pinFirst=cluster(3)'
+  out="$(printf '%s\n' "$PF1" "$PF2" | report_stdin)"
+  check "pin-first: 2 attempts parsed" "place attempt lines: 2 parsed, 0 unparseable; pack lookup lines: 0" "$(printf '%s\n' "$out" | sed -n 1p)"
+  check "pin-first: single and cluster cards are known outcomes (not (unknown))" "0|1|1" "$(has x "$out" "(unknown)")|$(has x "$out" "PIN_FIRST pin_first *$")|$(has x "$out" "PIN_FIRST pin_first_cluster")"
+  check "pin-first: no pin id echoed" "0" "$(has x "$out" 'user:')"
   echo "fixtures: $pass passed, $fail failed"
   [ "$fail" = 0 ]
 }
