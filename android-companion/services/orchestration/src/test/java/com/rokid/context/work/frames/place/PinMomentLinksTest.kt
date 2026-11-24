@@ -45,7 +45,7 @@ class PinMomentLinksTest {
     private val ids = (0..3).map { "user:00000000-0000-0000-0000-00000000000$it" }
     private fun pin(i: Int, moment: String?) = UserPlace(ids[i], "Pin $i", PlaceKinds.MONUMENT, 7.9, 80.7, momentId = moment)
 
-    private val alive: suspend (List<String>) -> Set<String> = { l -> db.momentDao().photoMomentsOf(l).map { it.momentId }.toSet() }
+    private val alive: suspend (List<String>) -> Set<String> = { l -> db.momentDao().momentsAliveOrExpired(l) } // the production liveness (retention v3, r2-9)
     private val save: suspend (List<UserPlace>) -> Boolean = { l -> store.write(l) }
     private val noSave: suspend (List<UserPlace>) -> Boolean = { false }
     private val all: suspend (List<String>) -> Set<String> = { it.toSet() }
@@ -602,6 +602,12 @@ class PinMomentLinksTest {
     @Test fun retentionExpiryKeepsTheLinkAndThePin() = runBlocking<Unit> {
         fx.service.expirePhotos(listOf("b"))
         assertEquals(listOf("Pin 0", "Pin 1", "Pin 2"), names()); assertEquals(listOf(id1, id2, null), links())
+        // retention v3 (r2-9): the NEXT pin sweep tests the photo rows of the second; an expired photo (durable marker) still counts as alive, so the link stays
+        assertEquals(0, sweep()); assertEquals("the sweep keeps the link of a Moment whose photo only expired", listOf(id1, id2, null), links())
+        // a user Forget of the expired photo clears its marker, so the next sweep ends the link (the pin itself stays)
+        fx.service.forgetMoment("b")
+        sweep()
+        assertEquals(listOf("Pin 0", "Pin 1", "Pin 2"), names()); assertEquals(listOf(id1, null, null), links())
     }
 
     @Test fun theSweepIsIdempotentAndAnUnreadablePinListIsLeftAlone() = runBlocking<Unit> {

@@ -3,6 +3,7 @@ package com.rokid.context.orchestration.forget
 import android.content.Context
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.data.frames.RokidFrameInbox
+import androidx.room.withTransaction
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.WipeFence
 import kotlinx.coroutines.Dispatchers
@@ -48,7 +49,7 @@ object FrameSweep {
      * Retention v3 (M1, bounded): the expiry markers of the tombstones this prune is about to delete go in the SAME transaction. A tombstone is pruned only when no `frame` row, memory or `frame_source` row remains
      * (a skipped photo, never a described one), so a marker never outlives what it explains. The candidates are read with the prune's own conditions before it runs.
      */
-    internal suspend fun pruneWithMarkers(db: com.rokid.context.memory.db.ContextDatabase, beforeMs: Long, keep: List<String>): Int = androidx.room.withTransaction(db) {
+    internal suspend fun pruneWithMarkers(db: com.rokid.context.memory.db.ContextDatabase, beforeMs: Long, keep: List<String>): Int = db.withTransaction {
         val dao = db.forgetDao()
         val going = dao.prunableTombstones(beforeMs, keep)
         val n = dao.pruneTombstones(beforeMs, keep)

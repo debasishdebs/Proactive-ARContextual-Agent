@@ -77,7 +77,8 @@ class ForgetService(
         if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
             // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan canvas rows (safer default). No frame_source row
             // can exist here: memoryIdsOfFrame already lists them, so an orphan one takes the main path below.
-            dropCanvasOutputs(listOf(frameId), null, radiusCascade)
+            dropCanvasOutputs(listOf(frameId), capturedAt, radiusCascade)
+            ExpiryMarks.clear(db.canvasSlice3Dao(), listOf(frameId)) // retention v3 (r2-3): an expired photo with nothing left is still forgotten by this Forget
             return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites, bounded = bounded).with(invalidatedCarried)
         }
         val r = cascade(ids, lockFrames = true, extraCited = cites, queueOutbox = queueOutbox, phoneFilesOnly = phoneFilesOnly, bounded = bounded)
@@ -115,6 +116,9 @@ class ForgetService(
     internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true, queueOutbox: Boolean = true, bounded: Set<String>? = null): Result = db.withTransaction {
         cascade(ids.distinct(), lockFrames, queueOutbox = queueOutbox, bounded = bounded)
     }
+
+    /** Retention v3 demotion (see [ForgetExecutor.demoteFacts]): the text vectors of SHORT facts older than [beforeMs] go, nothing else. Never deletes a memory row. Returns the number of facts demoted. */
+    suspend fun demoteFacts(beforeMs: Long, limit: Int): Int = executor.demoteFacts(beforeMs, limit)
 
     /**
      * Row 8 (suspect descriptions): removes the marked suspect [ids] (their rows, vectors and edges; the derived summaries built on them are invalidated and rebuilt; asks and nudges that cited them are

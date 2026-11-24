@@ -79,7 +79,7 @@ object ForgetPolicy {
             purge = r(K, "IMP:20 doc: a photo is NOT touched")),
         PolicyRow(ForgetChild.MEMORY,
             user = r(F, "FP:32-35 Policy.User, FP:102 forgotten memories ERASE"), deleteAll = r(F, "WD:20 DELETE FROM memory"),
-            expiry = r(K, "retention v3: retention never deletes a memory row (no expire path exists); only a user Forget does. A SHORT fact loses only its TEXT VECTOR (RW demote)"), sweep = r(F, "FE:153-158 removeDescriptions (Policy.User, memory ERASE)"),
+            expiry = r(K, "FE:153 demoteFacts: retention v3 never deletes a memory row (no expire path exists); a past-the-window SHORT fact loses only its text vector"), sweep = r(F, "FE:153-158 removeDescriptions (Policy.User, memory ERASE)"),
             purge = r(F, "IMP:69 orphan memories via service.forgetFacts (user policy)")),
         PolicyRow(ForgetChild.MOMENT,
             user = r(C, "FP:107,181,216 dropHolding / removeMoments (DROP or REBUILD per row)"), deleteAll = r(F, "WD:60-63 DELETE FROM moment_part, moment_trace_dep, moment, moment_tombstone"),
@@ -125,7 +125,7 @@ object ForgetPolicy {
             expiry = r(K, "FAM:336"), sweep = r(K, "FAM:336"), purge = r(K, "FAM:336")),
         PolicyRow(ForgetChild.CONTROL,
             user = r(C, "FP:134 fence; tombstones written by FAM:44 PhotoFamily.lock"), deleteAll = r(C, "WD:27 tombstones deleted; DG counters / fences"),
-            expiry = r(C, "FAM PhotoFamily.expire: tombstone + expiry marker (rx:f:) + frame row, one transaction"), sweep = r(C, "FE:231 queueCleanup writes cleanup_outbox rows, only for an uncited legacy frame (OPEN RULING O2); no tombstone (FE:212 needs lockFrames) and no fence move (CanvasSlice3Dao.kt:77,91 only via FE:244-246 dropCanvasOutputs)"), purge = r(C, "IMP:60 moment_tombstone per second")),
+            expiry = r(C, "FAM:53 PhotoFamily.expire: tombstone + expiry marker (rx:f:) + frame row, one transaction"), sweep = r(C, "FE:231 queueCleanup writes cleanup_outbox rows, only for an uncited legacy frame (OPEN RULING O2); no tombstone (FE:212 needs lockFrames) and no fence move (CanvasSlice3Dao.kt:77,91 only via FE:244-246 dropCanvasOutputs)"), purge = r(C, "IMP:60 moment_tombstone per second")),
         // ---- families that live inside another one or outside the database ----
         PolicyRow(ForgetChild.EMBEDDING,
             user = r(F, "FAM:77-78 deleteVectorsFor with the memory; FAM:46 PhotoFamily.deleteVectors, frame vector with the photo"), deleteAll = r(F, "WD:22 DELETE FROM frame_vector; memory vectors with memory"),

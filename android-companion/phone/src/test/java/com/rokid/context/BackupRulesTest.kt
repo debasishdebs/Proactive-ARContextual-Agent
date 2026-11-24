@@ -140,6 +140,8 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS,
         // Pause zones: user configuration (ids, names, boxes, buffers; no DB ids), restored and exported. The per-install record counter is harmless after a restore.
         com.rokid.context.phone.zone.ZoneStore.PREFS,
+        // Retention v3 (K5): only the flag that the one-time notice was dismissed; a UI preference, no ids, restored.
+        com.rokid.context.phone.ui.shell.RetentionNoticeControl.PREFS,
     )
 
     /**

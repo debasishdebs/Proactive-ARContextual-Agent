@@ -139,6 +139,15 @@ class PlaceGuideHistoryTest {
         assertNull(det.photoPath); assertTrue(det.row.photoGone); assertEquals("The photo is gone", det.showAgainBlock)
     }
 
+    /** Retention v3 (r2-5): the row keeps its frame id as private lineage when the photo expires; the renderer must NOT load an image for it (it used to rely on frameId being null), even if a path still resolves. */
+    @Test fun aGoneRowThatKeepsItsFrameIdNeverLoadsAnImage() {
+        val h = FakeHistory(listOf(row("a", 100, frame = "f-a", gone = 1))); h.photos += "f-a" // the frame id is kept, and a path would resolve if anything asked for it
+        val v = vm(h); v.openHistory("a"); d.scheduler.advanceUntilIdle()
+        val det = v.state.value.historyDetail!!
+        assertNull("no image is loaded for a gone photo", det.photoPath); assertTrue(det.row.photoGone); assertEquals("f-a", det.row.frameId)
+        assertEquals("The photo is gone", det.showAgainBlock)
+    }
+
     @Test fun showAgainIsDisabledWhenTheGlassesAreNotConnectedOrAZoneIsActive() {
         val h = FakeHistory(listOf(row("a", 100))); h.env = ShowAgainEnv(true, true, false)
         val v = vm(h); v.openHistory("a"); d.scheduler.advanceUntilIdle()

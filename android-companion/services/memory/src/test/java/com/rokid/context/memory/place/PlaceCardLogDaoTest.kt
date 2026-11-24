@@ -21,12 +21,15 @@ class PlaceCardLogDaoTest {
     private fun row(id: String, at: Long, placeId: String = "wd:Q1", frame: String? = null, members: String? = null, card: String? = "c-$id") =
         PlaceCardLogEntity(id, at, placeId, "Site A", "PHOTO", members, frame, null, card, CardDelivery.PENDING)
 
-    @Test fun framesAreDeletedOrUnlinked() = runBlocking {
+    /** Retention v3 (r2-5): expiry only sets `photoGone`; the frame id stays as private lineage, so a later Forget of the photo still deletes the row. */
+    @Test fun framesAreDeletedOrMarkedGoneKeepingTheirLineage() = runBlocking {
         dao.putCardLog(row("a", 1, frame = "f1")); dao.putCardLog(row("b", 2, frame = "f2")); dao.putCardLog(row("c", 3, frame = null))
-        assertEquals(1, dao.unlinkCardLogFrames(listOf("f1")))
-        dao.cardLog("a")!!.let { assertNull(it.frameId); assertEquals(1, it.photoGone) }
+        assertEquals(1, dao.markCardLogPhotoGone(listOf("f1")))
+        dao.cardLog("a")!!.let { assertEquals("f1", it.frameId); assertEquals(1, it.photoGone) }
+        assertEquals(1, dao.deleteCardLogForFrames(listOf("f1"))) // the later user Forget of the expired photo still matches
+        assertNull(dao.cardLog("a"))
         assertEquals(1, dao.deleteCardLogForFrames(listOf("f2")))
-        assertNull(dao.cardLog("b")); assertEquals(2, dao.cardLogCount())
+        assertNull(dao.cardLog("b")); assertEquals(1, dao.cardLogCount())
     }
 
     @Test fun rangeAndAllAndOne() = runBlocking {

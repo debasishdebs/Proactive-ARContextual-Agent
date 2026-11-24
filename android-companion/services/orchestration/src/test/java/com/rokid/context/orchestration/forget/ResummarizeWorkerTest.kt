@@ -88,8 +88,6 @@ class ResummarizeWorkerTest {
         work()
         val r = graph.memories.all().single { it.text == "Rebuilt B" }
         assertEquals(setOf("A", "X"), graph.db.frameSourceDao().forMemory(r.id).filter { it.role == "CARRIED" }.map { it.frameId }.toSet())
-        ForgetService(graph.db, graph.proposals).expire(listOf("MA")) // retention expires MA: R keeps living, its edge to MA goes
-        assertTrue("R survives MA's expiry", graph.memories.all().any { it.id == r.id })
         ForgetService(graph.db, graph.proposals).forgetMoment("X")
         assertTrue("R, derived from X's detail, is gone after Forget X", graph.memories.all().none { it.id == r.id && it.reviewState == ReviewState.OK })
     }

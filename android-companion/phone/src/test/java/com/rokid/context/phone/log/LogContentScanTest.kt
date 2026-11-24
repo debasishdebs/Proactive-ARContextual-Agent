@@ -69,9 +69,9 @@ class LogContentScanTest {
         "worker", "running", "enqueued", "heapMb", "maxMb", "powerSave", "idle", "exempt", "foreground",
         // Roaming data saver (DataSaverGraph, tag PcData): the cost class name (FREE / HOME_MOBILE / ROAMING / UNKNOWN / OFFLINE) and, in "skipped", the kind name, the Skipped enum value and the fixed reason token of the decision; never a host, endpoint, country or content.
         "cost.name",
-        // Retention (RetentionWorker plan / done / paused lines, MomentRepair done line, tag PcRetention / PcMoments): Int locals that hold counts or seconds; never an id or a text.
-        "shortDue", "mediumDue", "longDue", "captionDue", "clusterSummaryDue", "skippedPhotosDue", "photosDue", "vectorsDue", "legacyDue", "nudgesKept", "answersKept",
-        "memoriesExpired", "photosExpired", "skippedPhotosExpired", "nudgesRedacted", "answersRedacted", "seconds",
+        // Retention v3 (RetentionWorker plan / done / paused / quota / migration lines, PlaceCardHistory expire line, MomentRepair done line, tags PcRetention / PcMoments / PcPlace): Int locals that hold counts or seconds; never an id or a text.
+        // There is no memory expiry any more, so the old per-tier and redaction counters (shortDue, mediumDue, longDue, captionDue, clusterSummaryDue, nudgesKept, answersKept, memoriesExpired, nudgesRedacted, answersRedacted) are gone.
+        "demoteDue", "skippedPhotosDue", "photosDue", "vectorsDue", "legacyDue", "quotaDue", "demoted", "photosExpired", "skippedPhotosExpired", "quotaEvicted", "backfilled", "marked", "seconds",
         "repairedDays", "missingSeconds", "momentsStored", "scenesBuilt", "unscenedMoments",
         "reps.values.sumOf { it.size }", "counts.closed.joinToString(\",\").ifEmpty { \"-\" }", "runCatching { l.isWearingCheckOn() }",
     )

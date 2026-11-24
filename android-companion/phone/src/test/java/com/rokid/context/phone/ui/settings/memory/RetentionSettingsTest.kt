@@ -40,7 +40,7 @@ class RetentionSettingsTest {
 
     private fun screen(s: MemorySettings) = compose.setContent {
         PcTheme {
-            MemorySettingsScreen(MemorySettingsUiState(settings = s), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+            MemorySettingsScreen(MemorySettingsUiState(settings = s), onBack = {}, onRecall = {}, onQuota = {},
                 onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {})
         }
     }
@@ -60,23 +60,27 @@ class RetentionSettingsTest {
 
     @Test fun rowsAreShownWithTheUpgradeNote() {
         screen(MemorySettings())
-        listOf("retention_photo", "retention_skipped", "retention_caption", "retention_summary", "retention_vector").forEach { compose.onNodeWithTag(it).assertExists() }
+        listOf("retention_recall", "retention_photo", "retention_skipped", "retention_vector").forEach { compose.onNodeWithTag(it).assertExists() }
+        // retention v3 (K3): the rows that no longer delete anything are gone
+        listOf("retention_short", "retention_medium", "retention_long", "retention_caption", "retention_summary", "retention_vector_warning").forEach { compose.onNodeWithTag(it).assertDoesNotExist() }
         compose.onNodeWithText("Photos you already have are kept at least 7 days from this update.").assertExists()
-        compose.onNodeWithTag("retention_vector_warning").assertDoesNotExist() // vectors forever = captions forever
+        compose.onNodeWithTag("quota_note").assertExists(); compose.onNodeWithTag("retention_no_auto_delete_note").assertExists()
     }
 
-    @Test fun warnsWhenVectorsShorterThanCaptions() {
+    @Test fun theVectorWarningFunctionStillHoldsButTheRowIsGone() {
         screen(MemorySettings(imageVectorDays = 30, captionDays = 365))
-        compose.onNodeWithTag("retention_vector_warning").assertExists()
+        compose.onNodeWithTag("retention_vector_warning").assertDoesNotExist() // captions are no longer a setting
         assertEquals(true, MemorySettingsViewModel.vectorsShorterThanCaptions(MemorySettings(imageVectorDays = 30)))
         assertEquals(false, MemorySettingsViewModel.vectorsShorterThanCaptions(MemorySettings(imageVectorDays = 365, captionDays = 90)))
         assertEquals(false, MemorySettingsViewModel.vectorsShorterThanCaptions(MemorySettings()))
     }
 
-    @Test fun noteMentionsEveryKind() {
-        val note = MemorySettingsViewModel.retentionNote(MemorySettings(photoDays = 30))
-        assertEquals(true, note.contains("Photos are removed 30 days after they were taken"))
-        assertEquals(true, note.contains("captions and scene summaries stay"))
+    @Test fun noteSaysQuickRecallAndThatOnlyForgetRemovesText() {
+        val note = MemorySettingsViewModel.retentionNote(MemorySettings(recallHours = 72))
+        assertEquals(true, note.contains("stay in quick recall for 72 h"))
+        assertEquals(true, note.contains("Nothing you saw is deleted by clean-up; only Forget removes text."))
+        assertEquals(true, MemorySettingsViewModel.retentionNote(MemorySettings(recallHours = 168)).contains("for 7 days"))
+        assertEquals("the labels follow the choices", listOf("12 h", "24 h", "48 h", "72 h", "7 days"), com.rokid.context.memory.MemorySettingsStore.RECALL_HOURS.map { MemorySettingsViewModel.recallLabel(it) })
     }
 
     /** I2: the note is the same whatever the photo window (skipped photos included), and goes once the 7 days are over. */

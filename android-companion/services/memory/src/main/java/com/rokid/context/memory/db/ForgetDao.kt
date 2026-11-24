@@ -287,9 +287,9 @@ abstract class ForgetDao {
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) AND " + DESCRIBED_BY_EXTRACTION +
             "AND NOT EXISTS (SELECT 1 FROM memory pm WHERE pm.type = 'place' AND (pm.frameId = f.id OR EXISTS (SELECT 1 FROM frame_source pf WHERE pf.memoryId = pm.id AND pf.frameId = f.id))) " +
             "AND NOT EXISTS (SELECT 1 FROM canvas_label l WHERE l.atMs BETWEEN f.ts - :radiusMs AND f.ts + :radiusMs) " +
-            "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN nudge n ON n.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND (n.sourceIdsJson LIKE '%\"' || f.id || '\"%' " +
+            "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN nudge n ON n.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND ((n.sourceIdsJson LIKE '%\"' || f.id || '\"%' OR n.sourceIdsJson LIKE '%\"frame:' || f.id || '\"%') " +
             "OR EXISTS (SELECT 1 FROM memory cm WHERE cm.frameId = f.id AND n.sourceIdsJson LIKE '%\"' || cm.id || '\"%'))) " +
-            "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN ask a ON a.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND (a.sourcesJson LIKE '%\"' || f.id || '\"%' " +
+            "AND NOT EXISTS (SELECT 1 FROM proposal p JOIN ask a ON a.id = p.originId WHERE p.state IN ('EXECUTING','EXECUTED') AND ((a.sourcesJson LIKE '%\"' || f.id || '\"%' OR a.sourcesJson LIKE '%\"frame:' || f.id || '\"%') " +
             "OR EXISTS (SELECT 1 FROM memory cm WHERE cm.frameId = f.id AND a.sourcesJson LIKE '%\"' || cm.id || '\"%'))) " +
             "ORDER BY f.ts, f.id LIMIT :limit",
     )

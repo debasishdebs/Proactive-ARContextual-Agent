@@ -17,8 +17,8 @@ fun interface RecallWindow {
         fun hours(h: () -> Int): RecallWindow = RecallWindow { now -> h().takeIf { it > 0 }?.let { now - it * HOUR } }
 
         /**
-         * The user's setting. Today the field is `shortHours`; when the retention branch renames it to `recallHours` this is the ONE line to change.
+         * The user's Quick recall setting (`recall_hours`, falling back to the old `short_hours`: read by [MemorySettingsStore]).
          */
-        fun of(store: MemorySettingsStore): RecallWindow = hours { store.settings.value.shortHours }
+        fun of(store: MemorySettingsStore): RecallWindow = hours { store.settings.value.recallHours }
     }
 }

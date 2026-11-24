@@ -145,28 +145,6 @@ class PhotoExpiryTest {
         assertEquals(0, graph.db.frameVectorDao().countForSpace("space1"))
     }
 
-    /** Retention expiry of a memory (any tier or kind) leaves the keyframe, its vectors, meta and state alone. */
-    @Test fun expireOfAMemoryLeavesKeyframeAlone() = runBlocking {
-        val (jpg, _) = seed("k3")
-        val r = service.expire(listOf("mem_k3"))
-        assertEquals(setOf("mem_k3"), r.forgotten); assertTrue(r.framesToDelete.isEmpty())
-        assertTrue(jpg.exists()); assertNotNull(graph.db.forgetDao().frame("k3"))
-        assertTrue(graph.db.forgetDao().tombstoned(listOf("k3")).isEmpty())
-        assertEquals(1, graph.db.frameVectorDao().countForSpace("space1"))
-        assertNotNull(graph.db.frameMetaDao().get("k3")); assertNotNull(graph.db.frameStateDao().get("k3"))
-        assertTrue(graph.db.frameSourceDao().memoriesForFrame("k3").isEmpty()) // the citation link goes with the memory
-    }
-
-    /** A legacy frame (no frame_meta) keeps wave-1 behaviour on expiry. */
-    @Test fun expireOfALegacyFrameMemoryStillLocksIt() = runBlocking {
-        val jpg = File(ctx.filesDir, "rokid_archive/leg.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
-        graph.db.frameDao().insertIgnore(FrameEntity("leg", 1, jpg.absolutePath, "rokid_glasses"))
-        graph.db.memoryDao().insert(MemoryEntity("mem_leg", "leg", "t", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "t"))
-        val r = service.expire(listOf("mem_leg"))
-        assertEquals(listOf(jpg.absolutePath), r.framesToDelete)
-        assertEquals(listOf("leg"), graph.db.forgetDao().tombstoned(listOf("leg")))
-    }
-
     /** S1: retention is storage hygiene. The photo's metadata lives on, so a saved answer's cite stays live. */
     @Test fun photoExpiryDoesNotRedactCites() = runBlocking {
         seed("f1")

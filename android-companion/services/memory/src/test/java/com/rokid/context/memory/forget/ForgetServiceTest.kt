@@ -168,22 +168,6 @@ class ForgetServiceTest {
         assertTrue(db.memoryDao().search("zebra*", 5).isEmpty())
     }
 
-    /** Fix round 1 C1: retention expiry deletes only the expired rows; derived memories keep their own windows. */
-    @Test fun expireLeavesDescendantsAlone() = runBlocking {
-        mem("A"); mem("B", derived = true)
-        edge("B", "A")
-        db.askDao().upsert(AskEntity("q1", 1, "q", "from A", """["A"]""", null, "phone_typed", false))
-        db.askDao().upsert(AskEntity("q2", 1, "q", "from B", """["B"]""", null, "phone_typed", false))
-        val r = service.expire(listOf("A"))
-        assertEquals(setOf("A"), r.forgotten)
-        assertTrue(r.invalidated.isEmpty())
-        assertEquals(ReviewState.OK, state("B"))
-        assertTrue(db.forgetDao().edgesFrom(listOf("B")).isEmpty())
-        assertFalse("P0: system expiry never redacts an answer that cited the expired fact", db.askDao().byId("q1")!!.redacted)
-        assertEquals("from A", db.askDao().byId("q1")!!.answer)
-        assertFalse(db.askDao().byId("q2")!!.redacted)
-    }
-
     /** Fix round 1 I2: executing/executed proposals of a redacted origin lose their params and log details. */
     @Test fun executedProposalOfRedactedAskIsScrubbed() = runBlocking {
         mem("A")
@@ -198,26 +182,6 @@ class ForgetServiceTest {
             assertTrue(db.actionDao().logFor(id).none { "Call mom" in it.detail })
         }
         assertEquals(ProposalState.EXECUTED.name, proposals.byId("p1")!!.state) // state kept: Undo still works by createdRef
-    }
-
-    /** P0 (was final review C1): retention expiry leaves every proposal whole, accepted or not (it redacts no origin). */
-    @Test fun expireLeavesAcceptedProposalsAlone() = runBlocking {
-        mem("A")
-        db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["A"]""", null, "phone_typed", false))
-        val params = """{"title":"Call mom","dueAt":5}"""
-        listOf("p1" to ProposalState.EXECUTED, "p2" to ProposalState.EXECUTING, "p3" to ProposalState.PENDING, "p4" to ProposalState.DECLINED).forEach { (id, st) ->
-            proposals.create(ProposalEntity(id, ProposalOrigin.ASK.name, "q1", "REMINDER", params, st.name, 99_999, null, null, 1), 1)
-            db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 2, proposalId = id, transition = "X", detail = "Call mom"))
-        }
-        val r = service.expire(listOf("A"))
-        assertFalse(db.askDao().byId("q1")!!.redacted)
-        assertTrue("P0: nothing is redacted, so no proposal is scrubbed", r.redactedProposals.isEmpty())
-        listOf("p1", "p2", "p3", "p4").forEach { id ->
-            assertEquals(params, proposals.byId(id)!!.paramsJson)
-            assertTrue(db.actionDao().logFor(id).any { "Call mom" in it.detail })
-        }
-        assertEquals(ProposalState.EXECUTED.name, proposals.byId("p1")!!.state)
-        assertEquals(ProposalState.PENDING.name, proposals.byId("p3")!!.state)
     }
 
     // --- wave 3 Task 11 (S1, S2): photo cites and metadata-only moments -----------------------------------------------
@@ -280,11 +244,8 @@ class ForgetServiceTest {
         assertTrue("the photo goes", r.framesToDelete.contains("/f1.jpg"))
         assertEquals(listOf("v1"), r.redactedAskIds)
         assertTrue(db.askDao().byId("v1")!!.redacted); assertFalse(db.askDao().byId("v2")!!.redacted)
-        // retention expiry of a memory never redacts a photo cite
-        db.frameDao().insertIgnore(FrameEntity("legacy", 1, "/legacy.jpg", "rokid_glasses")); mem("m2", frameId = "legacy")
-        db.askDao().upsert(AskEntity("v3", 1, "q", "a", """["${PHOTO_CITE_PREFIX}legacy"]""", null, "glasses_voice", false))
-        service.expire(listOf("m2"))
-        assertFalse(db.askDao().byId("v3")!!.redacted)
+        // retention v3: there is no memory expiry any more (structurally: ForgetService has no `expire`)
+        assertTrue(ForgetService::class.java.methods.none { it.name == "expire" })
     }
 
     @Test fun expiredUncaptionedSkippedPhotoCanBeForgotten() = runBlocking {

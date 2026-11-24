@@ -194,8 +194,6 @@ class MemorySettingsViewModel(
         /** Retention v3 (K4): Auto-delete details is designed but NOT in this build. */
         const val NO_AUTO_DELETE_NOTE = "There is no automatic text deletion in this version. Only Forget removes details."
 
-        /** Retention v3 (K5): shown once, on the first launch of the build that stops clean-up from deleting text. */
-        const val ONE_TIME_NOTICE = "Clean-up no longer deletes the details of your photos. Forget removes them; you can turn on Auto-delete in Settings → Memory"
 
         const val UPGRADE_NOTE = "Photos you already have are kept at least 7 days from this update."
 

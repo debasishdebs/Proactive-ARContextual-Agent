@@ -40,8 +40,8 @@ enum class IndexState {
         }
     }
 }
-enum class BannerKind { AI_BLOCKED, BATTERY_SAVER, GLASSES_DISCONNECTED, PROTOCOL_MISMATCH, CAPTURE_DEFERRED, CAPTURE_PAUSED, INDEX, STORAGE }
-enum class BannerAction { FIX_AI, RECONNECT, RESUME, REBUILD_INDEX }
+enum class BannerKind { AI_BLOCKED, BATTERY_SAVER, GLASSES_DISCONNECTED, PROTOCOL_MISMATCH, CAPTURE_DEFERRED, CAPTURE_PAUSED, INDEX, STORAGE, RETENTION_NOTICE }
+enum class BannerAction { FIX_AI, RECONNECT, RESUME, REBUILD_INDEX, DISMISS_NOTICE }
 
 /** Everything the banner needs; [aiBlockedText] is the hub's short `Health.Blocked` text, never an exception message. */
 data class BannerInputs(
@@ -59,6 +59,8 @@ data class BannerInputs(
     val batterySaver: Boolean = false,
     /** The phone watchdog's line ("Glasses not connected · last heard 7 min ago"); replaces the title of the glasses banner. */
     val glassesNote: String? = null,
+    /** Retention v3 (K5): the one-time notice that clean-up no longer deletes text; false once the user dismissed it. */
+    val retentionNotice: Boolean = false,
 )
 
 data class BannerSpec(
@@ -77,6 +79,8 @@ data class BannerSpec(
 object BannerResolver {
     private const val MAX_TEXT = 60
     const val EMBED_NOT_SET_TITLE = "Semantic search is off \u00b7 no Embeddings model"
+    /** Retention v3 (K5): shown once. Auto-delete is not in this version, so the notice does not mention it. */
+    const val RETENTION_NOTICE_TITLE = "Clean-up no longer deletes the details of your photos. Forget removes them."
     /** "Still paused on glasses - Resume?" shows for 10 minutes after a Resume. */
     const val STILL_PAUSED_MS = 10 * 60_000L
 
@@ -120,6 +124,7 @@ object BannerResolver {
                 else -> null
             }
         },
+        if (i.retentionNotice) BannerSpec(BannerKind.RETENTION_NOTICE, BannerTone.SKY, RETENTION_NOTICE_TITLE, "Got it", BannerAction.DISMISS_NOTICE) else null,
     )
 
     private fun short(text: String): String {

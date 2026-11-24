@@ -52,6 +52,8 @@ class HomeViewModel(
     private val voice: PhoneVoice = PhoneVoice.None,
     /** G7: Android Battery Saver; while on, Home's banner says asks are paused (the ask path refuses them). */
     batterySaver: Flow<Boolean> = flowOf(false),
+    /** Retention v3 (K5): the one-time notice banner. */
+    retentionNotice: Flow<Boolean> = flowOf(false),
     /** G3: the "Some features are limited" banner. */
     private val limitedMode: LimitedModeControl = LimitedModeControl.None,
     /** v0.9.7 slice D: the shared text backend, called with the chat text before any model call; null = every text is a plain ask. This class has no command logic of its own. */
@@ -88,7 +90,7 @@ class HomeViewModel(
         .flatMapLatest { (id, d) -> if (id == null) flowOf(null) else asks.observe(id).map { a -> a?.let { Feed.ask(it, d, zone()) } } }
 
     private val base: Flow<HomeUiState> = combine(
-        StatusUi.flow(glasses, pipeline, clock, storagePct, index, batterySaver),
+        StatusUi.flow(glasses, pipeline, clock, storagePct, index, batterySaver, retentionNotice),
         timeline.recentVisibleMemories(20).map(SuggestedQuestions::from),
         feed,
         lastAnswer,

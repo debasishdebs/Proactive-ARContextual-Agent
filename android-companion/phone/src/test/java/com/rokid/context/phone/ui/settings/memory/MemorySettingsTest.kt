@@ -56,8 +56,8 @@ class MemorySettingsTest {
         val vm = vm()
         val s0 = withTimeout(5_000) { vm.state.first { it.storage.isNotEmpty() } }
         assertEquals("42 MB of 250 MB", s0.storage); assertEquals(3, s0.reviewCount)
-        vm.setShort(48); vm.setQuota(200)
-        assertEquals(48, vm.state.value.settings.shortHours); assertEquals(200, vm.state.value.settings.quotaMb)
+        vm.setRecall(48); vm.setQuota(200)
+        assertEquals(48, vm.state.value.settings.recallHours); assertEquals(200, vm.state.value.settings.quotaMb)
         vm.setEncryption(true)
         assertEquals(MemorySettingsViewModel.ENCRYPTION_ON_NOTE, withTimeout(5_000) { vm.state.first { it.encryptionNote != null } }.encryptionNote)
         vm.export()
@@ -72,29 +72,30 @@ class MemorySettingsTest {
     }
 
     /** S1: retention runs daily since Phase 7; the note describes the windows in force, not "arrives with Forget". */
-    @Test fun retentionNoteDescribesTheActiveWindows() {
+    @Test fun retentionNoteDescribesQuickRecall() {
         assertEquals(
-            "Once a day, short-term memories older than 24 h, medium-term older than 7 days and long-term older than 30 days are removed. " +
-                "Photos are removed 7 days after they were taken (skipped photos after 1 day); captions and scene summaries stay until their own setting says otherwise.",
+            "Details from your photos stay in quick recall for 24 h. After that they are kept for your Moments, cards, nudges and answers, and for questions about a day, but leave everyday search. " +
+                "Nothing you saw is deleted by clean-up; only Forget removes text. Photos follow the Photos setting and the storage cap.",
             MemorySettingsViewModel.retentionNote(com.rokid.context.memory.MemorySettings()),
         )
-        val s = com.rokid.context.memory.MemorySettings(shortHours = 48, mediumDays = 14, longDays = 365)
-        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(settings = s), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+        val s = com.rokid.context.memory.MemorySettings(recallHours = 48, mediumDays = 14, longDays = 365)
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(settings = s), onBack = {}, onRecall = {}, onQuota = {},
             onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}) } }
         compose.onNodeWithText(MemorySettingsViewModel.retentionNote(s)).assertExists()
-        compose.onNodeWithText("older than 365 days", substring = true).assertExists()
+        compose.onNodeWithText("quick recall for 48 h", substring = true).assertExists()
+        compose.onNodeWithTag("retention_medium").assertDoesNotExist(); compose.onNodeWithTag("retention_long").assertDoesNotExist() // K3: the rows are gone, the old values are only read
         compose.onNodeWithText("Automatic clean-up arrives together with Forget.").assertDoesNotExist()
     }
 
     @Test fun firstConfirmSaysMyCarIsCleared() {
-        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 1), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 1), onBack = {}, onRecall = {}, onQuota = {},
             onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}) } }
         compose.onNodeWithText("My car list is cleared", substring = true).assertExists()
     }
 
     @Test fun screenShowsTheSecondConfirm() {
         var confirmed = 0
-        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2, pinsChecked = true), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2, pinsChecked = true), onBack = {}, onRecall = {}, onQuota = {},
             onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = { confirmed++ }, onCancelDeleteAll = {}, onOpenReview = {}) } }
         compose.onNodeWithText("This can't be undone. Delete every memory, photo and answer?").assertExists()
         compose.onNodeWithTag("delete_confirm").performClick()
@@ -103,7 +104,7 @@ class MemorySettingsTest {
 
     @Test fun theConfirmButtonIsDisabledUntilThePinLookupSucceeded() {
         var confirmed = 0
-        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2), onBack = {}, onRecall = {}, onQuota = {},
             onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = { confirmed++ }, onCancelDeleteAll = {}, onOpenReview = {}) } }
         compose.onNodeWithTag("delete_confirm").assertIsNotEnabled()
         compose.onNodeWithTag("delete_confirm").performClick()
@@ -201,7 +202,7 @@ class MemorySettingsTest {
 
     @Test fun theDialogShowsDeleteAllKeepPinsOnlyAfterAFailedLookup() {
         var kept = 0
-        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 1, pinsChecked = true, pinsGoing = com.rokid.context.work.frames.place.PinsGoing.FAILED), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 1, pinsChecked = true, pinsGoing = com.rokid.context.work.frames.place.PinsGoing.FAILED), onBack = {}, onRecall = {}, onQuota = {},
             onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}, onKeepPinsDeleteAll = { kept++ }) } }
         compose.onNodeWithTag("delete_confirm").assertIsNotEnabled()
         compose.onNodeWithTag("delete_keep_pins").performClick()

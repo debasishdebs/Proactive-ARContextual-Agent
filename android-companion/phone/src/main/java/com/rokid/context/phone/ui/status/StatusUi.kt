@@ -32,7 +32,7 @@ data class StatusUi(
 
         fun build(
             s: GlassesStatus, pipelineEnabled: Boolean, storagePct: Int?, nowMs: Long, index: IndexState = IndexState.NONE,
-            pauses: List<PauseRecord> = emptyList(), lastResumeAtMs: Long? = null, batterySaver: Boolean = false,
+            pauses: List<PauseRecord> = emptyList(), lastResumeAtMs: Long? = null, batterySaver: Boolean = false, retentionNotice: Boolean = false,
         ): StatusUi {
             val all = BannerResolver.candidates(
                 BannerInputs(
@@ -47,6 +47,7 @@ data class StatusUi(
                     nowMs = nowMs,
                     batterySaver = batterySaver,
                     glassesNote = s.note,
+                    retentionNotice = retentionNotice,
                 ),
             )
             return StatusUi(
@@ -64,12 +65,12 @@ data class StatusUi(
         /** [batterySaver]: Home passes Android's Battery Saver (G7); other screens leave it off. */
         fun flow(
             glasses: GlassesStatusSource, pipeline: PipelineControl, clock: Flow<Long>, storagePct: Flow<Int?>, index: Flow<IndexState> = flowOf(IndexState.NONE),
-            batterySaver: Flow<Boolean> = flowOf(false),
+            batterySaver: Flow<Boolean> = flowOf(false), retentionNotice: Flow<Boolean> = flowOf(false),
         ): Flow<StatusUi> =
             combine(
                 combine(glasses.status, pipeline.enabled, clock, storagePct, index) { s, enabled, now, storage, idx -> Inputs(s, enabled, now, storage, idx) },
-                pipeline.activePauses, pipeline.lastResumeAtMs, batterySaver,
-            ) { i, pauses, resumedAt, saver -> build(i.s, i.enabled, i.storage, i.now, i.index, pauses, resumedAt, saver) }
+                pipeline.activePauses, pipeline.lastResumeAtMs, batterySaver, retentionNotice,
+            ) { i, pauses, resumedAt, saver, notice -> build(i.s, i.enabled, i.storage, i.now, i.index, pauses, resumedAt, saver, notice) }
 
         private data class Inputs(val s: GlassesStatus, val enabled: Boolean, val now: Long, val storage: Int?, val index: IndexState)
     }
@@ -81,7 +82,7 @@ object BannerActions {
         when (action) {
             BannerAction.RECONNECT -> glasses.requestReconnect()
             BannerAction.RESUME -> pipeline.setEnabled(true) // resumes the ids active now (spec §5.5)
-            BannerAction.FIX_AI, BannerAction.REBUILD_INDEX -> Unit
+            BannerAction.FIX_AI, BannerAction.REBUILD_INDEX, BannerAction.DISMISS_NOTICE -> Unit // navigation, the index rebuild and the notice are handled by the route (Destinations.kt)
         }
     }
 }

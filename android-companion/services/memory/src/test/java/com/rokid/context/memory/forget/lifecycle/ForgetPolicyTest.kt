@@ -17,7 +17,7 @@ class ForgetPolicyTest {
     /** child -> [user (SINGLE, MULTI, RANGE, SCOPE), DELETE_ALL, SYSTEM_EXPIRY, SYSTEM_SWEEP, SYSTEM_PURGE] */
     private val expected: Map<ForgetChild, List<PolicyAction>> = mapOf(
         ForgetChild.PHOTO to listOf(F, F, C, K, K),
-        ForgetChild.MEMORY to listOf(F, F, F, F, F),
+        ForgetChild.MEMORY to listOf(F, F, K, F, F), // retention v3: retention never deletes a memory (expiry = KEEP)
         ForgetChild.MOMENT to listOf(C, F, C, C, F),
         ForgetChild.SCENE to listOf(C, F, C, C, C),
         ForgetChild.DERIVED_FIELD to listOf(C, F, C, C, C),
