@@ -1,5 +1,6 @@
 package com.rokid.context.work.frames.place.replay
 
+import com.rokid.context.work.frames.place.PlaceMatchResult
 import com.rokid.context.work.frames.place.PlaceOutcome
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -44,6 +45,7 @@ object ReplayReport {
             val row = r.rows.firstOrNull { it.frameId == h.frameId && it.extra.isEmpty() && it.outcome != PlaceOutcome.SEEN }
             if (row == null || row.pos == "UNKNOWN" || row.pos == "-") { none++; continue }
             checked++
+            // H2: a MATCHED whose card was suppressed (`cardWhy=already_shown_here`) is still the recorded identification.
             if (row.outcome == PlaceOutcome.MATCHED && row.chosenName.equals(h.name, ignoreCase = true)) ok++
             else misses += "${ist(h.capturedAt)} ${h.name}: ${row.verdict}${if (row.note.isNotEmpty()) " (${row.note})" else ""}"
         }
@@ -56,14 +58,15 @@ object ReplayReport {
     fun wrongCards(bundle: ReplayBundle, r: ReplayResult): List<ReplayRow> = r.rows.filter { row ->
         val span = row.frameCapMs?.let { bundle.spanAt(it) } ?: return@filter false
         val target = span.targetName
-        (row.isCard && row.chosenName != target) || (row.f1.startsWith("card ") && row.f1.removePrefix("card ") != target)
+        // H3: a cluster card is wrong only when the span's target is not a member of it.
+        (row.isCard && (target == null || target !in row.names)) || (row.f1.startsWith("card ") && row.f1.removePrefix("card ") != target)
     }
 
     fun spanVerdict(span: TruthSpan, rows: List<ReplayRow>): String {
         if (!span.isTestable && !span.assumedFixOnly) return "not testable (${span.testable.substringAfter(':', span.testable)}; ${span.label})"
         val inSpan = rows.filter { r -> r.frameCapMs?.let { it in span } == true }
-        val cards = inSpan.count { it.isCard && it.chosenName == span.targetName }
-        val wrong = inSpan.count { it.isCard && it.chosenName != span.targetName }
+        val cards = inSpan.count { it.isCard && span.targetName in it.names }
+        val wrong = inSpan.count { it.isCard && span.targetName !in it.names }
         val top = inSpan.groupingBy { it.verdict }.eachCount().entries.sortedByDescending { it.value }.take(4).joinToString("; ") { "${it.key} x${it.value}" }
         val tag = if (span.assumedFixOnly) "ASSUMED fix only; " else ""
         return "${tag}pokes=${inSpan.size} cards=$cards wrong=$wrong | $top"
@@ -103,6 +106,22 @@ object ReplayReport {
 
     private fun histogram(r: ReplayResult) = r.rows.groupingBy { it.verdict }.eachCount().entries.sortedByDescending { it.value }.take(14).joinToString("\n") { "- ${it.key}: ${it.value}" }
 
+    /** H5: `calls=<n> pinCards=<n> clusterCards=<n> suppressed=<n>` of a whole run. */
+    fun totals(r: ReplayResult) = "calls=${r.rows.count { it.isCall }} pinCards=${r.rows.count { it.isPinCard }} clusterCards=${r.rows.count { it.isClusterCard }} suppressed=${r.rows.count { it.isSuppressed }}"
+
+    /** H5: one tab-separated row per (run, overlay, span) plus a `*` row of the whole run, so a step can compare numbers by script. Counts only. */
+    fun acceptance(bundle: ReplayBundle, groups: List<ReplayGroup>): String {
+        val sb = StringBuilder("run\toverlay\tspan\tcards\twrong\tcalls\tpinCards\tclusterCards\n")
+        for (g in groups) for ((name, r) in listOf("HEAD" to g.head) + g.overlays.map { it.key to it.value }) {
+            for (span in bundle.truth) {
+                val rows = r.rows.filter { it.frameCapMs?.let { c -> c in span } == true }
+                sb.append("${g.title}\t$name\t${span.label}\t${rows.count { it.isCard && span.targetName in it.names }}\t${rows.count { it.isCard && span.targetName !in it.names }}\t${rows.count { it.isCall }}\t${rows.count { it.isPinCard }}\t${rows.count { it.isClusterCard }}\n")
+            }
+            sb.append("${g.title}\t$name\t*\t${r.rows.count { it.isCard }}\t${wrongCards(bundle, r).size}\t${r.rows.count { it.isCall }}\t${r.rows.count { it.isPinCard }}\t${r.rows.count { it.isClusterCard }}\n")
+        }
+        return sb.toString()
+    }
+
     fun summary(bundle: ReplayBundle, groups: List<ReplayGroup>, calibration: Calibration?): String {
         val sb = StringBuilder("# Trip replay summary\n\nREAL DATA. This folder stays on this Mac (never in git).\n\n## Fidelity limits\n")
         LIMITS.forEach { sb.append("- $it\n") }
@@ -113,9 +132,10 @@ object ReplayReport {
         for (g in groups) {
             sb.append("\n## ${g.title}\n")
             sb.append("Outcomes (all ${g.head.rows.size} pokes), HEAD:\n${histogram(g.head)}\n\n")
-            sb.append("Wrong-place cards: HEAD ${wrongCards(bundle, g.head).size}" + g.overlays.entries.joinToString("") { ", ${it.key} ${wrongCards(bundle, it.value).size}" } + "\n\n")
+            sb.append("Wrong-place cards: HEAD ${wrongCards(bundle, g.head).size}" + g.overlays.entries.joinToString("") { ", ${it.key} ${wrongCards(bundle, it.value).size}" } + "\n")
+            sb.append("Run totals: HEAD ${totals(g.head)}" + g.overlays.entries.joinToString("") { ", ${it.key} ${totals(it.value)}" } + "\n\n")
             for (span in bundle.truth) {
-                val cards = { r: ReplayResult -> r.rows.count { it.isCard && it.frameCapMs?.let { c -> c in span } == true && it.chosenName == span.targetName } }
+                val cards = { r: ReplayResult -> r.rows.count { it.isCard && it.frameCapMs?.let { c -> c in span } == true && span.targetName in it.names } }
                 val f1Cards = { r: ReplayResult -> r.rows.count { it.extra.isEmpty() && it.f1.startsWith("card ") && it.frameCapMs?.let { c -> c in span } == true && it.f1 == "card ${span.targetName}" } }
                 sb.append("- ${span.label}: ${spanVerdict(span, g.head.rows)}")
                 if (span.isTestable || span.assumedFixOnly) sb.append(" | cards HEAD ${cards(g.head)}" + g.overlays.entries.joinToString("") { (k, v) -> ", $k ${cards(v)}${if (k == "F1" || k == "ALL") "/F1 card ${f1Cards(v)}" else ""}" })
@@ -128,6 +148,7 @@ object ReplayReport {
     fun write(outDir: File, bundle: ReplayBundle, groups: List<ReplayGroup>, calibration: Calibration?) {
         outDir.mkdirs()
         File(outDir, "summary.md").writeText(summary(bundle, groups, calibration))
+        File(outDir, "acceptance.tsv").writeText(acceptance(bundle, groups))
         for (span in bundle.truth) {
             val sb = StringBuilder("# ${span.label} (${ist(span.startMs)} - ${ist(span.endMs)}), target ${span.target}\n\n${span.testable.let { if (it == "yes") "" else "Testable: $it\n\n" }}")
             for (g in groups) sb.append("## ${g.title}\n\n${spanVerdict(span, g.head.rows)}\n\n${placeTable(span, g)}\n")
@@ -154,7 +175,7 @@ object ReplayReport {
             return ReplayGroup(title, head, ov)
         }
         val groups = ArrayList<ReplayGroup>()
-        for (sc in listOf(FixScenario.AsRecorded, FixScenario.Outdoor10, FixScenario.Indoor60, FixScenario.Stale)) groups += group("Oracle x ${sc.label} x AS_CREATED", Oracle, sc)
+        for (sc in listOf(FixScenario.AsRecorded, FixScenario.Outdoor10, FixScenario.Indoor60, FixScenario.Stale, FixScenario.IndoorMediaGood)) groups += group("Oracle x ${sc.label} x AS_CREATED", Oracle, sc)
         groups += group("Oracle x ASSUMED_PIN_10M (Antera/Ramoji, sites) x AS_CREATED", Oracle, FixScenario.AssumedPin(10f), withSites = sites)
         groups += group("Oracle x ASSUMED_PIN_60M (Antera/Ramoji, sites) x AS_CREATED", Oracle, FixScenario.AssumedPin(60f), withSites = sites)
         groups += group("Oracle x OUTDOOR_10M x ALWAYS (next visit)", Oracle, FixScenario.Outdoor10, Activation.ALWAYS)
@@ -165,14 +186,18 @@ object ReplayReport {
         return groups to calibrate(bundle, cal.head)
     }
 
-    /** ALL = F1+F2+F3a+F4 with the F5 text matcher where the stage is the oracle: falls back to the oracle for frames without caption text. */
-    private object CaptionTextOrOracle : MatchStage {
+    /** ALL = F1+F2+F3a+F4 with the F5 text matcher where it has a hit (H1): a frame whose caption names no candidate falls through to the oracle. */
+    internal object CaptionTextOrOracle : MatchStage {
         override val label = "CaptionText+Oracle"
         override fun create(bundle: ReplayBundle): ReplayMatcher {
             val c = CaptionText.create(bundle); val o = Oracle.create(bundle)
             return object : BaseMatcher() {
-                override suspend fun match(frameId: String, lines: List<String>) =
-                    if (bundle.framesById[frameId]?.text.isNullOrBlank()) o.match(frameId, lines).also { note = o.note } else c.match(frameId, lines).also { note = c.note }
+                override suspend fun match(frameId: String, lines: List<String>): PlaceMatchResult {
+                    c.note = null
+                    val r = c.match(frameId, lines)
+                    if (c.note != "caption_no_hit") { note = c.note; return r }
+                    return o.match(frameId, lines).also { note = o.note }
+                }
             }
         }
     }

@@ -19,8 +19,17 @@ data class RunSpec(
 data class ReplayRow(
     val pokeMs: Long, val extra: String, val frameId: String?, val frameCapMs: Long?, val motion: String, val pos: String, val assumed: Boolean, val f2: Boolean,
     val outcome: PlaceOutcome?, val reason: String, val chosenId: String, val chosenName: String, val f1: String, val note: String, val attemptLine: String,
+    /** Parsed from the attempt line (H2): `card=`, `cardWhy=`, `call=`, `pinFirst=`, `fixSrc=`. */
+    val card: String = "-", val cardWhy: String = "-", val call: String = "-", val pinFirst: String = "-", val fixSrc: String = "-",
+    /** The names of every place the card names (one for a single card, the members for a cluster card; `chosen=` then holds comma-separated ids). */
+    val names: List<String> = if (chosenName.isEmpty()) emptyList() else listOf(chosenName),
 ) {
-    val isCard get() = outcome == PlaceOutcome.MATCHED || outcome == PlaceOutcome.NEARBY
+    /** H2: a card is `card=shown` on the attempt line, not an outcome name (a MATCHED may be `card=suppressed`). */
+    val isCard get() = card == "shown"
+    val isPinCard get() = isCard && outcome?.name == "PIN_FIRST"
+    val isClusterCard get() = isCard && pinFirst.startsWith("cluster(")
+    val isSuppressed get() = card == "suppressed"
+    val isCall get() = call == "made"
     val verdict get() = "${outcome?.name ?: "-"} · $reason"
 }
 
@@ -92,7 +101,9 @@ class TripReplayRunner(private val bundle: ReplayBundle) {
             rows += ReplayRow(
                 now, ev.extra, fr?.frameId, fr?.capturedAt, fr?.motion ?: ev.frame?.motion ?: "-",
                 if (fx == null) "-" else if (fx.pos == null) "UNKNOWN" else fx.pos.label() + " acc=${fx.accM.toInt()}", fx?.assumed == true, fx?.f2 == true,
-                outcome, kv["reason"] ?: "-", chosen, chosen.let { id -> pack.nameOf(id) ?: "" }, f1Decision, matcher.note.orEmpty(), line,
+                outcome, kv["reason"] ?: "-", chosen, chosen.split(',').mapNotNull { id -> pack.nameOf(id) }.joinToString(" + "), f1Decision, matcher.note.orEmpty(), line,
+                kv["card"] ?: "-", kv["cardWhy"] ?: "-", kv["call"] ?: "-", kv["pinFirst"] ?: "-", kv["fixSrc"] ?: "-",
+                chosen.split(',').mapNotNull { id -> pack.nameOf(id) },
             )
         }
         return ReplayResult(spec, rows, requests)

@@ -122,6 +122,25 @@ class TripReplaySyntheticTest {
         assertTrue("a 2 min old fix is beyond a 1 min window", f1.none { it.isCard })
     }
 
+    @Test fun allCombiner_fallsBackToOracleOnCaptionMiss() {
+        // every synthetic caption is "plain text": it names no place, so the combined stage must behave as the oracle (H1)
+        val r = replay(RunSpec(ReplayReport.CaptionTextOrOracle, FixScenario.Outdoor10))
+        val rows = rowsIn(r, siteA.first, siteA.last)
+        assertTrue(rows[0].isCard); assertEquals("Site A", rows[0].chosenName)
+        assertEquals("caption-only is the old behaviour: no card", PlaceOutcome.NONE, replay(RunSpec(CaptionText, FixScenario.Outdoor10)).rows.first { it.pokeMs in siteA }.outcome)
+    }
+
+    @Test fun indoorMediaGood_givesGoodFixOnlyNearMediaFix() {
+        val f = ReplayFrame("s9001", T0 + 5 * H + 30_000, T0 + 5 * H + 29_000, true, "STILL", "ss1", -1, true, false, "")
+        val b = bundle.copy(frames = bundle.frames + f)
+        val rows = rowsIn(replay(RunSpec(Oracle, FixScenario.IndoorMediaGood), b), indoorE.first, indoorE.last)
+        val near = rows.first { it.frameId == "s9001" }
+        assertTrue("a media fix 30 s before gives a good fix and a card", near.isCard); assertEquals("Site E", near.chosenName)
+        val far = rows.first { it.frameId == "s0050" }
+        assertEquals("a fix 120 s old is only the inaccurate one", "fix_inaccurate", far.reason)
+        assertEquals(PlaceOutcome.STALE_FIX, far.outcome)
+    }
+
     @Test fun noPinNoCandidates_reportedNotTestable() {
         val span = bundle.truth.first { it.label == "NOPIN" }
         val rows = rowsIn(replay(RunSpec(Oracle, FixScenario.Outdoor10)), span.startMs, span.endMs)
