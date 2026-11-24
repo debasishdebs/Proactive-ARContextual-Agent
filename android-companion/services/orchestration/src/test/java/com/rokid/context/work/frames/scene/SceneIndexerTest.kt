@@ -141,6 +141,20 @@ class SceneIndexerTest {
         assertNotNull(db.frameVectorDao().get("b", "sA")) // the vector is kept
     }
 
+    /** Codex data saver r2 P1-2: a frame parked for Wi-Fi keeps its marker and stays PENDING through routing (semantic dup, salient dup, cluster); it is never a skipped or expiring photo. */
+    @Test fun parkedFrameKeepsDataSaverMarkThroughRouting() = runBlocking {
+        watchVec = plane(0, 0.0)
+        val b = code(1, plane(0, 0.0)); val salient = code(2, plane(0, 0.0), w = 5)
+        seed("a", T, b); seed("p1", T + 60_000, b); seed("p2", T + 70_000, salient); seed("p3", T + 80_000, code(3, plane(2, 0.0)))
+        listOf("p1", "p2", "p3").forEach { db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET lastError = 'data_saver' WHERE frameId = '$it'") }
+        indexer().routeBatch()
+        listOf("p1", "p2", "p3").forEach { id ->
+            assertEquals("PENDING", st(id).state); assertEquals("data_saver", st(id).lastError)
+            assertNotNull(meta(id).routedAt); assertNull(meta(id).clusterId); assertNull(meta(id).nearDupOf)
+        }
+        assertEquals(3, db.frameStateDao().dataSaverParkedCount())
+    }
+
     @Test fun dupIsOnlyWithinTenMinutes() = runBlocking {
         val b = code(1, plane(0, 0.0))
         seed("a", T, b); seed("b", T + 11 * 60_000, b)
