@@ -92,6 +92,15 @@ class DemotedRetrievalTest {
         assertEquals(setOf("dem2"), ids(retriever.retrieveWindowed("walrus", s.copy(mode = RetrievalMode.HYBRID), now, null, null, EventWindow(now - 21 * day, now - 19 * day))))
     }
 
+    /** Codex v3 r1 P2-11: with SEMANTIC mode (a vector space is active) a time-window question still reaches the demoted facts (no vector) through the windowed lexical search. */
+    @Test fun aTimeWindowQuestionReachesDemotedFactsInSemanticModeToo() = runBlocking {
+        world()
+        val r = retriever.retrieveWindowed("walrus", s.copy(mode = RetrievalMode.SEMANTIC), now, null, null, EventWindow(now - 11 * day, now - 9 * day))
+        assertEquals(setOf("old-vec", "dem", "cap"), ids(r))
+        assertEquals(RetrievalMode.SEMANTIC, r.modeUsed)
+        assertEquals("a default question (no window) is unchanged: the demoted fact stays out", setOf("in", "old-vec"), ids(retriever.retrieve("walrus", s.copy(mode = RetrievalMode.SEMANTIC), now)))
+    }
+
     @Test fun citedAndProvenanceReadsByIdNeverFilter() = runBlocking {
         world()
         // a nudge / answer / card / Moment cites ids: byIds is the read path of provenance, and the demoted fact is still there

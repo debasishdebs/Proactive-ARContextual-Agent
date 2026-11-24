@@ -61,7 +61,7 @@ class EmbeddingSpaces(
 
     /** False when the space is gone or no longer writable (RETIRED/STALE); throws on a dimension mismatch. */
     suspend fun put(memoryId: String, spaceId: String, vector: FloatArray): Boolean =
-        dao.putChecked(MemoryVectorEntity(memoryId, spaceId, VectorCodec.encode(vector)), vector.size)
+        dao.putChecked(MemoryVectorEntity(memoryId, spaceId, VectorCodec.encode(vector)), vector.size, recallSince())
     suspend fun missing(spaceId: String, limit: Int): List<EmbedInput> = dao.missing(spaceId, limit, recallSince())
     /** Stored photos with no image vector in [spaceId], newest first, `unembeddable` ones excluded. */
     suspend fun missingImages(spaceId: String, limit: Int): List<String> = dao.missingImageIds(spaceId, limit)
